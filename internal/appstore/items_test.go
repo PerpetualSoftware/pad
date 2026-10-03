@@ -59,7 +59,7 @@ func newAppFixture(t *testing.T, opts Options) appFixture {
 		t.Fatal(err)
 	}
 	if opts.ETagKey == nil {
-		opts.ETagKey = []byte("server-only-test-key")
+		opts.ETagKey = []byte("server-only-test-key-0123456789abcdef")
 	}
 	return appFixture{
 		s: s, a: New(s, opts), ws: ws, owner: owner, companion: companion, private: private,
@@ -176,7 +176,7 @@ func TestAppUpdateItem_WritesOnlyWhatTheSpecAllows(t *testing.T) {
 	var updated *models.Item
 	writes := storetest.CaptureWrites(t, f.s, func() {
 		updated, err = f.a.UpdateItem(ctx, f.spec, item.ID, AppItemUpdate{
-			FieldsPatch: map[string]any{"status": "solved", "public_status": "Fixed"}, ExpectedETag: f.a.ETag(f.spec, item),
+			FieldsPatch: map[string]any{"status": "solved", "public_status": "Fixed"}, ExpectedETag: mustETag(t, f.a, f.spec, item),
 		}, f.actor)
 		if err != nil {
 			t.Fatalf("update: %v", err)
@@ -194,7 +194,7 @@ func TestAppUpdateItem_WritesOnlyWhatTheSpecAllows(t *testing.T) {
 	}
 	// A second update inside the debounce window merges into one activity.
 	if _, err := f.a.UpdateItem(ctx, f.spec, item.ID, AppItemUpdate{
-		FieldsPatch: map[string]any{"priority": "low"}, ExpectedETag: f.a.ETag(f.spec, updated),
+		FieldsPatch: map[string]any{"priority": "low"}, ExpectedETag: mustETag(t, f.a, f.spec, updated),
 	}, f.actor); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestAppItemRefusalsWriteNothing(t *testing.T) {
 	}
 	stale := f.spec
 	stale.Epoch = 2
-	etag := f.a.ETag(f.spec, mine)
+	etag := mustETag(t, f.a, f.spec, mine)
 
 	for name, tc := range map[string]struct {
 		run  func() error
@@ -264,7 +264,7 @@ func TestAppItemRefusalsWriteNothing(t *testing.T) {
 			return err
 		}, func(err error) bool { return errors.Is(err, store.ErrAppBadActor) }},
 		"update: item a human created": {func() error {
-			_, err := f.a.UpdateItem(ctx, f.spec, human.ID, AppItemUpdate{FieldsPatch: map[string]any{"priority": "low"}, ExpectedETag: f.a.ETag(f.spec, human)}, f.actor)
+			_, err := f.a.UpdateItem(ctx, f.spec, human.ID, AppItemUpdate{FieldsPatch: map[string]any{"priority": "low"}, ExpectedETag: mustETag(t, f.a, f.spec, human)}, f.actor)
 			return err
 		}, func(err error) bool { return errors.Is(err, store.ErrAppNotAppItem) }},
 		"update: stale etag": {func() error {
@@ -322,7 +322,7 @@ func TestAppCreateItem_ItemCapIsEnforcedWithoutACount(t *testing.T) {
 		t.Fatalf("a capped create wrote: %v", writes)
 	}
 	// Self-host (PlanLimit off) is not capped, as on the human path.
-	free := New(f.s, Options{ETagKey: []byte("k")})
+	free := New(f.s, Options{ETagKey: []byte("server-only-test-key-0123456789abcdef")})
 	if _, err := free.CreateItem(ctx, f.spec, f.companion.ID, AppItemCreate{Title: "Third"}, f.actor); err != nil {
 		t.Fatalf("self-host create over the cap: %v", err)
 	}
@@ -388,6 +388,15 @@ func TestAppAndHumanCreatesNeverShareNumbers(t *testing.T) {
 	}
 }
 
+func mustETag(t *testing.T, a *Store, spec store.FenceSpec, item *models.Item) string {
+	t.Helper()
+	e, err := a.ETag(spec, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
 // fieldValue decodes a fields blob: Postgres JSONB and SQLite TEXT render
 // the same object differently.
 func fieldValue(t *testing.T, fieldsJSON, key string) any {
@@ -406,4 +415,100 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// A hidden item must not change what an app link resolves to (codex round 1):
+// with the unrestricted resolver, a private item sharing a companion's title
+// could win the match and leave the link broken, which told the app it
+// existed.
+func TestAppLinks_HiddenItemsDoNotInfluenceResolution(t *testing.T) {
+	f := newAppFixture(t, Options{})
+	ctx := context.Background()
+	known, err := f.a.CreateItem(ctx, f.spec, f.companion.ID, AppItemCreate{Title: "Known"}, f.actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hidden := range []string{"Known", "Known|Secret"} {
+		if _, err := f.s.CreateItem(f.ws.ID, f.private.ID, models.ItemCreate{Title: hidden}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, content := range []string{"[[Known]]", "[[Known|Secret]]"} {
+		item, err := f.a.CreateItem(ctx, f.spec, f.companion.ID, AppItemCreate{Title: "Links " + content, Content: content}, f.actor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := f.count(t, `SELECT COUNT(*) FROM item_wiki_links WHERE source_item_id = ? AND target_item_id = ?`, item.ID, known.ID); n != 1 {
+			t.Errorf("%s: resolved to the companion %d times, want 1", content, n)
+		}
+	}
+}
+
+// Schema defaults are applied after the key checks, so they must not carry a
+// forbidden value onto an app item (codex round 1).
+func TestAppCreateItem_DefaultsCannotBypassTheRules(t *testing.T) {
+	f := newAppFixture(t, Options{})
+	ctx := context.Background()
+	target, err := f.a.CreateItem(ctx, f.spec, f.companion.ID, AppItemCreate{Title: "Target"}, f.actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withDefaults, err := f.s.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Defaulted", Schema: `{"fields":[
+		{"key":"related","label":"Related","type":"relation","collection":"tickets","default":"` + target.ID + `"},
+		{"key":"score","label":"Score","type":"number","computed":true,"default":3},
+		{"key":"external_id","label":"Ext","type":"text","unique_scope":"workspace_collection","default":"e1"},
+		{"key":"note","label":"Note","type":"text","default":"plain"}
+	]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := f.spec
+	spec.Companions = append(append([]string{}, spec.Companions...), withDefaults.ID)
+	item, err := f.a.CreateItem(ctx, spec, withDefaults.ID, AppItemCreate{Title: "Defaulted"}, f.actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"related", "score", "external_id"} {
+		if v := fieldValue(t, item.Fields, k); v != nil {
+			t.Errorf("default for forbidden field %s landed: %v", k, v)
+		}
+	}
+	if fieldValue(t, item.Fields, "note") != "plain" {
+		t.Errorf("an ordinary default was not applied: %s", item.Fields)
+	}
+
+	tokenDefault, err := f.s.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Tokened", Schema: `{"fields":[
+		{"key":"note","label":"Note","type":"text","default":"pad-attachment:abc"}
+	]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Companions = append(spec.Companions, tokenDefault.ID)
+	var got error
+	writes := storetest.CaptureWrites(t, f.s, func() {
+		_, got = f.a.CreateItem(ctx, spec, tokenDefault.ID, AppItemCreate{Title: "Tokened"}, f.actor)
+	})
+	if !IsInputError(got) || len(writes) != 0 {
+		t.Fatalf("an attachment token in a default: %v, writes %v", got, writes)
+	}
+}
+
+// Without a usable server key there are no etags to issue or check: a
+// forgeable token is worse than none (codex round 1).
+func TestAppUpdateItem_RefusesWithoutAnETagKey(t *testing.T) {
+	f := newAppFixture(t, Options{})
+	ctx := context.Background()
+	item, err := f.a.CreateItem(ctx, f.spec, f.companion.ID, AppItemCreate{Title: "Keyless"}, f.actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range [][]byte{nil, []byte("short")} {
+		keyless := New(f.s, Options{ETagKey: key})
+		if _, err := keyless.ETag(f.spec, item); !errors.Is(err, ErrNoETagKey) {
+			t.Errorf("ETag with key %q: %v", key, err)
+		}
+		if _, err := keyless.UpdateItem(ctx, f.spec, item.ID, AppItemUpdate{FieldsPatch: map[string]any{"priority": "low"}, ExpectedETag: "x"}, f.actor); !errors.Is(err, ErrNoETagKey) {
+			t.Errorf("UpdateItem with key %q: %v", key, err)
+		}
+	}
 }

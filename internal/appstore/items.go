@@ -94,8 +94,18 @@ func (a *Store) createItemOnce(ctx context.Context, spec store.FenceSpec, collec
 		return nil, err
 	}
 	working = items.CoerceFields(working, schema)
-	if err := items.ValidateFields(working, schema); err != nil {
+	// Validation applies schema defaults in place, AFTER the key checks
+	// above, so it runs against a schema whose forbidden fields carry no
+	// default: a default may not put a relation, computed or uniqueness-scoped
+	// value on an app item. A required field of those kinds then cannot be
+	// satisfied by an app, which is the refusal it should get.
+	if err := items.ValidateFields(working, appWritableSchema(schema)); err != nil {
 		return nil, refuse("%v", err)
+	}
+	// And a default is still content: no pad-attachment: token may arrive
+	// through one either.
+	if err := refuseReferencesInFields(working); err != nil {
+		return nil, err
 	}
 	blob, err := json.Marshal(working)
 	if err != nil {
@@ -123,6 +133,9 @@ func (a *Store) UpdateItem(ctx context.Context, spec store.FenceSpec, itemID str
 	}
 	if in.ExpectedETag == "" {
 		return nil, refuse("expected_etag is required")
+	}
+	if err := a.etagKeyUsable(); err != nil {
+		return nil, err
 	}
 	if err := refuseReferencesInFields(in.FieldsPatch); err != nil {
 		return nil, err
@@ -161,6 +174,20 @@ func (a *Store) UpdateItem(ctx context.Context, spec store.FenceSpec, itemID str
 		return nil, err
 	}
 	return item, nil
+}
+
+// appWritableSchema is schema with every default removed from the field
+// kinds an app may not write.
+func appWritableSchema(schema models.CollectionSchema) models.CollectionSchema {
+	out := schema
+	out.Fields = make([]models.FieldDef, len(schema.Fields))
+	for i, def := range schema.Fields {
+		if def.IsRelation() || def.IsMultiRelation() || def.Computed || def.UniqueScope != "" {
+			def.Default = nil
+		}
+		out.Fields[i] = def
+	}
+	return out
 }
 
 func companionSchema(ftx *store.FencedTx, collectionID string) (models.CollectionSchema, error) {

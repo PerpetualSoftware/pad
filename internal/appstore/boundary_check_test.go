@@ -61,7 +61,7 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"decryptUserTOTP":          "decrypts a field in memory; no SQL",
 	"decrypt":                  "decrypts in memory; no SQL",
 	"HasEncryptionKey":         "reads in-memory config; no SQL",
-	"replaceWikiLinks":         "DELETE and INSERT on item_wiki_links WHERE source_item_id = the item it is given, only; target resolution reads",
+	"replaceWikiLinksScoped":   "DELETE and INSERT on item_wiki_links WHERE source_item_id = the item it is given, only (all six INSERTs bind it); target resolution reads, limited to the scope's collections",
 	"emitItemEventTx":          "INSERT INTO event_outbox (through writeOutboxTx) for the item it is given",
 	"emitItemUpdateEventsTx":   "INSERT INTO event_outbox for the item it is given (status_changed and/or updated)",
 	"buildItemAppProjectionTx": "reads the item's creator and collection schema",

@@ -30,6 +30,43 @@ const snippetRadius = 40
 // Idempotent: calling with the same (sourceItemID, content) twice
 // yields the same final row set.
 func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content string) error {
+	return s.replaceWikiLinksScoped(tx, sourceItemID, workspaceID, content, linkScope{})
+}
+
+// linkScope restricts which items a wiki link may resolve to. The zero value
+// is unrestricted (every human path). An app write sets it to the install's
+// companion collections (SPEC-6, TASK-3390): every resolution query, the
+// number-only and collection-qualified fallbacks included, then sees only
+// companion items, so a hidden item can neither win a match nor change which
+// fallback runs, and the link state reveals nothing about it.
+type linkScope struct {
+	enabled     bool
+	collections []string
+}
+
+// clause is the SQL restriction for a query whose items table is aliased
+// alias ("" for an unaliased items table).
+func (sc linkScope) clause(alias string) (string, []any) {
+	if !sc.enabled {
+		return "", nil
+	}
+	col := "collection_id"
+	if alias != "" {
+		col = alias + ".collection_id"
+	}
+	if len(sc.collections) == 0 {
+		return " AND 1 = 0", nil
+	}
+	args := make([]any, len(sc.collections))
+	for i, c := range sc.collections {
+		args[i] = c
+	}
+	return " AND " + col + " IN (?" + strings.Repeat(", ?", len(sc.collections)-1) + ")", args
+}
+
+// replaceWikiLinksScoped is replaceWikiLinks with target resolution limited
+// by scope.
+func (s *Store) replaceWikiLinksScoped(tx *sql.Tx, sourceItemID, workspaceID, content string, scope linkScope) error {
 	// Delete first so callers don't need to pre-clear. This is the
 	// canonical "re-parse this item" path; an empty content body
 	// correctly leaves zero rows behind.
@@ -113,7 +150,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 				key := refKey{prefix: prefix, number: number}
 				targetID, cached := resolved[key]
 				if !cached {
-					targetID = resolveRefTx(tx, s, workspaceID, prefix, number)
+					targetID = resolveRefTx(tx, s, workspaceID, prefix, number, scope)
 					resolved[key] = targetID
 				}
 				// Insert as ref-kind row. NO title fallback here —
@@ -145,7 +182,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			key := refKey{prefix: prefix, number: number}
 			targetID, cached := resolved[key]
 			if !cached {
-				targetID = resolveRefTx(tx, s, workspaceID, prefix, number)
+				targetID = resolveRefTx(tx, s, workspaceID, prefix, number, scope)
 				resolved[key] = targetID
 			}
 			if targetID.Valid {
@@ -193,7 +230,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			for i, candidate := range titleCandidates {
 				cached, ok := resolvedTitles[candidate]
 				if !ok {
-					cached = resolveTitleTx(tx, s, workspaceID, candidate)
+					cached = resolveTitleTx(tx, s, workspaceID, candidate, scope)
 					resolvedTitles[candidate] = cached
 				}
 				if cached.Valid {
@@ -276,7 +313,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 			for i, candidate := range candidates {
 				cached, ok := resolvedTitles[candidate]
 				if !ok {
-					cached = resolveTitleTx(tx, s, workspaceID, candidate)
+					cached = resolveTitleTx(tx, s, workspaceID, candidate, scope)
 					resolvedTitles[candidate] = cached
 				}
 				if cached.Valid {
@@ -372,14 +409,14 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 // number-only match (matching GetItemByRef's behavior so an item
 // that has been moved between collections still resolves under its
 // old prefix).
-func resolveRefTx(tx *sql.Tx, s *Store, workspaceID, prefix string, number int) sql.NullString {
+func resolveRefTx(tx *sql.Tx, s *Store, workspaceID, prefix string, number int, scope linkScope) sql.NullString {
 	var id string
+	restrictI, scopeArgs := scope.clause("i")
 	err := tx.QueryRow(s.q(`
 		SELECT i.id FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ?
-		  AND i.deleted_at IS NULL
-	`), workspaceID, prefix, number).Scan(&id)
+		  AND i.deleted_at IS NULL`+restrictI), append([]any{workspaceID, prefix, number}, scopeArgs...)...).Scan(&id)
 	if err == nil {
 		return sql.NullString{String: id, Valid: true}
 	}
@@ -393,10 +430,10 @@ func resolveRefTx(tx *sql.Tx, s *Store, workspaceID, prefix string, number int) 
 		return sql.NullString{}
 	}
 	// Number-only fallback for the cross-collection-move case.
+	restrict, _ := scope.clause("")
 	err = tx.QueryRow(s.q(`
 		SELECT id FROM items
-		WHERE workspace_id = ? AND item_number = ? AND deleted_at IS NULL
-	`), workspaceID, number).Scan(&id)
+		WHERE workspace_id = ? AND item_number = ? AND deleted_at IS NULL`+restrict), append([]any{workspaceID, number}, scopeArgs...)...).Scan(&id)
 	if err != nil {
 		return sql.NullString{}
 	}
@@ -435,18 +472,19 @@ func resolveRefTx(tx *sql.Tx, s *Store, workspaceID, prefix string, number int) 
 // it lands as a single helper change here + a matching renderer
 // fix; the cross-engine baseline doesn't pretend to do more than
 // it does.
-func resolveTitleTx(tx *sql.Tx, s *Store, workspaceID, title string) sql.NullString {
+func resolveTitleTx(tx *sql.Tx, s *Store, workspaceID, title string, scope linkScope) sql.NullString {
 	// Stage 1: full-key exact match. LIMIT 1 because the renderer
 	// uses Array.find() (first match wins) — we mirror that
 	// non-determinism rather than introducing our own ordering.
 	var id string
+	restrict, scopeArgs := scope.clause("")
 	err := tx.QueryRow(s.q(`
 		SELECT id FROM items
 		WHERE workspace_id = ?
 		  AND deleted_at IS NULL
-		  AND LOWER(title) = LOWER(?)
+		  AND LOWER(title) = LOWER(?)`+restrict+`
 		LIMIT 1
-	`), workspaceID, title).Scan(&id)
+	`), append([]any{workspaceID, title}, scopeArgs...)...).Scan(&id)
 	if err == nil {
 		return sql.NullString{String: id, Valid: true}
 	}
@@ -469,15 +507,16 @@ func resolveTitleTx(tx *sql.Tx, s *Store, workspaceID, title string) sql.NullStr
 	}
 	collSlug := title[:slash]
 	titleRest := title[slash+1:]
+	restrictI, _ := scope.clause("i")
 	err = tx.QueryRow(s.q(`
 		SELECT i.id FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		WHERE i.workspace_id = ?
 		  AND c.slug = ?
 		  AND i.deleted_at IS NULL
-		  AND LOWER(i.title) = LOWER(?)
+		  AND LOWER(i.title) = LOWER(?)`+restrictI+`
 		LIMIT 1
-	`), workspaceID, collSlug, titleRest).Scan(&id)
+	`), append([]any{workspaceID, collSlug, titleRest}, scopeArgs...)...).Scan(&id)
 	if err != nil {
 		return sql.NullString{}
 	}

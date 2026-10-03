@@ -332,35 +332,19 @@ func (f *FencedTx) UpdateItemFields(itemID string, patch map[string]any, expecte
 	return updated, nil
 }
 
-// indexWikiLinks indexes an app item's [[...]] links. It runs the human
-// indexer, which writes ONLY rows whose source is this item, then breaks every
-// resolved target that is not a live companion item: an app link names only
-// what the app can see, and a link to anything else stays broken, which
-// reveals nothing. [[workspace::REF]] is refused before this layer.
+// indexWikiLinks indexes an app item's [[...]] links, resolving targets ONLY
+// among live companion items (linkScope): a hidden item can neither win a
+// match nor change which fallback runs, so the stored link state reveals
+// nothing about it. The indexer writes only rows whose source is this item.
+// [[workspace::REF]] is refused before this layer.
 func (f *FencedTx) indexWikiLinks(itemID, content string) error {
-	if err := f.s.replaceWikiLinks(f.tx, itemID, f.workspaceID, content); err != nil {
-		return fmt.Errorf("fenced wiki links: %w", err)
-	}
 	ids := make([]string, 0, len(f.companions))
 	for id := range f.companions {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	q := `UPDATE item_wiki_links SET target_item_id = NULL
-		WHERE source_item_id = ? AND target_item_id IS NOT NULL
-		  AND target_item_id NOT IN (SELECT id FROM items WHERE workspace_id = ? AND deleted_at IS NULL`
-	args := []any{itemID, f.workspaceID}
-	if len(ids) > 0 {
-		q += ` AND collection_id IN (?` + strings.Repeat(", ?", len(ids)-1) + `)`
-		for _, id := range ids {
-			args = append(args, id)
-		}
-	} else {
-		q += ` AND 1 = 0`
-	}
-	q += `)`
-	if _, err := f.tx.Exec(f.s.q(q), args...); err != nil {
-		return fmt.Errorf("fenced wiki links: confine targets: %w", err)
+	if err := f.s.replaceWikiLinksScoped(f.tx, itemID, f.workspaceID, content, linkScope{enabled: true, collections: ids}); err != nil {
+		return fmt.Errorf("fenced wiki links: %w", err)
 	}
 	return nil
 }
