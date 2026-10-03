@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"strings"
 )
 
 // SendInvitation sends a workspace invitation email.
@@ -182,6 +183,58 @@ This link expires in 24 hours. If you didn't create a Pad account, you can safel
 		cloudMode,
 	)
 
+	return s.Send(ctx, to, name, subject, htmlBody, plainBody)
+}
+
+// SendAccountClaimed tells the owner of an address that their sign-in
+// claimed a Pad account somebody else had registered with it and never
+// verified (TASK-3351), and what the claim removed: the workspaces the
+// registrant had joined (the account was taken out of them) and the ones
+// the registrant had created (deleted). Either list may be empty.
+func (s *Sender) SendAccountClaimed(ctx context.Context, to, name, provider string, stripped, deleted []string) error {
+	subject := "You've claimed your Pad account"
+	cloudMode := s.CloudMode()
+
+	listHTML := func(names []string) string {
+		var b strings.Builder
+		b.WriteString(`<ul style="font-size: 15px; line-height: 1.5;">`)
+		for _, n := range names {
+			b.WriteString("<li>" + html.EscapeString(n) + "</li>")
+		}
+		b.WriteString("</ul>")
+		return b.String()
+	}
+	listPlain := func(names []string) string {
+		var b strings.Builder
+		for _, n := range names {
+			b.WriteString("  - " + n + "\n")
+		}
+		return b.String()
+	}
+
+	intro := fmt.Sprintf("Hi %s, you signed in with %s using this address. Someone had registered a Pad account with it and never verified it, so you've claimed that account. Every password, session and token it had was reset; only you can sign in to it now.",
+		name, provider)
+
+	var bodyHTML, bodyPlain strings.Builder
+	bodyHTML.WriteString(`  <p style="font-size: 16px; line-height: 1.5;">` + html.EscapeString(intro) + "</p>\n")
+	bodyPlain.WriteString(intro + "\n\n")
+	if len(deleted) > 0 {
+		line := "Workspaces created by whoever registered the address were deleted:"
+		bodyHTML.WriteString(`  <p style="font-size: 15px; line-height: 1.5;">` + line + "</p>\n  " + listHTML(deleted) + "\n")
+		bodyPlain.WriteString(line + "\n" + listPlain(deleted) + "\n")
+	}
+	if len(stripped) > 0 {
+		line := "The account was removed from workspaces it had joined:"
+		bodyHTML.WriteString(`  <p style="font-size: 15px; line-height: 1.5;">` + line + "</p>\n  " + listHTML(stripped) + "\n")
+		bodyPlain.WriteString(line + "\n" + listPlain(stripped) + "\n")
+	}
+	closing := "If this wasn't you, reset the password of this email account and contact support@getpad.dev."
+	bodyHTML.WriteString(`  <p style="font-size: 13px; color: #666; line-height: 1.5;">` + closing + "</p>\n")
+	bodyPlain.WriteString(closing)
+
+	footer := "You received this because your address was used to sign in to Pad."
+	htmlBody := buildHTMLShell(bodyHTML.String(), footer, cloudMode)
+	plainBody := buildPlainShell(bodyPlain.String(), footer, cloudMode)
 	return s.Send(ctx, to, name, subject, htmlBody, plainBody)
 }
 

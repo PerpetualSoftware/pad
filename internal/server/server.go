@@ -661,6 +661,12 @@ func (s *Server) Stop() {
 }
 
 func New(s *store.Store) *Server {
+	// An account claim regenerates the claimed account's username
+	// (TASK-3351); it must pass the same rules a chosen one does, reserved
+	// names included.
+	if s != nil {
+		s.SetUsernameValidator(ValidateUsername)
+	}
 	rl := NewRateLimiters()
 	// PAD_DISABLE_RATE_LIMITS turns off ALL HTTP rate limiting when set to a
 	// truthy value. It exists ONLY for the E2E harness (BUG-2089): every
@@ -1707,10 +1713,13 @@ func (s *Server) setupRouter() {
 				r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
 				r.Post("/tokens/{tokenID}/rotate", s.handleRotateUserToken)
 
-				// Cloud: OAuth login/linking (called by pad-cloud sidecar, protected by cloud secret)
-				r.Post("/oauth-login", s.handleOAuthLogin)
-				r.Post("/oauth-link", s.handleOAuthLink)
-				r.Post("/oauth-unlink", s.handleOAuthUnlink)
+				// Cloud: OAuth login/linking (called by pad-cloud sidecar, protected
+				// by cloud secret). Cloud mode only (TASK-3351): a self-hosted
+				// install that carries a secret must not create accounts or mint
+				// sessions on a caller's word about an email.
+				r.With(s.requireCloudMode).Post("/oauth-login", s.handleOAuthLogin)
+				r.With(s.requireCloudMode).Post("/oauth-link", s.handleOAuthLink)
+				r.With(s.requireCloudMode).Post("/oauth-unlink", s.handleOAuthUnlink)
 
 				// CLI browser-based auth flow
 				r.Post("/cli/sessions", s.handleCreateCLIAuthSession)

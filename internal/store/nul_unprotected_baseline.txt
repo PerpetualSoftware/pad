@@ -249,6 +249,10 @@ status_transitions.item_id
 status_transitions.workspace_id
 stripe_processed_events.event_id
 stripe_processed_events.processed_at
+user_oauth_identities.created_at
+user_oauth_identities.provider
+user_oauth_identities.subject
+user_oauth_identities.user_id
 user_report_layouts.created_at
 user_report_layouts.updated_at
 user_report_layouts.user_id

@@ -41,6 +41,10 @@ var AllowSchemaAhead bool
 type Store struct {
 	db      *sql.DB
 	dialect Dialect
+	// usernameValidator, when set, is the rule a generated username must
+	// pass (the server's ValidateUsername: format, length, reserved names).
+	// An account claim regenerates one (TASK-3351).
+	usernameValidator func(string) error
 	// dbPath is the on-disk SQLite file path (empty for Postgres and for
 	// in-memory SQLite). Retained so the migration path can write a
 	// pre-migration snapshot next to it. See snapshotBeforeMigrate.

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -731,68 +730,45 @@ func (s *Store) CreateOAuthUser(email, name, avatarURL string) (*models.User, er
 }
 
 // AddOAuthProvider adds a provider to the user's oauth_providers list.
-// No-op if the provider is already linked.
+// No-op if the provider is already linked. It takes the account lock, like
+// every provider write (TASK-3351).
 func (s *Store) AddOAuthProvider(userID, provider string) error {
-	user, err := s.GetUser(userID)
-	if err != nil {
-		return fmt.Errorf("add oauth provider: %w", err)
-	}
-	if user == nil {
-		return fmt.Errorf("add oauth provider: user not found")
-	}
-
-	if user.HasOAuthProvider(provider) {
-		return nil // Already linked
-	}
-
-	providers := user.GetOAuthProviders()
-	providers = append(providers, provider)
-	data, err := json.Marshal(providers)
-	if err != nil {
-		return fmt.Errorf("add oauth provider: marshal: %w", err)
-	}
-
-	_, err = s.db.Exec(s.q(`UPDATE users SET oauth_providers = ?, updated_at = ? WHERE id = ?`),
-		string(data), now(), userID)
-	if err != nil {
+	if err := s.LinkOAuthProvider(userID, provider, ""); err != nil {
 		return fmt.Errorf("add oauth provider: %w", err)
 	}
 	return nil
 }
 
-// RemoveOAuthProvider removes a provider from the user's oauth_providers list.
+// RemoveOAuthProvider removes a provider from the user's oauth_providers
+// list, and forgets the provider account it was bound to, so a relink may
+// bind a different one (TASK-3351). Under the account lock, so a sign-in
+// that read the link before this commits cannot re-bind afterwards.
 func (s *Store) RemoveOAuthProvider(userID, provider string) error {
-	user, err := s.GetUser(userID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("remove oauth provider: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	providers, found, err := s.lockUserProvidersTx(tx, userID)
 	if err != nil {
 		return fmt.Errorf("remove oauth provider: %w", err)
 	}
-	if user == nil {
+	if !found {
 		return fmt.Errorf("remove oauth provider: user not found")
 	}
-
-	providers := user.GetOAuthProviders()
 	var filtered []string
 	for _, p := range providers {
 		if p != provider {
 			filtered = append(filtered, p)
 		}
 	}
-
-	var val string
-	if len(filtered) > 0 {
-		data, err := json.Marshal(filtered)
-		if err != nil {
-			return fmt.Errorf("remove oauth provider: marshal: %w", err)
-		}
-		val = string(data)
-	}
-
-	_, err = s.db.Exec(s.q(`UPDATE users SET oauth_providers = ?, updated_at = ? WHERE id = ?`),
-		val, now(), userID)
-	if err != nil {
+	if err := s.writeUserProvidersTx(tx, userID, filtered); err != nil {
 		return fmt.Errorf("remove oauth provider: %w", err)
 	}
-	return nil
+	if _, err := tx.Exec(s.q(`DELETE FROM user_oauth_identities WHERE user_id = ? AND provider = ?`), userID, provider); err != nil {
+		return fmt.Errorf("remove oauth provider: forget subject: %w", err)
+	}
+	return tx.Commit()
 }
 
 // ErrLastAdmin is returned when a role change would leave zero admins.
@@ -1209,6 +1185,10 @@ func lateUserReference(err error) (string, bool) {
 
 // issuedGrantWorkspaces, when non-nil, is RESET and refilled by each
 // attempt, so after a retry it holds only the committing attempt's rows.
+// deleteAccountAfterUserLockHook, when set by a test, runs once account
+// deletion holds the account lock (TASK-3351 lock-order test).
+var deleteAccountAfterUserLockHook func()
+
 func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1258,6 +1238,9 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	var lockedID string
 	if err := tx.QueryRow(s.q(lock), userID).Scan(&lockedID); err != nil {
 		return fmt.Errorf("delete account: lock user: %w", err)
+	}
+	if deleteAccountAfterUserLockHook != nil {
+		deleteAccountAfterUserLockHook()
 	}
 
 	// 0b. Delete the grants the user issued BEFORE the tabs below (BUG-3288).

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -100,18 +101,40 @@ func (s *Store) ConsumeEmailVerification(token string) (*models.User, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Atomically mark the token used and return its user, only if it's
-	// currently unused and not expired. The WHERE clause ensures only one
-	// concurrent caller can succeed.
+	// Lock order (TASK-3351): the account, then its tokens, the order
+	// account deletion and an account claim take them, so none of the three
+	// deadlocks another on Postgres. Find the token's account without a
+	// lock, lock the account, then spend the token conditionally.
 	var userID string
+	err = tx.QueryRow(s.q(`
+		SELECT user_id FROM email_verification_tokens
+		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+	`), tokenHash, now()).Scan(&userID)
+	if err == sql.ErrNoRows {
+		return nil, nil // Invalid, expired, or already used
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find verification token: %w", err)
+	}
+	if err := s.lockUserRowTx(tx, userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("lock user: %w", err)
+	}
+
+	// Atomically mark the token used, only if it's still unused and not
+	// expired: only one concurrent caller can succeed, and a claim that
+	// deleted it while this waited for the account leaves nothing to spend.
+	var spentBy string
 	err = tx.QueryRow(s.q(`
 		UPDATE email_verification_tokens
 		SET used_at = ?
 		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
 		RETURNING user_id
-	`), now(), tokenHash, now()).Scan(&userID)
-	if err == sql.ErrNoRows {
-		return nil, nil // Invalid, expired, or already used
+	`), now(), tokenHash, now()).Scan(&spentBy)
+	if err == sql.ErrNoRows || (err == nil && spentBy != userID) {
+		return nil, nil // Spent, or gone, while this waited
 	}
 	if err != nil {
 		return nil, fmt.Errorf("consume verification token: %w", err)
