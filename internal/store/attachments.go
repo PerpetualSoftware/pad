@@ -1499,17 +1499,31 @@ func (s *Store) CreateAttachmentVariantIfParentLive(a *models.Attachment) (bool,
 	}
 	defer tx.Rollback()
 
-	query := `SELECT 1 FROM attachments WHERE id = ? AND deleted_at IS NULL`
+	// The lock also READS the parent's binding (BUG-3385). The caller built
+	// the variant from a parent snapshot taken before decoding and
+	// resizing; if the original was attached to an item since, that
+	// snapshot's item_id is stale. AttachAttachmentToItem updates only the
+	// variants that already exist, so a variant inserted from the snapshot
+	// stayed unbound under a bound parent until orphan GC reaped it. Under
+	// this lock no bind can land between the read and the insert.
+	query := `SELECT item_id FROM attachments WHERE id = ? AND deleted_at IS NULL`
 	if s.dialect.Driver() == DriverPostgres {
 		query += ` FOR NO KEY UPDATE`
 	}
-	var one int
-	switch err := tx.QueryRow(s.q(query), *a.ParentID).Scan(&one); {
+	var parentItemID sql.NullString
+	switch err := tx.QueryRow(s.q(query), *a.ParentID).Scan(&parentItemID); {
 	case errors.Is(err, sql.ErrNoRows):
 		// Parent gone or tombstoned — refuse, no row minted.
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("lock variant parent: %w", err)
+	}
+
+	if parentItemID.Valid {
+		id := parentItemID.String
+		a.ItemID = &id
+	} else {
+		a.ItemID = nil
 	}
 
 	source, err := attachmentFilenameSource(a)
