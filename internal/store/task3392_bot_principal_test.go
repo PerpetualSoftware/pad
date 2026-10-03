@@ -579,3 +579,59 @@ func TestTask3392_AdminMemberCountIsPeople(t *testing.T) {
 		t.Errorf("detail = %+v, want one workspace with 1 member", got)
 	}
 }
+
+// codex r1: a stored reset or verification token, however it came to exist,
+// is no credential for a bot, and neither is rotating a stored PAT.
+func TestTask3392_StoredCredentialsAreNoUseToABot(t *testing.T) {
+	s := testStore(t)
+	bot := task3392Bot(t, s, "inst-stored")
+	plant := func(table, plaintext string) {
+		sum := sha256.Sum256([]byte(plaintext))
+		if _, err := s.db.Exec(s.q(`INSERT INTO `+table+` (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`),
+			newID(), bot.ID, hex.EncodeToString(sum[:]), time.Now().UTC().Add(time.Hour).Format(time.RFC3339), now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant("password_reset_tokens", "padres_bot")
+	plant("email_verification_tokens", "padver_bot")
+	if u, err := s.LookupPasswordReset("padres_bot"); err != nil || u != nil {
+		t.Errorf("LookupPasswordReset = %v, %v; want nothing", u, err)
+	}
+	if u, err := s.ConsumePasswordReset("padres_bot"); err != nil || u != nil {
+		t.Errorf("ConsumePasswordReset = %v, %v; want nothing", u, err)
+	}
+	if u, err := s.LookupEmailVerification("padver_bot"); err != nil || u != nil {
+		t.Errorf("LookupEmailVerification = %v, %v; want nothing", u, err)
+	}
+	if u, err := s.ConsumeEmailVerification("padver_bot"); err != nil || u != nil {
+		t.Errorf("ConsumeEmailVerification = %v, %v; want nothing", u, err)
+	}
+	// A PAT minted while the row was a person, then rotated as a bot.
+	task3392SetKind(t, s, bot.ID, models.UserKindHuman)
+	tok, err := s.CreateAPIToken(bot.ID, models.APITokenCreate{Name: "t"}, 30, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task3392SetKind(t, s, bot.ID, models.UserKindApp)
+	if _, err := s.RotateAPIToken(tok.ID, bot.ID, 30, 365); !errors.Is(err, ErrAppPrincipal) {
+		t.Errorf("RotateAPIToken err = %v, want ErrAppPrincipal", err)
+	}
+}
+
+// codex r1: a bot is never a grantee. Its access is its install's companion
+// collections, and a grant row would be a second lock path onto its users
+// row for account deletion to deadlock against.
+func TestTask3392_NoGrantsToABot(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "grantor@test.com", "Grantor", "password123")
+	ws := createTestWorkspace(t, s, "Grants")
+	coll := createTestCollection(t, s, ws.ID, "Things")
+	item := createTestItem(t, s, ws.ID, coll.ID, "Thing", "")
+	bot := task3392Bot(t, s, "inst-grant")
+	if _, err := s.CreateCollectionGrant(ws.ID, coll.ID, bot.ID, "view", owner.ID); !errors.Is(err, ErrAppPrincipal) {
+		t.Errorf("CreateCollectionGrant err = %v, want ErrAppPrincipal", err)
+	}
+	if _, err := s.CreateItemGrant(ws.ID, item.ID, bot.ID, "view", owner.ID); !errors.Is(err, ErrAppPrincipal) {
+		t.Errorf("CreateItemGrant err = %v, want ErrAppPrincipal", err)
+	}
+}

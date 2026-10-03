@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -404,5 +406,36 @@ func TestTask3392_SessionDoorsOwnChecksRefuseABot(t *testing.T) {
 	srv.handleOAuthAuthorize(rr, asBot(httptest.NewRequest("GET", "/oauth/authorize?"+q.Encode(), nil), nil))
 	if rr.Code != http.StatusFound || !strings.HasPrefix(rr.Header().Get("Location"), "/login") {
 		t.Errorf("authorize with a bot as the current user: %d → %q, want a redirect to sign in", rr.Code, rr.Header().Get("Location"))
+	}
+}
+
+// codex r1: an OAuth access token whose subject is a bot authenticates
+// nothing at /mcp, and a stored reset token for a bot changes no password.
+func TestTask3392_StoredCredentialsAreNoUseToABotOverHTTP(t *testing.T) {
+	srv := twoResourceOAuthServer(t)
+	sess := newOAuthSession(t, srv)
+	tok, _ := mintWithResource(t, srv, sess, testCanonicalAudience)
+	user, _ := srv.store.GetUserByEmail("oauth-test@example.com")
+	if rr := postMCP(srv, "/mcp", tok); rr.Code == http.StatusUnauthorized {
+		t.Fatalf("fixture: the person's grant does not work at /mcp (%d)", rr.Code)
+	}
+	task3392SetKind(t, srv, user.ID, models.UserKindApp)
+	if rr := postMCP(srv, "/mcp", tok); rr.Code != http.StatusUnauthorized {
+		t.Errorf("a bot subject's OAuth grant at /mcp: %d, want 401", rr.Code)
+	}
+
+	bot := task3392Bot(t, srv, "inst-reset-consume")
+	before, _ := srv.store.GetUser(bot.ID)
+	sum := sha256.Sum256([]byte("padres_bot_http"))
+	if _, err := srv.store.DB().Exec(`INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`,
+		"rst-3392", bot.ID, hex.EncodeToString(sum[:]), time.Now().UTC().Add(time.Hour).Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	task3392SameAnswer(t, "reset-password",
+		doRequestFromRemoteAddr(srv, "POST", "/api/v1/auth/reset-password", map[string]string{"token": "padres_bot_http", "password": "a-new-password-3392"}, "192.0.2.50:1"),
+		doRequestFromRemoteAddr(srv, "POST", "/api/v1/auth/reset-password", map[string]string{"token": "padres_nonexistent", "password": "a-new-password-3392"}, "192.0.2.51:1"))
+	after, _ := srv.store.GetUser(bot.ID)
+	if after.PasswordHash != before.PasswordHash || after.PasswordSet != before.PasswordSet {
+		t.Error("a stored reset token changed a bot's password")
 	}
 }

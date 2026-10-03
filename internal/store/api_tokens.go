@@ -114,6 +114,10 @@ func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defau
 // expiryDays controls the new expiry: 0 keeps the original, >0 sets a new one.
 // maxLifetimeDays enforces a ceiling on the new expiry (0 = no limit).
 func (s *Store) RotateAPIToken(tokenID, userID string, expiryDays, maxLifetimeDays int) (*models.APITokenWithSecret, error) {
+	// A rotation mints a secret: never for a bot (TASK-3392).
+	if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+		return nil, err
+	}
 	// Verify the token exists and belongs to the user
 	existing, err := s.getAPIToken(tokenID)
 	if err != nil {

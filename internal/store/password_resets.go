@@ -64,6 +64,8 @@ func (s *Store) LookupPasswordReset(token string) (*models.User, error) {
 	err := s.db.QueryRow(s.q(`
 		SELECT user_id FROM password_reset_tokens
 		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+		  -- A bot's token is no token (TASK-3392).
+		  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = password_reset_tokens.user_id AND u.kind = 'app')
 	`), tokenHash, now()).Scan(&userID)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -100,6 +102,8 @@ func (s *Store) ConsumePasswordReset(token string) (*models.User, error) {
 		UPDATE password_reset_tokens
 		SET used_at = ?
 		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+		  -- A bot's token is no token (TASK-3392).
+		  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = password_reset_tokens.user_id AND u.kind = 'app')
 		RETURNING user_id, (SELECT credential_epoch FROM users WHERE users.id = password_reset_tokens.user_id)
 	`), now(), tokenHash, now()).Scan(&userID, &epoch)
 

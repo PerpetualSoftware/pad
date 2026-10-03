@@ -628,8 +628,8 @@ func (c *watchVisCache) refreshUser() {
 		c.deny = true
 		return
 	}
-	if fresh == nil {
-		// Deleted mid-connection.
+	if fresh == nil || fresh.IsApp() {
+		// Deleted mid-connection, or a bot (TASK-3392).
 		c.deny = true
 		return
 	}

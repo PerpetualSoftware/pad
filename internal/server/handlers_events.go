@@ -987,8 +987,8 @@ func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string
 			"user_id", cachedUser.ID, "error", err)
 		return true
 	}
-	if user == nil {
-		// User deleted → revoke.
+	if user == nil || user.IsApp() {
+		// User deleted, or a bot (TASK-3392) → revoke.
 		return false
 	}
 	// Disabled user → revoke.
