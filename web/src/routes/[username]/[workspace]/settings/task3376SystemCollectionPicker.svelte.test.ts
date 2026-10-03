@@ -6,10 +6,12 @@ import SettingsPage from './+page.svelte';
 /**
  * TASK-3376: system collections (Conventions, Playbooks) are ordinary
  * collections for a restricted member. In the member access picker they are
- * real checkboxes, not a disabled always-checked row, and they start CHECKED
- * when an owner switches a member from All to Specific, so that restricting
- * someone does not silently stop their agents loading the workspace's rules.
- * A member who is ALREADY restricted keeps their saved list as is.
+ * real checkboxes, not a disabled always-checked row. They start UNCHECKED
+ * when an owner switches a member from All to Specific (TASK-3384, Dave's
+ * ruling), like every other collection, and a hint names what leaving them
+ * unchecked means: that member's agents won't load the workspace's
+ * conventions or playbooks. A member who is ALREADY restricted keeps their
+ * saved list as is.
  */
 
 const meCalls: Array<(value: unknown) => void> = [];
@@ -112,21 +114,28 @@ describe('TASK-3376: system collections in the member access picker', () => {
 		window.location.hash = '';
 	});
 
-	it('All to Specific starts with the system collections checked, and they can be unchecked', async () => {
+	it('All to Specific starts with nothing checked, the system collections included, and the hint names the consequence', async () => {
 		await openAccessPanel();
 		setAccessMode('specific');
-		await waitFor(() => expect(checkbox('Conventions').checked).toBe(true));
-		expect(checkbox('Playbooks').checked).toBe(true);
+		await waitFor(() => expect(checkbox('Conventions')).toBeTruthy());
+		expect(checkbox('Conventions').checked).toBe(false);
+		expect(checkbox('Playbooks').checked).toBe(false);
 		expect(checkbox('Tasks').checked).toBe(false);
 		// Real choices, not the old disabled always-checked row.
 		expect(checkbox('Conventions').disabled).toBe(false);
 		expect(checkbox('Playbooks').disabled).toBe(false);
+		const hint = document.querySelector('.access-coll-hint');
+		expect(hint?.textContent).toMatch(/agents won.t load .*conventions.*playbooks/i);
 
-		checkbox('Conventions').click();
-		await waitFor(() => expect(checkbox('Conventions').checked).toBe(false));
+		// Checking one is an ordinary choice, saved like any collection.
+		checkbox('Playbooks').click();
+		await waitFor(() => expect(checkbox('Playbooks').checked).toBe(true));
+		checkbox('Tasks').click();
+		await waitFor(() => expect(checkbox('Tasks').checked).toBe(true));
 		screen.getByRole('button', { name: /^Save$/ }).click();
 		await waitFor(() => expect(saves.length).toBe(1));
-		expect(saves[0]).toEqual({ mode: 'specific', ids: ['c-pb'] });
+		expect([...saves[0].ids].sort()).toEqual(['c-pb', 'c-tasks']);
+		expect(saves[0].mode).toBe('specific');
 	});
 
 	it('an already-restricted member keeps their saved list; nothing is added for them', async () => {
