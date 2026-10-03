@@ -312,14 +312,14 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 		// Auto-link the provider for new OAuth users, binding the
 		// provider account in the same write (TASK-3351).
+		// Any failure stops the sign-in: an account whose provider never
+		// linked could not sign in with it again. A mismatch means the
+		// precheck above passed and another sign-in bound this provider
+		// account in between.
 		if err := s.store.LinkOAuthProvider(user.ID, input.Provider, input.Subject); err != nil {
-			if errors.Is(err, store.ErrOAuthSubjectMismatch) {
-				// The precheck above passed, so another sign-in bound this
-				// provider account in between.
-				s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
-				return
-			}
 			slog.Error("oauth-login: failed to link provider", "error", err, "user_id", user.ID)
+			s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
+			return
 		}
 
 		slog.Info("oauth-login: created new user", "provider", input.Provider, "email", input.Email, "user_id", user.ID)

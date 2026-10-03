@@ -1185,6 +1185,10 @@ func lateUserReference(err error) (string, bool) {
 
 // issuedGrantWorkspaces, when non-nil, is RESET and refilled by each
 // attempt, so after a retry it holds only the committing attempt's rows.
+// deleteAccountAfterUserLockHook, when set by a test, runs once account
+// deletion holds the account lock (TASK-3351 lock-order test).
+var deleteAccountAfterUserLockHook func()
+
 func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1234,6 +1238,9 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	var lockedID string
 	if err := tx.QueryRow(s.q(lock), userID).Scan(&lockedID); err != nil {
 		return fmt.Errorf("delete account: lock user: %w", err)
+	}
+	if deleteAccountAfterUserLockHook != nil {
+		deleteAccountAfterUserLockHook()
 	}
 
 	// 0b. Delete the grants the user issued BEFORE the tabs below (BUG-3288).

@@ -43,6 +43,17 @@ func (s *Store) lockUserProvidersTx(tx *sql.Tx, userID string) (providers []stri
 	return providers, true, nil
 }
 
+// lockUserRowTx takes the account row lock (Postgres; SQLite's BEGIN
+// IMMEDIATE already serializes writers). sql.ErrNoRows when it is gone.
+func (s *Store) lockUserRowTx(tx *sql.Tx, userID string) error {
+	q := `SELECT id FROM users WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		q += ` FOR NO KEY UPDATE`
+	}
+	var id string
+	return tx.QueryRow(s.q(q), userID).Scan(&id)
+}
+
 func providerListHas(list []string, v string) bool {
 	for _, x := range list {
 		if x == v {

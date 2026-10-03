@@ -112,3 +112,36 @@ func TestTASK3351_ClaimAndVerifyDoNotDeadlock(t *testing.T) {
 		t.Fatalf("verify: %v", verifyErr)
 	}
 }
+
+// Account deletion takes the account, then its tokens. A verification
+// consume and an account claim that start while it holds the account must
+// wait for it, not hold a token it needs (codex round 2, TASK-3351): every
+// path now locks the account before its tokens.
+func TestTASK3351_DeletionClaimAndVerifyDoNotDeadlock(t *testing.T) {
+	s := testStore(t)
+	u := createUnverifiedUser(t, s, "gone@example.com")
+	tok, err := s.CreateEmailVerification(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	var verifyErr, claimErr error
+	deleteAccountAfterUserLockHook = func() {
+		deleteAccountAfterUserLockHook = nil
+		wg.Add(2)
+		go func() { defer wg.Done(); _, verifyErr = s.ConsumeEmailVerification(tok) }()
+		go func() { defer wg.Done(); _, claimErr = s.ClaimAccountByProvider(u.ID, "google", "") }()
+		time.Sleep(300 * time.Millisecond) // let both reach their locks
+	}
+	t.Cleanup(func() { deleteAccountAfterUserLockHook = nil })
+	if err := s.DeleteAccountAtomic(u.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	wg.Wait()
+	if verifyErr != nil {
+		t.Fatalf("verify: %v", verifyErr)
+	}
+	if claimErr != nil && !errors.Is(claimErr, ErrClaimNotEligible) {
+		t.Fatalf("claim: %v", claimErr)
+	}
+}

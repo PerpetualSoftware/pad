@@ -71,18 +71,34 @@ func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) 
 	defer func() { _ = tx.Rollback() }()
 	ts := now()
 
+	// Lock order: the account, then its tokens (see ConsumeEmailVerification).
+	// Find the token's account without a lock; the core locks the account
+	// and then spends the token.
 	var userID string
 	err = tx.QueryRow(s.q(`
-		UPDATE email_verification_tokens SET used_at = ?
-		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
-		RETURNING user_id`), ts, tokenHash, ts).Scan(&userID)
+		SELECT user_id FROM email_verification_tokens
+		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`), tokenHash, ts).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrClaimNotEligible
 	}
 	if err != nil {
-		return nil, fmt.Errorf("account claim: spend token: %w", err)
+		return nil, fmt.Errorf("account claim: find token: %w", err)
 	}
-	claim, err := s.claimAccountTx(tx, userID, unusable, ts)
+	spend := func(tx *sql.Tx) error {
+		var spentBy string
+		err := tx.QueryRow(s.q(`
+			UPDATE email_verification_tokens SET used_at = ?
+			WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+			RETURNING user_id`), ts, tokenHash, ts).Scan(&spentBy)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && spentBy != userID) {
+			return ErrClaimNotEligible
+		}
+		if err != nil {
+			return fmt.Errorf("account claim: spend token: %w", err)
+		}
+		return nil
+	}
+	claim, err := s.claimAccountTx(tx, userID, unusable, ts, spend)
 	if err != nil {
 		return nil, err
 	}
@@ -110,22 +126,9 @@ func (s *Store) ClaimAccountByProvider(userID, provider, subject string) (*Accou
 		return nil, fmt.Errorf("account claim: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Lock order: the account's verification tokens before the account,
-	// the order ConsumeEmailVerification and the link claim take them, so
-	// the two cannot deadlock on Postgres. SQLite serializes writers.
-	if s.dialect.Driver() == DriverPostgres {
-		rows, err := tx.Query(s.q(`SELECT id FROM email_verification_tokens WHERE user_id = ? FOR UPDATE`), userID)
-		if err != nil {
-			return nil, fmt.Errorf("account claim: lock verification tokens: %w", err)
-		}
-		for rows.Next() {
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("account claim: lock verification tokens: %w", err)
-		}
-	}
-	claim, err := s.claimAccountTx(tx, userID, unusable, now())
+	// Lock order: the account, then its tokens, as everywhere (see
+	// ConsumeEmailVerification); the core locks the account first.
+	claim, err := s.claimAccountTx(tx, userID, unusable, now(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +167,11 @@ func unusablePasswordHash() ([]byte, error) {
 // claimAccountTx is the claim itself, inside the caller's transaction: lock
 // the account, check it is claimable, reset every credential, strip access
 // elsewhere and soft-delete what it owns.
-func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts string) (*AccountClaim, error) {
+//
+// spend, when given, runs once the account is locked and before anything
+// is checked or changed: the link claim spends its token there, so the
+// account is always locked before its tokens.
+func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts string, spend func(*sql.Tx) error) (*AccountClaim, error) {
 	lockQ := `SELECT COALESCE(email_verified_at, ''), CASE WHEN disabled_at IS NULL THEN 0 ELSE 1 END, COALESCE(stripe_customer_id, '') FROM users WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		lockQ += ` FOR NO KEY UPDATE`
@@ -180,6 +187,11 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts st
 	}
 	if claimAfterUserLockHook != nil {
 		claimAfterUserLockHook()
+	}
+	if spend != nil {
+		if err := spend(tx); err != nil {
+			return nil, err
+		}
 	}
 	if verifiedAt != "" || disabled == 1 {
 		return nil, ErrClaimNotEligible
