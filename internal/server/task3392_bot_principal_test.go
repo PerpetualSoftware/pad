@@ -1,15 +1,18 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -326,4 +329,80 @@ func createWSForTestWithCookie(t *testing.T, srv *Server, token string) string {
 	}
 	parseJSON(t, rr, &ws)
 	return ws.Slug
+}
+
+// The doors' own checks, behind the session backstop: each handler is called
+// with the bot ALREADY resolved as the current user, which no real request
+// can produce (ValidateSession refuses a bot first). This pins the second
+// layer the lead ruled for, so removing either layer alone is caught.
+func TestTask3392_SessionDoorsOwnChecksRefuseABot(t *testing.T) {
+	srv := twoResourceOAuthServer(t)
+	sess := newOAuthSession(t, srv)
+	user, _ := srv.store.GetUserByEmail("oauth-test@example.com")
+	task3392SetKind(t, srv, user.ID, models.UserKindApp)
+	bot, _ := srv.store.GetUser(user.ID)
+	if !bot.IsApp() {
+		t.Fatal("fixture: the row is not a bot")
+	}
+	asBot := func(r *http.Request, params map[string]string) *http.Request {
+		rctx := chi.NewRouteContext()
+		for k, v := range params {
+			rctx.URLParams.Add(k, v)
+		}
+		ctx := context.WithValue(r.Context(), chi.RouteCtxKey, rctx)
+		return r.WithContext(WithCurrentUser(ctx, bot))
+	}
+
+	// CLI approve.
+	cli := doRequest(srv, "POST", "/api/v1/auth/cli/sessions", nil)
+	var cliResp struct {
+		SessionCode string `json:"session_code"`
+	}
+	parseJSON(t, cli, &cliResp)
+	rr := httptest.NewRecorder()
+	srv.handleApproveCLIAuthSession(rr, asBot(httptest.NewRequest("POST", "/", nil), map[string]string{"code": cliResp.SessionCode}))
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("CLI approve with a bot as the current user: %d %s, want 401", rr.Code, rr.Body.String())
+	}
+
+	// Invitation accept, both doors. The invitation is to the bot row's own
+	// address, so only the kind can refuse it.
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Inv 3392"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inviter, err := srv.store.CreateUser(models.UserCreate{Email: "inviter-3392@example.com", Name: "I", Password: task3392Password})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := srv.store.CreateInvitation(ws.ID, bot.Email, "editor", inviter.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr = httptest.NewRecorder()
+	srv.handleAcceptInvitation(rr, asBot(httptest.NewRequest("POST", "/", nil), map[string]string{"code": inv.Code}))
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("invitation accept by code as a bot: %d %s, want 401", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	srv.handleAcceptMyInvitation(rr, asBot(httptest.NewRequest("POST", "/", nil), map[string]string{"id": inv.ID}))
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("invitation accept by id as a bot: %d %s, want 401", rr.Code, rr.Body.String())
+	}
+	if n := countRows(t, srv, `SELECT COUNT(*) FROM workspace_members WHERE user_id = ?`, bot.ID); n != 0 {
+		t.Errorf("the bot joined %d workspaces", n)
+	}
+
+	// OAuth authorize: a bot is signed out, so the answer is the sign-in
+	// redirect.
+	q := url.Values{
+		"client_id": {sess.clientID}, "response_type": {"code"}, "redirect_uri": {"https://app.test/cb"},
+		"scope": {"pad:read"}, "code_challenge": {s256Challenge("verifier-3392-abcdefghijklmnopqrstuvwxyz0123456789")},
+		"code_challenge_method": {"S256"}, "state": {"state-3392-02"}, "resource": {testCanonicalAudience},
+	}
+	rr = httptest.NewRecorder()
+	srv.handleOAuthAuthorize(rr, asBot(httptest.NewRequest("GET", "/oauth/authorize?"+q.Encode(), nil), nil))
+	if rr.Code != http.StatusFound || !strings.HasPrefix(rr.Header().Get("Location"), "/login") {
+		t.Errorf("authorize with a bot as the current user: %d → %q, want a redirect to sign in", rr.Code, rr.Header().Get("Location"))
+	}
 }
