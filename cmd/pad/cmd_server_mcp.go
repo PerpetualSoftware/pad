@@ -216,5 +216,22 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 		slog.Debug("oauth_connections backfill no-op",
 			"chains_seen", bf.ChainsSeen)
 	}
+
+	// BUG-3338: connections stored with the wildcard on and "future" off
+	// were promised their current workspaces only, and the wildcard kept
+	// granting workspaces joined later. Narrow each to its user's current
+	// memberships. After the backfill, whose rows carry both flags on and
+	// so are never narrowed. Idempotent; a failure is logged and the next
+	// startup retries, since the transaction leaves nothing half-done.
+	if nr, nrErr := s.NarrowCurrentOnlyWildcardConnections(); nrErr != nil {
+		slog.Warn("oauth_connections current-only narrowing failed; non-fatal, retried next startup",
+			"error", nrErr)
+	} else if nr.Connections > 0 {
+		slog.Info("oauth_connections: narrowed current-only wildcard connections to their current workspaces",
+			"connections", nr.Connections,
+			"workspaces_added", nr.WorkspacesAdded,
+			"emptied", nr.Emptied,
+		)
+	}
 	return nil
 }
