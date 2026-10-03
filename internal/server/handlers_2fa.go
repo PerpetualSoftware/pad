@@ -265,7 +265,7 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the challenge token (proves password was verified, checks IP + expiry)
-	userID, err := validateTwoFAChallenge(input.ChallengeToken, clientIP(r), s.twoFAChallengeSecret)
+	userID, challengeEpoch, err := validateTwoFAChallengeEpoch(input.ChallengeToken, clientIP(r), s.twoFAChallengeSecret)
 	if err != nil {
 		time.Sleep(500 * time.Millisecond)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or expired 2FA challenge")
@@ -393,7 +393,12 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create full session
+	// Create full session, fenced on the credential epoch the FIRST factor
+	// was checked under (BUG-3382): a password reset or account claim since
+	// then makes this challenge mint nothing.
+	if challengeEpoch >= 0 {
+		user.CredentialEpoch = challengeEpoch
+	}
 	token, err := s.createAuthSession(w, r, user, webSessionTTL)
 	if err != nil {
 		return

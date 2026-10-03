@@ -75,6 +75,7 @@ var authCSRFUnconditionalExemptPaths = map[string]bool{
 	"/api/v1/auth/reset-password":      true,
 	"/api/v1/auth/local-reset":         true,
 	"/api/v1/auth/verify-email":        true,
+	"/api/v1/auth/verify-email/claim":  true, // BUG-3382: pre-auth, proven by the mailed token
 	"/api/v1/auth/resend-verification": true,
 	"/api/v1/auth/2fa/login-verify":    true,
 	"/api/v1/auth/oauth-login":         true,

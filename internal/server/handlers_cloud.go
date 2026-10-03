@@ -291,7 +291,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 			"email":    input.Email,
 			"reason":   "two_factor_required",
 		}))
-		challenge := generateTwoFAChallenge(user.ID, clientIP(r), s.twoFAChallengeSecret)
+		challenge := generateTwoFAChallengeAt(user.ID, clientIP(r), user.CredentialEpoch, s.twoFAChallengeSecret)
 		writeError2(w, http.StatusForbidden, "two_factor_required",
 			"This account has two-factor authentication turned on. Sign in on the web to finish with your 2FA code.",
 			map[string]interface{}{"challenge_token": challenge})

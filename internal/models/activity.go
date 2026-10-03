@@ -44,6 +44,10 @@ const (
 	// ActionEmailVerified is logged when a user confirms their email address
 	// via a verification link (POST /auth/verify-email). PLAN-1933 / TASK-1936.
 	ActionEmailVerified = "email_verified"
+	// ActionAccountClaimed is logged when the owner of an address claims a
+	// never-verified account registered with it, through the verification
+	// link (BUG-3382): every credential is reset.
+	ActionAccountClaimed = "account_claimed"
 	// ActionEmailVerifiedByAdmin is logged when an admin force-verifies a
 	// user's email from the admin console (DR-7). PLAN-1933 / TASK-1936.
 	ActionEmailVerifiedByAdmin = "email_verified_by_admin"

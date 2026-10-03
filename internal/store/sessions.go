@@ -64,6 +64,29 @@ func (s *Store) CreateSession(userID, deviceInfo, ipAddress, userAgent string, t
 // measured from created_at. The expiry is capped at that lifetime too. A
 // zero issuedAt means a new sign-in, now.
 func (s *Store) CreateSessionIssuedAt(userID, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
+	return s.createSession(userID, -1, deviceInfo, ipAddress, userAgent, ttl, issuedAt)
+}
+
+// ErrCredentialsChanged refuses a session mint whose credential check is
+// stale: the account's credential_epoch moved between the check and the mint
+// (a password reset or change, a disable, an account claim). The caller
+// answers as for a failed sign-in (BUG-3382).
+var ErrCredentialsChanged = errors.New("credentials changed since the sign-in was checked")
+
+// CreateSessionFenced is CreateSessionIssuedAt for a sign-in: it mints only if
+// the account's credential_epoch still equals epoch, the value read when the
+// credential was checked (models.User.CredentialEpoch on the user the check
+// loaded), else ErrCredentialsChanged. Every production sign-in uses it
+// (BUG-3382); CreateSession / CreateSessionIssuedAt carry no fence and are
+// for tests and tooling.
+func (s *Store) CreateSessionFenced(userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
+	if epoch < 0 {
+		return "", fmt.Errorf("insert session: negative credential epoch %d", epoch)
+	}
+	return s.createSession(userID, epoch, deviceInfo, ipAddress, userAgent, ttl, issuedAt)
+}
+
+func (s *Store) createSession(userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
 	// Generate 32 random bytes → hex → prefix
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -105,6 +128,18 @@ func (s *Store) CreateSessionIssuedAt(userID, deviceInfo, ipAddress, userAgent s
 			return "", err
 		}
 		return "", fmt.Errorf("insert session: %w", err)
+	}
+	// The epoch is read under requireActiveUserTx's lock (FOR SHARE on
+	// Postgres; SQLite serializes writers), which a credential change's
+	// UPDATE of the row conflicts with, so the two serialize.
+	if epoch >= 0 {
+		var current int64
+		if err := tx.QueryRow(s.q(`SELECT credential_epoch FROM users WHERE id = ?`), userID).Scan(&current); err != nil {
+			return "", fmt.Errorf("insert session: read credential epoch: %w", err)
+		}
+		if current != epoch {
+			return "", ErrCredentialsChanged
+		}
 	}
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds, kind)

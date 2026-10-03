@@ -154,7 +154,9 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to approve a CLI session")
 		return
 	}
-	token, err := s.store.CreateSessionIssuedAt(user.ID, "cli-browser-auth", clientIP(r), "", 30*24*time.Hour, approver.CreatedAt)
+	// Fenced on the approver's credential epoch as this request was admitted
+	// (BUG-3382): a claim or reset since then makes the approval mint nothing.
+	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, "cli-browser-auth", clientIP(r), "", 30*24*time.Hour, approver.CreatedAt)
 	if errors.Is(err, store.ErrUserDisabled) {
 		// Disabled between this request's admission and the mint (BUG-3349).
 		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")

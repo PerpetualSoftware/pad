@@ -89,6 +89,7 @@ func verifiedEmailExemptPath(path string) bool {
 	switch path {
 	case "/api/v1/auth/logout",
 		"/api/v1/auth/verify-email",
+		"/api/v1/auth/verify-email/claim",
 		"/api/v1/auth/resend-verification",
 		"/api/v1/auth/delete-account":
 		return true
