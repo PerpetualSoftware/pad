@@ -298,6 +298,87 @@ func (s *Store) SetScopeFlags(requestID string, mayCreate, allCurrent, includeFu
 	return assertRowAffected(res, ErrOAuthConnectionNotFound)
 }
 
+// ErrConnectionNoWorkspaces reports that LimitConnectionToCurrentWorkspaces
+// found no live workspace the user is a member of, so it changed nothing:
+// a specific-list connection must name at least one workspace.
+var ErrConnectionNoWorkspaces = errors.New("oauth_connections: user is a member of no workspace")
+
+// LimitConnectionToCurrentWorkspaces turns a wildcard connection into a
+// specific list of the workspaces the user is a member of right now
+// (BUG-3338). It is the honest form of "my current workspaces": the
+// wildcard is live and covers workspaces joined later, and the old
+// include_future_workspaces checkbox never narrowed it.
+//
+// One transaction: the flags UPDATE takes the connection row first (and
+// its row lock on Postgres), then every live membership is inserted with
+// added_by='user', keeping any rows already staged. Both flags are
+// cleared, matching the consent screen's "Only specific workspaces".
+// Returns how many rows it added; ErrOAuthConnectionNotFound when the
+// connection is not the user's; ErrConnectionNoWorkspaces, with nothing
+// written, when the list would be empty.
+func (s *Store) LimitConnectionToCurrentWorkspaces(requestID, userID string) (int, error) {
+	if requestID == "" || userID == "" {
+		return 0, fmt.Errorf("oauth_connections: request_id and user_id required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(s.q(`
+        UPDATE oauth_connections
+           SET all_current_workspaces = ?,
+               include_future_workspaces = ?,
+               updated_at = `+s.dialect.NowRFC3339()+`
+         WHERE request_id = ? AND user_id = ?
+    `), s.dialect.BoolToInt(false), s.dialect.BoolToInt(false), requestID, userID)
+	if err != nil {
+		return 0, fmt.Errorf("oauth_connections: limit to current: flags: %w", err)
+	}
+	if err := assertRowAffected(res, ErrOAuthConnectionNotFound); err != nil {
+		return 0, err
+	}
+
+	insert := `
+        INSERT OR IGNORE INTO oauth_connection_workspaces (request_id, workspace_id, added_by)
+        SELECT ?, wm.workspace_id, ?
+          FROM workspace_members wm
+          JOIN workspaces w ON w.id = wm.workspace_id
+         WHERE wm.user_id = ? AND w.deleted_at IS NULL
+    `
+	if s.dialect.Driver() == DriverPostgres {
+		insert = `
+            INSERT INTO oauth_connection_workspaces (request_id, workspace_id, added_by)
+            SELECT ?, wm.workspace_id, ?
+              FROM workspace_members wm
+              JOIN workspaces w ON w.id = wm.workspace_id
+             WHERE wm.user_id = ? AND w.deleted_at IS NULL
+            ON CONFLICT (request_id, workspace_id) DO NOTHING
+        `
+	}
+	res, err = tx.Exec(s.q(insert), requestID, AddedByUser, userID)
+	if err != nil {
+		return 0, fmt.Errorf("oauth_connections: limit to current: insert: %w", err)
+	}
+	added, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("oauth_connections: limit to current: rows affected: %w", err)
+	}
+
+	var total int
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM oauth_connection_workspaces WHERE request_id = ?`), requestID).Scan(&total); err != nil {
+		return 0, fmt.Errorf("oauth_connections: limit to current: count: %w", err)
+	}
+	if total == 0 {
+		return 0, ErrConnectionNoWorkspaces
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(added), nil
+}
+
 // AddConnectionWorkspace inserts a (request_id, workspace_id) row in
 // the allow-list join table. Idempotent: re-adding an existing pair is
 // a no-op (INSERT OR IGNORE on SQLite, ON CONFLICT DO NOTHING on PG).

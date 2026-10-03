@@ -2540,6 +2540,7 @@ export interface ConnectedApp {
 	name?: string;
 	may_create_workspaces?: boolean;
 	all_current_workspaces?: boolean;
+	// Still returned; no longer a control (BUG-3338): it follows all_current_workspaces.
 	include_future_workspaces?: boolean;
 }
 

@@ -371,8 +371,17 @@ func (s *Server) handleRenameConnectedApp(w http.ResponseWriter, r *http.Request
 }
 
 // handleUpdateConnectedAppFlags: PATCH /api/v1/connected-apps/{id}/flags
-// Body: {may_create_workspaces, all_current_workspaces, include_future_workspaces}.
-// All three boolean fields are written atomically by the store.
+// Body: {may_create_workspaces, all_current_workspaces}. Both are written
+// atomically by the store.
+//
+// include_future_workspaces is no longer a control (BUG-3338). The
+// wildcard (all_current_workspaces) is live and covers workspaces joined
+// later, and nothing ever auto-added on the flag, so the checkbox that set
+// it promised something false either way. A body that still carries it
+// (an older page) is accepted and the field ignored; the stored value
+// follows all_current_workspaces, which is what the consent screen has
+// always written. "Only my current workspaces" is the limit-to-current
+// action below.
 //
 // Invariant: a connection with all_current_workspaces=false MUST have
 // at least one workspace in oauth_connection_workspaces — otherwise
@@ -385,8 +394,9 @@ func (s *Server) handleUpdateConnectedAppFlags(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var body struct {
-		MayCreateWorkspaces     bool `json:"may_create_workspaces"`
-		AllCurrentWorkspaces    bool `json:"all_current_workspaces"`
+		MayCreateWorkspaces  bool `json:"may_create_workspaces"`
+		AllCurrentWorkspaces bool `json:"all_current_workspaces"`
+		// Accepted for older pages and ignored (BUG-3338).
 		IncludeFutureWorkspaces bool `json:"include_future_workspaces"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
@@ -420,8 +430,33 @@ func (s *Server) handleUpdateConnectedAppFlags(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	if err := s.store.SetScopeFlags(id, body.MayCreateWorkspaces, body.AllCurrentWorkspaces, body.IncludeFutureWorkspaces); err != nil {
+	if err := s.store.SetScopeFlags(id, body.MayCreateWorkspaces, body.AllCurrentWorkspaces, body.AllCurrentWorkspaces); err != nil {
 		writeInternalError(w, err)
+		return
+	}
+	s.respondWithConnection(w, user.ID, id)
+}
+
+// handleLimitConnectedAppToCurrent: POST /api/v1/connected-apps/{id}/limit-to-current
+// Turns a wildcard connection into a specific list of the workspaces the
+// user is a member of now (BUG-3338): the one-shot, explicit form of
+// "only my current workspaces". Workspaces joined later are not covered
+// until the user adds them. Rows already staged in the list are kept.
+func (s *Server) handleLimitConnectedAppToCurrent(w http.ResponseWriter, r *http.Request) {
+	user, id, ok := s.requireConnectionOwner(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.store.LimitConnectionToCurrentWorkspaces(id, user.ID); err != nil {
+		switch {
+		case errors.Is(err, store.ErrConnectionNoWorkspaces):
+			writeError(w, http.StatusBadRequest, "empty_allowlist",
+				"You are not a member of any workspace, so there is nothing to limit this app to.")
+		case errors.Is(err, store.ErrOAuthConnectionNotFound):
+			writeError(w, http.StatusNotFound, "not_found", "Connection not found.")
+		default:
+			writeInternalError(w, err)
+		}
 		return
 	}
 	s.respondWithConnection(w, user.ID, id)

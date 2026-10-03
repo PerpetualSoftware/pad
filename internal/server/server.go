@@ -1809,6 +1809,7 @@ func (s *Server) setupRouter() {
 				// error envelopes + audit shape.
 				r.Patch("/connected-apps/{id}/name", s.handleRenameConnectedApp)
 				r.Patch("/connected-apps/{id}/flags", s.handleUpdateConnectedAppFlags)
+				r.Post("/connected-apps/{id}/limit-to-current", s.handleLimitConnectedAppToCurrent)
 				r.Post("/connected-apps/{id}/workspaces", s.handleAddConnectedAppWorkspace)
 				r.Delete("/connected-apps/{id}/workspaces/{slug}", s.handleRemoveConnectedAppWorkspace)
 			})

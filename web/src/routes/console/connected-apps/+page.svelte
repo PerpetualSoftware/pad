@@ -100,7 +100,7 @@
 
 	async function toggleFlag(
 		app: ConnectedApp,
-		key: 'may_create_workspaces' | 'all_current_workspaces' | 'include_future_workspaces',
+		key: 'may_create_workspaces' | 'all_current_workspaces',
 		next: boolean
 	) {
 		savingFlag[app.id] = true;
@@ -108,7 +108,6 @@
 		const flags = {
 			may_create_workspaces: app.may_create_workspaces ?? true,
 			all_current_workspaces: app.all_current_workspaces ?? true,
-			include_future_workspaces: app.include_future_workspaces ?? true,
 			[key]: next
 		};
 		try {
@@ -116,6 +115,22 @@
 			replaceApp(updated);
 		} catch (e) {
 			setError(app.id, e instanceof Error ? e.message : 'Failed to update flags');
+		} finally {
+			savingFlag[app.id] = false;
+		}
+	}
+
+	// BUG-3338: the wildcard is live and covers workspaces joined later.
+	// "Only my current workspaces" is this one-shot action, which copies
+	// the user's current memberships into the list and turns it off.
+	async function limitToCurrent(app: ConnectedApp) {
+		savingFlag[app.id] = true;
+		clearError(app.id);
+		try {
+			const updated = await api.connectedApps.limitToCurrent(app.id);
+			replaceApp(updated);
+		} catch (e) {
+			setError(app.id, e instanceof Error ? e.message : 'Failed to limit workspaces');
 		} finally {
 			savingFlag[app.id] = false;
 		}
@@ -492,22 +507,23 @@
 												(e.currentTarget as HTMLInputElement).checked
 											)}
 									/>
-									<span>Cover all my current workspaces (wildcard)</span>
+									<span>All my workspaces, including ones I join later</span>
 								</label>
-								<label class="edit-toggle">
-									<input
-										type="checkbox"
-										checked={app.include_future_workspaces ?? true}
-										disabled={!!savingFlag[app.id]}
-										onchange={(e) =>
-											toggleFlag(
-												app,
-												'include_future_workspaces',
-												(e.currentTarget as HTMLInputElement).checked
-											)}
-									/>
-									<span>Auto-add new workspaces I create</span>
-								</label>
+								{#if isAll}
+									<div class="edit-row">
+										<Button
+											variant="secondary"
+											onclick={() => limitToCurrent(app)}
+											disabled={!!savingFlag[app.id]}
+										>
+											Limit to my current workspaces
+										</Button>
+									</div>
+									<p class="edit-hint">
+										Replaces "all" with the workspaces you belong to now. Workspaces you join
+										later are not included until you add them.
+									</p>
+								{/if}
 							</div>
 
 							<!-- Workspace allow-list editor (TASK-1524 / Codex review
@@ -544,7 +560,7 @@
 										<span class="ws-empty">
 											{#if isAll}
 												No workspaces staged — add one if you plan to switch off
-												"Cover all my current workspaces".
+												"All my workspaces".
 											{:else}
 												No workspaces — add one below.
 											{/if}
@@ -553,8 +569,8 @@
 								</div>
 								{#if !isAll && eaWsList.length <= 1}
 									<p class="edit-hint">
-										You can't remove the last workspace — switch to "Cover all my current
-										workspaces" first or revoke the connection.
+										You can't remove the last workspace — switch to "All my workspaces"
+										first or revoke the connection.
 									</p>
 								{/if}
 								<div class="edit-row add-row">
