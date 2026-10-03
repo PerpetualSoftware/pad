@@ -36,6 +36,43 @@ func isSupportedOAuthProvider(provider string) bool {
 	return supportedOAuthProviders[provider]
 }
 
+// validOAuthSubject accepts a provider account id: 1-255 bytes, no control
+// characters (TASK-3351). The column has no database NUL trigger, so this
+// door is what keeps control bytes out.
+func validOAuthSubject(subject string) bool {
+	if subject == "" || len(subject) > 255 {
+		return false
+	}
+	for _, r := range subject {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// refuseOAuthSubject answers a sign-in or link whose provider account is not
+// the one bound to this pad account (TASK-3351). It names the way back in:
+// the address still reaches its owner, so a password reset recovers the
+// account, and unlinking and relinking the provider then binds the new
+// provider account. A store error that is not a mismatch is a 500.
+func (s *Server) refuseOAuthSubject(w http.ResponseWriter, r *http.Request, userID, provider, email string, err error) {
+	if !errors.Is(err, store.ErrOAuthSubjectMismatch) {
+		writeInternalError(w, err)
+		return
+	}
+	slog.Warn("oauth: provider subject mismatch", "provider", provider, "user_id", userID)
+	s.logAuditEventForUser(models.ActionOAuthLoginFailed, r, userID, auditMeta(map[string]string{
+		"provider": provider,
+		"email":    email,
+		"reason":   "subject_mismatch",
+	}))
+	writeError2(w, http.StatusForbidden, "oauth_subject_mismatch",
+		"This "+provider+" account is not the one linked to the Pad account for this address. "+
+			"Sign in with your password, or reset it from \"Forgot password\", then unlink and relink "+provider+" in account settings.",
+		map[string]interface{}{"provider": provider, "recovery": "password_reset", "recovery_path": "/forgot-password"})
+}
+
 // validateCloudSecret checks the cloud_secret field in a JSON request body
 // against the server's configured cloud secret. Returns true if the secret
 // matches; writes a 403 error and returns false otherwise.
@@ -163,6 +200,10 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		AvatarURL     string `json:"avatar_url"`
 		EmailVerified bool   `json:"email_verified"`
 		CloudSecret   string `json:"cloud_secret"`
+		// Subject is the provider's stable account id (TASK-3351).
+		// Optional: a sidecar that predates it sends none, and the login
+		// proceeds as before.
+		Subject string `json:"subject"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -188,6 +229,10 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
 	if input.Email == "" || !emailRegexp.MatchString(input.Email) {
 		writeError(w, http.StatusBadRequest, "bad_request", "valid email is required")
+		return
+	}
+	if input.Subject != "" && !validOAuthSubject(input.Subject) {
+		writeError(w, http.StatusBadRequest, "bad_request", "subject must be 1-255 printable characters")
 		return
 	}
 
@@ -220,6 +265,24 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	// A provider account bound to a DIFFERENT pad account (its address
+	// changed at the provider) neither creates an account nor signs in to
+	// this one (TASK-3351). Checked before anything is created.
+	if input.Subject != "" {
+		owner, err := s.store.OAuthIdentityOwner(input.Provider, input.Subject)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if owner != "" && (user == nil || owner != user.ID) {
+			refusedFor := owner
+			if user != nil {
+				refusedFor = user.ID
+			}
+			s.refuseOAuthSubject(w, r, refusedFor, input.Provider, input.Email, store.ErrOAuthSubjectMismatch)
+			return
+		}
+	}
 
 	isNewUser := false
 	if user == nil {
@@ -238,6 +301,14 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		// Auto-link the provider for new OAuth users
 		if err := s.store.AddOAuthProvider(user.ID, input.Provider); err != nil {
 			slog.Error("oauth-login: failed to link provider", "error", err, "user_id", user.ID)
+		}
+		if input.Subject != "" {
+			if err := s.store.BindOAuthIdentity(user.ID, input.Provider, input.Subject); err != nil {
+				// A brand-new account cannot hold a binding, so a mismatch
+				// means this provider account is already bound elsewhere.
+				s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
+				return
+			}
 		}
 
 		slog.Info("oauth-login: created new user", "provider", input.Provider, "email", input.Email, "user_id", user.ID)
@@ -269,6 +340,17 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if user.IsDisabled() {
 		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
 		return
+	}
+
+	// 6a. Provider account binding (TASK-3351). The address alone does not
+	// say WHICH provider account is asserting it, and an address can move
+	// between accounts. The first sign-in carrying a subject binds it; a
+	// different one is refused.
+	if !isNewUser && input.Subject != "" {
+		if err := s.store.BindOAuthIdentity(user.ID, input.Provider, input.Subject); err != nil {
+			s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
+			return
+		}
 	}
 
 	// 6b. Two-factor (BUG-3322). The provider stands in for the password,
@@ -519,6 +601,9 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 		Email         string `json:"email"`
 		EmailVerified bool   `json:"email_verified"`
 		CloudSecret   string `json:"cloud_secret"`
+		// Subject: the provider's stable account id, bound on link
+		// (TASK-3351). Optional, as on oauth-login.
+		Subject string `json:"subject"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -533,6 +618,10 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 	// 2. Validate provider
 	if !isSupportedOAuthProvider(input.Provider) {
 		writeError(w, http.StatusBadRequest, "bad_request", "provider must be 'github', 'google', or 'apple'")
+		return
+	}
+	if input.Subject != "" && !validOAuthSubject(input.Subject) {
+		writeError(w, http.StatusBadRequest, "bad_request", "subject must be 1-255 printable characters")
 		return
 	}
 
@@ -564,6 +653,12 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 
 	// 5. Check if already linked
 	if user.HasOAuthProvider(input.Provider) {
+		if input.Subject != "" {
+			if err := s.store.BindOAuthIdentity(user.ID, input.Provider, input.Subject); err != nil {
+				s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
+				return
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"ok":       true,
 			"provider": input.Provider,
@@ -572,7 +667,14 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Link the provider
+	// 6. Bind the provider account first, so a subject already bound to
+	// another pad account links nothing; then link the provider.
+	if input.Subject != "" {
+		if err := s.store.BindOAuthIdentity(user.ID, input.Provider, input.Subject); err != nil {
+			s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
+			return
+		}
+	}
 	if err := s.store.AddOAuthProvider(user.ID, input.Provider); err != nil {
 		writeInternalError(w, err)
 		return

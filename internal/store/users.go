@@ -792,7 +792,9 @@ func (s *Store) RemoveOAuthProvider(userID, provider string) error {
 	if err != nil {
 		return fmt.Errorf("remove oauth provider: %w", err)
 	}
-	return nil
+	// The provider account it was bound to goes with it (TASK-3351), so a
+	// relink may bind a different one.
+	return s.DeleteOAuthIdentity(userID, provider)
 }
 
 // ErrLastAdmin is returned when a role change would leave zero admins.
