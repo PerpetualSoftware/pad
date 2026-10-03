@@ -400,8 +400,12 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 	// took effect, and refresh preserved Extra, so it never would.
 	// Startup runs BackfillOAuthConnections, which seeds a row for every
 	// chain from its Extra, so ignoring Extra loses no access the user
-	// did not themselves remove. Extra is read only for a chain with no
-	// row (a backfill that failed for that chain), as before.
+	// did not themselves remove, with one exception: the backfill skips
+	// a slug it cannot resolve, including a workspace soft-deleted when
+	// it ran, so restoring that workspace does not restore the grant.
+	// That fails closed, and the user re-adds it in Connected Apps.
+	// Extra is read only for a chain with no row (a backfill that
+	// failed for that chain), as before.
 	//
 	// Hot-path cost: one PK lookup against oauth_connections per
 	// request, plus one indexed scan + small join when the
