@@ -317,7 +317,10 @@ func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMemb
 
 // VisibleCollectionIDs returns the set of collection IDs a member can see.
 // Returns nil if the member has "all" access (meaning no filtering needed).
-// System collections (conventions, playbooks) are always included for members.
+// System collections (conventions, playbooks) are ordinary collections here:
+// a restricted member sees one only when it is in their
+// member_collection_access or granted (TASK-3376). Migration 108 listed them
+// for every member restricted before that change.
 func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, error) {
 	return s.VisibleCollectionIDsQ(s.db, workspaceID, userID)
 }
@@ -339,7 +342,7 @@ func (s *Store) VisibleCollectionIDsQ(q Queryer, workspaceID, userID string) ([]
 		return nil, nil
 	}
 
-	// "specific" access — get the granted collection IDs + system collections
+	// "specific" access — get the granted collection IDs
 	rows, err := q.Query(s.q(`
 		SELECT collection_id FROM member_collection_access
 		WHERE workspace_id = ? AND user_id = ?
@@ -359,24 +362,6 @@ func (s *Store) VisibleCollectionIDsQ(q Queryer, workspaceID, userID string) ([]
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-
-	// Always include system collections for members
-	sysRows, err := q.Query(s.q(`
-		SELECT id FROM collections
-		WHERE workspace_id = ? AND is_system = ? AND deleted_at IS NULL
-	`), workspaceID, s.dialect.BoolToInt(true))
-	if err != nil {
-		return nil, fmt.Errorf("get system collections: %w", err)
-	}
-	defer sysRows.Close()
-
-	for sysRows.Next() {
-		var id string
-		if err := sysRows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids[id] = true
 	}
 
 	// Also include collections from direct collection grants. This ensures
@@ -531,35 +516,6 @@ func (s *Store) GetMemberCollectionAccessQ(q Queryer, workspaceID, userID string
 	return ids, rows.Err()
 }
 
-// ListSystemCollectionIDs returns the IDs of system collections in a workspace.
-// System collections are always visible to members regardless of collection_access mode.
-func (s *Store) ListSystemCollectionIDs(workspaceID string) ([]string, error) {
-	return s.ListSystemCollectionIDsQ(s.db, workspaceID)
-}
-
-// ListSystemCollectionIDsQ is ListSystemCollectionIDs parameterized over its
-// executor (see Queryer).
-func (s *Store) ListSystemCollectionIDsQ(q Queryer, workspaceID string) ([]string, error) {
-	rows, err := q.Query(s.q(`
-		SELECT id FROM collections
-		WHERE workspace_id = ? AND is_system = ? AND deleted_at IS NULL
-	`), workspaceID, s.dialect.BoolToInt(true))
-	if err != nil {
-		return nil, fmt.Errorf("list system collections: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
 // GetUserMemberWorkspaces returns only workspaces where the user has
 // a workspace_members row — NO guest-grant fallback. Mirrors the
 // first half of GetUserWorkspaces but without the UNION with
@@ -621,8 +577,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 	// effective UpdatedAt reflects item activity, not just row mtime.
 	// For members with collection_access='specific', restrict MAX to
 	// items in collections the member can actually see (via
-	// member_collection_access, system collections, collection_grants,
-	// or item_grants) — otherwise the freshness signal leaks activity
+	// member_collection_access, collection_grants, or item_grants) — otherwise the freshness signal leaks activity
 	// for collections the member doesn't have access to. Members with
 	// 'all' (or empty) access see every collection, so the predicate
 	// short-circuits and behaves like an unrestricted MAX. The
@@ -639,7 +594,6 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		             AND c.deleted_at IS NULL
 		             AND (
 		                 COALESCE(wm.collection_access, '') IN ('', 'all')
-		                 OR c.is_system = ?
 		                 OR EXISTS (
 		                     SELECT 1 FROM member_collection_access mca
 		                     WHERE mca.workspace_id = w.id
@@ -665,7 +619,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		LEFT JOIN users ou ON ou.id = w.owner_id
 		WHERE wm.user_id = ? AND w.deleted_at IS NULL
 		ORDER BY wm.sort_order ASC, w.name ASC
-	`), s.dialect.BoolToInt(true), userID)
+	`), userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user workspaces: %w", err)
 	}

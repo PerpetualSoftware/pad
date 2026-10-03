@@ -145,7 +145,7 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 			// Strict full-access set — used for per-item visibility
 			// decisions. Mirrors guestResourceFilter's fullCollIDs for
 			// restricted members: explicit member_collection_access +
-			// system collections + direct collection grants. Item-grant
+			// direct collection grants. Item-grant
 			// collections are intentionally excluded — having an item grant
 			// in a collection does NOT confer access to siblings.
 			fullSet := make(map[string]struct{})
@@ -155,14 +155,6 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			for _, id := range memberColls {
-				fullSet[id] = struct{}{}
-			}
-			sysColls, err := s.store.ListSystemCollectionIDs(workspaceID)
-			if err != nil {
-				writeInternalError(w, err)
-				return
-			}
-			for _, id := range sysColls {
 				fullSet[id] = struct{}{}
 			}
 			for _, g := range collGrants {

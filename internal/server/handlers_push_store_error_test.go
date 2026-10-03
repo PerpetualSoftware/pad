@@ -44,12 +44,13 @@ import (
 // opposite of the fail-closed posture they document.
 //
 // SECOND GAP, MEASURED NOT GUESSED. This reaches only the FIRST of the
-// function's four store calls. Closing the DB makes GetWorkspaceMember
-// fail immediately, so the function returns before GuestVisibleResources,
-// GetMemberCollectionAccess or ListSystemCollectionIDs ever run — and a
-// mutation re-swallowing GetMemberCollectionAccess's error survives this
-// test (verified, matrix entry M11). The later three are propagated by
-// inspection, not by measurement.
+// function's store calls (four when written; three since TASK-3376 removed
+// ListSystemCollectionIDs). Closing the DB makes GetWorkspaceMember fail
+// immediately, so the function returns before GuestVisibleResources or
+// GetMemberCollectionAccess ever run — and a mutation re-swallowing
+// GetMemberCollectionAccess's error survives this test (verified, matrix
+// entry M11). The later calls are propagated by inspection, not by
+// measurement.
 //
 // Reaching them needs the earlier calls to SUCCEED while a later one
 // fails, which this package cannot express today: srv.store is a

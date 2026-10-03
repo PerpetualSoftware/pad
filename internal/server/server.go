@@ -3181,13 +3181,11 @@ func (s *Server) checkItemVisibleQ(q store.Queryer, workspaceID string, item *mo
 	//   a) the collection itself has a full grant (any item passes), OR
 	//   b) for restricted members: the collection is in member_collection_access
 	//      (the member's explicit collection-access list), OR
-	//   c) the item's collection is a system collection — restricted
-	//      members always retain access to system collections (conventions,
-	//      playbooks, …); pre-round-2 this branch missed the system-
-	//      collections union that guestResourceFilterCore performed, so a
-	//      restricted member with an item grant in a non-system collection
-	//      was 404'd on a system-collection item they were entitled to see.
-	//   d) the specific item is in the granted-items list.
+	//   c) the specific item is in the granted-items list.
+	// System collections get no branch of their own: a restricted member
+	// reaches one only through (a) or (b), like any collection (TASK-3376).
+	// A per-record reach for conventions and playbooks, if it is built
+	// (TASK-3376 phase 2), belongs beside (c), as item-level access.
 	for _, id := range grantCollIDs {
 		if id == item.CollectionID {
 			return true, nil
@@ -3202,19 +3200,6 @@ func (s *Server) checkItemVisibleQ(q store.Queryer, workspaceID string, item *mo
 			return false, err
 		}
 		for _, id := range memberColls {
-			if id == item.CollectionID {
-				return true, nil
-			}
-		}
-		// System-collections union — mirror guestResourceFilterCore's
-		// pre-round-2 behavior. ListSystemCollectionIDs is a workspace-
-		// scoped lookup (no per-user filter), so the same call is correct
-		// for every restricted member in the workspace.
-		sysColls, err := s.store.ListSystemCollectionIDsQ(q, workspaceID)
-		if err != nil {
-			return false, err
-		}
-		for _, id := range sysColls {
 			if id == item.CollectionID {
 				return true, nil
 			}
@@ -3256,8 +3241,8 @@ func (s *Server) isItemVisibleToGuest(r *http.Request, workspaceID string, item 
 // - admin users
 // - members with "all" collection access (grants should merge, not replace)
 // For guests: returns direct collection grants as fullCollIDs + item grants.
-// For restricted members: returns member_collection_access + system collections
-// + direct collection grants as fullCollIDs, plus item grants as grantedItemIDs.
+// For restricted members: returns member_collection_access + direct
+// collection grants as fullCollIDs, plus item grants as grantedItemIDs.
 // This ensures item grants are additive to the member's existing access.
 func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullCollIDs, grantedItemIDs []string, err error) {
 	return s.guestResourceFilterCore(r, workspaceID, false)
@@ -3352,8 +3337,7 @@ func isCollectionVisible(collectionID string, visibleIDs []string) bool {
 // Reuses the existing guestResourceFilter/isCollectionVisible/
 // isItemVisibleToGuest helpers rather than a bespoke visibility pass:
 // guestResourceFilter's fullCollIDs is already the STRICT full-access set
-// (member_collection_access ∪ system collections ∪ direct collection
-// grants, excluding item-grant-only collections) — the same strict set
+// (member_collection_access ∪ direct collection grants, excluding item-grant-only collections) — the same strict set
 // requireCollectionFullyVisible narrows to — so collection grants are
 // filtered directly against it with no extra narrowing step.
 //
@@ -3434,31 +3418,110 @@ func (s *Server) filterUserGrantsForCaller(r *http.Request, workspaceID string, 
 // OAuth/MCP consent allow-list, which this helper does not (DR-10 of
 // PLAN-2357).
 func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, workspaceID string, itemID, collectionID string) bool {
-	role := workspaceRole(r)
-
-	// Editors and owners always have edit access
-	if role != "guest" && requireRole(r, "editor") {
-		return true
-	}
-
-	// For guests and members with insufficient role (e.g., viewers),
-	// check grant-based permissions as an override.
-	user := currentUser(r)
-	if user == nil {
-		writeError(w, http.StatusForbidden, "forbidden", "Insufficient permissions")
-		return false
-	}
-
-	perm, err := s.store.ResolveUserPermission(workspaceID, user.ID, itemID, collectionID)
+	ok, err := s.canEditInCollection(r, workspaceID, itemID, collectionID)
 	if err != nil {
 		writeInternalError(w, err)
 		return false
 	}
-	if permissionLevel(perm) < permissionLevel("edit") {
+	if !ok {
 		writeError(w, http.StatusForbidden, "forbidden", "Insufficient permissions")
 		return false
 	}
 	return true
+}
+
+// canEditInCollection is requireEditPermission's decision without the
+// response, for callers that report per row (bulk) rather than per request.
+//
+// An editor or owner ROLE applies only inside the collections the member's
+// access reaches (TASK-3376, PR #1756 codex round 2 P1). Before it, the role
+// short-circuited before the collection was looked at, so a member with
+// collection_access='specific' who could SEE an item through a VIEW grant
+// could edit it, comment on it and create beside it. Outside their reach the
+// grant decides, through ResolveUserPermission, and only 'edit' writes.
+func (s *Server) canEditInCollection(r *http.Request, workspaceID, itemID, collectionID string) (bool, error) {
+	role := workspaceRole(r)
+	if role != "guest" && requireRole(r, "editor") {
+		reaches, err := s.editorRoleReaches(r, workspaceID, collectionID)
+		if err != nil {
+			return false, err
+		}
+		if reaches {
+			return true, nil
+		}
+	}
+
+	// Guests, viewers, and editors outside their collection access: the
+	// grant cascade decides.
+	user := currentUser(r)
+	if user == nil {
+		return false, nil
+	}
+	perm, err := s.store.ResolveUserPermission(workspaceID, user.ID, itemID, collectionID)
+	if err != nil {
+		return false, err
+	}
+	return permissionLevel(perm) >= permissionLevel("edit"), nil
+}
+
+// editorRoleReaches reports whether the caller's editor/owner role applies to
+// collectionID: always for a member with 'all' collection access, and for a
+// restricted member only when the collection is in their
+// member_collection_access. A collection or item GRANT is not "reach": it
+// carries its own level, which ResolveUserPermission applies.
+//
+// Two principals keep the old unconditional behavior because they have no
+// per-member access to consult: a user-less legacy workspace token (fixed
+// editor role in its own workspace) and a platform admin on a cookie session
+// (which visibleCollectionIDs also leaves unfiltered).
+func (s *Server) editorRoleReaches(r *http.Request, workspaceID, collectionID string) (bool, error) {
+	user := currentUser(r)
+	if user == nil {
+		return true, nil
+	}
+	if user.Role == "admin" && !isBearerAuth(r) {
+		return true, nil
+	}
+	member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
+	if err != nil {
+		return false, err
+	}
+	if member == nil {
+		return false, nil
+	}
+	return s.memberRoleReachesCollection(workspaceID, member, collectionID)
+}
+
+// memberRoleReachesCollection is the member half of editorRoleReaches, shared
+// with the collab socket's write decision, which has no request context.
+//
+// The OWNER role always reaches (PR #1756 codex round 3, lead ruling). An
+// owner can set any member's collection access, their own included
+// (handleSetMemberCollectionAccess is owner-gated with no self exception), so
+// a restriction on an owner's writes is one click from undone. It would also
+// split the server from the web client, whose canEditItem/canEditCollection
+// treat owners as editors everywhere. The collection check binds the EDITOR
+// role only.
+func (s *Server) memberRoleReachesCollection(workspaceID string, member *models.WorkspaceMember, collectionID string) (bool, error) {
+	if member.Role == "owner" {
+		return true, nil
+	}
+	if member.CollectionAccess == "all" || member.CollectionAccess == "" {
+		return true, nil
+	}
+	if collectionID == "" {
+		return false, nil
+	}
+	listed, err := s.store.GetMemberCollectionAccess(workspaceID, member.UserID)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range listed {
+		if id == collectionID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // resolveWorkspace resolves a workspace by slug or UUID, scoped to the

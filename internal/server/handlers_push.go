@@ -432,7 +432,8 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 // (receipt, so a successor can re-derive it instead of trusting it):
 // computeWatchAccessVisibility's inputs are platform role, workspace
 // membership, CollectionAccess, GuestVisibleResources,
-// GetMemberCollectionAccess, ListSystemCollectionIDs — all per-USER,
+// GetMemberCollectionAccess — all per-USER (ListSystemCollectionIDs was
+// one too until TASK-3376 removed it),
 // identical for every session this function counts, since it only ever
 // counts one user's own sessions — plus bearerAuth, which is
 // per-CONNECTION and the sole varying input. One varying boolean means

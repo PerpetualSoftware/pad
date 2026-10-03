@@ -283,6 +283,19 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			resp.Failed = append(resp.Failed, bulkItemFailure{Ref: ref, Error: "item not found"})
 			continue
 		}
+		// Per-item EDIT gate (TASK-3376, PR #1756 codex round 2 P1). Seeing
+		// an item is not editing it: a restricted editor who sees this one
+		// through a view grant, outside their collection access, may not
+		// bulk-mutate it any more than PATCH it.
+		canEdit, eerr := s.canEditInCollection(r, workspaceID, item.ID, item.CollectionID)
+		if eerr != nil {
+			resp.Failed = append(resp.Failed, bulkItemFailure{Ref: ref, Error: eerr.Error()})
+			continue
+		}
+		if !canEdit {
+			resp.Failed = append(resp.Failed, bulkItemFailure{Ref: itemRefOrSlug(*item), Error: "insufficient permissions", Code: "forbidden"})
+			continue
+		}
 
 		var droppedFields []string
 		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs, resolvedTarget, batchID, &droppedFields)
@@ -907,6 +920,13 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// collection they can't see.
 	if !isCollectionVisible(targetColl.ID, visibleIDs) {
 		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}
+	}
+	// Writing into the target needs edit there too, as handleMoveItem's
+	// requireEditPermission on the target does (TASK-3376).
+	if ok, err := s.canEditInCollection(r, workspaceID, "", targetColl.ID); err != nil {
+		return nil, &bulkOpError{message: err.Error(), code: "internal_error"}
+	} else if !ok {
+		return nil, &bulkOpError{message: "insufficient permissions on the target collection", code: "forbidden"}
 	}
 	if targetColl.ID == item.CollectionID {
 		return nil, &bulkOpError{message: "item is already in this collection", code: "same_collection"}

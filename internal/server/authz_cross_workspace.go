@@ -771,6 +771,9 @@ func (s *Server) crossWorkspaceRole(r *http.Request, ws *models.Workspace, user 
 //     never read from workspaceRole(r);
 //   - it runs only AFTER the scoped visibility check.
 //
+// (TASK-3376: the ordering alone did NOT make it safe. An item-scoped
+// visibility check passes on a VIEW grant, so the base role must also reach
+// the collection; see the base-role branch below.)
 // That ordering is what makes the base-role branch safe. DR-10a's
 // escalation is the fast path used ALONE: an editor whose membership is
 // collection_access="specific" passing the role check for a collection
@@ -809,9 +812,24 @@ func (s *Server) crossWorkspaceEditAllowed(ws *models.Workspace, user *models.Us
 	}
 	// Base-role branch, mirroring requireEditPermission. "guest" is
 	// excluded: a guest has no role-based permission at all, only
-	// grants.
+	// grants. Since TASK-3376 (PR #1756 codex round 2 P1) the role, like
+	// requireEditPermission's, applies only inside the member's collection
+	// access: visibility can come from a VIEW grant, so "the caller can see
+	// it" no longer stands in for "the role reaches it".
 	if role != "guest" && roleLevel(role) >= roleLevel("editor") {
-		return true, nil
+		member, err := s.store.GetWorkspaceMember(ws.ID, user.ID)
+		if err != nil {
+			return false, err
+		}
+		if member != nil {
+			reaches, err := s.memberRoleReachesCollection(ws.ID, member, scope.permCollectionID())
+			if err != nil {
+				return false, err
+			}
+			if reaches {
+				return true, nil
+			}
+		}
 	}
 	perm, err := s.store.ResolveUserPermission(ws.ID, user.ID, scope.itemID(), scope.permCollectionID())
 	if err != nil {

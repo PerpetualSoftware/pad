@@ -678,8 +678,22 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 	// `role != "guest" && requireRole(r, "editor")`. The visibility
 	// checks below decide READ admission to the room; canWrite decides
 	// whether the admitted conn may persist inbound frames. Per TASK-265.
+	//
+	// TASK-3376 (PR #1756 codex round 2 P1): the role applies only inside
+	// the member's collection access, exactly as in requireEditPermission
+	// (memberRoleReachesCollection). Outside it, a grant decides, so a view
+	// grant that admits a restricted editor to the room does not let them
+	// write.
 	var canWrite bool
+	roleReaches := false
 	if member != nil && roleLevel(member.Role) >= roleLevel("editor") {
+		reaches, err := s.memberRoleReachesCollection(wsID, member, item.CollectionID)
+		if err != nil {
+			return collabAccess{}, err
+		}
+		roleReaches = reaches
+	}
+	if roleReaches {
 		canWrite = true
 	} else {
 		perm, err := s.store.ResolveUserPermission(wsID, fresh.ID, item.ID, item.CollectionID)

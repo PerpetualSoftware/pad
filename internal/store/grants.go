@@ -391,21 +391,27 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 		return "", fmt.Errorf("check membership: %w", err)
 	}
 	if member != nil {
-		// Check collection visibility for members with "specific" access
+		// A restricted member's ROLE applies only to a collection in their
+		// member_collection_access (TASK-3376, PR #1756 codex round 2 P1).
+		// This used to consult VisibleCollectionIDs, the NAVIGATION set, which
+		// also lists a collection because one item in it is granted, so a
+		// view grant on one item handed the member their editor role over
+		// the whole collection. Grants are resolved above with their own
+		// levels and are not reach for the role.
 		if collectionID != "" && member.CollectionAccess == "specific" {
-			visIDs, err := s.VisibleCollectionIDs(workspaceID, userID)
+			listed, err := s.GetMemberCollectionAccess(workspaceID, userID)
 			if err != nil {
 				return "", err
 			}
-			visible := false
-			for _, id := range visIDs {
+			reach := false
+			for _, id := range listed {
 				if id == collectionID {
-					visible = true
+					reach = true
 					break
 				}
 			}
-			if !visible {
-				return "", nil // Collection not visible → deny
+			if !reach {
+				return "", nil // role does not reach this collection → deny
 			}
 		}
 		return member.Role, nil // "owner", "editor", or "viewer"

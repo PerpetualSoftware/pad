@@ -258,8 +258,8 @@ func (a searchAccess) none() bool {
 //     admin is an ordinary user and only membership counts (BUG-1616), not
 //     even a guest grant.
 //   - A member with "all" collection access reads everything; a restricted
-//     member reads their collections, the system collections, and anything
-//     granted to them.
+//     member reads their listed collections and anything granted to them.
+//     System collections are listed like any other (TASK-3376).
 //   - A non-member reads exactly what is granted to them, which with no
 //     grants is nothing.
 func (s *Server) searchAccessFor(r *http.Request, ws *models.Workspace) (searchAccess, error) {
@@ -311,13 +311,9 @@ func (s *Server) searchAccessFor(r *http.Request, ws *models.Workspace) (searchA
 	if err != nil {
 		return searchAccess{}, err
 	}
-	sysColls, err := s.store.ListSystemCollectionIDs(ws.ID)
-	if err != nil {
-		return searchAccess{}, err
-	}
 	seen := map[string]bool{}
 	var colls []string
-	for _, group := range [][]string{memberColls, sysColls, grantColls} {
+	for _, group := range [][]string{memberColls, grantColls} {
 		for _, id := range group {
 			if !seen[id] {
 				seen[id] = true

@@ -137,8 +137,9 @@ func (s *Store) ResolveBacklinksVisibilityQ(q Queryer, userID, workspaceID strin
 	}
 
 	// Restricted member branch — merge grant collections with
-	// member_collection_access + system collections. Same as lines
-	// 1798-1825 of server.guestResourceFilterCore.
+	// member_collection_access. System collections are not added: a
+	// restricted member reaches one only when it is listed or granted
+	// (TASK-3376).
 	fullCollSet := make(map[string]bool)
 	for _, id := range grantCollIDs {
 		fullCollSet[id] = true
@@ -148,13 +149,6 @@ func (s *Store) ResolveBacklinksVisibilityQ(q Queryer, userID, workspaceID strin
 		return nil, nil, err
 	}
 	for _, id := range memberColls {
-		fullCollSet[id] = true
-	}
-	sysColls, err := s.ListSystemCollectionIDsQ(q, workspaceID)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, id := range sysColls {
 		fullCollSet[id] = true
 	}
 	fullCollIDs = make([]string, 0, len(fullCollSet))
