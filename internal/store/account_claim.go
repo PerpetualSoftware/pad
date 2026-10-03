@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -101,7 +102,7 @@ func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) 
 		}
 		return nil
 	}
-	claim, err := s.claimAccountTx(tx, userID, unusable, ts, spend)
+	claim, err := s.claimAccountTx(tx, userID, unusable, ts, "", spend)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +120,10 @@ func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) 
 // in the SAME transaction: a subject bound to another account
 // (ErrOAuthSubjectMismatch) rolls the whole claim back, so a refused sign-in
 // changes nothing.
-func (s *Store) ClaimAccountByProvider(userID, provider, subject string) (*AccountClaim, error) {
+//
+// name is the provider's display name for the claimant, used to reset the
+// account's name and username; empty falls back to the address.
+func (s *Store) ClaimAccountByProvider(userID, provider, subject, name string) (*AccountClaim, error) {
 	unusable, err := unusablePasswordHash()
 	if err != nil {
 		return nil, err
@@ -131,7 +135,7 @@ func (s *Store) ClaimAccountByProvider(userID, provider, subject string) (*Accou
 	defer func() { _ = tx.Rollback() }()
 	// Lock order: the account, then its tokens, as everywhere (see
 	// ConsumeEmailVerification); the core locks the account first.
-	claim, err := s.claimAccountTx(tx, userID, unusable, now(), nil)
+	claim, err := s.claimAccountTx(tx, userID, unusable, now(), name, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -154,6 +158,22 @@ func (s *Store) ClaimAccountByProvider(userID, provider, subject string) (*Accou
 // account lock, which is where a concurrent verification interleaves.
 var claimAfterUserLockHook func()
 
+// uniqueUsernameTx returns base, or base-2, base-3, ..., the first no OTHER
+// account holds, read in the claim's transaction.
+func (s *Store) uniqueUsernameTx(tx *sql.Tx, base, userID string) (string, error) {
+	username := base
+	for suffix := 2; ; suffix++ {
+		var n int
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM users WHERE username = ? AND id <> ?`), username, userID).Scan(&n); err != nil {
+			return "", fmt.Errorf("account claim: username: %w", err)
+		}
+		if n == 0 {
+			return username, nil
+		}
+		username = fmt.Sprintf("%s-%d", base, suffix)
+	}
+}
+
 // unusablePasswordHash is a random secret nobody keeps.
 func unusablePasswordHash() ([]byte, error) {
 	raw := make([]byte, 32)
@@ -174,14 +194,20 @@ func unusablePasswordHash() ([]byte, error) {
 // spend, when given, runs once the account is locked and before anything
 // is checked or changed: the link claim spends its token there, so the
 // account is always locked before its tokens.
-func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts string, spend func(*sql.Tx) error) (*AccountClaim, error) {
-	lockQ := `SELECT COALESCE(email_verified_at, ''), CASE WHEN disabled_at IS NULL THEN 0 ELSE 1 END, COALESCE(stripe_customer_id, '') FROM users WHERE id = ?`
+//
+// The registrant's display name and username are replaced too (TASK-3351):
+// either can impersonate ("support", a staff name), and nothing live depends
+// on the username once the account's own workspaces are deleted. The name
+// becomes claimantName, or the address's local part when that is empty; the
+// username is generated from it and kept unique.
+func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, claimantName string, spend func(*sql.Tx) error) (*AccountClaim, error) {
+	lockQ := `SELECT COALESCE(email_verified_at, ''), CASE WHEN disabled_at IS NULL THEN 0 ELSE 1 END, COALESCE(stripe_customer_id, ''), email FROM users WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		lockQ += ` FOR NO KEY UPDATE`
 	}
-	var verifiedAt, customer string
+	var verifiedAt, customer, email string
 	var disabled int
-	err := tx.QueryRow(s.q(lockQ), userID).Scan(&verifiedAt, &disabled, &customer)
+	err := tx.QueryRow(s.q(lockQ), userID).Scan(&verifiedAt, &disabled, &customer, &email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrClaimNotEligible
 	}
@@ -201,6 +227,15 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts st
 	}
 	if customer != "" {
 		return nil, ErrClaimNeedsSupport
+	}
+
+	name := strings.TrimSpace(claimantName)
+	if name == "" {
+		name = strings.Split(email, "@")[0]
+	}
+	username, err := s.uniqueUsernameTx(tx, GenerateUsername(name, email), userID)
+	if err != nil {
+		return nil, err
 	}
 
 	claim := &AccountClaim{UserID: userID}
@@ -236,8 +271,8 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts st
 		args        []any
 	}{
 		{"reset credentials", `UPDATE users SET password_hash = ?, password_set = ?, totp_secret = '', totp_enabled = ?, recovery_codes = '',
-			email_verified_at = ?, updated_at = ?, credential_epoch = credential_epoch + 1 WHERE id = ?`,
-			[]any{string(unusable), s.dialect.BoolToInt(false), s.dialect.BoolToInt(false), ts, ts, userID}},
+			email_verified_at = ?, updated_at = ?, credential_epoch = credential_epoch + 1, name = ?, username = ? WHERE id = ?`,
+			[]any{string(unusable), s.dialect.BoolToInt(false), s.dialect.BoolToInt(false), ts, ts, name, username, userID}},
 		// Sign-in providers linked before the claim were linked by someone
 		// else (TASK-3351); the claimant links their own.
 		{"unlink providers", `UPDATE users SET oauth_providers = '' WHERE id = ?`, []any{userID}},

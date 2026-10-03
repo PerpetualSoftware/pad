@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // TASK-3351: a claim unlinks every sign-in provider the account held and
@@ -21,7 +23,7 @@ func TestTASK3351_ClaimUnlinksProvidersAndForgetsSubjects(t *testing.T) {
 	if err := s.BindOAuthIdentity(u.ID, "github", "gh-squatter"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClaimAccountByProvider(u.ID, "google", ""); err != nil {
+	if _, err := s.ClaimAccountByProvider(u.ID, "google", "", ""); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	after, err := s.GetUser(u.ID)
@@ -50,7 +52,7 @@ func TestTASK3351_ClaimRefusedOnSubjectChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ClaimAccountByProvider(u.ID, "google", "g-taken"); !errors.Is(err, ErrOAuthSubjectMismatch) {
+	if _, err := s.ClaimAccountByProvider(u.ID, "google", "g-taken", ""); !errors.Is(err, ErrOAuthSubjectMismatch) {
 		t.Fatalf("claim with a subject bound elsewhere: %v", err)
 	}
 	after, _ := s.GetUser(u.ID)
@@ -103,7 +105,7 @@ func TestTASK3351_ClaimAndVerifyDoNotDeadlock(t *testing.T) {
 		time.Sleep(300 * time.Millisecond) // let the consume reach its lock
 	}
 	t.Cleanup(func() { claimAfterUserLockHook = nil })
-	_, claimErr := s.ClaimAccountByProvider(u.ID, "google", "")
+	_, claimErr := s.ClaimAccountByProvider(u.ID, "google", "", "")
 	wg.Wait()
 	if claimErr != nil {
 		t.Fatalf("claim: %v", claimErr)
@@ -130,7 +132,7 @@ func TestTASK3351_DeletionClaimAndVerifyDoNotDeadlock(t *testing.T) {
 		deleteAccountAfterUserLockHook = nil
 		wg.Add(2)
 		go func() { defer wg.Done(); _, verifyErr = s.ConsumeEmailVerification(tok) }()
-		go func() { defer wg.Done(); _, claimErr = s.ClaimAccountByProvider(u.ID, "google", "") }()
+		go func() { defer wg.Done(); _, claimErr = s.ClaimAccountByProvider(u.ID, "google", "", "") }()
 		time.Sleep(300 * time.Millisecond) // let both reach their locks
 	}
 	t.Cleanup(func() { deleteAccountAfterUserLockHook = nil })
@@ -164,5 +166,49 @@ func TestTASK3351_LinkClaimChecksExpiryAfterTheWait(t *testing.T) {
 	}
 	if after, _ := s.GetUser(u.ID); after.IsEmailVerified() {
 		t.Error("an expired token claimed the account")
+	}
+}
+
+// A claim resets the identity the registrant chose (lead, on #1760): the
+// username and display name can impersonate ("support", a staff name), and
+// nothing live depends on them, since the claim deleted the workspaces the
+// account owned. The username is regenerated from the claimant's name, else
+// the address's local part, and stays unique.
+func TestTASK3351_ClaimResetsTheRegistrantsIdentity(t *testing.T) {
+	s := testStore(t)
+	// Someone already holds the name the claimant's would generate.
+	if _, err := s.CreateUser(models.UserCreate{Email: "taken@example.com", Name: "Real Owner", Username: "real-owner", Password: "password123"}); err != nil {
+		t.Fatal(err)
+	}
+	squat := func(email string) *models.User {
+		u, err := s.CreateUser(models.UserCreate{Email: email, Name: "Pad Support", Username: "support-" + email[:2], Password: "password123", Unverified: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+
+	// Provider claim: the provider's name.
+	u := squat("social@example.com")
+	if _, err := s.ClaimAccountByProvider(u.ID, "google", "", "Real Owner"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.GetUser(u.ID)
+	if after.Name != "Real Owner" || after.Username != "real-owner-2" {
+		t.Errorf("provider claim: name=%q username=%q, want Real Owner / real-owner-2", after.Name, after.Username)
+	}
+
+	// Link claim: no name to go on, so the address's local part.
+	v := squat("mailbox@example.com")
+	tok, err := s.CreateEmailVerification(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimAccountByVerification(tok); err != nil {
+		t.Fatal(err)
+	}
+	after, _ = s.GetUser(v.ID)
+	if after.Name != "mailbox" || after.Username != "mailbox" {
+		t.Errorf("link claim: name=%q username=%q, want mailbox / mailbox", after.Name, after.Username)
 	}
 }

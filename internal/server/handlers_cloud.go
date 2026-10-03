@@ -336,7 +336,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		// owner claims it, which resets every credential the registrant
 		// held, as the verification-link claim does (BUG-3382).
 		if !user.HasOAuthProvider(input.Provider) && !user.IsEmailVerified() && providerVouchesForClaim(input.Provider, input.EmailPrimary) {
-			c, err := s.store.ClaimAccountByProvider(user.ID, input.Provider, input.Subject)
+			c, err := s.store.ClaimAccountByProvider(user.ID, input.Provider, input.Subject, input.Name)
 			switch {
 			case err == nil:
 				claim = c
@@ -363,14 +363,6 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			user = claimed
-			// The display name was the registrant's choice; the provider's
-			// is the owner's.
-			if input.Name != "" && input.Name != user.Name {
-				name := input.Name
-				if renamed, err := s.store.UpdateUser(user.ID, models.UserUpdate{Name: &name}); err == nil && renamed != nil {
-					user = renamed
-				}
-			}
 			// The session is fenced on the epoch the claim produced.
 			user.CredentialEpoch = claim.Epoch
 			s.logAuditEventForUser(models.ActionAccountClaimed, r, user.ID, auditMeta(map[string]string{
