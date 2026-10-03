@@ -404,36 +404,24 @@ func (s *Server) handleUpdateConnectedAppFlags(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Empty-allow-list guard: if the user is switching all_current=off
-	// AND the join table is empty, the connection ends up scoped to no
-	// workspaces. The Phase D UI prevents this at the form level, but
-	// the API enforces it too in case of direct calls. IDEA-1517 §3
-	// Acceptance bullet: "Empty allow-list with all_current_workspaces=0
-	// is disallowed — UI prevents and backend validates."
-	//
-	// Count via ConnectionWorkspaceCount (not GetOAuthConnectionAccess)
-	// — the access projection intentionally short-circuits the join
-	// when the CURRENT row is wildcard, but we need to know the count
-	// regardless of current state so a user pre-staging workspaces in
-	// wildcard mode can subsequently flip the toggle. Codex review
-	// #585 round 1 caught the always-empty-on-wildcard read.
-	if !body.AllCurrentWorkspaces {
-		n, err := s.store.ConnectionWorkspaceCount(id)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if n == 0 {
+	// Empty-allow-list guard (IDEA-1517 §3): switching all_current off
+	// with no workspace in the list would leave the connection reaching
+	// nothing. The store checks it under the connection's lock, so a
+	// concurrent removal cannot empty the list between the check and the
+	// write (BUG-3338). Rows staged while the wildcard is on count, which
+	// is how a user moves from wildcard to a list (codex review #585).
+	if err := s.store.SetScopeFlagsGuarded(id, body.MayCreateWorkspaces, body.AllCurrentWorkspaces, body.AllCurrentWorkspaces); err != nil {
+		if errors.Is(err, store.ErrLastConnectionWorkspace) {
 			writeError(w, http.StatusBadRequest, "empty_allowlist",
 				"Cannot switch to 'specific workspaces' with no workspaces selected. Add at least one workspace first.")
 			return
 		}
-	}
-
-	if err := s.store.SetScopeFlags(id, body.MayCreateWorkspaces, body.AllCurrentWorkspaces, body.AllCurrentWorkspaces); err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	// Turning the wildcard off narrows the connection; live connections
+	// re-check now, as a removal does (TASK-3365).
+	s.invalidateUserAccess(user.ID)
 	s.respondWithConnection(w, user.ID, id)
 }
 
@@ -459,6 +447,7 @@ func (s *Server) handleLimitConnectedAppToCurrent(w http.ResponseWriter, r *http
 		}
 		return
 	}
+	s.invalidateUserAccess(user.ID)
 	s.respondWithConnection(w, user.ID, id)
 }
 
@@ -543,39 +532,16 @@ func (s *Server) handleRemoveConnectedAppWorkspace(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// Pre-check: would this leave the connection with no workspaces?
-	conn, err := s.store.GetOAuthConnection(id)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if !conn.AllCurrentWorkspaces {
-		// Need the actual row count (not via the access projection,
-		// which short-circuits on wildcard). Also need to know
-		// whether THIS slug is in the list — removing a slug that
-		// isn't in the list shouldn't trip the guard. Combined:
-		// a removal that would leave zero rows iff the slug IS in
-		// the list AND total count == 1.
-		allowed, err := s.store.IsConnectionWorkspaceAllowed(id, ws.ID)
-		if err != nil {
-			writeInternalError(w, err)
+	// The last workspace of a specific list cannot be removed: that would
+	// leave the connection reaching nothing. Checked and deleted under the
+	// connection's lock, so a concurrent limit or flags change cannot slip
+	// between the two (BUG-3338).
+	if err := s.store.RemoveConnectionWorkspaceUnlessLast(id, ws.ID); err != nil {
+		if errors.Is(err, store.ErrLastConnectionWorkspace) {
+			writeError(w, http.StatusBadRequest, "empty_allowlist",
+				"Removing the last workspace would orphan this connection. Switch to 'All my workspaces' or revoke the connection instead.")
 			return
 		}
-		if allowed {
-			n, countErr := s.store.ConnectionWorkspaceCount(id)
-			if countErr != nil {
-				writeInternalError(w, countErr)
-				return
-			}
-			if n <= 1 {
-				writeError(w, http.StatusBadRequest, "empty_allowlist",
-					"Removing the last workspace would orphan this connection. Switch to 'All my workspaces' or revoke the connection instead.")
-				return
-			}
-		}
-	}
-
-	if err := s.store.RemoveConnectionWorkspace(id, ws.ID); err != nil {
 		writeInternalError(w, err)
 		return
 	}

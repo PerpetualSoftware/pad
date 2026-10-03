@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"sort"
@@ -115,9 +116,90 @@ func TestBUG3338_LimitToCurrentSnapshotsMemberships(t *testing.T) {
 		t.Errorf("a workspace joined after the limit is covered: %v", access.WorkspaceSlugs)
 	}
 
-	// Idempotent: limiting again keeps the list as it is.
+	// A second press (a stale tab) on the now-specific list must not add
+	// the workspace joined since the first one.
 	if rr := doAuthedJSON(srv, "POST", "/api/v1/connected-apps/bug3338-limit/limit-to-current", nil, tok); rr.Code != http.StatusOK {
 		t.Fatalf("second limit: %d %s", rr.Code, rr.Body.String())
+	}
+	access, err = srv.store.GetOAuthConnectionAccess("bug3338-limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if access.AllCurrentWorkspaces || !reflect.DeepEqual(access.WorkspaceSlugs, want) {
+		t.Errorf("a repeated limit widened the list: %+v, want %v", access, want)
+	}
+}
+
+// The snapshot is what the wildcard reaches today, which includes a
+// workspace the user reaches only as a guest through a grant.
+func TestBUG3338_LimitToCurrentKeepsGuestWorkspaces(t *testing.T) {
+	srv, _ := connectedAppsTestServer(t)
+	user, tok := loginTestUser(t, srv)
+	owner, _ := loginTestUserAs(t, srv, "owner3338@example.test", "Owner", "pw-3338-abcdefgh")
+	if err := srv.store.CreateOAuthConnection(store.OAuthConnection{
+		RequestID:            "bug3338-guest",
+		UserID:               user.ID,
+		AllCurrentWorkspaces: true,
+	}); err != nil {
+		t.Fatalf("CreateOAuthConnection: %v", err)
+	}
+	_, mine := mustSeedWorkspaceForMutation(t, srv, user.ID, "bug3338-mine", "owner")
+	itemWSID, itemWS := mustSeedWorkspaceForMutation(t, srv, owner.ID, "bug3338-item-guest", "owner")
+	collWSID, collWS := mustSeedWorkspaceForMutation(t, srv, owner.ID, "bug3338-coll-guest", "owner")
+	it := mustItem(t, srv, itemWSID, mustCollection(t, srv, itemWSID, "Tasks").ID, "shared")
+	if _, err := srv.store.CreateItemGrant(itemWSID, it.ID, user.ID, "view", owner.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+	if _, err := srv.store.CreateCollectionGrant(collWSID, mustCollection(t, srv, collWSID, "Docs").ID, user.ID, "view", owner.ID); err != nil {
+		t.Fatalf("CreateCollectionGrant: %v", err)
+	}
+	mustSeedWorkspaceForMutation(t, srv, owner.ID, "bug3338-unrelated", "owner")
+
+	if rr := doAuthedJSON(srv, "POST", "/api/v1/connected-apps/bug3338-guest/limit-to-current", nil, tok); rr.Code != http.StatusOK {
+		t.Fatalf("limit-to-current: %d %s", rr.Code, rr.Body.String())
+	}
+	access, err := srv.store.GetOAuthConnectionAccess("bug3338-guest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{mine, itemWS, collWS}
+	sort.Strings(want)
+	if !reflect.DeepEqual(access.WorkspaceSlugs, want) {
+		t.Errorf("limited to %v, want %v (member + both guest workspaces, not the unrelated one)", access.WorkspaceSlugs, want)
+	}
+}
+
+// The empty-list rule on removal and on turning the wildcard off is
+// enforced by the store under the connection's lock.
+func TestBUG3338_GuardedWritesRefuseAnEmptyList(t *testing.T) {
+	srv, _ := connectedAppsTestServer(t)
+	user, _ := loginTestUser(t, srv)
+	wsID, _ := mustSeedWorkspaceForMutation(t, srv, user.ID, "bug3338-only", "owner")
+	if err := srv.store.CreateOAuthConnection(store.OAuthConnection{RequestID: "bug3338-guard", UserID: user.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.AddConnectionWorkspace("bug3338-guard", wsID, store.AddedByUser); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.RemoveConnectionWorkspaceUnlessLast("bug3338-guard", wsID); !errors.Is(err, store.ErrLastConnectionWorkspace) {
+		t.Fatalf("removing the last workspace: err = %v", err)
+	}
+	if n, _ := srv.store.ConnectionWorkspaceCount("bug3338-guard"); n != 1 {
+		t.Errorf("refused removal deleted the row: count %d", n)
+	}
+	// Under the wildcard the last row may go, and then the wildcard may
+	// not be turned off.
+	if err := srv.store.SetScopeFlagsGuarded("bug3338-guard", true, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.RemoveConnectionWorkspaceUnlessLast("bug3338-guard", wsID); err != nil {
+		t.Fatalf("removal under the wildcard: %v", err)
+	}
+	if err := srv.store.SetScopeFlagsGuarded("bug3338-guard", true, false, false); !errors.Is(err, store.ErrLastConnectionWorkspace) {
+		t.Fatalf("turning the wildcard off with an empty list: err = %v", err)
+	}
+	if a, _ := srv.store.GetOAuthConnectionAccess("bug3338-guard"); !a.AllCurrentWorkspaces {
+		t.Error("refused flag change still turned the wildcard off")
 	}
 }
 

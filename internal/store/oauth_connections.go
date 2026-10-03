@@ -313,6 +313,14 @@ var ErrConnectionNoWorkspaces = errors.New("oauth_connections: user is a member 
 // its row lock on Postgres), then every live membership is inserted with
 // added_by='user', keeping any rows already staged. Both flags are
 // cleared, matching the consent screen's "Only specific workspaces".
+// It acts only while the wildcard is on: on a connection that is already
+// a specific list it changes nothing (a repeated press from a stale tab
+// must not add workspaces joined since the first one).
+//
+// The snapshot is every live workspace the wildcard reaches for the user
+// today: workspaces they are a member of, and workspaces they reach only
+// as a guest through a collection or item grant.
+//
 // Returns how many rows it added; ErrOAuthConnectionNotFound when the
 // connection is not the user's; ErrConnectionNoWorkspaces, with nothing
 // written, when the list would be empty.
@@ -331,33 +339,26 @@ func (s *Store) LimitConnectionToCurrentWorkspaces(requestID, userID string) (in
            SET all_current_workspaces = ?,
                include_future_workspaces = ?,
                updated_at = `+s.dialect.NowRFC3339()+`
-         WHERE request_id = ? AND user_id = ?
-    `), s.dialect.BoolToInt(false), s.dialect.BoolToInt(false), requestID, userID)
+         WHERE request_id = ? AND user_id = ? AND all_current_workspaces = ?
+    `), s.dialect.BoolToInt(false), s.dialect.BoolToInt(false), requestID, userID, s.dialect.BoolToInt(true))
 	if err != nil {
 		return 0, fmt.Errorf("oauth_connections: limit to current: flags: %w", err)
 	}
-	if err := assertRowAffected(res, ErrOAuthConnectionNotFound); err != nil {
-		return 0, err
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, fmt.Errorf("oauth_connections: limit to current: rows affected: %w", err)
+	} else if n == 0 {
+		var one int
+		err := tx.QueryRow(s.q(`SELECT 1 FROM oauth_connections WHERE request_id = ? AND user_id = ?`), requestID, userID).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrOAuthConnectionNotFound
+		}
+		if err != nil {
+			return 0, fmt.Errorf("oauth_connections: limit to current: lookup: %w", err)
+		}
+		return 0, nil // already a specific list
 	}
 
-	insert := `
-        INSERT OR IGNORE INTO oauth_connection_workspaces (request_id, workspace_id, added_by)
-        SELECT ?, wm.workspace_id, ?
-          FROM workspace_members wm
-          JOIN workspaces w ON w.id = wm.workspace_id
-         WHERE wm.user_id = ? AND w.deleted_at IS NULL
-    `
-	if s.dialect.Driver() == DriverPostgres {
-		insert = `
-            INSERT INTO oauth_connection_workspaces (request_id, workspace_id, added_by)
-            SELECT ?, wm.workspace_id, ?
-              FROM workspace_members wm
-              JOIN workspaces w ON w.id = wm.workspace_id
-             WHERE wm.user_id = ? AND w.deleted_at IS NULL
-            ON CONFLICT (request_id, workspace_id) DO NOTHING
-        `
-	}
-	res, err = tx.Exec(s.q(insert), requestID, AddedByUser, userID)
+	res, err = tx.Exec(s.q(s.snapshotCurrentWorkspacesSQL()), requestID, AddedByUser, userID, userID, userID)
 	if err != nil {
 		return 0, fmt.Errorf("oauth_connections: limit to current: insert: %w", err)
 	}
@@ -377,6 +378,112 @@ func (s *Store) LimitConnectionToCurrentWorkspaces(requestID, userID string) (in
 		return 0, err
 	}
 	return int(added), nil
+}
+
+// snapshotCurrentWorkspacesSQL inserts, for one connection, a row per
+// live workspace the wildcard reaches for a user today: membership, or a
+// collection or item grant. Args: request_id, added_by, then the user id
+// three times. Shared by the limit action and the startup narrowing so
+// the two can never snapshot different sets (BUG-3338).
+func (s *Store) snapshotCurrentWorkspacesSQL() string {
+	sel := `
+        SELECT ?, w.id, ?
+          FROM workspaces w
+         WHERE w.deleted_at IS NULL
+           AND (w.id IN (SELECT workspace_id FROM workspace_members WHERE user_id = ?)
+                OR w.id IN (SELECT workspace_id FROM collection_grants WHERE user_id = ?)
+                OR w.id IN (SELECT workspace_id FROM item_grants WHERE user_id = ?))`
+	if s.dialect.Driver() == DriverPostgres {
+		return `INSERT INTO oauth_connection_workspaces (request_id, workspace_id, added_by)` + sel +
+			` ON CONFLICT (request_id, workspace_id) DO NOTHING`
+	}
+	return `INSERT OR IGNORE INTO oauth_connection_workspaces (request_id, workspace_id, added_by)` + sel
+}
+
+// ErrLastConnectionWorkspace reports that a change would leave a
+// specific-list connection with no workspace, so it was refused.
+var ErrLastConnectionWorkspace = errors.New("oauth_connections: would leave the connection with no workspace")
+
+// lockConnectionTx takes the connection row's write lock inside tx (a
+// no-op UPDATE: a row lock on Postgres, the database write lock on
+// SQLite), so a guard read after it cannot be invalidated by a concurrent
+// flags change, limit or removal before tx commits (BUG-3338).
+func (s *Store) lockConnectionTx(tx *sql.Tx, requestID string) error {
+	res, err := tx.Exec(s.q(`UPDATE oauth_connections SET updated_at = updated_at WHERE request_id = ?`), requestID)
+	if err != nil {
+		return fmt.Errorf("oauth_connections: lock: %w", err)
+	}
+	return assertRowAffected(res, ErrOAuthConnectionNotFound)
+}
+
+// RemoveConnectionWorkspaceUnlessLast deletes one allow-list row, unless
+// the connection is a specific list and that row is its last one, in
+// which case it returns ErrLastConnectionWorkspace and changes nothing.
+// The check and the delete hold the connection's lock, so a concurrent
+// limit or flags change cannot slip between them.
+func (s *Store) RemoveConnectionWorkspaceUnlessLast(requestID, workspaceID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.lockConnectionTx(tx, requestID); err != nil {
+		return err
+	}
+	var allCurrent interface{}
+	if err := tx.QueryRow(s.q(`SELECT all_current_workspaces FROM oauth_connections WHERE request_id = ?`), requestID).Scan(&allCurrent); err != nil {
+		return fmt.Errorf("oauth_connections: remove: read flags: %w", err)
+	}
+	if !scanBool(allCurrent) {
+		var inList, total int
+		if err := tx.QueryRow(s.q(`
+            SELECT COALESCE(SUM(CASE WHEN workspace_id = ? THEN 1 ELSE 0 END), 0), COUNT(*)
+              FROM oauth_connection_workspaces WHERE request_id = ?`), workspaceID, requestID).Scan(&inList, &total); err != nil {
+			return fmt.Errorf("oauth_connections: remove: count: %w", err)
+		}
+		if inList > 0 && total <= 1 {
+			return ErrLastConnectionWorkspace
+		}
+	}
+	if _, err := tx.Exec(s.q(`DELETE FROM oauth_connection_workspaces WHERE request_id = ? AND workspace_id = ?`), requestID, workspaceID); err != nil {
+		return fmt.Errorf("oauth_connections: remove workspace: %w", err)
+	}
+	return tx.Commit()
+}
+
+// SetScopeFlagsGuarded is SetScopeFlags with the empty-list rule checked
+// under the connection's lock: turning the wildcard off is refused with
+// ErrLastConnectionWorkspace when the list is empty, so a concurrent
+// removal cannot empty it between the check and the write.
+func (s *Store) SetScopeFlagsGuarded(requestID string, mayCreate, allCurrent, includeFuture bool) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.lockConnectionTx(tx, requestID); err != nil {
+		return err
+	}
+	if !allCurrent {
+		var total int
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM oauth_connection_workspaces WHERE request_id = ?`), requestID).Scan(&total); err != nil {
+			return fmt.Errorf("oauth_connections: set flags: count: %w", err)
+		}
+		if total == 0 {
+			return ErrLastConnectionWorkspace
+		}
+	}
+	if _, err := tx.Exec(s.q(`
+        UPDATE oauth_connections
+           SET may_create_workspaces = ?,
+               all_current_workspaces = ?,
+               include_future_workspaces = ?,
+               updated_at = `+s.dialect.NowRFC3339()+`
+         WHERE request_id = ?`),
+		s.dialect.BoolToInt(mayCreate), s.dialect.BoolToInt(allCurrent), s.dialect.BoolToInt(includeFuture), requestID); err != nil {
+		return fmt.Errorf("oauth_connections: set flags: %w", err)
+	}
+	return tx.Commit()
 }
 
 // AddConnectionWorkspace inserts a (request_id, workspace_id) row in
