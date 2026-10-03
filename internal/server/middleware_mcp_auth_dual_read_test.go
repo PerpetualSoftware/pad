@@ -21,8 +21,8 @@ import (
 //	> session.Extra still passes; token with empty session.Extra but
 //	> row in oauth_connection_workspaces also passes.
 //
-// We cover both directly, plus the wildcard and union edge cases that
-// fall out of "allow if either source allows" semantics.
+// We cover both directly. Since BUG-3337 a connection row, when present,
+// is authoritative and Extra is ignored; Extra decides only without one.
 func TestMergeAllowedWorkspaces(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -74,16 +74,16 @@ func TestMergeAllowedWorkspaces(t *testing.T) {
 			want:   []string{"docapp"},
 		},
 		{
-			name:   "extra explicit + connection explicit — union",
+			name:   "extra explicit + connection explicit — connection is authoritative (BUG-3337)",
 			extra:  []string{"docapp", "ws-2"},
 			access: store.OAuthConnectionAccess{HasConnection: true, WorkspaceSlugs: []string{"ws-2", "ws-3"}},
-			want:   []string{"docapp", "ws-2", "ws-3"},
+			want:   []string{"ws-2", "ws-3"},
 		},
 		{
-			name:   "extra wildcard + connection explicit — wildcard wins",
+			name:   "extra wildcard + connection explicit — connection is authoritative (BUG-3337)",
 			extra:  []string{"*"},
 			access: store.OAuthConnectionAccess{HasConnection: true, WorkspaceSlugs: []string{"docapp"}},
-			want:   nil,
+			want:   []string{"docapp"},
 		},
 
 		// --- Fail-closed edge: connection scoped to nothing. ---
@@ -111,10 +111,22 @@ func TestMergeAllowedWorkspaces(t *testing.T) {
 
 		// --- "*" on the Extra side mid-list still wins (defensive). ---
 		{
-			name:   "extra mixed wildcard mid-list — wildcard wins",
+			name:   "extra mixed wildcard mid-list + no connection — wildcard wins",
 			extra:  []string{"docapp", "*"},
-			access: store.OAuthConnectionAccess{HasConnection: true, WorkspaceSlugs: []string{"ws-2"}},
+			access: store.OAuthConnectionAccess{HasConnection: false},
 			want:   nil,
+		},
+		{
+			name:   "extra explicit + connection scoped to empty — fail-closed, Extra ignored (BUG-3337)",
+			extra:  []string{"docapp"},
+			access: store.OAuthConnectionAccess{HasConnection: true, WorkspaceSlugs: []string{}},
+			want:   []string{},
+		},
+		{
+			name:   "extra explicit list with duplicates + no connection — deduped and sorted",
+			extra:  []string{"ws-2", "docapp", "ws-2"},
+			access: store.OAuthConnectionAccess{HasConnection: false},
+			want:   []string{"docapp", "ws-2"},
 		},
 	}
 
