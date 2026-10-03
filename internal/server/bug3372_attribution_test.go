@@ -258,3 +258,42 @@ func TestBUG3372_DocumentAttributionIsTheRequests(t *testing.T) {
 		})
 	}
 }
+
+// The document autosave hint (a content-only PATCH whose body says
+// "source":"web" writes no activity row) must also match the request: a PAT
+// or agent saying "web" is not the web editor, and used to write no audit
+// row at all.
+func TestBUG3372_AutosaveHintNeedsAWebRequest(t *testing.T) {
+	f := newAttributionFixture(t)
+	doc := f.do(t, "POST", "/documents", map[string]any{"title": "autosave 3372", "content": "x"})
+	docID := doc["id"].(string)
+	updatedRows := func() int {
+		t.Helper()
+		var n int
+		if err := f.srv.store.DB().QueryRow(
+			`SELECT COUNT(*) FROM activities WHERE document_id = ? AND action = 'updated'`, docID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Control: the web editor's autosave (cookie, body source web) still
+	// skips the row.
+	f.do(t, "PATCH", "/documents/"+docID, map[string]any{"content": "web autosave", "source": "web"})
+	if n := updatedRows(); n != 0 {
+		t.Fatalf("control: a cookie autosave wrote %d activity rows, want 0", n)
+	}
+
+	pat, err := f.srv.store.CreateAPIToken(f.user.ID, models.APITokenCreate{Name: "autosave-3372"}, 30, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := doRequestWithBearer(f.srv, "PATCH", "/api/v1/workspaces/"+f.ws.Slug+"/documents/"+docID, pat.Token,
+		map[string]any{"content": "pat claiming web", "source": "web"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PAT patch: %d %s", rr.Code, rr.Body.String())
+	}
+	if n := updatedRows(); n != 1 {
+		t.Errorf("a PAT sending source=web wrote %d activity rows, want 1", n)
+	}
+}

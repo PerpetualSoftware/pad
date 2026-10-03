@@ -265,9 +265,11 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	isContentOnly := input.Content != nil &&
 		input.Title == nil && input.DocType == nil && input.Status == nil &&
 		input.Tags == nil && input.Pinned == nil && input.SortOrder == nil
-	isWebAutoSave := isContentOnly && autosaveHint == "web"
-
+	// The hint is the body's, so it also has to match the request: a PAT or
+	// agent sending "source":"web" on a content-only PATCH used to skip the
+	// activity row, writing no audit record at all (BUG-3372 review).
 	actor, source := actorFromRequest(r)
+	isWebAutoSave := isContentOnly && autosaveHint == "web" && source == "web"
 	if !isWebAutoSave {
 		s.logActivity(updated.WorkspaceID, updated.ID, "updated", r)
 	}
