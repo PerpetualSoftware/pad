@@ -426,6 +426,7 @@ type Metrics struct {
 	// internal/server/handlers_oauth.go (per-handler seams) and
 	// internal/oauth/storage.go (revocation TTL observation).
 	OAuthFlowsTotal            *prometheus.CounterVec
+	OAuthResourceMissingTotal  *prometheus.CounterVec
 	OAuthFlowDuration          *prometheus.HistogramVec
 	OAuthTokenRevocationsTotal *prometheus.CounterVec
 	OAuthTokenTTLSeconds       prometheus.Histogram
@@ -551,6 +552,16 @@ func New() *Metrics {
 		Name: "pad_oauth_flows_total",
 		Help: "Total number of OAuth authorization flow events by stage.",
 	}, []string{"stage"})
+
+	// TASK-3363 phase 1: requests that omitted the RFC 8707 resource
+	// parameter and were defaulted to the canonical audience. Phase 2 refuses
+	// them with invalid_target, so this measures who would break. Labelled
+	// by endpoint only (authorize, decide, token); the client is in the
+	// log line, not a label, to keep cardinality bounded.
+	oauthResourceMissingTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_oauth_resource_missing_total",
+		Help: "OAuth requests that omitted the RFC 8707 resource parameter, by endpoint.",
+	}, []string{"endpoint"})
 
 	// Per-handler durations let ops spot a slow consent render (DB
 	// lookups for the user's workspace list) vs a slow code-exchange
@@ -708,6 +719,7 @@ func New() *Metrics {
 		mcpActiveSessions,
 		contentWritesSupersededTotal,
 		oauthFlowsTotal,
+		oauthResourceMissingTotal,
 		oauthFlowDuration,
 		oauthTokenRevocationsTotal,
 		oauthTokenTTLSeconds,
@@ -749,6 +761,7 @@ func New() *Metrics {
 		MCPActiveSessions:            mcpActiveSessions,
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
 		OAuthFlowsTotal:              oauthFlowsTotal,
+		OAuthResourceMissingTotal:    oauthResourceMissingTotal,
 		OAuthFlowDuration:            oauthFlowDuration,
 		OAuthTokenRevocationsTotal:   oauthTokenRevocationsTotal,
 		OAuthTokenTTLSeconds:         oauthTokenTTLSeconds,

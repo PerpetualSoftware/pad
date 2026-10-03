@@ -73,6 +73,13 @@ type Server struct {
 	// load-bearing, not incidental (codex round 3).
 	afterItemPreRead func(itemID string)
 
+	// resourceMissingLast is when noteResourceMissing last logged each
+	// client (TASK-3363); resourceMissingNow is a test clock, nil in
+	// production.
+	resourceMissingMu   sync.Mutex
+	resourceMissingLast map[string]time.Time
+	resourceMissingNow  func() time.Time
+
 	// adminAPITokensAllowed is PAD_ADMIN_API_TOKENS=allow, read at startup
 	// (BUG-3361). See adminAcceptsAPITokens.
 	adminAPITokensAllowed bool
