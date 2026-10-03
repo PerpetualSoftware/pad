@@ -37,11 +37,67 @@ var allowedStoreMethods = map[string]bool{
 }
 
 // allowedStoreMethodsInsideDoor are the *store.Store helpers the door itself
-// (BeginFenced and FencedTx methods) may call. Each was reviewed as opening no
-// transaction of its own and writing nothing.
-var allowedStoreMethodsInsideDoor = map[string]bool{
-	"q":                       true,
-	"acquireWorkspaceSeqLock": true,
+// (BeginFenced, FencedTx methods, and the reviewed helpers below) may call. A
+// helper on this list is part of the door: its body is walked with the door's
+// rules. Each entry records what it WRITES, confirmed by reading it; "reads"
+// means it executes no INSERT, UPDATE or DELETE. None opens a transaction of
+// its own: every one runs on the transaction it is handed.
+var allowedStoreMethodsInsideDoor = map[string]string{
+	"q":                       "rebinds placeholders; no SQL",
+	"acquireWorkspaceSeqLock": "pg_advisory_xact_lock on the workspace; writes nothing",
+	// U2a (TASK-3390).
+	"getItemTx":                "reads the item row",
+	"getItemScanQ":             "reads the item row",
+	"doneFieldKeyQ":            "reads the collection's schema and settings",
+	"getCollectionSlugTx":      "reads collections.slug",
+	"getCollectionQ":           "reads the collection row",
+	"scanCollectionRow":        "scans a collection row; no SQL of its own",
+	"enforceWorkspaceLimitTx":  "reads plan, settings and the item count under the caller's lock",
+	"checkLimitOn":             "reads plan, settings and counts",
+	"featureCountOn":           "reads a count",
+	"resolveLimitQ":            "reads workspace owner, user plan and platform settings",
+	"GetUserQ":                 "reads the user row",
+	"GetPlatformSettingQ":      "reads platform_settings",
+	"decryptUserTOTP":          "decrypts a field in memory; no SQL",
+	"decrypt":                  "decrypts in memory; no SQL",
+	"HasEncryptionKey":         "reads in-memory config; no SQL",
+	"replaceWikiLinks":         "DELETE and INSERT on item_wiki_links WHERE source_item_id = the item it is given, only; target resolution reads",
+	"emitItemEventTx":          "INSERT INTO event_outbox (through writeOutboxTx) for the item it is given",
+	"emitItemUpdateEventsTx":   "INSERT INTO event_outbox for the item it is given (status_changed and/or updated)",
+	"buildItemAppProjectionTx": "reads the item's creator and collection schema",
+	"userDisplayTx":            "reads a user's display name",
+	"outboxRowCap":             "reads in-memory config; no SQL",
+	"outboxClaimableRowCap":    "reads in-memory config; no SQL",
+	"enqueueDecisionJobsTx":    "INSERT ... ON CONFLICT DO UPDATE on decision_jobs for the item it is given; no-op without a provider",
+	"decisionSetResolver":      "loads an in-memory pointer; no SQL",
+	"createActivityQ":          "INSERT INTO activities on the executor it is given (the fence's tx)",
+	"recentDebounceCandidateQ": "reads activities",
+}
+
+// reviewedStoreFuncs are package-level internal/store functions that are part
+// of the door, with what each writes. Same rules as the list above.
+var reviewedStoreFuncs = map[string]string{
+	"writeOutboxTx":           "INSERT INTO event_outbox ... RETURNING on the tx it is handed",
+	"resolveRefTx":            "reads items",
+	"resolveTitleTx":          "reads items",
+	"resolveWorkspaceSlugTx":  "reads workspaces",
+	"itemUpdatedSliceChanged": "compares two item snapshots in memory; no SQL",
+	"collapseChanges":         "rewrites a change string in memory; no SQL",
+}
+
+// allowedFuncValues are named function values the walk may meet: function
+// FullName, then variable name, then why it is safe. Per the lead's ruling the
+// func-value rule is never loosened globally; a new case gets its own entry.
+var allowedFuncValues = map[string]map[string]string{
+	"(*github.com/PerpetualSoftware/pad/internal/store.Store).enqueueDecisionJobsTx": {
+		"resolve": "the store's DecisionSetResolver; production installs decision.Registry.SetsFor, an in-memory lookup that runs no SQL",
+	},
+	"github.com/PerpetualSoftware/pad/internal/store.collapseChanges": {
+		"isLossySummary": "a closure defined in the same body and never reassigned; the walk inspects its body",
+	},
+	"github.com/PerpetualSoftware/pad/internal/store.itemUpdatedSliceChanged": {
+		"normalize": "a closure defined in the same body and never reassigned; the walk inspects its body",
+	},
 }
 
 type violation struct {
@@ -229,7 +285,7 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 				// verification codex probed (reassignment, aliases, method
 				// expressions, interface dispatch) had a bypass, and this
 				// is a guard, not a proof. App code calls named functions.
-				if !isStaticOrBuiltin(p, n.Fun) {
+				if !isStaticOrBuiltin(p, n.Fun) && !allowedFuncValue(u, p, n.Fun) {
 					report(p, n.Pos(), "dynamic-call", "%s calls a function value the walk cannot resolve", u.name)
 				}
 			case *ast.SelectorExpr:
@@ -283,7 +339,8 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 					if m.Name() == "DB" && !inBeginFenced {
 						report(p, n.Pos(), "raw-db", "%s calls (*store.Store).DB", u.name)
 					}
-					allowed := allowedStoreMethods[m.Name()] || (door && allowedStoreMethodsInsideDoor[m.Name()])
+					_, insideDoor := allowedStoreMethodsInsideDoor[m.Name()]
+					allowed := allowedStoreMethods[m.Name()] || (door && insideDoor)
 					if !allowed {
 						report(p, n.Pos(), "store-method", "%s calls (*store.Store).%s, which is not on the reviewed allow-list", u.name, m.Name())
 					}
@@ -312,7 +369,7 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 				// Rule 9: a variable or parameter of function type is a
 				// function value the walk cannot resolve, whether it is
 				// called here or handed to code that calls it (sync.Once.Do).
-				if v, ok := obj.(*types.Var); ok && !v.IsField() && isFuncType(v.Type()) {
+				if v, ok := obj.(*types.Var); ok && !v.IsField() && isFuncType(v.Type()) && allowedFuncValues[u.name][v.Name()] == "" {
 					report(p, n.Pos(), "func-value", "%s uses function-typed variable %s", u.name, v.Name())
 				}
 			}
@@ -404,6 +461,17 @@ func isGenericUnit(u unit) bool {
 	return ok && (sig.TypeParams().Len() > 0 || sig.RecvTypeParams().Len() > 0)
 }
 
+// allowedFuncValue: the call's callee is a variable named on
+// allowedFuncValues for the unit being walked.
+func allowedFuncValue(u unit, p *packages.Package, fun ast.Expr) bool {
+	id, ok := calleeExpr(fun).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	v, ok := p.TypesInfo.Uses[id].(*types.Var)
+	return ok && allowedFuncValues[u.name][v.Name()] != ""
+}
+
 func isFuncType(t types.Type) bool {
 	_, ok := t.Underlying().(*types.Signature)
 	return ok
@@ -429,7 +497,10 @@ func isDoor(fn *types.Func) bool {
 		return true
 	}
 	// A reviewed helper the door may call is part of the door.
-	if isStoreType(recvOf(fn)) && allowedStoreMethodsInsideDoor[fn.Name()] {
+	if _, ok := allowedStoreMethodsInsideDoor[fn.Name()]; ok && isStoreType(recvOf(fn)) {
+		return true
+	}
+	if _, ok := reviewedStoreFuncs[fn.Name()]; ok && recvOf(fn) == nil {
 		return true
 	}
 	r := recvOf(fn)

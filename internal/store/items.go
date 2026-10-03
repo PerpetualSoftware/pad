@@ -2838,7 +2838,9 @@ func (s *Store) updateItemWithParentLinkOnce(
 		forceVersion := input.ForceVersion || (input.Title != nil && *input.Title != existing.Title)
 		shouldVersion := forceVersion
 		if !shouldVersion {
-			shouldVersion, err = s.shouldCreateItemVersion(tx, id, createdBy, source)
+			// Human writes carry no install; app writes never reach this
+			// path (they cannot edit content in v1).
+			shouldVersion, err = s.shouldCreateItemVersion(tx, id, createdBy, source, "")
 			if err != nil {
 				return nil, fmt.Errorf("check version throttle: %w", err)
 			}
@@ -5694,16 +5696,16 @@ func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body st
 	return !parseTime(createdAt).Before(parseTime(flushedAt.String)), nil
 }
 
-func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source string) (bool, error) {
-	var createdBy, src, createdAt string
+func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source, viaApp string) (bool, error) {
+	var createdBy, src, createdAt, rowViaApp string
 	var imported int
 	err := q.QueryRow(s.q(`
-		SELECT created_by, source, created_at, imported
+		SELECT created_by, source, created_at, imported, COALESCE(via_app, '')
 		FROM item_versions
 		WHERE item_id = ?
 		ORDER BY created_at DESC, version_seq DESC
 		LIMIT 1
-	`), itemID).Scan(&createdBy, &src, &createdAt, &imported)
+	`), itemID).Scan(&createdBy, &src, &createdAt, &imported, &rowViaApp)
 	if err == sql.ErrNoRows {
 		return true, nil // No versions yet
 	}
@@ -5718,8 +5720,10 @@ func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source stri
 		return true, nil
 	}
 
-	// Actor or source changed — always snapshot
-	if createdBy != actor || src != source {
+	// Actor, source or app install changed — always snapshot. via_app is
+	// part of the writer identity (SPEC-6, TASK-3390): an app's write and a
+	// human's, or two installs', never land in one version.
+	if createdBy != actor || src != source || rowViaApp != viaApp {
 		return true, nil
 	}
 

@@ -52,6 +52,9 @@ func TestAppstoreBoundaryCatchesEachRule(t *testing.T) {
 		// codex round 4
 		"genericconstraint": "interface-call",
 		"genericnested":     "interface-call",
+		// U2a: a named func-value entry does not leak to a same-named value
+		// in another function.
+		"allowlistnarrow": "func-value",
 	}
 	var roots []string
 	for fixture := range fixtures {

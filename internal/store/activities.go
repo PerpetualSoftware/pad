@@ -78,9 +78,9 @@ func (s *Store) createActivityQ(q execQueryer, a models.Activity) (string, error
 	ts := now()
 
 	_, err := q.Exec(s.q(`
-		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, user_id, ip_address, user_agent, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), a.ID, nilIfEmpty(a.WorkspaceID), nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), nilIfEmpty(a.IPAddress), nilIfEmpty(a.UserAgent), ts)
+		INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, user_id, ip_address, user_agent, created_at, via_app)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), a.ID, nilIfEmpty(a.WorkspaceID), nilIfEmpty(a.DocumentID), a.Action, a.Actor, a.Source, a.Metadata, nilIfEmpty(a.UserID), nilIfEmpty(a.IPAddress), nilIfEmpty(a.UserAgent), ts, nilIfEmpty(a.ViaApp))
 	if err != nil {
 		// No id alongside an error (BUG-2779). The id in hand names a row
 		// that was NOT written, and a caller who ignores the error — as one
@@ -417,8 +417,9 @@ func (s *Store) recentDebounceCandidateQ(q rowsQueryer, a models.Activity, cutof
 		SELECT id, metadata FROM activities
 		WHERE document_id = ? AND action = ? AND created_at >= ? AND actor = ? AND source = ?
 			AND ((user_id IS NOT NULL AND user_id = ?) OR (user_id IS NULL AND ? = ''))
+			AND COALESCE(via_app, '') = ?
 		ORDER BY created_at DESC LIMIT ?
-	`), a.DocumentID, a.Action, cutoff, a.Actor, a.Source, a.UserID, a.UserID, maxDebounceCandidates)
+	`), a.DocumentID, a.Action, cutoff, a.Actor, a.Source, a.UserID, a.UserID, a.ViaApp, maxDebounceCandidates)
 	if err != nil {
 		return "", "", false
 	}

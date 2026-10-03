@@ -22,17 +22,34 @@ package appstore
 import (
 	"context"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // Store runs app mutations. It holds the human store concretely and reaches
 // the database only through store.FencedTx.
 type Store struct {
-	s *store.Store
+	s    *store.Store
+	opts Options
+}
+
+// Options are the server's settings for app writes.
+type Options struct {
+	// PlanLimit enforces plan caps (items_per_workspace) in the fence, as
+	// the human paths do on Pad Cloud. Off on self-host.
+	PlanLimit bool
+	// ETagKey is the SERVER-ONLY key app etags are computed under. No app
+	// ever holds it (DOC-3371 §4).
+	ETagKey []byte
 }
 
 // New wraps the store for app writes.
-func New(s *store.Store) *Store { return &Store{s: s} }
+func New(s *store.Store, opts Options) *Store { return &Store{s: s, opts: opts} }
+
+// ETag is the concurrency token an app sees for an item.
+func (a *Store) ETag(spec store.FenceSpec, item *models.Item) string {
+	return store.AppItemETag(a.opts.ETagKey, spec.InstallID, item.ID, item.Seq)
+}
 
 // CheckFence opens and commits an empty fenced transaction: whether a request
 // admitted under spec may still write. It writes nothing. U1 has no
