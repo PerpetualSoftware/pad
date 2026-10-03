@@ -164,25 +164,6 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 		}
 	}
 
-	// Call sites of root-package functions, for the dynamic-call rule.
-	rootUses := map[*types.Func][]ast.Expr{}
-	callArgs := map[*types.Func][][]ast.Expr{}
-	for _, f := range rootPkg.Syntax {
-		ast.Inspect(f, func(n ast.Node) bool {
-			switch n := n.(type) {
-			case *ast.Ident:
-				if fn, ok := rootPkg.TypesInfo.Uses[n].(*types.Func); ok && fn.Pkg() == rootPkg.Types {
-					rootUses[fn.Origin()] = append(rootUses[fn.Origin()], n)
-				}
-			case *ast.CallExpr:
-				if fn := staticCallee(rootPkg, n.Fun); fn != nil && fn.Pkg() == rootPkg.Types {
-					callArgs[fn.Origin()] = append(callArgs[fn.Origin()], n.Args)
-				}
-			}
-			return true
-		})
-	}
-
 	seen := map[*types.Func]bool{}
 	var queue []unit
 	walkedPkgs := map[*packages.Package]bool{}
@@ -243,11 +224,12 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 			switch n := n.(type) {
 			case *ast.CallExpr:
 				// Rule 8: a call through a function VALUE has no static
-				// target. Allowed only for a parameter of an unexported
-				// root-package function whose every call site passes a
-				// function literal or a named module function, both of
-				// which the walk inspects.
-				if !isStaticOrBuiltin(p, n.Fun) && !ix.dynamicCallVerified(rootPkg, u, n.Fun, rootUses, callArgs) {
+				// target the walk can follow. Refused outright, with no
+				// attempt to verify where the value came from: every such
+				// verification codex probed (reassignment, aliases, method
+				// expressions, interface dispatch) had a bypass, and this
+				// is a guard, not a proof. App code calls named functions.
+				if !isStaticOrBuiltin(p, n.Fun) {
 					report(p, n.Pos(), "dynamic-call", "%s calls a function value the walk cannot resolve", u.name)
 				}
 			case *ast.SelectorExpr:
@@ -260,26 +242,32 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 				if sel.Kind() == types.FieldVal && sel.Obj() == ix.storeDB && !inBeginFenced {
 					report(p, n.Pos(), "raw-db", "%s reads Store.db", u.name)
 				}
-				m, ok := sel.Obj().(*types.Func)
+				// Rule 9: a FIELD of function type is a function value.
+				if sel.Kind() == types.FieldVal && isFuncType(sel.Obj().Type()) {
+					report(p, n.Pos(), "func-value", "%s uses function-typed field %s", u.name, sel.Obj().Name())
+				}
+				inst, ok := sel.Obj().(*types.Func)
 				if !ok {
 					return true
 				}
-				m = m.Origin()
-				// The DECLARING receiver, not the selection's: a method
-				// promoted through an embedded *sql.DB or *store.Store is
-				// still that type's method.
-				recv := recvOf(m)
-				// Rule 4: an interface call an internal/store type could answer.
-				// The door is exempt: it is reviewed code inside the store
-				// and calls the store's own dialect interface.
-				if recv != nil {
-					if iface, ok := recv.Underlying().(*types.Interface); ok {
-						if !door && !isErrorIface(recv) && implementedByStore(iface, ix.storeImpls) {
-							report(p, n.Pos(), "interface-call", "%s calls %s on interface %s, which an internal/store type implements", u.name, m.Name(), recv)
+				// Rule 4: an interface call an internal/store type could
+				// answer, judged on the INSTANTIATED interface: Mutator[string]
+				// may be implemented where Mutator[T] is not. The door is
+				// exempt: it is reviewed code inside the store and calls the
+				// store's own dialect interface.
+				if irecv := recvOf(inst); irecv != nil {
+					if iface, ok := irecv.Underlying().(*types.Interface); ok {
+						if !door && !isErrorIface(irecv) && implementedByStore(iface, ix.storeImpls) {
+							report(p, n.Pos(), "interface-call", "%s calls %s on interface %s, which an internal/store type implements", u.name, inst.Name(), irecv)
 						}
 						return true
 					}
 				}
+				m := inst.Origin()
+				// The DECLARING receiver, not the selection's: a method
+				// promoted through an embedded *sql.DB or *store.Store is
+				// still that type's method.
+				recv := recvOf(m)
 				// Rule 1: *store.Store methods.
 				if isStoreType(recv) {
 					if m.Name() == "DB" && !inBeginFenced {
@@ -310,6 +298,12 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 				}
 				if f, ok := obj.(*types.Func); ok {
 					enqueue(f)
+				}
+				// Rule 9: a variable or parameter of function type is a
+				// function value the walk cannot resolve, whether it is
+				// called here or handed to code that calls it (sync.Once.Do).
+				if v, ok := obj.(*types.Var); ok && !v.IsField() && isFuncType(v.Type()) {
+					report(p, n.Pos(), "func-value", "%s uses function-typed variable %s", u.name, v.Name())
 				}
 			}
 			return true
@@ -390,51 +384,9 @@ func isStaticOrBuiltin(p *packages.Package, fun ast.Expr) bool {
 	return staticCallee(p, fun) != nil
 }
 
-// dynamicCallVerified: the callee is a parameter of the unexported root
-// function being walked, that function is only ever CALLED in the root
-// package (never taken as a value), and at every call site the argument for
-// that parameter is a function literal or a named function.
-func (ix *index) dynamicCallVerified(rootPkg *packages.Package, u unit, fun ast.Expr, uses map[*types.Func][]ast.Expr, calls map[*types.Func][][]ast.Expr) bool {
-	if u.pkg != rootPkg || u.fn == nil || u.fn.Exported() {
-		return false
-	}
-	id, ok := calleeExpr(fun).(*ast.Ident)
-	if !ok {
-		return false
-	}
-	v, ok := rootPkg.TypesInfo.Uses[id].(*types.Var)
-	if !ok {
-		return false
-	}
-	sig := u.fn.Type().(*types.Signature)
-	idx := -1
-	for i := 0; i < sig.Params().Len(); i++ {
-		if sig.Params().At(i) == v {
-			idx = i
-		}
-	}
-	if idx < 0 {
-		return false
-	}
-	fn := u.fn.Origin()
-	sites := calls[fn]
-	if len(sites) == 0 || len(sites) != len(uses[fn]) {
-		return false
-	}
-	for _, args := range sites {
-		if idx >= len(args) {
-			return false
-		}
-		a := calleeExpr(args[idx])
-		if _, ok := a.(*ast.FuncLit); ok {
-			continue
-		}
-		if staticCallee(rootPkg, a) != nil {
-			continue
-		}
-		return false
-	}
-	return true
+func isFuncType(t types.Type) bool {
+	_, ok := t.Underlying().(*types.Signature)
+	return ok
 }
 
 func dedupe(vs []violation) []violation {

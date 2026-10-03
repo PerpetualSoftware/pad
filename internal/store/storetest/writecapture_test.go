@@ -281,3 +281,25 @@ func TestCaptureWrites_RefusesACommitFromAnotherHandle(t *testing.T) {
 		t.Fatalf("capture did not refuse a commit from another handle; got %q", msg)
 	}
 }
+
+// A same-named trigger that is disabled is not coverage: the next capture
+// replaces it and sees the write (codex round 2 on TASK-3388).
+func TestCaptureWrites_PostgresReplacesABrokenTrigger(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set")
+	}
+	s := NewPostgres(t)
+	ws, col := seedCollection(t, s)
+	CaptureWrites(t, s, func() {})
+	if _, err := s.DB().Exec(`ALTER TABLE items DISABLE TRIGGER pad_write_audit_t`); err != nil {
+		t.Fatal(err)
+	}
+	writes := CaptureWrites(t, s, func() {
+		if _, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "After tamper", Fields: `{"status":"open"}`}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !contains(Tables(writes), "items") {
+		t.Fatalf("a disabled audit trigger hid the write: %v", Tables(writes))
+	}
+}

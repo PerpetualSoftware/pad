@@ -207,14 +207,23 @@ func capturePostgres(t testing.TB, s *store.Store, fn func()) []Write {
 	return writes
 }
 
-// unauditedTables lists base tables in the store's schema that lack the
-// audit trigger.
+// unauditedTables lists base tables in the store's schema with no WORKING
+// audit trigger. A same-named trigger only counts when it is enabled,
+// statement-level, AFTER, fires on INSERT, UPDATE and DELETE, and calls
+// pad_write_audit_fn (tgtype bits: ROW 1, BEFORE 2, INSERT 4, DELETE 8,
+// UPDATE 16, INSTEAD 64). A disabled or repointed one is not coverage.
 func unauditedTables(t testing.TB, s *store.Store) []string {
 	t.Helper()
 	rows, err := s.DB().Query(`SELECT c.relname FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') AND c.relname <> 'pad_write_audit'
-		  AND NOT EXISTS (SELECT 1 FROM pg_trigger tg WHERE tg.tgrelid = c.oid AND tg.tgname = 'pad_write_audit_t')`)
+		  AND NOT EXISTS (SELECT 1 FROM pg_trigger tg
+		    WHERE tg.tgrelid = c.oid AND tg.tgname = 'pad_write_audit_t'
+		      AND tg.tgenabled IN ('O', 'A')
+		      AND (tg.tgtype & (1 | 2 | 64)) = 0
+		      AND (tg.tgtype & (4 | 8 | 16)) = (4 | 8 | 16)
+		      AND tg.tgfoid = (SELECT p.oid FROM pg_proc p JOIN pg_namespace pn ON pn.oid = p.pronamespace
+		                       WHERE p.proname = 'pad_write_audit_fn' AND pn.nspname = current_schema()))`)
 	if err != nil {
 		t.Fatalf("capture: list unaudited: %v", err)
 	}
@@ -248,10 +257,16 @@ func installPGAudit(t testing.TB, s *store.Store) {
 			t.Fatalf("capture: install audit: %v", err)
 		}
 	}
+	// A table without a working trigger gets one, replacing any same-named
+	// trigger that is disabled or calls something else.
 	for _, tbl := range unauditedTables(t, s) {
-		q := fmt.Sprintf(`CREATE TRIGGER pad_write_audit_t AFTER INSERT OR UPDATE OR DELETE ON %q FOR EACH STATEMENT EXECUTE FUNCTION pad_write_audit_fn()`, tbl)
-		if _, err := db.Exec(q); err != nil {
-			t.Fatalf("capture: trigger on %s: %v", tbl, err)
+		for _, q := range []string{
+			fmt.Sprintf(`DROP TRIGGER IF EXISTS pad_write_audit_t ON %q`, tbl),
+			fmt.Sprintf(`CREATE TRIGGER pad_write_audit_t AFTER INSERT OR UPDATE OR DELETE ON %q FOR EACH STATEMENT EXECUTE FUNCTION pad_write_audit_fn()`, tbl),
+		} {
+			if _, err := db.Exec(q); err != nil {
+				t.Fatalf("capture: trigger on %s: %v", tbl, err)
+			}
 		}
 	}
 }

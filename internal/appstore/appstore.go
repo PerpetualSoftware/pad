@@ -9,7 +9,8 @@
 //   - boundary_test.go walks every call this package can reach, through
 //     go/types, and fails on any store method outside an allow-list, any
 //     database/sql write outside FencedTx, any interface call an
-//     internal/store type could answer, and any reflect or unsafe;
+//     internal/store type could answer, any use of a function value, and
+//     any reflect, unsafe or go:linkname;
 //   - the write-capture harness (internal/store/storetest) records every
 //     table each mutation actually writes, on both dialects.
 //
@@ -33,27 +34,23 @@ type Store struct {
 // New wraps the store for app writes.
 func New(s *store.Store) *Store { return &Store{s: s} }
 
-// withFence runs fn in one fenced transaction, committing only if fn
-// succeeds. Every app mutation is one call to it.
-func (a *Store) withFence(ctx context.Context, spec store.FenceSpec, fn func(*store.FencedTx) error) error {
+// CheckFence opens and commits an empty fenced transaction: whether a request
+// admitted under spec may still write. It writes nothing. U1 has no
+// mutations yet; this is the live path the boundary test and the
+// write-capture harness exercise until U2 adds them.
+//
+// Every mutation follows this shape: open, work, commit, with the deferred
+// rollback a no-op after Commit. There are deliberately no callbacks: the
+// boundary test refuses any call through a function value, which it cannot
+// resolve statically.
+func (a *Store) CheckFence(ctx context.Context, spec store.FenceSpec) error {
 	ftx, err := a.s.BeginFenced(ctx, spec)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = ftx.Rollback() }()
-	if err := fn(ftx); err != nil {
+	if _, err := ftx.NextSeq(); err != nil {
 		return err
 	}
 	return ftx.Commit()
-}
-
-// CheckFence opens and commits an empty fenced transaction: whether a request
-// admitted under spec may still write. It writes nothing. U1 has no
-// mutations yet; this is the live path the boundary test and the
-// write-capture harness exercise until U2 adds them.
-func (a *Store) CheckFence(ctx context.Context, spec store.FenceSpec) error {
-	return a.withFence(ctx, spec, func(ftx *store.FencedTx) error {
-		_, err := ftx.NextSeq()
-		return err
-	})
 }

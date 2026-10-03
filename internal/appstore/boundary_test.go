@@ -42,6 +42,11 @@ func TestAppstoreBoundaryCatchesEachRule(t *testing.T) {
 		"embeddedstore":  "store-method",
 		"funcfield":      "dynamic-call",
 		"linkname":       "linkname",
+		// codex round 2
+		"genericiface":       "interface-call",
+		"callbackparam":      "func-value",
+		"methodexprcallback": "func-value",
+		"oncevar":            "func-value",
 	}
 	var roots []string
 	for fixture := range fixtures {
