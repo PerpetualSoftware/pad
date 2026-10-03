@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -26,7 +27,9 @@ func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) 
 	// item-only grants can't reorder items they don't have edit access to.
 	for _, u := range updates {
 		item, err := s.store.GetItem(u.ItemID)
-		if err != nil || item == nil {
+		// GetItem is not workspace-scoped, so an item from another
+		// workspace is answered exactly as a missing one (BUG-3342).
+		if err != nil || item == nil || item.WorkspaceID != workspaceID {
 			writeError(w, http.StatusForbidden, "forbidden", "Cannot reorder items in hidden collections")
 			return
 		}
@@ -39,6 +42,12 @@ func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := s.store.UpdateRoleSortOrder(workspaceID, updates); err != nil {
+		// An item deleted between the check above and the write: same
+		// answer as one that was never there, and nothing was written.
+		if errors.Is(err, store.ErrRoleSortItemNotFound) {
+			writeError(w, http.StatusForbidden, "forbidden", "Cannot reorder items in hidden collections")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}

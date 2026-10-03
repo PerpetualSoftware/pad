@@ -3112,6 +3112,12 @@ func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *m
 // (BUG-2409). Every other caller goes through the pool wrapper above; the
 // decision logic is identical by construction — one body, two executors.
 func (s *Server) checkItemVisibleQ(q store.Queryer, workspaceID string, item *models.Item, user *models.User, role string, isBearer bool) (bool, error) {
+	// An item is visible only in its own workspace. Every caller already
+	// pairs the two, and this keeps a future one that does not (a global
+	// GetItem, as the role-board reorder had) from passing (BUG-3342).
+	if item == nil || item.WorkspaceID != workspaceID {
+		return false, nil
+	}
 	// Tokenized-nil-user bypass. RequireWorkspaceAccess synthesizes
 	// "owner" on fresh installs (UserCount == 0, currentUser == nil) and
 	// "editor" for legacy workspace-scoped API tokens (currentUser ==
