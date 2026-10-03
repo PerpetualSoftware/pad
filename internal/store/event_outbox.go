@@ -603,6 +603,34 @@ func marshalEventPayload(v any) ([]byte, error) {
 type itemEventPayload struct {
 	*models.Item
 	PriorStatus *string `json:"prior_status,omitempty"`
+	// AppProjection is the event-time block apps are served from (TASK-3389;
+	// see app_projection.go). Stripped before any owner-webhook delivery.
+	AppProjection *itemAppProjection `json:"app_projection,omitempty"`
+}
+
+// commentPayloadWithProjection is a comment snapshot plus its app-projection
+// block. It cannot be a struct embedding *models.Comment: Comment has its own
+// MarshalJSON, which an embedding promotes, and the promoted method marshals
+// the comment ALONE and silently drops every sibling field (the census test
+// caught exactly that). So the comment is marshaled on its own and the block
+// is added as one more top-level key.
+func commentPayloadWithProjection(comment *models.Comment, proj *commentAppProjection) (any, error) {
+	base, err := json.Marshal(comment)
+	if err != nil {
+		return nil, fmt.Errorf("outbox: marshal comment: %w", err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(base, &doc); err != nil {
+		return nil, fmt.Errorf("outbox: reopen comment payload: %w", err)
+	}
+	if proj != nil {
+		raw, err := json.Marshal(proj)
+		if err != nil {
+			return nil, fmt.Errorf("outbox: marshal app projection: %w", err)
+		}
+		doc[appProjectionKey] = raw
+	}
+	return doc, nil
 }
 
 // scrubItemPII returns a copy of the item with the JOIN-POPULATED assignee
@@ -718,11 +746,38 @@ func scrubUserRefsFromPayload(payload []byte, userID string) ([]byte, bool, erro
 	return out, true, nil
 }
 
+// scrubAppProjectionCreator erases the deleted user's identity from an
+// app-projection block's creator: the user_id, and the display beside it,
+// which no key match could tie to the account. Nothing else in the block is
+// touched.
+func scrubAppProjectionCreator(proj map[string]any, userID string) bool {
+	creator, ok := proj["creator"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if s, ok := creator["user_id"].(string); !ok || s != userID {
+		return false
+	}
+	delete(creator, "user_id")
+	delete(creator, "display")
+	return true
+}
+
 func scrubUserRefsInNode(node any, userID string) bool {
 	changed := false
 	switch v := node.(type) {
 	case map[string]any:
 		for k, val := range v {
+			// The app-projection block (TASK-3389) is scrubbed by PATH, not
+			// walked: its creator carries identity, and its fields are the
+			// item's own data, where a declared field may well be called
+			// user_id (codex round 1).
+			if k == appProjectionKey {
+				if proj, ok := val.(map[string]any); ok && scrubAppProjectionCreator(proj, userID) {
+					changed = true
+				}
+				continue
+			}
 			if outboxUserRefKeys[k] {
 				if s, ok := val.(string); ok && s == userID {
 					delete(v, k)
@@ -999,7 +1054,11 @@ func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item,
 		return fmt.Errorf("outbox: %s has no item snapshot", eventType)
 	}
 	snapshot := scrubItemPII(item)
-	payload, err := marshalEventPayload(itemEventPayload{Item: snapshot, PriorStatus: priorStatus})
+	proj, err := s.buildItemAppProjectionTx(tx, item)
+	if err != nil {
+		return err
+	}
+	payload, err := marshalEventPayload(itemEventPayload{Item: snapshot, PriorStatus: priorStatus, AppProjection: proj})
 	if err != nil {
 		return err
 	}
@@ -1024,7 +1083,15 @@ func (s *Store) emitCommentEventTx(tx *sql.Tx, eventType string, comment *models
 	if comment == nil {
 		return fmt.Errorf("outbox: %s has no comment snapshot", eventType)
 	}
-	payload, err := marshalEventPayload(comment)
+	proj, err := s.buildCommentAppProjectionTx(tx, comment.ItemID, comment.UserID, comment.Author, comment.CreatedBy, comment.ParentID)
+	if err != nil {
+		return err
+	}
+	withProj, err := commentPayloadWithProjection(comment, proj)
+	if err != nil {
+		return err
+	}
+	payload, err := marshalEventPayload(withProj)
 	if err != nil {
 		return err
 	}
@@ -1351,6 +1418,10 @@ type refOnlyDeletionPayload struct {
 	WorkspaceID string `json:"workspace_id"`
 	ItemID      string `json:"item_id,omitempty"`
 	ParentID    string `json:"parent_id,omitempty"`
+	// AppProjection is set on comment.deleted only, computed by DeleteComment
+	// BEFORE it reaps any ancestor (TASK-3389). It holds identifiers and the
+	// author's display, never the deleted body.
+	AppProjection *commentAppProjection `json:"app_projection,omitempty"`
 }
 
 // emitRefOnlyDeletionTx writes one ref-only hard-delete event.
@@ -1359,11 +1430,19 @@ type refOnlyDeletionPayload struct {
 // ref-only shape cannot be reached with a full snapshot by accident: there is
 // no parameter here that could carry one.
 func (s *Store) emitRefOnlyDeletionTx(tx *sql.Tx, eventType, workspaceID, subjectID, itemID, parentID string) error {
+	return s.emitRefOnlyDeletionWithProjectionTx(tx, eventType, workspaceID, subjectID, itemID, parentID, nil)
+}
+
+// emitRefOnlyDeletionWithProjectionTx is emitRefOnlyDeletionTx carrying a
+// comment's app-projection block, which the caller computed before the delete
+// changed anything it reads.
+func (s *Store) emitRefOnlyDeletionWithProjectionTx(tx *sql.Tx, eventType, workspaceID, subjectID, itemID, parentID string, proj *commentAppProjection) error {
 	payload, err := marshalEventPayload(refOnlyDeletionPayload{
-		ID:          subjectID,
-		WorkspaceID: workspaceID,
-		ItemID:      itemID,
-		ParentID:    parentID,
+		ID:            subjectID,
+		WorkspaceID:   workspaceID,
+		ItemID:        itemID,
+		ParentID:      parentID,
+		AppProjection: proj,
 	})
 	if err != nil {
 		return err

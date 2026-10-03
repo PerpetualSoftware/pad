@@ -458,6 +458,19 @@ func (s *Store) DeleteComment(id string) error {
 		return sql.ErrNoRows
 	}
 
+	// The app-projection block for comment.deleted (TASK-3389) is computed
+	// HERE, before the tombstone or the delete, and before reapTombstonesTx
+	// can remove the parent: its same-item parent check needs the parent row.
+	var authorID sql.NullString
+	var author, createdBy string
+	if err := tx.QueryRow(s.q(`SELECT user_id, COALESCE(author, ''), created_by FROM comments WHERE id = ?`), id).Scan(&authorID, &author, &createdBy); err != nil {
+		return fmt.Errorf("delete comment: read author: %w", err)
+	}
+	proj, err := s.buildCommentAppProjectionTx(tx, target.itemID, authorID.String, author, createdBy, target.parentID)
+	if err != nil {
+		return err
+	}
+
 	var replies int
 	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM comments WHERE parent_id = ?`), id).Scan(&replies); err != nil {
 		return fmt.Errorf("delete comment: count replies: %w", err)
@@ -478,7 +491,7 @@ func (s *Store) DeleteComment(id string) error {
 		}
 	}
 
-	if err := s.emitRefOnlyDeletionTx(tx, kernelevents.CommentDeleted, target.workspaceID, id, target.itemID, target.parentID); err != nil {
+	if err := s.emitRefOnlyDeletionWithProjectionTx(tx, kernelevents.CommentDeleted, target.workspaceID, id, target.itemID, target.parentID, proj); err != nil {
 		return err
 	}
 	// Deleting a comment changes the recent trail (TASK-3117 ruling 3); see
