@@ -1,7 +1,11 @@
 package storetest
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -151,4 +155,129 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// fatalRecorder stands in for *testing.T so a test can observe the harness
+// REFUSING a capture: Fatalf records the message and ends the goroutine, as
+// the real one does.
+type fatalRecorder struct {
+	testing.TB
+	msg string
+}
+
+func (r *fatalRecorder) Fatalf(format string, args ...any) {
+	r.msg = fmt.Sprintf(format, args...)
+	runtime.Goexit()
+}
+
+func (r *fatalRecorder) Fatal(args ...any) {
+	r.msg = fmt.Sprint(args...)
+	runtime.Goexit()
+}
+
+// runRecorded runs CaptureWrites under a recorder and returns its fatal
+// message, or "" if the capture completed.
+func runRecorded(t *testing.T, s *store.Store, fn func()) string {
+	t.Helper()
+	r := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		CaptureWrites(r, s, fn)
+	}()
+	<-done
+	return r.msg
+}
+
+// A write committed on a connection OTHER than the hooked one is not
+// observed by the hook, so the capture must refuse rather than report a
+// clean result (codex round 1 on TASK-3388: before this check, widening the
+// pool mid-capture lost a write with both sentinels passing).
+func TestCaptureWrites_RefusesAWriteOnAnotherConnection(t *testing.T) {
+	s := NewSQLite(t)
+	if _, err := s.DB().Exec(`CREATE TABLE cap_other (x TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	msg := runRecorded(t, s, func() {
+		db := s.DB()
+		db.SetMaxOpenConns(2)
+		hooked, err := db.Conn(context.Background())
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer hooked.Close()
+		// With the hooked connection checked out, this runs on a second one.
+		if _, err := db.Exec(`INSERT INTO cap_other VALUES ('lost')`); err != nil {
+			t.Error(err)
+		}
+	})
+	// Either refusal is right: another connection committed, or the hooked
+	// connection itself was replaced.
+	if !strings.Contains(msg, "another connection committed") && !strings.Contains(msg, "no longer on the hooked connection") {
+		t.Fatalf("capture did not refuse a write on another connection; got %q", msg)
+	}
+}
+
+// Postgres: a table created after an earlier capture is covered by the next
+// one, and a table created DURING a capture is refused, not silently missed
+// (codex round 1 on TASK-3388).
+func TestCaptureWrites_PostgresCoversTablesCreatedLater(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set")
+	}
+	s := NewPostgres(t)
+	CaptureWrites(t, s, func() {})
+	for _, q := range []string{
+		`CREATE TABLE cap_src (x TEXT)`,
+		`CREATE TABLE cap_log (x TEXT)`,
+		`CREATE FUNCTION cap_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO cap_log VALUES (NEW.x); RETURN NULL; END $$`,
+		`CREATE TRIGGER cap_tr AFTER INSERT ON cap_src FOR EACH ROW EXECUTE FUNCTION cap_fn()`,
+	} {
+		if _, err := s.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writes := CaptureWrites(t, s, func() {
+		if _, err := s.DB().Exec(`INSERT INTO cap_src VALUES ('a')`); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if tables := Tables(writes); !contains(tables, "cap_src") || !contains(tables, "cap_log") {
+		t.Fatalf("tables created after the first capture were not covered: %v", tables)
+	}
+	msg := runRecorded(t, s, func() {
+		if _, err := s.DB().Exec(`CREATE TABLE cap_during (x TEXT)`); err != nil {
+			t.Error(err)
+		}
+	})
+	if !strings.Contains(msg, "unaudited") {
+		t.Fatalf("a table created during capture was not refused; got %q", msg)
+	}
+}
+
+// The data_version branch: the hooked connection stays in place while a
+// write commits through a different handle on the same database file.
+func TestCaptureWrites_RefusesACommitFromAnotherHandle(t *testing.T) {
+	s := NewSQLite(t)
+	if _, err := s.DB().Exec(`CREATE TABLE cap_other (x TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	if err := s.DB().QueryRow(`SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&path); err != nil || path == "" {
+		t.Fatalf("database file: %q %v", path, err)
+	}
+	other, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	msg := runRecorded(t, s, func() {
+		if _, err := other.Exec(`INSERT INTO cap_other VALUES ('lost')`); err != nil {
+			t.Error(err)
+		}
+	})
+	if !strings.Contains(msg, "another connection committed") {
+		t.Fatalf("capture did not refuse a commit from another handle; got %q", msg)
+	}
 }

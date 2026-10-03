@@ -197,11 +197,7 @@ func TestFencedTx_DisableWaitsForAnOpenFence(t *testing.T) {
 		}
 		disabled <- tx.Commit()
 	}()
-	select {
-	case err := <-disabled:
-		t.Fatalf("the disable committed while a fenced transaction was open: %v", err)
-	case <-time.After(500 * time.Millisecond):
-	}
+	waitForFenceLockWait(t, f.s, disabled, "the disable")
 	if err := ftx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -232,11 +228,7 @@ func TestFencedTx_SeqLockBlocksAHumanCreate(t *testing.T) {
 		_, err := f.s.CreateItem(f.ws.ID, f.other.ID, models.ItemCreate{Title: "Human"})
 		created <- err
 	}()
-	select {
-	case err := <-created:
-		t.Fatalf("a human create ran while the fence held the seq lock: %v", err)
-	case <-time.After(500 * time.Millisecond):
-	}
+	waitForFenceLockWait(t, f.s, created, "a human create")
 	if err := ftx.Rollback(); err != nil {
 		t.Fatal(err)
 	}
@@ -326,4 +318,29 @@ func TestFencedTx_CannotBeMadeOutsideBeginFenced(t *testing.T) {
 			t.Errorf("Rollback: %v", err)
 		}
 	}
+}
+
+// waitForFenceLockWait returns once Postgres reports a backend in this test's
+// database waiting on a LOCK, which is the proof the worker is blocked on the
+// fence and not merely slow to be scheduled. It fails if the worker finishes
+// first (it was not blocked) or no lock wait appears within 10s.
+func waitForFenceLockWait(t *testing.T, s *Store, done chan error, what string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			t.Fatalf("%s finished without waiting on the fence: %v", what, err)
+		default:
+		}
+		var waiting int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s never waited on a lock", what)
 }

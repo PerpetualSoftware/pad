@@ -41,7 +41,7 @@ type Write struct {
 // this harness, never by a shipped migration) appends to pad_write_audit,
 // and the rows fn added are returned. A statement that changes zero rows
 // still fires, so Postgres over-reports rather than under-reports.
-func CaptureWrites(t *testing.T, s *store.Store, fn func()) []Write {
+func CaptureWrites(t testing.TB, s *store.Store, fn func()) []Write {
 	t.Helper()
 	if s.D().Driver() == store.DriverPostgres {
 		return capturePostgres(t, s, fn)
@@ -65,7 +65,7 @@ func Tables(ws []Write) []string {
 
 const sentinelTable = "pad_capture_sentinel"
 
-func captureSQLite(t *testing.T, s *store.Store, fn func()) []Write {
+func captureSQLite(t testing.TB, s *store.Store, fn func()) []Write {
 	t.Helper()
 	ctx := context.Background()
 	db := s.DB()
@@ -116,7 +116,8 @@ func captureSQLite(t *testing.T, s *store.Store, fn func()) []Write {
 		before := len(writes)
 		mu.Unlock()
 		if _, err := db.Exec(`INSERT INTO temp.`+sentinelTable+` (at) VALUES (?)`, when); err != nil {
-			t.Fatalf("capture: sentinel %s: %v", when, err)
+			// The temp table exists only on the hooked connection.
+			t.Fatalf("capture: the %s sentinel failed (%v): the store is no longer on the hooked connection", when, err)
 		}
 		mu.Lock()
 		defer mu.Unlock()
@@ -126,33 +127,58 @@ func captureSQLite(t *testing.T, s *store.Store, fn func()) []Write {
 		writes = writes[:before]
 	}
 
+	// PRAGMA data_version, read on the hooked connection, changes when ANY
+	// OTHER connection commits to the database. Equal values at start and end
+	// mean every write fn committed went through the hooked connection, even
+	// if something widened the pool in between.
+	dataVersion := func() int64 {
+		var v int64
+		if err := db.QueryRow(`PRAGMA data_version`).Scan(&v); err != nil {
+			t.Fatalf("capture: data_version: %v", err)
+		}
+		return v
+	}
+
 	if _, err := db.Exec(`CREATE TEMP TABLE IF NOT EXISTS ` + sentinelTable + ` (at TEXT)`); err != nil {
 		t.Fatalf("capture: sentinel table: %v", err)
 	}
 	setHook(hook)
 	defer setHook(nil)
 	sentinel("start")
+	dvStart := dataVersion()
 	fn()
+	// Pin the pool back to one connection before reading, so the read and
+	// the end sentinel land on the hooked connection if it still exists.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	sentinel("end")
+	if dvEnd := dataVersion(); dvEnd != dvStart {
+		t.Fatalf("capture: another connection committed during capture (data_version %d -> %d); its writes were not observed", dvStart, dvEnd)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	return append([]Write(nil), writes...)
 }
 
-var pgAuditOnce sync.Map // database identity -> struct{}
+// pgCaptureLocks serializes captures per database: the audit window is a
+// range of audit ids, so two captures running at once would read each other's
+// writes, and one installing triggers could race the other's callback.
+var pgCaptureLocks sync.Map // database name -> *sync.Mutex
 
-func capturePostgres(t *testing.T, s *store.Store, fn func()) []Write {
+func capturePostgres(t testing.TB, s *store.Store, fn func()) []Write {
 	t.Helper()
 	db := s.DB()
 	var dbName string
 	if err := db.QueryRow(`SELECT current_database()`).Scan(&dbName); err != nil {
 		t.Fatalf("capture: %v", err)
 	}
-	if _, done := pgAuditOnce.Load(dbName); !done {
-		installPGAudit(t, s)
-		pgAuditOnce.Store(dbName, struct{}{})
-	}
+	mu, _ := pgCaptureLocks.LoadOrStore(dbName, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
+	// Every capture re-checks coverage: a table created since the last one
+	// gets its trigger now.
+	installPGAudit(t, s)
 	var start int64
 	if err := db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM pad_write_audit`).Scan(&start); err != nil {
 		t.Fatalf("capture: audit start: %v", err)
@@ -174,13 +200,40 @@ func capturePostgres(t *testing.T, s *store.Store, fn func()) []Write {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("capture: audit rows: %v", err)
 	}
+	// A table created DURING fn has no trigger, so its writes were not seen.
+	if missing := unauditedTables(t, s); len(missing) > 0 {
+		t.Fatalf("capture: tables created during capture are unaudited: %v", missing)
+	}
 	return writes
 }
 
+// unauditedTables lists base tables in the store's schema that lack the
+// audit trigger.
+func unauditedTables(t testing.TB, s *store.Store) []string {
+	t.Helper()
+	rows, err := s.DB().Query(`SELECT c.relname FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') AND c.relname <> 'pad_write_audit'
+		  AND NOT EXISTS (SELECT 1 FROM pg_trigger tg WHERE tg.tgrelid = c.oid AND tg.tgname = 'pad_write_audit_t')`)
+	if err != nil {
+		t.Fatalf("capture: list unaudited: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("capture: list unaudited: %v", err)
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
 // installPGAudit puts a statement-level AFTER trigger on every base table in
-// the store's schema. Tables created later are not covered, so it runs once
-// per database, after migrations.
-func installPGAudit(t *testing.T, s *store.Store) {
+// the store's schema that does not have one yet. It runs at the start of
+// every capture, so a table created after an earlier capture is covered.
+func installPGAudit(t testing.TB, s *store.Store) {
 	t.Helper()
 	db := s.DB()
 	for _, stmt := range []string{
@@ -195,31 +248,10 @@ func installPGAudit(t *testing.T, s *store.Store) {
 			t.Fatalf("capture: install audit: %v", err)
 		}
 	}
-	rows, err := db.Query(`SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename <> 'pad_write_audit'`)
-	if err != nil {
-		t.Fatalf("capture: list tables: %v", err)
-	}
-	var tables []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			t.Fatalf("capture: list tables: %v", err)
-		}
-		tables = append(tables, name)
-	}
-	rows.Close()
-	if len(tables) == 0 {
-		t.Fatal("capture: no tables to audit")
-	}
-	for _, tbl := range tables {
-		for _, q := range []string{
-			fmt.Sprintf(`DROP TRIGGER IF EXISTS pad_write_audit_t ON %q`, tbl),
-			fmt.Sprintf(`CREATE TRIGGER pad_write_audit_t AFTER INSERT OR UPDATE OR DELETE ON %q FOR EACH STATEMENT EXECUTE FUNCTION pad_write_audit_fn()`, tbl),
-		} {
-			if _, err := db.Exec(q); err != nil {
-				t.Fatalf("capture: trigger on %s: %v", tbl, err)
-			}
+	for _, tbl := range unauditedTables(t, s) {
+		q := fmt.Sprintf(`CREATE TRIGGER pad_write_audit_t AFTER INSERT OR UPDATE OR DELETE ON %q FOR EACH STATEMENT EXECUTE FUNCTION pad_write_audit_fn()`, tbl)
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("capture: trigger on %s: %v", tbl, err)
 		}
 	}
 }

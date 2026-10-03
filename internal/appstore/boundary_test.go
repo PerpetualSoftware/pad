@@ -35,6 +35,13 @@ func TestAppstoreBoundaryCatchesEachRule(t *testing.T) {
 		"reflectuse":     "reflect-unsafe",
 		"attachmentsput": "attachments-put",
 		"transitive":     "store-method",
+		"pkgvar":         "store-method",
+		"helperinit":     "store-method",
+		"generic":        "store-method",
+		"embeddedsql":    "raw-sql",
+		"embeddedstore":  "store-method",
+		"funcfield":      "dynamic-call",
+		"linkname":       "linkname",
 	}
 	var roots []string
 	for fixture := range fixtures {
@@ -55,5 +62,22 @@ func TestAppstoreBoundaryCatchesEachRule(t *testing.T) {
 			}
 			t.Fatalf("rule %s not reported; got:\n%s", rule, strings.Join(got, "\n"))
 		})
+	}
+}
+
+// The walk covers the whole module, not only internal/: a helper under, say,
+// pkg/ would otherwise be a blind spot.
+func TestBoundaryCoversTheWholeModule(t *testing.T) {
+	for path, want := range map[string]bool{
+		"github.com/PerpetualSoftware/pad":                 true,
+		"github.com/PerpetualSoftware/pad/internal/store":  true,
+		"github.com/PerpetualSoftware/pad/pkg/helper":      true,
+		"github.com/PerpetualSoftware/pad/cmd/pad":         true,
+		"github.com/PerpetualSoftware/padx/internal/store": false,
+		"database/sql": false,
+	} {
+		if got := inModule(path); got != want {
+			t.Errorf("inModule(%q) = %v, want %v", path, got, want)
+		}
 	}
 }
