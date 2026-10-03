@@ -399,13 +399,24 @@ func (s *Server) deliverOutboxUnit(unit outboxDelivery) {
 		return
 	}
 
+	// The app-projection block (SPEC-6, TASK-3389) is for app delivery only.
+	// Owner webhooks read stored payloads verbatim, so this is the choke
+	// point: every single and folded delivery passes through here and nowhere
+	// else. A payload the strip cannot parse is not sent unstripped; it is
+	// failed like any server-side error and retried.
+	payload, err := store.StripAppProjection(unit.payload)
+	if err != nil {
+		s.failOutboxRows(unit.claimToken, unit.rowIDs, err.Error())
+		return
+	}
+
 	outcome, err := s.webhooks.DeliverEvent(webhooks.Delivery{
 		WorkspaceID: unit.workspaceID,
 		EventID:     unit.eventID,
 		BatchID:     unit.batchID,
 		Event:       unit.eventType,
 		OccurredAt:  unit.occurredAt,
-		Payload:     json.RawMessage(unit.payload),
+		Payload:     json.RawMessage(payload),
 	})
 	if err != nil {
 		// The server's own failure: nothing was attempted, so the event is
