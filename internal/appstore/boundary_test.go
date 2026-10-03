@@ -47,6 +47,8 @@ func TestAppstoreBoundaryCatchesEachRule(t *testing.T) {
 		"callbackparam":      "func-value",
 		"methodexprcallback": "func-value",
 		"oncevar":            "func-value",
+		// codex round 3
+		"genericifacebody": "interface-call",
 	}
 	var roots []string
 	for fixture := range fixtures {

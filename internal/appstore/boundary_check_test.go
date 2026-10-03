@@ -257,7 +257,13 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 				// store's own dialect interface.
 				if irecv := recvOf(inst); irecv != nil {
 					if iface, ok := irecv.Underlying().(*types.Interface); ok {
-						if !door && !isErrorIface(irecv) && implementedByStore(iface, ix.storeImpls) {
+						// A generic body is walked once, with its type
+						// parameters unbound: Mutator[T] cannot be checked
+						// against what T will be. Refused rather than
+						// propagated (codex round 3).
+						if !door && mentionsTypeParam(irecv) {
+							report(p, n.Pos(), "interface-call", "%s calls %s on interface %s, whose type arguments are unbound here", u.name, inst.Name(), irecv)
+						} else if !door && !isErrorIface(irecv) && implementedByStore(iface, ix.storeImpls) {
 							report(p, n.Pos(), "interface-call", "%s calls %s on interface %s, which an internal/store type implements", u.name, inst.Name(), irecv)
 						}
 						return true
@@ -382,6 +388,25 @@ func isStaticOrBuiltin(p *packages.Package, fun ast.Expr) bool {
 		return true
 	}
 	return staticCallee(p, fun) != nil
+}
+
+// mentionsTypeParam reports whether t is, or is instantiated with, a type
+// parameter.
+func mentionsTypeParam(t types.Type) bool {
+	switch t := t.(type) {
+	case *types.TypeParam:
+		return true
+	case *types.Pointer:
+		return mentionsTypeParam(t.Elem())
+	case *types.Named:
+		args := t.TypeArgs()
+		for i := 0; i < args.Len(); i++ {
+			if mentionsTypeParam(args.At(i)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isFuncType(t types.Type) bool {
