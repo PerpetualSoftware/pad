@@ -974,8 +974,10 @@ func invitationProofHash(proof string) string {
 // (TASK-3352): if proof is the one minted with invitationID, it is cleared
 // and userID's email is marked verified, in one transaction, so the proof is
 // single-use and the verification happens iff it is spent. It returns false,
-// with nothing changed, for a wrong, empty or already-used proof, or for a
-// disabled account.
+// with nothing changed, for a wrong, empty or already-used proof, for an
+// invitation past its expiry (decided here, inside the transaction, since a
+// slow request can pass the handler's check and cross it), or for a disabled
+// account.
 //
 // The caller has already checked that the account's email is the
 // invitation's: the proof proves the MAILBOX, the match ties it to this
@@ -1005,8 +1007,9 @@ func (s *Store) ConsumeInvitationProof(invitationID, userID, proof string) (bool
 
 	res, err = tx.Exec(s.q(`
 		UPDATE workspace_invitations SET proof_hash = ''
-		WHERE id = ? AND proof_hash = ? AND proof_hash <> ''`),
-		invitationID, invitationProofHash(proof))
+		WHERE id = ? AND proof_hash = ? AND proof_hash <> ''
+		  AND (expires_at IS NULL OR expires_at = '' OR expires_at > ?)`),
+		invitationID, invitationProofHash(proof), time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return false, fmt.Errorf("consume invitation proof: %w", err)
 	}

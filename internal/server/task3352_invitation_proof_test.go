@@ -229,6 +229,21 @@ func TestTASK3352_ConsumeInvitationProofRules(t *testing.T) {
 		t.Errorf("a spent proof was accepted again: %v %v", ok, err)
 	}
 
+	// An invitation past its expiry: its proof verifies nothing, however
+	// the request got here.
+	c := mk("c@example.com")
+	invC, err := srv.store.CreateInvitation(ws.ID, "c@example.com", "editor", admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Second).UTC().Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(`UPDATE workspace_invitations SET expires_at = ? WHERE id = ?`, past, invC.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := srv.store.ConsumeInvitationProof(invC.ID, c.ID, invC.Proof); err != nil || ok {
+		t.Errorf("an expired invitation's proof verified: %v %v", ok, err)
+	}
+
 	if err := srv.store.DisableUser(b.ID); err != nil {
 		t.Fatal(err)
 	}
