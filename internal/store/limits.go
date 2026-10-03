@@ -579,6 +579,11 @@ func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error)
 	if w.Revision < 0 {
 		return PlanWriteResult{}, fmt.Errorf("set user plan: negative revision %d", w.Revision)
 	}
+	if w.Revision > 0 && w.Source != PlanSourceStripe {
+		// A manual write fences with the current time; a revision of its own
+		// would undercut the fence.
+		return PlanWriteResult{}, fmt.Errorf("set user plan: a revision is only valid on a stripe write")
+	}
 
 	// Read the row under its lock first (Postgres FOR UPDATE; SQLite's
 	// transaction already holds the write lock), so a refusal's reason is

@@ -416,6 +416,13 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "revision must not be negative")
 		return
 	}
+	// A revision orders STRIPE-derived writes; a manual write fences them
+	// with the current time instead, which a caller-chosen revision would
+	// undercut (BUG-3356).
+	if input.Revision > 0 && input.Source != store.PlanSourceStripe {
+		writeError(w, http.StatusBadRequest, "bad_request", "revision is only accepted with source 'stripe'")
+		return
+	}
 	if !validSubscriptionID(input.SubscriptionID) {
 		writeError(w, http.StatusBadRequest, "bad_request", "subscription_id must be at most 255 letters, digits, '_' or '-'")
 		return

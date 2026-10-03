@@ -462,6 +462,15 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if input.PlanExpiresAt != nil {
 			expiresAt = *input.PlanExpiresAt
 		}
+		// An expiry that does not parse makes the plan free (BUG-3356), so
+		// refuse it here as /admin/plan does, rather than store a plan the
+		// operator meant to grant and silently grant nothing.
+		if expiresAt != "" {
+			if _, err := time.Parse(time.RFC3339, expiresAt); err != nil {
+				writeError(w, http.StatusBadRequest, "bad_request", "plan_expires_at must be a valid RFC3339 timestamp")
+				return
+			}
+		}
 		// An operator's explicit choice always applies, lowering included
 		// (PLAN-3291 DR-6), and takes the plan's source over as manual.
 		if _, err := s.store.SetUserPlan(userID, store.PlanWrite{
