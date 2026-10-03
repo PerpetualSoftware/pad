@@ -204,6 +204,9 @@ func (s *Server) removeUnusableWorkspace(door, workspaceID, workspaceSlug, userI
 			"workspace_id", workspaceID, "workspace_slug", workspaceSlug, "user_id", userID, "error", delErr)
 		return nil
 	}
+	// TASK-3365: nobody should hold a live connection to a workspace minted
+	// moments ago, but if anyone does it re-checks now.
+	s.invalidateWorkspaceAccess(workspaceID)
 
 	// Soft-deleted. Everything from here leaves the workspace GONE from the
 	// caller's point of view; what varies is whether the purge runs now or

@@ -295,6 +295,8 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 		writeMemberChangeError(w, err)
 		return
 	}
+	// TASK-3365: their live connections re-check now.
+	s.invalidateUserAccess(userID)
 
 	s.logWorkspaceAuditEvent(workspaceID, models.ActionRoleChanged, r, auditMeta(map[string]string{"user_id": userID, "role": input.Role}))
 
@@ -649,6 +651,8 @@ func (s *Server) handleSetMemberCollectionAccess(w http.ResponseWriter, r *http.
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: their live connections re-check now.
+	s.invalidateUserAccess(userID)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"collection_access": input.Mode,

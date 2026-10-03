@@ -1066,6 +1066,9 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 			return sessionIPChangeTerminated
 		}
 		if deleted {
+			// TASK-3365: this user's other live connections on the destroyed
+			// session re-check now.
+			s.invalidateUserAccess(userID)
 			s.logAuditEventForUser(models.ActionSessionIPChanged, r, userID, auditMeta(map[string]string{
 				"old_ip": storedIP,
 				"new_ip": newIP,
@@ -1188,6 +1191,8 @@ func (s *Server) handleSessionUAChange(w http.ResponseWriter, r *http.Request, s
 		return sessionIPChangeTerminated
 	}
 	if deleted {
+		// TASK-3365: see the IP-change arm.
+		s.invalidateUserAccess(userID)
 		s.logAuditEventForUser(models.ActionSessionUAChanged, r, userID, auditMeta(map[string]string{
 			"session_ip": session.IPAddress,
 			"client_ip":  clientIP(r),

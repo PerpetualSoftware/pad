@@ -657,6 +657,9 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: the collection's grants stop applying and its items leave
+	// every view, so connections on this workspace re-check now.
+	s.invalidateWorkspaceAccess(coll.WorkspaceID)
 
 	w.WriteHeader(http.StatusNoContent)
 }

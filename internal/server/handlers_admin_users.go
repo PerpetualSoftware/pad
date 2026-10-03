@@ -439,6 +439,9 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
+		// TASK-3365: an admin demotion ends the cookie-admin bypass, so their
+		// live connections re-check now.
+		s.invalidateUserAccess(userID)
 
 		s.logAuditEvent(models.ActionRoleChanged, r, auditMeta(map[string]string{
 			"target_user_id": userID,
@@ -607,6 +610,8 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: their live connections re-check now.
+	s.invalidateUserAccess(userID)
 
 	s.logAuditEvent(models.ActionPasswordResetByAdmin, r, auditMeta(map[string]string{
 		"target_user_id": userID,
@@ -653,6 +658,8 @@ func (s *Server) handleAdminDisableUser(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, err)
 		return
 	}
+	// TASK-3365: their live connections re-check now.
+	s.invalidateUserAccess(userID)
 
 	s.logAuditEvent(models.ActionUserDisabled, r, auditMeta(map[string]string{
 		"target_user_id": userID,

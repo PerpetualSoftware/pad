@@ -1076,8 +1076,25 @@ func (s *Store) DeleteUser(id string) error {
 // reference can land inside the transaction, and its errors carry no
 // SQLSTATE for lateUserReference to match.
 func (s *Store) DeleteAccountAtomic(userID string) error {
+	return s.deleteAccountAtomic(userID, nil)
+}
+
+// DeleteAccountAtomicReport is DeleteAccountAtomic that also reports the
+// workspaces whose grants the user had ISSUED, read from the rows the
+// transaction itself deleted (TASK-3365, codex r2 on PR2): a list read before
+// the call could miss a grant created in between and deleted by it. The
+// caller kicks every connection on those workspaces after the commit.
+func (s *Store) DeleteAccountAtomicReport(userID string) ([]string, error) {
+	var issued []string
+	if err := s.deleteAccountAtomic(userID, &issued); err != nil {
+		return nil, err
+	}
+	return issued, nil
+}
+
+func (s *Store) deleteAccountAtomic(userID string, issuedGrantWorkspaces *[]string) error {
 	for attempt := 1; ; attempt++ {
-		err := s.deleteAccountAtomicOnce(userID)
+		err := s.deleteAccountAtomicOnce(userID, issuedGrantWorkspaces)
 		constraint, late := lateUserReference(err)
 		if !late {
 			return err
@@ -1145,7 +1162,9 @@ func lateUserReference(err error) (string, bool) {
 	return pgErr.ConstraintName, lateUserReferenceConstraints[pgErr.ConstraintName]
 }
 
-func (s *Store) deleteAccountAtomicOnce(userID string) error {
+// issuedGrantWorkspaces, when non-nil, is RESET and refilled by each
+// attempt, so after a retry it holds only the committing attempt's rows.
+func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("delete account: begin tx: %w", err)
@@ -1204,12 +1223,34 @@ func (s *Store) deleteAccountAtomicOnce(userID string) error {
 	// deadlocked (40P01, delete_account_writer_lockorder_test.go). Now both
 	// take the grant row first, so whichever gets it second waits holding
 	// nothing the other needs.
+	// RETURNING, so the workspaces reported are exactly the rows deleted.
+	issuedSeen := map[string]bool{}
 	for _, stmt := range []struct{ what, query string }{
-		{"delete issued collection grants", "DELETE FROM collection_grants WHERE granted_by = ?"},
-		{"delete issued item grants", "DELETE FROM item_grants WHERE granted_by = ?"},
+		{"delete issued collection grants", "DELETE FROM collection_grants WHERE granted_by = ? RETURNING workspace_id"},
+		{"delete issued item grants", "DELETE FROM item_grants WHERE granted_by = ? RETURNING workspace_id"},
 	} {
-		if _, err := tx.Exec(s.q(stmt.query), userID); err != nil {
+		rows, err := tx.Query(s.q(stmt.query), userID)
+		if err != nil {
 			return fmt.Errorf("delete account: %s: %w", stmt.what, err)
+		}
+		for rows.Next() {
+			var wsID string
+			if err := rows.Scan(&wsID); err != nil {
+				rows.Close()
+				return fmt.Errorf("delete account: %s: %w", stmt.what, err)
+			}
+			issuedSeen[wsID] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("delete account: %s: %w", stmt.what, err)
+		}
+		rows.Close()
+	}
+	if issuedGrantWorkspaces != nil {
+		*issuedGrantWorkspaces = (*issuedGrantWorkspaces)[:0]
+		for wsID := range issuedSeen {
+			*issuedGrantWorkspaces = append(*issuedGrantWorkspaces, wsID)
 		}
 	}
 

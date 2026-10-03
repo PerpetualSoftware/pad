@@ -113,6 +113,10 @@ func (s *Server) handleCreateCollectionGrant(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusConflict, "conflict", "Grant already exists or failed to create")
 		return
 	}
+	// TASK-3365: a new grant can NARROW access as well as add it (an
+	// item-level view grant overrides a collection-level edit grant), so the
+	// grantee's connections re-check now whether or not "gained" goes out.
+	s.invalidateUserAccess(userID)
 	if reachErr != nil || !reachedBefore {
 		s.publishWorkspaceAccessChangedFromRequest(r, workspaceID, watchevents.AccessGained, userID)
 	}
@@ -279,6 +283,10 @@ func (s *Server) handleCreateItemGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "Grant already exists or failed to create")
 		return
 	}
+	// TASK-3365: a new grant can NARROW access as well as add it (an
+	// item-level view grant overrides a collection-level edit grant), so the
+	// grantee's connections re-check now whether or not "gained" goes out.
+	s.invalidateUserAccess(userID)
 	if reachErr != nil || !reachedBefore {
 		s.publishWorkspaceAccessChangedFromRequest(r, workspaceID, watchevents.AccessGained, userID)
 	}

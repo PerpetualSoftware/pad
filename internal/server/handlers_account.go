@@ -209,7 +209,12 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.store.DeleteAccountAtomic(user.ID); err != nil {
+	// TASK-3365: the deletion also removes the grants this user ISSUED,
+	// possibly in workspaces someone else owns. Their workspaces are reported
+	// from the rows the transaction deleted, so a grant created after any
+	// earlier read cannot be missed (codex r2 on PR2), and kicked below.
+	issuedGrantWorkspaces, err := s.store.DeleteAccountAtomicReport(user.ID)
+	if err != nil {
 		// Cross-system danger zone: if Stripe was already cancelled, the
 		// user's billing is gone but their account data is still present.
 		// Stripe cancel is NOT reversible programmatically. Operator must
@@ -230,6 +235,11 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error",
 			"Account deletion failed. No data was removed. Please try again or contact support.")
 		return
+	}
+	// TASK-3365: the account is gone, so its live connections close now.
+	s.invalidateUserAccess(user.ID)
+	for _, wsID := range issuedGrantWorkspaces {
+		s.invalidateWorkspaceAccess(wsID)
 	}
 
 	// Clear session cookie
