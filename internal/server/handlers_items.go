@@ -920,30 +920,18 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	}
 	input.Fields = string(validatedFields)
 
-	// Persist the source from the request's auth context so the item row
-	// reflects which client created it. Without this, items created via
-	// the CLI would persist as 'web' (the column default) since the CLI's
-	// ItemCreate body has no Source field set, and downstream signals like
-	// the dashboard's has_agent_activity flag (TASK-862) would never flip
-	// on.
-	// If a client explicitly sent a source in the body (e.g. an agent
-	// marking itself as 'skill'), respect it.
-	if input.Source == "" || input.CreatedBy == "" {
-		actor, src := actorFromRequest(r)
-		if input.Source == "" {
-			input.Source = src
-		}
-		// BUG-2542: the actor half used to be discarded here, so every item
-		// created through this path fell through to store.CreateItem's
-		// `created_by = "user"` default — even for an agent that DID send
-		// X-Pad-Agent. Comments have always stamped it (handlers_comments.go);
-		// item creation silently did not, which made the skill's "items you
-		// create will have created_by: agent" contract false on its own terms.
-		// Same shape as Source: an explicit body value wins.
-		if input.CreatedBy == "" {
-			input.CreatedBy = actor
-		}
-	}
+	// Persist the source and the writer's kind from the request's auth
+	// context so the item row reflects which client created it, and who.
+	// Without this, items created via the CLI would persist as 'web' (the
+	// column default) and downstream signals like the dashboard's
+	// has_agent_activity flag (TASK-862) would never flip on. BUG-2542 added
+	// the created_by half.
+	//
+	// BUG-3372: both come from the request, never the body. The body used to
+	// win, so a caller could file an item as an agent's or a human's at will;
+	// no client sent either (the web, the CLI and both MCP doors leave them
+	// out), so nothing legitimate is lost.
+	input.CreatedBy, input.Source = actorFromRequest(r)
 
 	// PLAN-2348 U2: the create's version row names its user.
 	input.ActorUserID = currentUserID(r)
@@ -987,7 +975,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// Create parent link if specified
 	if parentValue != "" {
 		actor, _ := actorFromRequest(r)
-		if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
+		if _, err := s.store.SetParentLinkAs(workspaceID, item.ID, parentValue, actor, currentUserID(r)); err != nil {
 			return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: fmt.Sprintf("item created but parent link failed: %v", err)}
 		}
 		// SetParentLink advances the source seq because it changes the
@@ -1924,6 +1912,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			ParentID:    parentValue,
 			WorkspaceID: workspaceID,
 			CreatedBy:   linkActor,
+			UserID:      currentUserID(r), // BUG-3372
 		}
 	}
 
@@ -2001,14 +1990,21 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	input.ActorUserID = currentUserID(r)
 	if collabSnapshot {
 		input.VersionSource = "collab-snapshot"
-	} else if input.VersionSource == "" {
+	} else {
 		// PLAN-2348 checkpoint 2, defect 3: every other write reached the
 		// version row with no source at all, so UpdateItem's "web" default
 		// labelled an agent's API body edit as a web edit. The request's own
 		// source is stamped here, on VersionSource for the reason above:
 		// items.source must not move on an update.
+		//
+		// BUG-3372: always the request's, never the body's version_source,
+		// which let a caller label its edit in History as any client's. No
+		// client sends one.
 		_, input.VersionSource = actorFromRequest(r)
 	}
+	// BUG-3372: items.source records where the item was CREATED; an update
+	// does not move it (see above), and a body-supplied source used to.
+	input.Source = ""
 	// TASK-2198 U4: "recovery" labels the server's own op-log recovery write
 	// in the version history. A client may not claim it. Nor "chatgpt", which
 	// only the ChatGPT door below sets (TASK-3321 U1b); a claim of it gets the
@@ -2039,12 +2035,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// BUG-2542: stamp the writer on single-item updates. Bulk ops already do
 	// this (handlers_items_bulk.go), but this path did not, so an agent's
 	// PATCH left last_modified_by at store.UpdateItem's "user" default and an
-	// item edited only by agents read as human-edited. An explicit body value
-	// wins, matching Source/CreatedBy on the create path.
-	if input.LastModifiedBy == "" {
-		updateActor, _ := actorFromRequest(r)
-		input.LastModifiedBy = updateActor
-	}
+	// item edited only by agents read as human-edited. BUG-3372: always the
+	// request's kind; a body value used to win.
+	input.LastModifiedBy, _ = actorFromRequest(r)
 
 	// BUG-3080: one tab's content writes are ordered by the counter it stamps
 	// on them. Held from here — past every validation, before the first write

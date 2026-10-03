@@ -348,13 +348,18 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at,
-		                   content_flushed_at, content_flushed_op_log_id, seq)
+		                   content_flushed_at, content_flushed_op_log_id, seq,
+		                   created_by_user_id, last_modified_by_user_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?,
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
-		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)
+		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`, ?, ?)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
 		s.dialect.BoolToInt(input.Pinned), input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID),
-		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID, workspaceID)
+		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID, workspaceID,
+		// BUG-3372: the canonical user columns record WHICH account wrote the
+		// row; created_by/last_modified_by only say user or agent. Empty for
+		// system writers (templates, imports), which name no account.
+		versionUserID(input.ActorUserID), versionUserID(input.ActorUserID))
 	if err != nil {
 		return err
 	}
@@ -2378,6 +2383,8 @@ type ParentLinkUpdate struct {
 	ParentID    string
 	WorkspaceID string
 	CreatedBy   string
+	// UserID is the account writing the link (BUG-3372); "" for none.
+	UserID string
 }
 
 // UpdateItemWithPreCheck is UpdateItem with an optional pre-mutation
@@ -3038,6 +3045,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 		sets = append(sets, "last_modified_by = ?")
 		args = append(args, input.LastModifiedBy)
 	}
+	// BUG-3372: which account made this change. Only a write that names one
+	// moves it; a system writer (recovery, a migration) leaves the last
+	// human's id in place rather than erasing it.
+	if input.ActorUserID != "" {
+		sets = append(sets, "last_modified_by_user_id = ?")
+		args = append(args, input.ActorUserID)
+	}
 	if input.Source != "" {
 		sets = append(sets, "source = ?")
 		args = append(args, input.Source)
@@ -3210,7 +3224,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	var hierarchyChanged bool
 	if parentLink != nil && parentLink.Provided {
 		if parentLink.ParentID != "" {
-			if _, err := s.setParentLinkTx(tx, parentLink.WorkspaceID, id, parentLink.ParentID, parentLink.CreatedBy); err != nil {
+			if _, err := s.setParentLinkTx(tx, parentLink.WorkspaceID, id, parentLink.ParentID, parentLink.CreatedBy, parentLink.UserID); err != nil {
 				return nil, err
 			}
 			hierarchyChanged = true
@@ -3675,7 +3689,7 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 	// (blocks / supersedes / implements / related / …), none of which the cycle
 	// walk follows.
 	if linkType == models.ItemLinkTypeParent {
-		return s.SetParentLink(workspaceID, sourceID, input.TargetID, createdBy)
+		return s.SetParentLinkAs(workspaceID, sourceID, input.TargetID, createdBy, input.UserID)
 	}
 
 	tx, err := s.db.Begin()
@@ -3721,9 +3735,9 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 	}
 
 	if _, err := tx.Exec(s.q(`
-		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, sourceID, input.TargetID, linkType, createdBy, ts); err != nil {
+		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at, user_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, workspaceID, sourceID, input.TargetID, linkType, createdBy, ts, versionUserID(input.UserID)); err != nil {
 		return nil, fmt.Errorf("create item link: %w", err)
 	}
 	if linkType == models.ItemLinkTypeImplements {
@@ -3982,14 +3996,21 @@ func (s *Store) DeleteItemLink(id string) error {
 // guard could read 0 open children while this method was about to
 // attach a non-terminal child.
 func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (*models.ItemLink, error) {
+	return s.SetParentLinkAs(workspaceID, itemID, parentID, createdBy, "")
+}
+
+// SetParentLinkAs is SetParentLink recording the account that wrote the link
+// in item_links.user_id (BUG-3372). Request paths use it; "" names no
+// account, which is what SetParentLink passes.
+func (s *Store) SetParentLinkAs(workspaceID, itemID, parentID, createdBy, userID string) (*models.ItemLink, error) {
 	// BUG-2073: retry if the item's parent moved during lock acquisition
 	// (setParentLinkTx re-reads under the child lock and signals a rollback).
 	return retryOnParentSetChanged(func() (*models.ItemLink, error) {
-		return s.setParentLinkOnce(workspaceID, itemID, parentID, createdBy)
+		return s.setParentLinkOnce(workspaceID, itemID, parentID, createdBy, userID)
 	})
 }
 
-func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy string) (*models.ItemLink, error) {
+func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy, userID string) (*models.ItemLink, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
@@ -4008,7 +4029,7 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy strin
 		return nil, err
 	}
 
-	id, err := s.setParentLinkTx(tx, workspaceID, itemID, parentID, createdBy)
+	id, err := s.setParentLinkTx(tx, workspaceID, itemID, parentID, createdBy, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -4077,7 +4098,7 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy strin
 // Lock acquisition routes through AcquireParentChildrenLocks, so re-acquiring
 // keys the enclosing tx already holds (as UpdateItemWithParentLink does after
 // pre-locking the new parent) is an idempotent no-op rather than a deadlock.
-func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, createdBy string) (string, error) {
+func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, createdBy, userID string) (string, error) {
 	// Find the existing parent (if any) so we can fold it into the initial
 	// lock batch. The DELETE below targets link_type='parent' specifically,
 	// which matches what the guard's children query treats as the parent
@@ -4154,9 +4175,9 @@ func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, creat
 	id := newID()
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := tx.Exec(s.q(`
-		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
-		VALUES (?, ?, ?, ?, 'parent', ?, ?)
-	`), id, workspaceID, itemID, parentID, createdBy, now); err != nil {
+		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at, user_id)
+		VALUES (?, ?, ?, ?, 'parent', ?, ?, ?)
+	`), id, workspaceID, itemID, parentID, createdBy, now, versionUserID(userID)); err != nil {
 		return "", fmt.Errorf("insert parent link: %w", err)
 	}
 	if err := s.bumpStructuralLinkSourceTx(tx, workspaceID, itemID); err != nil {

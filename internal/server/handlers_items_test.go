@@ -1124,10 +1124,10 @@ func TestCreateItemSourcePersistedFromAuth(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit source in body wins over auth-derived", func(t *testing.T) {
-		// e.g. an agent acting through the CLI explicitly marks itself as
-		// 'skill'. We must respect that and not clobber it with the
-		// auth-derived 'cli' default.
+	t.Run("a source in the body does not override the auth-derived one", func(t *testing.T) {
+		// BUG-3372: the body used to win ("an agent marking itself as
+		// 'skill'"), which let any caller label its item as any client's.
+		// No client sends one; the request decides.
 		rr := doRequestWithHeaders(srv, "POST",
 			"/api/v1/workspaces/"+ws.Slug+"/collections/tasks/items",
 			map[string]interface{}{
@@ -1142,8 +1142,8 @@ func TestCreateItemSourcePersistedFromAuth(t *testing.T) {
 		}
 		var item models.Item
 		parseJSON(t, rr, &item)
-		if item.Source != "skill" {
-			t.Fatalf("expected source=skill when explicitly set in body, got %q", item.Source)
+		if item.Source != "cli" {
+			t.Fatalf("expected the auth-derived source=cli despite source=skill in the body, got %q", item.Source)
 		}
 	})
 }
