@@ -922,3 +922,22 @@ func planLimitDefault(limits store.PlanLimits, feature string) int {
 }
 
 // auditMeta is defined in handlers_documents.go
+
+// adminRefuseAppPrincipal answers an installed app's bot as an unknown user on
+// every admin per-user route (TASK-3392). The bot is absent from the admin
+// user list, and an admin cannot reset, disable, promote or re-plan it: those
+// belong to its install.
+func (s *Server) adminRefuseAppPrincipal(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, err := s.store.GetUser(chi.URLParam(r, "userID"))
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if user.IsApp() {
+			writeError(w, http.StatusNotFound, "not_found", "User not found")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

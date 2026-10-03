@@ -77,10 +77,22 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		enrichedInvs = []invWithURL{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"members":     members,
 		"invitations": enrichedInvs,
-	})
+	}
+	// Installed apps' bots are never in `members`. Under the SPEC-6 §11 Q2
+	// decision point they are listed in their own `apps` array, or nowhere
+	// (store.appPrincipalMemberPolicy, TASK-3392).
+	if store.AppPrincipalsListed() {
+		apps, err := s.store.ListWorkspaceAppPrincipals(workspaceID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		resp["apps"] = apps
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleInviteMember creates an invitation or directly adds a user if they exist.
@@ -107,6 +119,11 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 
 	if input.Email == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "email is required")
+		return
+	}
+	// An installed app's address is not a person to invite (TASK-3392).
+	if models.IsReservedAppEmail(input.Email) {
+		writeError(w, http.StatusBadRequest, "bad_request", "This address belongs to an installed app and cannot be invited")
 		return
 	}
 	if input.Role == "" {
@@ -331,6 +348,10 @@ func writeMemberChangeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "canonical_owner", "This is the workspace's owner, who cannot be demoted or removed; transfer ownership first")
 	case errors.Is(err, store.ErrLastOwner):
 		writeError(w, http.StatusConflict, "last_owner", "A workspace must keep at least one owner; make another member an owner first")
+	case errors.Is(err, store.ErrAppPrincipal):
+		// TASK-3392: a bot's membership belongs to its install; removing it
+		// is uninstalling the app.
+		writeError(w, http.StatusConflict, "app_principal", "This member is an installed app; manage it from the app's install")
 	default:
 		writeInternalError(w, err)
 	}
@@ -406,7 +427,8 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	}
 
 	user := currentUser(r)
-	if user == nil {
+	// A bot is no signed-in person (TASK-3392).
+	if user == nil || user.IsApp() {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to accept an invitation")
 		return
 	}

@@ -121,6 +121,10 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 	if user == nil {
 		user = s.validateSessionCookie(r)
 	}
+	// A bot is no signed-in person (TASK-3392).
+	if user.IsApp() {
+		user = nil
+	}
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to approve a CLI session")
 		return

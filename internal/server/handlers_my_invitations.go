@@ -59,7 +59,8 @@ func (s *Server) handleListMyInvitations(w http.ResponseWriter, r *http.Request)
 //     never sets email_verified_at.
 func (s *Server) handleAcceptMyInvitation(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
-	if user == nil {
+	// A bot is no signed-in person (TASK-3392).
+	if user == nil || user.IsApp() {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to accept an invitation")
 		return
 	}

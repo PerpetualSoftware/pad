@@ -1761,16 +1761,22 @@ func (s *Server) setupRouter() {
 
 				// User management
 				r.Get("/users", s.handleAdminListUsers)
-				r.Get("/users/{userID}", s.handleAdminGetUser)
-				r.Patch("/users/{userID}", s.handleAdminUpdateUser)
-				r.Post("/users/{userID}/reset-password", s.handleAdminResetPassword)
-				r.Get("/users/{userID}/workspaces", s.handleAdminGetUserWorkspaces)
-				r.Get("/users/{userID}/detail", s.handleAdminGetUserDetail)
-				r.Get("/users/{userID}/activity", s.handleAdminGetUserActivity)
-				r.Get("/users/{userID}/metrics", s.handleAdminGetUserMetrics)
-				r.Post("/users/{userID}/disable", s.handleAdminDisableUser)
-				r.Post("/users/{userID}/enable", s.handleAdminEnableUser)
-				r.Post("/users/{userID}/verify-email", s.handleAdminVerifyEmail)
+				// An installed app's bot is not in the admin user list, and
+				// every per-user route answers it as an unknown user: its
+				// lifecycle belongs to its install (TASK-3392).
+				r.Route("/users/{userID}", func(r chi.Router) {
+					r.Use(s.adminRefuseAppPrincipal)
+					r.Get("/", s.handleAdminGetUser)
+					r.Patch("/", s.handleAdminUpdateUser)
+					r.Post("/reset-password", s.handleAdminResetPassword)
+					r.Get("/workspaces", s.handleAdminGetUserWorkspaces)
+					r.Get("/detail", s.handleAdminGetUserDetail)
+					r.Get("/activity", s.handleAdminGetUserActivity)
+					r.Get("/metrics", s.handleAdminGetUserMetrics)
+					r.Post("/disable", s.handleAdminDisableUser)
+					r.Post("/enable", s.handleAdminEnableUser)
+					r.Post("/verify-email", s.handleAdminVerifyEmail)
+				})
 
 				// Invitations
 				r.Get("/invitations", s.handleAdminListInvitations)
