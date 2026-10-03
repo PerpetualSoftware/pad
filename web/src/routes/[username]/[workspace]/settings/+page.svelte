@@ -703,17 +703,6 @@
 		}
 	}
 
-	// TASK-3376: system collections are ordinary choices for a restricted
-	// member. Moving a member from All to Specific starts with them checked,
-	// so restricting someone does not silently stop their agents loading the
-	// workspace's rules. A member already restricted keeps their saved list.
-	function setAccessMode(next: 'all' | 'specific') {
-		if (next === 'specific' && accessMode !== 'specific' && accessCollectionIds.length === 0) {
-			accessCollectionIds = systemCollections.map((c) => c.id);
-		}
-		accessMode = next;
-	}
-
 	function toggleAccessCollection(collId: string) {
 		if (accessCollectionIds.includes(collId)) {
 			accessCollectionIds = accessCollectionIds.filter(id => id !== collId);
@@ -1053,7 +1042,7 @@
 													id="access-mode-{member.user_id}"
 													class="role-select"
 													value={accessMode}
-													onchange={(e) => { setAccessMode((e.target as HTMLSelectElement).value as 'all' | 'specific'); }}
+													onchange={(e) => { accessMode = (e.target as HTMLSelectElement).value as 'all' | 'specific'; }}
 												>
 													<option value="all">All collections</option>
 													<option value="specific">Specific collections</option>
@@ -1086,7 +1075,8 @@
 													{/each}
 													{#if systemCollections.length > 0}
 														<p class="access-coll-hint">
-															{systemCollections.map((c) => c.name).join(' and ')} hold the rules and procedures agents load. Unchecked, this member's agents won't receive them.
+															<!-- TASK-3376/3384: system collections are ordinary choices for a restricted member and start unchecked, like every other collection. -->
+															Unchecked, {systemCollections.map((c) => c.name).join(' and ')} stay hidden from this member, and their agents won't load the workspace's conventions or playbooks.
 														</p>
 													{/if}
 												</div>
