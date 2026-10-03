@@ -3082,12 +3082,17 @@ export const api = {
 			flags: {
 				may_create_workspaces: boolean;
 				all_current_workspaces: boolean;
-				include_future_workspaces: boolean;
 			}
 		) =>
 			request<ConnectedApp>(`/connected-apps/${encodeURIComponent(id)}/flags`, {
 				method: 'PATCH',
 				body: JSON.stringify(flags)
+			}),
+		// BUG-3338: copy the user's current memberships into the list and
+		// turn the wildcard off.
+		limitToCurrent: (id: string) =>
+			request<ConnectedApp>(`/connected-apps/${encodeURIComponent(id)}/limit-to-current`, {
+				method: 'POST'
 			}),
 		addWorkspace: (id: string, workspaceSlug: string) =>
 			request<ConnectedApp>(`/connected-apps/${encodeURIComponent(id)}/workspaces`, {
