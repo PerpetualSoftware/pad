@@ -1931,10 +1931,7 @@ func (s *Store) WorkspaceStorageInfo(workspaceID string) (*WorkspaceStorageInfo,
 		return info, nil
 	}
 
-	plan := user.Plan
-	if plan == "" {
-		plan = "free"
-	}
+	plan := user.EffectivePlan(time.Now()) // expiry enforced (BUG-3356)
 	info.Plan = plan
 
 	// Detect whether a per-user storage_bytes override is configured.

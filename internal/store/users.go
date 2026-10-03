@@ -619,31 +619,55 @@ func (s *Store) CountBillingAggregates(since time.Time) (*BillingAggregates, err
 	// `plan` column would split '' and 'free' into two result rows that
 	// both scan as "free" in Go and overwrite each other in the map,
 	// silently underreporting the free-tier count (Codex round 2).
-	rows, err := s.db.Query(s.q(`SELECT COALESCE(NULLIF(plan, ''), 'free') AS plan, COUNT(*)
+	//
+	// Counted by EFFECTIVE plan (BUG-3356): a plan past its expiry is free.
+	// The expiry is decided in Go by the same models.User.EffectivePlan the
+	// limit checks use, not compared in SQL, because a stored RFC3339 value
+	// may carry an offset and does not sort lexically against now. Rows are
+	// grouped by (plan, expiry) first, so this reads one row per distinct
+	// expiry, not one per user.
+	now := time.Now()
+	rows, err := s.db.Query(s.q(`SELECT COALESCE(plan, ''), COALESCE(plan_expires_at, ''), COUNT(*)
 		FROM users
-		GROUP BY COALESCE(NULLIF(plan, ''), 'free')`))
+		GROUP BY COALESCE(plan, ''), COALESCE(plan_expires_at, '')`))
 	if err != nil {
 		return nil, fmt.Errorf("count users by plan: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var plan string
+		var u models.User
 		var count int
-		if err := rows.Scan(&plan, &count); err != nil {
+		if err := rows.Scan(&u.Plan, &u.PlanExpiresAt, &count); err != nil {
 			return nil, fmt.Errorf("scan users-by-plan row: %w", err)
 		}
-		out.CustomersByPlan[plan] = count
+		out.CustomersByPlan[u.EffectivePlan(now)] += count
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate users-by-plan: %w", err)
 	}
 
 	cutoff := since.UTC().Format(time.RFC3339)
-	if err := s.db.QueryRow(
-		s.q(`SELECT COUNT(*) FROM users WHERE plan = 'pro' AND created_at > ?`),
+	proRows, err := s.db.Query(
+		s.q(`SELECT COALESCE(plan_expires_at, ''), COUNT(*) FROM users WHERE plan = 'pro' AND created_at > ?
+			GROUP BY COALESCE(plan_expires_at, '')`),
 		cutoff,
-	).Scan(&out.NewProSignups); err != nil {
+	)
+	if err != nil {
 		return nil, fmt.Errorf("count new pro signups: %w", err)
+	}
+	defer proRows.Close()
+	for proRows.Next() {
+		u := models.User{Plan: "pro"}
+		var count int
+		if err := proRows.Scan(&u.PlanExpiresAt, &count); err != nil {
+			return nil, fmt.Errorf("scan new pro signups: %w", err)
+		}
+		if u.EffectivePlan(now) == "pro" {
+			out.NewProSignups += count
+		}
+	}
+	if err := proRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate new pro signups: %w", err)
 	}
 
 	return out, nil

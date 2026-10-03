@@ -184,6 +184,7 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 		"role":              user.Role,
 		"plan":              user.Plan,
 		"plan_expires_at":   user.PlanExpiresAt,
+		"plan_expired":      user.PlanExpired(time.Now()), // stored plan shown as is; entitlement is free (BUG-3356)
 		"plan_source":       user.PlanSource,
 		"plan_overrides":    user.PlanOverrides,
 		"totp_enabled":      user.TOTPEnabled,
@@ -352,6 +353,7 @@ func (s *Server) handleAdminGetUserDetail(w http.ResponseWriter, r *http.Request
 			"role":            user.Role,
 			"plan":            user.Plan,
 			"plan_expires_at": user.PlanExpiresAt,
+			"plan_expired":    user.PlanExpired(time.Now()),
 			"plan_source":     user.PlanSource,
 			"plan_overrides":  user.PlanOverrides,
 			"totp_enabled":    user.TOTPEnabled,
@@ -459,6 +461,15 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		expiresAt := ""
 		if input.PlanExpiresAt != nil {
 			expiresAt = *input.PlanExpiresAt
+		}
+		// An expiry that does not parse makes the plan free (BUG-3356), so
+		// refuse it here as /admin/plan does, rather than store a plan the
+		// operator meant to grant and silently grant nothing.
+		if expiresAt != "" {
+			if _, err := time.Parse(time.RFC3339, expiresAt); err != nil {
+				writeError(w, http.StatusBadRequest, "bad_request", "plan_expires_at must be a valid RFC3339 timestamp")
+				return
+			}
 		}
 		// An operator's explicit choice always applies, lowering included
 		// (PLAN-3291 DR-6), and takes the plan's source over as manual.
@@ -852,12 +863,10 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	planCounts := map[string]int{}
+	now := time.Now()
 	for _, u := range users {
-		plan := u.Plan
-		if plan == "" {
-			plan = "free"
-		}
-		planCounts[plan]++
+		// Effective plan: an expired plan counts as free (BUG-3356).
+		planCounts[u.EffectivePlan(now)]++
 	}
 
 	workspaces, err := s.store.ListWorkspaces()

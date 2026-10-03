@@ -266,6 +266,7 @@ users.last_write_at
 users.password_hash
 users.plan
 users.plan_expires_at
+users.plan_subscription_id
 users.role
 users.stripe_customer_id
 users.totp_secret

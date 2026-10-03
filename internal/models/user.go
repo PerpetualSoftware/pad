@@ -33,6 +33,32 @@ type User struct {
 }
 
 // IsDisabled returns true if the user account has been disabled.
+// PlanExpired reports whether the user's plan carries an expiry at or
+// before now (BUG-3356). An expiry that does not parse as RFC3339 counts
+// as expired: both write doors validate it, so such a value came from
+// outside them, and an entitlement nobody can read is not one to grant.
+func (u *User) PlanExpired(now time.Time) bool {
+	if u == nil || u.PlanExpiresAt == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, u.PlanExpiresAt)
+	if err != nil {
+		return true
+	}
+	return !t.After(now)
+}
+
+// EffectivePlan is the plan entitlement is decided from: the stored plan,
+// "free" when it is empty, and "free" once its expiry has passed
+// (BUG-3356). The stored value is left alone, so an expired plan is still
+// visible to admins as what it was.
+func (u *User) EffectivePlan(now time.Time) string {
+	if u == nil || u.Plan == "" || u.PlanExpired(now) {
+		return "free"
+	}
+	return u.Plan
+}
+
 func (u *User) IsDisabled() bool {
 	return u.DisabledAt != ""
 }

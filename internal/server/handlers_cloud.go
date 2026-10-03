@@ -333,6 +333,29 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 // --- Admin Plan Endpoint (TASK-431) ---
 
+// validSubscriptionID accepts "" or a Stripe-shaped id (sub_...): letters,
+// digits, '_' and '-', at most 255 bytes. The column has no database NUL
+// trigger, so this door is what keeps control bytes out (BUG-3356).
+func validSubscriptionID(id string) bool {
+	if len(id) > 255 {
+		return false
+	}
+	for _, r := range id {
+		if !(r == '_' || r == '-' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// countPlanWrite counts one /admin/plan write by source and outcome
+// (BUG-3356).
+func (s *Server) countPlanWrite(source, outcome string) {
+	if s.metrics != nil {
+		s.metrics.PlanWritesTotal.WithLabelValues(source, outcome).Inc()
+	}
+}
+
 // handleSetPlan handles POST /api/v1/admin/plan.
 // Called by the pad-cloud sidecar to update a user's billing plan
 // after Stripe subscription events.
@@ -350,6 +373,11 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt   string `json:"expires_at"`
 		Source      string `json:"source"`
 		CloudSecret string `json:"cloud_secret"`
+		// BUG-3356: the sidecar's fetch time (unix ms) of the Stripe state
+		// this plan was derived from, and the subscription it came from.
+		// Optional: absent from a sidecar that predates it.
+		Revision       int64  `json:"revision"`
+		SubscriptionID string `json:"subscription_id"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -384,6 +412,22 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if input.Revision < 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "revision must not be negative")
+		return
+	}
+	// A revision orders STRIPE-derived writes; a manual write fences them
+	// with the current time instead, which a caller-chosen revision would
+	// undercut (BUG-3356).
+	if input.Revision > 0 && input.Source != store.PlanSourceStripe {
+		writeError(w, http.StatusBadRequest, "bad_request", "revision is only accepted with source 'stripe'")
+		return
+	}
+	if !validSubscriptionID(input.SubscriptionID) {
+		writeError(w, http.StatusBadRequest, "bad_request", "subscription_id must be at most 255 letters, digits, '_' or '-'")
+		return
+	}
+
 	// 2b. Validate expires_at format if provided
 	if input.ExpiresAt != "" {
 		if _, err := time.Parse(time.RFC3339, input.ExpiresAt); err != nil {
@@ -407,23 +451,37 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 	oldPlan := targetUser.Plan
 	result, err := s.store.SetUserPlan(input.UserID, store.PlanWrite{
 		Plan: input.Plan, ExpiresAt: input.ExpiresAt, Source: input.Source,
+		Revision: input.Revision, SubscriptionID: input.SubscriptionID,
 	})
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	if !result.Applied {
-		slog.Info("plan update refused: lowering from a source that did not set the plan",
+		s.countPlanWrite(input.Source, result.Reason)
+		slog.Info("plan update refused",
+			"reason", result.Reason,
 			"user_id", input.UserID, "requested_plan", input.Plan, "source", input.Source,
+			"revision", input.Revision,
 			"held_plan", result.Plan, "held_source", result.Source)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"user_id":     input.UserID,
 			"plan":        result.Plan,
 			"plan_source": result.Source,
 			"applied":     false,
+			"reason":      result.Reason,
 			"ok":          true,
 		})
 		return
+	}
+	if input.Source == store.PlanSourceStripe && input.Revision == 0 {
+		// Accepted, unordered, for a sidecar that predates revisions; a
+		// later change refuses it once the sidecar sends one (BUG-3356).
+		s.countPlanWrite(input.Source, "no_revision")
+		slog.Warn("stripe plan write carried no revision; applied without ordering",
+			"user_id", input.UserID, "plan", input.Plan)
+	} else {
+		s.countPlanWrite(input.Source, "applied")
 	}
 
 	// 5. Audit log

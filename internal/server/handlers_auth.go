@@ -73,7 +73,7 @@ func sessionUserPayload(user *models.User) map[string]interface{} {
 		"name":           user.Name,
 		"role":           user.Role,
 		"totp_enabled":   user.TOTPEnabled,
-		"plan":           user.Plan,
+		"plan":           user.EffectivePlan(time.Now()), // expiry enforced (BUG-3356)
 		"email_verified": user.IsEmailVerified(),
 	}
 }

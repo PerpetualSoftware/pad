@@ -425,8 +425,12 @@ type Metrics struct {
 	// OAuth flow metrics (PLAN-943 TASK-961). Wired from
 	// internal/server/handlers_oauth.go (per-handler seams) and
 	// internal/oauth/storage.go (revocation TTL observation).
-	OAuthFlowsTotal            *prometheus.CounterVec
-	OAuthResourceMissingTotal  *prometheus.CounterVec
+	OAuthFlowsTotal           *prometheus.CounterVec
+	OAuthResourceMissingTotal *prometheus.CounterVec
+	// PlanWritesTotal counts /admin/plan writes by source and outcome
+	// (applied / source / stale_revision / no_revision for a stripe write
+	// that applied without one), BUG-3356.
+	PlanWritesTotal            *prometheus.CounterVec
 	OAuthFlowDuration          *prometheus.HistogramVec
 	OAuthTokenRevocationsTotal *prometheus.CounterVec
 	OAuthTokenTTLSeconds       prometheus.Histogram
@@ -558,6 +562,11 @@ func New() *Metrics {
 	// them with invalid_target, so this measures who would break. Labelled
 	// by endpoint only (authorize, decide, token); the client is in the
 	// log line, not a label, to keep cardinality bounded.
+	planWritesTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_plan_writes_total",
+		Help: "Writes to /admin/plan by source and outcome (applied, refused by the source rule or as a stale revision, or a stripe write applied with no revision).",
+	}, []string{"source", "outcome"})
+
 	oauthResourceMissingTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_oauth_resource_missing_total",
 		Help: "OAuth requests that omitted the RFC 8707 resource parameter, by endpoint.",
@@ -720,6 +729,7 @@ func New() *Metrics {
 		contentWritesSupersededTotal,
 		oauthFlowsTotal,
 		oauthResourceMissingTotal,
+		planWritesTotal,
 		oauthFlowDuration,
 		oauthTokenRevocationsTotal,
 		oauthTokenTTLSeconds,
@@ -762,6 +772,7 @@ func New() *Metrics {
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
 		OAuthFlowsTotal:              oauthFlowsTotal,
 		OAuthResourceMissingTotal:    oauthResourceMissingTotal,
+		PlanWritesTotal:              planWritesTotal,
 		OAuthFlowDuration:            oauthFlowDuration,
 		OAuthTokenRevocationsTotal:   oauthTokenRevocationsTotal,
 		OAuthTokenTTLSeconds:         oauthTokenTTLSeconds,
