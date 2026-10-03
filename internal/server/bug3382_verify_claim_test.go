@@ -275,3 +275,31 @@ func TestBUG3382_UnverifiedCookieCannotUseFallbackRoutes(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// Opening the link a few times, claiming, then setting the password must fit
+// one address's budget: the claim has already reset the old credentials, so
+// a 429 on the set-password step strands the claimant.
+func TestBUG3382_ClaimThenSetPasswordFitsTheBudget(t *testing.T) {
+	f := newSquatFixture(t)
+	const addr = "198.51.100.77:1234"
+	for i := 0; i < 3; i++ {
+		rr := doRequestFromRemoteAddr(f.srv, "POST", "/api/v1/auth/verify-email", map[string]string{"token": f.token}, addr)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("open %d: %d %s", i, rr.Code, rr.Body.String())
+		}
+	}
+	rr := doRequestFromRemoteAddr(f.srv, "POST", "/api/v1/auth/verify-email/claim", map[string]string{"token": f.token}, addr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("claim: %d %s", rr.Code, rr.Body.String())
+	}
+	var claim struct {
+		ResetPath string `json:"reset_path"`
+	}
+	parseJSON(t, rr, &claim)
+	rr = doRequestFromRemoteAddr(f.srv, "POST", "/api/v1/auth/reset-password", map[string]string{
+		"token": strings.TrimPrefix(claim.ResetPath, "/reset-password/"), "password": "the-real-owners-password-9",
+	}, addr)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("set password: %d %s", rr.Code, rr.Body.String())
+	}
+}

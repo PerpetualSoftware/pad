@@ -5,7 +5,8 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 
-const calls = vi.hoisted(() => ({ verify: [] as string[], claim: [] as string[] }));
+const calls = vi.hoisted(() => ({ verify: [] as string[], claim: [] as string[], logout: 0, goto: [] as string[] }));
+const signedIn = vi.hoisted(() => ({ user: null as null | { email: string } }));
 const next = vi.hoisted(() => ({ verify: null as unknown, claim: null as unknown }));
 
 vi.mock('$lib/api/client', () => {
@@ -32,6 +33,9 @@ vi.mock('$lib/api/client', () => {
 					return settle(next.claim);
 				}),
 				resendVerification: vi.fn(async () => ({})),
+				logout: vi.fn(async () => {
+					calls.logout++;
+				}),
 			},
 		},
 	};
@@ -39,10 +43,18 @@ vi.mock('$lib/api/client', () => {
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		cloudMode: true,
-		user: null,
+		get user() {
+			return signedIn.user;
+		},
 		ensureLoaded: async () => {},
 		load: async () => {},
 	},
+}));
+
+vi.mock('$app/navigation', () => ({
+	goto: vi.fn(async (url: string) => {
+		calls.goto.push(url);
+	}),
 }));
 
 import { page } from '$app/state';
@@ -63,6 +75,9 @@ const needsSession = (canClaim: boolean) =>
 beforeEach(() => {
 	calls.verify.length = 0;
 	calls.claim.length = 0;
+	calls.logout = 0;
+	calls.goto.length = 0;
+	signedIn.user = null;
 	(page as { params: Record<string, string> }).params = { token: 'tok123' };
 });
 afterEach(() => cleanup());
@@ -119,5 +134,19 @@ describe('verify link without the account’s session (BUG-3382)', () => {
 		await settle();
 		expect(screen.getByRole('alert').textContent).toContain('support@getpad.dev');
 		expect(screen.getByRole('button', { name: 'Claim this address' })).toBeTruthy();
+	});
+
+	it('signed in as another account: signs out before sending to sign-in', async () => {
+		signedIn.user = { email: 'other@example.com' };
+		next.verify = needsSession(true);
+		render(VerifyPage);
+		await settle();
+		expect(screen.getByText(/signed in as other@example\.com/)).toBeTruthy();
+		// A plain link to /login would bounce back here still signed in.
+		expect(screen.queryByRole('link', { name: 'Sign in to verify' })).toBeNull();
+		await fireEvent.click(screen.getByRole('button', { name: 'Switch account to verify' }));
+		await settle();
+		expect(calls.logout).toBe(1);
+		expect(calls.goto).toEqual(['/login?redirect=%2Fverify-email%2Ftok123']);
 	});
 });

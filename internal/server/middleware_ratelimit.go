@@ -259,6 +259,8 @@ type RateLimiters struct {
 	AuthEmail *ipRateLimiter
 	// Password reset: per-IP
 	PasswordReset *ipRateLimiter
+	// Email-verification link consume and claim: per-IP (BUG-3382)
+	EmailVerify *ipRateLimiter
 	// Registration: per-IP
 	Register *ipRateLimiter
 	// OAuth login: per-IP (higher limit since pad-cloud sidecar calls this)
@@ -419,6 +421,15 @@ func NewRateLimiters() *RateLimiters {
 		PasswordReset: newIPRateLimiter(rateLimitConfig{
 			Rate:  rate.Limit(3.0 / 3600.0),
 			Burst: 3,
+		}),
+		// Verification link consume + claim: 10 per hour per IP, burst 10
+		// (BUG-3382). Separate from PasswordReset so one verification page
+		// load, a refresh and a claim do not spend the budget the claimant
+		// then needs to set a password. The token is a 256-bit secret, so
+		// this bounds load, not guessing.
+		EmailVerify: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(10.0 / 3600.0),
+			Burst: 10,
 		}),
 		// Registration: 5 per hour per IP (= 5/3600 per second, burst 5)
 		Register: newIPRateLimiter(rateLimitConfig{
@@ -589,6 +600,7 @@ func (rls *RateLimiters) Stop() {
 		rls.Auth,
 		rls.AuthEmail,
 		rls.PasswordReset,
+		rls.EmailVerify,
 		rls.Register,
 		rls.OAuthLogin,
 		rls.CloudAdmin,
@@ -665,12 +677,14 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			case path == "/api/v1/auth/login" || path == "/api/v1/auth/bootstrap" || path == "/api/v1/auth/2fa/login-verify":
 				limiter = s.rateLimiters.Auth
 			case path == "/api/v1/auth/forgot-password" || path == "/api/v1/auth/reset-password" || path == "/api/v1/auth/local-reset" ||
-				path == "/api/v1/auth/verify-email" || path == "/api/v1/auth/verify-email/claim" || path == "/api/v1/auth/resend-verification":
-				// Email-verification endpoints (PLAN-1933 DR-5) reuse the
-				// PasswordReset bucket — same low-frequency, enumeration-safe
-				// shape as forgot/reset-password. Without an entry here they'd
-				// fall through to the looser default API limiter.
+				path == "/api/v1/auth/resend-verification":
+				// resend-verification (PLAN-1933 DR-5) reuses the
+				// PasswordReset bucket — same low-frequency, enumeration-safe,
+				// mail-sending shape as forgot/reset-password. Without an entry
+				// here it would fall through to the looser default API limiter.
 				limiter = s.rateLimiters.PasswordReset
+			case path == "/api/v1/auth/verify-email" || path == "/api/v1/auth/verify-email/claim":
+				limiter = s.rateLimiters.EmailVerify
 			case path == "/api/v1/auth/register":
 				limiter = s.rateLimiters.Register
 			case path == "/api/v1/auth/oauth-login" || path == "/api/v1/auth/oauth-link":

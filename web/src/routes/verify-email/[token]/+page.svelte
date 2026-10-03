@@ -70,6 +70,28 @@
 		}
 	}
 
+	// Signed in as a DIFFERENT account: /login would bounce straight back
+	// here still signed in as it, so sign out first (the CLI-approval page's
+	// switch-account pattern).
+	let switching = $state(false);
+	let switchError = $state('');
+	async function switchAccount() {
+		if (switching) return;
+		switching = true;
+		switchError = '';
+		try {
+			await api.auth.logout();
+		} catch (err: unknown) {
+			switching = false;
+			switchError =
+				err instanceof Error && err.message
+					? `Couldn't sign you out: ${err.message}`
+					: "Couldn't sign you out. Please try again.";
+			return;
+		}
+		await goto(signInHref, { replaceState: true });
+	}
+
 	async function claim() {
 		if (claimState === 'claiming') return;
 		claimState = 'claiming';
@@ -151,7 +173,17 @@
 						This link verifies {pendingEmail || 'this address'}. Sign in to that account to finish
 						verifying.
 					</p>
-					<a class="button-link" href={signInHref}>Sign in to verify</a>
+					{#if authStore.user}
+						<p>You're signed in as {authStore.user.email}.</p>
+						{#if switchError}
+							<p class="error" role="alert">{switchError}</p>
+						{/if}
+						<button onclick={switchAccount} disabled={switching}>
+							{switching ? 'Signing out…' : 'Switch account to verify'}
+						</button>
+					{:else}
+						<a class="button-link" href={signInHref}>Sign in to verify</a>
+					{/if}
 					{#if canClaim}
 						{#if claimState === 'idle'}
 							<button class="secondary" onclick={() => (claimState = 'confirming')}>

@@ -209,16 +209,32 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 	args = append(args, id)
 
 	query := fmt.Sprintf("UPDATE users SET %s WHERE id = ?", strings.Join(sets, ", "))
+	fenced := input.Password != nil && input.ExpectedEpoch != nil
+	if fenced {
+		query += " AND credential_epoch = ?"
+		args = append(args, *input.ExpectedEpoch)
+	}
 	result, err := s.db.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
+		if fenced {
+			if u, err := s.GetUser(id); err == nil && u != nil {
+				return nil, ErrCredentialsChanged
+			}
+		}
 		return nil, sql.ErrNoRows
 	}
 
-	return s.GetUser(id)
+	u, err := s.GetUser(id)
+	if err == nil && u != nil && fenced {
+		// The epoch THIS write produced, not whatever a later change left:
+		// a session minted on it must not survive a change after this one.
+		u.CredentialEpoch = *input.ExpectedEpoch + 1
+	}
+	return u, err
 }
 
 // ValidatePassword checks an email/password combination. Returns the user

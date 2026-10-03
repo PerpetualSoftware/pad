@@ -82,13 +82,22 @@ func (s *Store) ConsumePasswordReset(token string) (*models.User, error) {
 	// Atomically mark the token as used and return it, only if it's
 	// currently unused and not expired. The WHERE clause ensures only
 	// one concurrent caller can succeed.
+	//
+	// The account's credential_epoch is read in the SAME statement
+	// (BUG-3382): the password write that follows is fenced on it, and a
+	// claim that committed after this token was spent must refuse that
+	// write. A later read could return the claim's epoch instead. The token
+	// row this statement locks is one the claim deletes, so a claim in
+	// flight either commits before this statement (the token is gone) or
+	// after it (its epoch bump is not seen).
 	var userID string
+	var epoch int64
 	err := s.db.QueryRow(s.q(`
 		UPDATE password_reset_tokens
 		SET used_at = ?
 		WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
-		RETURNING user_id
-	`), now(), tokenHash, now()).Scan(&userID)
+		RETURNING user_id, (SELECT credential_epoch FROM users WHERE users.id = password_reset_tokens.user_id)
+	`), now(), tokenHash, now()).Scan(&userID, &epoch)
 
 	if err == sql.ErrNoRows {
 		return nil, nil // Invalid, expired, or already used
@@ -97,14 +106,26 @@ func (s *Store) ConsumePasswordReset(token string) (*models.User, error) {
 		return nil, fmt.Errorf("consume reset token: %w", err)
 	}
 
+	if passwordResetSpentHook != nil {
+		passwordResetSpentHook(userID)
+	}
+
 	// Fetch the user
 	user, err := s.GetUser(userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
+	if user != nil {
+		user.CredentialEpoch = epoch
+	}
 
 	return user, nil
 }
+
+// passwordResetSpentHook, when set by a test, runs after the reset token is
+// spent and before the user is read back, which is where a claim can land
+// (BUG-3382).
+var passwordResetSpentHook func(userID string)
 
 // CleanExpiredPasswordResets removes old reset tokens.
 func (s *Store) CleanExpiredPasswordResets() error {

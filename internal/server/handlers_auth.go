@@ -1412,6 +1412,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Validate password change
+	var passwordEpoch int64
 	if input.NewPassword != "" {
 		if input.CurrentPassword == "" {
 			writeError(w, http.StatusBadRequest, "validation_error", "Current password is required to set a new password")
@@ -1447,6 +1448,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusForbidden, "invalid_password", "Current password is incorrect")
 			return
 		}
+		passwordEpoch = valid.CredentialEpoch
 	}
 
 	// Build update
@@ -1456,9 +1458,17 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	}
 	if input.NewPassword != "" {
 		update.Password = &input.NewPassword
+		// Fenced on the epoch the current password was checked under, so a
+		// claim or reset that lands in between is not overwritten (BUG-3382).
+		update.ExpectedEpoch = &passwordEpoch
 	}
 
 	updated, err := s.store.UpdateUser(user.ID, update)
+	if errors.Is(err, store.ErrCredentialsChanged) {
+		writeError(w, http.StatusUnauthorized, "credentials_changed",
+			"Your sign-in details changed while this request was in progress. Sign in again.")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update profile")
 		return
@@ -1722,9 +1732,17 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update password
+	// Fenced on the epoch read as the token was spent (BUG-3382): a claim or
+	// another password change that landed since wins, and this reset writes
+	// nothing.
 	password := input.Password
-	update := models.UserUpdate{Password: &password}
+	update := models.UserUpdate{Password: &password, ExpectedEpoch: &user.CredentialEpoch}
 	updated, err := s.store.UpdateUser(user.ID, update)
+	if errors.Is(err, store.ErrCredentialsChanged) {
+		writeError(w, http.StatusConflict, "credentials_changed",
+			"This account's sign-in details changed after this link was opened. Request a new reset link.")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update password")
 		return

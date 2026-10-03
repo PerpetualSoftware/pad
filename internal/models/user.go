@@ -127,6 +127,12 @@ type UserUpdate struct {
 	Username  *string `json:"username,omitempty"`
 	Password  *string `json:"password,omitempty"` // Plaintext, will be hashed
 	AvatarURL *string `json:"avatar_url,omitempty"`
+	// ExpectedEpoch, when set with Password, makes the password write
+	// conditional on the account's credential_epoch still being this value:
+	// the epoch the caller's authority (the current password, a reset token)
+	// was checked under (BUG-3382). A mismatch writes nothing and returns
+	// store.ErrCredentialsChanged.
+	ExpectedEpoch *int64 `json:"-"`
 }
 
 // Session represents a database-backed authentication session.
