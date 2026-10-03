@@ -172,7 +172,10 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// BUG-3372: attribution is the request's, never the body's.
+	// BUG-3372: attribution is the request's, never the body's. The body's
+	// source survives only as the autosave hint below, which decides whether
+	// an activity row is written and never what any row says.
+	autosaveHint := input.Source
 	input.LastModifiedBy, input.Source = actorFromRequest(r)
 
 	updated, err := s.store.UpdateDocument(doc.ID, input)
@@ -262,7 +265,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	isContentOnly := input.Content != nil &&
 		input.Title == nil && input.DocType == nil && input.Status == nil &&
 		input.Tags == nil && input.Pinned == nil && input.SortOrder == nil
-	isWebAutoSave := isContentOnly && input.Source == "web"
+	isWebAutoSave := isContentOnly && autosaveHint == "web"
 
 	actor, source := actorFromRequest(r)
 	if !isWebAutoSave {
