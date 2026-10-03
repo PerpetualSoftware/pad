@@ -395,6 +395,11 @@ func wrapConn(c driver.Conn) driver.Conn {
 
 type guardConn struct{ driver.Conn }
 
+// Unwrap returns the driver's own connection. The write-capture test harness
+// (storetest.CaptureWrites, TASK-3388) needs it to reach modernc's
+// pre-update hook; nothing in the request path calls it.
+func (c guardConn) Unwrap() driver.Conn { return c.Conn }
+
 // Pinger and SessionResetter are implemented unconditionally, which is sound
 // only because requireBaseInterfaces has already established that every base
 // has them.
