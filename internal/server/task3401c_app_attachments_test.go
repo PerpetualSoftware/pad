@@ -259,9 +259,22 @@ func TestTask3401c_AViewerCannotUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := f.count(t, `SELECT COUNT(*) FROM attachments`)
-	rr := appUpload(f, "/items/"+f.item.ID+"/attachments?filename=a.png", body, int64(len(body)))
+	// Refused before any byte of the body is read: no blob is staged for a
+	// subject who could not upload (the pre-row re-check alone would refuse
+	// only after the whole body).
+	read := false
+	lazy := &lazyBody{build: func() []byte { read = true; return body }}
+	req := httptest.NewRequest("POST", f.path("/items/"+f.item.ID+"/attachments?filename=a.png"), lazy)
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("a viewer's upload: %d %s, want 403", rr.Code, rr.Body.String())
+	}
+	if read {
+		t.Error("a viewer's upload body was read before the refusal")
 	}
 	if after := f.count(t, `SELECT COUNT(*) FROM attachments`); after != before {
 		t.Errorf("a viewer's upload wrote %d rows", after-before)
