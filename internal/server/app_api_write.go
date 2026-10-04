@@ -80,7 +80,31 @@ func decodeAppJSON(r *http.Request, v any) error {
 // service token (§4: the actor is decided by token kind; X-Pad-Agent is
 // ignored). A delegated person (TASK-3399) will be "user" with their own id.
 func appActor(ac *appContext) store.FencedActor {
+	if ac.AuthKind == "delegated" {
+		// A person acting through the app (TASK-3399, lead ruling R3): the
+		// write is theirs, with via_app = the install; never the bot's.
+		return store.FencedActor{Kind: "user", UserID: ac.Actor.ID}
+	}
 	return store.FencedActor{Kind: "agent", UserID: ac.Actor.ID, AgentName: ac.Actor.Name}
+}
+
+// appActorKind is the actor kind an app write's events carry: "user" for a
+// person acting through the app (a delegated token), "agent" for the bot.
+// X-Pad-Agent never decides it (DOC-3371 §4 Attribution).
+func appActorKind(ac *appContext) string {
+	if ac.AuthKind == "delegated" {
+		return "user"
+	}
+	return "agent"
+}
+
+// appCommentAuthorKind is the author_kind of a comment an app write makes,
+// as the comment listing derives it: "app" for the bot, "user" for a person.
+func appCommentAuthorKind(ac *appContext) string {
+	if ac.AuthKind == "delegated" {
+		return "user"
+	}
+	return "app"
 }
 
 // writeAppStoreError maps an appstore refusal to its response.
@@ -142,7 +166,7 @@ func (s *Server) appCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item := wr.Item
-	s.publishItemEventWithName(sseItemCreated, ac.WorkspaceID, item.ID, item.Title, wr.View.CollectionSlug, "agent", wr.ActorDisplay, "app", item.Seq)
+	s.publishItemEventWithName(sseItemCreated, ac.WorkspaceID, item.ID, item.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", item.Seq)
 	writeAppJSON(w, http.StatusCreated, appWrittenItemDTO(wr))
 }
 
@@ -188,20 +212,20 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	after := wr.Item
-	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, wr.View.CollectionSlug, "agent", wr.ActorDisplay, "app", after.Seq)
+	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", after.Seq)
 	// Watchers hear about an app's status change as about anyone's (lead
 	// ruling R1). The signal is the fenced transaction's own, never a
 	// comparison with this handler's earlier read: a status another writer
 	// changed between that read and the commit is not this write's.
 	if after.LastMutation != nil && after.LastMutation.StatusChanged {
-		s.publishWatchNotifications(ac.WorkspaceID, after, "agent", wr.ActorDisplay)
+		s.publishWatchNotifications(ac.WorkspaceID, after, appActorKind(ac), wr.ActorDisplay)
 	}
 	writeAppJSON(w, http.StatusOK, appWrittenItemDTO(wr))
 }
 
-// appCommentDTO is one comment's DTO, written by the bot.
-func appCommentDTO(c *models.Comment) AppComment {
-	dto := AppComment{ID: c.ID, ItemID: c.ItemID, Body: c.Body, AuthorDisplay: c.Author, AuthorKind: "app",
+// appCommentDTO is one comment's DTO, written by this request's actor.
+func appCommentDTO(c *models.Comment, authorKind string) AppComment {
+	dto := AppComment{ID: c.ID, ItemID: c.ItemID, Body: c.Body, AuthorDisplay: c.Author, AuthorKind: authorKind,
 		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Edited: c.IsEdited(), Deleted: c.Deleted}
 	if c.ParentID != "" {
 		p := c.ParentID
@@ -242,18 +266,18 @@ func (s *Server) appCreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	comment, at := cw.Comment, cw.Item
-	s.publishCommentEvent(sseCommentCreated, ac.WorkspaceID, at.ID, comment.ID, at.Title, at.CollectionSlug, "agent", "app")
+	s.publishCommentEvent(sseCommentCreated, ac.WorkspaceID, at.ID, comment.ID, at.Title, at.CollectionSlug, appActorKind(ac), "app")
 	s.publishWatchNotification(watchevents.Notification{
 		WorkspaceID:  ac.WorkspaceID,
 		ItemID:       at.ID,
 		CollectionID: at.CollectionID,
 		ItemRef:      at.Ref,
 		Kind:         watchevents.KindComment,
-		Actor:        "agent",
+		Actor:        appActorKind(ac),
 		ActorName:    cw.ActorDisplay,
 		Summary:      truncateForSummary(comment.Body, 120),
 	})
-	writeAppJSON(w, http.StatusCreated, appCommentDTO(comment))
+	writeAppJSON(w, http.StatusCreated, appCommentDTO(comment, appCommentAuthorKind(ac)))
 }
 
 // appCommentOnItem resolves the comment for a PATCH or DELETE: the item
@@ -309,8 +333,8 @@ func (s *Server) appUpdateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	at := cw.Item
-	s.publishCommentEvent(sseCommentUpdated, ac.WorkspaceID, at.ID, cw.Comment.ID, at.Title, at.CollectionSlug, "agent", "app")
-	writeAppJSON(w, http.StatusOK, appCommentDTO(cw.Comment))
+	s.publishCommentEvent(sseCommentUpdated, ac.WorkspaceID, at.ID, cw.Comment.ID, at.Title, at.CollectionSlug, appActorKind(ac), "app")
+	writeAppJSON(w, http.StatusOK, appCommentDTO(cw.Comment, appCommentAuthorKind(ac)))
 }
 
 func (s *Server) appDeleteComment(w http.ResponseWriter, r *http.Request) {

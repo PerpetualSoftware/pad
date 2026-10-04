@@ -48,11 +48,6 @@ func (s *Server) appConsentGate(ar fosite.AuthorizeRequester, user *models.User,
 	if !s.appsAvailable() {
 		return nil, &appConsentRefusal{notFound: true}
 	}
-	// Closed until U5b-2 (TASK-3399): the app API does not accept delegated
-	// tokens yet, so no grant is issued that it could not honour.
-	if !s.delegatedSignInOpen {
-		return nil, &appConsentRefusal{err: fosite.ErrAccessDenied.WithHint("Signing in to installed apps is not yet available.")}
-	}
 	st, err := s.store.GetInstallConsentState(client.AppInstallID)
 	if err != nil {
 		return nil, &appConsentRefusal{err: fosite.ErrServerError.WithWrap(err)}

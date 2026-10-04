@@ -580,6 +580,12 @@ type AppTokenBinding struct {
 	WorkspaceID string
 	AuthEpoch   int64
 	AuthKind    string
+	// A delegated grant's facts, as its first persistence bound them
+	// (TASK-3399); empty / zero on a service binding.
+	DelegatedAccess          string
+	DelegatedUserID          string
+	DelegatedCredentialEpoch int64
+	DelegatedMemberSince     string
 }
 
 // AppTokenState is what introspection needs, read in one statement: the
@@ -599,13 +605,17 @@ func (s *Store) GetAppTokenState(requestID string) (*AppTokenState, error) {
 	var disabledAt sql.NullString
 	err := s.db.QueryRow(s.q(`
 		SELECT b.request_id, b.client_id, b.install_id, b.workspace_id, b.auth_epoch, b.auth_kind,
+		       COALESCE(b.delegated_access, ''), COALESCE(b.delegated_user_id, ''), COALESCE(b.delegated_credential_epoch, 0),
+		       COALESCE(b.delegated_member_since, ''),
 		       i.state, i.auth_epoch, c.disabled_at
 		FROM app_token_bindings b
 		JOIN app_installs i ON i.id = b.install_id
 		JOIN oauth_clients c ON c.id = b.client_id
 		WHERE b.request_id = ? AND b.revoked_at IS NULL`), requestID).Scan(
 		&st.Binding.RequestID, &st.Binding.ClientID, &st.Binding.InstallID, &st.Binding.WorkspaceID,
-		&st.Binding.AuthEpoch, &st.Binding.AuthKind, &st.InstallState, &st.InstallEpoch, &disabledAt)
+		&st.Binding.AuthEpoch, &st.Binding.AuthKind,
+		&st.Binding.DelegatedAccess, &st.Binding.DelegatedUserID, &st.Binding.DelegatedCredentialEpoch, &st.Binding.DelegatedMemberSince,
+		&st.InstallState, &st.InstallEpoch, &disabledAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
