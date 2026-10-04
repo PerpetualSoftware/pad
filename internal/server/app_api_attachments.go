@@ -23,7 +23,7 @@ import (
 // a correctness proof (DOC-3371 §4): a download that passed its gate streams
 // for at most this long after it, which is the one place an app read is
 // ordered against revocation only up to its first byte.
-const appAttachmentRouteDeadline = 5 * time.Minute
+var appAttachmentRouteDeadline = 5 * time.Minute
 
 func (s *Server) appUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	ac := appContextFrom(r)
@@ -147,21 +147,40 @@ func (s *Server) appGetAttachment(w http.ResponseWriter, r *http.Request) {
 // read is ordered against revocation only up to its first byte, stated in
 // DOC-3371.
 func (s *Server) appDownloadAttachment(w http.ResponseWriter, r *http.Request) {
+	if s.appStreamDone != nil {
+		defer s.appStreamDone()
+	}
 	ac := appContextFrom(r)
 	as, err := s.appStore()
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), appAttachmentRouteDeadline)
+	deadline := time.Now().Add(appAttachmentRouteDeadline)
+	ctx, cancel := context.WithDeadline(r.Context(), deadline)
 	defer cancel()
-	att, f, err := as.OpenAttachment(ctx, ac.appFenceSpec(), chi.URLParam(r, "attachmentID"), r.URL.Query().Get("variant"))
+	id := chi.URLParam(r, "attachmentID")
+	// Authorize BEFORE touching storage (codex U6c r1 P2): a storage error
+	// (a missing blob, a missing variant blob) on an attachment the subject
+	// may not see would answer differently from an unknown id.
+	meta, err := as.GetAttachment(ctx, ac.appFenceSpec(), id)
+	if err != nil {
+		writeAppStoreError(w, err)
+		return
+	}
+	if !s.appVisibleAttachment(w, r, meta) {
+		return
+	}
+	att, f, err := as.OpenAttachment(ctx, ac.appFenceSpec(), id, r.URL.Query().Get("variant"))
 	if err != nil {
 		writeAppStoreError(w, err)
 		return
 	}
 	defer func() { _ = f.Close() }()
-	if !s.appVisibleAttachment(w, r, att) {
+	// The open re-read the row; what it opened must be the same attachment's
+	// (or its variant's) on the item just authorized.
+	if att.ItemID != meta.ItemID {
+		writeAppNotFound(w, "Attachment")
 		return
 	}
 	if s.appBeforeFirstByte != nil {
@@ -170,6 +189,15 @@ func (s *Server) appDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	// THE GATE: nothing has been written yet.
 	if err := s.appRevalidate(r); err != nil {
 		writeAppUnauthorized(w)
+		return
+	}
+	// The deadline also bounds the transport (codex U6c r1 P2): a context
+	// stops only the next file read, so a client that stops reading would
+	// otherwise hold a blocked write open past it and receive more bytes
+	// later. A ResponseWriter without deadline support (a test recorder) is
+	// served with the read-side bound alone.
+	if err := http.NewResponseController(w).SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		writeInternalError(w, err)
 		return
 	}
 	contentType, disposition := attachmentServeType(att.MimeType)

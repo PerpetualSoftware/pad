@@ -61,9 +61,15 @@ func newAppFixture(t *testing.T, opts Options) appFixture {
 	if opts.ETagKey == nil {
 		opts.ETagKey = []byte("server-only-test-key-0123456789abcdef")
 	}
+	install := insertInstall(t, s, ws.ID)
+	// A companion is a collection stamped with the install (as provisioning
+	// leaves it); the fence checks the stamp in its transaction.
+	if _, err := s.DB().Exec(s.D().Rebind(`UPDATE collections SET via_app = ? WHERE id = ?`), install, companion.ID); err != nil {
+		t.Fatal(err)
+	}
 	return appFixture{
 		s: s, a: New(s, opts), ws: ws, owner: owner, companion: companion, private: private,
-		spec:  store.FenceSpec{InstallID: insertInstall(t, s, ws.ID), WorkspaceID: ws.ID, Epoch: 1, Companions: []string{companion.ID}},
+		spec:  store.FenceSpec{InstallID: install, WorkspaceID: ws.ID, Epoch: 1, Companions: []string{companion.ID}},
 		actor: store.FencedActor{Kind: "user", UserID: owner.ID},
 	}
 }
@@ -462,6 +468,9 @@ func TestAppCreateItem_DefaultsCannotBypassTheRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.s.DB().Exec(f.s.D().Rebind(`UPDATE collections SET via_app = ? WHERE id = ?`), f.spec.InstallID, withDefaults.ID); err != nil {
+		t.Fatal(err)
+	}
 	spec := f.spec
 	spec.Companions = append(append([]string{}, spec.Companions...), withDefaults.ID)
 	item, err := f.a.CreateItem(ctx, spec, withDefaults.ID, AppItemCreate{Title: "Defaulted"}, f.actor)
@@ -481,6 +490,9 @@ func TestAppCreateItem_DefaultsCannotBypassTheRules(t *testing.T) {
 		{"key":"note","label":"Note","type":"text","default":"pad-attachment:abc"}
 	]}`})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.DB().Exec(f.s.D().Rebind(`UPDATE collections SET via_app = ? WHERE id = ?`), f.spec.InstallID, tokenDefault.ID); err != nil {
 		t.Fatal(err)
 	}
 	spec.Companions = append(spec.Companions, tokenDefault.ID)

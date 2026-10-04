@@ -262,3 +262,134 @@ func TestTask3401c_AViewerCannotUpload(t *testing.T) {
 		t.Errorf("a viewer's upload wrote %d rows", after-before)
 	}
 }
+
+// Codex U6c r1 P1: a companion that stops being one while an upload's body
+// is in flight. The fence checks the collection's stamp in the row's own
+// transaction, so no row commits.
+func TestTask3401c_ACompanionLeavingMidUploadCommitsNoRow(t *testing.T) {
+	for name, change := range map[string]string{
+		"deleted":    `UPDATE collections SET deleted_at = '2026-01-01T00:00:00Z' WHERE id = ?`,
+		"re-stamped": `UPDATE collections SET via_app = NULL WHERE id = ?`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := appAPIFixture(t, "write")
+			body := append(testPNG(t), 1, 2, 3)
+			before := f.count(t, `SELECT COUNT(*) FROM attachments`)
+			changed := false
+			r := &lazyBody{build: func() []byte {
+				if _, err := f.srv.store.DB().Exec(change, f.companion.ID); err != nil {
+					t.Error(err)
+				}
+				changed = true
+				return body
+			}}
+			req := httptest.NewRequest("POST", f.path("/items/"+f.item.ID+"/attachments?filename=a.png"), r)
+			req.ContentLength = int64(len(body))
+			req.Header.Set("Authorization", "Bearer "+f.token)
+			req.RemoteAddr = "192.0.2.1:1234"
+			rr := httptest.NewRecorder()
+			f.srv.ServeHTTP(rr, req)
+			if !changed {
+				t.Fatal("control: the body was never read, so the change did not run mid-upload")
+			}
+			if rr.Code < 400 {
+				t.Errorf("upload after the companion %s: %d %s, want a refusal", name, rr.Code, rr.Body.String())
+			}
+			if after := f.count(t, `SELECT COUNT(*) FROM attachments`); after != before {
+				t.Errorf("a row committed after the companion was %s", name)
+			}
+		})
+	}
+}
+
+// Codex U6c r1 P1: a credential change committed while the re-checks run.
+// The credential is read again as re-admission's last step.
+func TestTask3401c_ARevocationDuringReadmissionSendsNothing(t *testing.T) {
+	for name, revoke := range map[string]string{
+		"rotate":  `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`,
+		"disable": `UPDATE app_installs SET state = 'disabling', auth_epoch = auth_epoch + 1 WHERE id = ?`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := appAPIFixture(t, "read")
+			ran := false
+			f.srv.appAfterRechecks = func() {
+				if ran {
+					return
+				}
+				ran = true
+				if _, err := f.srv.store.DB().Exec(revoke, f.in.id); err != nil {
+					t.Error(err)
+				}
+			}
+			rr := appGet(f.srv, f.path("/attachments/"+f.attachment+"/content"), f.token)
+			if !ran {
+				t.Fatal("control: the seam never ran")
+			}
+			if rr.Code != http.StatusUnauthorized || bytes.Contains(rr.Body.Bytes(), f.attachmentBytes[:16]) {
+				t.Errorf("%s during re-admission: %d, want 401 and none of the file", name, rr.Code)
+			}
+		})
+	}
+}
+
+// Codex U6c r1 P2: a storage error on an attachment the subject may not see
+// answers exactly as an unknown id does.
+func TestTask3401c_AMissingBlobIsNoOracle(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	var key string
+	if err := f.srv.store.DB().QueryRow(`SELECT storage_key FROM attachments WHERE id = ?`, f.attachment).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := f.blobs.Open(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := blob.Name()
+	_ = blob.Close()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE workspace_members SET collection_access = 'specific' WHERE workspace_id = ? AND user_id = ?`, f.ws.ID, f.in.bot.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"", "?variant=thumb-md"} {
+		hidden := appGet(f.srv, f.path("/attachments/"+f.attachment+"/content"+v), f.token)
+		unknown := appGet(f.srv, f.path("/attachments/nope/content"+v), f.token)
+		if hidden.Code != unknown.Code || hidden.Body.String() != unknown.Body.String() {
+			t.Errorf("hidden with a missing blob %d %q vs unknown %d %q", hidden.Code, hidden.Body.String(), unknown.Code, unknown.Body.String())
+		}
+	}
+}
+
+// Codex U6c r1 P2: the route deadline bounds the transport too. A client
+// that reads the headers and then stops reading must not hold the handler
+// in a blocked write past the deadline.
+func TestTask3401c_AStalledClientDoesNotOutliveTheDeadline(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	big := bytes.Repeat([]byte("pad stream test line\n"), (24<<20)/21)
+	id := seedAttachment(t, f, f.item.ID, big, "text/plain", "big.txt")
+	old := appAttachmentRouteDeadline
+	appAttachmentRouteDeadline = 300 * time.Millisecond
+	defer func() { appAttachmentRouteDeadline = old }()
+	done := make(chan struct{}, 1)
+	f.srv.appStreamDone = func() { done <- struct{}{} }
+	ts := httptest.NewServer(f.srv)
+	defer ts.Close()
+	req, _ := http.NewRequest("GET", ts.URL+f.path("/attachments/"+id+"/content"), nil)
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("control: %d", resp.StatusCode)
+	}
+	// Read nothing more: the server's writes block once the socket buffers
+	// fill, far short of 24 MiB.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the download handler was still blocked writing 5s after its 300ms deadline")
+	}
+}

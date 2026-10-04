@@ -41,13 +41,19 @@ func newFenceFixture(t *testing.T) fenceFixture {
 	t.Helper()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Fence WS")
-	return fenceFixture{
+	f := fenceFixture{
 		s:         s,
 		ws:        ws,
 		companion: createTestCollection(t, s, ws.ID, "Tickets"),
 		other:     createTestCollection(t, s, ws.ID, "Private"),
 		install:   insertTestInstall(t, s, ws.ID, "active", 1),
 	}
+	// A companion is a collection stamped with the install (as provisioning
+	// leaves it); the fence checks the stamp in its transaction.
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET via_app = ? WHERE id = ?`), f.install, f.companion.ID); err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
 
 func (f fenceFixture) spec() FenceSpec {

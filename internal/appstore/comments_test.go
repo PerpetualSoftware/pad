@@ -221,12 +221,19 @@ func TestAppCommentRefusalsWriteNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherInstall := f.spec
-	otherInstall.InstallID = insertInstall(t, f.s, f.ws.ID)
-	theirs, err := f.a.CreateComment(ctx, otherInstall, f.mine.ID, AppCommentCreate{Body: "another install"}, f.actor)
-	if err != nil {
+	// Another install's comment on this item, by the same user: seeded as a
+	// row, since no install can write through a collection stamped with
+	// another's via_app (the fence checks the stamp live, TASK-3401 U6c). It
+	// is reachable as history: an item moved here, or a re-stamped companion.
+	otherInstall := insertInstall(t, f.s, f.ws.ID)
+	theirsID := uuid.NewString()
+	tsTheirs := time.Now().UTC().Format(time.RFC3339)
+	if _, err := f.s.DB().Exec(f.s.D().Rebind(`INSERT INTO comments (id, item_id, workspace_id, author, user_id, body, created_by, source, created_at, updated_at, via_app)
+		VALUES (?, ?, ?, 'a', ?, 'another install', 'user', 'app', ?, ?, ?)`),
+		theirsID, f.mine.ID, f.ws.ID, f.actor.UserID, tsTheirs, tsTheirs, otherInstall); err != nil {
 		t.Fatal(err)
 	}
+	theirs := &models.Comment{ID: theirsID}
 	user2, err := f.s.CreateUser(models.UserCreate{Email: "u2-" + uuid.NewString()[:8] + "@example.com", Name: "Two", Password: "password123"})
 	if err != nil {
 		t.Fatal(err)

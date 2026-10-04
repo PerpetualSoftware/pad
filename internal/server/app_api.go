@@ -539,6 +539,22 @@ func (s *Server) appRevalidate(r *http.Request) error {
 			return err
 		}
 	}
+	if s.appAfterRechecks != nil {
+		s.appAfterRechecks()
+	}
+	// The credential once more, LAST (codex U6c r1 P1): the checks above take
+	// time, and a revocation, disable or rotation committed while they ran
+	// would otherwise pass. Re-admission is a sequence of reads, not one
+	// snapshot, so it orders the response against a change committed before
+	// its final step: this one, for the credential and the install, and each
+	// re-check's own read for the resource it covers.
+	last, err := s.appAdmitToken(r.Context(), ac.token)
+	if err != nil {
+		return err
+	}
+	if last.Grant.AuthEpoch != ac.Grant.AuthEpoch || last.Access != ac.Access || last.InstallID != ac.InstallID {
+		return errors.New("the grant changed")
+	}
 	return nil
 }
 
