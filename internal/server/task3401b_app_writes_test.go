@@ -402,6 +402,89 @@ func TestTask3401b_AnotherWritersStatusChangeIsNotTheApps(t *testing.T) {
 	}
 }
 
+// postCommitBus runs after once, on the first event published: the publish
+// follows the write's commit, so after injects a failure that only a
+// post-commit step can meet.
+type postCommitBus struct {
+	events.EventBus
+	after func()
+	done  bool
+}
+
+func (b *postCommitBus) Publish(e events.Event) error {
+	if !b.done {
+		b.done = true
+		b.after()
+	}
+	return b.EventBus.Publish(e)
+}
+
+// Codex U6b round 2 P2: a write's response must not depend on a read after
+// its commit. With the database gone after the commit, the create still
+// answers 201 and describes the item it wrote; a 500 would tell the app its
+// write failed and invite a duplicate.
+func TestTask3401b_AFailureAfterCommitDoesNotHideTheWrite(t *testing.T) {
+	f := appAPIFixture(t, "write")
+	var id string
+	f.srv.SetEventBus(&postCommitBus{EventBus: events.New(), after: func() {
+		if err := f.srv.store.DB().QueryRow(`SELECT id FROM items WHERE title = 'Committed'`).Scan(&id); err != nil {
+			t.Errorf("control: the item is not committed when the publish runs: %v", err)
+		}
+		_ = f.srv.store.DB().Close()
+	}})
+	rr := appDo(f.srv, "POST", f.path("/collections/requests/items"), f.token, map[string]any{"title": "Committed", "fields": map[string]any{"size": "S"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create after a post-commit failure: %d %s, want 201", rr.Code, rr.Body.String())
+	}
+	var got AppItem
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if got.ID != id || got.ViaApp != f.in.id || got.CreatedByDisplay != f.in.bot.Name || got.ETag == "" || got.Fields["size"] != "S" {
+		t.Errorf("response = %+v, want the committed item %s by %q via %s", got, id, f.in.bot.Name, f.in.id)
+	}
+}
+
+// Codex U6b round 2 P2: the response projects fields by the schema the
+// write validated against, read in its transaction, not the handler's
+// earlier copy. A field added with a default between the two is stored,
+// and must be in the response.
+func TestTask3401b_TheResponseUsesTheWritesSchema(t *testing.T) {
+	f := appAPIFixture(t, "write")
+	body := &lazyBody{build: func() []byte {
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(f.companion.Schema), &schema); err != nil {
+			t.Fatal(err)
+		}
+		schema.Fields = append(schema.Fields, models.FieldDef{Key: "fresh", Label: "Fresh", Type: "text", Default: "stored default"})
+		b, _ := json.Marshal(schema)
+		if _, err := f.srv.store.DB().Exec(`UPDATE collections SET schema = ? WHERE id = ?`, string(b), f.companion.ID); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := json.Marshal(map[string]any{"title": "After the schema change"})
+		return out
+	}}
+	req := httptest.NewRequest("POST", f.path("/collections/requests/items"), body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var got AppItem
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	var stored string
+	if err := f.srv.store.DB().QueryRow(`SELECT fields FROM items WHERE id = ?`, got.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored, "stored default") {
+		t.Fatalf("control: the default was not stored (%s), so the race did not run", stored)
+	}
+	if got.Fields["fresh"] != "stored default" {
+		t.Errorf("response fields = %v, want the stored default under the write's schema", got.Fields)
+	}
+}
+
 // Lead ruling R3, U5b half: a DELEGATED write's author is the person, with
 // via_app set ("Dave via Support Portal"), never the bot. Enabled by
 // TASK-3399, which brings delegated tokens.

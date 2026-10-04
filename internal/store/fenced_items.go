@@ -122,6 +122,30 @@ func (f *FencedTx) CompanionCollectionSchema(collectionID string) (schemaJSON, s
 	return schemaJSON, settingsJSON, err
 }
 
+// FencedItemView is what an app write's response is built from, read inside
+// the write's own transaction: a read after commit can fail or see a later
+// state, and a response must describe the write that committed.
+type FencedItemView struct {
+	CollectionSlug string
+	SchemaJSON     string
+	ViaApp         string
+	CreatorDisplay string
+}
+
+// ItemView reads the response view of a companion item in this transaction.
+func (f *FencedTx) ItemView(itemID string) (FencedItemView, error) {
+	var v FencedItemView
+	err := f.tx.QueryRow(f.s.q(`SELECT c.slug, c.schema, COALESCE(i.via_app, ''), COALESCE(u.name, '')
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users u ON u.id = i.created_by_user_id
+		WHERE i.id = ? AND i.workspace_id = ?`), itemID, f.workspaceID).Scan(&v.CollectionSlug, &v.SchemaJSON, &v.ViaApp, &v.CreatorDisplay)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FencedItemView{}, ErrNotCompanion
+	}
+	return v, err
+}
+
 // CompanionItemCollection returns the collection of a live item that this
 // install created, refusing any other item the same way the update will.
 func (f *FencedTx) CompanionItemCollection(itemID string) (string, error) {

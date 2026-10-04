@@ -133,23 +133,36 @@ func (s *Server) appCreateItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	item, err := as.CreateItem(r.Context(), ac.appFenceSpec(), c.ID, appstore.AppItemCreate{Title: in.Title, Content: in.Content, Fields: in.Fields}, appActor(ac))
+	wr, err := as.CreateItemWrite(r.Context(), ac.appFenceSpec(), c.ID, appstore.AppItemCreate{Title: in.Title, Content: in.Content, Fields: in.Fields}, appActor(ac))
 	if err != nil {
 		writeAppStoreError(w, err)
 		return
 	}
-	s.publishItemEventWithName(sseItemCreated, ac.WorkspaceID, item.ID, item.Title, c.Slug, "agent", ac.Actor.Name, "app", item.Seq)
-	dtos, err := s.appItemDTOs(r, []models.Item{*item}, c)
-	if err != nil {
-		writeInternalError(w, err)
-		return
+	item := wr.Item
+	s.publishItemEventWithName(sseItemCreated, ac.WorkspaceID, item.ID, item.Title, wr.View.CollectionSlug, "agent", ac.Actor.Name, "app", item.Seq)
+	writeAppJSON(w, http.StatusCreated, appWrittenItemDTO(wr))
+}
+
+// appWrittenItemDTO is a write's response, built only from what the write's
+// own transaction read (appstore.ItemWrite). Nothing here touches the
+// database: the write has committed, and a later read could fail and report
+// a committed write as failed (inviting a duplicate retry), or describe a
+// state the write did not produce, such as a schema changed since the
+// handler resolved the collection.
+func appWrittenItemDTO(wr *appstore.ItemWrite) AppItem {
+	it := wr.Item
+	c := &models.Collection{Slug: wr.View.CollectionSlug, Schema: wr.View.SchemaJSON}
+	return AppItem{
+		ID: it.ID, Collection: c.Slug, Title: it.Title, Content: it.Content,
+		Fields: appFieldProjection(it.Fields, c), ETag: wr.ETag,
+		CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt,
+		CreatedByDisplay: wr.View.CreatorDisplay, ViaApp: wr.View.ViaApp,
 	}
-	writeAppJSON(w, http.StatusCreated, dtos[0])
 }
 
 func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 	ac := appContextFrom(r)
-	before, c, ok := s.appVisibleItem(w, r)
+	before, _, ok := s.appVisibleItem(w, r)
 	if !ok {
 		return
 	}
@@ -166,12 +179,13 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	after, err := as.UpdateItem(r.Context(), ac.appFenceSpec(), before.ID, appstore.AppItemUpdate{FieldsPatch: in.FieldsPatch, ExpectedETag: in.ExpectedETag}, appActor(ac))
+	wr, err := as.UpdateItemWrite(r.Context(), ac.appFenceSpec(), before.ID, appstore.AppItemUpdate{FieldsPatch: in.FieldsPatch, ExpectedETag: in.ExpectedETag}, appActor(ac))
 	if err != nil {
 		writeAppStoreError(w, err)
 		return
 	}
-	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, c.Slug, "agent", ac.Actor.Name, "app", after.Seq)
+	after := wr.Item
+	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, wr.View.CollectionSlug, "agent", ac.Actor.Name, "app", after.Seq)
 	// Watchers hear about an app's status change as about anyone's (lead
 	// ruling R1). The signal is the fenced transaction's own, never a
 	// comparison with this handler's earlier read: a status another writer
@@ -179,12 +193,7 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if after.LastMutation != nil && after.LastMutation.StatusChanged {
 		s.publishWatchNotifications(ac.WorkspaceID, after, "agent", ac.Actor.Name)
 	}
-	dtos, err := s.appItemDTOs(r, []models.Item{*after}, c)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	writeAppJSON(w, http.StatusOK, dtos[0])
+	writeAppJSON(w, http.StatusOK, appWrittenItemDTO(wr))
 }
 
 // appCommentDTO is one comment's DTO, written by the bot.
