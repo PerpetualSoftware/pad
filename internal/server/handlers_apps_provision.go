@@ -267,7 +267,6 @@ func diffChanges(was, now []string) (added, removed []string) {
 			w[c]--
 		}
 	}
-	w = in(was)
 	for _, c := range was {
 		if n[c] == 0 {
 			removed = append(removed, c)
