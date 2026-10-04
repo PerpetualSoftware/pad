@@ -236,6 +236,12 @@ func (s *Server) appDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeAppNotFound(w, "Attachment")
 		return
 	}
+	// A variant is its own row: the gate re-checks the row whose bytes are
+	// served, not only the original that was authorized (codex U6c r6).
+	if att.ID != meta.ID {
+		served, item := att.ID, meta.ItemID
+		appAddRecheck(r, func(r2 *http.Request) error { return s.appRecheckAttachment(r2, served, item) })
+	}
 	if s.appBeforeFirstByte != nil {
 		s.appBeforeFirstByte()
 	}

@@ -206,7 +206,14 @@ func appJSONContentType(next http.Handler) http.Handler {
 // installed apps are off on this server.
 func (s *Server) requireAppsAvailable(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.appsAvailable() {
+		on, err := s.appsAvailableChecked()
+		if err != nil {
+			// A failure to read the setting is a fault, not "apps off"
+			// (codex U6c r6).
+			writeInternalError(w, err)
+			return
+		}
+		if !on {
 			writeError(w, http.StatusNotFound, "not_found", "Not found")
 			return
 		}

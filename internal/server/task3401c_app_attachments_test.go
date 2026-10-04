@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -531,5 +533,53 @@ func TestTask3401c_ACredentialDyingMidUploadIs401(t *testing.T) {
 	f.srv.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized || !strings.Contains(rr.Header().Get("WWW-Authenticate"), "invalid_token") {
 		t.Errorf("a rotation mid-upload: %d %q, want 401 invalid_token", rr.Code, rr.Header().Get("WWW-Authenticate"))
+	}
+}
+
+// Codex U6c r6: the variant whose bytes are served is re-checked at the gate,
+// not only the original that was authorized.
+func TestTask3401c_ADeletedVariantIsNotServed(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	thumb := append(testPNG(t), 9, 9, 9, 9)
+	sum := sha256.Sum256(thumb)
+	hash := hex.EncodeToString(sum[:])
+	key, err := f.blobs.Put(context.Background(), hash, "image/png", bytes.NewReader(thumb))
+	if err != nil {
+		t.Fatal(err)
+	}
+	variantID := "var-" + hash[:12]
+	if _, err := f.srv.store.DB().Exec(`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash,
+		mime_type, size_bytes, filename, parent_id, variant, created_at, filename_source, imported, via_app)
+		VALUES (?, ?, ?, ?, ?, ?, 'image/png', ?, 'thumb.png', ?, 'thumb-md', ?, 'derived', 0, ?)`,
+		variantID, f.ws.ID, f.item.ID, f.in.bot.ID, key, hash, len(thumb), f.attachment, time.Now().UTC().Format(time.RFC3339), f.in.id); err != nil {
+		t.Fatal(err)
+	}
+	if rr := appGet(f.srv, f.path("/attachments/"+f.attachment+"/content?variant=thumb-md"), f.token); rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), thumb) {
+		t.Fatalf("control: the variant download served %d, %d bytes", rr.Code, rr.Body.Len())
+	}
+	f.srv.appBeforeFirstByte = func() {
+		if _, err := f.srv.store.DB().Exec(`UPDATE attachments SET deleted_at = '2026-01-01T00:00:00Z' WHERE id = ?`, variantID); err != nil {
+			t.Error(err)
+		}
+	}
+	rr := appGet(f.srv, f.path("/attachments/"+f.attachment+"/content?variant=thumb-md"), f.token)
+	if rr.Code == http.StatusOK || bytes.Contains(rr.Body.Bytes(), thumb[len(thumb)-8:]) {
+		t.Errorf("a variant deleted before the first byte: %d, %d bytes served", rr.Code, rr.Body.Len())
+	}
+}
+
+// Codex U6c r6: on a self-host, a failure to read the apps setting is a fault
+// at the first gate too, not a 404 "apps are off".
+func TestTask3401c_ASettingsFaultIsNotAppsOff(t *testing.T) {
+	f := appAPIFixtureOn(t, "read", false)
+	if rr := appGet(f.srv, f.path("/me"), f.token); rr.Code != http.StatusOK {
+		t.Fatalf("control: %d %s", rr.Code, rr.Body.String())
+	}
+	if _, err := f.srv.store.DB().Exec(`ALTER TABLE platform_settings RENAME TO platform_settings_gone`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = f.srv.store.DB().Exec(`ALTER TABLE platform_settings_gone RENAME TO platform_settings`) }()
+	if rr := appGet(f.srv, f.path("/me"), f.token); rr.Code != http.StatusInternalServerError {
+		t.Errorf("a settings fault: %d %s, want 500", rr.Code, rr.Body.String())
 	}
 }
