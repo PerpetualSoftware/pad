@@ -206,3 +206,23 @@ func TestTask3401c_TheStreamStopsAtTheDeadline(t *testing.T) {
 		t.Error("a stream past its deadline read on")
 	}
 }
+
+// The subject's own visibility is a layer of its own: the fenced read rule
+// asks only whether the attachment's item is a companion item, so a bot
+// whose membership no longer reaches the companion (collection_access
+// 'specific' with no grant) must still be refused here.
+func TestTask3401c_TheSubjectMustSeeTheItem(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	if rr := appGet(f.srv, f.path("/attachments/"+f.attachment), f.token); rr.Code != http.StatusOK {
+		t.Fatalf("control: %d %s", rr.Code, rr.Body.String())
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE workspace_members SET collection_access = 'specific' WHERE workspace_id = ? AND user_id = ?`, f.ws.ID, f.in.bot.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/attachments/" + f.attachment, "/attachments/" + f.attachment + "/content"} {
+		rr := appGet(f.srv, f.path(p), f.token)
+		if rr.Code != http.StatusNotFound || bytes.Contains(rr.Body.Bytes(), f.attachmentBytes[:16]) {
+			t.Errorf("%s with the membership narrowed: %d, want the attachment 404", p, rr.Code)
+		}
+	}
+}
