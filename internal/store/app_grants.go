@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -124,39 +123,48 @@ func (s *Store) RevokeUserAppGrant(userID, requestID string) (installID string, 
 			return "", fmt.Errorf("lock install for app grant revoke: %w", err)
 		}
 	}
-	for _, q := range []string{
-		`UPDATE oauth_access_tokens SET active = ? WHERE request_id = ?`,
-		`UPDATE oauth_refresh_tokens SET active = ? WHERE request_id = ?`,
-	} {
-		if _, err := tx.Exec(s.q(q), false, requestID); err != nil {
-			return "", fmt.Errorf("revoke app grant: %w", err)
-		}
+	// Child rows in teardown's order (binding, PKCE, code, refresh, access),
+	// after the install lock teardown and issuance also take first.
+	// A tombstone, not a delete: a persistence already past its own checks
+	// would take a missing binding for a first issuance.
+	if _, err := tx.Exec(s.q(`UPDATE app_token_bindings SET revoked_at = ? WHERE request_id = ? AND revoked_at IS NULL`), now(), requestID); err != nil {
+		return "", fmt.Errorf("revoke app grant: %w", err)
 	}
 	for _, q := range []string{
-		`DELETE FROM oauth_authorization_codes WHERE request_id = ?`,
 		`DELETE FROM oauth_pkce_requests WHERE request_id = ?`,
+		`DELETE FROM oauth_authorization_codes WHERE request_id = ?`,
 	} {
 		if _, err := tx.Exec(s.q(q), requestID); err != nil {
 			return "", fmt.Errorf("revoke app grant: %w", err)
 		}
 	}
-	// A tombstone, not a delete: a persistence already past its own checks
-	// would take a missing binding for a first issuance and recreate it.
-	if _, err := tx.Exec(s.q(`UPDATE app_token_bindings SET revoked_at = ? WHERE request_id = ? AND revoked_at IS NULL`), now(), requestID); err != nil {
-		return "", fmt.Errorf("revoke app grant: %w", err)
+	for _, q := range []string{
+		`UPDATE oauth_refresh_tokens SET active = ? WHERE request_id = ?`,
+		`UPDATE oauth_access_tokens SET active = ? WHERE request_id = ?`,
+	} {
+		if _, err := tx.Exec(s.q(q), false, requestID); err != nil {
+			return "", fmt.Errorf("revoke app grant: %w", err)
+		}
 	}
 	return installID, tx.Commit()
 }
 
 // revokeDelegatedGrantsTx ends the delegated app grants a person holds, in
 // one workspace (workspaceID) or in every one (""), inside the caller's
-// transaction: the grants' installs are locked first, in id order, then
-// their tokens deactivated, their unexchanged codes and PKCE rows deleted,
-// and their bindings tombstoned, which the issuance barrier and
-// introspection refuse. Called by member removal, account disable and
-// account claim, each AFTER its own users-row lock and BEFORE any token
-// statement: users, then installs, then token and binding rows is the order
-// the issuance barrier and the install lifecycle take too (codex U5b-1 r2).
+// transaction: their bindings tombstoned, their unexchanged PKCE rows and
+// codes deleted, and their tokens deactivated. Called by member removal,
+// account disable and account claim, each of which already holds the
+// person's users row.
+//
+// LOCKS (codex U5b-1 r2 and r3). It takes no install lock: the issuance
+// barrier share-locks a delegated grant's person BEFORE anything else, so
+// holding the person's row already orders every issuance of their grants
+// against this. An install lock here deadlocked against owner-account
+// deletion, which reaches installs through their bots' foreign key in an
+// order of its own. Against install teardown, which holds the install and
+// then writes these same rows, both take the child rows in ONE order:
+// binding, PKCE, code, refresh, access (DeleteInstallClientTx's), so the two
+// cannot wait on each other in a cycle.
 func (s *Store) revokeDelegatedGrantsTx(tx *sql.Tx, userID, workspaceID string) error {
 	scope := `SELECT request_id FROM app_token_bindings WHERE auth_kind = 'delegated' AND delegated_user_id = ?`
 	args := []any{userID}
@@ -164,37 +172,19 @@ func (s *Store) revokeDelegatedGrantsTx(tx *sql.Tx, userID, workspaceID string) 
 		scope += ` AND workspace_id = ?`
 		args = append(args, workspaceID)
 	}
-	if s.dialect.Driver() == DriverPostgres {
-		rows, err := tx.Query(s.q(`SELECT id FROM app_installs WHERE id IN (SELECT install_id FROM app_token_bindings
-			WHERE auth_kind = 'delegated' AND delegated_user_id = ?`+map[bool]string{true: ` AND workspace_id = ?`, false: ``}[workspaceID != ""]+`)
-			ORDER BY id FOR UPDATE`), args...)
-		if err != nil {
-			return fmt.Errorf("lock installs for delegated revoke: %w", err)
-		}
-		for rows.Next() {
-		}
-		if err := rows.Close(); err != nil {
-			return err
-		}
-	}
+	with := func(first any) []any { return append([]any{first}, args...) }
 	for _, st := range []struct {
 		q    string
-		bool bool
+		args []any
 	}{
-		{`UPDATE oauth_access_tokens SET active = ? WHERE request_id IN (` + scope + `)`, true},
-		{`UPDATE oauth_refresh_tokens SET active = ? WHERE request_id IN (` + scope + `)`, true},
-		{`DELETE FROM oauth_pkce_requests WHERE request_id IN (` + scope + `)`, false},
-		{`DELETE FROM oauth_authorization_codes WHERE request_id IN (` + scope + `)`, false},
-		{`UPDATE app_token_bindings SET revoked_at = ? WHERE revoked_at IS NULL AND request_id IN (` + scope + `)`, false},
+		{`UPDATE app_token_bindings SET revoked_at = ? WHERE revoked_at IS NULL AND auth_kind = 'delegated' AND delegated_user_id = ?` +
+			map[bool]string{true: ` AND workspace_id = ?`, false: ``}[workspaceID != ""], with(now())},
+		{`DELETE FROM oauth_pkce_requests WHERE request_id IN (` + scope + `)`, args},
+		{`DELETE FROM oauth_authorization_codes WHERE request_id IN (` + scope + `)`, args},
+		{`UPDATE oauth_refresh_tokens SET active = ? WHERE request_id IN (` + scope + `)`, with(false)},
+		{`UPDATE oauth_access_tokens SET active = ? WHERE request_id IN (` + scope + `)`, with(false)},
 	} {
-		a := args
-		switch {
-		case st.bool:
-			a = append([]any{false}, args...)
-		case strings.HasPrefix(st.q, "UPDATE app_token_bindings"):
-			a = append([]any{now()}, args...)
-		}
-		if _, err := tx.Exec(s.q(st.q), a...); err != nil {
+		if _, err := tx.Exec(s.q(st.q), st.args...); err != nil {
 			return fmt.Errorf("revoke delegated grants: %w", err)
 		}
 	}
