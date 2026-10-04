@@ -463,7 +463,15 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 			return true, ErrInstallDelegatedSubject
 		}
 		// And the membership it was given under (a removal and re-add since
-		// the consent gate read it refuses).
+		// the consent gate read it refuses). RESIDUAL, accepted by the lead
+		// (codex U5b-1 r9): workspace_members has no row id (its key is
+		// workspace_id, user_id, which a re-add reuses) and created_at has
+		// one-second resolution, so an owner's removal AND re-add inside one
+		// second, during an in-flight consent, still matches. It grants
+		// nothing beyond the person's current membership: they are a member at
+		// the consent and at this persistence, and any grant that already
+		// existed was revoked by the removal itself (revokeDelegatedGrantsTx).
+		// No generation column is added for this.
 		if carried, ok := carriedMemberSince(req.SessionData); !ok || carried != memberSince {
 			return true, ErrInstallDelegatedSubject
 		}
