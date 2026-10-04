@@ -992,6 +992,19 @@ func (s *Store) DisableUserAndRevokeAccess(userID string) error {
 		return fmt.Errorf("disable user: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.disableUserAndRevokeAccessTx(tx, userID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("disable user: commit: %w", err)
+	}
+	return nil
+}
+
+// disableUserAndRevokeAccessTx is DisableUserAndRevokeAccess on the caller's
+// transaction: the app uninstall disables the install's bot inside
+// UninstallAppTx (TASK-3397, U8c).
+func (s *Store) disableUserAndRevokeAccessTx(tx *sql.Tx, userID string) error {
 	ts := now()
 	stmts := []struct {
 		what, query string
@@ -1014,9 +1027,6 @@ func (s *Store) DisableUserAndRevokeAccess(userID string) error {
 		if _, err := tx.Exec(s.q(st.query), st.args...); err != nil {
 			return fmt.Errorf("disable user: %s: %w", st.what, err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("disable user: commit: %w", err)
 	}
 	return nil
 }
