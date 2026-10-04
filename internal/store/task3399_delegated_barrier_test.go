@@ -82,6 +82,13 @@ func TestTask3399_EveryPersistenceRechecksTheEpoch(t *testing.T) {
 		} {
 			t.Run(name+"/"+change, func(t *testing.T) {
 				f := task3399Fixture(t, "inst-ep-"+name+"-"+change, "write")
+				// A token's grant has its code first (its binding); the code
+				// and PKCE steps are themselves the first persistence.
+				if name == "access" || name == "refresh" {
+					if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-ep", "read", 1)); err != nil {
+						t.Fatal(err)
+					}
+				}
 				// Authorized under epoch 1, which the change then moves.
 				if _, err := f.s.db.Exec(f.s.q(q), f.installID); err != nil {
 					t.Fatal(err)
@@ -89,8 +96,12 @@ func TestTask3399_EveryPersistenceRechecksTheEpoch(t *testing.T) {
 				if err := step(f.s, task3399Req(f.clientID, f.person.ID, "req-ep", "read", 1)); !errors.Is(err, ErrInstallNotActive) {
 					t.Errorf("%s after a %s: err = %v, want ErrInstallNotActive", name, change, err)
 				}
-				if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings`); n != 0 {
-					t.Errorf("a refused %s wrote %d bindings", name, n)
+				want := 0
+				if name == "access" || name == "refresh" {
+					want = 1 // the code's
+				}
+				if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings`); n != want {
+					t.Errorf("a refused %s left %d bindings, want %d", name, n, want)
 				}
 			})
 		}
@@ -415,5 +426,61 @@ func TestTask3399_ADisableIsOrderedAgainstIssuance(t *testing.T) {
 	}
 	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_refresh_tokens WHERE request_id = 'req-ord' AND active = ?`, true); n != 0 {
 		t.Errorf("%d refresh tokens of a disabled person are still active", n)
+	}
+}
+
+// Codex U5b-1 r2 P1: a revoked grant whose tombstone the sweep removed is
+// not revived by a persistence already past its checks: only a grant's code
+// writes its binding, so a token persisting against none is refused.
+func TestTask3399_ASweptTombstoneRevivesNothing(t *testing.T) {
+	f := task3399Fixture(t, "inst-swept", "write")
+	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-sw", "read", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.RevokeUserAppGrant(f.person.ID, "req-sw"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.SweepExpiredOAuthRows(OAuthSweepCutoffs{}, 100, 10, 0); err != nil {
+		t.Fatal(err)
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = 'req-sw'`); n != 0 {
+		t.Fatal("control: the sweep kept the tombstone, so this does not test its removal")
+	}
+	for _, persist := range []func(models.OAuthRequest) error{f.s.CreateAccessToken, f.s.CreateRefreshToken} {
+		if err := persist(task3399Req(f.clientID, f.person.ID, "req-sw", "read", 1)); !errors.Is(err, ErrInstallNotActive) {
+			t.Errorf("a token for a swept, revoked grant: err = %v, want ErrInstallNotActive", err)
+		}
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = 'req-sw'`); n != 0 {
+		t.Error("a refused persistence recreated the binding")
+	}
+}
+
+// Codex U5b-1 r2 P2: removing a member ends their delegated grants in that
+// workspace, so a re-add in the same second revives nothing.
+func TestTask3399_RemovingAMemberEndsTheirGrants(t *testing.T) {
+	for _, remove := range []string{"RemoveWorkspaceMember", "RemoveWorkspaceMemberAndRevokeGrants"} {
+		t.Run(remove, func(t *testing.T) {
+			f := task3399Fixture(t, "inst-rm-"+remove, "write")
+			task3399Delegated(t, f, "req-rm")
+			var err error
+			if remove == "RemoveWorkspaceMember" {
+				err = f.s.RemoveWorkspaceMember(f.ws.ID, f.person.ID)
+			} else {
+				err = f.s.RemoveWorkspaceMemberAndRevokeGrants(f.ws.ID, f.person.ID)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.s.AddWorkspaceMember(f.ws.ID, f.person.ID, "editor"); err != nil {
+				t.Fatal(err)
+			}
+			if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_refresh_tokens WHERE request_id = 'req-rm' AND active = ?`, true); n != 0 {
+				t.Errorf("%d refresh tokens survive the removal", n)
+			}
+			if err := f.s.CreateRefreshToken(task3399Req(f.clientID, f.person.ID, "req-rm", "read", 1)); err == nil {
+				t.Error("the grant persisted a new refresh token after a removal and same-second re-add")
+			}
+		})
 	}
 }

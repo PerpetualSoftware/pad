@@ -307,6 +307,21 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	if !installID.Valid || installID.String == "" {
 		return false, nil
 	}
+	// A delegated grant's person is share-locked BEFORE the install (codex
+	// U5b-1 r2): users, then installs, then token rows is the order account
+	// erase (owner, then its installs' bots), disable and member removal take,
+	// so issuance cannot hold an install while waiting for a person another
+	// transaction holds with that install next. A service grant's subject is
+	// the install's bot, which the install lifecycle reaches through the
+	// install, so it is not locked here.
+	kind, access := carriedInstallGrant(req.SessionData)
+	if kind == "delegated" && s.dialect.Driver() == DriverPostgres {
+		var one int
+		if err := tx.QueryRow(s.q(`SELECT 1 FROM users WHERE id = ? FOR SHARE`), req.Subject).Scan(&one); err != nil &&
+			!errors.Is(err, sql.ErrNoRows) {
+			return true, fmt.Errorf("oauth: lock delegated subject: %w", err)
+		}
+	}
 	lockQ := `SELECT workspace_id, state, auth_epoch, delegated_access FROM app_installs WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		lockQ += ` FOR UPDATE`
@@ -335,9 +350,9 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	if disabledAt.Valid && disabledAt.String != "" {
 		return true, ErrInstallClientDisabled
 	}
-	// The grant's kind, and for a delegated grant the access the person
-	// consented to, as the consent decision put them in the session data.
-	kind, access := carriedInstallGrant(req.SessionData)
+	// The grant's kind (read above), and for a delegated grant the access
+	// the person consented to, as the consent decision put them in the
+	// session data.
 	var bindAccess, bindUser, bindSince sql.NullString
 	var bindCredEpoch sql.NullInt64
 	switch kind {
@@ -412,6 +427,12 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		delegated_credential_epoch, revoked_at FROM app_token_bindings WHERE request_id = ?`),
 		req.RequestID).Scan(&bound, &boundKind, &boundAccess, &boundUser, &boundSince, &boundCredEpoch, &boundRevoked)
 	switch {
+	case errors.Is(err, sql.ErrNoRows) && kind == "delegated" && table != "oauth_authorization_codes" && table != "oauth_pkce_requests":
+		// Only a delegated grant's FIRST persistence (its code, at consent)
+		// writes its binding. A token persisting against no binding is a
+		// grant whose binding is gone: revoked and swept (codex U5b-1 r2), or
+		// erased. Never a first issuance.
+		return true, ErrInstallNotActive
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.Exec(s.q(`
 			INSERT INTO app_token_bindings (request_id, client_id, install_id, workspace_id, auth_epoch, auth_kind, delegated_access,

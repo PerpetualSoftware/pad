@@ -367,11 +367,6 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, c
 		{"revoke oauth refresh tokens", `UPDATE oauth_refresh_tokens SET active = ? WHERE subject = ?`, []any{s.dialect.BoolToInt(false), userID}},
 		{"revoke oauth authorization codes", `UPDATE oauth_authorization_codes SET active = ? WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{s.dialect.BoolToInt(false), userID}},
 		{"delete oauth pkce requests", `DELETE FROM oauth_pkce_requests WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{userID}},
-		// A delegated grant to an installed app has no connection row; its
-		// unexchanged code and PKCE row are found through its binding
-		// (TASK-3399), or a re-enable would let the code exchange.
-		{"revoke delegated app codes", `UPDATE oauth_authorization_codes SET active = ? WHERE request_id IN (SELECT request_id FROM app_token_bindings WHERE delegated_user_id = ?)`, []any{s.dialect.BoolToInt(false), userID}},
-		{"delete delegated app pkce requests", `DELETE FROM oauth_pkce_requests WHERE request_id IN (SELECT request_id FROM app_token_bindings WHERE delegated_user_id = ?)`, []any{userID}},
 		{"delete oauth connections", `DELETE FROM oauth_connections WHERE user_id = ?`, []any{userID}},
 		{"delete cli handoffs", `DELETE FROM cli_auth_sessions WHERE user_id = ?`, []any{userID}},
 		{"delete reset tokens", `DELETE FROM password_reset_tokens WHERE user_id = ?`, []any{userID}},
@@ -386,9 +381,16 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, c
 		{"delete tabs of owned workspaces", `DELETE FROM user_workspace_tabs WHERE workspace_id IN (SELECT id FROM workspaces WHERE owner_id = ? AND deleted_at IS NULL)`, []any{userID}},
 		{"soft-delete owned workspaces", `UPDATE workspaces SET deleted_at = ?, updated_at = ? WHERE owner_id = ? AND deleted_at IS NULL`, []any{ts, ts, userID}},
 	}
-	for _, st := range stmts {
+	for i, st := range stmts {
 		if _, err := tx.Exec(s.q(st.query), st.args...); err != nil {
 			return nil, fmt.Errorf("account claim: %s: %w", st.what, err)
+		}
+		// After the users row (the first statement), before any token row:
+		// the claimed account's delegated app grants (TASK-3399).
+		if i == 0 {
+			if err := s.revokeDelegatedGrantsTx(tx, userID, ""); err != nil {
+				return nil, fmt.Errorf("account claim: %w", err)
+			}
 		}
 	}
 	if err := tx.QueryRow(s.q(`SELECT credential_epoch FROM users WHERE id = ?`), userID).Scan(&claim.Epoch); err != nil {

@@ -204,6 +204,11 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 	if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
 		return err
 	}
+	// Their delegated app grants in this workspace end with the membership
+	// (TASK-3399): a re-add does not revive them.
+	if err := s.revokeDelegatedGrantsTx(tx, userID, workspaceID); err != nil {
+		return err
+	}
 	result, err := tx.Exec(
 		s.q("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?"),
 		workspaceID, userID,
@@ -240,6 +245,12 @@ func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string)
 		return err
 	}
 	if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
+		return err
+	}
+
+	// Their delegated app grants in this workspace end with the membership
+	// (TASK-3399): a re-add does not revive them.
+	if err := s.revokeDelegatedGrantsTx(tx, userID, workspaceID); err != nil {
 		return err
 	}
 
