@@ -175,10 +175,13 @@ var ErrNotWorkspaceOwner = errors.New("not a workspace owner")
 //   - 2. The workspace seq lock (advisory): item writers (create, update,
 //     delete, move, restore) and slug allocation read the item and slug space
 //     provisioning writes into, so they are a cycle.
-//   - 3. Every collections row of the workspace, FOR SHARE: one consistent
-//     view of the collections for a multi-statement derivation under READ
-//     COMMITTED (kind to destination, schemas, companion slugs, relation
-//     target collections).
+//   - 3. Every collections row of the workspace, FOR NO KEY UPDATE: one
+//     consistent view of the collections for a multi-statement derivation
+//     under READ COMMITTED (kind to destination, schemas, companion slugs,
+//     relation target collections). NO KEY UPDATE rather than SHARE because
+//     an adoption UPDATEs the adopted row's via_app later in this transaction,
+//     and a SHARE lock upgraded under concurrency deadlocks; it still does not
+//     conflict with the FK KEY SHARE an item insert takes.
 //
 // Raced on purpose, each serializing as "provision first":
 //   - collection archive, trait and rename: they read no item provisioning
@@ -242,7 +245,7 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 
 	// 3. Every collection row of the workspace (Postgres).
 	if pg {
-		if err := lockRowsForShare(tx, s.q(`SELECT id FROM collections WHERE workspace_id = ? ORDER BY id FOR SHARE`), req.WorkspaceID); err != nil {
+		if err := lockRowsForShare(tx, s.q(`SELECT id FROM collections WHERE workspace_id = ? ORDER BY id FOR NO KEY UPDATE`), req.WorkspaceID); err != nil {
 			return nil, fmt.Errorf("provision app: lock collections: %w", err)
 		}
 	}
@@ -271,8 +274,15 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 	var companionIDs []string
 	for _, c := range req.Collections {
 		if c.Adopt {
+			// Adoption re-stamps the companion to this install; the derivation
+			// already refused unless its holder is uninstalled (lead ruling,
+			// day 86). Items' and comments' via_app stay as written: they are
+			// attribution, not ownership.
 			var id string
 			if err := tx.QueryRow(s.q(`SELECT id FROM collections WHERE workspace_id = ? AND slug = ?`), req.WorkspaceID, c.Slug).Scan(&id); err != nil {
+				return nil, fmt.Errorf("provision app: adopt %q: %w", c.Slug, err)
+			}
+			if _, err := tx.Exec(s.q(`UPDATE collections SET via_app = ? WHERE id = ?`), installID, id); err != nil {
 				return nil, fmt.Errorf("provision app: adopt %q: %w", c.Slug, err)
 			}
 			companionIDs = append(companionIDs, id)

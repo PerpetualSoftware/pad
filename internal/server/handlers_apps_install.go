@@ -351,9 +351,17 @@ func (s *Server) buildAppPreviewQ(q store.Queryer, r *http.Request, workspaceID 
 			e.path = fmt.Sprintf("companion_pack.collections[%d].slug", i)
 			return nil, e
 		}
-		if owner, exists := owners[c.Slug]; exists {
-			if owner != m.Origin {
+		if holder, exists := owners[c.Slug]; exists {
+			if holder.Origin != m.Origin {
 				e := installErr(http.StatusConflict, "collection_conflict", "This workspace already has a collection %q that this app did not create", c.Slug)
+				e.path = fmt.Sprintf("companion_pack.collections[%d].slug", i)
+				return nil, e
+			}
+			// Adopted only from an UNINSTALLED install (lead ruling, day
+			// 86): a disabled install can be re-enabled, and taking its
+			// companions would break it then.
+			if holder.InstallState != "uninstalled" {
+				e := installErr(http.StatusConflict, "app_already_installed", "This app is already installed in this workspace (state %s): re-enable or uninstall it first", holder.InstallState)
 				e.path = fmt.Sprintf("companion_pack.collections[%d].slug", i)
 				return nil, e
 			}

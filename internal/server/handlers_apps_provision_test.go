@@ -854,3 +854,66 @@ func TestProvisionAppInstall_SuppliedRelationTargetDeleted(t *testing.T) {
 	}
 	assertCensusUnchanged(t, before, provisionCensus(t, e))
 }
+
+// Adoption (lead ruling, day 86): a same-origin companion is adopted, and
+// re-stamped to the new install, ONLY when its holder is uninstalled. Every
+// other holder state is refused, naming the state.
+func TestAppInstall_AdoptionByHolderState(t *testing.T) {
+	install := func(t *testing.T, e *appsEnv) string {
+		t.Helper()
+		p := e.stagePreview(t)
+		rr := e.confirm(t, p, p.ManifestSHA256)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("first install: %d %s", rr.Code, rr.Body.String())
+		}
+		var out appInstallConfirmResponse
+		parseJSON(t, rr, &out)
+		return out.InstallID
+	}
+	t.Run("uninstalled adopts", func(t *testing.T) {
+		e := newProvisionEnv(t)
+		first := install(t, e)
+		if _, err := e.srv.store.DB().Exec(`UPDATE app_installs SET state = 'uninstalled' WHERE id = ?`, first); err != nil {
+			t.Fatal(err)
+		}
+		p := e.stagePreview(t)
+		if !p.Collections[0].Adopt {
+			t.Fatalf("preview did not adopt: %+v", p.Collections)
+		}
+		rr := e.confirm(t, p, p.ManifestSHA256)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("second install: %d %s", rr.Code, rr.Body.String())
+		}
+		var out appInstallConfirmResponse
+		parseJSON(t, rr, &out)
+		companion, err := e.srv.store.GetCollectionBySlug(e.wsID, "portal-tickets")
+		if err != nil || companion == nil {
+			t.Fatal(err)
+		}
+		var via string
+		if err := e.srv.store.DB().QueryRow(`SELECT via_app FROM collections WHERE id = ?`, companion.ID).Scan(&via); err != nil || via != out.InstallID {
+			t.Fatalf("companion via_app %q (%v), want the new install %s", via, err, out.InstallID)
+		}
+		var bot string
+		if err := e.srv.store.DB().QueryRow(`SELECT bot_user_id FROM app_installs WHERE id = ?`, out.InstallID).Scan(&bot); err != nil {
+			t.Fatal(err)
+		}
+		granted, err := e.srv.store.GetMemberCollectionAccess(e.wsID, bot)
+		if err != nil || len(granted) != 1 || granted[0] != companion.ID {
+			t.Fatalf("new bot's grants %v (%v), want the adopted companion", granted, err)
+		}
+	})
+	for _, state := range []string{"active", "disabling", "inactive", "uninstalling"} {
+		t.Run(state+" refuses", func(t *testing.T) {
+			e := newProvisionEnv(t)
+			first := install(t, e)
+			if _, err := e.srv.store.DB().Exec(`UPDATE app_installs SET state = ? WHERE id = ?`, state, first); err != nil {
+				t.Fatal(err)
+			}
+			rr := e.preview(t)
+			if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "app_already_installed") || !strings.Contains(rr.Body.String(), "state "+state) {
+				t.Fatalf("got %d %s; want 409 app_already_installed naming state %s", rr.Code, rr.Body.String(), state)
+			}
+		})
+	}
+}
