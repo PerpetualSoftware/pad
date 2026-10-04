@@ -5,7 +5,7 @@
 	import Chip from '$lib/components/common/Chip.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
-	import type { ConnectedApp, Workspace } from '$lib/types';
+	import type { AppGrant, ConnectedApp, Workspace } from '$lib/types';
 
 	// Connected Apps page (TASK-954). Lists every active OAuth grant
 	// chain the user has authorized via the MCP API and lets them
@@ -14,14 +14,18 @@
 	// modal exists to make that point obvious.
 
 	let apps = $state<ConnectedApp[]>([]);
+	// TASK-3399: delegated grants a person gave an installed app. Read-only
+	// here apart from Revoke, which uses the same DELETE route.
+	let appGrants = $state<AppGrant[]>([]);
 	let loading = $state(true);
 	let error = $state('');
 
 	let expanded = $state<Record<string, boolean>>({});
 	let chipsExpanded = $state<Record<string, boolean>>({});
 
-	// Modal state — single modal at a time, keyed by the target app id.
-	let confirmTarget = $state<ConnectedApp | null>(null);
+	// Modal state — single modal at a time, keyed by the target id. Holds
+	// either an MCP connection or an installed-app grant (TASK-3399).
+	let confirmTarget = $state<{ id: string; label: string } | null>(null);
 	let revoking = $state(false);
 	let revokeError = $state('');
 
@@ -247,6 +251,7 @@
 		try {
 			const result = await api.connectedApps.list();
 			apps = Array.isArray(result?.items) ? result.items : [];
+			appGrants = Array.isArray(result?.app_grants) ? result.app_grants : [];
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load connected apps';
 		} finally {
@@ -262,8 +267,8 @@
 		chipsExpanded[id] = !chipsExpanded[id];
 	}
 
-	function openConfirm(app: ConnectedApp) {
-		confirmTarget = app;
+	function openConfirm(target: { id: string; label: string }) {
+		confirmTarget = target;
 		revokeError = '';
 	}
 
@@ -307,7 +312,7 @@
 			<p>{error}</p>
 			<Button variant="secondary" onclick={loadApps}>Retry</Button>
 		</div>
-	{:else if apps.length === 0}
+	{:else if apps.length === 0 && appGrants.length === 0}
 		<div class="empty-state">
 			<p class="empty-title">No connected apps yet.</p>
 			<p class="empty-desc">
@@ -319,288 +324,345 @@
 			</p>
 		</div>
 	{:else}
-		<div class="apps-list">
-			{#each apps as app (app.id)}
-				{@const anyWs = isAnyWorkspace(app)}
-				{@const wsList = anyWs ? [] : (app.allowed_workspaces ?? [])}
-				{@const showAllChips = chipsExpanded[app.id]}
-				{@const visibleChips = showAllChips ? wsList : wsList.slice(0, 3)}
-				{@const extraChips = Math.max(0, wsList.length - 3)}
-				<article class="app-card">
-					<div class="app-main">
-						<div class="app-logo">
-							{#if app.logo_uri}
-								<img src={app.logo_uri} alt="" />
-							{:else}
-								<span class="logo-initials">{initials(app.client_name)}</span>
-							{/if}
-						</div>
-						<div class="app-body">
-							<div class="app-title-row">
-								<h2 class="app-title">{app.client_name}</h2>
-								<Chip color={tierColor(app.capability_tier)}>
-									{TIER_LABELS[app.capability_tier]}
-								</Chip>
-							</div>
-
-							<div class="chip-row">
-								{#if anyWs}
-									<span class="chip chip-any">Any workspace</span>
+		{#if apps.length > 0}
+			<div class="apps-list">
+				{#each apps as app (app.id)}
+					{@const anyWs = isAnyWorkspace(app)}
+					{@const wsList = anyWs ? [] : (app.allowed_workspaces ?? [])}
+					{@const showAllChips = chipsExpanded[app.id]}
+					{@const visibleChips = showAllChips ? wsList : wsList.slice(0, 3)}
+					{@const extraChips = Math.max(0, wsList.length - 3)}
+					<article class="app-card">
+						<div class="app-main">
+							<div class="app-logo">
+								{#if app.logo_uri}
+									<img src={app.logo_uri} alt="" />
 								{:else}
-									{#each visibleChips as ws (ws)}
-										<span class="chip">{ws}</span>
-									{/each}
-									{#if !showAllChips && extraChips > 0}
-										<button
-											type="button"
-											class="chip chip-more"
-											onclick={() => toggleChips(app.id)}
-										>
-											+{extraChips}
-										</button>
-									{:else if showAllChips && wsList.length > 3}
-										<button
-											type="button"
-											class="chip chip-more"
-											onclick={() => toggleChips(app.id)}
-										>
-											Show less
-										</button>
-									{/if}
+									<span class="logo-initials">{initials(app.client_name)}</span>
 								{/if}
 							</div>
-
-							<dl class="meta">
-								<div class="meta-item">
-									<dt>Connected</dt>
-									<dd title={new Date(app.connected_at).toISOString()}>
-										{relativeTime(app.connected_at)}
-									</dd>
+							<div class="app-body">
+								<div class="app-title-row">
+									<h2 class="app-title">{app.client_name}</h2>
+									<Chip color={tierColor(app.capability_tier)}>
+										{TIER_LABELS[app.capability_tier]}
+									</Chip>
 								</div>
-								<div class="meta-item">
-									<dt>Last used</dt>
-									<dd title={app.last_used_at ? new Date(app.last_used_at).toISOString() : ''}>
-										{relativeTime(app.last_used_at)}
-									</dd>
-								</div>
-								<div class="meta-item">
-									<dt>Activity</dt>
-									<dd>{callsLabel(app.calls_30d)}</dd>
-								</div>
-							</dl>
 
-							<button
-								type="button"
-								class="details-toggle"
-								onclick={() => toggleDetails(app.id)}
-								aria-expanded={!!expanded[app.id]}
-							>
-								{expanded[app.id] ? 'Hide details' : 'Details'}
-							</button>
-
-							{#if expanded[app.id]}
-								<div class="details">
-									<div class="detail-row">
-										<span class="detail-label">Scopes</span>
-										<code class="detail-value">{app.scope_string || '—'}</code>
-									</div>
-									<div class="detail-row">
-										<span class="detail-label">Allowed workspaces</span>
-										<span class="detail-value">
-											{#if anyWs}
-												Any workspace
-											{:else}
-												{wsList.join(', ')}
-											{/if}
-										</span>
-									</div>
-									<div class="detail-row">
-										<span class="detail-label">Redirect URIs</span>
-										<div class="detail-value">
-											{#if app.redirect_uris && app.redirect_uris.length > 0}
-												{#each app.redirect_uris as uri (uri)}
-													<code class="uri">{uri}</code>
-												{/each}
-											{:else}
-												&mdash;
-											{/if}
-										</div>
-									</div>
-								</div>
-							{/if}
-						</div>
-					</div>
-
-					<div class="app-actions">
-						<Button
-							variant="secondary"
-							onclick={() => (editingId === app.id ? closeEdit() : openEdit(app))}
-							aria-expanded={editingId === app.id}
-						>
-							{editingId === app.id ? 'Done' : 'Edit'}
-						</Button>
-						<Button variant="danger" onclick={() => openConfirm(app)}>Revoke</Button>
-					</div>
-
-					{#if editingId === app.id}
-						{@const eaWsList = (app.allowed_workspaces ?? []).filter((s) => s !== '*')}
-						{@const pickable = pickableFor(app)}
-						{@const isAll = app.all_current_workspaces ?? true}
-						<div class="edit-panel" role="region" aria-label="Edit {app.client_name}">
-							{#if editErrors[app.id]}
-								<p class="edit-error">{editErrors[app.id]}</p>
-							{/if}
-
-							<div class="edit-field">
-								<label class="edit-label" for="name-{app.id}">Connection name</label>
-								<div class="edit-row">
-									<input
-										id="name-{app.id}"
-										class="edit-input"
-										type="text"
-										maxlength="120"
-										placeholder="e.g. Cursor on MacBook"
-										bind:value={nameDrafts[app.id]}
-										disabled={!!savingFlag[app.id]}
-									/>
-									<Button
-										variant="secondary"
-										onclick={() => saveName(app)}
-										disabled={!!savingFlag[app.id] ||
-											(nameDrafts[app.id] ?? '').trim() === (app.name ?? '')}
-									>
-										Save
-									</Button>
-								</div>
-								{#if !(app.name ?? '')}
-									<p class="edit-hint">
-										Name your connection so you can tell it apart from other apps.
-									</p>
-								{/if}
-							</div>
-
-							<div class="edit-field">
-								<span class="edit-label">Scope flags</span>
-								<label class="edit-toggle">
-									<input
-										type="checkbox"
-										checked={app.may_create_workspaces ?? true}
-										disabled={!!savingFlag[app.id]}
-										onchange={(e) =>
-											toggleFlag(
-												app,
-												'may_create_workspaces',
-												(e.currentTarget as HTMLInputElement).checked
-											)}
-									/>
-									<span>Let this app create new workspaces</span>
-								</label>
-								<label class="edit-toggle">
-									<input
-										type="checkbox"
-										checked={app.all_current_workspaces ?? true}
-										disabled={!!savingFlag[app.id]}
-										onchange={(e) =>
-											toggleFlag(
-												app,
-												'all_current_workspaces',
-												(e.currentTarget as HTMLInputElement).checked
-											)}
-									/>
-									<span>All my workspaces, including ones I join later</span>
-								</label>
-								{#if isAll}
-									<div class="edit-row">
-										<Button
-											variant="secondary"
-											onclick={() => limitToCurrent(app)}
-											disabled={!!savingFlag[app.id]}
-										>
-											Limit to my current workspaces
-										</Button>
-									</div>
-									<p class="edit-hint">
-										Replaces "all" with the workspaces you belong to now. Workspaces you join
-										later are not included until you add them.
-									</p>
-								{/if}
-							</div>
-
-							<!-- Workspace allow-list editor (TASK-1524 / Codex review
-								 #585 round 1): always rendered so users in wildcard
-								 mode can pre-stage workspaces before flipping
-								 all_current_workspaces=off. The backend's
-								 empty_allowlist guard rejects the toggle when the
-								 join table is empty; pre-staging in wildcard mode
-								 is the mechanism that lets a user transition
-								 through that state cleanly. -->
-							<div class="edit-field">
-								<div class="edit-label-row">
-									<span class="edit-label">Workspace allow-list</span>
-									{#if isAll}
-										<Chip size="sm" color="var(--accent-gray)">Inert while wildcard is on</Chip>
-									{/if}
-								</div>
-								<div class="ws-chips">
-									{#each eaWsList as ws (ws)}
-										<span class="chip">
-											{ws}
+								<div class="chip-row">
+									{#if anyWs}
+										<span class="chip chip-any">Any workspace</span>
+									{:else}
+										{#each visibleChips as ws (ws)}
+											<span class="chip">{ws}</span>
+										{/each}
+										{#if !showAllChips && extraChips > 0}
 											<button
 												type="button"
-												class="chip-remove"
-												aria-label="Remove {ws}"
-												disabled={!!savingFlag[app.id] || (!isAll && eaWsList.length <= 1)}
-												onclick={() => removeWorkspaceFromApp(app, ws)}
+												class="chip chip-more"
+												onclick={() => toggleChips(app.id)}
 											>
-												×
+												+{extraChips}
 											</button>
-										</span>
-									{/each}
-									{#if eaWsList.length === 0}
-										<span class="ws-empty">
-											{#if isAll}
-												No workspaces staged — add one if you plan to switch off
-												"All my workspaces".
-											{:else}
-												No workspaces — add one below.
-											{/if}
-										</span>
+										{:else if showAllChips && wsList.length > 3}
+											<button
+												type="button"
+												class="chip chip-more"
+												onclick={() => toggleChips(app.id)}
+											>
+												Show less
+											</button>
+										{/if}
 									{/if}
 								</div>
-								{#if !isAll && eaWsList.length <= 1}
-									<p class="edit-hint">
-										You can't remove the last workspace — switch to "All my workspaces"
-										first or revoke the connection.
-									</p>
-								{/if}
-								<div class="edit-row add-row">
-									<select
-										class="edit-input"
-										bind:value={addPickerSlug[app.id]}
-										disabled={!!savingFlag[app.id]}
-									>
-										<option value="">Add a workspace…</option>
-										{#each pickable as ws (ws.slug)}
-											<option value={ws.slug}>{ws.name}</option>
-										{/each}
-									</select>
-									<Button
-										variant="secondary"
-										onclick={() => addWorkspaceToApp(app)}
-										disabled={!!savingFlag[app.id] || !addPickerSlug[app.id]}
-									>
-										Add
-									</Button>
-								</div>
-								{#if workspacesError}
-									<p class="edit-hint edit-hint-error">{workspacesError}</p>
+
+								<dl class="meta">
+									<div class="meta-item">
+										<dt>Connected</dt>
+										<dd title={new Date(app.connected_at).toISOString()}>
+											{relativeTime(app.connected_at)}
+										</dd>
+									</div>
+									<div class="meta-item">
+										<dt>Last used</dt>
+										<dd title={app.last_used_at ? new Date(app.last_used_at).toISOString() : ''}>
+											{relativeTime(app.last_used_at)}
+										</dd>
+									</div>
+									<div class="meta-item">
+										<dt>Activity</dt>
+										<dd>{callsLabel(app.calls_30d)}</dd>
+									</div>
+								</dl>
+
+								<button
+									type="button"
+									class="details-toggle"
+									onclick={() => toggleDetails(app.id)}
+									aria-expanded={!!expanded[app.id]}
+								>
+									{expanded[app.id] ? 'Hide details' : 'Details'}
+								</button>
+
+								{#if expanded[app.id]}
+									<div class="details">
+										<div class="detail-row">
+											<span class="detail-label">Scopes</span>
+											<code class="detail-value">{app.scope_string || '—'}</code>
+										</div>
+										<div class="detail-row">
+											<span class="detail-label">Allowed workspaces</span>
+											<span class="detail-value">
+												{#if anyWs}
+													Any workspace
+												{:else}
+													{wsList.join(', ')}
+												{/if}
+											</span>
+										</div>
+										<div class="detail-row">
+											<span class="detail-label">Redirect URIs</span>
+											<div class="detail-value">
+												{#if app.redirect_uris && app.redirect_uris.length > 0}
+													{#each app.redirect_uris as uri (uri)}
+														<code class="uri">{uri}</code>
+													{/each}
+												{:else}
+													&mdash;
+												{/if}
+											</div>
+										</div>
+									</div>
 								{/if}
 							</div>
 						</div>
-					{/if}
-				</article>
-			{/each}
-		</div>
+
+						<div class="app-actions">
+							<Button
+								variant="secondary"
+								onclick={() => (editingId === app.id ? closeEdit() : openEdit(app))}
+								aria-expanded={editingId === app.id}
+							>
+								{editingId === app.id ? 'Done' : 'Edit'}
+							</Button>
+							<Button
+								variant="danger"
+								onclick={() => openConfirm({ id: app.id, label: app.client_name })}
+							>
+								Revoke
+							</Button>
+						</div>
+
+						{#if editingId === app.id}
+							{@const eaWsList = (app.allowed_workspaces ?? []).filter((s) => s !== '*')}
+							{@const pickable = pickableFor(app)}
+							{@const isAll = app.all_current_workspaces ?? true}
+							<div class="edit-panel" role="region" aria-label="Edit {app.client_name}">
+								{#if editErrors[app.id]}
+									<p class="edit-error">{editErrors[app.id]}</p>
+								{/if}
+
+								<div class="edit-field">
+									<label class="edit-label" for="name-{app.id}">Connection name</label>
+									<div class="edit-row">
+										<input
+											id="name-{app.id}"
+											class="edit-input"
+											type="text"
+											maxlength="120"
+											placeholder="e.g. Cursor on MacBook"
+											bind:value={nameDrafts[app.id]}
+											disabled={!!savingFlag[app.id]}
+										/>
+										<Button
+											variant="secondary"
+											onclick={() => saveName(app)}
+											disabled={!!savingFlag[app.id] ||
+												(nameDrafts[app.id] ?? '').trim() === (app.name ?? '')}
+										>
+											Save
+										</Button>
+									</div>
+									{#if !(app.name ?? '')}
+										<p class="edit-hint">
+											Name your connection so you can tell it apart from other apps.
+										</p>
+									{/if}
+								</div>
+
+								<div class="edit-field">
+									<span class="edit-label">Scope flags</span>
+									<label class="edit-toggle">
+										<input
+											type="checkbox"
+											checked={app.may_create_workspaces ?? true}
+											disabled={!!savingFlag[app.id]}
+											onchange={(e) =>
+												toggleFlag(
+													app,
+													'may_create_workspaces',
+													(e.currentTarget as HTMLInputElement).checked
+												)}
+										/>
+										<span>Let this app create new workspaces</span>
+									</label>
+									<label class="edit-toggle">
+										<input
+											type="checkbox"
+											checked={app.all_current_workspaces ?? true}
+											disabled={!!savingFlag[app.id]}
+											onchange={(e) =>
+												toggleFlag(
+													app,
+													'all_current_workspaces',
+													(e.currentTarget as HTMLInputElement).checked
+												)}
+										/>
+										<span>All my workspaces, including ones I join later</span>
+									</label>
+									{#if isAll}
+										<div class="edit-row">
+											<Button
+												variant="secondary"
+												onclick={() => limitToCurrent(app)}
+												disabled={!!savingFlag[app.id]}
+											>
+												Limit to my current workspaces
+											</Button>
+										</div>
+										<p class="edit-hint">
+											Replaces "all" with the workspaces you belong to now. Workspaces you join
+											later are not included until you add them.
+										</p>
+									{/if}
+								</div>
+
+								<!-- Workspace allow-list editor (TASK-1524 / Codex review
+									 #585 round 1): always rendered so users in wildcard
+									 mode can pre-stage workspaces before flipping
+									 all_current_workspaces=off. The backend's
+									 empty_allowlist guard rejects the toggle when the
+									 join table is empty; pre-staging in wildcard mode
+									 is the mechanism that lets a user transition
+									 through that state cleanly. -->
+								<div class="edit-field">
+									<div class="edit-label-row">
+										<span class="edit-label">Workspace allow-list</span>
+										{#if isAll}
+											<Chip size="sm" color="var(--accent-gray)">Inert while wildcard is on</Chip>
+										{/if}
+									</div>
+									<div class="ws-chips">
+										{#each eaWsList as ws (ws)}
+											<span class="chip">
+												{ws}
+												<button
+													type="button"
+													class="chip-remove"
+													aria-label="Remove {ws}"
+													disabled={!!savingFlag[app.id] || (!isAll && eaWsList.length <= 1)}
+													onclick={() => removeWorkspaceFromApp(app, ws)}
+												>
+													×
+												</button>
+											</span>
+										{/each}
+										{#if eaWsList.length === 0}
+											<span class="ws-empty">
+												{#if isAll}
+													No workspaces staged — add one if you plan to switch off
+													"All my workspaces".
+												{:else}
+													No workspaces — add one below.
+												{/if}
+											</span>
+										{/if}
+									</div>
+									{#if !isAll && eaWsList.length <= 1}
+										<p class="edit-hint">
+											You can't remove the last workspace — switch to "All my workspaces"
+											first or revoke the connection.
+										</p>
+									{/if}
+									<div class="edit-row add-row">
+										<select
+											class="edit-input"
+											bind:value={addPickerSlug[app.id]}
+											disabled={!!savingFlag[app.id]}
+										>
+											<option value="">Add a workspace…</option>
+											{#each pickable as ws (ws.slug)}
+												<option value={ws.slug}>{ws.name}</option>
+											{/each}
+										</select>
+										<Button
+											variant="secondary"
+											onclick={() => addWorkspaceToApp(app)}
+											disabled={!!savingFlag[app.id] || !addPickerSlug[app.id]}
+										>
+											Add
+										</Button>
+									</div>
+									{#if workspacesError}
+										<p class="edit-hint edit-hint-error">{workspacesError}</p>
+									{/if}
+								</div>
+							</div>
+						{/if}
+					</article>
+				{/each}
+			</div>
+		{/if}
+
+		{#if appGrants.length > 0}
+			<section class="grants-section" aria-labelledby="app-grants-title">
+				<h2 id="app-grants-title" class="section-title">Installed apps acting as you</h2>
+				<p class="section-desc">
+					Apps installed in a workspace that you signed in to. They act as you in that workspace
+					only.
+				</p>
+				<div class="apps-list">
+					{#each appGrants as grant (grant.id)}
+						<article class="app-card">
+							<div class="app-main">
+								<div class="app-logo">
+									<span class="logo-initials">{initials(grant.app_name)}</span>
+								</div>
+								<div class="app-body">
+									<div class="app-title-row">
+										<h3 class="app-title">{grant.app_name}</h3>
+										<span class="access-label">
+											{grant.access === 'write' ? 'Read and write' : 'Read only'}
+										</span>
+									</div>
+									<p class="grant-origin">{grant.origin}</p>
+									<dl class="meta">
+										<div class="meta-item">
+											<dt>Workspace</dt>
+											<dd>{grant.workspace.name}</dd>
+										</div>
+										<div class="meta-item">
+											<dt>Signed in</dt>
+											<dd title={new Date(grant.granted_at).toISOString()}>
+												{relativeTime(grant.granted_at)}
+											</dd>
+										</div>
+									</dl>
+								</div>
+							</div>
+							<div class="app-actions">
+								<Button
+									variant="danger"
+									onclick={() => openConfirm({ id: grant.id, label: grant.app_name })}
+								>
+									Revoke
+								</Button>
+							</div>
+						</article>
+					{/each}
+				</div>
+			</section>
+		{/if}
 	{/if}
 </div>
 
@@ -616,7 +678,7 @@
 >
 	{#if confirmTarget}
 		<div class="revoke-modal">
-			<h3 id="revoke-title" class="modal-title">Revoke {confirmTarget.client_name}?</h3>
+			<h3 id="revoke-title" class="modal-title">Revoke {confirmTarget.label}?</h3>
 			<p class="modal-body">
 				The app will lose access immediately. This can&rsquo;t be undone.
 			</p>
@@ -874,6 +936,38 @@
 
 	.app-actions {
 		flex-shrink: 0;
+	}
+
+	/* TASK-3399: installed-app grants section. */
+	.grants-section {
+		margin-top: var(--space-6);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.section-title {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	.section-desc,
+	.grant-origin {
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--text-muted);
+	}
+
+	.access-label {
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+		padding: 2px 8px;
+		border-radius: 999px;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
 	}
 
 	/* Modal — surface/backdrop/Escape come from the shared <Modal> primitive
