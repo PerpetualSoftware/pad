@@ -398,11 +398,14 @@ func (s *Store) CheckAdditiveFieldsQ(q Queryer, workspaceID, installID, slug str
 		}
 		var n int
 		expr := s.dialect.JSONExtractText("fields", f.Key)
-		if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE collection_id = ? AND deleted_at IS NULL AND `+expr+` IS NOT NULL`), collID).Scan(&n); err != nil {
+		// ARCHIVED items count too: RestoreItem clears deleted_at without
+		// re-validating fields, so an archived value would come back
+		// unchecked under the new field (codex r2 on U8b2).
+		if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE collection_id = ? AND `+expr+` IS NOT NULL`), collID).Scan(&n); err != nil {
 			return fmt.Errorf("check additive field %q: %w", f.Key, err)
 		}
 		if n > 0 {
-			return &ProvisionConflictError{Collection: slug, Field: f.Key, Detail: fmt.Sprintf("%d existing items already hold values under this key; declaring it now would leave them unchecked", n)}
+			return &ProvisionConflictError{Collection: slug, Field: f.Key, Detail: fmt.Sprintf("%d existing items (archived ones included) already hold values under this key; declaring it now would leave them unchecked", n)}
 		}
 		next.Fields = append(next.Fields, f)
 	}

@@ -385,3 +385,23 @@ func TestAppUpgrade_AdditiveFieldThatMovesTheDoneFieldRefuses(t *testing.T) {
 		t.Fatalf("got %d %s; want 409 naming the done field", code, body)
 	}
 }
+
+// codex r2: an ARCHIVED item's value counts too, since a restore would bring
+// it back unchecked under the new field.
+func TestAppUpgrade_AdditiveFieldOverArchivedDataRefuses(t *testing.T) {
+	u := newUpgradeEnv(t)
+	c, _ := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
+	it, err := u.srv.store.CreateItem(u.wsID, c.ID, models.ItemCreate{Title: "archived holder", Fields: `{"code":"same"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := u.srv.store.DeleteItem(it.ID); err != nil {
+		t.Fatal(err)
+	}
+	u.addTicketField(map[string]any{"key": "code", "label": "Code", "type": "text", "unique_scope": "workspace_collection"})
+	u.publish(t, u.m)
+	code, _, body := u.previewUpgrade(t)
+	if code != http.StatusConflict || !strings.Contains(body, "already hold values") {
+		t.Fatalf("got %d %s; want 409 counting the archived value", code, body)
+	}
+}
