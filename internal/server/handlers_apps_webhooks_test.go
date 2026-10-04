@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PerpetualSoftware/pad/internal/appmanifest"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TASK-3408 (U10a): the app's hook is created from the manifest, HELD until
@@ -251,25 +251,12 @@ func TestAppWebhook_Backfill(t *testing.T) {
 	}
 	// The same under the row lock, for an install that left the list's
 	// states after it was read.
-	if err := u.srv.store.EnsureAppWebhook(u.wsID, u.installID, appWebhookSpec(manifestOf(t, u.m))); err != nil {
+	if err := u.srv.store.EnsureAppWebhook(u.wsID, u.installID, appWebhookSpecFromJSON); err != nil {
 		t.Fatal(err)
 	}
 	if u.hook(t) != nil {
 		t.Fatal("EnsureAppWebhook created a hook for an uninstalled install")
 	}
-}
-
-func manifestOf(t *testing.T, m map[string]any) *appmanifest.Manifest {
-	t.Helper()
-	b, err := json.Marshal(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out appmanifest.Manifest
-	if err := json.Unmarshal(b, &out); err != nil {
-		t.Fatal(err)
-	}
-	return &out
 }
 
 // An event resolves only to THIS install's companions: a collection that now
@@ -288,8 +275,48 @@ func TestAppWebhook_ResolvesOnlyOwnCompanions(t *testing.T) {
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create collection: %d %s", rr.Code, rr.Body.String())
 	}
-	err := u.srv.store.EnsureAppWebhook(u.wsID, u.installID, appWebhookSpec(manifestOf(t, u.m)))
+	err := u.srv.store.EnsureAppWebhook(u.wsID, u.installID, appWebhookSpecFromJSON)
 	if err == nil || u.hook(t) != nil {
 		t.Fatalf("subscribed to a collection that is not the app's: err %v, hook %+v", err, u.hook(t))
+	}
+}
+
+// codex r1 on U10a: a backfill working from a stale list never touches an
+// existing hook and reads the manifest under the install lock.
+func TestAppWebhook_BackfillNeverOverridesAnUpgrade(t *testing.T) {
+	u := newUpgradeEnv(t)
+	u.issueAndRedeem(t)
+	u.m["version"] = "1.0.1"
+	u.m["webhook_url"] = u.origin() + "/hooks/v2"
+	u.publish(t, u.m)
+	_, p, _ := u.previewUpgrade(t)
+	if code, body := u.confirmUpgrade(t, p); code != http.StatusOK {
+		t.Fatalf("upgrade: %d %s", code, body)
+	}
+	before := u.hook(t)
+	stale := func(string) (*store.AppWebhookSpec, error) {
+		return &store.AppWebhookSpec{URL: u.origin() + "/hooks", Events: []store.AppWebhookEvent{{Name: "item.created", CollectionSlugs: []string{"portal-tickets"}}}}, nil
+	}
+	if err := u.srv.store.EnsureAppWebhook(u.wsID, u.installID, stale); err != nil {
+		t.Fatal(err)
+	}
+	if after := u.hook(t); *after != *before {
+		t.Fatalf("a backfill rewrote an existing hook: %+v -> %+v", before, after)
+	}
+
+	// An upgrade that dropped every event: the backfill reads THAT manifest.
+	u.m["version"] = "1.0.2"
+	delete(u.m, "events")
+	delete(u.m, "webhook_url")
+	u.publish(t, u.m)
+	_, p, _ = u.previewUpgrade(t)
+	if code, body := u.confirmUpgrade(t, p); code != http.StatusOK {
+		t.Fatalf("upgrade: %d %s", code, body)
+	}
+	if err := u.srv.store.EnsureAppWebhook(u.wsID, u.installID, appWebhookSpecFromJSON); err != nil {
+		t.Fatal(err)
+	}
+	if h := u.hook(t); h != nil {
+		t.Fatalf("a backfill recreated a hook the installed manifest no longer declares: %+v", h)
 	}
 }

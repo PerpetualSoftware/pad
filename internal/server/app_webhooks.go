@@ -42,6 +42,15 @@ func appWebhookSpec(m *appmanifest.Manifest) *store.AppWebhookSpec {
 	return spec
 }
 
+// appWebhookSpecFromJSON is appWebhookSpec over a stored manifest.
+func appWebhookSpecFromJSON(manifestJSON string) (*store.AppWebhookSpec, error) {
+	var m appmanifest.Manifest
+	if err := json.Unmarshal([]byte(manifestJSON), &m); err != nil {
+		return nil, err
+	}
+	return appWebhookSpec(&m), nil
+}
+
 // appWebhookView is the owner-facing hook status, with the held notice.
 type appWebhookView struct {
 	URL    string `json:"url"`
@@ -96,16 +105,7 @@ func (s *Server) EnsureAppWebhooks(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		var m appmanifest.Manifest
-		if err := json.Unmarshal([]byte(in.ManifestJSON), &m); err != nil {
-			slog.Error("apps: webhook backfill: manifest", "install_id", in.InstallID, "error", err)
-			continue
-		}
-		spec := appWebhookSpec(&m)
-		if spec == nil {
-			continue
-		}
-		if err := s.store.EnsureAppWebhook(in.WorkspaceID, in.InstallID, spec); err != nil {
+		if err := s.store.EnsureAppWebhook(in.WorkspaceID, in.InstallID, appWebhookSpecFromJSON); err != nil {
 			slog.Error("apps: webhook backfill", "install_id", in.InstallID, "error", err)
 		}
 	}

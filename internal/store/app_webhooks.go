@@ -168,18 +168,17 @@ func (s *Store) GetAppWebhookStatus(installID string) (*AppWebhookStatus, error)
 	return st, nil
 }
 
-// InstallManifestNeedingWebhook is an install whose stored manifest may
-// declare a hook it does not have yet (the backfill's work list).
-type InstallManifestNeedingWebhook struct {
-	InstallID    string
-	WorkspaceID  string
-	ManifestJSON string
+// InstallNeedingWebhook is an install that may need a backfilled hook (the
+// backfill's work list; EnsureAppWebhook re-decides under the lock).
+type InstallNeedingWebhook struct {
+	InstallID   string
+	WorkspaceID string
 }
 
 // ListInstallsWithoutWebhook returns active and inactive installs that have a
 // stored manifest and no hook row: those provisioned before U10 (TASK-3408).
-func (s *Store) ListInstallsWithoutWebhook() ([]InstallManifestNeedingWebhook, error) {
-	rows, err := s.db.Query(s.q(`SELECT i.id, i.workspace_id, i.manifest FROM app_installs i
+func (s *Store) ListInstallsWithoutWebhook() ([]InstallNeedingWebhook, error) {
+	rows, err := s.db.Query(s.q(`SELECT i.id, i.workspace_id FROM app_installs i
 		WHERE i.state IN ('active', 'inactive') AND i.manifest IS NOT NULL AND i.manifest != ''
 		AND NOT EXISTS (SELECT 1 FROM webhooks w WHERE w.app_install_id = i.id)
 		ORDER BY i.id`))
@@ -187,10 +186,10 @@ func (s *Store) ListInstallsWithoutWebhook() ([]InstallManifestNeedingWebhook, e
 		return nil, fmt.Errorf("list installs without webhook: %w", err)
 	}
 	defer rows.Close()
-	var out []InstallManifestNeedingWebhook
+	var out []InstallNeedingWebhook
 	for rows.Next() {
-		var r InstallManifestNeedingWebhook
-		if err := rows.Scan(&r.InstallID, &r.WorkspaceID, &r.ManifestJSON); err != nil {
+		var r InstallNeedingWebhook
+		if err := rows.Scan(&r.InstallID, &r.WorkspaceID); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -198,11 +197,18 @@ func (s *Store) ListInstallsWithoutWebhook() ([]InstallManifestNeedingWebhook, e
 	return out, rows.Err()
 }
 
+// AppWebhookSpecFunc derives the hook spec from a stored manifest (the
+// server's appmanifest translation); nil when it declares no hook.
+type AppWebhookSpecFunc func(manifestJSON string) (*AppWebhookSpec, error)
+
 // EnsureAppWebhook creates the hook an already-installed manifest declares
-// (the backfill). It locks the install row, re-checks its state, then
-// creates it HELD (awaiting its secret): this app was
+// (the backfill). Under the install row lock it re-checks the state, that
+// there is still no hook, and re-reads the manifest: the list the caller
+// worked from may be stale (another instance's backfill or a reviewed
+// upgrade can land in between; codex r1 on U10a), and an existing hook is
+// never touched. It creates the hook HELD (awaiting its secret): this app was
 // never handed one, and gets it only at its next redeem (lead ruling, day 86).
-func (s *Store) EnsureAppWebhook(workspaceID, installID string, spec *AppWebhookSpec) error {
+func (s *Store) EnsureAppWebhook(workspaceID, installID string, specOf AppWebhookSpecFunc) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -215,8 +221,27 @@ func (s *Store) EnsureAppWebhook(workspaceID, installID string, spec *AppWebhook
 	if state != InstallActive && state != InstallInactive {
 		return nil
 	}
-	// A hook created since the list was read (an upgrade) is simply updated
-	// to the same manifest: upsert keeps its secret and delivered state.
+	var n int
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM webhooks WHERE app_install_id = ?`), installID).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	var manifest sql.NullString
+	if err := tx.QueryRow(s.q(`SELECT manifest FROM app_installs WHERE id = ?`), installID).Scan(&manifest); err != nil {
+		return err
+	}
+	if !manifest.Valid || manifest.String == "" {
+		return nil
+	}
+	spec, err := specOf(manifest.String)
+	if err != nil {
+		return err
+	}
+	if spec == nil {
+		return nil
+	}
 	if err := s.upsertAppWebhookTx(tx, workspaceID, installID, spec); err != nil {
 		return err
 	}
