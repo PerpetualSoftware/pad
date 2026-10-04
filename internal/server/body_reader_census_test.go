@@ -270,6 +270,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"middleware_request_text.go": "the chokepoint itself: readBodyForDecode reads the body under the caller's cap so bodyDecodesNUL can scan it",
 		"handlers_import_bundle.go":  "tar.gz bundle import — streams the body through gzip, and its pad-export.json is checked with bodyDecodesNUL before ImportWorkspace",
 		"handlers_attachments.go":    "multipart upload — the body is binary blob content, not text, and must NOT be scanned for text validity",
+		"app_api_attachments.go":     "app upload (TASK-3401 U6c) — a raw binary body with a required Content-Length, handed to appstore.StageUpload, which bounds it with a LimitReader at the declared size plus one; blob content, never JSON",
 		"artifact_import.go":         "raw artifact TEXT (not JSON) — checked with bindableText, the same predicate ValidatePath and ValidateQuery apply",
 		"handlers_cloud.go":          "bodyHasCloudSecret PEEKS at the body and restores the first 64 KiB of it — a larger body loses its tail, a bound that file documents and accepts; the real decode still happens through decodeJSON downstream",
 		"middleware_mcp_audit.go":    "audit capture — parses the body ITSELF and binds the decoded method / params.name to mcp_audit_log.tool_name, so it is a second READER, not a pass-through. That the MCP dispatcher decodes the body again is true and says nothing about what this middleware persists — the earlier rationale here made exactly that mistake and certified it safe (codex round 20). parseMCPRequestBody now runs both caller-derived returns through sanitiseStoredText",
@@ -287,6 +288,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 	bodyReaderSites := map[string]int{
 		"artifact_import.go::parseArtifactRequest::Body":                             1,
 		"handlers_attachments.go::Server.handleUploadAttachment::Body":               2,
+		"app_api_attachments.go::Server.appUploadAttachment::Body":                   1,
 		"handlers_attachments.go::Server.handleUploadAttachment::MultipartForm":      2,
 		"handlers_attachments.go::Server.handleUploadAttachment::ParseMultipartForm": 1,
 		"handlers_attachments.go::Server.handleUploadAttachment::FormFile":           1,
