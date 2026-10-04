@@ -597,10 +597,3 @@ func TestTask3401b_TheActorNameIsReadWithTheWrite(t *testing.T) {
 		t.Fatal("no watch notification")
 	}
 }
-
-// Lead ruling R3, U5b half: a DELEGATED write's author is the person, with
-// via_app set ("Dave via Support Portal"), never the bot. Enabled by
-// TASK-3399, which brings delegated tokens.
-func TestTask3401_DelegatedWriteAuthorIsThePerson(t *testing.T) {
-	t.Skip("TASK-3399 (U5b): delegated tokens are refused until then; enable this with them")
-}

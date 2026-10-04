@@ -328,6 +328,8 @@ func (s *Server) appAdmitToken(ctx context.Context, tok string) (*appContext, er
 // and the install's companion ∪ system collections, intersected with what
 // the person may see at every resolver (U6a's request ceiling).
 func (s *Server) appAdmitDelegated(grant *AppTokenGrant, inst *store.InstallAPIState, tok string) (*appContext, error) {
+	// Second layer: the issuance barrier already binds every persistence to
+	// the person its code named (U5b-2 mutant D6 survives for that reason).
 	if grant.DelegatedUserID == "" || grant.Subject != grant.DelegatedUserID {
 		return nil, errAppAdmit
 	}

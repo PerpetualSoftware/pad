@@ -1,0 +1,217 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// TASK-3399 (SPEC-6 U5b-2): the app API for a person signed in through an
+// installed app.
+
+type delegatedAPIFix struct {
+	appAPIFix
+	person *models.User
+	reqID  string
+}
+
+// delegatedAPIFixture is the U6 app world (a companion, a system and a
+// private collection, an app item, a person's comment) with a PERSON signed
+// in through the app's real consent flow, consenting to access; the
+// fixture's token is that person's delegated token.
+func delegatedAPIFixture(t *testing.T, offered, access, role string) delegatedAPIFix {
+	t.Helper()
+	f := appAPIFixture(t, "write")
+	if _, err := f.srv.store.DB().Exec(`UPDATE app_installs SET delegated_access = ? WHERE id = ?`, offered, f.in.id); err != nil {
+		t.Fatal(err)
+	}
+	person, sessionToken := loginTestUserAs(t, f.srv, "dana-"+f.in.id+"@example.com", "Dana", "password123")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, person.ID, role); err != nil {
+		t.Fatal(err)
+	}
+	df := delegatedFix{srv: f.srv, in: f.in, person: person, sessionToken: sessionToken}
+	df.csrf = df.csrfFromAppConsent(t)
+	tok, reqID := df.signIn(t, access)
+	f.token = tok
+	return delegatedAPIFix{appAPIFix: f, person: person, reqID: reqID}
+}
+
+func TestTask3399b_TheAppActsAsThePerson(t *testing.T) {
+	f := delegatedAPIFixture(t, "write", "write", "editor")
+	rr := appGet(f.srv, f.path("/me"), f.token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/me: %d %s", rr.Code, rr.Body.String())
+	}
+	var me AppMe
+	_ = json.Unmarshal(rr.Body.Bytes(), &me)
+	if me.UserID != f.person.ID || me.IsApp || me.Role != "editor" {
+		t.Errorf("/me = %+v, want the person as an editor", me)
+	}
+	// The ceiling: companions and system collections, never the private one.
+	if rr := appGet(f.srv, f.path("/items/"+f.item.ID), f.token); rr.Code != http.StatusOK {
+		t.Errorf("a companion item: %d", rr.Code)
+	}
+	if rr := appGet(f.srv, f.path("/items/"+f.privateItem.ID), f.token); rr.Code != http.StatusNotFound {
+		t.Errorf("a private item: %d, want 404", rr.Code)
+	}
+}
+
+// Lead ruling R3 (TASK-3401 U6b), the delegated half: a write is the
+// PERSON's, with via_app = the install, never the bot's.
+func TestTask3401_DelegatedWriteAuthorIsThePerson(t *testing.T) {
+	f := delegatedAPIFixture(t, "write", "write", "editor")
+	bus := events.New()
+	f.srv.SetEventBus(bus)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sse, _, _ := bus.Subscribe(ctx, f.ws.ID)
+
+	rr := appDo(f.srv, "POST", f.path("/collections/requests/items"), f.token, map[string]any{"title": "Filed by Dana via the portal"},
+		"X-Pad-Agent", "spoofed")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created AppItem
+	_ = json.Unmarshal(rr.Body.Bytes(), &created)
+	var createdBy, createdByUser, viaApp string
+	if err := f.srv.store.DB().QueryRow(`SELECT created_by, COALESCE(created_by_user_id, ''), COALESCE(via_app, '') FROM items WHERE id = ?`, created.ID).
+		Scan(&createdBy, &createdByUser, &viaApp); err != nil {
+		t.Fatal(err)
+	}
+	if createdBy != "user" || createdByUser != f.person.ID || viaApp != f.in.id {
+		t.Errorf("item attribution = %s/%s via %s, want user/%s via %s", createdBy, createdByUser, viaApp, f.person.ID, f.in.id)
+	}
+	if created.CreatedByDisplay != "Dana" {
+		t.Errorf("created_by_display = %q, want the person", created.CreatedByDisplay)
+	}
+
+	rr = appDo(f.srv, "POST", f.path("/items/"+f.item.ID+"/comments"), f.token, map[string]any{"body": "following up"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("comment: %d %s", rr.Code, rr.Body.String())
+	}
+	var c AppComment
+	_ = json.Unmarshal(rr.Body.Bytes(), &c)
+	if c.AuthorKind != "user" || c.AuthorDisplay != "Dana" {
+		t.Errorf("comment author = %s/%s, want user/Dana", c.AuthorKind, c.AuthorDisplay)
+	}
+	var cBy, cUser, cVia string
+	if err := f.srv.store.DB().QueryRow(`SELECT created_by, COALESCE(user_id, ''), COALESCE(via_app, '') FROM comments WHERE id = ?`, c.ID).
+		Scan(&cBy, &cUser, &cVia); err != nil {
+		t.Fatal(err)
+	}
+	if cBy != "user" || cUser != f.person.ID || cVia != f.in.id {
+		t.Errorf("comment row = %s/%s via %s", cBy, cUser, cVia)
+	}
+	deadline := time.After(3 * time.Second)
+	for seen := 0; seen < 2; {
+		select {
+		case e := <-sse:
+			seen++
+			if e.Actor != "user" {
+				t.Errorf("SSE %s actor = %q, want user", e.Type, e.Actor)
+			}
+		case <-deadline:
+			t.Fatalf("saw %d SSE events, want 2", seen)
+		}
+	}
+}
+
+// §4 step 4: the token's access is the LESSER of the person's consent and
+// what the manifest offers now; and the person's role still applies.
+func TestTask3399b_AccessIsTheLesser(t *testing.T) {
+	create := func(f delegatedAPIFix) int {
+		return appDo(f.srv, "POST", f.path("/collections/requests/items"), f.token, map[string]any{"title": "x"}).Code
+	}
+	// Consented read on a write manifest.
+	if code := create(delegatedAPIFixture(t, "write", "read", "editor")); code != http.StatusForbidden {
+		t.Errorf("a read consent writing: %d, want 403", code)
+	}
+	// Consented write, then the manifest narrowed to read (an upgrade).
+	f := delegatedAPIFixture(t, "write", "write", "editor")
+	if code := create(f); code != http.StatusCreated {
+		t.Fatalf("control: a write consent writing: %d", code)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE app_installs SET delegated_access = 'read' WHERE id = ?`, f.in.id); err != nil {
+		t.Fatal(err)
+	}
+	if code := create(f); code != http.StatusForbidden {
+		t.Errorf("writing after the manifest narrowed to read: %d, want 403", code)
+	}
+	// A viewer's write consent cannot write either.
+	if code := create(delegatedAPIFixture(t, "write", "write", "viewer")); code < 400 {
+		t.Errorf("a viewer writing: %d, want a refusal", code)
+	}
+}
+
+// §8: removing a delegated user's membership (or disabling them, or moving
+// their credentials) stops their token at the NEXT request, even where no
+// revocation reached the token itself.
+func TestTask3399b_ThePersonIsCheckedOnEveryRequest(t *testing.T) {
+	cases := map[string]func(t *testing.T, f delegatedAPIFix){
+		"membership removed": func(t *testing.T, f delegatedAPIFix) {
+			if _, err := f.srv.store.DB().Exec(`DELETE FROM workspace_members WHERE user_id = ? AND workspace_id = ?`, f.person.ID, f.ws.ID); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"account disabled": func(t *testing.T, f delegatedAPIFix) {
+			if _, err := f.srv.store.DB().Exec(`UPDATE users SET disabled_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), f.person.ID); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"credentials moved": func(t *testing.T, f delegatedAPIFix) {
+			if _, err := f.srv.store.DB().Exec(`UPDATE users SET credential_epoch = credential_epoch + 1 WHERE id = ?`, f.person.ID); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"membership re-created": func(t *testing.T, f delegatedAPIFix) {
+			if _, err := f.srv.store.DB().Exec(`UPDATE workspace_members SET created_at = '2099-01-01T00:00:00Z' WHERE user_id = ? AND workspace_id = ?`, f.person.ID, f.ws.ID); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := delegatedAPIFixture(t, "write", "write", "editor")
+			if rr := appGet(f.srv, f.path("/me"), f.token); rr.Code != http.StatusOK {
+				t.Fatalf("control: %d", rr.Code)
+			}
+			change(t, f)
+			if rr := appGet(f.srv, f.path("/me"), f.token); rr.Code != http.StatusUnauthorized {
+				t.Errorf("after %s: %d, want 401", name, rr.Code)
+			}
+		})
+	}
+}
+
+// The person's own visibility bounds what the app sees as them: the request
+// ceiling (U6a), not only the companion set.
+func TestTask3399b_ThePersonsVisibilityBoundsTheApp(t *testing.T) {
+	f := delegatedAPIFixture(t, "write", "read", "editor")
+	if _, err := f.srv.store.DB().Exec(`UPDATE workspace_members SET collection_access = 'specific' WHERE user_id = ? AND workspace_id = ?`, f.person.ID, f.ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rr := appGet(f.srv, f.path("/items/"+f.item.ID), f.token); rr.Code != http.StatusNotFound {
+		t.Errorf("a companion item the person cannot see: %d, want 404", rr.Code)
+	}
+}
+
+// U6a's Q7 note made load-bearing: re-admission replays every authorization
+// under the FRESH context, so a companion released while a delegated read is
+// in flight withholds the response (the store's bot ceiling does not cover a
+// person).
+func TestTask3399b_ACompanionReleasedMidReadWithholdsIt(t *testing.T) {
+	f := delegatedAPIFixture(t, "write", "read", "editor")
+	f.srv.appAfterHandler = func() {
+		if _, err := f.srv.store.DB().Exec(`UPDATE collections SET via_app = NULL WHERE id = ?`, f.companion.ID); err != nil {
+			t.Error(err)
+		}
+	}
+	if rr := appGet(f.srv, f.path("/items/"+f.item.ID), f.token); rr.Code != http.StatusUnauthorized {
+		t.Errorf("a companion released mid-read: %d, want 401 and nothing", rr.Code)
+	}
+}
