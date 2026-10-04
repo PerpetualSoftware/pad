@@ -341,6 +341,18 @@ func (s *Store) VisibleCollectionIDs(workspaceID, userID string) ([]string, erro
 // VisibleCollectionIDsQ is VisibleCollectionIDs parameterized over its
 // executor (see Queryer).
 func (s *Store) VisibleCollectionIDsQ(q Queryer, workspaceID, userID string) ([]string, error) {
+	ids, err := s.membershipVisibleCollectionIDsQ(q, workspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	// An installed app's bot sees no further than its install's ceiling,
+	// whatever its membership says, at EVERY caller (SPEC-6 U6a, TASK-3401).
+	return s.applyAppPrincipalCeilingQ(q, workspaceID, userID, ids)
+}
+
+// membershipVisibleCollectionIDsQ is the visibility a membership (or a
+// guest's grants) gives, before any app ceiling.
+func (s *Store) membershipVisibleCollectionIDsQ(q Queryer, workspaceID, userID string) ([]string, error) {
 	member, err := s.GetWorkspaceMemberQ(q, workspaceID, userID)
 	if err != nil {
 		return nil, err
