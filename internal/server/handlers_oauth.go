@@ -1177,7 +1177,11 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer s.observeOAuthFlowDuration("token", start)
 
-	if !s.oauthAvailable() {
+	// The token endpoint serves MCP clients while MCP is available and
+	// installed apps' clients while apps are (SPEC-6 U5a A0): with MCP off
+	// and apps on, ONLY an install client gets past this.
+	mcpOn := s.oauthAvailable()
+	if !mcpOn && !s.appsAvailable() {
 		http.NotFound(w, r)
 		return
 	}
@@ -1190,8 +1194,28 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid form body", http.StatusBadRequest)
 		return
 	}
-	if translateResourceToAudience(r, s.oauthServer.AllowedAudience()) {
-		s.noteResourceMissing(r, "token")
+	installClient := s.installClientFor(r)
+	switch {
+	case installClient != nil:
+		if !s.appsAvailable() {
+			http.NotFound(w, r)
+			return
+		}
+		// Resource required, no MCP default, client_credentials only.
+		if !s.prepareInstallTokenRequest(ctx, w, r) {
+			return
+		}
+	case !mcpOn:
+		http.NotFound(w, r)
+		return
+	case r.PostForm.Get("grant_type") == "client_credentials":
+		// client_credentials is for installed apps' clients only.
+		s.writeTokenError(ctx, w, fosite.ErrUnauthorizedClient.WithHint("client_credentials is for installed apps."))
+		return
+	default:
+		if translateResourceToAudience(r, s.oauthServer.AllowedAudience()) {
+			s.noteResourceMissing(r, "token")
+		}
 	}
 
 	// Empty session for fosite to populate from storage. The auth
@@ -1205,12 +1229,22 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		s.oauthServer.Provider().WriteAccessError(ctx, w, ar, err)
 		return
 	}
+	// An installed app's service token: the app scope and audience, and its
+	// install's bot as the subject (fosite's client_credentials grants none).
+	if installClient != nil {
+		if err := s.grantInstallServiceToken(ar, installClient); err != nil {
+			s.oauthServer.Provider().WriteAccessError(ctx, w, ar, err)
+			return
+		}
+	}
 	// No tokens for an account that is gone or disabled (BUG-3349): an
 	// authorization code or refresh token issued before a disable would
 	// otherwise exchange for fresh ones, and work again after a re-enable.
+	// A bot gets one only as its OWN install client's service token (lead
+	// ruling R1 on TASK-3394); the store's issuance barrier decides it again.
 	if subject := ar.GetSession().GetSubject(); subject != "" {
 		u, uerr := s.store.GetUser(subject)
-		if uerr != nil || u == nil || u.IsDisabled() || u.IsApp() {
+		if uerr != nil || u == nil || u.IsDisabled() || (u.IsApp() && !s.isOwnInstallBot(installClient, u)) {
 			s.oauthServer.Provider().WriteAccessError(ctx, w, ar, fosite.ErrInvalidGrant.WithHint("The account is not available."))
 			return
 		}
@@ -1370,7 +1404,25 @@ func (s *Server) handleOAuthIntrospect(w http.ResponseWriter, r *http.Request) {
 	// pad-specific fields.
 	session := oauth.NewSession("")
 
+	// Installed apps' clients do not use the public endpoint, and it never
+	// describes their tokens (lead ruling R2 on TASK-3394): the app API
+	// checks its tokens in-process. The general caller-ownership gap is
+	// BUG-3398.
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid form body", http.StatusBadRequest)
+		return
+	}
+	if s.introspectionCallerIsInstall(r) {
+		s.oauthServer.Provider().WriteIntrospectionError(ctx, w, fosite.ErrRequestUnauthorized.WithHint("Installed apps do not use this endpoint."))
+		return
+	}
+
 	ir, err := s.oauthServer.Provider().NewIntrospectionRequest(ctx, r, session)
+	if err == nil && ir.IsActive() {
+		if c, cerr := s.store.GetOAuthClient(ir.GetAccessRequester().GetClient().GetID()); cerr == nil && c.IsInstallClient() {
+			err = fosite.ErrInactiveToken
+		}
+	}
 	if err != nil {
 		// fosite's WriteIntrospectionError handles the RFC 7662 §2.2
 		// distinction: for ErrInactiveToken / general validation

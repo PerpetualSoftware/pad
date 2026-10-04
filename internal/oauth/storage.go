@@ -51,6 +51,9 @@ import (
 type Storage struct {
 	store              *store.Store
 	canonicalAudiences []string
+	// appAudience is the app API resource (SPEC-6 U5a): held by install
+	// clients only, never by a DCR client.
+	appAudience string
 
 	// onTokenRevoked is an optional observer that fires AFTER each
 	// successful access-token family revocation. Wired by cmd/pad
@@ -551,9 +554,24 @@ func (s *Storage) oauthRequestToFositeRequest(stored *models.OAuthRequest, sessi
 // every request with ServerError, surfacing the misconfiguration
 // fast.
 func (s *Storage) modelClientToFosite(c *models.OAuthClient) fosite.Client {
+	// An installed app's client (SPEC-6 U5a, TASK-3394) is confidential:
+	// fosite compares its secret against the stored hash, and its audiences
+	// are its own, the app API resource only.
+	if c.IsInstallClient() {
+		return &fosite.DefaultClient{
+			ID:            c.ID,
+			Secret:        []byte(c.SecretHash),
+			RedirectURIs:  append([]string(nil), c.RedirectURIs...),
+			GrantTypes:    append([]string(nil), c.GrantTypes...),
+			ResponseTypes: append([]string(nil), c.ResponseTypes...),
+			Scopes:        append([]string(nil), c.Scopes...),
+			Audience:      append([]string(nil), c.AllowedAudiences...),
+			Public:        false,
+		}
+	}
 	var audience []string
 	for _, a := range s.canonicalAudiences {
-		if a != "" {
+		if a != "" && (s.appAudience == "" || NormalizeAudience(a) != NormalizeAudience(s.appAudience)) {
 			audience = append(audience, a)
 		}
 	}

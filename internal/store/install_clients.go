@@ -284,3 +284,58 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	}
 	return true, nil
 }
+
+// AppPrincipalForInstall returns the install's bot: the kind='app' user at
+// the address CreateAppUserTx gave it, or nil when there is none.
+func (s *Store) AppPrincipalForInstall(installID string) (*models.User, error) {
+	u, err := s.GetUserByEmail(appPrincipalEmail(installID))
+	if err != nil || u == nil || !u.IsApp() {
+		return nil, err
+	}
+	return u, nil
+}
+
+// AppTokenBinding is the binding the issuance barrier wrote for a token
+// family.
+type AppTokenBinding struct {
+	RequestID   string
+	ClientID    string
+	InstallID   string
+	WorkspaceID string
+	AuthEpoch   int64
+	AuthKind    string
+}
+
+// AppTokenState is what introspection needs, read in one statement: the
+// family's binding, its install's current state and epoch, and whether its
+// client is disabled.
+type AppTokenState struct {
+	Binding        AppTokenBinding
+	InstallState   string
+	InstallEpoch   int64
+	ClientDisabled bool
+}
+
+// GetAppTokenState reads a token family's binding with its install and
+// client, or nil when the family has no binding.
+func (s *Store) GetAppTokenState(requestID string) (*AppTokenState, error) {
+	var st AppTokenState
+	var disabledAt sql.NullString
+	err := s.db.QueryRow(s.q(`
+		SELECT b.request_id, b.client_id, b.install_id, b.workspace_id, b.auth_epoch, b.auth_kind,
+		       i.state, i.auth_epoch, c.disabled_at
+		FROM app_token_bindings b
+		JOIN app_installs i ON i.id = b.install_id
+		JOIN oauth_clients c ON c.id = b.client_id
+		WHERE b.request_id = ?`), requestID).Scan(
+		&st.Binding.RequestID, &st.Binding.ClientID, &st.Binding.InstallID, &st.Binding.WorkspaceID,
+		&st.Binding.AuthEpoch, &st.Binding.AuthKind, &st.InstallState, &st.InstallEpoch, &disabledAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read app token state: %w", err)
+	}
+	st.ClientDisabled = disabledAt.Valid && disabledAt.String != ""
+	return &st, nil
+}

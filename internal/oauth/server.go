@@ -46,6 +46,12 @@ type Config struct {
 	// named; a request naming none is bound to AllowedAudience, as before.
 	AdditionalAudiences []string
 
+	// AppAPIAudience is the installed-app API resource (SPEC-6 U5a,
+	// TASK-3394). Only install clients ever hold it: a DCR client's
+	// hydrated audiences exclude it, and an install client's are exactly
+	// it. Empty disables install-client tokens.
+	AppAPIAudience string
+
 	// Optional lifespan overrides — sensible defaults below if zero.
 	// Operators who need shorter access tokens (e.g. compliance
 	// regimes) override via env vars in sub-PR C's wiring.
@@ -204,7 +210,7 @@ func NewServer(cfg Config) (*Server, error) {
 
 		// Custom audience strategy (RFC 8707). Rejects any audience
 		// that isn't the canonical MCP resource URL. See audience.go.
-		AudienceMatchingStrategy: audienceMatchingStrategy(cfg.allowedAudiences()),
+		AudienceMatchingStrategy: audienceMatchingStrategy(cfg.strategyAudiences()),
 
 		// Strategies fosite needs to introspect:
 		// (no extra config — defaults handle these)
@@ -215,6 +221,7 @@ func NewServer(cfg Config) (*Server, error) {
 	// resource AS for v1 — every client implicitly allowed for the
 	// configured audience. See storage.go modelClientToFosite.
 	storage := NewStorage(cfg.Store, cfg.allowedAudiences()...)
+	storage.appAudience = cfg.AppAPIAudience
 	strategy := compose.NewOAuth2HMACStrategy(fcfg)
 
 	provider := compose.Compose(
@@ -234,6 +241,11 @@ func NewServer(cfg Config) (*Server, error) {
 		compose.OAuth2TokenRevocationFactory,
 		// PKCE (S256 enforced).
 		compose.OAuth2PKCEFactory,
+		// client_credentials, for install clients only (SPEC-6 U5a): fosite
+		// already refuses a public client and one whose grant_types lack
+		// it, and handleOAuthToken refuses any client that is not an
+		// install client before fosite sees the request.
+		compose.OAuth2ClientCredentialsGrantFactory,
 	)
 
 	// Sanity check that compose actually built a usable provider.
@@ -281,6 +293,17 @@ func (s *Server) AllowedAudience() string {
 // for: AllowedAudience first, then AdditionalAudiences.
 func (s *Server) AllowedAudiences() []string {
 	return s.cfg.allowedAudiences()
+}
+
+// strategyAudiences is every resource a request may name: the MCP
+// canonicals plus the app API resource. Which one a given client may hold is
+// decided by that client's own audiences (Storage.modelClientToFosite).
+func (c Config) strategyAudiences() []string {
+	out := c.allowedAudiences()
+	if c.AppAPIAudience != "" {
+		out = append(out, c.AppAPIAudience)
+	}
+	return out
 }
 
 func (c Config) allowedAudiences() []string {
