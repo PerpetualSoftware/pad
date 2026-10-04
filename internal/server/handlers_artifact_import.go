@@ -8,6 +8,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/artifact"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // artifactImportResponse is the JSON body returned by a successful import.
@@ -36,7 +37,12 @@ type artifactImportResponse struct {
 // Returns ("", nil) when no visible collection declares the kind — the caller
 // reports that as a workspace with nowhere to put this artifact.
 func (s *Server) collectionIDForKind(workspaceID string, k artifact.Kind, visibleCollIDs []string) (string, error) {
-	traited, err := s.store.ListTraitedCollections(workspaceID)
+	return s.collectionIDForKindQ(s.store.Q(), workspaceID, k, visibleCollIDs)
+}
+
+// collectionIDForKindQ is collectionIDForKind on q (TASK-3397, U8b).
+func (s *Server) collectionIDForKindQ(q store.Queryer, workspaceID string, k artifact.Kind, visibleCollIDs []string) (string, error) {
+	traited, err := s.store.ListTraitedCollectionsQ(q, workspaceID)
 	if err != nil {
 		return "", err
 	}
@@ -311,11 +317,13 @@ func freeInvocationSlug(requested string, isTaken func(string) (bool, error)) (s
 // invocationSlugTaken reports whether an item with the given invocation_slug
 // already exists (non-archived) in the destination collection.
 func (s *Server) invocationSlugTaken(workspaceID, collectionID, slug string) (bool, error) {
-	existing, err := s.store.ListItems(workspaceID, models.ItemListParams{
-		CollectionIDs: []string{collectionID},
-		Fields:        map[string]string{"invocation_slug": slug},
-		Limit:         1,
-	})
+	return s.invocationSlugTakenQ(s.store.Q(), workspaceID, collectionID, slug)
+}
+
+// invocationSlugTakenQ is invocationSlugTaken on q, through the same
+// ListItems Fields predicate (store.ItemsWithFieldValueQ; TASK-3397, U8b).
+func (s *Server) invocationSlugTakenQ(q store.Queryer, workspaceID, collectionID, slug string) (bool, error) {
+	existing, err := s.store.ItemsWithFieldValueQ(q, workspaceID, collectionID, "invocation_slug", slug, 1)
 	if err != nil {
 		return false, err
 	}

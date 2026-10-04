@@ -6,6 +6,20 @@
     "fields": null,
     "warnings": null
   },
+  "convention with relation defaults": {
+    "status": 201,
+    "title": "Related",
+    "content": "See [[Ada]].\n",
+    "fields": {
+      "owner": "item:Ada",
+      "status": "draft",
+      "trigger": "on-commit"
+    },
+    "warnings": [
+      "field \"reviewer\" was discarded: the destination collection's schema declares a default for it that is not a valid reference",
+      "status \"active\" reset to \"draft\" on import"
+    ]
+  },
   "convention, active, valid selects": {
     "status": 201,
     "title": "Clean Convention",

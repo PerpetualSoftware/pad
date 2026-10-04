@@ -105,8 +105,9 @@ type appPreviewArtifact struct {
 	// Changes are the importer's warnings: every field it dropped or changed.
 	Changes []string `json:"changes"`
 
-	// What provisioning (U8b) re-checks inside its transaction. Never
-	// serialized: provisioning recomputes the preview from the staged bytes.
+	// For provisioning (U8b), never serialized: the destination collection's
+	// id, and the relation fields whose resolved targets the provisioning
+	// transaction locks.
 	collectionID     string
 	collectionSchema string
 	uniqueKeys       []string
@@ -316,6 +317,16 @@ func (s *Server) stageErr(err error) error {
 // buildAppPreview validates the pack against this workspace and normalizes
 // every artifact exactly as the importer would store it.
 func (s *Server) buildAppPreview(r *http.Request, workspaceID string, m *appmanifest.Manifest, manifestSHA string, rawArtifacts [][]byte) (*appPreview, error) {
+	return s.buildAppPreviewQ(s.store.Q(), r, workspaceID, m, manifestSHA, rawArtifacts)
+}
+
+// buildAppPreviewQ is buildAppPreview with every read on q. Provisioning (U8b)
+// runs it on its own transaction, under its locks, and compares the result
+// with the reviewed preview: the digest comparison IS the re-check, so no
+// fact the normalization depends on has to be listed separately (lead
+// ruling, day 86). It must stay read-only: the write-capture test asserts a
+// pass on the provisioning transaction writes nothing.
+func (s *Server) buildAppPreviewQ(q store.Queryer, r *http.Request, workspaceID string, m *appmanifest.Manifest, manifestSHA string, rawArtifacts [][]byte) (*appPreview, error) {
 	p := &appPreview{
 		Origin: m.Origin, ManifestURL: appmanifest.ManifestURL(m.Origin), ManifestSHA256: manifestSHA,
 		AppID: m.ID, Version: m.Version, Title: m.Title, Description: m.Description, Publisher: m.Publisher, Homepage: m.Homepage,
@@ -334,7 +345,7 @@ func (s *Server) buildAppPreview(r *http.Request, workspaceID string, m *appmani
 	for i, c := range m.CompanionPack.Collections {
 		slugs[i] = c.Slug
 	}
-	owners, err := s.store.CollectionSlugOwners(workspaceID, slugs)
+	owners, err := s.store.CollectionSlugOwnersQ(q, workspaceID, slugs)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +380,7 @@ func (s *Server) buildAppPreview(r *http.Request, workspaceID string, m *appmani
 	// order on one transaction and so reaches the same outcome.
 	claimed := map[string]map[string]map[string]bool{}
 	for i, a := range m.CompanionPack.Artifacts {
-		pa, err := s.previewArtifact(r, workspaceID, a, rawArtifacts[i], claimed)
+		pa, err := s.previewArtifact(q, r, workspaceID, a, rawArtifacts[i], claimed)
 		if err != nil {
 			var ae *appInstallError
 			if errors.As(err, &ae) && ae.path == "" {
@@ -384,7 +395,7 @@ func (s *Server) buildAppPreview(r *http.Request, workspaceID string, m *appmani
 
 // previewArtifact runs the importer's own guards, decode and preprocess over
 // the STAGED bytes (DOC-3371 §2 step 3).
-func (s *Server) previewArtifact(r *http.Request, workspaceID string, a appmanifest.Artifact, raw []byte, claimed map[string]map[string]map[string]bool) (*appPreviewArtifact, error) {
+func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID string, a appmanifest.Artifact, raw []byte, claimed map[string]map[string]map[string]bool) (*appPreviewArtifact, error) {
 	art, err := decodeArtifactBytes(raw)
 	if err != nil {
 		return nil, installErr(http.StatusUnprocessableEntity, "invalid_artifact", "Artifact %q is not a valid Pad artifact: %v", a.Key, err)
@@ -392,14 +403,14 @@ func (s *Server) previewArtifact(r *http.Request, workspaceID string, a appmanif
 	if msg := models.ValidateItemTitle(models.NormalizeItemTitle(art.Title)); msg != "" {
 		return nil, installErr(http.StatusUnprocessableEntity, "invalid_artifact", "Artifact %q: %s", a.Key, msg)
 	}
-	collID, err := s.collectionIDForKind(workspaceID, art.Kind, nil)
+	collID, err := s.collectionIDForKindQ(q, workspaceID, art.Kind, nil)
 	if err != nil {
 		return nil, err
 	}
 	if collID == "" {
 		return nil, installErr(http.StatusUnprocessableEntity, "artifact_destination_missing", "This workspace has no collection that accepts %q artifacts (artifact %q)", art.Kind, a.Key)
 	}
-	coll, err := s.store.GetCollection(collID)
+	coll, err := s.store.GetCollectionQ(q, collID)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +426,7 @@ func (s *Server) previewArtifact(r *http.Request, workspaceID string, a appmanif
 		if packClaims["invocation_slug"]["s:"+slug] {
 			return true, nil
 		}
-		return s.invocationSlugTaken(workspaceID, coll.ID, slug)
+		return s.invocationSlugTakenQ(q, workspaceID, coll.ID, slug)
 	})
 	if err != nil {
 		return nil, err
@@ -424,7 +435,7 @@ func (s *Server) previewArtifact(r *http.Request, workspaceID string, a appmanif
 	// The create's own field pipeline (coercion, defaults, validation,
 	// relation resolution in the import's carry posture, the unique check),
 	// so the digest covers exactly what the import stores (codex round 1).
-	fields, dropped, unresolved, undeclared, cerr := s.prepareCreateFields(r, workspaceID, coll, schema, norm.Fields, relationsCarry)
+	fields, dropped, unresolved, undeclared, cerr := s.prepareCreateFieldsQ(q, r, workspaceID, coll, schema, norm.Fields, relationsCarry)
 	if cerr != nil {
 		return nil, installErr(http.StatusUnprocessableEntity, "invalid_artifact", "Artifact %q cannot be stored in %q: %s", a.Key, coll.Slug, cerr.message)
 	}
@@ -467,7 +478,7 @@ func (s *Server) previewArtifact(r *http.Request, workspaceID string, a appmanif
 			return nil, installErr(http.StatusUnprocessableEntity, "invalid_artifact", "Artifact %q would store a non-text invocation_slug", a.Key)
 		}
 		if slug != "" {
-			taken, err := s.store.InvocationSlugIndexTaken(coll.ID, slug)
+			taken, err := s.store.InvocationSlugIndexTakenQ(q, coll.ID, slug)
 			if err != nil {
 				return nil, err
 			}
@@ -534,7 +545,7 @@ func (s *Server) previewArtifact(r *http.Request, workspaceID string, a appmanif
 	return &appPreviewArtifact{
 		Key: a.Key, URL: a.URL, Kind: string(art.Kind), DestinationCollection: coll.Slug,
 		RawSHA256: a.SHA256, Raw: string(raw), Normalized: item, NormalizedSHA256: digest, Changes: changes,
-		collectionID: coll.ID, collectionSchema: coll.Schema, uniqueKeys: uniqueKeys, relationTargets: relationTargets,
+		collectionID: coll.ID, relationTargets: relationTargets,
 	}, nil
 }
 

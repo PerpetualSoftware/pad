@@ -9,9 +9,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
 // TASK-3397 (U8b): provisioning, install codes and redeem.
@@ -243,81 +245,133 @@ func squatPlaybook(t *testing.T, e *appsEnv, title, slug string) {
 	}
 }
 
-// The single-transaction re-check is the guarantee: a write that lands AFTER
-// the pre-transaction comparison passed is still refused inside the
-// transaction, the refusal names artifact, field and the colliding item, and
-// nothing is written (lead ruling, U8b).
+// The single-transaction re-derivation is the guarantee: a write that lands
+// AFTER the pre-transaction comparison passed is still refused inside the
+// transaction, the refusal names the artifact or collection, the field and
+// what changed, and nothing is written (lead rulings, U8b). Each case moves a
+// different piece of state the normalization READS, including the two codex
+// round 2 found that skip the workspace lock (a collection archive, a
+// relation target's collection archive).
 func TestProvisionAppInstall_InTransactionRecheck(t *testing.T) {
 	cases := map[string]struct {
-		move      func(t *testing.T, e *appsEnv)
-		artifact  string
-		coll      string
-		field     string
-		wantInMsg string
+		setup    func(t *testing.T, e *appsEnv)
+		move     func(t *testing.T, e *appsEnv)
+		wantText []string
 	}{
-		"invocation slug": {
+		"invocation slug squatted": {
 			move:     func(t *testing.T, e *appsEnv) { squatPlaybook(t, e, "Late squatter", "ship") },
-			artifact: "ship", field: "invocation_slug", wantInMsg: "PLAYB-",
+			wantText: []string{`Artifact "ship"`, "invocation_slug", `reviewed "ship", now "ship-2"`},
 		},
-		"companion slug": {
+		"companion slug taken": {
 			move: func(t *testing.T, e *appsEnv) {
 				if _, err := e.srv.store.CreateCollection(e.wsID, models.CollectionCreate{Name: "Late", Slug: "portal-tickets"}); err != nil {
 					t.Fatal(err)
 				}
 			},
-			coll: "tickets", field: "slug", wantInMsg: "portal-tickets",
+			wantText: []string{"portal-tickets"},
 		},
-		// Codex round 1: everything the re-check compares derives from the
-		// destination schema, so a schema edit after the comparison refuses.
-		"destination schema": {
-			move: func(t *testing.T, e *appsEnv) {
-				coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
-				if err != nil || coll == nil {
-					t.Fatalf("playbooks: %v", err)
-				}
-				var schema map[string]any
-				if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
-					t.Fatal(err)
-				}
-				schema["fields"] = append(schema["fields"].([]any), map[string]any{"key": "late", "label": "Late", "type": "text"})
-				b, _ := json.Marshal(schema)
-				sch := string(b)
-				if _, err := e.srv.store.UpdateCollection(coll.ID, models.CollectionUpdate{Schema: &sch}); err != nil {
+		// Codex round 1: a schema edit can make a stored value a conflict.
+		"destination schema makes a value unique": {
+			setup: func(t *testing.T, e *appsEnv) {
+				coll := playbooksColl(t, e)
+				if _, err := e.srv.store.CreateItem(e.wsID, coll.ID, models.ItemCreate{Title: "Holder", Fields: `{"status":"draft"}`}); err != nil {
 					t.Fatal(err)
 				}
 			},
-			artifact: "ship", wantInMsg: "schema changed",
+			move: func(t *testing.T, e *appsEnv) {
+				editPlaybookSchema(t, e, func(f map[string]any) {
+					if f["key"] == "status" {
+						f["unique_scope"] = "workspace_collection"
+					}
+				})
+			},
+			wantText: []string{`Artifact "ship"`, `"status"`, "already used"},
+		},
+		// Codex round 2: a trait-only update (no schema move) skips the
+		// workspace lock, and changes which collection the kind resolves to.
+		"destination kind trait cleared": {
+			move: func(t *testing.T, e *appsEnv) {
+				traits := "{}"
+				if _, err := e.srv.store.UpdateCollection(playbooksColl(t, e).ID, models.CollectionUpdate{Traits: &traits}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantText: []string{`artifact \"ship\"`, "no collection that accepts"},
 		},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			e := newProvisionEnv(t)
+			if c.setup != nil {
+				c.setup(t, e)
+			}
 			p := e.stagePreview(t)
-			pending, err := e.srv.store.GetPendingInstall(p.PendingID, e.wsID, ownerIDOf(t, e))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var reviewed appPreview
-			if err := json.Unmarshal([]byte(pending.Preview), &reviewed); err != nil {
-				t.Fatal(err)
-			}
-			req, err := e.srv.buildProvisionRequest(ownerRequest(t, e), e.wsID, pending.OwnerID, pending, &reviewed)
-			if err != nil {
-				t.Fatalf("build: %v", err)
-			}
-			c.move(t, e) // lands after the comparison, before the transaction
+			req, derive := prepareProvision(t, e, p)
+			c.move(t, e) // lands after the pool comparison, before the transaction
 			before := provisionCensus(t, e)
-			_, err = e.srv.store.ProvisionAppInstall(*req)
-			var pc *store.ProvisionConflictError
-			if !errors.As(err, &pc) {
-				t.Fatalf("got %v, want a ProvisionConflictError", err)
-			}
-			if pc.Artifact != c.artifact || pc.Collection != c.coll || pc.Field != c.field || !strings.Contains(pc.Detail, c.wantInMsg) {
-				t.Errorf("conflict %+v; want artifact %q collection %q field %q naming %q", pc, c.artifact, c.coll, c.field, c.wantInMsg)
+			_, err := e.srv.store.ProvisionAppInstall(*req, derive)
+			ae := wantStale(t, err)
+			for _, w := range c.wantText {
+				if !strings.Contains(ae.msg, strings.ReplaceAll(w, `\"`, `"`)) {
+					t.Errorf("refusal %q does not name %s", ae.msg, w)
+				}
 			}
 			assertCensusUnchanged(t, before, provisionCensus(t, e))
 		})
 	}
+}
+
+func playbooksColl(t *testing.T, e *appsEnv) *models.Collection {
+	t.Helper()
+	coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
+	if err != nil || coll == nil {
+		t.Fatalf("playbooks collection: %v", err)
+	}
+	return coll
+}
+
+func editPlaybookSchema(t *testing.T, e *appsEnv, edit func(field map[string]any)) {
+	t.Helper()
+	coll := playbooksColl(t, e)
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range schema["fields"].([]any) {
+		edit(f.(map[string]any))
+	}
+	b, _ := json.Marshal(schema)
+	sch := string(b)
+	if _, err := e.srv.store.UpdateCollection(coll.ID, models.CollectionUpdate{Schema: &sch}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// prepareProvision is the confirm handler's first half, as the owner.
+func prepareProvision(t *testing.T, e *appsEnv, p appPreview) (*store.ProvisionRequest, store.ProvisionDeriveFunc) {
+	t.Helper()
+	pending, err := e.srv.store.GetPendingInstall(p.PendingID, e.wsID, ownerIDOf(t, e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reviewed appPreview
+	if err := json.Unmarshal([]byte(pending.Preview), &reviewed); err != nil {
+		t.Fatal(err)
+	}
+	req, derive, err := e.srv.buildProvisionRequest(ownerRequest(t, e), e.wsID, pending.OwnerID, pending, &reviewed)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	return req, derive
+}
+
+func wantStale(t *testing.T, err error) *appInstallError {
+	t.Helper()
+	var ae *appInstallError
+	if !errors.As(err, &ae) || ae.code != "install_review_stale" || ae.status != http.StatusConflict {
+		t.Fatalf("got %v, want a 409 install_review_stale from the in-transaction derivation", err)
+	}
+	return ae
 }
 
 func ownerIDOf(t *testing.T, e *appsEnv) string {
@@ -465,35 +519,50 @@ func TestAppInstallRedeem_RateLimited(t *testing.T) {
 func TestProvisionAppInstall_RefusesAnUnreviewedManifest(t *testing.T) {
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
-	pending, err := e.srv.store.GetPendingInstall(p.PendingID, e.wsID, ownerIDOf(t, e))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var reviewed appPreview
-	if err := json.Unmarshal([]byte(pending.Preview), &reviewed); err != nil {
-		t.Fatal(err)
-	}
-	req, err := e.srv.buildProvisionRequest(ownerRequest(t, e), e.wsID, pending.OwnerID, pending, &reviewed)
-	if err != nil {
-		t.Fatal(err)
-	}
+	req, derive := prepareProvision(t, e, p)
 	req.ManifestSHA256 = strings.Repeat("0", 64)
 	before := provisionCensus(t, e)
-	if _, err := e.srv.store.ProvisionAppInstall(*req); !errors.Is(err, store.ErrPendingManifestChanged) {
+	if _, err := e.srv.store.ProvisionAppInstall(*req, derive); !errors.Is(err, store.ErrPendingManifestChanged) {
 		t.Fatalf("got %v, want ErrPendingManifestChanged", err)
 	}
 	assertCensusUnchanged(t, before, provisionCensus(t, e))
 }
 
 // A relation value reaches an artifact only through a schema default (an
-// artifact carries a fixed key set). The preview resolves it; if its target
-// is deleted after the comparison, the transaction refuses, naming the field.
+// artifact carries a fixed key set). The in-transaction derivation re-runs the
+// RESOLUTION, not a check of the id it chose, so every way the resolution can
+// change is caught (codex round 2): the target deleted, its collection
+// archived (which skips the workspace lock), and a title default that a new
+// item makes ambiguous.
 func TestProvisionAppInstall_RelationRecheck(t *testing.T) {
-	for _, deleteTarget := range []bool{false, true} {
-		name := "target kept"
-		if deleteTarget {
-			name = "target deleted"
-		}
+	type env struct {
+		e      *appsEnv
+		people *models.Collection
+		target *models.Item
+	}
+	cases := map[string]struct {
+		byTitle bool
+		move    func(t *testing.T, v env)
+		ok      bool
+	}{
+		"target kept (control)": {move: func(t *testing.T, v env) {}, ok: true},
+		"target deleted": {move: func(t *testing.T, v env) {
+			if err := v.e.srv.store.DeleteItem(v.target.ID); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		"target collection archived": {move: func(t *testing.T, v env) {
+			if err := v.e.srv.store.DeleteCollection(v.people.ID, ""); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		"title default made ambiguous": {byTitle: true, move: func(t *testing.T, v env) {
+			if _, err := v.e.srv.store.CreateItem(v.e.wsID, v.people.ID, models.ItemCreate{Title: "Ada"}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			e := newProvisionEnv(t)
 			people, err := e.srv.store.CreateCollection(e.wsID, models.CollectionCreate{Name: "People", Slug: "people"})
@@ -504,16 +573,17 @@ func TestProvisionAppInstall_RelationRecheck(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
-			if err != nil || coll == nil {
-				t.Fatalf("playbooks: %v", err)
+			def := target.ID
+			if c.byTitle {
+				def = "Ada"
 			}
+			coll := playbooksColl(t, e)
 			var schema map[string]any
 			if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
 				t.Fatal(err)
 			}
 			schema["fields"] = append(schema["fields"].([]any), map[string]any{
-				"key": "owner", "label": "Owner", "type": "relation", "collection": "people", "default": target.ID,
+				"key": "owner", "label": "Owner", "type": "relation", "collection": "people", "default": def,
 			})
 			b, _ := json.Marshal(schema)
 			sch := string(b)
@@ -524,37 +594,24 @@ func TestProvisionAppInstall_RelationRecheck(t *testing.T) {
 			if p.Artifacts[0].Normalized.Fields["owner"] != target.ID {
 				t.Fatalf("preview owner %v, want the resolved default %s", p.Artifacts[0].Normalized.Fields["owner"], target.ID)
 			}
-			pending, err := e.srv.store.GetPendingInstall(p.PendingID, e.wsID, ownerIDOf(t, e))
-			if err != nil {
-				t.Fatal(err)
+			req, derive := prepareProvision(t, e, p)
+			// The derivation reports the target it resolved, for the lock.
+			d, err := derive(e.srv.store.Q())
+			if err != nil || len(d.ResolvedItemIDs) != 1 || d.ResolvedItemIDs[0] != target.ID {
+				t.Fatalf("resolved items %v (%v), want [%s]", d, err, target.ID)
 			}
-			var reviewed appPreview
-			if err := json.Unmarshal([]byte(pending.Preview), &reviewed); err != nil {
-				t.Fatal(err)
-			}
-			req, err := e.srv.buildProvisionRequest(ownerRequest(t, e), e.wsID, pending.OwnerID, pending, &reviewed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if req.Artifacts[0].RelationTargets["owner"] != "people" {
-				t.Fatalf("relation targets %v: the handler did not pass the resolved relation to the re-check", req.Artifacts[0].RelationTargets)
-			}
-			if deleteTarget {
-				if err := e.srv.store.DeleteItem(target.ID); err != nil {
-					t.Fatal(err)
-				}
-			}
+			c.move(t, env{e, people, target})
 			before := provisionCensus(t, e)
-			_, err = e.srv.store.ProvisionAppInstall(*req)
-			if !deleteTarget {
+			_, err = e.srv.store.ProvisionAppInstall(*req, derive)
+			if c.ok {
 				if err != nil {
 					t.Fatalf("control: %v", err)
 				}
 				return
 			}
-			var pc *store.ProvisionConflictError
-			if !errors.As(err, &pc) || pc.Artifact != "ship" || pc.Field != "owner" || !strings.Contains(pc.Detail, target.ID) {
-				t.Fatalf("got %v (%+v), want a conflict on ship/owner naming %s", err, pc, target.ID)
+			ae := wantStale(t, err)
+			if !strings.Contains(ae.msg, `Artifact "ship"`) || !strings.Contains(ae.msg, "field owner") || !strings.Contains(ae.msg, target.ID) {
+				t.Errorf("refusal %q does not name the artifact, the field and the reviewed target", ae.msg)
 			}
 			assertCensusUnchanged(t, before, provisionCensus(t, e))
 		})
@@ -591,13 +648,13 @@ func TestProvisionAppInstall_PendingRecordGuards(t *testing.T) {
 			if err := json.Unmarshal([]byte(pending.Preview), &reviewed); err != nil {
 				t.Fatal(err)
 			}
-			req, err := e.srv.buildProvisionRequest(ownerRequest(t, e), e.wsID, pending.OwnerID, pending, &reviewed)
+			req, derive, err := e.srv.buildProvisionRequest(ownerRequest(t, e), e.wsID, pending.OwnerID, pending, &reviewed)
 			if err != nil {
 				t.Fatal(err)
 			}
 			mutate(t, e, req)
 			before := provisionCensus(t, e)
-			if _, err := e.srv.store.ProvisionAppInstall(*req); !errors.Is(err, store.ErrPendingNotStaged) {
+			if _, err := e.srv.store.ProvisionAppInstall(*req, derive); !errors.Is(err, store.ErrPendingNotStaged) {
 				t.Fatalf("got %v, want ErrPendingNotStaged", err)
 			}
 			assertCensusUnchanged(t, before, provisionCensus(t, e))
@@ -633,24 +690,21 @@ func TestAppInstall_ReservedCompanionSlug(t *testing.T) {
 		t.Fatalf("preview: %d %s", rr.Code, rr.Body.String())
 	}
 
-	// The store backstop, reached directly.
+	// The store backstop, reached directly: a derivation that hands the
+	// store a reserved slug (as a buggy caller could) is refused by
+	// createCollectionTx, atomically.
 	e2 := newProvisionEnv(t)
 	p := e2.stagePreview(t)
-	pending, err := e2.srv.store.GetPendingInstall(p.PendingID, e2.wsID, ownerIDOf(t, e2))
-	if err != nil {
-		t.Fatal(err)
+	req, derive := prepareProvision(t, e2, p)
+	bad := func(q store.Queryer) (*store.ProvisionDerived, error) {
+		d, err := derive(q)
+		if err == nil {
+			d.Collections[0].Slug = "settings"
+		}
+		return d, err
 	}
-	var reviewed appPreview
-	if err := json.Unmarshal([]byte(pending.Preview), &reviewed); err != nil {
-		t.Fatal(err)
-	}
-	req, err := e2.srv.buildProvisionRequest(ownerRequest(t, e2), e2.wsID, pending.OwnerID, pending, &reviewed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Collections[0].Slug = "settings"
 	before := provisionCensus(t, e2)
-	_, err = e2.srv.store.ProvisionAppInstall(*req)
+	_, err := e2.srv.store.ProvisionAppInstall(*req, bad)
 	var pc *store.ProvisionConflictError
 	if !errors.As(err, &pc) || pc.Collection != "tickets" || pc.Field != "slug" {
 		t.Fatalf("got %v, want a slug conflict on tickets", err)
@@ -683,5 +737,81 @@ func TestAppInstallRedeem_DeadCodeNeverChargesTheInstallBucket(t *testing.T) {
 	}
 	if rr := redeem(e.srv, `{"code":"`+code+`"}`); rr.Code != http.StatusOK {
 		t.Fatalf("fresh code after dead-code attempts: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Lead condition (2), U8b: the in-transaction derivation only READS. It runs
+// under the write-capture harness on a real transaction, relation passes
+// included, and must record no write. On SQLite the harness pins the store to
+// ONE connection, so a derivation that slipped a read onto the pool instead
+// of the transaction would deadlock here: the timeout turns that into a
+// failure naming the cause rather than a hung test.
+func TestProvisionDerive_WritesNothing(t *testing.T) {
+	e := newProvisionEnv(t)
+	people, err := e.srv.store.CreateCollection(e.wsID, models.CollectionCreate{Name: "People", Slug: "people"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.srv.store.CreateItem(e.wsID, people.ID, models.ItemCreate{Title: "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+	coll := playbooksColl(t, e)
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+		t.Fatal(err)
+	}
+	schema["fields"] = append(schema["fields"].([]any),
+		map[string]any{"key": "owner", "label": "Owner", "type": "relation", "collection": "people", "default": "Ada"})
+	b, _ := json.Marshal(schema)
+	sch := string(b)
+	if _, err := e.srv.store.UpdateCollection(coll.ID, models.CollectionUpdate{Schema: &sch}); err != nil {
+		t.Fatal(err)
+	}
+	p := e.stagePreview(t)
+	_, derive := prepareProvision(t, e, p)
+
+	// Quiesce the server's background loops (outbox drain, sweepers, ticks):
+	// they share the store's pool, and the harness pins it to the one hooked
+	// connection, so a loop's query there races the capture (it reproduced in
+	// 2 of 5 runs). Stop is idempotent; the cleanup's Stop is then a no-op.
+	e.srv.Stop()
+
+	var derived *store.ProvisionDerived
+	var derr error
+	leaked := false
+	writes := storetest.CaptureWrites(t, e.srv.store, func() {
+		tx, err := e.srv.store.DB().Begin()
+		if err != nil {
+			derr = err
+			return
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			derived, derr = derive(tx)
+		}()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			// A pool read is waiting for the connection this transaction
+			// holds. Releasing it lets that read finish, so the failure is
+			// reported instead of the test hanging.
+			leaked = true
+			_ = tx.Rollback()
+			<-done
+		}
+		_ = tx.Rollback()
+	})
+	if leaked {
+		t.Fatal("the derivation did not finish while the transaction held the only connection: a read went to the pool instead of the transaction")
+	}
+	if derr != nil {
+		t.Fatalf("derive: %v", derr)
+	}
+	if len(derived.ResolvedItemIDs) != 1 {
+		t.Fatalf("the relation pass did not run on the transaction: resolved %v", derived.ResolvedItemIDs)
+	}
+	if len(writes) != 0 {
+		t.Fatalf("the derivation wrote: %v", storetest.Tables(writes))
 	}
 }

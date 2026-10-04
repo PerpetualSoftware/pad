@@ -79,7 +79,7 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	req, ierr := s.buildProvisionRequest(r, workspaceID, owner.ID, p, &reviewed)
+	req, derive, ierr := s.buildProvisionRequest(r, workspaceID, owner.ID, p, &reviewed)
 	if ierr != nil {
 		var ae *appInstallError
 		if errors.As(ierr, &ae) {
@@ -90,12 +90,20 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	res, err := s.store.ProvisionAppInstall(*req)
+	res, err := s.store.ProvisionAppInstall(*req, derive)
 	if err != nil {
 		var pc *store.ProvisionConflictError
+		var ae *appInstallError
 		switch {
+		case errors.As(err, &ae):
+			ae.write(w)
+		case errors.Is(err, store.ErrNotWorkspaceOwner):
+			writeError(w, http.StatusForbidden, "forbidden", "Only a workspace owner can install apps")
 		case errors.As(err, &pc):
-			details := map[string]interface{}{"field": pc.Field}
+			details := map[string]interface{}{}
+			if pc.Field != "" {
+				details["field"] = pc.Field
+			}
 			if pc.Artifact != "" {
 				details["artifact"] = pc.Artifact
 			}
@@ -120,7 +128,7 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 		coll := reviewed.Artifacts[i].DestinationCollection
 		s.logActivity(workspaceID, item.ID, "created", r)
 		s.publishItemEventWithName(sseItemCreated, workspaceID, item.ID, item.Title, coll, actor, actorName, source, item.Seq)
-		out.Items = append(out.Items, confirmItem{Key: req.Artifacts[i].Key, Ref: item.Ref, Status: itemStatus(item)})
+		out.Items = append(out.Items, confirmItem{Key: reviewed.Artifacts[i].Key, Ref: item.Ref, Status: itemStatus(item)})
 	}
 	s.logAuditEvent(models.ActionAppInstalled, r, auditMeta(map[string]string{
 		"workspace_id": workspaceID, "install_id": res.InstallID, "origin": p.Origin, "manifest_sha256": p.ManifestSHA256,
@@ -128,92 +136,145 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, out)
 }
 
-// buildProvisionRequest re-normalizes the pending record's STAGED bytes with
-// the preview's own code and compares each artifact with what the owner
-// reviewed. A difference means the workspace changed since the review, and
-// the owner previews again; nothing is written (409 install_review_stale).
-func (s *Server) buildProvisionRequest(r *http.Request, workspaceID, ownerID string, p *store.PendingInstall, reviewed *appPreview) (*store.ProvisionRequest, error) {
+// buildProvisionRequest re-normalizes the pending record's STAGED bytes and
+// compares each artifact with what the owner reviewed, first on the pool (a
+// fast, friendly refusal: 409 install_review_stale, nothing written) and then
+// again INSIDE the provisioning transaction through the returned derive
+// function, which is the guarantee (lead ruling, day 86).
+func (s *Server) buildProvisionRequest(r *http.Request, workspaceID, ownerID string, p *store.PendingInstall, reviewed *appPreview) (*store.ProvisionRequest, store.ProvisionDeriveFunc, error) {
 	blobs, err := s.store.PendingInstallBlobs(p.ID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	mblob, ok := blobs[store.PendingManifestKey]
 	if !ok {
-		return nil, fmt.Errorf("apps: pending install %s has no staged manifest", p.ID)
+		return nil, nil, fmt.Errorf("apps: pending install %s has no staged manifest", p.ID)
 	}
 	m, err := appmanifest.Parse(mblob.Data)
 	if err != nil {
-		return nil, fmt.Errorf("apps: staged manifest no longer parses: %w", err)
+		return nil, nil, fmt.Errorf("apps: staged manifest no longer parses: %w", err)
 	}
 	raws := make([][]byte, len(m.CompanionPack.Artifacts))
 	for i, a := range m.CompanionPack.Artifacts {
 		b, ok := blobs[a.Key]
 		if !ok {
-			return nil, fmt.Errorf("apps: pending install %s is missing artifact %q", p.ID, a.Key)
+			return nil, nil, fmt.Errorf("apps: pending install %s is missing artifact %q", p.ID, a.Key)
 		}
 		raws[i] = b.Data
 	}
-	fresh, err := s.buildAppPreview(r, workspaceID, m, p.ManifestSHA256, raws)
-	if err != nil {
-		var ae *appInstallError
-		if errors.As(err, &ae) {
-			stale := installErr(http.StatusConflict, "install_review_stale", "The workspace changed since you reviewed this install, and nothing was written: %s. Preview it again.", ae.msg)
-			stale.path = ae.path
-			return nil, stale
+
+	derive := func(q store.Queryer) (*store.ProvisionDerived, error) {
+		fresh, err := s.buildAppPreviewQ(q, r, workspaceID, m, p.ManifestSHA256, raws)
+		if err != nil {
+			var ae *appInstallError
+			if errors.As(err, &ae) {
+				stale := installErr(http.StatusConflict, "install_review_stale", "The workspace changed since you reviewed this install, and nothing was written: %s. Preview it again.", ae.msg)
+				stale.path = ae.path
+				return nil, stale
+			}
+			return nil, err
 		}
-		return nil, err
+		if err := compareWithReviewed(fresh, reviewed); err != nil {
+			return nil, err
+		}
+		return provisionDerived(m, fresh), nil
 	}
+	// The pool pass: refuses early, with the same message, before any lock.
+	if _, err := derive(s.store.Q()); err != nil {
+		return nil, nil, err
+	}
+
+	manifestJSON, err := json.Marshal(m)
+	if err != nil {
+		return nil, nil, err
+	}
+	artDigests := map[string]map[string]string{}
+	for _, a := range reviewed.Artifacts {
+		artDigests[a.Key] = map[string]string{"raw": a.RawSHA256, "normalized": a.NormalizedSHA256}
+	}
+	b, err := json.Marshal(map[string]any{"manifest": p.ManifestSHA256, "artifacts": artDigests})
+	if err != nil {
+		return nil, nil, err
+	}
+	req := &store.ProvisionRequest{
+		PendingID: p.ID, WorkspaceID: workspaceID, OwnerID: ownerID, Origin: m.Origin,
+		ManifestSHA256: p.ManifestSHA256, ManifestVersion: m.Version, ManifestJSON: string(manifestJSON),
+		AppTitle: m.Title, ServiceAccess: m.Scopes.Service.Access, DelegatedAccess: m.Scopes.Delegated.Access,
+		RedirectURIs: m.RedirectURIs, SourcePack: m.Origin + "@" + m.Version, DigestsJSON: string(b),
+	}
+	return req, derive, nil
+}
+
+// compareWithReviewed refuses when a fresh normalization differs from the
+// reviewed preview, naming the artifact and each field with its reviewed and
+// current values, or the collection whose adopt/create decision moved.
+func compareWithReviewed(fresh, reviewed *appPreview) error {
 	if len(fresh.Artifacts) != len(reviewed.Artifacts) || len(fresh.Collections) != len(reviewed.Collections) {
-		return nil, installErr(http.StatusConflict, "install_review_stale", "The install no longer matches what you reviewed; preview it again")
+		return installErr(http.StatusConflict, "install_review_stale", "The install no longer matches what you reviewed; preview it again")
 	}
 	for i, c := range fresh.Collections {
 		if c.Adopt != reviewed.Collections[i].Adopt {
 			e := installErr(http.StatusConflict, "install_review_stale", "Collection %q changed since you reviewed this install (it would now be %s); preview it again", c.Key, adoptWord(c.Adopt))
 			e.path = fmt.Sprintf("companion_pack.collections[%d].slug", i)
-			return nil, e
+			return e
 		}
 	}
 	for i, a := range fresh.Artifacts {
 		was := reviewed.Artifacts[i]
-		if a.NormalizedSHA256 != was.NormalizedSHA256 {
-			e := installErr(http.StatusConflict, "install_review_stale", "Artifact %q would now be stored differently from what you reviewed (%s); preview it again", a.Key, describeNormalizedDiff(was.Normalized, a.Normalized))
+		if a.NormalizedSHA256 != was.NormalizedSHA256 || a.DestinationCollection != was.DestinationCollection {
+			what := describeNormalizedDiff(was.Normalized, a.Normalized)
+			if a.DestinationCollection != was.DestinationCollection {
+				what = fmt.Sprintf("destination collection: reviewed %q, now %q", was.DestinationCollection, a.DestinationCollection)
+			}
+			e := installErr(http.StatusConflict, "install_review_stale", "Artifact %q would now be stored differently from what you reviewed (%s); preview it again", a.Key, what)
 			e.path = fmt.Sprintf("companion_pack.artifacts[%d]", i)
-			return nil, e
+			return e
 		}
 	}
+	return nil
+}
 
-	manifestJSON, err := json.Marshal(m)
-	if err != nil {
-		return nil, err
-	}
-	digests := map[string]any{"manifest": p.ManifestSHA256}
-	artDigests := map[string]map[string]string{}
-	req := &store.ProvisionRequest{
-		PendingID: p.ID, WorkspaceID: workspaceID, OwnerID: ownerID, Origin: m.Origin,
-		ManifestSHA256: p.ManifestSHA256, ManifestVersion: m.Version, ManifestJSON: string(manifestJSON),
-		AppTitle: m.Title, ServiceAccess: m.Scopes.Service.Access, DelegatedAccess: m.Scopes.Delegated.Access,
-		RedirectURIs: m.RedirectURIs, SourcePack: m.Origin + "@" + m.Version,
-	}
+// provisionDerived turns a fresh preview into what provisioning writes, plus
+// every item its relation passes resolved (which the transaction locks).
+func provisionDerived(m *appmanifest.Manifest, fresh *appPreview) *store.ProvisionDerived {
+	d := &store.ProvisionDerived{}
 	for i, c := range m.CompanionPack.Collections {
-		req.Collections = append(req.Collections, store.ProvisionCollection{
+		d.Collections = append(d.Collections, store.ProvisionCollection{
 			Key: c.Key, Slug: c.Slug, Name: c.Name, Schema: string(c.Schema), Adopt: fresh.Collections[i].Adopt,
 		})
 	}
+	seen := map[string]bool{}
 	for _, a := range fresh.Artifacts {
-		req.Artifacts = append(req.Artifacts, store.ProvisionArtifact{
-			Key: a.Key, CollectionID: a.collectionID, CollectionSchema: a.collectionSchema, Title: a.Normalized.Title, Content: a.Normalized.Content,
-			Fields: a.Normalized.Fields, UniqueKeys: a.uniqueKeys, RelationTargets: a.relationTargets,
-			RawSHA256: a.RawSHA256, NormalizedSHA256: a.NormalizedSHA256,
+		d.Artifacts = append(d.Artifacts, store.ProvisionArtifact{
+			Key: a.Key, CollectionID: a.collectionID, Title: a.Normalized.Title, Content: a.Normalized.Content,
+			Fields: a.Normalized.Fields, RawSHA256: a.RawSHA256, NormalizedSHA256: a.NormalizedSHA256,
 		})
-		artDigests[a.Key] = map[string]string{"raw": a.RawSHA256, "normalized": a.NormalizedSHA256}
+		for key := range a.relationTargets {
+			for _, id := range relationValues(a.Normalized.Fields[key]) {
+				if id != "" && !seen[id] {
+					seen[id] = true
+					d.ResolvedItemIDs = append(d.ResolvedItemIDs, id)
+				}
+			}
+		}
 	}
-	digests["artifacts"] = artDigests
-	b, err := json.Marshal(digests)
-	if err != nil {
-		return nil, err
+	return d
+}
+
+func relationValues(v any) []string {
+	switch t := v.(type) {
+	case string:
+		return []string{t}
+	case []any:
+		var out []string
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
 	}
-	req.DigestsJSON = string(b)
-	return req, nil
+	return nil
 }
 
 func adoptWord(adopt bool) string {

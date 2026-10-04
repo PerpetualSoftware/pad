@@ -995,6 +995,13 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 // preview (TASK-3397) computes its digest over exactly what the import
 // stores; createItemChecked is unchanged in behaviour.
 func (s *Server) prepareCreateFields(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, fieldMap map[string]any, posture relationPosture) (fields map[string]any, droppedDefaults, unresolved, undeclared []string, cerr *itemCreateError) {
+	return s.prepareCreateFieldsQ(s.store.Q(), r, workspaceID, coll, schema, fieldMap, posture)
+}
+
+// prepareCreateFieldsQ is prepareCreateFields with every read on q. The app
+// installer runs it on the provisioning transaction (TASK-3397, U8b); every
+// other caller passes the pool through prepareCreateFields.
+func (s *Server) prepareCreateFieldsQ(q store.Queryer, r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, fieldMap map[string]any, posture relationPosture) (fields map[string]any, droppedDefaults, unresolved, undeclared []string, cerr *itemCreateError) {
 	// Coerce strings to their declared types before validating (BUG-2850).
 	fieldMap = items.CoerceFields(fieldMap, schema)
 	// BUG-3028: on an ordinary create every value is SUPPLIED, so a blank
@@ -1023,8 +1030,8 @@ func (s *Server) prepareCreateFields(r *http.Request, workspaceID string, coll *
 	// check, so "must be a string" and "names nothing" are never both reported
 	// for one value, and after coercion so the value is in its final form.
 	// The four steps live in one place — see resolveRelationsForWrite.
-	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWrite(
-		r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, posture)
+	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWriteQ(
+		q, r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, posture)
 	if relErr != nil {
 		return nil, nil, nil, nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to resolve relation references"}
 	}
@@ -1042,7 +1049,7 @@ func (s *Server) prepareCreateFields(r *http.Request, workspaceID string, coll *
 	}
 	undeclared = items.UndeclaredFieldKeys(fieldMap, schema)
 
-	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
+	if err := s.checkUniqueFieldsQ(q, workspaceID, coll.ID, "", schema, fieldMap); err != nil {
 		return nil, nil, nil, nil, &itemCreateError{status: http.StatusConflict, code: "conflict", message: err.Error()}
 	}
 	return fieldMap, droppedDefaults, unresolved, undeclared, nil
@@ -3900,6 +3907,14 @@ func (s *Server) extractParentLink(
 func uniqueEnforced(def models.FieldDef) bool { return def.UniqueScope == "workspace_collection" }
 
 func (s *Server) checkUniqueFields(workspaceID, collectionID, excludeItemID string, schema models.CollectionSchema, fieldMap map[string]any) error {
+	return s.checkUniqueFieldsQ(s.store.Q(), workspaceID, collectionID, excludeItemID, schema, fieldMap)
+}
+
+// checkUniqueFieldsQ is checkUniqueFields on q. The lookup is
+// store.ItemsWithFieldValueQ, ListItems' own Fields-filter predicate, so the
+// pool path and the installer's in-transaction path share one implementation
+// (TASK-3397, U8b).
+func (s *Server) checkUniqueFieldsQ(q store.Queryer, workspaceID, collectionID, excludeItemID string, schema models.CollectionSchema, fieldMap map[string]any) error {
 	for _, def := range schema.Fields {
 		if !uniqueEnforced(def) {
 			continue
@@ -3916,11 +3931,7 @@ func (s *Server) checkUniqueFields(workspaceID, collectionID, excludeItemID stri
 		// consistent with the partial unique index's `deleted_at IS NULL`
 		// predicate. A soft-deleted playbook releases its slug back to the
 		// pool; trying to reclaim it should succeed, not 409.
-		existing, err := s.store.ListItems(workspaceID, models.ItemListParams{
-			CollectionIDs: []string{collectionID},
-			Fields:        map[string]string{def.Key: val},
-			Limit:         2,
-		})
+		existing, err := s.store.ItemsWithFieldValueQ(q, workspaceID, collectionID, def.Key, val, 2)
 		if err != nil {
 			return err
 		}

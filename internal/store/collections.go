@@ -258,6 +258,12 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 // getCollectionQ is GetCollection against a caller-supplied executor, so an
 // in-transaction caller reads through its own transaction instead of asking
 // the pool for a second connection while holding the first (BUG-2778).
+// GetCollectionQ is the exported getCollectionQ: the app installer's
+// normalization runs on the provisioning transaction (TASK-3397, U8b).
+func (s *Store) GetCollectionQ(q Queryer, id string) (*models.Collection, error) {
+	return s.getCollectionQ(q, id)
+}
+
 func (s *Store) getCollectionQ(q Queryer, id string) (*models.Collection, error) {
 	c, err := s.scanCollectionRow(q, getCollectionQuery, id)
 	if err != nil {
@@ -374,7 +380,13 @@ func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection,
 // are validated on the way IN (create/update/seed), so a stored blob that
 // doesn't parse means something wrote around those gates. TASK-2657.
 func (s *Store) ListTraitedCollections(workspaceID string) ([]collections.TraitedCollection, error) {
-	rows, err := s.db.Query(
+	return s.ListTraitedCollectionsQ(s.db, workspaceID)
+}
+
+// ListTraitedCollectionsQ is ListTraitedCollections on a caller-supplied
+// executor (TASK-3397, U8b: the installer's in-transaction normalization).
+func (s *Store) ListTraitedCollectionsQ(q Queryer, workspaceID string) ([]collections.TraitedCollection, error) {
+	rows, err := q.Query(
 		s.q(`SELECT id, slug, traits FROM collections WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY sort_order ASC, created_at ASC`),
 		workspaceID,
 	)

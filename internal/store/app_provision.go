@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,12 +20,14 @@ import (
 //
 // The preview (U8a) is ADVISORY: it may refuse what provisioning would
 // accept, never the reverse. ProvisionAppInstall is the guarantee. In ONE
-// transaction it re-verifies every state-dependent fact the preview relied
-// on, under the locks every writer of that state takes, then writes the
-// install, its companion collections, its bot, its client, its artifacts and
-// its install code, and deletes the pending record. Any refusal rolls the
-// whole transaction back and leaves the pending record for a retry or a
-// discard.
+// transaction it takes the locks every writer of the state the preview's
+// normalization reads must wait on, re-derives that normalization on the
+// transaction through the caller's ProvisionDeriveFunc (which compares it
+// with the reviewed digests), then writes the install, its companion
+// collections, its bot, its client, its artifacts and its install code, and
+// deletes the pending record. Any refusal rolls the whole transaction back
+// and leaves the pending record for a retry or a discard. The lock table is
+// on ProvisionAppInstall.
 
 // InstallCodeTTL is how long an install code can be redeemed.
 const InstallCodeTTL = 10 * time.Minute
@@ -83,24 +86,11 @@ type ProvisionCollection struct {
 // ProvisionArtifact is one artifact to insert, exactly as the preview
 // normalized it.
 type ProvisionArtifact struct {
-	Key          string
-	CollectionID string
-	// CollectionSchema is the destination schema the normalization used,
-	// byte for byte. Every other field below was derived from it, so
-	// provisioning refuses if it moved (codex round 1).
-	CollectionSchema string
+	Key              string
+	CollectionID     string
 	Title            string
 	Content          string
 	Fields           map[string]any
-	// UniqueKeys are the field keys whose values must be free in the
-	// destination collection: invocation_slug (a database index) and every
-	// unique-scoped field.
-	UniqueKeys []string
-	// RelationTargets maps each relation field (scalar or multi) the item
-	// stores RESOLVED values in to that field's declared collection slug. Values the
-	// preview carried unresolved are not listed: they named nothing then and
-	// are stored as text either way.
-	RelationTargets  map[string]string
 	RawSHA256        string
 	NormalizedSHA256 string
 }
@@ -119,8 +109,10 @@ type ProvisionRequest struct {
 	RedirectURIs    []string
 	SourcePack      string
 	DigestsJSON     string
-	Collections     []ProvisionCollection
-	Artifacts       []ProvisionArtifact
+	// Collections and Artifacts are filled from the derivation, inside the
+	// transaction; anything a caller sets here is replaced.
+	Collections []ProvisionCollection
+	Artifacts   []ProvisionArtifact
 }
 
 // ProvisionResult is what a successful provisioning wrote.
@@ -132,19 +124,78 @@ type ProvisionResult struct {
 	Items       []*models.Item
 }
 
-// ProvisionAppInstall provisions an app install in one transaction. See the
-// file comment.
-func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, error) {
+// ProvisionDerived is what the caller's derivation returns from inside the
+// provisioning transaction: the collections and artifacts to write, exactly
+// as the normalization produced them on the transaction, and the items the
+// normalization resolved (relation targets), which are then locked.
+type ProvisionDerived struct {
+	Collections []ProvisionCollection
+	Artifacts   []ProvisionArtifact
+	// ResolvedItemIDs are the items the normalization read through relation
+	// resolution. Locked FOR SHARE on Postgres (lead ruling, U8b).
+	ResolvedItemIDs []string
+}
+
+// ProvisionDeriveFunc re-runs the install's normalization on q (the
+// provisioning transaction) and compares it with what the owner reviewed.
+// A difference is the caller's typed error, returned unchanged. It must only
+// READ: the write-capture test asserts a derivation writes nothing.
+type ProvisionDeriveFunc func(q Queryer) (*ProvisionDerived, error)
+
+// ErrNotWorkspaceOwner: the confirming caller is no longer an owner of the
+// workspace when the provisioning transaction checks.
+var ErrNotWorkspaceOwner = errors.New("not a workspace owner")
+
+// ProvisionAppInstall provisions an app install in one transaction.
+//
+// THE RE-CHECK IS A RE-DERIVATION (lead ruling, day 86). The transaction does
+// not re-verify a list of facts the preview relied on; two review rounds
+// showed that list is never complete. It takes the locks every writer of the
+// state the normalization READS must wait on, runs the same normalization on
+// the transaction (derive), and lets the caller compare the result with the
+// reviewed digests. Lock table (Postgres; the order is fixed and the
+// workspace lock comes first):
+//
+//  1. app_install_pending row        FOR UPDATE    the record being consumed
+//  2. workspace seq lock (advisory)                every item writer, slug
+//     allocation, and schema or
+//     rename edits of collections
+//  3. every collections row of the   FOR SHARE     archive, trait-only and other
+//     workspace                                    collection UPDATEs that skip
+//     lock 2: the kind -> destination
+//     lookup, destination schema,
+//     relation target collections,
+//     companion slugs and adoption
+//  4. the owner's workspace_members  FOR SHARE     a demotion or removal of the
+//     row                                          caller, and the visibility the
+//     relation passes evaluate as
+//  5. every item the derivation      FOR SHARE     relation targets; then the
+//     resolved                                     derivation runs AGAIN and must
+//     agree, so a read taken before
+//     lock 5 is never trusted
+//
+// FOR SHARE blocks UPDATE and DELETE of those rows but not the FK KEY SHARE an
+// item or link insert takes, and nothing below UPDATEs a row held FOR SHARE,
+// so no lock is ever upgraded (the share-then-upgrade deadlock).
+//
+// SQLite needs none of 3-5: the transaction is BEGIN IMMEDIATE, which holds
+// the database write lock from its first statement, so no other writer can
+// commit anything the derivation reads until this one ends.
+//
+// Any refusal rolls the whole transaction back and leaves the pending record
+// for a retry or a discard.
+func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDeriveFunc) (*ProvisionResult, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("provision app: begin: %w", err)
 	}
 	defer tx.Rollback()
+	pg := s.dialect.Driver() == DriverPostgres
 
 	// 1. The pending record: live, staged, this owner's, this workspace's,
 	// and the very manifest the owner reviewed.
 	lockQ := `SELECT workspace_id, owner_id, origin, state, COALESCE(manifest_sha256, ''), expires_at FROM app_install_pending WHERE id = ?`
-	if s.dialect.Driver() == DriverPostgres {
+	if pg {
 		lockQ += ` FOR UPDATE`
 	}
 	var ws, owner, origin, state, manifestSHA, expires string
@@ -162,37 +213,61 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, err
 		return nil, ErrPendingManifestChanged
 	}
 
-	// 2. The workspace lock every item, collection and slug writer takes, so
-	// nothing re-checked below can move before commit.
+	// 2. The workspace lock, first of the workspace-scoped locks.
 	if err := s.acquireWorkspaceSeqLock(tx, req.WorkspaceID); err != nil {
 		return nil, err
 	}
 
-	// 3a. Companion collections: a created slug must still be free, and an
-	// adopted one must still be this origin's.
-	for _, c := range req.Collections {
-		var holderOrigin sql.NullString
-		var found bool
-		err := tx.QueryRow(s.q(`SELECT a.origin FROM collections c LEFT JOIN app_installs a ON a.id = c.via_app
-			WHERE c.workspace_id = ? AND c.slug = ?`), req.WorkspaceID, c.Slug).Scan(&holderOrigin)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-		case err != nil:
-			return nil, fmt.Errorf("provision app: collection slug %q: %w", c.Slug, err)
-		default:
-			found = true
-		}
-		if c.Adopt && (!found || holderOrigin.String != req.Origin) {
-			return nil, &ProvisionConflictError{Collection: c.Key, Field: "slug",
-				Detail: fmt.Sprintf("the collection %q this app was going to adopt is no longer one an install of %s created", c.Slug, req.Origin)}
-		}
-		if !c.Adopt && found {
-			return nil, &ProvisionConflictError{Collection: c.Key, Field: "slug",
-				Detail: fmt.Sprintf("a collection %q now exists in this workspace", c.Slug)}
+	// 3. Every collection row of the workspace (Postgres).
+	if pg {
+		if err := lockRowsForShare(tx, s.q(`SELECT id FROM collections WHERE workspace_id = ? ORDER BY id FOR SHARE`), req.WorkspaceID); err != nil {
+			return nil, fmt.Errorf("provision app: lock collections: %w", err)
 		}
 	}
 
-	// 4. The install row.
+	// 4. The caller is still an owner, read under a share lock on Postgres.
+	roleQ := `SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
+	if pg {
+		roleQ += ` FOR SHARE`
+	}
+	var role string
+	if err := tx.QueryRow(s.q(roleQ), req.WorkspaceID, req.OwnerID).Scan(&role); err != nil || role != "owner" {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("provision app: owner role: %w", err)
+		}
+		return nil, ErrNotWorkspaceOwner
+	}
+
+	// The derivation, on this transaction.
+	derived, err := derive(tx)
+	if err != nil {
+		return nil, err
+	}
+	// 5. The items it resolved (Postgres), then derive again: the second
+	// pass reads only rows held by locks 2-5, and must agree with the first.
+	if pg && len(derived.ResolvedItemIDs) > 0 {
+		ids := append([]string(nil), derived.ResolvedItemIDs...)
+		sort.Strings(ids)
+		in := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+		args := []any{req.WorkspaceID}
+		for _, id := range ids {
+			args = append(args, id)
+		}
+		if err := lockRowsForShare(tx, s.q(`SELECT id FROM items WHERE workspace_id = ? AND id IN (`+in+`) ORDER BY id FOR SHARE`), args...); err != nil {
+			return nil, fmt.Errorf("provision app: lock resolved items: %w", err)
+		}
+		again, err := derive(tx)
+		if err != nil {
+			return nil, err
+		}
+		if !sameDerivation(derived, again) {
+			return nil, &ProvisionConflictError{Detail: "the workspace changed while the install was being applied; preview it again"}
+		}
+		derived = again
+	}
+	req.Collections, req.Artifacts = derived.Collections, derived.Artifacts
+
+	// The install row.
 	installID := newID()
 	ts := now()
 	if _, err := tx.Exec(s.q(`INSERT INTO app_installs (id, workspace_id, origin, state, auth_epoch,
@@ -203,7 +278,7 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, err
 		return nil, fmt.Errorf("provision app: insert install: %w", err)
 	}
 
-	// 5. Companion collections, created or adopted.
+	// Companion collections, created or adopted.
 	var companionIDs []string
 	for _, c := range req.Collections {
 		if c.Adopt {
@@ -216,6 +291,8 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, err
 		}
 		id, err := s.createCollectionTx(tx, req.WorkspaceID, models.CollectionCreate{Name: c.Name, Slug: c.Slug, Schema: c.Schema}, installID)
 		if errors.Is(err, ErrAppCollectionSlugTaken) {
+			// A backstop: the derivation already compared this collection's
+			// adopt/create decision with the reviewed one.
 			return nil, &ProvisionConflictError{Collection: c.Key, Field: "slug", Detail: fmt.Sprintf("a collection %q now exists in this workspace", c.Slug)}
 		}
 		if err != nil {
@@ -224,8 +301,8 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, err
 		companionIDs = append(companionIDs, id)
 	}
 
-	// 6. The bot: its principal, its membership by declared service access,
-	// and visibility over exactly the companion collections (§3).
+	// The bot: its principal, its membership by declared service access, and
+	// visibility over exactly the companion collections (§3).
 	bot, err := s.CreateAppUserTx(tx, installID, req.AppTitle)
 	if err != nil {
 		return nil, fmt.Errorf("provision app: %w", err)
@@ -233,18 +310,18 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, err
 	if _, err := tx.Exec(s.q(`UPDATE app_installs SET bot_user_id = ? WHERE id = ?`), bot.ID, installID); err != nil {
 		return nil, fmt.Errorf("provision app: bind bot: %w", err)
 	}
-	role := "viewer"
+	botRole := "viewer"
 	if req.ServiceAccess == "write" {
-		role = "editor"
+		botRole = "editor"
 	}
-	if err := s.addAppPrincipalMemberTx(tx, req.WorkspaceID, bot.ID, role); err != nil {
+	if err := s.addAppPrincipalMemberTx(tx, req.WorkspaceID, bot.ID, botRole); err != nil {
 		return nil, fmt.Errorf("provision app: bot membership: %w", err)
 	}
 	if err := s.setMemberCollectionAccessTx(tx, req.WorkspaceID, bot.ID, "specific", companionIDs); err != nil {
 		return nil, fmt.Errorf("provision app: bot collection access: %w", err)
 	}
 
-	// 7. The install client. Its first secret is discarded unseen: redeem
+	// The install client. Its first secret is discarded unseen: redeem
 	// rotates and returns the one the app holds (lead ruling, U8b Q2).
 	if _, secret, err := s.CreateInstallClientTx(tx, installID, req.RedirectURIs); err != nil {
 		return nil, fmt.Errorf("provision app: %w", err)
@@ -252,14 +329,10 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, err
 		discardSecret(&secret)
 	}
 
-	// 3b + 8. Each artifact is re-checked against the transaction's own view
-	// (which includes the artifacts inserted before it, in manifest order) and
-	// then inserted as a draft through the owner create's transactional path.
+	// The artifacts, in manifest order, as drafts through the owner create's
+	// transactional path, stamped with their pack and both digests.
 	result := &ProvisionResult{InstallID: installID, BotUserID: bot.ID}
 	for _, a := range req.Artifacts {
-		if err := s.recheckProvisionArtifactTx(tx, req.WorkspaceID, a); err != nil {
-			return nil, err
-		}
 		fieldsJSON, err := json.Marshal(a.Fields)
 		if err != nil {
 			return nil, fmt.Errorf("provision app: artifact %q fields: %w", a.Key, err)
@@ -281,14 +354,12 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, err
 		result.Items = append(result.Items, item)
 	}
 
-	// 10. The install code.
 	code, expiresAt, err := s.mintInstallCodeTx(tx, installID)
 	if err != nil {
 		return nil, err
 	}
 	result.InstallCode, result.ExpiresAt = code, expiresAt
 
-	// 11. The pending record and its blobs (ON DELETE CASCADE).
 	if _, err := tx.Exec(s.q(`DELETE FROM app_install_pending WHERE id = ?`), req.PendingID); err != nil {
 		return nil, fmt.Errorf("provision app: delete pending: %w", err)
 	}
@@ -298,116 +369,35 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, err
 	return result, nil
 }
 
-// recheckProvisionArtifactTx re-verifies, on the provisioning transaction,
-// every workspace-state fact the preview relied on for one artifact.
-func (s *Store) recheckProvisionArtifactTx(tx *sql.Tx, workspaceID string, a ProvisionArtifact) error {
-	// The schema first: UniqueKeys, RelationTargets and the normalized fields
-	// all derive from it. A schema edit that moves it takes the workspace
-	// lock this transaction holds, so this read is the committed schema.
-	var schema string
-	err := tx.QueryRow(s.q(`SELECT schema FROM collections WHERE id = ? AND deleted_at IS NULL`), a.CollectionID).Scan(&schema)
-	if errors.Is(err, sql.ErrNoRows) {
-		return &ProvisionConflictError{Artifact: a.Key, Detail: "its destination collection no longer exists"}
-	}
+// lockRowsForShare runs a FOR SHARE select and drains it: the locks are taken
+// as the rows are read.
+func lockRowsForShare(tx *sql.Tx, query string, args ...any) error {
+	rows, err := tx.Query(query, args...)
 	if err != nil {
-		return fmt.Errorf("provision app: destination schema: %w", err)
+		return err
 	}
-	if schema != a.CollectionSchema {
-		return &ProvisionConflictError{Artifact: a.Key, Detail: "its destination collection's schema changed since the review"}
+	defer rows.Close()
+	for rows.Next() {
 	}
-	for _, key := range a.UniqueKeys {
-		raw, ok := a.Fields[key]
-		if !ok || raw == nil {
-			continue
-		}
-		val, isText := raw.(string)
-		if !isText || val == "" {
-			// The import's unique check (checkUniqueFields) compares text
-			// values only, and the preview refuses a non-text invocation_slug.
-			continue
-		}
-		var n int
-		if key == "invocation_slug" {
-			// The index's own expression, as InvocationSlugIndexTaken.
-			expr := `json_extract(fields, '$.invocation_slug')`
-			if s.dialect.Driver() == DriverPostgres {
-				expr = `(fields->>'invocation_slug')`
-			}
-			if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE collection_id = ? AND deleted_at IS NULL
-				AND `+expr+` IS NOT NULL AND `+expr+` != '' AND `+expr+` = ?`), a.CollectionID, val).Scan(&n); err != nil {
-				return fmt.Errorf("provision app: invocation slug check: %w", err)
-			}
-		} else {
-			cond, args := s.dialect.JSONFieldEquals("i.fields", key, val)
-			args = append([]any{a.CollectionID}, args...)
-			if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM items i WHERE i.collection_id = ? AND i.deleted_at IS NULL AND `+cond), args...).Scan(&n); err != nil {
-				return fmt.Errorf("provision app: unique check %q: %w", key, err)
-			}
-		}
-		if n > 0 {
-			holder := s.uniqueHolderRefTx(tx, a.CollectionID, key, val)
-			return &ProvisionConflictError{Artifact: a.Key, Field: key,
-				Detail: fmt.Sprintf("the value %q is already held by %s", val, holder)}
-		}
-	}
-	for key, collSlug := range a.RelationTargets {
-		var vals []string
-		switch v := a.Fields[key].(type) {
-		case string:
-			vals = []string{v}
-		case []any:
-			for _, e := range v {
-				str, ok := e.(string)
-				if !ok {
-					return &ProvisionConflictError{Artifact: a.Key, Field: key, Detail: "a reference in it is not text"}
-				}
-				vals = append(vals, str)
-			}
-		case nil:
-		default:
-			return &ProvisionConflictError{Artifact: a.Key, Field: key, Detail: "its value is not a reference"}
-		}
-		for _, val := range vals {
-			if val == "" {
-				continue
-			}
-			item, err := s.resolveRelationTargetQ(tx, workspaceID, val)
-			if err != nil {
-				return fmt.Errorf("provision app: relation %q: %w", key, err)
-			}
-			if item == nil || item.CollectionSlug != collSlug {
-				return &ProvisionConflictError{Artifact: a.Key, Field: key,
-					Detail: fmt.Sprintf("the item %q it referenced is no longer in %q", val, collSlug)}
-			}
-		}
-	}
-	return nil
+	return rows.Err()
 }
 
-// uniqueHolderRefTx names the item holding a unique value, for the refusal.
-// The caller is the workspace owner, who can see every item, so naming it is
-// no existence oracle. Falls back to a generic phrase if the read fails.
-func (s *Store) uniqueHolderRefTx(tx *sql.Tx, collectionID, key, val string) string {
-	var cond string
-	var args []any
-	if key == "invocation_slug" {
-		expr := `json_extract(i.fields, '$.invocation_slug')`
-		if s.dialect.Driver() == DriverPostgres {
-			expr = `(i.fields->>'invocation_slug')`
+// sameDerivation compares two derivations by what provisioning would write.
+func sameDerivation(a, b *ProvisionDerived) bool {
+	if len(a.Artifacts) != len(b.Artifacts) || len(a.Collections) != len(b.Collections) {
+		return false
+	}
+	for i := range a.Artifacts {
+		if a.Artifacts[i].NormalizedSHA256 != b.Artifacts[i].NormalizedSHA256 || a.Artifacts[i].CollectionID != b.Artifacts[i].CollectionID {
+			return false
 		}
-		cond, args = expr+` = ?`, []any{val}
-	} else {
-		cond, args = s.dialect.JSONFieldEquals("i.fields", key, val)
 	}
-	args = append([]any{collectionID}, args...)
-	var prefix string
-	var number int64
-	err := tx.QueryRow(s.q(`SELECT c.prefix, i.item_number FROM items i JOIN collections c ON c.id = i.collection_id
-		WHERE i.collection_id = ? AND i.deleted_at IS NULL AND `+cond+` ORDER BY i.item_number LIMIT 1`), args...).Scan(&prefix, &number)
-	if err != nil {
-		return "an existing item"
+	for i := range a.Collections {
+		if a.Collections[i] != b.Collections[i] {
+			return false
+		}
 	}
-	return fmt.Sprintf("%s-%d", prefix, number)
+	return true
 }
 
 // mintInstallCodeTx mints a fresh install code for installID: 128 random
