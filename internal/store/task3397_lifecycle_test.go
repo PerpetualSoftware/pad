@@ -3,6 +3,8 @@ package store
 import (
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 	"testing"
 )
 
@@ -76,5 +78,140 @@ func TestTask3397_UninstallAppTxIsAllOrNothing(t *testing.T) {
 	}
 	if got := snapshot()["state"]; got != InstallUninstalled {
 		t.Fatalf("state %s, want uninstalled", got)
+	}
+}
+
+func task3397LifecycleFix(t *testing.T, installID string) task3394Fix {
+	t.Helper()
+	f := task3394Fixture(t, installID)
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET bot_user_id = ? WHERE id = ?`), f.bot.ID, f.installID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.addAppPrincipalMemberTx(tx, f.ws.ID, f.bot.ID, "editor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func task3397Epoch(t *testing.T, s *Store, id string) int64 {
+	t.Helper()
+	e, err := s.InstallEpoch(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// codex r1 #1: rotate's phase 2 bumps the epoch again, so a grant that read
+// the phase-1 epoch while the install was disabling (and authenticated with
+// the old secret) is refused once the install is active again.
+func TestTask3397_RotateEndsGrantsFromBetweenThePhases(t *testing.T) {
+	f := task3397LifecycleFix(t, "inst-rot-window")
+	before := task3397Epoch(t, f.s, f.installID)
+	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownRotate); err != nil {
+		t.Fatal(err)
+	}
+	between := task3397Epoch(t, f.s, f.installID)
+	if _, _, err := f.s.FinishRotate(f.ws.ID, f.installID); err != nil {
+		t.Fatal(err)
+	}
+	if got := task3397Epoch(t, f.s, f.installID); got != before+2 || between != before+1 {
+		t.Fatalf("epochs %d -> %d -> %d, want +1 then +2", before, between, got)
+	}
+	req := task3394Req(f.clientID, f.bot.ID, "req-between")
+	req.SessionData = fmt.Sprintf(`{"extra":{"%s":%d}}`, InstallEpochSessionKey, between)
+	if err := f.s.CreateAccessToken(req); err == nil {
+		t.Fatal("a grant carrying the phase-1 epoch was issued after rotate")
+	}
+}
+
+// codex r1 #2: phase 1 kills every unconsumed install code, so an earlier
+// code cannot be redeemed for a fresh secret after a rotate or after a
+// disable and re-enable. The rotate's own code works.
+func TestTask3397_TeardownInvalidatesEarlierInstallCodes(t *testing.T) {
+	f := task3397LifecycleFix(t, "inst-codes")
+	old, _, err := f.s.IssueInstallCode(f.ws.ID, f.installID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownRotate); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _, err := f.s.FinishRotate(f.ws.ID, f.installID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.RedeemInstallCode(old); !errors.Is(err, ErrInstallCodeInvalid) {
+		t.Fatalf("a pre-rotate code redeemed after rotate: %v", err)
+	}
+	if _, err := f.s.RedeemInstallCode(fresh); err != nil {
+		t.Fatalf("the rotate's code: %v", err)
+	}
+
+	again, _, err := f.s.IssueInstallCode(f.ws.ID, f.installID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownDisable); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.FinishDisable(f.ws.ID, f.installID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.ReenableInstall(f.ws.ID, f.installID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.RedeemInstallCode(again); !errors.Is(err, ErrInstallCodeInvalid) {
+		t.Fatalf("a pre-disable code redeemed after re-enable: %v", err)
+	}
+}
+
+// codex r1 #3: uninstall racing account deletion's bot purge, which deletes
+// the bot's membership, then the bot (whose FK action updates the install's
+// bot_user_id), must not deadlock. The writer here replays that order.
+func TestTask3397_UninstallDoesNotDeadlockWithTheBotPurge(t *testing.T) {
+	f := task3397LifecycleFix(t, "inst-purge-race")
+	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownUninstall); err != nil {
+		t.Fatal(err)
+	}
+	w, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Exec(f.s.q(`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), f.ws.ID, f.bot.ID); err != nil {
+		_ = w.Rollback()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.s.UninstallAppTx(f.ws.ID, f.installID) }()
+	time.Sleep(700 * time.Millisecond)
+	if _, err := w.Exec(f.s.q(`UPDATE app_installs SET bot_user_id = NULL WHERE bot_user_id = ?`), f.bot.ID); err != nil {
+		_ = w.Rollback()
+		<-done
+		t.Fatalf("the purge could not reach the install row (a deadlock victim?): %v", err)
+	}
+	if err := w.Commit(); err != nil {
+		t.Fatalf("purge commit: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil && strings.Contains(err.Error(), "40P01") {
+			t.Fatalf("uninstall was a deadlock victim: %v", err)
+		}
+		if err != nil {
+			t.Fatalf("uninstall: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("uninstall never finished")
+	}
+	if st, _ := f.s.InstallState(f.ws.ID, f.installID); st != InstallUninstalled {
+		t.Fatalf("state %s, want uninstalled", st)
 	}
 }

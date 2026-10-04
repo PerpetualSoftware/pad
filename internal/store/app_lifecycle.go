@@ -19,10 +19,12 @@ import (
 // re-takes the row and requires the phase-1 state: a crash between the two
 // leaves the install in that state, and repeating the owner's call resumes.
 //
-// Lock order, every door: the install row first, then the client's grant
-// tables, then the bot's users row. The barrier (install row FOR SHARE, then
-// token inserts), FencedTx (install row FOR SHARE first) and redeem (install
-// row, then the code row) take them in the same order.
+// Lock order: phase 1 and phase 2 of disable and rotate take the install row
+// first, then the client's grant tables and the code rows; the barrier
+// (install row FOR SHARE, then token inserts), FencedTx (install row FOR SHARE
+// first) and redeem (install row, then the code row) agree. UninstallAppTx
+// alone takes the bot's membership and users rows BEFORE the install row, the
+// order account deletion's bot purge takes them (see UninstallAppTx).
 
 // Install states (the CHECK in migration 112).
 const (
@@ -124,6 +126,11 @@ func (s *Store) BeginInstallTeardown(workspaceID, installID string, kind Teardow
 	if err := s.RevokeInstallClientGrantsTx(tx, installID); err != nil && !errors.Is(err, ErrNoInstallClient) {
 		return err
 	}
+	// Every unconsumed install code dies too: redeeming one would mint a
+	// fresh working secret, which rotate and disable exist to end (codex r1).
+	if _, err := tx.Exec(s.q(`DELETE FROM app_install_codes WHERE install_id = ? AND consumed_at IS NULL`), installID); err != nil {
+		return fmt.Errorf("revoke install codes: %w", err)
+	}
 	return tx.Commit()
 }
 
@@ -176,7 +183,11 @@ func (s *Store) FinishRotate(workspaceID, installID string) (string, time.Time, 
 	if state != InstallDisabling {
 		return "", time.Time{}, &InstallStateError{State: state}
 	}
-	if err := s.setInstallStateTx(tx, installID, InstallActive, false); err != nil {
+	// A second bump: a token request that read the phase-1 epoch while the
+	// install was disabling, and authenticated with the OLD secret, would
+	// otherwise commit a live token once this makes the install active
+	// (codex r1). Its grant carries the phase-1 epoch, which this ends.
+	if err := s.setInstallStateTx(tx, installID, InstallActive, true); err != nil {
 		return "", time.Time{}, err
 	}
 	secret, err := s.RotateInstallClientSecretTx(tx, installID)
@@ -248,6 +259,27 @@ func (s *Store) UninstallAppTx(workspaceID, installID string) error {
 		return err
 	}
 	defer tx.Rollback()
+	// Lock order (Postgres): the bot's membership row, then its users row,
+	// then the install row. Account deletion purging this bot takes them in
+	// that order (membership, user, then the install row through the
+	// bot_user_id FK action); taking the install row first deadlocked with it
+	// (codex r1). The users row is FOR NO KEY UPDATE, which does not conflict
+	// with the FK KEY SHARE a fenced app write takes on it while holding the
+	// install row FOR SHARE. SQLite: BEGIN IMMEDIATE.
+	if s.dialect.Driver() == DriverPostgres {
+		var pre sql.NullString
+		if err := tx.QueryRow(s.q(`SELECT bot_user_id FROM app_installs WHERE id = ? AND workspace_id = ?`), installID, workspaceID).Scan(&pre); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("uninstall: read bot: %w", err)
+		}
+		if pre.Valid && pre.String != "" {
+			if err := lockRowsForShare(tx, s.q(`SELECT user_id FROM workspace_members WHERE workspace_id = ? AND user_id = ? FOR UPDATE`), workspaceID, pre.String); err != nil {
+				return fmt.Errorf("uninstall: lock bot membership: %w", err)
+			}
+			if err := lockRowsForShare(tx, s.q(`SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE`), pre.String); err != nil {
+				return fmt.Errorf("uninstall: lock bot: %w", err)
+			}
+		}
+	}
 	state, err := s.lockInstallTx(tx, workspaceID, installID)
 	if err != nil {
 		return err
