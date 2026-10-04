@@ -438,8 +438,11 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		// disable or a member removal waits for this issuance to commit and
 		// then revokes what it wrote, or commits first and is seen here.
 		// SQLite's single writer serializes them already.
+		// The workspace must be live too (codex U5b-1 r9): a consent approved
+		// after a soft delete persists nothing.
 		subjQ := `SELECT u.kind, u.disabled_at, u.credential_epoch, m.created_at FROM users u
 			JOIN workspace_members m ON m.user_id = u.id AND m.workspace_id = ?
+			JOIN workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL
 			WHERE u.id = ?`
 		if s.dialect.Driver() == DriverPostgres {
 			subjQ += ` FOR SHARE`
@@ -682,11 +685,13 @@ func (s *Store) lockBindingsInOrderTx(tx *sql.Tx, where string, args ...any) err
 }
 
 // WorkspaceMemberSince returns a membership's created_at exactly as stored,
-// or "" when there is none: the value a delegated consent carries and the
+// or "" when there is none or its workspace is deleted: the value a delegated consent carries and the
 // issuance barrier compares (TASK-3399).
 func (s *Store) WorkspaceMemberSince(workspaceID, userID string) (string, error) {
 	var since string
-	err := s.db.QueryRow(s.q(`SELECT created_at FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), workspaceID, userID).Scan(&since)
+	err := s.db.QueryRow(s.q(`SELECT m.created_at FROM workspace_members m
+		JOIN workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL
+		WHERE m.workspace_id = ? AND m.user_id = ?`), workspaceID, userID).Scan(&since)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

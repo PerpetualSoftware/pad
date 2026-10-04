@@ -569,3 +569,18 @@ func TestTask3399_AConsentAcrossARemovalAndReAddMintsNothing(t *testing.T) {
 		t.Errorf("a code from a consent given under the earlier membership: err = %v, want ErrInstallDelegatedSubject", err)
 	}
 }
+
+// Codex U5b-1 r9: a consent approved after the workspace was soft-deleted
+// persists nothing.
+func TestTask3399_ADeletedWorkspaceTakesNoGrant(t *testing.T) {
+	f := task3399Fixture(t, "inst-wsdel", "write")
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), f.ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-wsdel", "read", 1)); !errors.Is(err, ErrInstallDelegatedSubject) {
+		t.Errorf("a code in a deleted workspace: err = %v, want ErrInstallDelegatedSubject", err)
+	}
+	if since, err := f.s.WorkspaceMemberSince(f.ws.ID, f.person.ID); err != nil || since != "" {
+		t.Errorf("the consent gate's membership read in a deleted workspace = %q, %v; want none", since, err)
+	}
+}
