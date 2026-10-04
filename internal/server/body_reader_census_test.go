@@ -274,6 +274,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_cloud.go":          "bodyHasCloudSecret PEEKS at the body and restores the first 64 KiB of it — a larger body loses its tail, a bound that file documents and accepts; the real decode still happens through decodeJSON downstream",
 		"middleware_mcp_audit.go":    "audit capture — parses the body ITSELF and binds the decoded method / params.name to mcp_audit_log.tool_name, so it is a second READER, not a pass-through. That the MCP dispatcher decodes the body again is true and says nothing about what this middleware persists — the earlier rationale here made exactly that mistake and certified it safe (codex round 20). parseMCPRequestBody now runs both caller-derived returns through sanitiseStoredText",
 		"handlers_tokens.go":         "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — so the body is read by the chokepoint, which applies the cap and the NUL rule. The earlier reason here said it never reads the body, which was simply false (codex round 29): a wrong reason in this list is the same defect as a missing entry, since both let a reader pass as reviewed",
+		"app_tokens.go":              "the install-client token rules (TASK-3394) read the same FORM-encoded OAuth body handleOAuthToken/handleOAuthIntrospect read, behind ValidateFormBody (BUG-2811), to classify the client exactly as fosite will",
 		"handlers_oauth.go":          "the OAuth handlers read FORM-encoded bodies (r.Form/FormValue). Every POST route they serve is wrapped in ValidateFormBody (BUG-2811), which applies bindableText to the body before these reads. The transport rules cover the query half of r.Form; ValidateFormBody covers the body half",
 		"middleware_form_body.go":    "the form-body chokepoint itself: ValidateFormBody reads a form-encoded body up to net/http's own ParseForm cap, checks it with validQueryText, and hands the same bytes (or the same read error) back to the handler (BUG-2811)",
 		"handlers_watches.go":        "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — the closing-round-4 fix for the chunked-body drop; the one reader expression is the nil check itself, and the body bytes flow through the chokepoint",
@@ -300,16 +301,22 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_oauth.go::Server.handleOAuthAuthorizeDecide::FormValue":            1,
 		"handlers_oauth.go::Server.parseConsentPayload::FormValue":                   4,
 		"handlers_oauth.go::Server.parseConsentPayload::PostForm":                    2,
-		"handlers_oauth.go::Server.handleOAuthToken::ParseForm":                      1,
-		"handlers_oauth.go::Server.handleOAuthRevoke::ParseForm":                     1,
-		"handlers_oauth.go::Server.handleOAuthRevoke::PostForm":                      1,
-		"handlers_oauth.go::Server.validateConsentCSRFToken::FormValue":              1,
-		"handlers_tokens.go::Server.handleRotateUserToken::Body":                     1,
-		"handlers_watches.go::Server.handleCreateWatch::Body":                        1,
-		"import_read_deadline.go::Server.withImportReadDeadline::Body":               2,
-		"middleware_mcp_audit.go::Server.MCPAuditLog::Body":                          5,
-		"middleware_mcp_audit.go::Server.emitMCPAuditDenied::Body":                   2,
-		"middleware_request_text.go::readBodyForDecode::Body":                        4,
+		// TASK-3394: parsed as fosite parses it (multipart included), so the
+		// client classified for the install-client rules is fosite's client.
+		"handlers_oauth.go::Server.handleOAuthToken::ParseMultipartForm": 1,
+		"handlers_oauth.go::Server.handleOAuthToken::PostForm":           1,
+		"handlers_oauth.go::Server.handleOAuthIntrospect::ParseForm":     1,
+		"app_tokens.go::Server.prepareInstallTokenRequest::PostForm":     4,
+		"app_tokens.go::requestClientID::PostForm":                       1,
+		"handlers_oauth.go::Server.handleOAuthRevoke::ParseForm":         1,
+		"handlers_oauth.go::Server.handleOAuthRevoke::PostForm":          1,
+		"handlers_oauth.go::Server.validateConsentCSRFToken::FormValue":  1,
+		"handlers_tokens.go::Server.handleRotateUserToken::Body":         1,
+		"handlers_watches.go::Server.handleCreateWatch::Body":            1,
+		"import_read_deadline.go::Server.withImportReadDeadline::Body":   2,
+		"middleware_mcp_audit.go::Server.MCPAuditLog::Body":              5,
+		"middleware_mcp_audit.go::Server.emitMCPAuditDenied::Body":       2,
+		"middleware_request_text.go::readBodyForDecode::Body":            4,
 	}
 
 	sites := collectRequestBodyReads(t, ".")
@@ -454,6 +461,10 @@ func TestEveryRequestHandoffIsClassified(t *testing.T) {
 		"handlers_oauth.go::Server.handleOAuthToken::github.com/ory/fosite.OAuth2Provider.NewAccessRequest":              1,
 		"handlers_oauth.go::Server.handleOAuthRevoke::github.com/ory/fosite.OAuth2Provider.NewRevocationRequest":         1,
 		"handlers_oauth.go::Server.handleOAuthIntrospect::github.com/ory/fosite.OAuth2Provider.NewIntrospectionRequest":  1,
+		// TASK-3394: fosite's own bearer extraction (header, then the form's
+		// access_token, parsing multipart), so the install-caller refusal
+		// reads the caller exactly as NewIntrospectionRequest will.
+		"app_tokens.go::Server.introspectionCallerIsInstall::github.com/ory/fosite.AccessTokenFromRequest": 1,
 	}
 
 	handoffs := collectRequestHandoffs(t, ".")

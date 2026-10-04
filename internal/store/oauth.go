@@ -140,13 +140,16 @@ func (s *Store) GetOAuthClient(id string) (*models.OAuthClient, error) {
 		logoURL                                          sql.NullString
 		createdStr                                       string
 		public                                           bool
+		secretHash, audiencesRaw, installID, disabledAt  sql.NullString
 	)
 	err := s.db.QueryRow(s.q(`
 		SELECT id, name, redirect_uris, grant_types, response_types,
-		       token_endpoint_auth_method, scopes, public, logo_url, created_at
+		       token_endpoint_auth_method, scopes, public, logo_url, created_at,
+		       client_secret_hash, allowed_audiences, app_install_id, disabled_at
 		FROM oauth_clients WHERE id = ?
 	`), id).Scan(&c.ID, &c.Name, &redirectsRaw, &grantsRaw, &respTypesRaw,
-		&c.TokenEndpointAuthMethod, &scopesRaw, &public, &logoURL, &createdStr)
+		&c.TokenEndpointAuthMethod, &scopesRaw, &public, &logoURL, &createdStr,
+		&secretHash, &audiencesRaw, &installID, &disabledAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrOAuthNotFound
 	}
@@ -169,6 +172,14 @@ func (s *Store) GetOAuthClient(id string) (*models.OAuthClient, error) {
 	c.Public = public
 	c.LogoURL = logoURL.String
 	c.CreatedAt = parseTime(createdStr)
+	c.SecretHash = secretHash.String
+	c.AppInstallID = installID.String
+	c.DisabledAt = disabledAt.String
+	if audiencesRaw.Valid && audiencesRaw.String != "" {
+		if c.AllowedAudiences, err = parseJSONStringList(audiencesRaw.String); err != nil {
+			return nil, fmt.Errorf("decode allowed_audiences: %w", err)
+		}
+	}
 	return &c, nil
 }
 
@@ -598,6 +609,17 @@ func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest) err
 		return fmt.Errorf("oauth: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// An installed app's client persists through the issuance barrier and
+	// nowhere else (SPEC-6 U5a, TASK-3394): it locks the install, re-checks
+	// it, and writes the token's binding in this same transaction.
+	if handled, err := s.installIssuanceBarrierTx(tx, table, req, requestedStr); err != nil {
+		return err
+	} else if handled {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("oauth: commit: %w", err)
+		}
+		return nil
+	}
 	if req.Subject != "" {
 		if err := s.requireActiveUserTx(tx, req.Subject); err != nil {
 			return err

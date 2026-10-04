@@ -151,6 +151,21 @@ func (s *Server) requireMCPAvailable(next http.Handler) http.Handler {
 	})
 }
 
+// requireOAuthRoutesAvailable gates the /oauth/* group. Every route there is
+// the MCP authorization server's and needs oauthAvailable, except the token
+// endpoint, which installed apps' clients also use (SPEC-6 U5a A0): it opens
+// while apps are available too, and handleOAuthToken then admits only an
+// install client unless MCP is on.
+func (s *Server) requireOAuthRoutesAvailable(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.oauthAvailable() || (r.URL.Path == "/oauth/token" && s.appsAvailable()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeError(w, http.StatusNotFound, "not_found", "Not found")
+	})
+}
+
 func (s *Server) requireOAuthAvailable(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.oauthAvailable() {
