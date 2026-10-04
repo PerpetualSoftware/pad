@@ -395,7 +395,6 @@ func appCeilingAllows(r *http.Request, collectionID string) bool {
 	return false
 }
 
-
 // appResponseBuffer holds a handler's response until the grant is
 // re-validated (codex r1 P1).
 type appResponseBuffer struct {
