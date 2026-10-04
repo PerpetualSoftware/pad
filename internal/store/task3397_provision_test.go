@@ -216,6 +216,12 @@ func task3397NoDeadlock(t *testing.T, f task3397Fix, first, second func(tx *sql.
 // new bot. Neither order may deadlock (the users-row / pending-row cycle).
 func TestTask3397_AccountDeletionAfterProvisioning(t *testing.T) {
 	f := task3397Fixture(t)
+	// The cycle is the CANONICAL owner's deletion: that is the one whose
+	// purge scans the workspace's bots (purgeAppPrincipalsOfOwnedWorkspacesTx
+	// keys on workspaces.owner_id).
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE workspaces SET owner_id = ? WHERE id = ?`), f.owner.ID, f.ws.ID); err != nil {
+		t.Fatal(err)
+	}
 	assertBlockedUntilRelease(t, f, 1, func() error {
 		_, err := f.s.DeleteAccountAtomicReport(f.owner.ID)
 		return err
