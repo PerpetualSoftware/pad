@@ -395,20 +395,6 @@ func appCeilingAllows(r *http.Request, collectionID string) bool {
 	return false
 }
 
-// appWriteAllows reports whether a collection is one the app may write: a
-// companion. Outside the app API everything passes.
-func appWriteAllows(r *http.Request, collectionID string) bool {
-	ac := appContextFrom(r)
-	if ac == nil {
-		return true
-	}
-	for _, id := range ac.Companions {
-		if id == collectionID {
-			return true
-		}
-	}
-	return false
-}
 
 // appResponseBuffer holds a handler's response until the grant is
 // re-validated (codex r1 P1).
