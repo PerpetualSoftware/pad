@@ -524,6 +524,12 @@ func (s *Server) authorizeCrossWorkspace(r *http.Request, workspaceSlugOrID stri
 		a.collectionScoped = scope.collectionID != ""
 		return a
 	}
+	// An installed app never reaches across workspaces (SPEC-6 §4, U6a): no
+	// app handler calls this, and it refuses outright for the one that
+	// someday would.
+	if appContextFrom(r) != nil {
+		return verdict(CrossWorkspaceAccess{Reason: CrossWorkspaceTokenNotAllowed})
+	}
 	return verdict(s.authorizeCrossWorkspaceInner(r, workspaceSlugOrID, scope, needEdit))
 }
 

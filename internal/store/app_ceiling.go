@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -138,4 +139,91 @@ func IntersectCollectionIDs(visible, ceiling []string) []string {
 		}
 	}
 	return out
+}
+
+// InstallAPIState is what the app API reads about an install per request.
+type InstallAPIState struct {
+	WorkspaceID   string
+	State         string
+	ServiceAccess string // "read", "write", or "" (none)
+	BotUserID     string
+}
+
+// GetInstallAPIState reads an install's workspace, state, service access and
+// bot, or nil when there is no such install.
+func (s *Store) GetInstallAPIState(installID string) (*InstallAPIState, error) {
+	var st InstallAPIState
+	var access, bot sql.NullString
+	err := s.db.QueryRow(s.q(`SELECT workspace_id, state, service_access, bot_user_id FROM app_installs WHERE id = ?`), installID).
+		Scan(&st.WorkspaceID, &st.State, &access, &bot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read install: %w", err)
+	}
+	st.ServiceAccess, st.BotUserID = access.String, bot.String
+	return &st, nil
+}
+
+// AppItemReadMeta is what the app API's item DTO needs beyond models.Item.
+type AppItemReadMeta struct {
+	ViaApp         string
+	CreatorDisplay string
+}
+
+// ItemsAppReadMeta returns each item's via_app (the last install that wrote
+// it) and its creator's display name, in one query.
+func (s *Store) ItemsAppReadMeta(itemIDs []string) (map[string]AppItemReadMeta, error) {
+	out := map[string]AppItemReadMeta{}
+	if len(itemIDs) == 0 {
+		return out, nil
+	}
+	ph := make([]string, len(itemIDs))
+	args := make([]any, len(itemIDs))
+	for i, id := range itemIDs {
+		ph[i], args[i] = "?", id
+	}
+	rows, err := s.db.Query(s.q(`SELECT i.id, COALESCE(i.via_app, ''), COALESCE(u.name, '')
+		FROM items i LEFT JOIN users u ON u.id = i.created_by_user_id
+		WHERE i.id IN (`+strings.Join(ph, ",")+`)`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("read item app meta: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var m AppItemReadMeta
+		if err := rows.Scan(&id, &m.ViaApp, &m.CreatorDisplay); err != nil {
+			return nil, err
+		}
+		out[id] = m
+	}
+	return out, rows.Err()
+}
+
+// UserKinds returns each user's kind ("human" or "app").
+func (s *Store) UserKinds(userIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	ph := make([]string, len(userIDs))
+	args := make([]any, len(userIDs))
+	for i, id := range userIDs {
+		ph[i], args[i] = "?", id
+	}
+	rows, err := s.db.Query(s.q(`SELECT id, kind FROM users WHERE id IN (`+strings.Join(ph, ",")+`)`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("read user kinds: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, kind string
+		if err := rows.Scan(&id, &kind); err != nil {
+			return nil, err
+		}
+		out[id] = kind
+	}
+	return out, rows.Err()
 }

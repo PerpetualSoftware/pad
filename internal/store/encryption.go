@@ -4,10 +4,13 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"strings"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 const encryptedPrefix = "enc:"
@@ -251,4 +254,24 @@ func (s *Store) EncryptWebhookSecretsAtRest() (int, error) {
 	}
 
 	return len(toEncrypt), nil
+}
+
+// ErrNoEncryptionKey means no encryption key is configured.
+var ErrNoEncryptionKey = fmt.Errorf("no encryption key is configured")
+
+// DeriveServerKey derives a 32-byte server-only key for one purpose from the
+// deployment encryption key (HKDF-SHA256, the label as info). Every supported
+// deployment has the encryption key at startup (SQLite generates and persists
+// one; Postgres refuses to start without PAD_ENCRYPTION_KEY, shared by every
+// replica), so a derived key is mandatory, persistent and the same on every
+// instance. Rotating the encryption key rotates every derived key.
+func (s *Store) DeriveServerKey(label string) ([]byte, error) {
+	if !s.HasEncryptionKey() {
+		return nil, ErrNoEncryptionKey
+	}
+	out := make([]byte, 32)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, s.encryptionKey, nil, []byte(label)), out); err != nil {
+		return nil, fmt.Errorf("derive server key: %w", err)
+	}
+	return out, nil
 }
