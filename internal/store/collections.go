@@ -38,6 +38,27 @@ func (e *CollectionUpdateConflictError) Error() string {
 }
 
 func (s *Store) CreateCollection(workspaceID string, input models.CollectionCreate) (*models.Collection, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	id, err := s.createCollectionTx(tx, workspaceID, input, "")
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit collection create: %w", err)
+	}
+
+	return s.GetCollection(id)
+}
+
+// createCollectionTx is CreateCollection on the caller's transaction, so the
+// app installer creates companion collections in its one provisioning
+// transaction (TASK-3397, U8b). viaApp stamps collections.via_app with the
+// creating install; "" leaves it NULL. It returns the new collection's id.
+func (s *Store) createCollectionTx(tx *sql.Tx, workspaceID string, input models.CollectionCreate, viaApp string) (string, error) {
 	id := newID()
 	ts := now()
 
@@ -68,7 +89,7 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 		// `--prefix "AB!"` still produced items whose printed issue ID no
 		// surface could resolve.
 		if !collections.IsValidPrefix(prefix) {
-			return nil, invalidf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", prefix)
+			return "", invalidf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", prefix)
 		}
 	} else {
 		prefix = collections.DerivePrefix(input.Name)
@@ -88,11 +109,6 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	if isReservedCollectionSlug(baseSlug) {
 		baseSlug = baseSlug + "-collection"
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
 
 	// LOCK ORDER: workspace advisory lock FIRST, then the INSERT (whose only
 	// row lock is the FK key-share on the workspaces row). That is the same
@@ -116,26 +132,37 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	// come free from the single BEGIN IMMEDIATE write lock; the advisory lock
 	// is a no-op there.
 	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
-		return nil, err
+		return "", err
 	}
 
 	slug, err := s.uniqueSlugQ(tx, "collections", "workspace_id", workspaceID, baseSlug)
 	if err != nil {
-		return nil, fmt.Errorf("unique slug: %w", err)
+		return "", fmt.Errorf("unique slug: %w", err)
+	}
+	// An app's companion collection keeps exactly the slug it declared: the
+	// manifest, its artifacts and the app's own calls address it by that slug,
+	// so a de-collided `x-2` would be a collection nobody can name. The
+	// installer checks the slug is free under this same lock first; this
+	// refuses rather than diverging if that check and this scan ever disagree.
+	// Compared with the slug the app DECLARED, not baseSlug: a reserved slug
+	// is rewritten to `<slug>-collection` above, which is just as unaddressable
+	// to the app as a de-collided one (codex round 1).
+	if viaApp != "" && slug != input.Slug {
+		return "", fmt.Errorf("%w: collection slug %q is not available", ErrAppCollectionSlugTaken, input.Slug)
 	}
 
+	var via any
+	if viaApp != "" {
+		via = viaApp
+	}
 	_, err = tx.Exec(s.q(`
-		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, traits, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), ts, ts)
+		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, via_app, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, traits, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), via, ts, ts)
 	if err != nil {
-		return nil, fmt.Errorf("insert collection: %w", err)
+		return "", fmt.Errorf("insert collection: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit collection create: %w", err)
-	}
-
-	return s.GetCollection(id)
+	return id, nil
 }
 
 // collectionColumns is the ONE full-row projection of the collections table.
@@ -231,6 +258,12 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 // getCollectionQ is GetCollection against a caller-supplied executor, so an
 // in-transaction caller reads through its own transaction instead of asking
 // the pool for a second connection while holding the first (BUG-2778).
+// GetCollectionQ is the exported getCollectionQ: the app installer's
+// normalization runs on the provisioning transaction (TASK-3397, U8b).
+func (s *Store) GetCollectionQ(q Queryer, id string) (*models.Collection, error) {
+	return s.getCollectionQ(q, id)
+}
+
 func (s *Store) getCollectionQ(q Queryer, id string) (*models.Collection, error) {
 	c, err := s.scanCollectionRow(q, getCollectionQuery, id)
 	if err != nil {
@@ -347,7 +380,13 @@ func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection,
 // are validated on the way IN (create/update/seed), so a stored blob that
 // doesn't parse means something wrote around those gates. TASK-2657.
 func (s *Store) ListTraitedCollections(workspaceID string) ([]collections.TraitedCollection, error) {
-	rows, err := s.db.Query(
+	return s.ListTraitedCollectionsQ(s.db, workspaceID)
+}
+
+// ListTraitedCollectionsQ is ListTraitedCollections on a caller-supplied
+// executor (TASK-3397, U8b: the installer's in-transaction normalization).
+func (s *Store) ListTraitedCollectionsQ(q Queryer, workspaceID string) ([]collections.TraitedCollection, error) {
+	rows, err := q.Query(
 		s.q(`SELECT id, slug, traits FROM collections WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY sort_order ASC, created_at ASC`),
 		workspaceID,
 	)
@@ -1305,6 +1344,10 @@ var reservedCollectionSlugs = map[string]bool{
 
 // isReservedCollectionSlug checks whether a slug would collide with a
 // workspace-level UI route.
+// IsReservedCollectionSlug reports whether a slug collides with a
+// workspace-level UI route; the app installer refuses such a companion slug.
+func IsReservedCollectionSlug(slug string) bool { return isReservedCollectionSlug(slug) }
+
 func isReservedCollectionSlug(slug string) bool {
 	return reservedCollectionSlugs[strings.ToLower(slug)]
 }

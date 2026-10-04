@@ -48,6 +48,12 @@ const (
 	// never-verified account registered with it, through the verification
 	// link (BUG-3382): every credential is reset.
 	ActionAccountClaimed = "account_claimed"
+	// ActionAppInstalled is logged when a workspace owner confirms an app
+	// install and it is provisioned (SPEC-6 U8b, TASK-3397).
+	ActionAppInstalled = "app_installed"
+	// ActionAppInstallCodeIssued is logged when an owner issues a new install
+	// code for an existing install (the lost-redeem recovery, TASK-3397).
+	ActionAppInstallCodeIssued = "app_install_code_issued"
 	// ActionEmailVerifiedByAdmin is logged when an admin force-verifies a
 	// user's email from the admin console (DR-7). PLAN-1933 / TASK-1936.
 	ActionEmailVerifiedByAdmin = "email_verified_by_admin"

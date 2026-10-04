@@ -66,6 +66,19 @@ func (s *Server) resolveRelationReferentsAs(
 	schema models.CollectionSchema,
 	fieldMap map[string]any,
 ) ([]store.RelationIssue, error) {
+	return s.resolveRelationReferentsAsQ(s.store.Q(), r, workspaceID, role, schema, fieldMap)
+}
+
+// resolveRelationReferentsAsQ is resolveRelationReferentsAs with every read on
+// q: the app installer re-runs it on the provisioning transaction (TASK-3397).
+func (s *Server) resolveRelationReferentsAsQ(
+	q store.Queryer,
+	r *http.Request,
+	workspaceID string,
+	role string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+) ([]store.RelationIssue, error) {
 	// The ORIGINAL values, captured before the store resolver rewrites a ref
 	// into its target's UUID. Every issue this function raises quotes what the
 	// CALLER sent, never the canonical form: a refusal for an item the
@@ -86,7 +99,7 @@ func (s *Server) resolveRelationReferentsAs(
 		return canonical
 	}
 
-	issues, err := s.store.ResolveRelationReferents(workspaceID, schema, fieldMap, s.relationVisibility(r, role))
+	issues, err := s.store.ResolveRelationReferentsQ(q, workspaceID, schema, fieldMap, s.relationVisibility(r, role))
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +159,7 @@ func (s *Server) resolveRelationReferentsAs(
 			}
 			continue
 		}
-		item, err := s.store.GetItem(id)
+		item, err := s.store.GetItemQ(q, id)
 		if err != nil {
 			return nil, err
 		}
@@ -164,7 +177,7 @@ func (s *Server) resolveRelationReferentsAs(
 			})
 			continue
 		}
-		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), role, isBearerAuth(r))
+		visible, err := s.checkItemVisibleQ(q, workspaceID, item, currentUser(r), role, isBearerAuth(r))
 		if err != nil {
 			return nil, err
 		}
@@ -395,7 +408,19 @@ func (s *Server) dropInvisibleRelationDefaults(
 	fieldMap map[string]any,
 	notADefault map[string]bool,
 ) ([]store.RelationIssue, error) {
-	return s.store.DropInvisibleRelationDefaultsQ(s.store.Q(), workspaceID,
+	return s.dropInvisibleRelationDefaultsQ(s.store.Q(), r, workspaceID, role, schema, fieldMap, notADefault)
+}
+
+func (s *Server) dropInvisibleRelationDefaultsQ(
+	q store.Queryer,
+	r *http.Request,
+	workspaceID string,
+	role string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+	notADefault map[string]bool,
+) ([]store.RelationIssue, error) {
+	return s.store.DropInvisibleRelationDefaultsQ(q, workspaceID,
 		s.relationVisibility(r, role), schema, fieldMap, notADefault)
 }
 
@@ -447,7 +472,22 @@ func (s *Server) resolveRelationsForWrite(
 	presentBefore map[string]bool,
 	posture relationPosture,
 ) (refusals []store.RelationIssue, dropped []string, err error) {
-	issues, err := s.resolveRelationReferents(r, workspaceID, schema, fieldMap)
+	return s.resolveRelationsForWriteQ(s.store.Q(), r, workspaceID, role, schema, fieldMap, presentBefore, posture)
+}
+
+// resolveRelationsForWriteQ is resolveRelationsForWrite with every read on q
+// (TASK-3397: the installer's in-transaction normalization).
+func (s *Server) resolveRelationsForWriteQ(
+	q store.Queryer,
+	r *http.Request,
+	workspaceID string,
+	role string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+	presentBefore map[string]bool,
+	posture relationPosture,
+) (refusals []store.RelationIssue, dropped []string, err error) {
+	issues, err := s.resolveRelationReferentsAsQ(q, r, workspaceID, workspaceRole(r), schema, fieldMap)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -466,7 +506,7 @@ func (s *Server) resolveRelationsForWrite(
 	// — and reporting none of it. The refusals are still returned; they are
 	// the carry report, not a stop.
 
-	lateDropped, err := s.store.ResolveLateRelationDefaults(s.relationVisibility(r, role), workspaceID, schema, fieldMap, presentBefore)
+	lateDropped, err := s.store.ResolveLateRelationDefaultsQ(q, s.relationVisibility(r, role), workspaceID, schema, fieldMap, presentBefore)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -477,7 +517,7 @@ func (s *Server) resolveRelationsForWrite(
 		return append(callerIssues, required...), nil, nil
 	}
 
-	invisible, err := s.dropInvisibleRelationDefaults(r, workspaceID, role, schema, fieldMap, presentBefore)
+	invisible, err := s.dropInvisibleRelationDefaultsQ(q, r, workspaceID, role, schema, fieldMap, presentBefore)
 	if err != nil {
 		return nil, nil, err
 	}

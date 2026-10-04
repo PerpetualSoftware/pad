@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/artifact"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // TASK-3397 (U8a) refactors the artifact importer's preprocess into one
@@ -94,6 +95,41 @@ func artifactParityCases() []parityCase {
 				Body:       "Body.\n",
 				Provenance: artifact.Provenance{Workspace: "elsewhere", Author: "someone", ExportedAt: "2026-01-02T03:04:05Z"}})
 		}},
+		// TASK-3397 (U8b): the relation passes now take a Queryer, so the human
+		// path's relation behaviour is pinned too. Two relation DEFAULTS (an
+		// artifact carries a fixed key set, so defaults are how a relation
+		// value reaches one): a title that resolves, and one that does not and
+		// is dropped with a warning.
+		{name: "convention with relation defaults", setup: func(t *testing.T, srv *Server, ws string) {
+			t.Helper()
+			wsID := workspaceIDForSlug(t, srv, ws)
+			people, err := srv.store.CreateCollection(wsID, models.CollectionCreate{Name: "People", Slug: "people"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := srv.store.CreateItem(wsID, people.ID, models.ItemCreate{Title: "Ada"}); err != nil {
+				t.Fatal(err)
+			}
+			coll, err := srv.store.GetCollectionBySlug(wsID, "conventions")
+			if err != nil || coll == nil {
+				t.Fatalf("conventions: %v", err)
+			}
+			var schema map[string]any
+			if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+				t.Fatal(err)
+			}
+			schema["fields"] = append(schema["fields"].([]any),
+				map[string]any{"key": "owner", "label": "Owner", "type": "relation", "collection": "people", "default": "Ada"},
+				map[string]any{"key": "reviewer", "label": "Reviewer", "type": "relation", "collection": "people", "default": "Nobody"})
+			b, _ := json.Marshal(schema)
+			sch := string(b)
+			if _, err := srv.store.UpdateCollection(coll.ID, models.CollectionUpdate{Schema: &sch}); err != nil {
+				t.Fatal(err)
+			}
+		}, body: func(t *testing.T) []byte {
+			return encodeArtifact(t, artifact.Artifact{Kind: artifact.KindConvention, Title: "Related",
+				Fields: map[string]any{"status": "active", "trigger": "on-commit"}, Body: "See [[Ada]].\n"})
+		}},
 		{name: "blank title", body: func(t *testing.T) []byte {
 			return encodeArtifact(t, artifact.Artifact{Kind: artifact.KindConvention, Title: "   ",
 				Fields: map[string]any{"status": "draft"}, Body: "x\n"})
@@ -123,6 +159,15 @@ func runParityCase(t *testing.T, c parityCase) parityResult {
 	res.Title, res.Content = item.Title, item.Content
 	if err := json.Unmarshal([]byte(item.Fields), &res.Fields); err != nil {
 		t.Fatal(err)
+	}
+	// A resolved relation stores an item UUID, different on every run; the
+	// golden records which item it names instead.
+	for k, v := range res.Fields {
+		if id, ok := v.(string); ok && isUUID(id) {
+			if target, err := srv.store.GetItem(id); err == nil && target != nil {
+				res.Fields[k] = "item:" + target.Title
+			}
+		}
 	}
 	return res
 }

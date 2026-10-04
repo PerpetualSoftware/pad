@@ -273,13 +273,24 @@ func (s *Store) PendingInstallBlobs(pendingID string) (map[string]PendingBlob, e
 	return out, rows.Err()
 }
 
+// SlugHolder describes the collection already holding a slug: the origin
+// and state of the app install that created it, both "" when no install did.
+type SlugHolder struct {
+	Origin       string
+	InstallState string
+}
+
 // CollectionSlugOwners reports, for each of slugs that already names a
 // collection in the workspace (live or soft-deleted, since the unique index
-// covers both), the origin of the app install that created it, or "" when no
-// install did. Slugs absent from the result are free. It backs the install
-// conflict check (DOC-3371 §2 step 5, L6).
-func (s *Store) CollectionSlugOwners(workspaceID string, slugs []string) (map[string]string, error) {
-	out := map[string]string{}
+// covers both), the app install that created it. Slugs absent from the result
+// are free. It backs the install conflict check (DOC-3371 §2 step 5, L6).
+func (s *Store) CollectionSlugOwners(workspaceID string, slugs []string) (map[string]SlugHolder, error) {
+	return s.CollectionSlugOwnersQ(s.db, workspaceID, slugs)
+}
+
+// CollectionSlugOwnersQ is CollectionSlugOwners on a caller-supplied executor.
+func (s *Store) CollectionSlugOwnersQ(q Queryer, workspaceID string, slugs []string) (map[string]SlugHolder, error) {
+	out := map[string]SlugHolder{}
 	if len(slugs) == 0 {
 		return out, nil
 	}
@@ -288,7 +299,7 @@ func (s *Store) CollectionSlugOwners(workspaceID string, slugs []string) (map[st
 	for _, sl := range slugs {
 		args = append(args, sl)
 	}
-	rows, err := s.db.Query(s.q(`SELECT c.slug, COALESCE(a.origin, '') FROM collections c
+	rows, err := q.Query(s.q(`SELECT c.slug, COALESCE(a.origin, ''), COALESCE(a.state, '') FROM collections c
 		LEFT JOIN app_installs a ON a.id = c.via_app
 		WHERE c.workspace_id = ? AND c.slug IN (`+in+`)`), args...)
 	if err != nil {
@@ -296,11 +307,12 @@ func (s *Store) CollectionSlugOwners(workspaceID string, slugs []string) (map[st
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var slug, origin string
-		if err := rows.Scan(&slug, &origin); err != nil {
+		var slug string
+		var h SlugHolder
+		if err := rows.Scan(&slug, &h.Origin, &h.InstallState); err != nil {
 			return nil, err
 		}
-		out[slug] = origin
+		out[slug] = h
 	}
 	return out, rows.Err()
 }
@@ -312,15 +324,59 @@ func (s *Store) CollectionSlugOwners(workspaceID string, slugs []string) (map[st
 // objects included (TASK-3397, codex round 8). It backs the app installer's
 // preview of a defaulted slug.
 func (s *Store) InvocationSlugIndexTaken(collectionID, slug string) (bool, error) {
+	return s.InvocationSlugIndexTakenQ(s.db, collectionID, slug)
+}
+
+// InvocationSlugIndexTakenQ is InvocationSlugIndexTaken on a caller-supplied
+// executor.
+func (s *Store) InvocationSlugIndexTakenQ(q Queryer, collectionID, slug string) (bool, error) {
 	expr := `json_extract(fields, '$.invocation_slug')`
 	if s.dialect.Driver() == DriverPostgres {
 		expr = `(fields->>'invocation_slug')`
 	}
 	var n int
-	err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE collection_id = ? AND deleted_at IS NULL
+	err := q.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE collection_id = ? AND deleted_at IS NULL
 		AND `+expr+` IS NOT NULL AND `+expr+` != '' AND `+expr+` = ?`), collectionID, slug).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("invocation slug index lookup: %w", err)
 	}
 	return n > 0, nil
 }
+
+// ItemsWithFieldValueQ returns up to limit live items of collectionID in
+// workspaceID whose field key equals value, with ListItems' own Fields-filter
+// predicate (JSONFieldEquals, deleted_at IS NULL), on a caller-supplied
+// executor. It is the in-transaction form of the two ListItems lookups the
+// importer's normalization makes (the invocation_slug probe and the unique
+// check), so a normalization on the provisioning transaction applies the
+// same predicate the import does (TASK-3397, U8b).
+func (s *Store) ItemsWithFieldValueQ(q Queryer, workspaceID, collectionID, key, value string, limit int) ([]FieldValueHolder, error) {
+	// ListItems SKIPS a filter whose key fails isValidFieldKey, matching every
+	// item of the collection. Mirrored, not tightened: this must answer what
+	// the import's own lookup answers.
+	cond, args := "1=1", []any(nil)
+	if isValidFieldKey(key) {
+		cond, args = s.dialect.JSONFieldEquals("i.fields", key, value)
+	}
+	args = append([]any{workspaceID, collectionID}, args...)
+	args = append(args, limit)
+	rows, err := q.Query(s.q(`SELECT i.id, i.slug FROM items i
+		WHERE i.workspace_id = ? AND i.collection_id = ? AND i.deleted_at IS NULL AND `+cond+`
+		ORDER BY i.id LIMIT ?`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("items with field value: %w", err)
+	}
+	defer rows.Close()
+	var out []FieldValueHolder
+	for rows.Next() {
+		var h FieldValueHolder
+		if err := rows.Scan(&h.ID, &h.Slug); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// FieldValueHolder is an item ItemsWithFieldValueQ found.
+type FieldValueHolder struct{ ID, Slug string }

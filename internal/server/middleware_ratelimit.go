@@ -393,6 +393,18 @@ type RateLimiters struct {
 	// about 1.1e-4 per code window. A human redeeming a code they were
 	// shown needs one attempt, perhaps two.
 	OAuthClaim *ipRateLimiter
+
+	// AppRedeemAddr caps POST /api/app/v1/install/redeem per address: 10/min,
+	// burst 10 (TASK-3397, U8b). An app redeems once per install, or once per
+	// code the owner reissues; a code is 128 random bits, so this is defense
+	// in depth on an unauthenticated route, not the guess bound. Charged
+	// before the code is looked up, so a probe of bad codes spends it.
+	AppRedeemAddr *ipRateLimiter
+	// AppRedeemInstall caps redeems per install: 5/min, burst 5. It is
+	// charged only once the code names an install, so no caller without a
+	// code can spend another install's bucket. It bounds secret churn from a
+	// stream of reissued codes.
+	AppRedeemInstall *ipRateLimiter
 }
 
 // NewRateLimiters creates rate limiters with sensible defaults.
@@ -580,6 +592,14 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(10.0 / 60.0),
 			Burst: 10,
 		}),
+		AppRedeemAddr: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(10.0 / 60.0),
+			Burst: 10,
+		}),
+		AppRedeemInstall: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(5.0 / 60.0),
+			Burst: 5,
+		}),
 	}
 }
 
@@ -618,6 +638,8 @@ func (rls *RateLimiters) Stop() {
 		rls.OAuthDecide,
 		rls.OAuthRegister,
 		rls.OAuthClaim,
+		rls.AppRedeemAddr,
+		rls.AppRedeemInstall,
 	} {
 		rl.Stop() // nil-safe via the receiver guard in (*ipRateLimiter).Stop
 	}

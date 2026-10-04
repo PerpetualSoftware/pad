@@ -146,16 +146,26 @@ func (s *Store) ListWorkspaceAppPrincipals(workspaceID string) ([]WorkspaceAppPr
 	}
 	out := make([]WorkspaceAppPrincipal, 0, len(found))
 	for _, r := range found {
-		// CreateAppUserTx is the only writer of a bot's address, and it
-		// encodes the install id there; nobody else can hold the domain.
-		if id, ok := appPrincipalInstallID(r.email); ok {
-			var origin string
-			err := s.db.QueryRow(s.q(`SELECT origin FROM app_installs WHERE id = ? AND workspace_id = ?`), id, workspaceID).Scan(&origin)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return nil, fmt.Errorf("read app install: %w", err)
+		// The install is the one whose bot_user_id is this bot (U8b); an
+		// install made before provisioning set it is found by the address,
+		// which CreateAppUserTx alone writes and which encodes the install
+		// id. Either way the address must agree.
+		var origin, boundID string
+		err := s.db.QueryRow(s.q(`SELECT id, origin FROM app_installs WHERE bot_user_id = ? AND workspace_id = ?`), r.p.UserID, workspaceID).Scan(&boundID, &origin)
+		if err == nil {
+			if id, ok := appPrincipalInstallID(r.email); !ok || !strings.EqualFold(id, boundID) {
+				origin = "" // the address disagrees: name no app
 			}
-			r.p.AppName = origin
 		}
+		if errors.Is(err, sql.ErrNoRows) {
+			if id, ok := appPrincipalInstallID(r.email); ok {
+				err = s.db.QueryRow(s.q(`SELECT origin FROM app_installs WHERE id = ? AND workspace_id = ? AND bot_user_id IS NULL`), id, workspaceID).Scan(&origin)
+			}
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("read app install: %w", err)
+		}
+		r.p.AppName = origin
 		out = append(out, r.p)
 	}
 	return out, nil
