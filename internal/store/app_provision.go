@@ -166,13 +166,17 @@ var ErrNotWorkspaceOwner = errors.New("not a workspace owner")
 //     lookup, destination schema,
 //     relation target collections,
 //     companion slugs and adoption
-//  4. the owner's workspace_members  FOR SHARE     a demotion or removal of the
-//     row                                          caller, and the visibility the
-//     relation passes evaluate as
-//  5. every item the derivation      FOR SHARE     relation targets; then the
-//     resolved                                     derivation runs AGAIN and must
-//     agree, so a read taken before
-//     lock 5 is never trusted
+//     derive #1 (read-only; names the items to lock)
+//  4. every item derive #1 resolved  FOR SHARE     relation targets
+//  5. the caller's workspace_members FOR SHARE     a demotion or removal, and the
+//     row (+ the owner-role check),                visibility the relation passes
+//     member_collection_access,                    evaluate as (checkItemVisibleQ
+//     collection_grants, item_grants               reads exactly these)
+//     derive #2, which must agree with #1: it reads only rows held by 2-5
+//
+// Items come BEFORE the membership because account deletion updates the
+// caller's items and then deletes their membership; the opposite order
+// deadlocked with it (codex round 3, reproduced as 40P01).
 //
 // FOR SHARE blocks UPDATE and DELETE of those rows but not the FK KEY SHARE an
 // item or link insert takes, and nothing below UPDATEs a row held FOR SHARE,
