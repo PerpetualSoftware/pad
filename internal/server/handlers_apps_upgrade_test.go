@@ -297,3 +297,91 @@ func TestAppUpgrade_RecordsDoNotCross(t *testing.T) {
 		t.Fatalf("an install's pending record confirmed as an upgrade: %d %s", code, body)
 	}
 }
+
+func (u *upgradeEnv) epoch(t *testing.T) int64 {
+	t.Helper()
+	var e int64
+	if err := u.srv.store.DB().QueryRow(`SELECT auth_epoch FROM app_installs WHERE id = ?`, u.installID).Scan(&e); err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func (u *upgradeEnv) addTicketField(f map[string]any) {
+	coll := u.m["companion_pack"].(map[string]any)["collections"].([]any)[0].(map[string]any)
+	sch := coll["schema"].(map[string]any)
+	sch["fields"] = append(sch["fields"].([]any), f)
+}
+
+// codex r1 #1: an owner renamed a companion; the upgrade cannot map it by
+// slug, so it refuses rather than leaving it the app's.
+func TestAppUpgrade_RenamedCompanionRefuses(t *testing.T) {
+	u := newUpgradeEnv(t)
+	c, _ := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
+	if _, err := u.srv.store.DB().Exec(`UPDATE collections SET slug = 'renamed-tickets' WHERE id = ?`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	u.m["version"] = "1.0.1"
+	u.publish(t, u.m)
+	code, _, body := u.previewUpgrade(t)
+	if code != http.StatusConflict || !strings.Contains(body, "upgrade_conflict") || !strings.Contains(body, "no longer resolves") {
+		t.Fatalf("got %d %s; want 409 upgrade_conflict", code, body)
+	}
+}
+
+// codex r1 #2: a restrictive upgrade bumps the epoch (admitted writes and
+// earlier tokens die); a neutral one does not.
+func TestAppUpgrade_RestrictiveUpgradeBumpsTheEpoch(t *testing.T) {
+	u := newUpgradeEnv(t)
+	e0 := u.epoch(t)
+	u.m["version"] = "1.0.1"
+	u.publish(t, u.m)
+	_, p, _ := u.previewUpgrade(t)
+	if code, body := u.confirmUpgrade(t, p); code != http.StatusOK {
+		t.Fatalf("neutral: %d %s", code, body)
+	}
+	if u.epoch(t) != e0 {
+		t.Fatal("a neutral upgrade bumped the epoch")
+	}
+	u.m["version"] = "1.0.2"
+	u.m["scopes"] = map[string]any{"service": map[string]any{"access": "read"}, "delegated": map[string]any{"access": "read"}}
+	u.publish(t, u.m)
+	_, p, _ = u.previewUpgrade(t)
+	if code, body := u.confirmUpgrade(t, p); code != http.StatusOK {
+		t.Fatalf("narrowing: %d %s", code, body)
+	}
+	if u.epoch(t) != e0+1 {
+		t.Fatalf("a narrowing upgrade did not bump the epoch (%d -> %d)", e0, u.epoch(t))
+	}
+}
+
+// codex r1 #3: items already hold values under the key a field would declare.
+func TestAppUpgrade_AdditiveFieldOverExistingDataRefuses(t *testing.T) {
+	u := newUpgradeEnv(t)
+	c, _ := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
+	if _, err := u.srv.store.CreateItem(u.wsID, c.ID, models.ItemCreate{Title: "held", Fields: `{"code":"same"}`}); err != nil {
+		t.Fatal(err)
+	}
+	u.addTicketField(map[string]any{"key": "code", "label": "Code", "type": "text", "unique_scope": "workspace_collection"})
+	u.publish(t, u.m)
+	code, _, body := u.previewUpgrade(t)
+	if code != http.StatusConflict || !strings.Contains(body, "already hold values") {
+		t.Fatalf("got %d %s; want 409 naming the existing values", code, body)
+	}
+}
+
+// codex r1 #4: board_group_by names the new select, so adding it would move
+// the done field and reclassify every existing item.
+func TestAppUpgrade_AdditiveFieldThatMovesTheDoneFieldRefuses(t *testing.T) {
+	u := newUpgradeEnv(t)
+	c, _ := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
+	if _, err := u.srv.store.DB().Exec(`UPDATE collections SET settings = '{"board_group_by":"resolution"}' WHERE id = ?`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	u.addTicketField(map[string]any{"key": "resolution", "label": "Resolution", "type": "select", "options": []any{"fixed", "wontfix"}})
+	u.publish(t, u.m)
+	code, _, body := u.previewUpgrade(t)
+	if code != http.StatusConflict || !strings.Contains(body, "done field") {
+		t.Fatalf("got %d %s; want 409 naming the done field", code, body)
+	}
+}

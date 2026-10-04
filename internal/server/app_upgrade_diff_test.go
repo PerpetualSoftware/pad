@@ -209,3 +209,18 @@ func TestUpgradeDiff_AbsentConfigSchemaIsNotAChange(t *testing.T) {
 		t.Fatalf("null vs absent config_schema diffed: %+v %v", d, err)
 	}
 }
+
+// codex r1 #5: a name declared twice is the union of its declarations, so a
+// widening cannot hide behind a duplicate.
+func TestUpgradeDiff_DuplicateEventNamesAreUnioned(t *testing.T) {
+	old := diffBase()
+	n := clone(old)
+	n.Events = []appmanifest.Event{{Name: "item.created", Collections: []string{"other"}}, {Name: "item.created", Collections: []string{"tickets"}}}
+	d, err := diffUpgrade(old, n, diffDigests, diffFresh("r1", "n1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := entryOf(t, d, "event", "item.created"); e.Change != "widened" || e.Class != upgradeReview {
+		t.Fatalf("a widening behind a duplicate name: %+v", e)
+	}
+}

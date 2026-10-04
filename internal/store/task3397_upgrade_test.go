@@ -112,3 +112,21 @@ func TestTask3397_ProvisionRefusesAnUpgradeRecord(t *testing.T) {
 		t.Fatalf("got %v, want ErrPendingNotStaged", err)
 	}
 }
+
+// The transaction never skips a release that does not resolve: a plan naming
+// a companion slug that is not this install's is refused, not ignored (the
+// derivation's companion check normally catches it first; this is the
+// transaction's own backstop).
+func TestTask3397_UpgradeNeverSkipsAnUnresolvedRelease(t *testing.T) {
+	f, req := task3397UpgradeFix(t, "inst-up-release")
+	_, err := f.s.UpgradeAppInstall(req, func(_ Queryer, inst *InstallUpgradeState) (*UpgradePlan, error) {
+		p := task3397Plan(inst)
+		p.Released = []string{"not-a-companion"}
+		p.Restrictive = true
+		return p, nil
+	})
+	var pc *ProvisionConflictError
+	if !errors.As(err, &pc) || pc.Collection != "not-a-companion" {
+		t.Fatalf("got %v, want a conflict naming the unresolved companion", err)
+	}
+}

@@ -85,6 +85,9 @@ func (s *Server) handleAppUpgradePreview(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			return err
 		}
+		if err := s.upgradeStateChecks(s.store.Q(), workspaceID, inst.ID, old, d); err != nil {
+			return err
+		}
 		entries := d.Entries
 		if entries == nil {
 			entries = []upgradeDiffEntry{}
@@ -200,6 +203,9 @@ func (s *Server) handleAppUpgradeConfirm(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			return nil, err
 		}
+		if err := s.upgradeStateChecks(q, workspaceID, installID, old, d); err != nil {
+			return nil, err
+		}
 		entries := d.Entries
 		if entries == nil {
 			entries = []upgradeDiffEntry{}
@@ -282,6 +288,9 @@ func upgradePlanFrom(old, next *appmanifest.Manifest, d *upgradeDiff, fresh *app
 		ManifestSHA256: fresh.ManifestSHA256, ManifestVersion: next.Version, ManifestJSON: string(manifestJSON),
 		DigestsJSON: string(digests), ServiceAccess: next.Scopes.Service.Access, DelegatedAccess: next.Scopes.Delegated.Access,
 		SourcePack: next.Origin + "@" + next.Version, Released: d.Released, Renamed: map[string]string{},
+		Restrictive: len(d.Released) > 0 ||
+			accessRank(next.Scopes.Service.Access) < accessRank(old.Scopes.Service.Access) ||
+			accessRank(next.Scopes.Delegated.Access) < accessRank(old.Scopes.Delegated.Access),
 	}
 	if !sameStringSet(old.RedirectURIs, next.RedirectURIs) {
 		plan.RedirectURIs = append([]string{}, next.RedirectURIs...)
@@ -313,4 +322,43 @@ func upgradePlanFrom(old, next *appmanifest.Manifest, d *upgradeDiff, fresh *app
 		})
 	}
 	return plan, nil
+}
+
+// upgradeStateChecks runs, on q, the checks the diff cannot make alone
+// because they read the workspace: every installed companion still resolves,
+// and every additive field is safe for the collection's existing items
+// (codex r1 on U8b2). Preview runs it on the pool (advisory); confirm runs it
+// inside the transaction (the guarantee).
+func (s *Server) upgradeStateChecks(q store.Queryer, workspaceID, installID string, old *appmanifest.Manifest, d *upgradeDiff) error {
+	var slugs []string
+	for _, c := range old.CompanionPack.Collections {
+		slugs = append(slugs, c.Slug)
+	}
+	if err := s.store.CheckCompanionsResolveQ(q, workspaceID, installID, slugs); err != nil {
+		return upgradeConflictErr(err)
+	}
+	bySlug := map[string][]models.FieldDef{}
+	var order []string
+	for _, add := range d.SchemaAdds {
+		if _, seen := bySlug[add.CollectionSlug]; !seen {
+			order = append(order, add.CollectionSlug)
+		}
+		bySlug[add.CollectionSlug] = append(bySlug[add.CollectionSlug], add.Field)
+	}
+	for _, slug := range order {
+		if err := s.store.CheckAdditiveFieldsQ(q, workspaceID, installID, slug, bySlug[slug]); err != nil {
+			return upgradeConflictErr(err)
+		}
+	}
+	return nil
+}
+
+func upgradeConflictErr(err error) error {
+	var pc *store.ProvisionConflictError
+	if errors.As(err, &pc) {
+		e := installErr(http.StatusConflict, "upgrade_conflict", "This upgrade cannot apply to the workspace as it stands: %s", pc.Error())
+		e.path = pc.Field
+		return e
+	}
+	return err
 }

@@ -78,6 +78,11 @@ type UpgradePlan struct {
 	Renamed map[string]string
 	// Artifacts land as NEW drafts (changed or added); nothing is overwritten.
 	Artifacts []ProvisionArtifact
+	// Restrictive: the upgrade narrows what the app may do (an access level
+	// narrowed, or a companion released). The install's epoch is bumped, so
+	// a write admitted before the upgrade cannot commit after it and every
+	// token issued before it is refused (codex r1 on U8b2).
+	Restrictive bool
 }
 
 // UpgradeRequest identifies the upgrade being confirmed.
@@ -185,9 +190,14 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 		return nil, err
 	}
 
-	// The install row.
+	// The install row; a restrictive upgrade also bumps the epoch, under the
+	// install row lock this transaction holds (the U5a contract).
+	epochBump := ""
+	if plan.Restrictive {
+		epochBump = ", auth_epoch = auth_epoch + 1"
+	}
 	if _, err := tx.Exec(s.q(`UPDATE app_installs SET manifest_sha256 = ?, manifest_version = ?, manifest = ?, digests = ?,
-		service_access = ?, delegated_access = ?, updated_at = ? WHERE id = ?`),
+		service_access = ?, delegated_access = ?, updated_at = ?`+epochBump+` WHERE id = ?`),
 		plan.ManifestSHA256, plan.ManifestVersion, plan.ManifestJSON, plan.DigestsJSON,
 		plan.ServiceAccess, plan.DelegatedAccess, now(), req.InstallID); err != nil {
 		return nil, fmt.Errorf("upgrade app: install row: %w", err)
@@ -221,7 +231,9 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 		var collID string
 		err := tx.QueryRow(s.q(`SELECT id FROM collections WHERE workspace_id = ? AND slug = ? AND via_app = ?`), req.WorkspaceID, slug, req.InstallID).Scan(&collID)
 		if errors.Is(err, sql.ErrNoRows) {
-			continue // already not this install's
+			// Never skipped: a companion that no longer resolves by its slug
+			// would keep via_app and the bot's access (codex r1 on U8b2).
+			return nil, &ProvisionConflictError{Collection: slug, Field: "slug", Detail: "this installed companion no longer resolves (renamed or deleted); restore its slug to upgrade the app"}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("upgrade app: release %q: %w", slug, err)
@@ -239,6 +251,15 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 	// Additive optional fields on existing companions, appended to the
 	// CURRENT schema. The derivation refused a key the collection already
 	// holds. Nothing to reindex: no existing item has a value for a new key.
+	bySlug := map[string][]models.FieldDef{}
+	for _, add := range plan.SchemaAdds {
+		bySlug[add.CollectionSlug] = append(bySlug[add.CollectionSlug], add.Field)
+	}
+	for slug, fields := range bySlug {
+		if err := s.CheckAdditiveFieldsQ(tx, req.WorkspaceID, req.InstallID, slug, fields); err != nil {
+			return nil, err
+		}
+	}
 	for _, add := range plan.SchemaAdds {
 		var collID, schemaJSON string
 		if err := tx.QueryRow(s.q(`SELECT id, schema FROM collections WHERE workspace_id = ? AND slug = ? AND via_app = ?`), req.WorkspaceID, add.CollectionSlug, req.InstallID).Scan(&collID, &schemaJSON); err != nil {
@@ -318,4 +339,76 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 		return nil, fmt.Errorf("upgrade app: commit: %w", err)
 	}
 	return items, nil
+}
+
+// CheckCompanionsResolveQ refuses unless every installed companion slug still
+// names a live collection stamped via_app = installID. An owner rename or
+// delete of a companion is drift the upgrade cannot map (it addresses
+// companions by slug), so it refuses rather than guessing (codex r1 on U8b2).
+func (s *Store) CheckCompanionsResolveQ(q Queryer, workspaceID, installID string, slugs []string) error {
+	for _, slug := range slugs {
+		var n int
+		if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM collections WHERE workspace_id = ? AND slug = ? AND via_app = ? AND deleted_at IS NULL`),
+			workspaceID, slug, installID).Scan(&n); err != nil {
+			return fmt.Errorf("check companion %q: %w", slug, err)
+		}
+		if n == 0 {
+			return &ProvisionConflictError{Collection: slug, Field: "slug",
+				Detail: "this installed companion no longer resolves (renamed or deleted in this workspace); restore its slug to upgrade the app"}
+		}
+	}
+	return nil
+}
+
+// CheckAdditiveFieldsQ refuses an additive field that is not safe for the
+// collection's EXISTING items, decided against the current data (codex r1 on
+// U8b2): a key the schema already declares; a key items already hold values
+// under (human writes accept undeclared keys, so a new unique or relation
+// field would start out violated or unindexed); and a field that would change
+// the collection's done field (DoneFieldKey also reads settings, so a plain
+// select named by board_group_by would reclassify every existing item).
+func (s *Store) CheckAdditiveFieldsQ(q Queryer, workspaceID, installID, slug string, fields []models.FieldDef) error {
+	var collID, schemaJSON, settingsJSON string
+	err := q.QueryRow(s.q(`SELECT id, schema, settings FROM collections WHERE workspace_id = ? AND slug = ? AND via_app = ? AND deleted_at IS NULL`),
+		workspaceID, slug, installID).Scan(&collID, &schemaJSON, &settingsJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &ProvisionConflictError{Collection: slug, Field: "slug", Detail: "this installed companion no longer resolves (renamed or deleted)"}
+	}
+	if err != nil {
+		return fmt.Errorf("check additive fields of %q: %w", slug, err)
+	}
+	var schema models.CollectionSchema
+	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		return fmt.Errorf("check additive fields of %q: schema: %w", slug, err)
+	}
+	var settings models.CollectionSettings
+	if settingsJSON != "" {
+		_ = json.Unmarshal([]byte(settingsJSON), &settings) // an unreadable settings blob reads as defaults, as everywhere else
+	}
+	before := models.DoneFieldKey(schema, settings)
+	next := schema
+	for _, f := range fields {
+		for _, have := range schema.Fields {
+			if have.Key == f.Key {
+				return &ProvisionConflictError{Collection: slug, Field: f.Key, Detail: "the collection already declares this field"}
+			}
+		}
+		if !isValidFieldKey(f.Key) {
+			return &ProvisionConflictError{Collection: slug, Field: f.Key, Detail: "not a valid field key"}
+		}
+		var n int
+		expr := s.dialect.JSONExtractText("fields", f.Key)
+		if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE collection_id = ? AND deleted_at IS NULL AND `+expr+` IS NOT NULL`), collID).Scan(&n); err != nil {
+			return fmt.Errorf("check additive field %q: %w", f.Key, err)
+		}
+		if n > 0 {
+			return &ProvisionConflictError{Collection: slug, Field: f.Key, Detail: fmt.Sprintf("%d existing items already hold values under this key; declaring it now would leave them unchecked", n)}
+		}
+		next.Fields = append(next.Fields, f)
+	}
+	if after := models.DoneFieldKey(next, settings); after != before {
+		return &ProvisionConflictError{Collection: slug, Field: after,
+			Detail: fmt.Sprintf("adding it would change the collection's done field from %q to %q (its board_group_by setting), reclassifying existing items", before, after)}
+	}
+	return nil
 }

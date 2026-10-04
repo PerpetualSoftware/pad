@@ -142,13 +142,24 @@ func diffUpgrade(old, next *appmanifest.Manifest, oldDigests map[string]storedAr
 	}
 
 	// Events, by name.
-	oldEv, newEv := map[string]appmanifest.Event{}, map[string]appmanifest.Event{}
-	for _, e := range old.Events {
-		oldEv[e.Name] = e
+	// A name may be declared more than once (the manifest allows it): its
+	// collections are the union of every declaration, or a widening could hide
+	// behind a duplicate (codex r1 on U8b2).
+	unionEvents := func(evs []appmanifest.Event) map[string]appmanifest.Event {
+		out := map[string]appmanifest.Event{}
+		for _, e := range evs {
+			u := out[e.Name]
+			u.Name = e.Name
+			for _, c := range e.Collections {
+				if !subsetOf([]string{c}, u.Collections) {
+					u.Collections = append(u.Collections, c)
+				}
+			}
+			out[e.Name] = u
+		}
+		return out
 	}
-	for _, e := range next.Events {
-		newEv[e.Name] = e
-	}
+	oldEv, newEv := unionEvents(old.Events), unionEvents(next.Events)
 	for _, name := range upgradeSortedKeys(oldEv) {
 		if _, ok := newEv[name]; !ok {
 			d.add("event", name, "removed", upgradeAuto, "")
