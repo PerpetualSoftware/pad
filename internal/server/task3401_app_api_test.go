@@ -42,7 +42,19 @@ type appAPIFix struct {
 
 func appAPIFixture(t *testing.T, access string) appAPIFix {
 	t.Helper()
-	srv := appOAuthServer(t, true)
+	return appAPIFixtureOn(t, access, true)
+}
+
+// appAPIFixtureOn builds the fixture on Pad Cloud, or on a self-host with
+// apps enabled (cloud=false).
+func appAPIFixtureOn(t *testing.T, access string, cloud bool) appAPIFix {
+	t.Helper()
+	srv := appOAuthServer(t, cloud)
+	if !cloud {
+		if err := srv.store.SetPlatformSetting(settingAppsEnabled, "true"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	srv.store.SetEncryptionKey(bytes32ForTest())
 	in := newTestInstall(t, srv, "inst-api")
 	ws, err := srv.store.GetWorkspaceByID(in.wsID)
@@ -677,5 +689,23 @@ func TestTask3401_ARevocationDuringAReadWithholdsItsData(t *testing.T) {
 func TestTask3401_AppAfterHandlerSeamIsNilInProduction(t *testing.T) {
 	if New(nil).appAfterHandler != nil {
 		t.Fatal("appAfterHandler is set in a new Server")
+	}
+}
+
+// codex r3 P2: on a self-host, an admin turning apps off while a read is in
+// flight withholds its data, as the gate refuses any new request.
+func TestTask3401_AppsTurnedOffMidReadWithholdsTheData(t *testing.T) {
+	f := appAPIFixtureOn(t, "read", false)
+	if rr := appGet(f.srv, f.path("/items/"+f.item.ID), f.token); rr.Code != http.StatusOK {
+		t.Fatalf("control: %d %s", rr.Code, rr.Body.String())
+	}
+	f.srv.appAfterHandler = func() {
+		if err := f.srv.store.SetPlatformSetting(settingAppsEnabled, "false"); err != nil {
+			t.Error(err)
+		}
+	}
+	rr := appGet(f.srv, f.path("/items/"+f.item.ID), f.token)
+	if rr.Code == http.StatusOK || strings.Contains(rr.Body.String(), "Login broken") {
+		t.Errorf("apps off mid-read: %d %s", rr.Code, rr.Body.String())
 	}
 }

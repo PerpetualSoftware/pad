@@ -170,6 +170,18 @@ var errAppRecheck = errors.New("app authorization no longer holds")
 // store as it stands: live, in the workspace, visible to the actor, inside
 // the ceiling.
 func (s *Server) appRecheckCollection(r *http.Request, collectionID string) error {
+	if memo, ok := r.Context().Value(appRecheckMemoKey{}).(*appRecheckMemo); ok {
+		if err, seen := memo.collections[collectionID]; seen {
+			return err
+		}
+		err := s.appRecheckCollectionUncached(r, collectionID)
+		memo.collections[collectionID] = err
+		return err
+	}
+	return s.appRecheckCollectionUncached(r, collectionID)
+}
+
+func (s *Server) appRecheckCollectionUncached(r *http.Request, collectionID string) error {
 	ac := appContextFrom(r)
 	c, err := s.store.GetCollection(collectionID)
 	if err != nil {

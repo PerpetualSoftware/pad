@@ -477,6 +477,17 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	if ac == nil || ac.Grant == nil {
 		return errors.New("no app context")
 	}
+	// A route without the re-check holder cannot have registered its
+	// authorizations, so it fails closed rather than passing with none.
+	rc, ok := r.Context().Value(appRecheckKey{}).(*appRechecks)
+	if !ok {
+		return errors.New("no re-check holder")
+	}
+	// The gate every new request passes (codex r3): apps turned off while a
+	// read was in flight withholds it too.
+	if !s.appsAvailable() {
+		return errors.New("apps are not available")
+	}
 	tokAC, err := s.appAdmitToken(r.Context(), ac.token)
 	if err != nil {
 		return err
@@ -493,13 +504,18 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	if fresh.Role != ac.Role || fresh.WorkspaceSlug != ac.WorkspaceSlug {
 		return errors.New("the membership changed")
 	}
-	r2 := r.WithContext(appRequestContext(r.Context(), fresh))
-	if rc, ok := r.Context().Value(appRecheckKey{}).(*appRechecks); ok {
-		for _, fn := range rc.fns {
-			if err := fn(r2); err != nil {
-				return err
-			}
+	r2 := r.WithContext(context.WithValue(appRequestContext(r.Context(), fresh), appRecheckMemoKey{}, &appRecheckMemo{collections: map[string]error{}}))
+	for _, fn := range rc.fns {
+		if err := fn(r2); err != nil {
+			return err
 		}
 	}
 	return nil
 }
+
+// appRecheckMemoKey holds one re-validation's memo of collection re-checks:
+// a list replays the same collection for every item, and the answer cannot
+// change within one re-validation.
+type appRecheckMemoKey struct{}
+
+type appRecheckMemo struct{ collections map[string]error }
