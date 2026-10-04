@@ -861,56 +861,9 @@ const (
 )
 
 func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string, posture relationPosture) (*models.Item, *itemCreateError) {
-	// Coerce strings to their declared types before validating (BUG-2850).
-	fieldMap = items.CoerceFields(fieldMap, schema)
-	// BUG-3028: on an ordinary create every value is SUPPLIED, so a blank
-	// relation is removed before validation and a required one is refused as
-	// required. An artifact import (relationsCarry) carries values nobody typed
-	// in this request, so its blanks are removed after validation instead —
-	// the same carry-not-refuse posture it already has for unresolvable ones.
-	if posture == relationsRefuse {
-		items.DropBlankRelations(fieldMap, schema, nil)
-	}
-	// Snapshot before validation, which INJECTS schema defaults without
-	// type-checking them (codex round 7). The resolver below skips a
-	// non-string, so an injected `default: 42` on a relation field reached the
-	// blob unchallenged — the same hole the migrate doors had, by the same
-	// route, and closed with the same pass.
-	relBefore := store.RelationKeysPresent(schema, fieldMap)
-	// BUG-3079: a default that fails its own type check is DISCARDED and
-	// reported, not stored. The list joins the relation drops below in the one
-	// `warnings.dropped_fields` channel — they are the same event to a caller.
-	defaultDrops, err := items.ValidateFieldsWithDrops(fieldMap, schema)
-	if err != nil {
-		return nil, &itemCreateError{status: http.StatusBadRequest, code: "validation_error", message: err.Error()}
-	}
-	items.DropBlankRelations(fieldMap, schema, nil)
-	// Referent validation for relation values (TASK-2878). AFTER the shape
-	// check, so "must be a string" and "names nothing" are never both reported
-	// for one value, and after coercion so the value is in its final form.
-	// The four steps live in one place — see resolveRelationsForWrite.
-	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWrite(
-		r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, posture)
-	if relErr != nil {
-		return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to resolve relation references"}
-	}
-	droppedDefaults = append(defaultDrops, droppedDefaults...)
-	var unresolved []string
-	if len(relRefusals) > 0 {
-		if posture == relationsRefuse {
-			return nil, &itemCreateError{status: http.StatusBadRequest, code: "validation_error", message: relationIssuesMessage(relRefusals)}
-		}
-		// Carry: the values stay in fieldMap exactly as supplied — the
-		// resolver leaves what it cannot resolve untouched — and the write
-		// says which ones, so an import is never silently lossy.
-		for _, ri := range relRefusals {
-			unresolved = append(unresolved, ri.Key)
-		}
-	}
-	undeclared := items.UndeclaredFieldKeys(fieldMap, schema)
-
-	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
-		return nil, &itemCreateError{status: http.StatusConflict, code: "conflict", message: err.Error()}
+	fieldMap, droppedDefaults, unresolved, undeclared, cerr := s.prepareCreateFields(r, workspaceID, coll, schema, fieldMap, posture)
+	if cerr != nil {
+		return nil, cerr
 	}
 
 	// Marshal validated/defaulted fields back
@@ -1032,6 +985,67 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	}
 
 	return item, nil
+}
+
+// prepareCreateFields is createItemChecked's field pipeline, in its order:
+// coerce to declared types, drop blank relations (refuse posture), apply and
+// validate schema defaults, resolve relation referents, name undeclared keys,
+// and the unique-field check. It returns the fields as a create would store
+// them, plus the three warning lists. Extracted so the app installer's
+// preview (TASK-3397) computes its digest over exactly what the import
+// stores; createItemChecked is unchanged in behaviour.
+func (s *Server) prepareCreateFields(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, fieldMap map[string]any, posture relationPosture) (fields map[string]any, droppedDefaults, unresolved, undeclared []string, cerr *itemCreateError) {
+	// Coerce strings to their declared types before validating (BUG-2850).
+	fieldMap = items.CoerceFields(fieldMap, schema)
+	// BUG-3028: on an ordinary create every value is SUPPLIED, so a blank
+	// relation is removed before validation and a required one is refused as
+	// required. An artifact import (relationsCarry) carries values nobody typed
+	// in this request, so its blanks are removed after validation instead —
+	// the same carry-not-refuse posture it already has for unresolvable ones.
+	if posture == relationsRefuse {
+		items.DropBlankRelations(fieldMap, schema, nil)
+	}
+	// Snapshot before validation, which INJECTS schema defaults without
+	// type-checking them (codex round 7). The resolver below skips a
+	// non-string, so an injected `default: 42` on a relation field reached the
+	// blob unchallenged — the same hole the migrate doors had, by the same
+	// route, and closed with the same pass.
+	relBefore := store.RelationKeysPresent(schema, fieldMap)
+	// BUG-3079: a default that fails its own type check is DISCARDED and
+	// reported, not stored. The list joins the relation drops below in the one
+	// `warnings.dropped_fields` channel — they are the same event to a caller.
+	defaultDrops, err := items.ValidateFieldsWithDrops(fieldMap, schema)
+	if err != nil {
+		return nil, nil, nil, nil, &itemCreateError{status: http.StatusBadRequest, code: "validation_error", message: err.Error()}
+	}
+	items.DropBlankRelations(fieldMap, schema, nil)
+	// Referent validation for relation values (TASK-2878). AFTER the shape
+	// check, so "must be a string" and "names nothing" are never both reported
+	// for one value, and after coercion so the value is in its final form.
+	// The four steps live in one place — see resolveRelationsForWrite.
+	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWrite(
+		r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, posture)
+	if relErr != nil {
+		return nil, nil, nil, nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to resolve relation references"}
+	}
+	droppedDefaults = append(defaultDrops, droppedDefaults...)
+	if len(relRefusals) > 0 {
+		if posture == relationsRefuse {
+			return nil, nil, nil, nil, &itemCreateError{status: http.StatusBadRequest, code: "validation_error", message: relationIssuesMessage(relRefusals)}
+		}
+		// Carry: the values stay in fieldMap exactly as supplied — the
+		// resolver leaves what it cannot resolve untouched — and the write
+		// says which ones, so an import is never silently lossy.
+		for _, ri := range relRefusals {
+			unresolved = append(unresolved, ri.Key)
+		}
+	}
+	undeclared = items.UndeclaredFieldKeys(fieldMap, schema)
+
+	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
+		return nil, nil, nil, nil, &itemCreateError{status: http.StatusConflict, code: "conflict", message: err.Error()}
+	}
+	return fieldMap, droppedDefaults, unresolved, undeclared, nil
 }
 
 // writeItemResolveError distinguishes a soft-deleted (archived) item from a
@@ -3880,9 +3894,14 @@ func (s *Server) extractParentLink(
 	return parentValue, parentProvided, true
 }
 
+// uniqueEnforced reports whether checkUniqueFields enforces def. The app
+// installer's preview uses the same predicate (TASK-3397), so the two cannot
+// disagree about which fields are unique.
+func uniqueEnforced(def models.FieldDef) bool { return def.UniqueScope == "workspace_collection" }
+
 func (s *Server) checkUniqueFields(workspaceID, collectionID, excludeItemID string, schema models.CollectionSchema, fieldMap map[string]any) error {
 	for _, def := range schema.Fields {
-		if def.UniqueScope != "workspace_collection" {
+		if !uniqueEnforced(def) {
 			continue
 		}
 		raw, ok := fieldMap[def.Key]

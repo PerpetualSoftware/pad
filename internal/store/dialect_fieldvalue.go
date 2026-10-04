@@ -160,3 +160,21 @@ func (d *postgresDialect) JSONFieldOrder(column, key, dir string) string {
 	num := fmt.Sprintf("(CASE WHEN %s = 'number' THEN (%s->'%s')::numeric END)", t, column, key)
 	return fmt.Sprintf("%s ASC, %s %s, %s %s", rank, num, dir, d.JSONFieldText(column, key), dir)
 }
+
+// NumericClaimForms is the form under which JSONFieldEquals could find two
+// numeric values equal, on either dialect, for arg when numericArg accepts
+// it: its float64 value. SQLite compares an INTEGER and a REAL as doubles,
+// and Postgres compares numeric EXACTLY; two exactly equal values round to
+// the same double, so equal doubles is a superset of both. The app
+// installer's in-pack uniqueness claims key numbers on it (TASK-3397, codex
+// rounds 10-12).
+func NumericClaimForms(arg string) []string {
+	if _, ok := numericArg(arg); !ok {
+		return nil
+	}
+	f, err := strconv.ParseFloat(arg, 64)
+	if err != nil && !math.IsInf(f, 0) {
+		return nil
+	}
+	return []string{"f:" + strconv.FormatFloat(f, 'g', -1, 64)}
+}

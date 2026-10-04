@@ -72,6 +72,7 @@ var rawDecodeAllowed = map[string]string{
 	"internal/server/handlers_collections.go::prevSchema": "the grandfather test's own baseline: a stripped prevSchema would reclassify every EXISTING declaration as newly introduced and refuse every update to such a collection",
 	"cmd/pad/cmd_collection.go::schema":                   "CLI --schema parse and the collection list's own status-option rendering — the collection's definition, not any item's fields",
 	"internal/mcp/dispatch_http_routes.go::schema":        "MCP collection schema INPUT, the remote twin of handlers_collections.go",
+	"internal/appmanifest/manifest.go::Parsed":            "an app manifest's companion collection DEFINITION (TASK-3397), decoded strictly so a misspelled key is refused; the install preview then runs validateNoReservedFieldKeys on it, as collection create does",
 
 	// The move / copy family. These decode raw and strip at the point of use
 	// via items.SchemaForMigratedFields (BUG-2674), which is the same
@@ -556,7 +557,7 @@ func TestGuardAllowListHasNoDeadEntries(t *testing.T) {
 //
 // 22 since BUG-3202 added models/fields_json.go's generic number-preserving
 // decoder, a fourth INTERFACE destination.
-const rawDecodeSiteCount = 22
+const rawDecodeSiteCount = 23
 
 func TestGuardSeesEveryKnownDecodeSite(t *testing.T) {
 	sites := collectSchemaDecodes(t, repoRoot(t))
