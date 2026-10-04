@@ -119,7 +119,20 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 		r.Route("/workspaces/{ws}", func(r chi.Router) {
 			for _, rt := range appRoutes {
 				handler := rt.Handler
-				inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler(s, w, r) })
+				inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// The handler writes into a buffer; nothing reaches the
+					// app until the grant is re-validated (codex r1 P1).
+					buf := newAppResponseBuffer()
+					handler(s, buf, r)
+					if s.appAfterHandler != nil {
+						s.appAfterHandler()
+					}
+					if err := s.appRevalidate(r); err != nil {
+						writeAppUnauthorized(w)
+						return
+					}
+					buf.flushTo(w)
+				})
 				h := s.requireAppAccess(rt.Access, s.requireAppWorkspace(inner))
 				r.Method(rt.Method, rt.Template, h)
 			}
@@ -359,4 +372,77 @@ func appWriteAllows(r *http.Request, collectionID string) bool {
 		}
 	}
 	return false
+}
+
+// appResponseBuffer holds a handler's response until the grant is
+// re-validated (codex r1 P1).
+type appResponseBuffer struct {
+	header http.Header
+	status int
+	body   []byte
+}
+
+func newAppResponseBuffer() *appResponseBuffer { return &appResponseBuffer{header: http.Header{}} }
+
+func (b *appResponseBuffer) Header() http.Header { return b.header }
+
+func (b *appResponseBuffer) WriteHeader(code int) {
+	if b.status == 0 {
+		b.status = code
+	}
+}
+
+func (b *appResponseBuffer) Write(p []byte) (int, error) {
+	if b.status == 0 {
+		b.status = http.StatusOK
+	}
+	b.body = append(b.body, p...)
+	return len(p), nil
+}
+
+func (b *appResponseBuffer) flushTo(w http.ResponseWriter) {
+	for k, v := range b.header {
+		w.Header()[k] = v
+	}
+	if b.status == 0 {
+		b.status = http.StatusOK
+	}
+	w.WriteHeader(b.status)
+	_, _ = w.Write(b.body)
+}
+
+// appRevalidate re-checks, AFTER the handler has read, that the grant the
+// request was admitted under is still good: the same binding and epoch, the
+// install active, the client enabled, the service access unchanged. A
+// disable, rotate, uninstall or access change that commits while a read is in
+// flight therefore withholds its data; every response is ordered against
+// revocation at this check (codex r1 P1). App mutations are ordered by their
+// FencedTx; this orders the reads.
+func (s *Server) appRevalidate(r *http.Request) error {
+	ac := appContextFrom(r)
+	if ac == nil || ac.Grant == nil {
+		return errors.New("no app context")
+	}
+	st, err := s.store.GetAppTokenState(ac.Grant.RequestID)
+	if err != nil {
+		return err
+	}
+	switch {
+	case st == nil:
+		return errors.New("binding gone")
+	case st.Binding.AuthEpoch != ac.Grant.AuthEpoch || st.InstallEpoch != ac.Grant.AuthEpoch:
+		return errors.New("epoch moved")
+	case st.InstallState != "active":
+		return errors.New("install not active")
+	case st.ClientDisabled:
+		return errors.New("client disabled")
+	}
+	inst, err := s.store.GetInstallAPIState(ac.InstallID)
+	if err != nil {
+		return err
+	}
+	if inst == nil || inst.ServiceAccess != ac.Access {
+		return errors.New("access changed")
+	}
+	return nil
 }

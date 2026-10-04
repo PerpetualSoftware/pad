@@ -24,40 +24,47 @@ import (
 // whose bot_user_id it is, else the one its address names. "" for a person,
 // or a bot whose install is gone.
 func (s *Store) AppPrincipalInstallIDQ(q Queryer, userID string) (string, error) {
+	id, _, err := s.appPrincipalInstallQ(q, userID)
+	return id, err
+}
+
+// appPrincipalInstallQ is AppPrincipalInstallIDQ that also reports whether
+// the user is a bot at all, from the same single users read (codex r1 P3).
+func (s *Store) appPrincipalInstallQ(q Queryer, userID string) (string, bool, error) {
 	var kind, email string
 	err := q.QueryRow(s.q(`SELECT kind, email FROM users WHERE id = ?`), userID).Scan(&kind, &email)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return "", false, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("read principal: %w", err)
+		return "", false, fmt.Errorf("read principal: %w", err)
 	}
 	if kind != models.UserKindApp {
-		return "", nil
+		return "", false, nil
 	}
 	var id string
 	err = q.QueryRow(s.q(`SELECT id FROM app_installs WHERE bot_user_id = ?`), userID).Scan(&id)
 	if err == nil {
-		return id, nil
+		return id, true, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("read principal install: %w", err)
+		return "", true, fmt.Errorf("read principal install: %w", err)
 	}
 	if fromAddr, ok := appPrincipalInstallID(email); ok {
 		var bot sql.NullString
 		err := q.QueryRow(s.q(`SELECT bot_user_id FROM app_installs WHERE id = ?`), fromAddr).Scan(&bot)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
-			return "", nil
+			return "", true, nil
 		case err != nil:
-			return "", fmt.Errorf("read principal install: %w", err)
+			return "", true, fmt.Errorf("read principal install: %w", err)
 		case bot.Valid && bot.String != "" && bot.String != userID:
 			// The install names a different bot: this one is not its.
-			return "", nil
+			return "", true, nil
 		}
-		return fromAddr, nil
+		return fromAddr, true, nil
 	}
-	return "", nil
+	return "", true, nil
 }
 
 // InstallCompanionCollectionIDsQ returns the install's companion collections:
@@ -102,16 +109,15 @@ func (s *Store) collectIDs(q Queryer, query string, args ...any) ([]string, erro
 // ceiling itself; the result for a bot is never nil, so no caller can read
 // it as "unrestricted". A person's visibility is returned unchanged.
 func (s *Store) applyAppPrincipalCeilingQ(q Queryer, workspaceID, userID string, visible []string) ([]string, error) {
-	installID, err := s.AppPrincipalInstallIDQ(q, userID)
+	installID, isBot, err := s.appPrincipalInstallQ(q, userID)
 	if err != nil {
 		return nil, err
 	}
-	if installID == "" {
-		var kind string
-		if err := q.QueryRow(s.q(`SELECT kind FROM users WHERE id = ?`), userID).Scan(&kind); err == nil && kind == models.UserKindApp {
-			return []string{}, nil // a bot with no install sees nothing
-		}
+	if !isBot {
 		return visible, nil
+	}
+	if installID == "" {
+		return []string{}, nil // a bot with no install sees nothing
 	}
 	ceiling, err := s.InstallReadCeilingQ(q, installID)
 	if err != nil {

@@ -624,3 +624,45 @@ func TestTask3401_TheRequestCeilingBindsAPersonActor(t *testing.T) {
 		t.Error("control: the companion item is not visible")
 	}
 }
+
+// codex r1 P1: a revocation that commits while a read is in flight withholds
+// its data. The response is re-validated against the install (epoch, state,
+// service access, client) before it is sent.
+func TestTask3401_ARevocationDuringAReadWithholdsItsData(t *testing.T) {
+	cases := map[string]string{
+		"rotate (epoch bump)":    `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`,
+		"disable":                `UPDATE app_installs SET state = 'disabling' WHERE id = ?`,
+		"service access removed": `UPDATE app_installs SET service_access = NULL WHERE id = ?`,
+		"access lowered":         `UPDATE app_installs SET service_access = 'read' WHERE id = ?`,
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := appAPIFixture(t, "write")
+			f.srv.appAfterHandler = func() {
+				if _, err := f.srv.store.DB().Exec(change, f.in.id); err != nil {
+					t.Error(err)
+				}
+			}
+			rr := appGet(f.srv, f.path("/items/"+f.item.ID), f.token)
+			if rr.Code != http.StatusUnauthorized {
+				t.Errorf("%s mid-read: %d, want 401", name, rr.Code)
+			}
+			if strings.Contains(rr.Body.String(), "Login broken") || strings.Contains(rr.Body.String(), f.item.ID) {
+				t.Errorf("%s mid-read: the item leaked: %s", name, rr.Body.String())
+			}
+		})
+	}
+	// Control: nothing changes mid-read.
+	f := appAPIFixture(t, "write")
+	f.srv.appAfterHandler = func() {}
+	if rr := appGet(f.srv, f.path("/items/"+f.item.ID), f.token); rr.Code != http.StatusOK {
+		t.Errorf("control: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// The seam is nil in production.
+func TestTask3401_AppAfterHandlerSeamIsNilInProduction(t *testing.T) {
+	if New(nil).appAfterHandler != nil {
+		t.Fatal("appAfterHandler is set in a new Server")
+	}
+}

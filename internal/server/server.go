@@ -96,6 +96,9 @@ type Server struct {
 	visibleCollectionIDsFault func() error
 	// appstoreState holds the one appstore the app API uses (SPEC-6 U6a).
 	appstoreState appStoreState
+	// appAfterHandler is a TEST-ONLY seam, nil in production: it runs after
+	// an app handler and before its response is re-validated and sent.
+	appAfterHandler func()
 
 	// userCountFault is a TEST-ONLY seam, nil in production (BUG-3334). When
 	// set, userCount calls it first and returns its error. The fresh-install
