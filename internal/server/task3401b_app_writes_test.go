@@ -186,11 +186,18 @@ func TestTask3401b_TheWriteRule(t *testing.T) {
 	if n := f.count(t, `SELECT COUNT(*) FROM items WHERE collection_id = ?`, f.system.ID); n != 0 {
 		t.Errorf("%d items written outside the companions", n)
 	}
-	// The rule inside requireEditPermission itself.
+	// The rule inside requireEditPermission itself, for a bot that is an
+	// editor with "all" access, so only the rule can refuse it. The companion
+	// call is the control: the same request is allowed there.
 	req := httptest.NewRequest("POST", "/x", nil)
-	req = req.WithContext(withAppContextForTest(req, &appContext{Companions: []string{f.companion.ID}}))
-	rec := httptest.NewRecorder()
-	if f.srv.requireEditPermission(rec, req, f.ws.ID, "", f.system.ID) {
+	ctx := withAppContextForTest(req, &appContext{Companions: []string{f.companion.ID}})
+	ctx = WithCurrentUser(ctx, f.in.bot)
+	ctx = context.WithValue(ctx, ctxWorkspaceRole, "editor")
+	req = req.WithContext(ctx)
+	if !f.srv.requireEditPermission(httptest.NewRecorder(), req, f.ws.ID, "", f.companion.ID) {
+		t.Fatal("control: requireEditPermission refused the app in its own companion")
+	}
+	if f.srv.requireEditPermission(httptest.NewRecorder(), req, f.ws.ID, "", f.system.ID) {
 		t.Error("requireEditPermission let an app write outside its companions")
 	}
 }
