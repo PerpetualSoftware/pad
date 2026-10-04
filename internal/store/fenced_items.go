@@ -313,6 +313,12 @@ func (f *FencedTx) UpdateItemFields(itemID string, patch map[string]any, expecte
 	if updated == nil {
 		return nil, fmt.Errorf("fenced update: item %s not readable in transaction", itemID)
 	}
+	// The mutation signal, from THIS transaction's before and after, as the
+	// human update sets it: a caller comparing its own earlier read would
+	// attribute another writer's status change to this write.
+	if statusChanged {
+		updated.LastMutation = &models.ItemMutationSignal{StatusChanged: true, StatusFieldKey: doneKey, FromStatus: statusBefore, ToStatus: newStatus}
+	}
 	if err := f.s.emitItemUpdateEventsTx(f.tx, existing, updated, statusChanged, statusBefore, doneKey, "", false); err != nil {
 		return nil, err
 	}

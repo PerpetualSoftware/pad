@@ -346,6 +346,62 @@ func TestTask3401b_SSEAndWatchParity(t *testing.T) {
 	}
 }
 
+// lazyBody produces a request body only when the handler reads it, which is
+// after the handler's own read of the item: build runs in that gap.
+type lazyBody struct {
+	build func() []byte
+	r     *bytes.Reader
+}
+
+func (b *lazyBody) Read(p []byte) (int, error) {
+	if b.r == nil {
+		b.r = bytes.NewReader(b.build())
+	}
+	return b.r.Read(p)
+}
+
+// Codex U6b round 1 P2: a status another writer changed between the
+// handler's read and the app's commit is not the app's change. The app
+// patches only size; no status notification may name it.
+func TestTask3401b_AnotherWritersStatusChangeIsNotTheApps(t *testing.T) {
+	f := appAPIFixture(t, "write")
+	watch := watchevents.New()
+	f.srv.SetWatchEventsBus(watch)
+	notes, _, err := watch.Subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := &lazyBody{build: func() []byte {
+		status := "done"
+		if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{FieldsPatch: map[string]interface{}{"status": status}}); err != nil {
+			t.Error(err)
+		}
+		// Drain the human write's own notifications, if any were published.
+		for len(notes) > 0 {
+			<-notes
+		}
+		b, _ := json.Marshal(map[string]any{"fields_patch": map[string]any{"size": "M"}, "expected_etag": f.etag(t, f.item.ID)})
+		return b
+	}}
+	req := httptest.NewRequest("PATCH", f.path("/items/"+f.item.ID), body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", rr.Code, rr.Body.String())
+	}
+	if body.r == nil {
+		t.Fatal("control: the handler never read the body, so the race did not run")
+	}
+	select {
+	case n := <-notes:
+		t.Errorf("a size-only app write published %+v", n)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 // Lead ruling R3, U5b half: a DELEGATED write's author is the person, with
 // via_app set ("Dave via Support Portal"), never the bot. Enabled by
 // TASK-3399, which brings delegated tokens.

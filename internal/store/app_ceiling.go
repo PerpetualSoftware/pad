@@ -238,9 +238,3 @@ func (s *Store) UserKinds(userIDs []string) (map[string]string, error) {
 	}
 	return out, rows.Err()
 }
-
-// DoneFieldKey is the collection's done-field key (its status field), or ""
-// when it has none.
-func (s *Store) DoneFieldKey(collectionID string) string {
-	return s.doneFieldKeyQ(s.db, collectionID)
-}

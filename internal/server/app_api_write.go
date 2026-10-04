@@ -173,14 +173,11 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, c.Slug, "agent", ac.Actor.Name, "app", after.Seq)
 	// Watchers hear about an app's status change as about anyone's (lead
-	// ruling R1): the fenced update sets no LastMutation, so it is built
-	// here from the done field before and after.
-	if key := s.store.DoneFieldKey(after.CollectionID); key != "" {
-		from, to := itemFieldString(before.Fields, key), itemFieldString(after.Fields, key)
-		if from != to {
-			after.LastMutation = &models.ItemMutationSignal{StatusChanged: true, StatusFieldKey: key, FromStatus: from, ToStatus: to}
-			s.publishWatchNotifications(ac.WorkspaceID, after, "agent", ac.Actor.Name)
-		}
+	// ruling R1). The signal is the fenced transaction's own, never a
+	// comparison with this handler's earlier read: a status another writer
+	// changed between that read and the commit is not this write's.
+	if after.LastMutation != nil && after.LastMutation.StatusChanged {
+		s.publishWatchNotifications(ac.WorkspaceID, after, "agent", ac.Actor.Name)
 	}
 	dtos, err := s.appItemDTOs(r, []models.Item{*after}, c)
 	if err != nil {
@@ -188,17 +185,6 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeAppJSON(w, http.StatusOK, dtos[0])
-}
-
-// itemFieldString reads one field of an item's fields blob as a string ("" if
-// absent or not a string).
-func itemFieldString(fieldsJSON, key string) string {
-	var m map[string]any
-	if json.Unmarshal([]byte(fieldsJSON), &m) != nil {
-		return ""
-	}
-	v, _ := m[key].(string)
-	return v
 }
 
 // appCommentDTO is one comment's DTO, written by the bot.
