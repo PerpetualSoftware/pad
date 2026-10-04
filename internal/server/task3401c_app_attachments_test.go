@@ -163,13 +163,20 @@ func TestTask3401c_ARevocationBeforeTheFirstByteSendsNothing(t *testing.T) {
 		// The subject's membership narrows: only the item re-check sees it,
 		// since the fenced read rule asks about the companion alone.
 		"membership narrows": `UPDATE workspace_members SET collection_access = 'specific' WHERE user_id = (SELECT bot_user_id FROM app_installs WHERE id = ?)`,
+		// The attachment itself is deleted: only the attachment re-check sees
+		// it, since its item is unchanged.
+		"attachment deleted": `UPDATE attachments SET deleted_at = '2026-01-01T00:00:00Z' WHERE id = ?FROM-ATTACHMENT`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := appAPIFixture(t, "read")
 			ran := false
 			f.srv.appBeforeFirstByte = func() {
 				ran = true
-				if _, err := f.srv.store.DB().Exec(revoke, f.in.id); err != nil {
+				arg := f.in.id
+				if strings.Contains(revoke, "FROM-ATTACHMENT") {
+					revoke, arg = strings.Replace(revoke, "FROM-ATTACHMENT", "", 1), f.attachment
+				}
+				if _, err := f.srv.store.DB().Exec(revoke, arg); err != nil {
 					t.Error(err)
 				}
 			}
