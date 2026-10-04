@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -91,8 +90,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	// anyone noticing. Both now call the same models pair, so the claim is
 	// enforced rather than asserted; create adopted this door's trim, which is
 	// the stricter and correct reading.
-	art.Title = models.NormalizeItemTitle(art.Title)
-	if msg := models.ValidateItemTitle(art.Title); msg != "" {
+	if msg := models.ValidateItemTitle(models.NormalizeItemTitle(art.Title)); msg != "" {
 		writeError(w, http.StatusBadRequest, "bad_request", msg)
 		return
 	}
@@ -143,42 +141,19 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Copy the artifact fields so the preprocess never mutates the decoded
-	// value (keeps the parse layer's output immutable from the handler's POV).
-	fields := make(map[string]any, len(art.Fields))
-	for k, v := range art.Fields {
-		fields[k] = v
-	}
-
-	warnings := s.preprocessArtifactFields(workspaceID, coll, art.Kind, schema, fields)
-
-	fieldsJSON, err := json.Marshal(fields)
+	norm, err := normalizeArtifact(art, coll, schema, func(slug string) (bool, error) {
+		return s.invocationSlugTaken(workspaceID, coll.ID, slug)
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to marshal fields")
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to normalize the artifact")
 		return
 	}
-
-	// Normalize the field map through JSON so its nested types match what the
-	// normal create path validates. handleCreateItem builds its fieldMap by
-	// unmarshalling the JSON request body, so structured values are canonical
-	// JSON types ([]any, map[string]any). The artifact decode produces Go-native
-	// types (e.g. arguments as []map[string]any), which ValidateFields' json case
-	// rejects — round-tripping fixes that without special-casing any field.
-	normalizedFields := make(map[string]any)
-	if err := json.Unmarshal(fieldsJSON, &normalizedFields); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to normalize fields")
-		return
-	}
-
-	body := art.Body
-	if footer := artifactProvenanceFooter(art.Provenance); footer != "" {
-		body = body + footer
-	}
+	warnings := norm.Warnings
 
 	input := models.ItemCreate{
-		Title:   art.Title,
-		Content: body,
-		Fields:  string(fieldsJSON),
+		Title:   norm.Title,
+		Content: norm.Content,
+		Fields:  norm.FieldsJSON,
 	}
 	// Attribution: a normal agent/api create. CreatedBy and Source are both
 	// left blank so createItemChecked stamps them from the request auth
@@ -203,7 +178,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	// ruling, day 57. An artifact was written elsewhere and the importer did
 	// not choose its field values; refusing would break the import of exactly
 	// the artifacts most likely to hold pre-validation junk.
-	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, normalizedFields, "", relationsCarry)
+	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, norm.Fields, "", relationsCarry)
 	if cerr != nil {
 		cerr.write(w, r)
 		return
@@ -265,7 +240,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 //   - status is forced to "draft" regardless of the artifact's value.
 //   - For playbooks, a non-empty invocation_slug that's already taken in the
 //     destination collection is suffixed (-2, -3, …) until free.
-func (s *Server) preprocessArtifactFields(workspaceID string, coll *models.Collection, kind artifact.Kind, schema models.CollectionSchema, fields map[string]any) []string {
+func preprocessArtifactFields(kind artifact.Kind, schema models.CollectionSchema, fields map[string]any, slugTaken func(string) (bool, error)) []string {
 	var warnings []string
 
 	// Blank foreign select values (trigger/scope/priority and any other
@@ -302,7 +277,7 @@ func (s *Server) preprocessArtifactFields(workspaceID string, coll *models.Colle
 	// De-collide invocation_slug for playbooks.
 	if kind == artifact.KindPlaybook {
 		if slug, _ := fields["invocation_slug"].(string); slug != "" {
-			free, changed := s.freeInvocationSlug(workspaceID, coll.ID, slug)
+			free, changed := freeInvocationSlug(slug, slugTaken)
 			if changed {
 				fields["invocation_slug"] = free
 				warnings = append(warnings,
@@ -315,12 +290,12 @@ func (s *Server) preprocessArtifactFields(workspaceID string, coll *models.Colle
 }
 
 // freeInvocationSlug returns an invocation_slug that's free in the destination
-// collection. If the requested slug is already taken it appends -2, -3, …
-// until an unused value is found. Returns (slug, changed).
-func (s *Server) freeInvocationSlug(workspaceID, collectionID, requested string) (string, bool) {
+// collection, per taken. If the requested slug is already taken it appends
+// -2, -3, … until an unused value is found. Returns (slug, changed).
+func freeInvocationSlug(requested string, isTaken func(string) (bool, error)) (string, bool) {
 	candidate := requested
 	for n := 2; ; n++ {
-		taken, err := s.invocationSlugTaken(workspaceID, collectionID, candidate)
+		taken, err := isTaken(candidate)
 		if err != nil {
 			// On a query error, fall back to the requested slug and let the
 			// create-time uniqueness precheck/constraint surface a conflict.
