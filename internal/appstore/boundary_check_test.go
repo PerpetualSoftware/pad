@@ -74,6 +74,15 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"decisionSetResolver":        "loads an in-memory pointer; no SQL",
 	"createActivityQ":            "INSERT INTO activities on the executor it is given (the fence's tx)",
 	"recentDebounceCandidateQ":   "reads activities",
+	// U2b (TASK-3391).
+	"getCommentQ":                         "reads the comment row",
+	"emitCommentEventTx":                  "INSERT INTO event_outbox (through writeOutboxTx) for the comment it is given",
+	"buildCommentAppProjectionTx":         "reads the comment's item, whether its workspace has an install (workspaceHasInstalledAppTx), its author's display name and its parent's item",
+	"enqueueDecisionJobsForItemTx":        "reads the item's collection, then enqueueDecisionJobsTx for that item",
+	"lockCommentForDeleteTx":              "reads the comment's ancestor chain and locks it root first (FOR UPDATE on Postgres); writes nothing",
+	"lockCommentRowTx":                    "reads one comment row (FOR UPDATE on Postgres); writes nothing",
+	"reapTombstonesTx":                    "DELETE FROM comments for emptied tombstones up the chain from the id it is given; FencedTx.DeleteComment first proves every comment on that chain is on the same companion item",
+	"emitRefOnlyDeletionWithProjectionTx": "INSERT INTO event_outbox (through writeOutboxTx) for the deleted comment",
 }
 
 // reviewedStoreFuncs are package-level internal/store functions that are part

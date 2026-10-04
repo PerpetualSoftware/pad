@@ -94,3 +94,22 @@ func TestBoundaryCoversTheWholeModule(t *testing.T) {
 		}
 	}
 }
+
+// The human attachment stamp touches any attachment in the workspace, so the
+// door must never reach it (TASK-3391 ruling): an app comment's references go
+// through FencedTx's item-bound stamp instead. The walk refuses any store
+// helper not on a reviewed list; this pins that it is on none of them.
+func TestHumanAttachmentStampStaysOffTheDoor(t *testing.T) {
+	const human = "stampAttachmentRefsTx"
+	if _, ok := allowedStoreMethodsInsideDoor[human]; ok {
+		t.Errorf("%s is on allowedStoreMethodsInsideDoor", human)
+	}
+	if _, ok := reviewedStoreFuncs[human]; ok {
+		t.Errorf("%s is on reviewedStoreFuncs", human)
+	}
+	for fn := range allowedFuncValues {
+		if strings.Contains(fn, human) {
+			t.Errorf("%s has an allowedFuncValues entry", human)
+		}
+	}
+}
