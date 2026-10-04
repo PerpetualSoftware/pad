@@ -81,6 +81,18 @@ type appPreview struct {
 	ConfigSchema    json.RawMessage          `json:"config_schema,omitempty"`
 	RedirectURIs    []string                 `json:"redirect_uris"`
 	Docs            string                   `json:"docs,omitempty"`
+	// Upgrade is set on an upgrade's preview (U8b2): what it would change.
+	Upgrade *appUpgradePreview `json:"upgrade,omitempty"`
+}
+
+// appUpgradePreview is the upgrade half of a preview (U8b2).
+type appUpgradePreview struct {
+	InstallID          string             `json:"install_id"`
+	FromVersion        string             `json:"from_version"`
+	FromManifestSHA256 string             `json:"from_manifest_sha256"`
+	Diff               []upgradeDiffEntry `json:"diff"`
+	ReviewRequired     bool               `json:"review_required"`
+	Notice             string             `json:"notice"`
 }
 
 type appPreviewCollection struct {
@@ -91,6 +103,8 @@ type appPreviewCollection struct {
 	// Adopt: a collection with this slug exists and was created by an install
 	// of this same origin; it is adopted rather than created.
 	Adopt bool `json:"adopt"`
+	// Existing: on an upgrade, this install's own companion (U8b2).
+	Existing bool `json:"existing,omitempty"`
 }
 
 type appPreviewArtifact struct {
@@ -199,7 +213,7 @@ func (s *Server) handleAppInstallPreview(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, err)
 		return
 	}
-	preview, ierr := s.stageAppInstall(r, workspaceID, pending, origin)
+	preview, ierr := s.stageAppInstall(r, workspaceID, pending, origin, nil)
 	if ierr != nil {
 		if err := s.store.DeletePendingInstall(pending.ID); err != nil {
 			slog.Warn("apps: deleting a failed pending install", "pending", pending.ID, "error", err)
@@ -217,7 +231,10 @@ func (s *Server) handleAppInstallPreview(w http.ResponseWriter, r *http.Request)
 
 // stageAppInstall fetches, stages, validates and previews under a reservation
 // already taken. Any error leaves the caller to delete the reservation.
-func (s *Server) stageAppInstall(r *http.Request, workspaceID string, pending *store.PendingInstall, origin string) (*appPreview, error) {
+//
+// extend, when set (an upgrade, U8b2), adds to the preview before it is
+// stored; a refusal from it is the stage's refusal.
+func (s *Server) stageAppInstall(r *http.Request, workspaceID string, pending *store.PendingInstall, origin string, extend func(*appPreview, *appmanifest.Manifest) error) (*appPreview, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), appFetchDeadline)
 	defer cancel()
 	fetcher, err := appfetch.New(s.appsPrivateOrigins(), appFetchDeadline, s.appFetchTLS)
@@ -271,11 +288,16 @@ func (s *Server) stageAppInstall(r *http.Request, workspaceID string, pending *s
 	}
 	// No further bytes can arrive: everything is staged.
 
-	preview, err := s.buildAppPreview(r, workspaceID, m, manifestSHA, rawArtifacts)
+	preview, err := s.buildAppPreviewQ(s.store.Q(), r, workspaceID, m, manifestSHA, rawArtifacts, pending.UpgradeOf)
 	if err != nil {
 		return nil, err
 	}
 	preview.PendingID = pending.ID
+	if extend != nil {
+		if err := extend(preview, m); err != nil {
+			return nil, err
+		}
+	}
 	// The stored preview omits each artifact's raw text: the staged blobs
 	// already hold those bytes, and GET fills them back in from there.
 	stored := *preview
@@ -309,19 +331,19 @@ func (s *Server) stageErr(err error) error {
 	return err
 }
 
-// buildAppPreview validates the pack against this workspace and normalizes
-// every artifact exactly as the importer would store it.
-func (s *Server) buildAppPreview(r *http.Request, workspaceID string, m *appmanifest.Manifest, manifestSHA string, rawArtifacts [][]byte) (*appPreview, error) {
-	return s.buildAppPreviewQ(s.store.Q(), r, workspaceID, m, manifestSHA, rawArtifacts)
-}
-
-// buildAppPreviewQ is buildAppPreview with every read on q. Provisioning (U8b)
-// runs it on its own transaction, under its locks, and compares the result
+// buildAppPreviewQ validates the pack against this workspace and normalizes
+// every artifact exactly as the importer would store it, with every read on
+// q: the pool for a preview, the transaction for provisioning (U8b), which
+// runs it under its locks and compares the result
 // with the reviewed preview: the digest comparison IS the re-check, so no
 // fact the normalization depends on has to be listed separately (lead
 // ruling, day 86). It must stay read-only: the write-capture test asserts a
 // pass on the provisioning transaction writes nothing.
-func (s *Server) buildAppPreviewQ(q store.Queryer, r *http.Request, workspaceID string, m *appmanifest.Manifest, manifestSHA string, rawArtifacts [][]byte) (*appPreview, error) {
+//
+// upgradeOf is "" for an install; for an upgrade (U8b2) it is the install
+// being upgraded, whose own companion collections are existing, not
+// conflicts.
+func (s *Server) buildAppPreviewQ(q store.Queryer, r *http.Request, workspaceID string, m *appmanifest.Manifest, manifestSHA string, rawArtifacts [][]byte, upgradeOf string) (*appPreview, error) {
 	p := &appPreview{
 		Origin: m.Origin, ManifestURL: appmanifest.ManifestURL(m.Origin), ManifestSHA256: manifestSHA,
 		AppID: m.ID, Version: m.Version, Title: m.Title, Description: m.Description, Publisher: m.Publisher, Homepage: m.Homepage,
@@ -351,7 +373,9 @@ func (s *Server) buildAppPreviewQ(q store.Queryer, r *http.Request, workspaceID 
 			e.path = fmt.Sprintf("companion_pack.collections[%d].slug", i)
 			return nil, e
 		}
-		if holder, exists := owners[c.Slug]; exists {
+		if holder, exists := owners[c.Slug]; exists && upgradeOf != "" && holder.InstallID == upgradeOf {
+			pc.Existing = true
+		} else if exists {
 			if holder.Origin != m.Origin {
 				e := installErr(http.StatusConflict, "collection_conflict", "This workspace already has a collection %q that this app did not create", c.Slug)
 				e.path = fmt.Sprintf("companion_pack.collections[%d].slug", i)

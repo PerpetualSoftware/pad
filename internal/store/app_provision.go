@@ -219,7 +219,9 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 
 	// 1. The pending record: live, staged, this owner's, this workspace's,
 	// and the very manifest the owner reviewed.
-	lockQ := `SELECT workspace_id, owner_id, origin, state, COALESCE(manifest_sha256, ''), expires_at FROM app_install_pending WHERE id = ?`
+	// upgrade_of IS NULL: an upgrade's pending record is never provisioned as
+	// a fresh install (U8b2); it confirms through UpgradeAppInstall only.
+	lockQ := `SELECT workspace_id, owner_id, origin, state, COALESCE(manifest_sha256, ''), expires_at FROM app_install_pending WHERE id = ? AND upgrade_of IS NULL`
 	if pg {
 		lockQ += ` FOR UPDATE`
 	}
