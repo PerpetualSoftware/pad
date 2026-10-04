@@ -309,6 +309,10 @@ func TestTask3399_TheConsoleShowsAndRevokesAppGrants(t *testing.T) {
 	if _, err := f.srv.introspectAppToken(context.Background(), tok); err == nil {
 		t.Error("a revoked app grant's token still introspects")
 	}
+	// Through the binding (lead ruling Q1), not only the tokens.
+	if n := count3399(t, f.srv, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = ?`, reqID); n != 0 {
+		t.Error("the console revoke left the grant's binding")
+	}
 	// Someone else cannot revoke it, and the answer is the plain 404.
 	g := delegatedFixture(t, "inst-console2", "write")
 	_, other := g.signIn(t, "read")
