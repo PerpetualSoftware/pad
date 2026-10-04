@@ -228,21 +228,6 @@ func TestTask3397_UninstallKeepsAttribution(t *testing.T) {
 	}
 }
 
-// Phase 1 refuses an app write admitted at the old epoch: the FencedTx
-// re-reads the epoch under the same install row (DOC-3371 §2, R3-4).
-func TestTask3397_PhaseOneFencesAnAdmittedWrite(t *testing.T) {
-	srv := appOAuthServer(t, true)
-	in := lifecycleInstall(t, srv, "inst-fence")
-	epoch := installEpoch(t, srv, in.id)
-	if err := srv.store.BeginInstallTeardown(in.wsID, in.id, store.TeardownDisable); err != nil {
-		t.Fatal(err)
-	}
-	_, err := srv.store.BeginFenced(context.Background(), store.FenceSpec{InstallID: in.id, WorkspaceID: in.wsID, Epoch: epoch})
-	if err == nil {
-		t.Fatal("a write admitted before phase 1 opened its fence after it")
-	}
-}
-
 // Wrong states answer a typed refusal, and the doors resume a call left
 // between the phases.
 func TestTask3397_LifecycleStatesAndResume(t *testing.T) {

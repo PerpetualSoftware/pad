@@ -1,11 +1,12 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 	"testing"
+	"time"
 )
 
 // TASK-3397 (U8c): UninstallAppTx is one transaction (DOC-3371 §8 step 3). A
@@ -213,5 +214,26 @@ func TestTask3397_UninstallDoesNotDeadlockWithTheBotPurge(t *testing.T) {
 	}
 	if st, _ := f.s.InstallState(f.ws.ID, f.installID); st != InstallUninstalled {
 		t.Fatalf("state %s, want uninstalled", st)
+	}
+}
+
+// Phase 1 refuses an app write admitted at the old epoch: BeginFenced re-reads
+// the epoch and state under the same install row (DOC-3371 §2, R3-4). Lives in
+// internal/store because only appstore may open a fence outside this package
+// (TestFencedTx_OnlyAppstoreOpensOne).
+func TestTask3397_PhaseOneFencesAnAdmittedWrite(t *testing.T) {
+	f := task3397LifecycleFix(t, "inst-fence")
+	epoch := task3397Epoch(t, f.s, f.installID)
+	spec := FenceSpec{InstallID: f.installID, WorkspaceID: f.ws.ID, Epoch: epoch}
+	ftx, err := f.s.BeginFenced(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("control: a fence at the current epoch: %v", err)
+	}
+	_ = ftx.Rollback()
+	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownDisable); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.BeginFenced(context.Background(), spec); err == nil {
+		t.Fatal("a write admitted before phase 1 opened its fence after it")
 	}
 }
