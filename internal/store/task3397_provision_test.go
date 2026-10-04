@@ -94,13 +94,16 @@ func TestTask3397_ProvisionRefusesADemotedOwner(t *testing.T) {
 	if err := f.s.UpdateWorkspaceMemberRole(f.ws.ID, f.owner.ID, "editor"); err != nil {
 		t.Fatal(err)
 	}
-	called := false
-	_, err := f.s.ProvisionAppInstall(f.req, func(Queryer) (*ProvisionDerived, error) { called = true; return f.derived("n1"), nil })
+	// On Postgres the first, read-only derivation runs before the role check
+	// (it names the items to lock first; see the lock order). Nothing is
+	// written either way.
+	_, err := f.s.ProvisionAppInstall(f.req, func(Queryer) (*ProvisionDerived, error) { return f.derived("n1"), nil })
 	if !errors.Is(err, ErrNotWorkspaceOwner) {
 		t.Fatalf("got %v, want ErrNotWorkspaceOwner", err)
 	}
-	if called {
-		t.Error("the derivation ran for a caller who is not an owner")
+	var n int
+	if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM app_installs`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d installs written (%v)", n, err)
 	}
 }
 
@@ -177,6 +180,66 @@ func TestTask3397_ResolvedItemWaitsForProvisioning(t *testing.T) {
 		_, err := f.s.db.Exec(f.s.q(`UPDATE items SET title = 'Renamed' WHERE id = ?`), f.target.ID)
 		return err
 	})
+}
+
+// Codex round 3: the visibility check reads the caller's grants, so a grant
+// revocation must wait too. The hold is on the second derivation, after the
+// visibility rows are locked (Postgres); SQLite's write lock covers it.
+func TestTask3397_GrantRevocationWaitsForProvisioning(t *testing.T) {
+	f := task3397Fixture(t)
+	g, err := f.s.CreateCollectionGrant(f.ws.ID, f.people.ID, f.owner.ID, "view", f.owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold := 1
+	if f.s.dialect.Driver() == DriverPostgres {
+		hold = 2
+	}
+	assertBlockedUntilRelease(t, f, hold, func() error {
+		_, err := f.s.db.Exec(f.s.q(`DELETE FROM collection_grants WHERE id = ?`), g.ID)
+		return err
+	})
+}
+
+// Codex round 3: account deletion updates the caller's items, then deletes
+// their membership. Provisioning takes the resolved items BEFORE the
+// membership, the same order, so the two queue instead of deadlocking: the
+// deletion commits first and provisioning then finds no owner.
+func TestTask3397_AccountDeletionOrderDoesNotDeadlock(t *testing.T) {
+	f := task3397Fixture(t)
+	other := createTestUser(t, f.s, "second3397@example.com", "Second", "correct-horse-battery")
+	if err := f.s.AddWorkspaceMember(f.ws.ID, other.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	del, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Step 1 of the deletion: an UPDATE of the resolved target item.
+	if _, err := del.Exec(f.s.q(`UPDATE items SET title = 'Ada (deleted author)' WHERE id = ?`), f.target.ID); err != nil {
+		t.Fatal(err)
+	}
+	provDone := make(chan error, 1)
+	go func() {
+		_, err := f.s.ProvisionAppInstall(f.req, func(Queryer) (*ProvisionDerived, error) { return f.derived("n1"), nil })
+		provDone <- err
+	}()
+	time.Sleep(700 * time.Millisecond) // provisioning is now waiting on the item (or, on SQLite, on BEGIN)
+	// Step 2 of the deletion: the membership.
+	if _, err := del.Exec(f.s.q(`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), f.ws.ID, f.owner.ID); err != nil {
+		t.Fatalf("the deletion could not take the membership (a deadlock victim?): %v", err)
+	}
+	if err := del.Commit(); err != nil {
+		t.Fatalf("deletion commit: %v", err)
+	}
+	select {
+	case err := <-provDone:
+		if !errors.Is(err, ErrNotWorkspaceOwner) {
+			t.Fatalf("provisioning: %v, want ErrNotWorkspaceOwner after the deletion committed", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("provisioning never finished")
+	}
 }
 
 // Postgres re-derives after lock 5 and refuses if the two disagree. SQLite

@@ -815,3 +815,47 @@ func TestProvisionDerive_WritesNothing(t *testing.T) {
 		t.Fatalf("the derivation wrote: %v", storetest.Tables(writes))
 	}
 }
+
+// Codex round 3: a relation value the artifact itself SUPPLIES (here the
+// playbook's trigger, redeclared as a relation) is carried as text when it no
+// longer resolves, so the stored bytes do not change and only a warning
+// appears. The owner reviewed the warnings too, so the derivation refuses.
+func TestProvisionAppInstall_SuppliedRelationTargetDeleted(t *testing.T) {
+	e := newProvisionEnv(t)
+	people, err := e.srv.store.CreateCollection(e.wsID, models.CollectionCreate{Name: "People", Slug: "people"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := e.srv.store.CreateItem(e.wsID, people.ID, models.ItemCreate{Title: "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	editPlaybookSchema(t, e, func(f map[string]any) {
+		if f["key"] == "trigger" {
+			f["type"] = "relation"
+			f["collection"] = "people"
+			delete(f, "options")
+			delete(f, "default")
+		}
+	})
+	m := e.manifest(t)
+	body := []byte(strings.Replace(string(e.files["/pack/ship.md"]), "trigger: on-intent", "trigger: "+target.ID, 1))
+	e.files["/pack/ship.md"] = body
+	m["companion_pack"].(map[string]any)["artifacts"] = []any{map[string]any{"key": "ship", "url": e.origin() + "/pack/ship.md", "sha256": appSHA(body)}}
+	e.publish(t, m)
+	p := e.stagePreview(t)
+	if p.Artifacts[0].Normalized.Fields["trigger"] != target.ID {
+		t.Fatalf("preview trigger %v, want the resolved %s", p.Artifacts[0].Normalized.Fields["trigger"], target.ID)
+	}
+	req, derive := prepareProvision(t, e, p)
+	if err := e.srv.store.DeleteItem(target.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := provisionCensus(t, e)
+	_, err = e.srv.store.ProvisionAppInstall(*req, derive)
+	ae := wantStale(t, err)
+	if !strings.Contains(ae.msg, `Artifact "ship"`) || !strings.Contains(ae.msg, "trigger") {
+		t.Errorf("refusal %q does not name the artifact and the field", ae.msg)
+	}
+	assertCensusUnchanged(t, before, provisionCensus(t, e))
+}

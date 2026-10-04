@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -230,8 +231,51 @@ func compareWithReviewed(fresh, reviewed *appPreview) error {
 			e.path = fmt.Sprintf("companion_pack.artifacts[%d]", i)
 			return e
 		}
+		// The owner reviewed the CHANGES list too, and it can move while the
+		// stored item does not: a relation the import carries as unresolved
+		// text keeps the same bytes and gains only a warning (codex round 3).
+		if added, removed := diffChanges(was.Changes, a.Changes); len(added)+len(removed) > 0 {
+			var parts []string
+			for _, c := range added {
+				parts = append(parts, "now: "+c)
+			}
+			for _, c := range removed {
+				parts = append(parts, "no longer: "+c)
+			}
+			e := installErr(http.StatusConflict, "install_review_stale", "Artifact %q changed since you reviewed this install (%s); preview it again", a.Key, strings.Join(parts, "; "))
+			e.path = fmt.Sprintf("companion_pack.artifacts[%d]", i)
+			return e
+		}
 	}
 	return nil
+}
+
+// diffChanges returns the change lines in now but not in was, and the reverse.
+func diffChanges(was, now []string) (added, removed []string) {
+	in := func(list []string) map[string]int {
+		m := map[string]int{}
+		for _, c := range list {
+			m[c]++
+		}
+		return m
+	}
+	w, n := in(was), in(now)
+	for _, c := range now {
+		if w[c] == 0 {
+			added = append(added, c)
+		} else {
+			w[c]--
+		}
+	}
+	w = in(was)
+	for _, c := range was {
+		if n[c] == 0 {
+			removed = append(removed, c)
+		} else {
+			n[c]--
+		}
+	}
+	return added, removed
 }
 
 // provisionDerived turns a fresh preview into what provisioning writes, plus

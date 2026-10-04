@@ -225,47 +225,64 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 		}
 	}
 
-	// 4. The caller is still an owner, read under a share lock on Postgres.
-	roleQ := `SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
-	if pg {
-		roleQ += ` FOR SHARE`
-	}
-	var role string
-	if err := tx.QueryRow(s.q(roleQ), req.WorkspaceID, req.OwnerID).Scan(&role); err != nil || role != "owner" {
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("provision app: owner role: %w", err)
+	if !pg {
+		// SQLite: BEGIN IMMEDIATE already holds the write lock, so one
+		// derivation after the role check reads state nothing can change.
+		if err := s.requireWorkspaceOwnerTx(tx, req.WorkspaceID, req.OwnerID, false); err != nil {
+			return nil, err
 		}
-		return nil, ErrNotWorkspaceOwner
-	}
-
-	// The derivation, on this transaction.
-	derived, err := derive(tx)
-	if err != nil {
-		return nil, err
-	}
-	// 5. The items it resolved (Postgres), then derive again: the second
-	// pass reads only rows held by locks 2-5, and must agree with the first.
-	if pg && len(derived.ResolvedItemIDs) > 0 {
-		ids := append([]string(nil), derived.ResolvedItemIDs...)
-		sort.Strings(ids)
-		in := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-		args := []any{req.WorkspaceID}
-		for _, id := range ids {
-			args = append(args, id)
+		derived, err := derive(tx)
+		if err != nil {
+			return nil, err
 		}
-		if err := lockRowsForShare(tx, s.q(`SELECT id FROM items WHERE workspace_id = ? AND id IN (`+in+`) ORDER BY id FOR SHARE`), args...); err != nil {
-			return nil, fmt.Errorf("provision app: lock resolved items: %w", err)
+		req.Collections, req.Artifacts = derived.Collections, derived.Artifacts
+	} else {
+		// Postgres: a first derivation to learn which items it resolves; then
+		// lock 4 (those items) BEFORE lock 5 (the owner's membership and
+		// visibility rows), the order account deletion takes them in (items
+		// first, then the membership), so the two cannot deadlock (codex
+		// round 3); then the role check; then the derivation again, reading
+		// only rows held by locks 2-5, which must agree with the first.
+		first, err := derive(tx)
+		if err != nil {
+			return nil, err
+		}
+		if len(first.ResolvedItemIDs) > 0 {
+			ids := append([]string(nil), first.ResolvedItemIDs...)
+			sort.Strings(ids)
+			in := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+			args := []any{req.WorkspaceID}
+			for _, id := range ids {
+				args = append(args, id)
+			}
+			if err := lockRowsForShare(tx, s.q(`SELECT id FROM items WHERE workspace_id = ? AND id IN (`+in+`) ORDER BY id FOR SHARE`), args...); err != nil {
+				return nil, fmt.Errorf("provision app: lock resolved items: %w", err)
+			}
+		}
+		if err := s.requireWorkspaceOwnerTx(tx, req.WorkspaceID, req.OwnerID, true); err != nil {
+			return nil, err
+		}
+		// Every row the visibility check reads for this caller (checkItemVisibleQ:
+		// collection_access on the membership row, member_collection_access,
+		// collection and item grants), so a revocation waits (codex round 3).
+		for _, q := range []string{
+			`SELECT collection_id FROM member_collection_access WHERE workspace_id = ? AND user_id = ? ORDER BY collection_id FOR SHARE`,
+			`SELECT id FROM collection_grants WHERE workspace_id = ? AND user_id = ? ORDER BY id FOR SHARE`,
+			`SELECT id FROM item_grants WHERE workspace_id = ? AND user_id = ? ORDER BY id FOR SHARE`,
+		} {
+			if err := lockRowsForShare(tx, s.q(q), req.WorkspaceID, req.OwnerID); err != nil {
+				return nil, fmt.Errorf("provision app: lock visibility rows: %w", err)
+			}
 		}
 		again, err := derive(tx)
 		if err != nil {
 			return nil, err
 		}
-		if !sameDerivation(derived, again) {
+		if !sameDerivation(first, again) {
 			return nil, &ProvisionConflictError{Detail: "the workspace changed while the install was being applied; preview it again"}
 		}
-		derived = again
+		req.Collections, req.Artifacts = again.Collections, again.Artifacts
 	}
-	req.Collections, req.Artifacts = derived.Collections, derived.Artifacts
 
 	// The install row.
 	installID := newID()
@@ -538,4 +555,22 @@ func (s *Store) InstallForLiveCode(code string) (string, bool) {
 		return "", false
 	}
 	return id, true
+}
+
+// requireWorkspaceOwnerTx refuses unless userID is an owner of workspaceID,
+// read on tx (FOR SHARE on Postgres when share is set).
+func (s *Store) requireWorkspaceOwnerTx(tx *sql.Tx, workspaceID, userID string, share bool) error {
+	q := `SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
+	if share {
+		q += ` FOR SHARE`
+	}
+	var role string
+	err := tx.QueryRow(s.q(q), workspaceID, userID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && role != "owner") {
+		return ErrNotWorkspaceOwner
+	}
+	if err != nil {
+		return fmt.Errorf("provision app: owner role: %w", err)
+	}
+	return nil
 }
