@@ -422,6 +422,11 @@ type Metrics struct {
 	// detail the log line carries.
 	ContentWritesSupersededTotal prometheus.Counter
 
+	// DBDeadlockRetriesTotal counts store transactions run again after a
+	// Postgres deadlock (40P01), by site (TASK-3399). A site that climbs is a
+	// pair of writers whose lock order needs fixing, not just retrying.
+	DBDeadlockRetriesTotal *prometheus.CounterVec
+
 	// OAuth flow metrics (PLAN-943 TASK-961). Wired from
 	// internal/server/handlers_oauth.go (per-handler seams) and
 	// internal/oauth/storage.go (revocation TTL observation).
@@ -537,6 +542,11 @@ func New() *Metrics {
 		Name: "pad_mcp_active_sessions",
 		Help: "Number of currently-open MCP Streamable HTTP sessions.",
 	})
+
+	dbDeadlockRetriesTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_db_deadlock_retries_total",
+		Help: "Store transactions run again after a Postgres deadlock (SQLSTATE 40P01), by site (TASK-3399).",
+	}, []string{"site"})
 
 	contentWritesSupersededTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_content_writes_superseded_total",
@@ -727,6 +737,7 @@ func New() *Metrics {
 		mcpPreAuthDeniedTotal,
 		mcpActiveSessions,
 		contentWritesSupersededTotal,
+		dbDeadlockRetriesTotal,
 		oauthFlowsTotal,
 		oauthResourceMissingTotal,
 		planWritesTotal,
@@ -770,6 +781,7 @@ func New() *Metrics {
 		MCPPreAuthDeniedTotal:        mcpPreAuthDeniedTotal,
 		MCPActiveSessions:            mcpActiveSessions,
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
+		DBDeadlockRetriesTotal:       dbDeadlockRetriesTotal,
 		OAuthFlowsTotal:              oauthFlowsTotal,
 		OAuthResourceMissingTotal:    oauthResourceMissingTotal,
 		PlanWritesTotal:              planWritesTotal,

@@ -41,9 +41,16 @@ var (
 	// ErrInstallTokenSubject refuses an install-client credential whose
 	// subject is not that install's own bot.
 	ErrInstallTokenSubject = errors.New("an install client's service token belongs to its own app principal only")
-	// ErrInstallDelegatedUnsupported refuses delegated (code + PKCE) install
-	// grants until TASK-3399 (U5b) brings them through the barrier.
-	ErrInstallDelegatedUnsupported = errors.New("delegated install grants are not supported yet")
+	// ErrInstallDelegatedUnsupported refuses a code or PKCE persistence for
+	// an install grant that is not a delegated one: only a person signing in
+	// through the app takes the code flow (TASK-3399).
+	ErrInstallDelegatedUnsupported = errors.New("only a delegated install grant takes the authorization-code flow")
+	// ErrInstallDelegatedSubject refuses a delegated install grant whose
+	// subject is not a live human member of the install's workspace.
+	ErrInstallDelegatedSubject = errors.New("a delegated install grant belongs to a member of the install's workspace")
+	// ErrInstallDelegatedAccess refuses a delegated grant whose consented
+	// access is missing, unknown, or more than the manifest offers.
+	ErrInstallDelegatedAccess = errors.New("a delegated install grant's access is not one the app offers")
 	// ErrNoInstallClient means the install has no client.
 	ErrNoInstallClient = errors.New("app install has no client")
 )
@@ -54,6 +61,73 @@ var (
 // authenticated with a secret that a rotate then replaced reaches the barrier
 // after the rotate committed, still carrying the epoch from before it.
 const InstallEpochSessionKey = "app_install_epoch"
+
+// InstallAuthKindSessionKey and InstallAccessSessionKey carry a delegated
+// grant's kind ("delegated") and the access the person consented to ("read"
+// or "write") in its session data, set by the consent decision (TASK-3399).
+// A grant without the kind is a service grant.
+const (
+	InstallAuthKindSessionKey = "app_auth_kind"
+	InstallAccessSessionKey   = "app_delegated_access"
+	// InstallPersonEpochSessionKey carries the person's credential_epoch as
+	// the consent request resolved them (codex U5b-1 r7): the barrier refuses
+	// a grant whose person's credentials changed since, so a consent posted
+	// from a session a disable destroyed cannot mint a code after a re-enable.
+	InstallPersonEpochSessionKey = "app_person_epoch"
+	// InstallMemberSinceSessionKey carries the person's membership created_at
+	// as the consent gate read it (codex U5b-1 r8): a removal and re-add
+	// between the consent and its code refuses the code.
+	InstallMemberSinceSessionKey = "app_member_since"
+)
+
+// carriedMemberSince reads the membership created_at a delegated grant
+// carries, if any.
+func carriedMemberSince(sessionData string) (string, bool) {
+	var doc struct {
+		Extra map[string]any `json:"extra"`
+	}
+	if err := json.Unmarshal([]byte(sessionData), &doc); err != nil {
+		return "", false
+	}
+	v, ok := doc.Extra[InstallMemberSinceSessionKey].(string)
+	return v, ok && v != ""
+}
+
+// carriedPersonEpoch reads the person's credential epoch a delegated grant
+// carries, if any.
+func carriedPersonEpoch(sessionData string) (int64, bool) {
+	var doc struct {
+		Extra map[string]any `json:"extra"`
+	}
+	dec := json.NewDecoder(strings.NewReader(sessionData))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
+		return 0, false
+	}
+	n, ok := doc.Extra[InstallPersonEpochSessionKey].(json.Number)
+	if !ok {
+		return 0, false
+	}
+	v, err := n.Int64()
+	return v, err == nil
+}
+
+// carriedInstallGrant reads a grant's kind and consented access from its
+// session data; kind is "service" when none is carried.
+func carriedInstallGrant(sessionData string) (kind, access string) {
+	var doc struct {
+		Extra map[string]any `json:"extra"`
+	}
+	if err := json.Unmarshal([]byte(sessionData), &doc); err != nil {
+		return "service", ""
+	}
+	kind, _ = doc.Extra[InstallAuthKindSessionKey].(string)
+	access, _ = doc.Extra[InstallAccessSessionKey].(string)
+	if kind == "" {
+		kind = "service"
+	}
+	return kind, access
+}
 
 // InstallEpoch returns the install's current epoch.
 func (s *Store) InstallEpoch(installID string) (int64, error) {
@@ -70,15 +144,18 @@ func (s *Store) InstallEpoch(installID string) (int64, error) {
 
 // carriedInstallEpoch reads the epoch a grant carries in its session data.
 func carriedInstallEpoch(sessionData string) (int64, bool) {
+	// The extra map holds other keys too (a delegated grant's kind and
+	// access are strings), so it is decoded generically, with numbers kept
+	// exact, and only the epoch key is required to be a number.
 	var doc struct {
-		Extra map[string]json.Number `json:"extra"`
+		Extra map[string]any `json:"extra"`
 	}
 	dec := json.NewDecoder(strings.NewReader(sessionData))
 	dec.UseNumber()
 	if err := dec.Decode(&doc); err != nil {
 		return 0, false
 	}
-	n, ok := doc.Extra[InstallEpochSessionKey]
+	n, ok := doc.Extra[InstallEpochSessionKey].(json.Number)
 	if !ok {
 		return 0, false
 	}
@@ -202,6 +279,14 @@ func (s *Store) RevokeInstallClientGrantsTx(tx *sql.Tx, installID string) error 
 	if err != nil {
 		return err
 	}
+	// The bindings first, locked in request_id order (TASK-3399, codex U5b-1
+	// r4): a person's delegated revocation locks ITS bindings in the same
+	// order before any child row, so the two meet at the first shared
+	// binding instead of crossing inside a token table, where one table
+	// order does not mean one row order.
+	if err := s.lockBindingsInOrderTx(tx, `client_id = ?`, clientID); err != nil {
+		return fmt.Errorf("revoke install grants: %w", err)
+	}
 	if _, err := tx.Exec(s.q(`DELETE FROM app_token_bindings WHERE client_id = ?`), clientID); err != nil {
 		return fmt.Errorf("revoke install grants: bindings: %w", err)
 	}
@@ -271,13 +356,29 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	if !installID.Valid || installID.String == "" {
 		return false, nil
 	}
-	lockQ := `SELECT workspace_id, state, auth_epoch FROM app_installs WHERE id = ?`
+	// A delegated grant's person is share-locked BEFORE the install (codex
+	// U5b-1 r2): users, then installs, then token rows is the order account
+	// erase (owner, then its installs' bots), disable and member removal take,
+	// so issuance cannot hold an install while waiting for a person another
+	// transaction holds with that install next. A service grant's subject is
+	// the install's bot, which the install lifecycle reaches through the
+	// install, so it is not locked here.
+	kind, access := carriedInstallGrant(req.SessionData)
+	if kind == "delegated" && s.dialect.Driver() == DriverPostgres {
+		var one int
+		if err := tx.QueryRow(s.q(`SELECT 1 FROM users WHERE id = ? FOR SHARE`), req.Subject).Scan(&one); err != nil &&
+			!errors.Is(err, sql.ErrNoRows) {
+			return true, fmt.Errorf("oauth: lock delegated subject: %w", err)
+		}
+	}
+	lockQ := `SELECT workspace_id, state, auth_epoch, delegated_access FROM app_installs WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		lockQ += ` FOR UPDATE`
 	}
 	var workspaceID, state string
 	var epoch int64
-	err = tx.QueryRow(s.q(lockQ), installID.String).Scan(&workspaceID, &state, &epoch)
+	var offered sql.NullString
+	err = tx.QueryRow(s.q(lockQ), installID.String).Scan(&workspaceID, &state, &epoch, &offered)
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, ErrInstallNotActive
 	}
@@ -298,42 +399,151 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	if disabledAt.Valid && disabledAt.String != "" {
 		return true, ErrInstallClientDisabled
 	}
-	if table != "oauth_access_tokens" && table != "oauth_refresh_tokens" {
+	// The grant's kind (read above), and for a delegated grant the access
+	// the person consented to, as the consent decision put them in the
+	// session data.
+	var bindAccess, bindUser, bindSince sql.NullString
+	var bindCredEpoch sql.NullInt64
+	switch kind {
+	case "service":
+		// A service token is client_credentials: no code, no PKCE.
+		if table != "oauth_access_tokens" && table != "oauth_refresh_tokens" {
+			return true, ErrInstallDelegatedUnsupported
+		}
+		var botKind string
+		var botDisabled sql.NullString
+		// The subject must be the install's bot: bot_user_id when provisioning
+		// set it (U8b), with the address as the agreement check either way.
+		err = tx.QueryRow(s.q(`SELECT u.kind, u.disabled_at FROM users u JOIN app_installs i ON i.id = ?
+			WHERE u.id = ? AND u.email = ? AND (i.bot_user_id IS NULL OR i.bot_user_id = u.id)`),
+			installID.String, req.Subject, appPrincipalEmail(installID.String)).Scan(&botKind, &botDisabled)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && (botKind != models.UserKindApp || botDisabled.Valid)) {
+			return true, ErrInstallTokenSubject
+		}
+		if err != nil {
+			return true, fmt.Errorf("oauth: read install principal: %w", err)
+		}
+	case "delegated":
+		// TASK-3399: a person signing in through the app. The access they
+		// consented to must be one the manifest offers, read under the lock:
+		// an upgrade that withdrew delegated access refuses a grant consented
+		// before it.
+		if !delegatedAccessWithin(access, offered) {
+			return true, ErrInstallDelegatedAccess
+		}
+		// The subject must be a live HUMAN member of the install's workspace,
+		// read in this transaction: never a bot (which has its own door), and
+		// never someone removed since they consented. On Postgres the user and
+		// membership rows are share-locked (codex U5b-1 r1), so an account
+		// disable or a member removal waits for this issuance to commit and
+		// then revokes what it wrote, or commits first and is seen here.
+		// SQLite's single writer serializes them already.
+		// The workspace must be live too (codex U5b-1 r9): a consent approved
+		// after a soft delete persists nothing.
+		subjQ := `SELECT u.kind, u.disabled_at, u.credential_epoch, m.created_at FROM users u
+			JOIN workspace_members m ON m.user_id = u.id AND m.workspace_id = ?
+			JOIN workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL
+			WHERE u.id = ?`
+		if s.dialect.Driver() == DriverPostgres {
+			subjQ += ` FOR SHARE`
+		}
+		var userKind, memberSince string
+		var userDisabled sql.NullString
+		var credEpoch int64
+		err = tx.QueryRow(s.q(subjQ), workspaceID, req.Subject).Scan(&userKind, &userDisabled, &credEpoch, &memberSince)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && (userKind != models.UserKindHuman || userDisabled.Valid)) {
+			return true, ErrInstallDelegatedSubject
+		}
+		if err != nil {
+			return true, fmt.Errorf("oauth: read delegated subject: %w", err)
+		}
+		// The credentials the consent was given under must still be the
+		// person's: a disable or claim since then bumped them.
+		if carried, ok := carriedPersonEpoch(req.SessionData); !ok || carried != credEpoch {
+			return true, ErrInstallDelegatedSubject
+		}
+		// And the membership it was given under (a removal and re-add since
+		// the consent gate read it refuses). RESIDUAL, accepted by the lead
+		// (codex U5b-1 r9): workspace_members has no row id (its key is
+		// workspace_id, user_id, which a re-add reuses) and created_at has
+		// one-second resolution, so an owner's removal AND re-add inside one
+		// second, during an in-flight consent, still matches. It grants
+		// nothing beyond the person's current membership: they are a member at
+		// the consent and at this persistence, and any grant that already
+		// existed was revoked by the removal itself (revokeDelegatedGrantsTx).
+		// No generation column is added for this.
+		if carried, ok := carriedMemberSince(req.SessionData); !ok || carried != memberSince {
+			return true, ErrInstallDelegatedSubject
+		}
+		bindAccess = sql.NullString{String: access, Valid: true}
+		bindUser = sql.NullString{String: req.Subject, Valid: true}
+		bindSince = sql.NullString{String: memberSince, Valid: true}
+		bindCredEpoch = sql.NullInt64{Int64: credEpoch, Valid: true}
+	default:
 		return true, ErrInstallDelegatedUnsupported
-	}
-	var botKind string
-	var botDisabled sql.NullString
-	// The subject must be the install's bot: bot_user_id when provisioning
-	// set it (U8b), with the address as the agreement check either way.
-	err = tx.QueryRow(s.q(`SELECT u.kind, u.disabled_at FROM users u JOIN app_installs i ON i.id = ?
-		WHERE u.id = ? AND u.email = ? AND (i.bot_user_id IS NULL OR i.bot_user_id = u.id)`),
-		installID.String, req.Subject, appPrincipalEmail(installID.String)).Scan(&botKind, &botDisabled)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && (botKind != models.UserKindApp || botDisabled.Valid)) {
-		return true, ErrInstallTokenSubject
-	}
-	if err != nil {
-		return true, fmt.Errorf("oauth: read install principal: %w", err)
 	}
 	if err := s.insertOAuthRequestRowTx(tx, table, req, requestedStr); err != nil {
 		return true, err
 	}
+	// One binding per grant (fosite keeps the request id from code to token),
+	// written by its first persistence and checked by every later one: the
+	// same epoch, kind and access, so no later step can change what the grant
+	// is.
 	var bound int64
-	err = tx.QueryRow(s.q(`SELECT auth_epoch FROM app_token_bindings WHERE request_id = ?`), req.RequestID).Scan(&bound)
+	var boundKind string
+	var boundAccess, boundUser, boundSince, boundRevoked sql.NullString
+	var boundCredEpoch sql.NullInt64
+	err = tx.QueryRow(s.q(`SELECT auth_epoch, auth_kind, delegated_access, delegated_user_id, delegated_member_since,
+		delegated_credential_epoch, revoked_at FROM app_token_bindings WHERE request_id = ?`),
+		req.RequestID).Scan(&bound, &boundKind, &boundAccess, &boundUser, &boundSince, &boundCredEpoch, &boundRevoked)
 	switch {
+	case errors.Is(err, sql.ErrNoRows) && kind == "delegated" && table != "oauth_authorization_codes" && table != "oauth_pkce_requests":
+		// Only a delegated grant's FIRST persistence (its code, at consent)
+		// writes its binding. A token persisting against no binding is a
+		// grant whose binding is gone: revoked and swept (codex U5b-1 r2), or
+		// erased. Never a first issuance.
+		return true, ErrInstallNotActive
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.Exec(s.q(`
-			INSERT INTO app_token_bindings (request_id, client_id, install_id, workspace_id, auth_epoch, auth_kind, created_at)
-			VALUES (?, ?, ?, ?, ?, 'service', ?)`),
-			req.RequestID, req.ClientID, installID.String, workspaceID, epoch, now()); err != nil {
+			INSERT INTO app_token_bindings (request_id, client_id, install_id, workspace_id, auth_epoch, auth_kind, delegated_access,
+			                                delegated_user_id, delegated_member_since, delegated_credential_epoch, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			req.RequestID, req.ClientID, installID.String, workspaceID, epoch, kind, bindAccess, bindUser, bindSince, bindCredEpoch, now()); err != nil {
 			return true, fmt.Errorf("oauth: write token binding: %w", err)
 		}
 	case err != nil:
 		return true, fmt.Errorf("oauth: read token binding: %w", err)
+	case boundRevoked.Valid:
+		// The person revoked this grant: a tombstone, never a first issuance.
+		return true, ErrInstallNotActive
 	case bound != epoch:
 		// A later persistence of a family bound under an earlier epoch.
 		return true, ErrInstallNotActive
+	case boundKind != kind || boundAccess != bindAccess:
+		return true, ErrInstallDelegatedAccess
+	case boundUser != bindUser || boundSince != bindSince || boundCredEpoch != bindCredEpoch:
+		// Not the person, membership or credentials it was issued against:
+		// a disable (credential_epoch) or a removal and re-add (member since)
+		// between two persistences ends the grant.
+		return true, ErrInstallDelegatedSubject
 	}
 	return true, nil
+}
+
+// delegatedAccessWithin reports whether a consented access is one the
+// manifest offers: "read" or "write", and no more than offered. An install
+// whose manifest offers no delegated access refuses every delegated grant.
+func delegatedAccessWithin(access string, offered sql.NullString) bool {
+	if !offered.Valid {
+		return false
+	}
+	switch access {
+	case "read":
+		return offered.String == "read" || offered.String == "write"
+	case "write":
+		return offered.String == "write"
+	}
+	return false
 }
 
 // AppPrincipalForInstall returns the install's bot: the kind='app' user at
@@ -393,7 +603,7 @@ func (s *Store) GetAppTokenState(requestID string) (*AppTokenState, error) {
 		FROM app_token_bindings b
 		JOIN app_installs i ON i.id = b.install_id
 		JOIN oauth_clients c ON c.id = b.client_id
-		WHERE b.request_id = ?`), requestID).Scan(
+		WHERE b.request_id = ? AND b.revoked_at IS NULL`), requestID).Scan(
 		&st.Binding.RequestID, &st.Binding.ClientID, &st.Binding.InstallID, &st.Binding.WorkspaceID,
 		&st.Binding.AuthEpoch, &st.Binding.AuthKind, &st.InstallState, &st.InstallEpoch, &disabledAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -404,4 +614,97 @@ func (s *Store) GetAppTokenState(requestID string) (*AppTokenState, error) {
 	}
 	st.ClientDisabled = disabledAt.Valid && disabledAt.String != ""
 	return &st, nil
+}
+
+// InstallConsentState is what the delegated consent page and decision need
+// about an install (TASK-3399): where it lives, whether it is active, what
+// delegated access its manifest offers, and how to name it.
+type InstallConsentState struct {
+	InstallID       string
+	WorkspaceID     string
+	State           string
+	Origin          string
+	DelegatedAccess string // "read", "write", or "" (none offered)
+	AppName         string // the install's bot display name, which is the app's name
+	// AuthEpoch is read with the state, before any check the gate makes on
+	// it, and carried into the grant (codex U5b-1 r8): a disable and
+	// re-enable after the gate refuses the code.
+	AuthEpoch int64
+}
+
+// GetInstallConsentState reads an install's consent state, or nil when there
+// is no such install.
+func (s *Store) GetInstallConsentState(installID string) (*InstallConsentState, error) {
+	st := InstallConsentState{InstallID: installID}
+	var access, name sql.NullString
+	err := s.db.QueryRow(s.q(`SELECT i.workspace_id, i.state, i.origin, i.delegated_access, u.name, i.auth_epoch
+		FROM app_installs i LEFT JOIN users u ON u.id = i.bot_user_id WHERE i.id = ?`), installID).
+		Scan(&st.WorkspaceID, &st.State, &st.Origin, &access, &name, &st.AuthEpoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read install consent state: %w", err)
+	}
+	st.DelegatedAccess, st.AppName = access.String, name.String
+	if st.AppName == "" {
+		// An install from before bot_user_id (U8b): its bot by address.
+		if bot, err := s.AppPrincipalForInstall(installID); err == nil && bot != nil {
+			st.AppName = bot.Name
+		}
+	}
+	if st.AppName == "" {
+		st.AppName = st.Origin
+	}
+	return &st, nil
+}
+
+// notInstallClientSQL keeps a token row's chain to ordinary OAuth clients:
+// an installed app's chains (its service tokens and the delegated grants
+// people give it, TASK-3399) are not MCP connections. Every reader that
+// treats a token chain as a connection (the Connected Apps list, the MCP
+// readiness resume count, the connections backfill) filters with it; app
+// grants are listed and revoked on their own (ListUserAppGrants,
+// RevokeUserAppGrant). Appended to a WHERE clause over a token table whose
+// client column is client_id.
+const notInstallClientSQL = ` AND client_id NOT IN (SELECT id FROM oauth_clients WHERE app_install_id IS NOT NULL AND app_install_id <> '')`
+
+// lockBindingsInOrderTx locks the app_token_bindings rows a predicate
+// selects, tombstones included, in request_id order, on Postgres (SQLite's
+// single writer serializes the callers already). Every transaction that
+// writes several grants' child rows (install teardown, a person's delegated
+// revocation) takes its bindings this way first, so two of them can only
+// wait on each other at a binding, in one order, never in a cycle.
+func (s *Store) lockBindingsInOrderTx(tx *sql.Tx, where string, args ...any) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	rows, err := tx.Query(s.q(`SELECT request_id FROM app_token_bindings WHERE `+where+` ORDER BY request_id FOR UPDATE`), args...)
+	if err != nil {
+		return fmt.Errorf("lock token bindings: %w", err)
+	}
+	for rows.Next() {
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("lock token bindings: %w", err)
+	}
+	return rows.Close()
+}
+
+// WorkspaceMemberSince returns a membership's created_at exactly as stored,
+// or "" when there is none or its workspace is deleted: the value a delegated consent carries and the
+// issuance barrier compares (TASK-3399).
+func (s *Store) WorkspaceMemberSince(workspaceID, userID string) (string, error) {
+	var since string
+	err := s.db.QueryRow(s.q(`SELECT m.created_at FROM workspace_members m
+		JOIN workspaces w ON w.id = m.workspace_id AND w.deleted_at IS NULL
+		WHERE m.workspace_id = ? AND m.user_id = ?`), workspaceID, userID).Scan(&since)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read membership: %w", err)
+	}
+	return since, nil
 }

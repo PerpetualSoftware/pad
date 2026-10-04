@@ -2550,6 +2550,18 @@ export interface ConnectedApp {
 	include_future_workspaces?: boolean;
 }
 
+// A delegated grant a person gave an installed app (TASK-3399): the app acts
+// as them, in one workspace, with the access they chose. Listed on the
+// Connected apps page read-only; it can only be revoked.
+export interface AppGrant {
+	id: string;
+	app_name: string;
+	origin: string;
+	workspace: { slug: string; name: string };
+	access: 'read' | 'write';
+	granted_at: string;
+}
+
 // ─── Helper functions ────────────────────────────────────────────────────────
 
 export function parseFields(item: Item): Record<string, any> {

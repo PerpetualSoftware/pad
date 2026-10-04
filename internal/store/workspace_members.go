@@ -187,6 +187,13 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 // The user's workspace tab goes with it when no grant keeps them in the
 // workspace (TASK-3256).
 func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
+	// One transaction per attempt, nothing outside it before the commit:
+	// retryable on a deadlock (TASK-3399).
+	attempt := 0
+	return s.retryOnDeadlock("remove_workspace_member", func() error { return s.removeWorkspaceMemberOnce(workspaceID, userID, &attempt) })
+}
+
+func (s *Store) removeWorkspaceMemberOnce(workspaceID, userID string, attempt *int) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -202,6 +209,11 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 		return err
 	}
 	if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
+		return err
+	}
+	// Their delegated app grants in this workspace end with the membership
+	// (TASK-3399): a re-add does not revive them.
+	if err := s.revokeDelegatedGrantsTx(tx, userID, workspaceID); err != nil {
 		return err
 	}
 	result, err := tx.Exec(
@@ -218,6 +230,9 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 	if err := s.pruneWorkspaceTabIfNoAccessTx(tx, userID, workspaceID); err != nil {
 		return err
 	}
+	if err := s.injectedDeadlock("remove_workspace_member", attempt); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -225,6 +240,13 @@ func (s *Store) RemoveWorkspaceMember(workspaceID, userID string) error {
 // and revokes all their grants in a single transaction. This prevents the user
 // from retaining guest access if the member removal succeeds but grant revocation fails.
 func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string) error {
+	// One transaction per attempt, nothing outside it before the commit:
+	// retryable on a deadlock (TASK-3399).
+	attempt := 0
+	return s.retryOnDeadlock("remove_workspace_member", func() error { return s.removeWorkspaceMemberAndRevokeGrantsOnce(workspaceID, userID, &attempt) })
+}
+
+func (s *Store) removeWorkspaceMemberAndRevokeGrantsOnce(workspaceID, userID string, attempt *int) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -240,6 +262,12 @@ func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string)
 		return err
 	}
 	if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
+		return err
+	}
+
+	// Their delegated app grants in this workspace end with the membership
+	// (TASK-3399): a re-add does not revive them.
+	if err := s.revokeDelegatedGrantsTx(tx, userID, workspaceID); err != nil {
 		return err
 	}
 
@@ -264,6 +292,9 @@ func (s *Store) RemoveWorkspaceMemberAndRevokeGrants(workspaceID, userID string)
 		return err
 	}
 
+	if err := s.injectedDeadlock("remove_workspace_member", attempt); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

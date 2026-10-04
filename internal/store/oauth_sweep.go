@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -31,12 +32,17 @@ type OAuthSweepResult struct {
 	RefreshTokens      int64
 	AuthorizationCodes int64
 	PKCERequests       int64
-	Capped             bool
+	// AppTokenBindings is install-token bindings whose grant has no row left
+	// in any of the four tables (TASK-3399): the binding table has no
+	// foreign key to them, so without this an expired chain's binding
+	// stayed forever, for service and delegated grants alike.
+	AppTokenBindings int64
+	Capped           bool
 }
 
 // Total is the rows deleted across all four tables.
 func (r OAuthSweepResult) Total() int64 {
-	return r.AccessTokens + r.RefreshTokens + r.AuthorizationCodes + r.PKCERequests
+	return r.AccessTokens + r.RefreshTokens + r.AuthorizationCodes + r.PKCERequests + r.AppTokenBindings
 }
 
 // SweepExpiredOAuthRows deletes rows whose requested_at is before the
@@ -81,7 +87,14 @@ func (s *Store) SweepExpiredOAuthRows(cut OAuthSweepCutoffs, batchSize, maxBatch
 		)`)
 		batches := 0
 		for {
-			r, err := s.db.Exec(stmt, before, batchSize)
+			// Each batch is one statement in its own transaction: retryable
+			// on a deadlock (TASK-3399).
+			var r sql.Result
+			err := s.retryOnDeadlock("oauth_sweep", func() error {
+				var err error
+				r, err = s.db.Exec(stmt, before, batchSize)
+				return err
+			})
 			if err != nil {
 				return res, fmt.Errorf("sweep %s: %w", t.table, err)
 			}
@@ -103,6 +116,41 @@ func (s *Store) SweepExpiredOAuthRows(cut OAuthSweepCutoffs, batchSize, maxBatch
 			// rather than losing every race to the next batch.
 			time.Sleep(pause)
 		}
+	}
+	// Bindings orphaned by the deletes above, or by any earlier one. A
+	// binding is written in the same transaction as its grant's first row,
+	// so a committed binding without a row is never one mid-issuance.
+	orphans := s.q(`DELETE FROM app_token_bindings WHERE request_id IN (
+		SELECT b.request_id FROM app_token_bindings b
+		WHERE NOT EXISTS (SELECT 1 FROM oauth_access_tokens t WHERE t.request_id = b.request_id)
+		  AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.request_id = b.request_id)
+		  AND NOT EXISTS (SELECT 1 FROM oauth_authorization_codes t WHERE t.request_id = b.request_id)
+		  AND NOT EXISTS (SELECT 1 FROM oauth_pkce_requests t WHERE t.request_id = b.request_id)
+		LIMIT ?
+	)`)
+	for batches := 0; ; batches++ {
+		if batches >= maxBatches {
+			res.Capped = true
+			break
+		}
+		var r sql.Result
+		err := s.retryOnDeadlock("oauth_sweep", func() error {
+			var err error
+			r, err = s.db.Exec(orphans, batchSize)
+			return err
+		})
+		if err != nil {
+			return res, fmt.Errorf("sweep app_token_bindings: %w", err)
+		}
+		n, err := r.RowsAffected()
+		if err != nil {
+			return res, fmt.Errorf("sweep app_token_bindings: rows affected: %w", err)
+		}
+		res.AppTokenBindings += n
+		if n < int64(batchSize) {
+			break
+		}
+		time.Sleep(pause)
 	}
 	return res, nil
 }

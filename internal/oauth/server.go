@@ -10,6 +10,7 @@ import (
 	"github.com/ory/fosite/compose"
 	"github.com/ory/fosite/handler/oauth2"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -111,6 +112,7 @@ type Server struct {
 	provider fosite.OAuth2Provider
 	cfg      Config
 	storage  *Storage
+	strategy *oauth2.HMACSHAStrategy
 }
 
 // NewServer constructs an OAuth 2.1 authorization server backed by
@@ -261,7 +263,45 @@ func NewServer(cfg Config) (*Server, error) {
 		provider: provider,
 		cfg:      cfg,
 		storage:  storage,
+		strategy: strategy,
 	}, nil
+}
+
+// GrantOwner names the client a presented authorization code or refresh
+// token was issued to, active or not, or "" when it names nothing. It reads
+// the row by the token's signature and writes nothing.
+//
+// fosite's code and refresh flows treat a used code or a rotated refresh
+// token as a replay and revoke that grant's whole family BEFORE checking the
+// client that presented it. An installed app's client is refused any grant
+// it does not own before fosite runs (TASK-3399, keeping U5a's guarantee),
+// so it can never revoke another client's family.
+func (s *Server) GrantOwner(ctx context.Context, grantType, token string) (string, error) {
+	var sig string
+	switch grantType {
+	case "authorization_code":
+		sig = s.strategy.AuthorizeCodeSignature(ctx, token)
+	case "refresh_token":
+		sig = s.strategy.RefreshTokenSignature(ctx, token)
+	}
+	// A malformed token has no signature, and so names nothing.
+	if sig == "" {
+		return "", nil
+	}
+	var req *models.OAuthRequest
+	var err error
+	if grantType == "authorization_code" {
+		req, err = s.cfg.Store.GetAuthorizationCode(sig)
+	} else {
+		req, err = s.cfg.Store.GetRefreshToken(sig)
+	}
+	if req == nil {
+		if err != nil && !errors.Is(err, store.ErrOAuthNotFound) {
+			return "", err
+		}
+		return "", nil
+	}
+	return req.ClientID, nil
 }
 
 // Provider returns the fosite.OAuth2Provider that sub-PR C's HTTP

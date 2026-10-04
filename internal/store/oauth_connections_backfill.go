@@ -188,13 +188,13 @@ func (s *Store) collectGrantChainsForBackfill() (map[string]backfillChain, error
 
 	if err := scan(`
         SELECT request_id, subject, requested_at, session_data
-        FROM oauth_access_tokens
+        FROM oauth_access_tokens WHERE 1 = 1` + notInstallClientSQL + `
     `); err != nil {
 		return nil, fmt.Errorf("scan access tokens: %w", err)
 	}
 	if err := scan(`
         SELECT request_id, subject, requested_at, session_data
-        FROM oauth_refresh_tokens
+        FROM oauth_refresh_tokens WHERE 1 = 1` + notInstallClientSQL + `
     `); err != nil {
 		return nil, fmt.Errorf("scan refresh tokens: %w", err)
 	}

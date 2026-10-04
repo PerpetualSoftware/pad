@@ -61,13 +61,16 @@ func (s *Server) writeTokenError(ctx context.Context, w http.ResponseWriter, err
 // prepareInstallTokenRequest applies the install-client rules to a token
 // request BEFORE fosite reads it, and reports false after answering when one
 // refuses:
-//   - only client_credentials (delegated grants arrive with TASK-3399);
+//   - client_credentials (a service token), or authorization_code and
+//     refresh_token (a delegated grant, TASK-3399);
 //   - `resource` is REQUIRED, with no MCP default (install clients are new,
 //     so they never had the log-only phase TASK-3363 gave humans);
 //   - an `audience` that names something else is refused, not reconciled.
 func (s *Server) prepareInstallTokenRequest(ctx context.Context, w http.ResponseWriter, r *http.Request) bool {
-	if r.PostForm.Get("grant_type") != "client_credentials" {
-		s.writeTokenError(ctx, w, fosite.ErrUnsupportedGrantType.WithHint("An installed app's client uses client_credentials."))
+	switch r.PostForm.Get("grant_type") {
+	case "client_credentials", "authorization_code", "refresh_token":
+	default:
+		s.writeTokenError(ctx, w, fosite.ErrUnsupportedGrantType.WithHint("An installed app's client uses client_credentials, authorization_code or refresh_token."))
 		return false
 	}
 	resource := strings.TrimSpace(r.PostForm.Get("resource"))

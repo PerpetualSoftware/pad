@@ -84,6 +84,7 @@ import type {
 	AttachmentListFilters,
 	AttachmentListResponse,
 	ConnectedApp,
+	AppGrant,
 	ClaimCodeResponse,
 	ImportArtifactResult
 } from '$lib/types';
@@ -3097,7 +3098,7 @@ export const api = {
 	// the nav link in self-host.
 
 	connectedApps: {
-		list: () => request<{ items: ConnectedApp[] }>('/connected-apps'),
+		list: () => request<{ items: ConnectedApp[]; app_grants?: AppGrant[] }>('/connected-apps'),
 		revoke: (id: string) =>
 			request<void>(`/connected-apps/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 

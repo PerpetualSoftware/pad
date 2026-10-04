@@ -102,6 +102,12 @@ type Server struct {
 	// appBeforeHandler is a TEST-ONLY seam, nil in production: it runs after
 	// the app middleware admitted a request and before its handler.
 	appBeforeHandler func()
+	// delegatedSignInOpen is THE guard on delegated app sign-in (TASK-3399,
+	// lead ruling): false, so the consent page answers access_denied, until
+	// U5b-2 deletes this field in the same PR that makes the app API accept
+	// delegated tokens, so a grant and its use go live together. Tests open
+	// it on their own server.
+	delegatedSignInOpen bool
 	// appBeforeFirstByte is a TEST-ONLY seam, nil in production: it runs in
 	// an app download after the blob is open and before the re-admission
 	// gate that precedes the first byte.
@@ -1249,6 +1255,9 @@ func (s *Server) countMidStreamResync(activity bool) {
 // no-ops until both prerequisites are present.
 func (s *Server) SetMetrics(m *metrics.Metrics) {
 	s.metrics = m
+	if m != nil && m.DBDeadlockRetriesTotal != nil {
+		s.store.SetDeadlockRetryObserver(func(site string) { m.DBDeadlockRetriesTotal.WithLabelValues(site).Inc() })
+	}
 	s.wireOAuthMetricsObserver()
 	s.wireStreamGauge()
 }
@@ -1843,10 +1852,17 @@ func (s *Server) setupRouter() {
 			// OAuth there are no grants to manage. The audit route
 			// above is deliberately outside the gate: it is history
 			// of a connection the caller owns.
+			// The list and the revoke also serve the grants people gave
+			// installed apps, so they are open when either OAuth or apps
+			// are (TASK-3399); with OAuth off they show and revoke app
+			// grants only.
 			r.Group(func(r chi.Router) {
-				r.Use(s.requireOAuthAvailable)
+				r.Use(s.requireOAuthOrAppsAvailable)
 				r.Get("/connected-apps", s.handleListConnectedApps)
 				r.Delete("/connected-apps/{id}", s.handleRevokeConnectedApp)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(s.requireOAuthAvailable)
 				// PLAN-1519 / TASK-1524 / IDEA-1517 §3: mutation
 				// endpoints for the connections-page UI. Per-field
 				// patches rather than a general PATCH for cleaner

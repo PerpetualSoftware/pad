@@ -987,18 +987,26 @@ func (s *Store) requireActiveUserTx(tx *sql.Tx, userID string) error {
 // Nothing here is restored by EnableUser: the user signs in, mints tokens
 // and reconnects apps again.
 func (s *Store) DisableUserAndRevokeAccess(userID string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("disable user: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := s.disableUserAndRevokeAccessTx(tx, userID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("disable user: commit: %w", err)
-	}
-	return nil
+	// One transaction per attempt, nothing outside it before the commit:
+	// retryable on a deadlock (TASK-3399).
+	attempt := 0
+	return s.retryOnDeadlock("disable_user", func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("disable user: begin: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := s.disableUserAndRevokeAccessTx(tx, userID); err != nil {
+			return err
+		}
+		if err := s.injectedDeadlock("disable_user", &attempt); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("disable user: commit: %w", err)
+		}
+		return nil
+	})
 }
 
 // disableUserAndRevokeAccessTx is DisableUserAndRevokeAccess on the caller's
@@ -1023,9 +1031,17 @@ func (s *Store) disableUserAndRevokeAccessTx(tx *sql.Tx, userID string) error {
 		{"delete oauth pkce requests", `DELETE FROM oauth_pkce_requests WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{userID}},
 		{"delete oauth connections", `DELETE FROM oauth_connections WHERE user_id = ?`, []any{userID}},
 	}
-	for _, st := range stmts {
+	for i, st := range stmts {
 		if _, err := tx.Exec(s.q(st.query), st.args...); err != nil {
 			return fmt.Errorf("disable user: %s: %w", st.what, err)
+		}
+		// After the users row (the first statement), before any token row:
+		// the person's delegated app grants, through their installs
+		// (TASK-3399, the users -> installs -> tokens order).
+		if i == 0 {
+			if err := s.revokeDelegatedGrantsTx(tx, userID, ""); err != nil {
+				return fmt.Errorf("disable user: %w", err)
+			}
 		}
 	}
 	return nil

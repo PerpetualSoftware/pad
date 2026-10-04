@@ -158,7 +158,11 @@ func (s *Server) requireMCPAvailable(next http.Handler) http.Handler {
 // install client unless MCP is on.
 func (s *Server) requireOAuthRoutesAvailable(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.oauthAvailable() || (r.URL.Path == "/oauth/token" && s.appsAvailable()) {
+		// With OAuth off, installed apps still need the token door (U5a) and
+		// the sign-in doors (TASK-3399); those handlers then admit only an
+		// installed app's client (appSignInAvailable, installClientFor).
+		appDoor := r.URL.Path == "/oauth/token" || r.URL.Path == "/oauth/authorize" || r.URL.Path == "/oauth/authorize/decide"
+		if s.oauthAvailable() || (appDoor && s.appsAvailable()) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -169,6 +173,20 @@ func (s *Server) requireOAuthRoutesAvailable(next http.Handler) http.Handler {
 func (s *Server) requireOAuthAvailable(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.oauthAvailable() {
+			writeError(w, http.StatusNotFound, "not_found", "Not found")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireOAuthOrAppsAvailable gates the Connected Apps list and revoke: they
+// manage MCP connections when OAuth is available, and the grants people gave
+// installed apps when apps are (TASK-3399, codex U5b-1 r1): turning MCP off
+// must not strand an app grant its person cannot see or revoke.
+func (s *Server) requireOAuthOrAppsAvailable(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.oauthAvailable() && !s.appsAvailable() {
 			writeError(w, http.StatusNotFound, "not_found", "Not found")
 			return
 		}
