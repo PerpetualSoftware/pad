@@ -128,6 +128,13 @@ func TestTask3401c_DownloadServesTheBytesFailClosed(t *testing.T) {
 		!strings.HasPrefix(rr.Header().Get("Content-Disposition"), "inline") {
 		t.Errorf("headers = %v", rr.Header())
 	}
+	// The fail-closed type decision is the download's, not only a unit's: an
+	// allowlisted active type is downloaded as an attachment, never inline.
+	html := seedAttachment(t, f, f.item.ID, []byte("<html><script>alert(1)</script></html>"), "text/html", "page.html")
+	if rr := appGet(f.srv, f.path("/attachments/"+html+"/content"), f.token); rr.Code != http.StatusOK ||
+		!strings.HasPrefix(rr.Header().Get("Content-Disposition"), "attachment") {
+		t.Errorf("an HTML download: %d, Content-Disposition %q, want attachment", rr.Code, rr.Header().Get("Content-Disposition"))
+	}
 	// A variant that does not exist falls back to the original.
 	if rr := appGet(f.srv, f.path("/attachments/"+f.attachment+"/content?variant=thumb-md"), f.token); rr.Code != http.StatusOK {
 		t.Errorf("variant fallback: %d", rr.Code)
@@ -153,6 +160,9 @@ func TestTask3401c_ARevocationBeforeTheFirstByteSendsNothing(t *testing.T) {
 		"disable":          `UPDATE app_installs SET state = 'disabling', auth_epoch = auth_epoch + 1 WHERE id = ?`,
 		"rotate":           `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`,
 		"companion leaves": `UPDATE collections SET via_app = NULL WHERE via_app = ?`,
+		// The subject's membership narrows: only the item re-check sees it,
+		// since the fenced read rule asks about the companion alone.
+		"membership narrows": `UPDATE workspace_members SET collection_access = 'specific' WHERE user_id = (SELECT bot_user_id FROM app_installs WHERE id = ?)`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := appAPIFixture(t, "read")
@@ -224,5 +234,24 @@ func TestTask3401c_TheSubjectMustSeeTheItem(t *testing.T) {
 		if rr.Code != http.StatusNotFound || bytes.Contains(rr.Body.Bytes(), f.attachmentBytes[:16]) {
 			t.Errorf("%s with the membership narrowed: %d, want the attachment 404", p, rr.Code)
 		}
+	}
+}
+
+// The upload's write gate includes the subject's edit right: a bot whose
+// membership role is viewer cannot upload, even with a write token. The
+// fenced store checks the companion and the creator, not the role.
+func TestTask3401c_AViewerCannotUpload(t *testing.T) {
+	f := appAPIFixture(t, "write")
+	body := testPNG(t)
+	if _, err := f.srv.store.DB().Exec(`UPDATE workspace_members SET role = 'viewer' WHERE workspace_id = ? AND user_id = ?`, f.ws.ID, f.in.bot.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := f.count(t, `SELECT COUNT(*) FROM attachments`)
+	rr := appUpload(f, "/items/"+f.item.ID+"/attachments?filename=a.png", body, int64(len(body)))
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("a viewer's upload: %d %s, want 403", rr.Code, rr.Body.String())
+	}
+	if after := f.count(t, `SELECT COUNT(*) FROM attachments`); after != before {
+		t.Errorf("a viewer's upload wrote %d rows", after-before)
 	}
 }
