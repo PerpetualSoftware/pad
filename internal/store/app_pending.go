@@ -64,6 +64,9 @@ type PendingInstall struct {
 	ManifestSHA256 string
 	Preview        string
 	ExpiresAt      time.Time
+	// UpgradeOf is the install an upgrade would change; "" for a fresh
+	// install (U8b2).
+	UpgradeOf string
 }
 
 // PendingBlob is one staged blob: the manifest or an artifact.
@@ -89,6 +92,16 @@ func timeText(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 // ReservePendingInstall takes a reservation for an install the owner is about
 // to fetch, or refuses with ErrPendingLimit. No fetch may begin without one.
 func (s *Store) ReservePendingInstall(workspaceID, ownerID, origin string) (*PendingInstall, error) {
+	return s.reservePending(workspaceID, ownerID, origin, "")
+}
+
+// ReservePendingUpgrade reserves a pending record for an upgrade of
+// installID, under the same caps as an install (U8b2).
+func (s *Store) ReservePendingUpgrade(workspaceID, ownerID, origin, installID string) (*PendingInstall, error) {
+	return s.reservePending(workspaceID, ownerID, origin, installID)
+}
+
+func (s *Store) reservePending(workspaceID, ownerID, origin, upgradeOf string) (*PendingInstall, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("pending install: begin: %w", err)
@@ -122,10 +135,15 @@ func (s *Store) ReservePendingInstall(workspaceID, ownerID, origin string) (*Pen
 	p := &PendingInstall{
 		ID: newID(), WorkspaceID: workspaceID, OwnerID: ownerID, Origin: origin, State: "fetching",
 		ReservedBytes: PendingInstallBytes, ExpiresAt: nowT.Add(PendingFetchTTL).UTC().Truncate(time.Second),
+		UpgradeOf: upgradeOf,
 	}
-	if _, err := tx.Exec(s.q(`INSERT INTO app_install_pending (id, workspace_id, owner_id, origin, state, reserved_bytes, expires_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'fetching', ?, ?, ?, ?)`),
-		p.ID, workspaceID, ownerID, origin, PendingInstallBytes, timeText(p.ExpiresAt), nowS, nowS); err != nil {
+	var upg any
+	if upgradeOf != "" {
+		upg = upgradeOf
+	}
+	if _, err := tx.Exec(s.q(`INSERT INTO app_install_pending (id, workspace_id, owner_id, origin, state, reserved_bytes, expires_at, created_at, updated_at, upgrade_of)
+		VALUES (?, ?, ?, ?, 'fetching', ?, ?, ?, ?, ?)`),
+		p.ID, workspaceID, ownerID, origin, PendingInstallBytes, timeText(p.ExpiresAt), nowS, nowS, upg); err != nil {
 		return nil, fmt.Errorf("pending install: insert: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -239,19 +257,19 @@ func (s *Store) SweepExpiredPendingInstalls() (int64, error) {
 // expired and a missing one all answer the same).
 func (s *Store) GetPendingInstall(pendingID, workspaceID, ownerID string) (*PendingInstall, error) {
 	var p PendingInstall
-	var manifest, preview sql.NullString
+	var manifest, preview, upgradeOf sql.NullString
 	var expires string
-	err := s.db.QueryRow(s.q(`SELECT id, workspace_id, owner_id, origin, state, reserved_bytes, manifest_sha256, preview, expires_at
+	err := s.db.QueryRow(s.q(`SELECT id, workspace_id, owner_id, origin, state, reserved_bytes, manifest_sha256, preview, expires_at, upgrade_of
 		FROM app_install_pending WHERE id = ? AND workspace_id = ? AND owner_id = ? AND expires_at > ?`),
 		pendingID, workspaceID, ownerID, timeText(time.Now())).
-		Scan(&p.ID, &p.WorkspaceID, &p.OwnerID, &p.Origin, &p.State, &p.ReservedBytes, &manifest, &preview, &expires)
+		Scan(&p.ID, &p.WorkspaceID, &p.OwnerID, &p.Origin, &p.State, &p.ReservedBytes, &manifest, &preview, &expires, &upgradeOf)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrPendingNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get pending install: %w", err)
 	}
-	p.ManifestSHA256, p.Preview, p.ExpiresAt = manifest.String, preview.String, parseTime(expires)
+	p.ManifestSHA256, p.Preview, p.ExpiresAt, p.UpgradeOf = manifest.String, preview.String, parseTime(expires), upgradeOf.String
 	return &p, nil
 }
 
@@ -278,6 +296,9 @@ func (s *Store) PendingInstallBlobs(pendingID string) (map[string]PendingBlob, e
 type SlugHolder struct {
 	Origin       string
 	InstallState string
+	// InstallID is the creating install ("" when none): an upgrade treats its
+	// own companions as existing, not as conflicts (U8b2).
+	InstallID string
 }
 
 // CollectionSlugOwners reports, for each of slugs that already names a
@@ -299,7 +320,7 @@ func (s *Store) CollectionSlugOwnersQ(q Queryer, workspaceID string, slugs []str
 	for _, sl := range slugs {
 		args = append(args, sl)
 	}
-	rows, err := q.Query(s.q(`SELECT c.slug, COALESCE(a.origin, ''), COALESCE(a.state, '') FROM collections c
+	rows, err := q.Query(s.q(`SELECT c.slug, COALESCE(a.origin, ''), COALESCE(a.state, ''), COALESCE(a.id, '') FROM collections c
 		LEFT JOIN app_installs a ON a.id = c.via_app
 		WHERE c.workspace_id = ? AND c.slug IN (`+in+`)`), args...)
 	if err != nil {
@@ -309,7 +330,7 @@ func (s *Store) CollectionSlugOwnersQ(q Queryer, workspaceID string, slugs []str
 	for rows.Next() {
 		var slug string
 		var h SlugHolder
-		if err := rows.Scan(&slug, &h.Origin, &h.InstallState); err != nil {
+		if err := rows.Scan(&slug, &h.Origin, &h.InstallState, &h.InstallID); err != nil {
 			return nil, err
 		}
 		out[slug] = h

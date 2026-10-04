@@ -2237,6 +2237,9 @@ func (s *Server) setupRouter() {
 					r.Post("/apps/{installID}/enable", s.handleEnableAppInstall)
 					r.Post("/apps/{installID}/rotate", s.handleRotateAppInstall)
 					r.Post("/apps/{installID}/uninstall", s.handleUninstallAppInstall)
+					// U8b2: upgrade an install.
+					r.Post("/apps/{installID}/upgrade/preview", s.handleAppUpgradePreview)
+					r.Post("/apps/{installID}/upgrade/confirm", s.handleAppUpgradeConfirm)
 
 					// Webhooks
 					r.Route("/webhooks", func(r chi.Router) {

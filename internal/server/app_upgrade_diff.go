@@ -245,7 +245,14 @@ func diffUpgrade(old, next *appmanifest.Manifest, oldDigests map[string]storedAr
 		case !had || !oldArt[a.Key]:
 			d.ChangedArtifacts[a.Key] = true
 			d.add("artifact", a.Key, "added", upgradeReview, "lands as a new draft")
-		case was.Raw != a.RawSHA256 || was.Normalized != a.NormalizedSHA256:
+		case was.Raw != a.RawSHA256:
+			// Changed is decided by the RAW digest. The normalized digest of
+			// an unchanged artifact moves on every upgrade (its fresh
+			// normalization de-collides against the very item the install
+			// created, e.g. invocation_slug "ship" becomes "ship-2"), and an
+			// unchanged artifact stores nothing, so there is nothing of it to
+			// review. A changed one lands as a new draft whose normalized
+			// form is the reviewed one (TASK-3397 U8b2, flagged to the lead).
 			d.ChangedArtifacts[a.Key] = true
 			d.add("artifact", a.Key, "changed", upgradeReview, "lands as a new draft; the installed item is not changed")
 		}

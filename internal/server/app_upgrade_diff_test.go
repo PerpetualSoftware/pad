@@ -116,17 +116,25 @@ func TestUpgradeDiff_Classes(t *testing.T) {
 		})
 	}
 
-	// Artifacts: either digest changing is a new draft needing review; a
+	// Artifacts: a raw digest change is a new draft needing review; a
 	// removed artifact keeps its item.
 	old = diffBase()
-	for name, fresh := range map[string]*appPreview{"raw": diffFresh("r2", "n1"), "normalized": diffFresh("r1", "n2")} {
-		d, err := diffUpgrade(old, clone(old), diffDigests, fresh)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !d.ChangedArtifacts["ship"] || !d.ReviewRequired {
-			t.Errorf("a %s digest change: %+v", name, d)
-		}
+	d, err = diffUpgrade(old, clone(old), diffDigests, diffFresh("r2", "n2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.ChangedArtifacts["ship"] || !d.ReviewRequired {
+		t.Errorf("a raw digest change: %+v", d)
+	}
+	// A normalized-only change is the artifact's own installed item moving
+	// its normalization (invocation_slug "ship" to "ship-2"), not the app
+	// changing it: no draft, no entry.
+	d, err = diffUpgrade(old, clone(old), diffDigests, diffFresh("r1", "n2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.ChangedArtifacts["ship"] || len(d.Entries) != 0 {
+		t.Errorf("a normalized-only change was treated as an app change: %+v", d)
 	}
 	n = clone(old)
 	n.CompanionPack.Artifacts = nil

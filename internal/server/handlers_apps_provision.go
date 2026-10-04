@@ -165,7 +165,7 @@ func (s *Server) buildProvisionRequest(r *http.Request, workspaceID, ownerID str
 	}
 
 	derive := func(q store.Queryer) (*store.ProvisionDerived, error) {
-		fresh, err := s.buildAppPreviewQ(q, r, workspaceID, m, p.ManifestSHA256, raws)
+		fresh, err := s.buildAppPreviewQ(q, r, workspaceID, m, p.ManifestSHA256, raws, "")
 		if err != nil {
 			var ae *appInstallError
 			if errors.As(err, &ae) {
