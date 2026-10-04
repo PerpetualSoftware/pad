@@ -1,4 +1,4 @@
--- Migration 116: confidential install clients and token bindings (SPEC-6 U5a,
+-- Migration 117: confidential install clients and token bindings (SPEC-6 U5a,
 -- TASK-3394, DOC-3371 §4 Credentials).
 --
 -- Every installed app gets one confidential OAuth client. Unlike the public

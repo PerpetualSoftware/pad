@@ -1,5 +1,5 @@
--- Migration 090: confidential install clients and token bindings (SPEC-6 U5a,
--- TASK-3394). Mirrors SQLite migration 116; see it for the rationale.
+-- Migration 091: confidential install clients and token bindings (SPEC-6 U5a,
+-- TASK-3394). Mirrors SQLite migration 117; see it for the rationale.
 ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS client_secret_hash TEXT;
 ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS allowed_audiences JSONB;
 ALTER TABLE oauth_clients ADD COLUMN IF NOT EXISTS app_install_id TEXT REFERENCES app_installs(id);
