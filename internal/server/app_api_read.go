@@ -326,13 +326,27 @@ func (s *Server) appListItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ac := appContextFrom(r)
-	// One row past the window decides has_more exactly. Item visibility
-	// filters AFTER the window, so a page can come back short; paging must
-	// therefore follow the window (next_offset), never the page's length
-	// (Rook's review of #1771).
-	items, err := s.store.ListItems(ac.WorkspaceID, models.ItemListParams{
-		ScopeCollectionID: c.ID, CollectionIDs: []string{c.ID}, Limit: limit + 1, Offset: offset,
-	})
+	// One row past the window decides has_more exactly. The window is over
+	// rows the actor may see, filtered in SQL as the human list filters a
+	// restricted member's or guest's item grants (guestResourceFilter): a
+	// person acting through the app (TASK-3399) may hold item grants only,
+	// and a window over hidden rows would let has_more and next_offset count
+	// them (codex U5b-2 r2). The per-item check below stays, as a second
+	// layer.
+	params := models.ItemListParams{ScopeCollectionID: c.ID, CollectionIDs: []string{c.ID}, Limit: limit + 1, Offset: offset}
+	fullCollIDs, grantedItemIDs, err := s.guestResourceFilter(r, ac.WorkspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if len(grantedItemIDs) > 0 {
+		params.CollectionIDs = fullCollIDs
+		if params.CollectionIDs == nil {
+			params.CollectionIDs = []string{}
+		}
+		params.ItemIDs = grantedItemIDs
+	}
+	items, err := s.store.ListItems(ac.WorkspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
 		return

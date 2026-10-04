@@ -331,3 +331,37 @@ func TestTask3399b_APersonLosingAccessMidBodyWritesNothing(t *testing.T) {
 		}
 	}
 }
+
+// Codex U5b-2 r2: a person who sees only granted items in a companion lists
+// only those, and the window (has_more, next_offset) counts nothing hidden.
+func TestTask3399b_AListCountsNothingHidden(t *testing.T) {
+	f := delegatedAPIFixture(t, "write", "read", "editor")
+	// A second companion item the person will not be granted.
+	hidden, err := f.srv.store.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: "Hidden", ActorUserID: f.person.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE workspace_members SET collection_access = 'specific' WHERE user_id = ? AND workspace_id = ?`, f.person.ID, f.ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`INSERT INTO item_grants (id, workspace_id, item_id, user_id, permission, granted_by, created_at) VALUES (?, ?, ?, ?, 'view', ?, ?)`,
+		"grant-"+f.item.ID[:8], f.ws.ID, f.item.ID, f.person.ID, f.person.ID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	rr := appGet(f.srv, f.path("/collections/requests/items?limit=1"), f.token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rr.Code, rr.Body.String())
+	}
+	var page struct {
+		Items   []AppItem `json:"items"`
+		HasMore bool      `json:"has_more"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &page)
+	if len(page.Items) != 1 || page.Items[0].ID != f.item.ID {
+		t.Fatalf("items = %+v, want only the granted item", page.Items)
+	}
+	if page.HasMore {
+		t.Error("has_more counted an item the person cannot see")
+	}
+	_ = hidden
+}
