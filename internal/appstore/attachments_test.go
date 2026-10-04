@@ -161,7 +161,7 @@ func TestAppUpload_WritesOnlyTheRow(t *testing.T) {
 // The DTO's JSON has exactly the spec's keys: never storage_key, content_hash
 // or uploaded_by.
 func TestAppAttachmentDTO_HasOnlyTheSpecKeys(t *testing.T) {
-	b, err := json.Marshal(AppAttachment{ID: "a", ItemID: "i", Filename: "f", MimeType: "m", Size: 1, Variant: "thumb-sm", CreatedAt: time.Now()})
+	b, err := json.Marshal(AppAttachment{ID: "a", ItemID: "i", Filename: "f", MimeType: "m", Size: 1, Variant: nil, CreatedAt: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +571,7 @@ func TestAppAttachmentVariantInheritsTheParent(t *testing.T) {
 	}
 	defer rc.Close()
 	got, _ := io.ReadAll(rc)
-	if dto.Variant != variant || !bytes.Equal(got, thumb) {
+	if dto.Variant == nil || *dto.Variant != variant || !bytes.Equal(got, thumb) {
 		t.Fatalf("variant read: %+v, %d bytes", dto, len(got))
 	}
 	// An absent variant falls back to the original.

@@ -42,6 +42,9 @@ func (s *Server) appUploadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "The file exceeds the 25 MiB upload limit")
 		return
 	}
+	// The upload registers its authorizations like a read does, so the
+	// pre-row check below can replay them under a re-admitted context.
+	r = r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{}))
 	// The write gate is an app field edit's: the item visible under the
 	// ceiling, a companion the app may write, and the subject's edit right.
 	// That the item was created by this install is the FencedTx's check
@@ -60,9 +63,43 @@ func (s *Server) appUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), appAttachmentRouteDeadline)
 	defer cancel()
-	att, err := as.UploadAttachment(ctx, ac.appFenceSpec(), item.ID, appstore.AppUpload{
+	itemID, collectionID := item.ID, item.CollectionID
+	pending, err := as.StageUpload(ctx, ac.appFenceSpec(), item.ID, appstore.AppUpload{
 		Body: r.Body, DeclaredSize: r.ContentLength, Filename: r.URL.Query().Get("filename"),
 	}, appActor(ac))
+	if err != nil {
+		writeAppStoreError(w, err)
+		return
+	}
+	defer pending.Close()
+	// The subject's part of the write gate again, once the body is in (codex
+	// U6c r3): a body can take minutes. A full re-admission (the credential,
+	// the install, the membership and its role as they stand now, and the item
+	// re-check appVisibleItem registered, replayed under the fresh context),
+	// then the edit right, which the unchanged role keeps current. The fence
+	// checks the companion and the creator in the row's own transaction; what
+	// remains is the gap between this check and that transaction, the one an
+	// item write has.
+	if err := s.appRevalidate(r); err != nil {
+		if errors.Is(err, errAppAdmitInternal) {
+			writeInternalError(w, err)
+			return
+		}
+		writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
+		return
+	}
+	if !appWriteAllows(r, collectionID) {
+		writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
+		return
+	}
+	if ok, err := s.canEditInCollection(r, ac.WorkspaceID, itemID, collectionID); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if !ok {
+		writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
+		return
+	}
+	att, err := pending.Insert(ctx)
 	if err != nil {
 		writeAppStoreError(w, err)
 		return

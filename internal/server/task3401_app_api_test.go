@@ -250,7 +250,7 @@ var appDTOKeys = map[string][]string{
 	"item":         {"collection", "content", "created_at", "created_by_display", "etag", "fields", "id", "title", "updated_at", "via_app"},
 	"comment":      {"author_display", "author_kind", "body", "created_at", "deleted", "edited", "id", "item_id", "parent_comment_id", "updated_at"},
 	"me":           {"display_name", "is_app", "role", "user_id"},
-	"attachment":   {"created_at", "filename", "id", "item_id", "mime_type", "size", "variant"}, // variant only on a variant
+	"attachment":   {"created_at", "filename", "id", "item_id", "mime_type", "size", "variant"}, // variant null on an original
 }
 
 func appKeysOf(m map[string]any) []string {
@@ -327,7 +327,7 @@ func checkAppDTOKeys(t *testing.T, route string, body any) {
 	case "appGetItem":
 		checkItem(t, route, m)
 	case "appGetAttachment", "appUploadAttachment":
-		assertKeysWithin(t, route, m, "attachment", []string{"created_at", "filename", "id", "item_id", "mime_type", "size"})
+		assertKeysWithin(t, route, m, "attachment", appDTOKeys["attachment"])
 	case "appListComments":
 		for _, c := range m["comments"].([]any) {
 			assertKeysWithin(t, route+".comments[]", c.(map[string]any), "comment", appDTOKeys["comment"])

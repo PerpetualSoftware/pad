@@ -467,3 +467,41 @@ func TestTask3401c_HeadAndUnknownVariant(t *testing.T) {
 		t.Errorf("an unknown variant: %d, want 400", rr.Code)
 	}
 }
+
+// Codex U6c r3 P1: the subject's edit right, checked again once the body is
+// in. A membership narrowed while the body was read refuses the row.
+func TestTask3401c_ASubjectNarrowedMidUploadCommitsNoRow(t *testing.T) {
+	for name, change := range map[string]string{
+		"collection access narrowed": `UPDATE workspace_members SET collection_access = 'specific' WHERE user_id = ?`,
+		"role dropped to viewer":     `UPDATE workspace_members SET role = 'viewer' WHERE user_id = ?`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := appAPIFixture(t, "write")
+			body := append(testPNG(t), 4, 5, 6)
+			before := f.count(t, `SELECT COUNT(*) FROM attachments`)
+			changed := false
+			r := &lazyBody{build: func() []byte {
+				if _, err := f.srv.store.DB().Exec(change, f.in.bot.ID); err != nil {
+					t.Error(err)
+				}
+				changed = true
+				return body
+			}}
+			req := httptest.NewRequest("POST", f.path("/items/"+f.item.ID+"/attachments?filename=a.png"), r)
+			req.ContentLength = int64(len(body))
+			req.Header.Set("Authorization", "Bearer "+f.token)
+			req.RemoteAddr = "192.0.2.1:1234"
+			rr := httptest.NewRecorder()
+			f.srv.ServeHTTP(rr, req)
+			if !changed {
+				t.Fatal("control: the body was never read")
+			}
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("%s mid-upload: %d %s, want 403", name, rr.Code, rr.Body.String())
+			}
+			if after := f.count(t, `SELECT COUNT(*) FROM attachments`); after != before {
+				t.Errorf("a row committed after the %s", name)
+			}
+		})
+	}
+}
