@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -38,6 +39,17 @@ func mcpOAuthAudience(ep config.MCPEndpoints) string {
 		return ""
 	}
 	return ep.ResourceURL
+}
+
+// appAPIAudience is the installed-app API resource (SPEC-6 U5a, TASK-3394):
+// the origin's /api/app/v1. Like the MCP audience it exists only where the
+// OAuth server does (an https auth-server URL), because every app credential
+// is an OAuth token. Only install clients may hold it.
+func appAPIAudience(ep config.MCPEndpoints) string {
+	if !ep.HTTPS() || ep.Origin == "" {
+		return ""
+	}
+	return strings.TrimRight(ep.Origin, "/") + "/api/app/v1"
 }
 
 // wireMCP constructs the remote MCP capability on every install (PLAN-2310
@@ -172,10 +184,13 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 		// never both, and each mount checks its own. A request naming no
 		// resource is still bound to /mcp's.
 		AdditionalAudiences: []string{ep.ChatGPTResourceURL},
+		// Installed apps' API (SPEC-6 U5a): held by install clients only.
+		AppAPIAudience: appAPIAudience(ep),
 	})
 	if err != nil {
 		return fmt.Errorf("init OAuth server: %w", err)
 	}
+	s.SetAppAPIAudience(appAPIAudience(ep))
 	srv.SetOAuthServer(oauthSrv)
 	// Same key powers stateless 6-digit claim codes (PLAN-1519 /
 	// TASK-1521 / IDEA-1517 §4): the OAuth signing path and the claim

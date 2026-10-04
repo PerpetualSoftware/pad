@@ -22,6 +22,12 @@ app_installs.origin
 app_installs.state
 app_installs.updated_at
 app_installs.workspace_id
+app_token_bindings.auth_kind
+app_token_bindings.client_id
+app_token_bindings.created_at
+app_token_bindings.install_id
+app_token_bindings.request_id
+app_token_bindings.workspace_id
 attachments.content_hash
 attachments.created_at
 attachments.deleted_at
@@ -199,7 +205,11 @@ oauth_authorization_codes.client_id
 oauth_authorization_codes.request_id
 oauth_authorization_codes.requested_at
 oauth_authorization_codes.signature
+oauth_clients.allowed_audiences
+oauth_clients.app_install_id
+oauth_clients.client_secret_hash
 oauth_clients.created_at
+oauth_clients.disabled_at
 oauth_clients.id
 oauth_clients.token_endpoint_auth_method
 oauth_connection_workspaces.added_at
