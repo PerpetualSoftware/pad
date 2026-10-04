@@ -43,9 +43,14 @@ type appRoute struct {
 	Access   string // "read" or "write"
 }
 
-// appRoutes is U6a's table: the reads. U6b adds the writes, U6c the
+// appRoutes is the table: U6a's reads and U6b's writes. U6c adds the
 // attachments.
 var appRoutes = []appRoute{
+	{"POST", "/collections/{collSlug}/items", "appCreateItem", (*Server).appCreateItem, "either", "write"},
+	{"PATCH", "/items/{itemID}", "appUpdateItem", (*Server).appUpdateItem, "either", "write"},
+	{"POST", "/items/{itemID}/comments", "appCreateComment", (*Server).appCreateComment, "either", "write"},
+	{"PATCH", "/items/{itemID}/comments/{commentID}", "appUpdateComment", (*Server).appUpdateComment, "either", "write"},
+	{"DELETE", "/items/{itemID}/comments/{commentID}", "appDeleteComment", (*Server).appDeleteComment, "either", "write"},
 	{"GET", "/collections", "appListCollections", (*Server).appListCollections, "either", "read"},
 	{"GET", "/collections/{collSlug}", "appGetCollection", (*Server).appGetCollection, "either", "read"},
 	{"GET", "/collections/{collSlug}/items", "appListItems", (*Server).appListItems, "either", "read"},
@@ -125,7 +130,17 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 		r.Route("/workspaces/{ws}", func(r chi.Router) {
 			for _, rt := range appRoutes {
 				handler := rt.Handler
+				access := rt.Access
 				inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// Writes are NOT re-validated after commit (lead ruling R2,
+					// U6b): a write's authority is decided inside its FencedTx
+					// under the epoch fence, and refusing the response AFTER a
+					// commit would hide a write that happened and invite a
+					// duplicate retry. Re-admission before send is for reads.
+					if access == "write" {
+						handler(s, w, r)
+						return
+					}
 					// The handler writes into a buffer; nothing reaches the
 					// app until the grant is re-validated (codex r1 P1).
 					buf := newAppResponseBuffer()
@@ -506,3 +521,18 @@ func (s *Server) appRevalidate(r *http.Request) error {
 type appRecheckMemoKey struct{}
 
 type appRecheckMemo struct{ collections map[string]error }
+
+// appWriteAllows reports whether a collection is one the app may write: a
+// companion. Outside the app API everything passes.
+func appWriteAllows(r *http.Request, collectionID string) bool {
+	ac := appContextFrom(r)
+	if ac == nil {
+		return true
+	}
+	for _, id := range ac.Companions {
+		if id == collectionID {
+			return true
+		}
+	}
+	return false
+}
