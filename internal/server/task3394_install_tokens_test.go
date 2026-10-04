@@ -138,24 +138,27 @@ func TestTask3394_ServiceTokenForTheInstallsBot(t *testing.T) {
 func TestTask3394_InstallTokenRequestRules(t *testing.T) {
 	srv := appOAuthServer(t, true)
 	in := newTestInstall(t, srv, "inst-rules")
+	// Each refusal is pinned by its own hint: fosite's audience strategy
+	// would also refuse most of these (the client's audiences are the app
+	// API's only), so a bare 4xx would not tell the two layers apart.
 	cases := []struct {
-		name string
-		form url.Values
+		name, hint string
+		form       url.Values
 	}{
-		{"no resource", serviceTokenForm("")},
-		{"the MCP resource", serviceTokenForm(testCanonicalAudience)},
-		{"an unknown resource", serviceTokenForm("https://elsewhere.example/api")},
-		{"audience and resource disagree", func() url.Values {
+		{"no resource", "resource parameter is required", serviceTokenForm("")},
+		{"the MCP resource", "holds the app API resource only", serviceTokenForm(testCanonicalAudience)},
+		{"an unknown resource", "holds the app API resource only", serviceTokenForm("https://elsewhere.example/api")},
+		{"audience and resource disagree", "name different resources", func() url.Values {
 			f := serviceTokenForm(testAppAPIAudience)
 			f.Set("audience", testCanonicalAudience)
 			return f
 		}()},
-		{"a delegated grant", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {"x"}, "resource": {testAppAPIAudience}}},
+		{"a delegated grant", "uses client_credentials", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {"x"}, "resource": {testAppAPIAudience}}},
 	}
 	for _, tc := range cases {
 		rr := postTokenBasic(srv, tc.form, in.clientID, in.secret)
-		if rr.Code < 400 || rr.Code >= 500 {
-			t.Errorf("%s: %d %s, want a 4xx", tc.name, rr.Code, rr.Body.String())
+		if rr.Code < 400 || rr.Code >= 500 || !strings.Contains(rr.Body.String(), tc.hint) {
+			t.Errorf("%s: %d %s, want a 4xx naming %q", tc.name, rr.Code, rr.Body.String(), tc.hint)
 		}
 		if strings.Contains(rr.Body.String(), "access_token") {
 			t.Errorf("%s: a token was issued", tc.name)
@@ -175,8 +178,10 @@ func TestTask3394_ClientCredentialsIsForInstallClientsOnly(t *testing.T) {
 	srv := appOAuthServer(t, true)
 	dcr := registerTestClient(t, srv, "https://app.test/cb")
 	rr := postOAuthForm(srv, "/oauth/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {dcr}, "resource": {testCanonicalAudience}})
-	if rr.Code < 400 || strings.Contains(rr.Body.String(), "access_token") {
-		t.Errorf("a DCR client's client_credentials: %d %s", rr.Code, rr.Body.String())
+	// fosite would refuse it too (the client lacks the grant type and is
+	// public); the hint pins pad's own refusal.
+	if rr.Code < 400 || strings.Contains(rr.Body.String(), "access_token") || !strings.Contains(rr.Body.String(), "for installed apps") {
+		t.Errorf("a DCR client's client_credentials: %d %s, want pad's refusal", rr.Code, rr.Body.String())
 	}
 }
 
@@ -255,15 +260,17 @@ func TestTask3394_PublicIntrospectionAndInstallClients(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized || strings.Contains(rr.Body.String(), `"active":true`) {
 		t.Errorf("install client as caller (Basic): %d %s, want 401", rr.Code, rr.Body.String())
 	}
-	// ... and by its own token as the Bearer.
-	if rr := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{"token": {tok}}, tok); rr.Code != http.StatusUnauthorized {
-		t.Errorf("install token as the bearer: %d %s, want 401", rr.Code, rr.Body.String())
-	}
 	// An MCP client asking about an install token learns nothing.
 	sess := newOAuthSession(t, srv)
 	mcpTok, code := mintWithResource(t, srv, sess, testCanonicalAudience)
 	if code != http.StatusOK {
 		t.Fatalf("mcp mint: %d", code)
+	}
+	// ... and an install token as the Bearer is no caller, even asking about
+	// a token that is not its own (fosite alone refuses only an identical
+	// bearer and token).
+	if rr := postOAuthFormBearer(srv, "/oauth/introspect", url.Values{"token": {mcpTok}}, tok); rr.Code != http.StatusUnauthorized || strings.Contains(rr.Body.String(), `"active":true`) {
+		t.Errorf("install token as the bearer: %d %s, want 401", rr.Code, rr.Body.String())
 	}
 	rr = postOAuthFormBearer(srv, "/oauth/introspect", url.Values{"token": {tok}}, mcpTok)
 	if strings.Contains(rr.Body.String(), `"active":true`) || strings.Contains(rr.Body.String(), in.bot.ID) {
