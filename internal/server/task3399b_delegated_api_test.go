@@ -365,3 +365,33 @@ func TestTask3399b_AListCountsNothingHidden(t *testing.T) {
 	}
 	_ = hidden
 }
+
+// Codex U5b-2 r3: the response's final re-admission step re-checks the
+// workspace and the person's role, not only the credential.
+func TestTask3399b_ARoleDroppedDuringTheReChecksWithholdsTheResponse(t *testing.T) {
+	for name, change := range map[string]string{
+		"role dropped":      `UPDATE workspace_members SET role = 'viewer' WHERE user_id = ?`,
+		"workspace deleted": `UPDATE workspaces SET deleted_at = '2026-01-01T00:00:00Z' WHERE id = (SELECT workspace_id FROM workspace_members WHERE user_id = ? LIMIT 1)`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := delegatedAPIFixture(t, "write", "write", "editor")
+			ran := false
+			f.srv.appAfterRechecks = func() {
+				if ran {
+					return
+				}
+				ran = true
+				if _, err := f.srv.store.DB().Exec(change, f.person.ID); err != nil {
+					t.Error(err)
+				}
+			}
+			rr := appGet(f.srv, f.path("/items/"+f.item.ID), f.token)
+			if !ran {
+				t.Fatal("control: the seam never ran")
+			}
+			if rr.Code == http.StatusOK {
+				t.Errorf("%s during the re-checks: 200, want the response withheld", name)
+			}
+		})
+	}
+}

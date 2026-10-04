@@ -640,6 +640,19 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	if last.Grant.AuthEpoch != ac.Grant.AuthEpoch || last.Access != ac.Access || last.InstallID != ac.InstallID {
 		return fmt.Errorf("%w: the grant changed", errAppCredential)
 	}
+	// And the workspace and role once more (codex U5b-2 r3): a person's role
+	// is not part of the credential, so a downgrade or a workspace delete
+	// committed while the re-checks ran would otherwise pass this step.
+	lastWS, err := s.appAdmitWorkspace(last)
+	if err != nil {
+		if errors.Is(err, errAppAdmitInternal) {
+			return err
+		}
+		return fmt.Errorf("the workspace or membership changed: %w", err)
+	}
+	if lastWS.Role != ac.Role || lastWS.WorkspaceSlug != ac.WorkspaceSlug {
+		return errors.New("the membership changed")
+	}
 	return nil
 }
 
