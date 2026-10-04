@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
@@ -299,5 +300,34 @@ func TestAppDelivery_NoProjectionIsSkipped(t *testing.T) {
 	e.tick(t)
 	if got := e.hooksAt("/hooks"); len(got) != 0 {
 		t.Fatalf("delivered an event that had no app projection: %s", got[0].Body)
+	}
+	// Skipped, not owed: retrying cannot make the block appear.
+	if n := e.pendingOutbox(t); n != 0 {
+		t.Fatalf("%d events left owed after a skip", n)
+	}
+}
+
+// Stopping the server ends a pending app retry at once (the dispatcher's
+// context is cancelled first thing in Stop).
+func TestAppDelivery_StopEndsAPendingRetry(t *testing.T) {
+	e := newDeliveryEnv(t)
+	e.redeemNow(t)
+	e.status["/hooks"] = http.StatusServiceUnavailable
+	e.srv.webhooks.SetRetryBackoff(time.Hour)
+	e.item(t, e.companion.ID, "Retried")
+	done := make(chan struct{})
+	go func() { e.tick(t); close(done) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(e.hooksAt("/hooks")) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	e.srv.Stop()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not end the pending retry")
+	}
+	if n := len(e.hooksAt("/hooks")); n != 1 {
+		t.Fatalf("%d attempts, want 1 (no attempt after Stop)", n)
 	}
 }

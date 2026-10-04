@@ -24,7 +24,12 @@ type task3408Fix struct {
 // released hook subscribed to item.created on it.
 func task3408Fixture(t *testing.T, installID string) task3408Fix {
 	t.Helper()
-	f := task3394Fixture(t, installID)
+	return task3408FixtureIn(t, task3394Fixture(t, installID))
+}
+
+func task3408FixtureIn(t *testing.T, f task3394Fix) task3408Fix {
+	t.Helper()
+	installID := f.installID
 	companion := createTestCollection(t, f.s, f.ws.ID, "Tickets "+installID)
 	other := createTestCollection(t, f.s, f.ws.ID, "Other "+installID)
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE collections SET via_app = ? WHERE id = ?`), installID, companion.ID); err != nil {
@@ -277,4 +282,21 @@ func TestTask3408_RotateHoldsTheHook(t *testing.T) {
 	}
 	_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "after-rotate")
 	wantRefused(t, err, "hook_held")
+}
+
+// An admitted attempt whose secret cannot be decrypted releases its record
+// at once, rather than holding a drain for the record's lifetime.
+func TestTask3408_UndecryptableSecretReleasesTheRecord(t *testing.T) {
+	f := task3394Fixture(t, "inst-decrypt")
+	f.s.SetEncryptionKey([]byte("0123456789abcdef0123456789abcdef"))
+	g := task3408FixtureIn(t, f)
+	f.s.SetEncryptionKey([]byte("fedcba9876543210fedcba9876543210"))
+	_, err := f.s.AdmitAppDelivery(g.hookID, "item.created", g.companion.ID, "dx")
+	var r *AppDeliveryRefusedError
+	if err == nil || errors.As(err, &r) {
+		t.Fatalf("got %v, want a store error", err)
+	}
+	if g.inflight(t) != 0 {
+		t.Fatal("an unsendable admission left its in-flight record")
+	}
 }

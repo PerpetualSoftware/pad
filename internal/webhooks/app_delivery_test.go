@@ -262,3 +262,19 @@ func TestAppDelivery_DeadlineStartsBeforeAdmission(t *testing.T) {
 		t.Fatalf("remaining %v after a 300ms admission, want at most %v", p.deadlines, deliveryTimeout-250*time.Millisecond)
 	}
 }
+
+// A stopped dispatcher admits and sends nothing, even on the first attempt.
+func TestAppDelivery_StoppedDispatcherSendsNothing(t *testing.T) {
+	d, _ := newAppTestDispatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.SetContext(ctx)
+	adm := &fakeAdmitter{}
+	p := &fakePoster{}
+	if got := d.DeliverAppEvent(adm, p, appDV); got != AppTransient {
+		t.Fatalf("result %s, want transient (still owed)", got)
+	}
+	if len(adm.admitted) != 0 || len(p.calls) != 0 {
+		t.Fatalf("a stopped dispatcher admitted %d and sent %d", len(adm.admitted), len(p.calls))
+	}
+}
