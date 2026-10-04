@@ -232,3 +232,88 @@ func count3399(t *testing.T, srv *Server, q string, args ...any) int {
 	}
 	return n
 }
+
+// signIn runs a whole delegated sign-in and returns the access token and the
+// grant's request id.
+func (f delegatedFix) signIn(t *testing.T, access string) (string, string) {
+	t.Helper()
+	code, oerr := codeFrom(f.decide(t, f.authorizeParams(), "approve", access))
+	if code == "" {
+		t.Fatalf("sign-in: no code (%s)", oerr)
+	}
+	rr := f.exchange(code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("exchange: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, rr, &resp)
+	tok, _ := resp["access_token"].(string)
+	g, err := f.srv.introspectAppToken(context.Background(), tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok, g.RequestID
+}
+
+// Lead ruling Q1: the console lists an app grant on its own, read-only plus
+// revoke; every connection mutation refuses it and changes nothing.
+func TestTask3399_TheConsoleShowsAndRevokesAppGrants(t *testing.T) {
+	f := delegatedFixture(t, "inst-console", "write")
+	tok, reqID := f.signIn(t, "write")
+
+	rr := doAuthedJSON(f.srv, "GET", "/api/v1/connected-apps", nil, f.sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rr.Code, rr.Body.String())
+	}
+	var list struct {
+		Items     []map[string]any `json:"items"`
+		AppGrants []map[string]any `json:"app_grants"`
+	}
+	parseJSON(t, rr, &list)
+	for _, it := range list.Items {
+		if it["id"] == reqID || it["request_id"] == reqID {
+			t.Errorf("the app grant is listed as an MCP connection: %v", it)
+		}
+	}
+	if len(list.AppGrants) != 1 || list.AppGrants[0]["id"] != reqID || list.AppGrants[0]["access"] != "write" ||
+		list.AppGrants[0]["app_name"] != "Portal" {
+		t.Fatalf("app_grants = %v", list.AppGrants)
+	}
+
+	// Read-only: every connection mutation refuses the app grant.
+	for _, m := range []struct {
+		method, path string
+		body         any
+	}{
+		{"PATCH", "/api/v1/connected-apps/" + reqID + "/name", map[string]any{"name": "x"}},
+		{"PATCH", "/api/v1/connected-apps/" + reqID + "/flags", map[string]any{"may_create_workspaces": true}},
+		{"POST", "/api/v1/connected-apps/" + reqID + "/limit-to-current", nil},
+		{"POST", "/api/v1/connected-apps/" + reqID + "/workspaces", map[string]any{"slug": "anything"}},
+		{"DELETE", "/api/v1/connected-apps/" + reqID + "/workspaces/anything", nil},
+	} {
+		if rr := doAuthedJSON(f.srv, m.method, m.path, m.body, f.sessionToken); rr.Code < 400 {
+			t.Errorf("%s %s on an app grant: %d, want a refusal", m.method, m.path, rr.Code)
+		}
+	}
+	if n := count3399(t, f.srv, `SELECT COUNT(*) FROM oauth_connections WHERE request_id = ?`, reqID); n != 0 {
+		t.Error("a mutation wrote a connection row for the app grant")
+	}
+	if _, err := f.srv.introspectAppToken(context.Background(), tok); err != nil {
+		t.Fatalf("control: the grant died before the revoke: %v", err)
+	}
+
+	// Revoke: the token stops at introspection.
+	if rr := doAuthedJSON(f.srv, "DELETE", "/api/v1/connected-apps/"+reqID, nil, f.sessionToken); rr.Code != http.StatusNoContent {
+		t.Fatalf("revoke: %d %s", rr.Code, rr.Body.String())
+	}
+	if _, err := f.srv.introspectAppToken(context.Background(), tok); err == nil {
+		t.Error("a revoked app grant's token still introspects")
+	}
+	// Someone else cannot revoke it, and the answer is the plain 404.
+	g := delegatedFixture(t, "inst-console2", "write")
+	_, other := g.signIn(t, "read")
+	_, stranger := loginTestUserAs(t, g.srv, "stranger@example.com", "Stranger", "password123")
+	if rr := doAuthedJSON(g.srv, "DELETE", "/api/v1/connected-apps/"+other, nil, stranger); rr.Code != http.StatusNotFound {
+		t.Errorf("a stranger's revoke: %d, want 404", rr.Code)
+	}
+}
