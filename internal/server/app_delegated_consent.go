@@ -58,10 +58,16 @@ func (s *Server) appConsentGate(ar fosite.AuthorizeRequester, user *models.User,
 	if st.DelegatedAccess != "read" && st.DelegatedAccess != "write" {
 		return nil, &appConsentRefusal{err: fosite.ErrAccessDenied.WithHint("This app does not offer sign-in.")}
 	}
+	// Second layer: fosite already refuses a missing or plain PKCE for every
+	// client (oauth/server.go EnforcePKCE, S256 only), so this check stays
+	// for the case a future config loosens that (U5b-1 mutant C2 survives).
 	form := ar.GetRequestForm()
 	if form.Get("code_challenge") == "" || form.Get("code_challenge_method") != "S256" {
 		return nil, &appConsentRefusal{err: fosite.ErrInvalidRequest.WithHint("An installed app signs people in with PKCE (S256).")}
 	}
+	// Second layer: an install client's fosite audiences are its own
+	// AllowedAudiences, the app API only (oauth/storage.go), so fosite
+	// already refuses any other resource (U5b-1 mutant C3 survives).
 	appAud := s.store.AppAPIAudience()
 	audOK := false
 	for _, a := range ar.GetRequestedAudience() {

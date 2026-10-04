@@ -214,6 +214,13 @@ func TestTask3399_SignInRefusals(t *testing.T) {
 	if code, _ := codeFrom(k.decide(t, p, "approve", "read")); code != "" {
 		t.Error("a sign-in for the MCP resource minted a code")
 	}
+	// No resource at all: the app API's must be named.
+	n := delegatedFixture(t, "inst-nores", "write")
+	p = n.authorizeParams()
+	p.Del("resource")
+	if code, _ := codeFrom(n.decide(t, p, "approve", "read")); code != "" {
+		t.Error("a sign-in naming no resource minted a code")
+	}
 	// A disabled install.
 	m := delegatedFixture(t, "inst-inactive", "write")
 	if _, err := m.srv.store.DB().Exec(`UPDATE app_installs SET state = 'inactive' WHERE id = ?`, m.in.id); err != nil {

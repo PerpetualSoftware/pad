@@ -311,3 +311,19 @@ func TestTask3399_RevokingAPersonReachesTheirDelegatedCodes(t *testing.T) {
 		t.Error("an erased person's binding survived")
 	}
 }
+
+// A grant's later persistence cannot change whom it acts for: the binding
+// fixes the person its first persistence named.
+func TestTask3399_TheBindingFixesThePerson(t *testing.T) {
+	f := task3399Fixture(t, "inst-person-fix", "write")
+	other := createTestUser(t, f.s, "other-fix@test.com", "Other", "password123")
+	if err := f.s.AddWorkspaceMember(f.ws.ID, other.ID, "editor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-pfix", "read", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.CreateAccessToken(task3399Req(f.clientID, other.ID, "req-pfix", "read", 1)); !errors.Is(err, ErrInstallDelegatedSubject) {
+		t.Errorf("a token for another member under the same grant: err = %v, want ErrInstallDelegatedSubject", err)
+	}
+}
