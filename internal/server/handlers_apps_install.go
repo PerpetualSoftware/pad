@@ -107,9 +107,10 @@ type appPreviewArtifact struct {
 
 	// What provisioning (U8b) re-checks inside its transaction. Never
 	// serialized: provisioning recomputes the preview from the staged bytes.
-	collectionID    string
-	uniqueKeys      []string
-	relationTargets map[string]string
+	collectionID     string
+	collectionSchema string
+	uniqueKeys       []string
+	relationTargets  map[string]string
 }
 
 // normalizedItem is the item an artifact will be stored as. Its canonical
@@ -339,6 +340,11 @@ func (s *Server) buildAppPreview(r *http.Request, workspaceID string, m *appmani
 	}
 	for i, c := range m.CompanionPack.Collections {
 		pc := appPreviewCollection{Key: c.Key, Slug: c.Slug, Name: c.Name, Schema: c.Schema}
+		if store.IsReservedCollectionSlug(c.Slug) {
+			e := installErr(http.StatusUnprocessableEntity, "invalid_manifest", "collection %q: the slug %q is reserved by Pad", c.Key, c.Slug)
+			e.path = fmt.Sprintf("companion_pack.collections[%d].slug", i)
+			return nil, e
+		}
 		if owner, exists := owners[c.Slug]; exists {
 			if owner != m.Origin {
 				e := installErr(http.StatusConflict, "collection_conflict", "This workspace already has a collection %q that this app did not create", c.Slug)
@@ -528,7 +534,7 @@ func (s *Server) previewArtifact(r *http.Request, workspaceID string, a appmanif
 	return &appPreviewArtifact{
 		Key: a.Key, URL: a.URL, Kind: string(art.Kind), DestinationCollection: coll.Slug,
 		RawSHA256: a.SHA256, Raw: string(raw), Normalized: item, NormalizedSHA256: digest, Changes: changes,
-		collectionID: coll.ID, uniqueKeys: uniqueKeys, relationTargets: relationTargets,
+		collectionID: coll.ID, collectionSchema: coll.Schema, uniqueKeys: uniqueKeys, relationTargets: relationTargets,
 	}, nil
 }
 

@@ -85,9 +85,13 @@ type ProvisionCollection struct {
 type ProvisionArtifact struct {
 	Key          string
 	CollectionID string
-	Title        string
-	Content      string
-	Fields       map[string]any
+	// CollectionSchema is the destination schema the normalization used,
+	// byte for byte. Every other field below was derived from it, so
+	// provisioning refuses if it moved (codex round 1).
+	CollectionSchema string
+	Title            string
+	Content          string
+	Fields           map[string]any
 	// UniqueKeys are the field keys whose values must be free in the
 	// destination collection: invocation_slug (a database index) and every
 	// unique-scoped field.
@@ -297,6 +301,20 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest) (*ProvisionResult, err
 // recheckProvisionArtifactTx re-verifies, on the provisioning transaction,
 // every workspace-state fact the preview relied on for one artifact.
 func (s *Store) recheckProvisionArtifactTx(tx *sql.Tx, workspaceID string, a ProvisionArtifact) error {
+	// The schema first: UniqueKeys, RelationTargets and the normalized fields
+	// all derive from it. A schema edit that moves it takes the workspace
+	// lock this transaction holds, so this read is the committed schema.
+	var schema string
+	err := tx.QueryRow(s.q(`SELECT schema FROM collections WHERE id = ? AND deleted_at IS NULL`), a.CollectionID).Scan(&schema)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &ProvisionConflictError{Artifact: a.Key, Detail: "its destination collection no longer exists"}
+	}
+	if err != nil {
+		return fmt.Errorf("provision app: destination schema: %w", err)
+	}
+	if schema != a.CollectionSchema {
+		return &ProvisionConflictError{Artifact: a.Key, Detail: "its destination collection's schema changed since the review"}
+	}
 	for _, key := range a.UniqueKeys {
 		raw, ok := a.Fields[key]
 		if !ok || raw == nil {
@@ -515,12 +533,18 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	return &RedeemedInstall{InstallID: installID, ClientID: clientID, ClientSecret: secret}, nil
 }
 
-// InstallForCode reads, unlocked, which install a code names, for the redeem
-// route's per-install limiter. It decides nothing: RedeemInstallCode re-reads
-// the code under its locks.
-func (s *Store) InstallForCode(code string) (string, bool) {
+// InstallForLiveCode reads, unlocked, which install a code names, for the
+// redeem route's per-install limiter, and only for a code that could still
+// redeem (unconsumed, unexpired, install active). A dead code then answers
+// exactly like an unknown one, never with a 429, so the limiter says nothing
+// about which codes exist and an old code cannot throttle a fresh one (codex
+// round 1). It decides nothing: RedeemInstallCode re-reads under its locks.
+func (s *Store) InstallForLiveCode(code string) (string, bool) {
 	var id string
-	if err := s.db.QueryRow(s.q(`SELECT install_id FROM app_install_codes WHERE code_sha256 = ?`), installCodeHash(code)).Scan(&id); err != nil {
+	err := s.db.QueryRow(s.q(`SELECT c.install_id FROM app_install_codes c JOIN app_installs a ON a.id = c.install_id
+		WHERE c.code_sha256 = ? AND c.consumed_at IS NULL AND c.expires_at > ? AND a.state = 'active'`),
+		installCodeHash(code), timeText(time.Now())).Scan(&id)
+	if err != nil {
 		return "", false
 	}
 	return id, true

@@ -201,7 +201,7 @@ func (s *Server) buildProvisionRequest(r *http.Request, workspaceID, ownerID str
 	}
 	for _, a := range fresh.Artifacts {
 		req.Artifacts = append(req.Artifacts, store.ProvisionArtifact{
-			Key: a.Key, CollectionID: a.collectionID, Title: a.Normalized.Title, Content: a.Normalized.Content,
+			Key: a.Key, CollectionID: a.collectionID, CollectionSchema: a.collectionSchema, Title: a.Normalized.Title, Content: a.Normalized.Content,
 			Fields: a.Normalized.Fields, UniqueKeys: a.uniqueKeys, RelationTargets: a.relationTargets,
 			RawSHA256: a.RawSHA256, NormalizedSHA256: a.NormalizedSHA256,
 		})
@@ -313,7 +313,7 @@ func (s *Server) handleRedeemAppInstallCode(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if s.rateLimiters != nil {
-		if installID, ok := s.store.InstallForCode(in.Code); ok && !s.rateLimiters.AppRedeemInstall.allow(installID) {
+		if installID, ok := s.store.InstallForLiveCode(in.Code); ok && !s.rateLimiters.AppRedeemInstall.allow(installID) {
 			writeRateLimitResponse(w, s.rateLimiters.AppRedeemInstall.config)
 			return
 		}

@@ -267,6 +267,27 @@ func TestProvisionAppInstall_InTransactionRecheck(t *testing.T) {
 			},
 			coll: "tickets", field: "slug", wantInMsg: "portal-tickets",
 		},
+		// Codex round 1: everything the re-check compares derives from the
+		// destination schema, so a schema edit after the comparison refuses.
+		"destination schema": {
+			move: func(t *testing.T, e *appsEnv) {
+				coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
+				if err != nil || coll == nil {
+					t.Fatalf("playbooks: %v", err)
+				}
+				var schema map[string]any
+				if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+					t.Fatal(err)
+				}
+				schema["fields"] = append(schema["fields"].([]any), map[string]any{"key": "late", "label": "Late", "type": "text"})
+				b, _ := json.Marshal(schema)
+				sch := string(b)
+				if _, err := e.srv.store.UpdateCollection(coll.ID, models.CollectionUpdate{Schema: &sch}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			artifact: "ship", wantInMsg: "schema changed",
+		},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -597,4 +618,70 @@ func ownerRequest(t *testing.T, e *appsEnv) *http.Request {
 	ctx := WithCurrentUser(r.Context(), u)
 	ctx = context.WithValue(ctx, ctxWorkspaceRole, "owner")
 	return r.WithContext(ctx)
+}
+
+// Codex round 1: a reserved companion slug would be rewritten to
+// "<slug>-collection", which the app cannot address. The preview refuses it,
+// and the store refuses a de-collided OR rewritten slug as a backstop.
+func TestAppInstall_ReservedCompanionSlug(t *testing.T) {
+	e := newProvisionEnv(t)
+	m := e.manifest(t)
+	m["companion_pack"].(map[string]any)["collections"].([]any)[0].(map[string]any)["slug"] = "settings"
+	e.publish(t, m)
+	rr := e.preview(t)
+	if rr.Code != http.StatusUnprocessableEntity || !strings.Contains(rr.Body.String(), "reserved") {
+		t.Fatalf("preview: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// The store backstop, reached directly.
+	e2 := newProvisionEnv(t)
+	p := e2.stagePreview(t)
+	pending, err := e2.srv.store.GetPendingInstall(p.PendingID, e2.wsID, ownerIDOf(t, e2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reviewed appPreview
+	if err := json.Unmarshal([]byte(pending.Preview), &reviewed); err != nil {
+		t.Fatal(err)
+	}
+	req, err := e2.srv.buildProvisionRequest(ownerRequest(t, e2), e2.wsID, pending.OwnerID, pending, &reviewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Collections[0].Slug = "settings"
+	before := provisionCensus(t, e2)
+	_, err = e2.srv.store.ProvisionAppInstall(*req)
+	var pc *store.ProvisionConflictError
+	if !errors.As(err, &pc) || pc.Collection != "tickets" || pc.Field != "slug" {
+		t.Fatalf("got %v, want a slug conflict on tickets", err)
+	}
+	assertCensusUnchanged(t, before, provisionCensus(t, e2))
+}
+
+// Codex round 1: a dead code (expired or consumed) must answer exactly like an
+// unknown one. It never charges the install bucket, so it can never draw a
+// 429 the unknown code would not, and it cannot throttle a fresh code.
+func TestAppInstallRedeem_DeadCodeNeverChargesTheInstallBucket(t *testing.T) {
+	e := newProvisionEnv(t)
+	p := e.stagePreview(t)
+	rr := e.confirm(t, p, p.ManifestSHA256)
+	var out appInstallConfirmResponse
+	parseJSON(t, rr, &out)
+	if _, err := e.srv.store.DB().Exec(`UPDATE app_install_codes SET expires_at = '2000-01-01T00:00:00Z'`); err != nil {
+		t.Fatal(err)
+	}
+	// Fewer than the per-address burst (10), more than the per-install one (5).
+	for i := 0; i < 8; i++ {
+		if rr := redeem(e.srv, `{"code":"`+out.InstallCode+`"}`); rr.Code != http.StatusBadRequest {
+			t.Fatalf("attempt %d with a dead code: %d %s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	// A fresh code for the same install still redeems.
+	code, _, err := e.srv.store.IssueInstallCode(e.wsID, out.InstallID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rr := redeem(e.srv, `{"code":"`+code+`"}`); rr.Code != http.StatusOK {
+		t.Fatalf("fresh code after dead-code attempts: %d %s", rr.Code, rr.Body.String())
+	}
 }

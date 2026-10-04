@@ -144,8 +144,11 @@ func (s *Store) createCollectionTx(tx *sql.Tx, workspaceID string, input models.
 	// so a de-collided `x-2` would be a collection nobody can name. The
 	// installer checks the slug is free under this same lock first; this
 	// refuses rather than diverging if that check and this scan ever disagree.
-	if viaApp != "" && slug != baseSlug {
-		return "", fmt.Errorf("%w: collection slug %q is taken", ErrAppCollectionSlugTaken, baseSlug)
+	// Compared with the slug the app DECLARED, not baseSlug: a reserved slug
+	// is rewritten to `<slug>-collection` above, which is just as unaddressable
+	// to the app as a de-collided one (codex round 1).
+	if viaApp != "" && slug != input.Slug {
+		return "", fmt.Errorf("%w: collection slug %q is not available", ErrAppCollectionSlugTaken, input.Slug)
 	}
 
 	var via any
@@ -1329,6 +1332,10 @@ var reservedCollectionSlugs = map[string]bool{
 
 // isReservedCollectionSlug checks whether a slug would collide with a
 // workspace-level UI route.
+// IsReservedCollectionSlug reports whether a slug collides with a
+// workspace-level UI route; the app installer refuses such a companion slug.
+func IsReservedCollectionSlug(slug string) bool { return isReservedCollectionSlug(slug) }
+
 func isReservedCollectionSlug(slug string) bool {
 	return reservedCollectionSlugs[strings.ToLower(slug)]
 }
