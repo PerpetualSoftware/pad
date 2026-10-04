@@ -42,6 +42,11 @@ func fixture(t *testing.T) (*store.Store, store.FenceSpec) {
 		id, ws.ID, "https://app.example", ts, ts); err != nil {
 		t.Fatal(err)
 	}
+	// A companion is a collection stamped with the install (as provisioning
+	// leaves it); the fence checks the stamp in its transaction.
+	if _, err := s.DB().Exec(s.D().Rebind(`UPDATE collections SET via_app = ? WHERE id = ?`), id, col.ID); err != nil {
+		t.Fatal(err)
+	}
 	return s, store.FenceSpec{InstallID: id, WorkspaceID: ws.ID, Epoch: 1, Companions: []string{col.ID}}
 }
 

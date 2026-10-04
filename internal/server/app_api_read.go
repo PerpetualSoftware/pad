@@ -185,14 +185,14 @@ func (s *Server) appRecheckCollectionUncached(r *http.Request, collectionID stri
 	ac := appContextFrom(r)
 	c, err := s.store.GetCollection(collectionID)
 	if err != nil {
-		return err
+		return appFault(err)
 	}
 	if c == nil || c.DeletedAt != nil || c.WorkspaceID != ac.WorkspaceID {
 		return errAppRecheck
 	}
 	ids, err := s.visibleCollectionIDs(r, ac.WorkspaceID)
 	if err != nil {
-		return err
+		return appFault(err)
 	}
 	if !isCollectionVisible(c.ID, ids) || !appCeilingAllows(r, c.ID) {
 		return errAppRecheck
@@ -206,7 +206,7 @@ func (s *Server) appRecheckItem(r *http.Request, itemID, collectionID string) er
 	ac := appContextFrom(r)
 	it, err := s.store.GetItem(itemID)
 	if err != nil {
-		return err
+		return appFault(err)
 	}
 	if it == nil || it.DeletedAt != nil || it.WorkspaceID != ac.WorkspaceID || it.CollectionID != collectionID {
 		return errAppRecheck
@@ -216,7 +216,7 @@ func (s *Server) appRecheckItem(r *http.Request, itemID, collectionID string) er
 	}
 	ok, err := s.checkItemVisible(ac.WorkspaceID, it, currentUser(r), workspaceRole(r), isBearerAuth(r))
 	if err != nil {
-		return err
+		return appFault(err)
 	}
 	if !ok {
 		return errAppRecheck

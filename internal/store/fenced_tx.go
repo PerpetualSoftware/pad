@@ -185,6 +185,20 @@ func (f *FencedTx) requireCompanionCollection(collectionID string) error {
 	if _, ok := f.companions[collectionID]; !ok {
 		return ErrNotCompanion
 	}
+	// And the collection as it stands in THIS transaction (TASK-3401 U6c,
+	// codex r1): the set above is the request's, from admission, and a
+	// companion can stop being one while a request is in flight (deleted, or
+	// re-stamped to another install). An upload's body can take minutes, so
+	// that window is not academic.
+	var live int
+	if err := f.tx.QueryRow(f.s.q(`SELECT COUNT(*) FROM collections
+		WHERE id = ? AND workspace_id = ? AND via_app = ? AND deleted_at IS NULL`),
+		collectionID, f.workspaceID, f.installID).Scan(&live); err != nil {
+		return fmt.Errorf("fenced companion check: %w", err)
+	}
+	if live == 0 {
+		return ErrNotCompanion
+	}
 	return nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/appstore"
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -40,12 +41,21 @@ type appRoute struct {
 	Name     string
 	Handler  func(*Server, http.ResponseWriter, *http.Request)
 	Auth     string // "service", "delegated" or "either"
-	Access   string // "read" or "write"
+	// Access is "read", "write" or "stream". A stream row is a read whose
+	// body is NOT buffered (an attachment download, lead ruling for U6c): the
+	// handler re-admits the request itself, immediately before its first
+	// byte, and then streams.
+	Access string
 }
 
-// appRoutes is the table: U6a's reads and U6b's writes. U6c adds the
-// attachments.
+// appRoutes is the table: U6a's reads, U6b's writes and U6c's attachments.
 var appRoutes = []appRoute{
+	{"POST", "/items/{itemID}/attachments", "appUploadAttachment", (*Server).appUploadAttachment, "either", "write"},
+	{"GET", "/attachments/{attachmentID}", "appGetAttachment", (*Server).appGetAttachment, "either", "read"},
+	{"GET", "/attachments/{attachmentID}/content", "appDownloadAttachment", (*Server).appDownloadAttachment, "either", "stream"},
+	// HEAD probes size and type through the same gate (ServeContent writes
+	// no body for it), as the regular download allows.
+	{"HEAD", "/attachments/{attachmentID}/content", "appHeadAttachment", (*Server).appDownloadAttachment, "either", "stream"},
 	{"POST", "/collections/{collSlug}/items", "appCreateItem", (*Server).appCreateItem, "either", "write"},
 	{"PATCH", "/items/{itemID}", "appUpdateItem", (*Server).appUpdateItem, "either", "write"},
 	{"POST", "/items/{itemID}/comments", "appCreateComment", (*Server).appCreateComment, "either", "write"},
@@ -113,7 +123,18 @@ func (s *Server) appStore() (*appstore.Store, error) {
 			s.appstoreState.err = err
 			return
 		}
-		s.appstoreState.store = appstore.New(s.store, appstore.Options{PlanLimit: s.cloudMode, ETagKey: key})
+		// Uploads write through the filesystem blob store the human uploads
+		// use, with constant work, under the same hash guard. With no FS
+		// backend wired the app store refuses uploads and downloads
+		// (ErrAppNoAttachmentStore). Resolved once, like the store itself,
+		// which holds the in-process upload reservations: SetAttachments runs
+		// at startup, before any request.
+		var blobs *attachments.FSStore
+		if s.attachments != nil {
+			blobs, _ = s.attachments.Backends()[attachments.FSPrefix].(*attachments.FSStore)
+		}
+		s.appstoreState.store = appstore.New(s.store, appstore.Options{PlanLimit: s.cloudMode, ETagKey: key,
+			Blobs: blobs, InFlight: s.UploadInFlight()})
 	})
 	return s.appstoreState.store, s.appstoreState.err
 }
@@ -144,6 +165,14 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 						handler(s, w, r)
 						return
 					}
+					// A stream row registers its re-checks like any read, but
+					// re-admits itself before its first byte (appStreamGate)
+					// instead of being buffered: a download is too large to
+					// hold, and nothing is sent before the gate passes.
+					if access == "stream" {
+						handler(s, w, r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{})))
+						return
+					}
 					// The handler writes into a buffer; nothing reaches the
 					// app until the grant is re-validated (codex r1 P1).
 					buf := newAppResponseBuffer()
@@ -153,7 +182,7 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 						s.appAfterHandler()
 					}
 					if err := s.appRevalidate(r); err != nil {
-						writeAppUnauthorized(w)
+						writeAppRevalidateError(w, err)
 						return
 					}
 					buf.flushTo(w)
@@ -177,7 +206,14 @@ func appJSONContentType(next http.Handler) http.Handler {
 // installed apps are off on this server.
 func (s *Server) requireAppsAvailable(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.appsAvailable() {
+		on, err := s.appsAvailableChecked()
+		if err != nil {
+			// A failure to read the setting is a fault, not "apps off"
+			// (codex U6c r6).
+			writeInternalError(w, err)
+			return
+		}
+		if !on {
 			writeError(w, http.StatusNotFound, "not_found", "Not found")
 			return
 		}
@@ -235,6 +271,15 @@ func (s *Server) appAdmitToken(ctx context.Context, tok string) (*appContext, er
 	}
 	grant, err := s.introspectAppToken(ctx, tok)
 	if err != nil {
+		// A store failure while reading the token's state is a fault, not a
+		// refusal (codex U6c r4): a 401 invalid_token would tell the app to
+		// discard a credential that is fine. Every named refusal stays a
+		// denial, and so does the OAuth library's own introspection error,
+		// which does not distinguish a storage fault from an unknown token
+		// and therefore fails closed.
+		if !isAppTokenDenial(err) {
+			return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+		}
 		return nil, errAppAdmit
 	}
 	// Delegated tokens are refused until TASK-3399 enables them (lead
@@ -488,17 +533,19 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	}
 	// The gate every new request passes (codex r3): apps turned off while a
 	// read was in flight withholds it too.
-	if !s.appsAvailable() {
+	if on, err := s.appsAvailableChecked(); err != nil {
+		return appFault(err)
+	} else if !on {
 		return errors.New("apps are not available")
 	}
 	tokAC, err := s.appAdmitToken(r.Context(), ac.token)
 	if err != nil {
-		return err
+		return appCredentialDenial(err)
 	}
 	if tokAC.Grant.RequestID != ac.Grant.RequestID || tokAC.Grant.AuthEpoch != ac.Grant.AuthEpoch ||
 		tokAC.InstallID != ac.InstallID || tokAC.WorkspaceID != ac.WorkspaceID ||
 		tokAC.Access != ac.Access || tokAC.Actor.ID != ac.Actor.ID {
-		return errors.New("the grant changed")
+		return fmt.Errorf("%w: the grant changed", errAppCredential)
 	}
 	fresh, err := s.appAdmitWorkspace(tokAC)
 	if err != nil {
@@ -513,7 +560,67 @@ func (s *Server) appRevalidate(r *http.Request) error {
 			return err
 		}
 	}
+	if s.appAfterRechecks != nil {
+		s.appAfterRechecks()
+	}
+	// The credential once more, LAST (codex U6c r1 P1): the checks above take
+	// time, and a revocation, disable or rotation committed while they ran
+	// would otherwise pass. Re-admission is a sequence of reads, not one
+	// snapshot, so it orders the response against a change committed before
+	// its final step: this one, for the credential and the install, and each
+	// re-check's own read for the resource it covers.
+	last, err := s.appAdmitToken(r.Context(), ac.token)
+	if err != nil {
+		return appCredentialDenial(err)
+	}
+	if last.Grant.AuthEpoch != ac.Grant.AuthEpoch || last.Access != ac.Access || last.InstallID != ac.InstallID {
+		return fmt.Errorf("%w: the grant changed", errAppCredential)
+	}
 	return nil
+}
+
+// errAppCredential marks a re-admission failure that is about the
+// credential itself (revoked, expired, rotated, the install disabled), as
+// opposed to the subject's permissions. A read answers every denial with
+// 401; a write that must tell the two apart (the upload's pre-row check,
+// codex U6c r5) answers this one with 401 and the rest with 403.
+var errAppCredential = errors.New("app credential no longer valid")
+
+// appCredentialDenial passes a fault through and marks anything else from
+// token admission as a credential denial.
+func appCredentialDenial(err error) error {
+	if errors.Is(err, errAppAdmitInternal) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errAppCredential, err)
+}
+
+// isAppTokenDenial reports whether an introspection error is one of its named
+// refusals, rather than a failure reading the token's state.
+func isAppTokenDenial(err error) bool {
+	for _, d := range []error{errAppTokenInactive, errAppTokenAudience, errAppTokenUnbound, errAppTokenMismatch,
+		errAppTokenInstall, errAppTokenEpoch, errAppTokenDisabled, errAppTokenNoBackend} {
+		if errors.Is(err, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// appFault marks an error from re-admission as a server fault (a store or
+// database failure), not a denial: the response is withheld either way, but
+// a fault answers 500, never the 401 invalid_token that tells an app to
+// discard a credential that is fine (codex U6c r2).
+func appFault(err error) error { return fmt.Errorf("%w: %w", errAppAdmitInternal, err) }
+
+// writeAppRevalidateError answers a failed re-admission: 500 for a fault,
+// 401 for a denial.
+func writeAppRevalidateError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errAppAdmitInternal) {
+		writeInternalError(w, err)
+		return
+	}
+	writeAppUnauthorized(w)
 }
 
 // appRecheckMemoKey holds one re-validation's memo of collection re-checks:

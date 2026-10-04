@@ -16,16 +16,27 @@ const settingAppsEnabled = "apps_enabled"
 // app credential is an OAuth token. It does not depend on the MCP setting.
 // A settings read error counts as off: the capability fails closed.
 func (s *Server) appsAvailable() bool {
-	if s.cloudMode {
-		return s.oauthServer != nil
-	}
-	if s.oauthServer == nil || !s.mcpEndpoints.HTTPS() {
-		return false
-	}
-	v, err := s.store.GetPlatformSetting(settingAppsEnabled)
+	on, err := s.appsAvailableChecked()
 	if err != nil {
 		slog.Warn("apps: reading the apps_enabled setting failed; treating apps as off", "error", err)
 		return false
 	}
-	return v == "true"
+	return on
+}
+
+// appsAvailableChecked is appsAvailable with a failure to read the setting
+// reported rather than folded into "off", for re-admission, where a fault
+// must not read as a revocation (TASK-3401 U6c codex r4).
+func (s *Server) appsAvailableChecked() (bool, error) {
+	if s.cloudMode {
+		return s.oauthServer != nil, nil
+	}
+	if s.oauthServer == nil || !s.mcpEndpoints.HTTPS() {
+		return false, nil
+	}
+	v, err := s.store.GetPlatformSetting(settingAppsEnabled)
+	if err != nil {
+		return false, err
+	}
+	return v == "true", nil
 }

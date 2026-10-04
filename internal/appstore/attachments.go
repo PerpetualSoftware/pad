@@ -55,12 +55,14 @@ type AppUpload struct {
 // AppAttachment is the only shape an app sees an attachment in. It never
 // carries storage_key, content_hash or uploaded_by (DOC-3371 §4).
 type AppAttachment struct {
-	ID        string    `json:"id"`
-	ItemID    string    `json:"item_id"`
-	Filename  string    `json:"filename"`
-	MimeType  string    `json:"mime_type"`
-	Size      int64     `json:"size"`
-	Variant   string    `json:"variant,omitempty"`
+	ID       string `json:"id"`
+	ItemID   string `json:"item_id"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Size     int64  `json:"size"`
+	// Variant is null on an original (DOC-3371 §4 lists it in every DTO;
+	// TASK-3401 U6c codex r3), the variant key on a variant.
+	Variant   *string   `json:"variant"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -70,7 +72,8 @@ func toAppAttachment(a *models.Attachment) *AppAttachment {
 		out.ItemID = *a.ItemID
 	}
 	if a.Variant != nil {
-		out.Variant = *a.Variant
+		v := *a.Variant
+		out.Variant = &v
 	}
 	return out
 }
@@ -136,9 +139,34 @@ func (res *reservation) release() {
 }
 
 // UploadAttachment stores an app upload bound to itemID, in the sequence
-// above. Refusals of the request itself are InputError (or
-// ErrAppSizeMismatch); store errors pass through.
+// above: StageUpload, then Insert. Refusals of the request itself are
+// InputError (or ErrAppSizeMismatch); store errors pass through.
 func (a *Store) UploadAttachment(ctx context.Context, spec store.FenceSpec, itemID string, in AppUpload, actor store.FencedActor) (*AppAttachment, error) {
+	p, err := a.StageUpload(ctx, spec, itemID, in, actor)
+	if err != nil {
+		return nil, err
+	}
+	defer p.Close()
+	return p.Insert(ctx)
+}
+
+// PendingUpload is an upload between its blob and its row: admitted, typed,
+// and its blob canonical, with its reservation and hash guard still held.
+// The caller may re-check what is not the store's to decide (the server
+// re-checks the subject's visibility and edit right, TASK-3401 U6c codex
+// r3), then calls Insert, and always Close. A pending upload that is closed
+// without an Insert leaves its blob for orphan GC, as any refused row does.
+type PendingUpload struct {
+	a      *Store
+	spec   store.FenceSpec
+	res    *reservation
+	staged *attachments.Staged
+	guard  string
+	row    store.FencedAttachmentCreate
+}
+
+// StageUpload runs steps 1 to 4: size, admission, type and blob.
+func (a *Store) StageUpload(ctx context.Context, spec store.FenceSpec, itemID string, in AppUpload, actor store.FencedActor) (*PendingUpload, error) {
 	if a.opts.Blobs == nil || a.opts.InFlight == nil {
 		return nil, ErrAppNoAttachmentStore
 	}
@@ -153,10 +181,15 @@ func (a *Store) UploadAttachment(ctx context.Context, spec store.FenceSpec, item
 	}
 
 	// Admission. The reservation is taken first, so this check sees it. It is
-	// released inside the row transaction on success, and by the defer on
-	// every other way out.
-	res := a.reserved.take(spec.InstallID, in.DeclaredSize)
-	defer res.release()
+	// released inside the row transaction on success, and by Close on every
+	// other way out.
+	p := &PendingUpload{a: a, spec: spec, res: a.reserved.take(spec.InstallID, in.DeclaredSize)}
+	ok := false
+	defer func() {
+		if !ok {
+			p.Close()
+		}
+	}()
 	if err := a.admitUpload(ctx, spec, itemID, actor); err != nil {
 		return nil, err
 	}
@@ -184,12 +217,12 @@ func (a *Store) UploadAttachment(ctx context.Context, spec store.FenceSpec, item
 	if err != nil {
 		return nil, err
 	}
-	defer staged.Abort()
+	p.staged = staged
 	if staged.Size != in.DeclaredSize {
 		return nil, ErrAppSizeMismatch
 	}
 	a.opts.InFlight.Hold(staged.Hash)
-	defer a.opts.InFlight.Release(staged.Hash)
+	p.guard = staged.Hash
 	key, err := staged.Commit(ctx)
 	if err != nil {
 		return nil, err
@@ -199,10 +232,31 @@ func (a *Store) UploadAttachment(ctx context.Context, spec store.FenceSpec, item
 	if entry.Category == attachments.CategoryImage {
 		width, height = a.imageSize(ctx, key)
 	}
-	return a.insertUpload(ctx, spec, res, store.FencedAttachmentCreate{
+	p.row = store.FencedAttachmentCreate{
 		ItemID: itemID, Actor: actor, StorageKey: key, ContentHash: staged.Hash, MimeType: entry.MIME,
 		Size: staged.Size, Filename: filename, FilenameSource: string(filenameSource), Width: width, Height: height,
-	})
+	}
+	ok = true
+	return p, nil
+}
+
+// Insert runs step 5: the row, in ONE fenced transaction.
+func (p *PendingUpload) Insert(ctx context.Context) (*AppAttachment, error) {
+	return p.a.insertUpload(ctx, p.spec, p.res, p.row)
+}
+
+// Close releases the hash guard, the staged blob and the reservation, in that
+// order; each is idempotent, and Close is safe to call more than once.
+func (p *PendingUpload) Close() {
+	if p.guard != "" {
+		p.a.opts.InFlight.Release(p.guard)
+		p.guard = ""
+	}
+	if p.staged != nil {
+		p.staged.Abort()
+		p.staged = nil
+	}
+	p.res.release()
 }
 
 func (a *Store) admitUpload(ctx context.Context, spec store.FenceSpec, itemID string, actor store.FencedActor) error {

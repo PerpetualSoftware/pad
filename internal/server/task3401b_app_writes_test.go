@@ -116,6 +116,15 @@ func TestTask3401b_WriteCensus(t *testing.T) {
 	}
 	seen["appDeleteComment"] = true
 
+	rr = appUpload(f, "/items/"+id+"/attachments?filename=shot.png", f.attachmentBytes, int64(len(f.attachmentBytes)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	var up map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &up)
+	checkAppDTOKeys(t, "appUploadAttachment", up)
+	seen["appUploadAttachment"] = true
+
 	for _, rt := range appRoutes {
 		if rt.Access == "write" && !seen[rt.Name] {
 			t.Errorf("write row %s is not in the census", rt.Name)
@@ -149,11 +158,12 @@ func TestTask3401b_EveryWriteRowRefusesAReadToken(t *testing.T) {
 	items := f.count(t, `SELECT COUNT(*) FROM items`)
 	comments := f.count(t, `SELECT COUNT(*) FROM comments`)
 	calls := map[string][2]string{
-		"appCreateItem":    {"POST", "/collections/requests/items"},
-		"appUpdateItem":    {"PATCH", "/items/" + f.item.ID},
-		"appCreateComment": {"POST", "/items/" + f.item.ID + "/comments"},
-		"appUpdateComment": {"PATCH", "/items/" + f.item.ID + "/comments/" + f.comment.ID},
-		"appDeleteComment": {"DELETE", "/items/" + f.item.ID + "/comments/" + f.comment.ID},
+		"appCreateItem":       {"POST", "/collections/requests/items"},
+		"appUpdateItem":       {"PATCH", "/items/" + f.item.ID},
+		"appCreateComment":    {"POST", "/items/" + f.item.ID + "/comments"},
+		"appUpdateComment":    {"PATCH", "/items/" + f.item.ID + "/comments/" + f.comment.ID},
+		"appDeleteComment":    {"DELETE", "/items/" + f.item.ID + "/comments/" + f.comment.ID},
+		"appUploadAttachment": {"POST", "/items/" + f.item.ID + "/attachments?filename=x.png"},
 	}
 	for _, rt := range appRoutes {
 		if rt.Access != "write" {
@@ -169,7 +179,8 @@ func TestTask3401b_EveryWriteRowRefusesAReadToken(t *testing.T) {
 			t.Errorf("%s with a read token: %d %s, want 403", rt.Name, rr.Code, rr.Body.String())
 		}
 	}
-	if items != f.count(t, `SELECT COUNT(*) FROM items`) || comments != f.count(t, `SELECT COUNT(*) FROM comments`) {
+	if items != f.count(t, `SELECT COUNT(*) FROM items`) || comments != f.count(t, `SELECT COUNT(*) FROM comments`) ||
+		f.count(t, `SELECT COUNT(*) FROM attachments`) != 1 {
 		t.Error("a read token wrote something")
 	}
 }
