@@ -709,3 +709,26 @@ func TestTask3401_AppsTurnedOffMidReadWithholdsTheData(t *testing.T) {
 		t.Errorf("apps off mid-read: %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+// codex r3: a request with no re-check holder could not have registered its
+// authorizations, so re-validation refuses it rather than passing with none.
+func TestTask3401_RevalidateFailsClosedWithoutARecheckHolder(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	ac, err := f.srv.appAdmitToken(context.Background(), f.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := f.srv.appAdmitWorkspace(ac)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/x", nil)
+	req = req.WithContext(appRequestContext(req.Context(), full))
+	if err := f.srv.appRevalidate(req); err == nil {
+		t.Error("re-validation passed a request with no re-check holder")
+	}
+	withHolder := req.WithContext(context.WithValue(req.Context(), appRecheckKey{}, &appRechecks{}))
+	if err := f.srv.appRevalidate(withHolder); err != nil {
+		t.Errorf("control: a request with a holder failed re-validation: %v", err)
+	}
+}
