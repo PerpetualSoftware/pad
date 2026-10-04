@@ -157,32 +157,37 @@ var ErrNotWorkspaceOwner = errors.New("not a workspace owner")
 // overwrites nothing it writes, serializes as "provision, then W": the
 // outcome equals a history in which the owner confirmed a moment earlier,
 // which is the guarantee every other write door gives. Only a writer that
-// ALSO reads or overwrites what provisioning writes can form a cycle, and
-// that writer must be locked out. Postgres; the order is fixed:
+// ALSO reads or overwrites what provisioning writes forms a cycle, and that
+// writer must be held off.
 //
-//  1. app_install_pending row       FOR UPDATE  the record being consumed
-//     (a concurrent confirm,
-//     discard or sweep)
-//  2. workspace seq lock (advisory)             item writers (create, update,
-//     delete, move, restore) and
-//     slug allocation: they read the
-//     item and slug space provisioning
-//     writes into, so they are a cycle
-//  3. every collections row of the  FOR SHARE   one consistent view of the
-//     workspace                                 collections for a multi-
-//     statement derivation under READ
-//     COMMITTED (kind -> destination,
-//     schemas, companion slugs,
-//     relation target collections)
+// The locks, Postgres, in this fixed order:
+//
+//   - 0. The confirming owner's users row, FOR SHARE. Account deletion of that
+//     owner is a REAL cycle (codex round 5): its bot scan reads the bot and
+//     membership provisioning writes, and it deletes the owner provisioning
+//     read. Its first statement locks this row FOR NO KEY UPDATE, so either it
+//     waits for the commit and then sees the bot, or provisioning waits and
+//     finds the pending row gone with the user. Taken first because that
+//     deletion reaches the pending row through its FK cascade (users, then
+//     pending: the order ReservePendingInstall takes too).
+//   - 1. The app_install_pending row, FOR UPDATE: the record being consumed
+//     (a concurrent confirm, discard or sweep).
+//   - 2. The workspace seq lock (advisory): item writers (create, update,
+//     delete, move, restore) and slug allocation read the item and slug space
+//     provisioning writes into, so they are a cycle.
+//   - 3. Every collections row of the workspace, FOR SHARE: one consistent
+//     view of the collections for a multi-statement derivation under READ
+//     COMMITTED (kind to destination, schemas, companion slugs, relation
+//     target collections).
 //
 // Raced on purpose, each serializing as "provision first":
-//   - collection archive / trait / rename: it reads no item provisioning
+//   - collection archive, trait and rename: they read no item provisioning
 //     inserts (and an archive racing lock 3 waits for the commit anyway);
 //   - membership, role, collection-access and grant writers, and an admin
-//     role change: visibility is read, never written, by provisioning;
-//   - account deletion of the confirming owner: it reads the items it
-//     updates, which provisioning neither writes nor overwrites; the FK checks
-//     of provisioning's inserts refuse cleanly if it commits first.
+//     role change: provisioning reads visibility and never writes it;
+//   - account deletion of ANOTHER user (an issued grant's author, a relation
+//     target's author): it updates their authored items and deletes their
+//     grants and memberships, none of which provisioning writes.
 //
 // The owner-role read is a plain read for the same reason. SQLite needs no
 // lock beyond its own: BEGIN IMMEDIATE holds the database write lock for the
@@ -197,6 +202,17 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 	}
 	defer tx.Rollback()
 	pg := s.dialect.Driver() == DriverPostgres
+
+	// 0. The confirming owner's users row, first (see the lock list).
+	if pg {
+		var id string
+		if err := tx.QueryRow(s.q(`SELECT id FROM users WHERE id = ? FOR SHARE`), req.OwnerID).Scan(&id); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrNotWorkspaceOwner
+			}
+			return nil, fmt.Errorf("provision app: lock owner: %w", err)
+		}
+	}
 
 	// 1. The pending record: live, staged, this owner's, this workspace's,
 	// and the very manifest the owner reviewed.

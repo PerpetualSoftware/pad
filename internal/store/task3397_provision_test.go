@@ -210,23 +210,65 @@ func task3397NoDeadlock(t *testing.T, f task3397Fix, first, second func(tx *sql.
 	}
 }
 
-// Account deletion (users.go): it updates the deleted user's authored items,
-// then deletes their membership.
-func TestTask3397_AccountDeletionDoesNotDeadlock(t *testing.T) {
+// Account deletion of the confirming owner is a real cycle (codex round 5):
+// its bot scan reads what provisioning writes. Lock 0 serializes the two
+// whole. Provisioning first: the deletion waits, then finds and purges the
+// new bot. Neither order may deadlock (the users-row / pending-row cycle).
+func TestTask3397_AccountDeletionAfterProvisioning(t *testing.T) {
 	f := task3397Fixture(t)
-	other := createTestUser(t, f.s, "second3397@example.com", "Second", "correct-horse-battery")
-	if err := f.s.AddWorkspaceMember(f.ws.ID, other.ID, "owner"); err != nil {
+	assertBlockedUntilRelease(t, f, 1, func() error {
+		_, err := f.s.DeleteAccountAtomicReport(f.owner.ID)
+		return err
+	})
+	var bots int
+	if err := f.s.db.QueryRow(f.s.q(`SELECT COUNT(*) FROM users WHERE kind = 'app'`)).Scan(&bots); err != nil {
 		t.Fatal(err)
 	}
-	task3397NoDeadlock(t, f,
-		func(tx *sql.Tx) error {
-			_, err := tx.Exec(f.s.q(`UPDATE items SET title = 'Ada (deleted author)' WHERE id = ?`), f.target.ID)
-			return err
-		},
-		func(tx *sql.Tx) error {
-			_, err := tx.Exec(f.s.q(`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), f.ws.ID, f.owner.ID)
-			return err
-		})
+	if bots != 0 {
+		t.Fatalf("%d app bots survived the owner's account deletion", bots)
+	}
+}
+
+// Deletion first: provisioning waits behind the deletion's user lock, then
+// finds the pending record gone with the user, and refuses cleanly.
+func TestTask3397_ProvisioningAfterAccountDeletion(t *testing.T) {
+	f := task3397Fixture(t)
+	locked, release := make(chan struct{}), make(chan struct{})
+	deleteAccountAfterUserLockHook = func() {
+		deleteAccountAfterUserLockHook = nil
+		close(locked)
+		<-release
+	}
+	t.Cleanup(func() { deleteAccountAfterUserLockHook = nil })
+	delDone := make(chan error, 1)
+	go func() {
+		_, err := f.s.DeleteAccountAtomicReport(f.owner.ID)
+		delDone <- err
+	}()
+	<-locked
+	provDone := make(chan error, 1)
+	go func() {
+		_, err := f.s.ProvisionAppInstall(f.req, func(Queryer) (*ProvisionDerived, error) { return f.derived("n1"), nil })
+		provDone <- err
+	}()
+	select {
+	case err := <-provDone:
+		close(release)
+		t.Fatalf("provisioning finished while the deletion held the user (err %v)", err)
+	case <-time.After(700 * time.Millisecond):
+	}
+	close(release)
+	if err := <-delDone; err != nil {
+		t.Fatalf("account deletion: %v", err)
+	}
+	select {
+	case err := <-provDone:
+		if !errors.Is(err, ErrPendingNotStaged) && !errors.Is(err, ErrNotWorkspaceOwner) {
+			t.Fatalf("provisioning: %v, want a clean refusal after the deletion", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("provisioning never finished")
+	}
 }
 
 // Member removal (RemoveWorkspaceMemberAndRevokeGrants): it deletes the
