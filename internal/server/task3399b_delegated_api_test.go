@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -213,5 +214,61 @@ func TestTask3399b_ACompanionReleasedMidReadWithholdsIt(t *testing.T) {
 	}
 	if rr := appGet(f.srv, f.path("/items/"+f.item.ID), f.token); rr.Code != http.StatusUnauthorized {
 		t.Errorf("a companion released mid-read: %d, want 401 and nothing", rr.Code)
+	}
+}
+
+// Lead ruling (U6c): a delegated upload re-admits the PERSON (their
+// visibility of the item and their edit right) immediately before its row.
+func TestTask3399b_APersonNarrowedMidUploadCommitsNoRow(t *testing.T) {
+	for name, change := range map[string]string{
+		"collection access narrowed": `UPDATE workspace_members SET collection_access = 'specific' WHERE user_id = ?`,
+		"role dropped to viewer":     `UPDATE workspace_members SET role = 'viewer' WHERE user_id = ?`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := delegatedAPIFixture(t, "write", "write", "editor")
+			body := append(testPNG(t), 8, 8, 8)
+			before := f.count(t, `SELECT COUNT(*) FROM attachments`)
+			changed := false
+			lazy := &lazyBody{build: func() []byte {
+				if _, err := f.srv.store.DB().Exec(change, f.person.ID); err != nil {
+					t.Error(err)
+				}
+				changed = true
+				return body
+			}}
+			req := httptest.NewRequest("POST", f.path("/items/"+f.item.ID+"/attachments?filename=a.png"), lazy)
+			req.ContentLength = int64(len(body))
+			req.Header.Set("Authorization", "Bearer "+f.token)
+			req.RemoteAddr = "192.0.2.1:1234"
+			rr := httptest.NewRecorder()
+			f.srv.ServeHTTP(rr, req)
+			if !changed {
+				t.Fatal("control: the body was never read")
+			}
+			if rr.Code < 400 {
+				t.Errorf("%s mid-upload: %d %s, want a refusal", name, rr.Code, rr.Body.String())
+			}
+			if after := f.count(t, `SELECT COUNT(*) FROM attachments`); after != before {
+				t.Errorf("a row committed after the person's %s", name)
+			}
+		})
+	}
+	// Control: the same upload with nothing changed lands, as the person.
+	f := delegatedAPIFixture(t, "write", "write", "editor")
+	body := append(testPNG(t), 7, 7)
+	rr := appUpload(f.appAPIFix, "/items/"+f.item.ID+"/attachments?filename=a.png", body, int64(len(body)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("control upload: %d %s", rr.Code, rr.Body.String())
+	}
+	var up struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &up)
+	var uploader, via string
+	if err := f.srv.store.DB().QueryRow(`SELECT uploaded_by, COALESCE(via_app, '') FROM attachments WHERE id = ?`, up.ID).Scan(&uploader, &via); err != nil {
+		t.Fatal(err)
+	}
+	if uploader != f.person.ID || via != f.in.id {
+		t.Errorf("uploaded_by %s via %s, want the person via the install", uploader, via)
 	}
 }
