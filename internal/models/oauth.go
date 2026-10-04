@@ -29,7 +29,20 @@ type OAuthClient struct {
 	Public                  bool      `json:"-"` // internal — never serialized
 	LogoURL                 string    `json:"logo_uri,omitempty"`
 	CreatedAt               time.Time `json:"client_id_issued_at"`
+
+	// Install clients (SPEC-6 U5a, TASK-3394). An installed app's one
+	// confidential client: a secret (only its hash is stored, from fosite's
+	// hasher), its own audiences (the app API resource only), and its
+	// install. All three are empty on an ordinary DCR client, whose
+	// audiences are the server's MCP canonicals. None is ever serialized.
+	SecretHash       string   `json:"-"`
+	AllowedAudiences []string `json:"-"`
+	AppInstallID     string   `json:"-"`
+	DisabledAt       string   `json:"-"`
 }
+
+// IsInstallClient reports whether the client belongs to an installed app.
+func (c *OAuthClient) IsInstallClient() bool { return c != nil && c.AppInstallID != "" }
 
 // OAuthRequest is the persisted form of a fosite.Requester (without
 // the fosite import). Carries everything the auth-code, access-token,

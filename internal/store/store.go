@@ -45,6 +45,9 @@ type Store struct {
 	// pass (the server's ValidateUsername: format, length, reserved names).
 	// An account claim regenerates one (TASK-3351).
 	usernameValidator func(string) error
+	// appAPIAudience is the app API resource, the only audience an install
+	// client holds (SPEC-6 U5a); set by the server at startup.
+	appAPIAudience string
 	// dbPath is the on-disk SQLite file path (empty for Postgres and for
 	// in-memory SQLite). Retained so the migration path can write a
 	// pre-migration snapshot next to it. See snapshotBeforeMigrate.
