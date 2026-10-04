@@ -132,6 +132,9 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 				handler := rt.Handler
 				access := rt.Access
 				inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if s.appBeforeHandler != nil {
+						s.appBeforeHandler()
+					}
 					// Writes are NOT re-validated after commit (lead ruling R2,
 					// U6b): a write's authority is decided inside its FencedTx
 					// under the epoch fence, and refusing the response AFTER a

@@ -99,6 +99,9 @@ type Server struct {
 	// appAfterHandler is a TEST-ONLY seam, nil in production: it runs after
 	// an app handler and before its response is re-validated and sent.
 	appAfterHandler func()
+	// appBeforeHandler is a TEST-ONLY seam, nil in production: it runs after
+	// the app middleware admitted a request and before its handler.
+	appBeforeHandler func()
 
 	// userCountFault is a TEST-ONLY seam, nil in production (BUG-3334). When
 	// set, userCount calls it first and returns its error. The fresh-install
