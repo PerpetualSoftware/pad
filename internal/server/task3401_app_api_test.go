@@ -87,6 +87,8 @@ func appAPIFixtureOn(t *testing.T, access string, cloud bool) appAPIFix {
 		ws.ID, in.bot.ID, time.Now().UTC().Format(time.RFC3339))
 
 	human := createTestUserDirect(t, srv, "adjunct-3401@example.com")
+	// Every live workspace has an owner; the item-limit check reads it.
+	exec(`UPDATE workspaces SET owner_id = ? WHERE id = ?`, human.ID, ws.ID)
 	f.privateItem, err = srv.store.CreateItem(ws.ID, f.private.ID, models.ItemCreate{Title: "Secret", ActorUserID: human.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -150,10 +152,19 @@ func TestTask3401_RoutesAndDTOCensus(t *testing.T) {
 		"appListComments":    "/items/" + f.item.ID + "/comments",
 		"appMe":              "/me",
 	}
-	if len(paths) != len(appRoutes) {
-		t.Fatalf("the census covers %d routes, the table has %d", len(paths), len(appRoutes))
+	reads := 0
+	for _, rt := range appRoutes {
+		if rt.Access == "read" {
+			reads++
+		}
+	}
+	if len(paths) != reads {
+		t.Fatalf("the read census covers %d routes, the table has %d read rows", len(paths), reads)
 	}
 	for _, rt := range appRoutes {
+		if rt.Access != "read" {
+			continue // the write rows: TestTask3401b_WriteCensus
+		}
 		p, ok := paths[rt.Name]
 		if !ok {
 			t.Errorf("route %s has no census path", rt.Name)

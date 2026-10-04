@@ -99,6 +99,9 @@ type Server struct {
 	// appAfterHandler is a TEST-ONLY seam, nil in production: it runs after
 	// an app handler and before its response is re-validated and sent.
 	appAfterHandler func()
+	// appBeforeHandler is a TEST-ONLY seam, nil in production: it runs after
+	// the app middleware admitted a request and before its handler.
+	appBeforeHandler func()
 
 	// userCountFault is a TEST-ONLY seam, nil in production (BUG-3334). When
 	// set, userCount calls it first and returns its error. The fresh-install
@@ -3478,6 +3481,14 @@ func (s *Server) filterUserGrantsForCaller(r *http.Request, workspaceID string, 
 // OAuth/MCP consent allow-list, which this helper does not (DR-10 of
 // PLAN-2357).
 func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, workspaceID string, itemID, collectionID string) bool {
+	// The app write rule (SPEC-6 §3 G4), AHEAD of the editor fast path: an
+	// installed app writes only into its companion collections. Its bot is an
+	// ordinary editor member, possibly with "all" access, so the role check
+	// below would otherwise pass it in every collection.
+	if !appWriteAllows(r, collectionID) {
+		writeError(w, http.StatusForbidden, "forbidden", "This app may not write here")
+		return false
+	}
 	ok, err := s.canEditInCollection(r, workspaceID, itemID, collectionID)
 	if err != nil {
 		writeInternalError(w, err)

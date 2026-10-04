@@ -122,6 +122,56 @@ func (f *FencedTx) CompanionCollectionSchema(collectionID string) (schemaJSON, s
 	return schemaJSON, settingsJSON, err
 }
 
+// FencedItemView is what an app write's response is built from, read inside
+// the write's own transaction: a read after commit can fail or see a later
+// state, and a response must describe the write that committed.
+type FencedItemView struct {
+	CollectionSlug string
+	SchemaJSON     string
+	ViaApp         string
+	CreatorDisplay string
+}
+
+// ItemView reads the response view of a companion item in this transaction.
+func (f *FencedTx) ItemView(itemID string) (FencedItemView, error) {
+	var v FencedItemView
+	err := f.tx.QueryRow(f.s.q(`SELECT c.slug, c.schema, COALESCE(i.via_app, ''), COALESCE(u.name, '')
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users u ON u.id = i.created_by_user_id
+		WHERE i.id = ? AND i.workspace_id = ?`), itemID, f.workspaceID).Scan(&v.CollectionSlug, &v.SchemaJSON, &v.ViaApp, &v.CreatorDisplay)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FencedItemView{}, ErrNotCompanion
+	}
+	return v, err
+}
+
+// Item reads a live item of this workspace in this transaction: the
+// collection, ref and title a write publishes are the ones it wrote under,
+// not an earlier read's (an item can move between companions in between).
+func (f *FencedTx) Item(itemID string) (*models.Item, error) {
+	it, err := f.s.getItemTx(f.tx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	if it == nil || it.WorkspaceID != f.workspaceID {
+		return nil, ErrNotCompanion
+	}
+	it.ComputeRef()
+	return it, nil
+}
+
+// ActorDisplay is the actor's display name, read in this transaction, so a
+// write's stored author, response and notifications agree.
+func (f *FencedTx) ActorDisplay(actor FencedActor) (string, error) {
+	var name string
+	err := f.tx.QueryRow(f.s.q(`SELECT COALESCE(name, '') FROM users WHERE id = ?`), actor.UserID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return name, err
+}
+
 // CompanionItemCollection returns the collection of a live item that this
 // install created, refusing any other item the same way the update will.
 func (f *FencedTx) CompanionItemCollection(itemID string) (string, error) {
@@ -312,6 +362,12 @@ func (f *FencedTx) UpdateItemFields(itemID string, patch map[string]any, expecte
 	}
 	if updated == nil {
 		return nil, fmt.Errorf("fenced update: item %s not readable in transaction", itemID)
+	}
+	// The mutation signal, from THIS transaction's before and after, as the
+	// human update sets it: a caller comparing its own earlier read would
+	// attribute another writer's status change to this write.
+	if statusChanged {
+		updated.LastMutation = &models.ItemMutationSignal{StatusChanged: true, StatusFieldKey: doneKey, FromStatus: statusBefore, ToStatus: newStatus}
 	}
 	if err := f.s.emitItemUpdateEventsTx(f.tx, existing, updated, statusChanged, statusBefore, doneKey, "", false); err != nil {
 		return nil, err
