@@ -186,7 +186,17 @@ func (s *FSStore) Put(ctx context.Context, hash, _ string, r io.Reader) (string,
 
 // Get opens the blob for read. The returned reader MUST be closed by the
 // caller. ErrNotFound is returned (wrapped) if the key has no blob.
-func (s *FSStore) Get(_ context.Context, key string) (io.ReadCloser, error) {
+func (s *FSStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	f, err := s.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// Open is Get with the concrete *os.File, for a caller that must not call
+// through an interface (the app store, TASK-3396). The caller closes it.
+func (s *FSStore) Open(_ context.Context, key string) (*os.File, error) {
 	hash, err := extractHash(key)
 	if err != nil {
 		return nil, err

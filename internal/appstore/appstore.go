@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -30,8 +31,9 @@ import (
 // Store runs app mutations. It holds the human store concretely and reaches
 // the database only through store.FencedTx.
 type Store struct {
-	s    *store.Store
-	opts Options
+	s        *store.Store
+	opts     Options
+	reserved reservations
 }
 
 // Options are the server's settings for app writes.
@@ -42,6 +44,14 @@ type Options struct {
 	// ETagKey is the SERVER-ONLY key app etags are computed under. No app
 	// ever holds it (DOC-3371 §4).
 	ETagKey []byte
+	// Blobs is the filesystem blob store app uploads write through, with
+	// constant work (Stage/Commit). Held concretely: the ordinary Put is
+	// never reached from this package (the boundary test enforces it).
+	Blobs *attachments.FSStore
+	// InFlight is the server's upload hash guard (Server.UploadInFlight),
+	// shared so an app upload fences against the same orphan-GC sweep the
+	// human uploads do.
+	InFlight *attachments.InFlight
 }
 
 // New wraps the store for app writes.
