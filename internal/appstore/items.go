@@ -49,6 +49,8 @@ type ItemWrite struct {
 	Item *models.Item
 	View store.FencedItemView
 	ETag string
+	// ActorDisplay is the acting identity's name, read in the transaction.
+	ActorDisplay string
 }
 
 // CreateItem creates an item in a companion collection, in one FencedTx.
@@ -145,10 +147,14 @@ func (a *Store) createItemOnce(ctx context.Context, spec store.FenceSpec, collec
 	if err != nil {
 		return nil, err
 	}
+	who, err := ftx.ActorDisplay(actor)
+	if err != nil {
+		return nil, err
+	}
 	if err := ftx.Commit(); err != nil {
 		return nil, err
 	}
-	return &ItemWrite{Item: item, View: view, ETag: store.AppItemETag(a.opts.ETagKey, spec.InstallID, item.ID, item.Seq)}, nil
+	return &ItemWrite{Item: item, View: view, ETag: store.AppItemETag(a.opts.ETagKey, spec.InstallID, item.ID, item.Seq), ActorDisplay: who}, nil
 }
 
 // UpdateItem applies a scalar fields patch to an item this install created,
@@ -209,10 +215,14 @@ func (a *Store) UpdateItemWrite(ctx context.Context, spec store.FenceSpec, itemI
 	if err != nil {
 		return nil, err
 	}
+	who, err := ftx.ActorDisplay(actor)
+	if err != nil {
+		return nil, err
+	}
 	if err := ftx.Commit(); err != nil {
 		return nil, err
 	}
-	return &ItemWrite{Item: item, View: view, ETag: store.AppItemETag(a.opts.ETagKey, spec.InstallID, item.ID, item.Seq)}, nil
+	return &ItemWrite{Item: item, View: view, ETag: store.AppItemETag(a.opts.ETagKey, spec.InstallID, item.ID, item.Seq), ActorDisplay: who}, nil
 }
 
 // appWritableSchema is schema with every default removed from the field

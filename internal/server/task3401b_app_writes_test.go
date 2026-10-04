@@ -485,6 +485,108 @@ func TestTask3401b_TheResponseUsesTheWritesSchema(t *testing.T) {
 	}
 }
 
+// appDoLazy sends a request whose body is built only when the handler reads
+// it, after the handler's own reads.
+func appDoLazy(f appAPIFix, method, path string, body *lazyBody) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
+	return rr
+}
+
+// Codex U6b round 3 P1: an item a human moves to another companion between
+// the handler's read and the comment's transaction. What the comment write
+// publishes names the collection it was written in, never the old one,
+// whose watchers would otherwise receive the comment's body.
+func TestTask3401b_ACommentPublishesTheItemsCollectionAtWriteTime(t *testing.T) {
+	f := appAPIFixture(t, "write")
+	other, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Escalations", Slug: "escalations", Schema: task3401Schema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE collections SET via_app = ? WHERE id = ?`, f.in.id, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	bus := events.New()
+	f.srv.SetEventBus(bus)
+	watch := watchevents.New()
+	f.srv.SetWatchEventsBus(watch)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sse, _, _ := bus.Subscribe(ctx, f.ws.ID)
+	notes, _, err := watch.Subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := false
+	rr := appDoLazy(f, "POST", f.path("/items/"+f.item.ID+"/comments"), &lazyBody{build: func() []byte {
+		if _, err := f.srv.store.DB().Exec(`UPDATE items SET collection_id = ? WHERE id = ?`, other.ID, f.item.ID); err != nil {
+			t.Error(err)
+		}
+		moved = true
+		b, _ := json.Marshal(map[string]any{"body": "for the escalations team"})
+		return b
+	}})
+	if rr.Code != http.StatusCreated || !moved {
+		t.Fatalf("comment: %d %s (moved=%v)", rr.Code, rr.Body.String(), moved)
+	}
+	select {
+	case e := <-sse:
+		if e.Collection != other.Slug {
+			t.Errorf("SSE collection = %q, want %q (the item's collection at write time)", e.Collection, other.Slug)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no SSE event")
+	}
+	select {
+	case n := <-notes:
+		if n.CollectionID != other.ID || !strings.HasPrefix(n.ItemRef, other.Prefix+"-") {
+			t.Errorf("watch notification = collection %s ref %s, want %s / %s-N", n.CollectionID, n.ItemRef, other.ID, other.Prefix)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no watch notification")
+	}
+}
+
+// Codex U6b round 3 P3: the bot renamed between admission and the write.
+// The stored author, the SSE actor and the watch actor all carry the name
+// the write's transaction read.
+func TestTask3401b_TheActorNameIsReadWithTheWrite(t *testing.T) {
+	f := appAPIFixture(t, "write")
+	watch := watchevents.New()
+	f.srv.SetWatchEventsBus(watch)
+	notes, _, err := watch.Subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := appDoLazy(f, "POST", f.path("/items/"+f.item.ID+"/comments"), &lazyBody{build: func() []byte {
+		if _, err := f.srv.store.DB().Exec(`UPDATE users SET name = 'Portal Renamed' WHERE id = ?`, f.in.bot.ID); err != nil {
+			t.Error(err)
+		}
+		b, _ := json.Marshal(map[string]any{"body": "after the rename"})
+		return b
+	}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("comment: %d %s", rr.Code, rr.Body.String())
+	}
+	var got AppComment
+	_ = json.Unmarshal(rr.Body.Bytes(), &got)
+	if got.AuthorDisplay != "Portal Renamed" {
+		t.Errorf("author_display = %q, want the name read with the write", got.AuthorDisplay)
+	}
+	select {
+	case n := <-notes:
+		if n.ActorName != "Portal Renamed" {
+			t.Errorf("watch actor = %q, want the name read with the write", n.ActorName)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no watch notification")
+	}
+}
+
 // Lead ruling R3, U5b half: a DELEGATED write's author is the person, with
 // via_app set ("Dave via Support Portal"), never the bot. Enabled by
 // TASK-3399, which brings delegated tokens.

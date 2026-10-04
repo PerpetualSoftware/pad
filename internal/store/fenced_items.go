@@ -146,6 +146,32 @@ func (f *FencedTx) ItemView(itemID string) (FencedItemView, error) {
 	return v, err
 }
 
+// Item reads a live item of this workspace in this transaction: the
+// collection, ref and title a write publishes are the ones it wrote under,
+// not an earlier read's (an item can move between companions in between).
+func (f *FencedTx) Item(itemID string) (*models.Item, error) {
+	it, err := f.s.getItemTx(f.tx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	if it == nil || it.WorkspaceID != f.workspaceID {
+		return nil, ErrNotCompanion
+	}
+	it.ComputeRef()
+	return it, nil
+}
+
+// ActorDisplay is the actor's display name, read in this transaction, so a
+// write's stored author, response and notifications agree.
+func (f *FencedTx) ActorDisplay(actor FencedActor) (string, error) {
+	var name string
+	err := f.tx.QueryRow(f.s.q(`SELECT COALESCE(name, '') FROM users WHERE id = ?`), actor.UserID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return name, err
+}
+
 // CompanionItemCollection returns the collection of a live item that this
 // install created, refusing any other item the same way the update will.
 func (f *FencedTx) CompanionItemCollection(itemID string) (string, error) {

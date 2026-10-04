@@ -139,7 +139,7 @@ func (s *Server) appCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item := wr.Item
-	s.publishItemEventWithName(sseItemCreated, ac.WorkspaceID, item.ID, item.Title, wr.View.CollectionSlug, "agent", ac.Actor.Name, "app", item.Seq)
+	s.publishItemEventWithName(sseItemCreated, ac.WorkspaceID, item.ID, item.Title, wr.View.CollectionSlug, "agent", wr.ActorDisplay, "app", item.Seq)
 	writeAppJSON(w, http.StatusCreated, appWrittenItemDTO(wr))
 }
 
@@ -185,13 +185,13 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	after := wr.Item
-	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, wr.View.CollectionSlug, "agent", ac.Actor.Name, "app", after.Seq)
+	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, wr.View.CollectionSlug, "agent", wr.ActorDisplay, "app", after.Seq)
 	// Watchers hear about an app's status change as about anyone's (lead
 	// ruling R1). The signal is the fenced transaction's own, never a
 	// comparison with this handler's earlier read: a status another writer
 	// changed between that read and the commit is not this write's.
 	if after.LastMutation != nil && after.LastMutation.StatusChanged {
-		s.publishWatchNotifications(ac.WorkspaceID, after, "agent", ac.Actor.Name)
+		s.publishWatchNotifications(ac.WorkspaceID, after, "agent", wr.ActorDisplay)
 	}
 	writeAppJSON(w, http.StatusOK, appWrittenItemDTO(wr))
 }
@@ -209,7 +209,7 @@ func appCommentDTO(c *models.Comment) AppComment {
 
 func (s *Server) appCreateComment(w http.ResponseWriter, r *http.Request) {
 	ac := appContextFrom(r)
-	item, c, ok := s.appVisibleItem(w, r)
+	item, _, ok := s.appVisibleItem(w, r)
 	if !ok {
 		return
 	}
@@ -226,22 +226,28 @@ func (s *Server) appCreateComment(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	// The author is server-set: the app's bot display name (lead ruling R3).
-	comment, err := as.CreateComment(r.Context(), ac.appFenceSpec(), item.ID,
-		appstore.AppCommentCreate{Body: in.Body, ParentID: in.ParentCommentID, Author: ac.Actor.Name}, appActor(ac))
+	// The author is server-set: the app's bot display name (lead ruling R3),
+	// read in the write's transaction (Author left empty). What the write
+	// publishes is the item as that transaction found it: a human may have
+	// moved it to another companion since this handler's read, and a
+	// notification naming the old collection would reach that collection's
+	// watchers.
+	cw, err := as.CreateCommentWrite(r.Context(), ac.appFenceSpec(), item.ID,
+		appstore.AppCommentCreate{Body: in.Body, ParentID: in.ParentCommentID}, appActor(ac))
 	if err != nil {
 		writeAppStoreError(w, err)
 		return
 	}
-	s.publishCommentEvent(sseCommentCreated, ac.WorkspaceID, item.ID, comment.ID, item.Title, c.Slug, "agent", "app")
+	comment, at := cw.Comment, cw.Item
+	s.publishCommentEvent(sseCommentCreated, ac.WorkspaceID, at.ID, comment.ID, at.Title, at.CollectionSlug, "agent", "app")
 	s.publishWatchNotification(watchevents.Notification{
 		WorkspaceID:  ac.WorkspaceID,
-		ItemID:       item.ID,
-		CollectionID: item.CollectionID,
-		ItemRef:      item.Ref,
+		ItemID:       at.ID,
+		CollectionID: at.CollectionID,
+		ItemRef:      at.Ref,
 		Kind:         watchevents.KindComment,
 		Actor:        "agent",
-		ActorName:    ac.Actor.Name,
+		ActorName:    cw.ActorDisplay,
 		Summary:      truncateForSummary(comment.Body, 120),
 	})
 	writeAppJSON(w, http.StatusCreated, appCommentDTO(comment))
@@ -273,7 +279,7 @@ func (s *Server) appCommentOnItem(w http.ResponseWriter, r *http.Request) (*mode
 
 func (s *Server) appUpdateComment(w http.ResponseWriter, r *http.Request) {
 	ac := appContextFrom(r)
-	item, c, comment, ok := s.appCommentOnItem(w, r)
+	item, _, comment, ok := s.appCommentOnItem(w, r)
 	if !ok {
 		return
 	}
@@ -288,13 +294,14 @@ func (s *Server) appUpdateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Author only, no admin bypass: the appstore checks user AND install.
-	updated, err := as.UpdateComment(r.Context(), ac.appFenceSpec(), item.ID, comment.ID, in.Body, appActor(ac))
+	cw, err := as.UpdateCommentWrite(r.Context(), ac.appFenceSpec(), item.ID, comment.ID, in.Body, appActor(ac))
 	if err != nil {
 		writeAppStoreError(w, err)
 		return
 	}
-	s.publishCommentEvent(sseCommentUpdated, ac.WorkspaceID, item.ID, updated.ID, item.Title, c.Slug, "agent", "app")
-	writeAppJSON(w, http.StatusOK, appCommentDTO(updated))
+	at := cw.Item
+	s.publishCommentEvent(sseCommentUpdated, ac.WorkspaceID, at.ID, cw.Comment.ID, at.Title, at.CollectionSlug, "agent", "app")
+	writeAppJSON(w, http.StatusOK, appCommentDTO(cw.Comment))
 }
 
 func (s *Server) appDeleteComment(w http.ResponseWriter, r *http.Request) {
