@@ -74,7 +74,24 @@ const (
 	// a grant whose person's credentials changed since, so a consent posted
 	// from a session a disable destroyed cannot mint a code after a re-enable.
 	InstallPersonEpochSessionKey = "app_person_epoch"
+	// InstallMemberSinceSessionKey carries the person's membership created_at
+	// as the consent gate read it (codex U5b-1 r8): a removal and re-add
+	// between the consent and its code refuses the code.
+	InstallMemberSinceSessionKey = "app_member_since"
 )
+
+// carriedMemberSince reads the membership created_at a delegated grant
+// carries, if any.
+func carriedMemberSince(sessionData string) (string, bool) {
+	var doc struct {
+		Extra map[string]any `json:"extra"`
+	}
+	if err := json.Unmarshal([]byte(sessionData), &doc); err != nil {
+		return "", false
+	}
+	v, ok := doc.Extra[InstallMemberSinceSessionKey].(string)
+	return v, ok && v != ""
+}
 
 // carriedPersonEpoch reads the person's credential epoch a delegated grant
 // carries, if any.
@@ -442,6 +459,11 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		if carried, ok := carriedPersonEpoch(req.SessionData); !ok || carried != credEpoch {
 			return true, ErrInstallDelegatedSubject
 		}
+		// And the membership it was given under (a removal and re-add since
+		// the consent gate read it refuses).
+		if carried, ok := carriedMemberSince(req.SessionData); !ok || carried != memberSince {
+			return true, ErrInstallDelegatedSubject
+		}
 		bindAccess = sql.NullString{String: access, Valid: true}
 		bindUser = sql.NullString{String: req.Subject, Valid: true}
 		bindSince = sql.NullString{String: memberSince, Valid: true}
@@ -593,6 +615,10 @@ type InstallConsentState struct {
 	Origin          string
 	DelegatedAccess string // "read", "write", or "" (none offered)
 	AppName         string // the install's bot display name, which is the app's name
+	// AuthEpoch is read with the state, before any check the gate makes on
+	// it, and carried into the grant (codex U5b-1 r8): a disable and
+	// re-enable after the gate refuses the code.
+	AuthEpoch int64
 }
 
 // GetInstallConsentState reads an install's consent state, or nil when there
@@ -600,9 +626,9 @@ type InstallConsentState struct {
 func (s *Store) GetInstallConsentState(installID string) (*InstallConsentState, error) {
 	st := InstallConsentState{InstallID: installID}
 	var access, name sql.NullString
-	err := s.db.QueryRow(s.q(`SELECT i.workspace_id, i.state, i.origin, i.delegated_access, u.name
+	err := s.db.QueryRow(s.q(`SELECT i.workspace_id, i.state, i.origin, i.delegated_access, u.name, i.auth_epoch
 		FROM app_installs i LEFT JOIN users u ON u.id = i.bot_user_id WHERE i.id = ?`), installID).
-		Scan(&st.WorkspaceID, &st.State, &st.Origin, &access, &name)
+		Scan(&st.WorkspaceID, &st.State, &st.Origin, &access, &name, &st.AuthEpoch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -653,4 +679,19 @@ func (s *Store) lockBindingsInOrderTx(tx *sql.Tx, where string, args ...any) err
 		return fmt.Errorf("lock token bindings: %w", err)
 	}
 	return rows.Close()
+}
+
+// WorkspaceMemberSince returns a membership's created_at exactly as stored,
+// or "" when there is none: the value a delegated consent carries and the
+// issuance barrier compares (TASK-3399).
+func (s *Store) WorkspaceMemberSince(workspaceID, userID string) (string, error) {
+	var since string
+	err := s.db.QueryRow(s.q(`SELECT created_at FROM workspace_members WHERE workspace_id = ? AND user_id = ?`), workspaceID, userID).Scan(&since)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read membership: %w", err)
+	}
+	return since, nil
 }

@@ -30,15 +30,25 @@ func task3399Fixture(t *testing.T, installID, offered string) task3399Fix {
 	if err := f.s.AddWorkspaceMember(f.ws.ID, person.ID, "editor"); err != nil {
 		t.Fatal(err)
 	}
+	// A fixed membership created_at, which task3399Req carries as the
+	// consent's (InstallMemberSinceSessionKey).
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE workspace_members SET created_at = ? WHERE workspace_id = ? AND user_id = ?`),
+		task3399MemberSince, f.ws.ID, person.ID); err != nil {
+		t.Fatal(err)
+	}
 	return task3399Fix{task3394Fix: f, person: person}
 }
+
+// task3399MemberSince is every fixture member's created_at.
+const task3399MemberSince = "2026-01-01T00:00:00Z"
 
 // task3399Req is a delegated grant's persistence request, as the consent
 // decision builds its session data.
 func task3399Req(clientID, subject, requestID, access string, epoch int) models.OAuthRequest {
 	r := task3394Req(clientID, subject, requestID)
 	r.SessionData = `{"extra":{"` + InstallEpochSessionKey + `":` + itoa(epoch) + `,"` + InstallAuthKindSessionKey + `":"delegated","` +
-		InstallAccessSessionKey + `":"` + access + `","` + InstallPersonEpochSessionKey + `":0}}`
+		InstallAccessSessionKey + `":"` + access + `","` + InstallPersonEpochSessionKey + `":0,"` +
+		InstallMemberSinceSessionKey + `":"` + task3399MemberSince + `"}}`
 	return r
 }
 
@@ -540,5 +550,22 @@ func TestTask3399_AnUnexchangedGrantIsListedAndRevocable(t *testing.T) {
 	}
 	if err := f.s.CreateAccessToken(task3399Req(f.clientID, f.person.ID, "req-ux", "read", 1)); err == nil {
 		t.Error("the revoked grant minted a token")
+	}
+}
+
+// Codex U5b-1 r8: a consent carries the membership its gate read; a removal
+// and re-add before its code persists (no grant yet for the removal to
+// revoke) refuses the code.
+func TestTask3399_AConsentAcrossARemovalAndReAddMintsNothing(t *testing.T) {
+	f := task3399Fixture(t, "inst-readd", "write")
+	if _, err := f.s.db.Exec(f.s.q(`DELETE FROM workspace_members WHERE user_id = ? AND workspace_id = ?`), f.person.ID, f.ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.db.Exec(f.s.q(`INSERT INTO workspace_members (workspace_id, user_id, role, created_at) VALUES (?, ?, 'editor', ?)`),
+		f.ws.ID, f.person.ID, "2026-06-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-readd", "read", 1)); !errors.Is(err, ErrInstallDelegatedSubject) {
+		t.Errorf("a code from a consent given under the earlier membership: err = %v, want ErrInstallDelegatedSubject", err)
 	}
 }

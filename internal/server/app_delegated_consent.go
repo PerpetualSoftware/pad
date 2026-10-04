@@ -44,7 +44,7 @@ type appConsentRefusal struct {
 // read fresh each time: apps on, the install active and offering delegated
 // access, PKCE with S256, the app API audience, and the person a human
 // member of the install's workspace.
-func (s *Server) appConsentGate(ar fosite.AuthorizeRequester, user *models.User, client *models.OAuthClient) (*store.InstallConsentState, *appConsentRefusal) {
+func (s *Server) appConsentGate(ar fosite.AuthorizeRequester, user *models.User, client *models.OAuthClient) (*appConsentFacts, *appConsentRefusal) {
 	if !s.appsAvailable() {
 		return nil, &appConsentRefusal{notFound: true}
 	}
@@ -86,14 +86,22 @@ func (s *Server) appConsentGate(ar fosite.AuthorizeRequester, user *models.User,
 	if !audOK {
 		return nil, &appConsentRefusal{err: fosite.ErrInvalidRequest.WithHint("An installed app's client holds the app API resource only.")}
 	}
-	m, err := s.store.GetWorkspaceMember(st.WorkspaceID, user.ID)
+	since, err := s.store.WorkspaceMemberSince(st.WorkspaceID, user.ID)
 	if err != nil {
 		return nil, &appConsentRefusal{err: fosite.ErrServerError.WithWrap(err)}
 	}
-	if m == nil || user.IsApp() {
+	if since == "" || user.IsApp() {
 		return nil, &appConsentRefusal{err: fosite.ErrAccessDenied.WithHint("You are not a member of the workspace this app is installed in.")}
 	}
-	return st, nil
+	return &appConsentFacts{InstallConsentState: st, MemberSince: since}, nil
+}
+
+// appConsentFacts is what the consent gate read and the decision carries
+// into the grant: the install state (with its epoch, read before the checks)
+// and the person's membership as of the gate (codex U5b-1 r8).
+type appConsentFacts struct {
+	*store.InstallConsentState
+	MemberSince string
 }
 
 func (s *Server) writeAppConsentRefusal(w http.ResponseWriter, r *http.Request, ar fosite.AuthorizeRequester, ref *appConsentRefusal) {
@@ -191,11 +199,10 @@ func (s *Server) decideAppConsent(w http.ResponseWriter, r *http.Request, ar fos
 		writeError(w, http.StatusBadRequest, "invalid_request", "app_access must be read, or write when the app offers it")
 		return
 	}
-	epoch, err := s.store.InstallEpoch(client.AppInstallID)
-	if err != nil {
-		s.writeAppConsentRefusal(w, r, ar, &appConsentRefusal{err: fosite.ErrAccessDenied.WithHint("This app is not available.")})
-		return
-	}
+	// The epoch and membership the gate read, never re-read here: a disable
+	// and re-enable, or a removal and re-add, after the gate refuses the code
+	// at the barrier (codex U5b-1 r8).
+	epoch := st.AuthEpoch
 	ar.GrantScope(store.InstallClientScope)
 	ar.GrantAudience(s.store.AppAPIAudience())
 	session := oauth.NewSession(user.ID)
@@ -206,6 +213,7 @@ func (s *Server) decideAppConsent(w http.ResponseWriter, r *http.Request, ar fos
 	// barrier refuses the code if they changed since (a disable destroyed
 	// this session, then a re-enable), codex U5b-1 r7.
 	session.DefaultSession.Extra[store.InstallPersonEpochSessionKey] = user.CredentialEpoch
+	session.DefaultSession.Extra[store.InstallMemberSinceSessionKey] = st.MemberSince
 	resp, err := s.oauthServer.Provider().NewAuthorizeResponse(r.Context(), ar, session)
 	if err != nil {
 		s.recordOAuthFlow("failed")
