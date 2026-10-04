@@ -102,6 +102,10 @@ type Server struct {
 	// appBeforeHandler is a TEST-ONLY seam, nil in production: it runs after
 	// the app middleware admitted a request and before its handler.
 	appBeforeHandler func()
+	// appAfterWriteReadmit is a TEST-ONLY seam, nil in production: it runs
+	// at the end of a write's pre-write re-admission, in the gap before its
+	// fenced transaction.
+	appAfterWriteReadmit func()
 	// appBeforeFirstByte is a TEST-ONLY seam, nil in production: it runs in
 	// an app download after the blob is open and before the re-admission
 	// gate that precedes the first byte.

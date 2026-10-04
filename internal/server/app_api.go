@@ -162,7 +162,11 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 					// commit would hide a write that happened and invite a
 					// duplicate retry. Re-admission before send is for reads.
 					if access == "write" {
-						handler(s, w, r)
+						// A write registers its re-checks too, so it can re-admit
+						// itself after reading its body and before its write
+						// (appReadmitBeforeWrite, codex U5b-2 r1). It is never
+						// re-validated after commit (R2).
+						handler(s, w, r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{})))
 						return
 					}
 					// A stream row registers its re-checks like any read, but

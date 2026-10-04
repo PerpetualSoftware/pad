@@ -42,9 +42,6 @@ func (s *Server) appUploadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "The file exceeds the 25 MiB upload limit")
 		return
 	}
-	// The upload registers its authorizations like a read does, so the
-	// pre-row check below can replay them under a re-admitted context.
-	r = r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{}))
 	// The write gate is an app field edit's: the item visible under the
 	// ceiling, a companion the app may write, and the subject's edit right.
 	// That the item was created by this install is the FencedTx's check
@@ -80,27 +77,7 @@ func (s *Server) appUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	// checks the companion and the creator in the row's own transaction; what
 	// remains is the gap between this check and that transaction, the one an
 	// item write has.
-	if err := s.appRevalidate(r); err != nil {
-		if errors.Is(err, errAppAdmitInternal) {
-			writeInternalError(w, err)
-			return
-		}
-		if errors.Is(err, errAppCredential) {
-			writeAppUnauthorized(w)
-			return
-		}
-		writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
-		return
-	}
-	if !appWriteAllows(r, collectionID) {
-		writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
-		return
-	}
-	if ok, err := s.canEditInCollection(r, ac.WorkspaceID, itemID, collectionID); err != nil {
-		writeInternalError(w, err)
-		return
-	} else if !ok {
-		writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
+	if !s.appReadmitBeforeWrite(w, r, itemID, collectionID) {
 		return
 	}
 	att, err := pending.Insert(ctx)

@@ -272,3 +272,62 @@ func TestTask3399b_APersonNarrowedMidUploadCommitsNoRow(t *testing.T) {
 		t.Errorf("uploaded_by %s via %s, want the person via the install", uploader, via)
 	}
 }
+
+// Codex U5b-2 r1: every delegated JSON write re-admits the person after its
+// body is read; one who lost access while the body arrived writes nothing.
+func TestTask3399b_APersonLosingAccessMidBodyWritesNothing(t *testing.T) {
+	type call struct {
+		method, path string
+		body         map[string]any
+		table        string
+	}
+	for _, removeBy := range []string{"removal", "role dropped to viewer"} {
+		for name, build := range map[string]func(f delegatedAPIFix) call{
+			"item create": func(f delegatedAPIFix) call {
+				return call{"POST", "/collections/requests/items", map[string]any{"title": "late"}, "items"}
+			},
+			"item update": func(f delegatedAPIFix) call {
+				return call{"PATCH", "/items/" + f.item.ID, map[string]any{"fields_patch": map[string]any{"size": "XL"}, "expected_etag": f.etag(t, f.item.ID)}, "items"}
+			},
+			"comment create": func(f delegatedAPIFix) call {
+				return call{"POST", "/items/" + f.item.ID + "/comments", map[string]any{"body": "late"}, "comments"}
+			},
+		} {
+			t.Run(removeBy+"/"+name, func(t *testing.T) {
+				f := delegatedAPIFixture(t, "write", "write", "editor")
+				c := build(f)
+				var fieldsBefore string
+				_ = f.srv.store.DB().QueryRow(`SELECT fields FROM items WHERE id = ?`, f.item.ID).Scan(&fieldsBefore)
+				before := f.count(t, `SELECT COUNT(*) FROM `+c.table)
+				changed := false
+				rr := appDoLazy(f.appAPIFix, c.method, f.path(c.path), &lazyBody{build: func() []byte {
+					q := `DELETE FROM workspace_members WHERE user_id = ? AND workspace_id = ?`
+					args := []any{f.person.ID, f.ws.ID}
+					if removeBy != "removal" {
+						q = `UPDATE workspace_members SET role = 'viewer' WHERE user_id = ? AND workspace_id = ?`
+					}
+					if _, err := f.srv.store.DB().Exec(q, args...); err != nil {
+						t.Error(err)
+					}
+					changed = true
+					b, _ := json.Marshal(c.body)
+					return b
+				}})
+				if !changed {
+					t.Fatal("control: the body was never read")
+				}
+				if rr.Code < 400 {
+					t.Errorf("%s after %s mid-body: %d %s, want a refusal", name, removeBy, rr.Code, rr.Body.String())
+				}
+				if after := f.count(t, `SELECT COUNT(*) FROM `+c.table); after != before {
+					t.Errorf("%s after %s: %d rows written", name, removeBy, after-before)
+				}
+				var fieldsAfter string
+				_ = f.srv.store.DB().QueryRow(`SELECT fields FROM items WHERE id = ?`, f.item.ID).Scan(&fieldsAfter)
+				if fieldsAfter != fieldsBefore {
+					t.Errorf("%s after %s: the item changed", name, removeBy)
+				}
+			})
+		}
+	}
+}

@@ -532,15 +532,18 @@ func TestTask3401b_ACommentPublishesTheItemsCollectionAtWriteTime(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The move lands in the gap AFTER the pre-write re-admission (TASK-3399
+	// U5b-2), before the comment's own transaction: the one window left. A
+	// move while the body is still arriving is refused outright (below).
 	moved := false
-	rr := appDoLazy(f, "POST", f.path("/items/"+f.item.ID+"/comments"), &lazyBody{build: func() []byte {
+	f.srv.appAfterWriteReadmit = func() {
 		if _, err := f.srv.store.DB().Exec(`UPDATE items SET collection_id = ? WHERE id = ?`, other.ID, f.item.ID); err != nil {
 			t.Error(err)
 		}
 		moved = true
-		b, _ := json.Marshal(map[string]any{"body": "for the escalations team"})
-		return b
-	}})
+	}
+	rr := appDo(f.srv, "POST", f.path("/items/"+f.item.ID+"/comments"), f.token, map[string]any{"body": "for the escalations team"})
+	f.srv.appAfterWriteReadmit = nil
 	if rr.Code != http.StatusCreated || !moved {
 		t.Fatalf("comment: %d %s (moved=%v)", rr.Code, rr.Body.String(), moved)
 	}
@@ -559,6 +562,33 @@ func TestTask3401b_ACommentPublishesTheItemsCollectionAtWriteTime(t *testing.T) 
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("no watch notification")
+	}
+}
+
+// TASK-3399 U5b-2: an item moved while the comment's body is still arriving
+// is refused by the pre-write re-admission, and nothing is written.
+func TestTask3401b_AMoveDuringTheBodyRefusesTheComment(t *testing.T) {
+	f := appAPIFixture(t, "write")
+	other, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Escalations", Slug: "escalations", Schema: task3401Schema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE collections SET via_app = ? WHERE id = ?`, f.in.id, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := f.count(t, `SELECT COUNT(*) FROM comments`)
+	rr := appDoLazy(f, "POST", f.path("/items/"+f.item.ID+"/comments"), &lazyBody{build: func() []byte {
+		if _, err := f.srv.store.DB().Exec(`UPDATE items SET collection_id = ? WHERE id = ?`, other.ID, f.item.ID); err != nil {
+			t.Error(err)
+		}
+		b, _ := json.Marshal(map[string]any{"body": "late"})
+		return b
+	}})
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("a comment whose item moved mid-body: %d %s, want 403", rr.Code, rr.Body.String())
+	}
+	if f.count(t, `SELECT COUNT(*) FROM comments`) != before {
+		t.Error("a comment was written")
 	}
 }
 

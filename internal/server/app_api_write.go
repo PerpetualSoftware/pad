@@ -155,6 +155,9 @@ func (s *Server) appCreateItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	if !s.appReadmitBeforeWrite(w, r, "", c.ID) {
+		return
+	}
 	as, err := s.appStore()
 	if err != nil {
 		writeInternalError(w, err)
@@ -199,6 +202,9 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 	var in AppItemUpdateRequest
 	if err := decodeAppJSON(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if !s.appReadmitBeforeWrite(w, r, before.ID, before.CollectionID) {
 		return
 	}
 	as, err := s.appStore()
@@ -246,6 +252,9 @@ func (s *Server) appCreateComment(w http.ResponseWriter, r *http.Request) {
 	var in AppCommentCreateRequest
 	if err := decodeAppJSON(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if !s.appReadmitBeforeWrite(w, r, item.ID, item.CollectionID) {
 		return
 	}
 	as, err := s.appStore()
@@ -321,6 +330,9 @@ func (s *Server) appUpdateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	if !s.appReadmitBeforeWrite(w, r, item.ID, item.CollectionID) {
+		return
+	}
 	as, err := s.appStore()
 	if err != nil {
 		writeInternalError(w, err)
@@ -343,6 +355,9 @@ func (s *Server) appDeleteComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.appReadmitBeforeWrite(w, r, item.ID, item.CollectionID) {
+		return
+	}
 	as, err := s.appStore()
 	if err != nil {
 		writeInternalError(w, err)
@@ -355,4 +370,45 @@ func (s *Server) appDeleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// appReadmitBeforeWrite re-admits a write after its body is read and before
+// its write, and reports false after answering (codex U5b-2 r1): a body can
+// arrive slowly, and the person a delegated token acts for can lose access
+// meanwhile. A full re-admission (the credential, the install, the person,
+// their membership and role, and every re-check the handler registered,
+// replayed under the fresh context), then the collection is still one the
+// app may write and the actor may still edit it. The fenced transaction then
+// checks the install and the companion again; what remains is the gap
+// between this check and that transaction, the one an upload has.
+func (s *Server) appReadmitBeforeWrite(w http.ResponseWriter, r *http.Request, itemID, collectionID string) bool {
+	ac := appContextFrom(r)
+	if err := s.appRevalidate(r); err != nil {
+		switch {
+		case errors.Is(err, errAppAdmitInternal):
+			writeInternalError(w, err)
+		case errors.Is(err, errAppCredential):
+			writeAppUnauthorized(w)
+		default:
+			writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
+		}
+		return false
+	}
+	if !appWriteAllows(r, collectionID) {
+		writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
+		return false
+	}
+	ok, err := s.canEditInCollection(r, ac.WorkspaceID, itemID, collectionID)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if !ok {
+		writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
+		return false
+	}
+	if s.appAfterWriteReadmit != nil {
+		s.appAfterWriteReadmit()
+	}
+	return true
 }
