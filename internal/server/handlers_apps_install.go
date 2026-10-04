@@ -331,14 +331,10 @@ func (s *Server) stageErr(err error) error {
 	return err
 }
 
-// buildAppPreview validates the pack against this workspace and normalizes
-// every artifact exactly as the importer would store it.
-func (s *Server) buildAppPreview(r *http.Request, workspaceID string, m *appmanifest.Manifest, manifestSHA string, rawArtifacts [][]byte) (*appPreview, error) {
-	return s.buildAppPreviewQ(s.store.Q(), r, workspaceID, m, manifestSHA, rawArtifacts, "")
-}
-
-// buildAppPreviewQ is buildAppPreview with every read on q. Provisioning (U8b)
-// runs it on its own transaction, under its locks, and compares the result
+// buildAppPreviewQ validates the pack against this workspace and normalizes
+// every artifact exactly as the importer would store it, with every read on
+// q: the pool for a preview, the transaction for provisioning (U8b), which
+// runs it under its locks and compares the result
 // with the reviewed preview: the digest comparison IS the re-check, so no
 // fact the normalization depends on has to be listed separately (lead
 // ruling, day 86). It must stay read-only: the write-capture test asserts a
