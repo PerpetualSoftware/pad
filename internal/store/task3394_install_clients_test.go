@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -388,5 +389,98 @@ func TestTask3394_TheExemptInsertHasExactlyTwoGatedCallers(t *testing.T) {
 	if strings.Join(callers, ",") != strings.Join(want, ",") {
 		t.Errorf("insertOAuthRequestRowTx callers = %v, want exactly %v: a new caller must gate, and the "+
 			"exemption in TestEveryCredentialInsertRequiresAnActiveUser must name it", callers, want)
+	}
+}
+
+// The issuance barrier serializes with the lifecycle on the install row
+// (Postgres; SQLite's single writer gives the same order trivially). Each case
+// holds the install row FOR UPDATE with a lifecycle change open, starts a
+// service-token issuance, PROVES it is blocked on that lock (pg_stat_activity,
+// not a sleep), commits the change, and checks what the issuance did.
+func TestTask3394_IssuanceRacesTheLifecycle_Postgres(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("Postgres-only: FOR UPDATE serialization on the install row")
+	}
+	cases := []struct {
+		name      string
+		change    string // the lifecycle UPDATE held open
+		wantErr   error  // the issuance's result after the commit
+		wantEpoch int64  // the binding's epoch when it succeeds
+	}{
+		{"disable (phase 1)", `UPDATE app_installs SET state = 'disabling', auth_epoch = auth_epoch + 1 WHERE id = ?`, ErrInstallNotActive, 0},
+		{"rotate (phase 1)", `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`, nil, 2},
+		{"re-enable", `UPDATE app_installs SET state = 'active' WHERE id = ?`, nil, 1},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := task3394Fixture(t, "inst-race-"+string(rune('a'+i)))
+			if tc.name == "re-enable" {
+				if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET state = 'inactive' WHERE id = ?`), f.installID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			life, err := f.s.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = life.Rollback() }()
+			if _, err := life.Exec(f.s.q(`SELECT 1 FROM app_installs WHERE id = ? FOR UPDATE`), f.installID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := life.Exec(f.s.q(tc.change), f.installID); err != nil {
+				t.Fatal(err)
+			}
+			reqID := "req-race-" + string(rune('a'+i))
+			done := make(chan error, 1)
+			go func() { done <- f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, reqID)) }()
+			waiting := false
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) && !waiting; {
+				var n int
+				if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity
+					WHERE wait_event_type = 'Lock' AND query LIKE '%app_installs%FOR UPDATE%'`).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				waiting = n > 0
+				if !waiting {
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+			if !waiting {
+				t.Fatal("the issuance did not wait on the install row's lock")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("the issuance finished while the lifecycle change was open: %v", err)
+			default:
+			}
+			if err := life.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			var got error
+			select {
+			case got = <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the issuance never finished")
+			}
+			if tc.wantErr != nil {
+				if !errors.Is(got, tc.wantErr) {
+					t.Errorf("issuance after %s: %v, want %v", tc.name, got, tc.wantErr)
+				}
+				if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = ?`, reqID); n != 0 {
+					t.Error("a binding was written")
+				}
+				return
+			}
+			if got != nil {
+				t.Fatalf("issuance after %s: %v", tc.name, got)
+			}
+			var epoch int64
+			if err := f.s.db.QueryRow(f.s.q(`SELECT auth_epoch FROM app_token_bindings WHERE request_id = ?`), reqID).Scan(&epoch); err != nil {
+				t.Fatal(err)
+			}
+			if epoch != tc.wantEpoch {
+				t.Errorf("binding epoch after %s = %d, want %d (the install's epoch AFTER the change)", tc.name, epoch, tc.wantEpoch)
+			}
+		})
 	}
 }
