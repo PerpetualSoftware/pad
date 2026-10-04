@@ -102,6 +102,12 @@ type Server struct {
 	// appBeforeHandler is a TEST-ONLY seam, nil in production: it runs after
 	// the app middleware admitted a request and before its handler.
 	appBeforeHandler func()
+	// delegatedSignInOpen is THE guard on delegated app sign-in (TASK-3399,
+	// lead ruling): false, so the consent page answers access_denied, until
+	// U5b-2 deletes this field in the same PR that makes the app API accept
+	// delegated tokens, so a grant and its use go live together. Tests open
+	// it on their own server.
+	delegatedSignInOpen bool
 	// appBeforeFirstByte is a TEST-ONLY seam, nil in production: it runs in
 	// an app download after the blob is open and before the re-admission
 	// gate that precedes the first byte.

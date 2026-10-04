@@ -33,6 +33,7 @@ func delegatedFixture(t *testing.T, installID, offered string) delegatedFix {
 func delegatedFixtureOn(t *testing.T, installID, offered string, cloud bool) delegatedFix {
 	t.Helper()
 	srv := appOAuthServer(t, cloud)
+	srv.delegatedSignInOpen = true // the guard U5b-2 deletes; see TestTask3399_DelegatedSignInIsClosedUntilU5b2
 	if !cloud {
 		if err := srv.store.SetPlatformSetting(settingAppsEnabled, "true"); err != nil {
 			t.Fatal(err)
@@ -410,5 +411,25 @@ func TestTask3399_AppGrantsWorkWithMCPOff(t *testing.T) {
 	q := url.Values{"client_id": {"some-mcp-client"}, "response_type": {"code"}, "redirect_uri": {"https://app.test/cb"}}
 	if rr := f.get("/oauth/authorize?" + q.Encode()); rr.Code != http.StatusNotFound {
 		t.Errorf("a non-app authorize with MCP off: %d, want 404", rr.Code)
+	}
+}
+
+// Lead ruling (U5b-1): delegated sign-in stays closed, with a clear
+// access_denied, until U5b-2 opens it together with the app API accepting
+// delegated tokens. U5b-2 deletes the guard and this test.
+func TestTask3399_DelegatedSignInIsClosedUntilU5b2(t *testing.T) {
+	f := delegatedFixture(t, "inst-closed", "write")
+	f.srv.delegatedSignInOpen = false
+	rr := f.decide(t, f.authorizeParams(), "approve", "read")
+	code, oerr := codeFrom(rr)
+	if code != "" || oerr != "access_denied" {
+		t.Fatalf("decide with sign-in closed: code %q, error %q, want access_denied", code, oerr)
+	}
+	cb, _ := url.Parse(rr.Header().Get("Location"))
+	if !strings.Contains(cb.Query().Get("error_description")+cb.Query().Get("error_hint"), "not yet available") {
+		t.Errorf("the refusal does not say sign-in is not yet available: %s", rr.Header().Get("Location"))
+	}
+	if rr := f.get("/oauth/authorize?" + f.authorizeParams().Encode()); rr.Code == http.StatusOK && strings.Contains(rr.Body.String(), "app_access") {
+		t.Error("the consent page rendered with sign-in closed")
 	}
 }
