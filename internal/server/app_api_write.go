@@ -267,6 +267,12 @@ func (s *Server) appCommentOnItem(w http.ResponseWriter, r *http.Request) (*mode
 		writeInternalError(w, err)
 		return nil, nil, nil, false
 	}
+	// First, ahead of authorship and every other refusal (DOC-3371 ruling 6).
+	// Second layer: FencedTx.lockOwnComment(itemID, commentID) binds the
+	// comment to the item again inside the write, so dropping this check
+	// still answers 404 (U6b mutant W3 survives for that reason). This one is
+	// the layer that makes a foreign comment's 404 identical to a missing
+	// one's before any other lookup runs.
 	if comment == nil || comment.ItemID != item.ID {
 		writeAppNotFound(w, "Comment")
 		return nil, nil, nil, false
