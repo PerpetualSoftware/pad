@@ -22,6 +22,13 @@ import (
 // tokens (enforceUserLimitTx, BUG-2808), refusing with a *PlanLimitError at the
 // limit. Only callers that pass the option are limited; both server token
 // doors do, in cloud mode.
+// createAPITokenAfterCommitHook, when a test sets it, runs between the mint's
+// commit and anything after it (BUG-3405).
+var createAPITokenAfterCommitHook func(tokenID string)
+
+// rotateAPITokenAfterCommitHook is the rotation's twin of the mint hook.
+var rotateAPITokenAfterCommitHook func(tokenID string)
+
 func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defaultExpiryDays, maxLifetimeDays int, opts ...MintOption) (*models.APITokenWithSecret, error) {
 	// Generate 32 random bytes → 64 hex chars
 	raw := make([]byte, 32)
@@ -92,13 +99,22 @@ func (s *Store) CreateAPIToken(userID string, input models.APITokenCreate, defau
 	if _, err := tx.Exec(s.q(insert), args...); err != nil {
 		return nil, fmt.Errorf("insert api token: %w", err)
 	}
+	// Read the row back on THIS transaction, before the commit (BUG-3405):
+	// a read on the pool after the commit could straddle a deletion (the
+	// user's account deletion, a revoke), answer nil, and the dereference
+	// below panicked. In-transaction, the row is the one just inserted.
+	token, err := s.getAPITokenQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if token == nil {
+		return nil, fmt.Errorf("insert api token: read back: %w", sql.ErrNoRows)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("insert api token: commit: %w", err)
 	}
-
-	token, err := s.getAPIToken(id)
-	if err != nil {
-		return nil, err
+	if createAPITokenAfterCommitHook != nil {
+		createAPITokenAfterCommitHook(id)
 	}
 
 	return &models.APITokenWithSecret{
@@ -153,17 +169,40 @@ func (s *Store) RotateAPIToken(tokenID, userID string, expiryDays, maxLifetimeDa
 		expiresAt = existing.ExpiresAt.Format(time.RFC3339)
 	}
 
-	_, err = s.db.Exec(s.q(`
+	// The update and its read-back share one transaction (BUG-3405, the
+	// sibling of the mint's defect): a revoke between an autocommitted UPDATE
+	// and a pool read answered nil and the dereference below panicked. The
+	// update is scoped to the owner, and a row gone in between is a clean
+	// ErrNoRows, the same answer a missing token gets above.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("rotate api token: begin: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(s.q(`
 		UPDATE api_tokens SET token_hash = ?, prefix = ?, expires_at = ?, last_used_at = NULL
-		WHERE id = ?
-	`), tokenHash, prefix, expiresAt, tokenID)
+		WHERE id = ? AND user_id = ?
+	`), tokenHash, prefix, expiresAt, tokenID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("rotate api token: %w", err)
 	}
-
-	updated, err := s.getAPIToken(tokenID)
+	if n, err := res.RowsAffected(); err != nil {
+		return nil, fmt.Errorf("rotate api token: %w", err)
+	} else if n == 0 {
+		return nil, sql.ErrNoRows
+	}
+	updated, err := s.getAPITokenQ(tx, tokenID)
 	if err != nil {
 		return nil, err
+	}
+	if updated == nil {
+		return nil, sql.ErrNoRows
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("rotate api token: commit: %w", err)
+	}
+	if rotateAPITokenAfterCommitHook != nil {
+		rotateAPITokenAfterCommitHook(tokenID)
 	}
 
 	return &models.APITokenWithSecret{
@@ -333,11 +372,18 @@ func (s *Store) validateToken(token string, touch bool) (*models.APIToken, error
 
 // getAPIToken retrieves a single API token by ID.
 func (s *Store) getAPIToken(id string) (*models.APIToken, error) {
+	return s.getAPITokenQ(s.db, id)
+}
+
+// getAPITokenQ is getAPIToken on a caller-supplied executor: the mint and the
+// rotation read their row back on their OWN transaction, so the write and the
+// read-back cannot straddle a deletion (BUG-3405).
+func (s *Store) getAPITokenQ(q Queryer, id string) (*models.APIToken, error) {
 	var t models.APIToken
 	var expiresAt, lastUsedAt, userID, workspaceID *string
 	var createdAt string
 
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT id, workspace_id, user_id, name, prefix, scopes, expires_at, last_used_at, created_at
 		FROM api_tokens
 		WHERE id = ?
