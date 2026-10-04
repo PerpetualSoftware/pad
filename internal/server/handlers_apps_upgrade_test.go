@@ -285,8 +285,8 @@ func TestAppUpgrade_RecordsDoNotCross(t *testing.T) {
 	u.publish(t, u.m)
 	_, up, _ := u.previewUpgrade(t)
 	rr := u.confirm(t, up, up.ManifestSHA256)
-	if rr.Code == http.StatusCreated {
-		t.Fatal("an upgrade's pending record provisioned a fresh install")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("an upgrade's pending record on the install route: %d %s, want 404", rr.Code, rr.Body.String())
 	}
 	if _, err := u.srv.store.DB().Exec(`UPDATE app_installs SET state = 'uninstalled' WHERE id = ?`, u.installID); err != nil {
 		t.Fatal(err)

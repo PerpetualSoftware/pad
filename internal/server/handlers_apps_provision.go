@@ -62,7 +62,9 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	p, err := s.store.GetPendingInstall(chi.URLParam(r, "pendingID"), workspaceID, owner.ID)
-	if errors.Is(err, store.ErrPendingNotFound) || (err == nil && p.State != "staged") {
+	// An upgrade's pending record confirms through the upgrade route only
+	// (U8b2); here it is not a pending install.
+	if errors.Is(err, store.ErrPendingNotFound) || (err == nil && (p.State != "staged" || p.UpgradeOf != "")) {
 		writeError(w, http.StatusNotFound, "not_found", "Pending install not found")
 		return
 	}
