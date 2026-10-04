@@ -326,12 +326,20 @@ func (s *Server) appListItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ac := appContextFrom(r)
+	// One row past the window decides has_more exactly. Item visibility
+	// filters AFTER the window, so a page can come back short; paging must
+	// therefore follow the window (next_offset), never the page's length
+	// (Rook's review of #1771).
 	items, err := s.store.ListItems(ac.WorkspaceID, models.ItemListParams{
-		ScopeCollectionID: c.ID, CollectionIDs: []string{c.ID}, Limit: limit, Offset: offset,
+		ScopeCollectionID: c.ID, CollectionIDs: []string{c.ID}, Limit: limit + 1, Offset: offset,
 	})
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
 	}
 	// Item-level visibility, as every human list applies it.
 	visible := items[:0]
@@ -352,7 +360,7 @@ func (s *Server) appListItems(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	writeAppJSON(w, http.StatusOK, map[string]any{"items": dtos})
+	writeAppJSON(w, http.StatusOK, map[string]any{"items": dtos, "has_more": hasMore, "next_offset": offset + limit})
 }
 
 // appVisibleItem resolves an item by ID in the token's workspace, inside the

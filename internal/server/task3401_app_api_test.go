@@ -251,6 +251,9 @@ func checkAppDTOKeys(t *testing.T, route string, body any) {
 	case "appGetCollection":
 		checkCollection(t, route, m)
 	case "appListItems":
+		if strings.Join(appKeysOf(m), ",") != "has_more,items,next_offset" {
+			t.Errorf("%s: top-level keys %v", route, appKeysOf(m))
+		}
 		for _, it := range m["items"].([]any) {
 			checkItem(t, route+".items[]", it.(map[string]any))
 		}
@@ -730,5 +733,41 @@ func TestTask3401_RevalidateFailsClosedWithoutARecheckHolder(t *testing.T) {
 	withHolder := req.WithContext(context.WithValue(req.Context(), appRecheckKey{}, &appRechecks{}))
 	if err := f.srv.appRevalidate(withHolder); err != nil {
 		t.Errorf("control: a request with a holder failed re-validation: %v", err)
+	}
+}
+
+// Rook's review: item visibility filters AFTER the LIMIT, so a page can come
+// back short. Paging must not depend on the page's length: next_offset
+// advances by the rows the window covered, and has_more is decided from the
+// raw window, so a short page never ends an app's paging early.
+func TestTask3401_ItemListPagingIsByWindowNotByCount(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	human := createTestUserDirect(t, f.srv, "pager-3401@example.com")
+	for i := 0; i < 2; i++ {
+		if _, err := f.srv.store.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: "More " + string(rune('A'+i)), ActorUserID: human.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type page struct {
+		Items      []AppItem `json:"items"`
+		HasMore    bool      `json:"has_more"`
+		NextOffset int       `json:"next_offset"`
+	}
+	get := func(q string) page {
+		var p page
+		rr := appGet(f.srv, f.path("/collections/requests/items"+q), f.token)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", q, rr.Code, rr.Body.String())
+		}
+		_ = json.Unmarshal(rr.Body.Bytes(), &p)
+		return p
+	}
+	p1 := get("?limit=2")
+	if !p1.HasMore || p1.NextOffset != 2 || len(p1.Items) != 2 {
+		t.Errorf("page 1: has_more=%v next_offset=%d items=%d, want true/2/2", p1.HasMore, p1.NextOffset, len(p1.Items))
+	}
+	p2 := get("?limit=2&offset=2")
+	if p2.HasMore || p2.NextOffset != 4 || len(p2.Items) != 1 {
+		t.Errorf("page 2: has_more=%v next_offset=%d items=%d, want false/4/1", p2.HasMore, p2.NextOffset, len(p2.Items))
 	}
 }
