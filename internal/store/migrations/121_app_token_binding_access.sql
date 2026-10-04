@@ -1,0 +1,11 @@
+-- Migration 121: the consented access of a delegated app grant (SPEC-6 U5b,
+-- TASK-3399).
+--
+-- A delegated token's access is the lesser of the manifest's
+-- delegated.access and what the person chose on the consent page (DOC-3371
+-- §4 step 4); the consent page offers read-only even when the manifest asks
+-- for write, defaulting to it (lead ruling Q2). The choice is recorded on the
+-- binding the issuance barrier writes, under the install-row lock, so every
+-- token of the grant carries the same value. NULL on a service binding,
+-- whose access is the install's service_access.
+ALTER TABLE app_token_bindings ADD COLUMN delegated_access TEXT;

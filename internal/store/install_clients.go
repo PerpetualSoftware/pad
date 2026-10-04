@@ -41,9 +41,16 @@ var (
 	// ErrInstallTokenSubject refuses an install-client credential whose
 	// subject is not that install's own bot.
 	ErrInstallTokenSubject = errors.New("an install client's service token belongs to its own app principal only")
-	// ErrInstallDelegatedUnsupported refuses delegated (code + PKCE) install
-	// grants until TASK-3399 (U5b) brings them through the barrier.
-	ErrInstallDelegatedUnsupported = errors.New("delegated install grants are not supported yet")
+	// ErrInstallDelegatedUnsupported refuses a code or PKCE persistence for
+	// an install grant that is not a delegated one: only a person signing in
+	// through the app takes the code flow (TASK-3399).
+	ErrInstallDelegatedUnsupported = errors.New("only a delegated install grant takes the authorization-code flow")
+	// ErrInstallDelegatedSubject refuses a delegated install grant whose
+	// subject is not a live human member of the install's workspace.
+	ErrInstallDelegatedSubject = errors.New("a delegated install grant belongs to a member of the install's workspace")
+	// ErrInstallDelegatedAccess refuses a delegated grant whose consented
+	// access is missing, unknown, or more than the manifest offers.
+	ErrInstallDelegatedAccess = errors.New("a delegated install grant's access is not one the app offers")
 	// ErrNoInstallClient means the install has no client.
 	ErrNoInstallClient = errors.New("app install has no client")
 )
@@ -54,6 +61,32 @@ var (
 // authenticated with a secret that a rotate then replaced reaches the barrier
 // after the rotate committed, still carrying the epoch from before it.
 const InstallEpochSessionKey = "app_install_epoch"
+
+// InstallAuthKindSessionKey and InstallAccessSessionKey carry a delegated
+// grant's kind ("delegated") and the access the person consented to ("read"
+// or "write") in its session data, set by the consent decision (TASK-3399).
+// A grant without the kind is a service grant.
+const (
+	InstallAuthKindSessionKey = "app_auth_kind"
+	InstallAccessSessionKey   = "app_delegated_access"
+)
+
+// carriedInstallGrant reads a grant's kind and consented access from its
+// session data; kind is "service" when none is carried.
+func carriedInstallGrant(sessionData string) (kind, access string) {
+	var doc struct {
+		Extra map[string]any `json:"extra"`
+	}
+	if err := json.Unmarshal([]byte(sessionData), &doc); err != nil {
+		return "service", ""
+	}
+	kind, _ = doc.Extra[InstallAuthKindSessionKey].(string)
+	access, _ = doc.Extra[InstallAccessSessionKey].(string)
+	if kind == "" {
+		kind = "service"
+	}
+	return kind, access
+}
 
 // InstallEpoch returns the install's current epoch.
 func (s *Store) InstallEpoch(installID string) (int64, error) {
@@ -70,15 +103,18 @@ func (s *Store) InstallEpoch(installID string) (int64, error) {
 
 // carriedInstallEpoch reads the epoch a grant carries in its session data.
 func carriedInstallEpoch(sessionData string) (int64, bool) {
+	// The extra map holds other keys too (a delegated grant's kind and
+	// access are strings), so it is decoded generically, with numbers kept
+	// exact, and only the epoch key is required to be a number.
 	var doc struct {
-		Extra map[string]json.Number `json:"extra"`
+		Extra map[string]any `json:"extra"`
 	}
 	dec := json.NewDecoder(strings.NewReader(sessionData))
 	dec.UseNumber()
 	if err := dec.Decode(&doc); err != nil {
 		return 0, false
 	}
-	n, ok := doc.Extra[InstallEpochSessionKey]
+	n, ok := doc.Extra[InstallEpochSessionKey].(json.Number)
 	if !ok {
 		return 0, false
 	}
@@ -271,13 +307,14 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	if !installID.Valid || installID.String == "" {
 		return false, nil
 	}
-	lockQ := `SELECT workspace_id, state, auth_epoch FROM app_installs WHERE id = ?`
+	lockQ := `SELECT workspace_id, state, auth_epoch, delegated_access FROM app_installs WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		lockQ += ` FOR UPDATE`
 	}
 	var workspaceID, state string
 	var epoch int64
-	err = tx.QueryRow(s.q(lockQ), installID.String).Scan(&workspaceID, &state, &epoch)
+	var offered sql.NullString
+	err = tx.QueryRow(s.q(lockQ), installID.String).Scan(&workspaceID, &state, &epoch, &offered)
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, ErrInstallNotActive
 	}
@@ -298,33 +335,73 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	if disabledAt.Valid && disabledAt.String != "" {
 		return true, ErrInstallClientDisabled
 	}
-	if table != "oauth_access_tokens" && table != "oauth_refresh_tokens" {
+	// The grant's kind, and for a delegated grant the access the person
+	// consented to, as the consent decision put them in the session data.
+	kind, access := carriedInstallGrant(req.SessionData)
+	var bindAccess sql.NullString
+	switch kind {
+	case "service":
+		// A service token is client_credentials: no code, no PKCE.
+		if table != "oauth_access_tokens" && table != "oauth_refresh_tokens" {
+			return true, ErrInstallDelegatedUnsupported
+		}
+		var botKind string
+		var botDisabled sql.NullString
+		// The subject must be the install's bot: bot_user_id when provisioning
+		// set it (U8b), with the address as the agreement check either way.
+		err = tx.QueryRow(s.q(`SELECT u.kind, u.disabled_at FROM users u JOIN app_installs i ON i.id = ?
+			WHERE u.id = ? AND u.email = ? AND (i.bot_user_id IS NULL OR i.bot_user_id = u.id)`),
+			installID.String, req.Subject, appPrincipalEmail(installID.String)).Scan(&botKind, &botDisabled)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && (botKind != models.UserKindApp || botDisabled.Valid)) {
+			return true, ErrInstallTokenSubject
+		}
+		if err != nil {
+			return true, fmt.Errorf("oauth: read install principal: %w", err)
+		}
+	case "delegated":
+		// TASK-3399: a person signing in through the app. The access they
+		// consented to must be one the manifest offers, read under the lock:
+		// an upgrade that withdrew delegated access refuses a grant consented
+		// before it.
+		if !delegatedAccessWithin(access, offered) {
+			return true, ErrInstallDelegatedAccess
+		}
+		// The subject must be a live HUMAN member of the install's workspace,
+		// read in this transaction: never a bot (which has its own door), and
+		// never someone removed since they consented.
+		var userKind string
+		var userDisabled sql.NullString
+		err = tx.QueryRow(s.q(`SELECT u.kind, u.disabled_at FROM users u
+			JOIN workspace_members m ON m.user_id = u.id AND m.workspace_id = ?
+			WHERE u.id = ?`), workspaceID, req.Subject).Scan(&userKind, &userDisabled)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && (userKind != models.UserKindHuman || userDisabled.Valid)) {
+			return true, ErrInstallDelegatedSubject
+		}
+		if err != nil {
+			return true, fmt.Errorf("oauth: read delegated subject: %w", err)
+		}
+		bindAccess = sql.NullString{String: access, Valid: true}
+	default:
 		return true, ErrInstallDelegatedUnsupported
-	}
-	var botKind string
-	var botDisabled sql.NullString
-	// The subject must be the install's bot: bot_user_id when provisioning
-	// set it (U8b), with the address as the agreement check either way.
-	err = tx.QueryRow(s.q(`SELECT u.kind, u.disabled_at FROM users u JOIN app_installs i ON i.id = ?
-		WHERE u.id = ? AND u.email = ? AND (i.bot_user_id IS NULL OR i.bot_user_id = u.id)`),
-		installID.String, req.Subject, appPrincipalEmail(installID.String)).Scan(&botKind, &botDisabled)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && (botKind != models.UserKindApp || botDisabled.Valid)) {
-		return true, ErrInstallTokenSubject
-	}
-	if err != nil {
-		return true, fmt.Errorf("oauth: read install principal: %w", err)
 	}
 	if err := s.insertOAuthRequestRowTx(tx, table, req, requestedStr); err != nil {
 		return true, err
 	}
+	// One binding per grant (fosite keeps the request id from code to token),
+	// written by its first persistence and checked by every later one: the
+	// same epoch, kind and access, so no later step can change what the grant
+	// is.
 	var bound int64
-	err = tx.QueryRow(s.q(`SELECT auth_epoch FROM app_token_bindings WHERE request_id = ?`), req.RequestID).Scan(&bound)
+	var boundKind string
+	var boundAccess sql.NullString
+	err = tx.QueryRow(s.q(`SELECT auth_epoch, auth_kind, delegated_access FROM app_token_bindings WHERE request_id = ?`),
+		req.RequestID).Scan(&bound, &boundKind, &boundAccess)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.Exec(s.q(`
-			INSERT INTO app_token_bindings (request_id, client_id, install_id, workspace_id, auth_epoch, auth_kind, created_at)
-			VALUES (?, ?, ?, ?, ?, 'service', ?)`),
-			req.RequestID, req.ClientID, installID.String, workspaceID, epoch, now()); err != nil {
+			INSERT INTO app_token_bindings (request_id, client_id, install_id, workspace_id, auth_epoch, auth_kind, delegated_access, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+			req.RequestID, req.ClientID, installID.String, workspaceID, epoch, kind, bindAccess, now()); err != nil {
 			return true, fmt.Errorf("oauth: write token binding: %w", err)
 		}
 	case err != nil:
@@ -332,8 +409,26 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	case bound != epoch:
 		// A later persistence of a family bound under an earlier epoch.
 		return true, ErrInstallNotActive
+	case boundKind != kind || boundAccess != bindAccess:
+		return true, ErrInstallDelegatedAccess
 	}
 	return true, nil
+}
+
+// delegatedAccessWithin reports whether a consented access is one the
+// manifest offers: "read" or "write", and no more than offered. An install
+// whose manifest offers no delegated access refuses every delegated grant.
+func delegatedAccessWithin(access string, offered sql.NullString) bool {
+	if !offered.Valid {
+		return false
+	}
+	switch access {
+	case "read":
+		return offered.String == "read" || offered.String == "write"
+	case "write":
+		return offered.String == "write"
+	}
+	return false
 }
 
 // AppPrincipalForInstall returns the install's bot: the kind='app' user at
