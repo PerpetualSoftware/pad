@@ -745,6 +745,10 @@ func serveCmd() *cobra.Command {
 			// Expired pending app installs and their staged bytes (TASK-3397).
 			srv.StartAppPendingSweep()
 
+			// Hooks for installs provisioned before app webhooks existed
+			// (TASK-3408 U10a), created held until the app's next redeem.
+			srv.EnsureAppWebhooks(cmd.Context())
+
 			// Typed decisions (PLAN-3114 / TASK-3117). With no provider
 			// configured the runner is nil: no write enqueues a job and no
 			// tick starts. A provider that is NAMED but cannot be built (an

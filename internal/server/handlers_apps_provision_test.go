@@ -49,7 +49,7 @@ func (e *appsEnv) confirm(t *testing.T, p appPreview, manifestSHA string) *httpt
 var provisionCensusTables = []string{
 	"app_installs", "app_install_codes", "app_install_pending", "app_install_pending_blobs",
 	"users", "workspace_members", "member_collection_access", "oauth_clients",
-	"collections", "items", "item_versions", "event_outbox", "activities",
+	"collections", "items", "item_versions", "event_outbox", "activities", "webhooks",
 }
 
 func provisionCensus(t *testing.T, e *appsEnv) map[string]int {

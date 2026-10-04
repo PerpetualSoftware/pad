@@ -110,7 +110,7 @@ func (s *Store) GetWebhookScoped(id, workspaceID string) (*models.Webhook, error
 	err := s.db.QueryRow(s.q(`
 		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
 		FROM webhooks
-		WHERE id = ? AND workspace_id = ?
+		WHERE id = ? AND workspace_id = ? AND app_install_id IS NULL
 	`), id, workspaceID).Scan(
 		&wh.ID, &wh.WorkspaceID, &wh.URL, &wh.Secret, &wh.Events,
 		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount,
@@ -157,7 +157,7 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 		SELECT wh.id, wh.workspace_id, wh.url, wh.secret, wh.events, wh.active, wh.created_at, wh.updated_at, wh.last_triggered_at, wh.failure_count
 		FROM webhooks wh
 		JOIN workspaces w ON w.id = wh.workspace_id
-		WHERE wh.workspace_id = ? AND w.deleted_at IS NULL
+		WHERE wh.workspace_id = ? AND w.deleted_at IS NULL AND wh.app_install_id IS NULL
 		ORDER BY wh.created_at ASC
 	`), workspaceID)
 	if err != nil {
@@ -198,7 +198,8 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 // a rotated/missing encryption key would otherwise leave a broken webhook
 // undeletable. Returns sql.ErrNoRows when no webhook matches both id and workspace.
 func (s *Store) DeleteWebhookScoped(id, workspaceID string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM webhooks WHERE id = ? AND workspace_id = ?"), id, workspaceID)
+	// An app's hook is the install's (TASK-3408): never an owner's to delete.
+	result, err := s.db.Exec(s.q("DELETE FROM webhooks WHERE id = ? AND workspace_id = ? AND app_install_id IS NULL"), id, workspaceID)
 	if err != nil {
 		return fmt.Errorf("delete webhook: %w", err)
 	}

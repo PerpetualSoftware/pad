@@ -83,6 +83,10 @@ type UpgradePlan struct {
 	// a write admitted before the upgrade cannot commit after it and every
 	// token issued before it is refused (codex r1 on U8b2).
 	Restrictive bool
+	// Webhook is the new manifest's hook (events by companion SLUG); nil
+	// removes it. An existing hook keeps its secret and delivered state; a
+	// new one starts HELD until a redeem (U10a).
+	Webhook *AppWebhookSpec
 }
 
 // UpgradeRequest identifies the upgrade being confirmed.
@@ -305,6 +309,11 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 				return nil, fmt.Errorf("upgrade app: grant %q: %w", c.Slug, err)
 			}
 		}
+	}
+
+	// The hook follows the new manifest, after its companions are settled.
+	if err := s.upsertAppWebhookTx(tx, req.WorkspaceID, req.InstallID, plan.Webhook); err != nil {
+		return nil, err
 	}
 
 	// Changed and added artifacts land as NEW drafts; the installed item is

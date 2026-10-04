@@ -309,6 +309,14 @@ func (s *Store) UninstallAppTx(workspaceID, installID string) error {
 		return err
 	}
 
+	// The hook: the tombstone install row keeps no way to be called.
+	if err := s.deleteAppWebhookTx(tx, installID); err != nil {
+		return fmt.Errorf("uninstall: %w", err)
+	}
+	if err := step("webhook"); err != nil {
+		return err
+	}
+
 	var bot sql.NullString
 	if err := tx.QueryRow(s.q(`SELECT bot_user_id FROM app_installs WHERE id = ?`), installID).Scan(&bot); err != nil {
 		return fmt.Errorf("uninstall: read bot: %w", err)

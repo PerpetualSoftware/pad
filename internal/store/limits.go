@@ -396,7 +396,9 @@ func (s *Store) featureCountOn(q rowQueryer, workspaceID, ownerID, feature strin
 				WHERE wm.workspace_id = ? AND u.kind = 'human'`), workspaceID).Scan(&count)
 		}
 	case "webhooks":
-		err = q.QueryRow(s.q(`SELECT COUNT(*) FROM webhooks WHERE workspace_id = ?`), workspaceID).Scan(&count)
+		// App hooks (one per install, TASK-3408) do not count against the
+		// owner's webhook plan limit.
+		err = q.QueryRow(s.q(`SELECT COUNT(*) FROM webhooks WHERE workspace_id = ? AND app_install_id IS NULL`), workspaceID).Scan(&count)
 	default:
 		return 0, fmt.Errorf("unknown workspace feature: %s", feature)
 	}
