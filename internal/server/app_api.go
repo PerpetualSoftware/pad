@@ -53,6 +53,9 @@ var appRoutes = []appRoute{
 	{"POST", "/items/{itemID}/attachments", "appUploadAttachment", (*Server).appUploadAttachment, "either", "write"},
 	{"GET", "/attachments/{attachmentID}", "appGetAttachment", (*Server).appGetAttachment, "either", "read"},
 	{"GET", "/attachments/{attachmentID}/content", "appDownloadAttachment", (*Server).appDownloadAttachment, "either", "stream"},
+	// HEAD probes size and type through the same gate (ServeContent writes
+	// no body for it), as the regular download allows.
+	{"HEAD", "/attachments/{attachmentID}/content", "appHeadAttachment", (*Server).appDownloadAttachment, "either", "stream"},
 	{"POST", "/collections/{collSlug}/items", "appCreateItem", (*Server).appCreateItem, "either", "write"},
 	{"PATCH", "/items/{itemID}", "appUpdateItem", (*Server).appUpdateItem, "either", "write"},
 	{"POST", "/items/{itemID}/comments", "appCreateComment", (*Server).appCreateComment, "either", "write"},
@@ -179,7 +182,7 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 						s.appAfterHandler()
 					}
 					if err := s.appRevalidate(r); err != nil {
-						writeAppUnauthorized(w)
+						writeAppRevalidateError(w, err)
 						return
 					}
 					buf.flushTo(w)
@@ -556,6 +559,22 @@ func (s *Server) appRevalidate(r *http.Request) error {
 		return errors.New("the grant changed")
 	}
 	return nil
+}
+
+// appFault marks an error from re-admission as a server fault (a store or
+// database failure), not a denial: the response is withheld either way, but
+// a fault answers 500, never the 401 invalid_token that tells an app to
+// discard a credential that is fine (codex U6c r2).
+func appFault(err error) error { return fmt.Errorf("%w: %w", errAppAdmitInternal, err) }
+
+// writeAppRevalidateError answers a failed re-admission: 500 for a fault,
+// 401 for a denial.
+func writeAppRevalidateError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errAppAdmitInternal) {
+		writeInternalError(w, err)
+		return
+	}
+	writeAppUnauthorized(w)
 }
 
 // appRecheckMemoKey holds one re-validation's memo of collection re-checks:

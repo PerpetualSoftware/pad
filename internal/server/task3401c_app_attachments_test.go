@@ -1,15 +1,18 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -391,5 +394,76 @@ func TestTask3401c_AStalledClientDoesNotOutliveTheDeadline(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the download handler was still blocked writing 5s after its 300ms deadline")
+	}
+}
+
+// Codex U6c r2: a body that ends early over a real connection reports
+// io.ErrUnexpectedEOF, which is the client's mistake (400), not a 500.
+func TestTask3401c_ATruncatedUploadIsTheClientsMistake(t *testing.T) {
+	f := appAPIFixture(t, "write")
+	ts := httptest.NewServer(f.srv)
+	defer ts.Close()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	body := append(testPNG(t), bytes.Repeat([]byte{0}, 1000)...)
+	head := "POST " + f.path("/items/"+f.item.ID+"/attachments?filename=a.png") + " HTTP/1.1\r\n" +
+		"Host: x\r\nAuthorization: Bearer " + f.token + "\r\nContent-Length: " + strconv.Itoa(len(body)+5000) + "\r\n\r\n"
+	if _, err := conn.Write(append([]byte(head), body...)); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.(*net.TCPConn).CloseWrite()
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest || !bytes.Contains(got, []byte("size_mismatch")) {
+		t.Errorf("a truncated upload: %d %s, want 400 size_mismatch", resp.StatusCode, got)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM attachments`); n != 1 {
+		t.Errorf("a truncated upload left %d rows, want only the fixture's", n)
+	}
+}
+
+// Codex U6c r2: a store fault during re-admission withholds the bytes but
+// answers 500, not the 401 invalid_token that tells the app to discard a
+// good credential.
+func TestTask3401c_AFaultDuringReadmissionIsNotADenial(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	f.srv.appBeforeFirstByte = func() {
+		if _, err := f.srv.store.DB().Exec(`ALTER TABLE attachments RENAME TO attachments_gone`); err != nil {
+			t.Error(err)
+		}
+	}
+	defer func() {
+		_, _ = f.srv.store.DB().Exec(`ALTER TABLE attachments_gone RENAME TO attachments`)
+	}()
+	rr := appGet(f.srv, f.path("/attachments/"+f.attachment+"/content"), f.token)
+	if rr.Code != http.StatusInternalServerError || bytes.Contains(rr.Body.Bytes(), f.attachmentBytes[:16]) {
+		t.Errorf("a fault during re-admission: %d %q, want 500 and none of the file", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("WWW-Authenticate") != "" {
+		t.Error("a fault answered with an invalid_token challenge")
+	}
+}
+
+// Codex U6c r2: HEAD probes the download through the same gate, and an
+// unknown variant name is refused as on the regular download.
+func TestTask3401c_HeadAndUnknownVariant(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	req := httptest.NewRequest("HEAD", f.path("/attachments/"+f.attachment+"/content"), nil)
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || rr.Body.Len() != 0 || rr.Header().Get("Content-Length") != strconv.Itoa(len(f.attachmentBytes)) {
+		t.Errorf("HEAD: %d, body %d bytes, Content-Length %q", rr.Code, rr.Body.Len(), rr.Header().Get("Content-Length"))
+	}
+	if rr := appGet(f.srv, f.path("/attachments/"+f.attachment+"/content?variant=nope"), f.token); rr.Code != http.StatusBadRequest {
+		t.Errorf("an unknown variant: %d, want 400", rr.Code)
 	}
 }

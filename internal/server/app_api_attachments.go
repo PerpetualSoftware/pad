@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -108,11 +109,15 @@ func (s *Server) appVisibleAttachment(w http.ResponseWriter, r *http.Request, at
 func (s *Server) appRecheckAttachment(r *http.Request, id, itemID string) error {
 	as, err := s.appStore()
 	if err != nil {
-		return err
+		return appFault(err)
 	}
 	att, err := as.GetAttachment(r.Context(), appContextFrom(r).appFenceSpec(), id)
-	if err != nil {
-		return err
+	switch {
+	case errors.Is(err, store.ErrAppAttachmentNotFound), errors.Is(err, store.ErrFenceStale),
+		errors.Is(err, store.ErrNotCompanion), errors.Is(err, store.ErrFenceClosed):
+		return errAppRecheck
+	case err != nil:
+		return appFault(err)
 	}
 	if att.ItemID != itemID {
 		return errors.New("the attachment moved")
@@ -160,6 +165,13 @@ func (s *Server) appDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithDeadline(r.Context(), deadline)
 	defer cancel()
 	id := chi.URLParam(r, "attachmentID")
+	// An unknown variant name is a malformed request, as on the regular
+	// download, not a silent fallback to the original (codex U6c r2).
+	variant := r.URL.Query().Get("variant")
+	if variant != "" && !isKnownVariant(variant) {
+		writeError(w, http.StatusBadRequest, "bad_variant", "Unknown variant")
+		return
+	}
 	// Authorize BEFORE touching storage (codex U6c r1 P2): a storage error
 	// (a missing blob, a missing variant blob) on an attachment the subject
 	// may not see would answer differently from an unknown id.
@@ -171,7 +183,7 @@ func (s *Server) appDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !s.appVisibleAttachment(w, r, meta) {
 		return
 	}
-	att, f, err := as.OpenAttachment(ctx, ac.appFenceSpec(), id, r.URL.Query().Get("variant"))
+	att, f, err := as.OpenAttachment(ctx, ac.appFenceSpec(), id, variant)
 	if err != nil {
 		writeAppStoreError(w, err)
 		return
@@ -188,7 +200,7 @@ func (s *Server) appDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	// THE GATE: nothing has been written yet.
 	if err := s.appRevalidate(r); err != nil {
-		writeAppUnauthorized(w)
+		writeAppRevalidateError(w, err)
 		return
 	}
 	// The deadline also bounds the transport (codex U6c r1 P2): a context
@@ -235,7 +247,10 @@ func writeAppAttachmentError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, store.ErrAppAttachmentLimit):
 		// No totals (DOC-3371 §4).
 		writeError(w, http.StatusForbidden, "attachment_limit_reached", "The app has reached its attachment limit")
-	case errors.Is(err, appstore.ErrAppSizeMismatch):
+	case errors.Is(err, appstore.ErrAppSizeMismatch), errors.Is(err, io.ErrUnexpectedEOF):
+		// A body that ends before its declared length: over a connection
+		// the request body reports io.ErrUnexpectedEOF (codex U6c r2), the
+		// same client mistake as a short body.
 		writeError(w, http.StatusBadRequest, "size_mismatch", "The body does not match Content-Length")
 	case errors.Is(err, appstore.ErrAppNoAttachmentStore):
 		writeError(w, http.StatusServiceUnavailable, "attachments_unavailable", "Attachment storage is not available")
