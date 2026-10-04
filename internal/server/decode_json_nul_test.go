@@ -902,8 +902,11 @@ func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
 	// which only substring-matches the mobile shells' marker to choose
 	// plan-limit copy and binds nothing to a column. It goes through the
 	// helper because this scan admits no other raw reader.
-	if safeUAUses != 6 {
-		t.Errorf("requestUserAgent occurrences = %d, want 6 (1 declaration + 5 call sites); "+
+	// The sixth is the app-grant revoke's audit row (TASK-3399), the same
+	// audit shape as the MCP connection revoke beside it: the sanitised
+	// header into activities.user_agent.
+	if safeUAUses != 7 {
+		t.Errorf("requestUserAgent occurrences = %d, want 7 (1 declaration + 6 call sites); "+
 			"a site was added or removed — re-justify and re-pin", safeUAUses)
 	}
 }

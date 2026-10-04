@@ -54,8 +54,12 @@ app_installs.workspace_id
 app_token_bindings.auth_kind
 app_token_bindings.client_id
 app_token_bindings.created_at
+app_token_bindings.delegated_access
+app_token_bindings.delegated_member_since
+app_token_bindings.delegated_user_id
 app_token_bindings.install_id
 app_token_bindings.request_id
+app_token_bindings.revoked_at
 app_token_bindings.workspace_id
 attachments.content_hash
 attachments.created_at
