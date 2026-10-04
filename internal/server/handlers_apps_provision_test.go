@@ -917,3 +917,18 @@ func TestAppInstall_AdoptionByHolderState(t *testing.T) {
 		})
 	}
 }
+
+// The redeem route sits beside the app API router (/api/app/v1, U6a), whose
+// token middleware answers 401 with WWW-Authenticate to a request with no
+// bearer. Redeem must never reach that middleware: the install code is its
+// credential (reviewed on #1771).
+func TestAppInstallRedeem_OutsideTheAppTokenRouter(t *testing.T) {
+	e := newProvisionEnv(t)
+	rr := redeem(e.srv, `{"code":"padic_unknown"}`)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_install_code") {
+		t.Fatalf("got %d %s; want the redeem handler's 400", rr.Code, rr.Body.String())
+	}
+	if h := rr.Header().Get("WWW-Authenticate"); h != "" {
+		t.Fatalf("the app token middleware answered (WWW-Authenticate %q)", h)
+	}
+}
