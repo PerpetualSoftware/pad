@@ -345,9 +345,11 @@ watches.id
 watches.item_id
 watches.user_id
 watches.workspace_id
+webhooks.app_install_id
 webhooks.created_at
 webhooks.id
 webhooks.last_triggered_at
+webhooks.secret_delivered_at
 webhooks.updated_at
 webhooks.workspace_id
 workspace_invitations.accepted_at
