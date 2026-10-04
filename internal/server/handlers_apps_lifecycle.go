@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -42,6 +43,17 @@ func (s *Server) writeInstallLifecycleError(w http.ResponseWriter, err error) {
 	}
 }
 
+// writeDrainError answers a drain that did not finish. The install is left
+// between the phases and repeating the same call resumes it.
+func (s *Server) writeDrainError(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrDrainTimeout) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "deliveries_in_flight", "The app still has webhook deliveries in flight; repeat this request to finish")
+		return
+	}
+	writeInternalError(w, err)
+}
+
 func (s *Server) installLifecycleDone(w http.ResponseWriter, r *http.Request, workspaceID, installID, action string, extra func(*appInstallStateResponse)) {
 	state, err := s.store.InstallState(workspaceID, installID)
 	if err != nil {
@@ -72,8 +84,8 @@ func (s *Server) handleDisableAppInstall(w http.ResponseWriter, r *http.Request)
 		s.writeInstallLifecycleError(w, err)
 		return
 	}
-	if err := s.store.DrainInstallDeliveries(installID); err != nil {
-		writeInternalError(w, err)
+	if err := s.store.DrainInstallDeliveries(r.Context(), installID); err != nil {
+		s.writeDrainError(w, err)
 		return
 	}
 	if err := s.store.FinishDisable(workspaceID, installID); err != nil {
@@ -108,8 +120,8 @@ func (s *Server) handleRotateAppInstall(w http.ResponseWriter, r *http.Request) 
 		s.writeInstallLifecycleError(w, err)
 		return
 	}
-	if err := s.store.DrainInstallDeliveries(installID); err != nil {
-		writeInternalError(w, err)
+	if err := s.store.DrainInstallDeliveries(r.Context(), installID); err != nil {
+		s.writeDrainError(w, err)
 		return
 	}
 	code, exp, err := s.store.FinishRotate(workspaceID, installID)
@@ -137,8 +149,8 @@ func (s *Server) handleUninstallAppInstall(w http.ResponseWriter, r *http.Reques
 		}
 		// Already a tombstone: answer its state.
 	}
-	if err := s.store.DrainInstallDeliveries(installID); err != nil {
-		writeInternalError(w, err)
+	if err := s.store.DrainInstallDeliveries(r.Context(), installID); err != nil {
+		s.writeDrainError(w, err)
 		return
 	}
 	if err := s.store.UninstallAppTx(workspaceID, installID); err != nil {

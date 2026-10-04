@@ -193,6 +193,41 @@ type Dispatcher struct {
 	// Defaults to defaultRetryBackoff; tests set it to 0.
 	retryBackoff time.Duration
 	SkipSSRF     bool // Skip SSRF validation (for tests only)
+	// ctx bounds every backoff wait and app attempt; the server cancels it
+	// when it stops, so a pending retry ends at once instead of sleeping
+	// through shutdown (TASK-3408 U10b). Background when unset.
+	ctx context.Context
+	// wait is the backoff wait: false when ctx ended first. A field so a
+	// test can record the schedule without sleeping.
+	wait func(ctx context.Context, d time.Duration) bool
+	// now is the signing clock (signature v2's t=).
+	now func() time.Time
+}
+
+// SetRetryBackoff sets the base retry backoff (tests set 0 to not wait).
+func (d *Dispatcher) SetRetryBackoff(b time.Duration) { d.retryBackoff = b }
+
+// SetContext sets the context that bounds backoff waits and app attempts.
+func (d *Dispatcher) SetContext(ctx context.Context) { d.ctx = ctx }
+
+func (d *Dispatcher) context() context.Context {
+	if d.ctx != nil {
+		return d.ctx
+	}
+	return context.Background()
+}
+
+// timerWait waits dur or until ctx ends, whichever is first, and reports
+// whether the full wait elapsed. It replaces time.Sleep in the retry loop.
+func timerWait(ctx context.Context, dur time.Duration) bool {
+	t := time.NewTimer(dur)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // SetSpawn injects the goroutine spawner used for deliveries. Passing the
@@ -222,7 +257,7 @@ func (d *Dispatcher) run(fn func()) {
 // to an internal target. Proxy is intentionally nil — honoring HTTP(S)_PROXY
 // would connect to the proxy host and skip our dialer's IP check entirely.
 func NewDispatcher(store WebhookStore) *Dispatcher {
-	d := &Dispatcher{store: store, retryBackoff: defaultRetryBackoff}
+	d := &Dispatcher{store: store, retryBackoff: defaultRetryBackoff, wait: timerWait, now: time.Now}
 
 	dialer := &net.Dialer{
 		Timeout:   deliveryTimeout,
@@ -413,8 +448,10 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
 			break // success or permanent failure — no point retrying
 		}
 		if attempt < maxDeliveryAttempts {
-			if backoff := d.retryBackoff * time.Duration(attempt); backoff > 0 {
-				time.Sleep(backoff)
+			if backoff := d.retryBackoff * time.Duration(attempt); backoff > 0 && !d.wait(d.context(), backoff) {
+				// Stopping: the event stays owed (transient), and no
+				// further attempt is made.
+				break
 			}
 		}
 	}

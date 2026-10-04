@@ -198,6 +198,11 @@ type Server struct {
 	// appFetchTLS is the TLS config app manifest/artifact fetches use; nil
 	// (the system roots) in production, set by tests (SetAppFetchTLS).
 	appFetchTLS *tls.Config
+	// appPosters caches the app webhook Poster (TASK-3408 U10b).
+	appPosters appPosterCache
+	// webhookCancel ends the dispatcher's context at Stop, so backoff waits
+	// and app attempts do not outlive the server (TASK-3408 U10b).
+	webhookCancel context.CancelFunc
 
 	// MCP Streamable HTTP transport (PLAN-943 TASK-950). Wired via
 	// SetMCPTransport at startup on every install (PLAN-2310 DR-4); nil
@@ -630,6 +635,11 @@ func (s *Server) Stop() {
 	// Signal long-running background loops (orphan GC, etc.) to exit.
 	// Each loop registers itself on s.bg, so the Wait() below blocks
 	// until they actually finish and any in-flight goroutines drain.
+	// End pending webhook backoff waits and app attempts first, so the
+	// outbox drain's in-flight delivery returns promptly (TASK-3408 U10b).
+	if s.webhookCancel != nil {
+		s.webhookCancel()
+	}
 	s.stopOrphanGC()
 	// Yjs op-log prune sweeper (TASK-1309). Same lifecycle pattern;
 	// signals BEFORE Wait() so the goroutine sees the close and exits.
@@ -1107,6 +1117,12 @@ func (s *Server) SetCollabRoomManager(rm *collab.RoomManager) {
 func (s *Server) SetWebhookDispatcher(d *webhooks.Dispatcher) {
 	if d != nil {
 		d.SetSpawn(s.goAsync)
+		ctx, cancel := context.WithCancel(context.Background())
+		d.SetContext(ctx)
+		if s.webhookCancel != nil {
+			s.webhookCancel()
+		}
+		s.webhookCancel = cancel
 	}
 	s.webhooks = d
 }

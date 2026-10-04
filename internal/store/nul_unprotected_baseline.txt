@@ -16,6 +16,9 @@ api_tokens.prefix
 api_tokens.token_hash
 api_tokens.user_id
 api_tokens.workspace_id
+app_delivery_inflight.delivery_id
+app_delivery_inflight.expires_at
+app_delivery_inflight.install_id
 app_install_codes.code_sha256
 app_install_codes.consumed_at
 app_install_codes.created_at

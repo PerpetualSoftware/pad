@@ -149,6 +149,25 @@ func (s *Store) rotateAppWebhookSecretTx(tx *sql.Tx, installID string) (string, 
 	return secret, nil
 }
 
+// holdAppWebhookTx replaces the install's hook secret with one nobody holds
+// and clears secret_delivered_at, so nothing is delivered until a redeem
+// hands the app a new one (rotate). A no-op when the install has no hook.
+func (s *Store) holdAppWebhookTx(tx *sql.Tx, installID string) error {
+	secret, err := newAppWebhookSecret()
+	if err != nil {
+		return err
+	}
+	enc, err := s.encrypt(secret)
+	discardSecret(&secret)
+	if err != nil {
+		return fmt.Errorf("app webhook: encrypt secret: %w", err)
+	}
+	if _, err := tx.Exec(s.q(`UPDATE webhooks SET secret = ?, secret_delivered_at = NULL, updated_at = ? WHERE app_install_id = ?`), enc, now(), installID); err != nil {
+		return fmt.Errorf("app webhook: hold: %w", err)
+	}
+	return nil
+}
+
 // GetAppWebhookStatus reports an install's hook for the owner; nil when the
 // install has none.
 func (s *Store) GetAppWebhookStatus(installID string) (*AppWebhookStatus, error) {

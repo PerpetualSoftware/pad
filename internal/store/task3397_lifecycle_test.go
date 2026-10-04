@@ -29,11 +29,23 @@ func TestTask3397_UninstallAppTxIsAllOrNothing(t *testing.T) {
 	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-atomic")); err != nil {
 		t.Fatalf("fixture token: %v", err)
 	}
+	// The install's hook (U10a), so the webhook step deletes a real row.
+	htx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := htx.Exec(f.s.q(`INSERT INTO webhooks (id, workspace_id, url, secret, events, active, created_at, updated_at, failure_count, app_install_id)
+		VALUES (?, ?, 'https://portal.example/h', 's', '[]', ?, ?, ?, 0, ?)`), newID(), f.ws.ID, f.s.dialect.BoolToInt(true), now(), now(), f.installID); err != nil {
+		t.Fatal(err)
+	}
+	if err := htx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownUninstall); err != nil {
 		t.Fatal(err)
 	}
 	tables := []string{"app_installs", "oauth_clients", "oauth_access_tokens", "app_token_bindings", "oauth_connections",
-		"workspace_members", "member_collection_access", "users", "sessions", "api_tokens"}
+		"workspace_members", "member_collection_access", "users", "sessions", "api_tokens", "webhooks"}
 	snapshot := func() map[string]string {
 		out := map[string]string{}
 		for _, tbl := range tables {
@@ -55,7 +67,7 @@ func TestTask3397_UninstallAppTxIsAllOrNothing(t *testing.T) {
 	}
 	before := snapshot()
 	boom := errors.New("injected")
-	for _, at := range []string{"client", "membership", "bot", "state"} {
+	for _, at := range []string{"client", "webhook", "membership", "bot", "state"} {
 		uninstallHookAfterStep = func(step string) error {
 			if step == at {
 				return boom

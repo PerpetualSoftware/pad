@@ -13,6 +13,7 @@
 package appfetch
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -60,9 +61,14 @@ var lookupIP = net.DefaultResolver.LookupIP
 // passes nil, so no private destination is ever reachable). tlsConfig is nil
 // in production; tests pass one that trusts their server.
 func New(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Config) (*Fetcher, error) {
+	return newFetcher(private, func(p PrivateOrigin) bool { return p.Fetch }, timeout, tlsConfig)
+}
+
+// newFetcher builds the client with the private entries use selects.
+func newFetcher(private []PrivateOrigin, use func(PrivateOrigin) bool, timeout time.Duration, tlsConfig *tls.Config) (*Fetcher, error) {
 	f := &Fetcher{private: map[string][]*net.IPNet{}}
 	for i, p := range private {
-		if !p.Fetch {
+		if !use(p) {
 			continue
 		}
 		origin, err := appmanifest.NormalizeOrigin(p.Origin)
@@ -211,4 +217,68 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, maxBytes int64) ([]byt
 		return nil, refused("%s is larger than %d bytes", rawURL, maxBytes)
 	}
 	return body, nil
+}
+
+// Poster sends app webhooks under the same policy (DOC-3371 §5, §9; TASK-3408
+// U10b): https only, never a redirect (a 3xx is returned as a status, which
+// the caller treats as a failed attempt), no environment proxy, every dial
+// screened. Its private destinations are the admin entries flagged Webhook,
+// and an entry with a Path admits only URLs under that path.
+type Poster struct {
+	f     *Fetcher
+	paths map[string]string // origin -> required path prefix, webhook entries with one
+}
+
+// NewPoster builds a Poster. private is the admin list (nil on Cloud).
+// timeout is a ceiling; the caller's context deadline is the real bound.
+func NewPoster(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Config) (*Poster, error) {
+	f, err := newFetcher(private, func(p PrivateOrigin) bool { return p.Webhook }, timeout, tlsConfig)
+	if err != nil {
+		return nil, err
+	}
+	p := &Poster{f: f, paths: map[string]string{}}
+	for _, e := range private {
+		if !e.Webhook || e.Path == "" {
+			continue
+		}
+		origin, err := appmanifest.NormalizeOrigin(e.Origin)
+		if err != nil {
+			return nil, err
+		}
+		p.paths[origin] = e.Path
+	}
+	return p, nil
+}
+
+// Post sends body to rawURL with header and returns the status. The response
+// body is drained up to a small bound and discarded. An error wrapping
+// ErrRefused is the policy's (permanent); any other error is the network's.
+func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header http.Header) (int, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return 0, refused("%q is not an https URL", rawURL)
+	}
+	origin, err := appmanifest.NormalizeOrigin("https://" + u.Host)
+	if err != nil {
+		return 0, refused("%q: %v", rawURL, err)
+	}
+	if prefix, ok := p.paths[origin]; ok && !strings.HasPrefix(u.Path, prefix) {
+		return 0, refused("%s is outside the path %s allowed for %s", u.Path, prefix, origin)
+	}
+	req, err := http.NewRequestWithContext(context.WithValue(ctx, originKey{}, origin), http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return 0, refused("%v", err)
+	}
+	for k, vs := range header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	resp, err := p.f.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	return resp.StatusCode, nil
 }

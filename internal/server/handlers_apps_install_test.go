@@ -6,11 +6,13 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -28,6 +30,22 @@ type appsEnv struct {
 	app    *httptest.Server
 	files  map[string][]byte // path -> body served by the app
 	status map[string]int    // path -> status override
+
+	// hookMu guards hooks: every POST the test app received (TASK-3408).
+	hookMu sync.Mutex
+	hooks  []recordedHook
+}
+
+type recordedHook struct {
+	Path   string
+	Header http.Header
+	Body   []byte
+}
+
+func (e *appsEnv) receivedHooks() []recordedHook {
+	e.hookMu.Lock()
+	defer e.hookMu.Unlock()
+	return append([]recordedHook(nil), e.hooks...)
 }
 
 func appSHA(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
@@ -53,12 +71,22 @@ func newAppsEnv(t *testing.T) *appsEnv {
 
 	e := &appsEnv{srv: srv, token: token, ws: ws.Slug, wsID: ws.ID, files: map[string][]byte{}, status: map[string]int{}}
 	e.app = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			e.hookMu.Lock()
+			e.hooks = append(e.hooks, recordedHook{Path: r.URL.Path, Header: r.Header.Clone(), Body: body})
+			e.hookMu.Unlock()
+		}
 		if code, ok := e.status[r.URL.Path]; ok {
 			if code >= 300 && code < 400 {
 				http.Redirect(w, r, "/elsewhere", code)
 				return
 			}
 			w.WriteHeader(code)
+			return
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		body, ok := e.files[r.URL.Path]
