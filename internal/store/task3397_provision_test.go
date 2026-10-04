@@ -298,3 +298,80 @@ func TestTask3397_MemberRemovalDoesNotDeadlock(t *testing.T) {
 			return err
 		})
 }
+
+// U5/U8b agreement: the install's bot is app_installs.bot_user_id once
+// provisioning sets it, at every lookup (the issuance barrier,
+// AppPrincipalForInstall, the members list), with the bot's address as the
+// agreement check. A bot_user_id naming another install's bot is refused.
+func TestTask3397_BotLookupsKeyOnBotUserID(t *testing.T) {
+	f := task3394Fixture(t, "inst-one")
+	other := task3394FixtureIn(t, f.s, f.ws, "inst-two")
+	bind := func(botID string) {
+		t.Helper()
+		if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET bot_user_id = ? WHERE id = ?`), botID, "inst-one"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appNameOf := func(botID string) string {
+		t.Helper()
+		list, err := f.s.ListWorkspaceAppPrincipals(f.ws.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range list {
+			if p.UserID == botID {
+				return p.AppName
+			}
+		}
+		t.Fatalf("bot %s not listed", botID)
+		return ""
+	}
+	appName := func() string { return appNameOf(f.bot.ID) }
+
+	tx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.addAppPrincipalMemberTx(tx, f.ws.ID, f.bot.ID, "editor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.addAppPrincipalMemberTx(tx, f.ws.ID, other.bot.ID, "editor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	bind(f.bot.ID)
+	if u, err := f.s.AppPrincipalForInstall("inst-one"); err != nil || u == nil || u.ID != f.bot.ID {
+		t.Fatalf("bound to its own bot: %v %v", u, err)
+	}
+	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-bound-own")); err != nil {
+		t.Fatalf("barrier, own bot: %v", err)
+	}
+	if appName() == "" {
+		t.Error("lister named no app for a correctly bound bot")
+	}
+
+	// bot_user_id naming ANOTHER install's bot: the address disagrees.
+	bind(other.bot.ID)
+	if u, err := f.s.AppPrincipalForInstall("inst-one"); err != nil || u != nil {
+		t.Fatalf("bound to another install's bot: got %v %v, want nil", u, err)
+	}
+	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-bound-other")); !errors.Is(err, ErrInstallTokenSubject) {
+		t.Fatalf("barrier with a rebound install: %v, want ErrInstallTokenSubject", err)
+	}
+	if err := f.s.CreateAccessToken(task3394Req(f.clientID, other.bot.ID, "req-bound-other-bot")); !errors.Is(err, ErrInstallTokenSubject) {
+		t.Fatalf("barrier, the other bot on this client: %v, want ErrInstallTokenSubject", err)
+	}
+	if got := appName(); got != "" {
+		t.Errorf("lister named %q for a bot its install no longer binds", got)
+	}
+	// inst-one's bot_user_id now names inst-two's bot, whose ADDRESS names
+	// inst-two: the binding and the address disagree, so no app is named.
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET bot_user_id = NULL WHERE id = ?`), "inst-two"); err != nil {
+		t.Fatal(err)
+	}
+	if got := appNameOf(other.bot.ID); got != "" {
+		t.Errorf("lister named %q for a bot bound by an install its address does not name", got)
+	}
+}

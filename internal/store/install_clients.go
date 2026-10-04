@@ -300,8 +300,11 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	}
 	var botKind string
 	var botDisabled sql.NullString
-	err = tx.QueryRow(s.q(`SELECT kind, disabled_at FROM users WHERE id = ? AND email = ?`),
-		req.Subject, appPrincipalEmail(installID.String)).Scan(&botKind, &botDisabled)
+	// The subject must be the install's bot: bot_user_id when provisioning
+	// set it (U8b), with the address as the agreement check either way.
+	err = tx.QueryRow(s.q(`SELECT u.kind, u.disabled_at FROM users u JOIN app_installs i ON i.id = ?
+		WHERE u.id = ? AND u.email = ? AND (i.bot_user_id IS NULL OR i.bot_user_id = u.id)`),
+		installID.String, req.Subject, appPrincipalEmail(installID.String)).Scan(&botKind, &botDisabled)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && (botKind != models.UserKindApp || botDisabled.Valid)) {
 		return true, ErrInstallTokenSubject
 	}
@@ -333,8 +336,23 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 // AppPrincipalForInstall returns the install's bot: the kind='app' user at
 // the address CreateAppUserTx gave it, or nil when there is none.
 func (s *Store) AppPrincipalForInstall(installID string) (*models.User, error) {
-	u, err := s.GetUserByEmail(appPrincipalEmail(installID))
-	if err != nil || u == nil || !u.IsApp() {
+	// The install's bot is app_installs.bot_user_id, which provisioning sets
+	// (U8b, agreed with U5 to switch in whichever landed second). The address
+	// stays an agreement check: a bot_user_id naming a user whose address is
+	// not this install's is refused, never trusted. An install with no
+	// bot_user_id (made before provisioning existed) falls back to the address.
+	var bot sql.NullString
+	err := s.db.QueryRow(s.q(`SELECT bot_user_id FROM app_installs WHERE id = ?`), installID).Scan(&bot)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read install bot: %w", err)
+	}
+	var u *models.User
+	if bot.Valid && bot.String != "" {
+		u, err = s.GetUser(bot.String)
+	} else {
+		u, err = s.GetUserByEmail(appPrincipalEmail(installID))
+	}
+	if err != nil || u == nil || !u.IsApp() || !strings.EqualFold(u.Email, appPrincipalEmail(installID)) {
 		return nil, err
 	}
 	return u, nil
