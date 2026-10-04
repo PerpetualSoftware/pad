@@ -42,6 +42,9 @@ func (s *Store) ListUserAppGrants(userID string) ([]AppGrant, error) {
 		JOIN workspaces w ON w.id = b.workspace_id
 		LEFT JOIN users u ON u.id = i.bot_user_id
 		WHERE b.auth_kind = 'delegated' AND b.delegated_user_id = ? AND b.revoked_at IS NULL
+		  -- An epoch the install has moved past (a disable, rotate or upgrade)
+		  -- has already ended the grant; it is not listed (codex U5b-1 r6).
+		  AND b.auth_epoch = i.auth_epoch
 		  AND (EXISTS (SELECT 1 FROM oauth_access_tokens t WHERE t.request_id = b.request_id AND t.active = ?)
 		    OR EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.request_id = b.request_id AND t.active = ?))
 		ORDER BY b.created_at DESC`), userID, true, true)

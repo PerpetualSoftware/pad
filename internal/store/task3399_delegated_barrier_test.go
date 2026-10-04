@@ -484,3 +484,19 @@ func TestTask3399_RemovingAMemberEndsTheirGrants(t *testing.T) {
 		})
 	}
 }
+
+// Codex U5b-1 r6: a grant the install's epoch has moved past (an upgrade, a
+// rotate) is already unusable, and the console does not list it.
+func TestTask3399_AGrantPastTheInstallEpochIsNotListed(t *testing.T) {
+	f := task3399Fixture(t, "inst-epoch-list", "write")
+	task3399Delegated(t, f, "req-el")
+	if grants, _ := f.s.ListUserAppGrants(f.person.ID); len(grants) != 1 {
+		t.Fatalf("control: %d grants listed", len(grants))
+	}
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`), f.installID); err != nil {
+		t.Fatal(err)
+	}
+	if grants, _ := f.s.ListUserAppGrants(f.person.ID); len(grants) != 0 {
+		t.Errorf("a grant past the install's epoch is listed: %+v", grants)
+	}
+}
