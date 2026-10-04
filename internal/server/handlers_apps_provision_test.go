@@ -595,11 +595,6 @@ func TestProvisionAppInstall_RelationRecheck(t *testing.T) {
 				t.Fatalf("preview owner %v, want the resolved default %s", p.Artifacts[0].Normalized.Fields["owner"], target.ID)
 			}
 			req, derive := prepareProvision(t, e, p)
-			// The derivation reports the target it resolved, for the lock.
-			d, err := derive(e.srv.store.Q())
-			if err != nil || len(d.ResolvedItemIDs) != 1 || d.ResolvedItemIDs[0] != target.ID {
-				t.Fatalf("resolved items %v (%v), want [%s]", d, err, target.ID)
-			}
 			c.move(t, env{e, people, target})
 			before := provisionCensus(t, e)
 			_, err = e.srv.store.ProvisionAppInstall(*req, derive)
@@ -808,8 +803,8 @@ func TestProvisionDerive_WritesNothing(t *testing.T) {
 	if derr != nil {
 		t.Fatalf("derive: %v", derr)
 	}
-	if len(derived.ResolvedItemIDs) != 1 {
-		t.Fatalf("the relation pass did not run on the transaction: resolved %v", derived.ResolvedItemIDs)
+	if id, _ := derived.Artifacts[0].Fields["owner"].(string); !isUUID(id) {
+		t.Fatalf("the relation pass did not resolve on the transaction: owner %v", derived.Artifacts[0].Fields["owner"])
 	}
 	if len(writes) != 0 {
 		t.Fatalf("the derivation wrote: %v", storetest.Tables(writes))

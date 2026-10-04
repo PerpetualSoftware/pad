@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -126,14 +125,10 @@ type ProvisionResult struct {
 
 // ProvisionDerived is what the caller's derivation returns from inside the
 // provisioning transaction: the collections and artifacts to write, exactly
-// as the normalization produced them on the transaction, and the items the
-// normalization resolved (relation targets), which are then locked.
+// as the normalization produced them on the transaction.
 type ProvisionDerived struct {
 	Collections []ProvisionCollection
 	Artifacts   []ProvisionArtifact
-	// ResolvedItemIDs are the items the normalization read through relation
-	// resolution. Locked FOR SHARE on Postgres (lead ruling, U8b).
-	ResolvedItemIDs []string
 }
 
 // ProvisionDeriveFunc re-runs the install's normalization on q (the
@@ -150,41 +145,48 @@ var ErrNotWorkspaceOwner = errors.New("not a workspace owner")
 //
 // THE RE-CHECK IS A RE-DERIVATION (lead ruling, day 86). The transaction does
 // not re-verify a list of facts the preview relied on; two review rounds
-// showed that list is never complete. It takes the locks every writer of the
-// state the normalization READS must wait on, runs the same normalization on
-// the transaction (derive), and lets the caller compare the result with the
-// reviewed digests. Lock table (Postgres; the order is fixed and the
-// workspace lock comes first):
+// showed that list is never complete. It runs the same normalization on the
+// transaction (derive) and the caller compares the result with the reviewed
+// digests and changes list.
 //
-//  1. app_install_pending row        FOR UPDATE    the record being consumed
-//  2. workspace seq lock (advisory)                every item writer, slug
-//     allocation, and schema or
-//     rename edits of collections
-//  3. every collections row of the   FOR SHARE     archive, trait-only and other
-//     workspace                                    collection UPDATEs that skip
-//     lock 2: the kind -> destination
-//     lookup, destination schema,
-//     relation target collections,
-//     companion slugs and adoption
-//     derive #1 (read-only; names the items to lock)
-//  4. every item derive #1 resolved  FOR SHARE     relation targets
-//  5. the caller's workspace_members FOR SHARE     a demotion or removal, and the
-//     row (+ the owner-role check),                visibility the relation passes
-//     member_collection_access,                    evaluate as (checkItemVisibleQ
-//     collection_grants, item_grants               reads exactly these)
-//     derive #2, which must agree with #1: it reads only rows held by 2-5
+// LOCKS BREAK DEPENDENCY CYCLES; THEY DO NOT COVER EVERY READ (lead ruling,
+// day 86, superseding "lock every read": that created deadlock cycles with
+// member removal and account deletion and could never cover an inserted
+// grant or a request-cached role; codex rounds 3-4). A writer W that changes
+// state provisioning READ, but reads nothing provisioning WRITES and
+// overwrites nothing it writes, serializes as "provision, then W": the
+// outcome equals a history in which the owner confirmed a moment earlier,
+// which is the guarantee every other write door gives. Only a writer that
+// ALSO reads or overwrites what provisioning writes can form a cycle, and
+// that writer must be locked out. Postgres; the order is fixed:
 //
-// Items come BEFORE the membership because account deletion updates the
-// caller's items and then deletes their membership; the opposite order
-// deadlocked with it (codex round 3, reproduced as 40P01).
+//  1. app_install_pending row       FOR UPDATE  the record being consumed
+//     (a concurrent confirm,
+//     discard or sweep)
+//  2. workspace seq lock (advisory)             item writers (create, update,
+//     delete, move, restore) and
+//     slug allocation: they read the
+//     item and slug space provisioning
+//     writes into, so they are a cycle
+//  3. every collections row of the  FOR SHARE   one consistent view of the
+//     workspace                                 collections for a multi-
+//     statement derivation under READ
+//     COMMITTED (kind -> destination,
+//     schemas, companion slugs,
+//     relation target collections)
 //
-// FOR SHARE blocks UPDATE and DELETE of those rows but not the FK KEY SHARE an
-// item or link insert takes, and nothing below UPDATEs a row held FOR SHARE,
-// so no lock is ever upgraded (the share-then-upgrade deadlock).
+// Raced on purpose, each serializing as "provision first":
+//   - collection archive / trait / rename: it reads no item provisioning
+//     inserts (and an archive racing lock 3 waits for the commit anyway);
+//   - membership, role, collection-access and grant writers, and an admin
+//     role change: visibility is read, never written, by provisioning;
+//   - account deletion of the confirming owner: it reads the items it
+//     updates, which provisioning neither writes nor overwrites; the FK checks
+//     of provisioning's inserts refuse cleanly if it commits first.
 //
-// SQLite needs none of 3-5: the transaction is BEGIN IMMEDIATE, which holds
-// the database write lock from its first statement, so no other writer can
-// commit anything the derivation reads until this one ends.
+// The owner-role read is a plain read for the same reason. SQLite needs no
+// lock beyond its own: BEGIN IMMEDIATE holds the database write lock for the
+// whole transaction, so nothing else commits while the derivation runs.
 //
 // Any refusal rolls the whole transaction back and leaves the pending record
 // for a retry or a discard.
@@ -229,64 +231,14 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 		}
 	}
 
-	if !pg {
-		// SQLite: BEGIN IMMEDIATE already holds the write lock, so one
-		// derivation after the role check reads state nothing can change.
-		if err := s.requireWorkspaceOwnerTx(tx, req.WorkspaceID, req.OwnerID, false); err != nil {
-			return nil, err
-		}
-		derived, err := derive(tx)
-		if err != nil {
-			return nil, err
-		}
-		req.Collections, req.Artifacts = derived.Collections, derived.Artifacts
-	} else {
-		// Postgres: a first derivation to learn which items it resolves; then
-		// lock 4 (those items) BEFORE lock 5 (the owner's membership and
-		// visibility rows), the order account deletion takes them in (items
-		// first, then the membership), so the two cannot deadlock (codex
-		// round 3); then the role check; then the derivation again, reading
-		// only rows held by locks 2-5, which must agree with the first.
-		first, err := derive(tx)
-		if err != nil {
-			return nil, err
-		}
-		if len(first.ResolvedItemIDs) > 0 {
-			ids := append([]string(nil), first.ResolvedItemIDs...)
-			sort.Strings(ids)
-			in := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-			args := []any{req.WorkspaceID}
-			for _, id := range ids {
-				args = append(args, id)
-			}
-			if err := lockRowsForShare(tx, s.q(`SELECT id FROM items WHERE workspace_id = ? AND id IN (`+in+`) ORDER BY id FOR SHARE`), args...); err != nil {
-				return nil, fmt.Errorf("provision app: lock resolved items: %w", err)
-			}
-		}
-		if err := s.requireWorkspaceOwnerTx(tx, req.WorkspaceID, req.OwnerID, true); err != nil {
-			return nil, err
-		}
-		// Every row the visibility check reads for this caller (checkItemVisibleQ:
-		// collection_access on the membership row, member_collection_access,
-		// collection and item grants), so a revocation waits (codex round 3).
-		for _, q := range []string{
-			`SELECT collection_id FROM member_collection_access WHERE workspace_id = ? AND user_id = ? ORDER BY collection_id FOR SHARE`,
-			`SELECT id FROM collection_grants WHERE workspace_id = ? AND user_id = ? ORDER BY id FOR SHARE`,
-			`SELECT id FROM item_grants WHERE workspace_id = ? AND user_id = ? ORDER BY id FOR SHARE`,
-		} {
-			if err := lockRowsForShare(tx, s.q(q), req.WorkspaceID, req.OwnerID); err != nil {
-				return nil, fmt.Errorf("provision app: lock visibility rows: %w", err)
-			}
-		}
-		again, err := derive(tx)
-		if err != nil {
-			return nil, err
-		}
-		if !sameDerivation(first, again) {
-			return nil, &ProvisionConflictError{Detail: "the workspace changed while the install was being applied; preview it again"}
-		}
-		req.Collections, req.Artifacts = again.Collections, again.Artifacts
+	if err := s.requireWorkspaceOwnerTx(tx, req.WorkspaceID, req.OwnerID); err != nil {
+		return nil, err
 	}
+	derived, err := derive(tx)
+	if err != nil {
+		return nil, err
+	}
+	req.Collections, req.Artifacts = derived.Collections, derived.Artifacts
 
 	// The install row.
 	installID := newID()
@@ -401,24 +353,6 @@ func lockRowsForShare(tx *sql.Tx, query string, args ...any) error {
 	for rows.Next() {
 	}
 	return rows.Err()
-}
-
-// sameDerivation compares two derivations by what provisioning would write.
-func sameDerivation(a, b *ProvisionDerived) bool {
-	if len(a.Artifacts) != len(b.Artifacts) || len(a.Collections) != len(b.Collections) {
-		return false
-	}
-	for i := range a.Artifacts {
-		if a.Artifacts[i].NormalizedSHA256 != b.Artifacts[i].NormalizedSHA256 || a.Artifacts[i].CollectionID != b.Artifacts[i].CollectionID {
-			return false
-		}
-	}
-	for i := range a.Collections {
-		if a.Collections[i] != b.Collections[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // mintInstallCodeTx mints a fresh install code for installID: 128 random
@@ -562,12 +496,10 @@ func (s *Store) InstallForLiveCode(code string) (string, bool) {
 }
 
 // requireWorkspaceOwnerTx refuses unless userID is an owner of workspaceID,
-// read on tx (FOR SHARE on Postgres when share is set).
-func (s *Store) requireWorkspaceOwnerTx(tx *sql.Tx, workspaceID, userID string, share bool) error {
+// read on tx. A plain read on purpose: see the lock comment on
+// ProvisionAppInstall.
+func (s *Store) requireWorkspaceOwnerTx(tx *sql.Tx, workspaceID, userID string) error {
 	q := `SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
-	if share {
-		q += ` FOR SHARE`
-	}
 	var role string
 	err := tx.QueryRow(s.q(q), workspaceID, userID).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && role != "owner") {

@@ -105,13 +105,8 @@ type appPreviewArtifact struct {
 	// Changes are the importer's warnings: every field it dropped or changed.
 	Changes []string `json:"changes"`
 
-	// For provisioning (U8b), never serialized: the destination collection's
-	// id, and the relation fields whose resolved targets the provisioning
-	// transaction locks.
-	collectionID     string
-	collectionSchema string
-	uniqueKeys       []string
-	relationTargets  map[string]string
+	// For provisioning (U8b), never serialized: the destination collection.
+	collectionID string
 }
 
 // normalizedItem is the item an artifact will be stored as. Its canonical
@@ -526,26 +521,10 @@ func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID s
 	}
 	changes := append([]string{}, norm.Warnings...)
 	sort.Strings(changes)
-	// Relation values (scalar and multi) that RESOLVED (anything the import carried
-	// unresolved is not listed): provisioning re-checks each still names a
-	// live item in its declared collection.
-	unresolvedSet := map[string]bool{}
-	for _, k := range unresolved {
-		unresolvedSet[k] = true
-	}
-	relationTargets := map[string]string{}
-	for _, def := range schema.Fields {
-		if !def.IsRelation() || unresolvedSet[def.Key] {
-			continue
-		}
-		if v, ok := fields[def.Key]; ok && v != nil {
-			relationTargets[def.Key] = def.Collection
-		}
-	}
 	return &appPreviewArtifact{
 		Key: a.Key, URL: a.URL, Kind: string(art.Kind), DestinationCollection: coll.Slug,
 		RawSHA256: a.SHA256, Raw: string(raw), Normalized: item, NormalizedSHA256: digest, Changes: changes,
-		collectionID: coll.ID, relationTargets: relationTargets,
+		collectionID: coll.ID,
 	}, nil
 }
 

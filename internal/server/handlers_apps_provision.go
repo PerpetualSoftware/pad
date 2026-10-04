@@ -278,8 +278,7 @@ func diffChanges(was, now []string) (added, removed []string) {
 	return added, removed
 }
 
-// provisionDerived turns a fresh preview into what provisioning writes, plus
-// every item its relation passes resolved (which the transaction locks).
+// provisionDerived turns a fresh preview into what provisioning writes.
 func provisionDerived(m *appmanifest.Manifest, fresh *appPreview) *store.ProvisionDerived {
 	d := &store.ProvisionDerived{}
 	for i, c := range m.CompanionPack.Collections {
@@ -287,38 +286,13 @@ func provisionDerived(m *appmanifest.Manifest, fresh *appPreview) *store.Provisi
 			Key: c.Key, Slug: c.Slug, Name: c.Name, Schema: string(c.Schema), Adopt: fresh.Collections[i].Adopt,
 		})
 	}
-	seen := map[string]bool{}
 	for _, a := range fresh.Artifacts {
 		d.Artifacts = append(d.Artifacts, store.ProvisionArtifact{
 			Key: a.Key, CollectionID: a.collectionID, Title: a.Normalized.Title, Content: a.Normalized.Content,
 			Fields: a.Normalized.Fields, RawSHA256: a.RawSHA256, NormalizedSHA256: a.NormalizedSHA256,
 		})
-		for key := range a.relationTargets {
-			for _, id := range relationValues(a.Normalized.Fields[key]) {
-				if id != "" && !seen[id] {
-					seen[id] = true
-					d.ResolvedItemIDs = append(d.ResolvedItemIDs, id)
-				}
-			}
-		}
 	}
 	return d
-}
-
-func relationValues(v any) []string {
-	switch t := v.(type) {
-	case string:
-		return []string{t}
-	case []any:
-		var out []string
-		for _, e := range t {
-			if s, ok := e.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	}
-	return nil
 }
 
 func adoptWord(adopt bool) string {
