@@ -3,7 +3,10 @@ package appfetch
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -64,55 +67,69 @@ func TestPoster_PolicyAndPrivateOrigins(t *testing.T) {
 	}
 }
 
-// codex r1/r2 on U10b: a server can answer while the body (or the
-// transport's buffered flush) is still going out. Once Post returns, no byte
-// may be written: the caller's in-flight record ends then.
-func TestPoster_NoWriteAfterReturn(t *testing.T) {
-	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// codex r1-r3 on U10b: a 2xx means the WHOLE request was sent, and a server
+// that answers early and stops reading is a failure, never a delivery.
+func TestPoster_SuccessMeansTheWholeBodyWasSent(t *testing.T) {
+	body := make([]byte, 4<<20)
+	var got atomic.Int64
+	done := make(chan struct{}, 1)
+	slow, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Answer first, then read the body slowly to the end.
 		w.WriteHeader(http.StatusNoContent)
 		w.(http.Flusher).Flush()
-		// Keep reading, slowly, so the client keeps writing.
-		buf := make([]byte, 4096)
-		for i := 0; i < 50; i++ {
-			if _, err := r.Body.Read(buf); err != nil {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		n, _ := io.Copy(io.Discard, &slowReader{r: r.Body})
+		got.Store(n)
+		done <- struct{}{}
 	}))
-	p, err := NewPoster([]PrivateOrigin{{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true}}, 10*time.Second, cfg)
+	p, err := NewPoster([]PrivateOrigin{{Origin: slow.URL, Allowed: []string{"127.0.0.1"}, Webhook: true}}, 30*time.Second, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var returned atomic.Bool
-	var writes, late atomic.Int32
-	onFencedWrite = func(err error) {
-		writes.Add(1)
-		if err != nil {
-			// The write the seal cut short: make it end late enough that
-			// a seal which did not wait for it would return first.
-			time.Sleep(50 * time.Millisecond)
-		}
-		if returned.Load() {
-			late.Add(1)
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	st, err := p.Post(ctx, slow.URL+"/hooks", body, http.Header{})
+	if err != nil || st != http.StatusNoContent {
+		t.Fatalf("post: %d %v", st, err)
 	}
-	t.Cleanup(func() { onFencedWrite = nil })
-	body := make([]byte, 8<<20)
-	for i := 0; i < 3; i++ {
-		if _, err := p.Post(context.Background(), srv.URL+"/hooks", body, http.Header{}); err != nil {
-			t.Logf("post: %v", err)
-		}
-		returned.Store(true)
-		time.Sleep(300 * time.Millisecond)
-		if n := late.Load(); n != 0 {
-			t.Fatalf("round %d: %d writes still running when Post returned", i, n)
-		}
-		returned.Store(false)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server never finished reading")
 	}
-	if writes.Load() == 0 {
-		t.Fatal("no write went through the fence: the connection was not wrapped")
+	if got.Load() != int64(len(body)) {
+		t.Fatalf("a 2xx with %d of %d body bytes delivered", got.Load(), len(body))
 	}
+
+	// A server that answers and stops reading: the write fails.
+	quitter, cfg2 := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(http.StatusNoContent)
+		w.(http.Flusher).Flush() // the 204 is on the wire before the close
+		if hj, ok := w.(http.Hijacker); ok {
+			c, _, _ := hj.Hijack()
+			_ = c.Close()
+		}
+	}))
+	p2, err := NewPoster([]PrivateOrigin{{Origin: quitter.URL, Allowed: []string{"127.0.0.1"}, Webhook: true}}, 30*time.Second, cfg2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Larger than any loopback send buffer, so the write cannot complete
+	// into the kernel unread.
+	big := make([]byte, 64<<20)
+	if st, err := p2.Post(ctx, quitter.URL+"/hooks", big, http.Header{}); err == nil {
+		t.Fatalf("a server that stopped reading answered as a delivery: %d", st)
+	}
+}
+
+type slowReader struct{ r io.Reader }
+
+func (s *slowReader) Read(p []byte) (int, error) {
+	time.Sleep(time.Millisecond)
+	if len(p) > 64<<10 {
+		p = p[:64<<10]
+	}
+	return s.r.Read(p)
 }
 
 func TestPoster_DuplicateEntriesKeepEveryPath(t *testing.T) {
@@ -150,5 +167,37 @@ func TestPoster_PathCannotEscapeItsPrefix(t *testing.T) {
 		if st, err := p.Post(context.Background(), srv.URL+path, nil, http.Header{}); err != nil || st != 204 {
 			t.Errorf("%s: %d %v, want 204", path, st, err)
 		}
+	}
+}
+
+// The certificate is verified: a server the roots do not trust is refused,
+// and so is a name the certificate does not cover.
+func TestPoster_VerifiesTheCertificate(t *testing.T) {
+	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	entry := []PrivateOrigin{{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true}}
+
+	untrusting, err := NewPoster(entry, 5*time.Second, nil) // system roots only
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := untrusting.Post(context.Background(), srv.URL+"/hooks", nil, http.Header{}); err == nil {
+		t.Fatalf("a self-signed server was accepted: %d", st)
+	}
+
+	// Trusted roots, but a hostname the certificate does not name.
+	wrongName := cfg.Clone()
+	other := strings.Replace(srv.URL, "127.0.0.1", "localhost.invalid", 1)
+	lookupWas := lookupIP
+	lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil
+	}
+	t.Cleanup(func() { lookupIP = lookupWas })
+	pinnedOther := []PrivateOrigin{{Origin: other, Allowed: []string{"127.0.0.1"}, Webhook: true}}
+	trusting, err := NewPoster(pinnedOther, 5*time.Second, wrongName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := trusting.Post(context.Background(), other+"/hooks", nil, http.Header{}); err == nil {
+		t.Fatalf("a certificate for another name was accepted: %d", st)
 	}
 }

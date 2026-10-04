@@ -77,6 +77,18 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 	if err != nil || len(targets) == 0 {
 		return false, err
 	}
+	// A member of a bulk operation is never delivered to an app, whether it
+	// is claimed alone or folded under its header (item.bulk_updated, not
+	// subscribable). Which of the two happens depends on claim timing, so
+	// delivering the singles would hand an app an arbitrary subset of one
+	// operation (codex r3 on U10b). DOC-3371 §5: a bulk human edit is
+	// invisible to the app in v1; it resyncs through the API.
+	if unit.batchID != "" {
+		for range targets {
+			s.countAppDelivery("skipped_bulk")
+		}
+		return false, nil
+	}
 	body, collectionID, err := store.BuildAppEventDTO(unit.eventType, unit.eventID, unit.occurredAt, unit.payload)
 	if errors.Is(err, store.ErrNoAppProjection) {
 		// Skipped and counted, never filled in from live state (§5).

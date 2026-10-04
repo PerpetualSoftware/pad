@@ -13,6 +13,7 @@
 package appfetch
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -23,7 +24,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/appmanifest"
@@ -53,6 +53,8 @@ func refused(format string, args ...any) error {
 type Fetcher struct {
 	client  *http.Client
 	private map[string][]*net.IPNet // origin -> pinned nets, fetch-flagged only
+	tls     *tls.Config             // nil: the system roots
+	dialer  *net.Dialer
 }
 
 // lookupIP is the resolver; a variable so tests can resolve without DNS.
@@ -88,6 +90,7 @@ func newFetcher(private []PrivateOrigin, use func(PrivateOrigin) bool, timeout t
 		}
 	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	f.tls, f.dialer = tlsConfig, dialer
 	transport := &http.Transport{
 		Proxy:                 nil,
 		TLSClientConfig:       tlsConfig,
@@ -157,9 +160,6 @@ func (f *Fetcher) dial(ctx context.Context, d *net.Dialer, network, addr string)
 		}
 		conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		if err == nil {
-			if fence, ok := ctx.Value(fenceKey{}).(*writeFence); ok {
-				return fence.wrap(conn), nil
-			}
 			return conn, nil
 		}
 		lastErr = err
@@ -226,24 +226,34 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, maxBytes int64) ([]byt
 // Poster sends app webhooks under the same policy (DOC-3371 §5, §9; TASK-3408
 // U10b): https only, never a redirect (a 3xx is returned as a status, which
 // the caller treats as a failed attempt), no environment proxy, every dial
-// screened. Its private destinations are the admin entries flagged Webhook,
-// and an entry with a Path admits only URLs under that path.
+// screened. Its private destinations are the admin entries flagged Webhook;
+// an entry with a Path admits only URLs under that path.
+//
+// It does NOT use net/http's Transport. The transport may hand back a
+// response while it is still writing the request, and stops writing on its
+// own schedule. A webhook's in-flight record must end only when no byte can
+// still go out, and a 2xx must mean the whole request was sent (codex r1-r3
+// on U10b). So Post writes the whole request itself, on its own connection,
+// then reads the response, then closes the connection, all on the caller's
+// goroutine: when it returns, nothing else can write.
 type Poster struct {
-	f     *Fetcher
-	paths map[string][]string // origin -> allowed path prefixes ("" = any), webhook entries
+	f       *Fetcher
+	paths   map[string][]string // origin -> allowed path prefixes ("" = any), webhook entries
+	timeout time.Duration       // ceiling on one Post, under the caller's deadline
 }
 
+// posterHandshakeTimeout bounds the TLS handshake, as the fetch Transport's
+// TLSHandshakeTimeout does.
+const posterHandshakeTimeout = 10 * time.Second
+
 // NewPoster builds a Poster. private is the admin list (nil on Cloud).
-// timeout is a ceiling; the caller's context deadline is the real bound.
+// The caller's context deadline bounds each Post.
 func NewPoster(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Config) (*Poster, error) {
 	f, err := newFetcher(private, func(p PrivateOrigin) bool { return p.Webhook }, timeout, tlsConfig)
 	if err != nil {
 		return nil, err
 	}
-	// One connection per request: the write fence seals the connection a
-	// request was written on, so none may be shared or reused.
-	f.client.Transport.(*http.Transport).DisableKeepAlives = true
-	p := &Poster{f: f, paths: map[string][]string{}}
+	p := &Poster{f: f, paths: map[string][]string{}, timeout: timeout}
 	for _, e := range private {
 		if !e.Webhook {
 			continue
@@ -260,9 +270,14 @@ func NewPoster(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Co
 	return p, nil
 }
 
-// Post sends body to rawURL with header and returns the status. The response
-// body is drained up to a small bound and discarded. An error wrapping
-// ErrRefused is the policy's (permanent); any other error is the network's.
+// postResponseMax bounds the response head and body Post reads.
+const postResponseMax = 64 << 10
+
+// Post sends body to rawURL with header and returns the status, having
+// written the WHOLE request before reading any response. A server that stops
+// reading early makes the write fail, which is an error here, never a
+// success. An error wrapping ErrRefused is the policy's (permanent); any
+// other error is the network's.
 func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header http.Header) (int, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
@@ -275,19 +290,50 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	if prefixes, ok := p.paths[origin]; ok && !underAnyPath(u, prefixes) {
 		return 0, refused("%s is outside the paths allowed for %s", u.EscapedPath(), origin)
 	}
-	// The write fence: every byte of this request goes through a connection
-	// it wrapped, and Post seals that connection before returning, waiting
-	// out any write in progress. A server may answer while the body, or the
-	// transport's buffered flush, is still going out; after Post returns no
-	// byte can be (codex r1/r2 on U10b), so the caller's in-flight record can
-	// end.
-	fence := &writeFence{}
-	reqCtx, cancel := context.WithCancel(context.WithValue(context.WithValue(ctx, originKey{}, origin), fenceKey{}, fence))
-	defer func() {
-		cancel()
-		fence.seal()
-	}()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	// f.dial screens every resolved address and dials the screened IP
+	// itself, so nothing is resolved between the screen and the connect.
+	raw, err := p.f.dial(context.WithValue(ctx, originKey{}, origin), p.f.dialer, "tcp", net.JoinHostPort(u.Hostname(), port))
+	if err != nil {
+		return 0, err
+	}
+	// The system roots unless a test supplies its own; the hostname is
+	// verified against the certificate (ServerName); never InsecureSkipVerify.
+	cfg := &tls.Config{}
+	if p.f.tls != nil {
+		cfg = p.f.tls.Clone()
+	}
+	cfg.ServerName = u.Hostname()
+	cfg.InsecureSkipVerify = false
+	cfg.MinVersion = tls.VersionTLS12
+	cfg.NextProtos = []string{"http/1.1"}
+	conn := tls.Client(raw, cfg)
+	// Closed before Post returns, on every path. Every read and write below
+	// runs on this goroutine, so once Post returns nothing can write. The
+	// AfterFunc only moves the deadline, to unblock a read or write when ctx
+	// ends; it never writes.
+	defer conn.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	defer stop()
+
+	hctx, hcancel := context.WithTimeout(ctx, posterHandshakeTimeout)
+	err = conn.HandshakeContext(hctx)
+	hcancel()
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return 0, refused("%v", err)
 	}
@@ -296,12 +342,20 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 			req.Header.Add(k, v)
 		}
 	}
-	resp, err := p.f.client.Do(req)
+	req.Close = true // one request per connection
+	bw := bufio.NewWriter(conn)
+	if err := req.Write(bw); err != nil {
+		return 0, err
+	}
+	if err := bw.Flush(); err != nil {
+		return 0, err
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(io.LimitReader(conn, postResponseMax)), req)
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 	return resp.StatusCode, nil
 }
 
@@ -331,72 +385,4 @@ func underAnyPath(u *url.URL, prefixes []string) bool {
 		}
 	}
 	return false
-}
-
-type fenceKey struct{}
-
-// writeFence holds the connections one request was written on. seal stops
-// every further write and returns only once no write is in progress.
-type writeFence struct {
-	mu     sync.Mutex
-	conns  []*fencedConn
-	sealed bool
-}
-
-func (f *writeFence) wrap(c net.Conn) net.Conn {
-	fc := &fencedConn{Conn: c}
-	f.mu.Lock()
-	f.conns = append(f.conns, fc)
-	sealed := f.sealed
-	f.mu.Unlock()
-	if sealed {
-		fc.seal() // dialled after the request ended: never written to
-	}
-	return fc
-}
-
-func (f *writeFence) seal() {
-	f.mu.Lock()
-	f.sealed = true
-	conns := append([]*fencedConn(nil), f.conns...)
-	f.mu.Unlock()
-	for _, c := range conns {
-		c.seal()
-	}
-}
-
-var errFenceSealed = errors.New("app webhook connection sealed")
-
-// onFencedWrite is a test hook: called as each write the fence let through
-// returns.
-var onFencedWrite func(err error)
-
-// fencedConn serialises writes with seal: once seal returns, no Write is in
-// progress and none will start.
-type fencedConn struct {
-	net.Conn
-	mu     sync.Mutex
-	sealed bool
-}
-
-func (c *fencedConn) Write(b []byte) (int, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.sealed {
-		return 0, errFenceSealed
-	}
-	n, err := c.Conn.Write(b)
-	if onFencedWrite != nil {
-		onFencedWrite(err) // as the write ENDS, still under the lock
-	}
-	return n, err
-}
-
-func (c *fencedConn) seal() {
-	// Unblock a write stuck on a full send buffer, then wait for it.
-	_ = c.Conn.SetWriteDeadline(time.Unix(1, 0))
-	c.mu.Lock()
-	c.sealed = true
-	c.mu.Unlock()
-	_ = c.Conn.Close()
 }

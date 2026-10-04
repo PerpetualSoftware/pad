@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
 )
 
@@ -329,5 +330,47 @@ func TestAppDelivery_StopEndsAPendingRetry(t *testing.T) {
 	}
 	if n := len(e.hooksAt("/hooks")); n != 1 {
 		t.Fatalf("%d attempts, want 1 (no attempt after Stop)", n)
+	}
+}
+
+// codex r3 on U10b: a bulk operation's members are never delivered to an app,
+// claimed alone or folded, so the app never sees an arbitrary subset of one
+// operation (DOC-3371 §5: bulk edits are invisible to apps in v1).
+func TestAppDelivery_BulkMembersAreNotDelivered(t *testing.T) {
+	e := newDeliveryEnv(t)
+	// Subscribe to item.updated as well.
+	e.m["version"] = "1.0.1"
+	e.m["events"] = []any{
+		map[string]any{"name": "item.created", "collections": []any{"tickets"}},
+		map[string]any{"name": "item.updated", "collections": []any{"tickets"}},
+	}
+	e.publish(t, e.m)
+	_, p, _ := e.previewUpgrade(t)
+	if code, body := e.confirmUpgrade(t, p); code != http.StatusOK {
+		t.Fatalf("upgrade: %d %s", code, body)
+	}
+	e.redeemNow(t)
+	it := e.item(t, e.companion.ID, "Member")
+	e.tick(t)
+	before := len(e.hooksAt("/hooks"))
+	title := "Member renamed"
+	if _, err := e.srv.store.UpdateItem(it.ID, models.ItemUpdate{Title: &title}, store.WithEventBatch("batch-u10b")); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t)
+	if got := e.hooksAt("/hooks"); len(got) != before {
+		t.Fatalf("a bulk member was delivered: %s", got[len(got)-1].Body)
+	}
+	if n := e.pendingOutbox(t); n != 0 {
+		t.Fatalf("%d events left owed after a skipped bulk member", n)
+	}
+	// The same edit outside a batch is delivered.
+	title = "Single edit"
+	if _, err := e.srv.store.UpdateItem(it.ID, models.ItemUpdate{Title: &title}); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t)
+	if got := e.hooksAt("/hooks"); len(got) != before+1 {
+		t.Fatalf("%d deliveries, want the single edit delivered", len(got)-before)
 	}
 }

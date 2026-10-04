@@ -429,8 +429,9 @@ type Metrics struct {
 	// AppWebhookDeliveriesTotal counts app webhook deliveries by result
 	// (TASK-3408 U10b): delivered, transient, permanent, refused (admission
 	// said no: install not active, hook held, event not visible), deferred,
-	// and skipped_no_projection (the event carried no app-projection block,
-	// so no app body could be built; never filled from live state).
+	// skipped_no_projection (the event carried no app-projection block,
+	// so no app body could be built; never filled from live state), and
+	// skipped_bulk (a member of a bulk operation, which v1 apps never get).
 	AppWebhookDeliveriesTotal *prometheus.CounterVec
 
 	// OAuth flow metrics (PLAN-943 TASK-961). Wired from
