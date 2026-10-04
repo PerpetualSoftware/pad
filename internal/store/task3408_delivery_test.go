@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -392,5 +393,68 @@ func TestTask3408_SubscriptionChangeMovesDeliverFrom(t *testing.T) {
 	upsert("item.created", "item.updated")
 	if got := get(); got == old {
 		t.Fatal("a changed subscription left deliver_from where it was")
+	}
+}
+
+// codex r6 on U10b: hooks released under migration 122 get a deliver_from
+// from their secret_delivered_at; held hooks stay NULL; set ones are kept.
+func TestTask3408_DeliverFromBackfill(t *testing.T) {
+	f := task3408Fixture(t, "inst-backfill")
+	fs, path := migrationsFS, "migrations/123_app_delivery_inflight.sql"
+	if f.s.dialect.Driver() != DriverSQLite {
+		fs, path = pgMigrationsFS, "pgmigrations/097_app_delivery_inflight.sql"
+	}
+	body, err := fs.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var backfill string
+	for _, stmt := range strings.Split(string(body), ";") {
+		var lines []string
+		for _, l := range strings.Split(stmt, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(l), "--") {
+				lines = append(lines, l)
+			}
+		}
+		if q := strings.TrimSpace(strings.Join(lines, "\n")); strings.HasPrefix(q, "UPDATE webhooks") {
+			backfill = q
+		}
+	}
+	if backfill == "" {
+		t.Fatalf("%s: no UPDATE webhooks statement", path)
+	}
+	// Three hooks: released (as under 122), held, and already stamped.
+	g := task3408FixtureIn(t, task3394FixtureIn(t, f.s, f.ws, "inst-backfill-held"))
+	h := task3408FixtureIn(t, task3394FixtureIn(t, f.s, f.ws, "inst-backfill-set"))
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := f.s.db.Exec(f.s.q(q), args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE webhooks SET deliver_from = NULL, secret_delivered_at = '2026-01-01T00:00:00Z' WHERE id = ?`, f.hookID)
+	exec(`UPDATE webhooks SET deliver_from = NULL, secret_delivered_at = NULL WHERE id = ?`, g.hookID)
+	exec(`UPDATE webhooks SET deliver_from = '2026-05-05T00:00:00Z' WHERE id = ?`, h.hookID)
+	if _, err := f.s.db.Exec(backfill); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	read := func(id string) string {
+		var v *string
+		if err := f.s.db.QueryRow(f.s.q(`SELECT deliver_from FROM webhooks WHERE id = ?`), id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		if v == nil {
+			return "NULL"
+		}
+		return *v
+	}
+	if got := read(f.hookID); got != "2026-01-01T00:00:00Z" {
+		t.Errorf("released hook: %s", got)
+	}
+	if got := read(g.hookID); got != "NULL" {
+		t.Errorf("held hook: %s", got)
+	}
+	if got := read(h.hookID); got != "2026-05-05T00:00:00Z" {
+		t.Errorf("stamped hook: %s", got)
 	}
 }

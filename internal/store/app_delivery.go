@@ -119,9 +119,12 @@ func (e *AppDeliveryRefusedError) Error() string { return "app delivery refused:
 // occurredAt is the event's outbox occurred_at (RFC3339, seconds). An event
 // that occurred before the hook's deliver_from is refused: the app skipped
 // it while held, disabled or not subscribed, and an owner hook's failure
-// keeping the row pending must not deliver it later (codex r5). Both stamps
-// are whole seconds, so an event in the same second as the redeem or
-// re-enable is admitted: a one-second stated residual.
+// keeping the row pending must not deliver it later (codex r5). STATED
+// RESIDUALS until per-endpoint delivery state (U10c) records the refusal
+// itself: both stamps are whole seconds, so an event in the same second as
+// the redeem or re-enable is admitted; and both are application-host time,
+// so on a multi-instance deployment the boundary is only as exact as the
+// hosts' clock agreement (codex r6).
 func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, deliveryID string) (*AppDeliveryAdmission, error) {
 	// The hook's install never changes (app_install_id is written once), so
 	// it is read before the lock to know which install row to take.

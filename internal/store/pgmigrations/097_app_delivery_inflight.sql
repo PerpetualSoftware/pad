@@ -15,3 +15,8 @@ CREATE INDEX IF NOT EXISTS idx_app_delivery_inflight_install ON app_delivery_inf
 -- skipped while held, disabled or unsubscribed is never delivered later
 -- because an owner hook's failure kept its outbox row pending.
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS deliver_from TEXT;
+-- Hooks released under migration 122 (U10a) start delivering from the
+-- moment their secret was handed out. Without this they would read NULL and
+-- refuse every event until the next redeem (codex r6 on U10b).
+UPDATE webhooks SET deliver_from = secret_delivered_at
+ WHERE app_install_id IS NOT NULL AND secret_delivered_at IS NOT NULL AND deliver_from IS NULL;
