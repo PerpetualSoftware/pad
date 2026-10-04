@@ -419,17 +419,81 @@ func TestTask3401_ContextSelfCheck(t *testing.T) {
 	}
 }
 
-// Cross-workspace helpers refuse outright under app context.
+// Cross-workspace helpers refuse outright under app context. Each leg has a
+// control without the app context that IS allowed, so the refusal is the
+// app context's, not some other denial.
 func TestTask3401_CrossWorkspaceHelpersRefuseApps(t *testing.T) {
-	f := appAPIFixture(t, "read")
-	req := httptest.NewRequest("GET", "/x", nil)
-	req = req.WithContext(withAppContextForTest(req, &appContext{InstallID: f.in.id}))
-	if a := f.srv.AuthorizeCrossWorkspaceRead(req, f.ws.Slug, CrossWorkspaceScope{}); a.Allowed {
+	mf := newMovedToFixture(t)
+	mf.record(mf.destB, true, 1)
+	mf.archiveSource()
+	base := func() *http.Request {
+		req := httptest.NewRequest("GET", "/x", nil)
+		ctx := WithCurrentUser(req.Context(), mf.owner)
+		ctx = context.WithValue(ctx, ctxResolvedWorkspaceID, mf.wsA.ID)
+		ctx = context.WithValue(ctx, ctxWorkspaceRole, "owner")
+		return req.WithContext(ctx)
+	}
+	asApp := func(r *http.Request) *http.Request {
+		return r.WithContext(withAppContextForTest(r, &appContext{InstallID: "inst-x"}))
+	}
+	if a := mf.srv.AuthorizeCrossWorkspaceRead(base(), mf.wsB.Slug, CrossWorkspaceWorkspaceOnlyScope()); !a.Allowed {
+		t.Fatalf("control: the owner's cross-workspace read was refused: %v", a.Reason)
+	}
+	if a := mf.srv.AuthorizeCrossWorkspaceRead(asApp(base()), mf.wsB.Slug, CrossWorkspaceWorkspaceOnlyScope()); a.Allowed {
 		t.Error("a cross-workspace read was allowed under app context")
 	}
-	deleted := &models.Item{ID: f.item.ID, DeletedAt: &time.Time{}}
-	if got := f.srv.movedToDestinations(req, deleted); got != nil {
+	now := time.Now()
+	source := &models.Item{ID: mf.source.ID, WorkspaceID: mf.wsA.ID, CollectionID: mf.collA.ID, DeletedAt: &now}
+	if got := mf.srv.movedToDestinations(base(), source); len(got) == 0 {
+		t.Fatal("control: the moved item names no destination")
+	}
+	if got := mf.srv.movedToDestinations(asApp(base()), source); got != nil {
 		t.Errorf("moved_to under app context: %v", got)
+	}
+}
+
+// A read token acts as a viewer whatever the bot's membership; a write token
+// keeps its membership's role.
+func TestTask3401_TheRoleFollowsTheAccess(t *testing.T) {
+	for access, want := range map[string]string{"read": "viewer", "write": "editor"} {
+		f := appAPIFixture(t, access)
+		var me AppMe
+		rr := appGet(f.srv, f.path("/me"), f.token)
+		_ = json.Unmarshal(rr.Body.Bytes(), &me)
+		if me.Role != want {
+			t.Errorf("%s token: role %q, want %q", access, me.Role, want)
+		}
+	}
+}
+
+// A comment whose parent is on ANOTHER item projects parent_comment_id null.
+func TestTask3401_ACrossItemParentProjectsToNull(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	human := createTestUserDirect(t, f.srv, "elsewhere-3401@example.com")
+	elsewhere, err := f.srv.store.CreateComment(f.ws.ID, f.privateItem.ID, human.ID, models.CommentCreate{Body: "other", Author: "B", CreatedBy: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE comments SET parent_id = ? WHERE id = ?`, elsewhere.ID, f.comment.ID); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := f.srv.store.CreateComment(f.ws.ID, f.item.ID, human.ID, models.CommentCreate{Body: "reply", Author: "C", CreatedBy: "user", ParentID: f.comment.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Comments []AppComment `json:"comments"`
+	}
+	_ = json.Unmarshal(appGet(f.srv, f.path("/items/"+f.item.ID+"/comments"), f.token).Body.Bytes(), &out)
+	got := map[string]*string{}
+	for _, c := range out.Comments {
+		got[c.ID] = c.ParentCommentID
+	}
+	if p, ok := got[f.comment.ID]; !ok || p != nil {
+		t.Errorf("a cross-item parent projected as %v, want null", p)
+	}
+	if p := got[reply.ID]; p == nil || *p != f.comment.ID {
+		t.Errorf("control: a same-item parent projected as %v", p)
 	}
 }
 
