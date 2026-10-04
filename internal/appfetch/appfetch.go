@@ -143,6 +143,11 @@ func (f *Fetcher) dial(ctx context.Context, d *net.Dialer, network, addr string)
 	}
 	origin, _ := ctx.Value(originKey{}).(string)
 	pinned := f.private[origin]
+	if only, ok := ctx.Value(pinsKey{}).([]*net.IPNet); ok {
+		// The caller narrowed the pins to the entries that admit this
+		// request (Poster: entries whose path matches).
+		pinned = only
+	}
 
 	var ips []net.IP
 	if ip := net.ParseIP(host); ip != nil {
@@ -238,9 +243,20 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, maxBytes int64) ([]byt
 // goroutine: when it returns, nothing else can write.
 type Poster struct {
 	f       *Fetcher
-	paths   map[string][]string // origin -> allowed path prefixes ("" = any), webhook entries
-	timeout time.Duration       // ceiling on one Post, under the caller's deadline
+	entries map[string][]posterEntry // origin -> its webhook entries
+	timeout time.Duration            // ceiling on one Post, under the caller's deadline
 }
+
+// posterEntry is one webhook-flagged admin entry: its pinned addresses and
+// the path it admits ("" = any). Kept per ENTRY, never merged per origin:
+// two entries for one origin admit their own path at their own addresses
+// only (codex r4 on U10b).
+type posterEntry struct {
+	nets []*net.IPNet
+	path string
+}
+
+type pinsKey struct{}
 
 // posterHandshakeTimeout bounds the TLS handshake, as the fetch Transport's
 // TLSHandshakeTimeout does.
@@ -253,7 +269,7 @@ func NewPoster(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Co
 	if err != nil {
 		return nil, err
 	}
-	p := &Poster{f: f, paths: map[string][]string{}, timeout: timeout}
+	p := &Poster{f: f, entries: map[string][]posterEntry{}, timeout: timeout}
 	for _, e := range private {
 		if !e.Webhook {
 			continue
@@ -262,10 +278,17 @@ func NewPoster(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Co
 		if err != nil {
 			return nil, err
 		}
-		// Every entry's path is kept: duplicate entries for one origin add
-		// paths, and an entry with none makes the origin unrestricted
-		// (codex r2 on U10b).
-		p.paths[origin] = append(p.paths[origin], e.Path)
+		pe := posterEntry{path: e.Path}
+		for _, a := range e.Allowed {
+			n, err := parseNet(a)
+			if err != nil {
+				return nil, fmt.Errorf("private origin %s: %v", origin, err)
+			}
+			pe.nets = append(pe.nets, n)
+		}
+		// Every entry is kept: duplicate entries for one origin add paths
+		// (codex r2), each with its own addresses (codex r4).
+		p.entries[origin] = append(p.entries[origin], pe)
 	}
 	return p, nil
 }
@@ -287,8 +310,17 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	if err != nil {
 		return 0, refused("%q: %v", rawURL, err)
 	}
-	if prefixes, ok := p.paths[origin]; ok && !underAnyPath(u, prefixes) {
-		return 0, refused("%s is outside the paths allowed for %s", u.EscapedPath(), origin)
+	var pins []*net.IPNet
+	if entries, ok := p.entries[origin]; ok {
+		for _, e := range entries {
+			if e.path == "" || underPath(u, e.path) {
+				pins = append(pins, e.nets...)
+			}
+		}
+		if len(pins) == 0 {
+			return 0, refused("%s is outside the paths allowed for %s", u.EscapedPath(), origin)
+		}
+		ctx = context.WithValue(ctx, pinsKey{}, pins)
 	}
 	if p.timeout > 0 {
 		var cancel context.CancelFunc
@@ -350,13 +382,26 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	if err := bw.Flush(); err != nil {
 		return 0, err
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(io.LimitReader(conn, postResponseMax)), req)
-	if err != nil {
-		return 0, err
+	// Interim 1xx answers (100 Continue, 103 Early Hints) precede the final
+	// one and are skipped, as net/http's Transport does (codex r4 on U10b);
+	// they share the one 64 KiB bound. 101 is a protocol switch, never a
+	// webhook answer.
+	br := bufio.NewReader(io.LimitReader(conn, postResponseMax))
+	for {
+		resp, err := http.ReadResponse(br, req)
+		if err != nil {
+			return 0, err
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			return 0, refused("%s answered 101 Switching Protocols", u.Redacted())
+		}
+		if resp.StatusCode >= 100 && resp.StatusCode < 200 {
+			continue
+		}
+		return resp.StatusCode, nil
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	return resp.StatusCode, nil
 }
 
 // underPath reports whether u's path lies under prefix, by whole segments.
@@ -376,13 +421,4 @@ func underPath(u *url.URL, prefix string) bool {
 		return strings.HasPrefix(u.Path, prefix)
 	}
 	return u.Path == prefix || strings.HasPrefix(u.Path, prefix+"/")
-}
-
-func underAnyPath(u *url.URL, prefixes []string) bool {
-	for _, p := range prefixes {
-		if p == "" || underPath(u, p) {
-			return true
-		}
-	}
-	return false
 }

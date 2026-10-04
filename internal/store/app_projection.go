@@ -244,7 +244,11 @@ func (s *Store) buildItemAppProjectionTx(tx *sql.Tx, item *models.Item) (*itemAp
 
 // buildCommentAppProjectionTx freezes the block for a comment event. author is
 // the comment's own author column, the display used when the account is gone.
-func (s *Store) buildCommentAppProjectionTx(tx *sql.Tx, itemID, userID, author, kind, parentID string) (*commentAppProjection, error) {
+//
+// commentID names the comment, so the block records the install that wrote
+// it (comments.via_app) as the creator's via_app, as an item's does (codex
+// r4 on U10b). Every caller computes the block while the row still exists.
+func (s *Store) buildCommentAppProjectionTx(tx *sql.Tx, commentID, itemID, userID, author, kind, parentID string) (*commentAppProjection, error) {
 	var collectionID, workspaceID string
 	err := tx.QueryRow(s.q(`SELECT collection_id, workspace_id FROM items WHERE id = ?`), itemID).Scan(&collectionID, &workspaceID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -260,10 +264,14 @@ func (s *Store) buildCommentAppProjectionTx(tx *sql.Tx, itemID, userID, author, 
 	if display == "" {
 		display = author
 	}
+	var viaApp sql.NullString
+	if err := tx.QueryRow(s.q(`SELECT via_app FROM comments WHERE id = ?`), commentID).Scan(&viaApp); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("app projection: read comment via_app: %w", err)
+	}
 	p := &commentAppProjection{
 		V:            appProjectionVersion,
 		CollectionID: collectionID,
-		Creator:      appProjectionCreator{UserID: userID, Display: display, Kind: kind},
+		Creator:      appProjectionCreator{UserID: userID, Display: display, Kind: kind, ViaApp: viaApp.String},
 		ItemID:       itemID,
 	}
 	if parentID != "" {

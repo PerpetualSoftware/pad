@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
+
+	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
@@ -372,5 +375,43 @@ func TestAppDelivery_BulkMembersAreNotDelivered(t *testing.T) {
 	e.tick(t)
 	if got := e.hooksAt("/hooks"); len(got) != before+1 {
 		t.Fatalf("%d deliveries, want the single edit delivered", len(got)-before)
+	}
+}
+
+// codex r4 on U10b: a folded bulk batch delivers nothing to apps and is
+// counted, like a member claimed alone.
+func TestAppDelivery_FoldedBulkIsCountedNotDelivered(t *testing.T) {
+	e := newDeliveryEnv(t)
+	m := metrics.New()
+	e.srv.SetMetrics(m)
+	e.redeemNow(t)
+	var ids []string
+	for _, title := range []string{"B1", "B2"} {
+		ids = append(ids, e.item(t, e.companion.ID, title).ID)
+	}
+	e.tick(t)
+	before := len(e.hooksAt("/hooks"))
+	const batch = "batch-fold"
+	for _, id := range ids {
+		if err := e.srv.store.DeleteItem(id, store.WithEventBatch(batch)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.srv.store.EmitBulkHeaderEvent(e.wsID, batch, "archive", ids, nil); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t)
+	if got := len(e.hooksAt("/hooks")); got != before {
+		t.Fatalf("%d deliveries from a bulk batch", got-before)
+	}
+	var got dto.Metric
+	if err := m.AppWebhookDeliveriesTotal.WithLabelValues("skipped_bulk").Write(&got); err != nil {
+		t.Fatal(err)
+	}
+	if n := got.GetCounter().GetValue(); n < 1 {
+		t.Fatalf("skipped_bulk = %v, want the batch counted", n)
+	}
+	if n := e.pendingOutbox(t); n != 0 {
+		t.Fatalf("%d events left owed", n)
 	}
 }

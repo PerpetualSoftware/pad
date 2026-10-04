@@ -201,3 +201,40 @@ func TestPoster_VerifiesTheCertificate(t *testing.T) {
 		t.Fatalf("a certificate for another name was accepted: %d", st)
 	}
 }
+
+// codex r4 on U10b: interim answers are skipped, as net/http's Transport
+// does; the final answer decides.
+func TestPoster_SkipsInterimAnswers(t *testing.T) {
+	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Link", "</style.css>; rel=preload")
+		w.WriteHeader(http.StatusEarlyHints)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	p, err := NewPoster([]PrivateOrigin{{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true}}, 5*time.Second, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := p.Post(context.Background(), srv.URL+"/hooks", []byte("{}"), http.Header{}); err != nil || st != http.StatusNoContent {
+		t.Fatalf("got %d %v, want the final 204", st, err)
+	}
+}
+
+// codex r4 on U10b: each entry admits its own path at its own addresses;
+// two entries for one origin are never merged into "any path at any pin".
+func TestPoster_EntryPinsAndPathsStayPaired(t *testing.T) {
+	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	p, err := NewPoster([]PrivateOrigin{
+		{Origin: srv.URL, Allowed: []string{"127.0.0.2"}, Webhook: true, Path: "/a"},
+		{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true, Path: "/b"},
+	}, 5*time.Second, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The server is at 127.0.0.1, which only /b's entry pins.
+	if st, err := p.Post(context.Background(), srv.URL+"/b", nil, http.Header{}); err != nil || st != 204 {
+		t.Fatalf("/b: %d %v, want 204", st, err)
+	}
+	if st, err := p.Post(context.Background(), srv.URL+"/a", nil, http.Header{}); !errors.Is(err, ErrRefused) {
+		t.Fatalf("/a reached /b's address: %d %v", st, err)
+	}
+}

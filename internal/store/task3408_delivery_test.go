@@ -311,3 +311,33 @@ func TestTask3408_DeletedWorkspaceRefusesAdmission(t *testing.T) {
 	_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "wd")
 	wantRefused(t, err, "workspace_deleted")
 }
+
+// codex r4 on U10b: a comment an app wrote carries its install as the
+// creator's via_app, as an app-created item does.
+func TestTask3408_CommentBlockRecordsTheWritingInstall(t *testing.T) {
+	f := task3408Fixture(t, "inst-cvia")
+	item, err := f.s.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: "T", Fields: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := f.s.CreateComment(f.ws.ID, item.ID, "", models.CommentCreate{Body: "hi", Author: "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	p, err := f.s.buildCommentAppProjectionTx(tx, c.ID, item.ID, c.UserID, c.Author, c.CreatedBy, "")
+	if err != nil || p == nil || p.Creator.ViaApp != "" {
+		t.Fatalf("a person's comment: %+v %v", p, err)
+	}
+	if _, err := tx.Exec(f.s.q(`UPDATE comments SET via_app = ? WHERE id = ?`), f.installID, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, err = f.s.buildCommentAppProjectionTx(tx, c.ID, item.ID, c.UserID, c.Author, c.CreatedBy, "")
+	if err != nil || p.Creator.ViaApp != f.installID {
+		t.Fatalf("an app's comment: %+v %v", p, err)
+	}
+}

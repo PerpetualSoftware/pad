@@ -48,8 +48,8 @@ type AppHookTarget struct {
 }
 
 // ListAppWebhookTargets returns the workspace's deliverable-looking app hooks
-// subscribed to event: install active, secret delivered. Unlocked; nothing is
-// decided here.
+// subscribed to event (any event when it is ""): install active, secret
+// delivered. Unlocked; nothing is decided here.
 func (s *Store) ListAppWebhookTargets(workspaceID, event string) ([]AppHookTarget, error) {
 	rows, err := s.db.Query(s.q(`SELECT w.id, w.app_install_id, w.events FROM webhooks w
 		JOIN app_installs i ON i.id = w.app_install_id
@@ -82,7 +82,7 @@ func appHookSubscribes(eventsJSON, event, collectionID string) bool {
 		return false
 	}
 	for _, sub := range subs {
-		if sub.Name != event {
+		if event != "" && sub.Name != event {
 			continue
 		}
 		if collectionID == "" {
