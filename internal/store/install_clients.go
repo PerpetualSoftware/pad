@@ -238,6 +238,14 @@ func (s *Store) RevokeInstallClientGrantsTx(tx *sql.Tx, installID string) error 
 	if err != nil {
 		return err
 	}
+	// The bindings first, locked in request_id order (TASK-3399, codex U5b-1
+	// r4): a person's delegated revocation locks ITS bindings in the same
+	// order before any child row, so the two meet at the first shared
+	// binding instead of crossing inside a token table, where one table
+	// order does not mean one row order.
+	if err := s.lockBindingsInOrderTx(tx, `client_id = ?`, clientID); err != nil {
+		return fmt.Errorf("revoke install grants: %w", err)
+	}
 	if _, err := tx.Exec(s.q(`DELETE FROM app_token_bindings WHERE client_id = ?`), clientID); err != nil {
 		return fmt.Errorf("revoke install grants: bindings: %w", err)
 	}
@@ -594,3 +602,26 @@ func (s *Store) GetInstallConsentState(installID string) (*InstallConsentState, 
 // RevokeUserAppGrant). Appended to a WHERE clause over a token table whose
 // client column is client_id.
 const notInstallClientSQL = ` AND client_id NOT IN (SELECT id FROM oauth_clients WHERE app_install_id IS NOT NULL AND app_install_id <> '')`
+
+// lockBindingsInOrderTx locks the app_token_bindings rows a predicate
+// selects, tombstones included, in request_id order, on Postgres (SQLite's
+// single writer serializes the callers already). Every transaction that
+// writes several grants' child rows (install teardown, a person's delegated
+// revocation) takes its bindings this way first, so two of them can only
+// wait on each other at a binding, in one order, never in a cycle.
+func (s *Store) lockBindingsInOrderTx(tx *sql.Tx, where string, args ...any) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	rows, err := tx.Query(s.q(`SELECT request_id FROM app_token_bindings WHERE `+where+` ORDER BY request_id FOR UPDATE`), args...)
+	if err != nil {
+		return fmt.Errorf("lock token bindings: %w", err)
+	}
+	for rows.Next() {
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("lock token bindings: %w", err)
+	}
+	return rows.Close()
+}

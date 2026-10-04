@@ -164,7 +164,9 @@ func (s *Store) RevokeUserAppGrant(userID, requestID string) (installID string, 
 // order of its own. Against install teardown, which holds the install and
 // then writes these same rows, both take the child rows in ONE order:
 // binding, PKCE, code, refresh, access (DeleteInstallClientTx's), so the two
-// cannot wait on each other in a cycle.
+// cannot wait on each other in a cycle. Both lock their bindings first, in
+// request_id order (lockBindingsInOrderTx), because one table order is not
+// one row order.
 func (s *Store) revokeDelegatedGrantsTx(tx *sql.Tx, userID, workspaceID string) error {
 	scope := `SELECT request_id FROM app_token_bindings WHERE auth_kind = 'delegated' AND delegated_user_id = ?`
 	args := []any{userID}
@@ -173,6 +175,16 @@ func (s *Store) revokeDelegatedGrantsTx(tx *sql.Tx, userID, workspaceID string) 
 		args = append(args, workspaceID)
 	}
 	with := func(first any) []any { return append([]any{first}, args...) }
+	// Every binding of the person in scope, tombstones included, locked in
+	// request_id order before any child row, as install teardown does
+	// (codex U5b-1 r4).
+	where := `auth_kind = 'delegated' AND delegated_user_id = ?`
+	if workspaceID != "" {
+		where += ` AND workspace_id = ?`
+	}
+	if err := s.lockBindingsInOrderTx(tx, where, args...); err != nil {
+		return fmt.Errorf("revoke delegated grants: %w", err)
+	}
 	for _, st := range []struct {
 		q    string
 		args []any
