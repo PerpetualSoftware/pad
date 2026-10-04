@@ -511,3 +511,25 @@ func TestTask3401c_ASubjectNarrowedMidUploadCommitsNoRow(t *testing.T) {
 		})
 	}
 }
+
+// Codex U6c r5: a credential that dies while an upload's body arrives is a
+// 401 with the invalid_token challenge, not the 403 a permission change gets.
+func TestTask3401c_ACredentialDyingMidUploadIs401(t *testing.T) {
+	f := appAPIFixture(t, "write")
+	body := append(testPNG(t), 7, 8, 9)
+	r := &lazyBody{build: func() []byte {
+		if _, err := f.srv.store.DB().Exec(`UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`, f.in.id); err != nil {
+			t.Error(err)
+		}
+		return body
+	}}
+	req := httptest.NewRequest("POST", f.path("/items/"+f.item.ID+"/attachments?filename=a.png"), r)
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized || !strings.Contains(rr.Header().Get("WWW-Authenticate"), "invalid_token") {
+		t.Errorf("a rotation mid-upload: %d %q, want 401 invalid_token", rr.Code, rr.Header().Get("WWW-Authenticate"))
+	}
+}

@@ -533,12 +533,12 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	}
 	tokAC, err := s.appAdmitToken(r.Context(), ac.token)
 	if err != nil {
-		return err
+		return appCredentialDenial(err)
 	}
 	if tokAC.Grant.RequestID != ac.Grant.RequestID || tokAC.Grant.AuthEpoch != ac.Grant.AuthEpoch ||
 		tokAC.InstallID != ac.InstallID || tokAC.WorkspaceID != ac.WorkspaceID ||
 		tokAC.Access != ac.Access || tokAC.Actor.ID != ac.Actor.ID {
-		return errors.New("the grant changed")
+		return fmt.Errorf("%w: the grant changed", errAppCredential)
 	}
 	fresh, err := s.appAdmitWorkspace(tokAC)
 	if err != nil {
@@ -564,12 +564,28 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	// re-check's own read for the resource it covers.
 	last, err := s.appAdmitToken(r.Context(), ac.token)
 	if err != nil {
-		return err
+		return appCredentialDenial(err)
 	}
 	if last.Grant.AuthEpoch != ac.Grant.AuthEpoch || last.Access != ac.Access || last.InstallID != ac.InstallID {
-		return errors.New("the grant changed")
+		return fmt.Errorf("%w: the grant changed", errAppCredential)
 	}
 	return nil
+}
+
+// errAppCredential marks a re-admission failure that is about the
+// credential itself (revoked, expired, rotated, the install disabled), as
+// opposed to the subject's permissions. A read answers every denial with
+// 401; a write that must tell the two apart (the upload's pre-row check,
+// codex U6c r5) answers this one with 401 and the rest with 403.
+var errAppCredential = errors.New("app credential no longer valid")
+
+// appCredentialDenial passes a fault through and marks anything else from
+// token admission as a credential denial.
+func appCredentialDenial(err error) error {
+	if errors.Is(err, errAppAdmitInternal) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errAppCredential, err)
 }
 
 // isAppTokenDenial reports whether an introspection error is one of its named

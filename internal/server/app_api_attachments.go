@@ -85,6 +85,10 @@ func (s *Server) appUploadAttachment(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
+		if errors.Is(err, errAppCredential) {
+			writeAppUnauthorized(w)
+			return
+		}
 		writeError(w, http.StatusForbidden, "forbidden", "This app may no longer write here")
 		return
 	}
