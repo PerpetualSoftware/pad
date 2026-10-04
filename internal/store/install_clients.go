@@ -284,6 +284,9 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	if err != nil {
 		return true, fmt.Errorf("oauth: lock install: %w", err)
 	}
+	// Load-bearing for UninstallAppTx's lock order (bot rows, then the install
+	// row): refusing here, before the user read, keeps the barrier from ever
+	// waiting on the bot while holding the install (TestTask3397_IssuanceDoesNotDeadlockWithUninstall).
 	if state != "active" {
 		return true, ErrInstallNotActive
 	}
