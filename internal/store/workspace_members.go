@@ -457,13 +457,22 @@ func (s *Store) membershipVisibleCollectionIDsQ(q Queryer, workspaceID, userID s
 // SetMemberCollectionAccess updates a member's collection_access mode and
 // replaces their specific collection grants atomically.
 func (s *Store) SetMemberCollectionAccess(workspaceID, userID, mode string, collectionIDs []string) error {
-	ts := now()
-
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if err := s.setMemberCollectionAccessTx(tx, workspaceID, userID, mode, collectionIDs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// setMemberCollectionAccessTx is SetMemberCollectionAccess on the caller's
+// transaction: the app installer scopes its bot to the companion collections
+// in the provisioning transaction (TASK-3397, U8b; DOC-3371 §3).
+func (s *Store) setMemberCollectionAccessTx(tx *sql.Tx, workspaceID, userID, mode string, collectionIDs []string) error {
+	ts := now()
 
 	// Validate that all collection IDs belong to this workspace
 	if mode == "specific" && len(collectionIDs) > 0 {
@@ -479,7 +488,7 @@ func (s *Store) SetMemberCollectionAccess(workspaceID, userID, mode string, coll
 	}
 
 	// Update the mode on workspace_members
-	_, err = tx.Exec(s.q(`
+	_, err := tx.Exec(s.q(`
 		UPDATE workspace_members SET collection_access = ?
 		WHERE workspace_id = ? AND user_id = ?
 	`), mode, workspaceID, userID)
@@ -509,7 +518,7 @@ func (s *Store) SetMemberCollectionAccess(workspaceID, userID, mode string, coll
 		}
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 // GetMemberCollectionAccess returns the collection IDs a member has been

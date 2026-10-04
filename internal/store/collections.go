@@ -38,6 +38,27 @@ func (e *CollectionUpdateConflictError) Error() string {
 }
 
 func (s *Store) CreateCollection(workspaceID string, input models.CollectionCreate) (*models.Collection, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	id, err := s.createCollectionTx(tx, workspaceID, input, "")
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit collection create: %w", err)
+	}
+
+	return s.GetCollection(id)
+}
+
+// createCollectionTx is CreateCollection on the caller's transaction, so the
+// app installer creates companion collections in its one provisioning
+// transaction (TASK-3397, U8b). viaApp stamps collections.via_app with the
+// creating install; "" leaves it NULL. It returns the new collection's id.
+func (s *Store) createCollectionTx(tx *sql.Tx, workspaceID string, input models.CollectionCreate, viaApp string) (string, error) {
 	id := newID()
 	ts := now()
 
@@ -68,7 +89,7 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 		// `--prefix "AB!"` still produced items whose printed issue ID no
 		// surface could resolve.
 		if !collections.IsValidPrefix(prefix) {
-			return nil, invalidf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", prefix)
+			return "", invalidf("invalid prefix %q: a collection prefix must start with an uppercase letter and contain only uppercase letters or digits (e.g. TASK, AB1)", prefix)
 		}
 	} else {
 		prefix = collections.DerivePrefix(input.Name)
@@ -88,11 +109,6 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	if isReservedCollectionSlug(baseSlug) {
 		baseSlug = baseSlug + "-collection"
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
 
 	// LOCK ORDER: workspace advisory lock FIRST, then the INSERT (whose only
 	// row lock is the FK key-share on the workspaces row). That is the same
@@ -116,26 +132,34 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	// come free from the single BEGIN IMMEDIATE write lock; the advisory lock
 	// is a no-op there.
 	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
-		return nil, err
+		return "", err
 	}
 
 	slug, err := s.uniqueSlugQ(tx, "collections", "workspace_id", workspaceID, baseSlug)
 	if err != nil {
-		return nil, fmt.Errorf("unique slug: %w", err)
+		return "", fmt.Errorf("unique slug: %w", err)
+	}
+	// An app's companion collection keeps exactly the slug it declared: the
+	// manifest, its artifacts and the app's own calls address it by that slug,
+	// so a de-collided `x-2` would be a collection nobody can name. The
+	// installer checks the slug is free under this same lock first; this
+	// refuses rather than diverging if that check and this scan ever disagree.
+	if viaApp != "" && slug != baseSlug {
+		return "", fmt.Errorf("%w: collection slug %q is taken", ErrAppCollectionSlugTaken, baseSlug)
 	}
 
+	var via any
+	if viaApp != "" {
+		via = viaApp
+	}
 	_, err = tx.Exec(s.q(`
-		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, traits, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), ts, ts)
+		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, via_app, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, traits, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), via, ts, ts)
 	if err != nil {
-		return nil, fmt.Errorf("insert collection: %w", err)
+		return "", fmt.Errorf("insert collection: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit collection create: %w", err)
-	}
-
-	return s.GetCollection(id)
+	return id, nil
 }
 
 // collectionColumns is the ONE full-row projection of the collections table.

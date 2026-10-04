@@ -104,6 +104,12 @@ type appPreviewArtifact struct {
 	NormalizedSHA256      string         `json:"normalized_sha256"`
 	// Changes are the importer's warnings: every field it dropped or changed.
 	Changes []string `json:"changes"`
+
+	// What provisioning (U8b) re-checks inside its transaction. Never
+	// serialized: provisioning recomputes the preview from the staged bytes.
+	collectionID    string
+	uniqueKeys      []string
+	relationTargets map[string]string
 }
 
 // normalizedItem is the item an artifact will be stored as. Its canonical
@@ -503,9 +509,26 @@ func (s *Server) previewArtifact(r *http.Request, workspaceID string, a appmanif
 	}
 	changes := append([]string{}, norm.Warnings...)
 	sort.Strings(changes)
+	// Relation values (scalar and multi) that RESOLVED (anything the import carried
+	// unresolved is not listed): provisioning re-checks each still names a
+	// live item in its declared collection.
+	unresolvedSet := map[string]bool{}
+	for _, k := range unresolved {
+		unresolvedSet[k] = true
+	}
+	relationTargets := map[string]string{}
+	for _, def := range schema.Fields {
+		if !def.IsRelation() || unresolvedSet[def.Key] {
+			continue
+		}
+		if v, ok := fields[def.Key]; ok && v != nil {
+			relationTargets[def.Key] = def.Collection
+		}
+	}
 	return &appPreviewArtifact{
 		Key: a.Key, URL: a.URL, Kind: string(art.Kind), DestinationCollection: coll.Slug,
 		RawSHA256: a.SHA256, Raw: string(raw), Normalized: item, NormalizedSHA256: digest, Changes: changes,
+		collectionID: coll.ID, uniqueKeys: uniqueKeys, relationTargets: relationTargets,
 	}, nil
 }
 

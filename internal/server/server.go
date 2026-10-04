@@ -1612,6 +1612,13 @@ func (s *Server) setupRouter() {
 		})
 	}
 
+	// App install-code redeem (SPEC-6 U8b, TASK-3397). Mounted alone,
+	// outside every auth middleware and with no workspace in the path: the
+	// install code IS the credential. The handler applies its own body cap
+	// and its own limiters (AppRedeemAddr, AppRedeemInstall), and answers
+	// every refusal with one indistinguishable 400.
+	r.Post("/api/app/v1/install/redeem", s.handleRedeemAppInstallCode)
+
 	// All other routes — full middleware stack
 	r.Group(func(r chi.Router) {
 		r.Use(corsMW)
@@ -2205,7 +2212,12 @@ func (s *Server) setupRouter() {
 						r.Post("/preview", s.handleAppInstallPreview)
 						r.Get("/pending/{pendingID}", s.handleGetAppInstallPending)
 						r.Delete("/pending/{pendingID}", s.handleDeleteAppInstallPending)
+						// U8b: provision the staged install the owner reviewed.
+						r.Post("/pending/{pendingID}/confirm", s.handleConfirmAppInstall)
 					})
+					// U8b: a new install code for an active install, the
+					// recovery when the app lost its redeem response.
+					r.Post("/apps/{installID}/install-code", s.handleIssueAppInstallCode)
 
 					// Webhooks
 					r.Route("/webhooks", func(r chi.Router) {
