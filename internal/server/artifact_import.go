@@ -107,6 +107,13 @@ func parseArtifactRequest(w http.ResponseWriter, r *http.Request, maxBytes int64
 		return artifact.Artifact{}, fmt.Errorf("artifact import: read body: %w", err)
 	}
 
+	return decodeArtifactBytes(data)
+}
+
+// decodeArtifactBytes is parseArtifactRequest's steps (2) to (5) over bytes
+// already read and size-capped: the import door and the app installer's
+// staged artifacts (TASK-3397) run the same guards and decode.
+func decodeArtifactBytes(data []byte) (artifact.Artifact, error) {
 	// (2) The artifact body is TEXT bound for text columns, and this
 	// handler reads it directly rather than through decodeJSON, so it
 	// inherits neither BUG-2803's refusal nor the path/query rule (a body is

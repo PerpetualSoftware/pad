@@ -1,0 +1,129 @@
+{
+  "blank title": {
+    "status": 400,
+    "title": "",
+    "content": "",
+    "fields": null,
+    "warnings": null
+  },
+  "convention, active, valid selects": {
+    "status": 201,
+    "title": "Clean Convention",
+    "content": "A clean convention.\n",
+    "fields": {
+      "priority": "must",
+      "scope": "all",
+      "status": "draft",
+      "trigger": "on-commit"
+    },
+    "warnings": [
+      "status \"active\" reset to \"draft\" on import"
+    ]
+  },
+  "convention, foreign select value": {
+    "status": 201,
+    "title": "Foreign",
+    "content": "x\n",
+    "fields": {
+      "scope": "all",
+      "status": "draft",
+      "trigger": ""
+    },
+    "warnings": [
+      "field \"trigger\" value \"on-candidate-advance\" is not a valid option in this workspace; cleared on import",
+      "status \"active\" reset to \"draft\" on import"
+    ]
+  },
+  "golden convention": {
+    "status": 201,
+    "title": "Run the test suite before pushing",
+    "content": "Always run `make test` before pushing to main.\n\n\n---\n\n_Imported artifact from workspace `demo`, exported by xarmian at 2026-06-22T00:00:00Z._\n",
+    "fields": {
+      "priority": "",
+      "role": "engineer",
+      "scope": "",
+      "status": "draft",
+      "trigger": "on-commit"
+    },
+    "warnings": [
+      "field \"priority\" value \"high\" is not a valid option in this workspace; cleared on import",
+      "field \"scope\" value \"repo\" is not a valid option in this workspace; cleared on import",
+      "status \"active\" reset to \"draft\" on import"
+    ]
+  },
+  "golden playbook": {
+    "status": 201,
+    "title": "Ship a change",
+    "content": "## Steps\n\n1. Run the tests\n2. Open a PR\n\n\n---\n\n_Imported artifact from workspace `demo`, exported by xarmian at 2026-06-22T00:00:00Z._\n",
+    "fields": {
+      "arguments": [
+        {
+          "description": "the item to ship",
+          "name": "ref",
+          "required": true,
+          "type": "ref"
+        },
+        {
+          "default": "squash",
+          "name": "merge-strategy",
+          "required": false,
+          "type": "enum"
+        }
+      ],
+      "invocation_slug": "ship",
+      "scope": "",
+      "status": "draft",
+      "trigger": ""
+    },
+    "warnings": [
+      "field \"scope\" value \"workspace\" is not a valid option in this workspace; cleared on import",
+      "field \"trigger\" value \"on-intent\" is not a valid option in this workspace; cleared on import",
+      "status \"active\" reset to \"draft\" on import"
+    ]
+  },
+  "playbook with arguments": {
+    "status": 201,
+    "title": "Playbook With Args",
+    "content": "Do the thing.\n",
+    "fields": {
+      "arguments": [
+        {
+          "description": "the thing",
+          "name": "target",
+          "required": true,
+          "type": "ref"
+        }
+      ],
+      "invocation_slug": "with-args",
+      "scope": "all",
+      "status": "draft",
+      "trigger": "manual"
+    },
+    "warnings": [
+      "status \"active\" reset to \"draft\" on import"
+    ]
+  },
+  "playbook, slug collision": {
+    "status": 201,
+    "title": "Second",
+    "content": "second\n",
+    "fields": {
+      "invocation_slug": "ship-2",
+      "status": "draft"
+    },
+    "warnings": [
+      "invocation_slug \"ship\" was already in use; imported as \"ship-2\"",
+      "status \"active\" reset to \"draft\" on import"
+    ]
+  },
+  "with provenance": {
+    "status": 201,
+    "title": "Provenanced",
+    "content": "Body.\n\n\n---\n\n_Imported artifact from workspace `elsewhere`, exported by someone at 2026-01-02T03:04:05Z._\n",
+    "fields": {
+      "status": "draft",
+      "trigger": "on-commit"
+    },
+    "warnings": null
+  }
+}

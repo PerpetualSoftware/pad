@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -169,6 +170,9 @@ type Server struct {
 	// build that doesn't want the dependency — still serves every
 	// other endpoint and stores originals untouched.
 	imageProcessor attachments.Processor
+	// appFetchTLS is the TLS config app manifest/artifact fetches use; nil
+	// (the system roots) in production, set by tests (SetAppFetchTLS).
+	appFetchTLS *tls.Config
 
 	// MCP Streamable HTTP transport (PLAN-943 TASK-950). Wired via
 	// SetMCPTransport at startup on every install (PLAN-2310 DR-4); nil
@@ -338,6 +342,10 @@ type Server struct {
 	// SetReminderTickConfig + started via StartReminderTick; Stop() signals
 	// the loop via stopReminderTick.
 	reminderTick reminderTickConfig
+
+	// appPendingSweep deletes expired pending app installs and their staged
+	// bytes (TASK-3397). Started via StartAppPendingSweep.
+	appPendingSweep appPendingSweepConfig
 
 	// decisionTick holds the typed-decision runner and its evaluation loop
 	// (TASK-3117). Same shape as reminderTick; started via StartDecisionTick
@@ -617,6 +625,7 @@ func (s *Server) Stop() {
 	// Item reminder tick (IDEA-2641). Same lifecycle pattern; an in-flight
 	// pass is tracked on s.bg and awaited below.
 	s.stopReminderTick()
+	s.stopAppPendingSweep()
 	s.stopDecisionTick()
 	// MCP audit writer / sweeper run on s.bg too. Signal first so
 	// the workers see the close BEFORE Wait() blocks; without the
@@ -1722,6 +1731,8 @@ func (s *Server) setupRouter() {
 				r.Put("/decision-provider", s.handleUpdateDecisionSettings)
 				r.Get("/mcp", s.handleGetMCPSettings)
 				r.Put("/mcp", s.handleUpdateMCPSettings)
+				r.Get("/apps", s.handleGetAppsSettings)
+				r.Put("/apps", s.handleUpdateAppsSettings)
 				r.Post("/test-email", s.handleTestEmail)
 
 				// Cloud sidecar endpoints — only exist in cloud mode. requireCloudMode
@@ -2179,6 +2190,14 @@ func (s *Server) setupRouter() {
 					// quota-aware UI surfaces (TASK-881). Cached behind a
 					// short TTL — see handleGetWorkspaceStorageUsage.
 					r.Get("/storage/usage", s.handleGetWorkspaceStorageUsage)
+
+					// App install staging (SPEC-6 U8a, TASK-3397). Owner-only and
+					// gated on appsAvailable inside each handler.
+					r.Route("/apps/install", func(r chi.Router) {
+						r.Post("/preview", s.handleAppInstallPreview)
+						r.Get("/pending/{pendingID}", s.handleGetAppInstallPending)
+						r.Delete("/pending/{pendingID}", s.handleDeleteAppInstallPending)
+					})
 
 					// Webhooks
 					r.Route("/webhooks", func(r chi.Router) {
