@@ -629,11 +629,24 @@ func TestTask3401_TheRequestCeilingBindsAPersonActor(t *testing.T) {
 // its data. The response is re-validated against the install (epoch, state,
 // service access, client) before it is sent.
 func TestTask3401_ARevocationDuringAReadWithholdsItsData(t *testing.T) {
+	// Each change is keyed by the install id; the ones that act on other
+	// rows find them through it (codex r2: the token, the membership, the
+	// resources themselves).
 	cases := map[string]string{
 		"rotate (epoch bump)":    `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`,
 		"disable":                `UPDATE app_installs SET state = 'disabling' WHERE id = ?`,
 		"service access removed": `UPDATE app_installs SET service_access = NULL WHERE id = ?`,
 		"access lowered":         `UPDATE app_installs SET service_access = 'read' WHERE id = ?`,
+		"token family revoked":   `UPDATE oauth_access_tokens SET active = 0 WHERE request_id IN (SELECT request_id FROM app_token_bindings WHERE install_id = ?)`,
+		"collection access emptied": `UPDATE workspace_members SET collection_access = 'specific'
+			WHERE user_id = (SELECT bot_user_id FROM app_installs WHERE id = ?)`,
+		"bot role lowered": `UPDATE workspace_members SET role = 'viewer'
+			WHERE user_id = (SELECT bot_user_id FROM app_installs WHERE id = ?)`,
+		"companion collection deleted": `UPDATE collections SET deleted_at = '2026-01-01T00:00:00Z' WHERE via_app = ?`,
+		"companion released":           `UPDATE collections SET via_app = NULL WHERE via_app = ?`,
+		"workspace deleted": `UPDATE workspaces SET deleted_at = '2026-01-01T00:00:00Z'
+			WHERE id = (SELECT workspace_id FROM app_installs WHERE id = ?)`,
+		"item deleted": `UPDATE items SET deleted_at = '2026-01-01T00:00:00Z' WHERE created_via_app = ?`,
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {

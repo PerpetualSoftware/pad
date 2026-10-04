@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -158,7 +159,57 @@ func (s *Server) appVisibleCollection(w http.ResponseWriter, r *http.Request, sl
 		writeAppNotFound(w, "Collection")
 		return nil, false
 	}
+	id := c.ID
+	appAddRecheck(r, func(r2 *http.Request) error { return s.appRecheckCollection(r2, id) })
 	return c, true
+}
+
+var errAppRecheck = errors.New("app authorization no longer holds")
+
+// appRecheckCollection replays a collection's authorization against the
+// store as it stands: live, in the workspace, visible to the actor, inside
+// the ceiling.
+func (s *Server) appRecheckCollection(r *http.Request, collectionID string) error {
+	ac := appContextFrom(r)
+	c, err := s.store.GetCollection(collectionID)
+	if err != nil {
+		return err
+	}
+	if c == nil || c.DeletedAt != nil || c.WorkspaceID != ac.WorkspaceID {
+		return errAppRecheck
+	}
+	ids, err := s.visibleCollectionIDs(r, ac.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	if !isCollectionVisible(c.ID, ids) || !appCeilingAllows(r, c.ID) {
+		return errAppRecheck
+	}
+	return nil
+}
+
+// appRecheckItem replays an item's authorization: live, in the workspace and
+// collection it was read from, inside the ceiling, visible to the actor.
+func (s *Server) appRecheckItem(r *http.Request, itemID, collectionID string) error {
+	ac := appContextFrom(r)
+	it, err := s.store.GetItem(itemID)
+	if err != nil {
+		return err
+	}
+	if it == nil || it.DeletedAt != nil || it.WorkspaceID != ac.WorkspaceID || it.CollectionID != collectionID {
+		return errAppRecheck
+	}
+	if !appCeilingAllows(r, it.CollectionID) {
+		return errAppRecheck
+	}
+	ok, err := s.checkItemVisible(ac.WorkspaceID, it, currentUser(r), workspaceRole(r), isBearerAuth(r))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errAppRecheck
+	}
+	return s.appRecheckCollection(r, collectionID)
 }
 
 func (s *Server) appCollectionDTO(c *models.Collection) AppCollection {
@@ -184,6 +235,8 @@ func (s *Server) appListCollections(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out = append(out, s.appCollectionDTO(c))
+		id := c.ID
+		appAddRecheck(r, func(r2 *http.Request) error { return s.appRecheckCollection(r2, id) })
 	}
 	writeAppJSON(w, http.StatusOK, map[string]any{"collections": out})
 }
@@ -278,6 +331,8 @@ func (s *Server) appListItems(w http.ResponseWriter, r *http.Request) {
 		}
 		if ok && items[i].CollectionID == c.ID {
 			visible = append(visible, items[i])
+			id, coll := items[i].ID, c.ID
+			appAddRecheck(r, func(r2 *http.Request) error { return s.appRecheckItem(r2, id, coll) })
 		}
 	}
 	dtos, err := s.appItemDTOs(r, visible, c)
@@ -310,10 +365,12 @@ func (s *Server) appVisibleItem(w http.ResponseWriter, r *http.Request) (*models
 		writeInternalError(w, err)
 		return nil, nil, false
 	}
-	if c == nil {
+	if c == nil || c.DeletedAt != nil {
 		writeAppNotFound(w, "Item")
 		return nil, nil, false
 	}
+	id, coll := it.ID, it.CollectionID
+	appAddRecheck(r, func(r2 *http.Request) error { return s.appRecheckItem(r2, id, coll) })
 	return it, c, true
 }
 

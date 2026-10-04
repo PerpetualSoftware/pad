@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -71,6 +72,11 @@ type appContext struct {
 	Actor         *models.User
 	ReadCeiling   []string // companion ∪ system collection ids
 	Companions    []string // companion collection ids (the write set)
+	Role          string   // the role the shared helpers see
+
+	// token is the presented access token, kept so the request can be
+	// re-admitted before its response is sent. Never serialized or logged.
+	token string
 }
 
 func appContextFrom(r *http.Request) *appContext {
@@ -123,6 +129,7 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 					// The handler writes into a buffer; nothing reaches the
 					// app until the grant is re-validated (codex r1 P1).
 					buf := newAppResponseBuffer()
+					r = r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{}))
 					handler(s, buf, r)
 					if s.appAfterHandler != nil {
 						s.appAfterHandler()
@@ -179,51 +186,63 @@ func appBearer(r *http.Request) string {
 // a partial app context; the workspace step completes it.
 func (s *Server) appTokenAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tok := appBearer(r)
-		if tok == "" {
-			writeAppUnauthorized(w)
-			return
-		}
-		grant, err := s.introspectAppToken(r.Context(), tok)
+		ac, err := s.appAdmitToken(r.Context(), appBearer(r))
 		if err != nil {
+			if errors.Is(err, errAppAdmitInternal) {
+				writeInternalError(w, err)
+				return
+			}
 			writeAppUnauthorized(w)
 			return
 		}
-		// Delegated tokens are refused until TASK-3399 enables them (lead
-		// ruling R4): U5b must turn them on, never inherit them.
-		if grant.AuthKind != "service" {
-			writeAppUnauthorized(w)
-			return
-		}
-		inst, err := s.store.GetInstallAPIState(grant.InstallID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if inst == nil || inst.State != "active" || inst.WorkspaceID != grant.WorkspaceID {
-			writeAppUnauthorized(w)
-			return
-		}
-		access := inst.ServiceAccess
-		if access != "read" && access != "write" {
-			writeAppUnauthorized(w) // no service access granted
-			return
-		}
-		bot, err := s.store.AppPrincipalForInstall(grant.InstallID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if bot == nil || bot.IsDisabled() || bot.ID != grant.Subject || (inst.BotUserID != "" && inst.BotUserID != bot.ID) {
-			writeAppUnauthorized(w)
-			return
-		}
-		ac := &appContext{Grant: grant, InstallID: grant.InstallID, WorkspaceID: grant.WorkspaceID,
-			Access: access, AuthKind: grant.AuthKind, Actor: bot}
 		ctx := context.WithValue(r.Context(), appCtxKey{}, ac)
-		ctx = WithCurrentUser(ctx, bot)
+		ctx = WithCurrentUser(ctx, ac.Actor)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+var (
+	errAppAdmit         = errors.New("app request not admitted")
+	errAppAdmitInternal = errors.New("app admission failed")
+)
+
+// appAdmitToken is the token half of admission, shared by the door and the
+// re-admission before a response is sent: the token is introspected (active,
+// not expired, audience, binding, install, client, epoch), delegated grants
+// are refused until TASK-3399, the install's service access is read, and the
+// install's own bot must be the subject, live and enabled.
+func (s *Server) appAdmitToken(ctx context.Context, tok string) (*appContext, error) {
+	if tok == "" {
+		return nil, errAppAdmit
+	}
+	grant, err := s.introspectAppToken(ctx, tok)
+	if err != nil {
+		return nil, errAppAdmit
+	}
+	// Delegated tokens are refused until TASK-3399 enables them (lead
+	// ruling R4): U5b must turn them on, never inherit them.
+	if grant.AuthKind != "service" {
+		return nil, errAppAdmit
+	}
+	inst, err := s.store.GetInstallAPIState(grant.InstallID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+	}
+	if inst == nil || inst.State != "active" || inst.WorkspaceID != grant.WorkspaceID {
+		return nil, errAppAdmit
+	}
+	if inst.ServiceAccess != "read" && inst.ServiceAccess != "write" {
+		return nil, errAppAdmit // no service access granted
+	}
+	bot, err := s.store.AppPrincipalForInstall(grant.InstallID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+	}
+	if bot == nil || bot.IsDisabled() || bot.ID != grant.Subject || (inst.BotUserID != "" && inst.BotUserID != bot.ID) {
+		return nil, errAppAdmit
+	}
+	return &appContext{Grant: grant, InstallID: grant.InstallID, WorkspaceID: grant.WorkspaceID,
+		Access: inst.ServiceAccess, AuthKind: grant.AuthKind, Actor: bot, token: tok}, nil
 }
 
 // requireAppAccess is step 2: a write row refuses a read token, before any
@@ -259,55 +278,16 @@ func (s *Server) requireAppWorkspace(next http.Handler) http.Handler {
 			writeWorkspaceNotFound(w, "Workspace not found")
 			return
 		}
-		ws, err := s.store.GetWorkspaceByID(ac.WorkspaceID)
+		full, err := s.appAdmitWorkspace(ac)
 		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if ws == nil {
+			if errors.Is(err, errAppAdmitInternal) {
+				writeInternalError(w, err)
+				return
+			}
 			writeWorkspaceNotFound(w, "Workspace not found")
 			return
 		}
-		member, err := s.store.GetWorkspaceMember(ac.WorkspaceID, ac.Actor.ID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if member == nil {
-			writeWorkspaceNotFound(w, "Workspace not found")
-			return
-		}
-		ceiling, err := s.store.InstallReadCeilingQ(s.store.DB(), ac.InstallID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		companions, err := s.store.InstallCompanionCollectionIDsQ(s.store.DB(), ac.InstallID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		// The role the shared helpers see: the membership's, capped by the
-		// token's access. A read token never acts as more than a viewer.
-		role := member.Role
-		if role == "owner" {
-			role = "editor" // a bot is never an owner (TASK-3392); defence in depth
-		}
-		if ac.Access == "read" {
-			role = "viewer"
-		}
-		full := *ac
-		full.WorkspaceSlug = ws.Slug
-		full.ReadCeiling = ceiling
-		full.Companions = companions
-
-		ctx := context.WithValue(r.Context(), appCtxKey{}, &full)
-		ctx = context.WithValue(ctx, ctxResolvedWorkspaceID, ws.ID)
-		ctx = context.WithValue(ctx, ctxWorkspaceRole, role)
-		ctx = WithAPITokenAuth(ctx)
-		ctx = WithTokenScopes(ctx, full.Access)
-		ctx = WithTokenAllowedWorkspaces(ctx, []string{ws.Slug})
-		r = r.WithContext(ctx)
+		r = r.WithContext(appRequestContext(r.Context(), full))
 		if err := appContextSelfCheck(r); err != nil {
 			slog.Error("app API: context self-check failed", "error", err)
 			writeInternalError(w, err)
@@ -315,6 +295,62 @@ func (s *Server) requireAppWorkspace(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// appAdmitWorkspace is the workspace half of admission, shared by the door
+// and the re-admission: the workspace is live, the bot is a member, and the
+// role, read ceiling and companion set are computed from the store as they
+// stand now.
+func (s *Server) appAdmitWorkspace(ac *appContext) (*appContext, error) {
+	ws, err := s.store.GetWorkspaceByID(ac.WorkspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+	}
+	if ws == nil {
+		return nil, errAppAdmit
+	}
+	member, err := s.store.GetWorkspaceMember(ac.WorkspaceID, ac.Actor.ID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+	}
+	if member == nil {
+		return nil, errAppAdmit
+	}
+	ceiling, err := s.store.InstallReadCeilingQ(s.store.DB(), ac.InstallID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+	}
+	companions, err := s.store.InstallCompanionCollectionIDsQ(s.store.DB(), ac.InstallID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+	}
+	// The role the shared helpers see: the membership's, capped by the
+	// token's access. A read token never acts as more than a viewer.
+	role := member.Role
+	if role == "owner" {
+		role = "editor" // a bot is never an owner (TASK-3392); defence in depth
+	}
+	if ac.Access == "read" {
+		role = "viewer"
+	}
+	full := *ac
+	full.WorkspaceSlug = ws.Slug
+	full.ReadCeiling = ceiling
+	full.Companions = companions
+	full.Role = role
+	return &full, nil
+}
+
+// appRequestContext sets every key the shared helpers read from a complete
+// app context.
+func appRequestContext(parent context.Context, ac *appContext) context.Context {
+	ctx := context.WithValue(parent, appCtxKey{}, ac)
+	ctx = WithCurrentUser(ctx, ac.Actor)
+	ctx = context.WithValue(ctx, ctxResolvedWorkspaceID, ac.WorkspaceID)
+	ctx = context.WithValue(ctx, ctxWorkspaceRole, ac.Role)
+	ctx = WithAPITokenAuth(ctx)
+	ctx = WithTokenScopes(ctx, ac.Access)
+	return WithTokenAllowedWorkspaces(ctx, []string{ac.WorkspaceSlug})
 }
 
 // appContextSelfCheck refuses a request whose context lacks any key the
@@ -411,38 +447,59 @@ func (b *appResponseBuffer) flushTo(w http.ResponseWriter) {
 	_, _ = w.Write(b.body)
 }
 
-// appRevalidate re-checks, AFTER the handler has read, that the grant the
-// request was admitted under is still good: the same binding and epoch, the
-// install active, the client enabled, the service access unchanged. A
-// disable, rotate, uninstall or access change that commits while a read is in
-// flight therefore withholds its data; every response is ordered against
-// revocation at this check (codex r1 P1). App mutations are ordered by their
+// appRecheckKey holds the request's re-checks: one per resource a handler
+// authorized, replayed before the response is sent.
+type appRecheckKey struct{}
+
+type appRechecks struct{ fns []func(*http.Request) error }
+
+// appAddRecheck registers a re-check of an authorization the handler made.
+// It is run against the store as it stands when the response is about to be
+// sent, under the re-admitted context.
+func appAddRecheck(r *http.Request, fn func(*http.Request) error) {
+	if rc, ok := r.Context().Value(appRecheckKey{}).(*appRechecks); ok {
+		rc.fns = append(rc.fns, fn)
+	}
+}
+
+// appRevalidate re-admits the request from scratch before its response is
+// sent (codex r1 and r2): the token is introspected again (revocation,
+// expiry, binding, epoch, install, client), the install's access and bot are
+// read again, and the workspace, membership, role and ceiling are recomputed.
+// The result must match what the request was admitted under, and then every
+// authorization the handler made is replayed under the re-admitted context.
+// A change to anything that authorized the response, committed while the
+// request was in flight, therefore withholds it: every response is ordered
+// against revocation at this check. App mutations are ordered by their
 // FencedTx; this orders the reads.
 func (s *Server) appRevalidate(r *http.Request) error {
 	ac := appContextFrom(r)
 	if ac == nil || ac.Grant == nil {
 		return errors.New("no app context")
 	}
-	st, err := s.store.GetAppTokenState(ac.Grant.RequestID)
+	tokAC, err := s.appAdmitToken(r.Context(), ac.token)
 	if err != nil {
 		return err
 	}
-	switch {
-	case st == nil:
-		return errors.New("binding gone")
-	case st.Binding.AuthEpoch != ac.Grant.AuthEpoch || st.InstallEpoch != ac.Grant.AuthEpoch:
-		return errors.New("epoch moved")
-	case st.InstallState != "active":
-		return errors.New("install not active")
-	case st.ClientDisabled:
-		return errors.New("client disabled")
+	if tokAC.Grant.RequestID != ac.Grant.RequestID || tokAC.Grant.AuthEpoch != ac.Grant.AuthEpoch ||
+		tokAC.InstallID != ac.InstallID || tokAC.WorkspaceID != ac.WorkspaceID ||
+		tokAC.Access != ac.Access || tokAC.Actor.ID != ac.Actor.ID {
+		return errors.New("the grant changed")
 	}
-	inst, err := s.store.GetInstallAPIState(ac.InstallID)
+	fresh, err := s.appAdmitWorkspace(tokAC)
 	if err != nil {
 		return err
 	}
-	if inst == nil || inst.ServiceAccess != ac.Access {
-		return errors.New("access changed")
+	if fresh.Role != ac.Role || fresh.WorkspaceSlug != ac.WorkspaceSlug {
+		return errors.New("the membership changed")
+	}
+	r2 := r.WithContext(appRequestContext(r.Context(), fresh))
+	if rc, ok := r.Context().Value(appRecheckKey{}).(*appRechecks); ok {
+		for _, fn := range rc.fns {
+			if err := fn(r2); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
