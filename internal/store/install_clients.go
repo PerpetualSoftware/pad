@@ -338,7 +338,7 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	// The grant's kind, and for a delegated grant the access the person
 	// consented to, as the consent decision put them in the session data.
 	kind, access := carriedInstallGrant(req.SessionData)
-	var bindAccess sql.NullString
+	var bindAccess, bindUser sql.NullString
 	switch kind {
 	case "service":
 		// A service token is client_credentials: no code, no PKCE.
@@ -381,6 +381,7 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 			return true, fmt.Errorf("oauth: read delegated subject: %w", err)
 		}
 		bindAccess = sql.NullString{String: access, Valid: true}
+		bindUser = sql.NullString{String: req.Subject, Valid: true}
 	default:
 		return true, ErrInstallDelegatedUnsupported
 	}
@@ -393,15 +394,15 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	// is.
 	var bound int64
 	var boundKind string
-	var boundAccess sql.NullString
-	err = tx.QueryRow(s.q(`SELECT auth_epoch, auth_kind, delegated_access FROM app_token_bindings WHERE request_id = ?`),
-		req.RequestID).Scan(&bound, &boundKind, &boundAccess)
+	var boundAccess, boundUser sql.NullString
+	err = tx.QueryRow(s.q(`SELECT auth_epoch, auth_kind, delegated_access, delegated_user_id FROM app_token_bindings WHERE request_id = ?`),
+		req.RequestID).Scan(&bound, &boundKind, &boundAccess, &boundUser)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.Exec(s.q(`
-			INSERT INTO app_token_bindings (request_id, client_id, install_id, workspace_id, auth_epoch, auth_kind, delegated_access, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
-			req.RequestID, req.ClientID, installID.String, workspaceID, epoch, kind, bindAccess, now()); err != nil {
+			INSERT INTO app_token_bindings (request_id, client_id, install_id, workspace_id, auth_epoch, auth_kind, delegated_access, delegated_user_id, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			req.RequestID, req.ClientID, installID.String, workspaceID, epoch, kind, bindAccess, bindUser, now()); err != nil {
 			return true, fmt.Errorf("oauth: write token binding: %w", err)
 		}
 	case err != nil:
@@ -411,6 +412,8 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		return true, ErrInstallNotActive
 	case boundKind != kind || boundAccess != bindAccess:
 		return true, ErrInstallDelegatedAccess
+	case boundUser != bindUser:
+		return true, ErrInstallDelegatedSubject
 	}
 	return true, nil
 }
@@ -539,3 +542,13 @@ func (s *Store) GetInstallConsentState(installID string) (*InstallConsentState, 
 	}
 	return &st, nil
 }
+
+// notInstallClientSQL keeps a token row's chain to ordinary OAuth clients:
+// an installed app's chains (its service tokens and the delegated grants
+// people give it, TASK-3399) are not MCP connections. Every reader that
+// treats a token chain as a connection (the Connected Apps list, the MCP
+// readiness resume count, the connections backfill) filters with it; app
+// grants are listed and revoked on their own (ListUserAppGrants,
+// RevokeUserAppGrant). Appended to a WHERE clause over a token table whose
+// client column is client_id.
+const notInstallClientSQL = ` AND client_id NOT IN (SELECT id FROM oauth_clients WHERE app_install_id IS NOT NULL AND app_install_id <> '')`

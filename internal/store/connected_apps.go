@@ -71,7 +71,7 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 	rows, err := s.db.Query(s.q(`
 		SELECT request_id, client_id, requested_at, granted_scopes
 		FROM oauth_access_tokens
-		WHERE subject = ? AND active = ?
+		WHERE subject = ? AND active = ?`+notInstallClientSQL+`
 		ORDER BY request_id, requested_at DESC
 	`), userID, true)
 	if err != nil {
@@ -126,7 +126,7 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 	rrows, err := s.db.Query(s.q(`
 		SELECT request_id, client_id, requested_at, granted_scopes
 		FROM oauth_refresh_tokens
-		WHERE subject = ? AND active = ?
+		WHERE subject = ? AND active = ?`+notInstallClientSQL+`
 		ORDER BY request_id, requested_at DESC
 	`), userID, true)
 	if err != nil {

@@ -143,9 +143,42 @@ func (s *Server) handleListConnectedApps(w http.ResponseWriter, r *http.Request)
 		out = append(out, connectionToDTO(c, statPtr))
 	}
 
+	// Delegated grants given to installed apps (TASK-3399): listed on their
+	// own, read-only plus revoke, never as MCP connections (no
+	// oauth_connections row, lead ruling Q1). Additive member.
+	grants, err := s.store.ListUserAppGrants(user.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	appGrants := make([]appGrantDTO, 0, len(grants))
+	for _, g := range grants {
+		appGrants = append(appGrants, appGrantDTO{
+			ID: g.RequestID, AppName: g.AppName, Origin: g.Origin, Access: g.Access, GrantedAt: g.GrantedAt,
+			Workspace: appGrantWorkspaceDTO{Slug: g.WorkspaceSlug, Name: g.WorkspaceName},
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": out,
+		"items":      out,
+		"app_grants": appGrants,
 	})
+}
+
+// appGrantDTO is one delegated grant to an installed app on the Connected
+// Apps page: who, where, what access, since when. It can only be revoked.
+type appGrantDTO struct {
+	ID        string               `json:"id"`
+	AppName   string               `json:"app_name"`
+	Origin    string               `json:"origin"`
+	Workspace appGrantWorkspaceDTO `json:"workspace"`
+	Access    string               `json:"access"`
+	GrantedAt time.Time            `json:"granted_at"`
+}
+
+type appGrantWorkspaceDTO struct {
+	Slug string `json:"slug"`
+	Name string `json:"name"`
 }
 
 // handleRevokeConnectedApp invalidates every token in the OAuth
@@ -177,6 +210,33 @@ func (s *Server) handleRevokeConnectedApp(w http.ResponseWriter, r *http.Request
 	id := strings.TrimSpace(chi.URLParam(r, "id"))
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "connection id required")
+		return
+	}
+
+	// A delegated grant to an installed app (TASK-3399) is revoked through
+	// its binding: the tokens deactivated, an unused code and PKCE row
+	// deleted, and the binding deleted, which introspection reads.
+	if isGrant, err := s.store.IsUserAppGrant(user.ID, id); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if isGrant {
+		installID, err := s.store.RevokeUserAppGrant(user.ID, id)
+		if errors.Is(err, store.ErrAppGrantNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "Connection not found.")
+			return
+		}
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		metaJSON, _ := json.Marshal(map[string]string{"connection_id": id, "app_install_id": installID})
+		if _, err := s.store.CreateActivity(models.Activity{
+			Action: "oauth_connection_revoked", Actor: "user", Source: "web", UserID: user.ID,
+			Metadata: string(metaJSON), IPAddress: clientIP(r), UserAgent: requestUserAgent(r),
+		}); err != nil {
+			slog.Warn("connected-apps: audit log write failed", "error", err, "user_id", user.ID, "connection_id", id)
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 

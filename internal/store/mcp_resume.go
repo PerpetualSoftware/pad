@@ -23,9 +23,9 @@ func (s *Store) CountLiveOAuthConnections() (int, error) {
 	var n int
 	err := s.db.QueryRow(s.q(`
 		SELECT COUNT(*) FROM (
-			SELECT request_id FROM oauth_access_tokens WHERE active = ?
+			SELECT request_id FROM oauth_access_tokens WHERE active = ?`+notInstallClientSQL+`
 			UNION
-			SELECT request_id FROM oauth_refresh_tokens WHERE active = ?
+			SELECT request_id FROM oauth_refresh_tokens WHERE active = ?`+notInstallClientSQL+`
 		) chains`), true, true).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count live oauth connections: %w", err)

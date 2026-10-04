@@ -1021,6 +1021,11 @@ func (s *Store) disableUserAndRevokeAccessTx(tx *sql.Tx, userID string) error {
 		// it exchange (codex review). PKCE rows ride the same request id.
 		{"revoke oauth authorization codes", `UPDATE oauth_authorization_codes SET active = ? WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{s.dialect.BoolToInt(false), userID}},
 		{"delete oauth pkce requests", `DELETE FROM oauth_pkce_requests WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{userID}},
+		// A delegated grant to an installed app has no connection row; its
+		// unexchanged code and PKCE row are found through its binding
+		// (TASK-3399), or a re-enable would let the code exchange.
+		{"revoke delegated app codes", `UPDATE oauth_authorization_codes SET active = ? WHERE request_id IN (SELECT request_id FROM app_token_bindings WHERE delegated_user_id = ?)`, []any{s.dialect.BoolToInt(false), userID}},
+		{"delete delegated app pkce requests", `DELETE FROM oauth_pkce_requests WHERE request_id IN (SELECT request_id FROM app_token_bindings WHERE delegated_user_id = ?)`, []any{userID}},
 		{"delete oauth connections", `DELETE FROM oauth_connections WHERE user_id = ?`, []any{userID}},
 	}
 	for _, st := range stmts {

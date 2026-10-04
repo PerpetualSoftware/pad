@@ -1,0 +1,133 @@
+package store
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// App grants (SPEC-6 U5b-1, TASK-3399): the delegated grants a person gave
+// installed apps. They are not MCP connections, and have no oauth_connections
+// row (lead ruling Q1): the install fixes the workspace and the binding the
+// issuance barrier wrote carries the kind, epoch and access. The console
+// lists them read-only and revokes them, through the binding.
+
+// AppGrant is one delegated grant, as the console shows it.
+type AppGrant struct {
+	RequestID     string
+	InstallID     string
+	AppName       string
+	Origin        string
+	WorkspaceID   string
+	WorkspaceName string
+	WorkspaceSlug string
+	Access        string // "read" or "write", as the person consented
+	GrantedAt     time.Time
+}
+
+// ErrAppGrantNotFound is a grant that does not exist or is not the user's;
+// the two are indistinguishable on purpose.
+var ErrAppGrantNotFound = errors.New("app grant not found")
+
+// ListUserAppGrants returns the user's live delegated app grants: a binding
+// of kind delegated whose grant still has an active access or refresh token
+// held by the user. Newest first.
+func (s *Store) ListUserAppGrants(userID string) ([]AppGrant, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT b.request_id, b.install_id, i.origin, COALESCE(u.name, ''), b.workspace_id, w.name, w.slug,
+		       COALESCE(b.delegated_access, ''), b.created_at
+		FROM app_token_bindings b
+		JOIN app_installs i ON i.id = b.install_id
+		JOIN workspaces w ON w.id = b.workspace_id
+		LEFT JOIN users u ON u.id = i.bot_user_id
+		WHERE b.auth_kind = 'delegated' AND b.delegated_user_id = ?
+		  AND (EXISTS (SELECT 1 FROM oauth_access_tokens t WHERE t.request_id = b.request_id AND t.active = ?)
+		    OR EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.request_id = b.request_id AND t.active = ?))
+		ORDER BY b.created_at DESC`), userID, true, true)
+	if err != nil {
+		return nil, fmt.Errorf("list app grants: %w", err)
+	}
+	defer rows.Close()
+	var out []AppGrant
+	for rows.Next() {
+		var g AppGrant
+		var granted string
+		if err := rows.Scan(&g.RequestID, &g.InstallID, &g.Origin, &g.AppName, &g.WorkspaceID, &g.WorkspaceName, &g.WorkspaceSlug,
+			&g.Access, &granted); err != nil {
+			return nil, fmt.Errorf("scan app grant: %w", err)
+		}
+		g.GrantedAt = parseTime(granted)
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if out[i].AppName == "" {
+			if bot, err := s.AppPrincipalForInstall(out[i].InstallID); err == nil && bot != nil {
+				out[i].AppName = bot.Name
+			}
+		}
+		if out[i].AppName == "" {
+			out[i].AppName = out[i].Origin
+		}
+	}
+	return out, nil
+}
+
+// IsUserAppGrant reports whether requestID is a delegated app grant the
+// user holds (active or not).
+func (s *Store) IsUserAppGrant(userID, requestID string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM app_token_bindings b
+		WHERE b.request_id = ? AND b.auth_kind = 'delegated' AND b.delegated_user_id = ?`),
+		requestID, userID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("check app grant: %w", err)
+	}
+	return n > 0, nil
+}
+
+// RevokeUserAppGrant ends a delegated app grant the user holds, in one
+// transaction: its access and refresh tokens are deactivated, an unused
+// code or PKCE row is deleted, and the binding is deleted, so introspection
+// refuses every token of the grant even before the deactivation is read.
+// Idempotent; a grant that is not the user's is ErrAppGrantNotFound.
+func (s *Store) RevokeUserAppGrant(userID, requestID string) (installID string, err error) {
+	ok, err := s.IsUserAppGrant(userID, requestID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", ErrAppGrantNotFound
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := tx.QueryRow(s.q(`SELECT install_id FROM app_token_bindings WHERE request_id = ?`), requestID).Scan(&installID); err != nil &&
+		!errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("read app grant: %w", err)
+	}
+	for _, q := range []string{
+		`UPDATE oauth_access_tokens SET active = ? WHERE request_id = ?`,
+		`UPDATE oauth_refresh_tokens SET active = ? WHERE request_id = ?`,
+	} {
+		if _, err := tx.Exec(s.q(q), false, requestID); err != nil {
+			return "", fmt.Errorf("revoke app grant: %w", err)
+		}
+	}
+	for _, q := range []string{
+		`DELETE FROM oauth_authorization_codes WHERE request_id = ?`,
+		`DELETE FROM oauth_pkce_requests WHERE request_id = ?`,
+		`DELETE FROM app_token_bindings WHERE request_id = ?`,
+	} {
+		if _, err := tx.Exec(s.q(q), requestID); err != nil {
+			return "", fmt.Errorf("revoke app grant: %w", err)
+		}
+	}
+	return installID, tx.Commit()
+}

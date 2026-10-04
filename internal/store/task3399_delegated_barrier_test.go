@@ -168,3 +168,146 @@ func TestTask3399_TheBindingFixesKindAndAccess(t *testing.T) {
 		t.Errorf("a token widening the consented access: err = %v, want ErrInstallDelegatedAccess", err)
 	}
 }
+
+// task3399MCPChain mints an ordinary MCP chain (access + refresh) for subject.
+func task3399MCPChain(t *testing.T, s *Store, clientID, subject, requestID string) {
+	t.Helper()
+	for _, persist := range []func(models.OAuthRequest) error{s.CreateAccessToken, s.CreateRefreshToken} {
+		r := task3394Req(clientID, subject, requestID)
+		r.Scopes, r.GrantedScopes, r.SessionData = "pad:read", "pad:read", `{"extra":{}}`
+		if err := persist(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// task3399Delegated mints a delegated grant (code, access, refresh).
+func task3399Delegated(t *testing.T, f task3399Fix, requestID string) {
+	t.Helper()
+	for _, persist := range []func(models.OAuthRequest) error{f.s.CreateAuthorizationCode, f.s.CreateAccessToken, f.s.CreateRefreshToken} {
+		if err := persist(task3399Req(f.clientID, f.person.ID, requestID, "read", 1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Lead ruling Q1: an installed app's chains are not MCP connections. Every
+// reader that lists or counts chains as connections leaves them out; the
+// app grant is listed on its own.
+func TestTask3399_AppChainsAreNotMCPConnections(t *testing.T) {
+	f := task3399Fixture(t, "inst-readers", "write")
+	mcpClient := seedClient(t, f.s, "Desktop")
+	task3399MCPChain(t, f.s, mcpClient, f.person.ID, "req-mcp")
+	task3399Delegated(t, f, "req-app")
+	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-svc")); err != nil {
+		t.Fatal(err)
+	}
+
+	conns, err := f.s.ListUserOAuthConnections(f.person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conns) != 1 || conns[0].RequestID != "req-mcp" {
+		t.Errorf("Connected Apps list = %+v, want only the MCP chain", conns)
+	}
+	if n, err := f.s.CountLiveOAuthConnections(); err != nil || n != 1 {
+		t.Errorf("readiness resume count = %d (%v), want 1: app chains are not resumable MCP connections", n, err)
+	}
+	if _, err := f.s.BackfillOAuthConnections(); err != nil {
+		t.Fatal(err)
+	}
+	for req, want := range map[string]int{"req-mcp": 1, "req-app": 0, "req-svc": 0} {
+		if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_connections WHERE request_id = ?`, req); n != want {
+			t.Errorf("backfill: %d connection rows for %s, want %d", n, req, want)
+		}
+	}
+	grants, err := f.s.ListUserAppGrants(f.person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || grants[0].RequestID != "req-app" || grants[0].Access != "read" || grants[0].WorkspaceID != f.ws.ID {
+		t.Errorf("app grants = %+v, want the delegated grant", grants)
+	}
+}
+
+func TestTask3399_RevokingAnAppGrantEndsItThroughTheBinding(t *testing.T) {
+	f := task3399Fixture(t, "inst-revoke", "write")
+	task3399Delegated(t, f, "req-rv")
+	other := createTestUser(t, f.s, "other-rv@test.com", "Other", "password123")
+	if _, err := f.s.RevokeUserAppGrant(other.ID, "req-rv"); !errors.Is(err, ErrAppGrantNotFound) {
+		t.Errorf("another user's revoke: %v, want ErrAppGrantNotFound", err)
+	}
+	if _, err := f.s.RevokeUserAppGrant(f.person.ID, "req-rv"); err != nil {
+		t.Fatal(err)
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = 'req-rv'`); n != 0 {
+		t.Error("the binding survived the revoke")
+	}
+	for _, table := range []string{"oauth_access_tokens", "oauth_refresh_tokens"} {
+		if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM `+table+` WHERE request_id = 'req-rv' AND active = ?`, true); n != 0 {
+			t.Errorf("%s: %d active rows after the revoke", table, n)
+		}
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_authorization_codes WHERE request_id = 'req-rv'`); n != 0 {
+		t.Error("the grant's code survived the revoke")
+	}
+	if grants, _ := f.s.ListUserAppGrants(f.person.ID); len(grants) != 0 {
+		t.Errorf("a revoked grant is still listed: %+v", grants)
+	}
+}
+
+// Lead ruling Q4: the expiry sweep removes bindings whose grant has no row
+// left, for service and delegated grants alike; a live binding stays.
+func TestTask3399_TheSweepRemovesOrphanBindings(t *testing.T) {
+	f := task3399Fixture(t, "inst-sweep", "write")
+	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-gone")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-live")); err != nil {
+		t.Fatal(err)
+	}
+	task3399Delegated(t, f, "req-dgone")
+	for _, q := range []string{
+		`DELETE FROM oauth_access_tokens WHERE request_id IN ('req-gone', 'req-dgone')`,
+		`DELETE FROM oauth_refresh_tokens WHERE request_id = 'req-dgone'`,
+		`DELETE FROM oauth_authorization_codes WHERE request_id = 'req-dgone'`,
+	} {
+		if _, err := f.s.db.Exec(f.s.q(q)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := f.s.SweepExpiredOAuthRows(OAuthSweepCutoffs{}, 100, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AppTokenBindings != 2 {
+		t.Errorf("swept %d bindings, want the 2 orphans", res.AppTokenBindings)
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = 'req-live'`); n != 1 {
+		t.Error("the sweep removed a live binding")
+	}
+}
+
+// Disabling or claiming an account deactivates the person's unexchanged
+// delegated codes through their bindings, so a re-enable cannot exchange
+// one; erasing the account cascades the bindings away.
+func TestTask3399_RevokingAPersonReachesTheirDelegatedCodes(t *testing.T) {
+	f := task3399Fixture(t, "inst-person", "write")
+	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-pending", "read", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.DisableUserAndRevokeAccess(f.person.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_authorization_codes WHERE request_id = 'req-pending' AND active = ?`, true); n != 0 {
+		t.Error("a disabled person's delegated code is still active")
+	}
+	g := task3399Fixture(t, "inst-erase", "write")
+	task3399Delegated(t, g, "req-erase")
+	if err := g.s.DeleteAccountAtomic(g.person.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := task3394Count(t, g.s, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = 'req-erase'`); n != 0 {
+		t.Error("an erased person's binding survived")
+	}
+}
