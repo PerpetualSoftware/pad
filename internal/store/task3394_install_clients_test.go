@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -65,7 +66,7 @@ func task3394Req(clientID, subject, requestID string) models.OAuthRequest {
 		Signature: "sig-" + requestID + "-" + newID(), RequestID: requestID, ClientID: clientID,
 		Scopes: InstallClientScope, GrantedScopes: InstallClientScope,
 		Audience: task3394Audience, GrantedAudience: task3394Audience,
-		Subject: subject, SessionData: `{}`, RequestForm: ``,
+		Subject: subject, SessionData: `{"extra":{"` + InstallEpochSessionKey + `":1}}`, RequestForm: ``,
 	}
 }
 
@@ -136,7 +137,9 @@ func TestTask3394_BarrierIssuesTheBotsServiceToken(t *testing.T) {
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET auth_epoch = 7 WHERE id = ?`), f.installID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-svc")); err != nil {
+	r := task3394Req(f.clientID, f.bot.ID, "req-svc")
+	r.SessionData = `{"extra":{"` + InstallEpochSessionKey + `":7}}`
+	if err := f.s.CreateAccessToken(r); err != nil {
 		t.Fatalf("CreateAccessToken: %v", err)
 	}
 	var clientID, installID, wsID, kind string
@@ -408,7 +411,9 @@ func TestTask3394_IssuanceRacesTheLifecycle_Postgres(t *testing.T) {
 		wantEpoch int64  // the binding's epoch when it succeeds
 	}{
 		{"disable (phase 1)", `UPDATE app_installs SET state = 'disabling', auth_epoch = auth_epoch + 1 WHERE id = ?`, ErrInstallNotActive, 0},
-		{"rotate (phase 1)", `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`, nil, 2},
+		// The grant carries the epoch from before the rotate, so it is
+		// refused (codex r1 P1): it never binds to the epoch after it.
+		{"rotate (phase 1)", `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`, ErrInstallNotActive, 0},
 		{"re-enable", `UPDATE app_installs SET state = 'active' WHERE id = ?`, nil, 1},
 	}
 	for i, tc := range cases {
@@ -482,5 +487,35 @@ func TestTask3394_IssuanceRacesTheLifecycle_Postgres(t *testing.T) {
 				t.Errorf("binding epoch after %s = %d, want %d (the install's epoch AFTER the change)", tc.name, epoch, tc.wantEpoch)
 			}
 		})
+	}
+}
+
+// codex r1 P1: a grant carries the epoch it read BEFORE the client
+// authenticated, and the barrier refuses unless it is still the install's.
+// A request that authenticated with a secret a rotate then replaced reaches
+// the barrier after the rotate committed, carrying the old epoch.
+func TestTask3394_BarrierRefusesAGrantCarryingAnOldEpoch(t *testing.T) {
+	f := task3394Fixture(t, "inst-carry")
+	carried := func(epoch any) models.OAuthRequest {
+		r := task3394Req(f.clientID, f.bot.ID, "req-carry-"+newID())
+		b, _ := json.Marshal(map[string]any{"subject": f.bot.ID, "extra": map[string]any{InstallEpochSessionKey: epoch}})
+		r.SessionData = string(b)
+		return r
+	}
+	if err := f.s.CreateAccessToken(carried(1)); err != nil {
+		t.Fatalf("the current epoch: %v", err)
+	}
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET auth_epoch = 2 WHERE id = ?`), f.installID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.CreateAccessToken(carried(1)); !errors.Is(err, ErrInstallNotActive) {
+		t.Errorf("a grant carrying the old epoch: %v, want ErrInstallNotActive", err)
+	}
+	r := task3394Req(f.clientID, f.bot.ID, "req-carry-none")
+	if err := f.s.CreateAccessToken(r); !errors.Is(err, ErrInstallNotActive) {
+		t.Errorf("a grant carrying no epoch: %v, want ErrInstallNotActive", err)
+	}
+	if err := f.s.CreateAccessToken(carried(2)); err != nil {
+		t.Errorf("the new epoch: %v", err)
 	}
 }

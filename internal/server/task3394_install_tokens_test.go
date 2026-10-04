@@ -328,3 +328,33 @@ func TestTask3394_TokenEndpointWithMCPOffAndAppsOn(t *testing.T) {
 		}
 	}
 }
+
+// codex r1 P2: the install-caller refusal reads credentials exactly as fosite
+// does: a percent-encoded Basic client id, and a bearer in the form.
+func TestTask3394_PublicIntrospectionCallerEncodings(t *testing.T) {
+	srv := appOAuthServer(t, true)
+	in := newTestInstall(t, srv, "inst-enc")
+	tok := mintServiceToken(t, srv, in)
+	sess := newOAuthSession(t, srv)
+	mcpTok, code := mintWithResource(t, srv, sess, testCanonicalAudience)
+	if code != http.StatusOK {
+		t.Fatalf("mcp mint: %d", code)
+	}
+	send := func(name string, form url.Values, basicID, basicSecret string) {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/oauth/introspect", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if basicID != "" {
+			req.SetBasicAuth(basicID, basicSecret)
+		}
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if strings.Contains(rr.Body.String(), `"active":true`) {
+			t.Errorf("%s: the install client introspected a person's token: %d %s", name, rr.Code, rr.Body.String())
+		}
+	}
+	encoded := strings.Replace(url.QueryEscape(in.clientID), "-", "%2D", 1)
+	send("percent-encoded Basic id", url.Values{"token": {mcpTok}}, encoded, in.secret)
+	send("bearer in the form", url.Values{"token": {mcpTok}, "access_token": {tok}}, "", "")
+}

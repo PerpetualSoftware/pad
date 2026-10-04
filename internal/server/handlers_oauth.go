@@ -1195,6 +1195,18 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	installClient := s.installClientFor(r)
+	// The install's epoch, read BEFORE fosite authenticates the client: the
+	// barrier refuses the token unless it is still current, so a rotate that
+	// replaces the secret after this request authenticated ends it.
+	var preEpoch int64
+	if installClient != nil {
+		e, err := s.store.InstallEpoch(installClient.AppInstallID)
+		if err != nil {
+			s.writeTokenError(ctx, w, fosite.ErrInvalidClient.WithHint("This app is not installed."))
+			return
+		}
+		preEpoch = e
+	}
 	switch {
 	case installClient != nil:
 		if !s.appsAvailable() {
@@ -1232,7 +1244,7 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	// An installed app's service token: the app scope and audience, and its
 	// install's bot as the subject (fosite's client_credentials grants none).
 	if installClient != nil {
-		if err := s.grantInstallServiceToken(ar, installClient); err != nil {
+		if err := s.grantInstallServiceToken(ar, installClient, preEpoch); err != nil {
 			s.oauthServer.Provider().WriteAccessError(ctx, w, ar, err)
 			return
 		}

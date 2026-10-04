@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/ory/fosite"
@@ -25,8 +26,13 @@ import (
 
 // requestClientID returns the client id a token or introspection request
 // authenticates as: HTTP Basic first (RFC 6749 §2.3.1), then the form.
+// The Basic id is percent-decoded, as fosite decodes it before looking the
+// client up (codex r1): reading it raw would miss an encoded install client.
 func requestClientID(r *http.Request) string {
 	if id, _, ok := r.BasicAuth(); ok && id != "" {
+		if dec, err := url.QueryUnescape(id); err == nil {
+			return dec
+		}
 		return id
 	}
 	return strings.TrimSpace(r.PostForm.Get("client_id"))
@@ -84,9 +90,11 @@ func (s *Server) prepareInstallTokenRequest(ctx context.Context, w http.Response
 }
 
 // grantInstallServiceToken fills a validated client_credentials request: the
-// app scope, the app API audience, and the install's bot as the subject.
-// fosite's client_credentials handler grants nothing on its own.
-func (s *Server) grantInstallServiceToken(ar fosite.AccessRequester, client *models.OAuthClient) error {
+// app scope, the app API audience, the install's bot as the subject, and the
+// install epoch read BEFORE the client authenticated (preEpoch), which the
+// store's barrier requires to still be current (codex r1 P1). fosite's
+// client_credentials handler grants nothing on its own.
+func (s *Server) grantInstallServiceToken(ar fosite.AccessRequester, client *models.OAuthClient, preEpoch int64) error {
 	bot, err := s.store.AppPrincipalForInstall(client.AppInstallID)
 	if err != nil {
 		return fosite.ErrServerError.WithWrap(err)
@@ -102,6 +110,10 @@ func (s *Server) grantInstallServiceToken(ar fosite.AccessRequester, client *mod
 		return fosite.ErrServerError.WithHint("empty session")
 	}
 	sess.DefaultSession.Subject = bot.ID
+	if sess.DefaultSession.Extra == nil {
+		sess.DefaultSession.Extra = map[string]interface{}{}
+	}
+	sess.DefaultSession.Extra[store.InstallEpochSessionKey] = preEpoch
 	ar.GrantScope(store.InstallClientScope)
 	ar.GrantAudience(s.store.AppAPIAudience())
 	return nil
@@ -192,17 +204,19 @@ func (s *Server) introspectAppToken(ctx context.Context, token string) (*AppToke
 // request authenticates as an install client, by Basic credentials or by an
 // install client's access token as the Bearer (lead ruling R2: install
 // clients do not use the public endpoint).
+//
+// It reads the caller exactly as fosite's NewIntrospectionRequest does (codex
+// r1): a bearer access token from the header, the form or the query
+// (fosite.AccessTokenFromRequest) first, and only without one, the Basic
+// credentials with the client id percent-decoded.
 func (s *Server) introspectionCallerIsInstall(r *http.Request) bool {
-	if s.installClientFor(r) != nil {
-		return true
-	}
-	auth := r.Header.Get("Authorization")
-	if len(auth) > 7 && strings.EqualFold(auth[:7], "bearer ") {
-		if ar, _, err := s.oauthServer.IntrospectToken(r.Context(), strings.TrimSpace(auth[7:])); err == nil && ar != nil {
-			if c, cerr := s.store.GetOAuthClient(ar.GetClient().GetID()); cerr == nil && c.IsInstallClient() {
-				return true
-			}
+	if bearer := fosite.AccessTokenFromRequest(r); bearer != "" {
+		ar, _, err := s.oauthServer.IntrospectToken(r.Context(), bearer)
+		if err != nil || ar == nil {
+			return false
 		}
+		c, cerr := s.store.GetOAuthClient(ar.GetClient().GetID())
+		return cerr == nil && c.IsInstallClient()
 	}
-	return false
+	return s.installClientFor(r) != nil
 }

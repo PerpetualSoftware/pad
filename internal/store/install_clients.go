@@ -48,6 +48,44 @@ var (
 	ErrNoInstallClient = errors.New("app install has no client")
 )
 
+// InstallEpochSessionKey is the session-data key under which a grant carries
+// the install's epoch, read BEFORE its client authenticated (codex r1 P1). The
+// barrier refuses unless it is still the install's epoch: a request that
+// authenticated with a secret that a rotate then replaced reaches the barrier
+// after the rotate committed, still carrying the epoch from before it.
+const InstallEpochSessionKey = "app_install_epoch"
+
+// InstallEpoch returns the install's current epoch.
+func (s *Store) InstallEpoch(installID string) (int64, error) {
+	var epoch int64
+	err := s.db.QueryRow(s.q(`SELECT auth_epoch FROM app_installs WHERE id = ?`), installID).Scan(&epoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrInstallNotActive
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read install epoch: %w", err)
+	}
+	return epoch, nil
+}
+
+// carriedInstallEpoch reads the epoch a grant carries in its session data.
+func carriedInstallEpoch(sessionData string) (int64, bool) {
+	var doc struct {
+		Extra map[string]json.Number `json:"extra"`
+	}
+	dec := json.NewDecoder(strings.NewReader(sessionData))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
+		return 0, false
+	}
+	n, ok := doc.Extra[InstallEpochSessionKey]
+	if !ok {
+		return 0, false
+	}
+	v, err := n.Int64()
+	return v, err == nil
+}
+
 // InstallClientScope is the one scope an install client holds and is granted.
 // Access is not a scope: it comes from the install's manifest per token kind
 // (§4 step 4), which the app API middleware reads.
@@ -211,7 +249,9 @@ func (s *Store) DeleteInstallClientTx(tx *sql.Tx, installID string) error {
 //   - lock the install row (FOR UPDATE on Postgres; SQLite's single writer
 //     serializes it), the order disable and rotate take it in, before any
 //     users row;
-//   - refuse unless the install is active and the client not disabled;
+//   - refuse unless the install is active, the client not disabled, and the
+//     epoch the grant carries (read before its client authenticated) is
+//     still the install's;
 //   - refuse unless the subject is the install's own bot (a service token):
 //     the ONE door through which a bot holds a credential (lead ruling R1).
 //     Delegated grants are refused until TASK-3399;
@@ -245,6 +285,11 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		return true, fmt.Errorf("oauth: lock install: %w", err)
 	}
 	if state != "active" {
+		return true, ErrInstallNotActive
+	}
+	// The epoch the grant carries, read before its client authenticated,
+	// must still be the install's (codex r1 P1).
+	if carried, ok := carriedInstallEpoch(req.SessionData); !ok || carried != epoch {
 		return true, ErrInstallNotActive
 	}
 	if disabledAt.Valid && disabledAt.String != "" {
