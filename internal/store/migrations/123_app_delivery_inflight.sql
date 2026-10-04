@@ -17,3 +17,11 @@ CREATE TABLE IF NOT EXISTS app_delivery_inflight (
     expires_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_app_delivery_inflight_install ON app_delivery_inflight (install_id, expires_at);
+
+-- deliver_from: the first instant an app hook may receive events (codex r5
+-- on U10b). Set when the app is handed its secret (redeem), when a disabled
+-- install is re-enabled, and when an upgrade changes the subscriptions.
+-- Admission refuses an event that occurred earlier, so an event the app
+-- skipped while held, disabled or unsubscribed is never delivered later
+-- because an owner hook's failure kept its outbox row pending.
+ALTER TABLE webhooks ADD COLUMN deliver_from TEXT;

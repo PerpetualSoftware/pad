@@ -115,7 +115,14 @@ func (e *AppDeliveryRefusedError) Error() string { return "app delivery refused:
 // names collectionID, to the app hook webhookID, recording deliveryID as in
 // flight. *AppDeliveryRefusedError when it must not be sent; any other error
 // is the store's and the event is still owed.
-func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, deliveryID string) (*AppDeliveryAdmission, error) {
+//
+// occurredAt is the event's outbox occurred_at (RFC3339, seconds). An event
+// that occurred before the hook's deliver_from is refused: the app skipped
+// it while held, disabled or not subscribed, and an owner hook's failure
+// keeping the row pending must not deliver it later (codex r5). Both stamps
+// are whole seconds, so an event in the same second as the redeem or
+// re-enable is admitted: a one-second stated residual.
+func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, deliveryID string) (*AppDeliveryAdmission, error) {
 	// The hook's install never changes (app_install_id is written once), so
 	// it is read before the lock to know which install row to take.
 	var installID sql.NullString
@@ -164,9 +171,9 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, deliveryID stri
 	// subscriptions) and uninstall (which deletes the hook) both hold this
 	// row FOR UPDATE, so what is read here is what the owner last consented.
 	var url, secret, events string
-	var delivered sql.NullString
-	err = tx.QueryRow(s.q(`SELECT url, secret, events, secret_delivered_at FROM webhooks WHERE id = ?`), webhookID).
-		Scan(&url, &secret, &events, &delivered)
+	var delivered, deliverFrom sql.NullString
+	err = tx.QueryRow(s.q(`SELECT url, secret, events, secret_delivered_at, deliver_from FROM webhooks WHERE id = ?`), webhookID).
+		Scan(&url, &secret, &events, &delivered, &deliverFrom)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &AppDeliveryRefusedError{Reason: "hook_gone"}
 	}
@@ -175,6 +182,9 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, deliveryID stri
 	}
 	if !delivered.Valid || delivered.String == "" {
 		return nil, &AppDeliveryRefusedError{Reason: "hook_held"}
+	}
+	if !deliverFrom.Valid || occurredAt < deliverFrom.String {
+		return nil, &AppDeliveryRefusedError{Reason: "before_deliverable"}
 	}
 	if !appHookSubscribes(events, event, collectionID) {
 		return nil, &AppDeliveryRefusedError{Reason: "not_subscribed"}

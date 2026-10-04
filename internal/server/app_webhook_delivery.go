@@ -18,8 +18,8 @@ import (
 // appAdmitter adapts the store to the dispatcher's admission interface.
 type appAdmitter struct{ st *store.Store }
 
-func (a appAdmitter) AdmitAppDelivery(webhookID, event, collectionID, deliveryID string) (*webhooks.AppAdmission, error) {
-	adm, err := a.st.AdmitAppDelivery(webhookID, event, collectionID, deliveryID)
+func (a appAdmitter) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, deliveryID string) (*webhooks.AppAdmission, error) {
+	adm, err := a.st.AdmitAppDelivery(webhookID, event, collectionID, occurredAt, deliveryID)
 	var refused *store.AppDeliveryRefusedError
 	if errors.As(err, &refused) {
 		return nil, fmt.Errorf("%w: %s", webhooks.ErrAppDeliveryRefused, refused.Reason)
@@ -113,7 +113,7 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 	adm := appAdmitter{st: s.store}
 	for _, t := range targets {
 		res := s.webhooks.DeliverAppEvent(adm, poster, webhooks.AppDelivery{
-			WebhookID: t.WebhookID, Event: unit.eventType, CollectionID: collectionID, Body: body,
+			WebhookID: t.WebhookID, Event: unit.eventType, CollectionID: collectionID, OccurredAt: unit.occurredAt, Body: body,
 		})
 		s.countAppDelivery(res.String())
 		if res == webhooks.AppTransient || res == webhooks.AppDeferred {

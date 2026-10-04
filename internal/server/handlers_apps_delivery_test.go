@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -413,5 +414,55 @@ func TestAppDelivery_FoldedBulkIsCountedNotDelivered(t *testing.T) {
 	}
 	if n := e.pendingOutbox(t); n != 0 {
 		t.Fatalf("%d events left owed", n)
+	}
+}
+
+// codex r5 on U10b: an event the app skipped while disabled stays pending
+// when an OWNER hook fails; after the re-enable it must still not reach the
+// app. The same for an event from before the app was handed its secret.
+func TestAppDelivery_SkippedEventsStaySkippedWhenOwnerRetries(t *testing.T) {
+	e := newDeliveryEnv(t)
+	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(owner.Close)
+	if _, err := e.srv.store.CreateWebhook(e.wsID, models.WebhookCreate{URL: owner.URL, Events: `["*"]`}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Before redeem: held.
+	e.item(t, e.companion.ID, "While held")
+	e.tick(t)
+	if e.pendingOutbox(t) == 0 {
+		t.Fatal("precondition: the failing owner hook did not keep the event pending")
+	}
+	time.Sleep(1100 * time.Millisecond) // past the one-second stamp boundary
+	e.redeemNow(t)
+	e.tick(t)
+	if got := e.hooksAt("/hooks"); len(got) != 0 {
+		t.Fatalf("an event from before the redeem reached the app: %s", got[0].Body)
+	}
+
+	// Disabled, then re-enabled.
+	base := "/api/v1/workspaces/" + e.ws + "/apps/" + e.installID
+	if rr := doRequestWithCookie(e.srv, "POST", base+"/disable", nil, e.token); rr.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", rr.Code, rr.Body.String())
+	}
+	e.item(t, e.companion.ID, "While disabled")
+	e.tick(t)
+	time.Sleep(1100 * time.Millisecond)
+	if rr := doRequestWithCookie(e.srv, "POST", base+"/enable", nil, e.token); rr.Code != http.StatusOK {
+		t.Fatalf("enable: %d %s", rr.Code, rr.Body.String())
+	}
+	e.tick(t)
+	if got := e.hooksAt("/hooks"); len(got) != 0 {
+		t.Fatalf("an event from the disabled period reached the app after re-enable: %s", got[0].Body)
+	}
+
+	// A new event is delivered.
+	e.item(t, e.companion.ID, "After enable")
+	e.tick(t)
+	if got := e.hooksAt("/hooks"); len(got) != 1 {
+		t.Fatalf("%d deliveries after re-enable, want the one new event", len(got))
 	}
 }

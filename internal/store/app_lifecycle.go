@@ -266,6 +266,11 @@ func (s *Store) ReenableInstall(workspaceID, installID string) error {
 	if err := s.setInstallStateTx(tx, installID, InstallActive, false); err != nil {
 		return err
 	}
+	// Events from the disabled period are never delivered after it, even
+	// when an owner hook's failure kept them pending (codex r5 on U10b).
+	if _, err := tx.Exec(s.q(`UPDATE webhooks SET deliver_from = ?, updated_at = ? WHERE app_install_id = ?`), now(), now(), installID); err != nil {
+		return fmt.Errorf("re-enable: webhook: %w", err)
+	}
 	return tx.Commit()
 }
 

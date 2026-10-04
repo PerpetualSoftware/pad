@@ -45,7 +45,7 @@ var ErrAppDeliveryRefused = errors.New("app delivery refused")
 // attempt must not be sent; any other error is the store's and the event is
 // still owed.
 type AppAdmitter interface {
-	AdmitAppDelivery(webhookID, event, collectionID, deliveryID string) (*AppAdmission, error)
+	AdmitAppDelivery(webhookID, event, collectionID, occurredAt, deliveryID string) (*AppAdmission, error)
 	EndAppDelivery(deliveryID string) error
 }
 
@@ -60,7 +60,10 @@ type AppDelivery struct {
 	WebhookID    string
 	Event        string
 	CollectionID string
-	Body         []byte
+	// OccurredAt is the event's outbox occurred_at; admission refuses an
+	// event older than the hook's deliver_from.
+	OccurredAt string
+	Body       []byte
 }
 
 // AppResult is what happened to one app delivery.
@@ -145,7 +148,7 @@ func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster 
 	defer cancel()
 
 	deliveryID := newDeliveryID()
-	a, err := adm.AdmitAppDelivery(dv.WebhookID, dv.Event, dv.CollectionID, deliveryID)
+	a, err := adm.AdmitAppDelivery(dv.WebhookID, dv.Event, dv.CollectionID, dv.OccurredAt, deliveryID)
 	if err != nil {
 		if errors.Is(err, ErrAppDeliveryRefused) {
 			return AppRefused

@@ -30,7 +30,7 @@ type fakeAdmitter struct {
 	onAdmit func(n int)
 }
 
-func (a *fakeAdmitter) AdmitAppDelivery(webhookID, event, collectionID, deliveryID string) (*AppAdmission, error) {
+func (a *fakeAdmitter) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, deliveryID string) (*AppAdmission, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.onAdmit != nil {

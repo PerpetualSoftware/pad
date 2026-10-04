@@ -72,7 +72,7 @@ func wantRefused(t *testing.T, err error, reason string) {
 
 func TestTask3408_AdmissionRecordsInFlightInDatabaseTime(t *testing.T) {
 	f := task3408Fixture(t, "inst-admit")
-	adm, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "d1")
+	adm, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, now(), "d1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,16 +100,16 @@ func TestTask3408_AdmissionRefusals(t *testing.T) {
 	f := task3408Fixture(t, "inst-refuse")
 	// Not subscribed: another event, or the subscribed event on a collection
 	// the subscription does not name.
-	_, err := f.s.AdmitAppDelivery(f.hookID, "item.updated", f.companion.ID, "r1")
+	_, err := f.s.AdmitAppDelivery(f.hookID, "item.updated", f.companion.ID, now(), "r1")
 	wantRefused(t, err, "not_subscribed")
-	_, err = f.s.AdmitAppDelivery(f.hookID, "item.created", f.other.ID, "r2")
+	_, err = f.s.AdmitAppDelivery(f.hookID, "item.created", f.other.ID, now(), "r2")
 	wantRefused(t, err, "not_subscribed")
 
 	// The ceiling: a companion no longer the app's.
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE collections SET via_app = NULL WHERE id = ?`), f.companion.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "r3")
+	_, err = f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, now(), "r3")
 	wantRefused(t, err, "not_visible")
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE collections SET via_app = ? WHERE id = ?`), f.installID, f.companion.ID); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestTask3408_AdmissionRefusals(t *testing.T) {
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE webhooks SET secret_delivered_at = NULL WHERE id = ?`), f.hookID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "r4")
+	_, err = f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, now(), "r4")
 	wantRefused(t, err, "hook_held")
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE webhooks SET secret_delivered_at = ? WHERE id = ?`), now(), f.hookID); err != nil {
 		t.Fatal(err)
@@ -129,11 +129,11 @@ func TestTask3408_AdmissionRefusals(t *testing.T) {
 	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownDisable); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "r5")
+	_, err = f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, now(), "r5")
 	wantRefused(t, err, "install_disabling")
 
 	// A hook that does not exist.
-	_, err = f.s.AdmitAppDelivery("no-such-hook", "item.created", f.companion.ID, "r6")
+	_, err = f.s.AdmitAppDelivery("no-such-hook", "item.created", f.companion.ID, now(), "r6")
 	wantRefused(t, err, "hook_gone")
 
 	if f.inflight(t) != 0 {
@@ -143,7 +143,7 @@ func TestTask3408_AdmissionRefusals(t *testing.T) {
 
 func TestTask3408_DrainWaitsForInFlight(t *testing.T) {
 	f := task3408Fixture(t, "inst-drain")
-	if _, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "w1"); err != nil {
+	if _, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, now(), "w1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownDisable); err != nil {
@@ -219,7 +219,7 @@ func TestTask3408_AdmissionRacesPhaseOne(t *testing.T) {
 				}
 				startedAfter := phaseOneDone.Load()
 				id := newID()
-				_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, id)
+				_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, now(), id)
 				if err == nil {
 					admitted.Add(1)
 					if startedAfter {
@@ -280,7 +280,7 @@ func TestTask3408_RotateHoldsTheHook(t *testing.T) {
 	if after == before || delivered != nil {
 		t.Fatalf("rotate left the hook releasing the old secret (changed %v, delivered %v)", after != before, delivered)
 	}
-	_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "after-rotate")
+	_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, now(), "after-rotate")
 	wantRefused(t, err, "hook_held")
 }
 
@@ -291,7 +291,7 @@ func TestTask3408_UndecryptableSecretReleasesTheRecord(t *testing.T) {
 	f.s.SetEncryptionKey([]byte("0123456789abcdef0123456789abcdef"))
 	g := task3408FixtureIn(t, f)
 	f.s.SetEncryptionKey([]byte("fedcba9876543210fedcba9876543210"))
-	_, err := f.s.AdmitAppDelivery(g.hookID, "item.created", g.companion.ID, "dx")
+	_, err := f.s.AdmitAppDelivery(g.hookID, "item.created", g.companion.ID, now(), "dx")
 	var r *AppDeliveryRefusedError
 	if err == nil || errors.As(err, &r) {
 		t.Fatalf("got %v, want a store error", err)
@@ -308,7 +308,7 @@ func TestTask3408_DeletedWorkspaceRefusesAdmission(t *testing.T) {
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), f.ws.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "wd")
+	_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, now(), "wd")
 	wantRefused(t, err, "workspace_deleted")
 }
 
@@ -339,5 +339,58 @@ func TestTask3408_CommentBlockRecordsTheWritingInstall(t *testing.T) {
 	p, err = f.s.buildCommentAppProjectionTx(tx, c.ID, item.ID, c.UserID, c.Author, c.CreatedBy, "")
 	if err != nil || p.Creator.ViaApp != f.installID {
 		t.Fatalf("an app's comment: %+v %v", p, err)
+	}
+}
+
+// codex r5 on U10b: an event older than the hook's deliver_from is refused.
+func TestTask3408_EventsBeforeDeliverFromAreRefused(t *testing.T) {
+	f := task3408Fixture(t, "inst-from")
+	_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "2000-01-01T00:00:00Z", "old")
+	wantRefused(t, err, "before_deliverable")
+	if _, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, now(), "new"); err != nil {
+		t.Fatalf("a current event: %v", err)
+	}
+}
+
+// A subscription change moves deliver_from; an unchanged one does not.
+func TestTask3408_SubscriptionChangeMovesDeliverFrom(t *testing.T) {
+	f := task3408Fixture(t, "inst-subs")
+	set := func(v string) {
+		if _, err := f.s.db.Exec(f.s.q(`UPDATE webhooks SET deliver_from = ? WHERE id = ?`), v, f.hookID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func() string {
+		var v string
+		if err := f.s.db.QueryRow(f.s.q(`SELECT deliver_from FROM webhooks WHERE id = ?`), f.hookID).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	upsert := func(events ...string) {
+		spec := &AppWebhookSpec{URL: "https://portal.example/hooks"}
+		for _, e := range events {
+			spec.Events = append(spec.Events, AppWebhookEvent{Name: e, CollectionSlugs: []string{f.companion.Slug}})
+		}
+		tx, err := f.s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.s.upsertAppWebhookTx(tx, f.ws.ID, f.installID, spec); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const old = "2000-01-01T00:00:00Z"
+	set(old)
+	upsert("item.created")
+	if got := get(); got != old {
+		t.Fatalf("an unchanged subscription moved deliver_from to %s", got)
+	}
+	upsert("item.created", "item.updated")
+	if got := get(); got == old {
+		t.Fatal("a changed subscription left deliver_from where it was")
 	}
 }
