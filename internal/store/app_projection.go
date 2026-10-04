@@ -44,7 +44,10 @@ import (
 // creator.display beside it, which no generic key match could tie to the
 // deleted account.
 
-const appProjectionVersion = 1
+// appProjectionVersion 2 adds actor_via_app (TASK-3411, SPEC-6 U10d). A v1
+// block, written before it, carries no actor; the app DTO then attributes
+// only create events, from the creator.
+const appProjectionVersion = 2
 
 // appProjectionKey is the payload key the block lives under.
 const appProjectionKey = "app_projection"
@@ -71,6 +74,11 @@ type itemAppProjection struct {
 	// "fields": {} and only a partial block omits the key.
 	Fields  *map[string]any `json:"fields,omitempty"`
 	Partial bool            `json:"partial,omitempty"`
+	// ActorViaApp is the install whose fenced write caused THIS event, empty
+	// for a person's or agent's write (v2, TASK-3411). Unlike the creator's
+	// via_app it names the writer of the change, so an app can tell its own
+	// echoes from other edits to the same item.
+	ActorViaApp string `json:"actor_via_app,omitempty"`
 }
 
 // appProjectionFieldTypes is every field type validateFieldType
@@ -116,6 +124,8 @@ type commentAppProjection struct {
 	// item. Legacy rows can point across items, and the foreign key does not
 	// prevent it; such a parent projects to absent.
 	ParentCommentID string `json:"parent_comment_id,omitempty"`
+	// ActorViaApp: as on the item block (v2, TASK-3411).
+	ActorViaApp string `json:"actor_via_app,omitempty"`
 }
 
 // workspaceHasInstalledAppTx reports whether the workspace has an app

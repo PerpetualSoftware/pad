@@ -284,7 +284,7 @@ func (f *FencedTx) CreateItem(in FencedItemCreate) (*models.Item, error) {
 	if item == nil {
 		return nil, fmt.Errorf("fenced create: item %s not readable in transaction", id)
 	}
-	if err := f.s.emitItemEventTx(f.tx, kernelevents.ItemCreated, item, nil, ""); err != nil {
+	if err := f.s.emitItemEventAsInstallTx(f.tx, kernelevents.ItemCreated, item, nil, "", f.installID); err != nil {
 		return nil, err
 	}
 	if err := f.s.enqueueDecisionJobsTx(f.tx, f.workspaceID, item.ID, item.CollectionID); err != nil {
@@ -369,7 +369,7 @@ func (f *FencedTx) UpdateItemFields(itemID string, patch map[string]any, expecte
 	if statusChanged {
 		updated.LastMutation = &models.ItemMutationSignal{StatusChanged: true, StatusFieldKey: doneKey, FromStatus: statusBefore, ToStatus: newStatus}
 	}
-	if err := f.s.emitItemUpdateEventsTx(f.tx, existing, updated, statusChanged, statusBefore, doneKey, "", false); err != nil {
+	if err := f.s.emitItemUpdateEventsAsInstallTx(f.tx, existing, updated, statusChanged, statusBefore, doneKey, "", false, f.installID); err != nil {
 		return nil, err
 	}
 	if err := f.s.enqueueDecisionJobsTx(f.tx, f.workspaceID, itemID, collectionID); err != nil {

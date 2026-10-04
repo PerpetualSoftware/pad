@@ -120,7 +120,7 @@ func (f *FencedTx) CreateComment(in FencedCommentCreate) (*models.Comment, error
 	if err != nil {
 		return nil, err
 	}
-	if err := f.s.emitCommentEventTx(f.tx, kernelevents.CommentCreated, created); err != nil {
+	if err := f.s.emitCommentEventAsInstallTx(f.tx, kernelevents.CommentCreated, created, f.installID); err != nil {
 		return nil, err
 	}
 	if err := f.s.enqueueDecisionJobsForItemTx(f.tx, in.ItemID); err != nil {
@@ -185,7 +185,7 @@ func (f *FencedTx) UpdateComment(itemID, commentID, body string, actor FencedAct
 		return nil, err
 	}
 	if body != before {
-		if err := f.s.emitCommentEventTx(f.tx, kernelevents.CommentUpdated, updated); err != nil {
+		if err := f.s.emitCommentEventAsInstallTx(f.tx, kernelevents.CommentUpdated, updated, f.installID); err != nil {
 			return nil, err
 		}
 		if err := f.s.enqueueDecisionJobsForItemTx(f.tx, itemID); err != nil {
@@ -247,6 +247,9 @@ func (f *FencedTx) DeleteComment(itemID, commentID string, actor FencedActor) er
 	proj, err := f.s.buildCommentAppProjectionTx(f.tx, commentID, itemID, authorID.String, author, createdBy, target.parentID)
 	if err != nil {
 		return err
+	}
+	if proj != nil {
+		proj.ActorViaApp = f.installID // TASK-3411
 	}
 
 	var replies int
