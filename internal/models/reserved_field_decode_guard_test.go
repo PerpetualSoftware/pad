@@ -73,6 +73,7 @@ var rawDecodeAllowed = map[string]string{
 	"cmd/pad/cmd_collection.go::schema":                   "CLI --schema parse and the collection list's own status-option rendering — the collection's definition, not any item's fields",
 	"internal/mcp/dispatch_http_routes.go::schema":        "MCP collection schema INPUT, the remote twin of handlers_collections.go",
 	"internal/appmanifest/manifest.go::Parsed":            "an app manifest's companion collection DEFINITION (TASK-3397), decoded strictly so a misspelled key is refused; the install preview then runs validateNoReservedFieldKeys on it, as collection create does",
+	"internal/store/app_upgrade.go::schema":               "an app upgrade's companion collection DEFINITION (TASK-3397 U8b2): CheckAdditiveFieldsQ compares the declared keys and the done field, and UpgradeAppInstall appends an additive field to the FULL schema and writes it back, so every existing FieldDef, a grandfathered one included, must survive the round trip verbatim",
 
 	// The move / copy family. These decode raw and strip at the point of use
 	// via items.SchemaForMigratedFields (BUG-2674), which is the same
@@ -556,8 +557,9 @@ func TestGuardAllowListHasNoDeadEntries(t *testing.T) {
 // seeing sites, not that the sites stopped existing.
 //
 // 22 since BUG-3202 added models/fields_json.go's generic number-preserving
-// decoder, a fourth INTERFACE destination.
-const rawDecodeSiteCount = 23
+// decoder, a fourth INTERFACE destination. 25 since TASK-3397 U8b2 added the
+// two app-upgrade DEFINITION decodes in store/app_upgrade.go.
+const rawDecodeSiteCount = 25
 
 func TestGuardSeesEveryKnownDecodeSite(t *testing.T) {
 	sites := collectSchemaDecodes(t, repoRoot(t))

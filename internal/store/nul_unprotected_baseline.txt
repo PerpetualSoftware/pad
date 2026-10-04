@@ -30,6 +30,7 @@ app_install_pending.owner_id
 app_install_pending.preview
 app_install_pending.state
 app_install_pending.updated_at
+app_install_pending.upgrade_of
 app_install_pending.workspace_id
 app_install_pending_blobs.data
 app_install_pending_blobs.key
