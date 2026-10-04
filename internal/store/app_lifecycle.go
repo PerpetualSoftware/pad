@@ -280,6 +280,11 @@ func (s *Store) UninstallAppTx(workspaceID, installID string) error {
 			}
 		}
 	}
+	if uninstallHookAfterStep != nil {
+		if err := uninstallHookAfterStep("bot-locks"); err != nil {
+			return err
+		}
+	}
 	state, err := s.lockInstallTx(tx, workspaceID, installID)
 	if err != nil {
 		return err

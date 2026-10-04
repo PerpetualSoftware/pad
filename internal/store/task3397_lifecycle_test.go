@@ -237,3 +237,55 @@ func TestTask3397_PhaseOneFencesAnAdmittedWrite(t *testing.T) {
 		t.Fatal("a write admitted before phase 1 opened its fence after it")
 	}
 }
+
+// The lead's check on #1775: UninstallAppTx takes the bot's users row BEFORE
+// the install row, and the issuance barrier takes the install row FOR UPDATE.
+// No cycle, for two reasons: by the time UninstallAppTx runs the install is
+// 'uninstalling', so the barrier refuses on its state check
+// (install_clients.go, `state != "active"`) before it reads the user; and its
+// user read is a plain SELECT, which never waits on a row lock. This races a
+// real issuance against UninstallAppTx held just after its bot-row locks, so
+// a barrier reordered to lock-read the user first goes red (40P01).
+func TestTask3397_IssuanceDoesNotDeadlockWithUninstall(t *testing.T) {
+	f := task3397LifecycleFix(t, "inst-issue-race")
+	epoch := task3397Epoch(t, f.s, f.installID)
+	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownUninstall); err != nil {
+		t.Fatal(err)
+	}
+	held, release := make(chan struct{}), make(chan struct{})
+	uninstallHookAfterStep = func(step string) error {
+		if step == "bot-locks" {
+			close(held)
+			<-release
+		}
+		return nil
+	}
+	t.Cleanup(func() { uninstallHookAfterStep = nil })
+	done := make(chan error, 1)
+	go func() { done <- f.s.UninstallAppTx(f.ws.ID, f.installID) }()
+	<-held
+	issued := make(chan error, 1)
+	go func() {
+		req := task3394Req(f.clientID, f.bot.ID, "req-issue-race")
+		req.SessionData = fmt.Sprintf(`{"extra":{"%s":%d}}`, InstallEpochSessionKey, epoch)
+		issued <- f.s.CreateAccessToken(req)
+	}()
+	time.Sleep(700 * time.Millisecond) // the issuance reaches the install row
+	close(release)
+	for name, ch := range map[string]chan error{"uninstall": done, "issuance": issued} {
+		select {
+		case err := <-ch:
+			if err != nil && strings.Contains(err.Error(), "40P01") {
+				t.Fatalf("%s was a deadlock victim: %v", name, err)
+			}
+			if name == "uninstall" && err != nil {
+				t.Fatalf("uninstall: %v", err)
+			}
+			if name == "issuance" && err == nil {
+				t.Fatal("a token was issued for an install being uninstalled")
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s never finished", name)
+		}
+	}
+}
