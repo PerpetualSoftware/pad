@@ -69,7 +69,31 @@ const InstallEpochSessionKey = "app_install_epoch"
 const (
 	InstallAuthKindSessionKey = "app_auth_kind"
 	InstallAccessSessionKey   = "app_delegated_access"
+	// InstallPersonEpochSessionKey carries the person's credential_epoch as
+	// the consent request resolved them (codex U5b-1 r7): the barrier refuses
+	// a grant whose person's credentials changed since, so a consent posted
+	// from a session a disable destroyed cannot mint a code after a re-enable.
+	InstallPersonEpochSessionKey = "app_person_epoch"
 )
+
+// carriedPersonEpoch reads the person's credential epoch a delegated grant
+// carries, if any.
+func carriedPersonEpoch(sessionData string) (int64, bool) {
+	var doc struct {
+		Extra map[string]any `json:"extra"`
+	}
+	dec := json.NewDecoder(strings.NewReader(sessionData))
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
+		return 0, false
+	}
+	n, ok := doc.Extra[InstallPersonEpochSessionKey].(json.Number)
+	if !ok {
+		return 0, false
+	}
+	v, err := n.Int64()
+	return v, err == nil
+}
 
 // carriedInstallGrant reads a grant's kind and consented access from its
 // session data; kind is "service" when none is carried.
@@ -412,6 +436,11 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		}
 		if err != nil {
 			return true, fmt.Errorf("oauth: read delegated subject: %w", err)
+		}
+		// The credentials the consent was given under must still be the
+		// person's: a disable or claim since then bumped them.
+		if carried, ok := carriedPersonEpoch(req.SessionData); !ok || carried != credEpoch {
+			return true, ErrInstallDelegatedSubject
 		}
 		bindAccess = sql.NullString{String: access, Valid: true}
 		bindUser = sql.NullString{String: req.Subject, Valid: true}

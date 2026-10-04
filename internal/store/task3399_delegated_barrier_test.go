@@ -38,7 +38,7 @@ func task3399Fixture(t *testing.T, installID, offered string) task3399Fix {
 func task3399Req(clientID, subject, requestID, access string, epoch int) models.OAuthRequest {
 	r := task3394Req(clientID, subject, requestID)
 	r.SessionData = `{"extra":{"` + InstallEpochSessionKey + `":` + itoa(epoch) + `,"` + InstallAuthKindSessionKey + `":"delegated","` +
-		InstallAccessSessionKey + `":"` + access + `"}}`
+		InstallAccessSessionKey + `":"` + access + `","` + InstallPersonEpochSessionKey + `":0}}`
 	return r
 }
 
@@ -498,5 +498,47 @@ func TestTask3399_AGrantPastTheInstallEpochIsNotListed(t *testing.T) {
 	}
 	if grants, _ := f.s.ListUserAppGrants(f.person.ID); len(grants) != 0 {
 		t.Errorf("a grant past the install's epoch is listed: %+v", grants)
+	}
+}
+
+// Codex U5b-1 r7 P1: a consent decided under the person's credentials as a
+// session resolved them cannot mint a code after those credentials changed
+// (a disable destroyed that session, then a re-enable).
+func TestTask3399_AConsentFromAStaleSessionMintsNothing(t *testing.T) {
+	f := task3399Fixture(t, "inst-stale", "write")
+	if err := f.s.DisableUserAndRevokeAccess(f.person.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.EnableUser(f.person.ID); err != nil {
+		t.Fatal(err)
+	}
+	// task3399Req carries the epoch the consent saw: 0, before the disable.
+	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-stale", "read", 1)); !errors.Is(err, ErrInstallDelegatedSubject) {
+		t.Errorf("a code from a consent under old credentials: err = %v, want ErrInstallDelegatedSubject", err)
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_authorization_codes`); n != 0 {
+		t.Errorf("%d codes stored", n)
+	}
+}
+
+// Codex U5b-1 r7 P2: a grant consented to but not yet exchanged is listed,
+// so its person can revoke its code.
+func TestTask3399_AnUnexchangedGrantIsListedAndRevocable(t *testing.T) {
+	f := task3399Fixture(t, "inst-unexch", "write")
+	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-ux", "read", 1)); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := f.s.ListUserAppGrants(f.person.ID)
+	if err != nil || len(grants) != 1 || grants[0].RequestID != "req-ux" {
+		t.Fatalf("an unexchanged grant: listed %+v, %v", grants, err)
+	}
+	if _, err := f.s.RevokeUserAppGrant(f.person.ID, "req-ux"); err != nil {
+		t.Fatal(err)
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_authorization_codes WHERE request_id = 'req-ux'`); n != 0 {
+		t.Error("the revoked grant's code survived")
+	}
+	if err := f.s.CreateAccessToken(task3399Req(f.clientID, f.person.ID, "req-ux", "read", 1)); err == nil {
+		t.Error("the revoked grant minted a token")
 	}
 }

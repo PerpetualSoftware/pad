@@ -197,6 +197,10 @@ func (s *Server) decideAppConsent(w http.ResponseWriter, r *http.Request, ar fos
 	session.DefaultSession.Extra[store.InstallEpochSessionKey] = epoch
 	session.DefaultSession.Extra[store.InstallAuthKindSessionKey] = "delegated"
 	session.DefaultSession.Extra[store.InstallAccessSessionKey] = access
+	// The credentials this request's session resolved the person under: the
+	// barrier refuses the code if they changed since (a disable destroyed
+	// this session, then a re-enable), codex U5b-1 r7.
+	session.DefaultSession.Extra[store.InstallPersonEpochSessionKey] = user.CredentialEpoch
 	resp, err := s.oauthServer.Provider().NewAuthorizeResponse(r.Context(), ar, session)
 	if err != nil {
 		s.recordOAuthFlow("failed")
