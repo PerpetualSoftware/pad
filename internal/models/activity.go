@@ -54,6 +54,10 @@ const (
 	// ActionAppInstallCodeIssued is logged when an owner issues a new install
 	// code for an existing install (the lost-redeem recovery, TASK-3397).
 	ActionAppInstallCodeIssued = "app_install_code_issued"
+	// ActionAppInstallLifecycle is logged when an owner disables, re-enables,
+	// rotates or uninstalls an app install (U8c, TASK-3397); the metadata
+	// names the action and the resulting state.
+	ActionAppInstallLifecycle = "app_install_lifecycle"
 	// ActionEmailVerifiedByAdmin is logged when an admin force-verifies a
 	// user's email from the admin console (DR-7). PLAN-1933 / TASK-1936.
 	ActionEmailVerifiedByAdmin = "email_verified_by_admin"
