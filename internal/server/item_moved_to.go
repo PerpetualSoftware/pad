@@ -191,6 +191,10 @@ func (s *Server) movedToDestinations(r *http.Request, item *models.Item) []model
 	if item == nil || item.DeletedAt == nil || item.ID == "" {
 		return nil
 	}
+	// An installed app never learns where an item went (SPEC-6 §4, U6a).
+	if appContextFrom(r) != nil {
+		return nil
+	}
 	itemID := item.ID
 
 	// Precondition. workspaceRole(r) below describes the workspace the request

@@ -94,6 +94,11 @@ type Server struct {
 	// deterministic. TestVisibleCollectionIDsFaultIsNilInProduction holds New
 	// to leaving it nil. Same synchronisation rule as afterItemPreRead.
 	visibleCollectionIDsFault func() error
+	// appstoreState holds the one appstore the app API uses (SPEC-6 U6a).
+	appstoreState appStoreState
+	// appAfterHandler is a TEST-ONLY seam, nil in production: it runs after
+	// an app handler and before its response is re-validated and sent.
+	appAfterHandler func()
 
 	// userCountFault is a TEST-ONLY seam, nil in production (BUG-3334). When
 	// set, userCount calls it first and returns its error. The fresh-install
@@ -1548,6 +1553,9 @@ func (s *Server) setupRouter() {
 	// Mounted on every install and gated per request (PLAN-2310 DR-5) —
 	// see registerMCPRoutes.
 	s.registerMCPRoutes(r)
+	// The installed-app API (SPEC-6 U6a): its own router, outside TokenAuth
+	// and RequireAuth, like the MCP mount above.
+	s.registerAppAPIRoutes(r)
 	s.registerChatGPTMCPRoutes(r)
 
 	// OAuth 2.1 authorization-server flow endpoints (PLAN-943
@@ -3015,7 +3023,17 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 	if user == nil || (user.Role == "admin" && !isBearerAuth(r)) {
 		return nil, nil // No filtering for admins (cookie session) or unauthenticated
 	}
-	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
+	ids, err := s.store.VisibleCollectionIDs(workspaceID, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	// An app request sees no further than its token's ceiling (SPEC-6 U6a),
+	// whoever the actor is: the store already ceilings a bot, and a delegated
+	// person (TASK-3399) is ceilinged here, from the request.
+	if ac := appContextFrom(r); ac != nil {
+		return store.IntersectCollectionIDs(ids, ac.ReadCeiling), nil
+	}
+	return ids, nil
 }
 
 // requireCollectionFullyVisible checks that the collection is visible to the
@@ -3065,6 +3083,13 @@ func (s *Server) requireCollectionFullyVisible(w http.ResponseWriter, r *http.Re
 // (e.g. handlers_ref_resolver.go) should use checkItemVisible directly with
 // a manually-derived role.
 func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item) bool {
+	// The app ceiling first (SPEC-6 U6a): checkItemVisible reads the store's
+	// visibility directly, so a ceiling only in visibleCollectionIDs would
+	// not reach it. Same 404 as any invisible item.
+	if item != nil && !appCeilingAllows(r, item.CollectionID) {
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return false
+	}
 	visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
 	if err != nil {
 		writeInternalError(w, err)
