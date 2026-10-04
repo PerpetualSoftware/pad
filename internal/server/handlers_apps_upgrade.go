@@ -288,6 +288,7 @@ func upgradePlanFrom(old, next *appmanifest.Manifest, d *upgradeDiff, fresh *app
 		ManifestSHA256: fresh.ManifestSHA256, ManifestVersion: next.Version, ManifestJSON: string(manifestJSON),
 		DigestsJSON: string(digests), ServiceAccess: next.Scopes.Service.Access, DelegatedAccess: next.Scopes.Delegated.Access,
 		SourcePack: next.Origin + "@" + next.Version, Released: d.Released, Renamed: map[string]string{},
+		Webhook: appWebhookSpec(next),
 		Restrictive: len(d.Released) > 0 ||
 			accessRank(next.Scopes.Service.Access) < accessRank(old.Scopes.Service.Access) ||
 			accessRank(next.Scopes.Delegated.Access) < accessRank(old.Scopes.Delegated.Access),

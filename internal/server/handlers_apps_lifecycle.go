@@ -26,6 +26,8 @@ type appInstallStateResponse struct {
 	InstallCode string `json:"install_code,omitempty"`
 	ExpiresAt   string `json:"expires_at,omitempty"`
 	Notice      string `json:"notice,omitempty"`
+	// Webhook is the install's hook, absent when it has none (U10a).
+	Webhook *appWebhookView `json:"webhook,omitempty"`
 }
 
 func (s *Server) writeInstallLifecycleError(w http.ResponseWriter, err error) {
@@ -50,6 +52,10 @@ func (s *Server) installLifecycleDone(w http.ResponseWriter, r *http.Request, wo
 		"workspace_id": workspaceID, "install_id": installID, "action": action, "state": state,
 	}))
 	out := appInstallStateResponse{InstallID: installID, State: state}
+	if out.Webhook, err = s.appWebhookView(installID); err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	if extra != nil {
 		extra(&out)
 	}

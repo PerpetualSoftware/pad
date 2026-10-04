@@ -112,6 +112,9 @@ type ProvisionRequest struct {
 	// transaction; anything a caller sets here is replaced.
 	Collections []ProvisionCollection
 	Artifacts   []ProvisionArtifact
+	// Webhook is the manifest's hook (events by companion SLUG); nil when it
+	// declares none. Created HELD: redeem hands the app its secret (U10a).
+	Webhook *AppWebhookSpec
 }
 
 // ProvisionResult is what a successful provisioning wrote.
@@ -322,6 +325,11 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 		return nil, fmt.Errorf("provision app: bot collection access: %w", err)
 	}
 
+	// The app's webhook, after the companions it names are stamped to it.
+	if err := s.upsertAppWebhookTx(tx, req.WorkspaceID, installID, req.Webhook); err != nil {
+		return nil, err
+	}
+
 	// The install client. Its first secret is discarded unseen: redeem
 	// rotates and returns the one the app holds (lead ruling, U8b Q2).
 	if _, secret, err := s.CreateInstallClientTx(tx, installID, req.RedirectURIs); err != nil {
@@ -446,6 +454,10 @@ type RedeemedInstall struct {
 	InstallID    string
 	ClientID     string
 	ClientSecret string
+	// WebhookSecret is the hook's new signing secret; "" when the install
+	// has no hook. Redeem is the only door that hands it out, and handing
+	// it out is what releases the hook's HOLD (U10a).
+	WebhookSecret string
 }
 
 // RedeemInstallCode consumes a code and rotates the install client's secret
@@ -500,10 +512,14 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	if err != nil {
 		return nil, fmt.Errorf("redeem install code: %w", err)
 	}
+	whSecret, err := s.rotateAppWebhookSecretTx(tx, installID)
+	if err != nil {
+		return nil, fmt.Errorf("redeem install code: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &RedeemedInstall{InstallID: installID, ClientID: clientID, ClientSecret: secret}, nil
+	return &RedeemedInstall{InstallID: installID, ClientID: clientID, ClientSecret: secret, WebhookSecret: whSecret}, nil
 }
 
 // InstallForLiveCode reads, unlocked, which install a code names, for the

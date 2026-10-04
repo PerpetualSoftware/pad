@@ -204,6 +204,7 @@ func (s *Server) buildProvisionRequest(r *http.Request, workspaceID, ownerID str
 		ManifestSHA256: p.ManifestSHA256, ManifestVersion: m.Version, ManifestJSON: string(manifestJSON),
 		AppTitle: m.Title, ServiceAccess: m.Scopes.Service.Access, DelegatedAccess: m.Scopes.Delegated.Access,
 		RedirectURIs: m.RedirectURIs, SourcePack: m.Origin + "@" + m.Version, DigestsJSON: string(b),
+		Webhook: appWebhookSpec(m),
 	}
 	return req, derive, nil
 }
@@ -409,7 +410,13 @@ func (s *Server) handleRedeemAppInstallCode(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]string{
+	out := map[string]string{
 		"install_id": red.InstallID, "client_id": red.ClientID, "client_secret": red.ClientSecret,
-	})
+	}
+	// The hook's signing secret, only when the install has a hook; this is
+	// the one place it is ever handed out (U10a).
+	if red.WebhookSecret != "" {
+		out["webhook_secret"] = red.WebhookSecret
+	}
+	writeJSON(w, http.StatusOK, out)
 }
