@@ -828,18 +828,7 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	// image/svg+xml, an extensionless SVG stored as text/xml, or an unknown row
 	// can never render as same-origin active content. The default was previously
 	// inline, which is exactly the fail-open this closes.
-	contentType := att.MimeType
-	disposition := "attachment"
-	if entry, ok := attachments.LookupMIME(att.MimeType); ok {
-		if entry.ServeInline() {
-			disposition = "inline"
-		}
-	} else {
-		// Not on the allowlist at all: don't echo back a type the browser might
-		// act on. Opaque bytes, paired with the attachment disposition and the
-		// nosniff below, make an unrecognized row inert.
-		contentType = "application/octet-stream"
-	}
+	contentType, disposition := attachmentServeType(att.MimeType)
 	w.Header().Set("Content-Type", contentType)
 	// Authorization has succeeded — replace the no-store denial directive
 	// set at the top of the handler with the positive one. Known and
@@ -986,4 +975,22 @@ func (s *Server) maybeWarnStorageQuota(workspaceID string) {
 			"used_bytes", usage,
 			"limit_bytes", limit)
 	}
+}
+
+// attachmentServeType is the download's fail-closed Content-Type and
+// Content-Disposition decision (BUG-2413; see the handler above), shared by
+// the human and app downloads so the two cannot drift: inline only for a
+// stored MIME that is on the allowlist AND inline-safe, an attachment for
+// everything else, and opaque bytes for a MIME not on the allowlist at all.
+func attachmentServeType(mime string) (contentType, disposition string) {
+	if entry, ok := attachments.LookupMIME(mime); ok {
+		if entry.ServeInline() {
+			return mime, "inline"
+		}
+		return mime, "attachment"
+	}
+	// Not on the allowlist at all: don't echo back a type the browser might
+	// act on. Opaque bytes, paired with the attachment disposition and
+	// nosniff, make an unrecognized row inert.
+	return "application/octet-stream", "attachment"
 }

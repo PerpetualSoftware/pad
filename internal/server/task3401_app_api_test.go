@@ -1,11 +1,17 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -38,6 +44,11 @@ type appAPIFix struct {
 	companion, system, private *models.Collection
 	item, privateItem          *models.Item
 	comment                    *models.Comment
+	// U6c: the blob store the app store writes through, and one attachment
+	// bound to item (its bytes are attachmentBytes).
+	blobs           *attachments.FSStore
+	attachment      string
+	attachmentBytes []byte
 }
 
 func appAPIFixture(t *testing.T, access string) appAPIFix {
@@ -114,8 +125,51 @@ func appAPIFixtureOn(t *testing.T, access string, cloud bool) appAPIFix {
 	if _, err := srv.store.AddReaction(f.comment.ID, human.ID, "user", "👍"); err != nil {
 		t.Fatalf("reaction: %v", err)
 	}
+	// Attachment storage, wired before any app request resolves the app
+	// store (which reads it once).
+	blobs, err := attachments.NewFSStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := attachments.NewRegistry()
+	reg.Register(attachments.FSPrefix, blobs)
+	srv.SetAttachments(reg, 0)
+	f.blobs = blobs
+	f.attachmentBytes = testPNG(t)
+	f.attachment = seedAttachment(t, f, f.item.ID, f.attachmentBytes, "image/png", "screenshot.png")
 	f.token = mintServiceToken(t, srv, in)
 	return f
+}
+
+// testPNG is a small valid PNG.
+func testPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// seedAttachment stores a blob and its row bound to itemID, as an earlier
+// upload would have, and returns the row's id.
+func seedAttachment(t *testing.T, f appAPIFix, itemID string, body []byte, mime, name string) string {
+	t.Helper()
+	sum := sha256.Sum256(body)
+	hash := hex.EncodeToString(sum[:])
+	key, err := f.blobs.Put(context.Background(), hash, mime, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "att-" + hash[:12] + "-" + itemID[:8]
+	if _, err := f.srv.store.DB().Exec(`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash,
+		mime_type, size_bytes, filename, created_at, filename_source, imported, via_app)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'caller', 0, ?)`,
+		id, f.ws.ID, itemID, f.in.bot.ID, key, hash, mime, len(body), name, time.Now().UTC().Format(time.RFC3339), f.in.id); err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 func createTestUserDirect(t *testing.T, srv *Server, email string) *models.User {
@@ -151,6 +205,7 @@ func TestTask3401_RoutesAndDTOCensus(t *testing.T) {
 		"appGetItem":         "/items/" + f.item.ID,
 		"appListComments":    "/items/" + f.item.ID + "/comments",
 		"appMe":              "/me",
+		"appGetAttachment":   "/attachments/" + f.attachment,
 	}
 	reads := 0
 	for _, rt := range appRoutes {
@@ -195,6 +250,7 @@ var appDTOKeys = map[string][]string{
 	"item":         {"collection", "content", "created_at", "created_by_display", "etag", "fields", "id", "title", "updated_at", "via_app"},
 	"comment":      {"author_display", "author_kind", "body", "created_at", "deleted", "edited", "id", "item_id", "parent_comment_id", "updated_at"},
 	"me":           {"display_name", "is_app", "role", "user_id"},
+	"attachment":   {"created_at", "filename", "id", "item_id", "mime_type", "size", "variant"}, // variant only on a variant
 }
 
 func appKeysOf(m map[string]any) []string {
@@ -270,6 +326,8 @@ func checkAppDTOKeys(t *testing.T, route string, body any) {
 		}
 	case "appGetItem":
 		checkItem(t, route, m)
+	case "appGetAttachment", "appUploadAttachment":
+		assertKeysWithin(t, route, m, "attachment", []string{"created_at", "filename", "id", "item_id", "mime_type", "size"})
 	case "appListComments":
 		for _, c := range m["comments"].([]any) {
 			assertKeysWithin(t, route+".comments[]", c.(map[string]any), "comment", appDTOKeys["comment"])

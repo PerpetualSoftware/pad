@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/appstore"
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -40,12 +41,18 @@ type appRoute struct {
 	Name     string
 	Handler  func(*Server, http.ResponseWriter, *http.Request)
 	Auth     string // "service", "delegated" or "either"
-	Access   string // "read" or "write"
+	// Access is "read", "write" or "stream". A stream row is a read whose
+	// body is NOT buffered (an attachment download, lead ruling for U6c): the
+	// handler re-admits the request itself, immediately before its first
+	// byte, and then streams.
+	Access string
 }
 
-// appRoutes is the table: U6a's reads and U6b's writes. U6c adds the
-// attachments.
+// appRoutes is the table: U6a's reads, U6b's writes and U6c's attachments.
 var appRoutes = []appRoute{
+	{"POST", "/items/{itemID}/attachments", "appUploadAttachment", (*Server).appUploadAttachment, "either", "write"},
+	{"GET", "/attachments/{attachmentID}", "appGetAttachment", (*Server).appGetAttachment, "either", "read"},
+	{"GET", "/attachments/{attachmentID}/content", "appDownloadAttachment", (*Server).appDownloadAttachment, "either", "stream"},
 	{"POST", "/collections/{collSlug}/items", "appCreateItem", (*Server).appCreateItem, "either", "write"},
 	{"PATCH", "/items/{itemID}", "appUpdateItem", (*Server).appUpdateItem, "either", "write"},
 	{"POST", "/items/{itemID}/comments", "appCreateComment", (*Server).appCreateComment, "either", "write"},
@@ -113,7 +120,18 @@ func (s *Server) appStore() (*appstore.Store, error) {
 			s.appstoreState.err = err
 			return
 		}
-		s.appstoreState.store = appstore.New(s.store, appstore.Options{PlanLimit: s.cloudMode, ETagKey: key})
+		// Uploads write through the filesystem blob store the human uploads
+		// use, with constant work, under the same hash guard. With no FS
+		// backend wired the app store refuses uploads and downloads
+		// (ErrAppNoAttachmentStore). Resolved once, like the store itself,
+		// which holds the in-process upload reservations: SetAttachments runs
+		// at startup, before any request.
+		var blobs *attachments.FSStore
+		if s.attachments != nil {
+			blobs, _ = s.attachments.Backends()[attachments.FSPrefix].(*attachments.FSStore)
+		}
+		s.appstoreState.store = appstore.New(s.store, appstore.Options{PlanLimit: s.cloudMode, ETagKey: key,
+			Blobs: blobs, InFlight: s.UploadInFlight()})
 	})
 	return s.appstoreState.store, s.appstoreState.err
 }
@@ -142,6 +160,14 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 					// duplicate retry. Re-admission before send is for reads.
 					if access == "write" {
 						handler(s, w, r)
+						return
+					}
+					// A stream row registers its re-checks like any read, but
+					// re-admits itself before its first byte (appStreamGate)
+					// instead of being buffered: a download is too large to
+					// hold, and nothing is sent before the gate passes.
+					if access == "stream" {
+						handler(s, w, r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{})))
 						return
 					}
 					// The handler writes into a buffer; nothing reaches the

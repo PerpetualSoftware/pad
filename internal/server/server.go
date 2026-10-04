@@ -102,6 +102,10 @@ type Server struct {
 	// appBeforeHandler is a TEST-ONLY seam, nil in production: it runs after
 	// the app middleware admitted a request and before its handler.
 	appBeforeHandler func()
+	// appBeforeFirstByte is a TEST-ONLY seam, nil in production: it runs in
+	// an app download after the blob is open and before the re-admission
+	// gate that precedes the first byte.
+	appBeforeFirstByte func()
 
 	// userCountFault is a TEST-ONLY seam, nil in production (BUG-3334). When
 	// set, userCount calls it first and returns its error. The fresh-install

@@ -85,6 +85,9 @@ func appActor(ac *appContext) store.FencedActor {
 
 // writeAppStoreError maps an appstore refusal to its response.
 func writeAppStoreError(w http.ResponseWriter, err error) {
+	if writeAppAttachmentError(w, err) {
+		return
+	}
 	switch {
 	case appstore.IsInputError(err):
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
