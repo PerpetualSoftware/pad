@@ -500,3 +500,42 @@ func (s *Store) GetAppTokenState(requestID string) (*AppTokenState, error) {
 	st.ClientDisabled = disabledAt.Valid && disabledAt.String != ""
 	return &st, nil
 }
+
+// InstallConsentState is what the delegated consent page and decision need
+// about an install (TASK-3399): where it lives, whether it is active, what
+// delegated access its manifest offers, and how to name it.
+type InstallConsentState struct {
+	InstallID       string
+	WorkspaceID     string
+	State           string
+	Origin          string
+	DelegatedAccess string // "read", "write", or "" (none offered)
+	AppName         string // the install's bot display name, which is the app's name
+}
+
+// GetInstallConsentState reads an install's consent state, or nil when there
+// is no such install.
+func (s *Store) GetInstallConsentState(installID string) (*InstallConsentState, error) {
+	st := InstallConsentState{InstallID: installID}
+	var access, name sql.NullString
+	err := s.db.QueryRow(s.q(`SELECT i.workspace_id, i.state, i.origin, i.delegated_access, u.name
+		FROM app_installs i LEFT JOIN users u ON u.id = i.bot_user_id WHERE i.id = ?`), installID).
+		Scan(&st.WorkspaceID, &st.State, &st.Origin, &access, &name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read install consent state: %w", err)
+	}
+	st.DelegatedAccess, st.AppName = access.String, name.String
+	if st.AppName == "" {
+		// An install from before bot_user_id (U8b): its bot by address.
+		if bot, err := s.AppPrincipalForInstall(installID); err == nil && bot != nil {
+			st.AppName = bot.Name
+		}
+	}
+	if st.AppName == "" {
+		st.AppName = st.Origin
+	}
+	return &st, nil
+}

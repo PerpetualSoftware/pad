@@ -67,11 +67,11 @@ func TestTask3399_ADelegatedGrantPersistsThroughTheBarrier(t *testing.T) {
 // authorize and any later step refuses that step (the lead's required race,
 // at the store; the end-to-end race is in the server tests).
 func TestTask3399_EveryPersistenceRechecksTheEpoch(t *testing.T) {
-	steps := map[string]func(Store, models.OAuthRequest) error{
-		"code":    func(s Store, r models.OAuthRequest) error { return s.CreateAuthorizationCode(r) },
-		"pkce":    func(s Store, r models.OAuthRequest) error { return s.CreatePKCERequest(r) },
-		"access":  func(s Store, r models.OAuthRequest) error { return s.CreateAccessToken(r) },
-		"refresh": func(s Store, r models.OAuthRequest) error { return s.CreateRefreshToken(r) },
+	steps := map[string]func(*Store, models.OAuthRequest) error{
+		"code":    func(s *Store, r models.OAuthRequest) error { return s.CreateAuthorizationCode(r) },
+		"pkce":    func(s *Store, r models.OAuthRequest) error { return s.CreatePKCERequest(r) },
+		"access":  func(s *Store, r models.OAuthRequest) error { return s.CreateAccessToken(r) },
+		"refresh": func(s *Store, r models.OAuthRequest) error { return s.CreateRefreshToken(r) },
 	}
 	for name, step := range steps {
 		for change, q := range map[string]string{
@@ -84,7 +84,7 @@ func TestTask3399_EveryPersistenceRechecksTheEpoch(t *testing.T) {
 				if _, err := f.s.db.Exec(f.s.q(q), f.installID); err != nil {
 					t.Fatal(err)
 				}
-				if err := step(*f.s, task3399Req(f.clientID, f.person.ID, "req-ep", "read", 1)); !errors.Is(err, ErrInstallNotActive) {
+				if err := step(f.s, task3399Req(f.clientID, f.person.ID, "req-ep", "read", 1)); !errors.Is(err, ErrInstallNotActive) {
 					t.Errorf("%s after a %s: err = %v, want ErrInstallNotActive", name, change, err)
 				}
 				if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings`); n != 0 {

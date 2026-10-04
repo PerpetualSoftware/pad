@@ -734,6 +734,16 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An installed app's client signs a person in to that app only, on its
+	// own fixed-workspace consent page (TASK-3399).
+	if client, err := s.installClientOf(ar); err != nil {
+		writeInternalError(w, fmt.Errorf("oauth: read client: %w", err))
+		return
+	} else if client != nil {
+		s.renderAppConsent(w, r, ar, user, client)
+		return
+	}
+
 	// TASK-961: consent render is the canonical "flow started" signal —
 	// the user has identified themselves AND fosite has accepted the
 	// authorize request. From here the only outcomes are
@@ -870,6 +880,17 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		s.recordOAuthFlow("failed")
 		writeError(w, http.StatusBadRequest, "invalid_request",
 			"decision must be 'approve' or 'deny'")
+		return
+	}
+
+	// An installed app's delegated sign-in (TASK-3399): its own decision,
+	// with no workspace choice and no oauth_connections row.
+	if client, err := s.installClientOf(ar); err != nil {
+		s.recordOAuthFlow("failed")
+		writeInternalError(w, fmt.Errorf("oauth: read client: %w", err))
+		return
+	} else if client != nil {
+		s.decideAppConsent(w, r, ar, user, client)
 		return
 	}
 
@@ -1217,9 +1238,29 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		// Resource required, no MCP default, client_credentials only.
+		// Resource required, no MCP default; client_credentials, or a
+		// delegated grant's code or refresh (TASK-3399).
 		if !s.prepareInstallTokenRequest(ctx, w, r) {
 			return
+		}
+		// A code or refresh token presented by an installed app's client
+		// must be its own, checked BEFORE fosite: fosite revokes a used
+		// code's or a rotated refresh token's whole family as a replay
+		// before it checks the presenting client (U5a's guarantee, kept).
+		if gt := r.PostForm.Get("grant_type"); gt == "authorization_code" || gt == "refresh_token" {
+			tok := r.PostForm.Get("code")
+			if gt == "refresh_token" {
+				tok = r.PostForm.Get("refresh_token")
+			}
+			owner, err := s.oauthServer.GrantOwner(ctx, gt, tok)
+			if err != nil {
+				s.writeTokenError(ctx, w, fosite.ErrServerError.WithWrap(err))
+				return
+			}
+			if owner != installClient.ID {
+				s.writeTokenError(ctx, w, fosite.ErrInvalidGrant.WithHint("The grant was not issued to this app."))
+				return
+			}
 		}
 	case !mcpOn:
 		http.NotFound(w, r)
@@ -1247,7 +1288,10 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// An installed app's service token: the app scope and audience, and its
 	// install's bot as the subject (fosite's client_credentials grants none).
-	if installClient != nil {
+	// A code or refresh exchange (a delegated grant, TASK-3399) carries what
+	// its consent decision stored: the person, the epoch, the kind and the
+	// access; the barrier re-checks them as it persists.
+	if installClient != nil && r.PostForm.Get("grant_type") == "client_credentials" {
 		if err := s.grantInstallServiceToken(ar, installClient, preEpoch); err != nil {
 			s.oauthServer.Provider().WriteAccessError(ctx, w, ar, err)
 			return

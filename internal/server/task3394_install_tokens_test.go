@@ -154,7 +154,11 @@ func TestTask3394_InstallTokenRequestRules(t *testing.T) {
 			f.Set("audience", testCanonicalAudience)
 			return f
 		}()},
-		{"a delegated grant", "uses client_credentials", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {"x"}, "resource": {testAppAPIAudience}}},
+		// TASK-3399: a delegated grant's code and refresh are admitted, but
+		// only for a grant this client owns, checked before fosite.
+		{"a refresh token it does not own", "not issued to this app", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {"x"}, "resource": {testAppAPIAudience}}},
+		{"a code it does not own", "not issued to this app", url.Values{"grant_type": {"authorization_code"}, "code": {"x"}, "redirect_uri": {"https://portal.example/cb"}, "resource": {testAppAPIAudience}}},
+		{"another grant type", "uses client_credentials, authorization_code or refresh_token", url.Values{"grant_type": {"password"}, "username": {"a"}, "password": {"b"}, "resource": {testAppAPIAudience}}},
 	}
 	for _, tc := range cases {
 		rr := postTokenBasic(srv, tc.form, in.clientID, in.secret)
@@ -362,8 +366,9 @@ func TestTask3394_PublicIntrospectionCallerEncodings(t *testing.T) {
 
 // codex r2 P2: the token endpoint classifies the client from the body fosite
 // will parse, multipart included. A multipart request from an install client
-// must meet the same rules (client_credentials only), never reach fosite's
-// refresh-reuse handling, and so never revoke another client's family.
+// must meet the same rules, never reach fosite's refresh-reuse handling with
+// a grant it does not own, and so never revoke another client's family
+// (TASK-3399 admits its OWN refresh tokens, checked before fosite).
 func TestTask3394_MultipartTokenRequestFromAnInstallClient(t *testing.T) {
 	srv := appOAuthServer(t, true)
 	in := newTestInstall(t, srv, "inst-multi")
@@ -395,7 +400,7 @@ func TestTask3394_MultipartTokenRequestFromAnInstallClient(t *testing.T) {
 	req.RemoteAddr = "192.0.2.1:1234"
 	mrr := httptest.NewRecorder()
 	srv.ServeHTTP(mrr, req)
-	if !strings.Contains(mrr.Body.String(), "uses client_credentials") {
+	if !strings.Contains(mrr.Body.String(), "not issued to this app") {
 		t.Errorf("a multipart install-client refresh: %d %s, want the install-client refusal", mrr.Code, mrr.Body.String())
 	}
 	// The victim's current family survives.
