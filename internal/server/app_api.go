@@ -514,8 +514,10 @@ func (s *Server) appRevalidate(r *http.Request) error {
 }
 
 // appRecheckMemoKey holds one re-validation's memo of collection re-checks:
-// a list replays the same collection for every item, and the answer cannot
-// change within one re-validation.
+// a list replays the same collection for every item, so each collection is
+// re-checked once per re-validation. The re-checks run sequentially, not as an
+// atomic snapshot; the memo only stops repeating one collection's check. It is
+// fresh per re-validation and not shared between goroutines.
 type appRecheckMemoKey struct{}
 
 type appRecheckMemo struct{ collections map[string]error }
