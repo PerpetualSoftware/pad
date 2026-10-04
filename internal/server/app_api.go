@@ -264,6 +264,15 @@ func (s *Server) appAdmitToken(ctx context.Context, tok string) (*appContext, er
 	}
 	grant, err := s.introspectAppToken(ctx, tok)
 	if err != nil {
+		// A store failure while reading the token's state is a fault, not a
+		// refusal (codex U6c r4): a 401 invalid_token would tell the app to
+		// discard a credential that is fine. Every named refusal stays a
+		// denial, and so does the OAuth library's own introspection error,
+		// which does not distinguish a storage fault from an unknown token
+		// and therefore fails closed.
+		if !isAppTokenDenial(err) {
+			return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+		}
 		return nil, errAppAdmit
 	}
 	// Delegated tokens are refused until TASK-3399 enables them (lead
@@ -517,7 +526,9 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	}
 	// The gate every new request passes (codex r3): apps turned off while a
 	// read was in flight withholds it too.
-	if !s.appsAvailable() {
+	if on, err := s.appsAvailableChecked(); err != nil {
+		return appFault(err)
+	} else if !on {
 		return errors.New("apps are not available")
 	}
 	tokAC, err := s.appAdmitToken(r.Context(), ac.token)
@@ -559,6 +570,18 @@ func (s *Server) appRevalidate(r *http.Request) error {
 		return errors.New("the grant changed")
 	}
 	return nil
+}
+
+// isAppTokenDenial reports whether an introspection error is one of its named
+// refusals, rather than a failure reading the token's state.
+func isAppTokenDenial(err error) bool {
+	for _, d := range []error{errAppTokenInactive, errAppTokenAudience, errAppTokenUnbound, errAppTokenMismatch,
+		errAppTokenInstall, errAppTokenEpoch, errAppTokenDisabled, errAppTokenNoBackend} {
+		if errors.Is(err, d) {
+			return true
+		}
+	}
+	return false
 }
 
 // appFault marks an error from re-admission as a server fault (a store or

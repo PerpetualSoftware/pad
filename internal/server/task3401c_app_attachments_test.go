@@ -433,21 +433,27 @@ func TestTask3401c_ATruncatedUploadIsTheClientsMistake(t *testing.T) {
 // answers 500, not the 401 invalid_token that tells the app to discard a
 // good credential.
 func TestTask3401c_AFaultDuringReadmissionIsNotADenial(t *testing.T) {
-	f := appAPIFixture(t, "read")
-	f.srv.appBeforeFirstByte = func() {
-		if _, err := f.srv.store.DB().Exec(`ALTER TABLE attachments RENAME TO attachments_gone`); err != nil {
-			t.Error(err)
-		}
-	}
-	defer func() {
-		_, _ = f.srv.store.DB().Exec(`ALTER TABLE attachments_gone RENAME TO attachments`)
-	}()
-	rr := appGet(f.srv, f.path("/attachments/"+f.attachment+"/content"), f.token)
-	if rr.Code != http.StatusInternalServerError || bytes.Contains(rr.Body.Bytes(), f.attachmentBytes[:16]) {
-		t.Errorf("a fault during re-admission: %d %q, want 500 and none of the file", rr.Code, rr.Body.String())
-	}
-	if rr.Header().Get("WWW-Authenticate") != "" {
-		t.Error("a fault answered with an invalid_token challenge")
+	// Each table is read by a different step of re-admission: the attachment
+	// re-check, and the token's state (codex U6c r4).
+	for _, table := range []string{"attachments", "app_token_bindings"} {
+		t.Run(table, func(t *testing.T) {
+			f := appAPIFixture(t, "read")
+			f.srv.appBeforeFirstByte = func() {
+				if _, err := f.srv.store.DB().Exec(`ALTER TABLE ` + table + ` RENAME TO ` + table + `_gone`); err != nil {
+					t.Error(err)
+				}
+			}
+			defer func() {
+				_, _ = f.srv.store.DB().Exec(`ALTER TABLE ` + table + `_gone RENAME TO ` + table)
+			}()
+			rr := appGet(f.srv, f.path("/attachments/"+f.attachment+"/content"), f.token)
+			if rr.Code != http.StatusInternalServerError || bytes.Contains(rr.Body.Bytes(), f.attachmentBytes[:16]) {
+				t.Errorf("a fault during re-admission: %d %q, want 500 and none of the file", rr.Code, rr.Body.String())
+			}
+			if rr.Header().Get("WWW-Authenticate") != "" {
+				t.Error("a fault answered with an invalid_token challenge")
+			}
+		})
 	}
 }
 
