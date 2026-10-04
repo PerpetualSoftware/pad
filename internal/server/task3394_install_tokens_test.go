@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -357,4 +358,48 @@ func TestTask3394_PublicIntrospectionCallerEncodings(t *testing.T) {
 	encoded := strings.Replace(url.QueryEscape(in.clientID), "-", "%2D", 1)
 	send("percent-encoded Basic id", url.Values{"token": {mcpTok}}, encoded, in.secret)
 	send("bearer in the form", url.Values{"token": {mcpTok}, "access_token": {tok}}, "", "")
+}
+
+// codex r2 P2: the token endpoint classifies the client from the body fosite
+// will parse, multipart included. A multipart request from an install client
+// must meet the same rules (client_credentials only), never reach fosite's
+// refresh-reuse handling, and so never revoke another client's family.
+func TestTask3394_MultipartTokenRequestFromAnInstallClient(t *testing.T) {
+	srv := appOAuthServer(t, true)
+	in := newTestInstall(t, srv, "inst-multi")
+	sess := newOAuthSession(t, srv)
+	victim, code := mintWithResource(t, srv, sess, testCanonicalAudience)
+	if code != http.StatusOK {
+		t.Fatalf("victim mint: %d", code)
+	}
+	oldRefresh := lastRefresh
+	// Rotate the victim's refresh token so the old one is a reused token.
+	rr := postOAuthForm(srv, "/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {oldRefresh}, "client_id": {sess.clientID}})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("victim refresh: %d %s", rr.Code, rr.Body.String())
+	}
+	var refreshed map[string]any
+	parseJSON(t, rr, &refreshed)
+	current, _ := refreshed["access_token"].(string)
+	_ = victim
+
+	var body strings.Builder
+	mw := multipart.NewWriter(&body)
+	for k, v := range map[string]string{"grant_type": "refresh_token", "refresh_token": oldRefresh,
+		"client_id": in.clientID, "client_secret": in.secret, "resource": testAppAPIAudience} {
+		_ = mw.WriteField(k, v)
+	}
+	_ = mw.Close()
+	req := httptest.NewRequest("POST", "/oauth/token", strings.NewReader(body.String()))
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.RemoteAddr = "192.0.2.1:1234"
+	mrr := httptest.NewRecorder()
+	srv.ServeHTTP(mrr, req)
+	if !strings.Contains(mrr.Body.String(), "uses client_credentials") {
+		t.Errorf("a multipart install-client refresh: %d %s, want the install-client refusal", mrr.Code, mrr.Body.String())
+	}
+	// The victim's current family survives.
+	if rr := postMCP(srv, "/mcp", current); rr.Code == http.StatusUnauthorized {
+		t.Error("the victim's current token was revoked by another client's request")
+	}
 }

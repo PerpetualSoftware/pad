@@ -1190,7 +1190,11 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	// RFC 8707 resource= → fosite audience= before fosite parses.
 	// Codex review #372 round 1 caught this — without translation
 	// real RFC 8707 token-exchange requests fail audience matching.
-	if err := r.ParseForm(); err != nil {
+	// Parsed exactly as fosite parses the token request (multipart included,
+	// the same 1 MiB bound), so the client classified here is the client
+	// fosite will authenticate: a ParseForm-only read missed a multipart
+	// body, skipping the install-client rules entirely (codex r2).
+	if err := r.ParseMultipartForm(1 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
 		http.Error(w, "Invalid form body", http.StatusBadRequest)
 		return
 	}
