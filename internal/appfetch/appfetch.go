@@ -157,6 +157,9 @@ func (f *Fetcher) dial(ctx context.Context, d *net.Dialer, network, addr string)
 		}
 		conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		if err == nil {
+			if fence, ok := ctx.Value(fenceKey{}).(*writeFence); ok {
+				return fence.wrap(conn), nil
+			}
 			return conn, nil
 		}
 		lastErr = err
@@ -227,7 +230,7 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, maxBytes int64) ([]byt
 // and an entry with a Path admits only URLs under that path.
 type Poster struct {
 	f     *Fetcher
-	paths map[string]string // origin -> required path prefix, webhook entries with one
+	paths map[string][]string // origin -> allowed path prefixes ("" = any), webhook entries
 }
 
 // NewPoster builds a Poster. private is the admin list (nil on Cloud).
@@ -237,16 +240,22 @@ func NewPoster(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Co
 	if err != nil {
 		return nil, err
 	}
-	p := &Poster{f: f, paths: map[string]string{}}
+	// One connection per request: the write fence seals the connection a
+	// request was written on, so none may be shared or reused.
+	f.client.Transport.(*http.Transport).DisableKeepAlives = true
+	p := &Poster{f: f, paths: map[string][]string{}}
 	for _, e := range private {
-		if !e.Webhook || e.Path == "" {
+		if !e.Webhook {
 			continue
 		}
 		origin, err := appmanifest.NormalizeOrigin(e.Origin)
 		if err != nil {
 			return nil, err
 		}
-		p.paths[origin] = e.Path
+		// Every entry's path is kept: duplicate entries for one origin add
+		// paths, and an entry with none makes the origin unrestricted
+		// (codex r2 on U10b).
+		p.paths[origin] = append(p.paths[origin], e.Path)
 	}
 	return p, nil
 }
@@ -255,10 +264,6 @@ func NewPoster(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Co
 // body is drained up to a small bound and discarded. An error wrapping
 // ErrRefused is the policy's (permanent); any other error is the network's.
 func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header http.Header) (int, error) {
-	return p.post(ctx, rawURL, bytes.NewReader(body), int64(len(body)), header)
-}
-
-func (p *Poster) post(ctx context.Context, rawURL string, body io.Reader, size int64, header http.Header) (int, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return 0, refused("%q is not an https URL", rawURL)
@@ -267,25 +272,25 @@ func (p *Poster) post(ctx context.Context, rawURL string, body io.Reader, size i
 	if err != nil {
 		return 0, refused("%q: %v", rawURL, err)
 	}
-	if prefix, ok := p.paths[origin]; ok && !underPath(u, prefix) {
-		return 0, refused("%s is outside the path %s allowed for %s", u.EscapedPath(), prefix, origin)
+	if prefixes, ok := p.paths[origin]; ok && !underAnyPath(u, prefixes) {
+		return 0, refused("%s is outside the paths allowed for %s", u.EscapedPath(), origin)
 	}
-	// The transport closes the request body when it has finished writing it
-	// (or given up). Post does not return before that: a server may answer
-	// while the body is still being written, and the caller's fence must not
-	// end while a byte can still go out (codex r1 on U10b).
-	rb := &closeSignal{Reader: body, closed: make(chan struct{})}
-	reqCtx, cancel := context.WithCancel(context.WithValue(ctx, originKey{}, origin))
+	// The write fence: every byte of this request goes through a connection
+	// it wrapped, and Post seals that connection before returning, waiting
+	// out any write in progress. A server may answer while the body, or the
+	// transport's buffered flush, is still going out; after Post returns no
+	// byte can be (codex r1/r2 on U10b), so the caller's in-flight record can
+	// end.
+	fence := &writeFence{}
+	reqCtx, cancel := context.WithCancel(context.WithValue(context.WithValue(ctx, originKey{}, origin), fenceKey{}, fence))
 	defer func() {
 		cancel()
-		<-rb.closed
+		fence.seal()
 	}()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, u.String(), rb)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {
-		rb.Close()
 		return 0, refused("%v", err)
 	}
-	req.ContentLength = size
 	for k, vs := range header {
 		for _, v := range vs {
 			req.Header.Add(k, v)
@@ -319,14 +324,79 @@ func underPath(u *url.URL, prefix string) bool {
 	return u.Path == prefix || strings.HasPrefix(u.Path, prefix+"/")
 }
 
-// closeSignal is a request body that reports when the transport closed it.
-type closeSignal struct {
-	io.Reader
-	once   sync.Once
-	closed chan struct{}
+func underAnyPath(u *url.URL, prefixes []string) bool {
+	for _, p := range prefixes {
+		if p == "" || underPath(u, p) {
+			return true
+		}
+	}
+	return false
 }
 
-func (c *closeSignal) Close() error {
-	c.once.Do(func() { close(c.closed) })
-	return nil
+type fenceKey struct{}
+
+// writeFence holds the connections one request was written on. seal stops
+// every further write and returns only once no write is in progress.
+type writeFence struct {
+	mu     sync.Mutex
+	conns  []*fencedConn
+	sealed bool
+}
+
+func (f *writeFence) wrap(c net.Conn) net.Conn {
+	fc := &fencedConn{Conn: c}
+	f.mu.Lock()
+	f.conns = append(f.conns, fc)
+	sealed := f.sealed
+	f.mu.Unlock()
+	if sealed {
+		fc.seal() // dialled after the request ended: never written to
+	}
+	return fc
+}
+
+func (f *writeFence) seal() {
+	f.mu.Lock()
+	f.sealed = true
+	conns := append([]*fencedConn(nil), f.conns...)
+	f.mu.Unlock()
+	for _, c := range conns {
+		c.seal()
+	}
+}
+
+var errFenceSealed = errors.New("app webhook connection sealed")
+
+// onFencedWrite is a test hook: called as each write the fence let through
+// returns.
+var onFencedWrite func(err error)
+
+// fencedConn serialises writes with seal: once seal returns, no Write is in
+// progress and none will start.
+type fencedConn struct {
+	net.Conn
+	mu     sync.Mutex
+	sealed bool
+}
+
+func (c *fencedConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealed {
+		return 0, errFenceSealed
+	}
+	n, err := c.Conn.Write(b)
+	if onFencedWrite != nil {
+		onFencedWrite(err) // as the write ENDS, still under the lock
+	}
+	return n, err
+}
+
+func (c *fencedConn) seal() {
+	// Unblock a write stuck on a full send buffer, then wait for it.
+	_ = c.Conn.SetWriteDeadline(time.Unix(1, 0))
+	c.mu.Lock()
+	c.sealed = true
+	c.mu.Unlock()
+	_ = c.Conn.Close()
 }

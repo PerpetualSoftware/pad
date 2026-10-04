@@ -3,7 +3,6 @@ package appfetch
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -65,51 +64,74 @@ func TestPoster_PolicyAndPrivateOrigins(t *testing.T) {
 	}
 }
 
-// slowBody reads in small, slow chunks and records any read that is still
-// running, or starts, after the caller marked Post as returned.
-type slowBody struct {
-	left     int
-	returned atomic.Bool
-	late     atomic.Int32
-}
-
-func (b *slowBody) Read(p []byte) (int, error) {
-	if b.returned.Load() {
-		b.late.Add(1)
-	}
-	if b.left == 0 {
-		return 0, io.EOF
-	}
-	time.Sleep(15 * time.Millisecond)
-	n := min(len(p), 4096, b.left)
-	b.left -= n
-	if b.returned.Load() {
-		b.late.Add(1)
-	}
-	return n, nil
-}
-
-// codex r1 on U10b: a server can answer before the body is written. Post
-// must not return while the transport can still read (and so write) the
-// body, or the caller's in-flight record ends with bytes still going out.
-func TestPoster_ReturnsOnlyAfterTheBodyIsDone(t *testing.T) {
+// codex r1/r2 on U10b: a server can answer while the body (or the
+// transport's buffered flush) is still going out. Once Post returns, no byte
+// may be written: the caller's in-flight record ends then.
+func TestPoster_NoWriteAfterReturn(t *testing.T) {
 	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent) // answer without reading the body
+		w.WriteHeader(http.StatusNoContent)
+		w.(http.Flusher).Flush()
+		// Keep reading, slowly, so the client keeps writing.
+		buf := make([]byte, 4096)
+		for i := 0; i < 50; i++ {
+			if _, err := r.Body.Read(buf); err != nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}))
 	p, err := NewPoster([]PrivateOrigin{{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true}}, 10*time.Second, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
-		b := &slowBody{left: 4 << 20}
-		if _, err := p.post(context.Background(), srv.URL+"/hooks", b, int64(b.left), http.Header{}); err != nil {
-			t.Logf("post: %v", err) // the early answer may surface as a write error; either is fine
+	var returned atomic.Bool
+	var writes, late atomic.Int32
+	onFencedWrite = func(err error) {
+		writes.Add(1)
+		if err != nil {
+			// The write the seal cut short: make it end late enough that
+			// a seal which did not wait for it would return first.
+			time.Sleep(50 * time.Millisecond)
 		}
-		b.returned.Store(true)
-		time.Sleep(100 * time.Millisecond)
-		if n := b.late.Load(); n != 0 {
-			t.Fatalf("round %d: %d body reads after Post returned", i, n)
+		if returned.Load() {
+			late.Add(1)
 		}
+	}
+	t.Cleanup(func() { onFencedWrite = nil })
+	body := make([]byte, 8<<20)
+	for i := 0; i < 3; i++ {
+		if _, err := p.Post(context.Background(), srv.URL+"/hooks", body, http.Header{}); err != nil {
+			t.Logf("post: %v", err)
+		}
+		returned.Store(true)
+		time.Sleep(300 * time.Millisecond)
+		if n := late.Load(); n != 0 {
+			t.Fatalf("round %d: %d writes still running when Post returned", i, n)
+		}
+		returned.Store(false)
+	}
+	if writes.Load() == 0 {
+		t.Fatal("no write went through the fence: the connection was not wrapped")
+	}
+}
+
+func TestPoster_DuplicateEntriesKeepEveryPath(t *testing.T) {
+	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	entries := []PrivateOrigin{
+		{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true, Path: "/hooks/a"},
+		{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true, Path: "/hooks/b"},
+	}
+	p, err := NewPoster(entries, 5*time.Second, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/hooks/a", "/hooks/b/x"} {
+		if st, err := p.Post(context.Background(), srv.URL+path, nil, http.Header{}); err != nil || st != 204 {
+			t.Errorf("%s: %d %v, want 204", path, st, err)
+		}
+	}
+	if _, err := p.Post(context.Background(), srv.URL+"/hooks/c", nil, http.Header{}); !errors.Is(err, ErrRefused) {
+		t.Errorf("/hooks/c: %v, want refused", err)
 	}
 }
 
