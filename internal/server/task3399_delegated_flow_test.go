@@ -15,6 +15,7 @@ import (
 // authorization code + PKCE, on a consent page fixed to the install.
 
 type delegatedFix struct {
+	selfHost     bool
 	srv          *Server
 	in           testInstall
 	person       *models.User
@@ -24,7 +25,19 @@ type delegatedFix struct {
 
 func delegatedFixture(t *testing.T, installID, offered string) delegatedFix {
 	t.Helper()
-	srv := appOAuthServer(t, true)
+	return delegatedFixtureOn(t, installID, offered, true)
+}
+
+// delegatedFixtureOn builds the fixture on Pad Cloud, or on a self-host with
+// apps enabled and MCP left off (cloud=false).
+func delegatedFixtureOn(t *testing.T, installID, offered string, cloud bool) delegatedFix {
+	t.Helper()
+	srv := appOAuthServer(t, cloud)
+	if !cloud {
+		if err := srv.store.SetPlatformSetting(settingAppsEnabled, "true"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	in := newTestInstall(t, srv, installID)
 	if offered != "" {
 		if _, err := srv.store.DB().Exec(`UPDATE app_installs SET delegated_access = ? WHERE id = ?`, offered, installID); err != nil {
@@ -35,7 +48,53 @@ func delegatedFixture(t *testing.T, installID, offered string) delegatedFix {
 	if err := srv.store.AddWorkspaceMember(in.wsID, person.ID, "editor"); err != nil {
 		t.Fatal(err)
 	}
-	return delegatedFix{srv: srv, in: in, person: person, sessionToken: sessionToken, csrf: readCSRFFromCookie(t, srv, sessionToken)}
+	f := delegatedFix{srv: srv, in: in, person: person, sessionToken: sessionToken, selfHost: !cloud}
+	f.csrf = f.csrfFromAppConsent(t)
+	return f
+}
+
+// serve sends req as the browser would: on a self-host, to the configured
+// origin's host (requireConfiguredHost refuses any other).
+func (f delegatedFix) serve(req *http.Request) *httptest.ResponseRecorder {
+	if f.selfHost {
+		req.Host = "app.test.example"
+	}
+	req.Header.Set("User-Agent", testSessionUA)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName(f.srv.secureCookies), Value: f.sessionToken})
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
+	return rr
+}
+
+func (f delegatedFix) get(path string) *httptest.ResponseRecorder {
+	return f.serve(httptest.NewRequest("GET", path, nil))
+}
+
+// api sends an authenticated API request with the double-submit CSRF pair.
+func (f delegatedFix) api(method, path string) *httptest.ResponseRecorder {
+	const csrf = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	req := httptest.NewRequest(method, path, nil)
+	req.AddCookie(&http.Cookie{Name: csrfCookieName(f.srv.secureCookies), Value: csrf})
+	req.Header.Set("X-CSRF-Token", csrf)
+	return f.serve(req)
+}
+
+// csrfFromAppConsent reads the consent CSRF cookie from the app's own consent
+// page, which serves with MCP off too (readCSRFFromCookie registers an MCP
+// client, which needs MCP on).
+func (f delegatedFix) csrfFromAppConsent(t *testing.T) string {
+	t.Helper()
+	q := f.authorizeParams()
+	rr := f.get("/oauth/authorize?" + q.Encode())
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == csrfCookieName(f.srv.secureCookies) && c.Value != "" {
+			return c.Value
+		}
+	}
+	// No membership or no delegated access: the page refused, and the tests
+	// that build such a fixture never post a decision needing the cookie.
+	return "no-csrf-" + f.in.id
 }
 
 const delegatedVerifier = "verifier-3399-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"
@@ -63,7 +122,10 @@ func (f delegatedFix) decide(t *testing.T, params url.Values, decision, access s
 	if access != "" {
 		form.Set("app_access", access)
 	}
-	return postFormWithCookie(f.srv, "/oauth/authorize/decide", form, f.sessionToken, f.csrf)
+	req := httptest.NewRequest("POST", "/oauth/authorize/decide", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: csrfCookieName(f.srv.secureCookies), Value: f.csrf})
+	return f.serve(req)
 }
 
 // codeFrom returns the code a decide redirect carries, or "" with the
@@ -86,7 +148,7 @@ func (f delegatedFix) exchange(code string) *httptest.ResponseRecorder {
 func TestTask3399_TheConsentPageIsFixedToTheInstall(t *testing.T) {
 	f := delegatedFixture(t, "inst-page", "write")
 	q := f.authorizeParams()
-	rr := doAuthedRequest(f.srv, "GET", "/oauth/authorize?"+q.Encode(), nil, f.sessionToken)
+	rr := f.get("/oauth/authorize?" + q.Encode())
 	if rr.Code != http.StatusOK {
 		t.Fatalf("consent page: %d %s", rr.Code, rr.Body.String())
 	}
@@ -317,8 +379,8 @@ func TestTask3399_TheConsoleShowsAndRevokesAppGrants(t *testing.T) {
 		t.Error("a revoked app grant's token still introspects")
 	}
 	// Through the binding (lead ruling Q1), not only the tokens.
-	if n := count3399(t, f.srv, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = ?`, reqID); n != 0 {
-		t.Error("the console revoke left the grant's binding")
+	if n := count3399(t, f.srv, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = ? AND revoked_at IS NOT NULL`, reqID); n != 1 {
+		t.Error("the console revoke left no tombstone on the grant's binding")
 	}
 	// Someone else cannot revoke it, and the answer is the plain 404.
 	g := delegatedFixture(t, "inst-console2", "write")
@@ -326,5 +388,27 @@ func TestTask3399_TheConsoleShowsAndRevokesAppGrants(t *testing.T) {
 	_, stranger := loginTestUserAs(t, g.srv, "stranger@example.com", "Stranger", "password123")
 	if rr := doAuthedJSON(g.srv, "DELETE", "/api/v1/connected-apps/"+other, nil, stranger); rr.Code != http.StatusNotFound {
 		t.Errorf("a stranger's revoke: %d, want 404", rr.Code)
+	}
+}
+
+// Codex U5b-1 r1 P2: on a self-host with apps on and MCP off, a person can
+// still sign in to an installed app, and still see and revoke the grant.
+func TestTask3399_AppGrantsWorkWithMCPOff(t *testing.T) {
+	f := delegatedFixtureOn(t, "inst-nomcp", "write", false)
+	if f.srv.oauthAvailable() {
+		t.Fatal("control: MCP is on in this fixture")
+	}
+	_, reqID := f.signIn(t, "read")
+	rr := f.api("GET", "/api/v1/connected-apps")
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), reqID) {
+		t.Fatalf("list with MCP off: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := f.api("DELETE", "/api/v1/connected-apps/"+reqID); rr.Code != http.StatusNoContent {
+		t.Errorf("revoke with MCP off: %d %s", rr.Code, rr.Body.String())
+	}
+	// Any other client's authorize stays closed with MCP off.
+	q := url.Values{"client_id": {"some-mcp-client"}, "response_type": {"code"}, "redirect_uri": {"https://app.test/cb"}}
+	if rr := f.get("/oauth/authorize?" + q.Encode()); rr.Code != http.StatusNotFound {
+		t.Errorf("a non-app authorize with MCP off: %d, want 404", rr.Code)
 	}
 }

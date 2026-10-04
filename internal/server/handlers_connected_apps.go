@@ -115,10 +115,16 @@ func (s *Server) handleListConnectedApps(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	conns, err := s.store.ListUserOAuthConnections(user.ID)
-	if err != nil {
-		writeInternalError(w, err)
-		return
+	// MCP connections are listed only while OAuth is available; app grants
+	// are listed whenever this route is (requireOAuthOrAppsAvailable).
+	var conns []models.OAuthConnection
+	if s.oauthAvailable() {
+		var err error
+		conns, err = s.store.ListUserOAuthConnections(user.ID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
 	}
 
 	// Enrich with audit-log aggregates. One bulk query — see
@@ -237,6 +243,12 @@ func (s *Server) handleRevokeConnectedApp(w http.ResponseWriter, r *http.Request
 			slog.Warn("connected-apps: audit log write failed", "error", err, "user_id", user.ID, "connection_id", id)
 		}
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// MCP connections are managed only while OAuth is available.
+	if !s.oauthAvailable() {
+		writeError(w, http.StatusNotFound, "not_found", "Connection not found.")
 		return
 	}
 

@@ -632,7 +632,9 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer s.observeOAuthFlowDuration("authorize", start)
 
-	if !s.oauthAvailable() {
+	// An installed app's sign-in is served while apps are available, even
+	// with MCP off (TASK-3399, codex U5b-1 r1); everything else needs OAuth.
+	if !s.oauthAvailable() && !s.appSignInAvailable(r) {
 		http.NotFound(w, r)
 		return
 	}
@@ -801,7 +803,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	start := time.Now()
 	defer s.observeOAuthFlowDuration("decide", start)
 
-	if !s.oauthAvailable() {
+	if !s.oauthAvailable() && !s.appSignInAvailable(r) {
 		http.NotFound(w, r)
 		return
 	}

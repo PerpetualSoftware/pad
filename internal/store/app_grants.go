@@ -41,7 +41,7 @@ func (s *Store) ListUserAppGrants(userID string) ([]AppGrant, error) {
 		JOIN app_installs i ON i.id = b.install_id
 		JOIN workspaces w ON w.id = b.workspace_id
 		LEFT JOIN users u ON u.id = i.bot_user_id
-		WHERE b.auth_kind = 'delegated' AND b.delegated_user_id = ?
+		WHERE b.auth_kind = 'delegated' AND b.delegated_user_id = ? AND b.revoked_at IS NULL
 		  AND (EXISTS (SELECT 1 FROM oauth_access_tokens t WHERE t.request_id = b.request_id AND t.active = ?)
 		    OR EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.request_id = b.request_id AND t.active = ?))
 		ORDER BY b.created_at DESC`), userID, true, true)
@@ -92,8 +92,8 @@ func (s *Store) IsUserAppGrant(userID, requestID string) (bool, error) {
 
 // RevokeUserAppGrant ends a delegated app grant the user holds, in one
 // transaction: its access and refresh tokens are deactivated, an unused
-// code or PKCE row is deleted, and the binding is deleted, so introspection
-// refuses every token of the grant even before the deactivation is read.
+// code or PKCE row is deleted, and the binding is tombstoned (revoked_at),
+// which introspection and the issuance barrier both refuse.
 // Idempotent; a grant that is not the user's is ErrAppGrantNotFound.
 func (s *Store) RevokeUserAppGrant(userID, requestID string) (installID string, err error) {
 	ok, err := s.IsUserAppGrant(userID, requestID)
@@ -112,6 +112,17 @@ func (s *Store) RevokeUserAppGrant(userID, requestID string) (installID string, 
 		!errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("read app grant: %w", err)
 	}
+	// The install row lock the issuance barrier takes, taken first (codex
+	// U5b-1 r1): a refresh in flight either commits before this revoke, whose
+	// updates below then see and deactivate its rows, or reads the tombstone
+	// this writes and refuses. On SQLite the single writer orders them.
+	if s.dialect.Driver() == DriverPostgres && installID != "" {
+		var one int
+		if err := tx.QueryRow(s.q(`SELECT 1 FROM app_installs WHERE id = ? FOR UPDATE`), installID).Scan(&one); err != nil &&
+			!errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("lock install for app grant revoke: %w", err)
+		}
+	}
 	for _, q := range []string{
 		`UPDATE oauth_access_tokens SET active = ? WHERE request_id = ?`,
 		`UPDATE oauth_refresh_tokens SET active = ? WHERE request_id = ?`,
@@ -123,11 +134,15 @@ func (s *Store) RevokeUserAppGrant(userID, requestID string) (installID string, 
 	for _, q := range []string{
 		`DELETE FROM oauth_authorization_codes WHERE request_id = ?`,
 		`DELETE FROM oauth_pkce_requests WHERE request_id = ?`,
-		`DELETE FROM app_token_bindings WHERE request_id = ?`,
 	} {
 		if _, err := tx.Exec(s.q(q), requestID); err != nil {
 			return "", fmt.Errorf("revoke app grant: %w", err)
 		}
+	}
+	// A tombstone, not a delete: a persistence already past its own checks
+	// would take a missing binding for a first issuance and recreate it.
+	if _, err := tx.Exec(s.q(`UPDATE app_token_bindings SET revoked_at = ? WHERE request_id = ? AND revoked_at IS NULL`), now(), requestID); err != nil {
+		return "", fmt.Errorf("revoke app grant: %w", err)
 	}
 	return installID, tx.Commit()
 }

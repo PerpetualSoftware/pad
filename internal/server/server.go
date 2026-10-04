@@ -1843,10 +1843,17 @@ func (s *Server) setupRouter() {
 			// OAuth there are no grants to manage. The audit route
 			// above is deliberately outside the gate: it is history
 			// of a connection the caller owns.
+			// The list and the revoke also serve the grants people gave
+			// installed apps, so they are open when either OAuth or apps
+			// are (TASK-3399); with OAuth off they show and revoke app
+			// grants only.
 			r.Group(func(r chi.Router) {
-				r.Use(s.requireOAuthAvailable)
+				r.Use(s.requireOAuthOrAppsAvailable)
 				r.Get("/connected-apps", s.handleListConnectedApps)
 				r.Delete("/connected-apps/{id}", s.handleRevokeConnectedApp)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(s.requireOAuthAvailable)
 				// PLAN-1519 / TASK-1524 / IDEA-1517 §3: mutation
 				// endpoints for the connections-page UI. Per-field
 				// patches rather than a general PATCH for cleaner

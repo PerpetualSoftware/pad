@@ -338,7 +338,8 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	// The grant's kind, and for a delegated grant the access the person
 	// consented to, as the consent decision put them in the session data.
 	kind, access := carriedInstallGrant(req.SessionData)
-	var bindAccess, bindUser sql.NullString
+	var bindAccess, bindUser, bindSince sql.NullString
+	var bindCredEpoch sql.NullInt64
 	switch kind {
 	case "service":
 		// A service token is client_credentials: no code, no PKCE.
@@ -368,12 +369,21 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		}
 		// The subject must be a live HUMAN member of the install's workspace,
 		// read in this transaction: never a bot (which has its own door), and
-		// never someone removed since they consented.
-		var userKind string
-		var userDisabled sql.NullString
-		err = tx.QueryRow(s.q(`SELECT u.kind, u.disabled_at FROM users u
+		// never someone removed since they consented. On Postgres the user and
+		// membership rows are share-locked (codex U5b-1 r1), so an account
+		// disable or a member removal waits for this issuance to commit and
+		// then revokes what it wrote, or commits first and is seen here.
+		// SQLite's single writer serializes them already.
+		subjQ := `SELECT u.kind, u.disabled_at, u.credential_epoch, m.created_at FROM users u
 			JOIN workspace_members m ON m.user_id = u.id AND m.workspace_id = ?
-			WHERE u.id = ?`), workspaceID, req.Subject).Scan(&userKind, &userDisabled)
+			WHERE u.id = ?`
+		if s.dialect.Driver() == DriverPostgres {
+			subjQ += ` FOR SHARE`
+		}
+		var userKind, memberSince string
+		var userDisabled sql.NullString
+		var credEpoch int64
+		err = tx.QueryRow(s.q(subjQ), workspaceID, req.Subject).Scan(&userKind, &userDisabled, &credEpoch, &memberSince)
 		if errors.Is(err, sql.ErrNoRows) || (err == nil && (userKind != models.UserKindHuman || userDisabled.Valid)) {
 			return true, ErrInstallDelegatedSubject
 		}
@@ -382,6 +392,8 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		}
 		bindAccess = sql.NullString{String: access, Valid: true}
 		bindUser = sql.NullString{String: req.Subject, Valid: true}
+		bindSince = sql.NullString{String: memberSince, Valid: true}
+		bindCredEpoch = sql.NullInt64{Int64: credEpoch, Valid: true}
 	default:
 		return true, ErrInstallDelegatedUnsupported
 	}
@@ -394,25 +406,34 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	// is.
 	var bound int64
 	var boundKind string
-	var boundAccess, boundUser sql.NullString
-	err = tx.QueryRow(s.q(`SELECT auth_epoch, auth_kind, delegated_access, delegated_user_id FROM app_token_bindings WHERE request_id = ?`),
-		req.RequestID).Scan(&bound, &boundKind, &boundAccess, &boundUser)
+	var boundAccess, boundUser, boundSince, boundRevoked sql.NullString
+	var boundCredEpoch sql.NullInt64
+	err = tx.QueryRow(s.q(`SELECT auth_epoch, auth_kind, delegated_access, delegated_user_id, delegated_member_since,
+		delegated_credential_epoch, revoked_at FROM app_token_bindings WHERE request_id = ?`),
+		req.RequestID).Scan(&bound, &boundKind, &boundAccess, &boundUser, &boundSince, &boundCredEpoch, &boundRevoked)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.Exec(s.q(`
-			INSERT INTO app_token_bindings (request_id, client_id, install_id, workspace_id, auth_epoch, auth_kind, delegated_access, delegated_user_id, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			req.RequestID, req.ClientID, installID.String, workspaceID, epoch, kind, bindAccess, bindUser, now()); err != nil {
+			INSERT INTO app_token_bindings (request_id, client_id, install_id, workspace_id, auth_epoch, auth_kind, delegated_access,
+			                                delegated_user_id, delegated_member_since, delegated_credential_epoch, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			req.RequestID, req.ClientID, installID.String, workspaceID, epoch, kind, bindAccess, bindUser, bindSince, bindCredEpoch, now()); err != nil {
 			return true, fmt.Errorf("oauth: write token binding: %w", err)
 		}
 	case err != nil:
 		return true, fmt.Errorf("oauth: read token binding: %w", err)
+	case boundRevoked.Valid:
+		// The person revoked this grant: a tombstone, never a first issuance.
+		return true, ErrInstallNotActive
 	case bound != epoch:
 		// A later persistence of a family bound under an earlier epoch.
 		return true, ErrInstallNotActive
 	case boundKind != kind || boundAccess != bindAccess:
 		return true, ErrInstallDelegatedAccess
-	case boundUser != bindUser:
+	case boundUser != bindUser || boundSince != bindSince || boundCredEpoch != bindCredEpoch:
+		// Not the person, membership or credentials it was issued against:
+		// a disable (credential_epoch) or a removal and re-add (member since)
+		// between two persistences ends the grant.
 		return true, ErrInstallDelegatedSubject
 	}
 	return true, nil
@@ -491,7 +512,7 @@ func (s *Store) GetAppTokenState(requestID string) (*AppTokenState, error) {
 		FROM app_token_bindings b
 		JOIN app_installs i ON i.id = b.install_id
 		JOIN oauth_clients c ON c.id = b.client_id
-		WHERE b.request_id = ?`), requestID).Scan(
+		WHERE b.request_id = ? AND b.revoked_at IS NULL`), requestID).Scan(
 		&st.Binding.RequestID, &st.Binding.ClientID, &st.Binding.InstallID, &st.Binding.WorkspaceID,
 		&st.Binding.AuthEpoch, &st.Binding.AuthKind, &st.InstallState, &st.InstallEpoch, &disabledAt)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -2,7 +2,9 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -240,8 +242,11 @@ func TestTask3399_RevokingAnAppGrantEndsItThroughTheBinding(t *testing.T) {
 	if _, err := f.s.RevokeUserAppGrant(f.person.ID, "req-rv"); err != nil {
 		t.Fatal(err)
 	}
-	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = 'req-rv'`); n != 0 {
-		t.Error("the binding survived the revoke")
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = 'req-rv' AND revoked_at IS NOT NULL`); n != 1 {
+		t.Error("the revoke left no tombstone on the binding")
+	}
+	if st, err := f.s.GetAppTokenState("req-rv"); err != nil || st != nil {
+		t.Errorf("introspection state of a revoked grant = %+v, %v; want none", st, err)
 	}
 	for _, table := range []string{"oauth_access_tokens", "oauth_refresh_tokens"} {
 		if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM `+table+` WHERE request_id = 'req-rv' AND active = ?`, true); n != 0 {
@@ -325,5 +330,90 @@ func TestTask3399_TheBindingFixesThePerson(t *testing.T) {
 	}
 	if err := f.s.CreateAccessToken(task3399Req(f.clientID, other.ID, "req-pfix", "read", 1)); !errors.Is(err, ErrInstallDelegatedSubject) {
 		t.Errorf("a token for another member under the same grant: err = %v, want ErrInstallDelegatedSubject", err)
+	}
+}
+
+// Codex U5b-1 r1: a revoke, a disable and re-enable, or a removal and re-add
+// between two persistences of one grant ends it; none is forgotten.
+func TestTask3399_AChangeBetweenPersistencesIsRemembered(t *testing.T) {
+	cases := map[string]func(t *testing.T, f task3399Fix){
+		"the person revoked it": func(t *testing.T, f task3399Fix) {
+			if _, err := f.s.RevokeUserAppGrant(f.person.ID, "req-mem"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a disable and re-enable": func(t *testing.T, f task3399Fix) {
+			if err := f.s.DisableUserAndRevokeAccess(f.person.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.s.EnableUser(f.person.ID); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a removal and re-add": func(t *testing.T, f task3399Fix) {
+			if _, err := f.s.db.Exec(f.s.q(`DELETE FROM workspace_members WHERE user_id = ? AND workspace_id = ?`), f.person.ID, f.ws.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.s.db.Exec(f.s.q(`INSERT INTO workspace_members (workspace_id, user_id, role, created_at) VALUES (?, ?, 'editor', ?)`),
+				f.ws.ID, f.person.ID, "2099-01-01T00:00:00Z"); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := task3399Fixture(t, "inst-mem-"+strings.ReplaceAll(name, " ", "-"), "write")
+			task3399Delegated(t, f, "req-mem")
+			change(t, f)
+			// The re-insert an in-flight refresh rotation makes after its checks.
+			// (The grant's EARLIER tokens are another matter: a membership
+			// removal leaves them to the app API's per-request admission, U5b-2.)
+			r := task3399Req(f.clientID, f.person.ID, "req-mem", "read", 1)
+			if err := f.s.CreateRefreshToken(r); err == nil {
+				t.Fatalf("after %s, the grant persisted a new refresh token", name)
+			}
+			if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_refresh_tokens WHERE signature = ?`, r.Signature); n != 0 {
+				t.Errorf("after %s: the refused refresh token was stored", name)
+			}
+		})
+	}
+}
+
+// Codex U5b-1 r1 P1: an account disable that commits while a delegated
+// issuance is between its checks and its commit does not miss the rows the
+// issuance writes. The disable waits for the issuance (the user-row share
+// lock on Postgres, the single writer on SQLite) and then revokes them.
+func TestTask3399_ADisableIsOrderedAgainstIssuance(t *testing.T) {
+	f := task3399Fixture(t, "inst-order", "write")
+	task3399Delegated(t, f, "req-ord")
+	tx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := task3399Req(f.clientID, f.person.ID, "req-ord", "read", 1)
+	r.Signature = "sig-ord-new"
+	if _, err := f.s.installIssuanceBarrierTx(tx, "oauth_refresh_tokens", r, now()); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- f.s.DisableUserAndRevokeAccess(f.person.ID) }()
+	select {
+	case err := <-done:
+		// SQLite in-memory test stores may not block; either way the rows
+		// must end up revoked, which the assertion below checks.
+		if err != nil {
+			t.Logf("disable returned before the issuance committed: %v", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_refresh_tokens WHERE request_id = 'req-ord' AND active = ?`, true); n != 0 {
+		t.Errorf("%d refresh tokens of a disabled person are still active", n)
 	}
 }

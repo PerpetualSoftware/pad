@@ -206,3 +206,18 @@ func (s *Server) decideAppConsent(w http.ResponseWriter, r *http.Request, ar fos
 	s.recordOAuthFlow("completed")
 	s.oauthServer.Provider().WriteAuthorizeResponse(r.Context(), s.authorizeResponseWriter(w), ar, resp)
 }
+
+// appSignInAvailable reports whether a request at the authorize or decide
+// door names an installed app's client while apps are available: those doors
+// serve that sign-in with MCP off too. It reads client_id from the query or
+// the form; the full rules run later, in appConsentGate.
+func (s *Server) appSignInAvailable(r *http.Request) bool {
+	if !s.appsAvailable() || s.oauthServer == nil {
+		return false
+	}
+	if err := r.ParseForm(); err != nil {
+		return false
+	}
+	c, err := s.store.GetOAuthClient(r.Form.Get("client_id"))
+	return err == nil && c != nil && c.IsInstallClient()
+}
