@@ -196,3 +196,16 @@ func addField(f models.FieldDef) func(m *appmanifest.Manifest) {
 		m.CompanionPack.Collections[0].Parsed.Fields = append(m.CompanionPack.Collections[0].Parsed.Fields, f)
 	}
 }
+
+// The stored manifest writes an unset config_schema as null; a fresh parse
+// leaves it empty. They are the same declaration, not a change.
+func TestUpgradeDiff_AbsentConfigSchemaIsNotAChange(t *testing.T) {
+	old := diffBase()
+	old.ConfigSchema = []byte("null")
+	n := clone(old)
+	n.ConfigSchema = nil
+	d, err := diffUpgrade(old, n, diffDigests, diffFresh("r1", "n1"))
+	if err != nil || len(d.Entries) != 0 {
+		t.Fatalf("null vs absent config_schema diffed: %+v %v", d, err)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/appmanifest"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -334,7 +335,14 @@ func subsetOf(a, b []string) bool {
 }
 
 func jsonEqual(a, b json.RawMessage) bool {
-	if len(a) == 0 && len(b) == 0 {
+	// Absent and null are the same declaration: the stored manifest is
+	// re-marshalled from the struct, which writes an unset RawMessage as
+	// null, while a freshly parsed manifest leaves it empty.
+	isNone := func(r json.RawMessage) bool {
+		t := strings.TrimSpace(string(r))
+		return t == "" || t == "null"
+	}
+	if isNone(a) && isNone(b) {
 		return true
 	}
 	var x, y any
