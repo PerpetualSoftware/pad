@@ -300,3 +300,14 @@ func TestTask3408_UndecryptableSecretReleasesTheRecord(t *testing.T) {
 		t.Fatal("an unsendable admission left its in-flight record")
 	}
 }
+
+// codex r1 on U10b: a soft-deleted workspace keeps its installs and
+// collections; its pending events are refused at admission.
+func TestTask3408_DeletedWorkspaceRefusesAdmission(t *testing.T) {
+	f := task3408Fixture(t, "inst-wsdel")
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), f.ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "wd")
+	wantRefused(t, err, "workspace_deleted")
+}

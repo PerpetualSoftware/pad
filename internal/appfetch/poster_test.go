@@ -3,6 +3,7 @@ package appfetch
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -61,5 +62,71 @@ func TestPoster_PolicyAndPrivateOrigins(t *testing.T) {
 	}
 	if redirected.Load() != 0 {
 		t.Fatal("the redirect was followed")
+	}
+}
+
+// slowBody reads in small, slow chunks and records any read that is still
+// running, or starts, after the caller marked Post as returned.
+type slowBody struct {
+	left     int
+	returned atomic.Bool
+	late     atomic.Int32
+}
+
+func (b *slowBody) Read(p []byte) (int, error) {
+	if b.returned.Load() {
+		b.late.Add(1)
+	}
+	if b.left == 0 {
+		return 0, io.EOF
+	}
+	time.Sleep(15 * time.Millisecond)
+	n := min(len(p), 4096, b.left)
+	b.left -= n
+	if b.returned.Load() {
+		b.late.Add(1)
+	}
+	return n, nil
+}
+
+// codex r1 on U10b: a server can answer before the body is written. Post
+// must not return while the transport can still read (and so write) the
+// body, or the caller's in-flight record ends with bytes still going out.
+func TestPoster_ReturnsOnlyAfterTheBodyIsDone(t *testing.T) {
+	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent) // answer without reading the body
+	}))
+	p, err := NewPoster([]PrivateOrigin{{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true}}, 10*time.Second, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		b := &slowBody{left: 4 << 20}
+		if _, err := p.post(context.Background(), srv.URL+"/hooks", b, int64(b.left), http.Header{}); err != nil {
+			t.Logf("post: %v", err) // the early answer may surface as a write error; either is fine
+		}
+		b.returned.Store(true)
+		time.Sleep(100 * time.Millisecond)
+		if n := b.late.Load(); n != 0 {
+			t.Fatalf("round %d: %d body reads after Post returned", i, n)
+		}
+	}
+}
+
+func TestPoster_PathCannotEscapeItsPrefix(t *testing.T) {
+	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	p, err := NewPoster([]PrivateOrigin{{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true, Path: "/hooks"}}, 5*time.Second, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/hooks/../admin", "/hooks/./x", "/hooks/%2e%2e/admin", "/hooks%2fadmin", "/hooksevil", "/hook", "/admin"} {
+		if _, err := p.Post(context.Background(), srv.URL+path, nil, http.Header{}); !errors.Is(err, ErrRefused) {
+			t.Errorf("%s: %v, want refused", path, err)
+		}
+	}
+	for _, path := range []string{"/hooks", "/hooks/in", "/hooks/a/b"} {
+		if st, err := p.Post(context.Background(), srv.URL+path, nil, http.Header{}); err != nil || st != 204 {
+			t.Errorf("%s: %d %v, want 204", path, st, err)
+		}
 	}
 }

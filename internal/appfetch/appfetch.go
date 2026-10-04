@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/appmanifest"
@@ -254,6 +255,10 @@ func NewPoster(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Co
 // body is drained up to a small bound and discarded. An error wrapping
 // ErrRefused is the policy's (permanent); any other error is the network's.
 func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header http.Header) (int, error) {
+	return p.post(ctx, rawURL, bytes.NewReader(body), int64(len(body)), header)
+}
+
+func (p *Poster) post(ctx context.Context, rawURL string, body io.Reader, size int64, header http.Header) (int, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return 0, refused("%q is not an https URL", rawURL)
@@ -262,13 +267,25 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	if err != nil {
 		return 0, refused("%q: %v", rawURL, err)
 	}
-	if prefix, ok := p.paths[origin]; ok && !strings.HasPrefix(u.Path, prefix) {
-		return 0, refused("%s is outside the path %s allowed for %s", u.Path, prefix, origin)
+	if prefix, ok := p.paths[origin]; ok && !underPath(u, prefix) {
+		return 0, refused("%s is outside the path %s allowed for %s", u.EscapedPath(), prefix, origin)
 	}
-	req, err := http.NewRequestWithContext(context.WithValue(ctx, originKey{}, origin), http.MethodPost, u.String(), bytes.NewReader(body))
+	// The transport closes the request body when it has finished writing it
+	// (or given up). Post does not return before that: a server may answer
+	// while the body is still being written, and the caller's fence must not
+	// end while a byte can still go out (codex r1 on U10b).
+	rb := &closeSignal{Reader: body, closed: make(chan struct{})}
+	reqCtx, cancel := context.WithCancel(context.WithValue(ctx, originKey{}, origin))
+	defer func() {
+		cancel()
+		<-rb.closed
+	}()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, u.String(), rb)
 	if err != nil {
+		rb.Close()
 		return 0, refused("%v", err)
 	}
+	req.ContentLength = size
 	for k, vs := range header {
 		for _, v := range vs {
 			req.Header.Add(k, v)
@@ -281,4 +298,35 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	return resp.StatusCode, nil
+}
+
+// underPath reports whether u's path lies under prefix, by whole segments.
+// A path carrying dot segments or percent-encoding is refused outright: a
+// server may normalise "/hooks/../admin" or "/hooks/%2e%2e/admin" to a path
+// outside the prefix that a string comparison accepted (codex r1 on U10b).
+func underPath(u *url.URL, prefix string) bool {
+	if u.RawPath != "" || strings.Contains(u.EscapedPath(), "%") {
+		return false
+	}
+	for _, seg := range strings.Split(u.Path, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	if strings.HasSuffix(prefix, "/") {
+		return strings.HasPrefix(u.Path, prefix)
+	}
+	return u.Path == prefix || strings.HasPrefix(u.Path, prefix+"/")
+}
+
+// closeSignal is a request body that reports when the transport closed it.
+type closeSignal struct {
+	io.Reader
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *closeSignal) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
 }

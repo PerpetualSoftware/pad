@@ -22,6 +22,14 @@ import (
 // 10 s deadline, created BEFORE admission, plus 2 s of slack. The attempt
 // therefore always ends before its row expires, whatever the hosts' clocks
 // say, because both intervals are relative.
+//
+// STATED RESIDUAL (codex r1 on U10b): the expiry is the DATABASE's wall
+// clock, by design (DOC-3371 §5 rejects the application host's), and the
+// attempt's deadline is the application's monotonic clock. A forward step of
+// the database clock while an attempt is in flight can expire its row early,
+// so a drain could return during that one send. A normal attempt does not
+// rely on expiry at all (it deletes its own row when it ends); expiry only
+// releases rows of attempts that crashed. Bounded by one delivery deadline.
 const appDeliveryFenceSeconds = 12
 
 // appDeliveryDrainBound caps the phase-2 wait: one fence lifetime plus
@@ -125,12 +133,12 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, deliveryID stri
 	}
 	defer tx.Rollback()
 
-	q := `SELECT state FROM app_installs WHERE id = ?`
+	q := `SELECT state, workspace_id FROM app_installs WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		q += ` FOR SHARE`
 	}
-	var state string
-	err = tx.QueryRow(s.q(q), installID.String).Scan(&state)
+	var state, workspaceID string
+	err = tx.QueryRow(s.q(q), installID.String).Scan(&state, &workspaceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &AppDeliveryRefusedError{Reason: "install_gone"}
 	}
@@ -139,6 +147,17 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, deliveryID stri
 	}
 	if state != InstallActive {
 		return nil, &AppDeliveryRefusedError{Reason: "install_" + state}
+	}
+	// A soft-deleted workspace keeps its installs and collections, so its
+	// pending events must be refused here (codex r1 on U10b; the owner path's
+	// WorkspaceLive check, BUG-3340). A plain read: deletion that races this
+	// serializes as "delivered, then deleted", the BUG-3340 residual.
+	var live int
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM workspaces WHERE id = ? AND deleted_at IS NULL`), workspaceID).Scan(&live); err != nil {
+		return nil, fmt.Errorf("admit app delivery: workspace: %w", err)
+	}
+	if live == 0 {
+		return nil, &AppDeliveryRefusedError{Reason: "workspace_deleted"}
 	}
 
 	// Under the install lock: an upgrade (which changes the URL and the
