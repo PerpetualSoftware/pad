@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -86,7 +87,14 @@ func (s *Store) SweepExpiredOAuthRows(cut OAuthSweepCutoffs, batchSize, maxBatch
 		)`)
 		batches := 0
 		for {
-			r, err := s.db.Exec(stmt, before, batchSize)
+			// Each batch is one statement in its own transaction: retryable
+			// on a deadlock (TASK-3399).
+			var r sql.Result
+			err := s.retryOnDeadlock("oauth_sweep", func() error {
+				var err error
+				r, err = s.db.Exec(stmt, before, batchSize)
+				return err
+			})
 			if err != nil {
 				return res, fmt.Errorf("sweep %s: %w", t.table, err)
 			}
@@ -125,7 +133,12 @@ func (s *Store) SweepExpiredOAuthRows(cut OAuthSweepCutoffs, batchSize, maxBatch
 			res.Capped = true
 			break
 		}
-		r, err := s.db.Exec(orphans, batchSize)
+		var r sql.Result
+		err := s.retryOnDeadlock("oauth_sweep", func() error {
+			var err error
+			r, err = s.db.Exec(orphans, batchSize)
+			return err
+		})
 		if err != nil {
 			return res, fmt.Errorf("sweep app_token_bindings: %w", err)
 		}

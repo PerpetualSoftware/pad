@@ -1249,6 +1249,9 @@ func (s *Server) countMidStreamResync(activity bool) {
 // no-ops until both prerequisites are present.
 func (s *Server) SetMetrics(m *metrics.Metrics) {
 	s.metrics = m
+	if m != nil && m.DBDeadlockRetriesTotal != nil {
+		s.store.SetDeadlockRetryObserver(func(site string) { m.DBDeadlockRetriesTotal.WithLabelValues(site).Inc() })
+	}
 	s.wireOAuthMetricsObserver()
 	s.wireStreamGauge()
 }

@@ -41,6 +41,11 @@ var AllowSchemaAhead bool
 type Store struct {
 	db      *sql.DB
 	dialect Dialect
+	// deadlockRetryObserver is told each deadlock retry's site
+	// (retryOnDeadlock); deadlockInjector is a TEST-ONLY hook, nil in
+	// production, that fails an attempt just before its commit.
+	deadlockRetryObserver func(site string)
+	deadlockInjector      func(site string, attempt int) bool
 	// usernameValidator, when set, is the rule a generated username must
 	// pass (the server's ValidateUsername: format, length, reserved names).
 	// An account claim regenerates one (TASK-3351).

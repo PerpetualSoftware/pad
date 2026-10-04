@@ -987,18 +987,26 @@ func (s *Store) requireActiveUserTx(tx *sql.Tx, userID string) error {
 // Nothing here is restored by EnableUser: the user signs in, mints tokens
 // and reconnects apps again.
 func (s *Store) DisableUserAndRevokeAccess(userID string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("disable user: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := s.disableUserAndRevokeAccessTx(tx, userID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("disable user: commit: %w", err)
-	}
-	return nil
+	// One transaction per attempt, nothing outside it before the commit:
+	// retryable on a deadlock (TASK-3399).
+	attempt := 0
+	return s.retryOnDeadlock("disable_user", func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("disable user: begin: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := s.disableUserAndRevokeAccessTx(tx, userID); err != nil {
+			return err
+		}
+		if err := s.injectedDeadlock("disable_user", &attempt); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("disable user: commit: %w", err)
+		}
+		return nil
+	})
 }
 
 // disableUserAndRevokeAccessTx is DisableUserAndRevokeAccess on the caller's

@@ -60,7 +60,9 @@ type AccountClaim struct {
 // The caller then gives the claimant a way to set a password and kicks the
 // account's live connections.
 func (s *Store) ClaimAccountByVerification(token string) (*AccountClaim, error) {
-	return claimWithRetry(func() (*AccountClaim, error) { return s.claimAccountByVerificationOnce(token) })
+	return claimWithRetry(func() (*AccountClaim, error) {
+		return claimRetryingDeadlocks(s, func() (*AccountClaim, error) { return s.claimAccountByVerificationOnce(token) })
+	})
 }
 
 func (s *Store) claimAccountByVerificationOnce(token string) (*AccountClaim, error) {
@@ -131,7 +133,9 @@ func (s *Store) claimAccountByVerificationOnce(token string) (*AccountClaim, err
 // account's name and username; empty falls back to the address.
 func (s *Store) ClaimAccountByProvider(userID, provider, subject, name string) (*AccountClaim, error) {
 	return claimWithRetry(func() (*AccountClaim, error) {
-		return s.claimAccountByProviderOnce(userID, provider, subject, name)
+		return claimRetryingDeadlocks(s, func() (*AccountClaim, error) {
+			return s.claimAccountByProviderOnce(userID, provider, subject, name)
+		})
 	})
 }
 
@@ -243,6 +247,19 @@ var claimAfterUsernameHook func(username string)
 // another account between choosing and writing it. The attempt's
 // transaction rolled back whole (a link claim's token included), so a
 // retry starts clean.
+// claimRetryingDeadlocks runs one claim attempt under retryOnDeadlock: each
+// attempt is one transaction with nothing outside it before its commit
+// (TASK-3399).
+func claimRetryingDeadlocks(s *Store, once func() (*AccountClaim, error)) (*AccountClaim, error) {
+	var claim *AccountClaim
+	err := s.retryOnDeadlock("account_claim", func() error {
+		var err error
+		claim, err = once()
+		return err
+	})
+	return claim, err
+}
+
 func claimWithRetry(attempt func() (*AccountClaim, error)) (*AccountClaim, error) {
 	var err error
 	for i := 0; i < 3; i++ {

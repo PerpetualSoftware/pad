@@ -95,7 +95,20 @@ func (s *Store) IsUserAppGrant(userID, requestID string) (bool, error) {
 // code or PKCE row is deleted, and the binding is tombstoned (revoked_at),
 // which introspection and the issuance barrier both refuse.
 // Idempotent; a grant that is not the user's is ErrAppGrantNotFound.
-func (s *Store) RevokeUserAppGrant(userID, requestID string) (installID string, err error) {
+func (s *Store) RevokeUserAppGrant(userID, requestID string) (string, error) {
+	// One transaction per attempt, nothing outside it before the commit:
+	// retryable on a deadlock (TASK-3399). The handler publishes nothing.
+	attempt := 0
+	var installID string
+	err := s.retryOnDeadlock("revoke_app_grant", func() error {
+		var err error
+		installID, err = s.revokeUserAppGrantOnce(userID, requestID, &attempt)
+		return err
+	})
+	return installID, err
+}
+
+func (s *Store) revokeUserAppGrantOnce(userID, requestID string, attempt *int) (installID string, err error) {
 	ok, err := s.IsUserAppGrant(userID, requestID)
 	if err != nil {
 		return "", err
@@ -145,6 +158,9 @@ func (s *Store) RevokeUserAppGrant(userID, requestID string) (installID string, 
 		if _, err := tx.Exec(s.q(q), false, requestID); err != nil {
 			return "", fmt.Errorf("revoke app grant: %w", err)
 		}
+	}
+	if err := s.injectedDeadlock("revoke_app_grant", attempt); err != nil {
+		return "", err
 	}
 	return installID, tx.Commit()
 }
