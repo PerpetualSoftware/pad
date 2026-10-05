@@ -110,8 +110,19 @@ func AppItemETag(key []byte, installID, itemID string, seq int64) string {
 
 // CompanionCollectionSchema returns a companion collection's schema and
 // settings, read in the fence, for the app layer's field validation.
+//
+// It takes the workspace seq lock FIRST (BUG-3407): every schema writer takes
+// that lock (UpdateCollection when the schema moves, the app upgrade), so the
+// schema the app layer validates against cannot change before this write
+// commits. Without it the schema was read here and the lock taken only at the
+// insert, and a schema change committing in between let a value validated
+// against the old schema in. The order is the upgrade's own: install row,
+// then the seq lock. Both callers are write paths (create, update).
 func (f *FencedTx) CompanionCollectionSchema(collectionID string) (schemaJSON, settingsJSON string, err error) {
 	if err := f.requireCompanionCollection(collectionID); err != nil {
+		return "", "", err
+	}
+	if err := f.LockWorkspaceSeq(); err != nil {
 		return "", "", err
 	}
 	err = f.tx.QueryRow(f.s.q(`SELECT schema, settings FROM collections WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`),

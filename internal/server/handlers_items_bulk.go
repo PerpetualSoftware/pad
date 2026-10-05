@@ -448,6 +448,10 @@ func bulkStoreError(err error) *bulkOpError {
 	if reason, ok := nulRefusalReason(err); ok {
 		return &bulkOpError{message: reason, code: "bad_request"}
 	}
+	// BUG-3407: a schema change refused this item's fields under the lock.
+	if v, ok := store.AsValidationError(err); ok {
+		return &bulkOpError{message: v.Reason, code: "validation_error"}
+	}
 	return &bulkOpError{message: err.Error()}
 }
 
@@ -825,11 +829,15 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		}
 	}
 
+	// BUG-3407: the schema bytes this item's collection's fields were
+	// validated against (per collection: each item loads its own).
+	validatedSchema := coll.Schema
 	input := models.ItemUpdate{
-		FieldsPatch:    patch,
-		LastModifiedBy: actor,
-		ActorUserID:    currentUserID(r), // BUG-3372
-		Source:         source,
+		FieldsPatch:     patch,
+		LastModifiedBy:  actor,
+		ActorUserID:     currentUserID(r), // BUG-3372
+		Source:          source,
+		ValidatedSchema: &validatedSchema,
 	}
 
 	updated, err := s.store.UpdateItemWithPreCheck(item.ID, input, precheck, store.WithEventBatch(batchID))
@@ -1194,7 +1202,9 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		}
 	}
 
-	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), precheck, store.WithEventBatch(batchID))
+	// BUG-3407: the target schema the moved fields were validated against
+	// (per collection: each item's own move names its target).
+	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), precheck, store.WithEventBatch(batchID), store.WithValidatedSchema(targetColl.Schema))
 	if err != nil {
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			raw, _ := json.Marshal(details)

@@ -85,6 +85,16 @@ type MutationOption func(*mutationOptions)
 type mutationOptions struct {
 	batchID   string
 	planLimit bool
+	// validatedSchema is the target schema bytes a move's caller validated
+	// against (BUG-3407); nil skips the check.
+	validatedSchema *string
+}
+
+// WithValidatedSchema hands MoveItemWithPreCheck the exact bytes of the
+// target collection's schema its caller validated the moved fields against
+// (BUG-3407). See models.ItemUpdate.ValidatedSchema.
+func WithValidatedSchema(schema string) MutationOption {
+	return func(o *mutationOptions) { o.validatedSchema = &schema }
 }
 
 // WithRestorePlanLimit makes RestoreItem enforce the workspace's

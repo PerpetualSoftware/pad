@@ -655,9 +655,15 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// same cost the icon-edit gate above exists to avoid — and my first
 	// version of this line claimed to test movement while only testing
 	// presence (codex round 3).
-	schemaMoved := input.Schema != nil && *input.Schema != existing.Schema
-	reindexRelations := schemaMoved || len(input.Migrations) > 0
-	if len(input.Migrations) > 0 || renaming || reindexRelations {
+	//
+	// BUG-3407 (codex r3): the LOCK is taken whenever a schema is supplied,
+	// not only when it looks moved. Whether it moved is decided below from
+	// the schema re-read under the locks, never from the pre-transaction
+	// `existing`: a concurrent update can change the row in between, and a
+	// write judged a no-op against the stale read would otherwise put bytes
+	// back without the lock an item write's schema compare relies on. The
+	// lock is cheap; the REINDEX is what the gate saves, and it stays gated.
+	if len(input.Migrations) > 0 || renaming || input.Schema != nil {
 		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
 			return nil, err
 		}
@@ -673,13 +679,14 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	//
 	// This is the READ of the old slug; the ALLOCATION of the new one follows
 	// it, under the same locks (IDEA-2874, below).
-	reread := "SELECT updated_at, slug FROM collections WHERE id = ? AND deleted_at IS NULL"
+	reread := "SELECT updated_at, slug, schema FROM collections WHERE id = ? AND deleted_at IS NULL"
 	if s.dialect.Driver() == DriverPostgres {
 		reread += " FOR UPDATE"
 	}
 	var currentUpdatedAt string
 	var lockedSlug string
-	rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt, &lockedSlug)
+	var lockedSchema string
+	rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt, &lockedSlug, &lockedSchema)
 	if rerr == sql.ErrNoRows {
 		// Deleted between the pre-tx GetCollection and here — treat as not-found.
 		return nil, nil
@@ -688,6 +695,10 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		return nil, fmt.Errorf("re-read collection under lock: %w", rerr)
 	}
 	current := parseTime(currentUpdatedAt)
+
+	// Moved against the schema as it stands under the locks (see above).
+	schemaMoved := input.Schema != nil && *input.Schema != lockedSchema
+	reindexRelations := schemaMoved || len(input.Migrations) > 0
 
 	// Allocate the new slug UNDER the workspace lock and this row's lock
 	// (IDEA-2874). The scan runs on `tx`, not the pool — a pool read from
