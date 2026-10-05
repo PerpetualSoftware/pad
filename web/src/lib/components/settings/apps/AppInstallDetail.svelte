@@ -5,6 +5,8 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import AppInstallCodePanel from './AppInstallCodePanel.svelte';
+	import AppUpgradeReview from './AppUpgradeReview.svelte';
+	import AppDraftsPanel from './AppDraftsPanel.svelte';
 	import { appStateLabel, appStateColor } from './appState';
 	import type { AppInstallCode, AppInstallSummary } from '$lib/types';
 
@@ -63,6 +65,11 @@
 	let error = $state('');
 	let code = $state<AppInstallCode | null>(null);
 	let heading: HTMLHeadingElement | undefined = $state();
+	/** The upgrade review replaces the actions while it is open (U9b). */
+	let upgrading = $state(false);
+	/** Bumped after an upgrade so the drafts panel re-reads its items. */
+	let draftsKey = $state(0);
+	let canUpgrade = $derived(installState === 'active' || installState === 'inactive');
 	let actionsEl: HTMLDivElement | undefined = $state();
 
 	onMount(() => heading?.focus());
@@ -186,7 +193,21 @@
 		<p class="error" role="alert">{error}</p>
 	{/if}
 
-	{#if pending}
+	{#if upgrading}
+		<AppUpgradeReview
+			{wsSlug}
+			{install}
+			onupgraded={() => {
+				draftsKey++;
+				onchanged();
+			}}
+			onclose={async () => {
+				upgrading = false;
+				await tick();
+				actionsEl?.querySelector<HTMLButtonElement>('[data-action="upgrade"]')?.focus();
+			}}
+		/>
+	{:else if pending}
 		{@const c = consequences[pending]}
 		<div class="confirm" class:danger={c.danger} role="group" aria-label={c.title}>
 			<strong>{c.title}</strong>
@@ -200,6 +221,9 @@
 		</div>
 	{:else if actions.length > 0}
 		<div class="row actions" bind:this={actionsEl}>
+			{#if canUpgrade}
+				<Button data-action="upgrade" size="sm" onclick={() => ((upgrading = true), (error = ''))}>Check for an update</Button>
+			{/if}
 			{#each actions as a (a)}
 				<Button data-action={a} size="sm" variant={consequences[a].danger ? 'danger' : 'secondary'} onclick={() => ((pending = a), (error = ''))}>
 					{label(a)}
@@ -209,6 +233,10 @@
 	{:else}
 		<p class="hint">This app was uninstalled. What it wrote stays in the workspace, labelled with its name.</p>
 	{/if}
+
+	{#key draftsKey}
+		<AppDraftsPanel {wsSlug} installId={install.install_id} />
+	{/key}
 </div>
 
 <style>
