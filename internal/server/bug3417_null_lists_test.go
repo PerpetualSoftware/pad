@@ -25,8 +25,9 @@ import (
 // What it cannot see, by design: the contents of interface-typed values
 // (an item's `fields` map is the item's own data, whose values the schema
 // types), and json.RawMessage. Element types are walked only through the
-// elements present, so the cases below keep their lists non-empty where a
-// list can be filled, alongside the empty case the bug was about.
+// elements present, so each door is driven twice where it can be: by the
+// minimal manifest (the empty lists the bug was about) and by the full one
+// (every list filled, so the lists inside its elements are walked too).
 func nullLists(t reflect.Type, v any, path string, out *[]string) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -167,6 +168,49 @@ func TestBug3417_AppsResponsesHaveNoNullLists(t *testing.T) {
 			http.StatusOK, typeOf[appInstallStateResponse]())
 	})
 
+	// The full manifest (events, an item action, an artifact), so the nested
+	// lists inside those elements are walked too, and an upgrade that changes
+	// the artifact, so its review's lists are (codex r2).
+	t.Run("full manifest: preview, confirm, changed-artifact upgrade, lifecycle", func(t *testing.T) {
+		e := newProvisionEnv(t)
+		ws := "/api/v1/workspaces/" + e.ws
+		rr := e.preview(t)
+		assertNoNullLists(t, "full preview", rr, http.StatusOK, typeOf[appPreview]())
+		var p appPreview
+		parseJSON(t, rr, &p)
+		if len(p.Events) == 0 || len(p.ItemActions) == 0 || len(p.Artifacts) == 0 {
+			t.Fatalf("the full manifest's preview has empty lists, so nothing nested was walked: %+v", p)
+		}
+		rr = e.confirm(t, p, p.ManifestSHA256)
+		assertNoNullLists(t, "full confirm", rr, http.StatusCreated, typeOf[appInstallConfirmResponse]())
+		var c appInstallConfirmResponse
+		parseJSON(t, rr, &c)
+		if len(c.Items) == 0 {
+			t.Fatal("the full confirm made no items, so its items were not walked")
+		}
+
+		m := e.manifest(t)
+		body2 := []byte(strings.Replace(string(e.files["/pack/ship.md"]), "title: Ship a change", "title: Ship a change v2", 1))
+		e.files["/pack/ship.md"] = body2
+		m["version"] = "1.1.0"
+		m["companion_pack"].(map[string]any)["artifacts"] = []any{map[string]any{"key": "ship", "url": e.origin() + "/pack/ship.md", "sha256": appSHA(body2)}}
+		e.publish(t, m)
+		rr = doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/upgrade/preview", nil, e.token)
+		assertNoNullLists(t, "changed-artifact upgrade preview", rr, http.StatusOK, typeOf[appPreview]())
+		var up appPreview
+		parseJSON(t, rr, &up)
+		assertNoNullLists(t, "changed-artifact upgrade confirm", doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/upgrade/confirm",
+			map[string]any{"pending_id": up.PendingID, "manifest_sha256": up.ManifestSHA256}, e.token),
+			http.StatusOK, typeOf[appUpgradeConfirmResponse]())
+
+		state := typeOf[appInstallStateResponse]()
+		assertNoNullLists(t, "install-code", doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/install-code", nil, e.token), http.StatusCreated,
+			typeOf[map[string]any]())
+		assertNoNullLists(t, "rotate", doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/rotate", nil, e.token), http.StatusOK, state)
+		assertNoNullLists(t, "disable before uninstall", doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/disable", nil, e.token), http.StatusOK, state)
+		assertNoNullLists(t, "uninstall", doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/uninstall", nil, e.token), http.StatusOK, state)
+	})
+
 	t.Run("app API and app actions", func(t *testing.T) {
 		u := u11Prepare(t, appAPIFixture(t, "write"))
 		f := u.appAPIFix
@@ -187,12 +231,18 @@ func TestBug3417_AppsResponsesHaveNoNullLists(t *testing.T) {
 				Items []AppItem `json:"items"`
 			}]())
 		assertNoNullLists(t, "app item", appGet(f.srv, f.path("/items/"+it.ID), f.token), http.StatusOK, typeOf[AppItem]())
+		assertNoNullLists(t, "app item update", appDo(f.srv, "PATCH", f.path("/items/"+it.ID), f.token, map[string]any{"fields_patch": map[string]any{"size": "M"}, "expected_etag": it.ETag}),
+			http.StatusOK, typeOf[AppItem]())
 		commentsList := typeOf[struct {
 			Comments []AppComment `json:"comments"`
 		}]()
 		assertNoNullLists(t, "app comments (empty)", appGet(f.srv, f.path("/items/"+it.ID+"/comments"), f.token), http.StatusOK, commentsList)
-		assertNoNullLists(t, "app comment create", appDo(f.srv, "POST", f.path("/items/"+it.ID+"/comments"), f.token, map[string]any{"body": "hi"}),
-			http.StatusCreated, typeOf[AppComment]())
+		rr = appDo(f.srv, "POST", f.path("/items/"+it.ID+"/comments"), f.token, map[string]any{"body": "hi"})
+		assertNoNullLists(t, "app comment create", rr, http.StatusCreated, typeOf[AppComment]())
+		var cm AppComment
+		parseJSON(t, rr, &cm)
+		assertNoNullLists(t, "app comment update", appDo(f.srv, "PATCH", f.path("/items/"+it.ID+"/comments/"+cm.ID), f.token, map[string]any{"body": "hi again"}),
+			http.StatusOK, typeOf[AppComment]())
 		assertNoNullLists(t, "app comments", appGet(f.srv, f.path("/items/"+it.ID+"/comments"), f.token), http.StatusOK, commentsList)
 		assertNoNullLists(t, "app items", appGet(f.srv, f.path("/collections/requests/items"), f.token), http.StatusOK,
 			typeOf[struct {
