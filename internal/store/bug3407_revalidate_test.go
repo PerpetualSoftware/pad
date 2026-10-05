@@ -1,8 +1,10 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -137,5 +139,58 @@ func TestBug3407_AnUnrelatedSchemaEditDoesNotRefuse(t *testing.T) {
 	}
 	if v, _ := storedColor(t, s, item.ID); v != "blue" {
 		t.Errorf("color = %v, want blue (undeclared keys are accepted)", v)
+	}
+}
+
+// The app path (BUG-3407): appstore validates against the schema it reads
+// through CompanionCollectionSchema, so that read must hold the lock every
+// schema writer takes.
+func TestBug3407_TheFencedSchemaReadHoldsTheSeqLock(t *testing.T) {
+	f := newFenceFixture(t)
+	ftx, err := f.s.BeginFenced(context.Background(), f.spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ftx.Rollback() }()
+	if ftx.seqLocked {
+		t.Fatal("precondition: a fresh fence holds no seq lock")
+	}
+	if _, _, err := ftx.CompanionCollectionSchema(f.companion.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !ftx.seqLocked {
+		t.Error("the schema read returned without the workspace seq lock")
+	}
+}
+
+// Behaviour: a schema change waits for a fenced write that has read the
+// schema. Discriminates on Postgres; on SQLite every writer is serialized by
+// BEGIN IMMEDIATE, so the wait holds with or without the fix there.
+func TestBug3407_ASchemaChangeWaitsForAFencedWriteThatReadTheSchema(t *testing.T) {
+	f := newFenceFixture(t)
+	ftx, err := f.s.BeginFenced(context.Background(), f.spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ftx.CompanionCollectionSchema(f.companion.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		schema := bug3407WithColor
+		_, err := f.s.UpdateCollection(f.companion.ID, models.CollectionUpdate{Schema: &schema})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		_ = ftx.Rollback()
+		t.Fatalf("the schema change committed while the fenced write held its schema read (err=%v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := ftx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("schema change after the fence released: %v", err)
 	}
 }
