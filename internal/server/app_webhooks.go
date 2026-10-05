@@ -56,6 +56,8 @@ type appWebhookView struct {
 	URL    string `json:"url"`
 	Status string `json:"status"`
 	Notice string `json:"notice,omitempty"`
+	// UndeliveredDropped counts deliveries dropped undelivered after 24 h.
+	UndeliveredDropped int64 `json:"undelivered_dropped"`
 }
 
 func (s *Server) appWebhookView(installID string) (*appWebhookView, error) {
@@ -63,7 +65,7 @@ func (s *Server) appWebhookView(installID string) (*appWebhookView, error) {
 	if err != nil || st == nil {
 		return nil, err
 	}
-	v := &appWebhookView{URL: st.URL, Status: st.Status}
+	v := &appWebhookView{URL: st.URL, Status: st.Status, UndeliveredDropped: st.Dropped}
 	if st.Status == store.AppWebhookAwaitingSecret {
 		v.Notice = appWebhookHeldNotice
 	}

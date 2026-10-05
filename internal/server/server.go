@@ -198,6 +198,8 @@ type Server struct {
 	appFetchTLS *tls.Config
 	// appPosters caches the app webhook Poster (TASK-3408 U10b).
 	appPosters appPosterCache
+	// appRate is the per-install app webhook rate cap (TASK-3408 U10c).
+	appRate appRateLimiter
 	// webhookCancel ends the dispatcher's context at Stop, so backoff waits
 	// and app attempts do not outlive the server (TASK-3408 U10b).
 	webhookCancel context.CancelFunc

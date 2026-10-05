@@ -352,6 +352,11 @@ watches.id
 watches.item_id
 watches.user_id
 watches.workspace_id
+webhook_deliveries.last_error
+webhook_deliveries.outbox_event_id
+webhook_deliveries.status
+webhook_deliveries.updated_at
+webhook_deliveries.webhook_id
 webhooks.app_install_id
 webhooks.created_at
 webhooks.deliver_from
