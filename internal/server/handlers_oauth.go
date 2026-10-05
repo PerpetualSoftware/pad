@@ -1440,6 +1440,10 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 // bearer is itself active and not the same token being introspected
 // (avoid trivial "introspect yourself with yourself" auth).
 //
+// What is described (BUG-3398): only an ACCESS token, and only to that
+// token's own client, read from the bearer's client (or the Basic client
+// id). Any other token reads as {"active": false}, as an unknown one does.
+//
 // In practice the consumer of this endpoint is sub-PR E's
 // MCPBearerAuth — but that integration uses fosite.IntrospectToken
 // directly (server-side, no HTTP roundtrip), so this public
@@ -1468,8 +1472,8 @@ func (s *Server) handleOAuthIntrospect(w http.ResponseWriter, r *http.Request) {
 
 	// Installed apps' clients do not use the public endpoint, and it never
 	// describes their tokens (lead ruling R2 on TASK-3394): the app API
-	// checks its tokens in-process. The general caller-ownership gap is
-	// BUG-3398.
+	// checks its tokens in-process. Every other caller is told only about
+	// its own client's access tokens (BUG-3398, below).
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form body", http.StatusBadRequest)
 		return
@@ -1481,8 +1485,23 @@ func (s *Server) handleOAuthIntrospect(w http.ResponseWriter, r *http.Request) {
 
 	ir, err := s.oauthServer.Provider().NewIntrospectionRequest(ctx, r, session)
 	if err == nil && ir.IsActive() {
-		if c, cerr := s.store.GetOAuthClient(ir.GetAccessRequester().GetClient().GetID()); cerr == nil && c.IsInstallClient() {
+		inspected := ir.GetAccessRequester().GetClient().GetID()
+		switch {
+		case ir.GetTokenUse() != fosite.AccessToken:
+			// A refresh token is never described (BUG-3398): it is not a
+			// bearer anywhere (/mcp refuses one), and describing it tells a
+			// holder of the string that it still mints access tokens.
 			err = fosite.ErrInactiveToken
+		case inspected != s.introspectionCallerClientID(r):
+			// A token is described only to its own client (BUG-3398). RFC
+			// 7662 §2.2 lets the server answer inactive when the caller may
+			// not know about the token, and that answer is the same as for
+			// an unknown one, so this is not an oracle.
+			err = fosite.ErrInactiveToken
+		default:
+			if c, cerr := s.store.GetOAuthClient(inspected); cerr == nil && c.IsInstallClient() {
+				err = fosite.ErrInactiveToken
+			}
 		}
 	}
 	if err != nil {
