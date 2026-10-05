@@ -204,7 +204,7 @@ func (s *Server) buildProvisionRequest(r *http.Request, workspaceID, ownerID str
 		ManifestSHA256: p.ManifestSHA256, ManifestVersion: m.Version, ManifestJSON: string(manifestJSON),
 		AppTitle: m.Title, ServiceAccess: m.Scopes.Service.Access, DelegatedAccess: m.Scopes.Delegated.Access,
 		RedirectURIs: m.RedirectURIs, SourcePack: m.Origin + "@" + m.Version, DigestsJSON: string(b),
-		Webhook: appWebhookSpec(m),
+		Webhook: appWebhookSpec(m), Actions: appActionSpecs(m),
 	}
 	return req, derive, nil
 }

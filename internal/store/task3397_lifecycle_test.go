@@ -38,6 +38,10 @@ func TestTask3397_UninstallAppTxIsAllOrNothing(t *testing.T) {
 		VALUES (?, ?, 'https://portal.example/h', 's', '[]', ?, ?, ?, 0, ?)`), newID(), f.ws.ID, f.s.dialect.BoolToInt(true), now(), now(), f.installID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := htx.Exec(f.s.q(`INSERT INTO app_item_actions (id, install_id, action_key, label, path, collection_ids, revision, active, created_at, updated_at)
+		VALUES (?, ?, 'open', 'Open', '/t', '[]', 1, ?, ?, ?)`), newID(), f.installID, f.s.dialect.BoolToInt(true), now(), now()); err != nil {
+		t.Fatal(err)
+	}
 	if err := htx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +49,7 @@ func TestTask3397_UninstallAppTxIsAllOrNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	tables := []string{"app_installs", "oauth_clients", "oauth_access_tokens", "app_token_bindings", "oauth_connections",
-		"workspace_members", "member_collection_access", "users", "sessions", "api_tokens", "webhooks"}
+		"workspace_members", "member_collection_access", "users", "sessions", "api_tokens", "webhooks", "app_item_actions"}
 	snapshot := func() map[string]string {
 		out := map[string]string{}
 		for _, tbl := range tables {
@@ -67,7 +71,7 @@ func TestTask3397_UninstallAppTxIsAllOrNothing(t *testing.T) {
 	}
 	before := snapshot()
 	boom := errors.New("injected")
-	for _, at := range []string{"client", "webhook", "membership", "bot", "state"} {
+	for _, at := range []string{"client", "webhook", "actions", "membership", "bot", "state"} {
 		uninstallHookAfterStep = func(step string) error {
 			if step == at {
 				return boom

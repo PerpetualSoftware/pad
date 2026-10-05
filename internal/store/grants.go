@@ -437,8 +437,13 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 // Grants on soft-deleted items or soft-deleted collections are excluded so
 // archived resources don't create phantom guest access.
 func (s *Store) UserHasGrantsInWorkspace(workspaceID, userID string) (bool, error) {
+	return s.UserHasGrantsInWorkspaceQ(s.db, workspaceID, userID)
+}
+
+// UserHasGrantsInWorkspaceQ is UserHasGrantsInWorkspace on q.
+func (s *Store) UserHasGrantsInWorkspaceQ(q Queryer, workspaceID, userID string) (bool, error) {
 	var count int
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT COUNT(*) FROM (
 			SELECT 1 FROM collection_grants cg
 			JOIN collections c ON c.id = cg.collection_id

@@ -177,7 +177,8 @@ var ErrDrainTimeout = errors.New("app deliveries still in flight")
 //
 // The webhook needs nothing here: admission refuses every attempt while the
 // install is not active, and the drain between the phases waited out every
-// attempt admitted before phase 1 (TASK-3408 U10b). TODO(U11): item actions.
+// attempt admitted before phase 1 (TASK-3408 U10b). Item actions need nothing
+// either: mint and redeem refuse an install that is not active (U11).
 func (s *Store) FinishDisable(workspaceID, installID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -286,8 +287,9 @@ var uninstallHookAfterStep func(step string) error
 //     DeleteInstallClientTx);
 //  2. the app webhook is deleted (U10a); no delivery is in flight, because
 //     admission refuses an uninstalling install and the drain ran first
-//     (U10b). Item actions: TODO(U11). App attachments are all bound to
-//     items and stay (the U7 item-scoped ruling);
+//     (U10b). Item actions and their context codes are deleted (U11). App
+//     attachments are all bound to items and stay (the U7 item-scoped
+//     ruling);
 //  3. the bot: its membership (member_collection_access cascades), its
 //     sessions, API tokens and OAuth credentials, and the bot is DISABLED;
 //  4. the install becomes the tombstone, state 'uninstalled'.
@@ -359,6 +361,13 @@ func (s *Store) UninstallAppTx(workspaceID, installID string) error {
 		return fmt.Errorf("uninstall: %w", err)
 	}
 	if err := step("webhook"); err != nil {
+		return err
+	}
+	// Item actions and their unredeemed context codes (U11).
+	if err := s.deleteAppItemActionsTx(tx, installID); err != nil {
+		return fmt.Errorf("uninstall: %w", err)
+	}
+	if err := step("actions"); err != nil {
 		return err
 	}
 

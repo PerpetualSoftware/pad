@@ -139,6 +139,15 @@ func (s *Server) appStore() (*appstore.Store, error) {
 	return s.appstoreState.store, s.appstoreState.err
 }
 
+// appUnscopedRoutes are mounted at the router's root, not under
+// /workspaces/{ws}: the workspace is the token's, injected before the same
+// per-route stack runs. U11's redeem (§6: /context/redeem) is one, so a code
+// sent with any workspace in its path cannot be refused before it is
+// consumed (codex r1 on U11).
+var appUnscopedRoutes = []appRoute{
+	{"POST", "/context/redeem", "appRedeemContext", (*Server).appRedeemContext, "service", "read"},
+}
+
 // registerAppAPIRoutes mounts the app router. The router sets its own
 // Content-Type (jsonContentType matches only /api/v1), and RateLimit runs
 // AFTER the token step, so it keys on the actor rather than the address.
@@ -148,53 +157,58 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 		r.Use(s.requireAppsAvailable)
 		r.Use(s.appTokenAuth)
 		r.Use(s.RateLimit)
+		build := func(rt appRoute) http.Handler {
+			handler := rt.Handler
+			access := rt.Access
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if s.appBeforeHandler != nil {
+					s.appBeforeHandler()
+				}
+				// Writes are NOT re-validated after commit (lead ruling R2,
+				// U6b): a write's authority is decided inside its FencedTx
+				// under the epoch fence, and refusing the response AFTER a
+				// commit would hide a write that happened and invite a
+				// duplicate retry. Re-admission before send is for reads.
+				if access == "write" {
+					// A write registers its re-checks too, so it can re-admit
+					// itself after reading its body and before its write
+					// (appReadmitBeforeWrite, codex U5b-2 r1). It is never
+					// re-validated after commit (R2).
+					handler(s, w, r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{})))
+					return
+				}
+				// A stream row registers its re-checks like any read, but
+				// re-admits itself before its first byte (appStreamGate)
+				// instead of being buffered: a download is too large to
+				// hold, and nothing is sent before the gate passes.
+				if access == "stream" {
+					handler(s, w, r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{})))
+					return
+				}
+				// The handler writes into a buffer; nothing reaches the
+				// app until the grant is re-validated (codex r1 P1).
+				buf := newAppResponseBuffer()
+				r = r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{}))
+				handler(s, buf, r)
+				if s.appAfterHandler != nil {
+					s.appAfterHandler()
+				}
+				if err := s.appRevalidate(r); err != nil {
+					writeAppRevalidateError(w, err)
+					return
+				}
+				buf.flushTo(w)
+			})
+			return s.requireAppAccess(rt.Access, s.requireAppWorkspace(inner))
+		}
 		r.Route("/workspaces/{ws}", func(r chi.Router) {
 			for _, rt := range appRoutes {
-				handler := rt.Handler
-				access := rt.Access
-				inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if s.appBeforeHandler != nil {
-						s.appBeforeHandler()
-					}
-					// Writes are NOT re-validated after commit (lead ruling R2,
-					// U6b): a write's authority is decided inside its FencedTx
-					// under the epoch fence, and refusing the response AFTER a
-					// commit would hide a write that happened and invite a
-					// duplicate retry. Re-admission before send is for reads.
-					if access == "write" {
-						// A write registers its re-checks too, so it can re-admit
-						// itself after reading its body and before its write
-						// (appReadmitBeforeWrite, codex U5b-2 r1). It is never
-						// re-validated after commit (R2).
-						handler(s, w, r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{})))
-						return
-					}
-					// A stream row registers its re-checks like any read, but
-					// re-admits itself before its first byte (appStreamGate)
-					// instead of being buffered: a download is too large to
-					// hold, and nothing is sent before the gate passes.
-					if access == "stream" {
-						handler(s, w, r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{})))
-						return
-					}
-					// The handler writes into a buffer; nothing reaches the
-					// app until the grant is re-validated (codex r1 P1).
-					buf := newAppResponseBuffer()
-					r = r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{}))
-					handler(s, buf, r)
-					if s.appAfterHandler != nil {
-						s.appAfterHandler()
-					}
-					if err := s.appRevalidate(r); err != nil {
-						writeAppRevalidateError(w, err)
-						return
-					}
-					buf.flushTo(w)
-				})
-				h := s.requireAppAccess(rt.Access, s.requireAppWorkspace(inner))
-				r.Method(rt.Method, rt.Template, h)
+				r.Method(rt.Method, rt.Template, build(rt))
 			}
 		})
+		for _, rt := range appUnscopedRoutes {
+			r.Method(rt.Method, rt.Template, s.appTokenWorkspace(build(rt)))
+		}
 	})
 }
 
@@ -385,6 +399,26 @@ func (s *Server) requireAppAccess(need string, next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "insufficient_access", "This app's access is read-only")
 			return
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// appTokenWorkspace sets {ws} to the token's own workspace, for a route
+// mounted outside /workspaces/{ws}, so requireAppWorkspace admits it the
+// same way.
+func (s *Server) appTokenWorkspace(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ac := appContextFrom(r)
+		if ac == nil {
+			writeAppUnauthorized(w)
+			return
+		}
+		rctx := chi.RouteContext(r.Context())
+		if rctx == nil {
+			rctx = chi.NewRouteContext()
+			r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+		}
+		rctx.URLParams.Add("ws", ac.WorkspaceID)
 		next.ServeHTTP(w, r)
 	})
 }

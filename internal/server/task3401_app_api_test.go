@@ -334,6 +334,11 @@ func checkAppDTOKeys(t *testing.T, route string, body any) {
 		}
 	case "appMe":
 		assertKeysWithin(t, route, m, "me", appDTOKeys["me"])
+	case "appRedeemContext":
+		if strings.Join(appKeysOf(m), ",") != "action_key,item" {
+			t.Errorf("%s: top-level keys %v", route, appKeysOf(m))
+		}
+		checkItem(t, route+".item", m["item"].(map[string]any))
 	}
 }
 

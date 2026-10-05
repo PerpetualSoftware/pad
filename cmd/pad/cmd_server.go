@@ -748,6 +748,8 @@ func serveCmd() *cobra.Command {
 			// Hooks for installs provisioned before app webhooks existed
 			// (TASK-3408 U10a), created held until the app's next redeem.
 			srv.EnsureAppWebhooks(cmd.Context())
+			// And their item actions (TASK-3414 U11).
+			srv.EnsureAppItemActions(cmd.Context())
 
 			// Typed decisions (PLAN-3114 / TASK-3117). With no provider
 			// configured the runner is nil: no write enqueues a job and no

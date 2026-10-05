@@ -2108,6 +2108,10 @@ func (s *Server) setupRouter() {
 						r.Delete("/", s.handleDeleteItem)
 						r.Post("/restore", s.handleRestoreItem)
 						r.Post("/move", s.handleMoveItem)
+						// SPEC-6 U11 (TASK-3414): app item actions for the
+						// item pane, and the link-out's context-code mint.
+						r.Get("/app-actions", s.handleListItemAppActions)
+						r.Post("/app-actions/{installID}/{actionKey}", s.handleMintItemAppAction)
 						// Content-free flush-watermark stamp from a caught-up
 						// tab (BUG-3124 unit B). Web-client only; no CLI/MCP.
 						r.Post("/collab-watermark", s.handleStampCollabWatermark)
