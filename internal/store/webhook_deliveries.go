@@ -64,25 +64,38 @@ func (s *Store) RecordDelivery(eventID, webhookID, status, lastError string, att
 		return err
 	}
 	defer tx.Rollback()
+	ts := now()
+	// Insert first: ON CONFLICT waits for a concurrent inserter (a drop) to
+	// commit, so a row that exists afterwards can be locked and read, and an
+	// absent one is simply ours (codex r6 on U10c: FOR UPDATE alone locks
+	// nothing when the row does not exist yet).
+	res, err := tx.Exec(s.q(`INSERT INTO webhook_deliveries (outbox_event_id, webhook_id, status, attempts, last_error, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (outbox_event_id, webhook_id) DO NOTHING`),
+		eventID, webhookID, status, attempts, nullIfEmpty(lastError), ts)
+	if err != nil {
+		return fmt.Errorf("record delivery: insert: %w", err)
+	}
+	if recordDeliveryHook != nil {
+		recordDeliveryHook()
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		return tx.Commit()
+	}
 	q := `SELECT status FROM webhook_deliveries WHERE outbox_event_id = ? AND webhook_id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		q += ` FOR UPDATE`
 	}
 	var prev string
-	err = tx.QueryRow(s.q(q), eventID, webhookID).Scan(&prev)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRow(s.q(q), eventID, webhookID).Scan(&prev); err != nil {
 		return fmt.Errorf("record delivery: read: %w", err)
 	}
 	undrop := prev == DeliveryDropped && status == DeliveryDelivered
 	if DeliveryTerminal(prev) && !undrop {
 		return nil
 	}
-	if _, err := tx.Exec(s.q(`INSERT INTO webhook_deliveries (outbox_event_id, webhook_id, status, attempts, last_error, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (outbox_event_id, webhook_id) DO UPDATE SET
-			status = excluded.status, attempts = webhook_deliveries.attempts + excluded.attempts,
-			last_error = excluded.last_error, updated_at = excluded.updated_at`),
-		eventID, webhookID, status, attempts, nullIfEmpty(lastError), now()); err != nil {
+	if _, err := tx.Exec(s.q(`UPDATE webhook_deliveries SET status = ?, attempts = attempts + ?, last_error = ?, updated_at = ?
+		WHERE outbox_event_id = ? AND webhook_id = ?`),
+		status, attempts, nullIfEmpty(lastError), ts, eventID, webhookID); err != nil {
 		return fmt.Errorf("record delivery: %w", err)
 	}
 	if undrop {
@@ -104,6 +117,10 @@ func (s *Store) OwnerDelivered(eventID, webhookID string) (bool, error) {
 func (s *Store) RecordOwnerDelivered(eventID, webhookID string) error {
 	return s.RecordDelivery(eventID, webhookID, DeliveryDelivered, "", 1)
 }
+
+// recordDeliveryHook runs inside RecordDelivery after its first statement
+// (tests drive a concurrent drop there); nil in production.
+var recordDeliveryHook func()
 
 func nullIfEmpty(v string) any {
 	if v == "" {

@@ -1,7 +1,10 @@
 package store
 
 import (
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -161,5 +164,96 @@ func TestTask3408_DeliveredOverridesADrop(t *testing.T) {
 	}
 	if st != DeliveryDropped {
 		t.Fatalf("a dropped row was overwritten with %s", st)
+	}
+}
+
+// codex r6 on U10c: a drop and a late delivery racing on a row that does
+// not exist yet. Whatever the interleaving, dropped_count equals the number
+// of events whose final row is dropped (Postgres is where this bites; SQLite
+// serializes the writers).
+func TestTask3408_DropAndDeliveryRace(t *testing.T) {
+	f := task3408Fixture(t, "inst-race2")
+	const rounds = 30
+	events := make([]string, 0, rounds)
+	for i := 0; i < rounds; i++ {
+		item, err := f.s.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: fmt.Sprintf("R%d", i), Fields: `{}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var id string
+		if err := f.s.db.QueryRow(f.s.q(`SELECT id FROM event_outbox WHERE subject_id = ? ORDER BY occurred_at DESC LIMIT 1`), item.ID).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, id)
+	}
+	for _, ev := range events {
+		var wg sync.WaitGroup
+		errs := make(chan error, 2)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, err := f.s.DropOwedDelivery(ev, f.hookID, "item.created", f.companion.ID, now(), "old")
+			errs <- err
+		}()
+		go func() {
+			defer wg.Done()
+			errs <- f.s.RecordDelivery(ev, f.hookID, DeliveryDelivered, "", 1)
+		}()
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var dropped, count int
+	if err := f.s.db.QueryRow(f.s.q(`SELECT COUNT(*) FROM webhook_deliveries WHERE webhook_id = ? AND status = 'dropped'`), f.hookID).Scan(&dropped); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.db.QueryRow(f.s.q(`SELECT dropped_count FROM webhooks WHERE id = ?`), f.hookID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != dropped {
+		t.Fatalf("dropped_count %d, but %d rows are dropped", count, dropped)
+	}
+}
+
+// The same race made deterministic: a drop starts while RecordDelivery is
+// between its first statement and its commit. The drop must wait for the
+// delivery and then leave it alone; dropped_count stays 0.
+func TestTask3408_DropDuringDeliveryRecord(t *testing.T) {
+	f := task3408Fixture(t, "inst-race3")
+	item, err := f.s.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: "R", Fields: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT id FROM event_outbox WHERE subject_id = ? ORDER BY occurred_at DESC LIMIT 1`), item.ID).Scan(&ev); err != nil {
+		t.Fatal(err)
+	}
+	dropDone := make(chan error, 1)
+	recordDeliveryHook = func() {
+		go func() {
+			_, err := f.s.DropOwedDelivery(ev, f.hookID, "item.created", f.companion.ID, now(), "old")
+			dropDone <- err
+		}()
+		time.Sleep(300 * time.Millisecond) // the drop runs, or blocks, here
+	}
+	t.Cleanup(func() { recordDeliveryHook = nil })
+	if err := f.s.RecordDelivery(ev, f.hookID, DeliveryDelivered, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	recordDeliveryHook = nil
+	if err := <-dropDone; err != nil {
+		t.Fatal(err)
+	}
+	var st string
+	var count int
+	if err := f.s.db.QueryRow(f.s.q(`SELECT d.status, w.dropped_count FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE d.outbox_event_id = ? AND d.webhook_id = ?`), ev, f.hookID).Scan(&st, &count); err != nil {
+		t.Fatal(err)
+	}
+	if st != DeliveryDelivered || count != 0 {
+		t.Fatalf("final %s, dropped_count %d; want delivered, 0", st, count)
 	}
 }
