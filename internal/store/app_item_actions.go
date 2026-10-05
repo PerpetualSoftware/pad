@@ -421,6 +421,9 @@ func (s *Store) RedeemContextCode(installID string, epoch int64, code string, vi
 	if lockErr != nil {
 		return refuse()
 	}
+	if redeemContextHook != nil {
+		redeemContextHook()
+	}
 	// Bound to THIS install and epoch; the token's epoch is the install's.
 	if codeInstall != installID || c.epoch != codeEpoch || epoch != codeEpoch {
 		return refuse()
@@ -439,6 +442,11 @@ func (s *Store) RedeemContextCode(installID string, epoch int64, code string, vi
 	}
 	return &RedeemedContext{ActionKey: actionKey, Item: c.item}, nil
 }
+
+// redeemContextHook runs inside RedeemContextCode's transaction, with
+// every lock held and the code consumed; tests start a competing mutation
+// there. nil in production.
+var redeemContextHook func()
 
 // burnContextCode marks a code consumed outside a redeem transaction.
 func (s *Store) burnContextCode(hash string) error {
