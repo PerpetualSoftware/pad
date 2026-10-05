@@ -45,7 +45,15 @@
 
 	onMount(load);
 
-	async function activate(a: AppInstallArtifact) {
+	let headingEl: HTMLHeadingElement | undefined = $state();
+
+	/** Focus was on `from` and the update took it away (or it was never moved). */
+	function focusWasLost(from: HTMLElement): boolean {
+		const active = document.activeElement;
+		return active === null || active === document.body || active === from;
+	}
+
+	async function activate(a: AppInstallArtifact, button: HTMLElement) {
 		const asked = authStore.identityEpoch;
 		const ws = wsSlug;
 		activating = a.item_id;
@@ -58,9 +66,14 @@
 			await load();
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			announcement = `${a.title} is now active.`;
-			// Its Activate button is gone: land on the same row's link.
+			// Its Activate button is gone. Move focus only if it was on that
+			// button: to the same row's link, or the panel heading when the
+			// reload failed or no longer lists the item (codex U9b r3).
 			await tick();
-			listEl?.querySelector<HTMLAnchorElement>(`[data-item="${a.item_id}"]`)?.focus();
+			if (focusWasLost(button)) {
+				const link = listEl?.querySelector<HTMLAnchorElement>(`[data-item="${a.item_id}"]`);
+				(link ?? headingEl)?.focus();
+			}
 		} catch (e) {
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			rowError = { id: a.item_id, message: e instanceof Error ? e.message : 'Could not activate it' };
@@ -71,7 +84,7 @@
 </script>
 
 <section class="drafts" aria-label="Playbooks and conventions from this app">
-	<h4>Playbooks and conventions</h4>
+	<h4 tabindex="-1" bind:this={headingEl}>Playbooks and conventions</h4>
 	<p class="hint">They arrive as drafts. Nothing runs until you activate it, and the app cannot activate them itself.</p>
 	<p class="sr-only" role="status">{announcement}</p>
 	{#if loadError}
@@ -90,7 +103,7 @@
 					<Chip size="sm" color={a.status === 'draft' ? 'var(--accent-amber)' : 'var(--accent-green)'}>{a.status ?? 'unknown'}</Chip>
 					<span class="hint">from v{a.version}</span>
 					{#if a.status === 'draft'}
-						<Button size="sm" disabled={activating !== null} onclick={() => activate(a)}>
+						<Button size="sm" disabled={activating !== null} onclick={(e) => activate(a, e.currentTarget)}>
 							{activating === a.item_id ? 'Activating…' : `Activate ${a.title}`}
 						</Button>
 					{/if}

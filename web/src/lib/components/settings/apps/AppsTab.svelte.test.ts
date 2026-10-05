@@ -397,3 +397,41 @@ describe('Settings → Apps: upgrade and drafts (U9b)', () => {
 		expect(screen.queryByRole('alert')).toBeNull();
 	});
 });
+
+describe('Settings → Apps: activation focus edges (U9b codex r3)', () => {
+	const draft = { item_id: 'i1', ref: 'PLAYB-3', slug: 'triage', title: 'Triage', collection_slug: 'playbooks', status: 'draft', version: '1.2.0' };
+
+	async function openWithDraft() {
+		listMock.mockResolvedValue({ available: true, cloud: false, installs: [portal] });
+		getMock.mockResolvedValue({ install_id: 'inst-1', state: 'active', artifacts: [draft] });
+		render(AppsTab, { wsSlug: 'ws-a' });
+		await fireEvent.click(await screen.findByRole('button', { name: /Support Portal/ }));
+		return screen.findByRole('button', { name: 'Activate Triage' });
+	}
+
+	it('a failed reload after activation lands focus on the panel heading', async () => {
+		const btn = await openWithDraft();
+		itemUpdateMock.mockResolvedValue({});
+		getMock.mockRejectedValueOnce(new Error('reload failed'));
+		btn.focus();
+		await fireEvent.click(btn);
+		await waitFor(() =>
+			expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Playbooks and conventions' }))
+		);
+	});
+
+	it('focus the user moved elsewhere during activation is left alone', async () => {
+		const btn = await openWithDraft();
+		let finish: (v: unknown) => void = () => {};
+		itemUpdateMock.mockReturnValue(new Promise((r) => (finish = r)));
+		getMock.mockResolvedValueOnce({ install_id: 'inst-1', state: 'active', artifacts: [{ ...draft, status: 'active' }] });
+		btn.focus();
+		await fireEvent.click(btn);
+		const elsewhere = screen.getByRole('button', { name: /All apps/ });
+		elsewhere.focus();
+		finish({});
+		await waitFor(() => expect(screen.queryByRole('button', { name: 'Activate Triage' })).toBeNull());
+		await new Promise((r) => setTimeout(r, 0));
+		expect(document.activeElement).toBe(elsewhere);
+	});
+});
