@@ -222,8 +222,6 @@ func TestTask3394_BarrierRefusesAnInactiveInstallOrDisabledClient(t *testing.T) 
 	}
 }
 
-// U5a has no delegated grants: an install client's code or PKCE row is
-// refused until TASK-3399.
 // A grant that carries no delegated kind is a service grant, and a service
 // grant has no code flow (TASK-3399 kept this refusal for it).
 func TestTask3394_AServiceGrantTakesNoCodeFlow(t *testing.T) {
