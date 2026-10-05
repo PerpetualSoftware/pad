@@ -928,7 +928,10 @@ else
 		# A bundle stamped with an older commit is correct when web/ did not
 		# change in between (a backend-only commit on top). Warn only when it
 		# did, or when that cannot be established.
-		if ! git -C "$SRC_DIR" diff --quiet "$web_commit" "$EXPECT_COMMIT" -- web/ 2>/dev/null; then
+		# :(top) anchors the pathspec at the repository root: SRC_DIR may
+		# be a subdirectory, where a bare web/ would name <subdir>/web/
+		# and find no change (codex r1 on BUG-3403).
+		if ! git -C "$SRC_DIR" diff --quiet "$web_commit" "$EXPECT_COMMIT" -- ':(top)web/' 2>/dev/null; then
 			warn "the web bundle was built at ${web_commit}, and web/ differs between that commit and ${EXPECT_COMMIT} (or that cannot be checked here): web/build is stale. Rebuild web (vite build) and refresh again."
 		fi
 	fi

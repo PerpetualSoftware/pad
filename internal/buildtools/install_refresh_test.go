@@ -1861,16 +1861,22 @@ func TestInstallRefresh_WebStampCheckUsesTheCallersCheckout(t *testing.T) {
 	gitIn(t, repo, "commit", "-q", "-m", "web two")
 	webChanged := gitIn(t, repo, "rev-parse", "HEAD")
 
+	if err := os.MkdirAll(filepath.Join(repo, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
-		name, expect string
-		wantWarn     bool
+		name, expect, from string
+		wantWarn           bool
 	}{
 		// The bundle is older than the binary, but web/ did not change in
 		// between: correct, and no warning.
-		{"web unchanged since the bundle", backendOnly, false},
+		{"web unchanged since the bundle", backendOnly, repo, false},
 		// web/ changed after the bundle was built: the warning is owed, so
 		// the fix must not have switched the check off.
-		{"web changed since the bundle", webChanged, true},
+		{"web changed since the bundle", webChanged, repo, true},
+		// The same, run from a subdirectory of the checkout: web/ is the
+		// repository's, not <subdir>/web/ (codex r1).
+		{"web changed, run from a subdirectory", webChanged, filepath.Join(repo, "internal"), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, dir := t.TempDir(), t.TempDir()
@@ -1894,7 +1900,7 @@ func TestInstallRefresh_WebStampCheckUsesTheCallersCheckout(t *testing.T) {
 			pre.Dir = serverDir
 			startPreServer(t, pre, "127.0.0.1", port)
 
-			res := runScriptIn(t, e, repo, built, installed, short, stamp)
+			res := runScriptIn(t, e, tc.from, built, installed, short, stamp)
 			if res.err != nil {
 				t.Fatalf("script failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
 			}
