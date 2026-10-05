@@ -133,7 +133,13 @@ func diffUpgrade(old, next *appmanifest.Manifest, oldDigests map[string]storedAr
 		case accessRank(a.to) > accessRank(a.from):
 			detail := fmt.Sprintf("%q to %q", a.from, a.to)
 			if a.key == "delegated" {
-				detail += "; recorded, and granted nothing until delegated access is enabled (TASK-3399)"
+				// What appAdmitDelegated grants: the lesser of what the person
+				// consented to and what the manifest offers now. A consent was
+				// capped at the level offered when it was given, so a widening
+				// leaves every existing sign-in where it is; only a person who
+				// signs in after the approval can consent to the new level
+				// (BUG-3427).
+				detail += fmt.Sprintf("; people already signed in through the app keep the access they consented to, and people who sign in after you approve can consent to up to %q", a.to)
 			}
 			d.add("access", a.key, "widened", upgradeReview, detail)
 		case accessRank(a.to) < accessRank(a.from):

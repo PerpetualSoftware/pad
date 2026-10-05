@@ -24,7 +24,8 @@ import (
 // A request passes, in order:
 //  1. appTokenAuth: an active app ACCESS token (introspectAppToken: audience,
 //     binding, install active, client enabled, epoch current); the install's
-//     own bot as the actor; delegated tokens refused until TASK-3399.
+//     own bot as the actor for a service token, or the person for a
+//     delegated one (appAdmitDelegated, TASK-3399).
 //  2. per route, the access check: a "write" row refuses a read token with
 //     403 before anything is resolved or looked up.
 //  3. per route, requireAppWorkspace: {ws} must be the token's workspace by
@@ -286,9 +287,9 @@ var (
 
 // appAdmitToken is the token half of admission, shared by the door and the
 // re-admission before a response is sent: the token is introspected (active,
-// not expired, audience, binding, install, client, epoch), delegated grants
-// are refused until TASK-3399, the install's service access is read, and the
-// install's own bot must be the subject, live and enabled.
+// not expired, audience, binding, install, client, epoch); a delegated grant
+// goes to appAdmitDelegated; for a service grant the install's service access
+// is read, and the install's own bot must be the subject, live and enabled.
 func (s *Server) appAdmitToken(ctx context.Context, tok string) (*appContext, error) {
 	if tok == "" {
 		return nil, errAppAdmit

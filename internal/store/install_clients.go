@@ -337,9 +337,11 @@ func (s *Store) DeleteInstallClientTx(tx *sql.Tx, installID string) error {
 //   - refuse unless the install is active, the client not disabled, and the
 //     epoch the grant carries (read before its client authenticated) is
 //     still the install's;
-//   - refuse unless the subject is the install's own bot (a service token):
-//     the ONE door through which a bot holds a credential (lead ruling R1).
-//     Delegated grants are refused until TASK-3399;
+//   - for a service grant, refuse unless the subject is the install's own
+//     bot: the ONE door through which a bot holds a credential (lead ruling
+//     R1). For a delegated grant (TASK-3399), refuse unless the consented
+//     access is one the manifest offers now and the subject is a live human
+//     member under the credentials and membership the consent was given in;
 //   - insert the token row and its binding, carrying the epoch read under
 //     the lock. Introspection refuses a binding whose epoch is not current,
 //     so a disable or rotate that bumps the epoch ends this token even when
