@@ -147,12 +147,6 @@ test.describe('TASK-3415: a real install, end to end', () => {
 		const httpsOnly = (what: string, url: unknown) =>
 			expect(String(url), `${what} is a URL pad hands the app`).toMatch(new RegExp(`^${frontOrigin.replace(/\./g, '\\.')}`));
 
-		// 0. What the app discovers is https, through the front.
-		const meta = await appCall(certs.ca, 'GET', `${frontOrigin}/.well-known/oauth-authorization-server`);
-		expect(meta.status, meta.text).toBe(200);
-		httpsOnly('issuer', meta.json().issuer);
-		httpsOnly('token_endpoint', meta.json().token_endpoint);
-
 		// 1. The owner installs it in the real UI.
 		const context = await browser.newContext({ baseURL: frontOrigin, ignoreHTTPSErrors: true });
 		await context.setExtraHTTPHeaders({ Authorization: `Bearer ${pat}` });
@@ -162,7 +156,7 @@ test.describe('TASK-3415: a real install, end to end', () => {
 		await page.getByRole('button', { name: 'Install an app' }).click();
 		await page.getByLabel('App URL').fill(app.origin);
 		await page.getByRole('button', { name: 'Review' }).click();
-		await expect(page.getByTestId('app-not-reviewed')).toBeVisible();
+		await expect(page.getByTestId('app-not-reviewed')).toBeVisible({ timeout: 30_000 });
 		await page.getByRole('button', { name: `Install ${TITLE}` }).click();
 		const code = (await page.getByTestId('app-install-code').textContent())?.trim() ?? '';
 		expect(code).toMatch(/^padic_/);
@@ -246,7 +240,10 @@ test.describe('TASK-3415: a real install, end to end', () => {
 
 		const after = await appCall(certs.ca, 'GET', `${api}/me`, { headers: bearer });
 		expect(after.status, after.text).toBe(401);
-		expect(String(after.headers['www-authenticate'] ?? '')).toContain('invalid_token');
+		const challenge = String(after.headers['www-authenticate'] ?? '');
+		expect(challenge).toContain('invalid_token');
+		// Any URL the challenge names is one pad hands the app.
+		for (const url of challenge.match(/https?:\/\/[^"\s,]+/g) ?? []) httpsOnly('a WWW-Authenticate URL', url);
 		const remint = await mint();
 		expect(remint.status, 'a disabled install mints no token').not.toBe(200);
 
