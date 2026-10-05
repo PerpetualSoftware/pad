@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,8 +32,9 @@ func TestBug3395_BulkCommentWritesLockRootFirst(t *testing.T) {
 
 	// seed: a workspace owned by a, an item, a root comment P and a reply R
 	// by authorID(a). P is then rewritten so its live tuple sits AFTER R's in
-	// the heap: a sequential scan visits R first, the reply-before-parent
-	// order the bug needs from a plan-ordered write.
+	// the heap and dated after R: a sequential scan and an index scan on
+	// (workspace_id, created_at) both visit R first, the reply-before-parent
+	// order the bug needs from a plan-ordered write (codex r1).
 	seed := func(t *testing.T, s *Store, tag string, authorID func(a *models.User) string) world {
 		t.Helper()
 		a := tabsUser(t, s, tag+"a")
@@ -48,7 +50,8 @@ func TestBug3395_BulkCommentWritesLockRootFirst(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.db.Exec(s.q(`UPDATE comments SET body = 'root, rewritten' WHERE id = ?`), p.ID); err != nil {
+		if _, err := s.db.Exec(s.q(`UPDATE comments SET body = 'root, rewritten', created_at = ? WHERE id = ?`),
+			time.Now().UTC().Add(time.Hour).Format(time.RFC3339), p.ID); err != nil {
 			t.Fatal(err)
 		}
 		return world{a: a, ws: ws.ID, item: it.ID, parent: p.ID, reply: r.ID}
@@ -169,4 +172,36 @@ func TestBug3395_BulkCommentWritesLockRootFirst(t *testing.T) {
 			return err
 		})
 	})
+}
+
+// The depth bound fails closed (codex r1 on BUG-3395): a thread that reaches
+// it refuses the lock, rather than collapsing its deeper rows onto one depth
+// and losing the parent-before-child order. Not parallel: it lowers a
+// package var, and parallel tests resume only after sequential ones finish.
+func TestBug3395_DepthBoundFailsClosed(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("Postgres only: SQLite takes no row locks")
+	}
+	a := tabsUser(t, s, "B3395d")
+	ws := tabsWorkspace(t, s, a, "B3395dWS")
+	c := createTestCollection(t, s, ws.ID, "B3395dC")
+	it := createTestItem(t, s, ws.ID, c.ID, "B3395d item", "")
+	p, err := s.CreateComment(ws.ID, it.ID, a.ID, models.CommentCreate{Body: "root", Author: "A", CreatedBy: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateComment(ws.ID, it.ID, a.ID, models.CommentCreate{Body: "reply", Author: "A", CreatedBy: "user", ParentID: p.ID}); err != nil {
+		t.Fatal(err)
+	}
+	prev := maxCommentLockDepth
+	maxCommentLockDepth = 1
+	defer func() { maxCommentLockDepth = prev }()
+	err = s.DeleteAccountAtomic(a.ID)
+	if err == nil || !strings.Contains(err.Error(), "replies deep") {
+		t.Fatalf("a reply at the bound: err = %v, want the depth refusal", err)
+	}
+	if n := task3394Count(t, s, `SELECT COUNT(*) FROM users WHERE id = ?`, a.ID); n != 1 {
+		t.Error("the refused deletion removed the account")
+	}
 }

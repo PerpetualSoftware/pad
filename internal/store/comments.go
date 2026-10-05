@@ -582,6 +582,10 @@ func (s *Store) lockCommentForDeleteTx(tx *sql.Tx, id string) (*commentDeleteRow
 // second-scope chain while wanting one of those reactions would cycle.
 //
 // SQLite needs none of it: every transaction is BEGIN IMMEDIATE.
+// maxCommentLockDepth bounds lockCommentsRootFirstTx's walk up a thread. A
+// var only so a test can lower it.
+var maxCommentLockDepth = 10000
+
 func (s *Store) lockCommentsRootFirstTx(tx *sql.Tx, scopeCol string, scopeVals ...string) error {
 	if s.dialect.Driver() != DriverPostgres || len(scopeVals) == 0 {
 		return nil
@@ -591,14 +595,21 @@ func (s *Store) lockCommentsRootFirstTx(tx *sql.Tx, scopeCol string, scopeVals .
 	for i, v := range scopeVals {
 		ph[i], args[i] = fmt.Sprintf("$%d", i+1), v
 	}
+	// The walk up is bounded so a corrupt parent cycle cannot run forever.
+	// The bound FAILS CLOSED: a row that reaches it has an unknown depth,
+	// and collapsing it onto the bound would break the strict
+	// parent-before-child order (codex r1). The walk is quadratic in chain
+	// length, which a real thread never comes near.
+	args = append(args, maxCommentLockDepth)
+	bound := fmt.Sprintf("$%d", len(args))
 	rows, err := tx.Query(`WITH RECURSIVE up(id, cur, depth) AS (
 			SELECT id, parent_id, 0 FROM comments WHERE `+scopeCol+` IN (`+strings.Join(ph, ", ")+`)
 			UNION ALL
 			SELECT up.id, c.parent_id, up.depth + 1
 			FROM up JOIN comments c ON c.id = up.cur
-			WHERE up.depth < 100000
+			WHERE up.depth < `+bound+`
 		), d AS (SELECT id, MAX(depth) AS depth FROM up GROUP BY id)
-		SELECT c.id FROM comments c JOIN d ON d.id = c.id
+		SELECT c.id, d.depth FROM comments c JOIN d ON d.id = c.id
 		ORDER BY d.depth, c.id
 		FOR UPDATE OF c`, args...)
 	if err != nil {
@@ -607,6 +618,14 @@ func (s *Store) lockCommentsRootFirstTx(tx *sql.Tx, scopeCol string, scopeVals .
 	defer rows.Close()
 	// Every row must be read: the locks are taken as rows are produced.
 	for rows.Next() {
+		var id string
+		var depth int
+		if err := rows.Scan(&id, &depth); err != nil {
+			return fmt.Errorf("lock comments root first: %w", err)
+		}
+		if depth >= maxCommentLockDepth {
+			return fmt.Errorf("lock comments root first: comment %s is %d or more replies deep", id, maxCommentLockDepth)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("lock comments root first: %w", err)

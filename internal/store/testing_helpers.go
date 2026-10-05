@@ -238,3 +238,14 @@ func (s *Store) ResetYjsClassificationForTesting(itemID string) error {
 		s.dialect.BoolToInt(true), itemID)
 	return err
 }
+
+// SetDeadlockInjectorForTesting sets the deadlock injector (see
+// injectedDeadlock) for the lifetime of the returned restore function, so a
+// test outside this package can make a retried transaction fail as a
+// deadlock just before its commit and check that the CALLER's effects after
+// the store call run once (BUG-3395). Production code MUST NOT call this.
+func (s *Store) SetDeadlockInjectorForTesting(fn func(site string, attempt int) bool) (restore func()) {
+	prev := s.deadlockInjector
+	s.deadlockInjector = fn
+	return func() { s.deadlockInjector = prev }
+}

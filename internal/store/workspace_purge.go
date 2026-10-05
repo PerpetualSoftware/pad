@@ -239,6 +239,21 @@ var purgeWorkspaceChildDeletes = []struct{ what, query string }{
 // live workspace's data. If the workspace is missing or live, it returns
 // an error and rolls back without deleting anything.
 func (s *Store) PurgeWorkspaceData(workspaceID string) error {
+	// A deadlock is retried (BUG-3395). The comments are locked root first,
+	// which removes the common cycle with a comment delete, but two remain:
+	// a fenced app request still in flight across the soft delete holds its
+	// install row FOR SHARE before its comment chain, and the workspace
+	// delete below cascades to app_installs; and a thread inserted after the
+	// root-first lock is not in it (READ COMMITTED). Each attempt is ONE
+	// transaction with nothing outside it before the commit: the caller
+	// reclaims blobs before this and publishes after it returns, once.
+	injected := 0
+	return s.retryOnDeadlock("purge_workspace", func() error {
+		return s.purgeWorkspaceDataOnce(workspaceID, &injected)
+	})
+}
+
+func (s *Store) purgeWorkspaceDataOnce(workspaceID string, injected *int) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("purge workspace: begin tx: %w", err)
@@ -297,6 +312,9 @@ func (s *Store) PurgeWorkspaceData(workspaceID string) error {
 		return fmt.Errorf("purge workspace %s: workspace row not deleted (no longer soft-deleted?)", workspaceID)
 	}
 
+	if err := s.injectedDeadlock("purge_workspace", injected); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("purge workspace %s: commit: %w", workspaceID, err)
 	}
