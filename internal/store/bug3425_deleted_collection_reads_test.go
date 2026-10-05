@@ -106,6 +106,13 @@ func TestListItemsSearch_ExcludesSoftDeletedCollections(t *testing.T) {
 	if !hasItem(after, w.live.ID) {
 		t.Errorf("search lost the live item")
 	}
+	optOut, err := w.s.ListItems(w.ws.ID, models.ItemListParams{Search: "Zephyr", IncludeDeletedCollections: true})
+	if err != nil {
+		t.Fatalf("ListItems search opt-out: %v", err)
+	}
+	if !hasItem(optOut, w.doomed.ID) {
+		t.Errorf("search ignores IncludeDeletedCollections")
+	}
 }
 
 func TestListWorkspaceGraphLinks_ExcludesEdgesTouchingSoftDeletedCollections(t *testing.T) {
@@ -200,5 +207,52 @@ func TestTitleRenameCascade_StillRewritesSoftDeletedCollectionSources(t *testing
 	}
 	if !strings.Contains(got.Content, "[[Zephyr renamed row]]") {
 		t.Errorf("cascade no longer rewrites a soft-deleted collection's source: %q", got.Content)
+	}
+}
+
+// Codex r1: the role lanes list their items through ListItems, so the role
+// COUNTS must leave out a soft-deleted collection's items too, or a lane
+// reports more items than it shows.
+func TestRoleCounts_ExcludeSoftDeletedCollections(t *testing.T) {
+	t.Parallel()
+	w := newBug3425World(t)
+	role, err := w.s.CreateAgentRole(w.ws.ID, models.AgentRoleCreate{Name: "Implementer"})
+	if err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	for _, it := range []*models.Item{w.live, w.doomed} {
+		if _, err := w.s.UpdateItem(it.ID, models.ItemUpdate{AgentRoleID: &role.ID}); err != nil {
+			t.Fatalf("assign role to %s: %v", it.Title, err)
+		}
+	}
+	counts := func() (listed, breakdown int) {
+		t.Helper()
+		roles, err := w.s.ListAgentRoles(w.ws.ID)
+		if err != nil {
+			t.Fatalf("ListAgentRoles: %v", err)
+		}
+		for _, r := range roles {
+			if r.ID == role.ID {
+				listed = r.ItemCount
+			}
+		}
+		rb, err := w.s.GetRoleBreakdown(w.ws.ID)
+		if err != nil {
+			t.Fatalf("GetRoleBreakdown: %v", err)
+		}
+		for _, b := range rb {
+			if b.RoleID != nil && *b.RoleID == role.ID {
+				breakdown = b.ItemCount
+			}
+		}
+		return
+	}
+
+	if l, b := counts(); l != 2 || b != 2 {
+		t.Fatalf("control: want 2 and 2 before the delete, got ListAgentRoles=%d GetRoleBreakdown=%d", l, b)
+	}
+	w.deleteDoomed(t)
+	if l, b := counts(); l != 1 || b != 1 {
+		t.Errorf("after the delete: want 1 and 1 (the live item only), got ListAgentRoles=%d GetRoleBreakdown=%d", l, b)
 	}
 }
