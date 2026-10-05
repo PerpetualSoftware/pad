@@ -66,3 +66,26 @@ func TestComputeAccessEpoch(t *testing.T) {
 		}
 	})
 }
+
+// TestEffectiveAccessEpoch pins the two rules effectiveAccessEpoch adds over
+// computeAccessEpoch (BUG-3347): with item grants the collection half is the
+// full-access set, and a nil full-access set is still a FILTERED caller, never
+// the unrestricted sentinel.
+func TestEffectiveAccessEpoch(t *testing.T) {
+	nav := []string{"c-kept", "c-deleted"}
+	full := []string{"c-kept"}
+	grants := []string{"i-1"}
+
+	if got, want := effectiveAccessEpoch(nav, full, grants), computeAccessEpoch(full, grants); got != want {
+		t.Errorf("with item grants the epoch must hash the full-access set: got %q, want %q", got, want)
+	}
+	if got, want := effectiveAccessEpoch(nav, full, nil), computeAccessEpoch(nav, nil); got != want {
+		t.Errorf("without item grants the epoch must hash the nav set: got %q, want %q", got, want)
+	}
+	if got := effectiveAccessEpoch(nav, nil, grants); got == accessEpochUnrestricted {
+		t.Errorf("a caller with item grants and no full-access collections read as unrestricted")
+	}
+	if got, want := effectiveAccessEpoch(nil, nil, nil), accessEpochUnrestricted; got != want {
+		t.Errorf("unrestricted caller: got %q, want %q", got, want)
+	}
+}
