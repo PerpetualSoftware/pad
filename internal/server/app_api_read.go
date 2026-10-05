@@ -465,6 +465,29 @@ func (s *Server) appListComments(w http.ResponseWriter, r *http.Request) {
 	writeAppJSON(w, http.StatusOK, map[string]any{"comments": out})
 }
 
+// AppInstallMe is the unscoped GET /api/app/v1/me (BUG-3416): the token's
+// binding. UserID and DisplayName are the actor: the install's bot for a
+// service token, the person for a delegated one.
+type AppInstallMe struct {
+	InstallID     string `json:"install_id"`
+	WorkspaceID   string `json:"workspace_id"`
+	WorkspaceSlug string `json:"workspace_slug"`
+	AuthKind      string `json:"auth_kind"`
+	Access        string `json:"access"`
+	UserID        string `json:"user_id"`
+	DisplayName   string `json:"display_name"`
+	IsApp         bool   `json:"is_app"`
+}
+
+func (s *Server) appInstallMe(w http.ResponseWriter, r *http.Request) {
+	ac := appContextFrom(r)
+	writeAppJSON(w, http.StatusOK, AppInstallMe{
+		InstallID: ac.InstallID, WorkspaceID: ac.WorkspaceID, WorkspaceSlug: ac.WorkspaceSlug,
+		AuthKind: ac.AuthKind, Access: ac.Access,
+		UserID: ac.Actor.ID, DisplayName: ac.Actor.Name, IsApp: ac.Actor.IsApp(),
+	})
+}
+
 func (s *Server) appMe(w http.ResponseWriter, r *http.Request) {
 	ac := appContextFrom(r)
 	writeAppJSON(w, http.StatusOK, AppMe{UserID: ac.Actor.ID, DisplayName: ac.Actor.Name, Role: workspaceRole(r), IsApp: ac.Actor.IsApp()})

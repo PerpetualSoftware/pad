@@ -146,6 +146,12 @@ func (s *Server) appStore() (*appstore.Store, error) {
 // consumed (codex r1 on U11).
 var appUnscopedRoutes = []appRoute{
 	{"POST", "/context/redeem", "appRedeemContext", (*Server).appRedeemContext, "service", "read"},
+	// The token's own binding (BUG-3416): where an app learns its install
+	// and its workspace, the {ws} of every scoped route. A delegated token
+	// never sees the install-code redeem, so this is its only way in. It
+	// reads the binding the token step already resolved and nothing else,
+	// after the same workspace, access and re-admission stack as any read.
+	{"GET", "/me", "appInstallMe", (*Server).appInstallMe, "either", "read"},
 }
 
 // registerAppAPIRoutes mounts the app router. The router sets its own

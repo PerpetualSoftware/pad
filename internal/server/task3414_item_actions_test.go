@@ -413,10 +413,17 @@ func TestTask3414_NonMemberAdminCannotLaunch(t *testing.T) {
 }
 
 // The unscoped route census: redeem's answer is {action_key, item} with the
-// app item DTO's keys, and it is the one root-mounted route.
+// app item DTO's keys. The root-mounted routes are exactly the context
+// redeem and BUG-3416's GET /me, both reads.
 func TestTask3414_RedeemRouteCensus(t *testing.T) {
-	if len(appUnscopedRoutes) != 1 || appUnscopedRoutes[0].Name != "appRedeemContext" {
+	want := map[string]string{"POST /context/redeem": "appRedeemContext", "GET /me": "appInstallMe"}
+	if len(appUnscopedRoutes) != len(want) {
 		t.Fatalf("unscoped routes: %+v", appUnscopedRoutes)
+	}
+	for _, rt := range appUnscopedRoutes {
+		if want[rt.Method+" "+rt.Template] != rt.Name || rt.Access != "read" {
+			t.Fatalf("unscoped route %+v is not in the census", rt)
+		}
 	}
 	f := u11Fixture(t)
 	_, _, code, body := f.mint(t, f.item.ID, f.in.id, "open")

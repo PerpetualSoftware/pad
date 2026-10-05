@@ -140,8 +140,12 @@ func TestAppDelivery_HeldUntilRedeemThenDelivered(t *testing.T) {
 	if f, _ := body["fields"].(map[string]any); f["status"] != "open" {
 		t.Fatalf("fields %v", body["fields"])
 	}
+	// The install's workspace, the {ws} of the app API (BUG-3416).
+	if body["workspace_id"] != e.wsID {
+		t.Errorf("app body workspace_id = %v, want the install's workspace %s", body["workspace_id"], e.wsID)
+	}
 	// Nothing of the stored snapshot beyond the table's keys.
-	for _, k := range []string{"workspace_id", "slug", "app_projection", "data", "ref"} {
+	for _, k := range []string{"slug", "app_projection", "data", "ref"} {
 		if _, ok := body[k]; ok {
 			t.Errorf("app body carries %q: %s", k, h.Body)
 		}

@@ -461,6 +461,10 @@ type RedeemedInstall struct {
 	InstallID    string
 	ClientID     string
 	ClientSecret string
+	// WorkspaceID is the install's workspace, the {ws} of every app API
+	// route, and WorkspaceSlug its slug, for display (BUG-3416).
+	WorkspaceID   string
+	WorkspaceSlug string
 	// WebhookSecret is the hook's new signing secret; "" when the install
 	// has no hook. Redeem is the only door that hands it out, and handing
 	// it out is what releases the hook's HOLD (U10a).
@@ -496,9 +500,38 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	if s.dialect.Driver() == DriverPostgres {
 		forUpdate = ` FOR UPDATE`
 	}
-	var state string
-	if err := tx.QueryRow(s.q(`SELECT state FROM app_installs WHERE id = ?`+forUpdate), installID).Scan(&state); err != nil || state != "active" {
+	var state, workspaceID string
+	switch err := tx.QueryRow(s.q(`SELECT state, workspace_id FROM app_installs WHERE id = ?`+forUpdate), installID).Scan(&state, &workspaceID); {
+	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrInstallCodeInvalid
+	case err != nil:
+		// A database failure is not a bad code: it surfaces as a 500, and
+		// the app may retry (BUG-3416).
+		return nil, fmt.Errorf("redeem install code: read install: %w", err)
+	case state != "active":
+		return nil, ErrInstallCodeInvalid
+	}
+	// The workspace is resolved, live, inside the transaction and before
+	// the code is consumed (BUG-3416): a code issued before a soft delete is
+	// refused rather than spent, and the slug the answer carries is never a
+	// separate read that can fail after the commit.
+	//
+	// The read takes NO lock, deliberately (lead ruling on BUG-3416, codex
+	// r2-r4). A soft delete that commits between this read and the redeem's
+	// commit lets the code be spent for a workspace that is gone. That is
+	// harmless: every app door refuses a deleted workspace (the app API
+	// answers its workspace 404, webhook admission refuses a dead workspace),
+	// and a restore leaves the install exactly as if it had been redeemed
+	// before the delete. Locking the workspace row to close that window
+	// added a lock edge that cycled with account deletion, the purge cascade,
+	// and teardown with account claim, three times over: a new lock to close
+	// a harmless race is a cost, not a fix. Redeem's lock set is the install
+	// row and the code row, as before.
+	var workspaceSlug string
+	if err := tx.QueryRow(s.q(`SELECT slug FROM workspaces WHERE id = ? AND deleted_at IS NULL`), workspaceID).Scan(&workspaceSlug); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrInstallCodeInvalid
+	} else if err != nil {
+		return nil, fmt.Errorf("redeem install code: read workspace: %w", err)
 	}
 	var expires string
 	var consumed sql.NullString
@@ -526,7 +559,7 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &RedeemedInstall{InstallID: installID, ClientID: clientID, ClientSecret: secret, WebhookSecret: whSecret}, nil
+	return &RedeemedInstall{InstallID: installID, ClientID: clientID, ClientSecret: secret, WorkspaceID: workspaceID, WorkspaceSlug: workspaceSlug, WebhookSecret: whSecret}, nil
 }
 
 // InstallForLiveCode reads, unlocked, which install a code names, for the

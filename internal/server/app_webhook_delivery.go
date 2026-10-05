@@ -123,7 +123,7 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 	if len(live) == 0 {
 		return false, nil
 	}
-	body, collectionID, err := store.BuildAppEventDTO(unit.eventType, unit.eventID, unit.occurredAt, unit.payload)
+	body, collectionID, err := store.BuildAppEventDTO(unit.eventType, unit.eventID, unit.occurredAt, unit.workspaceID, unit.payload)
 	if errors.Is(err, store.ErrNoAppProjection) {
 		// Skipped and counted, never filled in from live state (§5), and
 		// recorded so a retry for another endpoint does not count it again.
