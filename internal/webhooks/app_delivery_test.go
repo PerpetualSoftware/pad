@@ -101,7 +101,7 @@ func TestAppDelivery_SignedAndAdmittedPerAttempt(t *testing.T) {
 	d, waits := newAppTestDispatcher()
 	adm := &fakeAdmitter{}
 	p := &fakePoster{statuses: []int{503, 502, 204}}
-	if got := d.DeliverAppEvent(adm, p, appDV); got != AppDelivered {
+	if got, _ := d.DeliverAppEvent(adm, p, appDV); got != AppDelivered {
 		t.Fatalf("result %s, want delivered", got)
 	}
 	if len(adm.admitted) != 3 || len(adm.ended) != 3 {
@@ -150,7 +150,7 @@ func TestAppDelivery_Outcomes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, _ := newAppTestDispatcher()
-			if got := d.DeliverAppEvent(tc.adm, tc.poster, appDV); got != tc.want {
+			if got, _ := d.DeliverAppEvent(tc.adm, tc.poster, appDV); got != tc.want {
 				t.Fatalf("result %s, want %s", got, tc.want)
 			}
 			if len(tc.poster.calls) != tc.attempts {
@@ -169,7 +169,7 @@ func TestAppDelivery_DisableBetweenAttemptsStopsTheRetry(t *testing.T) {
 	adm := &fakeAdmitter{}
 	adm.onAdmit = func(n int) { adm.refuse = n >= 1 }
 	p := &fakePoster{statuses: []int{503}}
-	if got := d.DeliverAppEvent(adm, p, appDV); got != AppRefused {
+	if got, _ := d.DeliverAppEvent(adm, p, appDV); got != AppRefused {
 		t.Fatalf("result %s, want refused", got)
 	}
 	if len(p.calls) != 1 {
@@ -189,7 +189,7 @@ func TestBackoff_StopEndsTheWait(t *testing.T) {
 	d.wait = timerWait
 	d.retryBackoff = time.Hour
 	start := time.Now()
-	if got := d.DeliverAppEvent(adm, p, appDV); got != AppTransient {
+	if got, _ := d.DeliverAppEvent(adm, p, appDV); got != AppTransient {
 		t.Fatalf("result %s, want transient (still owed)", got)
 	}
 	if len(p.calls) > 1 || time.Since(start) > 5*time.Second {
@@ -255,7 +255,7 @@ func TestAppDelivery_DeadlineStartsBeforeAdmission(t *testing.T) {
 	d, _ := newAppTestDispatcher()
 	adm := &fakeAdmitter{onAdmit: func(int) { time.Sleep(300 * time.Millisecond) }}
 	p := &fakePoster{}
-	if got := d.DeliverAppEvent(adm, p, appDV); got != AppDelivered {
+	if got, _ := d.DeliverAppEvent(adm, p, appDV); got != AppDelivered {
 		t.Fatalf("result %s", got)
 	}
 	if len(p.deadlines) != 1 || p.deadlines[0] > deliveryTimeout-250*time.Millisecond {
@@ -271,7 +271,7 @@ func TestAppDelivery_StoppedDispatcherSendsNothing(t *testing.T) {
 	d.SetContext(ctx)
 	adm := &fakeAdmitter{}
 	p := &fakePoster{}
-	if got := d.DeliverAppEvent(adm, p, appDV); got != AppTransient {
+	if got, _ := d.DeliverAppEvent(adm, p, appDV); got != AppTransient {
 		t.Fatalf("result %s, want transient (still owed)", got)
 	}
 	if len(adm.admitted) != 0 || len(p.calls) != 0 {

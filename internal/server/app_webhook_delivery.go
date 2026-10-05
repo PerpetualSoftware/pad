@@ -94,7 +94,7 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 			if store.DeliveryTerminal(st) {
 				continue
 			}
-			if err := s.store.RecordDelivery(unit.eventID, h.WebhookID, store.DeliverySkipped, "bulk operation", false); err != nil {
+			if err := s.store.RecordDelivery(unit.eventID, h.WebhookID, store.DeliverySkipped, "bulk operation", 0); err != nil {
 				return false, err
 			}
 			s.countAppDelivery("skipped_bulk")
@@ -128,7 +128,7 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 		// Skipped and counted, never filled in from live state (§5), and
 		// recorded so a retry for another endpoint does not count it again.
 		for _, t := range live {
-			if err := s.store.RecordDelivery(unit.eventID, t.WebhookID, store.DeliverySkipped, "no app projection", false); err != nil {
+			if err := s.store.RecordDelivery(unit.eventID, t.WebhookID, store.DeliverySkipped, "no app projection", 0); err != nil {
 				return false, err
 			}
 			s.countAppDelivery("skipped_no_projection")
@@ -153,6 +153,20 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 			continue
 		}
 		if expired {
+			// Only a delivery the app was OWED is dropped and counted: one
+			// admission would refuse (before deliver_from, not visible, the
+			// install not active) is recorded refused (codex r2 on U10c).
+			reason, err := s.store.AppDeliveryRefusal(t.WebhookID, unit.eventType, collectionID, unit.occurredAt)
+			if err != nil {
+				return false, err
+			}
+			if reason != "" {
+				if err := s.store.RecordDelivery(unit.eventID, t.WebhookID, store.DeliveryRefused, reason, 0); err != nil {
+					return false, err
+				}
+				s.countAppDelivery("refused")
+				continue
+			}
 			dropped, err := s.store.DropDelivery(unit.eventID, t.WebhookID, "undelivered after "+appWebhookDropAfter.String())
 			if err != nil {
 				return false, err
@@ -163,14 +177,14 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 			continue
 		}
 		installID := t.InstallID
-		res := s.webhooks.DeliverAppEvent(adm, poster, webhooks.AppDelivery{
+		res, sent := s.webhooks.DeliverAppEvent(adm, poster, webhooks.AppDelivery{
 			WebhookID: t.WebhookID, Event: unit.eventType, CollectionID: collectionID, OccurredAt: unit.occurredAt, Body: body,
 			// The cap is per ATTEMPT: a retry spends a token too.
 			RateGate: func() bool { return s.appRate.allow(installID) },
 		})
 		s.countAppDelivery(res.String())
-		status, attempted := appDeliveryStatus(res)
-		if err := s.store.RecordDelivery(unit.eventID, t.WebhookID, status, "", attempted); err != nil {
+		status := appDeliveryStatus(res)
+		if err := s.store.RecordDelivery(unit.eventID, t.WebhookID, status, "", sent); err != nil {
 			return false, err
 		}
 		if !store.DeliveryTerminal(status) {
@@ -196,24 +210,23 @@ func appDeliveryExpired(occurredAt string, now time.Time) bool {
 	return now.Sub(t) > appWebhookDropAfter
 }
 
-// appDeliveryStatus maps an attempt's result to its recorded status, and
-// whether it counts as an attempt (a refusal or a deferral sent nothing).
-func appDeliveryStatus(r webhooks.AppResult) (string, bool) {
+// appDeliveryStatus maps an attempt's result to its recorded status.
+func appDeliveryStatus(r webhooks.AppResult) string {
 	switch r {
 	case webhooks.AppDelivered:
-		return store.DeliveryDelivered, true
+		return store.DeliveryDelivered
 	case webhooks.AppPermanent:
-		return store.DeliveryPermanent, true
+		return store.DeliveryPermanent
 	case webhooks.AppRefused:
-		return store.DeliveryRefused, false
+		return store.DeliveryRefused
 	case webhooks.AppDeferred:
-		return store.DeliveryDeferred, false
+		return store.DeliveryDeferred
 	case webhooks.AppRateLimited:
-		// Deferred, not dropped and not charged as an attempt: the event
-		// stays owed and a later pass tries again.
-		return store.DeliveryRateLimited, false
+		// Deferred, not dropped: the event stays owed and a later pass
+		// tries again.
+		return store.DeliveryRateLimited
 	default:
-		return store.DeliveryTransient, true
+		return store.DeliveryTransient
 	}
 }
 

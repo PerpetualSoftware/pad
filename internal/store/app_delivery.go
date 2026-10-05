@@ -137,13 +137,9 @@ func (e *AppDeliveryRefusedError) Error() string { return "app delivery refused:
 func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, deliveryID string) (*AppDeliveryAdmission, error) {
 	// The hook's install never changes (app_install_id is written once), so
 	// it is read before the lock to know which install row to take.
-	var installID sql.NullString
-	err := s.db.QueryRow(s.q(`SELECT app_install_id FROM webhooks WHERE id = ?`), webhookID).Scan(&installID)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && !installID.Valid) {
-		return nil, &AppDeliveryRefusedError{Reason: "hook_gone"}
-	}
+	installID, err := s.appHookInstall(webhookID)
 	if err != nil {
-		return nil, fmt.Errorf("admit app delivery: %w", err)
+		return nil, err
 	}
 
 	tx, err := s.db.Begin()
@@ -152,12 +148,74 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, del
 	}
 	defer tx.Rollback()
 
-	q := `SELECT state, workspace_id FROM app_installs WHERE id = ?`
+	hook, err := s.appDeliveryChecksQ(tx, installID, webhookID, event, collectionID, occurredAt, true)
+	if err != nil {
+		return nil, err
+	}
+
+	insert := `INSERT INTO app_delivery_inflight (delivery_id, install_id, expires_at)
+		VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+12 seconds'))`
 	if s.dialect.Driver() == DriverPostgres {
-		q += ` FOR SHARE`
+		insert = `INSERT INTO app_delivery_inflight (delivery_id, install_id, expires_at)
+			VALUES (?, ?, now() + interval '12 seconds')`
+	}
+	if _, err := tx.Exec(s.q(insert), deliveryID, installID); err != nil {
+		return nil, fmt.Errorf("admit app delivery: in-flight row: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("admit app delivery: commit: %w", err)
+	}
+	plain, err := s.decrypt(hook.secret)
+	if err != nil {
+		// Admitted but unsendable: release the row now rather than make the
+		// drain wait for it.
+		_ = s.EndAppDelivery(deliveryID)
+		return nil, fmt.Errorf("admit app delivery: decrypt secret: %w", err)
+	}
+	return &AppDeliveryAdmission{URL: hook.url, Secret: plain, InstallID: installID}, nil
+}
+
+// AppDeliveryRefusal runs admission's checks as a plain read, without the
+// lock or an in-flight record, and returns the refusal admission would give
+// ("" when it would admit). For decisions about an event that is NOT about
+// to be sent, the 24 h drop above all: a delivery admission would refuse was
+// never owed, so it is refused, not dropped and counted (codex r2 on U10c).
+func (s *Store) AppDeliveryRefusal(webhookID, event, collectionID, occurredAt string) (string, error) {
+	installID, err := s.appHookInstall(webhookID)
+	if err == nil {
+		_, err = s.appDeliveryChecksQ(s.db, installID, webhookID, event, collectionID, occurredAt, false)
+	}
+	var refused *AppDeliveryRefusedError
+	if errors.As(err, &refused) {
+		return refused.Reason, nil
+	}
+	return "", err
+}
+
+func (s *Store) appHookInstall(webhookID string) (string, error) {
+	var installID sql.NullString
+	err := s.db.QueryRow(s.q(`SELECT app_install_id FROM webhooks WHERE id = ?`), webhookID).Scan(&installID)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !installID.Valid) {
+		return "", &AppDeliveryRefusedError{Reason: "hook_gone"}
+	}
+	if err != nil {
+		return "", fmt.Errorf("admit app delivery: %w", err)
+	}
+	return installID.String, nil
+}
+
+type appHookRow struct{ url, secret string }
+
+// appDeliveryChecksQ is admission's decision, on q. lock takes the install
+// row FOR SHARE first (Postgres; admission runs it in a transaction); the
+// read-only pre-check passes false. One function so the two cannot drift.
+func (s *Store) appDeliveryChecksQ(q Queryer, installID, webhookID, event, collectionID, occurredAt string, lock bool) (*appHookRow, error) {
+	iq := `SELECT state, workspace_id FROM app_installs WHERE id = ?`
+	if lock && s.dialect.Driver() == DriverPostgres {
+		iq += ` FOR SHARE`
 	}
 	var state, workspaceID string
-	err = tx.QueryRow(s.q(q), installID.String).Scan(&state, &workspaceID)
+	err := q.QueryRow(s.q(iq), installID).Scan(&state, &workspaceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &AppDeliveryRefusedError{Reason: "install_gone"}
 	}
@@ -172,7 +230,7 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, del
 	// WorkspaceLive check, BUG-3340). A plain read: deletion that races this
 	// serializes as "delivered, then deleted", the BUG-3340 residual.
 	var live int
-	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM workspaces WHERE id = ? AND deleted_at IS NULL`), workspaceID).Scan(&live); err != nil {
+	if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM workspaces WHERE id = ? AND deleted_at IS NULL`), workspaceID).Scan(&live); err != nil {
 		return nil, fmt.Errorf("admit app delivery: workspace: %w", err)
 	}
 	if live == 0 {
@@ -182,10 +240,11 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, del
 	// Under the install lock: an upgrade (which changes the URL and the
 	// subscriptions) and uninstall (which deletes the hook) both hold this
 	// row FOR UPDATE, so what is read here is what the owner last consented.
-	var url, secret, events string
+	var row appHookRow
+	var events string
 	var delivered, deliverFrom sql.NullString
-	err = tx.QueryRow(s.q(`SELECT url, secret, events, secret_delivered_at, deliver_from FROM webhooks WHERE id = ?`), webhookID).
-		Scan(&url, &secret, &events, &delivered, &deliverFrom)
+	err = q.QueryRow(s.q(`SELECT url, secret, events, secret_delivered_at, deliver_from FROM webhooks WHERE id = ?`), webhookID).
+		Scan(&row.url, &row.secret, &events, &delivered, &deliverFrom)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &AppDeliveryRefusedError{Reason: "hook_gone"}
 	}
@@ -204,34 +263,14 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, del
 	// The ceiling: the event's collection must still be this install's
 	// companion. A released or deleted companion is no longer the app's.
 	var n int
-	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM collections WHERE id = ? AND via_app = ? AND deleted_at IS NULL`),
-		collectionID, installID.String).Scan(&n); err != nil {
+	if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM collections WHERE id = ? AND via_app = ? AND deleted_at IS NULL`),
+		collectionID, installID).Scan(&n); err != nil {
 		return nil, fmt.Errorf("admit app delivery: ceiling: %w", err)
 	}
 	if n == 0 {
 		return nil, &AppDeliveryRefusedError{Reason: "not_visible"}
 	}
-
-	insert := `INSERT INTO app_delivery_inflight (delivery_id, install_id, expires_at)
-		VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+12 seconds'))`
-	if s.dialect.Driver() == DriverPostgres {
-		insert = `INSERT INTO app_delivery_inflight (delivery_id, install_id, expires_at)
-			VALUES (?, ?, now() + interval '12 seconds')`
-	}
-	if _, err := tx.Exec(s.q(insert), deliveryID, installID.String); err != nil {
-		return nil, fmt.Errorf("admit app delivery: in-flight row: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("admit app delivery: commit: %w", err)
-	}
-	plain, err := s.decrypt(secret)
-	if err != nil {
-		// Admitted but unsendable: release the row now rather than make the
-		// drain wait for it.
-		_ = s.EndAppDelivery(deliveryID)
-		return nil, fmt.Errorf("admit app delivery: decrypt secret: %w", err)
-	}
-	return &AppDeliveryAdmission{URL: url, Secret: plain, InstallID: installID.String}, nil
+	return &row, nil
 }
 
 // EndAppDelivery removes an attempt's in-flight row. Safe to repeat.

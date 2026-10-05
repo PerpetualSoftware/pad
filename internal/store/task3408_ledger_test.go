@@ -32,13 +32,13 @@ func TestTask3408_DeliveryLedger(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryRateLimited, "cap", false))
-	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryTransient, "503", true))
+	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryRateLimited, "cap", 0))
+	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryTransient, "503", 1))
 	if st, n := row(); st != DeliveryTransient || n != 1 {
 		t.Fatalf("pending row: %s/%d, want transient/1 (a deferral is not an attempt)", st, n)
 	}
-	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryDelivered, "", true))
-	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryTransient, "late", true))
+	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryDelivered, "", 1))
+	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryTransient, "late", 1))
 	if st, n := row(); st != DeliveryDelivered || n != 2 {
 		t.Fatalf("after a late write: %s/%d, want delivered/2 (terminal stands)", st, n)
 	}
@@ -55,7 +55,7 @@ func TestTask3408_DeliveryLedger(t *testing.T) {
 	if _, err := f.s.db.Exec(f.s.q(`DELETE FROM webhook_deliveries WHERE outbox_event_id = ?`), eventID); err != nil {
 		t.Fatal(err)
 	}
-	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryTransient, "503", true))
+	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryTransient, "503", 1))
 	for i := 0; i < 2; i++ {
 		if _, err := f.s.DropDelivery(eventID, f.hookID, "old"); err != nil {
 			t.Fatal(err)

@@ -51,14 +51,11 @@ func (s *Store) DeliveryStatus(eventID, webhookID string) (string, error) {
 	return st, nil
 }
 
-// RecordDelivery stores status for (eventID, webhookID). attempted counts an
-// attempt (a rate-limited deferral is not one). A terminal row is never
-// overwritten: the first terminal decision stands.
-func (s *Store) RecordDelivery(eventID, webhookID, status, lastError string, attempted bool) error {
-	inc := 0
-	if attempted {
-		inc = 1
-	}
+// RecordDelivery stores status for (eventID, webhookID), adding attempts
+// requests actually sent (a refusal or a rate-limited deferral sends none).
+// A terminal row is never overwritten: the first terminal decision stands.
+func (s *Store) RecordDelivery(eventID, webhookID, status, lastError string, attempts int) error {
+	inc := attempts
 	ts := now()
 	_, err := s.db.Exec(s.q(`INSERT INTO webhook_deliveries (outbox_event_id, webhook_id, status, attempts, last_error, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
@@ -108,7 +105,7 @@ func (s *Store) OwnerDelivered(eventID, webhookID string) (bool, error) {
 // RecordOwnerDelivered records that an owner hook received eventID. Only
 // success is recorded for owner hooks (see the file comment).
 func (s *Store) RecordOwnerDelivered(eventID, webhookID string) error {
-	return s.RecordDelivery(eventID, webhookID, DeliveryDelivered, "", true)
+	return s.RecordDelivery(eventID, webhookID, DeliveryDelivered, "", 1)
 }
 
 func nullIfEmpty(v string) any {

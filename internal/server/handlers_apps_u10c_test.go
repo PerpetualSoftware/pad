@@ -138,7 +138,12 @@ func TestAppDelivery_DroppedAfter24Hours(t *testing.T) {
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.item(t, e.companion.ID, "Old")
-	if _, err := e.srv.store.DB().Exec(`UPDATE event_outbox SET occurred_at = '2000-01-01T00:00:00Z' WHERE dispatched_at IS NULL`); err != nil {
+	db := e.srv.store.DB()
+	// Owed (the hook was deliverable then), and older than 24 h.
+	if _, err := db.Exec(`UPDATE webhooks SET deliver_from = '1999-01-01T00:00:00Z' WHERE app_install_id = ?`, e.installID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE event_outbox SET occurred_at = '2000-01-01T00:00:00Z' WHERE dispatched_at IS NULL`); err != nil {
 		t.Fatal(err)
 	}
 	e.tick(t)
@@ -285,5 +290,67 @@ func TestAppDelivery_BulkSkipCountedOnce(t *testing.T) {
 	}
 	if n := got.GetCounter().GetValue(); n != 1 {
 		t.Fatalf("skipped_bulk = %v across an owner retry, want 1", n)
+	}
+}
+
+// codex r2 on U10c: an old event the app was never owed (before its
+// deliver_from) is refused, not dropped and counted.
+func TestAppDelivery_NotOwedIsNotDropped(t *testing.T) {
+	e := newDeliveryEnv(t)
+	e.redeemNow(t)
+	e.item(t, e.companion.ID, "Before the hook")
+	if _, err := e.srv.store.DB().Exec(`UPDATE event_outbox SET occurred_at = '2000-01-01T00:00:00Z' WHERE dispatched_at IS NULL`); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t)
+	if got := e.getInstall(t); got.Webhook.UndeliveredDropped != 0 {
+		t.Fatalf("undelivered_dropped %d for an event the app was never owed", got.Webhook.UndeliveredDropped)
+	}
+	if n := e.pendingOutbox(t); n != 0 {
+		t.Fatalf("%d events owed", n)
+	}
+}
+
+// codex r2 on U10c: an attempt admission refuses spends no rate budget.
+func TestAppDelivery_RefusalsSpendNoBudget(t *testing.T) {
+	e := newDeliveryEnv(t)
+	var down atomic.Int32
+	down.Store(http.StatusServiceUnavailable)
+	ownerSink(t, e, &down)
+	e.item(t, e.companion.ID, "While held") // pending: the owner is down
+	e.tick(t)
+	time.Sleep(1100 * time.Millisecond)
+	e.redeemNow(t)
+	e.setAppRate(t, 0, 1) // one token
+	e.item(t, e.companion.ID, "After redeem")
+	e.tick(t)
+	if got := e.hooksAt("/hooks"); len(got) != 1 {
+		t.Fatalf("%d deliveries: the refused old event spent the only token", len(got))
+	}
+}
+
+// codex r2 on U10c: the ledger counts requests actually sent.
+func TestAppDelivery_LedgerCountsRequests(t *testing.T) {
+	e := newDeliveryEnv(t)
+	e.redeemNow(t)
+	e.status["/hooks"] = http.StatusServiceUnavailable
+	e.item(t, e.companion.ID, "Three tries")
+	e.tick(t)
+	attempts := func() (string, int) {
+		var st string
+		var n int
+		if err := e.srv.store.DB().QueryRow(`SELECT d.status, d.attempts FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE w.app_install_id = ?`, e.installID).Scan(&st, &n); err != nil {
+			t.Fatal(err)
+		}
+		return st, n
+	}
+	if st, n := attempts(); st != "transient" || n != 3 {
+		t.Fatalf("ledger %s/%d after three 503s, want transient/3", st, n)
+	}
+	// One more request, then the cap.
+	e.setAppRate(t, 0, 1)
+	e.tick(t)
+	if st, n := attempts(); st != "rate_limited" || n != 4 {
+		t.Fatalf("ledger %s/%d, want rate_limited/4 (the request sent before the cap counts)", st, n)
 	}
 }
