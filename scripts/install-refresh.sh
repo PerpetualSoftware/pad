@@ -32,6 +32,13 @@ set -uo pipefail
 BUILT="${1:?built binary path required}"
 INSTALLED="${2:?install path required}"
 EXPECT_COMMIT="${3:-}"
+# SRC_DIR is the checkout this invocation runs from (`make install` runs in
+# the repo), captured before anything changes directory. Every git question
+# the script asks is about THIS checkout's objects, and is asked here: the
+# restart below enters the running server's own cwd, which can be any
+# directory at all (a pad auto-started from another project), and git
+# asked from there cannot resolve these commits (BUG-3403).
+SRC_DIR="$(pwd -P)"
 # PORT and HOST are resolved AFTER the argv capture, from the same
 # precedence the server itself uses: flag, then environment, then default.
 # See the resolution block below the capture.
@@ -150,7 +157,8 @@ commit_matches() {
 	[ "$expect" = "$found" ] && return 0
 
 	# Resolve both to FULL object ids and compare those. This is the exact
-	# answer and it is available because `make install` runs in the repo.
+	# answer and it is available because `make install` runs in the repo,
+	# whose path is SRC_DIR wherever the script has moved since (BUG-3403).
 	#
 	# Codex round 5 (P1) on the previous prefix comparison: `a3a1d586`
 	# accepted `a3a1d58` even when those are DIFFERENT commits that happen
@@ -160,8 +168,8 @@ commit_matches() {
 	# check exists for. Prefix matching cannot tell the two apart; full ids
 	# can.
 	local a b
-	a="$(git rev-parse --verify --quiet "${expect}^{commit}" 2>/dev/null || true)"
-	b="$(git rev-parse --verify --quiet "${found}^{commit}" 2>/dev/null || true)"
+	a="$(git -C "$SRC_DIR" rev-parse --verify --quiet "${expect}^{commit}" 2>/dev/null || true)"
+	b="$(git -C "$SRC_DIR" rev-parse --verify --quiet "${found}^{commit}" 2>/dev/null || true)"
 	if [ -n "$a" ] && [ -n "$b" ]; then
 		[ "$a" = "$b" ]
 		return
@@ -920,7 +928,7 @@ else
 		# A bundle stamped with an older commit is correct when web/ did not
 		# change in between (a backend-only commit on top). Warn only when it
 		# did, or when that cannot be established.
-		if ! git diff --quiet "$web_commit" "$EXPECT_COMMIT" -- web/ 2>/dev/null; then
+		if ! git -C "$SRC_DIR" diff --quiet "$web_commit" "$EXPECT_COMMIT" -- web/ 2>/dev/null; then
 			warn "the web bundle was built at ${web_commit}, and web/ differs between that commit and ${EXPECT_COMMIT} (or that cannot be checked here): web/build is stale. Rebuild web (vite build) and refresh again."
 		fi
 	fi
