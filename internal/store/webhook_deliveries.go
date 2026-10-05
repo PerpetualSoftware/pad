@@ -115,6 +115,14 @@ func (s *Store) OwnerDeliveryStatus(eventID, webhookID string) (string, error) {
 	return s.DeliveryStatus(eventID, webhookID)
 }
 
+// RecordOwnerDropped records that an owner hook stopped being owed eventID
+// (it was deactivated while the event was still pending for it) and counts
+// the drop on the hook (TASK-3409). A terminal row is left as it is.
+func (s *Store) RecordOwnerDropped(eventID, webhookID string) error {
+	_, err := s.recordDropDecision(eventID, webhookID, "dropped")
+	return err
+}
+
 // RecordOwnerOutcome records an owner hook's outcome for eventID: delivered
 // and permanent are terminal, transient stays owed (TASK-3409). The first
 // terminal decision stands, as for app hooks (RecordDelivery).

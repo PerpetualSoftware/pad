@@ -86,3 +86,41 @@ func TestTask3409_ASingleOwnerEndpointBehavesAsBefore(t *testing.T) {
 		t.Errorf("%d hits; the 429 was not retried", hits.Load())
 	}
 }
+
+// codex r1: an owner endpoint deactivated while an event is still owed to it
+// (automatically after consecutive failures, or by its owner) is no longer
+// owed it. The event is acked, and the endpoint's drop is recorded and
+// counted rather than silent.
+func TestTask3409_AnEndpointDeactivatedWhileOwedIsCountedAsDropped(t *testing.T) {
+	e := newDeliveryEnv(t)
+	var down atomic.Int32
+	down.Store(http.StatusServiceUnavailable)
+	ownerSink(t, e, &down)
+	e.item(t, e.companion.ID, "Owed then deactivated")
+	e.tick(t)
+	if e.pendingOutbox(t) == 0 {
+		t.Fatal("precondition: the transient endpoint keeps the event owed")
+	}
+	if _, err := e.srv.store.DB().Exec(`UPDATE webhooks SET active = ? WHERE app_install_id IS NULL`, false); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t)
+	if n := e.pendingOutbox(t); n != 0 {
+		t.Fatalf("%d events owed after their only endpoint was deactivated", n)
+	}
+	var status string
+	var dropped int
+	if err := e.srv.store.DB().QueryRow(`SELECT w.dropped_count FROM webhooks w WHERE w.app_install_id IS NULL`).Scan(&dropped); err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 1 {
+		t.Errorf("dropped_count = %d, want 1", dropped)
+	}
+	// The acked event's rows stay until retention prunes it.
+	if err := e.srv.store.DB().QueryRow(`SELECT d.status FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE w.app_install_id IS NULL`).Scan(&status); err != nil {
+		t.Fatalf("the owner endpoint's row: %v", err)
+	}
+	if status != "dropped" {
+		t.Errorf("row status = %s, want dropped", status)
+	}
+}

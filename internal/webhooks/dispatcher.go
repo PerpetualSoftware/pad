@@ -89,6 +89,9 @@ type WebhookStore interface {
 type OwnerDeliveryLedger interface {
 	OwnerDeliveryStatus(eventID, webhookID string) (string, error)
 	RecordOwnerOutcome(eventID, webhookID, status, lastError string, attempts int) error
+	// RecordOwnerDropped marks the event dropped for an endpoint that stopped
+	// being owed it (deactivated) and counts the drop on the hook.
+	RecordOwnerDropped(eventID, webhookID string) error
 }
 
 // Owner delivery statuses, as the ledger stores them (the store's
@@ -432,15 +435,31 @@ func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
 		return out, fmt.Errorf("marshal webhook payload: %w", err)
 	}
 
+	ledger, _ := d.store.(OwnerDeliveryLedger)
 	for _, hook := range hooks {
 		if !hook.Active {
+			// A deactivated endpoint (by its owner, or automatically after
+			// consecutive failures) is no longer owed the event. If an
+			// earlier pass left it owed, that is a drop: recorded and
+			// counted, so the loss is visible rather than silent (TASK-3409,
+			// codex r1). Nothing is recorded for a hook that never had a row.
+			if ledger != nil && dv.EventID != "" && matchesEvent(hook.Events, dv.Event) {
+				st, err := ledger.OwnerDeliveryStatus(dv.EventID, hook.ID)
+				if err != nil {
+					return out, fmt.Errorf("owner delivery ledger: %w", err)
+				}
+				if st != "" && !ownerStatusTerminal(st) {
+					if err := ledger.RecordOwnerDropped(dv.EventID, hook.ID); err != nil {
+						return out, fmt.Errorf("owner delivery ledger: %w", err)
+					}
+				}
+			}
 			continue
 		}
 		if !matchesEvent(hook.Events, dv.Event) {
 			continue
 		}
 		out.Matched++
-		ledger, _ := d.store.(OwnerDeliveryLedger)
 		if ledger != nil && dv.EventID != "" {
 			st, err := ledger.OwnerDeliveryStatus(dv.EventID, hook.ID)
 			if err != nil {
