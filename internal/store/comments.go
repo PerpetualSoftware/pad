@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
@@ -548,6 +549,88 @@ func (s *Store) lockCommentForDeleteTx(tx *sql.Tx, id string) (*commentDeleteRow
 		row = r
 	}
 	return row, nil
+}
+
+// lockCommentsRootFirstTx locks, on Postgres, every comment whose scopeCol
+// is one of scopeVals, in ONE (thread depth, id) order, before a multi-row
+// write over them (BUG-3395). scopeCol is a column name from this package,
+// never input.
+//
+// A single-statement UPDATE or DELETE over many comments locks them in
+// whatever order its plan visits them, which can take a reply before its
+// parent. A comment delete (DeleteComment and FencedTx.DeleteComment, both
+// through lockCommentForDeleteTx, BUG-3252) locks its ancestor chain ROOT
+// FIRST: exactly one row per depth, depth increasing. Against that, a reply
+// taken first deadlocked (40P01): the delete held the parent and wanted the
+// reply, the bulk write held the reply and wanted the parent.
+//
+// Locking in (depth, id) order removes the cycle. A delete only ever waits for
+// a row DEEPER than everything it holds; a holder of this order only ever
+// waits for a row no shallower than everything it holds. For a cycle, the
+// bulk writer would have to hold a row deeper than one it waits for, which
+// this order never does. Two bulk writers share the order, so they cannot
+// cycle with each other either. Postgres takes FOR UPDATE row locks in the
+// order rows leave the sort, since LockRows sits above it.
+//
+// A caller takes this before anything else it locks that a comment delete
+// also locks after the chain (comment_reactions, by the reactions delete or
+// its cascade), so those come after every comment in both. That is why it
+// takes a SET: a caller writing several scopes in turn (account deletion
+// erases each purged bot, then the person) must lock all their comments in
+// one pass first. Locking per scope would take the second scope's comments
+// while holding the first scope's reactions, and a delete holding a
+// second-scope chain while wanting one of those reactions would cycle.
+//
+// SQLite needs none of it: every transaction is BEGIN IMMEDIATE.
+// maxCommentLockDepth bounds lockCommentsRootFirstTx's walk up a thread. A
+// var only so a test can lower it.
+var maxCommentLockDepth = 10000
+
+func (s *Store) lockCommentsRootFirstTx(tx *sql.Tx, scopeCol string, scopeVals ...string) error {
+	if s.dialect.Driver() != DriverPostgres || len(scopeVals) == 0 {
+		return nil
+	}
+	ph := make([]string, len(scopeVals))
+	args := make([]any, len(scopeVals))
+	for i, v := range scopeVals {
+		ph[i], args[i] = fmt.Sprintf("$%d", i+1), v
+	}
+	// The walk up is bounded so a corrupt parent cycle cannot run forever.
+	// The bound FAILS CLOSED: a row that reaches it has an unknown depth,
+	// and collapsing it onto the bound would break the strict
+	// parent-before-child order (codex r1). The walk is quadratic in chain
+	// length, which a real thread never comes near.
+	args = append(args, maxCommentLockDepth)
+	bound := fmt.Sprintf("$%d", len(args))
+	rows, err := tx.Query(`WITH RECURSIVE up(id, cur, depth) AS (
+			SELECT id, parent_id, 0 FROM comments WHERE `+scopeCol+` IN (`+strings.Join(ph, ", ")+`)
+			UNION ALL
+			SELECT up.id, c.parent_id, up.depth + 1
+			FROM up JOIN comments c ON c.id = up.cur
+			WHERE up.depth < `+bound+`
+		), d AS (SELECT id, MAX(depth) AS depth FROM up GROUP BY id)
+		SELECT c.id, d.depth FROM comments c JOIN d ON d.id = c.id
+		ORDER BY d.depth, c.id
+		FOR UPDATE OF c`, args...)
+	if err != nil {
+		return fmt.Errorf("lock comments root first: %w", err)
+	}
+	defer rows.Close()
+	// Every row must be read: the locks are taken as rows are produced.
+	for rows.Next() {
+		var id string
+		var depth int
+		if err := rows.Scan(&id, &depth); err != nil {
+			return fmt.Errorf("lock comments root first: %w", err)
+		}
+		if depth >= maxCommentLockDepth {
+			return fmt.Errorf("lock comments root first: comment %s is %d or more replies deep", id, maxCommentLockDepth)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("lock comments root first: %w", err)
+	}
+	return nil
 }
 
 // lockCommentRowTx reads one comment row, FOR UPDATE on Postgres. It returns

@@ -1168,8 +1168,25 @@ func (s *Store) DeleteAccountAtomicReport(userID string) ([]string, error) {
 }
 
 func (s *Store) deleteAccountAtomic(userID string, issuedGrantWorkspaces *[]string) error {
+	injected := 0
 	for attempt := 1; ; attempt++ {
-		err := s.deleteAccountAtomicOnce(userID, issuedGrantWorkspaces)
+		// A deadlock is retried too (BUG-3395). The comments are locked root
+		// first, which removes the common cycle with a comment delete, but
+		// two remain that no row order here can fix:
+		//   - a fenced app comment delete holds its install row FOR SHARE
+		//     before its comment chain, and the bot's DELETE FROM users
+		//     sets app_installs.bot_user_id NULL, which needs that row.
+		//     Locking installs first would invert uninstall's order
+		//     (membership, users, install);
+		//   - a thread inserted after the root-first lock is not in it
+		//     (READ COMMITTED), so the detach can still take its reply
+		//     before its root.
+		// Each attempt is ONE transaction with nothing outside it before
+		// the commit; the handler's kicks, invalidations, audit event and
+		// publishes run after this returns, once.
+		err := s.retryOnDeadlock("delete_account", func() error {
+			return s.deleteAccountAtomicOnce(userID, issuedGrantWorkspaces, &injected)
+		})
 		constraint, late := lateUserReference(err)
 		if !late {
 			return err
@@ -1243,7 +1260,7 @@ func lateUserReference(err error) (string, bool) {
 // deletion holds the account lock (TASK-3351 lock-order test).
 var deleteAccountAfterUserLockHook func()
 
-func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]string) error {
+func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]string, injected *int) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("delete account: begin tx: %w", err)
@@ -1371,7 +1388,20 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	// Deleting a bot locks its users row; nothing a person does locks one
 	// (a bot holds no session), and account deletions do not overlap (the
 	// advisory lock above), so this adds no lock-order hazard.
-	if err := s.purgeAppPrincipalsOfOwnedWorkspacesTx(tx, userID); err != nil {
+	bots, err := s.appPrincipalsOfOwnedWorkspacesTx(tx, userID)
+	if err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+	// Every comment the erases below detach (the bots' and the person's) is
+	// locked root first, in ONE pass, before any of them writes (BUG-3395).
+	// A comment delete locks its chain root first (BUG-3252); a reply locked
+	// before its parent, or one erase's comments locked while holding an
+	// earlier erase's reactions, deadlocks with it. See
+	// lockCommentsRootFirstTx.
+	if err := s.lockCommentsRootFirstTx(tx, "user_id", append(bots, userID)...); err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+	if err := s.purgeAppPrincipalsTx(tx, bots); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
 
@@ -1379,6 +1409,9 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 		return err
 	}
 
+	if err := s.injectedDeadlock("delete_account", injected); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("delete account: commit: %w", err)
 	}
@@ -1413,6 +1446,10 @@ func (s *Store) eraseUserTx(tx *sql.Tx, userID string) error {
 		{"detach item versions", "UPDATE item_versions SET user_id = NULL WHERE user_id = ?"},
 		{"detach share-link views", "UPDATE share_link_views SET viewer_user_id = NULL WHERE viewer_user_id = ?"},
 	}
+	// The caller has locked this user's comments root first (BUG-3395,
+	// lockCommentsRootFirstTx): "detach comments" below would otherwise lock
+	// them in plan order and deadlock with a comment delete's root-first
+	// chain lock (BUG-3252).
 	for _, stmt := range deidentify {
 		if err := exec(stmt.what, stmt.query); err != nil {
 			return err
