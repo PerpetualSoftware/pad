@@ -2,6 +2,7 @@
 	import type { Comment, Item, Reaction } from '$lib/types';
 	import { relativeTime, renderMarkdown } from '$lib/utils/markdown';
 	import { IMPORTED_TITLE } from '$lib/utils/imported';
+	import { viaAppTitle } from '$lib/utils/viaApp';
 	import type { AttachmentResolver } from '$lib/markdown/attachments';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 	import ReactionPicker from './ReactionPicker.svelte';
@@ -211,6 +212,9 @@
 		{#if comment.author}
 			<span class="author-name">{comment.author}</span>
 		{/if}
+		{#if comment.via_app_name}
+			<span class="via-app-marker" title={viaAppTitle(comment.via_app_name)}>via <bdi>{comment.via_app_name}</bdi></span>
+		{/if}
 		{#if comment.imported}
 			<span class="imported-marker" title={IMPORTED_TITLE}>· imported</span>
 		{/if}
@@ -331,6 +335,9 @@
 						>
 						{#if reply.author}
 							<span class="author-name">{reply.author}</span>
+						{/if}
+						{#if reply.via_app_name}
+							<span class="via-app-marker" title={viaAppTitle(reply.via_app_name)}>via <bdi>{reply.via_app_name}</bdi></span>
 						{/if}
 						{#if reply.imported}
 							<span class="imported-marker" title={IMPORTED_TITLE}>· imported</span>
@@ -560,7 +567,8 @@
 	}
 
 	.edited-marker,
-	.imported-marker {
+	.imported-marker,
+	.via-app-marker {
 		font-size: 0.7em;
 		color: var(--text-muted);
 		font-style: italic;

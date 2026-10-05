@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { viaAppTitle } from '$lib/utils/viaApp';
 	import { safeString, safeText } from '$lib/fields/fieldShape';
 	import { page, navigating } from '$app/state';
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
@@ -6196,6 +6197,11 @@
 		<!-- Meta info -->
 		<div class="meta-info">
 			<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
+			{#if item.via_app_name}
+				<!-- SPEC-6 U9c: the app the item was created through; a quiet
+				     secondary label, never a second author. -->
+				<span class="meta-via-app" title={viaAppTitle(item.via_app_name)}>via <bdi>{item.via_app_name}</bdi></span>
+			{/if}
 			<span class="meta-sep">·</span>
 			<span title={new Date(item.updated_at).toLocaleString()}>Updated {relativeTime(item.updated_at)}</span>
 			<span class="save-status" class:saving={saveStatus === 'saving'} class:saved={saveStatus === 'saved'} class:visible={saveStatus !== 'idle'}>
@@ -8165,6 +8171,9 @@
 		color: var(--text-muted);
 		margin-bottom: var(--space-2);
 		flex-wrap: wrap;
+	}
+	.meta-via-app {
+		color: var(--text-muted);
 	}
 	.meta-sep { color: var(--text-muted); }
 	.save-status {
