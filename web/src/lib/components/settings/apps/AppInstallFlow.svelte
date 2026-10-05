@@ -5,6 +5,7 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import AppInstallCodePanel from './AppInstallCodePanel.svelte';
+	import AppArtifactReview from './AppArtifactReview.svelte';
 	import type { AppInstallCode, AppInstallPreview } from '$lib/types';
 
 	/**
@@ -194,37 +195,7 @@
 			<h4>Playbooks and conventions it adds ({preview.artifacts.length})</h4>
 			<p class="hint">Each lands as a draft. Nothing runs until you activate it.</p>
 			{#each preview.artifacts as a (a.key)}
-				<article class="artifact" data-testid="app-artifact">
-					<div class="artifact-head">
-						<strong>{a.normalized.title}</strong>
-						<span class="hint">{a.kind} &rarr; /{a.destination_collection}</span>
-					</div>
-					{#if a.changes.length > 0}
-						<ul class="changes" aria-label="Changes Pad makes to {a.normalized.title}">
-							{#each a.changes as ch (ch)}
-								<li>{ch}</li>
-							{/each}
-						</ul>
-					{:else}
-						<p class="hint">Stored exactly as published.</p>
-					{/if}
-					<details>
-						<summary>Compare what was fetched with what will be stored</summary>
-						<div class="compare">
-							<div>
-								<h5>Fetched</h5>
-								<pre>{a.raw}</pre>
-							</div>
-							<div>
-								<h5>Stored</h5>
-								<pre>{a.normalized.content}</pre>
-								{#if Object.keys(a.normalized.fields).length > 0}
-									<pre class="fields">{JSON.stringify(a.normalized.fields, null, 2)}</pre>
-								{/if}
-							</div>
-						</div>
-					</details>
-				</article>
+				<AppArtifactReview artifact={a} />
 			{/each}
 
 			<p class="hint">This review expires at {new Date(preview.expires_at).toLocaleTimeString()}.</p>
@@ -317,48 +288,6 @@
 		font-family: var(--font-mono, monospace);
 		font-size: 0.9em;
 		overflow-wrap: anywhere;
-	}
-	.artifact {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-3);
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-	.artifact-head {
-		display: flex;
-		gap: var(--space-2);
-		align-items: baseline;
-		flex-wrap: wrap;
-	}
-	.changes li {
-		color: var(--accent-orange);
-	}
-	.compare {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-		gap: var(--space-3);
-		margin-top: var(--space-2);
-	}
-	h5 {
-		margin: 0 0 var(--space-1);
-		font-size: 0.8em;
-		color: var(--text-secondary);
-	}
-	pre {
-		margin: 0;
-		max-height: 20rem;
-		overflow: auto;
-		padding: var(--space-2);
-		background: var(--bg-tertiary);
-		border-radius: var(--radius);
-		font-size: 0.8em;
-		white-space: pre-wrap;
-		overflow-wrap: anywhere;
-	}
-	.fields {
-		margin-top: var(--space-2);
 	}
 	.error {
 		margin: 0;

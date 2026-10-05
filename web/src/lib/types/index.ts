@@ -2650,8 +2650,30 @@ export interface AppPreviewArtifact {
 	changes: string[];
 }
 
+/** One line of an upgrade's diff (U8b2). class "auto" applies without review. */
 export interface AppUpgradeDiffEntry {
-	[key: string]: unknown;
+	kind: 'app' | 'access' | 'url' | 'event' | 'item_action' | 'collection' | 'field' | 'artifact' | 'config' | string;
+	key: string;
+	change: 'added' | 'removed' | 'changed' | 'widened' | 'narrowed' | 'released' | string;
+	class: 'auto' | 'review' | string;
+	detail?: string;
+}
+
+/** An item an install's pack provisioned (U9b): drafts until the owner activates them. */
+export interface AppInstallArtifact {
+	item_id: string;
+	ref?: string;
+	slug: string;
+	title: string;
+	collection_slug: string;
+	status?: string;
+	version: string;
+}
+
+export interface AppUpgradeConfirmResult {
+	install_id: string;
+	version: string;
+	items: { key: string; ref: string; status?: string }[];
 }
 
 /** What the owner reviews before installing (U8a). */
@@ -2709,6 +2731,8 @@ export interface AppInstallStateResult {
 	expires_at?: string;
 	notice?: string;
 	webhook?: AppWebhookStatus;
+	/** GET only: the items its pack provisioned. */
+	artifacts?: AppInstallArtifact[];
 }
 
 // ─── Helper functions ────────────────────────────────────────────────────────
