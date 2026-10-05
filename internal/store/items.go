@@ -4662,11 +4662,11 @@ func (s *Store) childrenDoneFiltersForParent(parentItemID string) []collectionDo
 // breakdowns) that need to evaluate "is done?" for every item regardless
 // of which collection it belongs to.
 //
-// Includes soft-deleted collections: callers (e.g. GetRoleBreakdown)
-// count items in the workspace without filtering by collection
-// deleted_at, so excluding soft-deleted collections here would leave
-// their items without a matching per-collection clause and cause them
-// to always register as non-terminal.
+// Includes soft-deleted collections, so that a caller counting items
+// without a collection deleted_at filter still finds a per-collection
+// clause for every item (an item with none would always register as
+// non-terminal). GetRoleBreakdown now excludes those items itself
+// (BUG-3425); keeping them here is harmless for it.
 func (s *Store) doneFiltersForWorkspace(workspaceID string) []collectionDoneFilter {
 	rows, err := s.db.Query(
 		s.q(`SELECT id, schema, settings FROM collections WHERE workspace_id = ?`),
