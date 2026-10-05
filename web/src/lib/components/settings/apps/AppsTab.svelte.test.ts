@@ -253,7 +253,12 @@ it('an install_state refusal closes the card and focuses the install heading', a
 	render(AppsTab, { wsSlug: 'ws-a' });
 	await fireEvent.click(await screen.findByRole('button', { name: /Support Portal/ }));
 	await fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
-	await fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+	// A real click focuses the button; fireEvent.click does not, and focus
+	// would otherwise still sit on the heading from mount.
+	const confirmBtn = screen.getByRole('button', { name: 'Disable' });
+	confirmBtn.focus();
+	expect(document.activeElement).toBe(confirmBtn);
+	await fireEvent.click(confirmBtn);
 	expect((await screen.findByRole('alert')).textContent).toMatch(/changed state/);
 	await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Support Portal' })));
 	expect(screen.queryByRole('group', { name: 'Disable this app' })).toBeNull();
