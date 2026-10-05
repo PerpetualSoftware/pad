@@ -14,8 +14,8 @@ func TestBug3398_IntrospectionIsOwnClientAccessTokensOnly(t *testing.T) {
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
-	clientA := registerTestClient(t, srv, "https://a.test/cb")
-	clientB := registerTestClient(t, srv, "https://b.test/cb")
+	clientA := registerTestClient(t, srv, "https://app.test/cb")
+	clientB := registerTestClient(t, srv, "https://app.test/cb")
 
 	a1 := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientA, "verifier-b3398-a1-quick-brown-fox-1234567890")
 	a2 := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientA, "verifier-b3398-a2-quick-brown-fox-1234567890")
