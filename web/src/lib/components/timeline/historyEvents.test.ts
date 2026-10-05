@@ -71,7 +71,9 @@ describe('groupHistory', () => {
 		expect(rows).toHaveLength(1);
 		const ev = rows[0] as HistoryEvent;
 		expect(ev.id).toBe('n1');
-		expect(ev.who).toEqual({ kind: 'agent', agent: 'claude-code', user: 'Dave', source: 'cli' });
+		// viaApp '' is the version's "known: no app" (SPEC-6 U9c); the
+		// activity cannot say, so the merge keeps the version's answer.
+		expect(ev.who).toEqual({ kind: 'agent', agent: 'claude-code', user: 'Dave', source: 'cli', viaApp: '' });
 		expect(ev.changes).toEqual([{ field: 'status', from: 'open', to: 'done' }]);
 		expect(ev.versions.map((v) => v.id)).toEqual(['v1']);
 		expect(ev.notes.map((n) => n.id)).toEqual(['n1']);
