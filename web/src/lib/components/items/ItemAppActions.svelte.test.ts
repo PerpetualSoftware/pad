@@ -8,7 +8,13 @@ import type { ItemAppAction } from '$lib/types';
 
 const listMock = vi.fn<(ws: string, slug: string) => Promise<ItemAppAction[]>>();
 const mintMock = vi.fn<(ws: string, slug: string, install: string, key: string) => Promise<{ url: string }>>();
-const auth = { identityEpoch: 1 };
+const auth = {
+	identityEpoch: 1,
+	identityFence() {
+		const at = auth.identityEpoch;
+		return () => auth.identityEpoch === at;
+	}
+};
 
 vi.mock('$lib/api/client', () => ({
 	api: {

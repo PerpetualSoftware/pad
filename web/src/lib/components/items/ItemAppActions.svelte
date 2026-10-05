@@ -28,15 +28,15 @@
 	});
 
 	onMount(async () => {
-		const asked = authStore.identityEpoch;
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const list = await api.items.appActions(wsSlug, itemSlug);
-			if (authStore.identityEpoch !== asked) return;
+			if (!isSameIdentity()) return;
 			actions = Array.isArray(list) ? list : [];
 		} catch {
 			// No actions to offer is the quiet answer: an item with none, an
-			// older server, apps off. The item pane is not about this button.
-			actions = [];
+			// older server, apps off. `actions` stays the empty list it started
+			// as; nothing is written.
 		}
 	});
 
@@ -53,7 +53,7 @@
 	}
 
 	async function open(a: ItemAppAction) {
-		const asked = authStore.identityEpoch;
+		const isSameIdentity = authStore.identityFence();
 		error = '';
 		// Open the tab NOW, inside the click: a window opened after an await
 		// is a popup the browser blocks. Cut its opener before anything loads,
@@ -66,7 +66,7 @@
 		opening = keyOf(a);
 		try {
 			const { url } = await api.items.mintAppAction(wsSlug, itemSlug, a.install_id, a.action_key);
-			if (authStore.identityEpoch !== asked || destroyed) {
+			if (!isSameIdentity() || destroyed) {
 				tab?.close();
 				return;
 			}
@@ -86,9 +86,9 @@
 			// Every refusal is the same 404 by design (U11): say only that it
 			// did not open.
 			tab?.close();
-			if (authStore.identityEpoch === asked && !destroyed) error = `Couldn't open ${a.app_title}.`;
+			if (isSameIdentity() && !destroyed) error = `Couldn't open ${a.app_title}.`;
 		} finally {
-			if (authStore.identityEpoch === asked) opening = null;
+			opening = null;
 		}
 	}
 </script>

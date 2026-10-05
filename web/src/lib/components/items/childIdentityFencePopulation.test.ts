@@ -176,6 +176,9 @@ const POPULATION: string[] = [
 	'lib/components/items/ItemPicker.svelte',
 	'lib/components/items/ItemAttachmentStrip.svelte',
 	'lib/components/items/DecisionChips.svelte',
+	// SPEC-6 U9d (TASK-3413): installed apps' item actions; its list load and
+	// its mint each fence with authStore.identityFence() after the await.
+	'lib/components/items/ItemAppActions.svelte',
 	'lib/components/attachments/AttachmentSurfaceHost.svelte',
 	'lib/components/common/QuickActionsMenu.svelte',
 	'lib/components/common/Menu.svelte',
@@ -247,6 +250,8 @@ const KNOWN_OUTSIDE_FENCE: Record<string, string> = {
 	'lib/components/items/ItemAttachmentStrip.svelte::<nested in $effect>::stopLoadingMarker': 'release: timer clear',
 	'lib/components/items/ItemAttachmentStrip.svelte::performDelete::unmarkDeleting': 'release: ref-counted in-flight marker',
 	'lib/components/fields/FieldEditor.svelte::<nested in writeRelationList>::tick': 'release: flush before the literal release',
+	// ── cleanup of a window the click itself opened (TASK-3413 U9d) ──
+	'lib/components/items/ItemAppActions.svelte::open::tab.close': 'cleanup: closes the blank tab this click opened when the mint is refused; must run under any identity, carries no data',
 	// ── identity-free UI after a LOCAL await (clipboard; no server request) ──
 	'lib/components/ShareDialog.svelte::handleCopyLink::toastStore.show ×2': 'local: constant text after a clipboard write',
 	'lib/components/items/PushToAgentDialog.svelte::handleCopyInstead::toastStore.show ×2': 'local: constant text after a clipboard write',
