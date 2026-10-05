@@ -238,3 +238,24 @@ func TestPoster_EntryPinsAndPathsStayPaired(t *testing.T) {
 		t.Fatalf("/a reached /b's address: %d %v", st, err)
 	}
 }
+
+// codex r3 on U10c: failures before any request byte (dial, handshake) are
+// ErrNotSent, so a ledger does not count them as requests.
+func TestPoster_PreSendFailuresAreNotSent(t *testing.T) {
+	srv, _ := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	entry := []PrivateOrigin{{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true}}
+	// Handshake: the system roots do not trust the test server.
+	p, err := NewPoster(entry, 5*time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Post(context.Background(), srv.URL+"/hooks", nil, http.Header{}); !errors.Is(err, ErrNotSent) {
+		t.Fatalf("handshake failure: %v, want ErrNotSent", err)
+	}
+	// Dial: nothing listens there any more.
+	closedURL := srv.URL
+	srv.Close()
+	if _, err := p.Post(context.Background(), closedURL+"/hooks", nil, http.Header{}); !errors.Is(err, ErrNotSent) {
+		t.Fatalf("dial failure: %v, want ErrNotSent", err)
+	}
+}

@@ -45,6 +45,12 @@ type PrivateOrigin struct {
 // address or size. The wrapped message says which.
 var ErrRefused = errors.New("app fetch refused")
 
+// ErrNotSent marks a Poster.Post failure that happened before any byte of
+// the request was written (dial, TLS handshake), so a delivery ledger does
+// not count a request the endpoint never received (codex r3 on U10c). A
+// policy refusal (ErrRefused) is also unsent.
+var ErrNotSent = errors.New("request not sent")
+
 func refused(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrRefused, fmt.Sprintf(format, args...))
 }
@@ -335,7 +341,7 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	// itself, so nothing is resolved between the screen and the connect.
 	raw, err := p.f.dial(context.WithValue(ctx, originKey{}, origin), p.f.dialer, "tcp", net.JoinHostPort(u.Hostname(), port))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %w", ErrNotSent, err)
 	}
 	// The system roots unless a test supplies its own; the hostname is
 	// verified against the certificate (ServerName); never InsecureSkipVerify.
@@ -363,7 +369,7 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	err = conn.HandshakeContext(hctx)
 	hcancel()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %w", ErrNotSent, err)
 	}
 	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {

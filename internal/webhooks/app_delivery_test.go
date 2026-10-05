@@ -278,3 +278,26 @@ func TestAppDelivery_StoppedDispatcherSendsNothing(t *testing.T) {
 		t.Fatalf("a stopped dispatcher admitted %d and sent %d", len(adm.admitted), len(p.calls))
 	}
 }
+
+// codex r3 on U10c: a request that failed before any byte went out (dial,
+// handshake, policy) is not counted as sent.
+func TestAppDelivery_UnsentFailuresAreNotCounted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want AppResult
+		sent int
+	}{
+		{"dial failure", fmt.Errorf("%w: connection refused", appfetch.ErrNotSent), AppTransient, 0},
+		{"policy refusal", fmt.Errorf("%w: not https", appfetch.ErrRefused), AppPermanent, 0},
+		{"failed mid-request", errors.New("connection reset by peer"), AppTransient, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _ := newAppTestDispatcher()
+			got, sent := d.DeliverAppEvent(&fakeAdmitter{}, &fakePoster{err: tc.err}, appDV)
+			if got != tc.want || sent != tc.sent {
+				t.Fatalf("got %s, %d sent; want %s, %d", got, sent, tc.want, tc.sent)
+			}
+		})
+	}
+}
