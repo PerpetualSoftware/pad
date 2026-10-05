@@ -46,6 +46,11 @@ const { page } = await import('$app/state');
 // that the canonical form of an already-canonical body is the body itself.
 // "Fixed point" is judged in the flush's compare space, after unescapeDocLinks:
 // the serializer escapes `[[`, and the flush's normalize undoes it.
+const OLD_SPAN_TABLE =
+	'<table class="table-wrapper" style="min-width: 50px;">\n' +
+	'<colgroup><col style="min-width: 25px;"><col style="min-width: 25px;"></colgroup><tbody><tr>' +
+	'<td colspan="1" rowspan="1"><p>para one</p><p>para two</p></td>' +
+	'<td colspan="1" rowspan="1"><p>x</p></td></tr></tbody>\n</table>';
 const notFixed: Array<[string, string]> = [
 	['leading horizontal rule', '---\nText after a rule.'],
 	['asterisk bullets', '* one\n* two'],
@@ -62,6 +67,11 @@ const notFixed: Array<[string, string]> = [
 	['a bare URL is autolinked', 'Tracker: https://example.com/org/repo/issues/56\n\nMore text.'],
 	['an HTML-looking tag in prose parses to an empty table the editor drops', 'Make @ui <Table> a drop-in for every list.'],
 	['an HTML table', '<table><tr><td><ul><li>a</li></ul></td></tr></table>\n\nafter'],
+	// The form the editor stored before Tiptap 3.31.4 (TASK-3421): a multi-block
+	// cell forces the HTML table, and 3.31.3 rendered every cell's default
+	// colspan/rowspan. 3.31.4 no longer does, so a body stored then is not a
+	// fixed point now; the canonical arm is what keeps opening it a no-op.
+	['an HTML table stored with default spans (pre-3.31.4)', OLD_SPAN_TABLE],
 ];
 const fixed: Array<[string, string]> = [
 	['plain paragraph', 'a perfectly ordinary paragraph'],
@@ -127,6 +137,18 @@ describe('canonicalEditorMarkdown agrees with the editor round trip (BUG-3197)',
 			expect(unescapeDocLinks(canonicalEditorMarkdown(editor(), body))).toBe(body);
 		});
 	}
+
+	// TASK-3421: the default spans are output only. The body with them and the
+	// body without them parse to the same document, so they share one canonical
+	// form, and that form carries no default span.
+	it('a body stored with default spans canonicalizes like the same body without them', () => {
+		const withSpans = canonicalEditorMarkdown(editor(), OLD_SPAN_TABLE);
+		const without = canonicalEditorMarkdown(editor(), OLD_SPAN_TABLE.replaceAll(' colspan="1" rowspan="1"', ''));
+		expect(withSpans).not.toBeNull();
+		expect(withSpans).toBe(without);
+		expect(withSpans).not.toMatch(/colspan="1"|rowspan="1"/);
+		expect(withSpans).toMatch(/<p>para one<\/p><p>para two<\/p>/);
+	});
 
 	// Codex round 4: a filterTransaction plugin that refuses the replace leaves
 	// the EMPTY document. Serializing that would make "" the canonical form of a
