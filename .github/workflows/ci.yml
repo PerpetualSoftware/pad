@@ -575,8 +575,38 @@ jobs:
         run: npm run audit:ci
 
   e2e:
-    name: E2E (Playwright)
+    name: E2E ${{ matrix.label }}
     runs-on: ubuntu-latest
+    # IDEA-3189's tripwire fired on 2026-10-05: the median of the last 10
+    # green E2E jobs was 16.5m (13.7-19.3m) against its 14m threshold, and a
+    # green-on-rerun job (#1811) was cancelled at the 20m cap with no failing
+    # test. So the suite is split across jobs, each building for itself.
+    #
+    # The cut is per PROJECT, then desktop in halves. A bare `--shard=N/2`
+    # does not balance: Playwright cuts the ordered test list by COUNT and the
+    # projects run in sequence, so with both projects the same size each half
+    # was exactly one project (measured on this unit's first run: shard 2/2
+    # ran mobile-chromium alone, 63 passed and 553 skipped, in 1.9m). And the
+    # projects are lopsided: desktop-chromium carried 1222s of the 1359s of
+    # test time (572 of 635 passing tests). Desktop is therefore sharded in
+    # two and mobile runs whole. The "E2E (Playwright)" job below is the one
+    # check that says whether E2E passed.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: desktop 1/2
+            project: desktop-chromium
+            shard: 1/2
+            artifact: desktop-1
+          - label: desktop 2/2
+            project: desktop-chromium
+            shard: 2/2
+            artifact: desktop-2
+          - label: mobile
+            project: mobile-chromium
+            shard: 1/1
+            artifact: mobile
     # Build the binary + UI once and reuse across Playwright projects.
     # The cap is a runaway sanity check, not a perf budget. It covers
     # build-web + build-binary + install-playwright + the suite. A single
@@ -682,13 +712,13 @@ jobs:
         env:
           CI: "1"
           PAD_E2E_BINARY: ${{ github.workspace }}/pad-e2etest
-        run: npx playwright test
+        run: npx playwright test --project=${{ matrix.project }} --shard=${{ matrix.shard }}
 
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.artifact }}
           path: web/playwright-report/
           retention-days: 14
 
@@ -701,6 +731,26 @@ jobs:
         if: success() && hashFiles('web/test-results/**/trace.zip') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-flaky-evidence
+          name: playwright-flaky-evidence-${{ matrix.artifact }}
           path: web/test-results/
           retention-days: 7
+
+  # The single E2E verdict. Every reader of CI (merge rules, waiters, people)
+  # keys on the check named "E2E (Playwright)", and the repo has no branch
+  # protection to list the shard jobs by name, so this job keeps that name and
+  # is green only when EVERY matrix job succeeded. `if: always()` is load-bearing:
+  # without it a failed or cancelled matrix job SKIPS this job, and a skipped check
+  # reads as neither red nor missing.
+  e2e-result:
+    name: E2E (Playwright)
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every E2E job succeeded
+        env:
+          SHARDS: ${{ needs.e2e.result }}
+        run: |
+          echo "e2e matrix result: $SHARDS"
+          test "$SHARDS" = "success"
