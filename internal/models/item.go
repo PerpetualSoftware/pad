@@ -560,6 +560,13 @@ type Item struct {
 	// the body and the per-actor throttle wrote no version row, so the edit
 	// has no version to show it (PLAN-2348 U2, for U3's "edited the body").
 	BodyEditedWithoutVersion bool `json:"-"`
+
+	// ViaApp and ViaAppName name the app that CREATED the item (created_via_app),
+	// absent for a person's or agent's (SPEC-6 U9c, TASK-3413). The name
+	// is the app's bot display name, else its origin, and survives
+	// uninstall. The server fills both on read; no scan sets them.
+	ViaApp     string `json:"via_app,omitempty"`
+	ViaAppName string `json:"via_app_name,omitempty"`
 }
 
 // ItemMutationSignal is the race-free status/assignment delta attached to

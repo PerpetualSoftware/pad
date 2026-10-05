@@ -177,6 +177,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 			writeInternalError(w, err)
 			return
 		}
+		s.hydrateCommentsAppAttribution(comments) // SPEC-6 U9c
 	}
 
 	// Bulk-load reactions for fetched comments.
@@ -211,6 +212,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 			writeInternalError(w, err)
 			return
 		}
+		s.hydrateVersionsAppAttribution(versions) // SPEC-6 U9c
 	}
 
 	// Implementation notes and decision-log entries live inside the item's

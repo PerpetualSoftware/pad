@@ -29,6 +29,13 @@ type Version struct {
 	// Imported marks a row a workspace import wrote (BUG-3379): its
 	// created_by and source came from the export, unverified here.
 	Imported bool `json:"imported,omitempty"`
+
+	// ViaApp and ViaAppName name the app whose write made this version,
+	// absent for a person's or agent's (SPEC-6 U9c, TASK-3413). The name
+	// is the app's bot display name, else its origin, and survives
+	// uninstall. The server fills both on read; no scan sets them.
+	ViaApp     string `json:"via_app,omitempty"`
+	ViaAppName string `json:"via_app_name,omitempty"`
 }
 
 // ItemVersionDiff is the change one item version row records (PLAN-2348 U2):

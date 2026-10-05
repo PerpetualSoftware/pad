@@ -43,6 +43,7 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 	if comments == nil {
 		comments = []models.Comment{}
 	}
+	s.hydrateCommentsAppAttribution(comments) // SPEC-6 U9c
 
 	// Bulk-load reactions for all comments.
 	if len(comments) > 0 {
