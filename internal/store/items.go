@@ -1299,6 +1299,11 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	if !params.IncludeArchived {
 		query += " AND i.deleted_at IS NULL"
 	}
+	// A soft-deleted collection leaves its items live (BUG-3425): every
+	// reader leaves them out unless it opts in.
+	if !params.IncludeDeletedCollections {
+		query += " AND c.deleted_at IS NULL"
+	}
 
 	if params.CollectionSlug != "" {
 		query += " AND c.slug = ?"
@@ -2075,6 +2080,10 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		// "no such column: 5" — see BUG-818. Postgres handles raw input via
 		// the OR-combined plainto_tsquery in the dialect (BUG-842).
 		args = []interface{}{workspaceID, sanitizeFTSQuery(params.Search)}
+	}
+	// As in ListItems (BUG-3425).
+	if !params.IncludeDeletedCollections {
+		query += " AND c.deleted_at IS NULL"
 	}
 
 	if params.CollectionSlug != "" {

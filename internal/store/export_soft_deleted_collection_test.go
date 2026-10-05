@@ -135,7 +135,8 @@ func TestRoundTripPreservesItemsUnderSoftDeletedCollection(t *testing.T) {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
 
-	items, err := s.ListItems(imported.ID, models.ItemListParams{})
+	// The collection is soft-deleted on both ends, so readers hide its items (BUG-3425); this asserts storage.
+	items, err := s.ListItems(imported.ID, models.ItemListParams{IncludeDeletedCollections: true})
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
@@ -215,7 +216,8 @@ func TestRoundTripPreservesDependentsUnderSoftDeletedCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportWorkspace: %v", err)
 	}
-	items, err := s.ListItems(imported.ID, models.ItemListParams{})
+	// The collection is soft-deleted on both ends, so readers hide its items (BUG-3425); this asserts storage.
+	items, err := s.ListItems(imported.ID, models.ItemListParams{IncludeDeletedCollections: true})
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
