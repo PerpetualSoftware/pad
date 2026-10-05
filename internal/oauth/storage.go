@@ -196,7 +196,32 @@ func (s *Storage) CreateAuthorizeCodeSession(_ context.Context, signature string
 // payload) when the row is invalidated triggers fosite's grant-family
 // revocation in flow_authorize_code_token.go — the canonical "code
 // was used twice → revoke the whole grant" behaviour.
-func (s *Storage) GetAuthorizeCodeSession(_ context.Context, signature string, session fosite.Session) (fosite.Requester, error) {
+// reusedByAnotherClient reports whether a reused (invalidated or inactive)
+// code or refresh token is being presented by a client other than the one
+// it was issued to (BUG-3400).
+//
+// fosite handles a reused token by revoking its whole family, and it does so
+// BEFORE it checks that the token belongs to the requesting client
+// (flow_refresh.go handleRefreshTokenReuse, flow_authorize_code_token.go). A
+// client holding another client's spent token could therefore revoke that
+// client's live family. fosite's ordering cannot change, so the storage read
+// answers ErrNotFound for that case instead of the reuse signal: the request
+// fails as an unknown token and nothing is revoked.
+//
+// The requesting client is the one fosite authenticated: NewAccessRequest
+// puts the access request into the context (fosite.AccessRequestContextKey)
+// and sets its client before any grant handler runs. A read with no access
+// request in the context (introspection, revocation, admin paths) is not a
+// grant exchange and is left as it was.
+func reusedByAnotherClient(ctx context.Context, issuedTo string) bool {
+	ar, ok := ctx.Value(fosite.AccessRequestContextKey).(fosite.AccessRequester)
+	if !ok || ar == nil || ar.GetClient() == nil {
+		return false
+	}
+	return ar.GetClient().GetID() != issuedTo
+}
+
+func (s *Storage) GetAuthorizeCodeSession(ctx context.Context, signature string, session fosite.Session) (fosite.Requester, error) {
 	stored, err := s.store.GetAuthorizationCode(signature)
 	if errors.Is(err, store.ErrOAuthNotFound) {
 		return nil, fosite.ErrNotFound
@@ -204,6 +229,9 @@ func (s *Storage) GetAuthorizeCodeSession(_ context.Context, signature string, s
 	// ErrOAuthInvalidatedCode is special: fosite needs the request
 	// payload AND the error so it can revoke the grant.
 	if errors.Is(err, store.ErrOAuthInvalidatedCode) {
+		if reusedByAnotherClient(ctx, stored.ClientID) {
+			return nil, fosite.ErrNotFound
+		}
 		req, _ := s.oauthRequestToFositeRequest(stored, session)
 		return req, fosite.ErrInvalidatedAuthorizeCode
 	}
@@ -302,12 +330,17 @@ func (s *Storage) CreateRefreshTokenSession(_ context.Context, signature, access
 // flow, defeating replay detection. Codex review #371 round 2 caught
 // this. The symmetric pattern is used by the auth-code invalidation
 // path (GetAuthorizeCodeSession above).
-func (s *Storage) GetRefreshTokenSession(_ context.Context, signature string, session fosite.Session) (fosite.Requester, error) {
+func (s *Storage) GetRefreshTokenSession(ctx context.Context, signature string, session fosite.Session) (fosite.Requester, error) {
 	stored, err := s.store.GetRefreshToken(signature)
 	if errors.Is(err, store.ErrOAuthNotFound) {
 		return nil, fosite.ErrNotFound
 	}
 	if errors.Is(err, store.ErrOAuthInactiveToken) {
+		// Another client presenting this spent token must not revoke its
+		// family (BUG-3400).
+		if reusedByAnotherClient(ctx, stored.ClientID) {
+			return nil, fosite.ErrNotFound
+		}
 		// fosite needs req.GetID() to revoke the family; hydrate even
 		// on the failure path. Hydration may itself fail (e.g. the
 		// client was deleted) — in that case return the underlying

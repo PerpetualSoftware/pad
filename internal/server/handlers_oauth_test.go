@@ -2570,8 +2570,30 @@ func runAuthCodeFlow(t *testing.T, srv *Server, sessionToken, csrfTok, clientID,
 // is not testCanonicalAudience.
 func runAuthCodeFlowFor(t *testing.T, srv *Server, sessionToken, csrfTok, clientID, verifier, audience string) map[string]any {
 	t.Helper()
+	code := authCodeFor(t, srv, sessionToken, csrfTok, clientID, verifier, audience)
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {clientID},
+		"redirect_uri":  {"https://app.test/cb"},
+		"code_verifier": {verifier},
+		"audience":      {audience},
+	}
+	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
+	if trr.Code != http.StatusOK {
+		t.Fatalf("token: expected 200, got %d (body: %s)", trr.Code, trr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, trr, &resp)
+	return resp
+}
+
+// authCodeFor drives /oauth/authorize/decide for clientID and returns the
+// authorization code from the callback, unexchanged.
+func authCodeFor(t *testing.T, srv *Server, sessionToken, csrfTok, clientID, verifier, audience string) string {
+	t.Helper()
 	if len(verifier) < 43 {
-		t.Fatalf("runAuthCodeFlow: verifier too short (%d chars; RFC 7636 §4.1 needs ≥43)", len(verifier))
+		t.Fatalf("authCodeFor: verifier too short (%d chars; RFC 7636 §4.1 needs ≥43)", len(verifier))
 	}
 	challenge := s256Challenge(verifier)
 	// State just needs ≥8 chars + uniqueness so a stray CSRF check
@@ -2611,22 +2633,7 @@ func runAuthCodeFlowFor(t *testing.T, srv *Server, sessionToken, csrfTok, client
 	if code == "" {
 		t.Fatalf("missing code in callback Location: %s", rr.Header().Get("Location"))
 	}
-
-	tokenForm := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
-		"client_id":     {clientID},
-		"redirect_uri":  {"https://app.test/cb"},
-		"code_verifier": {verifier},
-		"audience":      {audience},
-	}
-	trr := postOAuthForm(srv, "/oauth/token", tokenForm)
-	if trr.Code != http.StatusOK {
-		t.Fatalf("token: expected 200, got %d (body: %s)", trr.Code, trr.Body.String())
-	}
-	var resp map[string]any
-	parseJSON(t, trr, &resp)
-	return resp
+	return code
 }
 
 // postOAuthForm POSTs an x-www-form-urlencoded body without any
