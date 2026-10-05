@@ -238,3 +238,53 @@ func TestPoster_EntryPinsAndPathsStayPaired(t *testing.T) {
 		t.Fatalf("/a reached /b's address: %d %v", st, err)
 	}
 }
+
+// codex r3 on U10c: failures before any request byte (dial, handshake) are
+// ErrNotSent, so a ledger does not count them as requests.
+func TestPoster_PreSendFailuresAreNotSent(t *testing.T) {
+	srv, _ := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	entry := []PrivateOrigin{{Origin: srv.URL, Allowed: []string{"127.0.0.1"}, Webhook: true}}
+	// Handshake: the system roots do not trust the test server.
+	p, err := NewPoster(entry, 5*time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Post(context.Background(), srv.URL+"/hooks", nil, http.Header{}); !errors.Is(err, ErrNotSent) {
+		t.Fatalf("handshake failure: %v, want ErrNotSent", err)
+	}
+	// Dial: nothing listens there any more.
+	closedURL := srv.URL
+	srv.Close()
+	if _, err := p.Post(context.Background(), closedURL+"/hooks", nil, http.Header{}); !errors.Is(err, ErrNotSent) {
+		t.Fatalf("dial failure: %v, want ErrNotSent", err)
+	}
+}
+
+type failAfter struct{ ok int }
+
+func (f *failAfter) Write(p []byte) (int, error) {
+	if f.ok <= 0 {
+		return 0, errors.New("connection reset")
+	}
+	n := min(len(p), f.ok)
+	f.ok -= n
+	if n < len(p) {
+		return n, errors.New("connection reset")
+	}
+	return n, nil
+}
+
+// codex r4 on U10c: a write that fails before its first byte is unsent; one
+// that fails part-way is not.
+func TestPoster_ZeroByteWriteFailureIsUnsent(t *testing.T) {
+	none := &countingWriter{w: &failAfter{}}
+	_, err := none.Write([]byte("POST /"))
+	if !errors.Is(unsentIfNothingWritten(none, err), ErrNotSent) {
+		t.Fatal("a write failing at its first byte was not ErrNotSent")
+	}
+	some := &countingWriter{w: &failAfter{ok: 3}}
+	_, err = some.Write([]byte("POST /"))
+	if errors.Is(unsentIfNothingWritten(some, err), ErrNotSent) {
+		t.Fatal("a write failing after 3 bytes was reported unsent")
+	}
+}

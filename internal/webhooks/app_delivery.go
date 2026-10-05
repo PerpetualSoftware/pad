@@ -64,6 +64,10 @@ type AppDelivery struct {
 	// event older than the hook's deliver_from.
 	OccurredAt string
 	Body       []byte
+	// RateGate, when set, is asked before EVERY attempt, retries included,
+	// so a rate cap bounds requests rather than deliveries (codex r1 on
+	// U10c). false stops the delivery with AppRateLimited, nothing sent.
+	RateGate func() bool
 }
 
 // AppResult is what happened to one app delivery.
@@ -83,6 +87,9 @@ const (
 	// AppDeferred: admission could not be decided (a store error). Nothing
 	// was sent; the event is still owed.
 	AppDeferred
+	// AppRateLimited: the install's rate cap refused the attempt. Nothing
+	// was sent; the event is still owed and no attempt is charged.
+	AppRateLimited
 )
 
 // AppSignatureHeader carries `t=<unix seconds>,v1=<hex HMAC-SHA256 of
@@ -119,26 +126,34 @@ var newDeliveryID = func() string {
 // with the owner path's retry schedule (maxDeliveryAttempts, linear backoff
 // on context-aware timers). Each attempt is admitted separately: an install
 // disabled between attempts gets no further attempt.
-func (d *Dispatcher) DeliverAppEvent(adm AppAdmitter, poster AppPoster, dv AppDelivery) AppResult {
+//
+// It returns the final result and how many requests were actually sent, so
+// the delivery ledger records real attempts (codex r2 on U10c).
+func (d *Dispatcher) DeliverAppEvent(adm AppAdmitter, poster AppPoster, dv AppDelivery) (AppResult, int) {
 	parent := d.context()
-	result := AppPermanent
+	result, sent := AppPermanent, 0
 	for attempt := 1; attempt <= maxDeliveryAttempts; attempt++ {
-		result = d.attemptApp(parent, adm, poster, dv)
+		var s bool
+		result, s = d.attemptApp(parent, adm, poster, dv)
+		if s {
+			sent++
+		}
 		if result != AppTransient {
-			return result
+			return result, sent
 		}
 		if attempt < maxDeliveryAttempts {
 			if backoff := d.retryBackoff * time.Duration(attempt); backoff > 0 && !d.wait(parent, backoff) {
-				return AppTransient
+				return AppTransient, sent
 			}
 		}
 	}
-	return result
+	return result, sent
 }
 
-func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster AppPoster, dv AppDelivery) AppResult {
+// attemptApp makes one attempt and reports whether a request was sent.
+func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster AppPoster, dv AppDelivery) (AppResult, bool) {
 	if parent.Err() != nil {
-		return AppTransient
+		return AppTransient, false
 	}
 	// The deadline is RELATIVE and starts BEFORE admission (DOC-3371 §5):
 	// any delay before the send only shortens the attempt, while the
@@ -151,10 +166,10 @@ func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster 
 	a, err := adm.AdmitAppDelivery(dv.WebhookID, dv.Event, dv.CollectionID, dv.OccurredAt, deliveryID)
 	if err != nil {
 		if errors.Is(err, ErrAppDeliveryRefused) {
-			return AppRefused
+			return AppRefused, false
 		}
 		slog.Error("app webhook admission failed", "webhook_id", dv.WebhookID, "error", err)
-		return AppDeferred
+		return AppDeferred, false
 	}
 	defer func() {
 		if err := adm.EndAppDelivery(deliveryID); err != nil {
@@ -162,6 +177,13 @@ func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster 
 			slog.Error("app webhook: ending the in-flight record failed", "webhook_id", dv.WebhookID, "error", err)
 		}
 	}()
+
+	// The rate cap is asked AFTER admission: an attempt admission refuses
+	// sends nothing and must not spend the install's budget (codex r2 on
+	// U10c). The deferred EndAppDelivery releases the record.
+	if dv.RateGate != nil && !dv.RateGate() {
+		return AppRateLimited, false
+	}
 
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
@@ -171,22 +193,25 @@ func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster 
 
 	status, err := poster.Post(ctx, a.URL, dv.Body, h)
 	if err != nil {
+		// A request counts as sent only if the failure came after its bytes
+		// started going out (codex r3 on U10c).
+		sent := !errors.Is(err, appfetch.ErrRefused) && !errors.Is(err, appfetch.ErrNotSent)
 		if errors.Is(err, appfetch.ErrRefused) {
 			slog.Warn("app webhook refused by policy", "webhook_id", dv.WebhookID, "error", err)
-			return AppPermanent
+			return AppPermanent, sent
 		}
 		slog.Warn("app webhook delivery failed", "webhook_id", dv.WebhookID, "error", err)
-		return AppTransient
+		return AppTransient, sent
 	}
 	switch {
 	case status >= 200 && status < 300:
-		return AppDelivered
+		return AppDelivered, true
 	case status >= 500 && status < 600:
-		return AppTransient
+		return AppTransient, true
 	default:
 		// 3xx (never followed), 4xx, anything else.
 		slog.Warn("app webhook non-2xx", "webhook_id", dv.WebhookID, "status", status)
-		return AppPermanent
+		return AppPermanent, true
 	}
 }
 
@@ -203,6 +228,8 @@ func (r AppResult) String() string {
 		return "refused"
 	case AppDeferred:
 		return "deferred"
+	case AppRateLimited:
+		return "rate_limited"
 	}
 	return fmt.Sprintf("AppResult(%d)", int(r))
 }

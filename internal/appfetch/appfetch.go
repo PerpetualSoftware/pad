@@ -45,6 +45,12 @@ type PrivateOrigin struct {
 // address or size. The wrapped message says which.
 var ErrRefused = errors.New("app fetch refused")
 
+// ErrNotSent marks a Poster.Post failure that happened before any byte of
+// the request was written (dial, TLS handshake), so a delivery ledger does
+// not count a request the endpoint never received (codex r3 on U10c). A
+// policy refusal (ErrRefused) is also unsent.
+var ErrNotSent = errors.New("request not sent")
+
 func refused(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrRefused, fmt.Sprintf(format, args...))
 }
@@ -335,7 +341,7 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	// itself, so nothing is resolved between the screen and the connect.
 	raw, err := p.f.dial(context.WithValue(ctx, originKey{}, origin), p.f.dialer, "tcp", net.JoinHostPort(u.Hostname(), port))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %w", ErrNotSent, err)
 	}
 	// The system roots unless a test supplies its own; the hostname is
 	// verified against the certificate (ServerName); never InsecureSkipVerify.
@@ -363,7 +369,7 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	err = conn.HandshakeContext(hctx)
 	hcancel()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: %w", ErrNotSent, err)
 	}
 	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {
@@ -375,12 +381,16 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 		}
 	}
 	req.Close = true // one request per connection
-	bw := bufio.NewWriter(conn)
+	// Count what reached the connection: a write that fails before its
+	// first byte (a reset or the deadline right after the handshake) sent
+	// nothing (codex r4 on U10c).
+	cw := &countingWriter{w: conn}
+	bw := bufio.NewWriter(cw)
 	if err := req.Write(bw); err != nil {
-		return 0, err
+		return 0, unsentIfNothingWritten(cw, err)
 	}
 	if err := bw.Flush(); err != nil {
-		return 0, err
+		return 0, unsentIfNothingWritten(cw, err)
 	}
 	// Interim 1xx answers (100 Continue, 103 Early Hints) precede the final
 	// one and are skipped, as net/http's Transport does (codex r4 on U10b);
@@ -421,4 +431,23 @@ func underPath(u *url.URL, prefix string) bool {
 		return strings.HasPrefix(u.Path, prefix)
 	}
 	return u.Path == prefix || strings.HasPrefix(u.Path, prefix+"/")
+}
+
+// countingWriter counts the bytes its writer accepted.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func unsentIfNothingWritten(cw *countingWriter, err error) error {
+	if cw.n == 0 {
+		return fmt.Errorf("%w: %w", ErrNotSent, err)
+	}
+	return err
 }

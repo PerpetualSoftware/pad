@@ -79,6 +79,17 @@ type WebhookStore interface {
 	WorkspaceLive(workspaceID string) (bool, error)
 }
 
+// OwnerDeliveryLedger is optionally implemented by the store (TASK-3408
+// U10c). When it is, DeliverEvent skips an owner hook that already received
+// the event and records each owner success. It exists so that an event kept
+// owed by someone ELSE (an app hook's rate limit or outage) is not delivered
+// again to owner endpoints on every retry. Owner failure, retry and ack
+// semantics are unchanged; full owner per-endpoint state is TASK-3409.
+type OwnerDeliveryLedger interface {
+	OwnerDelivered(eventID, webhookID string) (bool, error)
+	RecordOwnerDelivered(eventID, webhookID string) error
+}
+
 // errWorkspaceGone stops a request whose webhook's workspace was deleted while
 // it was in flight; errWorkspaceUnknown stops one whose workspace could not be
 // checked (BUG-3340). The first is suppressed, the second deferred.
@@ -410,7 +421,26 @@ func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
 			continue
 		}
 		out.Matched++
-		switch d.deliver(hook, body) {
+		ledger, _ := d.store.(OwnerDeliveryLedger)
+		if ledger != nil && dv.EventID != "" {
+			done, err := ledger.OwnerDelivered(dv.EventID, hook.ID)
+			if err != nil {
+				return out, fmt.Errorf("owner delivery ledger: %w", err)
+			}
+			if done {
+				out.Succeeded++ // received on an earlier pass
+				continue
+			}
+		}
+		res := d.deliver(hook, body)
+		if res == deliverySuccess && ledger != nil && dv.EventID != "" {
+			if err := ledger.RecordOwnerDelivered(dv.EventID, hook.ID); err != nil {
+				// Not fatal: the cost is one possible re-send, the
+				// behaviour before the ledger existed.
+				slog.Error("owner delivery ledger: record failed", "webhook_id", hook.ID, "error", err)
+			}
+		}
+		switch res {
 		case deliverySuppressed:
 			// The workspace was deleted mid-delivery: this hook no longer
 			// selects the event, and nothing is owed to it.

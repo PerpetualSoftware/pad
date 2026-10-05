@@ -44,6 +44,9 @@ type AppWebhookStatus struct {
 	// Status is "awaiting_secret" (held: no redeem has handed the app its
 	// signing secret yet) or "active" (deliverable while the install is).
 	Status string `json:"status"`
+	// Dropped counts deliveries given up undelivered after
+	// appWebhookDropAfter (TASK-3408 U10c).
+	Dropped int64 `json:"undelivered_dropped"`
 }
 
 const (
@@ -176,14 +179,15 @@ func (s *Store) holdAppWebhookTx(tx *sql.Tx, installID string) error {
 func (s *Store) GetAppWebhookStatus(installID string) (*AppWebhookStatus, error) {
 	var url string
 	var delivered sql.NullString
-	err := s.db.QueryRow(s.q(`SELECT url, secret_delivered_at FROM webhooks WHERE app_install_id = ?`), installID).Scan(&url, &delivered)
+	var dropped int64
+	err := s.db.QueryRow(s.q(`SELECT url, secret_delivered_at, dropped_count FROM webhooks WHERE app_install_id = ?`), installID).Scan(&url, &delivered, &dropped)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("app webhook status: %w", err)
 	}
-	st := &AppWebhookStatus{URL: url, Status: AppWebhookAwaitingSecret}
+	st := &AppWebhookStatus{URL: url, Status: AppWebhookAwaitingSecret, Dropped: dropped}
 	if delivered.Valid && delivered.String != "" {
 		st.Status = AppWebhookActive
 	}
