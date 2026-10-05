@@ -110,8 +110,13 @@ func TestTask3389_AppProjectionCensus(t *testing.T) {
 		}
 		want[ev.eventType] = true
 		b := task3389Block(t, ev)
-		if b["v"] != float64(1) || b["collection_id"] != coll.ID {
+		if b["v"] != float64(2) || b["collection_id"] != coll.ID {
 			t.Errorf("%s: v/collection_id = %v/%v", ev.eventType, b["v"], b["collection_id"])
+		}
+		// A person's write names no installed app as its actor (TASK-3411;
+		// the fenced half of this census row is TestTask3411_*).
+		if _, ok := b["actor_via_app"]; ok {
+			t.Errorf("%s: a person's write carries actor_via_app %v", ev.eventType, b["actor_via_app"])
 		}
 		creator, _ := b["creator"].(map[string]any)
 		if creator["user_id"] != u.ID || creator["display"] != "Ada Projection" || creator["kind"] == "" || creator["kind"] == nil {

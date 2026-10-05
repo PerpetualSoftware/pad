@@ -1050,6 +1050,14 @@ func (s *Store) scrubOutboxRowTx(tx *sql.Tx, id, payload, userID string) error {
 // distinguishable from an event that has none — pass nil for every event other
 // than item.status_changed.
 func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item, priorStatus *string, batchID string) error {
+	return s.emitItemEventAsInstallTx(tx, eventType, item, priorStatus, batchID, "")
+}
+
+// emitItemEventAsInstallTx is emitItemEventTx for a write an installed app
+// made: actorInstall is frozen into the app-projection block as
+// actor_via_app (TASK-3411). Only fenced app writes pass one; every other
+// write passes "" through emitItemEventTx.
+func (s *Store) emitItemEventAsInstallTx(tx *sql.Tx, eventType string, item *models.Item, priorStatus *string, batchID, actorInstall string) error {
 	if item == nil {
 		return fmt.Errorf("outbox: %s has no item snapshot", eventType)
 	}
@@ -1057,6 +1065,9 @@ func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item,
 	proj, err := s.buildItemAppProjectionTx(tx, item)
 	if err != nil {
 		return err
+	}
+	if proj != nil {
+		proj.ActorViaApp = actorInstall
 	}
 	payload, err := marshalEventPayload(itemEventPayload{Item: snapshot, PriorStatus: priorStatus, AppProjection: proj})
 	if err != nil {
@@ -1080,12 +1091,21 @@ func (s *Store) emitItemEventTx(tx *sql.Tx, eventType string, item *models.Item,
 // binding keyed on the item as subject would be unable to distinguish a
 // comment from an edit to the item itself.
 func (s *Store) emitCommentEventTx(tx *sql.Tx, eventType string, comment *models.Comment) error {
+	return s.emitCommentEventAsInstallTx(tx, eventType, comment, "")
+}
+
+// emitCommentEventAsInstallTx is emitCommentEventTx for an installed app's
+// write; see emitItemEventAsInstallTx.
+func (s *Store) emitCommentEventAsInstallTx(tx *sql.Tx, eventType string, comment *models.Comment, actorInstall string) error {
 	if comment == nil {
 		return fmt.Errorf("outbox: %s has no comment snapshot", eventType)
 	}
 	proj, err := s.buildCommentAppProjectionTx(tx, comment.ID, comment.ItemID, comment.UserID, comment.Author, comment.CreatedBy, comment.ParentID)
 	if err != nil {
 		return err
+	}
+	if proj != nil {
+		proj.ActorViaApp = actorInstall
 	}
 	withProj, err := commentPayloadWithProjection(comment, proj)
 	if err != nil {
@@ -1640,11 +1660,17 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 // (codex round 5). The caller knows it performed a hierarchy write; the diff
 // cannot see it, and it must not have to.
 func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey, batchID string, hierarchyChanged bool) error {
+	return s.emitItemUpdateEventsAsInstallTx(tx, before, after, statusChanged, priorStatus, statusKey, batchID, hierarchyChanged, "")
+}
+
+// emitItemUpdateEventsAsInstallTx is emitItemUpdateEventsTx for an installed
+// app's write; see emitItemEventAsInstallTx.
+func (s *Store) emitItemUpdateEventsAsInstallTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey, batchID string, hierarchyChanged bool, actorInstall string) error {
 	if statusChanged {
 		// Taken by address unconditionally: an empty prior status is a real
 		// prior status here, not an absent one.
 		prior := priorStatus
-		if err := s.emitItemEventTx(tx, kernelevents.ItemStatusChanged, after, &prior, batchID); err != nil {
+		if err := s.emitItemEventAsInstallTx(tx, kernelevents.ItemStatusChanged, after, &prior, batchID, actorInstall); err != nil {
 			return err
 		}
 	}
@@ -1654,7 +1680,7 @@ func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, s
 		return err
 	}
 	if otherChanged || hierarchyChanged {
-		if err := s.emitItemEventTx(tx, kernelevents.ItemUpdated, after, nil, batchID); err != nil {
+		if err := s.emitItemEventAsInstallTx(tx, kernelevents.ItemUpdated, after, nil, batchID, actorInstall); err != nil {
 			return err
 		}
 	}

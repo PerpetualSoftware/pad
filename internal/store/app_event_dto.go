@@ -34,10 +34,11 @@ type AppEventEnvelope struct {
 	Event      string `json:"event"`
 	ID         string `json:"id"`
 	OccurredAt string `json:"occurred_at"`
-	// ViaApp is set on CREATE events only: there the frozen creator is the
-	// writer. On other events the block names who created the subject, not
-	// who made this change, so it is omitted rather than wrong; actor
-	// attribution on every event is TASK-3408 U10d (lead ruling, day 87).
+	// ViaApp is the install whose write caused this event, absent for a
+	// person's or agent's write. From a v2 block it is the frozen
+	// actor_via_app, on every event (TASK-3411). A v1 block (written before
+	// v2, still in the outbox) has no actor: it is set on CREATE events only,
+	// from the creator, who is the writer there (lead ruling, day 87).
 	ViaApp string `json:"via_app,omitempty"`
 }
 
@@ -123,12 +124,11 @@ func BuildAppEventDTO(event, eventID, occurredAt string, payload []byte) ([]byte
 			return nil, "", ErrNoAppProjection
 		}
 		if event == kernelevents.ItemDeleted {
+			env.ViaApp = envelopeViaApp(b.V, b.ActorViaApp, false, "")
 			out, err := json.Marshal(AppItemDeletedEvent{AppEventEnvelope: env, ItemID: p.ID, CollectionID: b.CollectionID})
 			return out, b.CollectionID, err
 		}
-		if event == kernelevents.ItemCreated {
-			env.ViaApp = b.Creator.ViaApp
-		}
+		env.ViaApp = envelopeViaApp(b.V, b.ActorViaApp, event == kernelevents.ItemCreated, b.Creator.ViaApp)
 		dto := AppItemEvent{AppEventEnvelope: env, ItemID: p.ID, CollectionID: b.CollectionID, Creator: creator(b.Creator),
 			CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
 		if b.Partial || b.Fields == nil {
@@ -154,9 +154,7 @@ func BuildAppEventDTO(event, eventID, occurredAt string, payload []byte) ([]byte
 		if b == nil || b.CollectionID == "" || b.ItemID == "" || p.ID == "" {
 			return nil, "", ErrNoAppProjection
 		}
-		if event == kernelevents.CommentCreated {
-			env.ViaApp = b.Creator.ViaApp
-		}
+		env.ViaApp = envelopeViaApp(b.V, b.ActorViaApp, event == kernelevents.CommentCreated, b.Creator.ViaApp)
 		out, err := json.Marshal(AppCommentEvent{AppEventEnvelope: env, CommentID: p.ID, ItemID: b.ItemID, CollectionID: b.CollectionID,
 			ParentCommentID: b.ParentCommentID, Body: p.Body, Creator: creator(b.Creator), CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt})
 		return out, b.CollectionID, err
@@ -173,8 +171,21 @@ func BuildAppEventDTO(event, eventID, occurredAt string, payload []byte) ([]byte
 		if b == nil || b.CollectionID == "" || b.ItemID == "" || p.ID == "" {
 			return nil, "", ErrNoAppProjection
 		}
+		env.ViaApp = envelopeViaApp(b.V, b.ActorViaApp, false, "")
 		out, err := json.Marshal(AppCommentDeletedEvent{AppEventEnvelope: env, CommentID: p.ID, ItemID: b.ItemID,
 			CollectionID: b.CollectionID, ParentCommentID: b.ParentCommentID})
 		return out, b.CollectionID, err
 	}
+}
+
+// envelopeViaApp is the envelope's via_app: the frozen actor from a v2 block;
+// from a v1 block, the creator's install on a create event only.
+func envelopeViaApp(v int, actor string, isCreate bool, creator string) string {
+	if v >= 2 {
+		return actor
+	}
+	if isCreate {
+		return creator
+	}
+	return ""
 }
