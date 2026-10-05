@@ -156,3 +156,98 @@ func TestAccessEpoch_TracksTheEffectiveSetForItemGrantCallers(t *testing.T) {
 		t.Errorf("SSE tick and /items-index disagree after the delete: %q vs %q", got, after.AccessEpoch)
 	}
 }
+
+// TestSSEAccessEpochAdvance_DegradedSnapshotNeitherAnnouncesNorMovesTheBase is
+// the codex round-1 follow-up. A snapshot resolved through a store fault is
+// fail-closed as a filter, but its epoch describes the fault. Comparing it would
+// send sync_required when the fault starts and again when it clears, with no
+// access change either time.
+func TestSSEAccessEpochAdvance_DegradedSnapshotNeitherAnnouncesNorMovesTheBase(t *testing.T) {
+	clean := sseVisibility{visibleSlugSet: map[string]bool{"kept": true}, visibleCollIDSet: map[string]bool{"c-kept": true}}
+	base := clean.accessEpoch()
+
+	narrowed := sseVisibility{visibleSlugSet: map[string]bool{}, visibleCollIDSet: map[string]bool{}}
+	if next, changed := sseAccessEpochAdvance(base, narrowed); !changed || next == base {
+		t.Fatalf("a clean narrowing must announce and move the base: changed=%v next=%q base=%q", changed, next, base)
+	}
+
+	faulted := narrowed
+	faulted.degraded = true
+	next, changed := sseAccessEpochAdvance(base, faulted)
+	if changed {
+		t.Errorf("a degraded snapshot announced an access change")
+	}
+	if next != base {
+		t.Errorf("a degraded snapshot moved the base: %q, want %q", next, base)
+	}
+	if next, changed := sseAccessEpochAdvance(next, clean); changed || next != base {
+		t.Errorf("recovery to the same access announced a change: changed=%v next=%q base=%q", changed, next, base)
+	}
+}
+
+// TestComputeSSEVisibility_StoreFaultMarksDegraded drives a real store fault
+// through computeSSEVisibility for an item-grant caller. Every table the
+// grant-side lookups read is also read by VisibleCollectionIDs first, so that
+// is the site a table rename reaches; the later sites set the same flag on the
+// same reasoning and have no separate seam.
+func TestComputeSSEVisibility_StoreFaultMarksDegraded(t *testing.T) {
+	srv := testServer(t)
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "owner@example.com", Name: "Owner", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	member, err := srv.store.CreateUser(models.UserCreate{
+		Email: "member@example.com", Name: "Member", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "DegradedEpoch", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, member.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	kept, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Kept", Slug: "kept", Prefix: "KEP", Schema: schema})
+	if err != nil {
+		t.Fatalf("create kept: %v", err)
+	}
+	other, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Other", Slug: "other", Prefix: "OTH", Schema: schema})
+	if err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{kept.ID}); err != nil {
+		t.Fatalf("set collection access: %v", err)
+	}
+	granted, err := srv.store.CreateItem(ws.ID, other.ID, models.ItemCreate{Title: "Granted", Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	if _, err := srv.store.CreateItemGrant(ws.ID, granted.ID, member.ID, "view", owner.ID); err != nil {
+		t.Fatalf("create item grant: %v", err)
+	}
+	vis := func() sseVisibility {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace="+ws.Slug, nil)
+		req = req.WithContext(context.WithValue(req.Context(), ctxCurrentUser, member))
+		return srv.computeSSEVisibility(req, ws.ID)
+	}
+
+	clean := vis()
+	if clean.degraded {
+		t.Fatalf("control: a clean resolve is marked degraded")
+	}
+	base := clean.accessEpoch()
+
+	breakTable(t, srv, "member_collection_access")
+	faulted := vis()
+	if !faulted.degraded {
+		t.Fatalf("a store fault during the resolve is not marked degraded")
+	}
+	if _, changed := sseAccessEpochAdvance(base, faulted); changed {
+		t.Errorf("the faulted tick announced an access change")
+	}
+}

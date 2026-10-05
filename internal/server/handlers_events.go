@@ -304,6 +304,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// established when the user was an editor would keep emitting events
 	// from collections they no longer see even after access was tightened.
 	vis := s.computeSSEVisibility(r, ws.ID)
+	// The epoch the next revalidation tick compares against. Advanced only by
+	// a snapshot that resolved cleanly (sseAccessEpochAdvance, BUG-3347). A
+	// stream that connects during a fault starts from that snapshot's epoch,
+	// so recovery announces one change, and the client's resync then reads the
+	// doors' real value.
+	accessEpoch := vis.accessEpoch()
 
 	sseUserID := currentUserID(r)
 
@@ -603,7 +609,6 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			// access tightened to "specific", item grants revoked). Rebuild
 			// the filter set so the next event dispatched respects the
 			// current grants rather than the ones captured at connect time.
-			epochBefore := vis.accessEpoch()
 			vis = s.computeSSEVisibility(r, ws.ID)
 			// IDEA-2898. Rebuilding the filter set stops the LEAK — no further
 			// event for a revoked collection is dispatched — but it says
@@ -621,7 +626,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			// has none. The caller's scope changed, which is a different fact,
 			// and clearing a healthy resume cursor would cost a full replay on
 			// the next reconnect for nothing.
-			if vis.accessEpoch() != epochBefore {
+			var accessChanged bool
+			accessEpoch, accessChanged = sseAccessEpochAdvance(accessEpoch, vis)
+			if accessChanged {
 				slog.Info("SSE: subscriber access scope changed mid-stream, sending sync_required",
 					"workspace", ws.Slug, "user_id", sseUserID)
 				if err := writeSSEEvent(w, "sync_required", 0, map[string]string{
@@ -769,6 +776,24 @@ func (v sseVisibility) accessEpoch() string {
 	return effectiveAccessEpoch(collIDs, fullIDs, itemIDs)
 }
 
+// sseAccessEpochAdvance decides whether a recomputed snapshot announces an
+// access change, and returns the epoch the next tick compares against.
+//
+// A DEGRADED snapshot (a store read failed while resolving it) is fail-closed
+// as a filter, but its epoch describes the fault rather than the caller's
+// access. Comparing it would send sync_required when the fault starts and again
+// when it clears, with no access change either time, and the resync it asks for
+// would hit the same failing store. So it neither announces nor moves the base
+// (BUG-3347, codex round 1: the epoch's collection half came to depend on a
+// lookup whose error used to be swallowed).
+func sseAccessEpochAdvance(last string, v sseVisibility) (next string, changed bool) {
+	if v.degraded {
+		return last, false
+	}
+	e := v.accessEpoch()
+	return e, e != last
+}
+
 type sseVisibility struct {
 	// visibleSlugSet == nil → user has unrestricted access (admin / owner /
 	// editor with no collection scope). A non-nil empty map means deny all
@@ -792,6 +817,10 @@ type sseVisibility struct {
 	// collection half of the set the item doors filter by when the caller
 	// holds item grants, so accessEpoch hashes it then (BUG-3347).
 	fullCollIDSet map[string]bool
+	// degraded is true when a store read failed while resolving this
+	// snapshot. The filter above is then fail-closed; the epoch is not
+	// compared (sseAccessEpochAdvance).
+	degraded bool
 	// isGuest is true when the user is not a direct workspace member —
 	// they only reach the SSE stream via per-collection / per-item grants.
 	// Used to hide workspace-level events that have no collection attached.
@@ -826,6 +855,7 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 			if err != nil {
 				slog.Warn("SSE: GetUser failed during visibility recompute; denying all events",
 					"user_id", cached.ID, "error", err)
+				v.degraded = true
 			}
 			v.visibleSlugSet = make(map[string]bool)
 			v.isGuest = true
@@ -857,6 +887,7 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 		// collection-scoped events rather than leaking hidden data.
 		slog.Warn("SSE: failed to resolve visible collections, denying all", "error", err)
 		v.visibleSlugSet = make(map[string]bool) // empty = deny
+		v.degraded = true
 	} else if visibleIDs != nil {
 		v.visibleSlugSet = make(map[string]bool, len(visibleIDs))
 		v.visibleCollIDSet = make(map[string]bool, len(visibleIDs))
@@ -877,7 +908,12 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 		return v
 	}
 
-	member, _ := s.store.GetWorkspaceMember(workspaceID, user.ID)
+	member, merr := s.store.GetWorkspaceMember(workspaceID, user.ID)
+	if merr != nil {
+		// Filtered as a guest, as before (the most restricted reading);
+		// only the epoch learns it was a fault.
+		v.degraded = true
+	}
 	if member == nil {
 		v.isGuest = true
 	}
@@ -893,6 +929,9 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 		// lookup below runs again and fails closed on its own error.
 		_, itemGrants, gerr := s.store.GuestVisibleResources(workspaceID, user.ID)
 		needsItemFilter = gerr != nil || len(itemGrants) > 0
+		if gerr != nil {
+			v.degraded = true
+		}
 	}
 	if !needsItemFilter {
 		return v
@@ -903,6 +942,7 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 		// Fail closed: if we can't resolve grants, install an empty item
 		// filter so no collection-scoped events leak through.
 		slog.Warn("SSE: failed to resolve item grants, denying item-scoped events", "error", grantErr)
+		v.degraded = true
 		v.grantedItemSet = make(map[string]bool)
 		v.fullCollSet = make(map[string]bool)
 		return v
@@ -921,7 +961,13 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 		fullCollIDSet[id] = true
 	}
 	if member != nil {
-		memberColls, _ := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
+		memberColls, mcErr := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
+		if mcErr != nil {
+			// The filter stays as narrow as before: those collections are
+			// then gated item by item. The epoch would hash an incomplete
+			// full-access set, so it is not compared.
+			v.degraded = true
+		}
 		for _, id := range memberColls {
 			fullCollIDSet[id] = true
 		}
