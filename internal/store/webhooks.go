@@ -52,21 +52,33 @@ func (s *Store) CreateWebhook(workspaceID string, input models.WebhookCreate, op
 	if err != nil {
 		return nil, fmt.Errorf("insert webhook: %w", err)
 	}
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.getWebhookQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("insert webhook: %w", err)
 	}
-
-	return s.GetWebhook(id)
+	afterCommitReadback("webhook", id)
+	return out, nil
 }
 
 // GetWebhook retrieves a single webhook by ID.
 func (s *Store) GetWebhook(id string) (*models.Webhook, error) {
+	return s.getWebhookQ(s.db, id)
+}
+
+func (s *Store) getWebhookQ(q Queryer, id string) (*models.Webhook, error) {
 	var wh models.Webhook
 	var active bool
 	var createdAt, updatedAt string
 	var lastTriggeredAt *string
 
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
 		FROM webhooks
 		WHERE id = ?

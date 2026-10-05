@@ -249,3 +249,14 @@ func (s *Store) SetDeadlockInjectorForTesting(fn func(site string, attempt int) 
 	s.deadlockInjector = fn
 	return func() { s.deadlockInjector = prev }
 }
+
+// readbackAfterCommitHook runs right after the commit of a write that reads
+// its row back (TASK-3406), with the row's kind and id, so a test can delete
+// the row at exactly that point. Nil in production.
+var readbackAfterCommitHook func(kind, id string)
+
+func afterCommitReadback(kind, id string) {
+	if h := readbackAfterCommitHook; h != nil {
+		h(kind, id)
+	}
+}

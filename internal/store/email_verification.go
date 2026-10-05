@@ -166,14 +166,17 @@ func (s *Store) ConsumeEmailVerification(token string) (*models.User, error) {
 		return nil, ErrUserDisabled
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit consume verification: %w", err)
-	}
-
-	user, err := s.GetUser(userID)
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): an account deletion landing after the commit cannot
+	// turn a successful verification into a nil user.
+	user, err := s.GetUserQ(tx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit consume verification: %w", err)
+	}
+	afterCommitReadback("user", userID)
 	return user, nil
 }
 

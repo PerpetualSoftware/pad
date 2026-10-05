@@ -30,10 +30,19 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 	if err != nil {
 		return nil, err
 	}
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.getCommentQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment: %w", err)
 	}
-	return s.GetComment(id)
+	afterCommitReadback("comment", id)
+	return out, nil
 }
 
 // CreateCommentWithActivity writes the activity row a comment links to AND
@@ -68,10 +77,19 @@ func (s *Store) CreateCommentWithActivity(workspaceID, itemID, userID string, ac
 	if err != nil {
 		return nil, err
 	}
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.getCommentQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment: %w", err)
 	}
-	return s.GetComment(id)
+	afterCommitReadback("comment", id)
+	return out, nil
 }
 
 // createCommentTx is the body of CreateComment against a caller's
@@ -231,10 +249,19 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 		}
 	}
 
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.getCommentQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment update: %w", err)
 	}
-	return s.GetComment(id)
+	afterCommitReadback("comment", id)
+	return out, nil
 }
 
 // GetComment returns a single comment by ID.

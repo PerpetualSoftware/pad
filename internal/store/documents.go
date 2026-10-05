@@ -207,11 +207,19 @@ func (s *Store) CreateDocument(workspaceID string, input models.DocumentCreate) 
 		return nil, fmt.Errorf("insert document: %w", err)
 	}
 
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.getDocumentQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit create document: %w", err)
 	}
-
-	return s.GetDocument(id)
+	afterCommitReadback("document", id)
+	return out, nil
 }
 
 func (s *Store) GetDocument(id string) (*models.Document, error) {
@@ -526,11 +534,19 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 		return nil, nil
 	}
 
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.getDocumentQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-
-	return s.GetDocument(id)
+	afterCommitReadback("document", id)
+	return out, nil
 }
 
 // acquireWorkspaceDocumentRenameLock serializes document TITLE RENAMES within
@@ -1161,10 +1177,19 @@ func (s *Store) RestoreDocument(workspaceID, id string) (*models.Document, error
 	if rows == 0 {
 		return nil, sql.ErrNoRows
 	}
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.getDocumentQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return s.GetDocument(id)
+	afterCommitReadback("document", id)
+	return out, nil
 }
 
 func scanDocuments(rows *sql.Rows) ([]models.Document, error) {
