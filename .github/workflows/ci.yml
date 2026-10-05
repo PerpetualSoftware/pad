@@ -626,6 +626,20 @@ jobs:
         # which is fine for tests — for e2e we need the real embedded UI.
         run: go build -o pad ./cmd/pad
 
+      - name: Build the e2etest pad binary
+        # TASK-3415: the real-install leg starts its own pad from this
+        # build, which carries the PAD_E2E_APP_CA door (cmd/pad/e2e_app_ca.go)
+        # so it can trust the test app's CA. Only this build has it.
+        run: go build -tags e2etest -o pad-e2etest ./cmd/pad
+
+      - name: The shipped build has no e2e CA door
+        # Lead ruling on TASK-3415: no environment variable may widen what a
+        # default build trusts. The e2etest build is the positive control:
+        # if it lost the string, the first check would pass vacuously.
+        run: |
+          grep -aq PAD_E2E_APP_CA pad-e2etest || { echo "control: the e2etest build has no PAD_E2E_APP_CA"; exit 1; }
+          if grep -aq PAD_E2E_APP_CA pad; then echo "the default build contains PAD_E2E_APP_CA"; exit 1; fi
+
       # Playwright browser binaries are downloaded from cdn.playwright.dev,
       # which occasionally hangs (PR #635 hit two consecutive 10-minute
       # timeouts during a CDN slow patch — see BUG-1625). Cache them per
@@ -667,6 +681,7 @@ jobs:
         working-directory: web
         env:
           CI: "1"
+          PAD_E2E_BINARY: ${{ github.workspace }}/pad-e2etest
         run: npx playwright test
 
       - name: Upload Playwright report on failure

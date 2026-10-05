@@ -308,6 +308,13 @@ func serveCmd() *cobra.Command {
 				"per_instance_and_per_principal_cover", "/api/v1/events + /api/v1/events/stream",
 				"per_workspace_covers", "/api/v1/events")
 			srv.SetCollabLimits(cfg.CollabMaxPerUser)
+			// Test builds only (TASK-3415): nil in every default build, so
+			// no environment variable can widen what a shipped binary trusts.
+			if e2eConfigureServer != nil {
+				if err := e2eConfigureServer(srv); err != nil {
+					return err
+				}
+			}
 			slog.Info("Collab connection limit (PER INSTANCE — not deployment-wide)",
 				"per_principal", cfg.CollabMaxPerUser,
 				"covers", "/api/v1/collab/{itemID}")
