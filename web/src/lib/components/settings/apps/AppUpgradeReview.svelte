@@ -154,7 +154,7 @@
 	</h3>
 
 	{#if busy && !preview && !result}
-		<p class="hint">Fetching the app's current version…</p>
+		<p class="hint" role="status">Fetching the app's current version…</p>
 	{/if}
 
 	{#if result}

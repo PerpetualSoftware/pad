@@ -370,8 +370,30 @@ describe('Settings → Apps: upgrade and drafts (U9b)', () => {
 		expect(rows).toHaveLength(2);
 		expect(screen.getByRole('link', { name: 'Triage' }).getAttribute('href')).toBe('/dave/ws-a/playbooks/PLAYB-3');
 		expect(screen.queryByRole('button', { name: 'Activate Tone' })).toBeNull();
-		await fireEvent.click(screen.getByRole('button', { name: 'Activate Triage' }));
+		getMock.mockResolvedValueOnce({
+			install_id: 'inst-1',
+			state: 'active',
+			artifacts: [
+				{ item_id: 'i1', ref: 'PLAYB-3', slug: 'triage', title: 'Triage', collection_slug: 'playbooks', status: 'active', version: '1.2.0' }
+			]
+		});
+		const activateBtn = screen.getByRole('button', { name: 'Activate Triage' });
+		activateBtn.focus();
+		await fireEvent.click(activateBtn);
 		expect(itemUpdateMock).toHaveBeenCalledWith('ws-a', 'i1', { fields_patch: { status: 'active' } });
 		await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+		// Its button is gone: focus is on the same row's link, and it is announced.
+		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('link', { name: 'Triage' })));
+		expect(screen.getByText('Triage is now active.')).toBeTruthy();
+	});
+
+	it('a failed draft list offers a retry', async () => {
+		getMock.mockRejectedValueOnce(new Error('network down'));
+		await openInstall();
+		expect((await screen.findByRole('alert')).textContent).toMatch(/network down/);
+		await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+		await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+		expect(await screen.findByText('This app added none.')).toBeTruthy();
+		expect(screen.queryByRole('alert')).toBeNull();
 	});
 });

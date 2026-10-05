@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -23,6 +23,9 @@
 	let loadError = $state('');
 	let activating = $state<string | null>(null);
 	let rowError = $state<{ id: string; message: string } | null>(null);
+	/** Announced after an activation (the button that had focus is gone). */
+	let announcement = $state('');
+	let listEl: HTMLUListElement | undefined = $state();
 
 	let username = $derived(page.params.username ?? '');
 
@@ -53,6 +56,11 @@
 			await api.items.update(ws, a.item_id, { fields_patch: { status: 'active' } });
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			await load();
+			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
+			announcement = `${a.title} is now active.`;
+			// Its Activate button is gone: land on the same row's link.
+			await tick();
+			listEl?.querySelector<HTMLAnchorElement>(`[data-item="${a.item_id}"]`)?.focus();
 		} catch (e) {
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			rowError = { id: a.item_id, message: e instanceof Error ? e.message : 'Could not activate it' };
@@ -65,17 +73,19 @@
 <section class="drafts" aria-label="Playbooks and conventions from this app">
 	<h4>Playbooks and conventions</h4>
 	<p class="hint">They arrive as drafts. Nothing runs until you activate it, and the app cannot activate them itself.</p>
+	<p class="sr-only" role="status">{announcement}</p>
 	{#if loadError}
 		<p class="error" role="alert">{loadError}</p>
+		<Button size="sm" onclick={load}>Try again</Button>
 	{:else if artifacts === null}
 		<p class="hint">Loading…</p>
 	{:else if artifacts.length === 0}
 		<p class="hint">This app added none.</p>
 	{:else}
-		<ul>
+		<ul bind:this={listEl}>
 			{#each artifacts as a (a.item_id)}
 				<li data-testid="app-artifact-row">
-					<a href="/{username}/{wsSlug}/{a.collection_slug}/{a.ref ?? a.slug}">{a.title}</a>
+					<a data-item={a.item_id} href="/{username}/{wsSlug}/{a.collection_slug}/{a.ref ?? a.slug}">{a.title}</a>
 					{#if a.ref}<span class="mono">{a.ref}</span>{/if}
 					<Chip size="sm" color={a.status === 'draft' ? 'var(--accent-amber)' : 'var(--accent-green)'}>{a.status ?? 'unknown'}</Chip>
 					<span class="hint">from v{a.version}</span>
@@ -128,6 +138,14 @@
 		font-family: var(--font-mono, monospace);
 		font-size: 0.85em;
 		color: var(--text-secondary);
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
 	}
 	.error {
 		margin: 0;
