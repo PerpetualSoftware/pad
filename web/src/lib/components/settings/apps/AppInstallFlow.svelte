@@ -6,6 +6,7 @@
 	import Chip from '$lib/components/common/Chip.svelte';
 	import AppInstallCodePanel from './AppInstallCodePanel.svelte';
 	import AppArtifactReview from './AppArtifactReview.svelte';
+	import { normalizePreview } from './appsShape';
 	import type { AppInstallCode, AppInstallPreview } from '$lib/types';
 
 	/**
@@ -54,7 +55,7 @@
 		try {
 			const p = await api.apps.preview(ws, baseUrl.trim());
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
-			preview = p;
+			preview = normalizePreview(p);
 		} catch (err) {
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			fail(err);

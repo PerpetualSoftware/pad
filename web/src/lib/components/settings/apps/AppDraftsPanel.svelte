@@ -6,6 +6,7 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import type { AppInstallArtifact } from '$lib/types';
+	import { normalizeInstallState } from './appsShape';
 
 	/**
 	 * The playbooks and conventions an app's pack provisioned (SPEC-6 U9b,
@@ -36,7 +37,7 @@
 		try {
 			const r = await api.apps.get(ws, installId);
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
-			artifacts = r.artifacts ?? [];
+			artifacts = normalizeInstallState(r).artifacts ?? [];
 		} catch (e) {
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			loadError = e instanceof Error ? e.message : 'Could not load the app’s playbooks and conventions';
