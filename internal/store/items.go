@@ -580,7 +580,9 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 	// BUG-3407: the caller validated these fields before this lock. If the
 	// schema it validated against has moved since, every key (all are set on
 	// a create) is re-checked against the schema as it stands under the lock.
-	{
+	// With no claim the blob is not even decoded: the store's contract for
+	// such callers (and its own guards, which run later) is unchanged.
+	if input.ValidatedSchema != nil {
 		set, err := decodeFieldsBlob(fields)
 		if err != nil {
 			return nil, fmt.Errorf("decode fields: %w", err)
@@ -2812,7 +2814,9 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// held above. A patch sets its own keys; a full `fields` write sets the
 	// keys whose value differs from the locked row. Carried values are never
 	// re-judged.
-	if input.FieldsPatch != nil {
+	if input.ValidatedSchema == nil {
+		// No claim: nothing to compare, and the blob is not decoded.
+	} else if input.FieldsPatch != nil {
 		if err := s.revalidateIfSchemaMovedTx(tx, existing.CollectionID, input.ValidatedSchema, input.FieldsPatch); err != nil {
 			return nil, err
 		}
@@ -5444,7 +5448,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 	// the whole blob is re-checked against it as it stands under the lock:
 	// every key of a moved item is set in the destination (MigrateFields keeps
 	// only values that migrate into a target field).
-	{
+	if opt.validatedSchema != nil {
 		set, err := decodeFieldsBlob(newFieldsJSON)
 		if err != nil {
 			return nil, fmt.Errorf("decode moved fields: %w", err)
