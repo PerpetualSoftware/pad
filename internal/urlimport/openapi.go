@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pb33f/go-yaml"
 	"github.com/pb33f/libopenapi"
 	"github.com/pb33f/libopenapi/datamodel/high/base"
 	v3high "github.com/pb33f/libopenapi/datamodel/high/v3"
-	"go.yaml.in/yaml/v4"
 )
 
 // ConvertOpenAPI converts an OpenAPI 3.x specification into a
@@ -343,6 +343,11 @@ func renderMediaExample(b *strings.Builder, mt *v3high.MediaType) {
 	// sequence nodes don't, so we serialize the whole node tree to
 	// YAML to get a usable representation. Tag/anchor metadata is
 	// untouched — we're rendering whatever the spec author wrote.
+	//
+	// The marshaller must be the YAML package libopenapi's Node type comes
+	// from (pb33f/go-yaml since libopenapi 0.41, TASK-3422). Any other
+	// yaml package sees a plain struct, not a Node, and the example
+	// silently renders as the node's fields instead of the author's YAML.
 	example := strings.TrimSpace(mt.Example.Value)
 	if example == "" {
 		out, err := yaml.Marshal(mt.Example)
