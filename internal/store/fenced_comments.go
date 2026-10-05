@@ -244,7 +244,7 @@ func (f *FencedTx) DeleteComment(itemID, commentID string, actor FencedActor) er
 	if err := f.tx.QueryRow(f.s.q(`SELECT user_id, COALESCE(author, ''), created_by FROM comments WHERE id = ?`), commentID).Scan(&authorID, &author, &createdBy); err != nil {
 		return fmt.Errorf("fenced comment delete: read author: %w", err)
 	}
-	proj, err := f.s.buildCommentAppProjectionTx(f.tx, itemID, authorID.String, author, createdBy, target.parentID)
+	proj, err := f.s.buildCommentAppProjectionTx(f.tx, commentID, itemID, authorID.String, author, createdBy, target.parentID)
 	if err != nil {
 		return err
 	}

@@ -1083,7 +1083,7 @@ func (s *Store) emitCommentEventTx(tx *sql.Tx, eventType string, comment *models
 	if comment == nil {
 		return fmt.Errorf("outbox: %s has no comment snapshot", eventType)
 	}
-	proj, err := s.buildCommentAppProjectionTx(tx, comment.ItemID, comment.UserID, comment.Author, comment.CreatedBy, comment.ParentID)
+	proj, err := s.buildCommentAppProjectionTx(tx, comment.ID, comment.ItemID, comment.UserID, comment.Author, comment.CreatedBy, comment.ParentID)
 	if err != nil {
 		return err
 	}

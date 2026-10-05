@@ -91,7 +91,10 @@ func (s *Store) upsertAppWebhookTx(tx *sql.Tx, workspaceID, installID string, sp
 		return err
 	}
 	ts := now()
-	res, err := tx.Exec(s.q(`UPDATE webhooks SET url = ?, events = ?, updated_at = ? WHERE app_install_id = ?`), spec.URL, string(events), ts, installID)
+	// A changed subscription list moves deliver_from: an event that occurred
+	// before the owner consented to it is never delivered (codex r5).
+	res, err := tx.Exec(s.q(`UPDATE webhooks SET url = ?, deliver_from = CASE WHEN events = ? THEN deliver_from ELSE ? END, events = ?, updated_at = ? WHERE app_install_id = ?`),
+		spec.URL, string(events), ts, string(events), ts, installID)
 	if err != nil {
 		return fmt.Errorf("app webhook: update: %w", err)
 	}
@@ -143,10 +146,29 @@ func (s *Store) rotateAppWebhookSecretTx(tx *sql.Tx, installID string) (string, 
 		return "", fmt.Errorf("app webhook: encrypt secret: %w", err)
 	}
 	ts := now()
-	if _, err := tx.Exec(s.q(`UPDATE webhooks SET secret = ?, secret_delivered_at = ?, updated_at = ? WHERE id = ?`), enc, ts, ts, id); err != nil {
+	if _, err := tx.Exec(s.q(`UPDATE webhooks SET secret = ?, secret_delivered_at = ?, deliver_from = ?, updated_at = ? WHERE id = ?`), enc, ts, ts, ts, id); err != nil {
 		return "", fmt.Errorf("app webhook: rotate secret: %w", err)
 	}
 	return secret, nil
+}
+
+// holdAppWebhookTx replaces the install's hook secret with one nobody holds
+// and clears secret_delivered_at, so nothing is delivered until a redeem
+// hands the app a new one (rotate). A no-op when the install has no hook.
+func (s *Store) holdAppWebhookTx(tx *sql.Tx, installID string) error {
+	secret, err := newAppWebhookSecret()
+	if err != nil {
+		return err
+	}
+	enc, err := s.encrypt(secret)
+	discardSecret(&secret)
+	if err != nil {
+		return fmt.Errorf("app webhook: encrypt secret: %w", err)
+	}
+	if _, err := tx.Exec(s.q(`UPDATE webhooks SET secret = ?, secret_delivered_at = NULL, updated_at = ? WHERE app_install_id = ?`), enc, now(), installID); err != nil {
+		return fmt.Errorf("app webhook: hold: %w", err)
+	}
+	return nil
 }
 
 // GetAppWebhookStatus reports an install's hook for the owner; nil when the

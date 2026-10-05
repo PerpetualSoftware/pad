@@ -426,6 +426,13 @@ type Metrics struct {
 	// Postgres deadlock (40P01), by site (TASK-3399). A site that climbs is a
 	// pair of writers whose lock order needs fixing, not just retrying.
 	DBDeadlockRetriesTotal *prometheus.CounterVec
+	// AppWebhookDeliveriesTotal counts app webhook deliveries by result
+	// (TASK-3408 U10b): delivered, transient, permanent, refused (admission
+	// said no: install not active, hook held, event not visible), deferred,
+	// skipped_no_projection (the event carried no app-projection block,
+	// so no app body could be built; never filled from live state), and
+	// skipped_bulk (a member of a bulk operation, which v1 apps never get).
+	AppWebhookDeliveriesTotal *prometheus.CounterVec
 
 	// OAuth flow metrics (PLAN-943 TASK-961). Wired from
 	// internal/server/handlers_oauth.go (per-handler seams) and
@@ -547,6 +554,10 @@ func New() *Metrics {
 		Name: "pad_db_deadlock_retries_total",
 		Help: "Store transactions run again after a Postgres deadlock (SQLSTATE 40P01), by site (TASK-3399).",
 	}, []string{"site"})
+	appWebhookDeliveriesTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_app_webhook_deliveries_total",
+		Help: "App webhook deliveries by result (TASK-3408).",
+	}, []string{"result"})
 
 	contentWritesSupersededTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_content_writes_superseded_total",
@@ -738,6 +749,7 @@ func New() *Metrics {
 		mcpActiveSessions,
 		contentWritesSupersededTotal,
 		dbDeadlockRetriesTotal,
+		appWebhookDeliveriesTotal,
 		oauthFlowsTotal,
 		oauthResourceMissingTotal,
 		planWritesTotal,
@@ -782,6 +794,7 @@ func New() *Metrics {
 		MCPActiveSessions:            mcpActiveSessions,
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
 		DBDeadlockRetriesTotal:       dbDeadlockRetriesTotal,
+		AppWebhookDeliveriesTotal:    appWebhookDeliveriesTotal,
 		OAuthFlowsTotal:              oauthFlowsTotal,
 		OAuthResourceMissingTotal:    oauthResourceMissingTotal,
 		PlanWritesTotal:              planWritesTotal,

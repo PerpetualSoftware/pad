@@ -424,8 +424,20 @@ func (s *Server) deliverOutboxUnit(unit outboxDelivery) {
 		s.failOutboxRows(unit.claimToken, unit.rowIDs, err.Error())
 		return
 	}
+	// App hooks (TASK-3408 U10b): their own body, admission and policy. Until
+	// per-endpoint state (U10c), an event owed to either side is retried for
+	// both, as owner endpoints already are for each other.
+	appOwed, err := s.deliverAppHooks(unit)
+	if err != nil {
+		s.failOutboxRows(unit.claimToken, unit.rowIDs, "app delivery: "+err.Error())
+		return
+	}
 	if outcome.Retryable() {
 		s.failOutboxRows(unit.claimToken, unit.rowIDs, outcome.LastError)
+		return
+	}
+	if appOwed {
+		s.failOutboxRows(unit.claimToken, unit.rowIDs, "app webhook delivery owed")
 		return
 	}
 	s.ackOutboxRows(unit.claimToken, unit.rowIDs)

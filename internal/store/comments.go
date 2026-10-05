@@ -466,7 +466,7 @@ func (s *Store) DeleteComment(id string) error {
 	if err := tx.QueryRow(s.q(`SELECT user_id, COALESCE(author, ''), created_by FROM comments WHERE id = ?`), id).Scan(&authorID, &author, &createdBy); err != nil {
 		return fmt.Errorf("delete comment: read author: %w", err)
 	}
-	proj, err := s.buildCommentAppProjectionTx(tx, target.itemID, authorID.String, author, createdBy, target.parentID)
+	proj, err := s.buildCommentAppProjectionTx(tx, id, target.itemID, authorID.String, author, createdBy, target.parentID)
 	if err != nil {
 		return err
 	}

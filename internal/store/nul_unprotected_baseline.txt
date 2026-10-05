@@ -16,6 +16,9 @@ api_tokens.prefix
 api_tokens.token_hash
 api_tokens.user_id
 api_tokens.workspace_id
+app_delivery_inflight.delivery_id
+app_delivery_inflight.expires_at
+app_delivery_inflight.install_id
 app_install_codes.code_sha256
 app_install_codes.consumed_at
 app_install_codes.created_at
@@ -351,6 +354,7 @@ watches.user_id
 watches.workspace_id
 webhooks.app_install_id
 webhooks.created_at
+webhooks.deliver_from
 webhooks.id
 webhooks.last_triggered_at
 webhooks.secret_delivered_at

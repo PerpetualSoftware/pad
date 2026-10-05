@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -135,16 +136,48 @@ func (s *Store) BeginInstallTeardown(workspaceID, installID string, kind Teardow
 }
 
 // DrainInstallDeliveries is the wait between the phases: until the install
-// has no unexpired in-flight webhook delivery row (DOC-3371 §5).
+// has no unexpired in-flight webhook delivery row, in database time
+// (DOC-3371 §5, TASK-3408 U10b). Phase 1 already refuses admission, so the
+// set only shrinks. Phase 2 must not run before this returns nil.
 //
-// TODO(U10): a no-op until app webhooks exist. U10 adds app_delivery_inflight
-// and must make this wait, in database time, until no row for installID is
-// unexpired; phase 2 must not run before it returns.
-func (s *Store) DrainInstallDeliveries(installID string) error { return nil }
+// It gives up after appDeliveryDrainBound with ErrDrainTimeout: no row can
+// outlive its 12 s expiry, so a longer wait means something is wrong with
+// time, and the caller must not finish the phase. A cancelled ctx (the
+// owner's request went away) stops the wait the same way; a repeated call
+// resumes it, as the phases are resumable.
+func (s *Store) DrainInstallDeliveries(ctx context.Context, installID string) error {
+	deadline := time.NewTimer(appDeliveryDrainBound)
+	defer deadline.Stop()
+	for {
+		n, err := s.liveAppDeliveries(installID)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		poll := time.NewTimer(appDeliveryDrainPoll)
+		select {
+		case <-ctx.Done():
+			poll.Stop()
+			return ctx.Err()
+		case <-deadline.C:
+			poll.Stop()
+			return ErrDrainTimeout
+		case <-poll.C:
+		}
+	}
+}
+
+// ErrDrainTimeout: an install still had in-flight deliveries after the
+// drain's bound. The phase is not finished; repeating the call resumes it.
+var ErrDrainTimeout = errors.New("app deliveries still in flight")
 
 // FinishDisable is disable's phase 2: disabling -> inactive.
 //
-// TODO(U10/U11): suspend the install's webhook and item actions here.
+// The webhook needs nothing here: admission refuses every attempt while the
+// install is not active, and the drain between the phases waited out every
+// attempt admitted before phase 1 (TASK-3408 U10b). TODO(U11): item actions.
 func (s *Store) FinishDisable(workspaceID, installID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -195,6 +228,12 @@ func (s *Store) FinishRotate(workspaceID, installID string) (string, time.Time, 
 		return "", time.Time{}, err
 	}
 	discardSecret(&secret)
+	// The webhook's secret is replaced and the hook HELD again, like the
+	// client secret: the old one may be what leaked, and the app gets the
+	// new one only by redeeming this code (TASK-3408 U10b).
+	if err := s.holdAppWebhookTx(tx, installID); err != nil {
+		return "", time.Time{}, err
+	}
 	code, exp, err := s.mintInstallCodeTx(tx, installID)
 	if err != nil {
 		return "", time.Time{}, err
@@ -227,6 +266,11 @@ func (s *Store) ReenableInstall(workspaceID, installID string) error {
 	if err := s.setInstallStateTx(tx, installID, InstallActive, false); err != nil {
 		return err
 	}
+	// Events from the disabled period are never delivered after it, even
+	// when an owner hook's failure kept them pending (codex r5 on U10b).
+	if _, err := tx.Exec(s.q(`UPDATE webhooks SET deliver_from = ?, updated_at = ? WHERE app_install_id = ?`), now(), now(), installID); err != nil {
+		return fmt.Errorf("re-enable: webhook: %w", err)
+	}
 	return tx.Commit()
 }
 
@@ -240,9 +284,10 @@ var uninstallHookAfterStep func(step string) error
 //  1. the install client: its oauth_connections by request_id first, then
 //     its bindings and grants, then the client row (U5a's
 //     DeleteInstallClientTx);
-//  2. item actions, pending deliveries and the app webhook: TODO(U10/U11),
-//     none exist yet. App attachments are all bound to items and stay
-//     (the U7 item-scoped ruling);
+//  2. the app webhook is deleted (U10a); no delivery is in flight, because
+//     admission refuses an uninstalling install and the drain ran first
+//     (U10b). Item actions: TODO(U11). App attachments are all bound to
+//     items and stay (the U7 item-scoped ruling);
 //  3. the bot: its membership (member_collection_access cascades), its
 //     sessions, API tokens and OAuth credentials, and the bot is DISABLED;
 //  4. the install becomes the tombstone, state 'uninstalled'.
