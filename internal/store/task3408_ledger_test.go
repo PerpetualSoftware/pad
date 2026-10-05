@@ -42,8 +42,8 @@ func TestTask3408_DeliveryLedger(t *testing.T) {
 	if st, n := row(); st != DeliveryDelivered || n != 2 {
 		t.Fatalf("after a late write: %s/%d, want delivered/2 (terminal stands)", st, n)
 	}
-	if dropped, err := f.s.DropDelivery(eventID, f.hookID, "old"); err != nil || dropped {
-		t.Fatalf("dropping a delivered row: %v %v", dropped, err)
+	if outcome, err := f.s.DropOwedDelivery(eventID, f.hookID, "item.created", f.companion.ID, now(), "old"); err != nil || outcome != "" {
+		t.Fatalf("dropping a delivered row: %q %v", outcome, err)
 	}
 	var count int
 	must(f.s.db.QueryRow(f.s.q(`SELECT dropped_count FROM webhooks WHERE id = ?`), f.hookID).Scan(&count))
@@ -57,7 +57,7 @@ func TestTask3408_DeliveryLedger(t *testing.T) {
 	}
 	must(f.s.RecordDelivery(eventID, f.hookID, DeliveryTransient, "503", 1))
 	for i := 0; i < 2; i++ {
-		if _, err := f.s.DropDelivery(eventID, f.hookID, "old"); err != nil {
+		if _, err := f.s.DropOwedDelivery(eventID, f.hookID, "item.created", f.companion.ID, now(), "old"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -69,5 +69,34 @@ func TestTask3408_DeliveryLedger(t *testing.T) {
 	// Owner rows: only delivered is recorded, and it is read back.
 	if ok, err := f.s.OwnerDelivered(eventID, "no-hook"); err != nil || ok {
 		t.Fatalf("an unrecorded owner hook: %v %v", ok, err)
+	}
+}
+
+// codex r4 on U10c: the drop decision runs admission's checks under the
+// install lock, so a delivery no longer owed (here: the install disabled
+// since) is recorded refused, not dropped and counted.
+func TestTask3408_DropOfAnUnowedDeliveryIsARefusal(t *testing.T) {
+	f := task3408Fixture(t, "inst-dropref")
+	item, err := f.s.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: "T", Fields: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var eventID string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT id FROM event_outbox WHERE subject_id = ? ORDER BY occurred_at DESC LIMIT 1`), item.ID).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.BeginInstallTeardown(f.ws.ID, f.installID, TeardownDisable); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := f.s.DropOwedDelivery(eventID, f.hookID, "item.created", f.companion.ID, now(), "old")
+	if err != nil || outcome != "refused:install_disabling" {
+		t.Fatalf("outcome %q (%v), want refused:install_disabling", outcome, err)
+	}
+	var count int
+	if err := f.s.db.QueryRow(f.s.q(`SELECT dropped_count FROM webhooks WHERE id = ?`), f.hookID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("dropped_count %d for a delivery that was not owed", count)
 	}
 }

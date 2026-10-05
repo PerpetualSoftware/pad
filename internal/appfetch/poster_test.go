@@ -259,3 +259,32 @@ func TestPoster_PreSendFailuresAreNotSent(t *testing.T) {
 		t.Fatalf("dial failure: %v, want ErrNotSent", err)
 	}
 }
+
+type failAfter struct{ ok int }
+
+func (f *failAfter) Write(p []byte) (int, error) {
+	if f.ok <= 0 {
+		return 0, errors.New("connection reset")
+	}
+	n := min(len(p), f.ok)
+	f.ok -= n
+	if n < len(p) {
+		return n, errors.New("connection reset")
+	}
+	return n, nil
+}
+
+// codex r4 on U10c: a write that fails before its first byte is unsent; one
+// that fails part-way is not.
+func TestPoster_ZeroByteWriteFailureIsUnsent(t *testing.T) {
+	none := &countingWriter{w: &failAfter{}}
+	_, err := none.Write([]byte("POST /"))
+	if !errors.Is(unsentIfNothingWritten(none, err), ErrNotSent) {
+		t.Fatal("a write failing at its first byte was not ErrNotSent")
+	}
+	some := &countingWriter{w: &failAfter{ok: 3}}
+	_, err = some.Write([]byte("POST /"))
+	if errors.Is(unsentIfNothingWritten(some, err), ErrNotSent) {
+		t.Fatal("a write failing after 3 bytes was reported unsent")
+	}
+}

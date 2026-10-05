@@ -175,21 +175,80 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, del
 	return &AppDeliveryAdmission{URL: hook.url, Secret: plain, InstallID: installID}, nil
 }
 
-// AppDeliveryRefusal runs admission's checks as a plain read, without the
-// lock or an in-flight record, and returns the refusal admission would give
-// ("" when it would admit). For decisions about an event that is NOT about
-// to be sent, the 24 h drop above all: a delivery admission would refuse was
-// never owed, so it is refused, not dropped and counted (codex r2 on U10c).
-func (s *Store) AppDeliveryRefusal(webhookID, event, collectionID, occurredAt string) (string, error) {
+// DropOwedDelivery decides a delivery that is past the drop age (codex r2/r4
+// on U10c). In ONE transaction that takes the install row first, as
+// admission does, it runs admission's checks: a delivery admission would
+// refuse was never owed and is recorded refused; one it would admit is
+// recorded dropped and counted on the hook. A terminal row is left alone.
+// It returns "dropped", "refused:<reason>" or "" (already terminal).
+func (s *Store) DropOwedDelivery(eventID, webhookID, event, collectionID, occurredAt, reason string) (string, error) {
 	installID, err := s.appHookInstall(webhookID)
-	if err == nil {
-		_, err = s.appDeliveryChecksQ(s.db, installID, webhookID, event, collectionID, occurredAt, false)
-	}
 	var refused *AppDeliveryRefusedError
 	if errors.As(err, &refused) {
-		return refused.Reason, nil
+		return s.recordDropDecision(eventID, webhookID, "refused:"+refused.Reason)
 	}
-	return "", err
+	if err != nil {
+		return "", err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	outcome := "dropped"
+	if _, err := s.appDeliveryChecksQ(tx, installID, webhookID, event, collectionID, occurredAt, true); err != nil {
+		if !errors.As(err, &refused) {
+			return "", err
+		}
+		outcome = "refused:" + refused.Reason
+	}
+	done, err := s.recordDropDecisionTx(tx, eventID, webhookID, outcome, reason)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return done, nil
+}
+
+func (s *Store) recordDropDecision(eventID, webhookID, outcome string) (string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	done, err := s.recordDropDecisionTx(tx, eventID, webhookID, outcome, "")
+	if err != nil {
+		return "", err
+	}
+	return done, tx.Commit()
+}
+
+// recordDropDecisionTx writes the terminal row for a drop-age decision and,
+// for a drop, counts it on the hook. "" when the row was already terminal.
+func (s *Store) recordDropDecisionTx(tx *sql.Tx, eventID, webhookID, outcome, reason string) (string, error) {
+	status, lastError := DeliveryDropped, reason
+	if outcome != "dropped" {
+		status, lastError = DeliveryRefused, outcome
+	}
+	res, err := tx.Exec(s.q(`INSERT INTO webhook_deliveries (outbox_event_id, webhook_id, status, attempts, last_error, updated_at)
+		VALUES (?, ?, ?, 0, ?, ?)
+		ON CONFLICT (outbox_event_id, webhook_id) DO UPDATE SET status = excluded.status, last_error = excluded.last_error, updated_at = excluded.updated_at
+		WHERE webhook_deliveries.status NOT IN ('delivered', 'permanent', 'refused', 'skipped', 'dropped')`),
+		eventID, webhookID, status, nullIfEmpty(lastError), now())
+	if err != nil {
+		return "", fmt.Errorf("drop decision: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", nil
+	}
+	if status == DeliveryDropped {
+		if _, err := tx.Exec(s.q(`UPDATE webhooks SET dropped_count = dropped_count + 1 WHERE id = ?`), webhookID); err != nil {
+			return "", fmt.Errorf("drop decision: count: %w", err)
+		}
+	}
+	return outcome, nil
 }
 
 func (s *Store) appHookInstall(webhookID string) (string, error) {

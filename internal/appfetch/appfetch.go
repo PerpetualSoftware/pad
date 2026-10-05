@@ -381,12 +381,16 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 		}
 	}
 	req.Close = true // one request per connection
-	bw := bufio.NewWriter(conn)
+	// Count what reached the connection: a write that fails before its
+	// first byte (a reset or the deadline right after the handshake) sent
+	// nothing (codex r4 on U10c).
+	cw := &countingWriter{w: conn}
+	bw := bufio.NewWriter(cw)
 	if err := req.Write(bw); err != nil {
-		return 0, err
+		return 0, unsentIfNothingWritten(cw, err)
 	}
 	if err := bw.Flush(); err != nil {
-		return 0, err
+		return 0, unsentIfNothingWritten(cw, err)
 	}
 	// Interim 1xx answers (100 Continue, 103 Early Hints) precede the final
 	// one and are skipped, as net/http's Transport does (codex r4 on U10b);
@@ -427,4 +431,23 @@ func underPath(u *url.URL, prefix string) bool {
 		return strings.HasPrefix(u.Path, prefix)
 	}
 	return u.Path == prefix || strings.HasPrefix(u.Path, prefix+"/")
+}
+
+// countingWriter counts the bytes its writer accepted.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func unsentIfNothingWritten(cw *countingWriter, err error) error {
+	if cw.n == 0 {
+		return fmt.Errorf("%w: %w", ErrNotSent, err)
+	}
+	return err
 }

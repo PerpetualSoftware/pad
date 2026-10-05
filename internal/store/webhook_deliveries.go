@@ -70,32 +70,6 @@ func (s *Store) RecordDelivery(eventID, webhookID, status, lastError string, att
 	return nil
 }
 
-// DropDelivery marks a still-owed delivery dropped and counts it on the hook,
-// in one transaction. A no-op when the row is already terminal.
-func (s *Store) DropDelivery(eventID, webhookID, reason string) (bool, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	ts := now()
-	res, err := tx.Exec(s.q(`INSERT INTO webhook_deliveries (outbox_event_id, webhook_id, status, attempts, last_error, updated_at)
-		VALUES (?, ?, 'dropped', 0, ?, ?)
-		ON CONFLICT (outbox_event_id, webhook_id) DO UPDATE SET status = 'dropped', last_error = excluded.last_error, updated_at = excluded.updated_at
-		WHERE webhook_deliveries.status NOT IN ('delivered', 'permanent', 'refused', 'skipped', 'dropped')`),
-		eventID, webhookID, reason, ts)
-	if err != nil {
-		return false, fmt.Errorf("drop delivery: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return false, nil
-	}
-	if _, err := tx.Exec(s.q(`UPDATE webhooks SET dropped_count = dropped_count + 1 WHERE id = ?`), webhookID); err != nil {
-		return false, fmt.Errorf("drop delivery: count: %w", err)
-	}
-	return true, tx.Commit()
-}
-
 // OwnerDelivered reports whether an owner hook already received eventID.
 func (s *Store) OwnerDelivered(eventID, webhookID string) (bool, error) {
 	st, err := s.DeliveryStatus(eventID, webhookID)

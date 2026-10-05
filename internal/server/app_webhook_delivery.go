@@ -153,26 +153,19 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 			continue
 		}
 		if expired {
-			// Only a delivery the app was OWED is dropped and counted: one
-			// admission would refuse (before deliver_from, not visible, the
-			// install not active) is recorded refused (codex r2 on U10c).
-			reason, err := s.store.AppDeliveryRefusal(t.WebhookID, unit.eventType, collectionID, unit.occurredAt)
+			// Only a delivery the app was OWED is dropped and counted, and
+			// the decision is made under the install lock, as admission's is
+			// (codex r2/r4 on U10c): one admission would refuse is recorded
+			// refused.
+			outcome, err := s.store.DropOwedDelivery(unit.eventID, t.WebhookID, unit.eventType, collectionID, unit.occurredAt, "undelivered after "+appWebhookDropAfter.String())
 			if err != nil {
 				return false, err
 			}
-			if reason != "" {
-				if err := s.store.RecordDelivery(unit.eventID, t.WebhookID, store.DeliveryRefused, reason, 0); err != nil {
-					return false, err
-				}
-				s.countAppDelivery("refused")
-				continue
-			}
-			dropped, err := s.store.DropDelivery(unit.eventID, t.WebhookID, "undelivered after "+appWebhookDropAfter.String())
-			if err != nil {
-				return false, err
-			}
-			if dropped {
+			switch {
+			case outcome == "dropped":
 				s.countAppDelivery("dropped")
+			case outcome != "":
+				s.countAppDelivery("refused")
 			}
 			continue
 		}
