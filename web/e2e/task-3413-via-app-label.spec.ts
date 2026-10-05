@@ -99,7 +99,7 @@ test('TASK-3413 U9c: the members list shows apps in their own section, not as me
 	await expect(page.getByRole('tab', { name: /Apps/ })).toHaveAttribute('aria-selected', 'true');
 });
 
-test('TASK-3413 U9c: a long unbroken app name wraps instead of widening the page (codex r1)', async ({ page, fixture, request }) => {
+test('TASK-3413 U9c: a long unbroken app name wraps inside the viewport (codex r1)', async ({ page, fixture, request }) => {
 	const long = 'Portal' + 'x'.repeat(120);
 	const { collSlug, item } = await seed(fixture, request);
 	await page.route(`**/api/v1/workspaces/${fixture.workspaceSlug}/**`, async (route: Route) => {
@@ -113,6 +113,14 @@ test('TASK-3413 U9c: a long unbroken app name wraps instead of widening the page
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${collSlug}/${item.slug}`);
 	await expect(page.locator('.meta-via-app')).toContainText(long);
 	await expect(page.locator('.via-app-marker').first()).toContainText(long);
-	const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-	expect(overflow, 'the page scrolls sideways').toBeLessThanOrEqual(0);
+	// An ancestor clips rather than scrolls, so the page's own width says
+	// nothing: measured without the fix, a phone's label ran to x=724 on a
+	// 412-wide viewport, cut off. Each label must end inside the viewport.
+	const overruns = await page.evaluate(() =>
+		['.meta-via-app', '.via-app-marker'].flatMap((sel) => {
+			const r = document.querySelector(sel)!.getBoundingClientRect();
+			return r.right > window.innerWidth ? [`${sel} ends at ${Math.round(r.right)} of ${window.innerWidth}`] : [];
+		})
+	);
+	expect(overruns, 'a via label runs past the viewport').toEqual([]);
 });
