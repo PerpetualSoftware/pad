@@ -2,100 +2,94 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { test } from './fixtures';
-import { seedRealisticContent } from './lib/demo-seed';
+import { seedReadmeShowcase } from './lib/readme-seed';
 
 /**
- * README screenshot capture.
+ * README / getpad.dev product screenshots (TASK-3426).
  *
- * Gated on PAD_SCREENSHOTS=1 — runs only when explicitly requested,
- * never as part of the normal e2e suite. The script seeds a small
- * demo dataset (realistic task titles + statuses + an active plan)
- * on top of the per-run workspace, then captures dashboard / board /
- * list / table screenshots into docs/screenshots/ at the repo root.
+ * Gated on PAD_SCREENSHOTS=1: runs only when explicitly requested, never as
+ * part of the normal e2e suite. It seeds the e2e fixture's own throwaway
+ * workspace with ./lib/readme-seed.ts (never a real workspace, CONVE-15),
+ * then captures each view in dark and light at 2x device pixel ratio.
  *
- * Re-run via:
- *   make build-go && cd web && PAD_SCREENSHOTS=1 npx playwright test screenshots --project=desktop-chromium
+ * Re-run against a FRESH data dir, so earlier runs' items don't pile up:
+ *   make build-go && cd web && \
+ *     PAD_SCREENSHOTS=1 PAD_BINARY=../pad PAD_E2E_DATA_DIR=$(mktemp -d) \
+ *     npx playwright test screenshots --project=desktop-chromium
  *
- * Theme: captured in DARK mode (Pad's default when no user preference is
- * set). Playwright's headless Chromium reports prefers-color-scheme: light
- * by default, which would otherwise make the layout's onMount set
- * data-theme="light" — producing light-mode screenshots that don't match
- * what most users see and that clash with getpad.dev's dark marketing site.
- * `test.use({ colorScheme: 'dark' })` flips this so the layout falls through
- * to its default (dark) branch.
+ * Then shrink them (about 60% smaller, no visible change at these sizes):
+ *   cd docs/screenshots && for f in *.png; do \
+ *     pngquant --quality=85-98 --speed 1 --force --output "$f" "$f"; done
  *
- * Output:
- *   docs/screenshots/dashboard.png
- *   docs/screenshots/board.png
- *   docs/screenshots/list.png
- *   docs/screenshots/table.png
+ * Theme: the layout's onMount forces data-theme="light" only when
+ * matchMedia reports light, so each shot emulates the colour scheme before
+ * navigating. Dark is Pad's default and getpad.dev's palette.
+ *
+ * Output (docs/screenshots/, 2880x1800 pixels each):
+ *   dashboard.png      dashboard-light.png
+ *   board.png          board-light.png
+ *   list.png           list-light.png
+ *   item.png           item-light.png
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..');
 const OUT_DIR = resolve(REPO_ROOT, 'docs', 'screenshots');
 
-// Skip the entire describe block when PAD_SCREENSHOTS isn't set so a
-// regular `npx playwright test` doesn't accidentally regenerate screenshots
-// or fail because the OUT_DIR write isn't permitted in some environment.
 const enabled = process.env.PAD_SCREENSHOTS === '1';
+
+// The sidebar footer shows the build's version label, which on a local build
+// reads "dev (<commit>)". It is not product UI anyone would see on a release.
+const HIDE_BUILD_LABEL = '.version-label { visibility: hidden !important; }';
 
 test.describe.configure({ mode: 'serial' });
 
 test.describe('README screenshots', () => {
 	test.skip(!enabled, 'set PAD_SCREENSHOTS=1 to regenerate screenshots');
 
-	// 1440x900 ≈ "Macbook Air at default zoom" — the most common desktop
-	// viewport for product screenshots. Wide enough that the board view
-	// shows multiple columns side-by-side without horizontal scroll.
-	//
-	// colorScheme: 'dark' makes Chromium report prefers-color-scheme: dark.
-	// The Pad layout's onMount only forces data-theme="light" when matchMedia
-	// reports 'light'; with dark emulation, it leaves the document on the
-	// default theme — which renders dark.
-	test.use({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
+	// 1440x900 CSS pixels at 2x: a MacBook-sized layout, crisp on retina and
+	// when getpad.dev scales it down to ~900px wide.
+	test.use({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 
 	test.beforeAll(async () => {
 		await mkdir(OUT_DIR, { recursive: true });
 	});
 
 	test('seed + capture', async ({ page, fixture, request }) => {
-		// Seed + four screenshots is more than the suite's default 30s.
-		// `networkidle` would never trigger anyway because the dashboard
-		// holds an open SSE connection — we use targeted waits below.
-		test.setTimeout(120_000);
+		// Seeding plus eight captures is well past the default 30s. The pages
+		// hold an open SSE connection, so `networkidle` never fires; the waits
+		// below are targeted instead.
+		test.setTimeout(180_000);
 
-		await seedRealisticContent(fixture, request);
-
+		const seed = await seedReadmeShowcase(fixture, request);
 		const wsPath = `/${fixture.adminUsername}/${fixture.workspaceSlug}`;
 
-		const captureView = async (
-			path: string,
-			outFile: string,
-			anchorSelector: string
-		) => {
-			await page.goto(path);
-			// DOMContentLoaded fires once the SvelteKit hydration scripts
-			// are parsed but before the SSE long-lived connection opens.
-			await page.waitForLoadState('domcontentloaded');
-			// Wait for a content-meaningful element to appear so we capture
-			// a populated view rather than the empty skeleton.
-			await page.waitForSelector(anchorSelector, { state: 'visible', timeout: 15_000 });
-			// Settle delay covers SSE-driven re-renders + animations
-			// (progress bars, drag handles) that happen post-paint.
-			await page.waitForTimeout(800);
-			await page.screenshot({ path: resolve(OUT_DIR, outFile), fullPage: false });
-		};
+		const shots: { path: string; name: string; anchor: string }[] = [
+			{ path: wsPath, name: 'dashboard', anchor: 'h1' },
+			{ path: `${wsPath}/tasks?view=board`, name: 'board', anchor: '.item-card' },
+			{ path: `${wsPath}/tasks?view=list`, name: 'list', anchor: '.item-card' },
+			{
+				// The split view: the list beside the open item reads as the
+				// product better than the full item page's stretched form.
+				path: `${wsPath}/tasks?view=list&item=${encodeURIComponent(seed.featureTaskSlug)}`,
+				name: 'item',
+				anchor: '.item-pane'
+			}
+		];
 
-		await captureView(wsPath, 'dashboard.png', 'h1, h2');
-		await captureView(`${wsPath}/tasks?view=board`, 'board.png', 'h1, h2');
-		await captureView(`${wsPath}/tasks?view=list`, 'list.png', 'h1, h2');
-		// Table view is not URL-reachable in the current code (only 'list'
-		// and 'board' are parsed from search params; 'table' is only set
-		// via the toggle UI + localStorage). Skip it for now — three
-		// screenshots already cover the README's hero use cases.
+		for (const scheme of ['dark', 'light'] as const) {
+			await page.emulateMedia({ colorScheme: scheme });
+			for (const shot of shots) {
+				await page.goto(shot.path);
+				await page.waitForLoadState('domcontentloaded');
+				await page.waitForSelector(shot.anchor, { state: 'visible', timeout: 15_000 });
+				await page.addStyleTag({ content: HIDE_BUILD_LABEL });
+				// Post-paint settle: SSE-driven re-renders, progress bars, the
+				// pane's open transition.
+				await page.waitForTimeout(1200);
+				const suffix = scheme === 'dark' ? '' : '-light';
+				await page.screenshot({ path: resolve(OUT_DIR, `${shot.name}${suffix}.png`) });
+			}
+		}
 	});
 });
-
-// seedRealisticContent now lives in ./lib/demo-seed.ts and is shared with
-// blog-screenshots.spec.ts.
