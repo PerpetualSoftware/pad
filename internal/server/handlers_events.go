@@ -740,7 +740,8 @@ func sseEventVisibleFor(vis sseVisibility, sseUserID string, event events.Event)
 // accessEpoch fingerprints this snapshot's effective visible set, so two
 // revalidation ticks can be compared without re-querying anything (IDEA-2898).
 //
-// It reuses the same function the item doors use, for one reason worth stating:
+// It reuses the same function the item doors use (effectiveAccessEpoch, which
+// hashes the set they FILTER BY, BUG-3347), for one reason worth stating:
 // the client compares the epoch it got from /items-changes against the one it
 // stored, and this signal only tells it to go and do that. If the two sides
 // disagreed about what "the same set" means, this tick would announce changes
@@ -759,9 +760,13 @@ func (v sseVisibility) accessEpoch() string {
 	for id := range v.grantedItemSet {
 		itemIDs = append(itemIDs, id)
 	}
+	fullIDs := make([]string, 0, len(v.fullCollIDSet))
+	for id := range v.fullCollIDSet {
+		fullIDs = append(fullIDs, id)
+	}
 	// Map iteration order is randomized; computeAccessEpoch sorts, which is
 	// what makes this comparable across ticks at all.
-	return computeAccessEpoch(collIDs, itemIDs)
+	return effectiveAccessEpoch(collIDs, fullIDs, itemIDs)
 }
 
 type sseVisibility struct {
@@ -783,6 +788,10 @@ type sseVisibility struct {
 	// member has FULL access; grantedItemSet still gates narrower
 	// collection accesses.
 	fullCollSet map[string]bool
+	// fullCollIDSet is fullCollSet keyed by collection ID. It is the
+	// collection half of the set the item doors filter by when the caller
+	// holds item grants, so accessEpoch hashes it then (BUG-3347).
+	fullCollIDSet map[string]bool
 	// isGuest is true when the user is not a direct workspace member —
 	// they only reach the SSE stream via per-collection / per-item grants.
 	// Used to hide workspace-level events that have no collection attached.
@@ -917,6 +926,7 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 			fullCollIDSet[id] = true
 		}
 	}
+	v.fullCollIDSet = fullCollIDSet
 	v.fullCollSet = make(map[string]bool, len(fullCollIDSet))
 	for id := range fullCollIDSet {
 		coll, _ := s.store.GetCollection(id)

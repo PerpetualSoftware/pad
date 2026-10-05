@@ -59,6 +59,33 @@ func computeAccessEpoch(visibleCollectionIDs, grantedItemIDs []string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// effectiveAccessEpoch is the ONE definition of a caller's epoch, used by
+// /items-index, /items-changes and the SSE revalidation tick (BUG-3347). It
+// hashes the collection set the item doors actually FILTER BY, which is not
+// always the nav-visible set:
+//
+//   - With item grants, the doors swap their collection filter to
+//     guestResourceFilter's fullCollIDs. That set drops a whole-collection
+//     grant on a soft-deleted collection (BUG-3333), while the nav set keeps
+//     it so the grant stays revocable. Hashing the nav set left the epoch
+//     unchanged when that collection was deleted, so a warm client was never
+//     told to drop its cached rows.
+//   - Without item grants, the doors filter by the nav set, and so does this.
+//
+// grantedItemIDs must be the LIVE grant set (guestResourceFilter, not the
+// include-deleted variant): see the review-round-2 note on /items-changes.
+func effectiveAccessEpoch(visibleCollectionIDs, fullCollIDs, grantedItemIDs []string) string {
+	if len(grantedItemIDs) > 0 {
+		if fullCollIDs == nil {
+			// Item grants make the caller filtered whatever the collection
+			// list says; nil must not read as the unrestricted sentinel.
+			fullCollIDs = []string{}
+		}
+		return computeAccessEpoch(fullCollIDs, grantedItemIDs)
+	}
+	return computeAccessEpoch(visibleCollectionIDs, grantedItemIDs)
+}
+
 // writeSortedIDs feeds ids to h in sorted order, one per line. The input slice
 // is COPIED before sorting: the callers pass slices they go on to use for the
 // query itself, and reordering those under them would be an invisible

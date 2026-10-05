@@ -285,7 +285,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		Total:                      len(result),
 		Cursor:                     cursor,
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
-		AccessEpoch:                computeAccessEpoch(visibleIDs, grantedItemIDs),
+		AccessEpoch:                effectiveAccessEpoch(visibleIDs, fullCollIDs, grantedItemIDs),
 	})
 }
 
@@ -489,8 +489,10 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	// The cost is one extra grant resolve on this door, and the consequence is
 	// that soft-deleting a granted item does change the epoch once. That is a
 	// single spurious resync which then converges, rather than a storm that
-	// never does.
-	_, liveGrantedItemIDs, liveGrantErr := s.guestResourceFilter(r, workspaceID)
+	// never does. The live COLLECTION set comes from the same resolve, because
+	// with item grants it is the set this door filters by (BUG-3347; see
+	// effectiveAccessEpoch).
+	liveFullCollIDs, liveGrantedItemIDs, liveGrantErr := s.guestResourceFilter(r, workspaceID)
 	if liveGrantErr != nil {
 		writeInternalError(w, liveGrantErr)
 		return
@@ -499,7 +501,7 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		Changes:                    changes,
 		Cursor:                     strconv.FormatInt(cursorSeq, 10),
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
-		AccessEpoch:                computeAccessEpoch(visibleIDs, liveGrantedItemIDs),
+		AccessEpoch:                effectiveAccessEpoch(visibleIDs, liveFullCollIDs, liveGrantedItemIDs),
 	})
 }
 
