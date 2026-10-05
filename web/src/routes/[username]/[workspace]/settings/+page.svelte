@@ -8,6 +8,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Collection, WorkspaceContext } from '$lib/types';
+	import type { WorkspaceApp } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
@@ -122,6 +123,9 @@
 	// Members
 	let members = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
 	let invitations = $state<{ id: string; email: string; role: string; code: string; join_url?: string }[]>([]);
+	// Installed apps' bot principals (TASK-3392): listed apart from members and
+	// not seats (Dave §11 Q2); shown in their own section (SPEC-6 U9c).
+	let workspaceApps = $state<WorkspaceApp[]>([]);
 	let inviteEmail = $state('');
 	let inviteRole = $state('editor');
 	let inviting = $state(false);
@@ -299,6 +303,7 @@
 			collections = [];
 			members = [];
 			invitations = [];
+			workspaceApps = [];
 			if (wsSlug) load(wsSlug);
 		});
 	});
@@ -436,6 +441,7 @@
 				if (myLoad !== loadGen) return;
 				members = memberData.members ?? [];
 				invitations = memberData.invitations ?? [];
+				workspaceApps = memberData.apps ?? [];
 				// Note: current-user role no longer derived here. workspaceStore.setCurrent
 				// fetches /me and pins workspaceStore.isOwner / .currentRole.
 			} catch {}
@@ -611,6 +617,7 @@
 			if (!identityHeld(epochAtEntry)) return;
 			members = memberData.members ?? [];
 			invitations = memberData.invitations ?? [];
+			workspaceApps = memberData.apps ?? [];
 		} catch (err: unknown) {
 			if (!identityHeld(epochAtEntry)) return;
 			if (isPlanLimitError(err)) {
@@ -1100,6 +1107,25 @@
 					</div>
 				{/if}
 
+				{#if workspaceApps.length > 0}
+					<!-- SPEC-6 U9c: installed apps act as their own principals.
+					     They are listed apart from people and are not seats
+					     (Dave §11 Q2). -->
+					<div class="invitations-section apps-section" data-testid="members-apps">
+						<h3>Apps</h3>
+						<p class="apps-note">
+							Installed apps act as their own member. They are not seats.
+							{#if isOwner}<a href="#apps" onclick={(e) => { e.preventDefault(); switchTab('apps'); }}>Manage apps</a>{/if}
+						</p>
+						{#each workspaceApps as app (app.id)}
+							<div class="app-row">
+								<bdi class="app-name">{app.app_name || app.display_name}</bdi>
+								<Chip size="sm" color="var(--accent-gray)">{app.role}</Chip>
+							</div>
+						{/each}
+					</div>
+				{/if}
+
 				{#if invitations.length > 0}
 					<div class="invitations-section">
 						<h3>Pending Invitations</h3>
@@ -1329,6 +1355,9 @@
 	.tab.danger.active { color: var(--accent-red); border-bottom-color: var(--accent-red); }
 	/* ── Sections ──── */
 	.section { margin-bottom: var(--space-8); }
+	.apps-note { margin: 0 0 var(--space-2); font-size: 0.85em; color: var(--text-secondary); }
+	.app-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) 0; flex-wrap: wrap; }
+	.app-name { font-size: 0.9em; overflow-wrap: anywhere; }
 	.section h2 { font-size: 1.1em; color: var(--text-secondary); margin-bottom: var(--space-4); }
 	.card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-4); }
 	.card + .card { margin-top: var(--space-3); }

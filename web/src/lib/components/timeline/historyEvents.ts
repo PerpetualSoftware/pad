@@ -35,6 +35,11 @@ export interface HistoryWho {
 	/** A row a workspace import wrote (BUG-3379): its kind and source came
 	 *  from the export, unverified. */
 	imported?: boolean;
+	/** The installed app the write went through (SPEC-6 U9c): its install id,
+	 *  '' for a row known to have none, undefined where the row cannot say
+	 *  (activities do not carry it). */
+	viaApp?: string;
+	viaAppName?: string;
 }
 
 export interface HistoryEvent {
@@ -116,7 +121,9 @@ export function whoOf(e: TimelineEntry): HistoryWho {
 			kind: v.created_by === 'agent' ? 'agent' : 'user',
 			user: nonEmpty(v.actor_name),
 			source: NO_SOURCE.has(v.source) ? undefined : v.source,
-			imported: v.imported === true ? true : undefined
+			imported: v.imported === true ? true : undefined,
+			viaApp: v.via_app ?? '',
+			viaAppName: v.via_app_name
 		};
 	}
 	// Notes and decisions record the actor kind only.
@@ -139,6 +146,9 @@ export function sameWriter(a: HistoryWho, b: HistoryWho): boolean {
 		agrees(a.agent, b.agent) &&
 		agrees(a.user, b.user) &&
 		agrees(a.source, b.source) &&
+		// A person's own edit and their edit through an app are two writers
+		// (U9c); an activity, which cannot say, joins either.
+		agrees(a.viaApp, b.viaApp) &&
 		(a.imported ?? false) === (b.imported ?? false)
 	);
 }
@@ -149,7 +159,9 @@ function mergeWho(a: HistoryWho, b: HistoryWho): HistoryWho {
 		agent: a.agent ?? b.agent,
 		user: a.user ?? b.user,
 		source: a.source ?? b.source,
-		imported: a.imported ?? b.imported
+		imported: a.imported ?? b.imported,
+		viaApp: a.viaApp ?? b.viaApp,
+		viaAppName: a.viaAppName ?? b.viaAppName
 	};
 }
 

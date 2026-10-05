@@ -138,6 +138,23 @@ describe('HistoryView', () => {
 		expect(rows()[rows().length - 1].querySelector('[title^="Imported with the workspace"]')).toBeNull();
 	});
 
+	it('labels writes through an app, an autosave included, and keeps them apart from direct edits (SPEC-6 U9c)', () => {
+		const auto = version('via-auto', 5, { source: 'collab-snapshot', via_app: 'inst-1', via_app_name: 'Support Portal' });
+		auto.autosave_run = { count: 2, first_at: at(20), oldest_version_id: 'old', lines_added: 1, lines_removed: 0 };
+		render([
+			auto,
+			version('via', 40, { via_app: 'inst-1', via_app_name: 'Support Portal' }),
+			version('direct', 50)
+		]);
+		const title = '[title="Written through the installed app Support Portal"]';
+		const labelled = rows().filter((r) => r.querySelector(title));
+		expect(labelled.map((r) => r.getAttribute('data-row-type'))).toEqual(['autosave', 'event']);
+		expect(labelled[1].querySelector(title)!.textContent).toBe('via Support Portal');
+		// The direct edit by the same person is its own row, unlabelled.
+		expect(rows()).toHaveLength(3);
+		expect(rows()[2].querySelector(title)).toBeNull();
+	});
+
 	it('a throttled body edit renders as an edit, not an empty card', () => {
 		render([activity('a', 5, { actor: 'agent', source: 'cli', meta: { agent: 'wren', body_edited: 'true' } })]);
 		expect(rows()).toHaveLength(1);

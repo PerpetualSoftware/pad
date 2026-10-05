@@ -14,6 +14,7 @@
 	import { statusColor, priorityColor } from '$lib/utils/fieldColors';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import { IMPORTED_TITLE } from '$lib/utils/imported';
+	import { viaAppTitle } from '$lib/utils/viaApp';
 	import ActivityChangeValue from './ActivityChangeValue.svelte';
 	import TimelineVersionCard from './TimelineVersionCard.svelte';
 	import {
@@ -182,6 +183,9 @@
 						<span>
 							{row.count === 1 ? 'Autosaved' : `${row.count} autosaves`} by <bdi>{whoName(row.who)}</bdi> while editing
 						</span>
+						{#if row.who.viaAppName}
+							<span class="via-app" title={viaAppTitle(row.who.viaAppName)}>via <bdi>{row.who.viaAppName}</bdi></span>
+						{/if}
 						{#if row.who.imported}
 							<span class="imported" title={IMPORTED_TITLE}><Chip size="sm">Imported</Chip></span>
 						{/if}
@@ -218,6 +222,9 @@
 						<bdi class="name">{whoName(ev.who)}</bdi>
 						{#if ev.who.kind === 'agent'}
 							<Chip size="sm" color="var(--accent-purple)">Agent</Chip>
+						{/if}
+						{#if ev.who.viaAppName}
+							<span class="via-app" title={viaAppTitle(ev.who.viaAppName)}>via <bdi>{ev.who.viaAppName}</bdi></span>
 						{/if}
 						{#if ev.who.imported}
 							<span class="imported" title={IMPORTED_TITLE}><Chip size="sm">Imported</Chip></span>
@@ -546,6 +553,13 @@
 		color: var(--text-muted);
 	}
 
+	/* The app a write went through (U9c): secondary, never a second author. */
+	.via-app {
+		font-size: 0.85em;
+		color: var(--text-muted);
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
 	.muted {
 		color: var(--text-muted);
 	}
