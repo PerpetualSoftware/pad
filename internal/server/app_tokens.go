@@ -155,6 +155,12 @@ type AppTokenGrant struct {
 	AuthEpoch   int64
 	AuthKind    string // "service" or "delegated"
 	Subject     string
+	// A delegated grant's binding facts (TASK-3399), checked against the
+	// person on every request by appAdmitToken.
+	DelegatedAccess          string
+	DelegatedUserID          string
+	DelegatedCredentialEpoch int64
+	DelegatedMemberSince     string
 }
 
 // introspectAppToken is the app API's token check, in-process (DOC-3371 §4
@@ -199,6 +205,8 @@ func (s *Server) introspectAppToken(ctx context.Context, token string) (*AppToke
 	return &AppTokenGrant{
 		RequestID: st.Binding.RequestID, ClientID: st.Binding.ClientID, InstallID: st.Binding.InstallID,
 		WorkspaceID: st.Binding.WorkspaceID, AuthEpoch: st.Binding.AuthEpoch, AuthKind: st.Binding.AuthKind,
+		DelegatedAccess: st.Binding.DelegatedAccess, DelegatedUserID: st.Binding.DelegatedUserID,
+		DelegatedCredentialEpoch: st.Binding.DelegatedCredentialEpoch, DelegatedMemberSince: st.Binding.DelegatedMemberSince,
 		Subject: ar.GetSession().GetSubject(),
 	}, nil
 }

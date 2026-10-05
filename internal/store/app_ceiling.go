@@ -154,26 +154,27 @@ func IntersectCollectionIDs(visible, ceiling []string) []string {
 
 // InstallAPIState is what the app API reads about an install per request.
 type InstallAPIState struct {
-	WorkspaceID   string
-	State         string
-	ServiceAccess string // "read", "write", or "" (none)
-	BotUserID     string
+	WorkspaceID     string
+	State           string
+	ServiceAccess   string // "read", "write", or "" (none)
+	DelegatedAccess string // the manifest's delegated access as it stands now (TASK-3399)
+	BotUserID       string
 }
 
 // GetInstallAPIState reads an install's workspace, state, service access and
 // bot, or nil when there is no such install.
 func (s *Store) GetInstallAPIState(installID string) (*InstallAPIState, error) {
 	var st InstallAPIState
-	var access, bot sql.NullString
-	err := s.db.QueryRow(s.q(`SELECT workspace_id, state, service_access, bot_user_id FROM app_installs WHERE id = ?`), installID).
-		Scan(&st.WorkspaceID, &st.State, &access, &bot)
+	var access, delegated, bot sql.NullString
+	err := s.db.QueryRow(s.q(`SELECT workspace_id, state, service_access, delegated_access, bot_user_id FROM app_installs WHERE id = ?`), installID).
+		Scan(&st.WorkspaceID, &st.State, &access, &delegated, &bot)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read install: %w", err)
 	}
-	st.ServiceAccess, st.BotUserID = access.String, bot.String
+	st.ServiceAccess, st.DelegatedAccess, st.BotUserID = access.String, delegated.String, bot.String
 	return &st, nil
 }
 

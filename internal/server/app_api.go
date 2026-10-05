@@ -83,7 +83,7 @@ type appContext struct {
 	WorkspaceID   string
 	WorkspaceSlug string
 	Access        string // "read" or "write"
-	AuthKind      string // "service" (delegated arrives with TASK-3399)
+	AuthKind      string // "service" (the bot) or "delegated" (a person, TASK-3399)
 	Actor         *models.User
 	ReadCeiling   []string // companion ∪ system collection ids
 	Companions    []string // companion collection ids (the write set)
@@ -162,7 +162,11 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 					// commit would hide a write that happened and invite a
 					// duplicate retry. Re-admission before send is for reads.
 					if access == "write" {
-						handler(s, w, r)
+						// A write registers its re-checks too, so it can re-admit
+						// itself after reading its body and before its write
+						// (appReadmitBeforeWrite, codex U5b-2 r1). It is never
+						// re-validated after commit (R2).
+						handler(s, w, r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{})))
 						return
 					}
 					// A stream row registers its re-checks like any read, but
@@ -282,16 +286,18 @@ func (s *Server) appAdmitToken(ctx context.Context, tok string) (*appContext, er
 		}
 		return nil, errAppAdmit
 	}
-	// Delegated tokens are refused until TASK-3399 enables them (lead
-	// ruling R4): U5b must turn them on, never inherit them.
-	if grant.AuthKind != "service" {
-		return nil, errAppAdmit
-	}
 	inst, err := s.store.GetInstallAPIState(grant.InstallID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
 	}
 	if inst == nil || inst.State != "active" || inst.WorkspaceID != grant.WorkspaceID {
+		return nil, errAppAdmit
+	}
+	switch grant.AuthKind {
+	case "service":
+	case "delegated":
+		return s.appAdmitDelegated(grant, inst, tok)
+	default:
 		return nil, errAppAdmit
 	}
 	if inst.ServiceAccess != "read" && inst.ServiceAccess != "write" {
@@ -306,6 +312,64 @@ func (s *Server) appAdmitToken(ctx context.Context, tok string) (*appContext, er
 	}
 	return &appContext{Grant: grant, InstallID: grant.InstallID, WorkspaceID: grant.WorkspaceID,
 		Access: inst.ServiceAccess, AuthKind: grant.AuthKind, Actor: bot, token: tok}, nil
+}
+
+// appAdmitDelegated admits a delegated token (TASK-3399, U5b-2): an app
+// acting as a PERSON, read fresh on every request (§8 "removing a delegated
+// user's membership stops their token at the next request"):
+//   - the subject is the binding's person: a live HUMAN account whose
+//     credential epoch is the one the grant was issued under (a disable or
+//     claim since bumped it);
+//   - their membership of the install's workspace is the one the grant was
+//     issued under (its created_at; a removal ended the grant, and a re-add
+//     does not revive it), in a live workspace;
+//   - the access is the LESSER of what the person consented to and what the
+//     manifest offers now (§4 step 4): an upgrade that narrowed delegated
+//     access narrows every live grant at once.
+//
+// The role and the ceiling come from appAdmitWorkspace, as for the bot: the
+// person's membership role (owner capped to editor, read access to viewer)
+// and the install's companion ∪ system collections, intersected with what
+// the person may see at every resolver (U6a's request ceiling).
+func (s *Server) appAdmitDelegated(grant *AppTokenGrant, inst *store.InstallAPIState, tok string) (*appContext, error) {
+	// Second layer: the issuance barrier already binds every persistence to
+	// the person its code named (U5b-2 mutant D6 survives for that reason).
+	if grant.DelegatedUserID == "" || grant.Subject != grant.DelegatedUserID {
+		return nil, errAppAdmit
+	}
+	person, err := s.store.GetUser(grant.Subject)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+	}
+	if person == nil || person.IsDisabled() || person.IsApp() || person.CredentialEpoch != grant.DelegatedCredentialEpoch {
+		return nil, errAppAdmit
+	}
+	since, err := s.store.WorkspaceMemberSince(grant.WorkspaceID, person.ID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errAppAdmitInternal, err)
+	}
+	if since == "" || since != grant.DelegatedMemberSince {
+		return nil, errAppAdmit
+	}
+	access := lesserAppAccess(grant.DelegatedAccess, inst.DelegatedAccess)
+	if access == "" {
+		return nil, errAppAdmit
+	}
+	return &appContext{Grant: grant, InstallID: grant.InstallID, WorkspaceID: grant.WorkspaceID,
+		Access: access, AuthKind: grant.AuthKind, Actor: person, token: tok}, nil
+}
+
+// lesserAppAccess is the lesser of two accesses ("read" < "write"); "" when
+// either grants none.
+func lesserAppAccess(a, b string) string {
+	valid := func(x string) bool { return x == "read" || x == "write" }
+	if !valid(a) || !valid(b) {
+		return ""
+	}
+	if a == "read" || b == "read" {
+		return "read"
+	}
+	return "write"
 }
 
 // requireAppAccess is step 2: a write row refuses a read token, before any
@@ -575,6 +639,19 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	}
 	if last.Grant.AuthEpoch != ac.Grant.AuthEpoch || last.Access != ac.Access || last.InstallID != ac.InstallID {
 		return fmt.Errorf("%w: the grant changed", errAppCredential)
+	}
+	// And the workspace and role once more (codex U5b-2 r3): a person's role
+	// is not part of the credential, so a downgrade or a workspace delete
+	// committed while the re-checks ran would otherwise pass this step.
+	lastWS, err := s.appAdmitWorkspace(last)
+	if err != nil {
+		if errors.Is(err, errAppAdmitInternal) {
+			return err
+		}
+		return fmt.Errorf("the workspace or membership changed: %w", err)
+	}
+	if lastWS.Role != ac.Role || lastWS.WorkspaceSlug != ac.WorkspaceSlug {
+		return errors.New("the membership changed")
 	}
 	return nil
 }
