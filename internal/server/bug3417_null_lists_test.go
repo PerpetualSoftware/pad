@@ -22,8 +22,11 @@ import (
 //
 // nullLists walks a decoded body alongside the Go type that produced it and
 // names every slice-typed field (or top-level list) that arrived as null.
-// The type is the census: a new list field is covered the moment it is added
-// to one of these response types.
+// What it cannot see, by design: the contents of interface-typed values
+// (an item's `fields` map is the item's own data, whose values the schema
+// types), and json.RawMessage. Element types are walked only through the
+// elements present, so the cases below keep their lists non-empty where a
+// list can be filled, alongside the empty case the bug was about.
 func nullLists(t reflect.Type, v any, path string, out *[]string) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -138,8 +141,25 @@ func TestBug3417_AppsResponsesHaveNoNullLists(t *testing.T) {
 			http.StatusOK, typeOf[appsSettingsResponse]())
 
 		e.publish(t, e.minimalManifest("1.0.1"))
-		assertNoNullLists(t, "upgrade preview", doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/upgrade/preview", nil, e.token),
-			http.StatusOK, typeOf[appPreview]())
+		rr = doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/upgrade/preview", nil, e.token)
+		assertNoNullLists(t, "upgrade preview", rr, http.StatusOK, typeOf[appPreview]())
+		var up appPreview
+		parseJSON(t, rr, &up)
+		// An upgrade that adds no artifacts (codex r1).
+		assertNoNullLists(t, "upgrade confirm", doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/upgrade/confirm",
+			map[string]any{"pending_id": up.PendingID, "manifest_sha256": up.ManifestSHA256}, e.token),
+			http.StatusOK, typeOf[appUpgradeConfirmResponse]())
+
+		// A webhook-only private origin may omit `allowed` (codex r1): the
+		// PUT and every later GET answer it as a list.
+		assertNoNullLists(t, "admin apps settings PUT", doRequestWithCookie(e.srv, "PUT", "/api/v1/admin/apps", map[string]any{
+			"private_origins": []map[string]any{
+				{"origin": e.app.URL, "allowed": []string{"127.0.0.1"}, "fetch": true},
+				{"origin": "https://hooks.internal.example", "webhook": true},
+			},
+		}, e.token), http.StatusOK, typeOf[appsSettingsResponse]())
+		assertNoNullLists(t, "admin apps settings GET", doRequestWithCookie(e.srv, "GET", "/api/v1/admin/apps", nil, e.token),
+			http.StatusOK, typeOf[appsSettingsResponse]())
 
 		assertNoNullLists(t, "disable", doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/disable", nil, e.token),
 			http.StatusOK, typeOf[appInstallStateResponse]())
@@ -147,8 +167,9 @@ func TestBug3417_AppsResponsesHaveNoNullLists(t *testing.T) {
 			http.StatusOK, typeOf[appInstallStateResponse]())
 	})
 
-	t.Run("app API and app actions with empty lists", func(t *testing.T) {
-		f := appAPIFixture(t, "write")
+	t.Run("app API and app actions", func(t *testing.T) {
+		u := u11Prepare(t, appAPIFixture(t, "write"))
+		f := u.appAPIFix
 		// An item the app owns, with no comments and no attachments.
 		rr := appDo(f.srv, "POST", f.path("/collections/requests/items"), f.token, map[string]any{"title": "Fresh"})
 		assertNoNullLists(t, "app item create", rr, http.StatusCreated, typeOf[AppItem]())
@@ -166,22 +187,63 @@ func TestBug3417_AppsResponsesHaveNoNullLists(t *testing.T) {
 				Items []AppItem `json:"items"`
 			}]())
 		assertNoNullLists(t, "app item", appGet(f.srv, f.path("/items/"+it.ID), f.token), http.StatusOK, typeOf[AppItem]())
-		assertNoNullLists(t, "app comments (empty)", appGet(f.srv, f.path("/items/"+it.ID+"/comments"), f.token), http.StatusOK,
+		commentsList := typeOf[struct {
+			Comments []AppComment `json:"comments"`
+		}]()
+		assertNoNullLists(t, "app comments (empty)", appGet(f.srv, f.path("/items/"+it.ID+"/comments"), f.token), http.StatusOK, commentsList)
+		assertNoNullLists(t, "app comment create", appDo(f.srv, "POST", f.path("/items/"+it.ID+"/comments"), f.token, map[string]any{"body": "hi"}),
+			http.StatusCreated, typeOf[AppComment]())
+		assertNoNullLists(t, "app comments", appGet(f.srv, f.path("/items/"+it.ID+"/comments"), f.token), http.StatusOK, commentsList)
+		assertNoNullLists(t, "app items", appGet(f.srv, f.path("/collections/requests/items"), f.token), http.StatusOK,
 			typeOf[struct {
-				Comments []AppComment `json:"comments"`
+				Items []AppItem `json:"items"`
 			}]())
 		assertNoNullLists(t, "app me", appGet(f.srv, f.path("/me"), f.token), http.StatusOK, typeOf[AppMe]())
-		assertNoNullLists(t, "app upload", appUpload(f, "/items/"+it.ID+"/attachments?filename=a.png", testPNG(t), int64(len(testPNG(t)))),
-			http.StatusCreated, typeOf[appstore.AppAttachment]())
+		rr = appUpload(f, "/items/"+it.ID+"/attachments?filename=a.png", testPNG(t), int64(len(testPNG(t))))
+		assertNoNullLists(t, "app upload", rr, http.StatusCreated, typeOf[appstore.AppAttachment]())
+		var att appstore.AppAttachment
+		parseJSON(t, rr, &att)
+		assertNoNullLists(t, "app attachment", appGet(f.srv, f.path("/attachments/"+att.ID), f.token), http.StatusOK, typeOf[appstore.AppAttachment]())
 
-		// The human item-actions list on an item no app offers an action on.
-		viewer, tok := loginTestUserAs(t, f.srv, "viewer-3417@example.com", "Vera", "pw-3417-viewer")
-		if _, err := f.srv.store.DB().Exec(`INSERT INTO workspace_members (workspace_id, user_id, role, collection_access, created_at) VALUES (?, ?, 'viewer', 'all', ?)`,
-			f.ws.ID, viewer.ID, time.Now().UTC().Format(time.RFC3339)); err != nil {
-			t.Fatal(err)
+		// An item action, minted and redeemed (U11).
+		_, _, code, body := u.mint(t, f.item.ID, f.in.id, "open")
+		if code == "" {
+			t.Fatalf("mint: %s", body)
 		}
-		assertNoNullLists(t, "item app actions (none)",
-			doRequestWithCookie(f.srv, "GET", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.item.ID+"/app-actions", nil, tok),
-			http.StatusOK, typeOf[[]store.ItemAppAction]())
+		assertNoNullLists(t, "context redeem", u.redeem(code), http.StatusOK, typeOf[AppContextRedeemed]())
+
+		// The human item-actions list: one action offered, and none.
+		actions := typeOf[[]store.ItemAppAction]()
+		assertNoNullLists(t, "item app actions", doRequestWithCookie(f.srv, "GET", u.itemPath(f.item.ID, "/app-actions"), nil, u.viewerTok),
+			http.StatusOK, actions)
+		assertNoNullLists(t, "item app actions (none)", doRequestWithCookie(f.srv, "GET", u.itemPath(f.privateItem.ID, "/app-actions"), nil, u.viewerTok),
+			http.StatusOK, actions)
 	})
+}
+
+// The webhook bodies are built from frozen projections, not served by a
+// handler this test can call, so their census is by type: none of them has a
+// slice field today. One that gains one must be added to the census above
+// (and given a non-null default) before this passes.
+func TestBug3417_AppEventDTOsHaveNoListFields(t *testing.T) {
+	for _, typ := range []reflect.Type{
+		typeOf[store.AppItemEvent](), typeOf[store.AppItemDeletedEvent](),
+		typeOf[store.AppCommentEvent](), typeOf[store.AppCommentDeletedEvent](),
+	} {
+		var walk func(t reflect.Type, path string)
+		walk = func(rt reflect.Type, path string) {
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
+			switch rt.Kind() {
+			case reflect.Slice, reflect.Array:
+				t.Errorf("%s is a list field: add it to TestBug3417_AppsResponsesHaveNoNullLists", path)
+			case reflect.Struct:
+				for i := 0; i < rt.NumField(); i++ {
+					walk(rt.Field(i).Type, path+"."+rt.Field(i).Name)
+				}
+			}
+		}
+		walk(typ, typ.Name())
+	}
 }

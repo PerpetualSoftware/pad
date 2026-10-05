@@ -666,12 +666,23 @@ type appsSettingsResponse struct {
 	PrivateOrigins []appfetch.PrivateOrigin `json:"private_origins"`
 }
 
+// withAllowedLists returns origins as a list, every entry's Allowed a list
+// too (BUG-3417): a webhook-only entry may omit it, and a value stored
+// before this answered null.
+func withAllowedLists(origins []appfetch.PrivateOrigin) []appfetch.PrivateOrigin {
+	out := make([]appfetch.PrivateOrigin, len(origins))
+	for i, o := range origins {
+		if o.Allowed == nil {
+			o.Allowed = []string{}
+		}
+		out[i] = o
+	}
+	return out
+}
+
 func (s *Server) appsSettings() appsSettingsResponse {
 	v, _ := s.store.GetPlatformSetting(settingAppsEnabled)
-	list := s.appsPrivateOrigins()
-	if list == nil {
-		list = []appfetch.PrivateOrigin{}
-	}
+	list := withAllowedLists(s.appsPrivateOrigins())
 	return appsSettingsResponse{
 		Enabled: s.cloudMode || v == "true", Available: s.appsAvailable(),
 		HTTPSIssuer: s.oauthServer != nil && (s.cloudMode || s.mcpEndpoints.HTTPS()),
@@ -709,10 +720,7 @@ func (s *Server) handleUpdateAppsSettings(w http.ResponseWriter, r *http.Request
 	}
 	var changed []string
 	if in.PrivateOrigins != nil {
-		list := *in.PrivateOrigins
-		if list == nil {
-			list = []appfetch.PrivateOrigin{}
-		}
+		list := withAllowedLists(*in.PrivateOrigins)
 		// Validate by building a fetcher from it: the same parser the fetch
 		// path uses, so a list that saves is a list that works.
 		if _, err := appfetch.New(list, time.Second, nil); err != nil {

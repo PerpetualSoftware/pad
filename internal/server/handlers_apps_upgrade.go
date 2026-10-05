@@ -244,7 +244,8 @@ func (s *Server) handleAppUpgradeConfirm(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	out := appUpgradeConfirmResponse{InstallID: installID, Version: m.Version}
+	// Items is a list even when the upgrade adds no artifacts (BUG-3417).
+	out := appUpgradeConfirmResponse{InstallID: installID, Version: m.Version, Items: []confirmItem{}}
 	actor, source := actorFromRequest(r)
 	actorName := actorNameFromRequest(r)
 	collOf := map[string]string{}
