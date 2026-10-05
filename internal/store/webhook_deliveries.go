@@ -118,9 +118,13 @@ func (s *Store) RecordOwnerDelivered(eventID, webhookID string) error {
 	return s.RecordDelivery(eventID, webhookID, DeliveryDelivered, "", 1)
 }
 
-// recordDeliveryHook runs inside RecordDelivery after its first statement
-// (tests drive a concurrent drop there); nil in production.
-var recordDeliveryHook func()
+// recordDeliveryHook runs inside RecordDelivery after its first statement,
+// and dropDecisionHook just before a drop decision writes its row: tests
+// interleave the two there. Both nil in production.
+var (
+	recordDeliveryHook func()
+	dropDecisionHook   func()
+)
 
 func nullIfEmpty(v string) any {
 	if v == "" {

@@ -228,6 +228,9 @@ func (s *Store) recordDropDecision(eventID, webhookID, outcome string) (string, 
 // recordDropDecisionTx writes the terminal row for a drop-age decision and,
 // for a drop, counts it on the hook. "" when the row was already terminal.
 func (s *Store) recordDropDecisionTx(tx *sql.Tx, eventID, webhookID, outcome, reason string) (string, error) {
+	if dropDecisionHook != nil {
+		dropDecisionHook()
+	}
 	status, lastError := DeliveryDropped, reason
 	if outcome != "dropped" {
 		status, lastError = DeliveryRefused, outcome

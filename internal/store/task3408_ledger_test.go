@@ -233,14 +233,27 @@ func TestTask3408_DropDuringDeliveryRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	dropDone := make(chan error, 1)
+	reached := make(chan struct{}, 1)
+	dropDecisionHook = func() { reached <- struct{}{} }
 	recordDeliveryHook = func() {
 		go func() {
 			_, err := f.s.DropOwedDelivery(ev, f.hookID, "item.created", f.companion.ID, now(), "old")
 			dropDone <- err
 		}()
-		time.Sleep(300 * time.Millisecond) // the drop runs, or blocks, here
+		if f.s.dialect.Driver() == DriverPostgres {
+			// The drop holds the install lock and is about to write its row:
+			// it must now block on the row this transaction inserted.
+			select {
+			case <-reached:
+			case <-time.After(10 * time.Second):
+				t.Error("the drop never reached its write")
+			}
+			time.Sleep(100 * time.Millisecond) // let its upsert be issued
+		}
+		// SQLite: the drop cannot begin while this transaction holds the
+		// write lock (BEGIN IMMEDIATE), so it runs after the commit.
 	}
-	t.Cleanup(func() { recordDeliveryHook = nil })
+	t.Cleanup(func() { recordDeliveryHook, dropDecisionHook = nil, nil })
 	if err := f.s.RecordDelivery(ev, f.hookID, DeliveryDelivered, "", 1); err != nil {
 		t.Fatal(err)
 	}
