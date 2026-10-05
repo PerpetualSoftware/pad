@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -47,4 +48,31 @@ func TestBug3416_UnscopedMeNamesTheBinding(t *testing.T) {
 			t.Errorf("GET /me without a token: %d, want 401", rr.Code)
 		}
 	})
+}
+
+// A code issued before its workspace was soft-deleted is refused, not
+// spent: the workspace is resolved live inside the redeem's transaction,
+// before the code is consumed (codex r1 on BUG-3416).
+func TestBug3416_RedeemRefusesASoftDeletedWorkspace(t *testing.T) {
+	e := newProvisionEnv(t)
+	p := e.stagePreview(t)
+	rr := e.confirm(t, p, p.ManifestSHA256)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("confirm: %d %s", rr.Code, rr.Body.String())
+	}
+	var out appInstallConfirmResponse
+	parseJSON(t, rr, &out)
+	if _, err := e.srv.store.DB().Exec(`UPDATE workspaces SET deleted_at = '2026-01-01T00:00:00Z' WHERE id = ?`, e.wsID); err != nil {
+		t.Fatal(err)
+	}
+	if rr := redeem(e.srv, `{"code":"`+out.InstallCode+`"}`); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_install_code") {
+		t.Fatalf("redeem into a deleted workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	var consumed int
+	if err := e.srv.store.DB().QueryRow(`SELECT COUNT(*) FROM app_install_codes WHERE install_id = ? AND consumed_at IS NOT NULL`, out.InstallID).Scan(&consumed); err != nil {
+		t.Fatal(err)
+	}
+	if consumed != 0 {
+		t.Error("the refused redeem consumed the code")
+	}
 }
