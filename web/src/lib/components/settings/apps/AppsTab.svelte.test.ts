@@ -246,3 +246,15 @@ describe('Settings → Apps focus (codex r2)', () => {
 		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: /Support Portal/ })));
 	});
 });
+
+it('an install_state refusal closes the card and focuses the install heading', async () => {
+	listMock.mockResolvedValue({ available: true, cloud: false, installs: [portal] });
+	lifecycleMock.mockRejectedValue(new FakeApiError('install_state'));
+	render(AppsTab, { wsSlug: 'ws-a' });
+	await fireEvent.click(await screen.findByRole('button', { name: /Support Portal/ }));
+	await fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+	await fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+	expect((await screen.findByRole('alert')).textContent).toMatch(/changed state/);
+	await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Support Portal' })));
+	expect(screen.queryByRole('group', { name: 'Disable this app' })).toBeNull();
+});

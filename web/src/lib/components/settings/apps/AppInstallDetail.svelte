@@ -130,6 +130,10 @@
 				error = 'The app changed state in the meantime; the page now shows its current state.';
 				pending = null;
 				onchanged();
+				// The card that held focus is gone: land on the heading, with the
+				// alert below it saying why.
+				await tick();
+				heading?.focus();
 			} else {
 				error = e instanceof Error ? e.message : 'Something went wrong';
 			}
