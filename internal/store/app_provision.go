@@ -500,6 +500,10 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	if s.dialect.Driver() == DriverPostgres {
 		forUpdate = ` FOR UPDATE`
 	}
+	forShare := ""
+	if s.dialect.Driver() == DriverPostgres {
+		forShare = ` FOR SHARE`
+	}
 	var state, workspaceID string
 	if err := tx.QueryRow(s.q(`SELECT state, workspace_id FROM app_installs WHERE id = ?`+forUpdate), installID).Scan(&state, &workspaceID); err != nil || state != "active" {
 		return nil, ErrInstallCodeInvalid
@@ -507,9 +511,15 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	// The workspace is resolved, live, inside the transaction and before
 	// the code is consumed (BUG-3416, codex r1): a code issued before a
 	// soft delete is refused rather than spent, and the slug the answer
-	// carries is never a separate read that can fail after the commit.
+	// carries is never a separate read that can fail after the commit. On
+	// Postgres the row is held FOR SHARE, which a soft delete's UPDATE waits
+	// on, and which waits on one in flight (codex r2): a concurrent delete
+	// lands before the read or after the commit, never in between. Lock
+	// order: the install row (above), then the workspace row; a soft delete
+	// takes users rows, then the workspace row, and never an install row,
+	// so the two cannot cycle.
 	var workspaceSlug string
-	if err := tx.QueryRow(s.q(`SELECT slug FROM workspaces WHERE id = ? AND deleted_at IS NULL`), workspaceID).Scan(&workspaceSlug); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRow(s.q(`SELECT slug FROM workspaces WHERE id = ? AND deleted_at IS NULL`+forShare), workspaceID).Scan(&workspaceSlug); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInstallCodeInvalid
 	} else if err != nil {
 		return nil, err

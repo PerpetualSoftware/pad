@@ -52,7 +52,13 @@ func appSHA(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(
 
 func newAppsEnv(t *testing.T) *appsEnv {
 	t.Helper()
-	srv := testServer(t)
+	return newAppsEnvOn(t, testServer(t))
+}
+
+// newAppsEnvOn is newAppsEnv on a given server (a Postgres one, for a lock
+// test).
+func newAppsEnvOn(t *testing.T, srv *Server) *appsEnv {
+	t.Helper()
 	token := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Apps"}, token)
 	if rr.Code != http.StatusCreated {
