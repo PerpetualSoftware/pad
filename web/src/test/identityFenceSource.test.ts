@@ -8,12 +8,24 @@
 // error. So the core is driven here against inputs whose answers are known,
 // including the two shapes that have broken brace matchers in this repo
 // before: a brace inside a string literal, and a template interpolation.
-import { describe, it, expect } from 'vitest';
+import { afterAll, describe, it, expect } from 'vitest';
 import { matchBrace, matchDelimiter, readFenceSource, stripComments, withoutCatchArms, untrackedSpans, trackedEpochReads, stateDeclarations } from './identityFenceSource';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+// Every fixture directory this file creates, removed when it finishes:
+// they used to stay in /tmp, a tmpfs, three per run (BUG-3412).
+const fenceDirs: string[] = [];
+function fenceDir(): string {
+	const dir = mkdtempSync(join(tmpdir(), 'fence-'));
+	fenceDirs.push(dir);
+	return dir;
+}
+afterAll(() => {
+	for (const dir of fenceDirs) rmSync(dir, { recursive: true, force: true });
+});
 
 describe('matchBrace', () => {
 	it('matches a plain nested block', () => {
@@ -95,7 +107,7 @@ describe('stripComments', () => {
 
 describe('asyncFunctions delimiting', () => {
 	function fixture(script: string): ReturnType<typeof readFenceSource> {
-		const dir = mkdtempSync(join(tmpdir(), 'fence-'));
+		const dir = fenceDir();
 		const file = join(dir, 'fixture.svelte');
 		writeFileSync(file, `<script lang="ts">\n${script}\n</script>\n<div />\n`, 'utf8');
 		return readFenceSource(pathToFileURL(file));
@@ -296,7 +308,7 @@ describe('trackedEpochReads', () => {
 
 describe('effectBlocks fails closed on forms it cannot read', () => {
 	function sourceWith(effect: string): URL {
-		const dir = mkdtempSync(join(tmpdir(), 'fence-'));
+		const dir = fenceDir();
 		const file = join(dir, 'x.svelte');
 		writeFileSync(file, `<script lang="ts">\n\t${effect}\n</script>\n<div></div>`);
 		return pathToFileURL(file);
@@ -518,7 +530,7 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 	});
 
 	it('is exposed on FenceSource and reads the script block', () => {
-		const dir = mkdtempSync(join(tmpdir(), 'fence-'));
+		const dir = fenceDir();
 		const file = join(dir, 'page.svelte');
 		writeFileSync(file, '<script lang="ts">\n\tlet a: T | undefined;\n\tlet b = $state(0);\n</script>\n<p>{b}</p>\n');
 		expect(readFenceSource(pathToFileURL(file)).stateDeclarations()).toEqual(['b']);
