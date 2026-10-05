@@ -90,6 +90,7 @@ import type {
 	AppInstallList,
 	AppInstallPreview,
 	AppInstallStateResult,
+	AppUpgradeConfirmResult,
 	ClaimCodeResponse,
 	ImportArtifactResult,
 	ItemAppAction,
@@ -3145,6 +3146,18 @@ export const api = {
 			request<AppInstallCode>(`/workspaces/${encodeURIComponent(ws)}/apps/${encodeURIComponent(installId)}/install-code`, {
 				method: 'POST'
 			}),
+		/** Stage the app's current manifest and diff it against the install (U8b2). */
+		upgradePreview: (ws: string, installId: string) =>
+			request<AppInstallPreview>(
+				`/workspaces/${encodeURIComponent(ws)}/apps/${encodeURIComponent(installId)}/upgrade/preview`,
+				{ method: 'POST' }
+			),
+		/** manifestSha256 is the hash the owner REVIEWED, as on install. */
+		upgradeConfirm: (ws: string, installId: string, pendingId: string, manifestSha256: string) =>
+			request<AppUpgradeConfirmResult>(
+				`/workspaces/${encodeURIComponent(ws)}/apps/${encodeURIComponent(installId)}/upgrade/confirm`,
+				{ method: 'POST', body: JSON.stringify({ pending_id: pendingId, manifest_sha256: manifestSha256 }) }
+			),
 		/** disable / enable / rotate / uninstall. A 503 deliveries_in_flight is resumed by repeating the call. */
 		lifecycle: (ws: string, installId: string, action: 'disable' | 'enable' | 'rotate' | 'uninstall') =>
 			request<AppInstallStateResult>(

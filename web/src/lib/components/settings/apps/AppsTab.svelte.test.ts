@@ -21,6 +21,10 @@ const confirmMock = vi.fn();
 const discardMock = vi.fn();
 const lifecycleMock = vi.fn<(ws: string, id: string, action: string) => Promise<AppInstallStateResult>>();
 const issueCodeMock = vi.fn();
+const getMock = vi.fn();
+const upgradePreviewMock = vi.fn();
+const upgradeConfirmMock = vi.fn();
+const itemUpdateMock = vi.fn();
 
 vi.mock('$lib/api/client', () => ({
 	PadApiError: FakeApiError,
@@ -31,10 +35,16 @@ vi.mock('$lib/api/client', () => ({
 			confirm: (...a: unknown[]) => confirmMock(...a),
 			discardPending: (...a: unknown[]) => discardMock(...a),
 			lifecycle: (ws: string, id: string, action: string) => lifecycleMock(ws, id, action),
-			issueCode: (...a: unknown[]) => issueCodeMock(...a)
-		}
+			issueCode: (...a: unknown[]) => issueCodeMock(...a),
+			get: (...a: unknown[]) => getMock(...a),
+			upgradePreview: (...a: unknown[]) => upgradePreviewMock(...a),
+			upgradeConfirm: (...a: unknown[]) => upgradeConfirmMock(...a)
+		},
+		items: { update: (...a: unknown[]) => itemUpdateMock(...a) }
 	}
 }));
+
+vi.mock('$app/state', () => ({ page: { params: { username: 'dave', workspace: 'ws-a' } } }));
 
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { identityEpoch: 1 } }));
 
@@ -90,6 +100,7 @@ function previewFixture(): AppInstallPreview {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	getMock.mockResolvedValue({ install_id: 'inst-1', state: 'active', artifacts: [] });
 });
 
 describe('Settings → Apps', () => {
@@ -262,4 +273,165 @@ it('an install_state refusal closes the card and focuses the install heading', a
 	expect((await screen.findByRole('alert')).textContent).toMatch(/changed state/);
 	await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Support Portal' })));
 	expect(screen.queryByRole('group', { name: 'Disable this app' })).toBeNull();
+});
+
+describe('Settings → Apps: upgrade and drafts (U9b)', () => {
+	function upgradePreview(diff: unknown[]): AppInstallPreview {
+		return {
+			...previewFixture(),
+			pending_id: 'pend-up',
+			manifest_sha256: 'sha-up',
+			version: '2.0.0',
+			upgrade: { install_id: 'inst-1', from_version: '1.2.0', from_manifest_sha256: 'old', diff: diff as never, review_required: true, notice: 'Review what changes.' }
+		};
+	}
+
+	async function openInstall() {
+		listMock.mockResolvedValue({ available: true, cloud: false, installs: [portal] });
+		render(AppsTab, { wsSlug: 'ws-a' });
+		await fireEvent.click(await screen.findByRole('button', { name: /Support Portal/ }));
+	}
+
+	it('groups the diff, names released collections, shows new drafts, and upgrades with the reviewed hash', async () => {
+		upgradePreviewMock.mockResolvedValue(
+			upgradePreview([
+				{ kind: 'artifact', key: 'triage', change: 'changed', class: 'review' },
+				{ kind: 'access', key: 'service', change: 'widened', class: 'review' },
+				{ kind: 'collection', key: 'old-tickets', change: 'released', class: 'auto' },
+				{ kind: 'event', key: 'item.deleted', change: 'removed', class: 'auto' }
+			])
+		);
+		upgradeConfirmMock.mockResolvedValue({ install_id: 'inst-1', version: '2.0.0', items: [{ key: 'triage', ref: 'PLAYB-9', status: 'draft' }] });
+		await openInstall();
+		await fireEvent.click(screen.getByRole('button', { name: 'Check for an update' }));
+
+		const review = await screen.findByTestId('app-upgrade-review');
+		expect(review.textContent).toMatch(/Playbook or convention “triage” changed/);
+		expect(review.textContent).toMatch(/widened: more access/);
+		const auto = screen.getByTestId('app-upgrade-auto');
+		expect(auto.textContent).toMatch(/“old-tickets” released to the workspace \(data kept\)/);
+		// Each line sits in exactly one group.
+		expect(review.querySelectorAll('li')).toHaveLength(2);
+		expect(review.textContent).not.toMatch(/old-tickets|item\.deleted/);
+		expect(auto.querySelectorAll('li')).toHaveLength(2);
+		expect(auto.textContent).not.toMatch(/triage|widened/);
+		expect(screen.getByText('arrives as a new draft')).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Upgrade to v2.0.0' }));
+		expect(upgradeConfirmMock).toHaveBeenCalledWith('ws-a', 'inst-1', 'pend-up', 'sha-up');
+		expect(await screen.findByText('PLAYB-9')).toBeTruthy();
+		// The drafts panel re-reads after the upgrade.
+		await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+	});
+
+	it('a stale review says so and previews again on request', async () => {
+		upgradePreviewMock.mockResolvedValue(upgradePreview([{ kind: 'event', key: 'x', change: 'added', class: 'review' }]));
+		upgradeConfirmMock.mockRejectedValue(new FakeApiError('install_review_stale', 'The workspace changed since you reviewed this upgrade'));
+		await openInstall();
+		await fireEvent.click(screen.getByRole('button', { name: 'Check for an update' }));
+		await fireEvent.click(await screen.findByRole('button', { name: 'Upgrade to v2.0.0' }));
+		expect((await screen.findByRole('alert')).textContent).toMatch(/changed since you reviewed/);
+		expect(screen.queryByRole('button', { name: 'Upgrade to v2.0.0' })).toBeNull();
+		await fireEvent.click(screen.getByRole('button', { name: 'Preview again' }));
+		expect(upgradePreviewMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('nothing to change offers no upgrade, and closing discards the staged one', async () => {
+		upgradePreviewMock.mockResolvedValue(upgradePreview([]));
+		discardMock.mockResolvedValue(undefined);
+		await openInstall();
+		await fireEvent.click(screen.getByRole('button', { name: 'Check for an update' }));
+		expect(await screen.findByTestId('app-upgrade-nothing')).toBeTruthy();
+		expect(screen.queryByRole('button', { name: /Upgrade to/ })).toBeNull();
+		await fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+		expect(discardMock).toHaveBeenCalledWith('ws-a', 'pend-up');
+		expect(screen.getByRole('button', { name: 'Check for an update' })).toBeTruthy();
+	});
+
+	it('no upgrade while an install is between phases', async () => {
+		listMock.mockResolvedValue({ available: true, cloud: false, installs: [{ ...portal, state: 'disabling' }] });
+		render(AppsTab, { wsSlug: 'ws-a' });
+		await fireEvent.click(await screen.findByRole('button', { name: /Support Portal/ }));
+		expect(screen.queryByRole('button', { name: 'Check for an update' })).toBeNull();
+	});
+
+	it('lists the app’s drafts with links, and Activate sets status active on that item only', async () => {
+		getMock.mockResolvedValue({
+			install_id: 'inst-1',
+			state: 'active',
+			artifacts: [
+				{ item_id: 'i1', ref: 'PLAYB-3', slug: 'triage', title: 'Triage', collection_slug: 'playbooks', status: 'draft', version: '1.2.0' },
+				{ item_id: 'i2', ref: 'CONVE-4', slug: 'tone', title: 'Tone', collection_slug: 'conventions', status: 'active', version: '1.2.0' }
+			]
+		});
+		itemUpdateMock.mockResolvedValue({});
+		await openInstall();
+		const rows = await screen.findAllByTestId('app-artifact-row');
+		expect(rows).toHaveLength(2);
+		expect(screen.getByRole('link', { name: 'Triage' }).getAttribute('href')).toBe('/dave/ws-a/playbooks/PLAYB-3');
+		expect(screen.queryByRole('button', { name: 'Activate Tone' })).toBeNull();
+		getMock.mockResolvedValueOnce({
+			install_id: 'inst-1',
+			state: 'active',
+			artifacts: [
+				{ item_id: 'i1', ref: 'PLAYB-3', slug: 'triage', title: 'Triage', collection_slug: 'playbooks', status: 'active', version: '1.2.0' }
+			]
+		});
+		const activateBtn = screen.getByRole('button', { name: 'Activate Triage' });
+		activateBtn.focus();
+		await fireEvent.click(activateBtn);
+		expect(itemUpdateMock).toHaveBeenCalledWith('ws-a', 'i1', { fields_patch: { status: 'active' } });
+		await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+		// Its button is gone: focus is on the same row's link, and it is announced.
+		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('link', { name: 'Triage' })));
+		expect(screen.getByText('Triage is now active.')).toBeTruthy();
+	});
+
+	it('a failed draft list offers a retry', async () => {
+		getMock.mockRejectedValueOnce(new Error('network down'));
+		await openInstall();
+		expect((await screen.findByRole('alert')).textContent).toMatch(/network down/);
+		await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+		await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+		expect(await screen.findByText('This app added none.')).toBeTruthy();
+		expect(screen.queryByRole('alert')).toBeNull();
+	});
+});
+
+describe('Settings → Apps: activation focus edges (U9b codex r3)', () => {
+	const draft = { item_id: 'i1', ref: 'PLAYB-3', slug: 'triage', title: 'Triage', collection_slug: 'playbooks', status: 'draft', version: '1.2.0' };
+
+	async function openWithDraft() {
+		listMock.mockResolvedValue({ available: true, cloud: false, installs: [portal] });
+		getMock.mockResolvedValue({ install_id: 'inst-1', state: 'active', artifacts: [draft] });
+		render(AppsTab, { wsSlug: 'ws-a' });
+		await fireEvent.click(await screen.findByRole('button', { name: /Support Portal/ }));
+		return screen.findByRole('button', { name: 'Activate Triage' });
+	}
+
+	it('a failed reload after activation lands focus on the panel heading', async () => {
+		const btn = await openWithDraft();
+		itemUpdateMock.mockResolvedValue({});
+		getMock.mockRejectedValueOnce(new Error('reload failed'));
+		btn.focus();
+		await fireEvent.click(btn);
+		await waitFor(() =>
+			expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Playbooks and conventions' }))
+		);
+	});
+
+	it('focus the user moved elsewhere during activation is left alone', async () => {
+		const btn = await openWithDraft();
+		let finish: (v: unknown) => void = () => {};
+		itemUpdateMock.mockReturnValue(new Promise((r) => (finish = r)));
+		getMock.mockResolvedValueOnce({ install_id: 'inst-1', state: 'active', artifacts: [{ ...draft, status: 'active' }] });
+		btn.focus();
+		await fireEvent.click(btn);
+		const elsewhere = screen.getByRole('button', { name: /All apps/ });
+		elsewhere.focus();
+		finish({});
+		await waitFor(() => expect(screen.queryByRole('button', { name: 'Activate Triage' })).toBeNull());
+		await new Promise((r) => setTimeout(r, 0));
+		expect(document.activeElement).toBe(elsewhere);
+	});
 });

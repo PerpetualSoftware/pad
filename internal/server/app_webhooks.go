@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -90,7 +91,40 @@ func (s *Server) handleGetAppInstall(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	if out.Artifacts, err = s.appInstallArtifacts(workspaceID, installID); err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// appInstallArtifacts lists the live items stamped with this install's
+// origin (U9b, TASK-3413). Provisioning and upgrade stamp source_pack =
+// origin@version; an install keeps no item list of its own.
+func (s *Server) appInstallArtifacts(workspaceID, installID string) ([]appInstallArtifact, error) {
+	origin, err := s.store.InstallOrigin(workspaceID, installID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.store.ListInstallArtifactItems(workspaceID, origin)
+	if err != nil {
+		return nil, err
+	}
+	out := []appInstallArtifact{}
+	for _, row := range rows {
+		item, err := s.store.GetItem(row.ItemID)
+		if err != nil {
+			return nil, err
+		}
+		if item == nil {
+			continue // deleted between the two reads
+		}
+		out = append(out, appInstallArtifact{
+			ItemID: item.ID, Ref: item.Ref, Slug: item.Slug, Title: item.Title, CollectionSlug: item.CollectionSlug,
+			Status: itemStatus(item), Version: strings.TrimPrefix(row.SourcePack, origin+"@"),
+		})
+	}
+	return out, nil
 }
 
 // EnsureAppWebhooks backfills the hook of every active or inactive install
