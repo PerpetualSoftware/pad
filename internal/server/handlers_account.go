@@ -397,6 +397,7 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 				wsData["items"] = []interface{}{}
 				wsData["export_error"] = "failed to export items"
 			} else {
+				s.hydrateItemsAppAttribution(items) // SPEC-6 U9c
 				wsData["items"] = items
 			}
 		}

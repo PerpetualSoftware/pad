@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,5 +241,74 @@ func TestTask3413_PlaybookShowCarriesViaApp(t *testing.T) {
 	parseJSON(t, rr, &got)
 	if got["via_app"] != "inst-pb" || got["via_app_name"] != "https://pb.example" {
 		t.Fatalf("playbook show: via_app=%v via_app_name=%v", got["via_app"], got["via_app_name"])
+	}
+}
+
+// The role board, a comment edit's response and the account export carry
+// the attribution too (codex r2 on U9c).
+func TestTask3413_RoleBoardCommentEditAndExport(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	db := f.srv.store.DB()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	me, tok := loginTestUserAs(t, f.srv, "owner-3413@example.com", "Olive Owner", "pw-3413-owner")
+	exec(`INSERT INTO workspace_members (workspace_id, user_id, role, collection_access, created_at) VALUES (?, ?, 'owner', 'all', ?)`,
+		f.ws.ID, me.ID, time.Now().UTC().Format(time.RFC3339))
+	exec(`UPDATE workspaces SET owner_id = ? WHERE id = ?`, me.ID, f.ws.ID)
+	base := "/api/v1/workspaces/" + f.ws.Slug
+
+	// Role board: the app-created item sits in the unassigned lane.
+	rr := doRequestWithCookie(f.srv, "GET", base+"/roles/board", nil, tok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("board: %d %s", rr.Code, rr.Body.String())
+	}
+	var board struct {
+		Lanes []struct {
+			Items []map[string]any `json:"items"`
+		} `json:"lanes"`
+	}
+	parseJSON(t, rr, &board)
+	seen := false
+	for _, l := range board.Lanes {
+		for _, it := range l.Items {
+			if it["id"] == f.item.ID {
+				seen = true
+				if it["via_app"] != f.in.id || it["via_app_name"] != "Portal" {
+					t.Errorf("board row: via_app=%v via_app_name=%v", it["via_app"], it["via_app_name"])
+				}
+			}
+		}
+	}
+	if !seen {
+		t.Fatalf("board: the app item is missing: %s", rr.Body.String())
+	}
+
+	// A comment edit answers with the comment as the list serves it.
+	c, err := f.srv.store.CreateComment(f.ws.ID, f.item.ID, me.ID, models.CommentCreate{Body: "first", Author: "Olive", CreatedBy: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(`UPDATE comments SET via_app = ? WHERE id = ?`, f.in.id, c.ID)
+	rr = doRequestWithCookie(f.srv, "PATCH", base+"/items/"+f.item.ID+"/comments/"+c.ID, map[string]string{"body": "edited"}, tok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("comment edit: %d %s", rr.Code, rr.Body.String())
+	}
+	var edited map[string]any
+	parseJSON(t, rr, &edited)
+	if edited["via_app"] != f.in.id || edited["via_app_name"] != "Portal" {
+		t.Errorf("comment edit: via_app=%v via_app_name=%v", edited["via_app"], edited["via_app_name"])
+	}
+
+	// The account export's item rows.
+	rr = doRequestWithCookie(f.srv, "GET", "/api/v1/auth/export", nil, tok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("export: %d %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"via_app":"`+f.in.id+`","via_app_name":"Portal"`) {
+		t.Errorf("export lacks the item's app attribution")
 	}
 }
