@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -1900,25 +1901,87 @@ func (s *Store) PruneDispatchedOutbox(before string) (int64, error) {
 // Callers log the count — an undispatchable event reaching its max age is a
 // delivery problem that has been failing for the whole window, and the number
 // is the only place it becomes visible.
+//
+// OWNER ENDPOINTS STILL OWED ARE COUNTED (TASK-3409). This is the point at
+// which the outbox gives up on an event, and its webhook_deliveries rows
+// cascade away with it, so the durable trace is each hook's dropped_count:
+// every row still non-terminal on a deleted event adds one to its hook. The
+// events are selected and locked first, counted, then deleted by id, all in
+// one transaction, so the counted set is exactly the deleted set. An endpoint
+// the drain never attempted for an event has no row and is not counted.
 func (s *Store) PruneUndispatchedOutbox(before, leaseCutoff string) (int64, error) {
-	res, err := s.db.Exec(s.q(`
-		DELETE FROM event_outbox
-		WHERE dispatched_at IS NULL
-		  AND occurred_at < ?
-		  AND (claimed_at IS NULL OR claimed_at < ?)
-	`), before, leaseCutoff)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("prune undispatched outbox: %w", err)
 	}
-	n, err := res.RowsAffected()
+	defer tx.Rollback()
+	sel := `SELECT id FROM event_outbox
+		WHERE dispatched_at IS NULL
+		  AND occurred_at < ?
+		  AND (claimed_at IS NULL OR claimed_at < ?)`
+	if s.dialect.Driver() == DriverPostgres {
+		sel += ` FOR UPDATE SKIP LOCKED`
+	}
+	rows, err := tx.Query(s.q(sel), before, leaseCutoff)
 	if err != nil {
-		// Advisory, exactly as in PruneDispatchedOutbox: the DELETE already
-		// succeeded, and reporting a count failure as a prune failure would
-		// make a caller retry a completed prune.
-		return 0, nil
+		return 0, fmt.Errorf("prune undispatched outbox: select: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("prune undispatched outbox: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("prune undispatched outbox: rows: %w", err)
+	}
+	if len(ids) == 0 {
+		return 0, tx.Commit()
+	}
+	var n int64
+	for start := 0; start < len(ids); start += pruneOutboxChunk {
+		end := start + pruneOutboxChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		marks := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		// Count, per hook, the rows still owed on these events.
+		if _, err := tx.Exec(s.q(`UPDATE webhooks SET dropped_count = dropped_count + (
+				SELECT COUNT(*) FROM webhook_deliveries d
+				WHERE d.webhook_id = webhooks.id AND d.outbox_event_id IN (`+marks+`)
+				  AND d.status NOT IN ('delivered', 'permanent', 'refused', 'skipped', 'dropped'))
+			WHERE id IN (SELECT d.webhook_id FROM webhook_deliveries d
+				WHERE d.outbox_event_id IN (`+marks+`)
+				  AND d.status NOT IN ('delivered', 'permanent', 'refused', 'skipped', 'dropped'))`),
+			append(append([]any{}, args...), args...)...); err != nil {
+			return 0, fmt.Errorf("prune undispatched outbox: count drops: %w", err)
+		}
+		res, err := tx.Exec(s.q(`DELETE FROM event_outbox WHERE id IN (`+marks+`)`), args...)
+		if err != nil {
+			return 0, fmt.Errorf("prune undispatched outbox: %w", err)
+		}
+		if c, err := res.RowsAffected(); err == nil {
+			n += c
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("prune undispatched outbox: commit: %w", err)
 	}
 	return n, nil
 }
+
+// pruneOutboxChunk bounds one IN list in PruneUndispatchedOutbox: far under
+// SQLite's and Postgres's bind-parameter limits even with the list used twice.
+const pruneOutboxChunk = 400
 
 // ClaimPendingOutboxEvents claims up to limit pending events for one drain
 // pass and returns them, oldest first.

@@ -8,13 +8,10 @@ import (
 
 // Per-endpoint webhook delivery state (SPEC-6 U10c, DOC-3371 §5; TASK-3408).
 //
-// For APP hooks every decision is recorded, and a terminal row is never
-// retried. For OWNER hooks only "delivered" is recorded, and used only to
-// skip re-sending an event an owner endpoint already received when the
-// event stays owed to someone else (an app's rate limit or outage must not
-// duplicate deliveries to people who never installed it; lead ruling, day
-// 87). Owner failure, retry and ack are otherwise unchanged; full owner
-// per-endpoint state is TASK-3409.
+// Every decision is recorded for APP and OWNER hooks alike, and a terminal
+// row is never retried (owner hooks since TASK-3409; U10c recorded only an
+// owner's success, to skip re-sending while an app kept the event owed). A
+// retry therefore goes only to endpoints still owed.
 
 // Delivery statuses. Terminal ones end the endpoint's part in the event.
 const (
@@ -112,10 +109,17 @@ func (s *Store) OwnerDelivered(eventID, webhookID string) (bool, error) {
 	return st == DeliveryDelivered, err
 }
 
-// RecordOwnerDelivered records that an owner hook received eventID. Only
-// success is recorded for owner hooks (see the file comment).
-func (s *Store) RecordOwnerDelivered(eventID, webhookID string) error {
-	return s.RecordDelivery(eventID, webhookID, DeliveryDelivered, "", 1)
+// OwnerDeliveryStatus is the recorded status of eventID for an owner hook,
+// "" when none (webhooks.OwnerDeliveryLedger, TASK-3409).
+func (s *Store) OwnerDeliveryStatus(eventID, webhookID string) (string, error) {
+	return s.DeliveryStatus(eventID, webhookID)
+}
+
+// RecordOwnerOutcome records an owner hook's outcome for eventID: delivered
+// and permanent are terminal, transient stays owed (TASK-3409). The first
+// terminal decision stands, as for app hooks (RecordDelivery).
+func (s *Store) RecordOwnerOutcome(eventID, webhookID, status, lastError string, attempts int) error {
+	return s.RecordDelivery(eventID, webhookID, status, lastError, attempts)
 }
 
 // recordDeliveryHook runs inside RecordDelivery after its first statement,

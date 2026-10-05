@@ -23,6 +23,10 @@ type Webhook struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 	LastTriggeredAt *time.Time `json:"last_triggered_at,omitempty"`
 	FailureCount    int        `json:"failure_count"`
+	// DroppedCount counts events this endpoint was still owed when the outbox
+	// gave up on them at its retention bound (TASK-3409; app hooks also count
+	// their 24 h drop, U10c).
+	DroppedCount int `json:"dropped_count"`
 }
 
 // WebhookCreate is the input for registering a new webhook.

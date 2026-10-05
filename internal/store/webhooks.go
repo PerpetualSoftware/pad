@@ -79,12 +79,12 @@ func (s *Store) getWebhookQ(q Queryer, id string) (*models.Webhook, error) {
 	var lastTriggeredAt *string
 
 	err := q.QueryRow(s.q(`
-		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
+		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count, dropped_count
 		FROM webhooks
 		WHERE id = ?
 	`), id).Scan(
 		&wh.ID, &wh.WorkspaceID, &wh.URL, &wh.Secret, &wh.Events,
-		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount,
+		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount, &wh.DroppedCount,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -120,12 +120,12 @@ func (s *Store) GetWebhookScoped(id, workspaceID string) (*models.Webhook, error
 	var lastTriggeredAt *string
 
 	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
+		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count, dropped_count
 		FROM webhooks
 		WHERE id = ? AND workspace_id = ? AND app_install_id IS NULL
 	`), id, workspaceID).Scan(
 		&wh.ID, &wh.WorkspaceID, &wh.URL, &wh.Secret, &wh.Events,
-		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount,
+		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount, &wh.DroppedCount,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -166,7 +166,7 @@ func (s *Store) WorkspaceLive(workspaceID string) (bool, error) {
 // a restore brings the webhooks back.
 func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT wh.id, wh.workspace_id, wh.url, wh.secret, wh.events, wh.active, wh.created_at, wh.updated_at, wh.last_triggered_at, wh.failure_count
+		SELECT wh.id, wh.workspace_id, wh.url, wh.secret, wh.events, wh.active, wh.created_at, wh.updated_at, wh.last_triggered_at, wh.failure_count, wh.dropped_count
 		FROM webhooks wh
 		JOIN workspaces w ON w.id = wh.workspace_id
 		WHERE wh.workspace_id = ? AND w.deleted_at IS NULL AND wh.app_install_id IS NULL
@@ -186,7 +186,7 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 
 		if err := rows.Scan(
 			&wh.ID, &wh.WorkspaceID, &wh.URL, &wh.Secret, &wh.Events,
-			&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount,
+			&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount, &wh.DroppedCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan webhook: %w", err)
 		}
