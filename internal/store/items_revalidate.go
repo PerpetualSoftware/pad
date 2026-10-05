@@ -46,6 +46,10 @@ func (s *Store) revalidateSetFieldsTx(tx *sql.Tx, collectionID string, set map[s
 	if err := models.UnmarshalItemFieldSchema([]byte(raw), &schema); err != nil {
 		return fmt.Errorf("decode collection schema under lock: %w", err)
 	}
+	// Reserved system metadata is judged by no schema, as on every handler
+	// path (SchemaForMigratedFields): a grandfathered schema that still
+	// declares one must not refuse the system's own value (codex r2).
+	schema = models.SchemaWithoutReservedFields(schema)
 	// ValidatePartialFields normalizes empty relation lists in place.
 	cp := make(map[string]any, len(set))
 	for k, v := range set {

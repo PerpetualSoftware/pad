@@ -218,3 +218,35 @@ func TestBug3407_AMoveIntoACollectionWhoseSchemaChangedIsRefused(t *testing.T) {
 		t.Fatalf("a valid move: %v", err)
 	}
 }
+
+// A grandfathered schema that still declares a reserved key must not refuse
+// the system's own value on any re-validated path (codex r2): the handlers
+// judge reserved metadata by no schema, and so does the re-check.
+const bug3407Grandfathered = `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open"},{"key":"implementation_notes","label":"Notes","type":"select","options":["x"]}]}`
+
+func TestBug3407_AGrandfatheredReservedDeclarationRefusesNothing(t *testing.T) {
+	s, ws, coll, item := bug3407Fixture(t)
+	setSchema(t, s, coll.ID, bug3407Grandfathered)
+	// Update: an append writes implementation_notes, which the stale
+	// declaration would forbid.
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{ImplementationNoteToAppend: &models.ItemImplementationNote{Summary: "did a thing"}}); err != nil {
+		t.Fatalf("append under a grandfathered declaration: %v", err)
+	}
+	got, err := s.GetItem(item.ID)
+	if err != nil || got == nil {
+		t.Fatal(err)
+	}
+	// Move: the notes travel with the item into a destination declaring the
+	// same stale key.
+	dest, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Dest", Slug: "dest", Schema: bug3407Grandfathered})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MoveItemWithPreCheck(item.ID, dest.ID, got.Fields, nil); err != nil {
+		t.Fatalf("move carrying notes: %v", err)
+	}
+	// Create (a copy's path): a blob carrying the notes.
+	if _, err := s.CreateItem(ws.ID, dest.ID, models.ItemCreate{Title: "Copy", Fields: got.Fields}); err != nil {
+		t.Fatalf("create carrying notes: %v", err)
+	}
+}
