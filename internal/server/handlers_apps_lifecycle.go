@@ -29,6 +29,21 @@ type appInstallStateResponse struct {
 	Notice      string `json:"notice,omitempty"`
 	// Webhook is the install's hook, absent when it has none (U10a).
 	Webhook *appWebhookView `json:"webhook,omitempty"`
+	// Artifacts are the live items its companion pack provisioned, drafts
+	// included, for the owner to activate (U9b). GET only.
+	Artifacts []appInstallArtifact `json:"artifacts,omitempty"`
+}
+
+// appInstallArtifact is one provisioned item, as the install view lists it.
+type appInstallArtifact struct {
+	ItemID         string `json:"item_id"`
+	Ref            string `json:"ref,omitempty"`
+	Slug           string `json:"slug"`
+	Title          string `json:"title"`
+	CollectionSlug string `json:"collection_slug"`
+	Status         string `json:"status,omitempty"`
+	// Version is the app version that provisioned it (source_pack after "@").
+	Version string `json:"version"`
 }
 
 func (s *Server) writeInstallLifecycleError(w http.ResponseWriter, err error) {

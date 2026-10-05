@@ -450,3 +450,46 @@ func (s *Store) ListWorkspaceInstalls(workspaceID string) ([]WorkspaceInstall, e
 	}
 	return out, rows.Err()
 }
+
+// InstallArtifactItem is a live item provisioned from an app's companion pack
+// (SPEC-6 U9b, TASK-3413): its id and the pack stamp, origin@version.
+type InstallArtifactItem struct {
+	ItemID     string
+	SourcePack string
+}
+
+// ListInstallArtifactItems returns the workspace's live items stamped with a
+// pack from origin (source_pack = origin@version), oldest first. A prefix is
+// compared with substr, not LIKE, so an origin's own characters never act as
+// a pattern.
+func (s *Store) ListInstallArtifactItems(workspaceID, origin string) ([]InstallArtifactItem, error) {
+	prefix := origin + "@"
+	rows, err := s.db.Query(s.q(`
+		SELECT id, source_pack FROM items
+		WHERE workspace_id = ? AND deleted_at IS NULL AND source_pack IS NOT NULL
+		  AND substr(source_pack, 1, ?) = ?
+		ORDER BY created_at, id`), workspaceID, len(prefix), prefix)
+	if err != nil {
+		return nil, fmt.Errorf("list install artifact items: %w", err)
+	}
+	defer rows.Close()
+	out := []InstallArtifactItem{}
+	for rows.Next() {
+		var a InstallArtifactItem
+		if err := rows.Scan(&a.ItemID, &a.SourcePack); err != nil {
+			return nil, fmt.Errorf("scan install artifact item: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// InstallOrigin returns an install's origin.
+func (s *Store) InstallOrigin(workspaceID, installID string) (string, error) {
+	var origin string
+	err := s.db.QueryRow(s.q(`SELECT origin FROM app_installs WHERE id = ? AND workspace_id = ?`), installID, workspaceID).Scan(&origin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrInstallNotFound
+	}
+	return origin, err
+}
