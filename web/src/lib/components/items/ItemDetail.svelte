@@ -8174,6 +8174,8 @@
 	}
 	.meta-via-app {
 		color: var(--text-muted);
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 	.meta-sep { color: var(--text-muted); }
 	.save-status {

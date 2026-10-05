@@ -43,18 +43,18 @@ async function seed(fixture: SuiteFixture, request: APIRequestContext) {
 }
 
 /** Add an app's attribution to whatever in a JSON body is this item or its comments. */
-function stamp(value: unknown, itemId: string): void {
+function stamp(value: unknown, itemId: string, name = APP): void {
 	if (Array.isArray(value)) {
-		value.forEach((v) => stamp(v, itemId));
+		value.forEach((v) => stamp(v, itemId, name));
 		return;
 	}
 	if (!value || typeof value !== 'object') return;
 	const o = value as Record<string, unknown>;
 	if (o.id === itemId || (typeof o.body === 'string' && o.item_id === itemId)) {
 		o.via_app = 'inst-e2e';
-		o.via_app_name = APP;
+		o.via_app_name = name;
 	}
-	for (const v of Object.values(o)) stamp(v, itemId);
+	for (const v of Object.values(o)) stamp(v, itemId, name);
 }
 
 test('TASK-3413 U9c: an item and its comment read "via <App>" beside their author', async ({ page, fixture, request }) => {
@@ -97,4 +97,22 @@ test('TASK-3413 U9c: the members list shows apps in their own section, not as me
 	// An owner can jump to the Apps tab from here.
 	await section.getByRole('link', { name: 'Manage apps' }).click();
 	await expect(page.getByRole('tab', { name: /Apps/ })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('TASK-3413 U9c: a long unbroken app name wraps instead of widening the page (codex r1)', async ({ page, fixture, request }) => {
+	const long = 'Portal' + 'x'.repeat(120);
+	const { collSlug, item } = await seed(fixture, request);
+	await page.route(`**/api/v1/workspaces/${fixture.workspaceSlug}/**`, async (route: Route) => {
+		if (route.request().method() !== 'GET') return route.fallback();
+		const response = await route.fetch();
+		if (!(response.headers()['content-type'] ?? '').includes('application/json')) return route.fulfill({ response });
+		const json = await response.json();
+		stamp(json, item.id, long);
+		return route.fulfill({ response, json });
+	});
+	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${collSlug}/${item.slug}`);
+	await expect(page.locator('.meta-via-app')).toContainText(long);
+	await expect(page.locator('.via-app-marker').first()).toContainText(long);
+	const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+	expect(overflow, 'the page scrolls sideways').toBeLessThanOrEqual(0);
 });

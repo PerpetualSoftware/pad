@@ -557,6 +557,8 @@
 	.via-app {
 		font-size: 0.85em;
 		color: var(--text-muted);
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 	.muted {
 		color: var(--text-muted);

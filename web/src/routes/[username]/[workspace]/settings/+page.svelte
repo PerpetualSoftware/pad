@@ -1118,7 +1118,7 @@
 						</p>
 						{#each workspaceApps as app (app.id)}
 							<div class="app-row">
-								<span class="app-name">{app.app_name || app.display_name}</span>
+								<bdi class="app-name">{app.app_name || app.display_name}</bdi>
 								<Chip size="sm" color="var(--accent-gray)">{app.role}</Chip>
 							</div>
 						{/each}
