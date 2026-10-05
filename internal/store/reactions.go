@@ -43,18 +43,30 @@ func (s *Store) AddReaction(commentID, userID, actor, emoji string) (*models.Rea
 	); err != nil {
 		return nil, fmt.Errorf("add reaction: %w", err)
 	}
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	// Return the reaction (may be existing if ON CONFLICT hit).
+	out, err := s.getReactionQ(tx, commentID, userID, emoji)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("add reaction: %w", err)
 	}
-
-	// Return the reaction (may be existing if ON CONFLICT hit).
-	return s.getReaction(commentID, userID, emoji)
+	afterCommitReadback("reaction", commentID)
+	return out, nil
 }
 
 func (s *Store) getReaction(commentID, userID, emoji string) (*models.Reaction, error) {
+	return s.getReactionQ(s.db, commentID, userID, emoji)
+}
+
+func (s *Store) getReactionQ(q Queryer, commentID, userID, emoji string) (*models.Reaction, error) {
 	var r models.Reaction
 	var createdAt string
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT id, comment_id, COALESCE(user_id, ''), actor, emoji, created_at
 		FROM comment_reactions
 		WHERE comment_id = ? AND user_id = ? AND emoji = ?`),

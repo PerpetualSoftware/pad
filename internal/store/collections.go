@@ -47,11 +47,19 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	if err != nil {
 		return nil, err
 	}
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.GetCollectionQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit collection create: %w", err)
 	}
-
-	return s.GetCollection(id)
+	afterCommitReadback("collection", id)
+	return out, nil
 }
 
 // createCollectionTx is CreateCollection on the caller's transaction, so the
@@ -769,11 +777,19 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		}
 	}
 
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.GetCollectionQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit collection update: %w", err)
 	}
-
-	return s.GetCollection(id)
+	afterCommitReadback("collection", id)
+	return out, nil
 }
 
 // DeleteCollection soft-deletes a collection by id. When expectedUpdatedAt is

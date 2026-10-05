@@ -3748,11 +3748,19 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 		}
 	}
 
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
+	out, err := s.getItemLinkQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit create item link: %w", err)
 	}
-
-	return s.getItemLink(id)
+	afterCommitReadback("item_link", id)
+	return out, nil
 }
 
 // getItemLink is the unfiltered post-insert readback used by CreateItemLink to
@@ -3763,6 +3771,10 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 // (Codex review on PR #259). User-facing surfaces all read links via
 // GetItemLinks (plural) or GetParentForItem, both of which DO filter.
 func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
+	return s.getItemLinkQ(s.db, id)
+}
+
+func (s *Store) getItemLinkQ(q Queryer, id string) (*models.ItemLink, error) {
 	var link models.ItemLink
 	var createdAt string
 
@@ -3772,7 +3784,7 @@ func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
 
 	srcStatus := s.dialect.JSONFieldText("s.fields", "status")
 	tgtStatus := s.dialect.JSONFieldText("t.fields", "status")
-	err := s.db.QueryRow(s.q(fmt.Sprintf(`
+	err := q.QueryRow(s.q(fmt.Sprintf(`
 		SELECT l.id, l.workspace_id, l.source_id, l.target_id, l.link_type, l.created_by, l.created_at,
 		       s.title, t.title, s.slug, t.slug, sc.slug, tc.slug, sc.prefix, tc.prefix,
 		       s.item_number, t.item_number,
@@ -4079,14 +4091,22 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy, user
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit parent link: %w", err)
-	}
-
+	// Read back INSIDE the transaction, before the commit (TASK-3406, the
+	// BUG-3405 shape): a deletion landing after the commit (an account
+	// deletion, a revoke, a cascade) cannot turn a successful write into
+	// a nil result.
 	// Return the full link with enriched fields. Use the unfiltered readback
 	// helper so that a delete race against either endpoint between commit and
 	// readback doesn't cause the successful insert to surface as nil.
-	return s.getItemLink(id)
+	out, err := s.getItemLinkQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit parent link: %w", err)
+	}
+	afterCommitReadback("item_link", id)
+	return out, nil
 }
 
 // setParentLinkTx performs the lock acquisition, cycle check, and the
