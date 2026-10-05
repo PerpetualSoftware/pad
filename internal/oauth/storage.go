@@ -188,14 +188,6 @@ func (s *Storage) CreateAuthorizeCodeSession(_ context.Context, signature string
 	return s.store.CreateAuthorizationCode(r)
 }
 
-// GetAuthorizeCodeSession hydrates the session for an auth code. The
-// caller supplies an empty fosite.Session (typically &Session{}); we
-// JSON-unmarshal the stored session_data into it.
-//
-// Returning fosite.ErrInvalidatedAuthorizeCode (alongside the request
-// payload) when the row is invalidated triggers fosite's grant-family
-// revocation in flow_authorize_code_token.go — the canonical "code
-// was used twice → revoke the whole grant" behaviour.
 // reusedByAnotherClient reports whether a reused (invalidated or inactive)
 // code or refresh token is being presented by a client other than the one
 // it was issued to (BUG-3400).
@@ -213,6 +205,21 @@ func (s *Storage) CreateAuthorizeCodeSession(_ context.Context, signature string
 // and sets its client before any grant handler runs. A read with no access
 // request in the context (introspection, revocation, admin paths) is not a
 // grant exchange and is left as it was.
+//
+// Residuals, accepted (lead ruling on BUG-3400):
+//   - The client id is only as strong as the client's authentication. A
+//     PUBLIC client (every DCR client) authenticates by its client_id alone,
+//     and client ids are not secret, so anyone holding a public client's
+//     spent token can name that client and trigger the family revoke, as the
+//     OAuth BCP intends for a replay. Closing that needs sender-constrained
+//     tokens. A CONFIDENTIAL client's (an installed app's) id cannot be named
+//     without its secret, so its family is fully protected here.
+//   - A foreign client's spent token answers "not found" while the owner's
+//     answers "already used" and a foreign LIVE token gets fosite's client
+//     mismatch, so error_description tells a holder spent from live. That is
+//     told only to someone who already holds the token; answering a spent
+//     token as good to unify the text would leave replay refusal to fosite's
+//     step order, which storage should not depend on.
 func reusedByAnotherClient(ctx context.Context, issuedTo string) bool {
 	ar, ok := ctx.Value(fosite.AccessRequestContextKey).(fosite.AccessRequester)
 	if !ok || ar == nil || ar.GetClient() == nil {
@@ -221,6 +228,14 @@ func reusedByAnotherClient(ctx context.Context, issuedTo string) bool {
 	return ar.GetClient().GetID() != issuedTo
 }
 
+// GetAuthorizeCodeSession hydrates the session for an auth code. The
+// caller supplies an empty fosite.Session (typically &Session{}); we
+// JSON-unmarshal the stored session_data into it.
+//
+// Returning fosite.ErrInvalidatedAuthorizeCode (alongside the request
+// payload) when the row is invalidated triggers fosite's grant-family
+// revocation in flow_authorize_code_token.go — the canonical "code
+// was used twice → revoke the whole grant" behaviour.
 func (s *Storage) GetAuthorizeCodeSession(ctx context.Context, signature string, session fosite.Session) (fosite.Requester, error) {
 	stored, err := s.store.GetAuthorizationCode(signature)
 	if errors.Is(err, store.ErrOAuthNotFound) {

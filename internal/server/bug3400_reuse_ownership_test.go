@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 )
@@ -134,5 +135,46 @@ func TestBug3400_CodeReuseByAnotherClientRevokesNothing(t *testing.T) {
 	}
 	if got := bug3400Refresh(srv, refresh1, clientA); got.code == http.StatusOK {
 		t.Fatalf("A's own code replay did not revoke its grant: its refresh still rotates (%s)", got.body)
+	}
+}
+
+// The case the check fully closes: the token's own client is CONFIDENTIAL (an
+// installed app's client, here holding a delegated grant), so nobody else can
+// name it without its secret. Another client presenting the app's spent
+// refresh token under its own id must not revoke the app's family. (Another
+// INSTALL client is refused earlier, by the token handler's ownership
+// preflight, so the presenter here is a public DCR client, which reaches
+// fosite and therefore this check.)
+func TestBug3400_SpentTokenOfAConfidentialClientCannotBeBurnedByAnother(t *testing.T) {
+	f := delegatedFixture(t, "inst-3400", "read")
+	code, _ := codeFrom(f.decide(t, f.authorizeParams(), "approve", ""))
+	if code == "" {
+		t.Fatal("no delegated code")
+	}
+	first := f.exchange(code)
+	if first.Code != http.StatusOK {
+		t.Fatalf("exchange: %d %s", first.Code, first.Body.String())
+	}
+	var tok map[string]any
+	parseJSON(t, first, &tok)
+	refresh0, _ := tok["refresh_token"].(string)
+	appRefresh := func(refresh string) *httptest.ResponseRecorder {
+		return postTokenBasic(f.srv, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "resource": {testAppAPIAudience}},
+			f.in.clientID, f.in.secret)
+	}
+	rot := appRefresh(refresh0)
+	if rot.Code != http.StatusOK {
+		t.Fatalf("the app's rotation: %d %s", rot.Code, rot.Body.String())
+	}
+	var r1 map[string]any
+	parseJSON(t, rot, &r1)
+	refresh1, _ := r1["refresh_token"].(string)
+
+	dcr := registerTestClient(t, f.srv, "https://app.test/cb")
+	if got := bug3400Refresh(f.srv, refresh0, dcr); got.code == http.StatusOK {
+		t.Fatalf("a public client redeemed the app's spent refresh token: %s", got.body)
+	}
+	if rr := appRefresh(refresh1); rr.Code != http.StatusOK {
+		t.Fatalf("the app's family was revoked by another client's replay: %d %s", rr.Code, rr.Body.String())
 	}
 }
