@@ -408,3 +408,45 @@ func (s *Store) InstallState(workspaceID, installID string) (string, error) {
 	}
 	return state, err
 }
+
+// WorkspaceInstall is one install as the owner's Apps list shows it (SPEC-6
+// U9a, TASK-3413). AppName is the install's bot display name (the app's
+// title), else its origin, as the console's app connections name it.
+type WorkspaceInstall struct {
+	ID        string
+	Origin    string
+	AppName   string
+	Version   string
+	State     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// ListWorkspaceInstalls returns every install of the workspace, the
+// uninstalled tombstones included, newest first.
+func (s *Store) ListWorkspaceInstalls(workspaceID string) ([]WorkspaceInstall, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT i.id, i.origin, COALESCE(u.name, ''), COALESCE(i.manifest_version, ''), i.state, i.created_at, i.updated_at
+		FROM app_installs i
+		LEFT JOIN users u ON u.id = i.bot_user_id
+		WHERE i.workspace_id = ?
+		ORDER BY i.created_at DESC, i.id`), workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list workspace installs: %w", err)
+	}
+	defer rows.Close()
+	out := []WorkspaceInstall{}
+	for rows.Next() {
+		var in WorkspaceInstall
+		var created, updated string
+		if err := rows.Scan(&in.ID, &in.Origin, &in.AppName, &in.Version, &in.State, &created, &updated); err != nil {
+			return nil, fmt.Errorf("scan workspace install: %w", err)
+		}
+		if in.AppName == "" {
+			in.AppName = in.Origin
+		}
+		in.CreatedAt, in.UpdatedAt = parseTime(created), parseTime(updated)
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}

@@ -85,6 +85,11 @@ import type {
 	AttachmentListResponse,
 	ConnectedApp,
 	AppGrant,
+	AppInstallCode,
+	AppInstallConfirmResult,
+	AppInstallList,
+	AppInstallPreview,
+	AppInstallStateResult,
 	ClaimCodeResponse,
 	ImportArtifactResult,
 	ItemAppAction
@@ -3115,6 +3120,37 @@ export const api = {
 	// only — the route returns 404 outside cloud mode, the page hides
 	// the nav link in self-host.
 
+	// Installed apps, owner-only (SPEC-6 U8/U9a, TASK-3413).
+	apps: {
+		list: (ws: string) => request<AppInstallList>(`/workspaces/${encodeURIComponent(ws)}/apps`),
+		get: (ws: string, installId: string) =>
+			request<AppInstallStateResult>(`/workspaces/${encodeURIComponent(ws)}/apps/${encodeURIComponent(installId)}`),
+		preview: (ws: string, baseUrl: string) =>
+			request<AppInstallPreview>(`/workspaces/${encodeURIComponent(ws)}/apps/install/preview`, {
+				method: 'POST',
+				body: JSON.stringify({ base_url: baseUrl })
+			}),
+		discardPending: (ws: string, pendingId: string) =>
+			request<void>(`/workspaces/${encodeURIComponent(ws)}/apps/install/pending/${encodeURIComponent(pendingId)}`, {
+				method: 'DELETE'
+			}),
+		/** manifestSha256 is the hash the owner REVIEWED: a changed manifest is refused. */
+		confirm: (ws: string, pendingId: string, manifestSha256: string) =>
+			request<AppInstallConfirmResult>(
+				`/workspaces/${encodeURIComponent(ws)}/apps/install/pending/${encodeURIComponent(pendingId)}/confirm`,
+				{ method: 'POST', body: JSON.stringify({ manifest_sha256: manifestSha256 }) }
+			),
+		issueCode: (ws: string, installId: string) =>
+			request<AppInstallCode>(`/workspaces/${encodeURIComponent(ws)}/apps/${encodeURIComponent(installId)}/install-code`, {
+				method: 'POST'
+			}),
+		/** disable / enable / rotate / uninstall. A 503 deliveries_in_flight is resumed by repeating the call. */
+		lifecycle: (ws: string, installId: string, action: 'disable' | 'enable' | 'rotate' | 'uninstall') =>
+			request<AppInstallStateResult>(
+				`/workspaces/${encodeURIComponent(ws)}/apps/${encodeURIComponent(installId)}/${action}`,
+				{ method: 'POST' }
+			)
+	},
 	connectedApps: {
 		list: () => request<{ items: ConnectedApp[]; app_grants?: AppGrant[] }>('/connected-apps'),
 		revoke: (id: string) =>

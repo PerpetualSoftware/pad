@@ -12,6 +12,7 @@
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import StorageTab from '$lib/components/settings/StorageTab.svelte';
+	import AppsTab from '$lib/components/settings/apps/AppsTab.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -143,6 +144,8 @@
 		{ id: 'members', label: 'Members', icon: '\uD83D\uDC65', ownerOnly: false },
 		{ id: 'collections', label: 'Collections', icon: '\uD83D\uDCC1', ownerOnly: false },
 		{ id: 'storage', label: 'Storage', icon: '\uD83D\uDCBE', ownerOnly: false },
+		// SPEC-6 U9a (TASK-3413): installed apps, owner-only like the server's doors.
+		{ id: 'apps', label: 'Apps', icon: '\uD83E\uDDE9', ownerOnly: true },
 		{ id: 'danger', label: 'Danger Zone', icon: '\u26A0\uFE0F', ownerOnly: true },
 	];
 	// BUG-2978: gate the owner-only tab on a STICKY read of the permission, not
@@ -1225,6 +1228,12 @@
 					initialItemId={attachmentItemId}
 					onClearScope={clearAttachmentItem}
 				/>
+			</section>
+		{:else if activeTab === 'apps'}
+			<section class="section">
+				{#key `${wsSlug}:${authStore.identityEpoch}`}
+					<AppsTab {wsSlug} />
+				{/key}
 			</section>
 		{:else if activeTab === 'danger'}
 			<section class="section">

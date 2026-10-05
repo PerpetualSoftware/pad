@@ -2562,6 +2562,134 @@ export interface AppGrant {
 	granted_at: string;
 }
 
+// ─── Installed apps (SPEC-6 U9a, TASK-3413) ─────────────────────────────────
+
+export type AppInstallState = 'active' | 'disabling' | 'inactive' | 'uninstalling' | 'uninstalled';
+
+/** An install's webhook as its owner sees it (U10a/U10c). */
+export interface AppWebhookStatus {
+	url: string;
+	/** awaiting_secret: held until the app redeems a new install code. */
+	status: 'awaiting_secret' | 'active' | string;
+	notice?: string;
+	/** Deliveries dropped undelivered after 24 h. */
+	undelivered_dropped: number;
+}
+
+export interface AppInstallSummary {
+	install_id: string;
+	app_name: string;
+	origin: string;
+	version?: string;
+	state: AppInstallState;
+	created_at: string;
+	updated_at: string;
+	webhook?: AppWebhookStatus;
+}
+
+export interface AppInstallList {
+	/** False when apps are off on this server: the page says "ask your admin". */
+	available: boolean;
+	cloud: boolean;
+	installs: AppInstallSummary[];
+}
+
+export interface AppManifestEvent {
+	name: string;
+	collections: string[];
+}
+
+export interface AppManifestItemAction {
+	key: string;
+	label: string;
+	collections: string[];
+	path: string;
+}
+
+export interface AppPreviewCollection {
+	key: string;
+	slug: string;
+	name: string;
+	schema: unknown;
+	/** An uninstalled install of this same app left it; it is adopted. */
+	adopt: boolean;
+	existing?: boolean;
+}
+
+export interface AppPreviewArtifact {
+	key: string;
+	url: string;
+	kind: string;
+	destination_collection: string;
+	raw_sha256: string;
+	raw: string;
+	normalized: { title: string; content: string; fields: Record<string, unknown> };
+	normalized_sha256: string;
+	/** Every field the importer dropped or changed. */
+	changes: string[];
+}
+
+export interface AppUpgradeDiffEntry {
+	[key: string]: unknown;
+}
+
+/** What the owner reviews before installing (U8a). */
+export interface AppInstallPreview {
+	pending_id: string;
+	expires_at: string;
+	origin: string;
+	manifest_url: string;
+	manifest_sha256: string;
+	app_id: string;
+	version: string;
+	title: string;
+	description?: string;
+	publisher: string;
+	homepage?: string;
+	reviewed_by_pad: boolean;
+	notice: string;
+	service_access: string;
+	delegated_access: string;
+	reads_system_collections: string;
+	collections: AppPreviewCollection[];
+	events: AppManifestEvent[];
+	webhook_url?: string;
+	item_actions: AppManifestItemAction[];
+	deferred_notice?: string;
+	artifacts: AppPreviewArtifact[];
+	redirect_uris: string[];
+	docs?: string;
+	upgrade?: {
+		install_id: string;
+		from_version: string;
+		from_manifest_sha256: string;
+		diff: AppUpgradeDiffEntry[];
+		review_required: boolean;
+		notice: string;
+	};
+}
+
+/** The install code the owner hands to the app. Shown once. */
+export interface AppInstallCode {
+	install_id: string;
+	install_code: string;
+	expires_at: string;
+	notice: string;
+}
+
+export interface AppInstallConfirmResult extends AppInstallCode {
+	items: { key: string; ref: string; status?: string }[];
+}
+
+export interface AppInstallStateResult {
+	install_id: string;
+	state: AppInstallState;
+	install_code?: string;
+	expires_at?: string;
+	notice?: string;
+	webhook?: AppWebhookStatus;
+}
+
 // ─── Helper functions ────────────────────────────────────────────────────────
 
 export function parseFields(item: Item): Record<string, any> {

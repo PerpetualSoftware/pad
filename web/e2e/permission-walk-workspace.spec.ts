@@ -123,10 +123,12 @@ async function openSettingsTab(page: Page, key: AccountKey, tab: string) {
 for (const key of MEMBERS) {
 	const owner = key === 'owner';
 
-	test(`${key}: Danger Zone tab renders iff owner`, async ({ page }) => {
+	test(`${key}: Apps and Danger Zone tabs render iff owner`, async ({ page }) => {
 		await openSettingsTab(page, key, 'general');
 		await expect(page.getByRole('tab', { name: /Members/ })).toBeVisible();
 		await expect(page.getByRole('tab', { name: /Danger Zone/ })).toHaveCount(owner ? 1 : 0);
+		// TASK-3413: installed apps are owner-only, as the server's doors are.
+		await expect(page.getByRole('tab', { name: /Apps/ })).toHaveCount(owner ? 1 : 0);
 	});
 
 	test(`${key}: General name is editable and savable iff owner`, async ({ page }) => {
