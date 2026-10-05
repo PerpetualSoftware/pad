@@ -132,6 +132,9 @@ async function expectCursorMoves(
 	// The pane follows the cursor on a debounce; let it land so the return
 	// press is a separate press to the app too.
 	await page.waitForTimeout(PANE_FOLLOW_SETTLE_MS);
+	// Read again right before the press: the return must be movement caused by
+	// it, not a change that happened during the settle (codex r2).
+	const beforeBack = await focusedCard();
 	await press(back);
 	try {
 		await expect
@@ -139,7 +142,7 @@ async function expectCursorMoves(
 				async () => {
 					const card = await focusedCard();
 					// null is focus LOST, which no list held, so it must not pass as a newcomer.
-					if (card === null || card === moved) return false;
+					if (card === null || card === moved || card === beforeBack) return false;
 					return card === start || !listedAtStart.includes(card);
 				},
 				{
