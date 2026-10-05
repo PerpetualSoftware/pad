@@ -1,5 +1,6 @@
 # Binary
 /pad
+/pad-e2etest
 /pad.exe
 /loadtest-collab
 /pad-vulnscan
