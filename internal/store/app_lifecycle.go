@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 // App install lifecycle: two-phase disable and rotate, re-enable, and
@@ -461,14 +462,20 @@ type InstallArtifactItem struct {
 // ListInstallArtifactItems returns the workspace's live items stamped with a
 // pack from origin (source_pack = origin@version), oldest first. A prefix is
 // compared with substr, not LIKE, so an origin's own characters never act as
-// a pattern.
+// a pattern; its length is in CHARACTERS, which is what substr counts on
+// both dialects (an origin's host is not punycoded, so it may be non-ASCII).
+//
+// The stamp names the app, not one install. The install conflict check
+// allows one non-uninstalled install per origin in a workspace, so the only
+// other install these rows can come from is an uninstalled one of the same
+// app, whose items a reinstall is meant to show (codex U9b r1).
 func (s *Store) ListInstallArtifactItems(workspaceID, origin string) ([]InstallArtifactItem, error) {
 	prefix := origin + "@"
 	rows, err := s.db.Query(s.q(`
 		SELECT id, source_pack FROM items
 		WHERE workspace_id = ? AND deleted_at IS NULL AND source_pack IS NOT NULL
 		  AND substr(source_pack, 1, ?) = ?
-		ORDER BY created_at, id`), workspaceID, len(prefix), prefix)
+		ORDER BY created_at, id`), workspaceID, utf8.RuneCountInString(prefix), prefix)
 	if err != nil {
 		return nil, fmt.Errorf("list install artifact items: %w", err)
 	}

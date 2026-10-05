@@ -141,7 +141,7 @@ test('TASK-3413 U9b: upgrade review, then activate a draft (app API answered by 
 		updated_at: '2026-10-05T10:00:00Z'
 	});
 
-	await page.route(`**/api/v1/workspaces/${ws}/items/triage`, async (route) => {
+	await page.route(`**/api/v1/workspaces/${ws}/items/i-triage`, async (route) => {
 		if (route.request().method() !== 'PATCH') return route.fallback();
 		patched.push(route.request().postDataJSON());
 		triageStatus = 'active';

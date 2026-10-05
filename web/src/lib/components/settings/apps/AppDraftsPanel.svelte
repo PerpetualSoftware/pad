@@ -48,7 +48,9 @@
 		activating = a.item_id;
 		rowError = null;
 		try {
-			await api.items.update(ws, a.slug, { fields_patch: { status: 'active' } });
+			// By id, never slug: a slug can be reused by another item, and the
+			// item routes resolve an id first (codex U9b r1).
+			await api.items.update(ws, a.item_id, { fields_patch: { status: 'active' } });
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			await load();
 		} catch (e) {

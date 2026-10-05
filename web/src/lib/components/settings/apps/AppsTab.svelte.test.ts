@@ -371,7 +371,7 @@ describe('Settings → Apps: upgrade and drafts (U9b)', () => {
 		expect(screen.getByRole('link', { name: 'Triage' }).getAttribute('href')).toBe('/dave/ws-a/playbooks/PLAYB-3');
 		expect(screen.queryByRole('button', { name: 'Activate Tone' })).toBeNull();
 		await fireEvent.click(screen.getByRole('button', { name: 'Activate Triage' }));
-		expect(itemUpdateMock).toHaveBeenCalledWith('ws-a', 'triage', { fields_patch: { status: 'active' } });
+		expect(itemUpdateMock).toHaveBeenCalledWith('ws-a', 'i1', { fields_patch: { status: 'active' } });
 		await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
 	});
 });

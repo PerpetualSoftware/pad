@@ -64,3 +64,28 @@ func TestTask3413b_TheInstallListsItsProvisionedItems(t *testing.T) {
 		t.Errorf("a deleted item was listed: %+v", got)
 	}
 }
+
+// The prefix is compared in characters: an origin whose host is not ASCII
+// still finds its items (codex U9b r1).
+func TestTask3413b_ANonASCIIOriginFindsItsItems(t *testing.T) {
+	e := newProvisionEnv(t)
+	p := e.stagePreview(t)
+	if rr := e.confirm(t, p, p.ManifestSHA256); rr.Code != http.StatusCreated {
+		t.Fatalf("confirm: %d", rr.Code)
+	}
+	var id string
+	if err := e.srv.store.DB().QueryRow(`SELECT id FROM items WHERE source_pack IS NOT NULL LIMIT 1`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	const origin = "https://café.example"
+	if _, err := e.srv.store.DB().Exec(`UPDATE items SET source_pack = ? WHERE id = ?`, origin+"@3.0.0", id); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.srv.store.ListInstallArtifactItems(e.wsID, origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ItemID != id {
+		t.Errorf("non-ASCII origin: %+v, want item %s", got, id)
+	}
+}
