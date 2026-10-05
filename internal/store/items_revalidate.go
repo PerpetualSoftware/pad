@@ -83,10 +83,13 @@ func decodeFieldsBlob(blob string) (map[string]any, error) {
 // changedFieldKeys is the subset of next whose decoded value differs from
 // prev: the keys a full `fields` write SETS, as opposed to carries. A key
 // next removes is a deletion, marked with a nil value.
+//
+// A stored blob that is not a JSON object (a corrupt row a full write is
+// repairing, BUG-3163) carries nothing: every key of next is set.
 func changedFieldKeys(prevBlob, nextBlob string) (map[string]any, error) {
 	prev, err := decodeFieldsBlob(prevBlob)
 	if err != nil {
-		return nil, err
+		prev = map[string]any{}
 	}
 	next, err := decodeFieldsBlob(nextBlob)
 	if err != nil {
