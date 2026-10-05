@@ -180,11 +180,11 @@ func appPrincipalInstallID(email string) (string, bool) {
 	return strings.TrimPrefix(local, "app+"), true
 }
 
-// purgeAppPrincipalsOfOwnedWorkspacesTx erases the bots that are members of
-// the workspaces ownerID owns, through eraseUserTx, in the caller's
-// transaction (lead ruling on TASK-3392: account deletion leaves no orphan
-// principals). A bot belongs to exactly one install, in one workspace.
-func (s *Store) purgeAppPrincipalsOfOwnedWorkspacesTx(tx *sql.Tx, ownerID string) error {
+// appPrincipalsOfOwnedWorkspacesTx lists the bots that are members of the
+// workspaces ownerID owns, in id order. Account deletion erases them
+// (purgeAppPrincipalsTx; lead ruling on TASK-3392: account deletion leaves no
+// orphan principals). A bot belongs to exactly one install, in one workspace.
+func (s *Store) appPrincipalsOfOwnedWorkspacesTx(tx *sql.Tx, ownerID string) ([]string, error) {
 	rows, err := tx.Query(s.q(`
 		SELECT DISTINCT u.id FROM users u
 		JOIN workspace_members wm ON wm.user_id = u.id
@@ -192,20 +192,26 @@ func (s *Store) purgeAppPrincipalsOfOwnedWorkspacesTx(tx *sql.Tx, ownerID string
 		WHERE u.kind = 'app' AND w.owner_id = ?
 		ORDER BY u.id`), ownerID)
 	if err != nil {
-		return fmt.Errorf("purge app principals: %w", err)
+		return nil, fmt.Errorf("purge app principals: %w", err)
 	}
 	var bots []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return fmt.Errorf("purge app principals: %w", err)
+			return nil, fmt.Errorf("purge app principals: %w", err)
 		}
 		bots = append(bots, id)
 	}
 	if err := rows.Close(); err != nil {
-		return fmt.Errorf("purge app principals: %w", err)
+		return nil, fmt.Errorf("purge app principals: %w", err)
 	}
+	return bots, nil
+}
+
+// purgeAppPrincipalsTx erases each bot through eraseUserTx, in the caller's
+// transaction, which has locked their comments root first (BUG-3395).
+func (s *Store) purgeAppPrincipalsTx(tx *sql.Tx, bots []string) error {
 	for _, id := range bots {
 		if err := s.eraseUserTx(tx, id); err != nil {
 			return fmt.Errorf("purge app principal %s: %w", id, err)

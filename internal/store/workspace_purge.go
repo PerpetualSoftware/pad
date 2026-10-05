@@ -259,6 +259,14 @@ func (s *Store) PurgeWorkspaceData(workspaceID string) error {
 		return fmt.Errorf("purge workspace %s: refusing to purge live (non-soft-deleted) workspace", workspaceID)
 	}
 
+	// Every comment in the workspace is locked root first before the parent
+	// detach and the bulk deletes below take them in plan order (BUG-3395):
+	// a comment delete locks its chain root first (BUG-3252), and a reply
+	// taken before its parent deadlocks with it. See lockCommentsRootFirstTx.
+	if err := s.lockCommentsRootFirstTx(tx, "workspace_id", workspaceID); err != nil {
+		return fmt.Errorf("purge workspace %s: %w", workspaceID, err)
+	}
+
 	// NULL self-referential RESTRICT columns before the bulk deletes so a
 	// single-statement DELETE can't hit a parent-before-child ordering
 	// violation on SQLite.

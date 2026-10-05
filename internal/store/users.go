@@ -1371,7 +1371,20 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	// Deleting a bot locks its users row; nothing a person does locks one
 	// (a bot holds no session), and account deletions do not overlap (the
 	// advisory lock above), so this adds no lock-order hazard.
-	if err := s.purgeAppPrincipalsOfOwnedWorkspacesTx(tx, userID); err != nil {
+	bots, err := s.appPrincipalsOfOwnedWorkspacesTx(tx, userID)
+	if err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+	// Every comment the erases below detach (the bots' and the person's) is
+	// locked root first, in ONE pass, before any of them writes (BUG-3395).
+	// A comment delete locks its chain root first (BUG-3252); a reply locked
+	// before its parent, or one erase's comments locked while holding an
+	// earlier erase's reactions, deadlocks with it. See
+	// lockCommentsRootFirstTx.
+	if err := s.lockCommentsRootFirstTx(tx, "user_id", append(bots, userID)...); err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+	if err := s.purgeAppPrincipalsTx(tx, bots); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
 
@@ -1413,6 +1426,10 @@ func (s *Store) eraseUserTx(tx *sql.Tx, userID string) error {
 		{"detach item versions", "UPDATE item_versions SET user_id = NULL WHERE user_id = ?"},
 		{"detach share-link views", "UPDATE share_link_views SET viewer_user_id = NULL WHERE viewer_user_id = ?"},
 	}
+	// The caller has locked this user's comments root first (BUG-3395,
+	// lockCommentsRootFirstTx): "detach comments" below would otherwise lock
+	// them in plan order and deadlock with a comment delete's root-first
+	// chain lock (BUG-3252).
 	for _, stmt := range deidentify {
 		if err := exec(stmt.what, stmt.query); err != nil {
 			return err
