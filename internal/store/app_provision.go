@@ -504,25 +504,34 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	if s.dialect.Driver() == DriverPostgres {
 		forShare = ` FOR SHARE`
 	}
-	var state, workspaceID string
-	if err := tx.QueryRow(s.q(`SELECT state, workspace_id FROM app_installs WHERE id = ?`+forUpdate), installID).Scan(&state, &workspaceID); err != nil || state != "active" {
+	// Lock order (BUG-3416, codex r3): the WORKSPACE row, then the install
+	// row, the order account deletion takes them (it soft-deletes the owned
+	// workspaces, then deletes their bots, whose ON DELETE SET NULL on
+	// app_installs.bot_user_id updates the install row) and the order the
+	// purge's cascade takes them. The install's workspace is read unlocked
+	// to find the row to lock, and re-read under the install lock: an
+	// install never changes workspace, so a mismatch is refused, not
+	// retried.
+	var workspaceID string
+	if err := tx.QueryRow(s.q(`SELECT workspace_id FROM app_installs WHERE id = ?`), installID).Scan(&workspaceID); err != nil {
 		return nil, ErrInstallCodeInvalid
 	}
 	// The workspace is resolved, live, inside the transaction and before
-	// the code is consumed (BUG-3416, codex r1): a code issued before a
-	// soft delete is refused rather than spent, and the slug the answer
-	// carries is never a separate read that can fail after the commit. On
-	// Postgres the row is held FOR SHARE, which a soft delete's UPDATE waits
-	// on, and which waits on one in flight (codex r2): a concurrent delete
-	// lands before the read or after the commit, never in between. Lock
-	// order: the install row (above), then the workspace row; a soft delete
-	// takes users rows, then the workspace row, and never an install row,
-	// so the two cannot cycle.
+	// the code is consumed (codex r1): a code issued before a soft delete is
+	// refused rather than spent, and the slug the answer carries is never a
+	// separate read that can fail after the commit. On Postgres the row is
+	// held FOR SHARE, which a soft delete's UPDATE waits on and which waits
+	// on one in flight (codex r2): a concurrent delete lands before the read
+	// or after the commit, never in between.
 	var workspaceSlug string
 	if err := tx.QueryRow(s.q(`SELECT slug FROM workspaces WHERE id = ? AND deleted_at IS NULL`+forShare), workspaceID).Scan(&workspaceSlug); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInstallCodeInvalid
 	} else if err != nil {
 		return nil, err
+	}
+	var state, lockedWorkspaceID string
+	if err := tx.QueryRow(s.q(`SELECT state, workspace_id FROM app_installs WHERE id = ?`+forUpdate), installID).Scan(&state, &lockedWorkspaceID); err != nil || state != "active" || lockedWorkspaceID != workspaceID {
+		return nil, ErrInstallCodeInvalid
 	}
 	var expires string
 	var consumed sql.NullString

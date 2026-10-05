@@ -83,8 +83,11 @@ func TestBug3416_RedeemRefusesASoftDeletedWorkspace(t *testing.T) {
 
 // A soft delete in flight when the redeem reads the workspace: the redeem
 // waits for it and then refuses, rather than spending the code on a
-// workspace that is gone by its commit (codex r2 on BUG-3416). Postgres
-// only: SQLite serialises every writer.
+// workspace that is gone by its commit (codex r2 on BUG-3416). The deleter
+// then touches the install row, as account deletion does through the bot's
+// foreign key, which must not deadlock: the redeem locks the workspace
+// before the install (codex r3). Postgres only: SQLite serialises every
+// writer.
 func TestBug3416_RedeemWaitsForAnInFlightSoftDelete(t *testing.T) {
 	e := newAppsEnvOn(t, accountDeleteServer(t, store.DriverPostgres)) // skips without PAD_TEST_POSTGRES_URL
 	e.srv.store.SetAppAPIAudience(testProvisionAudience)
@@ -125,6 +128,12 @@ func TestBug3416_RedeemWaitsForAnInFlightSoftDelete(t *testing.T) {
 			t.Fatal("the redeem never waited on a lock")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	// Account deletion goes on to delete the workspace's bot, whose ON DELETE
+	// SET NULL updates the install row (codex r3). With the redeem holding
+	// the install while it waits for the workspace, this deadlocked.
+	if _, err := del.Exec(`UPDATE app_installs SET bot_user_id = NULL WHERE id = $1`, out.InstallID); err != nil {
+		t.Fatalf("the deleter's install update while the redeem waits: %v", err)
 	}
 	if err := del.Commit(); err != nil {
 		t.Fatal(err)
