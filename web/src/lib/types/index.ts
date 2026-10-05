@@ -831,6 +831,13 @@ export interface Item {
 	 * stale on the next addition.
 	 */
 	warnings?: ItemWriteWarnings;
+	/**
+	 * The installed app that created this item (not its last app writer) (SPEC-6 U9c, TASK-3413): its install id
+	 * and name (the app's bot name, else its origin; kept after uninstall).
+	 * Absent for anything a person or an agent wrote.
+	 */
+	via_app?: string;
+	via_app_name?: string;
 }
 
 /**
@@ -1517,6 +1524,13 @@ export interface Version {
 	/** Written by a workspace import (BUG-3379): created_by / source came from
 	 *  the export and were not verified here. */
 	imported?: boolean;
+	/**
+	 * The installed app that made this version's write (SPEC-6 U9c, TASK-3413): its install id
+	 * and name (the app's bot name, else its origin; kept after uninstall).
+	 * Absent for anything a person or an agent wrote.
+	 */
+	via_app?: string;
+	via_app_name?: string;
 }
 
 /** The change one item version row records (PLAN-2348 U2). */
@@ -1674,6 +1688,13 @@ export interface Comment {
 	agent_name?: string;
 	replies?: Comment[];
 	reactions?: Reaction[];
+	/**
+	 * The installed app that wrote this comment (SPEC-6 U9c, TASK-3413): its install id
+	 * and name (the app's bot name, else its origin; kept after uninstall).
+	 * Absent for anything a person or an agent wrote.
+	 */
+	via_app?: string;
+	via_app_name?: string;
 }
 
 export interface CommentCreate {
@@ -2995,4 +3016,15 @@ export interface ItemAppAction {
 	app_title: string;
 	action_key: string;
 	label: string;
+}
+
+/**
+ * An installed app's bot principal on the workspace members list
+ * (`apps`, TASK-3392). Never in `members`, and not a seat.
+ */
+export interface WorkspaceApp {
+	id: string;
+	display_name: string;
+	app_name?: string;
+	role: string;
 }

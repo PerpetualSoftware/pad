@@ -25,6 +25,7 @@ func (s *Server) enrichItemsWithParent(r *http.Request, workspaceID string, item
 	// unrelated decorations, and a workspace with no parent links at all would
 	// otherwise return here and silently ship every list read unhydrated.
 	s.hydrateRelationTargets(r, workspaceID, items)
+	s.hydrateItemsAppAttribution(items) // SPEC-6 U9c
 
 	parentMap, err := s.store.GetParentMap(workspaceID)
 	if err != nil || len(parentMap) == 0 {
@@ -113,6 +114,8 @@ func (s *Server) enrichItemForResponse(r *http.Request, item *models.Item, visib
 	one := []models.Item{*item}
 	s.hydrateRelationTargets(r, item.WorkspaceID, one)
 	item.RelationTargets = one[0].RelationTargets
+	s.hydrateItemsAppAttribution(one) // SPEC-6 U9c
+	item.ViaApp, item.ViaAppName = one[0].ViaApp, one[0].ViaAppName
 
 	// Populate parent link info — skip if parent is in a hidden collection
 	parentLink, err := s.store.GetParentForItem(item.ID)

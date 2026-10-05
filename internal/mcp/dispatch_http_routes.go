@@ -1510,6 +1510,10 @@ type itemVersionSummary struct {
 	// with no user, such as recovery writes and versions from before
 	// migration 103.
 	ActorName string `json:"actor_name,omitempty"`
+	// ViaApp / ViaAppName: the installed app whose write made the row,
+	// absent otherwise (SPEC-6 U9c, TASK-3413).
+	ViaApp     string `json:"via_app,omitempty"`
+	ViaAppName string `json:"via_app_name,omitempty"`
 }
 
 // dispatchItemHistory is the hand-written dispatcher for `item history`
@@ -1594,6 +1598,8 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 			Source:        v.Source,
 			ChangeSummary: v.ChangeSummary,
 			ActorName:     v.ActorName,
+			ViaApp:        v.ViaApp,
+			ViaAppName:    v.ViaAppName,
 		})
 	}
 	enc, err := json.Marshal(summaries)

@@ -126,6 +126,7 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 	// returns a non-nil slice, which serialises to "[]" rather than
 	// "null", so we only need to guard deletedIDs (which can be nil
 	// when not initialised above).
+	s.hydrateItemsAppAttribution(updated) // SPEC-6 U9c
 	updatedItems := make([]interface{}, len(updated))
 	for i, item := range updated {
 		updatedItems[i] = item

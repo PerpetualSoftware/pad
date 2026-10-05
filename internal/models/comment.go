@@ -53,6 +53,13 @@ type Comment struct {
 	// Populated by handlers for threaded views
 	Replies   []Comment  `json:"replies,omitempty"`
 	Reactions []Reaction `json:"reactions,omitempty"`
+
+	// ViaApp and ViaAppName name the installed app that wrote the comment,
+	// absent for a person's or agent's (SPEC-6 U9c, TASK-3413). The name
+	// is the app's bot display name, else its origin, and survives
+	// uninstall. The server fills both on read; no scan sets them.
+	ViaApp     string `json:"via_app,omitempty"`
+	ViaAppName string `json:"via_app_name,omitempty"`
 }
 
 // IsEdited reports whether the body changed after creation: create stamps

@@ -117,6 +117,9 @@ func (s *Server) handleRoleBoard(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	for i := range lanes {
+		s.hydrateItemsAppAttribution(lanes[i].Items) // SPEC-6 U9c
+	}
 
 	// Each lane embeds its role, whose item_count the store fills from every
 	// item in the workspace. The lane's items were filtered above and its

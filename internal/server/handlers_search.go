@@ -184,6 +184,17 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	if resp != nil && len(resp.Results) > 0 {
+		// SPEC-6 U9c: a result row is the item as a GET serves it.
+		items := make([]models.Item, len(resp.Results))
+		for i := range resp.Results {
+			items[i] = resp.Results[i].Item
+		}
+		s.hydrateItemsAppAttribution(items)
+		for i := range resp.Results {
+			resp.Results[i].Item.ViaApp, resp.Results[i].Item.ViaAppName = items[i].ViaApp, items[i].ViaAppName
+		}
+	}
 
 	writeJSON(w, http.StatusOK, resp)
 }

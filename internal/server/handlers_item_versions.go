@@ -61,6 +61,7 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 			writeInternalError(w, err)
 			return
 		}
+		s.hydrateVersionsAppAttribution(versions) // SPEC-6 U9c
 		writeJSON(w, http.StatusOK, itemVersionMetadata(versions))
 		return
 	}
@@ -73,6 +74,7 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 	if versions == nil {
 		versions = []models.Version{}
 	}
+	s.hydrateVersionsAppAttribution(versions) // SPEC-6 U9c
 
 	writeJSON(w, http.StatusOK, versions)
 }
@@ -175,6 +177,9 @@ func (s *Server) handleGetItemVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Version not found")
 		return
 	}
+	one := []models.Version{*version}
+	s.hydrateVersionsAppAttribution(one) // SPEC-6 U9c
+	version.ViaApp, version.ViaAppName = one[0].ViaApp, one[0].ViaAppName
 
 	writeJSON(w, http.StatusOK, version)
 }
@@ -208,6 +213,9 @@ func (s *Server) handleGetItemVersionDiff(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "not_found", "Version not found")
 		return
 	}
+	one := []models.Version{d.Version}
+	s.hydrateVersionsAppAttribution(one) // SPEC-6 U9c
+	d.Version = one[0]
 	writeJSON(w, http.StatusOK, d)
 }
 
@@ -504,6 +512,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	if prunedPendingEdits > 0 && updated.Warnings == nil {
 		updated.Warnings = &models.ItemWriteWarnings{PrunedPendingEdits: prunedPendingEdits}
 	}
+	s.hydrateItemAppAttribution(updated) // SPEC-6 U9c
 
 	writeJSON(w, http.StatusOK, updated)
 }

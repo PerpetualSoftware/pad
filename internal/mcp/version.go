@@ -1738,6 +1738,17 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.65 — TASK-3413 (SPEC-6 U9c). ADDITIVE bump on the v0.53 grounds:
+//     an item an installed APP created, a comment an app wrote and a version
+//     row an app's write made gain `omitempty` `via_app` (the install id) and
+//     `via_app_name` (the app's bot display name, else its origin; it
+//     survives uninstall), on both transports. They reach `pad_item` get,
+//     list (summary and full), comments and history (summary rows too, both
+//     projections pinned together). On an item they name the CREATOR's app
+//     (items.created_via_app), never the last app writer. Absent on every
+//     row a person or an agent wrote, so a consumer that ignores them is
+//     unaffected. No name, enum or param moved.
+//
 //     0.64 — BUG-3379. ADDITIVE bump on the v0.53 grounds (bump if and only
 //     if the field reaches a response): a comment and an attachment row a
 //     WORKSPACE IMPORT wrote gain an `omitempty` `imported: true`, on both
@@ -1768,7 +1779,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.64"
+const ToolSurfaceVersion = "0.65"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

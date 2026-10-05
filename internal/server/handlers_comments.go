@@ -43,6 +43,7 @@ func (s *Server) handleListComments(w http.ResponseWriter, r *http.Request) {
 	if comments == nil {
 		comments = []models.Comment{}
 	}
+	s.hydrateCommentsAppAttribution(comments) // SPEC-6 U9c
 
 	// Bulk-load reactions for all comments.
 	if len(comments) > 0 {
@@ -276,6 +277,9 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishCommentEvent(sseCommentUpdated, workspaceID, updated.ItemID, updated.ID, title, collSlug, actor, source)
 
+	one := []models.Comment{*updated}
+	s.hydrateCommentsAppAttribution(one) // SPEC-6 U9c
+	updated.ViaApp, updated.ViaAppName = one[0].ViaApp, one[0].ViaAppName
 	writeJSON(w, http.StatusOK, updated)
 }
 

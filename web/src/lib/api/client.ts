@@ -92,7 +92,8 @@ import type {
 	AppInstallStateResult,
 	ClaimCodeResponse,
 	ImportArtifactResult,
-	ItemAppAction
+	ItemAppAction,
+	WorkspaceApp
 } from '$lib/types';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
@@ -2572,7 +2573,7 @@ export const api = {
 				invitations: { id: string; email: string; role: string; code: string; join_url?: string; created_at: string }[];
 				// Installed apps' bot principals (TASK-3392), never in `members`.
 				// Absent when the instance's policy hides them.
-				apps?: { id: string; display_name: string; app_name?: string; role: string }[];
+				apps?: WorkspaceApp[];
 			}>(`/workspaces/${ws}/members`),
 		invite: (ws: string, email: string, role: string) =>
 			request<{ added?: boolean; invited?: boolean; code?: string; join_url?: string; email: string; role: string; name?: string; user_id?: string }>(
