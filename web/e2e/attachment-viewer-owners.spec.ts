@@ -71,6 +71,13 @@ const FIRST_STEP_WINDOW_MS = 2000;
  * Direction is still not assumed. If `j` does not move the cursor within
  * FIRST_STEP_WINDOW_MS (the end of a group), the order flips: `k` must move it,
  * then `j` must bring it back.
+ *
+ * The suite is fully parallel against one server, so a row from another spec
+ * can sort in between the two neighbours while the pane settles. The route
+ * keeps focus on the moved-to item by identity, so the return press then lands
+ * on the newcomer, not the start card. The return step therefore accepts the
+ * start card OR a card that was not in the list when the step began. It still
+ * requires the return key to move the cursor, so a dead key fails it.
  */
 async function expectCursorMoves(
 	page: Page,
@@ -93,6 +100,9 @@ async function expectCursorMoves(
 	};
 
 	const start = await focusedCard();
+	const listedAtStart = await page.evaluate(() =>
+		[...document.querySelectorAll('.item-card')].map((c) => c.getAttribute('data-item-slug'))
+	);
 	let [away, back] = ['j', 'k'];
 	await press('j');
 	const jMoved = await expect
@@ -125,10 +135,20 @@ async function expectCursorMoves(
 	await press(back);
 	try {
 		await expect
-			.poll(focusedCard, {
-				message: `${message}: ${back} must move the cursor from "${moved}" back to "${start}"`
-			})
-			.toBe(start);
+			.poll(
+				async () => {
+					const card = await focusedCard();
+					// null is focus LOST, which no list held, so it must not pass as a newcomer.
+					if (card === null || card === moved) return false;
+					return card === start || !listedAtStart.includes(card);
+				},
+				{
+					message:
+						`${message}: ${back} must move the cursor from "${moved}" back to "${start}" ` +
+						`(or onto a row that arrived since the step began)`
+				}
+			)
+			.toBe(true);
 	} catch (err) {
 		await fail(err);
 	}
@@ -329,8 +349,12 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await expect(page.locator('.item-pane')).toBeVisible();
 		await expect(page.locator(`.item-pane ${TILE}`).first()).toBeVisible();
 
+		// Identified by slug, not by text: a card's text carries a relative time
+		// ("just now") that can roll over between two readings of the same card.
 		const focusedCard = () =>
-			page.evaluate(() => document.querySelector('.item-card.focused')?.textContent?.trim() ?? null);
+			page.evaluate(
+				() => document.querySelector('.item-card.focused')?.getAttribute('data-item-slug') ?? null
+			);
 
 		await page.locator('.item-card').first().click();
 		await expect.poll(focusedCard).not.toBe(null);
