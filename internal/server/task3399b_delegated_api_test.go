@@ -10,6 +10,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TASK-3399 (SPEC-6 U5b-2): the app API for a person signed in through an
@@ -393,5 +394,96 @@ func TestTask3399b_ARoleDroppedDuringTheReChecksWithholdsTheResponse(t *testing.
 				t.Errorf("%s during the re-checks: 200, want the response withheld", name)
 			}
 		})
+	}
+}
+
+// U5b-2 x U10d (lead cross-check): a DELEGATED app write's event names the
+// install that wrote it (actor_via_app, envelope via_app) AND credits the
+// person, never the install's bot.
+func TestTask3399b_ADelegatedWritesEventNamesTheInstallAndThePerson(t *testing.T) {
+	f := delegatedAPIFixture(t, "write", "write", "editor")
+	if _, err := f.srv.store.DB().Exec(`DELETE FROM event_outbox`); err != nil {
+		t.Fatal(err)
+	}
+	rr := appDo(f.srv, "POST", f.path("/collections/requests/items"), f.token, map[string]any{"title": "Filed by Dana", "fields": map[string]any{"status": "open", "size": "S"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &created)
+	id := created["id"].(string)
+	if rr = appDo(f.srv, "PATCH", f.path("/items/"+id), f.token, map[string]any{"fields_patch": map[string]any{"size": "M"}, "expected_etag": created["etag"]}); rr.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr = appDo(f.srv, "POST", f.path("/items/"+id+"/comments"), f.token, map[string]any{"body": "following up"}); rr.Code != http.StatusCreated {
+		t.Fatalf("comment: %d %s", rr.Code, rr.Body.String())
+	}
+
+	evs, err := f.srv.store.ListPendingOutboxEvents(1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, ev := range evs {
+		var doc map[string]any
+		if err := json.Unmarshal(ev.Payload, &doc); err != nil {
+			t.Fatal(err)
+		}
+		block, _ := doc["app_projection"].(map[string]any)
+		creator, _ := block["creator"].(map[string]any)
+		if block["actor_via_app"] != f.in.id {
+			t.Errorf("%s: actor_via_app = %v, want the install %s", ev.EventType, block["actor_via_app"], f.in.id)
+		}
+		if creator["user_id"] != f.person.ID || creator["kind"] != "user" || creator["display"] != "Dana" {
+			t.Errorf("%s: creator = %v, want the person, not the bot %s", ev.EventType, creator, f.in.bot.ID)
+		}
+		switch ev.EventType {
+		case "item.created", "item.updated":
+			if doc["created_by"] != "user" || doc["last_modified_by"] != "user" {
+				t.Errorf("%s: created_by/last_modified_by = %v/%v, want user/user", ev.EventType, doc["created_by"], doc["last_modified_by"])
+			}
+		case "comment.created":
+			if doc["user_id"] != f.person.ID || doc["author"] != "Dana" || doc["created_by"] != "user" {
+				t.Errorf("comment.created: user_id/author/created_by = %v/%v/%v, want the person", doc["user_id"], doc["author"], doc["created_by"])
+			}
+		}
+		// What the app receives.
+		b, _, err := store.BuildAppEventDTO(ev.EventType, "e", "t", ev.Payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var dto map[string]any
+		_ = json.Unmarshal(b, &dto)
+		dc, _ := dto["creator"].(map[string]any)
+		if dto["via_app"] != f.in.id || dc["kind"] != "user" || dc["display"] != "Dana" {
+			t.Errorf("%s DTO: via_app %v, creator %v; want the install, and the person as creator", ev.EventType, dto["via_app"], dc)
+		}
+		seen[ev.EventType] = true
+	}
+	for _, typ := range []string{"item.created", "item.updated", "comment.created"} {
+		if !seen[typ] {
+			t.Errorf("no %s event was emitted, so it was not checked", typ)
+		}
+	}
+	// The item.updated payload carries no modifier id; the activity row is
+	// where the update's author lives.
+	rows, err := f.srv.store.DB().Query(`SELECT action, actor, COALESCE(user_id, ''), COALESCE(via_app, '') FROM activities WHERE document_id = ?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var action, actor, user, via string
+		if err := rows.Scan(&action, &actor, &user, &via); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		if actor != "user" || user != f.person.ID || via != f.in.id {
+			t.Errorf("activity %s: %s/%s via %s, want user/%s via %s", action, actor, user, via, f.person.ID, f.in.id)
+		}
+	}
+	if n < 2 {
+		t.Errorf("%d activity rows for the item, want its create and its update", n)
 	}
 }
