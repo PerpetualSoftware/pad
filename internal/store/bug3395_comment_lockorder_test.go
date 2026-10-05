@@ -59,6 +59,16 @@ func TestBug3395_BulkCommentWritesLockRootFirst(t *testing.T) {
 
 	run := func(t *testing.T, s *Store, rootID string, bulk func() error, second func(tx *sql.Tx) error) {
 		t.Helper()
+		// The bulk writers retry a deadlock (the residues the lock order
+		// cannot remove), which would turn this case's cycle into a passing
+		// retry. A retry is the failure here: the lock order must avoid the
+		// cycle, not recover from it.
+		retries := retryRecorder(s)
+		defer func() {
+			if len(*retries) != 0 {
+				t.Errorf("the bulk write deadlocked and was retried (%v): the root-first lock did not prevent the cycle", *retries)
+			}
+		}()
 		holder, err := s.db.Begin()
 		if err != nil {
 			t.Fatal(err)
