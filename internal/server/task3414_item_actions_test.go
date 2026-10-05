@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -181,6 +182,16 @@ func TestTask3414_RedeemRefusalsAreIndistinguishable(t *testing.T) {
 		}, func() {
 			exec(`UPDATE app_item_actions SET active = 1 WHERE id = ?`, f.actionID)
 		}},
+		{"action deactivated at the same revision", func(string) {
+			exec(`UPDATE app_item_actions SET active = 0 WHERE id = ?`, f.actionID)
+		}, func() {
+			exec(`UPDATE app_item_actions SET active = 1 WHERE id = ?`, f.actionID)
+		}},
+		{"item moved to a companion the action is not offered on", func(string) {
+			exec(`UPDATE items SET collection_id = ? WHERE id = ?`, f.otherCompanion(t), f.item.ID)
+		}, func() {
+			exec(`UPDATE items SET collection_id = ? WHERE id = ?`, f.companion.ID, f.item.ID)
+		}},
 		{"companion released", func(string) {
 			exec(`UPDATE collections SET via_app = NULL WHERE id = ?`, f.companion.ID)
 		}, func() {
@@ -231,6 +242,11 @@ func TestTask3414_MintRefusalsAreIndistinguishable(t *testing.T) {
 		}, func() {
 			_, _ = f.srv.store.DB().Exec(`UPDATE workspace_members SET collection_access = 'all' WHERE workspace_id = ? AND user_id = ?`, f.ws.ID, f.viewer.ID)
 		}},
+		{"companion released", f.item.ID, f.in.id, "open", func() {
+			_, _ = f.srv.store.DB().Exec(`UPDATE collections SET via_app = NULL WHERE id = ?`, f.companion.ID)
+		}, func() {
+			_, _ = f.srv.store.DB().Exec(`UPDATE collections SET via_app = ? WHERE id = ?`, f.in.id, f.companion.ID)
+		}},
 		{"install disabled", f.item.ID, f.in.id, "open", func() {
 			_, _ = f.srv.store.DB().Exec(`UPDATE app_installs SET state = 'inactive' WHERE id = ?`, f.in.id)
 		}, func() {
@@ -265,5 +281,130 @@ func TestTask3414_RevokedBetweenMintAndRedeem(t *testing.T) {
 	}
 	if rr := f.redeem(code); rr.Code != http.StatusNotFound {
 		t.Fatalf("redeem after the viewer lost access: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Provisioning writes the manifest's actions; a reviewed upgrade that
+// changes one gives it a new revision, one that removes it retires it;
+// uninstall deletes them; installs from before U11 are backfilled.
+func TestTask3414_ActionRowsFollowTheManifest(t *testing.T) {
+	u := newUpgradeEnv(t)
+	db := u.srv.store.DB()
+	row := func() (label, path, colls string, rev int, active bool) {
+		t.Helper()
+		if err := db.QueryRow(`SELECT label, path, collection_ids, revision, active FROM app_item_actions WHERE install_id = ? AND action_key = 'open'`, u.installID).
+			Scan(&label, &path, &colls, &rev, &active); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	companion, err := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
+	if err != nil || companion == nil {
+		t.Fatal(err)
+	}
+	if label, path, colls, rev, active := row(); label != "Open" || path != "/t" || colls != `["`+companion.ID+`"]` || rev != 1 || !active {
+		t.Fatalf("provisioned action: %s %s %s %d %v", label, path, colls, rev, active)
+	}
+	upgrade := func(version string, actions []any) {
+		t.Helper()
+		u.m["version"] = version
+		u.m["item_actions"] = actions
+		u.publish(t, u.m)
+		_, p, _ := u.previewUpgrade(t)
+		if code, body := u.confirmUpgrade(t, p); code != http.StatusOK {
+			t.Fatalf("upgrade %s: %d %s", version, code, body)
+		}
+	}
+	upgrade("1.0.1", []any{map[string]any{"key": "open", "label": "Open ticket", "collections": []any{"tickets"}, "path": "/t"}})
+	if label, _, _, rev, active := row(); label != "Open ticket" || rev != 2 || !active {
+		t.Fatalf("changed action: %s rev %d active %v", label, rev, active)
+	}
+	upgrade("1.0.2", []any{map[string]any{"key": "open", "label": "Open ticket", "collections": []any{"tickets"}, "path": "/t"}})
+	if _, _, _, rev, _ := row(); rev != 2 {
+		t.Fatalf("an unchanged action got revision %d", rev)
+	}
+	upgrade("1.0.3", []any{})
+	if _, _, _, rev, active := row(); active || rev != 3 {
+		t.Fatalf("removed action: rev %d active %v, want retired", rev, active)
+	}
+
+	// Backfill: an install from before U11 gets its rows at start.
+	if _, err := db.Exec(`DELETE FROM app_item_actions WHERE install_id = ?`, u.installID); err != nil {
+		t.Fatal(err)
+	}
+	upgrade("1.0.4", []any{map[string]any{"key": "open", "label": "Open", "collections": []any{"tickets"}, "path": "/t"}})
+	if _, err := db.Exec(`DELETE FROM app_item_actions WHERE install_id = ?`, u.installID); err != nil {
+		t.Fatal(err)
+	}
+	u.srv.EnsureAppItemActions(context.Background())
+	if label, _, _, rev, active := row(); label != "Open" || rev != 1 || !active {
+		t.Fatalf("backfilled action: %s rev %d active %v", label, rev, active)
+	}
+
+	// Uninstall deletes them.
+	rr := doRequestWithCookie(u.srv, "POST", "/api/v1/workspaces/"+u.ws+"/apps/"+u.installID+"/uninstall", nil, u.token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("uninstall: %d %s", rr.Code, rr.Body.String())
+	}
+	if n := countRows(t, u.srv, `SELECT COUNT(*) FROM app_item_actions WHERE install_id = ?`, u.installID); n != 0 {
+		t.Fatalf("%d action rows after uninstall", n)
+	}
+}
+
+// otherCompanion is a second companion collection of the install, which the
+// action is not offered on (created once).
+func (f u11Fix) otherCompanion(t *testing.T) string {
+	t.Helper()
+	if c, _ := f.srv.store.GetCollectionBySlug(f.ws.ID, "requests-two"); c != nil {
+		return c.ID
+	}
+	c, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Requests two", Slug: "requests-two", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE collections SET via_app = ? WHERE id = ?`, f.in.id, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	return c.ID
+}
+
+// A code minted before the install's epoch moved (a rotate) is refused even
+// with a token from the new epoch: the code is bound to the epoch it was
+// minted under (§6).
+func TestTask3414_CodeFromAnEarlierEpochIsRefused(t *testing.T) {
+	f := u11Fixture(t)
+	status, _, code, body := f.mint(t, f.item.ID, f.in.id, "open")
+	if status != http.StatusOK {
+		t.Fatalf("mint: %d %s", status, body)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`, f.in.id); err != nil {
+		t.Fatal(err)
+	}
+	f.token = mintServiceToken(t, f.srv, f.in)
+	if rr := f.redeem(code); rr.Code != http.StatusNotFound {
+		t.Fatalf("redeem of a code from an earlier epoch: %d %s", rr.Code, rr.Body.String())
+	}
+	// A code minted now, at the new epoch, redeems.
+	status, _, code, body = f.mint(t, f.item.ID, f.in.id, "open")
+	if status != http.StatusOK {
+		t.Fatalf("mint at the new epoch: %d %s", status, body)
+	}
+	if rr := f.redeem(code); rr.Code != http.StatusOK {
+		t.Fatalf("redeem at the new epoch: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A platform admin who is not a member of the workspace is not a viewer an
+// app may be handed an item for: the membership-only stance, not the admin
+// cookie bypass.
+func TestTask3414_NonMemberAdminCannotLaunch(t *testing.T) {
+	f := u11Fixture(t)
+	admin, tok := loginTestUserAs(t, f.srv, "admin-3414@example.com", "Ada Admin", "pw-3414-admin")
+	if _, err := f.srv.store.DB().Exec(`UPDATE users SET role = 'admin' WHERE id = ?`, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	rr := doRequestWithCookie(f.srv, "POST", f.itemPath(f.item.ID, "/app-actions/"+f.in.id+"/open"), nil, tok)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("a non-member admin minted a code: %d %s", rr.Code, rr.Body.String())
 	}
 }

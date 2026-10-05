@@ -157,3 +157,47 @@ func TestTask3414_CodeFromBeforeAnUpgradeIsRefused(t *testing.T) {
 		t.Fatalf("redeem of a pre-upgrade code: %v", err)
 	}
 }
+
+// The backfill re-decides under the install lock: an install that is no
+// longer active or inactive gets nothing, even if the work list said so.
+func TestTask3414_BackfillSkipsAnUninstalledInstall(t *testing.T) {
+	f := u11StoreFixture(t, "inst-bf")
+	if _, err := f.s.db.Exec(f.s.q(`DELETE FROM app_item_actions WHERE install_id = ?`), f.installID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET state = 'uninstalled' WHERE id = ?`), f.installID); err != nil {
+		t.Fatal(err)
+	}
+	specs := func(string) ([]AppActionSpec, error) {
+		return []AppActionSpec{{Key: "open", Label: "Open", Path: "/t", CollectionSlugs: []string{f.companion.Slug}}}, nil
+	}
+	if err := f.s.EnsureAppItemActions(f.ws.ID, f.installID, specs); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := f.s.db.QueryRow(f.s.q(`SELECT COUNT(*) FROM app_item_actions WHERE install_id = ?`), f.installID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d action rows backfilled for an uninstalled install", n)
+	}
+}
+
+// Store-level guards the HTTP routing happens to shadow: a mint for another
+// workspace than the install's, and a redeem in a soft-deleted workspace.
+func TestTask3414_StoreGuardsWorkspace(t *testing.T) {
+	f := u11StoreFixture(t, "inst-wsg")
+	if _, err := f.s.MintContextCode("some-other-workspace", f.installID, "open", f.item.ID, "viewer-1", allVisible); err != ErrContextCodeRefused {
+		t.Fatalf("mint for another workspace: %v", err)
+	}
+	minted, err := f.s.MintContextCode(f.ws.ID, f.installID, "open", f.item.ID, "viewer-1", allVisible)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), f.ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.RedeemContextCode(f.installID, f.epoch(t), minted.Code, allVisible); err != ErrContextCodeRefused {
+		t.Fatalf("redeem in a deleted workspace: %v", err)
+	}
+}
