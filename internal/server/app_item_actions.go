@@ -84,33 +84,30 @@ func (s *Server) EnsureAppItemActions(ctx context.Context) {
 // contextViewerVisible is the viewer re-admission for mint and redeem: the
 // human item read's own visibility rule (checkItemVisibleQ) with the
 // viewer's CURRENT role, memberships and grants (lead ruling, day 88). The
-// role comes from crossWorkspaceRole, which tracks the front door, with
-// isBearer set so a platform admin who is not a member does not pass on the
-// admin cookie bypass: an app is about to receive the item.
-func (s *Server) contextViewerVisible(r *http.Request) store.ContextVisibleFunc {
+// role is crossWorkspaceRole's for a bearer caller (store.ViewerRoleQ), so a
+// platform admin who is not a member does not pass on the admin cookie
+// bypass: an app is about to receive the item.
+func (s *Server) contextViewerVisible() store.ContextVisibleFunc {
 	return func(q store.Queryer, item *models.Item, viewerID string) (bool, error) {
-		viewer, err := s.store.GetUser(viewerID)
+		// Every read on q, the mint or redeem's own transaction: a pool read
+		// here would wait for a second connection while holding the first,
+		// and under load every connection can be held that way (codex r1 on
+		// U11).
+		viewer, err := s.store.GetUserQ(q, viewerID)
 		if err != nil {
 			return false, err
 		}
 		if viewer == nil || viewer.IsDisabled() || viewer.Kind == models.UserKindApp {
 			return false, nil
 		}
-		ws, err := s.store.GetWorkspaceByID(item.WorkspaceID)
-		if err != nil {
-			return false, err
-		}
-		if ws == nil {
-			return false, nil
-		}
-		role, err := s.crossWorkspaceRole(r, ws, viewer, true)
+		role, err := s.store.ViewerRoleQ(q, item.WorkspaceID, viewer)
 		if err != nil {
 			return false, err
 		}
 		if role == "" {
 			return false, nil
 		}
-		return s.checkItemVisibleQ(q, ws.ID, item, viewer, role, true)
+		return s.checkItemVisibleQ(q, item.WorkspaceID, item, viewer, role, true)
 	}
 }
 
@@ -163,7 +160,7 @@ func (s *Server) handleMintItemAppAction(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	minted, err := s.store.MintContextCode(workspaceID, chi.URLParam(r, "installID"), chi.URLParam(r, "actionKey"),
-		item.ID, viewer.ID, s.contextViewerVisible(r))
+		item.ID, viewer.ID, s.contextViewerVisible())
 	if errors.Is(err, store.ErrContextCodeRefused) {
 		writeContextRefused(w)
 		return
@@ -207,6 +204,12 @@ type AppContextRedeemed struct {
 // appRedeemContext: POST /api/app/v1/workspaces/{ws}/context/redeem.
 func (s *Server) appRedeemContext(w http.ResponseWriter, r *http.Request) {
 	ac := appContextFrom(r)
+	// §6: a service token only. The route table's Auth column is
+	// documentation; this is the check.
+	if ac.AuthKind != "service" {
+		writeContextRefused(w)
+		return
+	}
 	var in struct {
 		Code string `json:"code"`
 	}
@@ -214,7 +217,7 @@ func (s *Server) appRedeemContext(w http.ResponseWriter, r *http.Request) {
 		writeContextRefused(w)
 		return
 	}
-	red, err := s.store.RedeemContextCode(ac.InstallID, ac.Grant.AuthEpoch, in.Code, s.contextViewerVisible(r))
+	red, err := s.store.RedeemContextCode(ac.InstallID, ac.Grant.AuthEpoch, in.Code, s.contextViewerVisible())
 	if errors.Is(err, store.ErrContextCodeRefused) {
 		writeContextRefused(w)
 		return

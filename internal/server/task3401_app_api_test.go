@@ -206,7 +206,6 @@ func TestTask3401_RoutesAndDTOCensus(t *testing.T) {
 		"appListComments":    "/items/" + f.item.ID + "/comments",
 		"appMe":              "/me",
 		"appGetAttachment":   "/attachments/" + f.attachment,
-		"appRedeemContext":   "/context/redeem", // POST; a code minted below (U11)
 	}
 	reads := 0
 	for _, rt := range appRoutes {
@@ -226,18 +225,7 @@ func TestTask3401_RoutesAndDTOCensus(t *testing.T) {
 			t.Errorf("route %s has no census path", rt.Name)
 			continue
 		}
-		var rr *httptest.ResponseRecorder
-		if rt.Method == "POST" {
-			// The one POST read: redeem a freshly minted context code.
-			u := u11Prepare(t, f)
-			_, _, code, body := u.mint(t, f.item.ID, f.in.id, "open")
-			if code == "" {
-				t.Fatalf("census mint: %s", body)
-			}
-			rr = appDo(f.srv, "POST", f.path(p), f.token, map[string]string{"code": code})
-		} else {
-			rr = appGet(f.srv, f.path(p), f.token)
-		}
+		rr := appGet(f.srv, f.path(p), f.token)
 		if rr.Code != http.StatusOK {
 			t.Errorf("%s: %d %s", rt.Name, rr.Code, rr.Body.String())
 			continue

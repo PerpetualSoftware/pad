@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/PerpetualSoftware/pad/internal/appmanifest"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -319,8 +320,11 @@ func (s *Store) MintContextCode(workspaceID, installID, actionKey, itemID, viewe
 	if err := s.contextAdmissibleQ(tx, c, installID, viewerID, visible); err != nil {
 		return nil, err
 	}
-	base := manifestField(c.manifest, "base_url")
-	if base == "" {
+	// The validated origin, not the raw field: validation trims base_url
+	// while it derives the origin, but the stored manifest keeps the
+	// original string (codex r1 on U11). Refused before a code is written.
+	base, err := appmanifest.NormalizeOrigin(manifestField(c.manifest, "base_url"))
+	if err != nil {
 		return nil, ErrContextCodeRefused
 	}
 	raw := make([]byte, 16) // 128 bits (§6)
@@ -534,4 +538,31 @@ func (s *Store) EnsureAppItemActions(workspaceID, installID string, specOf AppAc
 		return err
 	}
 	return tx.Commit()
+}
+
+// ViewerRoleQ is the role a bearer caller would be admitted with to
+// workspaceID (the server's crossWorkspaceRole with isBearer set), read on q
+// so the context-code transactions do not take a second connection (codex r1
+// on U11): the member's role; nothing for a platform admin who is not a
+// member (no admin bypass for an app's viewer); "guest" for a non-member
+// holding a grant; otherwise "".
+func (s *Store) ViewerRoleQ(q Queryer, workspaceID string, user *models.User) (string, error) {
+	member, err := s.GetWorkspaceMemberQ(q, workspaceID, user.ID)
+	if err != nil {
+		return "", err
+	}
+	if member != nil {
+		return member.Role, nil
+	}
+	if user.Role == "admin" {
+		return "", nil
+	}
+	has, err := s.UserHasGrantsInWorkspaceQ(q, workspaceID, user.ID)
+	if err != nil {
+		return "", err
+	}
+	if has {
+		return "guest", nil
+	}
+	return "", nil
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -72,8 +73,10 @@ func (f u11Fix) mint(t *testing.T, itemID, installID, key string) (int, string, 
 	return rr.Code, out["url"], u.Query().Get("pad_context"), rr.Body.String()
 }
 
+// redeem is §6's POST /api/app/v1/context/redeem: no workspace in the path,
+// the token's own (codex r1 on U11).
 func (f u11Fix) redeem(code string) *httptest.ResponseRecorder {
-	return appDo(f.srv, "POST", f.path("/context/redeem"), f.token, map[string]string{"code": code})
+	return appDo(f.srv, "POST", appAPIPrefix+"/context/redeem", f.token, map[string]string{"code": code})
 }
 
 func TestTask3414_MintRedeemAndReplay(t *testing.T) {
@@ -406,5 +409,121 @@ func TestTask3414_NonMemberAdminCannotLaunch(t *testing.T) {
 	rr := doRequestWithCookie(f.srv, "POST", f.itemPath(f.item.ID, "/app-actions/"+f.in.id+"/open"), nil, tok)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("a non-member admin minted a code: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// The unscoped route census: redeem's answer is {action_key, item} with the
+// app item DTO's keys, and it is the one root-mounted route.
+func TestTask3414_RedeemRouteCensus(t *testing.T) {
+	if len(appUnscopedRoutes) != 1 || appUnscopedRoutes[0].Name != "appRedeemContext" {
+		t.Fatalf("unscoped routes: %+v", appUnscopedRoutes)
+	}
+	f := u11Fixture(t)
+	_, _, code, body := f.mint(t, f.item.ID, f.in.id, "open")
+	if code == "" {
+		t.Fatalf("mint: %s", body)
+	}
+	rr := f.redeem(code)
+	if rr.Code != http.StatusOK || !strings.HasPrefix(rr.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("redeem: %d %s", rr.Code, rr.Body.String())
+	}
+	var m map[string]any
+	parseJSON(t, rr, &m)
+	if strings.Join(appKeysOf(m), ",") != "action_key,item" {
+		t.Fatalf("top-level keys %v", appKeysOf(m))
+	}
+	checkItem(t, "appRedeemContext.item", m["item"].(map[string]any))
+	// The workspace route of the same name does not exist: nothing can be
+	// refused at a workspace check before the code is consumed.
+	if rr := appDo(f.srv, "POST", f.path("/context/redeem"), f.token, map[string]string{"code": "x"}); rr.Code != http.StatusNotFound && rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("a workspace-scoped redeem path answered %d", rr.Code)
+	}
+}
+
+// §6: a service token only; a person's delegated token is refused with the
+// same body.
+func TestTask3414_DelegatedTokenCannotRedeem(t *testing.T) {
+	d := delegatedAPIFixture(t, "read", "read", "editor")
+	f := u11Prepare(t, d.appAPIFix)
+	_, _, code, body := f.mint(t, f.item.ID, f.in.id, "open")
+	if code == "" {
+		t.Fatalf("mint: %s", body)
+	}
+	want := f.redeem("padctx_00000000000000000000000000000000")
+	got := f.redeem(code)
+	if got.Code != http.StatusNotFound || got.Body.String() != want.Body.String() {
+		t.Fatalf("a delegated redeem: %d %s", got.Code, got.Body.String())
+	}
+}
+
+// codex r1 on U11: the URL is built from the validated origin, not the raw
+// stored base_url.
+func TestTask3414_URLUsesTheNormalizedOrigin(t *testing.T) {
+	f := u11Fixture(t)
+	if _, err := f.srv.store.DB().Exec(`UPDATE app_installs SET manifest = ? WHERE id = ?`, `{"title":"Portal","base_url":"  https://Portal.Example:443  "}`, f.in.id); err != nil {
+		t.Fatal(err)
+	}
+	status, target, _, body := f.mint(t, f.item.ID, f.in.id, "open")
+	if status != http.StatusOK || !strings.HasPrefix(target, "https://portal.example/t?") {
+		t.Fatalf("mint: %d %s %s", status, target, body)
+	}
+}
+
+// codex r1 on U11: the mint and redeem transactions read nothing through the
+// pool. With ONE connection, a pool read inside them deadlocks
+// deterministically. Every viewer branch is armed: a full member, a
+// restricted member (collection access list), a non-member guest (an item
+// grant).
+func TestTask3414_NoPoolReadsInsideTheTransactions(t *testing.T) {
+	f := u11Fixture(t)
+	db := f.srv.store.DB()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	ts := time.Now().UTC().Format(time.RFC3339)
+	restricted, restrictedTok := loginTestUserAs(t, f.srv, "restricted-3414@example.com", "Rae", "pw-3414-r")
+	exec(`INSERT INTO workspace_members (workspace_id, user_id, role, collection_access, created_at) VALUES (?, ?, 'viewer', 'specific', ?)`, f.ws.ID, restricted.ID, ts)
+	exec(`INSERT INTO member_collection_access (workspace_id, user_id, collection_id, created_at) VALUES (?, ?, ?, ?)`, f.ws.ID, restricted.ID, f.companion.ID, ts)
+	guest, guestTok := loginTestUserAs(t, f.srv, "guest-3414@example.com", "Gus", "pw-3414-g")
+	if _, err := f.srv.store.CreateItemGrant(f.ws.ID, f.item.ID, guest.ID, "view", f.viewer.ID); err != nil {
+		t.Fatal(err)
+	}
+	was := db.Stats().MaxOpenConnections
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.SetMaxOpenConns(was) })
+
+	for _, v := range []struct {
+		name, tok string
+	}{{"full member", f.viewerTok}, {"restricted member", restrictedTok}, {"guest", guestTok}} {
+		t.Run(v.name, func(t *testing.T) {
+			done := make(chan string, 1)
+			go func() {
+				rr := doRequestWithCookie(f.srv, "POST", f.itemPath(f.item.ID, "/app-actions/"+f.in.id+"/open"), nil, v.tok)
+				if rr.Code != http.StatusOK {
+					done <- "mint " + rr.Body.String()
+					return
+				}
+				var out map[string]string
+				_ = json.Unmarshal(rr.Body.Bytes(), &out)
+				u, _ := url.Parse(out["url"])
+				red := f.redeem(u.Query().Get("pad_context"))
+				if red.Code != http.StatusOK {
+					done <- "redeem " + red.Body.String()
+					return
+				}
+				done <- ""
+			}()
+			select {
+			case msg := <-done:
+				if msg != "" {
+					t.Fatal(msg)
+				}
+			case <-time.After(20 * time.Second):
+				t.Fatal("mint or redeem hung on a one-connection pool: a pool read inside the transaction")
+			}
+		})
 	}
 }
