@@ -125,7 +125,7 @@ func TestNonUpgradeCollabRequestPaysTheAPIBucket(t *testing.T) {
 		return rr.Code
 	}
 	apiBurst := srv.rateLimiters.API.config.Burst
-	freezeBucket(srv.rateLimiters.API)
+	api := freezeBucket(srv.rateLimiters.API)
 	refused := 0
 	for i := 0; i < apiBurst+10; i++ {
 		if plain() == http.StatusTooManyRequests {
@@ -134,6 +134,9 @@ func TestNonUpgradeCollabRequestPaysTheAPIBucket(t *testing.T) {
 	}
 	if refused != 10 {
 		t.Fatalf("%d plain requests under /api/v1/collab/ against a frozen API burst of %d: %d refused, want 10, so they are not paying the API bucket", apiBurst+10, apiBurst, refused)
+	}
+	if api.Tokens() >= 1 {
+		t.Fatalf("the frozen API bucket holds %.2f tokens: the limiter charged another bucket", api.Tokens())
 	}
 	if code := collabDialStatus(srv); code != http.StatusNotFound {
 		t.Fatalf("a real dial after plain requests spent the API bucket answered %d; the dial bucket should be untouched", code)
