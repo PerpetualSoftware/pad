@@ -133,6 +133,40 @@ describe('BUG-3417: null lists from the server', () => {
 		expect(await screen.findByTestId('app-upgrade-nothing')).toBeTruthy();
 	});
 
+	it('the upgrade review renders a changed artifact whose own lists are null', async () => {
+		listMock.mockResolvedValue({ available: true, cloud: false, installs: [install] });
+		upgradePreviewMock.mockResolvedValue({
+			...nullPreview(),
+			version: '2.0.0',
+			artifacts: [
+				{
+					key: 'triage',
+					url: 'https://minimal.example/triage.md',
+					kind: 'playbook',
+					destination_collection: 'playbooks',
+					raw_sha256: 'r',
+					raw: 'RAW',
+					normalized: { title: 'Triage', content: 'STORED', fields: null },
+					normalized_sha256: 'n',
+					changes: null
+				}
+			],
+			upgrade: {
+				install_id: 'inst-1',
+				from_version: '1.0.0',
+				from_manifest_sha256: 'old',
+				diff: [{ kind: 'artifact', key: 'triage', change: 'changed', class: 'review' }],
+				review_required: true,
+				notice: ''
+			}
+		});
+		render(AppsTab, { wsSlug: 'ws-a' });
+		await fireEvent.click(await screen.findByRole('button', { name: /Minimal App/ }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Check for an update' }));
+		expect(await screen.findByText('arrives as a new draft')).toBeTruthy();
+		expect(screen.getByText('Stored exactly as published.')).toBeTruthy();
+	});
+
 	it('an upgrade whose result lists no items says so', async () => {
 		listMock.mockResolvedValue({ available: true, cloud: false, installs: [install] });
 		upgradePreviewMock.mockResolvedValue({
