@@ -3770,10 +3770,6 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 // endpoint would otherwise cause the just-successful insert to return nil
 // (Codex review on PR #259). User-facing surfaces all read links via
 // GetItemLinks (plural) or GetParentForItem, both of which DO filter.
-func (s *Store) getItemLink(id string) (*models.ItemLink, error) {
-	return s.getItemLinkQ(s.db, id)
-}
-
 func (s *Store) getItemLinkQ(q Queryer, id string) (*models.ItemLink, error) {
 	var link models.ItemLink
 	var createdAt string

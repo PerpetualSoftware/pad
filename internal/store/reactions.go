@@ -59,10 +59,6 @@ func (s *Store) AddReaction(commentID, userID, actor, emoji string) (*models.Rea
 	return out, nil
 }
 
-func (s *Store) getReaction(commentID, userID, emoji string) (*models.Reaction, error) {
-	return s.getReactionQ(s.db, commentID, userID, emoji)
-}
-
 func (s *Store) getReactionQ(q Queryer, commentID, userID, emoji string) (*models.Reaction, error) {
 	var r models.Reaction
 	var createdAt string
