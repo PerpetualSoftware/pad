@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { viaAppTitle } from '$lib/utils/viaApp';
+	import ItemAppActions from './ItemAppActions.svelte';
 	import { safeString, safeText } from '$lib/fields/fieldShape';
 	import { page, navigating } from '$app/state';
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
@@ -6242,6 +6243,14 @@
 			>
 				{starredStore.isStarred(item.id) ? '★' : '☆'}
 			</button>
+			<!-- Installed apps' item actions (SPEC-6 U9d over U11): a link out
+			     per action, read-only here, so visible on the peeking side too.
+			     Remounted per item and identity like QuickActionsMenu below. -->
+			{#key itemSlug}
+				{#key identityKey}
+					<ItemAppActions {wsSlug} itemSlug={item.slug} />
+				{/key}
+			{/key}
 			<!-- Quick-actions menu: the prompt-copy actions are read-only and stay
 			     visible on the peeking side (invisible freeze, BUG-2263). But the
 			     owner "New / Manage actions" controls WRITE the whole collection
