@@ -194,3 +194,27 @@ func TestBug3407_ASchemaChangeWaitsForAFencedWriteThatReadTheSchema(t *testing.T
 		t.Fatalf("schema change after the fence released: %v", err)
 	}
 }
+
+// A move writes destination fields its caller validated before the lock
+// (codex r1): a destination schema change in between is checked too.
+func TestBug3407_AMoveIntoACollectionWhoseSchemaChangedIsRefused(t *testing.T) {
+	s, ws, _, item := bug3407Fixture(t)
+	dest, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Dest", Slug: "dest", Schema: bug3407Base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setSchema(t, s, dest.ID, bug3407WithColor)
+	_, err = s.MoveItemWithPreCheck(item.ID, dest.ID, `{"status":"open","color":"blue"}`, nil)
+	wantValidation(t, err, "move")
+	got, err := s.GetItem(item.ID)
+	if err != nil || got == nil {
+		t.Fatal(err)
+	}
+	if got.CollectionID == dest.ID {
+		t.Error("the item moved")
+	}
+	// Control: the same move with a value the destination allows lands.
+	if _, err := s.MoveItemWithPreCheck(item.ID, dest.ID, `{"status":"open","color":"red"}`, nil); err != nil {
+		t.Fatalf("a valid move: %v", err)
+	}
+}

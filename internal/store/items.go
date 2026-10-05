@@ -5438,6 +5438,21 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, err
 	}
 
+	// BUG-3407: the caller migrated and validated these fields against the
+	// destination schema before this lock. Every key of a moved item is set in
+	// the destination (MigrateFields keeps only values that migrate into a
+	// target field), so the whole blob is checked against the destination's
+	// schema as it stands under the lock.
+	{
+		set, err := decodeFieldsBlob(newFieldsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode moved fields: %w", err)
+		}
+		if err := s.revalidateSetFieldsTx(tx, targetCollectionID, set); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := s.acquireParentChildrenLocksForUpdate(tx, itemID); err != nil {
 		return nil, err
 	}
