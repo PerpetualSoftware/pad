@@ -186,10 +186,12 @@ func TestSSEAccessEpochAdvance_DegradedSnapshotNeitherAnnouncesNorMovesTheBase(t
 }
 
 // TestComputeSSEVisibility_StoreFaultMarksDegraded drives a real store fault
-// through computeSSEVisibility for an item-grant caller. Every table the
-// grant-side lookups read is also read by VisibleCollectionIDs first, so that
-// is the site a table rename reaches; the later sites set the same flag on the
-// same reasoning and have no separate seam.
+// through computeSSEVisibility. Renaming member_collection_access fails
+// VisibleCollectionIDs for both callers below, and for the item-grant caller
+// it also fails the later GetMemberCollectionAccess. The plain restricted
+// member never reaches that later read, so its leg is the one that pins the
+// VisibleCollectionIDs site on its own. The later site cannot be failed alone
+// by renaming a table, because VisibleCollectionIDs reads the same table first.
 func TestComputeSSEVisibility_StoreFaultMarksDegraded(t *testing.T) {
 	srv := testServer(t)
 	owner, err := srv.store.CreateUser(models.UserCreate{
@@ -230,24 +232,46 @@ func TestComputeSSEVisibility_StoreFaultMarksDegraded(t *testing.T) {
 	if _, err := srv.store.CreateItemGrant(ws.ID, granted.ID, member.ID, "view", owner.ID); err != nil {
 		t.Fatalf("create item grant: %v", err)
 	}
-	vis := func() sseVisibility {
+	plain, err := srv.store.CreateUser(models.UserCreate{
+		Email: "plain@example.com", Name: "Plain", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create plain member: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, plain.ID, "editor"); err != nil {
+		t.Fatalf("add plain member: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, plain.ID, "specific", []string{kept.ID}); err != nil {
+		t.Fatalf("set plain collection access: %v", err)
+	}
+	vis := func(u *models.User) sseVisibility {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace="+ws.Slug, nil)
-		req = req.WithContext(context.WithValue(req.Context(), ctxCurrentUser, member))
+		req = req.WithContext(context.WithValue(req.Context(), ctxCurrentUser, u))
 		return srv.computeSSEVisibility(req, ws.ID)
 	}
 
-	clean := vis()
-	if clean.degraded {
-		t.Fatalf("control: a clean resolve is marked degraded")
+	callers := []struct {
+		name string
+		user *models.User
+	}{{"item-grant member", member}, {"plain restricted member", plain}}
+	bases := map[string]string{}
+	for _, c := range callers {
+		clean := vis(c.user)
+		if clean.degraded {
+			t.Fatalf("%s: control: a clean resolve is marked degraded", c.name)
+		}
+		bases[c.name] = clean.accessEpoch()
 	}
-	base := clean.accessEpoch()
 
 	breakTable(t, srv, "member_collection_access")
-	faulted := vis()
-	if !faulted.degraded {
-		t.Fatalf("a store fault during the resolve is not marked degraded")
-	}
-	if _, changed := sseAccessEpochAdvance(base, faulted); changed {
-		t.Errorf("the faulted tick announced an access change")
+	for _, c := range callers {
+		faulted := vis(c.user)
+		if !faulted.degraded {
+			t.Errorf("%s: a store fault during the resolve is not marked degraded", c.name)
+			continue
+		}
+		if _, changed := sseAccessEpochAdvance(bases[c.name], faulted); changed {
+			t.Errorf("%s: the faulted tick announced an access change", c.name)
+		}
 	}
 }
