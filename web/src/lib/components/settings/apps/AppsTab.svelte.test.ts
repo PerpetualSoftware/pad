@@ -310,6 +310,11 @@ describe('Settings → Apps: upgrade and drafts (U9b)', () => {
 		expect(review.textContent).toMatch(/widened: more access/);
 		const auto = screen.getByTestId('app-upgrade-auto');
 		expect(auto.textContent).toMatch(/“old-tickets” released to the workspace \(data kept\)/);
+		// Each line sits in exactly one group.
+		expect(review.querySelectorAll('li')).toHaveLength(2);
+		expect(review.textContent).not.toMatch(/old-tickets|item\.deleted/);
+		expect(auto.querySelectorAll('li')).toHaveLength(2);
+		expect(auto.textContent).not.toMatch(/triage|widened/);
 		expect(screen.getByText('arrives as a new draft')).toBeTruthy();
 
 		await fireEvent.click(screen.getByRole('button', { name: 'Upgrade to v2.0.0' }));
