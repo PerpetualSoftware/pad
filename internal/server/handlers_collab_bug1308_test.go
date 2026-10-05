@@ -9,6 +9,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/gorilla/websocket"
+	"golang.org/x/time/rate"
 )
 
 // BUG-1308. Collab WebSocket dials used to draw on the general per-user API
@@ -27,6 +28,23 @@ func collabDialStatus(srv *Server) int {
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
 	return rr.Code
+}
+
+// testRateKey is the bucket key the limiter charges for these requests:
+// fresh-install mode has no user, so it is the client address.
+var testRateKey = "ip:" + rateLimitAddr("192.0.2.7")
+
+// freezeBucket stops rl's bucket for the test client from refilling, so
+// "spend the burst, then the next call is refused" holds however slowly the
+// calls run (BUG-3410: a stall of ~100ms refilled one API token and the
+// precondition failed). It returns the bucket so a test can confirm the
+// middleware charged THIS bucket: if the key derivation ever changed, the
+// frozen bucket would sit untouched and the test would be timing-bound
+// again without saying so.
+func freezeBucket(rl *ipRateLimiter) *rate.Limiter {
+	b := rl.getLimiter(testRateKey)
+	b.SetLimit(rate.Limit(1e-9))
+	return b
 }
 
 func restStatus(srv *Server) int {
@@ -48,6 +66,7 @@ func TestCollabDialsDoNotSpendTheAPIBucket(t *testing.T) {
 			srv.rateLimiters.CollabDial.config.Rate, burst)
 	}
 
+	dials := freezeBucket(srv.rateLimiters.CollabDial)
 	refused := 0
 	for i := 0; i < burst+10; i++ {
 		switch code := collabDialStatus(srv); code {
@@ -58,8 +77,11 @@ func TestCollabDialsDoNotSpendTheAPIBucket(t *testing.T) {
 			t.Fatalf("collab dial %d: unexpected status %d", i, code)
 		}
 	}
-	if refused == 0 {
-		t.Fatalf("%d dials against a burst of %d: none refused, so the collab bucket is not applied", burst+10, burst)
+	if refused != 10 {
+		t.Fatalf("%d dials against a frozen burst of %d: %d refused, want 10, so the collab bucket is not what limits dials", burst+10, burst, refused)
+	}
+	if dials.Tokens() >= 1 {
+		t.Fatalf("the frozen collab bucket holds %.2f tokens after the dials: the limiter charged another bucket", dials.Tokens())
 	}
 
 	apiBurst := srv.rateLimiters.API.config.Burst
@@ -73,11 +95,17 @@ func TestCollabDialsDoNotSpendTheAPIBucket(t *testing.T) {
 // And the reverse: a user who has spent their API burst can still dial.
 func TestRESTCallsDoNotSpendTheCollabDialBucket(t *testing.T) {
 	srv := testServer(t)
-	for i := 0; i < srv.rateLimiters.API.config.Burst+20; i++ {
-		restStatus(srv)
+	api := freezeBucket(srv.rateLimiters.API)
+	for i := 0; i < srv.rateLimiters.API.config.Burst; i++ {
+		if code := restStatus(srv); code == http.StatusTooManyRequests {
+			t.Fatalf("REST call %d of a fresh burst was refused", i+1)
+		}
 	}
 	if code := restStatus(srv); code != http.StatusTooManyRequests {
 		t.Fatalf("precondition: the API bucket should be spent, got %d", code)
+	}
+	if api.Tokens() >= 1 {
+		t.Fatalf("the frozen API bucket holds %.2f tokens: the limiter charged another bucket", api.Tokens())
 	}
 	if code := collabDialStatus(srv); code != http.StatusNotFound {
 		t.Fatalf("a collab dial after the API burst was spent answered %d, want it to reach the handler (404)", code)
@@ -97,14 +125,15 @@ func TestNonUpgradeCollabRequestPaysTheAPIBucket(t *testing.T) {
 		return rr.Code
 	}
 	apiBurst := srv.rateLimiters.API.config.Burst
+	freezeBucket(srv.rateLimiters.API)
 	refused := 0
 	for i := 0; i < apiBurst+10; i++ {
 		if plain() == http.StatusTooManyRequests {
 			refused++
 		}
 	}
-	if refused == 0 {
-		t.Fatalf("%d plain requests under /api/v1/collab/ against an API burst of %d: none refused, so they are not paying the API bucket", apiBurst+10, apiBurst)
+	if refused != 10 {
+		t.Fatalf("%d plain requests under /api/v1/collab/ against a frozen API burst of %d: %d refused, want 10, so they are not paying the API bucket", apiBurst+10, apiBurst, refused)
 	}
 	if code := collabDialStatus(srv); code != http.StatusNotFound {
 		t.Fatalf("a real dial after plain requests spent the API bucket answered %d; the dial bucket should be untouched", code)
