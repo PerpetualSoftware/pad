@@ -45,6 +45,16 @@ var appDeliveryDrainPoll = 250 * time.Millisecond
 type AppHookTarget struct {
 	WebhookID string
 	InstallID string
+	// Events is the stored subscription list, so the caller can narrow to
+	// the event's collection before spending anything on a target
+	// (AppHookSubscribes; codex r1 on U10c).
+	Events string
+}
+
+// AppHookSubscribes reports whether a stored subscription list names event
+// for collectionID (any collection when collectionID is "").
+func AppHookSubscribes(eventsJSON, event, collectionID string) bool {
+	return appHookSubscribes(eventsJSON, event, collectionID)
 }
 
 // ListAppWebhookTargets returns the workspace's deliverable-looking app hooks
@@ -63,11 +73,10 @@ func (s *Store) ListAppWebhookTargets(workspaceID, event string) ([]AppHookTarge
 	var out []AppHookTarget
 	for rows.Next() {
 		var t AppHookTarget
-		var events string
-		if err := rows.Scan(&t.WebhookID, &t.InstallID, &events); err != nil {
+		if err := rows.Scan(&t.WebhookID, &t.InstallID, &t.Events); err != nil {
 			return nil, err
 		}
-		if appHookSubscribes(events, event, "") {
+		if appHookSubscribes(t.Events, event, "") {
 			out = append(out, t)
 		}
 	}

@@ -84,7 +84,19 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 		if err != nil {
 			return false, err
 		}
-		for range hooks {
+		for _, h := range hooks {
+			// Recorded, so an owner hook's retry of this unit does not count
+			// it again (codex r1 on U10c).
+			st, err := s.store.DeliveryStatus(unit.eventID, h.WebhookID)
+			if err != nil {
+				return false, err
+			}
+			if store.DeliveryTerminal(st) {
+				continue
+			}
+			if err := s.store.RecordDelivery(unit.eventID, h.WebhookID, store.DeliverySkipped, "bulk operation", false); err != nil {
+				return false, err
+			}
 			s.countAppDelivery("skipped_bulk")
 		}
 		return false, nil
@@ -134,6 +146,12 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 	adm := appAdmitter{st: s.store}
 	expired := appDeliveryExpired(unit.occurredAt, time.Now())
 	for _, t := range live {
+		// Only a hook subscribed to this event FOR THIS COLLECTION is a
+		// target: anything else would be refused at admission, and must not
+		// spend the install's rate budget or be dropped (codex r1 on U10c).
+		if !store.AppHookSubscribes(t.Events, unit.eventType, collectionID) {
+			continue
+		}
 		if expired {
 			dropped, err := s.store.DropDelivery(unit.eventID, t.WebhookID, "undelivered after "+appWebhookDropAfter.String())
 			if err != nil {
@@ -144,18 +162,11 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 			}
 			continue
 		}
-		if !s.appRate.allow(t.InstallID) {
-			// Deferred, not dropped and not charged as an attempt: the event
-			// stays owed and the next drain pass tries again.
-			if err := s.store.RecordDelivery(unit.eventID, t.WebhookID, store.DeliveryRateLimited, "per-install rate cap", false); err != nil {
-				return false, err
-			}
-			s.countAppDelivery("rate_limited")
-			owed = true
-			continue
-		}
+		installID := t.InstallID
 		res := s.webhooks.DeliverAppEvent(adm, poster, webhooks.AppDelivery{
 			WebhookID: t.WebhookID, Event: unit.eventType, CollectionID: collectionID, OccurredAt: unit.occurredAt, Body: body,
+			// The cap is per ATTEMPT: a retry spends a token too.
+			RateGate: func() bool { return s.appRate.allow(installID) },
 		})
 		s.countAppDelivery(res.String())
 		status, attempted := appDeliveryStatus(res)
@@ -197,6 +208,10 @@ func appDeliveryStatus(r webhooks.AppResult) (string, bool) {
 		return store.DeliveryRefused, false
 	case webhooks.AppDeferred:
 		return store.DeliveryDeferred, false
+	case webhooks.AppRateLimited:
+		// Deferred, not dropped and not charged as an attempt: the event
+		// stays owed and a later pass tries again.
+		return store.DeliveryRateLimited, false
 	default:
 		return store.DeliveryTransient, true
 	}
@@ -234,8 +249,27 @@ func (l *appRateLimiter) allow(installID string) bool {
 	}
 	lim, ok := l.by[installID]
 	if !ok {
+		if len(l.by) >= appRateLimiterPruneAt {
+			l.pruneIdleLocked()
+		}
 		lim = rate.NewLimiter(l.limit, l.burst)
 		l.by[installID] = lim
 	}
 	return lim.Allow()
+}
+
+// appRateLimiterPruneAt bounds the limiter map (codex r1 on U10c): past it,
+// idle entries are dropped before a new one is added.
+const appRateLimiterPruneAt = 1024
+
+// pruneIdleLocked drops limiters whose bucket is full. A full bucket is
+// exactly what a fresh limiter starts with, so dropping one changes no
+// answer: an uninstalled or quiet install's entry goes, a busy one stays.
+func (l *appRateLimiter) pruneIdleLocked() {
+	now := time.Now()
+	for id, lim := range l.by {
+		if lim.TokensAt(now) >= float64(l.burst) {
+			delete(l.by, id)
+		}
+	}
 }

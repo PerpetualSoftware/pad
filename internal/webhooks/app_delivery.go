@@ -64,6 +64,10 @@ type AppDelivery struct {
 	// event older than the hook's deliver_from.
 	OccurredAt string
 	Body       []byte
+	// RateGate, when set, is asked before EVERY attempt, retries included,
+	// so a rate cap bounds requests rather than deliveries (codex r1 on
+	// U10c). false stops the delivery with AppRateLimited, nothing sent.
+	RateGate func() bool
 }
 
 // AppResult is what happened to one app delivery.
@@ -83,6 +87,9 @@ const (
 	// AppDeferred: admission could not be decided (a store error). Nothing
 	// was sent; the event is still owed.
 	AppDeferred
+	// AppRateLimited: the install's rate cap refused the attempt. Nothing
+	// was sent; the event is still owed and no attempt is charged.
+	AppRateLimited
 )
 
 // AppSignatureHeader carries `t=<unix seconds>,v1=<hex HMAC-SHA256 of
@@ -139,6 +146,9 @@ func (d *Dispatcher) DeliverAppEvent(adm AppAdmitter, poster AppPoster, dv AppDe
 func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster AppPoster, dv AppDelivery) AppResult {
 	if parent.Err() != nil {
 		return AppTransient
+	}
+	if dv.RateGate != nil && !dv.RateGate() {
+		return AppRateLimited
 	}
 	// The deadline is RELATIVE and starts BEFORE admission (DOC-3371 §5):
 	// any delay before the send only shortens the attempt, while the
@@ -203,6 +213,8 @@ func (r AppResult) String() string {
 		return "refused"
 	case AppDeferred:
 		return "deferred"
+	case AppRateLimited:
+		return "rate_limited"
 	}
 	return fmt.Sprintf("AppResult(%d)", int(r))
 }

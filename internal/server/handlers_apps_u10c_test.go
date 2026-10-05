@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TASK-3408 (U10c): per-endpoint delivery state, the owner no-duplicate
@@ -195,5 +197,93 @@ func TestAppDelivery_SkipIsCountedOnce(t *testing.T) {
 	}
 	if n := got.GetCounter().GetValue(); n != 1 {
 		t.Fatalf("skipped_no_projection = %v across an owner retry, want 1", n)
+	}
+}
+
+func (e *deliveryEnv) setAppRate(t *testing.T, limit rate.Limit, burst int) {
+	t.Helper()
+	e.srv.appRate.mu.Lock()
+	e.srv.appRate.by, e.srv.appRate.limit, e.srv.appRate.burst = map[string]*rate.Limiter{}, limit, burst
+	e.srv.appRate.mu.Unlock()
+}
+
+// codex r1 on U10c: an event in a collection the app is not subscribed to
+// spends none of its rate budget.
+func TestAppDelivery_UnrelatedCollectionsSpendNoBudget(t *testing.T) {
+	e := newDeliveryEnv(t)
+	e.redeemNow(t)
+	e.setAppRate(t, 0, 1) // one token, never refilled
+	other, err := e.srv.store.CreateCollection(e.wsID, models.CollectionCreate{Name: "Internal", Slug: "internal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.item(t, other.ID, "Not the app's")
+	e.tick(t)
+	e.item(t, e.companion.ID, "The app's")
+	e.tick(t)
+	if got := e.hooksAt("/hooks"); len(got) != 1 {
+		t.Fatalf("%d deliveries: an unrelated event spent the app's only token", len(got))
+	}
+}
+
+// codex r1 on U10c: the cap bounds REQUESTS, retries included.
+func TestAppDelivery_RateCapCountsEveryAttempt(t *testing.T) {
+	e := newDeliveryEnv(t)
+	e.redeemNow(t)
+	e.setAppRate(t, 0, 2) // two requests, never refilled
+	e.status["/hooks"] = http.StatusServiceUnavailable
+	e.item(t, e.companion.ID, "Flaky")
+	e.tick(t)
+	if got := len(e.hooksAt("/hooks")); got != 2 {
+		t.Fatalf("%d requests against a budget of 2", got)
+	}
+	if e.pendingOutbox(t) == 0 {
+		t.Fatal("the event was acked while still owed")
+	}
+}
+
+// codex r1 on U10c: the limiter map does not grow without bound, and pruning
+// drops only idle (full-bucket) entries.
+func TestAppRateLimiter_PrunesIdle(t *testing.T) {
+	l := appRateLimiter{by: map[string]*rate.Limiter{}, limit: 10, burst: 60}
+	busy := rate.NewLimiter(l.limit, l.burst)
+	busy.AllowN(time.Now(), 60) // spent: not idle
+	l.by["busy"] = busy
+	for i := 0; len(l.by) < appRateLimiterPruneAt; i++ {
+		l.by[fmt.Sprintf("idle-%d", i)] = rate.NewLimiter(l.limit, l.burst) // full: idle
+	}
+	l.allow("new")
+	if len(l.by) > 2 {
+		t.Fatalf("%d limiters retained after pruning, want busy and new", len(l.by))
+	}
+	if _, ok := l.by["busy"]; !ok {
+		t.Fatal("pruning dropped a limiter that had spent tokens")
+	}
+}
+
+// codex r1 on U10c: a bulk skip is recorded, so an owner hook's retry of
+// the same unit does not count it again.
+func TestAppDelivery_BulkSkipCountedOnce(t *testing.T) {
+	e := newDeliveryEnv(t)
+	m := metrics.New()
+	e.srv.SetMetrics(m)
+	e.redeemNow(t)
+	var down atomic.Int32
+	down.Store(http.StatusServiceUnavailable)
+	ownerSink(t, e, &down)
+	it := e.item(t, e.companion.ID, "Member")
+	e.tick(t)
+	title := "Renamed in bulk"
+	if _, err := e.srv.store.UpdateItem(it.ID, models.ItemUpdate{Title: &title}, store.WithEventBatch("batch-once")); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(t)
+	e.tick(t)
+	var got dto.Metric
+	if err := m.AppWebhookDeliveriesTotal.WithLabelValues("skipped_bulk").Write(&got); err != nil {
+		t.Fatal(err)
+	}
+	if n := got.GetCounter().GetValue(); n != 1 {
+		t.Fatalf("skipped_bulk = %v across an owner retry, want 1", n)
 	}
 }
