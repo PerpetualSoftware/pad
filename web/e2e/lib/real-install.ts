@@ -50,6 +50,15 @@ export function opensslAvailable(): boolean {
 /** A CA, and a leaf for 127.0.0.1 it signed, in a fresh temp dir. */
 export function makeCerts(): Certs {
 	const dir = mkdtempSync(join(tmpdir(), 'pad-e2e-tls-'));
+	try {
+		return makeCertsIn(dir);
+	} catch (err) {
+		rmSync(dir, { recursive: true, force: true });
+		throw err;
+	}
+}
+
+function makeCertsIn(dir: string): Certs {
 	const p = (f: string) => join(dir, f);
 	const run = (...args: string[]) => execFileSync('openssl', args, { stdio: 'pipe' });
 	run('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', '/CN=pad-e2e-ca',
@@ -98,13 +107,30 @@ export function closeServer(server: https.Server | undefined): Promise<void> {
 	});
 }
 
+// Hop-by-hop headers (RFC 9110 §7.6.1) belong to one connection and are not
+// forwarded, nor is any header the Connection header names.
+const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
+function endToEnd(headers: http.IncomingHttpHeaders): http.OutgoingHttpHeaders {
+	const named = String(headers.connection ?? '')
+		.split(',')
+		.map((h) => h.trim().toLowerCase())
+		.filter(Boolean);
+	const out: http.OutgoingHttpHeaders = {};
+	for (const [k, v] of Object.entries(headers)) {
+		if (!HOP_BY_HOP.includes(k) && !named.includes(k) && v !== undefined) out[k] = v;
+	}
+	return out;
+}
+
 /** The TLS front: https on a free port, forwarding to pad's http port with Host kept. */
 export async function startFront(certs: Certs, padPort: number): Promise<{ server: https.Server; port: number }> {
 	const server = https.createServer({ key: certs.key, cert: certs.cert }, (req, res) => {
 		const up = http.request(
-			{ host: '127.0.0.1', port: padPort, method: req.method, path: req.url, headers: req.headers },
+			{ host: '127.0.0.1', port: padPort, method: req.method, path: req.url, headers: endToEnd(req.headers) },
 			(r) => {
-				res.writeHead(r.statusCode ?? 502, r.headers);
+				res.writeHead(r.statusCode ?? 502, endToEnd(r.headers));
+				r.on('error', () => res.destroy());
+				r.on('aborted', () => res.destroy());
 				r.pipe(res);
 			}
 		);
@@ -112,6 +138,8 @@ export async function startFront(certs: Certs, padPort: number): Promise<{ serve
 			if (!res.headersSent) res.writeHead(502);
 			res.end();
 		});
+		// A client that goes away takes the upstream request with it.
+		res.on('close', () => up.destroy());
 		req.pipe(up);
 	});
 	// WebSocket upgrades (the collab socket) pass through as raw bytes.
@@ -205,13 +233,15 @@ export function startPad(opts: {
 	return { child, dataDir, failure: () => failure };
 }
 
-/** Stops pad and waits for it to exit, killing it if SIGTERM is not enough. */
+/** Stops pad and waits for it to be gone, killing it if SIGTERM is not enough. */
 export async function stopPad(child: ChildProcess | undefined): Promise<void> {
-	if (!child || child.exitCode !== null || child.signalCode !== null) return;
-	const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-	child.kill('SIGTERM');
+	if (!child || child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
+	// 'close' follows both a normal exit and a spawn failure ('error' with no
+	// 'exit'), so it is the one event that always ends the wait.
+	const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+	if (!child.kill('SIGTERM')) return;
 	const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
-	await exited;
+	await closed;
 	clearTimeout(timer);
 }
 

@@ -1,5 +1,5 @@
 import { expect, request as pwRequest, test, type APIRequestContext } from '@playwright/test';
-import { accessSync, constants } from 'node:fs';
+import { accessSync, constants, statSync } from 'node:fs';
 import type https from 'node:https';
 import {
 	appCall,
@@ -41,6 +41,7 @@ function missing(): string {
 	if (!BINARY) return 'PAD_E2E_BINARY (a `go build -tags e2etest` pad) is not set';
 	try {
 		accessSync(BINARY, constants.X_OK);
+		if (!statSync(BINARY).isFile()) throw new Error('not a file');
 	} catch {
 		return `PAD_E2E_BINARY=${BINARY} is not an executable file`;
 	}
@@ -111,20 +112,32 @@ test.describe('TASK-3415: a real install, end to end', () => {
 			return;
 		}
 		certs = makeCerts();
-		// pad's own port is chosen before it binds (the binary takes it as a
-		// setting); the front and the app bind port 0 and report theirs.
-		const padPort = await freePort();
-		const f = await startFront(certs, padPort);
-		front = f.server;
-		frontOrigin = `https://127.0.0.1:${f.port}`;
+		// The front and the app bind port 0 and report theirs. pad takes its
+		// port as a setting, so it is chosen first and can be taken in between
+		// by another process: an early exit retries on a new port.
 		app = await startApp(certs, manifest);
-		pad = startPad({ binary: BINARY, padPort, frontOrigin, caPath: certs.caPath });
-
+		owner = await pwRequest.newContext({ ignoreHTTPSErrors: true });
+		for (let attempt = 1; ; attempt++) {
+			const padPort = await freePort();
+			const f = await startFront(certs, padPort);
+			frontOrigin = `https://127.0.0.1:${f.port}`;
+			pad = startPad({ binary: BINARY, padPort, frontOrigin, caPath: certs.caPath });
+			try {
+				await waitFor('pad through the front', async () => {
+					if (pad!.failure()) throw new Error(pad!.failure());
+					return (await owner.get(`${frontOrigin}/api/v1/health`).catch(() => null))?.ok();
+				}, 30_000);
+				front = f.server;
+				break;
+			} catch (err) {
+				await stopPad(pad.child);
+				await closeServer(f.server);
+				cleanupDirs(pad.dataDir);
+				if (attempt === 3) throw err;
+			}
+		}
+		await owner.dispose();
 		owner = await pwRequest.newContext({ baseURL: frontOrigin, ignoreHTTPSErrors: true });
-		await waitFor('pad through the front', async () => {
-			if (pad!.failure()) throw new Error(pad!.failure());
-			return (await owner.get('/api/v1/health').catch(() => null))?.ok();
-		}, 30_000);
 
 		const boot = await owner.post('/api/v1/auth/bootstrap', { data: ADMIN });
 		expect(boot.ok(), await boot.text()).toBeTruthy();
