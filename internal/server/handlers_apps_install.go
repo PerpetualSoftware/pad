@@ -85,6 +85,29 @@ type appPreview struct {
 	Upgrade *appUpgradePreview `json:"upgrade,omitempty"`
 }
 
+// withLists returns p with every list a list, never null (BUG-3417): the
+// manifest's optional lists are nil when it omits them, and a nil slice
+// serializes as null where the contract (and the TS type) say an array. Every
+// door that writes a preview calls it.
+func (p *appPreview) withLists() *appPreview {
+	if p.Collections == nil {
+		p.Collections = []appPreviewCollection{}
+	}
+	if p.Events == nil {
+		p.Events = []appmanifest.Event{}
+	}
+	if p.ItemActions == nil {
+		p.ItemActions = []appmanifest.ItemAction{}
+	}
+	if p.Artifacts == nil {
+		p.Artifacts = []appPreviewArtifact{}
+	}
+	if p.RedirectURIs == nil {
+		p.RedirectURIs = []string{}
+	}
+	return p
+}
+
 // appUpgradePreview is the upgrade half of a preview (U8b2).
 type appUpgradePreview struct {
 	InstallID          string             `json:"install_id"`
@@ -226,7 +249,7 @@ func (s *Server) handleAppInstallPreview(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, ierr)
 		return
 	}
-	writeJSON(w, http.StatusOK, preview)
+	writeJSON(w, http.StatusOK, preview.withLists())
 }
 
 // stageAppInstall fetches, stages, validates and previews under a reservation
@@ -588,7 +611,7 @@ func (s *Server) handleGetAppInstallPending(w http.ResponseWriter, r *http.Reque
 		preview.Artifacts[i].Raw = string(blobs[preview.Artifacts[i].Key].Data)
 	}
 	preview.ExpiresAt = p.ExpiresAt
-	writeJSON(w, http.StatusOK, preview)
+	writeJSON(w, http.StatusOK, preview.withLists())
 }
 
 func (s *Server) handleDeleteAppInstallPending(w http.ResponseWriter, r *http.Request) {
@@ -643,12 +666,23 @@ type appsSettingsResponse struct {
 	PrivateOrigins []appfetch.PrivateOrigin `json:"private_origins"`
 }
 
+// withAllowedLists returns origins as a list, every entry's Allowed a list
+// too (BUG-3417): a webhook-only entry may omit it, and a value stored
+// before this answered null.
+func withAllowedLists(origins []appfetch.PrivateOrigin) []appfetch.PrivateOrigin {
+	out := make([]appfetch.PrivateOrigin, len(origins))
+	for i, o := range origins {
+		if o.Allowed == nil {
+			o.Allowed = []string{}
+		}
+		out[i] = o
+	}
+	return out
+}
+
 func (s *Server) appsSettings() appsSettingsResponse {
 	v, _ := s.store.GetPlatformSetting(settingAppsEnabled)
-	list := s.appsPrivateOrigins()
-	if list == nil {
-		list = []appfetch.PrivateOrigin{}
-	}
+	list := withAllowedLists(s.appsPrivateOrigins())
 	return appsSettingsResponse{
 		Enabled: s.cloudMode || v == "true", Available: s.appsAvailable(),
 		HTTPSIssuer: s.oauthServer != nil && (s.cloudMode || s.mcpEndpoints.HTTPS()),
@@ -686,10 +720,7 @@ func (s *Server) handleUpdateAppsSettings(w http.ResponseWriter, r *http.Request
 	}
 	var changed []string
 	if in.PrivateOrigins != nil {
-		list := *in.PrivateOrigins
-		if list == nil {
-			list = []appfetch.PrivateOrigin{}
-		}
+		list := withAllowedLists(*in.PrivateOrigins)
 		// Validate by building a fetcher from it: the same parser the fetch
 		// path uses, so a list that saves is a list that works.
 		if _, err := appfetch.New(list, time.Second, nil); err != nil {

@@ -124,7 +124,8 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	out := appInstallConfirmResponse{InstallID: res.InstallID, InstallCode: res.InstallCode, ExpiresAt: res.ExpiresAt, Notice: appInstallCodeNotice}
+	// Items is a list even when the pack has no artifacts (BUG-3417).
+	out := appInstallConfirmResponse{InstallID: res.InstallID, InstallCode: res.InstallCode, ExpiresAt: res.ExpiresAt, Notice: appInstallCodeNotice, Items: []confirmItem{}}
 	actor, source := actorFromRequest(r)
 	actorName := actorNameFromRequest(r)
 	for i, item := range res.Items {
