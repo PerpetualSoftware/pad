@@ -1202,6 +1202,9 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		WHERE wl.target_item_id = ?
 		  AND s.workspace_id = ?
 		  AND s.deleted_at IS NULL
+		  -- A soft-deleted COLLECTION leaves its items live (BUG-3344);
+		  -- relation backlinks make the same check.
+		  AND c.deleted_at IS NULL
 		  AND s.id != ?`+relClause+visClause+`
 		ORDER BY s.updated_at DESC, wl.position ASC
 		LIMIT ? OFFSET ?
@@ -1329,6 +1332,9 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 		WHERE wl.target_item_id = ?
 		  AND s.workspace_id = ?
 		  AND s.deleted_at IS NULL
+		  -- A soft-deleted COLLECTION leaves its items live (BUG-3344);
+		  -- relation backlinks make the same check.
+		  AND c.deleted_at IS NULL
 		  AND s.id != ?`+relClause+visClause+`
 	`), args...).Scan(&n)
 	if err != nil {
@@ -1591,7 +1597,10 @@ func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
 		  AND wl.target_workspace_id = ?
 		  AND `+refClause+`
 		  AND s.workspace_id = ?
-		  AND s.deleted_at IS NULL`+visClause+`
+		  AND s.deleted_at IS NULL
+		  -- A soft-deleted COLLECTION leaves its items live (BUG-3344);
+		  -- relation backlinks make the same check.
+		  AND c.deleted_at IS NULL`+visClause+`
 		ORDER BY s.updated_at DESC, wl.position ASC
 		LIMIT ?
 	`), args...)
