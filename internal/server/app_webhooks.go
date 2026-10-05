@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -111,4 +112,60 @@ func (s *Server) EnsureAppWebhooks(ctx context.Context) {
 			slog.Error("apps: webhook backfill", "install_id", in.InstallID, "error", err)
 		}
 	}
+}
+
+// appInstallListEntry is one row of the owner's Apps list (U9a, TASK-3413).
+type appInstallListEntry struct {
+	InstallID string          `json:"install_id"`
+	AppName   string          `json:"app_name"`
+	Origin    string          `json:"origin"`
+	Version   string          `json:"version,omitempty"`
+	State     string          `json:"state"`
+	CreatedAt string          `json:"created_at"`
+	UpdatedAt string          `json:"updated_at"`
+	Webhook   *appWebhookView `json:"webhook,omitempty"`
+}
+
+// appInstallListResponse answers GET /workspaces/{ws}/apps. Available is
+// false when apps are off on this server, so the page can say "ask your
+// admin" (Dave §11 Q1) instead of reading a 404 as an empty workspace.
+type appInstallListResponse struct {
+	Available bool                  `json:"available"`
+	Cloud     bool                  `json:"cloud"`
+	Installs  []appInstallListEntry `json:"installs"`
+}
+
+// GET /workspaces/{ws}/apps: the workspace's installs, owner-only. Unlike
+// the other install doors it answers while apps are off, with available
+// false and no installs, so the owner sees why there is nothing to manage.
+func (s *Server) handleListAppInstalls(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	out := appInstallListResponse{Available: s.appsAvailable(), Cloud: s.cloudMode, Installs: []appInstallListEntry{}}
+	if !out.Available {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	list, err := s.store.ListWorkspaceInstalls(workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	for _, in := range list {
+		e := appInstallListEntry{
+			InstallID: in.ID, AppName: in.AppName, Origin: in.Origin, Version: in.Version, State: in.State,
+			CreatedAt: in.CreatedAt.UTC().Format(time.RFC3339), UpdatedAt: in.UpdatedAt.UTC().Format(time.RFC3339),
+		}
+		if e.Webhook, err = s.appWebhookView(in.ID); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		out.Installs = append(out.Installs, e)
+	}
+	writeJSON(w, http.StatusOK, out)
 }

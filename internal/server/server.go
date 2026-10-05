@@ -2268,6 +2268,8 @@ func (s *Server) setupRouter() {
 					// U8b: a new install code for an active install, the
 					// recovery when the app lost its redeem response.
 					r.Post("/apps/{installID}/install-code", s.handleIssueAppInstallCode)
+					// U9a: the workspace's installs, for the owner's Apps page.
+					r.Get("/apps", s.handleListAppInstalls)
 					// U10a: the install's state and its webhook's status.
 					r.Get("/apps/{installID}", s.handleGetAppInstall)
 					// U8c: two-phase disable and rotate, re-enable, uninstall.
