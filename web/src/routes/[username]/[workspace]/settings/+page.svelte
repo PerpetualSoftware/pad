@@ -7,7 +7,8 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import type { Collection, WorkspaceApp, WorkspaceContext } from '$lib/types';
+	import type { Collection, WorkspaceContext } from '$lib/types';
+	import type { WorkspaceApp } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';

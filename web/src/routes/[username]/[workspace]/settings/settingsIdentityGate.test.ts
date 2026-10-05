@@ -16,14 +16,17 @@ identityGateSuite({
 		asyncFunctions: {
 			refreshCollections: { reviewed: '8eae0856214c', why: 'collectionsGen and the workspace, then identityHeld(epochAtEntry), before the commit; a failure commits nothing' },
 			load: {
-				reviewed: '49e07be52aa6',
-				why: 'loadGen after each await (collectionsGen too for the collections write). It has no identity check, and it re-stamps identityEpochAtLoad BEFORE its awaits, where roles and library re-stamp after the data lands. The advisory list on TASK-3097 carries that. Re-reviewed for BUG-3260: it no longer writes the name or context (an effect seeds them from the settled store), so it commits strictly less than before',
+				reviewed: '3ed7f506bd0f',
+				why: 'loadGen after each await (collectionsGen too for the collections write). It has no identity check, and it re-stamps identityEpochAtLoad BEFORE its awaits, where roles and library re-stamp after the data lands. The advisory list on TASK-3097 carries that. Re-reviewed for BUG-3260: it no longer writes the name or context (an effect seeds them from the settled store), so it commits strictly less than before. Re-reviewed for TASK-3413 U9c: the members apps list is written beside members, behind the same loadGen check',
 			},
 			saveName: { reviewed: '873c783bf6cb', why: `${ENTRY}; the finally clears the button's own busy flag unfenced, on purpose` },
 			saveContext: { reviewed: 'c7599b4b7ff4', why: `${ENTRY}, including between the update and the shared-store setCurrent; the finally clears its own busy flag` },
 			handleCollectionCreated: { reviewed: 'd79a036401d8', why: 'identityHeld(epochAtEntry) after refreshCollections, which fences its own commit' },
 			handleCollectionUpdated: { reviewed: '2f678b54cc5f', why: 'identityHeld(epochAtEntry) after refreshCollections, which fences its own commit' },
-			handleInvite: { reviewed: '186a0b583148', why: `${ENTRY}, before the clipboard write as well as the page commits; the finally clears its own busy flag` },
+			handleInvite: {
+				reviewed: '21d6ac84d817',
+				why: `${ENTRY}, before the clipboard write as well as the page commits; the finally clears its own busy flag. Re-reviewed for TASK-3413 U9c: the members apps list is written beside members, after the second await's check`,
+			},
 			handleRemoveMember: { reviewed: '2e4475081d64', why: ENTRY },
 			handleCancelInvitation: { reviewed: 'fba3090b1e99', why: ENTRY },
 			handleChangeRole: { reviewed: '259e70a8d250', why: ENTRY },
