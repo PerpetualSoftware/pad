@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/testtmp"
 	"github.com/google/uuid"
 )
 
@@ -96,7 +97,7 @@ func lockedCopyFromSQLiteTemplate(dst string) error {
 // a later step failed) so a failed build doesn't leak a /tmp directory;
 // mirrors storetest.go's buildTemplate.
 func buildSQLiteTemplate() (string, error) {
-	dir, err := os.MkdirTemp("", "pad-store-template-*")
+	dir, err := testtmp.MkdirTemp("pad-store-template-")
 	if err != nil {
 		return "", fmt.Errorf("mkdir template dir: %w", err)
 	}

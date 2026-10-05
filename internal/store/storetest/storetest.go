@@ -33,6 +33,7 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/testtmp"
 )
 
 var (
@@ -139,7 +140,7 @@ func Cleanup() {
 func buildTemplate() (string, error) {
 	atomic.AddInt32(&buildCount, 1)
 
-	dir, err := os.MkdirTemp("", "pad-storetest-template-*")
+	dir, err := testtmp.MkdirTemp("pad-storetest-template-")
 	if err != nil {
 		return "", fmt.Errorf("mkdir template dir: %w", err)
 	}
