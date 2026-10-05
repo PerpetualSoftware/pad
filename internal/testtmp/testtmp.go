@@ -15,27 +15,21 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
-
-// legacyMaxAge bounds how long a directory in the old, pid-less format is
-// kept. Only a binary built before BUG-3412 creates one, and another
-// worktree may still be running such a binary: a full suite takes close to
-// an hour, and its template is read for the whole run. A day is far past
-// any run, so a directory that old has no owner left.
-const legacyMaxAge = 24 * time.Hour
 
 // MkdirTemp is os.MkdirTemp("", prefix+"<pid>-*") after a sweep of earlier
 // prefix directories whose process is dead. prefix must end in "-".
 func MkdirTemp(prefix string) (string, error) {
-	Sweep(os.TempDir(), prefix, time.Now())
+	Sweep(os.TempDir(), prefix)
 	return os.MkdirTemp("", fmt.Sprintf("%s%d-*", prefix, os.Getpid()))
 }
 
-// Sweep removes dir/prefix* directories owned by this user whose process
-// is no longer running, and pid-less ones older than legacyMaxAge. Errors
-// are ignored: a sweep that cannot remove something leaves it as it was.
-func Sweep(dir, prefix string, now time.Time) {
+// Sweep removes dir/prefix<pid>-* directories owned by this user whose
+// process is no longer running. A directory without a pid (made before
+// BUG-3412) is never removed: its age cannot prove its owner gone, since a
+// stopped or suspended process can outlive any bound (codex r1). Errors are
+// ignored: a sweep that cannot remove something leaves it as it was.
+func Sweep(dir, prefix string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -55,10 +49,6 @@ func Sweep(dir, prefix string, now time.Time) {
 		pidPart, _, hasDash := strings.Cut(rest, "-")
 		pid, perr := strconv.Atoi(pidPart)
 		if !hasDash || perr != nil || pid <= 0 {
-			// The old format, prefix + random digits: no owner to ask.
-			if now.Sub(info.ModTime()) > legacyMaxAge {
-				_ = os.RemoveAll(path)
-			}
 			continue
 		}
 		if pid == self || processAlive(pid) {

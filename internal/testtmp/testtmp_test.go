@@ -39,15 +39,15 @@ func TestSweepRemovesOnlyTheDead(t *testing.T) {
 	deadDir := mk(prefix+strconv.Itoa(dead)+"-123", 0)
 	selfDir := mk(prefix+strconv.Itoa(os.Getpid())+"-456", 0)
 	parentDir := mk(prefix+strconv.Itoa(os.Getppid())+"-789", 0)
-	oldLegacy := mk(prefix+"1234567", 25*time.Hour)
+	oldLegacy := mk(prefix+"1234567", 30*24*time.Hour)
 	newLegacy := mk(prefix+"7654321", 2*time.Hour)
 	other := mk("pad-other-"+strconv.Itoa(dead)+"-1", 0)
 
-	Sweep(root, prefix, time.Now())
+	Sweep(root, prefix)
 
 	for p, want := range map[string]bool{
 		deadDir: false, selfDir: true, parentDir: true,
-		oldLegacy: false, newLegacy: true, other: true,
+		oldLegacy: true, newLegacy: true, other: true,
 	} {
 		_, err := os.Stat(p)
 		if got := err == nil; got != want {
