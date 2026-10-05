@@ -601,9 +601,10 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return deliverySuccess
-	case resp.StatusCode >= 500 && resp.StatusCode < 600:
-		// Server error — transient, worth retrying.
-		slog.Warn("webhook 5xx response", "status", resp.StatusCode, "url", hook.URL)
+	case RetryableStatus(resp.StatusCode):
+		// Server error, or the receiver asked us to come back later —
+		// transient, worth retrying.
+		slog.Warn("webhook retryable response", "status", resp.StatusCode, "url", hook.URL)
 		return deliveryTransient
 	default:
 		// 4xx and any other non-2xx (3xx with no followable Location, 1xx)
@@ -611,6 +612,25 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 		slog.Warn("webhook non-2xx response", "status", resp.StatusCode, "url", hook.URL)
 		return deliveryPermanent
 	}
+}
+
+// RetryableStatus reports whether a receiver's HTTP status means "try again
+// later" rather than "this request is unacceptable": any 5xx, and the three
+// 4xx codes that say so (TASK-3409, lead ruling): 408 Request Timeout,
+// 425 Too Early and 429 Too Many Requests. Every other non-2xx is permanent.
+// Before this, all of 4xx was permanent, which an event-level retry mostly
+// hid; once a permanent outcome ends an endpoint's part in an event, a
+// receiver that rate-limits us would lose the event for good. Shared by the
+// owner and app delivery paths so the two cannot disagree. Retry-After is
+// not honoured; the existing backoff schedule applies.
+func RetryableStatus(code int) bool {
+	switch {
+	case code >= 500 && code < 600:
+		return true
+	case code == 408, code == 425, code == 429:
+		return true
+	}
+	return false
 }
 
 // matchesEvent checks whether a webhook's event filter (JSON array)
