@@ -7,6 +7,7 @@
 	import AppInstallFlow from './AppInstallFlow.svelte';
 	import AppInstallDetail from './AppInstallDetail.svelte';
 	import { appStateLabel, appStateColor } from './appState';
+	import { normalizeInstallList } from './appsShape';
 	import type { AppInstallList } from '$lib/types';
 
 	/**
@@ -45,7 +46,7 @@
 		try {
 			const r = await api.apps.list(ws);
 			if (gen !== loadGen || authStore.identityEpoch !== asked) return;
-			list = r;
+			list = normalizeInstallList(r);
 		} catch (e) {
 			if (gen !== loadGen || authStore.identityEpoch !== asked) return;
 			loadError = e instanceof Error ? e.message : 'Could not load apps';

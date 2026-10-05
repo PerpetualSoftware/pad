@@ -4,6 +4,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import AppArtifactReview from './AppArtifactReview.svelte';
+	import { normalizePreview, normalizeUpgradeResult } from './appsShape';
 	import type { AppInstallPreview, AppInstallSummary, AppUpgradeDiffEntry, AppUpgradeConfirmResult } from '$lib/types';
 
 	/**
@@ -78,7 +79,7 @@
 		try {
 			const p = await api.apps.upgradePreview(ws, install.install_id);
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
-			preview = p;
+			preview = normalizePreview(p);
 		} catch (e) {
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			fail(e);
@@ -101,7 +102,7 @@
 		try {
 			const r = await api.apps.upgradeConfirm(ws, install.install_id, reviewed.pending_id, reviewed.manifest_sha256);
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
-			result = r;
+			result = normalizeUpgradeResult(r);
 			preview = null;
 			onupgraded();
 		} catch (e) {
