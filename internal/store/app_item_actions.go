@@ -332,9 +332,9 @@ func (s *Store) MintContextCode(workspaceID, installID, actionKey, itemID, viewe
 		return nil, fmt.Errorf("context code: %w", err)
 	}
 	code := "padctx_" + hex.EncodeToString(raw)
-	expires := `strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+120 seconds')`
+	expires := fmt.Sprintf(`strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ', 'now', '+%d seconds')`, contextCodeTTLSeconds)
 	if s.dialect.Driver() == DriverPostgres {
-		expires = `now() + interval '120 seconds'`
+		expires = fmt.Sprintf(`now() + interval '%d seconds'`, contextCodeTTLSeconds)
 	}
 	if _, err := tx.Exec(s.q(`INSERT INTO app_context_codes (code_sha256, install_id, auth_epoch, item_id, action_id, action_revision, viewer_user_id, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, `+expires+`)`),
