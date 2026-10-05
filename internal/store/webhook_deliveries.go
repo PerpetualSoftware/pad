@@ -53,21 +53,44 @@ func (s *Store) DeliveryStatus(eventID, webhookID string) (string, error) {
 
 // RecordDelivery stores status for (eventID, webhookID), adding attempts
 // requests actually sent (a refusal or a rate-limited deferral sends none).
-// A terminal row is never overwritten: the first terminal decision stands.
+// A terminal row is never overwritten, the first terminal decision standing,
+// with ONE exception: "delivered" replaces "dropped" and takes the drop back
+// off the hook's count. A request admitted before another drainer dropped
+// the event (its claim expired mid-request) did reach the app, and the
+// owner must not see it as lost (codex r5 on U10c).
 func (s *Store) RecordDelivery(eventID, webhookID, status, lastError string, attempts int) error {
-	inc := attempts
-	ts := now()
-	_, err := s.db.Exec(s.q(`INSERT INTO webhook_deliveries (outbox_event_id, webhook_id, status, attempts, last_error, updated_at)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	q := `SELECT status FROM webhook_deliveries WHERE outbox_event_id = ? AND webhook_id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		q += ` FOR UPDATE`
+	}
+	var prev string
+	err = tx.QueryRow(s.q(q), eventID, webhookID).Scan(&prev)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("record delivery: read: %w", err)
+	}
+	undrop := prev == DeliveryDropped && status == DeliveryDelivered
+	if DeliveryTerminal(prev) && !undrop {
+		return nil
+	}
+	if _, err := tx.Exec(s.q(`INSERT INTO webhook_deliveries (outbox_event_id, webhook_id, status, attempts, last_error, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (outbox_event_id, webhook_id) DO UPDATE SET
 			status = excluded.status, attempts = webhook_deliveries.attempts + excluded.attempts,
-			last_error = excluded.last_error, updated_at = excluded.updated_at
-		WHERE webhook_deliveries.status NOT IN ('delivered', 'permanent', 'refused', 'skipped', 'dropped')`),
-		eventID, webhookID, status, inc, nullIfEmpty(lastError), ts)
-	if err != nil {
+			last_error = excluded.last_error, updated_at = excluded.updated_at`),
+		eventID, webhookID, status, attempts, nullIfEmpty(lastError), now()); err != nil {
 		return fmt.Errorf("record delivery: %w", err)
 	}
-	return nil
+	if undrop {
+		if _, err := tx.Exec(s.q(`UPDATE webhooks SET dropped_count = dropped_count - 1 WHERE id = ? AND dropped_count > 0`), webhookID); err != nil {
+			return fmt.Errorf("record delivery: undo drop: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // OwnerDelivered reports whether an owner hook already received eventID.

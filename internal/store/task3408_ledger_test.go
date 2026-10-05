@@ -100,3 +100,66 @@ func TestTask3408_DropOfAnUnowedDeliveryIsARefusal(t *testing.T) {
 		t.Fatalf("dropped_count %d for a delivery that was not owed", count)
 	}
 }
+
+// codex r5 on U10c: a request admitted before another drainer dropped the
+// event did reach the app; "delivered" replaces "dropped" and the drop is
+// taken back off the count. Any other terminal row still stands.
+func TestTask3408_DeliveredOverridesADrop(t *testing.T) {
+	f := task3408Fixture(t, "inst-undrop")
+	item, err := f.s.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: "T", Fields: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var eventID string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT id FROM event_outbox WHERE subject_id = ? ORDER BY occurred_at DESC LIMIT 1`), item.ID).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := f.s.DropOwedDelivery(eventID, f.hookID, "item.created", f.companion.ID, now(), "old"); err != nil || out != "dropped" {
+		t.Fatalf("drop: %q %v", out, err)
+	}
+	if err := f.s.RecordDelivery(eventID, f.hookID, DeliveryDelivered, "", 1); err != nil {
+		t.Fatal(err)
+	}
+	var st string
+	var count int
+	if err := f.s.db.QueryRow(f.s.q(`SELECT d.status, w.dropped_count FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id WHERE d.outbox_event_id = ? AND d.webhook_id = ?`), eventID, f.hookID).Scan(&st, &count); err != nil {
+		t.Fatal(err)
+	}
+	if st != DeliveryDelivered || count != 0 {
+		t.Fatalf("after a late delivery: %s, dropped_count %d; want delivered, 0", st, count)
+	}
+	// Only delivered may replace dropped.
+	if err := f.s.RecordDelivery(eventID, f.hookID, DeliveryPermanent, "late", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.db.QueryRow(f.s.q(`SELECT status FROM webhook_deliveries WHERE outbox_event_id = ? AND webhook_id = ?`), eventID, f.hookID).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st != DeliveryDelivered {
+		t.Fatalf("a terminal delivered row was overwritten with %s", st)
+	}
+
+	// A drop followed by anything but a delivery stays dropped.
+	item2, err := f.s.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: "T2", Fields: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event2 string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT id FROM event_outbox WHERE subject_id = ? ORDER BY occurred_at DESC LIMIT 1`), item2.ID).Scan(&event2); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := f.s.DropOwedDelivery(event2, f.hookID, "item.created", f.companion.ID, now(), "old"); err != nil || out != "dropped" {
+		t.Fatalf("drop: %q %v", out, err)
+	}
+	for _, late := range []string{DeliveryPermanent, DeliveryTransient} {
+		if err := f.s.RecordDelivery(event2, f.hookID, late, "late", 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.s.db.QueryRow(f.s.q(`SELECT status FROM webhook_deliveries WHERE outbox_event_id = ? AND webhook_id = ?`), event2, f.hookID).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	if st != DeliveryDropped {
+		t.Fatalf("a dropped row was overwritten with %s", st)
+	}
+}
