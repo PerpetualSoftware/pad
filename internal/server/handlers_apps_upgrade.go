@@ -110,7 +110,7 @@ func (s *Server) handleAppUpgradePreview(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, ierr)
 		return
 	}
-	writeJSON(w, http.StatusOK, preview)
+	writeJSON(w, http.StatusOK, preview.withLists())
 }
 
 type appUpgradeConfirmResponse struct {
