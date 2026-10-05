@@ -1817,3 +1817,103 @@ func TestInstallRefresh_RefusesAnUnreadableCwdNamingWhatWasRead(t *testing.T) {
 		t.Errorf("the server was touched by a refused refresh: %q %v", got, err)
 	}
 }
+
+// gitIn runs git in dir and returns its trimmed output.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	c := exec.Command("git", append([]string{"-c", "user.email=t@example.com", "-c", "user.name=T"}, args...)...)
+	c.Dir = dir
+	out, err := c.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// BUG-3403: the restart enters the running server's own cwd, which is often
+// not a checkout at all (a pad auto-started from another project). The
+// stale-bundle check after it asked git from there, could not resolve the
+// commits, and warned "web/build is stale" about a bundle built from the
+// expected commit's web/. It must ask the checkout the script ran from.
+func TestInstallRefresh_WebStampCheckUsesTheCallersCheckout(t *testing.T) {
+	requireScriptDeps(t, "git")
+	repo := realDir(t, t.TempDir())
+	gitIn(t, repo, "init", "-q")
+	if err := os.MkdirAll(filepath.Join(repo, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "web", "a.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "web one")
+	webCommit := gitIn(t, repo, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "backend.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "backend only")
+	backendOnly := gitIn(t, repo, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "web", "a.txt"), []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "-A")
+	gitIn(t, repo, "commit", "-q", "-m", "web two")
+	webChanged := gitIn(t, repo, "rev-parse", "HEAD")
+
+	if err := os.MkdirAll(filepath.Join(repo, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, expect, from string
+		wantWarn           bool
+	}{
+		// The bundle is older than the binary, but web/ did not change in
+		// between: correct, and no warning.
+		{"web unchanged since the bundle", backendOnly, repo, false},
+		// web/ changed after the bundle was built: the warning is owed, so
+		// the fix must not have switched the check off.
+		{"web changed since the bundle", webChanged, repo, true},
+		// The same, run from a subdirectory of the checkout: web/ is the
+		// repository's, not <subdir>/web/ (codex r1).
+		{"web changed, run from a subdirectory", webChanged, filepath.Join(repo, "internal"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, dir := t.TempDir(), t.TempDir()
+			serverDir := realDir(t, t.TempDir()) // NOT a checkout
+			name := uniqueName(t)
+			defer killStub(t, name)
+			port := freePort(t)
+			short := tc.expect[:8]
+
+			built := installStub(t, dir, name)
+			installed := filepath.Join(home, "bin", name)
+			if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			e := stubEnv{version: "pad version dev (" + short + " x)", healthy: "1",
+				argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+			stamp := "STUB_WEB_COMMIT=" + webCommit
+
+			pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+			pre.Env = append(e.env(), stamp)
+			pre.Dir = serverDir
+			startPreServer(t, pre, "127.0.0.1", port)
+
+			res := runScriptIn(t, e, tc.from, built, installed, short, stamp)
+			if res.err != nil {
+				t.Fatalf("script failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+			}
+			if !strings.Contains(res.stdout, "captured server cwd: "+serverDir) {
+				t.Fatalf("the restart did not run outside the checkout, so this proves nothing; stdout=%s", res.stdout)
+			}
+			if !strings.Contains(res.stdout, "built from "+webCommit) {
+				t.Fatalf("the script did not read the web stamp; stdout=%s", res.stdout)
+			}
+			warned := strings.Contains(res.stderr, "web/build is stale")
+			if warned != tc.wantWarn {
+				t.Errorf("stale warning = %v, want %v\nstderr=%s", warned, tc.wantWarn, res.stderr)
+			}
+		})
+	}
+}

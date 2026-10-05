@@ -117,6 +117,13 @@ func main() {
 	port := os.Getenv("STUB_PORT")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
+		// STUB_WEB_COMMIT adds the web bundle stamp a real pad reports
+		// (TASK-3233), so the script's stale-bundle check can be driven
+		// (BUG-3403). Unset, health carries no web member, as before.
+		if c := os.Getenv("STUB_WEB_COMMIT"); c != "" {
+			fmt.Fprintf(w, `{"status":"ok","web":{"sha256":"ab12","files":1,"source_commit":%q,"source_dirty":0}}`, c)
+			return
+		}
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 	// The stub's own pid, so a fixture can prove that the process answering
