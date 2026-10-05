@@ -577,6 +577,19 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 		return nil, err
 	}
 
+	// BUG-3407: the fields were validated before this lock; a schema change
+	// that committed since then is checked here, against the schema as it
+	// stands under the lock. On create every key is set.
+	{
+		set, err := decodeFieldsBlob(fields)
+		if err != nil {
+			return nil, fmt.Errorf("decode fields: %w", err)
+		}
+		if err := s.revalidateSetFieldsTx(tx, collectionID, set); err != nil {
+			return nil, err
+		}
+	}
+
 	// The plan limit is decided here, under the lock every item insert in this
 	// workspace takes, so a concurrent create's row is either committed and
 	// counted or not yet inserted (BUG-2808). The cross-workspace copy counts under
@@ -2792,6 +2805,24 @@ func (s *Store) updateItemWithParentLinkOnce(
 			}
 		}
 		input.Fields = &base
+	}
+
+	// BUG-3407: re-validate the keys this write SETS against the schema as it
+	// stands under the seq lock held above. A patch sets its own keys; a full
+	// `fields` write sets the keys whose value differs from the locked row.
+	// Carried values are never re-judged.
+	if input.FieldsPatch != nil {
+		if err := s.revalidateSetFieldsTx(tx, existing.CollectionID, input.FieldsPatch); err != nil {
+			return nil, err
+		}
+	} else if input.Fields != nil {
+		set, err := changedFieldKeys(existing.Fields, *input.Fields)
+		if err != nil {
+			return nil, fmt.Errorf("compare fields: %w", err)
+		}
+		if err := s.revalidateSetFieldsTx(tx, existing.CollectionID, set); err != nil {
+			return nil, err
+		}
 	}
 
 	ts := now()
