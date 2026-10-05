@@ -86,7 +86,8 @@ import type {
 	ConnectedApp,
 	AppGrant,
 	ClaimCodeResponse,
-	ImportArtifactResult
+	ImportArtifactResult,
+	ItemAppAction
 } from '$lib/types';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
@@ -2037,6 +2038,23 @@ export const api = {
 			request<void>(`/workspaces/${ws}/items/${itemSlug}/star`, {
 				method: 'DELETE'
 			}),
+
+		/**
+		 * The installed apps' item actions offered on this item, for the item
+		 * pane's link-out button (SPEC-6 U11, TASK-3414). Shape frozen with U9.
+		 */
+		appActions: (ws: string, itemSlug: string) =>
+			request<ItemAppAction[]>(`/workspaces/${ws}/items/${itemSlug}/app-actions`),
+
+		/**
+		 * Mint a single-use context code for an item action and get the URL
+		 * to open (in a new tab, noopener). Every refusal is the same 404.
+		 */
+		mintAppAction: (ws: string, itemSlug: string, installId: string, actionKey: string) =>
+			request<{url: string}>(
+				`/workspaces/${ws}/items/${itemSlug}/app-actions/${encodeURIComponent(installId)}/${encodeURIComponent(actionKey)}`,
+				{method: 'POST'}
+			),
 
 		/** Check if an item is starred by the current user */
 		starStatus: (ws: string, itemSlug: string) =>

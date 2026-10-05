@@ -87,6 +87,9 @@ type UpgradePlan struct {
 	// removes it. An existing hook keeps its secret and delivered state; a
 	// new one starts HELD until a redeem (U10a).
 	Webhook *AppWebhookSpec
+	// Actions are the new manifest's item actions: a changed one gets a new
+	// revision, a removed one is retired (U11, TASK-3414).
+	Actions []AppActionSpec
 }
 
 // UpgradeRequest identifies the upgrade being confirmed.
@@ -313,6 +316,11 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 
 	// The hook follows the new manifest, after its companions are settled.
 	if err := s.upsertAppWebhookTx(tx, req.WorkspaceID, req.InstallID, plan.Webhook); err != nil {
+		return nil, err
+	}
+	// The install row is held FOR UPDATE above, so a redeem (install FOR
+	// SHARE, then the action row) cannot interleave (§6, U11).
+	if err := s.syncAppItemActionsTx(tx, req.WorkspaceID, req.InstallID, plan.Actions); err != nil {
 		return nil, err
 	}
 

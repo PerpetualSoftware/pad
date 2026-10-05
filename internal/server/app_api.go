@@ -50,6 +50,9 @@ type appRoute struct {
 
 // appRoutes is the table: U6a's reads, U6b's writes and U6c's attachments.
 var appRoutes = []appRoute{
+	// U11 (TASK-3414): an item action's context code, redeemed by the app's
+	// service token (§6). A read: the answer is buffered and re-admitted.
+	{"POST", "/context/redeem", "appRedeemContext", (*Server).appRedeemContext, "service", "read"},
 	{"POST", "/items/{itemID}/attachments", "appUploadAttachment", (*Server).appUploadAttachment, "either", "write"},
 	{"GET", "/attachments/{attachmentID}", "appGetAttachment", (*Server).appGetAttachment, "either", "read"},
 	{"GET", "/attachments/{attachmentID}/content", "appDownloadAttachment", (*Server).appDownloadAttachment, "either", "stream"},

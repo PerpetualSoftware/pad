@@ -75,4 +75,9 @@ func (s *Server) runAppPendingSweep() {
 	if n > 0 {
 		slog.Info("apps: swept expired pending installs", "count", n)
 	}
+	// Item-action context codes: single-use, two minutes; nothing reads one
+	// that is consumed or expired (TASK-3414 U11).
+	if _, err := s.store.PruneContextCodes(); err != nil {
+		slog.Warn("apps: context code prune failed", "error", err)
+	}
 }

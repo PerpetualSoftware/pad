@@ -2857,3 +2857,14 @@ export interface ClientWriteStamp {
 	tab: string;
 	n: number;
 }
+
+/**
+ * An installed app's item action offered on an item (SPEC-6 U11, TASK-3414):
+ * GET /workspaces/{ws}/items/{ref}/app-actions. Shape frozen with U9.
+ */
+export interface ItemAppAction {
+	install_id: string;
+	app_title: string;
+	action_key: string;
+	label: string;
+}

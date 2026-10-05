@@ -115,6 +115,9 @@ type ProvisionRequest struct {
 	// Webhook is the manifest's hook (events by companion SLUG); nil when it
 	// declares none. Created HELD: redeem hands the app its secret (U10a).
 	Webhook *AppWebhookSpec
+	// Actions are the manifest's item actions (by companion SLUG), written as
+	// app_item_actions rows (U11, TASK-3414).
+	Actions []AppActionSpec
 }
 
 // ProvisionResult is what a successful provisioning wrote.
@@ -327,6 +330,10 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 
 	// The app's webhook, after the companions it names are stamped to it.
 	if err := s.upsertAppWebhookTx(tx, req.WorkspaceID, installID, req.Webhook); err != nil {
+		return nil, err
+	}
+	// And its item actions, likewise after the companions (U11).
+	if err := s.syncAppItemActionsTx(tx, req.WorkspaceID, installID, req.Actions); err != nil {
 		return nil, err
 	}
 
