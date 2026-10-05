@@ -452,6 +452,18 @@ func (s *Store) RedeemContextCode(installID string, epoch int64, code string, vi
 // there. nil in production.
 var redeemContextHook func()
 
+// BurnContextCode consumes installID's code without redeeming it (an attempt
+// refused before the redeem, a delegated token's). Another install's code is
+// left alone.
+func (s *Store) BurnContextCode(installID, code string) error {
+	_, err := s.db.Exec(s.q(`UPDATE app_context_codes SET consumed_at = ? WHERE code_sha256 = ? AND install_id = ? AND consumed_at IS NULL`),
+		now(), contextCodeHash(code), installID)
+	if err != nil {
+		return fmt.Errorf("burn context code: %w", err)
+	}
+	return nil
+}
+
 // burnContextCode marks a code consumed outside a redeem transaction.
 func (s *Store) burnContextCode(hash string) error {
 	_, err := s.db.Exec(s.q(`UPDATE app_context_codes SET consumed_at = ? WHERE code_sha256 = ? AND consumed_at IS NULL`), now(), hash)

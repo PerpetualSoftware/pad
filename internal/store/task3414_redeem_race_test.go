@@ -201,3 +201,18 @@ func TestTask3414_StoreGuardsWorkspace(t *testing.T) {
 		t.Fatalf("redeem in a deleted workspace: %v", err)
 	}
 }
+
+// BurnContextCode consumes only the named install's code.
+func TestTask3414_BurnIsScopedToTheInstall(t *testing.T) {
+	f := u11StoreFixture(t, "inst-burn")
+	minted, err := f.s.MintContextCode(f.ws.ID, f.installID, "open", f.item.ID, "viewer-1", allVisible)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.BurnContextCode("another-install", minted.Code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.RedeemContextCode(f.installID, f.epoch(t), minted.Code, allVisible); err != nil {
+		t.Fatalf("another install's burn consumed the code: %v", err)
+	}
+}

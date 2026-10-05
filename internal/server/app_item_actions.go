@@ -204,16 +204,21 @@ type AppContextRedeemed struct {
 // appRedeemContext: POST /api/app/v1/workspaces/{ws}/context/redeem.
 func (s *Server) appRedeemContext(w http.ResponseWriter, r *http.Request) {
 	ac := appContextFrom(r)
-	// §6: a service token only. The route table's Auth column is
-	// documentation; this is the check.
-	if ac.AuthKind != "service" {
-		writeContextRefused(w)
-		return
-	}
 	var in struct {
 		Code string `json:"code"`
 	}
 	if err := decodeJSONWithLimit(r, &in, appContextRedeemMaxBody); err != nil || in.Code == "" {
+		writeContextRefused(w)
+		return
+	}
+	// §6: a service token only (the route table's Auth column is
+	// documentation; this is the check). A refused attempt still consumes
+	// the code, as every refusal does (codex r2 on U11).
+	if ac.AuthKind != "service" {
+		if err := s.store.BurnContextCode(ac.InstallID, in.Code); err != nil {
+			writeInternalError(w, err)
+			return
+		}
 		writeContextRefused(w)
 		return
 	}

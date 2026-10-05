@@ -454,6 +454,12 @@ func TestTask3414_DelegatedTokenCannotRedeem(t *testing.T) {
 	if got.Code != http.StatusNotFound || got.Body.String() != want.Body.String() {
 		t.Fatalf("a delegated redeem: %d %s", got.Code, got.Body.String())
 	}
+	// The refused attempt consumed the code: the app's service token
+	// cannot redeem it afterwards (codex r2 on U11).
+	f.token = mintServiceToken(t, f.srv, f.in)
+	if rr := f.redeem(code); rr.Code != http.StatusNotFound {
+		t.Fatalf("a service redeem after a delegated attempt: %d %s", rr.Code, rr.Body.String())
+	}
 }
 
 // codex r1 on U11: the URL is built from the validated origin, not the raw
