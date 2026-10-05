@@ -448,7 +448,7 @@ func TestTask3399b_ADelegatedWritesEventNamesTheInstallAndThePerson(t *testing.T
 			}
 		}
 		// What the app receives.
-		b, _, err := store.BuildAppEventDTO(ev.EventType, "e", "t", ev.Payload)
+		b, _, err := store.BuildAppEventDTO(ev.EventType, "e", "t", "ws-test", ev.Payload)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -412,6 +412,12 @@ func (s *Server) handleRedeemAppInstallCode(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Cache-Control", "no-store")
 	out := map[string]string{
 		"install_id": red.InstallID, "client_id": red.ClientID, "client_secret": red.ClientSecret,
+		// The workspace every app API route names (BUG-3416). The slug is
+		// display only: the routes take the id.
+		"workspace_id": red.WorkspaceID,
+	}
+	if ws, err := s.store.GetWorkspaceByID(red.WorkspaceID); err == nil && ws != nil {
+		out["workspace_slug"] = ws.Slug
 	}
 	// The hook's signing secret, only when the install has a hook; this is
 	// the one place it is ever handed out (U10a).

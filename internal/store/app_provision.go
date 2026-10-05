@@ -461,6 +461,9 @@ type RedeemedInstall struct {
 	InstallID    string
 	ClientID     string
 	ClientSecret string
+	// WorkspaceID is the install's workspace, the {ws} of every app API
+	// route (BUG-3416).
+	WorkspaceID string
 	// WebhookSecret is the hook's new signing secret; "" when the install
 	// has no hook. Redeem is the only door that hands it out, and handing
 	// it out is what releases the hook's HOLD (U10a).
@@ -496,8 +499,8 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	if s.dialect.Driver() == DriverPostgres {
 		forUpdate = ` FOR UPDATE`
 	}
-	var state string
-	if err := tx.QueryRow(s.q(`SELECT state FROM app_installs WHERE id = ?`+forUpdate), installID).Scan(&state); err != nil || state != "active" {
+	var state, workspaceID string
+	if err := tx.QueryRow(s.q(`SELECT state, workspace_id FROM app_installs WHERE id = ?`+forUpdate), installID).Scan(&state, &workspaceID); err != nil || state != "active" {
 		return nil, ErrInstallCodeInvalid
 	}
 	var expires string
@@ -526,7 +529,7 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &RedeemedInstall{InstallID: installID, ClientID: clientID, ClientSecret: secret, WebhookSecret: whSecret}, nil
+	return &RedeemedInstall{InstallID: installID, ClientID: clientID, ClientSecret: secret, WorkspaceID: workspaceID, WebhookSecret: whSecret}, nil
 }
 
 // InstallForLiveCode reads, unlocked, which install a code names, for the

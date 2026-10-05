@@ -412,6 +412,10 @@ func TestAppInstallRedeem(t *testing.T) {
 	if first["install_id"] != out.InstallID || first["client_id"] == "" || !strings.HasPrefix(first["client_secret"], "padapp_") {
 		t.Fatalf("redeem body: %v", first)
 	}
+	// BUG-3416: the workspace the app API routes name, and its slug.
+	if first["workspace_id"] != e.wsID || first["workspace_slug"] != e.ws {
+		t.Fatalf("redeem names workspace %q (%q), want %q (%q)", first["workspace_id"], first["workspace_slug"], e.wsID, e.ws)
+	}
 	afterFirst := hashOf()
 	if afterFirst == provisioned {
 		t.Error("redeem did not rotate the provisioning secret")

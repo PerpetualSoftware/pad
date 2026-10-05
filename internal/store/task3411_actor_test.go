@@ -127,7 +127,7 @@ func TestTask3411_FencedWritesNameTheirInstall(t *testing.T) {
 		if raw == nil {
 			t.Fatal("precondition: an item.updated event is missing")
 		}
-		b, _, err := BuildAppEventDTO(kernelevents.ItemUpdated, "e", "t", raw)
+		b, _, err := BuildAppEventDTO(kernelevents.ItemUpdated, "e", "t", "ws-test", raw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -148,7 +148,7 @@ func TestTask3411_FencedWritesNameTheirInstall(t *testing.T) {
 func TestTask3411_V1BlocksKeepTheCreateOnlyRule(t *testing.T) {
 	v1 := func(event string) string {
 		payload := `{"id":"i1","title":"T","content":"C","app_projection":{"v":1,"collection_id":"c1","creator":{"via_app":"inst-1"},"fields":{}}}`
-		b, _, err := BuildAppEventDTO(event, "e", "t", []byte(payload))
+		b, _, err := BuildAppEventDTO(event, "e", "t", "ws-test", []byte(payload))
 		if err != nil {
 			t.Fatal(err)
 		}

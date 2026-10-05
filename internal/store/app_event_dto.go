@@ -34,6 +34,10 @@ type AppEventEnvelope struct {
 	Event      string `json:"event"`
 	ID         string `json:"id"`
 	OccurredAt string `json:"occurred_at"`
+	// WorkspaceID is the install's workspace, the {ws} of every app API
+	// route (BUG-3416): an app learns which workspace an event is about from
+	// the event itself.
+	WorkspaceID string `json:"workspace_id"`
 	// ViaApp is the install whose write caused this event, absent for a
 	// person's or agent's write. From a v2 block it is the frozen
 	// actor_via_app, on every event (TASK-3411). A v1 block (written before
@@ -98,11 +102,11 @@ type AppCommentDeletedEvent struct {
 // BuildAppEventDTO builds the app body for one outbox event and returns it
 // with the companion collection its visibility is decided by. It reads the
 // stored payload only. ErrNoAppProjection when the block is missing.
-func BuildAppEventDTO(event, eventID, occurredAt string, payload []byte) ([]byte, string, error) {
+func BuildAppEventDTO(event, eventID, occurredAt, workspaceID string, payload []byte) ([]byte, string, error) {
 	if !AppEventSubscribable[event] {
 		return nil, "", fmt.Errorf("%w: %s is not an app event", ErrNoAppProjection, event)
 	}
-	env := AppEventEnvelope{Event: event, ID: eventID, OccurredAt: occurredAt}
+	env := AppEventEnvelope{Event: event, ID: eventID, OccurredAt: occurredAt, WorkspaceID: workspaceID}
 	creator := func(c appProjectionCreator) AppEventCreator {
 		return AppEventCreator{UserID: c.UserID, Display: c.Display, Kind: c.Kind, ViaApp: c.ViaApp}
 	}
