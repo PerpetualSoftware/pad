@@ -3,12 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // BUG-3416: an app learns its install and workspace from the unscoped
@@ -81,16 +77,10 @@ func TestBug3416_RedeemRefusesASoftDeletedWorkspace(t *testing.T) {
 	}
 }
 
-// A soft delete in flight when the redeem reads the workspace: the redeem
-// waits for it and then refuses, rather than spending the code on a
-// workspace that is gone by its commit (codex r2 on BUG-3416). The deleter
-// then touches the install row, as account deletion does through the bot's
-// foreign key, which must not deadlock: the redeem locks the workspace
-// before the install (codex r3). Postgres only: SQLite serialises every
-// writer.
-func TestBug3416_RedeemWaitsForAnInFlightSoftDelete(t *testing.T) {
-	e := newAppsEnvOn(t, accountDeleteServer(t, store.DriverPostgres)) // skips without PAD_TEST_POSTGRES_URL
-	e.srv.store.SetAppAPIAudience(testProvisionAudience)
+// A database failure while reading the install is a 500 the app may retry,
+// not invalid_install_code, which would tell it the code is bad (BUG-3416).
+func TestBug3416_RedeemReportsADatabaseFailureAsAFault(t *testing.T) {
+	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	rr := e.confirm(t, p, p.ManifestSHA256)
 	if rr.Code != http.StatusCreated {
@@ -98,54 +88,21 @@ func TestBug3416_RedeemWaitsForAnInFlightSoftDelete(t *testing.T) {
 	}
 	var out appInstallConfirmResponse
 	parseJSON(t, rr, &out)
-
 	db := e.srv.store.DB()
-	del, err := db.Begin()
-	if err != nil {
+	// The install table goes missing under the redeem: the code row still
+	// resolves, the install read fails.
+	if _, err := db.Exec(`ALTER TABLE app_installs RENAME TO app_installs_gone`); err != nil {
 		t.Fatal(err)
 	}
-	defer del.Rollback()
-	if _, err := del.Exec(`UPDATE workspaces SET deleted_at = $1 WHERE id = $2`, "2026-01-01T00:00:00Z", e.wsID); err != nil {
+	rr = redeem(e.srv, `{"code":"`+out.InstallCode+`"}`)
+	if _, err := db.Exec(`ALTER TABLE app_installs_gone RENAME TO app_installs`); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan *httptest.ResponseRecorder, 1)
-	go func() { done <- redeem(e.srv, `{"code":"`+out.InstallCode+`"}`) }()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var waiting int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting > 0 {
-			break
-		}
-		select {
-		case rr := <-done:
-			t.Fatalf("the redeem did not wait for the in-flight soft delete: %d %s", rr.Code, rr.Body.String())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the redeem never waited on a lock")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if rr.Code != http.StatusInternalServerError || strings.Contains(rr.Body.String(), "invalid_install_code") {
+		t.Fatalf("a database failure answered %d %s, want 500", rr.Code, rr.Body.String())
 	}
-	// Account deletion goes on to delete the workspace's bot, whose ON DELETE
-	// SET NULL updates the install row (codex r3). With the redeem holding
-	// the install while it waits for the workspace, this deadlocked.
-	if _, err := del.Exec(`UPDATE app_installs SET bot_user_id = NULL WHERE id = $1`, out.InstallID); err != nil {
-		t.Fatalf("the deleter's install update while the redeem waits: %v", err)
-	}
-	if err := del.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if rr := <-done; rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_install_code") {
-		t.Fatalf("redeem after the delete committed: %d %s", rr.Code, rr.Body.String())
-	}
-	var consumed int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM app_install_codes WHERE install_id = $1 AND consumed_at IS NOT NULL`, out.InstallID).Scan(&consumed); err != nil {
-		t.Fatal(err)
-	}
-	if consumed != 0 {
-		t.Error("the refused redeem consumed the code")
+	// The code was not spent: it redeems once the database is back.
+	if rr := redeem(e.srv, `{"code":"`+out.InstallCode+`"}`); rr.Code != http.StatusOK {
+		t.Fatalf("redeem after the fault: %d %s", rr.Code, rr.Body.String())
 	}
 }

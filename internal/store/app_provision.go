@@ -500,38 +500,38 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	if s.dialect.Driver() == DriverPostgres {
 		forUpdate = ` FOR UPDATE`
 	}
-	forShare := ""
-	if s.dialect.Driver() == DriverPostgres {
-		forShare = ` FOR SHARE`
-	}
-	// Lock order (BUG-3416, codex r3): the WORKSPACE row, then the install
-	// row, the order account deletion takes them (it soft-deletes the owned
-	// workspaces, then deletes their bots, whose ON DELETE SET NULL on
-	// app_installs.bot_user_id updates the install row) and the order the
-	// purge's cascade takes them. The install's workspace is read unlocked
-	// to find the row to lock, and re-read under the install lock: an
-	// install never changes workspace, so a mismatch is refused, not
-	// retried.
-	var workspaceID string
-	if err := tx.QueryRow(s.q(`SELECT workspace_id FROM app_installs WHERE id = ?`), installID).Scan(&workspaceID); err != nil {
+	var state, workspaceID string
+	switch err := tx.QueryRow(s.q(`SELECT state, workspace_id FROM app_installs WHERE id = ?`+forUpdate), installID).Scan(&state, &workspaceID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrInstallCodeInvalid
+	case err != nil:
+		// A database failure is not a bad code: it surfaces as a 500, and
+		// the app may retry (BUG-3416).
+		return nil, fmt.Errorf("redeem install code: read install: %w", err)
+	case state != "active":
 		return nil, ErrInstallCodeInvalid
 	}
 	// The workspace is resolved, live, inside the transaction and before
-	// the code is consumed (codex r1): a code issued before a soft delete is
+	// the code is consumed (BUG-3416): a code issued before a soft delete is
 	// refused rather than spent, and the slug the answer carries is never a
-	// separate read that can fail after the commit. On Postgres the row is
-	// held FOR SHARE, which a soft delete's UPDATE waits on and which waits
-	// on one in flight (codex r2): a concurrent delete lands before the read
-	// or after the commit, never in between.
+	// separate read that can fail after the commit.
+	//
+	// The read takes NO lock, deliberately (lead ruling on BUG-3416, codex
+	// r2-r4). A soft delete that commits between this read and the redeem's
+	// commit lets the code be spent for a workspace that is gone. That is
+	// harmless: every app door refuses a deleted workspace (the app API
+	// answers its workspace 404, webhook admission refuses a dead workspace),
+	// and a restore leaves the install exactly as if it had been redeemed
+	// before the delete. Locking the workspace row to close that window
+	// added a lock edge that cycled with account deletion, the purge cascade,
+	// and teardown with account claim, three times over: a new lock to close
+	// a harmless race is a cost, not a fix. Redeem's lock set is the install
+	// row and the code row, as before.
 	var workspaceSlug string
-	if err := tx.QueryRow(s.q(`SELECT slug FROM workspaces WHERE id = ? AND deleted_at IS NULL`+forShare), workspaceID).Scan(&workspaceSlug); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRow(s.q(`SELECT slug FROM workspaces WHERE id = ? AND deleted_at IS NULL`), workspaceID).Scan(&workspaceSlug); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInstallCodeInvalid
 	} else if err != nil {
-		return nil, err
-	}
-	var state, lockedWorkspaceID string
-	if err := tx.QueryRow(s.q(`SELECT state, workspace_id FROM app_installs WHERE id = ?`+forUpdate), installID).Scan(&state, &lockedWorkspaceID); err != nil || state != "active" || lockedWorkspaceID != workspaceID {
-		return nil, ErrInstallCodeInvalid
+		return nil, fmt.Errorf("redeem install code: read workspace: %w", err)
 	}
 	var expires string
 	var consumed sql.NullString
