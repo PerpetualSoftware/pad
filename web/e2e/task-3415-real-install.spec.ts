@@ -1,9 +1,10 @@
 import { expect, request as pwRequest, test, type APIRequestContext } from '@playwright/test';
-import type { ChildProcess } from 'node:child_process';
+import { accessSync, constants } from 'node:fs';
 import type https from 'node:https';
 import {
 	appCall,
 	cleanupDirs,
+	closeServer,
 	freePort,
 	makeCerts,
 	opensslAvailable,
@@ -11,6 +12,7 @@ import {
 	startApp,
 	startFront,
 	startPad,
+	stopPad,
 	waitFor,
 	type AppServer,
 	type Certs
@@ -35,7 +37,16 @@ import {
  */
 
 const BINARY = process.env.PAD_E2E_BINARY ?? '';
-const MISSING = !BINARY ? 'PAD_E2E_BINARY (a `go build -tags e2etest` pad) is not set' : !opensslAvailable() ? 'openssl is not on PATH' : '';
+function missing(): string {
+	if (!BINARY) return 'PAD_E2E_BINARY (a `go build -tags e2etest` pad) is not set';
+	try {
+		accessSync(BINARY, constants.X_OK);
+	} catch {
+		return `PAD_E2E_BINARY=${BINARY} is not an executable file`;
+	}
+	return opensslAvailable() ? '' : 'openssl is not on PATH';
+}
+const MISSING = missing();
 
 const ADMIN = { email: 'real-install-admin@example.com', name: 'Rina Admin', password: 'correct-horse-battery-staple-3415' };
 const COMPANION = 'e2e-tickets';
@@ -75,13 +86,16 @@ function manifest(origin: string) {
 	};
 }
 
-test.describe.configure({ mode: 'serial' });
+// The leg waits on a real manifest fetch, three webhook deliveries and a
+// no-delivery window; the suite's 30 s default would cut it short.
+test.describe.configure({ mode: 'serial', timeout: 150_000 });
 
 test.describe('TASK-3415: a real install, end to end', () => {
 	let certs: Certs;
-	let front: https.Server;
-	let app: AppServer;
-	let pad: { child: ChildProcess; dataDir: string };
+	let front: https.Server | undefined;
+	let app: AppServer | undefined;
+	let pad: ReturnType<typeof startPad> | undefined;
+	let browserContext: import('@playwright/test').BrowserContext | undefined;
 	let frontOrigin = '';
 	let owner: APIRequestContext;
 	let csrf: Record<string, string> = {};
@@ -97,14 +111,20 @@ test.describe('TASK-3415: a real install, end to end', () => {
 			return;
 		}
 		certs = makeCerts();
-		const [padPort, frontPort, appPort] = [await freePort(), await freePort(), await freePort()];
-		frontOrigin = `https://127.0.0.1:${frontPort}`;
-		front = await startFront(certs, frontPort, padPort);
-		app = await startApp(certs, appPort, manifest);
+		// pad's own port is chosen before it binds (the binary takes it as a
+		// setting); the front and the app bind port 0 and report theirs.
+		const padPort = await freePort();
+		const f = await startFront(certs, padPort);
+		front = f.server;
+		frontOrigin = `https://127.0.0.1:${f.port}`;
+		app = await startApp(certs, manifest);
 		pad = startPad({ binary: BINARY, padPort, frontOrigin, caPath: certs.caPath });
 
 		owner = await pwRequest.newContext({ baseURL: frontOrigin, ignoreHTTPSErrors: true });
-		await waitFor('pad through the front', async () => (await owner.get('/api/v1/health').catch(() => null))?.ok(), 30_000);
+		await waitFor('pad through the front', async () => {
+			if (pad!.failure()) throw new Error(pad!.failure());
+			return (await owner.get('/api/v1/health').catch(() => null))?.ok();
+		}, 30_000);
 
 		const boot = await owner.post('/api/v1/auth/bootstrap', { data: ADMIN });
 		expect(boot.ok(), await boot.text()).toBeTruthy();
@@ -126,35 +146,52 @@ test.describe('TASK-3415: a real install, end to end', () => {
 		// private origin, to fetch its manifest and to deliver its webhooks.
 		const apps = await owner.put('/api/v1/admin/apps', {
 			headers: csrf,
-			data: { enabled: true, private_origins: [{ origin: app.origin, allowed: ['127.0.0.1'], fetch: true, webhook: true }] }
+			data: { enabled: true, private_origins: [{ origin: app!.origin, allowed: ['127.0.0.1'], fetch: true, webhook: true }] }
 		});
 		expect(apps.ok(), await apps.text()).toBeTruthy();
 		expect((await apps.json()).available, 'apps available behind an https issuer').toBe(true);
+		// MCP on too, so pad publishes its authorization-server metadata: the
+		// URLs in it are ones pad hands any client, apps included.
+		const mcp = await owner.put('/api/v1/admin/mcp', { headers: csrf, data: { enabled: true } });
+		expect(mcp.ok(), await mcp.text()).toBeTruthy();
 	});
 
 	test.afterAll(async () => {
-		pad?.child.kill('SIGTERM');
+		await browserContext?.close().catch(() => {});
 		await owner?.dispose();
-		front?.close();
-		app?.server.close();
-		if (certs || pad) cleanupDirs(...[certs?.dir, pad?.dataDir].filter(Boolean) as string[]);
+		await stopPad(pad?.child);
+		await closeServer(front);
+		await closeServer(app?.server);
+		cleanupDirs(...([certs?.dir, pad?.dataDir].filter(Boolean) as string[]));
 	});
 
 	test('install, redeem, write, webhook, disable', async ({ browser }, info) => {
 		test.skip(info.project.name !== 'desktop-chromium', 'one world per run: the desktop project drives it');
 		test.skip(!!MISSING, MISSING);
 		const api = `${frontOrigin}/api/app/v1`;
+		const theApp = app!;
 		const httpsOnly = (what: string, url: unknown) =>
-			expect(String(url), `${what} is a URL pad hands the app`).toMatch(new RegExp(`^${frontOrigin.replace(/\./g, '\\.')}`));
+			expect(String(url), `${what} is a URL pad hands the app`).toMatch(new RegExp(`^${frontOrigin.replace(/\./g, '\\.')}(/|$)`));
+
+		// 0. What pad advertises is https, through the front, and the app
+		// takes its token endpoint from there rather than knowing it.
+		const meta = await appCall(certs.ca, 'GET', `${frontOrigin}/.well-known/oauth-authorization-server`);
+		expect(meta.status, meta.text).toBe(200);
+		const discovered = meta.json();
+		for (const key of Object.keys(discovered)) {
+			if (typeof discovered[key] === 'string' && /^https?:/.test(discovered[key])) httpsOnly(`metadata ${key}`, discovered[key]);
+		}
+		httpsOnly('issuer', discovered.issuer);
+		httpsOnly('token_endpoint', discovered.token_endpoint);
 
 		// 1. The owner installs it in the real UI.
-		const context = await browser.newContext({ baseURL: frontOrigin, ignoreHTTPSErrors: true });
+		const context = (browserContext = await browser.newContext({ baseURL: frontOrigin, ignoreHTTPSErrors: true }));
 		await context.setExtraHTTPHeaders({ Authorization: `Bearer ${pat}` });
 		const page = await context.newPage();
 		await page.goto(`/${username}/${wsSlug}/settings#apps`);
 		await expect(page.getByRole('tab', { name: /Apps/ })).toHaveAttribute('aria-selected', 'true');
 		await page.getByRole('button', { name: 'Install an app' }).click();
-		await page.getByLabel('App URL').fill(app.origin);
+		await page.getByLabel('App URL').fill(theApp.origin);
 		await page.getByRole('button', { name: 'Review' }).click();
 		await expect(page.getByTestId('app-not-reviewed')).toBeVisible({ timeout: 30_000 });
 		await page.getByRole('button', { name: `Install ${TITLE}` }).click();
@@ -176,7 +213,7 @@ test.describe('TASK-3415: a real install, end to end', () => {
 
 		// 3. A service token from the https issuer, for the https audience.
 		const mint = () =>
-			appCall(certs.ca, 'POST', `${frontOrigin}/oauth/token`, {
+			appCall(certs.ca, 'POST', discovered.token_endpoint, {
 				headers: {
 					'Content-Type': 'application/x-www-form-urlencoded',
 					Authorization: 'Basic ' + Buffer.from(`${encodeURIComponent(creds.client_id)}:${encodeURIComponent(creds.client_secret)}`).toString('base64')
@@ -221,7 +258,7 @@ test.describe('TASK-3415: a real install, end to end', () => {
 			data: { title: 'Filed by a person', fields: '{"status":"open"}' }
 		});
 		expect(human.ok(), await human.text()).toBeTruthy();
-		const byTitle = (title: string) => app.hooks.find((h) => h.body.event === 'item.created' && h.body.title === title);
+		const byTitle = (title: string) => theApp.hooks.find((h) => h.body.event === 'item.created' && h.body.title === title);
 		const personHook = await waitFor('the person-written item.created delivery', () => byTitle('Filed by a person'));
 		expect(signatureVerifies(creds.webhook_secret, personHook), 'signature v2 verifies with the redeemed secret').toBe(true);
 		expect(personHook.headers['x-pad-install']).toBe(creds.install_id);
@@ -229,7 +266,7 @@ test.describe('TASK-3415: a real install, end to end', () => {
 		expect(personHook.body.via_app, 'a person wrote it').toBeUndefined();
 		const appHook = await waitFor('the app-written item.created delivery', () => byTitle('Opened by the app'));
 		expect(appHook.body.via_app).toBe(creds.install_id);
-		await waitFor('the comment.created delivery', () => app.hooks.find((h) => h.body.event === 'comment.created'));
+		await waitFor('the comment.created delivery', () => theApp.hooks.find((h) => h.body.event === 'comment.created'));
 
 		// 7. The owner disables it in the UI: the token dies, no new one is
 		// issued, and deliveries stop.
@@ -247,7 +284,7 @@ test.describe('TASK-3415: a real install, end to end', () => {
 		const remint = await mint();
 		expect(remint.status, 'a disabled install mints no token').not.toBe(200);
 
-		const before = app.hooks.length;
+		const before = theApp.hooks.length;
 		const late = await owner.post(`/api/v1/workspaces/${wsSlug}/collections/${COMPANION}/items`, {
 			headers: csrf,
 			data: { title: 'Filed after disable', fields: '{"status":"open"}' }
@@ -255,8 +292,7 @@ test.describe('TASK-3415: a real install, end to end', () => {
 		expect(late.ok(), await late.text()).toBeTruthy();
 		// Twenty drain ticks: a delivery would have landed long before.
 		await new Promise((r) => setTimeout(r, 4_000));
-		expect(app.hooks.slice(before).map((h) => h.body.title), 'no delivery to a disabled install').toEqual([]);
+		expect(theApp.hooks.slice(before).map((h) => h.body.title), 'no delivery to a disabled install').toEqual([]);
 
-		await context.close();
 	});
 });

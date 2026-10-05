@@ -78,8 +78,28 @@ export async function freePort(): Promise<number> {
 	});
 }
 
-/** The TLS front: https on frontPort, forwarding to pad's http port with Host kept. */
-export async function startFront(certs: Certs, frontPort: number, padPort: number): Promise<https.Server> {
+/** Listens on 127.0.0.1:0 and resolves the port the OS assigned (no reserve-then-bind race). */
+function listenOnFreePort(server: https.Server): Promise<number> {
+	return new Promise((resolve, reject) => {
+		server.once('error', reject);
+		server.listen(0, '127.0.0.1', () => {
+			server.off('error', reject);
+			resolve((server.address() as net.AddressInfo).port);
+		});
+	});
+}
+
+/** Closes a server and resolves once it has stopped. */
+export function closeServer(server: https.Server | undefined): Promise<void> {
+	return new Promise((resolve) => {
+		if (!server) return resolve();
+		server.closeAllConnections?.();
+		server.close(() => resolve());
+	});
+}
+
+/** The TLS front: https on a free port, forwarding to pad's http port with Host kept. */
+export async function startFront(certs: Certs, padPort: number): Promise<{ server: https.Server; port: number }> {
 	const server = https.createServer({ key: certs.key, cert: certs.cert }, (req, res) => {
 		const up = http.request(
 			{ host: '127.0.0.1', port: padPort, method: req.method, path: req.url, headers: req.headers },
@@ -107,8 +127,7 @@ export async function startFront(certs: Certs, frontPort: number, padPort: numbe
 		up.on('error', () => socket.destroy());
 		socket.on('error', () => up.destroy());
 	});
-	await new Promise<void>((resolve) => server.listen(frontPort, '127.0.0.1', resolve));
-	return server;
+	return { server, port: await listenOnFreePort(server) };
 }
 
 export interface RecordedHook {
@@ -124,8 +143,8 @@ export interface AppServer {
 }
 
 /** The app: an https origin serving its manifest and recording webhooks. */
-export async function startApp(certs: Certs, port: number, manifest: (origin: string) => unknown): Promise<AppServer> {
-	const origin = `https://127.0.0.1:${port}`;
+export async function startApp(certs: Certs, manifest: (origin: string) => unknown): Promise<AppServer> {
+	let origin = '';
 	const hooks: RecordedHook[] = [];
 	const server = https.createServer({ key: certs.key, cert: certs.cert }, (req, res) => {
 		if (req.method === 'GET' && req.url === '/.well-known/pad-app.json') {
@@ -153,7 +172,7 @@ export async function startApp(certs: Certs, port: number, manifest: (origin: st
 		res.writeHead(404);
 		res.end();
 	});
-	await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+	origin = `https://127.0.0.1:${await listenOnFreePort(server)}`;
 	return { server, origin, hooks };
 }
 
@@ -163,7 +182,7 @@ export function startPad(opts: {
 	padPort: number;
 	frontOrigin: string;
 	caPath: string;
-}): { child: ChildProcess; dataDir: string } {
+}): { child: ChildProcess; dataDir: string; failure: () => string } {
 	const dataDir = mkdtempSync(join(tmpdir(), 'pad-e2e-real-install-'));
 	const child = spawn(opts.binary, ['server', 'start'], {
 		stdio: ['ignore', 'inherit', 'inherit'],
@@ -180,7 +199,20 @@ export function startPad(opts: {
 			PAD_LOG_LEVEL: 'warn'
 		}
 	});
-	return { child, dataDir };
+	let failure = '';
+	child.on('error', (err) => (failure = `pad did not start: ${err.message}`));
+	child.on('exit', (code, signal) => (failure ||= `pad exited early (code ${code}, signal ${signal})`));
+	return { child, dataDir, failure: () => failure };
+}
+
+/** Stops pad and waits for it to exit, killing it if SIGTERM is not enough. */
+export async function stopPad(child: ChildProcess | undefined): Promise<void> {
+	if (!child || child.exitCode !== null || child.signalCode !== null) return;
+	const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+	child.kill('SIGTERM');
+	const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+	await exited;
+	clearTimeout(timer);
 }
 
 export interface AppResponse {

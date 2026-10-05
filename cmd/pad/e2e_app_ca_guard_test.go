@@ -25,7 +25,7 @@ func TestE2EAppCADoorIsNotInDefaultBuilds(t *testing.T) {
 	const needle = "PAD_E2E_APP_CA"
 	mentions := func(t *testing.T, tags string) []string {
 		t.Helper()
-		args := []string{"list", "-deps", "-json=Dir,GoFiles,Standard"}
+		args := []string{"list", "-deps", "-json=Dir,GoFiles,CgoFiles,Standard"}
 		if tags != "" {
 			args = append(args, "-tags", tags)
 		}
@@ -42,6 +42,7 @@ func TestE2EAppCADoorIsNotInDefaultBuilds(t *testing.T) {
 			var p struct {
 				Dir      string
 				GoFiles  []string
+				CgoFiles []string
 				Standard bool
 			}
 			if err := dec.Decode(&p); err != nil {
@@ -50,7 +51,7 @@ func TestE2EAppCADoorIsNotInDefaultBuilds(t *testing.T) {
 			if p.Standard {
 				continue
 			}
-			for _, f := range p.GoFiles {
+			for _, f := range append(p.GoFiles, p.CgoFiles...) {
 				b, err := os.ReadFile(filepath.Join(p.Dir, f))
 				if err != nil {
 					t.Fatal(err)
