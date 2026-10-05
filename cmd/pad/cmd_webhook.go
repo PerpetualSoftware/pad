@@ -65,12 +65,13 @@ func webhooksListCmd() *cobra.Command {
 			red := color.New(color.FgRed)
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				dim.Sprint("ID"),
 				dim.Sprint("URL"),
 				dim.Sprint("EVENTS"),
 				dim.Sprint("ACTIVE"),
 				dim.Sprint("FAILURES"),
+				dim.Sprint("DROPPED"),
 			)
 			for _, h := range hooks {
 				// Truncate ID to 8 chars for display
@@ -103,8 +104,15 @@ func webhooksListCmd() *cobra.Command {
 					failStr = red.Sprintf("%d", h.FailureCount)
 				}
 
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					shortID, displayURL, events, activeStr, failStr,
+				// Events the outbox gave up on while this endpoint was still
+				// owed them (TASK-3409).
+				droppedStr := fmt.Sprintf("%d", h.DroppedCount)
+				if h.DroppedCount > 0 {
+					droppedStr = red.Sprintf("%d", h.DroppedCount)
+				}
+
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					shortID, displayURL, events, activeStr, failStr, droppedStr,
 				)
 			}
 			w.Flush()

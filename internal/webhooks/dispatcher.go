@@ -79,15 +79,37 @@ type WebhookStore interface {
 	WorkspaceLive(workspaceID string) (bool, error)
 }
 
-// OwnerDeliveryLedger is optionally implemented by the store (TASK-3408
-// U10c). When it is, DeliverEvent skips an owner hook that already received
-// the event and records each owner success. It exists so that an event kept
-// owed by someone ELSE (an app hook's rate limit or outage) is not delivered
-// again to owner endpoints on every retry. Owner failure, retry and ack
-// semantics are unchanged; full owner per-endpoint state is TASK-3409.
+// OwnerDeliveryLedger is optionally implemented by the store: per-endpoint
+// delivery state for owner hooks (TASK-3408 U10c recorded only successes;
+// TASK-3409 records every outcome). DeliverEvent skips an owner hook whose
+// row for the event is terminal, so a retry goes only to endpoints still
+// owed: one that accepted the event is not sent it again, and neither is one
+// that permanently refused it. A transient outcome is recorded with its
+// attempts and last error and stays owed.
 type OwnerDeliveryLedger interface {
-	OwnerDelivered(eventID, webhookID string) (bool, error)
-	RecordOwnerDelivered(eventID, webhookID string) error
+	OwnerDeliveryStatus(eventID, webhookID string) (string, error)
+	RecordOwnerOutcome(eventID, webhookID, status, lastError string, attempts int) error
+	// RecordOwnerDropped marks the event dropped for an endpoint that stopped
+	// being owed it (deactivated) and counts the drop on the hook.
+	RecordOwnerDropped(eventID, webhookID string) error
+}
+
+// Owner delivery statuses, as the ledger stores them (the store's
+// webhook_deliveries vocabulary).
+const (
+	OwnerStatusDelivered = "delivered"
+	OwnerStatusPermanent = "permanent"
+	OwnerStatusTransient = "transient"
+	OwnerStatusDropped   = "dropped"
+)
+
+// ownerStatusTerminal: an owner endpoint's part in the event is over.
+func ownerStatusTerminal(status string) bool {
+	switch status {
+	case OwnerStatusDelivered, OwnerStatusPermanent, OwnerStatusDropped:
+		return true
+	}
+	return false
 }
 
 // errWorkspaceGone stops a request whose webhook's workspace was deleted while
@@ -413,31 +435,54 @@ func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
 		return out, fmt.Errorf("marshal webhook payload: %w", err)
 	}
 
+	ledger, _ := d.store.(OwnerDeliveryLedger)
 	for _, hook := range hooks {
 		if !hook.Active {
+			// A deactivated endpoint (by its owner, or automatically after
+			// consecutive failures) is no longer owed the event. If an
+			// earlier pass left it owed, that is a drop: recorded and
+			// counted, so the loss is visible rather than silent (TASK-3409,
+			// codex r1). Nothing is recorded for a hook that never had a row.
+			if ledger != nil && dv.EventID != "" && matchesEvent(hook.Events, dv.Event) {
+				st, err := ledger.OwnerDeliveryStatus(dv.EventID, hook.ID)
+				if err != nil {
+					return out, fmt.Errorf("owner delivery ledger: %w", err)
+				}
+				if st != "" && !ownerStatusTerminal(st) {
+					if err := ledger.RecordOwnerDropped(dv.EventID, hook.ID); err != nil {
+						return out, fmt.Errorf("owner delivery ledger: %w", err)
+					}
+				}
+			}
 			continue
 		}
 		if !matchesEvent(hook.Events, dv.Event) {
 			continue
 		}
 		out.Matched++
-		ledger, _ := d.store.(OwnerDeliveryLedger)
 		if ledger != nil && dv.EventID != "" {
-			done, err := ledger.OwnerDelivered(dv.EventID, hook.ID)
+			st, err := ledger.OwnerDeliveryStatus(dv.EventID, hook.ID)
 			if err != nil {
 				return out, fmt.Errorf("owner delivery ledger: %w", err)
 			}
-			if done {
-				out.Succeeded++ // received on an earlier pass
+			if ownerStatusTerminal(st) {
+				// Decided on an earlier pass (TASK-3409): not sent again.
+				if st == OwnerStatusDelivered {
+					out.Succeeded++
+				} else {
+					out.Permanent++
+				}
 				continue
 			}
 		}
-		res := d.deliver(hook, body)
-		if res == deliverySuccess && ledger != nil && dv.EventID != "" {
-			if err := ledger.RecordOwnerDelivered(dv.EventID, hook.ID); err != nil {
-				// Not fatal: the cost is one possible re-send, the
-				// behaviour before the ledger existed.
-				slog.Error("owner delivery ledger: record failed", "webhook_id", hook.ID, "error", err)
+		res, attempts := d.deliverCounted(hook, body)
+		if ledger != nil && dv.EventID != "" {
+			if status, lastErr, ok := ownerOutcomeStatus(res); ok {
+				if err := ledger.RecordOwnerOutcome(dv.EventID, hook.ID, status, lastErr, attempts); err != nil {
+					// Not fatal: the cost is one possible re-send on the
+					// next pass, the behaviour before the ledger existed.
+					slog.Error("owner delivery ledger: record failed", "webhook_id", hook.ID, "error", err)
+				}
 			}
 		}
 		switch res {
@@ -468,12 +513,35 @@ func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
 // return; DeliverEvent tallies it, which is the whole of requirement 2. Permanent failures (4xx, SSRF block, malformed URL)
 // stop immediately without consuming retries.
 func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
+	result, _ := d.deliverCounted(hook, body)
+	return result
+}
+
+// ownerOutcomeStatus maps a delivery result to the ledger status recorded for
+// an owner endpoint, and false when nothing is recorded (a suppressed or
+// deferred delivery was not the endpoint's doing).
+func ownerOutcomeStatus(res deliveryResult) (status, lastErr string, ok bool) {
+	switch res {
+	case deliverySuccess:
+		return OwnerStatusDelivered, "", true
+	case deliveryPermanent:
+		return OwnerStatusPermanent, "permanent delivery failure", true
+	case deliveryTransient:
+		return OwnerStatusTransient, "transient delivery failure", true
+	}
+	return "", "", false
+}
+
+// deliverCounted is deliver, also reporting how many requests it made.
+func (d *Dispatcher) deliverCounted(hook models.Webhook, body []byte) (deliveryResult, int) {
 	result := deliveryPermanent
+	attempts := 0
 	for attempt := 1; attempt <= maxDeliveryAttempts; attempt++ {
 		result = d.attemptDeliver(hook, body)
 		if result == deliverySuppressed || result == deliveryDeferred {
-			return result // not the endpoint's doing; record nothing
+			return result, attempts // not the endpoint's doing; record nothing
 		}
+		attempts++
 		if result != deliveryTransient {
 			break // success or permanent failure — no point retrying
 		}
@@ -486,7 +554,7 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) deliveryResult {
 		}
 	}
 	d.store.UpdateWebhookFailure(hook.ID, result != deliverySuccess)
-	return result
+	return result, attempts
 }
 
 // attemptDeliver performs a single HTTP POST to the webhook URL and
@@ -601,9 +669,10 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return deliverySuccess
-	case resp.StatusCode >= 500 && resp.StatusCode < 600:
-		// Server error — transient, worth retrying.
-		slog.Warn("webhook 5xx response", "status", resp.StatusCode, "url", hook.URL)
+	case RetryableStatus(resp.StatusCode):
+		// Server error, or the receiver asked us to come back later —
+		// transient, worth retrying.
+		slog.Warn("webhook retryable response", "status", resp.StatusCode, "url", hook.URL)
 		return deliveryTransient
 	default:
 		// 4xx and any other non-2xx (3xx with no followable Location, 1xx)
@@ -611,6 +680,25 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 		slog.Warn("webhook non-2xx response", "status", resp.StatusCode, "url", hook.URL)
 		return deliveryPermanent
 	}
+}
+
+// RetryableStatus reports whether a receiver's HTTP status means "try again
+// later" rather than "this request is unacceptable": any 5xx, and the three
+// 4xx codes that say so (TASK-3409, lead ruling): 408 Request Timeout,
+// 425 Too Early and 429 Too Many Requests. Every other non-2xx is permanent.
+// Before this, all of 4xx was permanent, which an event-level retry mostly
+// hid; once a permanent outcome ends an endpoint's part in an event, a
+// receiver that rate-limits us would lose the event for good. Shared by the
+// owner and app delivery paths so the two cannot disagree. Retry-After is
+// not honoured; the existing backoff schedule applies.
+func RetryableStatus(code int) bool {
+	switch {
+	case code >= 500 && code < 600:
+		return true
+	case code == 408, code == 425, code == 429:
+		return true
+	}
+	return false
 }
 
 // matchesEvent checks whether a webhook's event filter (JSON array)

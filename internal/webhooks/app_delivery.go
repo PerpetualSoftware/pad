@@ -206,10 +206,11 @@ func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster 
 	switch {
 	case status >= 200 && status < 300:
 		return AppDelivered, true
-	case status >= 500 && status < 600:
+	case RetryableStatus(status):
+		// 5xx, or 408 / 425 / 429: the receiver asked us to come back.
 		return AppTransient, true
 	default:
-		// 3xx (never followed), 4xx, anything else.
+		// 3xx (never followed), any other 4xx, anything else.
 		slog.Warn("app webhook non-2xx", "webhook_id", dv.WebhookID, "status", status)
 		return AppPermanent, true
 	}

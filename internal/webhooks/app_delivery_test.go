@@ -147,6 +147,12 @@ func TestAppDelivery_Outcomes(t *testing.T) {
 		{"policy refusal is permanent", &fakeAdmitter{}, &fakePoster{err: fmt.Errorf("%w: not https", appfetch.ErrRefused)}, AppPermanent, 1},
 		{"network error is transient, retried", &fakeAdmitter{}, &fakePoster{err: errors.New("connection reset")}, AppTransient, 3},
 		{"5xx exhausts", &fakeAdmitter{}, &fakePoster{statuses: []int{500}}, AppTransient, 3},
+		// TASK-3409: the receiver asking us to come back is transient.
+		{"408 is transient, retried", &fakeAdmitter{}, &fakePoster{statuses: []int{408}}, AppTransient, 3},
+		{"425 is transient, retried", &fakeAdmitter{}, &fakePoster{statuses: []int{425}}, AppTransient, 3},
+		{"429 is transient, retried", &fakeAdmitter{}, &fakePoster{statuses: []int{429}}, AppTransient, 3},
+		{"400 stays permanent", &fakeAdmitter{}, &fakePoster{statuses: []int{400}}, AppPermanent, 1},
+		{"404 stays permanent", &fakeAdmitter{}, &fakePoster{statuses: []int{404}}, AppPermanent, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, _ := newAppTestDispatcher()

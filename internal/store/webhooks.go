@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -79,12 +80,12 @@ func (s *Store) getWebhookQ(q Queryer, id string) (*models.Webhook, error) {
 	var lastTriggeredAt *string
 
 	err := q.QueryRow(s.q(`
-		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
+		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count, dropped_count
 		FROM webhooks
 		WHERE id = ?
 	`), id).Scan(
 		&wh.ID, &wh.WorkspaceID, &wh.URL, &wh.Secret, &wh.Events,
-		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount,
+		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount, &wh.DroppedCount,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -120,12 +121,12 @@ func (s *Store) GetWebhookScoped(id, workspaceID string) (*models.Webhook, error
 	var lastTriggeredAt *string
 
 	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
+		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count, dropped_count
 		FROM webhooks
 		WHERE id = ? AND workspace_id = ? AND app_install_id IS NULL
 	`), id, workspaceID).Scan(
 		&wh.ID, &wh.WorkspaceID, &wh.URL, &wh.Secret, &wh.Events,
-		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount,
+		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount, &wh.DroppedCount,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -166,7 +167,7 @@ func (s *Store) WorkspaceLive(workspaceID string) (bool, error) {
 // a restore brings the webhooks back.
 func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT wh.id, wh.workspace_id, wh.url, wh.secret, wh.events, wh.active, wh.created_at, wh.updated_at, wh.last_triggered_at, wh.failure_count
+		SELECT wh.id, wh.workspace_id, wh.url, wh.secret, wh.events, wh.active, wh.created_at, wh.updated_at, wh.last_triggered_at, wh.failure_count, wh.dropped_count
 		FROM webhooks wh
 		JOIN workspaces w ON w.id = wh.workspace_id
 		WHERE wh.workspace_id = ? AND w.deleted_at IS NULL AND wh.app_install_id IS NULL
@@ -186,7 +187,7 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 
 		if err := rows.Scan(
 			&wh.ID, &wh.WorkspaceID, &wh.URL, &wh.Secret, &wh.Events,
-			&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount,
+			&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount, &wh.DroppedCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan webhook: %w", err)
 		}
@@ -226,19 +227,58 @@ func (s *Store) DeleteWebhookScoped(id, workspaceID string) error {
 // If failed is true, the failure_count is incremented. If it reaches the
 // threshold of 10, the webhook is auto-deactivated.
 // If failed is false, the failure_count is reset to 0 and last_triggered_at is updated.
+// webhookDeactivateAfter consecutive failures deactivate a webhook (the
+// documented "deactivated after 10 consecutive delivery failures").
+const webhookDeactivateAfter = 10
+
 func (s *Store) UpdateWebhookFailure(id string, failed bool) error {
 	ts := now()
 	if failed {
-		_, err := s.db.Exec(s.q(`
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("update webhook failure: %w", err)
+		}
+		defer tx.Rollback()
+		q := `SELECT active, failure_count FROM webhooks WHERE id = ?`
+		if s.dialect.Driver() == DriverPostgres {
+			q += ` FOR UPDATE`
+		}
+		var wasActive bool
+		var failures int
+		if err := tx.QueryRow(s.q(q), id).Scan(&wasActive, &failures); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil // deleted meanwhile; nothing to count
+			}
+			return fmt.Errorf("update webhook failure: read: %w", err)
+		}
+		if _, err := tx.Exec(s.q(`
 			UPDATE webhooks
 			SET failure_count = failure_count + 1,
 			    updated_at = ?,
 			    active = CASE WHEN failure_count + 1 >= 10 THEN FALSE ELSE active END
 			WHERE id = ?
-		`), ts, id)
-		if err != nil {
+		`), ts, id); err != nil {
 			return fmt.Errorf("update webhook failure: %w", err)
 		}
+		// TASK-3409 (codex r2): the deactivation is where the endpoint stops
+		// being owed what it was still owed, so its pending rows are settled
+		// here, in the same transaction, as dropped and counted. The event
+		// whose failure caused it has no row yet (its outcome is recorded
+		// after this); the drain's next pass drops that one.
+		if wasActive && failures+1 >= webhookDeactivateAfter {
+			res, err := tx.Exec(s.q(`UPDATE webhook_deliveries SET status = ?, last_error = ?, updated_at = ?
+				WHERE webhook_id = ? AND status NOT IN ('delivered', 'permanent', 'refused', 'skipped', 'dropped')`),
+				DeliveryDropped, "endpoint deactivated", ts, id)
+			if err != nil {
+				return fmt.Errorf("update webhook failure: settle deliveries: %w", err)
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				if _, err := tx.Exec(s.q(`UPDATE webhooks SET dropped_count = dropped_count + ? WHERE id = ?`), n, id); err != nil {
+					return fmt.Errorf("update webhook failure: count drops: %w", err)
+				}
+			}
+		}
+		return tx.Commit()
 	} else {
 		_, err := s.db.Exec(s.q(`
 			UPDATE webhooks
