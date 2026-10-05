@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // TASK-3413 (SPEC-6 U9b): the install view lists the items the app's pack
@@ -87,5 +89,57 @@ func TestTask3413b_ANonASCIIOriginFindsItsItems(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ItemID != id {
 		t.Errorf("non-ASCII origin: %+v, want item %s", got, id)
+	}
+}
+
+// §2 step 7 (lead ruling, U9b): activating an app's draft is an ordinary
+// edit by a person, never the app's. An app token, service or a delegated
+// owner's, cannot PATCH a draft playbook or convention the app's pack
+// provisioned: those live in system collections, never companions, and app
+// writes are companion-only (appWriteAllows).
+func TestTask3413b_TheAppCannotActivateItsOwnDrafts(t *testing.T) {
+	for _, kind := range []string{"service", "delegated owner"} {
+		t.Run(kind, func(t *testing.T) {
+			var f appAPIFix
+			if kind == "service" {
+				f = appAPIFixture(t, "write")
+			} else {
+				f = delegatedAPIFixture(t, "write", "write", "owner").appAPIFix
+			}
+			coll, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Playbooks Here", Slug: "playbooks-here",
+				Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["draft","active"],"default":"draft"}]}`})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var origin string
+			if err := f.srv.store.DB().QueryRow(`SELECT origin FROM app_installs WHERE id = ?`, f.in.id).Scan(&origin); err != nil {
+				t.Fatal(err)
+			}
+			item, err := f.srv.store.CreateItem(f.ws.ID, coll.ID, models.ItemCreate{Title: "Triage", Fields: `{"status":"draft"}`})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A system collection, as Playbooks and Conventions are.
+			if _, err := f.srv.store.DB().Exec(`UPDATE collections SET is_system = 1 WHERE id = ?`, coll.ID); err != nil {
+				t.Fatal(err)
+			}
+			// Stamped as provisioning stamps an app's artifact.
+			if _, err := f.srv.store.DB().Exec(`UPDATE items SET source_pack = ? WHERE id = ?`, origin+"@1.0.0", item.ID); err != nil {
+				t.Fatal(err)
+			}
+			// A valid etag, so a refusal is the write rule, not a precondition.
+			etag := f.etag(t, item.ID)
+			rr := appDo(f.srv, "PATCH", f.path("/items/"+item.ID), f.token, map[string]any{"fields_patch": map[string]any{"status": "active"}, "expected_etag": etag})
+			if rr.Code != http.StatusForbidden {
+				t.Errorf("app PATCH of its draft to active: %d %s, want 403", rr.Code, rr.Body.String())
+			}
+			got, err := f.srv.store.GetItem(item.ID)
+			if err != nil || got == nil {
+				t.Fatal(err)
+			}
+			if itemStatus(got) != "draft" {
+				t.Errorf("status = %q after the app's attempt, want draft", itemStatus(got))
+			}
+		})
 	}
 }
