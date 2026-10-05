@@ -150,7 +150,10 @@ func TestBug3395_BulkCommentWritesLockRootFirst(t *testing.T) {
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.AddWorkspaceMember(w.ws, bot.ID, "editor"); err != nil {
+		// The membership an install's provisioning writes (the member door
+		// refuses a bot).
+		if _, err := s.db.Exec(s.q(`INSERT INTO workspace_members (workspace_id, user_id, role, collection_access, created_at) VALUES (?, ?, 'editor', 'all', ?)`),
+			w.ws, bot.ID, now()); err != nil {
 			t.Fatal(err)
 		}
 		// The reply goes first, so P has no reply and its delete is a hard
