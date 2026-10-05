@@ -19,13 +19,26 @@ type AppAttribution struct {
 	Name      string
 }
 
-// attributionQuery runs one batch lookup: table.idCol IN ids, reading
-// table.installCol, joined to the install and its bot.
+// attributionChunk bounds one lookup's IN list. Callers pass whole
+// responses, some unbounded (the workspace index, /items-changes up to
+// 50,000 rows), and one placeholder per row would pass SQLite's 32,766
+// variables and Postgres's 65,535 parameters (codex r1 on U9c).
+const attributionChunk = 500
+
+// attributionQuery looks up table.installCol for ids, joined to the
+// install and its bot, attributionChunk ids per query.
 func (s *Store) attributionQuery(table, installCol string, ids []string) (map[string]AppAttribution, error) {
 	out := map[string]AppAttribution{}
-	if len(ids) == 0 {
-		return out, nil
+	for start := 0; start < len(ids); start += attributionChunk {
+		end := min(start+attributionChunk, len(ids))
+		if err := s.attributionChunkQuery(table, installCol, ids[start:end], out); err != nil {
+			return nil, err
+		}
 	}
+	return out, nil
+}
+
+func (s *Store) attributionChunkQuery(table, installCol string, ids []string, out map[string]AppAttribution) error {
 	ph := make([]string, len(ids))
 	args := make([]any, len(ids))
 	for i, id := range ids {
@@ -37,13 +50,13 @@ func (s *Store) attributionQuery(table, installCol string, ids []string) (map[st
 		LEFT JOIN users u ON u.id = a.bot_user_id
 		WHERE t.id IN (`+strings.Join(ph, ",")+`)`), args...)
 	if err != nil {
-		return nil, fmt.Errorf("app attribution (%s): %w", table, err)
+		return fmt.Errorf("app attribution (%s): %w", table, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id, install, bot, origin string
 		if err := rows.Scan(&id, &install, &bot, &origin); err != nil {
-			return nil, err
+			return err
 		}
 		name := bot
 		if name == "" {
@@ -51,7 +64,7 @@ func (s *Store) attributionQuery(table, installCol string, ids []string) (map[st
 		}
 		out[id] = AppAttribution{InstallID: install, Name: name}
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 // ItemsCreatedViaApp returns, for the items an app CREATED, that app

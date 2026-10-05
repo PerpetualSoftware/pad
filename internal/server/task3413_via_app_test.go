@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestTask3413_ViaAppOnHumanJSON(t *testing.T) {
 		}
 	}
 	viewer, tok := loginTestUserAs(t, f.srv, "viewer-3413@example.com", "Vera Viewer", "pw-3413-viewer")
-	exec(`INSERT INTO workspace_members (workspace_id, user_id, role, collection_access, created_at) VALUES (?, ?, 'viewer', 'all', ?)`,
+	exec(`INSERT INTO workspace_members (workspace_id, user_id, role, collection_access, created_at) VALUES (?, ?, 'editor', 'all', ?)`,
 		f.ws.ID, viewer.ID, time.Now().UTC().Format(time.RFC3339))
 	exec(`UPDATE comments SET via_app = ? WHERE id = ?`, f.in.id, f.comment.ID)
 	exec(`UPDATE item_versions SET via_app = ? WHERE item_id = ?`, f.in.id, f.item.ID)
@@ -128,8 +129,51 @@ func TestTask3413_ViaAppOnHumanJSON(t *testing.T) {
 		if !sawComment || !sawVersion {
 			t.Fatalf("timeline: app comment %v, version %v", sawComment, sawVersion)
 		}
+
+		// Search and the outage /changes sync serve the item too (codex r1).
+		var sr struct {
+			Results []struct {
+				Item map[string]any `json:"item"`
+			} `json:"results"`
+		}
+		rr := doRequestWithCookie(f.srv, "GET", "/api/v1/search?q=Login&workspace="+f.ws.Slug, nil, tok)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("search: %d %s", rr.Code, rr.Body.String())
+		}
+		parseJSON(t, rr, &sr)
+		if len(sr.Results) != 1 {
+			t.Fatalf("search: %d results", len(sr.Results))
+		}
+		want("search result", sr.Results[0].Item, name)
+		var ch struct {
+			Updated []map[string]any `json:"updated"`
+		}
+		get("/changes?since=0", &ch)
+		sawChanged := false
+		for _, it := range ch.Updated {
+			if it["id"] == f.item.ID {
+				want("changes row", it, name)
+				sawChanged = true
+			}
+		}
+		if !sawChanged {
+			t.Fatal("changes: the item is missing")
+		}
 	}
 	check("Portal")
+
+	// A person's restore answers with the item; its creator is still the app.
+	var versions []map[string]any
+	get("/items/"+f.item.ID+"/versions", &versions)
+	vid, _ := versions[len(versions)-1]["id"].(string)
+	rr := doRequestWithCookie(f.srv, "POST", base+"/items/"+f.item.ID+"/versions/"+vid+"/restore", nil, tok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore: %d %s", rr.Code, rr.Body.String())
+	}
+	var restored map[string]any
+	parseJSON(t, rr, &restored)
+	want("restore response", restored, "Portal")
+	exec(`UPDATE item_versions SET via_app = ? WHERE item_id = ?`, f.in.id, f.item.ID)
 
 	// The bot's name is preferred; with none, the install's origin.
 	exec(`UPDATE users SET name = '' WHERE id = ?`, f.in.bot.ID)
@@ -147,4 +191,54 @@ func TestTask3413_ViaAppOnHumanJSON(t *testing.T) {
 		t.Fatalf("state %s, want uninstalled", st)
 	}
 	check("Portal")
+}
+
+// The lookup is chunked: one IN list per response would pass SQLite's
+// 32,766-variable limit on a large unbounded response (codex r1 on U9c).
+func TestTask3413_AttributionLookupIsChunked(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	ids := make([]string, 0, 40001)
+	for i := 0; i < 40000; i++ {
+		ids = append(ids, fmt.Sprintf("no-such-item-%d", i))
+	}
+	ids = append(ids, f.item.ID)
+	got, err := f.srv.store.ItemsCreatedViaApp(ids)
+	if err != nil {
+		t.Fatalf("lookup over 40,001 ids: %v", err)
+	}
+	if len(got) != 1 || got[f.item.ID].InstallID != f.in.id {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// pad playbook show (and pad_playbook get) serves the playbook item outside
+// the common enrichment path; it carries the creating app too (codex r1).
+func TestTask3413_PlaybookShowCarriesViaApp(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	pb := createItem(t, srv, slug, "playbooks", map[string]interface{}{
+		"title":  "Ship something",
+		"fields": `{"status":"active","invocation_slug":"ship"}`,
+	})
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatal(err)
+	}
+	ts := time.Now().UTC().Format(time.RFC3339)
+	db := srv.store.DB()
+	if _, err := db.Exec(`INSERT INTO app_installs (id, workspace_id, origin, created_at, updated_at) VALUES ('inst-pb', ?, 'https://pb.example', ?, ?)`, ws.ID, ts, ts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE items SET created_via_app = 'inst-pb' WHERE id = ?`, pb.ID); err != nil {
+		t.Fatal(err)
+	}
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/playbooks/ship", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("show: %d %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	parseJSON(t, rr, &got)
+	if got["via_app"] != "inst-pb" || got["via_app_name"] != "https://pb.example" {
+		t.Fatalf("playbook show: via_app=%v via_app_name=%v", got["via_app"], got["via_app_name"])
+	}
 }

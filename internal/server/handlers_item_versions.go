@@ -512,6 +512,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	if prunedPendingEdits > 0 && updated.Warnings == nil {
 		updated.Warnings = &models.ItemWriteWarnings{PrunedPendingEdits: prunedPendingEdits}
 	}
+	s.hydrateItemAppAttribution(updated) // SPEC-6 U9c
 
 	writeJSON(w, http.StatusOK, updated)
 }

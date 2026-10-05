@@ -465,6 +465,7 @@ func (s *Server) handleShowPlaybook(w http.ResponseWriter, r *http.Request) {
 	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
+	s.hydrateItemAppAttribution(item) // SPEC-6 U9c
 	writeJSON(w, http.StatusOK, PlaybookShowResponse{
 		Item:   item,
 		Status: playbookStatus(item),

@@ -32,6 +32,16 @@ func (s *Server) hydrateItemsAppAttribution(items []models.Item) {
 	}
 }
 
+// hydrateItemAppAttribution is hydrateItemsAppAttribution for one item.
+func (s *Server) hydrateItemAppAttribution(item *models.Item) {
+	if item == nil {
+		return
+	}
+	one := []models.Item{*item}
+	s.hydrateItemsAppAttribution(one)
+	item.ViaApp, item.ViaAppName = one[0].ViaApp, one[0].ViaAppName
+}
+
 func (s *Server) hydrateCommentsAppAttribution(comments []models.Comment) {
 	if len(comments) == 0 {
 		return
