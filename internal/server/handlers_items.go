@@ -888,6 +888,11 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 
 	// PLAN-2348 U2: the create's version row names its user.
 	input.ActorUserID = currentUserID(r)
+	// BUG-3407: the schema bytes the fields were validated against (read at
+	// the top of this handler); the store re-checks under its lock if the
+	// schema moved since.
+	validatedSchema := coll.Schema
+	input.ValidatedSchema = &validatedSchema
 	item, err := s.store.CreateItem(workspaceID, coll.ID, input, s.workspaceLimitMintOpts()...)
 	if err != nil {
 		// BUG-2808: the cap, counted under the insert's lock, was reached after
@@ -902,6 +907,11 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		// 500 that a mutation test surfaced, and the update path needs the same
 		// arm for a title that only becomes invalid under the lock. Both paths
 		// answer the same way because both go through the same helper.
+		// BUG-3407: the store refused fields the collection's schema stopped
+		// allowing after this handler validated them.
+		if v, ok := store.AsValidationError(err); ok {
+			return nil, &itemCreateError{status: http.StatusBadRequest, code: "validation_error", message: v.Reason}
+		}
 		var badTitle *store.InvalidItemTitleError
 		if errors.As(err, &badTitle) {
 			return nil, &itemCreateError{status: http.StatusBadRequest, code: "bad_request", message: badTitle.Reason}
@@ -1579,6 +1589,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "validation_error", verr.Error())
 			return
 		}
+		// BUG-3407: the schema bytes these fields were validated against; the
+		// store re-checks them under its lock if the schema moved since.
+		validatedSchema := coll.Schema
+		input.ValidatedSchema = &validatedSchema
 		items.DropBlankRelations(fieldMap, schema, nil)
 		droppedDefaults = append(droppedDefaults, defaultDrops...)
 		// Referent validation for relation values (TASK-2878) — the same four
@@ -1789,6 +1803,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
+		// BUG-3407: the schema bytes this patch was validated against.
+		validatedSchema := coll.Schema
+		input.ValidatedSchema = &validatedSchema
 		// Referent validation for relation values (TASK-2878). Only the keys
 		// this patch carries are examined — the resolver skips absent keys —
 		// so a stray unresolvable value already stored on the item is not
@@ -2369,6 +2386,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		if pending, ok := store.AsContentPendingFlushError(err); ok {
 			writeContentPendingFlushError(w, itemRefOrSlug(*item), pending, input.ChatGPTDoor)
+			return
+		}
+		// BUG-3407: fields the collection's schema stopped allowing after this
+		// handler validated them.
+		if v, ok := store.AsValidationError(err); ok {
+			writeError(w, http.StatusBadRequest, "validation_error", v.Reason)
 			return
 		}
 		// BUG-2804: the item rename cascade refuses renames that would process
@@ -3163,10 +3186,16 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Move the item
-	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), movePrecheck)
+	// BUG-3407: the target schema the moved fields were validated against.
+	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), movePrecheck, store.WithValidatedSchema(targetColl.Schema))
 	if err != nil {
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
+		}
+		// BUG-3407: the target schema stopped allowing the moved fields.
+		if v, ok := store.AsValidationError(err); ok {
+			writeError(w, http.StatusBadRequest, "validation_error", v.Reason)
 			return
 		}
 		writeInternalError(w, err)

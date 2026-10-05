@@ -577,15 +577,15 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 		return nil, err
 	}
 
-	// BUG-3407: the fields were validated before this lock; a schema change
-	// that committed since then is checked here, against the schema as it
-	// stands under the lock. On create every key is set.
+	// BUG-3407: the caller validated these fields before this lock. If the
+	// schema it validated against has moved since, every key (all are set on
+	// a create) is re-checked against the schema as it stands under the lock.
 	{
 		set, err := decodeFieldsBlob(fields)
 		if err != nil {
 			return nil, fmt.Errorf("decode fields: %w", err)
 		}
-		if err := s.revalidateSetFieldsTx(tx, collectionID, set); err != nil {
+		if err := s.revalidateIfSchemaMovedTx(tx, collectionID, input.ValidatedSchema, set); err != nil {
 			return nil, err
 		}
 	}
@@ -2807,12 +2807,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 		input.Fields = &base
 	}
 
-	// BUG-3407: re-validate the keys this write SETS against the schema as it
-	// stands under the seq lock held above. A patch sets its own keys; a full
-	// `fields` write sets the keys whose value differs from the locked row.
-	// Carried values are never re-judged.
+	// BUG-3407: if the schema the caller validated against has moved since,
+	// re-check the keys this write SETS against the schema under the seq lock
+	// held above. A patch sets its own keys; a full `fields` write sets the
+	// keys whose value differs from the locked row. Carried values are never
+	// re-judged.
 	if input.FieldsPatch != nil {
-		if err := s.revalidateSetFieldsTx(tx, existing.CollectionID, input.FieldsPatch); err != nil {
+		if err := s.revalidateIfSchemaMovedTx(tx, existing.CollectionID, input.ValidatedSchema, input.FieldsPatch); err != nil {
 			return nil, err
 		}
 	} else if input.Fields != nil {
@@ -2820,7 +2821,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		if err != nil {
 			return nil, fmt.Errorf("compare fields: %w", err)
 		}
-		if err := s.revalidateSetFieldsTx(tx, existing.CollectionID, set); err != nil {
+		if err := s.revalidateIfSchemaMovedTx(tx, existing.CollectionID, input.ValidatedSchema, set); err != nil {
 			return nil, err
 		}
 	}
@@ -5439,16 +5440,16 @@ func (s *Store) moveItemWithPreCheckOnce(
 	}
 
 	// BUG-3407: the caller migrated and validated these fields against the
-	// destination schema before this lock. Every key of a moved item is set in
-	// the destination (MigrateFields keeps only values that migrate into a
-	// target field), so the whole blob is checked against the destination's
-	// schema as it stands under the lock.
+	// destination schema before this lock. If that schema has moved since,
+	// the whole blob is re-checked against it as it stands under the lock:
+	// every key of a moved item is set in the destination (MigrateFields keeps
+	// only values that migrate into a target field).
 	{
 		set, err := decodeFieldsBlob(newFieldsJSON)
 		if err != nil {
 			return nil, fmt.Errorf("decode moved fields: %w", err)
 		}
-		if err := s.revalidateSetFieldsTx(tx, targetCollectionID, set); err != nil {
+		if err := s.revalidateIfSchemaMovedTx(tx, targetCollectionID, opt.validatedSchema, set); err != nil {
 			return nil, err
 		}
 	}

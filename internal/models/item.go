@@ -1266,6 +1266,13 @@ type ItemCreate struct {
 	// only a well-formed object gets in. The sibling schema fields a convention
 	// also carries (trigger, scope, priority, …) stay ordinary `fields`.
 	Convention *ItemConventionMetadata `json:"convention,omitempty"`
+	// ValidatedSchema is the collection schema, as the exact bytes read from
+	// its row, that the caller validated these fields against (BUG-3407).
+	// When set, the store compares it with the schema it reads under the
+	// workspace seq lock; if the schema moved in between, the keys this write
+	// sets are re-validated against the new schema and a failure refuses the
+	// write. Nil (internal callers) keeps the store's contract unchanged.
+	ValidatedSchema *string `json:"-"`
 }
 
 // ValidateConventionMetadata normalizes a typed convention member and refuses
@@ -1533,6 +1540,13 @@ type ItemUpdate struct {
 	// body, so a caller cannot supply its own id or attribution.
 	ImplementationNoteToAppend *ItemImplementationNote `json:"-"`
 	DecisionToAppend           *ItemDecisionLogEntry   `json:"-"`
+	// ValidatedSchema is the collection schema, as the exact bytes read from
+	// its row, that the caller validated these fields against (BUG-3407).
+	// When set, the store compares it with the schema it reads under the
+	// workspace seq lock; if the schema moved in between, the keys this write
+	// sets are re-validated against the new schema and a failure refuses the
+	// write. Nil (internal callers) keeps the store's contract unchanged.
+	ValidatedSchema *string `json:"-"`
 }
 
 // ItemImplementationNoteAppend is the request shape of

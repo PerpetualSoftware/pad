@@ -19,19 +19,24 @@ import (
 //
 // Every schema writer takes the same workspace seq lock (UpdateCollection
 // whenever the schema moves, for its relation reindex; the app upgrade in its
-// provisioning transaction), so the schema read HERE, under the item write's
-// own seq lock, is the current one. The write's SET keys are re-validated
-// against it with the partial validator: type and option validity of the keys
-// this write sets, undeclared keys accepted as on every other path, a
-// required key not deletable. Carried values are never re-judged (the
-// TASK-2878 rule), and relation resolution and unique checks stay where they
-// are: neither is the reported race.
+// provisioning transaction), so the schema read under the item write's own
+// seq lock is the current one. The handler passes the exact schema bytes it
+// validated against; the store compares them under the lock and re-validates
+// only when they differ. An always-on re-check was tried first and refused:
+// the store is not a validation layer, and internal flows write below the
+// schema on purpose (lead ruling, day 86).
 
-// revalidateSetFieldsTx validates set against collectionID's schema as it
-// stands in tx. It must be called with the workspace seq lock held. A failure
-// is the ordinary validation error; nothing has been written.
-func (s *Store) revalidateSetFieldsTx(tx *sql.Tx, collectionID string, set map[string]any) error {
-	if len(set) == 0 {
+// revalidateIfSchemaMovedTx is the optimistic schema compare (lead ruling,
+// day 86). validated is the schema, as the exact bytes read from the
+// collection row, that the caller validated against; nil means the caller
+// made no such claim and nothing is checked, which keeps the store's contract
+// for internal flows that write below the schema on purpose. Otherwise the
+// schema is read again here, under the workspace seq lock the caller holds,
+// and compared byte for byte: unchanged, nothing to do; moved, the keys this
+// write sets are re-validated against the new schema and a failure refuses
+// the write before anything is written.
+func (s *Store) revalidateIfSchemaMovedTx(tx *sql.Tx, collectionID string, validated *string, set map[string]any) error {
+	if validated == nil || len(set) == 0 {
 		return nil
 	}
 	var raw string
@@ -42,11 +47,13 @@ func (s *Store) revalidateSetFieldsTx(tx *sql.Tx, collectionID string, set map[s
 	if err != nil {
 		return fmt.Errorf("re-read collection schema under lock: %w", err)
 	}
+	if raw == *validated {
+		return nil
+	}
 	var schema models.CollectionSchema
 	// UnmarshalItemFieldSchema, not json.Unmarshal: it drops reserved
 	// declarations, so system metadata is judged by no schema, as on every
-	// handler path. A grandfathered schema that still declares one must not
-	// refuse the system's own value (codex r2).
+	// handler path.
 	if err := models.UnmarshalItemFieldSchema([]byte(raw), &schema); err != nil {
 		return fmt.Errorf("decode collection schema under lock: %w", err)
 	}
@@ -56,7 +63,7 @@ func (s *Store) revalidateSetFieldsTx(tx *sql.Tx, collectionID string, set map[s
 		cp[k] = v
 	}
 	if err := items.ValidatePartialFields(cp, schema); err != nil {
-		return invalidf("%s", err.Error())
+		return invalidf("the collection's schema changed while this write was in flight: %s", err.Error())
 	}
 	return nil
 }

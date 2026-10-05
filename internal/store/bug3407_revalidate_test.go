@@ -33,6 +33,17 @@ func bug3407Fixture(t *testing.T) (*Store, *models.Workspace, *models.Collection
 	return s, ws, coll, item
 }
 
+// schemaBytes is the collection's schema exactly as stored: what a handler
+// reads and validates against, and passes as ValidatedSchema.
+func schemaBytes(t *testing.T, s *Store, collID string) *string {
+	t.Helper()
+	var raw string
+	if err := s.db.QueryRow(s.q(`SELECT schema FROM collections WHERE id = ?`), collID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	return &raw
+}
+
 func setSchema(t *testing.T, s *Store, collID, schema string) {
 	t.Helper()
 	if _, err := s.UpdateCollection(collID, models.CollectionUpdate{Schema: &schema}); err != nil {
@@ -66,11 +77,12 @@ func storedColor(t *testing.T, s *Store, id string) (any, bool) {
 // write's pre-lock read and before its lock.
 func TestBug3407_APatchValidatedAgainstTheOldSchemaIsRefusedUnderTheLock(t *testing.T) {
 	s, _, coll, item := bug3407Fixture(t)
+	validated := schemaBytes(t, s, coll.ID) // the handler's read, before the lock
 	s.SetAfterItemPreLockReadHookForTesting(func(string) {
 		s.SetAfterItemPreLockReadHookForTesting(nil)
 		setSchema(t, s, coll.ID, bug3407WithColor)
 	})
-	_, err := s.UpdateItem(item.ID, models.ItemUpdate{FieldsPatch: map[string]any{"color": "blue"}})
+	_, err := s.UpdateItem(item.ID, models.ItemUpdate{FieldsPatch: map[string]any{"color": "blue"}, ValidatedSchema: validated})
 	wantValidation(t, err, "patch")
 	if v, ok := storedColor(t, s, item.ID); ok {
 		t.Errorf("color stored as %v; nothing should be written", v)
@@ -79,9 +91,10 @@ func TestBug3407_APatchValidatedAgainstTheOldSchemaIsRefusedUnderTheLock(t *test
 
 func TestBug3407_AFullFieldsWriteSettingAForbiddenValueIsRefused(t *testing.T) {
 	s, _, coll, item := bug3407Fixture(t)
+	validated := schemaBytes(t, s, coll.ID)
 	setSchema(t, s, coll.ID, bug3407WithColor)
 	full := `{"status":"open","color":"blue"}`
-	_, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &full})
+	_, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &full, ValidatedSchema: validated})
 	wantValidation(t, err, "full fields")
 	if _, ok := storedColor(t, s, item.ID); ok {
 		t.Error("color was stored")
@@ -90,8 +103,9 @@ func TestBug3407_AFullFieldsWriteSettingAForbiddenValueIsRefused(t *testing.T) {
 
 func TestBug3407_ACreateValidatedAgainstTheOldSchemaIsRefused(t *testing.T) {
 	s, ws, coll, _ := bug3407Fixture(t)
+	validated := schemaBytes(t, s, coll.ID)
 	setSchema(t, s, coll.ID, bug3407WithColor)
-	_, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Two", Fields: `{"status":"open","color":"blue"}`})
+	_, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Two", Fields: `{"status":"open","color":"blue"}`, ValidatedSchema: validated})
 	wantValidation(t, err, "create")
 	var n int
 	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE collection_id = ? AND title = ?`), coll.ID, "Two").Scan(&n); err != nil {
@@ -109,12 +123,13 @@ func TestBug3407_ACarriedValueIsNotReJudged(t *testing.T) {
 	if _, err := s.db.Exec(s.q(`UPDATE items SET fields = ? WHERE id = ?`), `{"status":"open","color":"blue"}`, item.ID); err != nil {
 		t.Fatal(err)
 	}
+	validated := schemaBytes(t, s, coll.ID)
 	setSchema(t, s, coll.ID, bug3407WithColor)
-	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{FieldsPatch: map[string]any{"status": "done"}}); err != nil {
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{FieldsPatch: map[string]any{"status": "done"}, ValidatedSchema: validated}); err != nil {
 		t.Fatalf("patching another key: %v", err)
 	}
 	full := `{"status":"open","color":"blue"}`
-	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &full}); err != nil {
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &full, ValidatedSchema: validated}); err != nil {
 		t.Fatalf("a full write carrying the value unchanged: %v", err)
 	}
 	if v, _ := storedColor(t, s, item.ID); v != "blue" {
@@ -122,19 +137,21 @@ func TestBug3407_ACarriedValueIsNotReJudged(t *testing.T) {
 	}
 	// Changing it is a SET, and is judged.
 	green := `{"status":"open","color":"green"}`
-	_, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &green})
+	_, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: &green, ValidatedSchema: validated})
 	wantValidation(t, err, "changing the carried value")
 }
 
-// Control: a schema change that does not touch the written key lets the
-// write through, so the refusals above are about the key, not any edit.
-func TestBug3407_AnUnrelatedSchemaEditDoesNotRefuse(t *testing.T) {
+// Control (lead condition 4): the schema moves in the same window, but the
+// written values still satisfy it, and the write lands. The refusals above are
+// about the value, not about any schema edit.
+func TestBug3407_ASchemaChangeTheValuesStillSatisfyDoesNotRefuse(t *testing.T) {
 	s, _, coll, item := bug3407Fixture(t)
+	validated := schemaBytes(t, s, coll.ID)
 	s.SetAfterItemPreLockReadHookForTesting(func(string) {
 		s.SetAfterItemPreLockReadHookForTesting(nil)
 		setSchema(t, s, coll.ID, bug3407Unrelated)
 	})
-	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{FieldsPatch: map[string]any{"color": "blue"}}); err != nil {
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{FieldsPatch: map[string]any{"color": "blue"}, ValidatedSchema: validated}); err != nil {
 		t.Fatalf("an undeclared key under an unrelated edit: %v", err)
 	}
 	if v, _ := storedColor(t, s, item.ID); v != "blue" {
@@ -203,8 +220,9 @@ func TestBug3407_AMoveIntoACollectionWhoseSchemaChangedIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	validated := schemaBytes(t, s, dest.ID)
 	setSchema(t, s, dest.ID, bug3407WithColor)
-	_, err = s.MoveItemWithPreCheck(item.ID, dest.ID, `{"status":"open","color":"blue"}`, nil)
+	_, err = s.MoveItemWithPreCheck(item.ID, dest.ID, `{"status":"open","color":"blue"}`, nil, WithValidatedSchema(*validated))
 	wantValidation(t, err, "move")
 	got, err := s.GetItem(item.ID)
 	if err != nil || got == nil {
@@ -214,7 +232,7 @@ func TestBug3407_AMoveIntoACollectionWhoseSchemaChangedIsRefused(t *testing.T) {
 		t.Error("the item moved")
 	}
 	// Control: the same move with a value the destination allows lands.
-	if _, err := s.MoveItemWithPreCheck(item.ID, dest.ID, `{"status":"open","color":"red"}`, nil); err != nil {
+	if _, err := s.MoveItemWithPreCheck(item.ID, dest.ID, `{"status":"open","color":"red"}`, nil, WithValidatedSchema(*validated)); err != nil {
 		t.Fatalf("a valid move: %v", err)
 	}
 }
@@ -226,10 +244,11 @@ const bug3407Grandfathered = `{"fields":[{"key":"status","label":"Status","type"
 
 func TestBug3407_AGrandfatheredReservedDeclarationRefusesNothing(t *testing.T) {
 	s, ws, coll, item := bug3407Fixture(t)
+	validated := schemaBytes(t, s, coll.ID)
 	setSchema(t, s, coll.ID, bug3407Grandfathered)
 	// Update: an append writes implementation_notes, which the stale
 	// declaration would forbid.
-	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{ImplementationNoteToAppend: &models.ItemImplementationNote{Summary: "did a thing"}}); err != nil {
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{ImplementationNoteToAppend: &models.ItemImplementationNote{Summary: "did a thing"}, ValidatedSchema: validated}); err != nil {
 		t.Fatalf("append under a grandfathered declaration: %v", err)
 	}
 	got, err := s.GetItem(item.ID)
@@ -238,15 +257,41 @@ func TestBug3407_AGrandfatheredReservedDeclarationRefusesNothing(t *testing.T) {
 	}
 	// Move: the notes travel with the item into a destination declaring the
 	// same stale key.
-	dest, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Dest", Slug: "dest", Schema: bug3407Grandfathered})
+	dest, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Dest", Slug: "dest", Schema: bug3407Base})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.MoveItemWithPreCheck(item.ID, dest.ID, got.Fields, nil); err != nil {
+	destValidated := schemaBytes(t, s, dest.ID)
+	setSchema(t, s, dest.ID, bug3407Grandfathered)
+	if _, err := s.MoveItemWithPreCheck(item.ID, dest.ID, got.Fields, nil, WithValidatedSchema(*destValidated)); err != nil {
 		t.Fatalf("move carrying notes: %v", err)
 	}
 	// Create (a copy's path): a blob carrying the notes.
-	if _, err := s.CreateItem(ws.ID, dest.ID, models.ItemCreate{Title: "Copy", Fields: got.Fields}); err != nil {
+	if _, err := s.CreateItem(ws.ID, dest.ID, models.ItemCreate{Title: "Copy", Fields: got.Fields, ValidatedSchema: destValidated}); err != nil {
 		t.Fatalf("create carrying notes: %v", err)
+	}
+}
+
+// The store's contract for callers that make no claim is unchanged: an
+// internal flow writing below the schema on purpose is not refused.
+func TestBug3407_ACallerPassingNoValidatedSchemaIsNotChecked(t *testing.T) {
+	s, ws, coll, item := bug3407Fixture(t)
+	setSchema(t, s, coll.ID, bug3407WithColor)
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{FieldsPatch: map[string]any{"color": "blue"}}); err != nil {
+		t.Fatalf("update without a claim: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Raw", Fields: `{"color":"blue"}`}); err != nil {
+		t.Fatalf("create without a claim: %v", err)
+	}
+}
+
+// Optimistic: when the schema has not moved, the store re-judges nothing,
+// whatever the value. The handler's validation stands.
+func TestBug3407_AnUnmovedSchemaIsNotReJudged(t *testing.T) {
+	s, _, coll, item := bug3407Fixture(t)
+	setSchema(t, s, coll.ID, bug3407WithColor)
+	current := schemaBytes(t, s, coll.ID)
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{FieldsPatch: map[string]any{"color": "blue"}, ValidatedSchema: current}); err != nil {
+		t.Fatalf("unmoved schema: %v", err)
 	}
 }
