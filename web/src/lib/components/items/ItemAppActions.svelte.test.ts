@@ -93,6 +93,18 @@ describe('ItemAppActions', () => {
 		expect(tab.location.replace).not.toHaveBeenCalled();
 	});
 
+	it('an item switch during the mint (the parent remounts) closes the tab and opens nothing', async () => {
+		listMock.mockResolvedValue([action]);
+		let resolve: (v: { url: string }) => void = () => {};
+		mintMock.mockReturnValue(new Promise((r) => (resolve = r)));
+		const { unmount } = render(ItemAppActions, { wsSlug: 'ws', itemSlug: 'TASK-1' });
+		await fireEvent.click(await screen.findByRole('button', { name: /Open ticket/ }));
+		unmount();
+		resolve({ url: 'https://portal.example/ctx?code=abc' });
+		await waitFor(() => expect(tab.close).toHaveBeenCalled());
+		expect(tab.location.replace).not.toHaveBeenCalled();
+	});
+
 	it('with popups blocked outright, falls back to a no-opener open of the URL', async () => {
 		listMock.mockResolvedValue([action]);
 		mintMock.mockResolvedValue({ url: 'https://portal.example/ctx?code=abc' });

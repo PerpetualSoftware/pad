@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import type { ItemAppAction } from '$lib/types';
@@ -20,6 +20,12 @@
 	let actions = $state<ItemAppAction[]>([]);
 	let opening = $state<string | null>(null);
 	let error = $state('');
+	/** The parent remounts this per item: a mint that answers after the pane
+	 *  moved on must not open the old item's app (codex U9d r1). */
+	let destroyed = false;
+	onDestroy(() => {
+		destroyed = true;
+	});
 
 	onMount(async () => {
 		const asked = authStore.identityEpoch;
@@ -51,13 +57,16 @@
 		error = '';
 		// Open the tab NOW, inside the click: a window opened after an await
 		// is a popup the browser blocks. Cut its opener before anything loads,
-		// then send it to the URL once it is minted.
+		// then send it to the URL once it is minted. The navigation's referrer
+		// follows Pad's own Referrer-Policy (strict-origin-when-cross-origin),
+		// so the app learns Pad's origin, which it is installed on, and never
+		// the item's URL.
 		const tab = window.open('', '_blank');
 		if (tab) tab.opener = null;
 		opening = keyOf(a);
 		try {
 			const { url } = await api.items.mintAppAction(wsSlug, itemSlug, a.install_id, a.action_key);
-			if (authStore.identityEpoch !== asked) {
+			if (authStore.identityEpoch !== asked || destroyed) {
 				tab?.close();
 				return;
 			}
@@ -77,7 +86,7 @@
 			// Every refusal is the same 404 by design (U11): say only that it
 			// did not open.
 			tab?.close();
-			if (authStore.identityEpoch === asked) error = `Couldn't open ${a.app_title}.`;
+			if (authStore.identityEpoch === asked && !destroyed) error = `Couldn't open ${a.app_title}.`;
 		} finally {
 			if (authStore.identityEpoch === asked) opening = null;
 		}
