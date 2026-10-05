@@ -38,7 +38,7 @@
 		},
 		rotate: {
 			title: 'Rotate credentials',
-			body: "Replaces the app's credentials. Every token it holds is revoked and you get a new install code to give it. Until the app redeems that code, it cannot reach this workspace.",
+			body: "Replaces the app's credentials. Every token it holds is revoked and you get a new install code to give it. Until the app redeems that code, it cannot reach this workspace and its webhook waits.",
 			confirm: 'Rotate',
 			danger: true
 		},
