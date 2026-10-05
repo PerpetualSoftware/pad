@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { api, PadApiError } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import Button from '$lib/components/common/Button.svelte';
@@ -27,6 +28,9 @@
 	let preview = $state<AppInstallPreview | null>(null);
 	let code = $state<AppInstallCode | null>(null);
 	let installedName = $state('');
+	let urlInput: HTMLInputElement | undefined = $state();
+
+	onMount(() => urlInput?.focus());
 
 	function fail(e: unknown) {
 		if (e instanceof PadApiError) {
@@ -119,6 +123,7 @@
 			<div class="row">
 				<input
 					id="app-base-url"
+					bind:this={urlInput}
 					type="url"
 					placeholder="https://portal.example.com"
 					bind:value={baseUrl}

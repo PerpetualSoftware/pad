@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount, tick } from 'svelte';
 	import { api, PadApiError } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import Button from '$lib/components/common/Button.svelte';
@@ -61,6 +62,18 @@
 	let busy = $state(false);
 	let error = $state('');
 	let code = $state<AppInstallCode | null>(null);
+	let heading: HTMLHeadingElement | undefined = $state();
+	let actionsEl: HTMLDivElement | undefined = $state();
+
+	onMount(() => heading?.focus());
+
+	/** Close the confirm card. Cancel returns focus to the button that opened it. */
+	async function cancelPending() {
+		const opened = pending;
+		pending = null;
+		await tick();
+		actionsEl?.querySelector<HTMLButtonElement>(`[data-action="${opened}"]`)?.focus();
+	}
 
 	// What each state offers. A state between the two phases ("disabling",
 	// "uninstalling") is finished by repeating its own call.
@@ -104,6 +117,10 @@
 			}
 			pending = null;
 			onchanged();
+			// The confirm card (and the button focus was on) is gone; land on
+			// the install's heading unless a code panel took focus itself.
+			await tick();
+			if (!code) heading?.focus();
 		} catch (e) {
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			if (e instanceof PadApiError && e.code === 'deliveries_in_flight') {
@@ -126,7 +143,7 @@
 	<Button variant="ghost" size="sm" onclick={onback}>&larr; All apps</Button>
 
 	<header class="head">
-		<h3>{install.app_name}</h3>
+		<h3 tabindex="-1" bind:this={heading}>{install.app_name}</h3>
 		<Chip size="sm" color={appStateColor(installState)}>{appStateLabel(installState)}</Chip>
 	</header>
 	<dl class="facts">
@@ -174,13 +191,13 @@
 				<Button variant={c.danger ? 'danger-solid' : 'primary'} size="sm" disabled={busy} onclick={() => pending && run(pending)}>
 					{busy ? 'Working…' : label(pending)}
 				</Button>
-				<Button size="sm" disabled={busy} onclick={() => (pending = null)}>Cancel</Button>
+				<Button size="sm" disabled={busy} onclick={cancelPending}>Cancel</Button>
 			</div>
 		</div>
 	{:else if actions.length > 0}
-		<div class="row actions">
+		<div class="row actions" bind:this={actionsEl}>
 			{#each actions as a (a)}
-				<Button size="sm" variant={consequences[a].danger ? 'danger' : 'secondary'} onclick={() => ((pending = a), (error = ''))}>
+				<Button data-action={a} size="sm" variant={consequences[a].danger ? 'danger' : 'secondary'} onclick={() => ((pending = a), (error = ''))}>
 					{label(a)}
 				</Button>
 			{/each}

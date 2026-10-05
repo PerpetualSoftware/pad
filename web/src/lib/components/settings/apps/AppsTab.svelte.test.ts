@@ -211,3 +211,38 @@ describe('Settings → Apps', () => {
 		expect(screen.queryByRole('button', { name: 'Issue code' })).toBeNull();
 	});
 });
+
+describe('Settings → Apps focus (codex r2)', () => {
+	it('after install, focus lands on the code panel heading', async () => {
+		listMock.mockResolvedValue({ available: true, cloud: false, installs: [] });
+		previewMock.mockResolvedValue(previewFixture());
+		confirmMock.mockResolvedValue({ install_id: 'inst-1', install_code: 'C', expires_at: '2026-10-05T12:10:00Z', notice: 'n', items: [] });
+		render(AppsTab, { wsSlug: 'ws-a' });
+		await fireEvent.click(await screen.findByRole('button', { name: 'Install an app' }));
+		expect(document.activeElement).toBe(screen.getByLabelText('App URL'));
+		await fireEvent.input(screen.getByLabelText('App URL'), { target: { value: 'https://portal.example' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+		await fireEvent.click(await screen.findByRole('button', { name: 'Install Support Portal' }));
+		await waitFor(() => expect(document.activeElement?.textContent).toBe('Give this code to Support Portal'));
+	});
+
+	it('a completed action focuses the install heading; cancel returns to its button; back returns to the card', async () => {
+		listMock.mockResolvedValue({ available: true, cloud: false, installs: [portal] });
+		lifecycleMock.mockResolvedValue({ install_id: 'inst-1', state: 'active' });
+		render(AppsTab, { wsSlug: 'ws-a' });
+		await fireEvent.click(await screen.findByRole('button', { name: /Support Portal/ }));
+		const heading = screen.getByRole('heading', { name: 'Support Portal' });
+		expect(document.activeElement).toBe(heading);
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Uninstall' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Uninstall' })));
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Support Portal' })));
+
+		await fireEvent.click(screen.getByRole('button', { name: /All apps/ }));
+		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: /Support Portal/ })));
+	});
+});

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import type { AppInstallCode } from '$lib/types';
@@ -17,6 +18,11 @@
 	let { code, appName, ondone }: Props = $props();
 
 	let copied = $state(false);
+	let heading: HTMLHeadingElement | undefined = $state();
+
+	// The step that showed this panel removed the control the owner was on:
+	// move focus here so keyboard and screen-reader users land on the code.
+	onMount(() => heading?.focus());
 
 	async function copy() {
 		copied = await copyToClipboard(code.install_code);
@@ -29,7 +35,7 @@
 </script>
 
 <div class="code-panel" role="region" aria-label="Install code for {appName}">
-	<h3>Give this code to {appName}</h3>
+	<h3 tabindex="-1" bind:this={heading}>Give this code to {appName}</h3>
 	<p class="notice">{code.notice}</p>
 	<div class="code-row">
 		<code class="code" data-testid="app-install-code">{code.install_code}</code>

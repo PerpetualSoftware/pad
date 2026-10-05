@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
@@ -23,6 +23,15 @@
 	let loadError = $state('');
 	let installing = $state(false);
 	let selectedId = $state<string | null>(null);
+	let root: HTMLDivElement | undefined = $state();
+
+	/** Leave the detail and return focus to the card the owner opened. */
+	async function back() {
+		const was = selectedId;
+		selectedId = null;
+		await tick();
+		root?.querySelector<HTMLButtonElement>(`[data-install="${was}"]`)?.focus();
+	}
 
 	// Which (identity, workspace) the loaded list describes; a load that
 	// answers for another is dropped.
@@ -52,7 +61,7 @@
 	let selected = $derived(list?.installs.find((i) => i.install_id === selectedId) ?? null);
 </script>
 
-<div class="apps-tab">
+<div class="apps-tab" bind:this={root}>
 	{#if loadError}
 		<p class="error" role="alert">{loadError}</p>
 		<Button size="sm" onclick={load}>Try again</Button>
@@ -73,7 +82,7 @@
 	{:else if installing}
 		<AppInstallFlow {wsSlug} oninstalled={load} onclose={() => (installing = false)} />
 	{:else if selected}
-		<AppInstallDetail {wsSlug} install={selected} onchanged={load} onback={() => (selectedId = null)} />
+		<AppInstallDetail {wsSlug} install={selected} onchanged={load} onback={back} />
 	{:else}
 		<p class="hint">
 			Apps connect other tools to this workspace. Each one gets its own collections and acts as its own member, and
@@ -85,7 +94,7 @@
 			<ul class="list">
 				{#each live as app (app.install_id)}
 					<li>
-						<button class="card" onclick={() => (selectedId = app.install_id)}>
+						<button class="card" data-install={app.install_id} onclick={() => (selectedId = app.install_id)}>
 							<span class="name">{app.app_name}</span>
 							<Chip size="sm" color={appStateColor(app.state)}>{appStateLabel(app.state)}</Chip>
 							<span class="origin">{app.origin}</span>
