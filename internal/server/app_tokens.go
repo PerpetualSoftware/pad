@@ -221,13 +221,26 @@ func (s *Server) introspectAppToken(ctx context.Context, token string) (*AppToke
 // (fosite.AccessTokenFromRequest) first, and only without one, the Basic
 // credentials with the client id percent-decoded.
 func (s *Server) introspectionCallerIsInstall(r *http.Request) bool {
+	id := s.introspectionCallerClientID(r)
+	if id == "" {
+		return false
+	}
+	c, err := s.store.GetOAuthClient(id)
+	return err == nil && c.IsInstallClient()
+}
+
+// introspectionCallerClientID is the client a public /oauth/introspect
+// request authenticates as, read as fosite's NewIntrospectionRequest reads
+// it: the client of a bearer access token (header, form or query) first,
+// and only without one, the Basic or form client id. "" when it cannot be
+// read; fosite then refuses the request on its own terms.
+func (s *Server) introspectionCallerClientID(r *http.Request) string {
 	if bearer := fosite.AccessTokenFromRequest(r); bearer != "" {
 		ar, _, err := s.oauthServer.IntrospectToken(r.Context(), bearer)
-		if err != nil || ar == nil {
-			return false
+		if err != nil || ar == nil || ar.GetClient() == nil {
+			return ""
 		}
-		c, cerr := s.store.GetOAuthClient(ar.GetClient().GetID())
-		return cerr == nil && c.IsInstallClient()
+		return ar.GetClient().GetID()
 	}
-	return s.installClientFor(r) != nil
+	return requestClientID(r)
 }

@@ -469,9 +469,10 @@ func TestEveryRequestHandoffIsClassified(t *testing.T) {
 		"handlers_oauth.go::Server.handleOAuthRevoke::github.com/ory/fosite.OAuth2Provider.NewRevocationRequest":         1,
 		"handlers_oauth.go::Server.handleOAuthIntrospect::github.com/ory/fosite.OAuth2Provider.NewIntrospectionRequest":  1,
 		// TASK-3394: fosite's own bearer extraction (header, then the form's
-		// access_token, parsing multipart), so the install-caller refusal
-		// reads the caller exactly as NewIntrospectionRequest will.
-		"app_tokens.go::Server.introspectionCallerIsInstall::github.com/ory/fosite.AccessTokenFromRequest": 1,
+		// access_token, parsing multipart), so the caller is read exactly as
+		// NewIntrospectionRequest will. Shared since BUG-3398 by the
+		// install-caller refusal and the token-ownership check.
+		"app_tokens.go::Server.introspectionCallerClientID::github.com/ory/fosite.AccessTokenFromRequest": 1,
 	}
 
 	handoffs := collectRequestHandoffs(t, ".")
