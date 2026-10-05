@@ -44,10 +44,33 @@ import {
 const PANE_FOLLOW_SETTLE_MS = 400;
 
 /**
- * Assert the collection list's cursor MOVES, without depending on which
- * direction is available: the focused row can be the last of its group, where
- * `j` legitimately does nothing. Used for the before and after legs of the
- * arbitration test, where the claim is "navigation is live", not "j moves down".
+ * How long one press gets to show that it moved the cursor before the step
+ * concludes it did not. Only the FIRST step can legitimately not move (its row
+ * can be the last of its group, where `j` does nothing); every later step has a
+ * named expectation and polls for it with the default timeout.
+ */
+const FIRST_STEP_WINDOW_MS = 2000;
+
+/**
+ * Assert the collection list's cursor MOVES, one key at a time, each step with
+ * its own expectation: the first key must move the cursor off its start card,
+ * and the opposite key must bring it back to that card, by name. Used for the
+ * before and after legs of the arbitration test, where the claim is
+ * "navigation is live", not "j moves down".
+ *
+ * BUG-3204. The earlier shape read the card ONCE, immediately after `j`, and
+ * pressed `k` whenever that read still showed the start card. A `j` whose
+ * update landed just after the read then moved the cursor, the `k` moved it
+ * back, and a start-vs-end comparison failed with every guard reading clear
+ * (PR #1623's occurrence: the card recorded before `k` was already the one `j`
+ * moved to). Now every step polls for its own outcome, so a slow press is
+ * waited for rather than raced, a dead list still fails at the step that did
+ * not move, and a round trip cannot pass by netting to zero, because each leg
+ * is asserted on its own.
+ *
+ * Direction is still not assumed. If `j` does not move the cursor within
+ * FIRST_STEP_WINDOW_MS (the end of a group), the order flips: `k` must move it,
+ * then `j` must bring it back.
  */
 async function expectCursorMoves(
 	page: Page,
@@ -55,25 +78,59 @@ async function expectCursorMoves(
 	message: string
 ): Promise<void> {
 	// Each press records what the route's j/k guard reads at that moment, so a
-	// stuck cursor names which guard dropped it (BUG-3204: seen once in CI, with
-	// no trace kept, and not reproducible locally).
+	// stuck cursor names which guard dropped it.
 	const presses: { key: string; state: NavGuardState }[] = [];
-	const before = await focusedCard();
-	presses.push({ key: 'j', state: await navGuardState(page) });
-	await page.keyboard.press('j');
-	if ((await focusedCard()) === before) {
-		await page.waitForTimeout(PANE_FOLLOW_SETTLE_MS);
-		presses.push({ key: 'k', state: await navGuardState(page) });
-		await page.keyboard.press('k');
-	}
-	try {
-		await expect.poll(focusedCard, { message }).not.toBe(before);
-	} catch (err) {
+	const press = async (key: string) => {
+		presses.push({ key, state: await navGuardState(page) });
+		await page.keyboard.press(key);
+	};
+	const fail = async (err: unknown): Promise<never> => {
 		const after = await navGuardState(page);
 		throw new Error(
 			`${(err as Error).message}\nBUG-3204 guard state per press: ${JSON.stringify(presses)}\n` +
 				`after the poll: ${JSON.stringify(after)}`
 		);
+	};
+
+	const start = await focusedCard();
+	let [away, back] = ['j', 'k'];
+	await press('j');
+	const jMoved = await expect
+		.poll(focusedCard, { timeout: FIRST_STEP_WINDOW_MS })
+		.not.toBe(start)
+		.then(
+			() => true,
+			() => false
+		);
+	if (!jMoved) {
+		// `j` at the end of a group. Settle so a late `j` cannot land after `k`,
+		// then re-read: if it did land, the order stays j-then-k after all.
+		await page.waitForTimeout(PANE_FOLLOW_SETTLE_MS);
+		if ((await focusedCard()) === start) {
+			[away, back] = ['k', 'j'];
+			await press('k');
+		}
+	}
+	try {
+		await expect
+			.poll(focusedCard, { message: `${message}: ${away} must move the cursor off "${start}"` })
+			.not.toBe(start);
+	} catch (err) {
+		await fail(err);
+	}
+	const moved = await focusedCard();
+	// The pane follows the cursor on a debounce; let it land so the return
+	// press is a separate press to the app too.
+	await page.waitForTimeout(PANE_FOLLOW_SETTLE_MS);
+	await press(back);
+	try {
+		await expect
+			.poll(focusedCard, {
+				message: `${message}: ${back} must move the cursor from "${moved}" back to "${start}"`
+			})
+			.toBe(start);
+	} catch (err) {
+		await fail(err);
 	}
 }
 
