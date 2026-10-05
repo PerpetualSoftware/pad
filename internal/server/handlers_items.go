@@ -2237,6 +2237,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 				writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 				return
 			}
+			// BUG-3407 (codex r3): the collab-snapshot path's own arm.
+			if v, ok := store.AsValidationError(err); ok {
+				writeError(w, http.StatusBadRequest, "validation_error", v.Reason)
+				return
+			}
 			// BUG-2804 / codex R2: without this the cascade refusal reaches the
 			// client as a 500 from this path only, while the plain path answers
 			// 413 for the identical store error.

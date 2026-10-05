@@ -295,3 +295,37 @@ func TestBug3407_AnUnmovedSchemaIsNotReJudged(t *testing.T) {
 		t.Fatalf("unmoved schema: %v", err)
 	}
 }
+
+// codex r3: an UpdateCollection that supplies a schema takes the workspace
+// seq lock even when the bytes look unchanged against its pre-transaction
+// read, because whether they moved is decided only under the locks. Here
+// the bytes really are unchanged, and the update still waits for a held seq
+// lock. Discriminates on Postgres; on SQLite every writer is serialized.
+func TestBug3407_ASuppliedSchemaTakesTheSeqLockEvenWhenItLooksUnchanged(t *testing.T) {
+	f := newFenceFixture(t)
+	ftx, err := f.s.BeginFenced(context.Background(), f.spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ftx.LockWorkspaceSeq(); err != nil {
+		t.Fatal(err)
+	}
+	same := *schemaBytes(t, f.s, f.companion.ID)
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.s.UpdateCollection(f.companion.ID, models.CollectionUpdate{Schema: &same})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		_ = ftx.Rollback()
+		t.Fatalf("a supplied schema did not wait for the seq lock (err=%v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := ftx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("schema update after release: %v", err)
+	}
+}

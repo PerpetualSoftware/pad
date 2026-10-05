@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // BUG-3407 census (lead ruling, day 86, condition 3). Every HTTP path that
@@ -199,5 +201,20 @@ func TestBug3407_AnHTTPPatchRacingASchemaChangeIsRefused(t *testing.T) {
 	allows := `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open"},{"key":"color","label":"Color","type":"select","options":["red","blue"]}]}`
 	if rr := race(allows); rr.Code != http.StatusOK {
 		t.Errorf("racing a schema the value satisfies: %d %s, want 200", rr.Code, rr.Body.String())
+	}
+}
+
+// codex r3: the collaborative-content orderings answer through
+// writeTypedItemRefusal, which needs its own 400 arm for the refusal.
+func TestBug3407_TheContentRouteRefusalHelperAnswersTheSchemaRefusalWith400(t *testing.T) {
+	srv := testServer(t)
+	item := &models.Item{ID: "item-1", Ref: "TASK-1", Slug: "task-1"}
+	rec := httptest.NewRecorder()
+	err := fmt.Errorf("update item: %w", &store.ValidationError{Reason: "the collection's schema changed while this write was in flight: x"})
+	if !srv.writeTypedItemRefusal(rec, item, err, false) {
+		t.Fatal("not recognised as a refusal")
+	}
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "validation_error") || !strings.Contains(rec.Body.String(), "schema changed") {
+		t.Errorf("got %d %s; want 400 validation_error with the reason", rec.Code, rec.Body.String())
 	}
 }

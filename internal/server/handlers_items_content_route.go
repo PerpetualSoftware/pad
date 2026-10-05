@@ -484,6 +484,13 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 	if writeStoredStateUnreadable(w, err) {
 		return true
 	}
+	// BUG-3407: fields the collection's schema stopped allowing after the
+	// handler validated them, refused under the store's lock (codex r3: the
+	// collaborative-content orderings come here, not to the plain path's arm).
+	if v, ok := store.AsValidationError(err); ok {
+		writeError(w, http.StatusBadRequest, "validation_error", v.Reason)
+		return true
+	}
 	// The FIFTH arm, and the one this function was built without — found by codex
 	// round 5 as a REGRESSION, not a gap. The ordinary path maps a UNIQUE-constraint
 	// race to a 409 (a concurrent update that passes checkUniqueFields and then hits
