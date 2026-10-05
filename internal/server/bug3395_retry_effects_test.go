@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -55,6 +56,13 @@ func TestBug3395_CallerEffectsRunOnceAcrossARetry(t *testing.T) {
 			}
 			if n := count(f.accessSince(since), f.line("deleted", "member@example.com")); n != 1 {
 				t.Errorf("the member was told %d times, want once", n)
+			}
+			var audits int
+			if err := f.srv.store.DB().QueryRow(`SELECT COUNT(*) FROM activities WHERE action = '` + models.ActionAccountDeleted + `'`).Scan(&audits); err != nil {
+				t.Fatal(err)
+			}
+			if audits != 1 {
+				t.Errorf("%d account_deleted audit events, want one", audits)
 			}
 		})
 
