@@ -56,4 +56,12 @@ func TestCollectionSourceSurvivesExportImport(t *testing.T) {
 	if has, _ := s.WorkspaceHasAgentActivity(dest2.ID, nil, nil); has {
 		t.Error("an unrecognised bundle source counted as agent activity")
 	}
+	// And it is STORED as '' — the column holds only values the server writes.
+	var stored string
+	if err := s.db.QueryRow(s.q(`SELECT source FROM collections WHERE workspace_id = ? AND name = ?`), dest2.ID, "Agent Made").Scan(&stored); err != nil {
+		t.Fatalf("read imported source: %v", err)
+	}
+	if stored != "" {
+		t.Errorf("an unrecognised bundle source was stored as %q, want ''", stored)
+	}
 }
