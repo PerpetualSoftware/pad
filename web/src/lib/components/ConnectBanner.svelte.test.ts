@@ -120,4 +120,20 @@ describe('ConnectBanner follows agent activity live (BUG-3447)', () => {
 		expect(mocks.gets, 'the event during the first check was dropped').toBe(2);
 		expect(banner()).toBeNull();
 	});
+
+	it('a quiet re-check that overtakes the first check and fails leaves the banner showing (codex r3)', async () => {
+		let firstAnswer!: (v: { has_agent_activity: boolean }) => void;
+		const failed = Promise.reject(new Error('offline'));
+		failed.catch(() => {}); // consumed later by the mock; not unhandled
+		mocks.answers = [new Promise((r) => (firstAnswer = r)), failed];
+		render(ConnectBanner, { props: { wsSlug: 'ws', serverUrl: 'http://x' } });
+		await flush();
+		fire({ type: 'item_created', item_id: 'i1' });
+		await vi.advanceTimersByTimeAsync(2000);
+		await flush();
+		expect(mocks.gets, 'the quiet re-check went out while the first check was pending').toBe(2);
+		firstAnswer({ has_agent_activity: false }); // superseded by the re-check
+		await flush();
+		expect(banner(), 'unknown after a failed re-check hid the banner for good').not.toBeNull();
+	});
 });
