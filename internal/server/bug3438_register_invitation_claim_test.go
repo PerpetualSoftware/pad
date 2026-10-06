@@ -305,3 +305,64 @@ func TestRegisterWithCode_ReportsTheRoleTheAccountHolds(t *testing.T) {
 		}
 	})
 }
+
+// Codex r9: a claim the store refused BEFORE its commit is definitely not
+// landed, so a failing membership read must not turn the open-registration
+// outcome (account kept, told) into a 500 that leaves the account behind with
+// no session and a retry that meets the duplicate-email 409.
+func TestRegisterWithCode_OpenRegistrationRefusedClaimNeedsNoReconcileRead(t *testing.T) {
+	srv, mails, adminTok, ws := newProofFixture(t)
+	_, code, _ := inviteByEmail(t, srv, mails, adminTok, ws.Slug, "unread@example.com")
+	admin, err := srv.store.GetUserByEmail("admin@pad.test")
+	if err != nil || admin == nil {
+		t.Fatalf("admin lookup: %v", err)
+	}
+	srv.registerInvitationPreClaimHook = func(string) {
+		members, err := srv.store.ListWorkspaceMembers(ws.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.store.SetUserPlanOverrides(admin.ID, fmt.Sprintf(`{"members_per_workspace":%d}`, len(members))); err != nil {
+			t.Fatalf("SetUserPlanOverrides: %v", err)
+		}
+	}
+	srv.membershipCheck = func(string, string) (*models.WorkspaceMember, error) {
+		return nil, fmt.Errorf("injected: membership read failed")
+	}
+	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+		"email": "unread@example.com", "name": "Invitee",
+		"password": "correct-horse-battery-staple", "invitation_code": code,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("open-registration signup refused before commit, with an unreadable membership: %d %s, want 201", rr.Code, rr.Body.String())
+	}
+	var body notJoinedBody
+	parseJSON(t, rr, &body)
+	if body.NotJoined == nil || body.NotJoined.Code != "invitation_not_applied" || body.Token == "" {
+		t.Errorf("invitation_not_joined = %+v, token set = %v; want invitation_not_applied and a session", body.NotJoined, body.Token != "")
+	}
+}
+
+// Codex r9: when the invitation was the admission and the account rollback
+// FAILS, the signup must not answer as if it had been rolled back: the
+// account still holds the email.
+func TestRegisterWithCode_FailedRollbackIsNotReportedAsARollback(t *testing.T) {
+	f := newAccessFixture(t, store.DriverSQLite)
+	inv := f.invite("stuck@example.com", "editor")
+	f.srv.registerInvitationPreClaimHook = func(invID string) {
+		if err := f.srv.store.DeleteInvitation(f.wsID, invID); err != nil {
+			t.Fatalf("DeleteInvitation: %v", err)
+		}
+	}
+	f.srv.signupRollbackDelete = func(string) error { return fmt.Errorf("injected: rollback failed") }
+	rr := doRequest(f.srv, "POST", "/api/v1/auth/register", map[string]string{
+		"email": "stuck@example.com", "name": "Invitee",
+		"password": "correct-horse-battery-staple", "invitation_code": inv.Code,
+	})
+	if rr.Code == http.StatusNotFound || rr.Code == http.StatusCreated {
+		t.Fatalf("a failed rollback answered %d %s; want a server error, not the rolled-back 404 nor a success", rr.Code, rr.Body.String())
+	}
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status %d, want 500", rr.Code)
+	}
+}

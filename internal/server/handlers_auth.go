@@ -620,7 +620,11 @@ type invitationNotJoined struct {
 // and a kick for an account that survived only makes its connections
 // re-check and keep going (codex r7).
 func (s *Server) rollbackSignup(userID string) error {
-	err := s.store.DeleteAccountAtomic(userID)
+	del := s.store.DeleteAccountAtomic
+	if s.signupRollbackDelete != nil {
+		del = s.signupRollbackDelete
+	}
+	err := del(userID)
 	s.invalidateUserAccess(userID)
 	return err
 }

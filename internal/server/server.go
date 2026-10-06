@@ -465,6 +465,11 @@ type Server struct {
 	// window.
 	registerInvitationPreClaimHook func(invitationID string)
 
+	// signupRollbackDelete, when non-nil, replaces DeleteAccountAtomic in
+	// rollbackSignup (BUG-3438). Test seam only: it lets a test make the
+	// rollback fail.
+	signupRollbackDelete func(userID string) error
+
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
 	// the server can drain them before shutdown / test cleanup. Without
