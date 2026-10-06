@@ -5384,6 +5384,7 @@ func (s *Store) PopulateHasChildren(items []models.Item) {
 	query := fmt.Sprintf(`
 		SELECT DISTINCT il.target_id FROM item_links il
 		JOIN items child ON child.id = il.source_id AND child.deleted_at IS NULL
+		JOIN collections cc ON cc.id = child.collection_id AND cc.deleted_at IS NULL
 		WHERE il.link_type IN (%s) AND il.target_id IN (%s)
 	`, childLinkTypeSQL(), strings.Join(placeholders, ","))
 
