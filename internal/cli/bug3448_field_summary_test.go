@@ -29,3 +29,15 @@ func TestFormatFieldSummaryKeepsLargeNumbers(t *testing.T) {
 		t.Errorf("summary %q lost the number's digits", got)
 	}
 }
+
+// Codex r2: the agent projection (`item show --agent`, the MCP item get)
+// re-marshalled the fields through a float64 and rounded a number above 2^53.
+func TestAgentItemFieldsKeepsLargeNumbers(t *testing.T) {
+	got := string(agentItemFields([]byte(`{"budget":9007199254740993,"decision_log":[]}`)))
+	if !strings.Contains(got, "9007199254740993") {
+		t.Errorf("agent fields %s lost the number's digits", got)
+	}
+	if strings.Contains(got, "decision_log") {
+		t.Errorf("control: the hydrated key should still be dropped: %s", got)
+	}
+}
