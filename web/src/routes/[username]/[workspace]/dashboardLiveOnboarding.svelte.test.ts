@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
 	needsOnboarding: true,
 }));
 
+// Reactive, so a leg can switch workspaces under the mounted page.
+vi.mock('$app/state', async () => ({ page: (await import('../../../test/mocks/reactivePage.svelte')).page }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		identityEpoch: 0,
@@ -166,5 +168,18 @@ describe('the launchpad follows the agent live (BUG-3447)', () => {
 		const r = await mount();
 		r.unmount();
 		expect(mocks.unsubscribed).toBeGreaterThan(0);
+	});
+
+	it('a debounce armed in one workspace does not fire a load into the next (codex r1)', async () => {
+		await mount();
+		fire({ type: 'item_created', item_id: 'i1' });
+		page.params = { username: 'dave', workspace: 'other' };
+		page.url = new URL('http://localhost/dave/other');
+		await flush();
+		const afterSwitch = dashboardGets();
+		expect(afterSwitch, "control: the switch loads the next workspace's board").toBe(2);
+		await vi.advanceTimersByTimeAsync(2000);
+		await flush();
+		expect(dashboardGets(), 'the stale debounce fired a load into the next workspace').toBe(afterSwitch);
 	});
 });

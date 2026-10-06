@@ -92,4 +92,18 @@ describe('ConnectBanner follows agent activity live (BUG-3447)', () => {
 		await flush();
 		expect(mocks.gets).toBe(1);
 	});
+
+	it('a re-check armed in one workspace does not fire into the next (codex r1)', async () => {
+		mocks.answers = [{ has_agent_activity: false }, { has_agent_activity: false }];
+		const r = render(ConnectBanner, { props: { wsSlug: 'ws', serverUrl: 'http://x' } });
+		await flush();
+		fire({ type: 'item_created', item_id: 'i1' });
+		await r.rerender({ wsSlug: 'other', serverUrl: 'http://x' });
+		await flush();
+		expect(mocks.gets, "control: the switch re-checks the next workspace").toBe(2);
+		await vi.advanceTimersByTimeAsync(2000);
+		await flush();
+		expect(mocks.gets, 'the stale re-check fired into the next workspace').toBe(2);
+		expect(banner(), "the next workspace's own answer stands").not.toBeNull();
+	});
 });
