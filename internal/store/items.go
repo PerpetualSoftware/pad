@@ -1377,7 +1377,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	// parents upstream, but raw-UUID input bypasses that path. See BUG-734 /
 	// Codex review on PR #259.
 	if params.ParentLinkID != "" {
-		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL JOIN collections pc ON pc.id = p.collection_id AND pc.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
 	}
 
@@ -2105,7 +2105,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	// `parent=<UUID>&search=<q>` doesn't silently drop the parent constraint
 	// (and, by extension, the soft-deleted-parent rejection from BUG-734).
 	if params.ParentLinkID != "" {
-		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL JOIN collections pc ON pc.id = p.collection_id AND pc.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
 	}
 
@@ -3873,7 +3873,8 @@ func (s *Store) getItemLinkQ(q Queryer, id string) (*models.ItemLink, error) {
 }
 
 // GetItemLinks returns links where the given item is either source or target.
-// Links pointing to or from soft-deleted items are filtered out so callers (e.g.
+// Links pointing to or from soft-deleted items, or items in a soft-deleted
+// collection (BUG-3434), are filtered out so callers (e.g.
 // `pad item related`, the lineage panel, the dashboard enrichment pass) don't
 // surface dangling endpoints. The link rows themselves are preserved on disk —
 // restoring a soft-deleted item resurrects its relationships automatically. See
@@ -3889,8 +3890,8 @@ func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 		FROM item_links l
 		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
 		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
-		JOIN collections sc ON sc.id = s.collection_id
-		JOIN collections tc ON tc.id = t.collection_id
+		JOIN collections sc ON sc.id = s.collection_id AND sc.deleted_at IS NULL
+		JOIN collections tc ON tc.id = t.collection_id AND tc.deleted_at IS NULL
 		WHERE l.source_id = ? OR l.target_id = ?
 		ORDER BY l.created_at DESC
 	`, srcStatusExpr, tgtStatusExpr)), itemID, itemID)
@@ -4444,7 +4445,8 @@ func (s *Store) itemWorkspaceIDTx(tx *sql.Tx, itemID string) (string, error) {
 }
 
 // GetParentForItem returns the parent link for an item, or nil if it has no parent.
-// A parent link pointing to a soft-deleted item is treated as no parent — the
+// A parent link pointing to a soft-deleted item, or to an item in a
+// soft-deleted collection (BUG-3434), is treated as no parent — the
 // breadcrumb / lineage UI shouldn't show a deleted ancestor. See BUG-734.
 func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 	sStatusExpr := s.dialect.JSONFieldText("s.fields", "status")
@@ -4457,8 +4459,8 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 		FROM item_links l
 		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
 		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
-		JOIN collections sc ON sc.id = s.collection_id
-		JOIN collections tc ON tc.id = t.collection_id
+		JOIN collections sc ON sc.id = s.collection_id AND sc.deleted_at IS NULL
+		JOIN collections tc ON tc.id = t.collection_id AND tc.deleted_at IS NULL
 		WHERE l.source_id = ? AND l.link_type IN (%s)
 	`, sStatusExpr, tStatusExpr, childLinkTypeSQL())), itemID)
 	if err != nil {
@@ -4515,6 +4517,8 @@ func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
 		SELECT il.source_id, il.target_id FROM item_links il
 		JOIN items s ON s.id = il.source_id AND s.deleted_at IS NULL
 		JOIN items t ON t.id = il.target_id AND t.deleted_at IS NULL
+		JOIN collections sc ON sc.id = s.collection_id AND sc.deleted_at IS NULL
+		JOIN collections tc ON tc.id = t.collection_id AND tc.deleted_at IS NULL
 		WHERE il.workspace_id = ? AND il.link_type IN (%s)
 	`, childLinkTypeSQL())), workspaceID)
 	if err != nil {
@@ -4569,7 +4573,7 @@ func (s *Store) GetItemLineageByIDs(ids []string) (map[string]LineageRef, error)
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT i.id, i.title, i.slug, i.item_number, i.collection_id, c.slug, c.prefix
 		FROM items i
-		JOIN collections c ON c.id = i.collection_id
+		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
 		WHERE i.id IN (%s) AND i.deleted_at IS NULL
 	`, strings.Join(placeholders, ","))), args...)
 	if err != nil {
@@ -5343,6 +5347,8 @@ func (s *Store) GetBlocksEdges(workspaceID string) ([]BlocksEdge, error) {
 		FROM item_links l
 		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
 		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
+		JOIN collections sc ON sc.id = s.collection_id AND sc.deleted_at IS NULL
+		JOIN collections tc ON tc.id = t.collection_id AND tc.deleted_at IS NULL
 		WHERE l.workspace_id = ? AND l.link_type = 'blocks'
 		ORDER BY l.created_at DESC
 	`), workspaceID)
