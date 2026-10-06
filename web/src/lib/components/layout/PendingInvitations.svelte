@@ -7,8 +7,8 @@
 	// Accepting lands you in the workspace on an EPHEMERAL tab (Q5): an
 	// invitation is somewhere you were sent, not somewhere you chose to keep.
 	//
-	// Renders NOTHING when the list is empty or the fetch failed, like
-	// RecentlyDeletedWorkspaces beside it.
+	// Renders NOTHING when the list is empty, like RecentlyDeletedWorkspaces
+	// beside it. A failed fetch keeps the last list (the badge's too).
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -27,32 +27,26 @@
 
 	let { active, onaccepted }: Props = $props();
 
-	let invitations = $state<MyInvitation[]>([]);
+	// The rows ARE the badge store's list (codex r8): one list, written in one
+	// order, so the rows and the "+" count cannot disagree.
+	const invitations = $derived(pendingInvitations.invitations);
 	// Id being accepted: a double-click cannot fire two accepts.
 	let acceptingId = $state<string | null>(null);
 	// Id being declined (BUG-2136); either action in flight disables both.
 	let decliningId = $state<string | null>(null);
 	const busy = $derived(acceptingId !== null || decliningId !== null);
-	// Orders list responses: an older fetch cannot re-surface an invitation
-	// a newer fetch, an accept or a decline has already dropped.
-	let seq = 0;
-
+	// Fetches into the store under a place in its order taken before the
+	// request is sent, so a newer fetch, accept or decline wins. A failure
+	// keeps the last list.
 	async function load() {
-		const mine = ++seq;
-		// The badge's place in the order, taken before the request is sent.
 		const token = pendingInvitations.reserve();
-		// A response issued for a previous account is not this one's list, nor
-		// its badge count.
+		// A response issued for a previous account is not this one's list.
 		const isSameIdentity = authStore.identityFence();
 		try {
 			const res = await api.members.listMyInvitations();
-			if (mine === seq && isSameIdentity()) {
-				invitations = res.invitations ?? [];
-				// The "+" badge counts what this list shows (BUG-2136 U2).
-				pendingInvitations.set(invitations, token);
-			}
+			if (isSameIdentity()) pendingInvitations.set(res.invitations ?? [], token);
 		} catch {
-			if (mine === seq && isSameIdentity()) invitations = [];
+			// Keep the last list.
 		}
 	}
 
@@ -83,9 +77,6 @@
 				return;
 			}
 			if (!isSameIdentity()) return;
-			// A list fetch issued before the accept must not bring it back.
-			seq++;
-			invitations = invitations.filter((i) => i.id !== inv.id);
 			pendingInvitations.remove(inv.id);
 			toastStore.show(`Joined "${inv.workspace_name}"`, 'success');
 			onaccepted?.();
@@ -112,9 +103,6 @@
 		try {
 			await api.members.declineMyInvitation(inv.id);
 			if (!isSameIdentity()) return;
-			// A list fetch issued before the decline must not bring it back.
-			seq++;
-			invitations = invitations.filter((i) => i.id !== inv.id);
 			pendingInvitations.remove(inv.id);
 			toastStore.show(`Declined the invitation to "${inv.workspace_name}"`, 'success');
 		} catch (err) {
