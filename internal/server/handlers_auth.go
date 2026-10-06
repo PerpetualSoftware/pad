@@ -925,9 +925,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			slog.Info("invitation signup: the invitation was gone at its claim; rolling back the account",
 				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)
 			if derr := s.rollbackSignup(user.ID); derr != nil {
+				// Not rolled back: the account still holds the email, so the
+				// rolled-back 404 would be false (codex r9).
 				slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
 					"account with no workspace access",
 					"user_id", user.ID, "error", derr)
+				writeInternalError(w, derr)
+				return
 			}
 			writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
 			return
@@ -955,7 +959,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			if s.membershipCheck != nil {
 				membershipCheck = s.membershipCheck
 			}
-			member, cerr := membershipCheck(invitation.WorkspaceID, user.ID)
+			// The store returns the held role only with a COMMIT error; a claim
+			// it refused before committing (heldRole empty) is definitely not
+			// landed, so it needs no reconcile read, and a failing read must
+			// not turn it into a 500 (codex r9).
+			var member *models.WorkspaceMember
+			var cerr error
+			refusedBeforeCommit := heldRole == ""
+			if !refusedBeforeCommit {
+				member, cerr = membershipCheck(invitation.WorkspaceID, user.ID)
+			}
 			switch {
 			case cerr != nil:
 				// UNREADABLE — cannot tell an ack-lost success from a genuine
@@ -1020,6 +1033,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 					slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
 						"account with no workspace access",
 						"user_id", user.ID, "error", derr)
+					writeInternalError(w, derr)
+					return
 				}
 				// BUG-3098: a member cap reached after the pre-check is a
 				// refusal the invitee can act on, not a server fault.
