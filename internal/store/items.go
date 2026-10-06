@@ -1558,6 +1558,9 @@ func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]mo
 	if !params.IncludeArchived {
 		query += " AND i.deleted_at IS NULL"
 	}
+	// A soft-deleted collection's rows leave the index; the access epoch
+	// moves when that set changes so warm clients evict them (BUG-3428).
+	query += " AND c.deleted_at IS NULL"
 
 	if params.CollectionSlug != "" {
 		query += " AND c.slug = ?"
@@ -1696,7 +1699,7 @@ func (s *Store) ListItemsChangesSince(workspaceID string, params ItemChangesPara
 		JOIN collections c ON c.id = i.collection_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE i.workspace_id = ? AND i.seq > ?
+		WHERE i.workspace_id = ? AND i.seq > ? AND c.deleted_at IS NULL
 	`
 	args := []interface{}{workspaceID, params.Since}
 
@@ -4968,13 +4971,13 @@ func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
 // `SELECT DISTINCT … FOR UPDATE`. The advisory-lock pattern sidesteps
 // that constraint while still giving us a serialized snapshot.
 func (s *Store) GetChildItemsTx(tx *sql.Tx, parentItemID string) ([]models.Item, error) {
-	// The open-children guard is this function's caller, and it still counts
-	// a child in a soft-deleted collection as open work (BUG-3428 leaves that
-	// write rule to a ruling), so this read keeps those children.
+	// The open-children guard is this function's caller. A child in a
+	// soft-deleted collection does not block closing its parent (BUG-3428,
+	// lead ruling): it is gone from the children list and from progress.
 	if tx == nil {
-		return s.getChildItems(s.db, parentItemID, true)
+		return s.getChildItems(s.db, parentItemID, false)
 	}
-	return s.getChildItems(tx, parentItemID, true)
+	return s.getChildItems(tx, parentItemID, false)
 }
 
 // acquireParentChildrenLocksForUpdate is the in-tx helper UpdateItem

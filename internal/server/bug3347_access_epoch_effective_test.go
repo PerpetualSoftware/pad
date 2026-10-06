@@ -163,10 +163,14 @@ func TestAccessEpoch_TracksTheEffectiveSetForItemGrantCallers(t *testing.T) {
 // send sync_required when the fault starts and again when it clears, with no
 // access change either time.
 func TestSSEAccessEpochAdvance_DegradedSnapshotNeitherAnnouncesNorMovesTheBase(t *testing.T) {
-	clean := sseVisibility{visibleSlugSet: map[string]bool{"kept": true}, visibleCollIDSet: map[string]bool{"c-kept": true}}
+	// c-kept stays a live collection throughout (BUG-3428 phase 2: the epoch
+	// intersects the caller's set with the live set), so the narrowing below
+	// is the caller's access changing, not the workspace's collections.
+	live := []string{"c-kept"}
+	clean := sseVisibility{visibleSlugSet: map[string]bool{"kept": true}, visibleCollIDSet: map[string]bool{"c-kept": true}, liveCollIDs: live}
 	base := clean.accessEpoch()
 
-	narrowed := sseVisibility{visibleSlugSet: map[string]bool{}, visibleCollIDSet: map[string]bool{}}
+	narrowed := sseVisibility{visibleSlugSet: map[string]bool{}, visibleCollIDSet: map[string]bool{}, liveCollIDs: live}
 	if next, changed := sseAccessEpochAdvance(base, narrowed); !changed || next == base {
 		t.Fatalf("a clean narrowing must announce and move the base: changed=%v next=%q base=%q", changed, next, base)
 	}

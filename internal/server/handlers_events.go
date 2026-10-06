@@ -756,8 +756,9 @@ func sseEventVisibleFor(vis sseVisibility, sseUserID string, event events.Event)
 // They are separate values on separate wires; they must be one definition.
 func (v sseVisibility) accessEpoch() string {
 	if v.visibleSlugSet == nil {
-		// Mirrors computeAccessEpoch's nil case: no filtering at all.
-		return computeAccessEpoch(nil, nil)
+		// No filtering at all: the "all" sentinel over the live collection
+		// set, as the item doors compute it.
+		return effectiveAccessEpoch(nil, nil, nil, v.liveCollIDs)
 	}
 	collIDs := make([]string, 0, len(v.visibleCollIDSet))
 	for id := range v.visibleCollIDSet {
@@ -773,7 +774,7 @@ func (v sseVisibility) accessEpoch() string {
 	}
 	// Map iteration order is randomized; computeAccessEpoch sorts, which is
 	// what makes this comparable across ticks at all.
-	return effectiveAccessEpoch(collIDs, fullIDs, itemIDs)
+	return effectiveAccessEpoch(collIDs, fullIDs, itemIDs, v.liveCollIDs)
 }
 
 // sseAccessEpochAdvance decides whether a recomputed snapshot announces an
@@ -817,6 +818,9 @@ type sseVisibility struct {
 	// collection half of the set the item doors filter by when the caller
 	// holds item grants, so accessEpoch hashes it then (BUG-3347).
 	fullCollIDSet map[string]bool
+	// liveCollIDs is the workspace's live collection set, which every
+	// caller's epoch fingerprints (BUG-3428 phase 2).
+	liveCollIDs []string
 	// degraded is true when a store read failed while resolving this
 	// snapshot. The filter above is then fail-closed; the epoch is not
 	// compared (sseAccessEpochAdvance).
@@ -840,6 +844,16 @@ type sseVisibility struct {
 // refresh.
 func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVisibility {
 	var v sseVisibility
+
+	// The live collection set every epoch fingerprints (BUG-3428 phase 2).
+	// It filters no event, so a failed read only marks the snapshot
+	// degraded: the tick then neither announces nor moves its base.
+	if live, err := s.store.LiveCollectionIDs(workspaceID); err != nil {
+		slog.Warn("SSE: failed to resolve live collections; epoch not compared this tick", "error", err)
+		v.degraded = true
+	} else {
+		v.liveCollIDs = live
+	}
 
 	// Resolve the current user fresh from the store. A user row that cannot
 	// be read (or is gone) denies every event until a later recompute reads

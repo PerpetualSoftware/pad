@@ -162,11 +162,10 @@ func TestChildrenAndProgress_ExcludeSoftDeletedCollections(t *testing.T) {
 	check("after the delete", false, 1)
 }
 
-// The open-children guard reads children through GetChildItemsTx and is NOT
-// narrowed by BUG-3428: whether an open child in a soft-deleted collection
-// should still block closing its parent is a write-path rule, left for the
-// lead's ruling. This pins the current behaviour so changing it is a decision.
-func TestGetChildItemsTx_StillIncludesSoftDeletedCollections(t *testing.T) {
+// The open-children guard reads children through GetChildItemsTx. Lead ruling
+// (BUG-3428 phase 2): an open child in a soft-deleted collection no longer
+// blocks closing its parent, so this read leaves it out like every other.
+func TestGetChildItemsTx_ExcludesSoftDeletedCollections(t *testing.T) {
 	t.Parallel()
 	w := newBug3425World(t)
 	s := w.s
@@ -185,8 +184,8 @@ func TestGetChildItemsTx_StillIncludesSoftDeletedCollections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChildItemsTx: %v", err)
 	}
-	if !hasItem(kids, w.doomed.ID) {
-		t.Errorf("the guard's child read no longer sees a soft-deleted collection's child; that changes what blocks closing a parent")
+	if hasItem(kids, w.doomed.ID) {
+		t.Errorf("the guard's child read still sees a soft-deleted collection's child, so it still blocks closing the parent")
 	}
 }
 

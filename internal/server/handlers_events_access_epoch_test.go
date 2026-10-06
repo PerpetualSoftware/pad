@@ -75,7 +75,11 @@ func TestSSEVisibilityAccessEpoch_TracksNarrowingAndMatchesTheItemDoors(t *testi
 		if err != nil {
 			t.Fatalf("guestResourceFilter: %v", err)
 		}
-		return effectiveAccessEpoch(visibleIDs, fullCollIDs, grantedItemIDs)
+		live, err := srv.store.LiveCollectionIDs(ws.ID)
+		if err != nil {
+			t.Fatalf("LiveCollectionIDs: %v", err)
+		}
+		return effectiveAccessEpoch(visibleIDs, fullCollIDs, grantedItemIDs, live)
 	}
 
 	if err := srv.store.SetMemberCollectionAccess(ws.ID, user.ID, "specific", []string{kept.ID, revoked.ID}); err != nil {

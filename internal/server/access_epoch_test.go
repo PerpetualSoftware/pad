@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The properties the two item doors depend on. Each case names what a
 // FAILURE would mean for the client, because that is what decides whether
@@ -76,16 +79,30 @@ func TestEffectiveAccessEpoch(t *testing.T) {
 	full := []string{"c-kept"}
 	grants := []string{"i-1"}
 
-	if got, want := effectiveAccessEpoch(nav, full, grants), computeAccessEpoch(full, grants); got != want {
+	if got, want := effectiveAccessEpoch(nav, full, grants, nav), computeAccessEpoch(full, grants); got != want {
 		t.Errorf("with item grants the epoch must hash the full-access set: got %q, want %q", got, want)
 	}
-	if got, want := effectiveAccessEpoch(nav, full, nil), computeAccessEpoch(nav, nil); got != want {
+	if got, want := effectiveAccessEpoch(nav, full, nil, nav), computeAccessEpoch(nav, nil); got != want {
 		t.Errorf("without item grants the epoch must hash the nav set: got %q, want %q", got, want)
 	}
-	if got := effectiveAccessEpoch(nav, nil, grants); got == accessEpochUnrestricted {
+	if got := effectiveAccessEpoch(nav, nil, grants, nav); got == accessEpochUnrestricted {
 		t.Errorf("a caller with item grants and no full-access collections read as unrestricted")
 	}
-	if got, want := effectiveAccessEpoch(nil, nil, nil), accessEpochUnrestricted; got != want {
-		t.Errorf("unrestricted caller: got %q, want %q", got, want)
+	// BUG-3428 phase 2: the live collection set.
+	unrestricted := effectiveAccessEpoch(nil, nil, nil, nav)
+	if !strings.HasPrefix(unrestricted, accessEpochUnrestricted+":") {
+		t.Errorf("unrestricted caller: got %q, want the %q sentinel plus a live-set hash", unrestricted, accessEpochUnrestricted)
+	}
+	if unrestricted == effectiveAccessEpoch(nil, nil, nil, full) {
+		t.Errorf("unrestricted epoch did not move when the live collection set lost a collection")
+	}
+	if unrestricted != effectiveAccessEpoch(nil, nil, nil, []string{"c-deleted", "c-kept"}) {
+		t.Errorf("unrestricted epoch depends on the order of the live set")
+	}
+	if got, want := effectiveAccessEpoch(nav, nil, nil, full), computeAccessEpoch(full, nil); got != want {
+		t.Errorf("a restricted caller's set must be intersected with the live set: got %q, want %q", got, want)
+	}
+	if got := effectiveAccessEpoch([]string{}, nil, nil, nav); got == unrestricted || got == accessEpochUnrestricted {
+		t.Errorf("a caller with an empty visible set read as unrestricted: %q", got)
 	}
 }

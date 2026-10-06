@@ -74,16 +74,42 @@ func computeAccessEpoch(visibleCollectionIDs, grantedItemIDs []string) string {
 //
 // grantedItemIDs must be the LIVE grant set (guestResourceFilter, not the
 // include-deleted variant): see the review-round-2 note on /items-changes.
-func effectiveAccessEpoch(visibleCollectionIDs, fullCollIDs, grantedItemIDs []string) string {
-	if len(grantedItemIDs) > 0 {
-		if fullCollIDs == nil {
-			// Item grants make the caller filtered whatever the collection
-			// list says; nil must not read as the unrestricted sentinel.
-			fullCollIDs = []string{}
-		}
-		return computeAccessEpoch(fullCollIDs, grantedItemIDs)
+//
+// liveCollectionIDs is the workspace's live collection set (BUG-3428 phase 2,
+// lead ruling: option A). Deleting a collection writes no item rows, so the
+// epoch must move on its own: an unrestricted caller's epoch is the "all"
+// sentinel plus a hash of the live set, and a restricted caller's collection
+// set is intersected with it, because the item doors leave a soft-deleted
+// collection's rows out for everyone. A collection create moves it too, which
+// costs one resync per client and was ruled acceptable.
+func effectiveAccessEpoch(visibleCollectionIDs, fullCollIDs, grantedItemIDs, liveCollectionIDs []string) string {
+	if visibleCollectionIDs == nil && len(grantedItemIDs) == 0 {
+		h := sha256.New()
+		writeSortedIDs(h, liveCollectionIDs)
+		return accessEpochUnrestricted + ":" + hex.EncodeToString(h.Sum(nil))[:16]
 	}
-	return computeAccessEpoch(visibleCollectionIDs, grantedItemIDs)
+	coll := visibleCollectionIDs
+	if len(grantedItemIDs) > 0 {
+		// Item grants make the caller filtered whatever the collection list
+		// says; nil must not read as the unrestricted sentinel.
+		coll = fullCollIDs
+	}
+	return computeAccessEpoch(intersectIDs(coll, liveCollectionIDs), grantedItemIDs)
+}
+
+// intersectIDs returns the ids in a that are also in b, never nil.
+func intersectIDs(a, b []string) []string {
+	in := make(map[string]bool, len(b))
+	for _, id := range b {
+		in[id] = true
+	}
+	out := []string{}
+	for _, id := range a {
+		if in[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // writeSortedIDs feeds ids to h in sorted order, one per line. The input slice

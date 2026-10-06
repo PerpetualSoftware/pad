@@ -94,6 +94,11 @@ type Server struct {
 	// deterministic. TestVisibleCollectionIDsFaultIsNilInProduction holds New
 	// to leaving it nil. Same synchronisation rule as afterItemPreRead.
 	visibleCollectionIDsFault func() error
+	// itemDoorAfterRowsHook is a TEST-ONLY seam, nil in production: the item
+	// doors (/items-index, /items-changes) call it right after their row
+	// query, so a test can commit a write between the rows and the access
+	// epoch the response pairs them with (BUG-3428 phase 2, codex r1).
+	itemDoorAfterRowsHook func()
 	// appstoreState holds the one appstore the app API uses (SPEC-6 U6a).
 	appstoreState appStoreState
 	// appAfterHandler is a TEST-ONLY seam, nil in production: it runs after

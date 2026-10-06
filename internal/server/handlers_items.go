@@ -259,10 +259,23 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The live collection set the epoch fingerprints (BUG-3428 phase 2),
+	// read BEFORE the rows (codex r1). Read after them, a delete committing
+	// in between paired the deleted collection's rows with the post-delete
+	// epoch, and no later poll would evict them. Read before, the response
+	// carries the older epoch, so the next poll sees the change and resyncs.
+	liveCollIDs, liveErr := s.store.LiveCollectionIDs(workspaceID)
+	if liveErr != nil {
+		writeInternalError(w, liveErr)
+		return
+	}
 	result, err := s.store.ListItemsIndex(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	if s.itemDoorAfterRowsHook != nil {
+		s.itemDoorAfterRowsHook()
 	}
 	if result == nil {
 		result = []models.Item{}
@@ -285,7 +298,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		Total:                      len(result),
 		Cursor:                     cursor,
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
-		AccessEpoch:                effectiveAccessEpoch(visibleIDs, fullCollIDs, grantedItemIDs),
+		AccessEpoch:                effectiveAccessEpoch(visibleIDs, fullCollIDs, grantedItemIDs, liveCollIDs),
 	})
 }
 
@@ -401,10 +414,29 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		params.ItemIDs = grantedItemIDs
 	}
 
+	// The live collection set the epoch fingerprints (BUG-3428 phase 2),
+	// read BEFORE the rows (codex r1). Read after them, a delete committing
+	// in between paired the deleted collection's rows with the post-delete
+	// epoch, and no later poll would evict them. Read before, the response
+	// carries the older epoch, so the next poll sees the change and resyncs.
+	liveCollIDs, liveErr := s.store.LiveCollectionIDs(workspaceID)
+	if liveErr != nil {
+		writeInternalError(w, liveErr)
+		return
+	}
+	// The LIVE grant set the epoch uses (see the note at the response).
+	liveFullCollIDs, liveGrantedItemIDs, liveGrantErr := s.guestResourceFilter(r, workspaceID)
+	if liveGrantErr != nil {
+		writeInternalError(w, liveGrantErr)
+		return
+	}
 	rows, err := s.store.ListItemsChangesSince(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	if s.itemDoorAfterRowsHook != nil {
+		s.itemDoorAfterRowsHook()
 	}
 
 	// Enrich with parent metadata so the local cache rows match the
@@ -492,16 +524,15 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	// never does. The live COLLECTION set comes from the same resolve, because
 	// with item grants it is the set this door filters by (BUG-3347; see
 	// effectiveAccessEpoch).
-	liveFullCollIDs, liveGrantedItemIDs, liveGrantErr := s.guestResourceFilter(r, workspaceID)
-	if liveGrantErr != nil {
-		writeInternalError(w, liveGrantErr)
-		return
-	}
+	// liveFullCollIDs / liveGrantedItemIDs are resolved BEFORE the rows,
+	// with the live collection set (codex r2): read after them, a collection
+	// delete in between dropped its grant from the epoch while the rows still
+	// held its items.
 	writeJSON(w, http.StatusOK, itemsChangesResponse{
 		Changes:                    changes,
 		Cursor:                     strconv.FormatInt(cursorSeq, 10),
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
-		AccessEpoch:                effectiveAccessEpoch(visibleIDs, liveFullCollIDs, liveGrantedItemIDs),
+		AccessEpoch:                effectiveAccessEpoch(visibleIDs, liveFullCollIDs, liveGrantedItemIDs, liveCollIDs),
 	})
 }
 
