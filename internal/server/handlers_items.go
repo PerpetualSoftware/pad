@@ -424,6 +424,12 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, liveErr)
 		return
 	}
+	// The LIVE grant set the epoch uses (see the note at the response).
+	liveFullCollIDs, liveGrantedItemIDs, liveGrantErr := s.guestResourceFilter(r, workspaceID)
+	if liveGrantErr != nil {
+		writeInternalError(w, liveGrantErr)
+		return
+	}
 	rows, err := s.store.ListItemsChangesSince(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -518,11 +524,10 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	// never does. The live COLLECTION set comes from the same resolve, because
 	// with item grants it is the set this door filters by (BUG-3347; see
 	// effectiveAccessEpoch).
-	liveFullCollIDs, liveGrantedItemIDs, liveGrantErr := s.guestResourceFilter(r, workspaceID)
-	if liveGrantErr != nil {
-		writeInternalError(w, liveGrantErr)
-		return
-	}
+	// liveFullCollIDs / liveGrantedItemIDs are resolved BEFORE the rows,
+	// with the live collection set (codex r2): read after them, a collection
+	// delete in between dropped its grant from the epoch while the rows still
+	// held its items.
 	writeJSON(w, http.StatusOK, itemsChangesResponse{
 		Changes:                    changes,
 		Cursor:                     strconv.FormatInt(cursorSeq, 10),
