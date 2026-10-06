@@ -387,6 +387,27 @@ func (s *Store) ListCollectionsMinimal(workspaceID string) ([]models.Collection,
 // behavior for any collection that isn't conventions or playbooks. Declarations
 // are validated on the way IN (create/update/seed), so a stored blob that
 // doesn't parse means something wrote around those gates. TASK-2657.
+// LiveCollectionIDs returns the IDs of the workspace's collections that are
+// not soft-deleted. The access epoch fingerprints this set (BUG-3428 phase 2),
+// so deleting, restoring or creating a collection tells a warm client to
+// resync.
+func (s *Store) LiveCollectionIDs(workspaceID string) ([]string, error) {
+	rows, err := s.db.Query(s.q(`SELECT id FROM collections WHERE workspace_id = ? AND deleted_at IS NULL`), workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("live collection ids: %w", err)
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) ListTraitedCollections(workspaceID string) ([]collections.TraitedCollection, error) {
 	return s.ListTraitedCollectionsQ(s.db, workspaceID)
 }

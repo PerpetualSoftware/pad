@@ -280,12 +280,18 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	cursor := strconv.FormatInt(cursorSeq, 10)
 
+	// The epoch fingerprints the live collection set (BUG-3428 phase 2).
+	liveCollIDs, liveErr := s.store.LiveCollectionIDs(workspaceID)
+	if liveErr != nil {
+		writeInternalError(w, liveErr)
+		return
+	}
 	writeJSON(w, http.StatusOK, itemsIndexResponse{
 		Items:                      result,
 		Total:                      len(result),
 		Cursor:                     cursor,
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
-		AccessEpoch:                effectiveAccessEpoch(visibleIDs, fullCollIDs, grantedItemIDs),
+		AccessEpoch:                effectiveAccessEpoch(visibleIDs, fullCollIDs, grantedItemIDs, liveCollIDs),
 	})
 }
 
@@ -497,11 +503,17 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, liveGrantErr)
 		return
 	}
+	// The epoch fingerprints the live collection set (BUG-3428 phase 2).
+	liveCollIDs, liveErr := s.store.LiveCollectionIDs(workspaceID)
+	if liveErr != nil {
+		writeInternalError(w, liveErr)
+		return
+	}
 	writeJSON(w, http.StatusOK, itemsChangesResponse{
 		Changes:                    changes,
 		Cursor:                     strconv.FormatInt(cursorSeq, 10),
 		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
-		AccessEpoch:                effectiveAccessEpoch(visibleIDs, liveFullCollIDs, liveGrantedItemIDs),
+		AccessEpoch:                effectiveAccessEpoch(visibleIDs, liveFullCollIDs, liveGrantedItemIDs, liveCollIDs),
 	})
 }
 
