@@ -226,7 +226,8 @@
 			// The "+" badge must stop counting it, and the throttle would hold a
 			// navigation's refetch back (BUG-2136 U2). Whatever page is showing now.
 			void pendingInvitations.refresh(true);
-			if (!current()) return;
+			// A's proof is spent whichever page is showing now; the landing is
+			// fenced, so a moved-on page is not navigated away from.
 			clearInvitationProof(c);
 			await landInJoinedWorkspace(result, current);
 		} catch (err: unknown) {
@@ -244,8 +245,8 @@
 		try {
 			await api.members.declineInvitation(c);
 			void pendingInvitations.refresh(true);
-			if (!current()) return;
 			clearInvitationProof(c);
+			if (!current()) return;
 			status = 'declined';
 		} catch (err: unknown) {
 			if (!current()) return;
