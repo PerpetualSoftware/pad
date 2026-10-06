@@ -186,10 +186,15 @@ The pre-PLAN-1496 design seeded `IDEA-1` / `PLAN-2` / `TASK-3` / `DOC-4` (and `B
 ### Workspace membership
 ```bash
 pad workspace members                         # List workspace members
-pad workspace invite user@example.com         # Invite (adds directly if user exists, creates join code if not)
+pad workspace invite user@example.com         # Invite: always a PENDING invitation, never a direct add (BUG-2136)
 pad workspace invite user@example.com --role viewer  # Invite with specific role
-pad workspace join <code>                     # Accept a workspace invitation
+pad workspace invitations                     # Your pending invitations (with ids)
+pad workspace accept <id>                     # Accept one of them
+pad workspace decline <id>                    # Decline one (deletes it)
+pad workspace join <code>                     # Accept a workspace invitation by code
 ```
+
+An invitation becomes a membership only when the invitee accepts, from the CLI above, the web "+" menu (which shows a count badge), or the `/join/<code>` link. The link asks a signed-in visitor, including one who signs in from it, to Accept or Decline; only registering a NEW account through the code joins in one step. Inviting the same address again replaces the pending invitation.
 
 Roles: `owner` (full access), `editor` (CRUD items), `viewer` (read-only).
 
