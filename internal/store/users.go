@@ -1101,13 +1101,24 @@ func (s *Store) SetUserRole(userID, role string) error {
 // request that is now refusing it. Its email-verification tokens go with it in
 // the same transaction, because the signup mints one before the steps that can
 // refuse, and that row's foreign key would otherwise refuse the delete and
-// leave the email held (BUG-3438).
+// leave the email held (BUG-3438). So do its sessions: a sign-in can mint one
+// for the new account in the same window.
 func (s *Store) DeleteUser(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("delete user: %w", err)
 	}
 	defer tx.Rollback()
+	// The account row first, the lock a session mint takes (FOR SHARE on
+	// Postgres), so a sign-in racing the rollback either lands before this and
+	// its session is removed below, or waits and then finds no account
+	// (codex r2).
+	if _, err := tx.Exec(s.q(`UPDATE users SET updated_at = updated_at WHERE id = ?`), id); err != nil {
+		return fmt.Errorf("delete user: lock: %w", err)
+	}
+	if _, err := tx.Exec(s.q(`DELETE FROM sessions WHERE user_id = ?`), id); err != nil {
+		return fmt.Errorf("delete user: sessions: %w", err)
+	}
 	if _, err := tx.Exec(s.q(`DELETE FROM email_verification_tokens WHERE user_id = ?`), id); err != nil {
 		return fmt.Errorf("delete user: verification tokens: %w", err)
 	}

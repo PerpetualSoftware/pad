@@ -1091,6 +1091,23 @@ func (s *Store) ConsumeInvitationProof(invitationID, userID, proof string) (bool
 	return true, nil
 }
 
+// RestoreInvitationProof puts back a proof ConsumeInvitationProof spent, for
+// a signup that spent it and was then refused and rolled back (BUG-3438). It
+// restores only an invitation still pending whose proof is still spent, so a
+// gone, accepted or re-issued invitation is left alone.
+func (s *Store) RestoreInvitationProof(invitationID, proof string) error {
+	if invitationID == "" || proof == "" {
+		return nil
+	}
+	if _, err := s.db.Exec(s.q(`
+		UPDATE workspace_invitations SET proof_hash = ?
+		WHERE id = ? AND proof_hash = '' AND accepted_at IS NULL`),
+		invitationProofHash(proof), invitationID); err != nil {
+		return fmt.Errorf("restore invitation proof: %w", err)
+	}
+	return nil
+}
+
 // GetInvitation retrieves an invitation by ID.
 func (s *Store) GetInvitation(id string) (*models.WorkspaceInvitation, error) {
 	var inv models.WorkspaceInvitation

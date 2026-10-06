@@ -598,6 +598,18 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRegister creates a new user account.
+// restoreSpentProof puts back the invitation proof a refused signup spent
+// (BUG-3438), so the same emailed link still verifies on the retry. A failure
+// is logged, not fatal: the retry then needs the verification email instead.
+func (s *Server) restoreSpentProof(invitationID, proof string) {
+	if proof == "" {
+		return
+	}
+	if err := s.store.RestoreInvitationProof(invitationID, proof); err != nil {
+		slog.Error("invitation signup: failed to restore the spent invitation proof", "invitation_id", invitationID, "error", err)
+	}
+}
+
 // Registration is restricted to admins or users with a valid invitation code
 // so invitees can create an account via the /join/[code] flow.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -791,11 +803,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// cannot. Spending it verifies the new account, so no separate
 	// verification email is needed. A wrong or spent proof changes nothing:
 	// the signup proceeds exactly as it would without one.
+	// spentProof is the proof this signup spent, so a rollback below can put
+	// it back while the invitation is still pending (BUG-3438, codex r2).
+	spentProof := ""
 	if needsVerification && invitation != nil && input.InvitationProof != "" {
 		ok, perr := s.store.ConsumeInvitationProof(invitation.ID, user.ID, strings.TrimSpace(input.InvitationProof))
 		if perr != nil {
 			slog.Error("invitation proof: consume failed; continuing unverified", "error", perr, "user_id", user.ID)
 		} else if ok {
+			spentProof = strings.TrimSpace(input.InvitationProof)
 			needsVerification = false
 			if fresh, ferr := s.store.GetUser(user.ID); ferr == nil && fresh != nil {
 				user = fresh
@@ -864,6 +880,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(addErr, store.ErrInvitationGone) {
 			slog.Info("invitation signup: the invitation was gone at its claim; rolling back the account",
 				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)
+			s.restoreSpentProof(invitation.ID, spentProof)
 			if derr := s.store.DeleteUser(user.ID); derr != nil {
 				slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
 					"account with no workspace access",
@@ -942,6 +959,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				slog.Error("invitation signup: member was not added; rolling back the account and leaving the "+
 					"invitation redeemable",
 					"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
+				s.restoreSpentProof(invitation.ID, spentProof)
 				if derr := s.store.DeleteUser(user.ID); derr != nil {
 					slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
 						"account with no workspace access",
