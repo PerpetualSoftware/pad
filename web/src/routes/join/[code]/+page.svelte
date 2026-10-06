@@ -393,7 +393,7 @@
 					{#if submitting}
 						Verifying...
 					{:else}
-						Verify & join
+						Verify
 					{/if}
 				</button>
 

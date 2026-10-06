@@ -33,21 +33,24 @@
 	// Id being declined (BUG-2136); either action in flight disables both.
 	let decliningId = $state<string | null>(null);
 	const busy = $derived(acceptingId !== null || decliningId !== null);
-	// Guards list responses: an older fetch cannot re-surface an invitation
-	// the post-accept refresh has already dropped.
+	// Orders list responses: an older fetch cannot re-surface an invitation
+	// a newer fetch, an accept or a decline has already dropped.
 	let seq = 0;
 
 	async function load() {
 		const mine = ++seq;
+		// A response issued for a previous account is not this one's list, nor
+		// its badge count.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const res = await api.members.listMyInvitations();
-			if (mine === seq) {
+			if (mine === seq && isSameIdentity()) {
 				invitations = res.invitations ?? [];
 				// The "+" badge counts what this list shows (BUG-2136 U2).
 				pendingInvitations.set(invitations);
 			}
 		} catch {
-			if (mine === seq) invitations = [];
+			if (mine === seq && isSameIdentity()) invitations = [];
 		}
 	}
 
@@ -78,6 +81,9 @@
 				return;
 			}
 			if (!isSameIdentity()) return;
+			// A list fetch issued before the accept must not bring it back.
+			seq++;
+			invitations = invitations.filter((i) => i.id !== inv.id);
 			pendingInvitations.remove(inv.id);
 			toastStore.show(`Joined "${inv.workspace_name}"`, 'success');
 			onaccepted?.();

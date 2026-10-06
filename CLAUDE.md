@@ -141,6 +141,7 @@ One browser tab's content writes to an item are ordered by the server, also **pe
 - `GET/PUT /api/v1/admin/decision-provider` — decision provider setting (admin-only, TASK-3121): enable toggle, model pin, and a WRITE-ONLY API key stored encrypted (the response carries `api_key_set`, never the key or a mask of it). Resolved config file < this setting < environment, per field; a PUT to a field the environment sets is refused `409 set_by_environment`. A change rebuilds the provider in place, with no restart. On Pad Cloud the environment is the only source and PUT is `403 managed_by_operator`. `pad server info` resolves only the config file and environment on the CLI host, and says so
 - `POST /api/v1/admin/test-email` — send test email (admin-only)
 - `POST /api/v1/invitations/{code}/accept` — accept workspace invitation
+- `POST /api/v1/invitations/{code}/decline`, `POST /api/v1/me/invitations/{id}/decline` — decline a pending invitation (BUG-2136): it is deleted, as an owner's cancel does, and `member_invite_declined` is audited. By code, the caller must be signed in as the invited address; by id, the same admission as accept by id. 204
 - `GET /api/v1/workspaces/{ws}/agent/bootstrap` — one-round-trip agent context (workspace + user + collections + always-on conventions + roles + playbook metadata + dashboard + `needs_onboarding` flag). Same payload as the MCP `pad://workspace/{ws}/bootstrap` resource and the `pad_set_workspace` embed.
 
 ## Authentication
