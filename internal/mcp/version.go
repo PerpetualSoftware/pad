@@ -1738,6 +1738,16 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.68 — BUG-3448 (lead ruling). BEHAVIOR bump on the v0.62 / v0.64
+//     grounds (an output shape a consumer reads changed, with no name, enum
+//     or param moved): the item resource `pad://workspace/{ws}/items/{ref}`
+//     renders a structured field (a json field's object or array) as compact
+//     JSON instead of Go's map syntax (`[map[name:target …]]`), keeps the
+//     digits of a number above 2^53, and renders a JSON null as `null`. The
+//     agent projection (`pad_item` get with the agent shape) no longer rounds
+//     a number above 2^53 when it drops the hydrated keys. Scalar fields
+//     render exactly as before.
+//
 //     0.67 — BUG-3446 (lead ruling, day 89). ADDITIVE bump on the v0.62 /
 //     v0.64 grounds: in a SYSTEM conventions or playbooks collection, a
 //     create whose `trigger` / `scope` is a word the convention or playbook
@@ -1805,7 +1815,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.67"
+const ToolSurfaceVersion = "0.68"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
