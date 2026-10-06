@@ -284,4 +284,37 @@ describe('PendingInvitations', () => {
 		await settle();
 		expect(queryByText('Beta')).toBeNull();
 	});
+
+	it('a list response issued for a previous account is dropped, from the list and the badge (codex r1)', async () => {
+		let answer!: (v: unknown) => void;
+		mocks.listMyInvitations.mockReturnValue(new Promise((r) => (answer = r)));
+		const { queryByText } = render(PendingInvitations, { props: { active: true } });
+		await settle();
+		mocks.sameIdentity = false;
+		answer({ invitations: [inv('a', 'Alpha')], email_verified: true });
+		await settle();
+		expect(queryByText('Alpha')).toBeNull();
+		expect(mocks.storeSet).not.toHaveBeenCalled();
+	});
+
+	it('a list fetch issued before an accept cannot bring the accepted row back (codex r1)', async () => {
+		// A failed accept of A refetches; B is accepted while that refetch is
+		// still out, and the refetch answers with the list as it stood.
+		mocks.acceptMyInvitation.mockRejectedValueOnce(new Error('nope'));
+		const { getByRole, queryByText } = await mount([inv('a', 'Alpha'), inv('b', 'Beta')]);
+		mocks.storeSet.mockClear();
+		let answer!: (v: unknown) => void;
+		mocks.listMyInvitations.mockReturnValue(new Promise((r) => (answer = r)));
+		await fireEvent.click(getByRole('button', { name: 'Accept the invitation to Alpha' }));
+		await settle();
+		mocks.acceptMyInvitation.mockResolvedValue({ accepted: true, workspace_id: 'w', role: 'editor' });
+		await fireEvent.click(getByRole('button', { name: 'Accept the invitation to Beta' }));
+		await settle();
+		answer({ invitations: [inv('a', 'Alpha'), inv('b', 'Beta')], email_verified: true });
+		await settle();
+		expect(queryByText('Beta')).toBeNull();
+		for (const [list] of mocks.storeSet.mock.calls) {
+			expect((list as { id: string }[]).map((i) => i.id)).not.toContain('b');
+		}
+	});
 });

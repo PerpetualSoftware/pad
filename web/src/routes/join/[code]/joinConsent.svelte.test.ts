@@ -14,12 +14,19 @@ const mocks = vi.hoisted(() => ({
 	decline: vi.fn(),
 	login: vi.fn(),
 	register: vi.fn(),
+	verify2FA: vi.fn(),
 }));
 
 vi.mock('$app/navigation', () => ({ goto: mocks.goto, replaceState: vi.fn() }));
 vi.mock('$lib/api/client', () => ({
 	api: {
-		auth: { session: mocks.session, login: mocks.login, register: mocks.register, checkUsername: vi.fn() },
+		auth: {
+			session: mocks.session,
+			login: mocks.login,
+			register: mocks.register,
+			verify2FA: mocks.verify2FA,
+			checkUsername: vi.fn(),
+		},
 		members: {
 			previewInvitation: mocks.preview,
 			acceptInvitation: mocks.accept,
@@ -129,6 +136,27 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		await fireEvent.click(submitBtn());
 		await settle();
 		expect(mocks.login).toHaveBeenCalledWith('inv@example.com', 'password123');
+		expect(byTestId('join-accept')).not.toBeNull();
+		expect(mocks.accept).not.toHaveBeenCalled();
+	});
+
+	it('signing in with two-factor from the link lands on the card, not an accept (codex r1)', async () => {
+		mocks.session.mockResolvedValue({ authenticated: false });
+		mocks.login.mockResolvedValue({ requires_2fa: true, challenge_token: 'ch' });
+		mocks.verify2FA.mockResolvedValue({});
+		render(JoinPage);
+		await settle();
+		const pw = document.querySelector<HTMLInputElement>('input[type="password"]')!;
+		await fireEvent.input(pw, { target: { value: 'password123' } });
+		await fireEvent.click(submitBtn());
+		await settle();
+		const totp = document.querySelector<HTMLInputElement>('input[inputmode="numeric"]')!;
+		await fireEvent.input(totp, { target: { value: '123456' } });
+		await fireEvent.click(
+			Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((b) => /^Verify/.test(b.textContent?.trim() ?? ''))!
+		);
+		await settle();
+		expect(mocks.verify2FA).toHaveBeenCalled();
 		expect(byTestId('join-accept')).not.toBeNull();
 		expect(mocks.accept).not.toHaveBeenCalled();
 	});
