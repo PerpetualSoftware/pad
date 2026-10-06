@@ -604,8 +604,16 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 // /forgot-password or the signup's own verification mint can add rows that
 // reference it before the refusal, and DeleteAccountAtomic removes or
 // detaches every such row and retries one that lands late.
+//
+// Like every account deletion it then kicks the account's connections
+// (TASK-3365): a sign-in in the same window can have opened a stream, which
+// would otherwise run until its next revalidation tick (codex r6).
 func (s *Server) rollbackSignup(userID string) error {
-	return s.store.DeleteAccountAtomic(userID)
+	if err := s.store.DeleteAccountAtomic(userID); err != nil {
+		return err
+	}
+	s.invalidateUserAccess(userID)
+	return nil
 }
 
 // restoreSpentProof puts back the invitation proof a refused signup spent
