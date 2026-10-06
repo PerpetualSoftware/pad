@@ -1730,6 +1730,8 @@ export interface TimelineEntry {
 	 * second copy here (TASK-2760).
 	 */
 	agent_name?: string;
+	/** A comment entry whose comment an item update carried (BUG-3437); absent for a standalone comment. */
+	comment_on_update?: boolean;
 	source: string;
 	comment?: Comment;
 	activity?: Activity;

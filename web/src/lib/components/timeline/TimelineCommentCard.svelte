@@ -10,6 +10,12 @@
 
 	interface Props {
 		comment: Comment;
+		/**
+		 * The comment came with an item update (the timeline entry's
+		 * `comment_on_update`, BUG-3437). Only then is it "commented on
+		 * update": every comment has an activity_id, a standalone one included.
+		 */
+		onUpdate?: boolean;
 		wsSlug: string;
 		username?: string;
 		items: Item[];
@@ -57,7 +63,7 @@
 		onRemoveReaction: (commentId: string, emoji: string) => void;
 	}
 
-	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, frozen = false, attachmentResolver, isAdmin = false, hostToken = '', onDelete, onReply, onEdit, onReaction, onRemoveReaction }: Props = $props();
+	let { comment, onUpdate = false, wsSlug, username = '', items, currentUserId = '', canEdit = true, frozen = false, attachmentResolver, isAdmin = false, hostToken = '', onDelete, onReply, onEdit, onReaction, onRemoveReaction }: Props = $props();
 
 	let showReplyForm = $state(false);
 	let submittingReply = $state(false);
@@ -247,7 +253,7 @@
 		{/if}
 	</div>
 
-	{#if comment.activity_id}
+	{#if onUpdate}
 		<div class="activity-label">commented on update</div>
 	{/if}
 

@@ -347,7 +347,7 @@ func (s *Store) getCommentQ(q Queryer, id string) (*models.Comment, error) {
 const commentListCols = `c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at,
-		       CASE WHEN c.deleted_at IS NULL THEN 0 ELSE 1 END, c.imported, a.metadata`
+		       CASE WHEN c.deleted_at IS NULL THEN 0 ELSE 1 END, c.imported, a.metadata, a.action`
 
 const commentAgentJoin = `LEFT JOIN activities a ON a.id = c.activity_id AND a.document_id = c.item_id`
 
@@ -356,12 +356,12 @@ func scanComments(rows *sql.Rows) ([]models.Comment, error) {
 	for rows.Next() {
 		var c models.Comment
 		var createdAt, updatedAt string
-		var activityMeta sql.NullString
+		var activityMeta, activityAction sql.NullString
 		var deleted, imported int
 		if err := rows.Scan(
 			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
 			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
-			&createdAt, &updatedAt, &deleted, &imported, &activityMeta,
+			&createdAt, &updatedAt, &deleted, &imported, &activityMeta, &activityAction,
 		); err != nil {
 			return nil, fmt.Errorf("scan comment: %w", err)
 		}
@@ -372,6 +372,7 @@ func scanComments(rows *sql.Rows) ([]models.Comment, error) {
 		if activityMeta.Valid {
 			c.AgentName = models.AgentNameFromMetadata(activityMeta.String)
 		}
+		c.LinkedActivityAction = activityAction.String
 		comments = append(comments, c)
 	}
 	return comments, rows.Err()
