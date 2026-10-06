@@ -136,4 +136,15 @@ describe('ConnectBanner follows agent activity live (BUG-3447)', () => {
 		await flush();
 		expect(banner(), 'unknown after a failed re-check hid the banner for good').not.toBeNull();
 	});
+
+	it("an agent's collection is agent activity too: it re-checks on collection_updated (lead)", async () => {
+		mocks.answers = [{ has_agent_activity: false }, { has_agent_activity: true }];
+		render(ConnectBanner, { props: { wsSlug: 'ws', serverUrl: 'http://x' } });
+		await flush();
+		fire({ type: 'collection_updated', collection_id: 'c1' });
+		await vi.advanceTimersByTimeAsync(2000);
+		await flush();
+		expect(mocks.gets).toBe(2);
+		expect(banner()).toBeNull();
+	});
 });
