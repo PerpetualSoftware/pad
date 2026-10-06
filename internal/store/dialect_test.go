@@ -25,6 +25,16 @@ func TestRebindQuery(t *testing.T) {
 		{"comment markers inside a string", "SELECT 'a--b?' , '/* c? */' , ?", "SELECT 'a--b?' , '/* c? */' , $1"},
 		{"escaped quote in a string", "SELECT 'it''s ?' , ?", "SELECT 'it''s ?' , $1"},
 		{"apostrophe and ? in a quoted identifier", `SELECT "it's?" FROM t WHERE a = ?`, `SELECT "it's?" FROM t WHERE a = $1`},
+		// Postgres block comments nest (codex r1).
+		{"nested block comment", "SELECT /* outer /* inner */ ? */ ?", "SELECT /* outer /* inner */ ? */ $1"},
+		{"block comment at end of query", "SELECT ? /* done? */", "SELECT $1 /* done? */"},
+		{"comment markers inside a quoted identifier", `SELECT "a--b?", "c/*d?" FROM t WHERE x = ?`, `SELECT "a--b?", "c/*d?" FROM t WHERE x = $1`},
+		{"escaped quote in a quoted identifier", `SELECT "say ""hi?""" FROM t WHERE x = ?`, `SELECT "say ""hi?""" FROM t WHERE x = $1`},
+		{"double quote in a comment", "SELECT ? -- a \"quoted\" word\n, ?", "SELECT $1 -- a \"quoted\" word\n, $2"},
+		// Unterminated: the rest is copied as-is (Postgres then reports the
+		// syntax error itself).
+		{"unterminated string", "SELECT ?, 'oops ?", "SELECT $1, 'oops ?"},
+		{"unterminated block comment", "SELECT ? /* never ? closed", "SELECT $1 /* never ? closed"},
 	}
 
 	for _, tt := range tests {

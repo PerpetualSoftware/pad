@@ -397,13 +397,14 @@ func rebindQuery(query string) string {
 			buf.WriteString(query[i : i+j]) // the newline is copied next turn
 			i += j - 1
 		case ch == '/' && i+1 < len(query) && query[i+1] == '*':
-			j := strings.Index(query[i+2:], "*/")
-			if j < 0 {
+			// Postgres block comments NEST: /* a /* b */ c */ is one comment.
+			end := blockCommentEnd(query, i)
+			if end < 0 {
 				buf.WriteString(query[i:])
 				return buf.String()
 			}
-			buf.WriteString(query[i : i+2+j+2])
-			i += 2 + j + 1
+			buf.WriteString(query[i:end])
+			i = end - 1
 		case ch == '?':
 			n++
 			fmt.Fprintf(&buf, "$%d", n)
@@ -412,4 +413,25 @@ func rebindQuery(query string) string {
 		}
 	}
 	return buf.String()
+}
+
+// blockCommentEnd returns the index just past the */ that closes the block
+// comment opening at query[start], counting nested /* */ pairs as Postgres
+// does, or -1 when it never closes.
+func blockCommentEnd(query string, start int) int {
+	depth := 0
+	for i := start; i+1 < len(query); i++ {
+		switch {
+		case query[i] == '/' && query[i+1] == '*':
+			depth++
+			i++
+		case query[i] == '*' && query[i+1] == '/':
+			depth--
+			i++
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return -1
 }
