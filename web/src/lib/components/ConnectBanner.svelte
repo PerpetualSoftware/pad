@@ -125,8 +125,13 @@
 		? sseService.onItemEvent((event) => {
 				if (hasAgentActivity !== false || dismissed) return;
 				if (event.type !== 'item_created') return;
+				// Only for the workspace it was armed in: after a switch it would
+				// supersede the next workspace's own re-check (codex r1).
+				const armedFor = wsSlug;
 				clearTimeout(recheckTimer);
-				recheckTimer = setTimeout(() => refreshHasAgentActivity(wsSlug, true), AGENT_RECHECK_MS);
+				recheckTimer = setTimeout(() => {
+					if (wsSlug === armedFor) refreshHasAgentActivity(armedFor, true);
+				}, AGENT_RECHECK_MS);
 			})
 		: () => {};
 	onDestroy(() => {

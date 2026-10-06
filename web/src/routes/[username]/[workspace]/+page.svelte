@@ -367,10 +367,13 @@
 			if (!needsOnboarding) return;
 			if (event.type !== 'item_created' && event.type !== 'collection_updated') return;
 			// Trailing debounce: a burst re-arms one timer, whose body is only
-			// the fenced load() call.
+			// the fenced load() call, and only for the workspace it was armed
+			// in: a timer that outlives a workspace switch would otherwise
+			// start a load for the next one and supersede its own (codex r1).
+			const armedFor = wsSlug;
 			clearTimeout(liveReloadTimer);
 			liveReloadTimer = setTimeout(() => {
-				if (wsSlug) load(wsSlug, true);
+				if (wsSlug && wsSlug === armedFor) load(wsSlug, true);
 			}, LIVE_ONBOARDING_RELOAD_MS);
 		});
 		return () => clearInterval(pollTimer);
