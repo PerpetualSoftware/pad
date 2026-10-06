@@ -2,6 +2,8 @@
 	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { sseService } from '$lib/services/sse.svelte';
+	import { onDestroy } from 'svelte';
 	import ConnectWorkspaceModal from './ConnectWorkspaceModal.svelte';
 
 	interface Props {
@@ -62,10 +64,13 @@
 	// Failures fall back to `false` (fail-open: better to show the banner
 	// than to hide it on a transient error).
 	let fetchSeq = 0;
-	function refreshHasAgentActivity(slug: string) {
+	// `quiet` (BUG-3447): an event-driven re-check keeps the banner as it is
+	// while the request is out, instead of blanking it, and keeps it on a
+	// failure; only an answer changes it.
+	function refreshHasAgentActivity(slug: string, quiet = false) {
 		if (!slug) return;
 		const mySeq = ++fetchSeq;
-		hasAgentActivity = null;
+		if (!quiet) hasAgentActivity = null;
 		api.dashboard
 			.get(slug)
 			.then((d) => {
@@ -76,7 +81,7 @@
 			.catch(() => {
 				if (mySeq !== fetchSeq) return;
 				if (slug !== wsSlug) return;
-				hasAgentActivity = false;
+				if (!quiet) hasAgentActivity = false;
 			});
 	}
 
@@ -107,6 +112,26 @@
 			refreshHasAgentActivity(wsSlug);
 		}
 		prevOpen = connectOpen;
+	});
+
+	// LIVE (BUG-3447): the banner used to learn of agent activity only on a
+	// workspace change or when its own modal closed, so it stayed up while an
+	// agent was visibly creating items. While it is showing, an item creation
+	// schedules one quiet re-check, coalesced across a burst; once activity is
+	// known, events are ignored.
+	const AGENT_RECHECK_MS = 400;
+	let recheckTimer: ReturnType<typeof setTimeout> | undefined;
+	const unsubscribeItems = browser
+		? sseService.onItemEvent((event) => {
+				if (hasAgentActivity !== false || dismissed) return;
+				if (event.type !== 'item_created') return;
+				clearTimeout(recheckTimer);
+				recheckTimer = setTimeout(() => refreshHasAgentActivity(wsSlug, true), AGENT_RECHECK_MS);
+			})
+		: () => {};
+	onDestroy(() => {
+		unsubscribeItems();
+		clearTimeout(recheckTimer);
 	});
 
 	let visible = $derived(

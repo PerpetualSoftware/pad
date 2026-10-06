@@ -24,7 +24,14 @@ identityGateSuite({
 				body: /load\(wsSlug, true\)/,
 				in: 'onMount(…)',
 				why: 'the 30s poll: calls load, which captures the identity at its own entry',
-				reviewed: 'e407931b5d02',
+				reviewed: '2b0e5039b233',
+			},
+			{
+				call: /^setTimeout\($/,
+				body: /load\(wsSlug, true\)/,
+				in: 'sseService.onItemEvent(…)',
+				why: 'the live-onboarding reload (BUG-3447): a debounce an item or collection event re-arms while the workspace needs onboarding; its body only calls load, which captures the identity at its own entry',
+				reviewed: '2b0e5039b233',
 			},
 		],
 		helpers: {

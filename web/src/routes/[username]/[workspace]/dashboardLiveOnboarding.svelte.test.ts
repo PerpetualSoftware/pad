@@ -137,6 +137,22 @@ describe('the launchpad follows the agent live (BUG-3447)', () => {
 		expect(dashboardGets(), 'one coalesced refetch, well before the 30 s poll').toBe(2);
 	});
 
+	it('a collection the agent creates is enough on its own (the launchpad lists collections)', async () => {
+		await mount();
+		fire({ type: 'collection_updated', collection_id: 'c1' });
+		await vi.advanceTimersByTimeAsync(2000);
+		await flush();
+		expect(dashboardGets()).toBe(2);
+	});
+
+	it('ignores other events while onboarding (a comment is not progress on the launchpad)', async () => {
+		await mount();
+		fire({ type: 'comment_created', item_id: 'i1' });
+		await vi.advanceTimersByTimeAsync(2000);
+		await flush();
+		expect(dashboardGets()).toBe(1);
+	});
+
 	it('does not refetch on events once onboarding is over (the poll and sync own the board)', async () => {
 		mocks.needsOnboarding = false;
 		await mount();

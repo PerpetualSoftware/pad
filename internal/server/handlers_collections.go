@@ -325,6 +325,13 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// A create is announced as the existing collection_updated kind (BUG-3447,
+	// lead: prefer an existing kind), carrying the new collection's stable id
+	// and slug. Open tabs reload their collection list on it, which is what
+	// lets the first-run launchpad show a collection an agent just made
+	// instead of waiting for some other event to refresh the sidebar.
+	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.ID, coll.Slug, "", false)
+
 	if len(collapsed) > 0 {
 		coll.Warnings = &models.CollectionWriteWarnings{CollapsedDuplicateKeys: collapsed}
 	}
