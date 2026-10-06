@@ -129,4 +129,37 @@ describe('createPaneMintSettle', () => {
 		expect(onSettle).toHaveBeenCalledTimes(1);
 		expect(onSettle).toHaveBeenCalledWith('TASK-5');
 	});
+	// TASK-3423: kit 3 resolves a goto to afterNavigate across tasks, so a
+	// drill fired inside the window can still be in flight when it fires.
+	it('defers while a navigation is in flight; the in-flight drill then applies and the stale ref never does', () => {
+		const onSettle = vi.fn();
+		let inFlight = false;
+		const settle = createPaneMintSettle({ onSettle, deferWhile: () => inFlight });
+
+		settle.onNavigate('popstate', 'TASK-A');
+		vi.advanceTimersByTime(PANE_MINT_SETTLE_MS - 20);
+		inFlight = true; // the drill's goto started, not yet at afterNavigate
+		vi.advanceTimersByTime(PANE_MINT_SETTLE_MS * 3);
+		expect(onSettle).not.toHaveBeenCalled();
+
+		inFlight = false;
+		settle.onNavigate('goto', 'TASK-C');
+		vi.advanceTimersByTime(PANE_MINT_SETTLE_MS * 3);
+		expect(onSettle.mock.calls).toEqual([['TASK-C']]);
+	});
+
+	it('a deferred settle applies once the in-flight navigation ends without completing', () => {
+		const onSettle = vi.fn();
+		let inFlight = false;
+		const settle = createPaneMintSettle({ onSettle, deferWhile: () => inFlight });
+
+		settle.onNavigate('popstate', 'TASK-A');
+		inFlight = true;
+		vi.advanceTimersByTime(PANE_MINT_SETTLE_MS);
+		expect(onSettle).not.toHaveBeenCalled();
+
+		inFlight = false; // cancelled: no onNavigate follows
+		vi.advanceTimersByTime(PANE_MINT_SETTLE_MS);
+		expect(onSettle.mock.calls).toEqual([['TASK-A']]);
+	});
 });
