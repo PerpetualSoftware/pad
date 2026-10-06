@@ -848,10 +848,12 @@
 	.window-btn:hover {
 		color: var(--text-primary);
 	}
+	/* Selected segment: a 1px accent ring (BUG-3420). Background alone measured
+	   1.05-1.16:1 against its neighbours in both themes; the ring is >= 4.4:1. */
 	.window-btn.active {
 		background: var(--bg-primary, var(--bg));
 		color: var(--text-primary);
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+		box-shadow: inset 0 0 0 1px var(--accent-primary);
 	}
 
 	/* ── Print report link ────────────────────────────────────────────── */

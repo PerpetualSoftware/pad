@@ -1028,9 +1028,18 @@
 	.workspace-tab:hover {
 		background: var(--bg-hover);
 	}
+	/* The selected tab carries a 2px accent line along its top edge (BUG-3420).
+	   Its background alone could not mark it: the active tab flows into the
+	   page, so it IS the page colour, and that measured 1.07:1 (dark) and
+	   1.09:1 (light) against the strip and its neighbours, with the same text
+	   colour and weight. The line is WCAG non-text contrast against both: in
+	   dark #9268f8 is 4.85:1 on the strip and 5.20:1 on the tab, in light
+	   #7c3aed is 5.70:1 and 5.24:1. Inset, so it follows the rounded corners
+	   and moves nothing. */
 	.workspace-tab.active {
 		background: var(--bg-primary);
 		border-color: var(--border);
+		box-shadow: inset 0 2px 0 var(--accent-primary);
 		z-index: 1;
 	}
 	.workspace-tab-close {

@@ -287,10 +287,13 @@
 		border-left: 1px solid var(--border);
 	}
 
+	/* Selected segment: a 1px accent ring (BUG-3420). Background alone measured
+	   1.05-1.16:1 against its neighbours in both themes; the ring is >= 4.4:1. */
 	.view-btn.active {
 		background: var(--bg-tertiary);
 		color: var(--text-primary);
 		font-weight: 600;
+		box-shadow: inset 0 0 0 1px var(--accent-primary);
 	}
 
 	.tag-board {
