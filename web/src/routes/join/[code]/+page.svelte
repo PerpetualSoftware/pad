@@ -5,6 +5,7 @@
 	import { api, type InvitationPreview } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
@@ -170,6 +171,9 @@
 		try {
 			const result = await api.members.acceptInvitation(code, proof || undefined);
 			clearInvitationProof(code);
+			// The "+" badge must stop counting it, and the throttle would hold a
+			// navigation's refetch back (BUG-2136 U2).
+			void pendingInvitations.refresh(true);
 			await landInJoinedWorkspace(result);
 		} catch (err: unknown) {
 			errorMsg = err instanceof Error ? err.message : 'Failed to accept invitation';
@@ -183,6 +187,7 @@
 		try {
 			await api.members.declineInvitation(code);
 			clearInvitationProof(code);
+			void pendingInvitations.refresh(true);
 			status = 'declined';
 		} catch (err: unknown) {
 			errorMsg = err instanceof Error ? err.message : 'Failed to decline invitation';
