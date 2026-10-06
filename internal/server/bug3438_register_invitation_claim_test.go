@@ -158,9 +158,10 @@ func TestRegisterWithCode_FailedClaimBesideAMembershipIsNotAJoin(t *testing.T) {
 	}
 }
 
-// Codex r2: the account exists from CreateUser on, so a sign-in can mint it a
-// session before the claim. The rollback must still remove the account.
-func TestRegisterWithCode_SessionMintedBeforeTheClaimDoesNotBlockTheRollback(t *testing.T) {
+// Codex r2/r3: the account exists from CreateUser on, so a sign-in can mint it
+// a session, and /forgot-password a reset token, before the claim. The
+// rollback must still remove the account.
+func TestRegisterWithCode_CredentialsMintedBeforeTheClaimDoNotBlockTheRollback(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		inv := f.invite("signedin@example.com", "editor")
@@ -171,6 +172,10 @@ func TestRegisterWithCode_SessionMintedBeforeTheClaimDoesNotBlockTheRollback(t *
 			}
 			if _, err := f.srv.store.CreateSession(u.ID, "go-test", "192.0.2.1", "", time.Hour); err != nil {
 				t.Fatalf("CreateSession: %v", err)
+			}
+			// And a public /forgot-password, which mints a reset token (codex r3).
+			if _, err := f.srv.store.CreatePasswordReset(u.ID); err != nil {
+				t.Fatalf("CreatePasswordReset: %v", err)
 			}
 			if err := f.srv.store.DeleteInvitation(f.wsID, invID); err != nil {
 				t.Fatalf("DeleteInvitation: %v", err)
