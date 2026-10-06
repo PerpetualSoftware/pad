@@ -7,6 +7,9 @@
 // The list itself is rendered by PendingInvitations inside the "+" surface,
 // which fetches on open and reports what it got back here with set(), and
 // remove() after an accept or decline, so the badge never lags the list.
+// Both sources share ONE order: the list reserves a token before it fetches,
+// and set() applies only when nothing newer (a refresh, a remove, another
+// list) has happened since (codex r7).
 import { api } from '$lib/api/client';
 import { authStore } from '$lib/stores/auth.svelte';
 import type { MyInvitation } from '$lib/types';
@@ -53,9 +56,14 @@ class PendingInvitationsStore {
 		}
 	}
 
-	/** The list PendingInvitations just fetched. */
-	set(list: MyInvitation[]): void {
-		this.#seq++;
+	/** A place in the order, taken before an outside fetch is sent. */
+	reserve(): number {
+		return ++this.#seq;
+	}
+
+	/** The list an outside fetch got back, under the token it reserved. */
+	set(list: MyInvitation[], token: number): void {
+		if (token !== this.#seq) return;
 		this.invitations = list;
 	}
 

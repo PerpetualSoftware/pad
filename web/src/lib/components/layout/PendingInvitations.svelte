@@ -39,6 +39,8 @@
 
 	async function load() {
 		const mine = ++seq;
+		// The badge's place in the order, taken before the request is sent.
+		const token = pendingInvitations.reserve();
 		// A response issued for a previous account is not this one's list, nor
 		// its badge count.
 		const isSameIdentity = authStore.identityFence();
@@ -47,7 +49,7 @@
 			if (mine === seq && isSameIdentity()) {
 				invitations = res.invitations ?? [];
 				// The "+" badge counts what this list shows (BUG-2136 U2).
-				pendingInvitations.set(invitations);
+				pendingInvitations.set(invitations, token);
 			}
 		} catch {
 			if (mine === seq && isSameIdentity()) invitations = [];
