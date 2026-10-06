@@ -363,21 +363,51 @@ func dateBucketSubstr(column, granularity string) string {
 // ---------- Helper ----------
 
 // rebindQuery converts "?" placeholders to PostgreSQL's "$1", "$2", etc.
-// Respects string literals (single quotes) and does not modify "?" inside them.
+// A "?" is a placeholder only in plain SQL text: it is copied unchanged inside
+// a 'string literal' (where ” is an escaped quote), a "quoted identifier", a
+// -- line comment or a /* block comment */.
+//
+// Comments are lexed for BUG-3430. A quote inside a comment ("the
+// collection's items") used to flip the string state, so every later "?" was
+// left unbound and the query failed on Postgres only; SQLite takes "?"
+// natively and never comes here.
 func rebindQuery(query string) string {
 	var buf strings.Builder
 	buf.Grow(len(query) + 16)
 	n := 0
-	inString := false
 	for i := 0; i < len(query); i++ {
 		ch := query[i]
-		if ch == '\'' {
-			inString = !inString
-			buf.WriteByte(ch)
-		} else if ch == '?' && !inString {
+		switch {
+		case ch == '\'' || ch == '"':
+			// Copy through the closing quote. A doubled quote ('' or "")
+			// closes and reopens, which copies the same bytes.
+			j := strings.IndexByte(query[i+1:], ch)
+			if j < 0 {
+				buf.WriteString(query[i:])
+				return buf.String()
+			}
+			buf.WriteString(query[i : i+j+2])
+			i += j + 1
+		case ch == '-' && i+1 < len(query) && query[i+1] == '-':
+			j := strings.IndexByte(query[i:], '\n')
+			if j < 0 {
+				buf.WriteString(query[i:])
+				return buf.String()
+			}
+			buf.WriteString(query[i : i+j]) // the newline is copied next turn
+			i += j - 1
+		case ch == '/' && i+1 < len(query) && query[i+1] == '*':
+			j := strings.Index(query[i+2:], "*/")
+			if j < 0 {
+				buf.WriteString(query[i:])
+				return buf.String()
+			}
+			buf.WriteString(query[i : i+2+j+2])
+			i += 2 + j + 1
+		case ch == '?':
 			n++
 			fmt.Fprintf(&buf, "$%d", n)
-		} else {
+		default:
 			buf.WriteByte(ch)
 		}
 	}
