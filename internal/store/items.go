@@ -1377,7 +1377,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	// parents upstream, but raw-UUID input bypasses that path. See BUG-734 /
 	// Codex review on PR #259.
 	if params.ParentLinkID != "" {
-		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL JOIN collections pc ON pc.id = p.collection_id AND pc.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
 	}
 
@@ -2105,7 +2105,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	// `parent=<UUID>&search=<q>` doesn't silently drop the parent constraint
 	// (and, by extension, the soft-deleted-parent rejection from BUG-734).
 	if params.ParentLinkID != "" {
-		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL JOIN collections pc ON pc.id = p.collection_id AND pc.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
 	}
 
