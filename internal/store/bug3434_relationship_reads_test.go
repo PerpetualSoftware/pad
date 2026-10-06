@@ -173,3 +173,38 @@ func TestUnparented_StillCountsAParentInASoftDeletedCollection(t *testing.T) {
 		t.Errorf("control: an item with no parent link should be unparented")
 	}
 }
+
+// Codex r1: the parent filter on ListItems (and its FTS path) already treats a
+// soft-deleted parent as no parent (BUG-734); a parent in a soft-deleted
+// collection must read the same. The live parent is the control.
+func TestListItemsParentFilter_ExcludesParentInSoftDeletedCollection(t *testing.T) {
+	t.Parallel()
+	w := newBug3434World(t)
+	w.link(t, w.live, w.doomed, "parent")    // child of the doomed parent
+	w.link(t, w.partner, w.doomed, "parent") // second child, so search has two
+	ctl := createTestItem(t, w.s, w.ws.ID, w.liveColl.ID, "Zephyr control child", "")
+	w.link(t, ctl, w.partner, "parent") // child of a live parent
+
+	list := func(parent string, search string) []models.Item {
+		t.Helper()
+		got, err := w.s.ListItems(w.ws.ID, models.ItemListParams{ParentLinkID: parent, Search: search})
+		if err != nil {
+			t.Fatalf("ListItems: %v", err)
+		}
+		return got
+	}
+	for _, search := range []string{"", "Zephyr"} {
+		if !hasItem(list(w.doomed.ID, search), w.live.ID) {
+			t.Fatalf("control (search=%q): the doomed parent's child lists before the delete", search)
+		}
+	}
+	w.deleteDoomed(t)
+	for _, search := range []string{"", "Zephyr"} {
+		if got := list(w.doomed.ID, search); hasItem(got, w.live.ID) || hasItem(got, w.partner.ID) {
+			t.Errorf("search=%q: the parent filter still lists children of a parent in a soft-deleted collection", search)
+		}
+		if !hasItem(list(w.partner.ID, search), ctl.ID) {
+			t.Errorf("search=%q: the parent filter lost a live parent's child", search)
+		}
+	}
+}
