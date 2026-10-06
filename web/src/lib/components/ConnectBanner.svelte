@@ -81,7 +81,11 @@
 			.catch(() => {
 				if (mySeq !== fetchSeq) return;
 				if (slug !== wsSlug) return;
-				if (!quiet) hasAgentActivity = false;
+				// A quiet failure keeps a KNOWN answer; from unknown (it overtook
+				// the first check, which its sequence then discarded) it falls
+				// back to false like any failure, or the banner hides for good
+				// (codex r3).
+				if (!quiet || hasAgentActivity === null) hasAgentActivity = false;
 			});
 	}
 
