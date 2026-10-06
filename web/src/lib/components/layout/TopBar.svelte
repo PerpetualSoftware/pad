@@ -8,7 +8,7 @@
 	import { api } from '$lib/api/client';
 	import type { WorkspaceTab } from '$lib/types';
 	import { onMount, tick, untrack } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import PadLogo from '$lib/components/layout/PadLogo.svelte';
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
 	import UserMenuResources from '$lib/components/layout/UserMenuResources.svelte';
@@ -18,6 +18,7 @@
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import { tabLanding } from '$lib/utils/tabLanding';
+	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
 
@@ -29,6 +30,26 @@
 	// open as a tab, create one, or restore a deleted one.
 	let discoveryOpen = $state(false);
 	let addEl: HTMLButtonElement | undefined = $state(undefined);
+
+	// Pending invitations badge on "+" (BUG-2136 U2). Refetched on mount,
+	// window focus and every navigation, so an invitee sees a new invitation
+	// on their next page view; the store throttles the focus and navigation
+	// refetches, so a burst of either costs one request.
+	const invitationCount = $derived(pendingInvitations.count);
+	const addLabel = $derived(
+		invitationCount > 0
+			? `Find or create a workspace (${invitationCount} pending ${invitationCount === 1 ? 'invitation' : 'invitations'})`
+			: 'Find or create a workspace'
+	);
+	onMount(() => {
+		// A mount is a page load: it skips the throttle, so a remount within the
+		// window still fetches.
+		void pendingInvitations.refresh(true);
+		const onFocus = () => void pendingInvitations.refresh();
+		window.addEventListener('focus', onFocus);
+		return () => window.removeEventListener('focus', onFocus);
+	});
+	afterNavigate(() => void pendingInvitations.refresh());
 
 	let currentSlug = $derived(workspaceStore.current?.slug ?? '');
 
@@ -691,12 +712,15 @@
 					class="workspace-add"
 					bind:this={addEl}
 					onclick={() => (discoveryOpen = !discoveryOpen)}
-					title="Find or create a workspace"
-					aria-label="Find or create a workspace"
+					title={addLabel}
+					aria-label={addLabel}
 					aria-haspopup="listbox"
 					aria-expanded={discoveryOpen}
 				>
 					<span class="add-icon">+</span>
+					{#if invitationCount > 0}
+						<span class="add-badge" data-testid="invitation-badge" aria-hidden="true">{invitationCount}</span>
+					{/if}
 				</button>
 				<WorkspaceDiscovery open={discoveryOpen} onclose={() => (discoveryOpen = false)} trigger={addEl} />
 			</div>
@@ -1157,6 +1181,7 @@
 		flex-shrink: 0;
 	}
 	.workspace-add {
+		position: relative;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -1167,6 +1192,23 @@
 		color: var(--text-muted);
 		border: 2px dashed var(--border);
 		transition: border-color 0.15s, color 0.15s;
+	}
+	/* Pending invitations on "+" (BUG-2136 U2): visible without opening it. */
+	.add-badge {
+		position: absolute;
+		top: -6px;
+		right: -8px;
+		min-width: 16px;
+		height: 16px;
+		padding: 0 4px;
+		border-radius: 8px;
+		background: var(--accent-blue);
+		color: var(--bg-primary);
+		font-size: 10px;
+		font-weight: 600;
+		line-height: 16px;
+		text-align: center;
+		pointer-events: none;
 	}
 	.workspace-add:hover {
 		border-color: var(--text-secondary);

@@ -2605,6 +2605,12 @@ export const api = {
 			request<InvitationAccepted>(`/me/invitations/${encodeURIComponent(id)}/accept`, {
 				method: 'POST'
 			}),
+		// Declining deletes the invitation (BUG-2136). By id from the in-app
+		// list, or by code from the join page; both answer 204.
+		declineMyInvitation: (id: string) =>
+			request<void>(`/me/invitations/${encodeURIComponent(id)}/decline`, { method: 'POST' }),
+		declineInvitation: (code: string) =>
+			request<void>(`/invitations/${encodeURIComponent(code)}/decline`, { method: 'POST' }),
 		// Non-consuming, public preview of an invitation (BUG-1934). Used by the
 		// /join page to prefill the invited email read-only and pick
 		// register-vs-login mode. Always resolves (HTTP 200); check `found`.
