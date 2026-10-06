@@ -3428,7 +3428,37 @@ func (s *Server) guestResourceFilterCoreQ(q store.Queryer, r *http.Request, work
 	// helper duplicates the admin check via GetUser, but for the
 	// request hot path we short-circuit above (cookie admin only)
 	// so the duplicate lookup never fires for the common case.
-	return s.store.ResolveBacklinksVisibilityQ(q, user.ID, workspaceID, includeDeletedItems, authIsBearer)
+	fullCollIDs, grantedItemIDs, err = s.store.ResolveBacklinksVisibilityQ(q, user.ID, workspaceID, includeDeletedItems, authIsBearer)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s.appCeilGrantFilter(q, r, fullCollIDs, grantedItemIDs)
+}
+
+// appCeilGrantFilter narrows an item-grant filter to an app request's read
+// ceiling (BUG-3424), the same ceiling visibleCollectionIDs applies (SPEC-6
+// U6a). A caller holding item grants is filtered by this result instead of by
+// visibleCollectionIDs, so without it the ceiling would be dropped exactly
+// there. Outside the app API (no app context) it changes nothing.
+//
+// nil/nil stays nil/nil: it means "no grant filtering", and such a caller is
+// filtered by visibleCollectionIDs, which already applies the ceiling. A nil
+// fullCollIDs beside grants means NO full collections (BUG-3347), so it is
+// never widened to the ceiling the way IntersectCollectionIDs would widen it.
+func (s *Server) appCeilGrantFilter(q store.Queryer, r *http.Request, fullCollIDs, grantedItemIDs []string) ([]string, []string, error) {
+	ac := appContextFrom(r)
+	if ac == nil || (fullCollIDs == nil && grantedItemIDs == nil) {
+		return fullCollIDs, grantedItemIDs, nil
+	}
+	ceiled := []string{}
+	if fullCollIDs != nil {
+		ceiled = store.IntersectCollectionIDs(fullCollIDs, ac.ReadCeiling)
+	}
+	items, err := s.store.ItemIDsInCollectionsQ(q, grantedItemIDs, ac.ReadCeiling)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ceiled, items, nil
 }
 
 // isCollectionVisible checks if a collection ID is in the visible set.
