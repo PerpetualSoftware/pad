@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { untrack } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api, type InvitationPreview } from '$lib/api/client';
@@ -34,6 +34,15 @@
 	// card (BUG-2136 U2).
 	let invitedWorkspaceName = $state('');
 	let errorMsg = $state('');
+	const announcement = $derived(
+		status === 'accepting'
+			? 'Joining workspace...'
+			: status === 'declining'
+				? 'Declining invitation...'
+				: status === 'declined'
+					? 'Invitation declined. You were not added to the workspace.'
+					: ''
+	);
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
 
 	// Auth form state
@@ -64,8 +73,29 @@
 	let usernameError = $state('');
 	let checkTimeout: ReturnType<typeof setTimeout> | null = null;
 
-	onMount(async () => {
-		proof = captureInvitationProof(code, window.location.hash);
+	// The code the page is showing. SvelteKit keeps this component when only
+	// the code changes (an SPA navigation from one /join link to another), so
+	// the flow restarts for each code, every action addresses the code whose
+	// invitation is on screen, and an answer for an earlier code is dropped
+	// (BUG-2136 U2, codex r4).
+	let flowCode = '';
+	$effect(() => {
+		const c = code;
+		if (c !== untrack(() => flowCode)) untrack(() => void start(c));
+	});
+
+	async function start(c: string) {
+		flowCode = c;
+		status = 'loading';
+		invitedWorkspaceName = '';
+		invitedEmail = null;
+		email = '';
+		mode = 'register';
+		errorMsg = '';
+		formError = '';
+		challengeToken = '';
+		const current = () => c === flowCode;
+		proof = captureInvitationProof(c, window.location.hash);
 		if (window.location.hash) {
 			replaceState(window.location.pathname + window.location.search, page.state);
 		}
@@ -87,14 +117,15 @@
 		// it just tells us the invited email (to prefill read-only) and whether
 		// an account already exists (to pick login vs register). Best-effort: on
 		// failure we fall back to a blank, editable email field.
-		const previewPromise = api.members.previewInvitation(code).catch(() => null);
+		const previewPromise = api.members.previewInvitation(c).catch(() => null);
 
 		try {
 			const session = await api.auth.session();
+			if (!current()) return;
 			if (session.authenticated) {
 				// Already signed in: ASK (BUG-2136, lead ruling). Opening the link
 				// is not consent; the card offers accept or decline.
-				await applyPreview(previewPromise);
+				if (!(await applyPreview(previewPromise, current))) return;
 				status = 'confirm';
 				return;
 			}
@@ -104,15 +135,16 @@
 				return;
 			}
 			// Logged out — show the auth form.
-			await applyPreview(previewPromise);
+			if (!(await applyPreview(previewPromise, current))) return;
 			status = 'login';
 		} catch {
 			// Session probe itself failed — still show the form (defaulting to
 			// register unless the preview says an account exists). See BUG-1930.
-			await applyPreview(previewPromise);
+			if (!current()) return;
+			if (!(await applyPreview(previewPromise, current))) return;
 			status = 'login';
 		}
-	});
+	}
 
 	// Apply the invitation preview to the auth form: prefill + lock the invited
 	// email, and default the mode by whether an account already exists. When
@@ -121,8 +153,13 @@
 	// to sign into, and register passes the code to auto-accept in one step
 	// (BUG-1930). The "already have an account? sign in" switch still lets a
 	// returning user flip to login.
-	async function applyPreview(previewPromise: Promise<InvitationPreview | null>) {
+	// Answers false, applying nothing, when the page has moved on to another code.
+	async function applyPreview(
+		previewPromise: Promise<InvitationPreview | null>,
+		current: () => boolean
+	): Promise<boolean> {
 		const preview = await previewPromise;
+		if (!current()) return false;
 		if (preview?.found && preview.workspace_name) invitedWorkspaceName = preview.workspace_name;
 		if (preview?.found && preview.email) {
 			email = preview.email;
@@ -131,6 +168,7 @@
 		} else {
 			mode = 'register';
 		}
+		return true;
 	}
 
 	// OAuth completes entirely outside the SPA (provider → pad-cloud callback →
@@ -169,8 +207,8 @@
 	async function acceptInvitation() {
 		status = 'accepting';
 		try {
-			const result = await api.members.acceptInvitation(code, proof || undefined);
-			clearInvitationProof(code);
+			const result = await api.members.acceptInvitation(flowCode, proof || undefined);
+			clearInvitationProof(flowCode);
 			// The "+" badge must stop counting it, and the throttle would hold a
 			// navigation's refetch back (BUG-2136 U2).
 			void pendingInvitations.refresh(true);
@@ -185,8 +223,8 @@
 	async function declineInvitation() {
 		status = 'declining';
 		try {
-			await api.members.declineInvitation(code);
-			clearInvitationProof(code);
+			await api.members.declineInvitation(flowCode);
+			clearInvitationProof(flowCode);
 			void pendingInvitations.refresh(true);
 			status = 'declined';
 		} catch (err: unknown) {
@@ -260,10 +298,10 @@
 					name.trim(),
 					password,
 					username || undefined,
-					code,
+					flowCode,
 					proof || undefined
 				);
-				clearInvitationProof(code);
+				clearInvitationProof(flowCode);
 				// Registration with invitation_code already accepted the invite,
 				// so land directly instead of calling acceptInvitation().
 				await landInJoinedWorkspace(registered.accepted_invitation);
@@ -346,6 +384,9 @@
 			<h1 class="logo">Pad</h1>
 		{/if}
 
+		<!-- Accept and Decline remove the focused buttons, so their progress and
+		     result are spoken from a region that stays mounted (codex r4). -->
+		<p class="sr-only" role="status" aria-live="polite">{announcement}</p>
 		{#if status === 'loading'}
 			<p class="subtitle">Checking invitation...</p>
 		{:else if status === 'confirm'}
@@ -372,7 +413,7 @@
 				actionLabel="Go to login"
 			/>
 		{:else if status === 'error'}
-			<p class="subtitle error-text">{errorMsg}</p>
+			<p class="subtitle error-text" role="alert">{errorMsg}</p>
 			<a href="/login" class="link">Go to login</a>
 		{:else if status === '2fa'}
 			<p class="subtitle">Two-factor authentication</p>
@@ -681,5 +722,16 @@
 
 	.username-status.taken {
 		color: var(--accent-red);
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 </style>
