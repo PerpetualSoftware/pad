@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 	register: vi.fn(),
 	verify2FA: vi.fn(),
 	refreshInvitations: vi.fn(async () => {}),
+	clearProof: vi.fn(),
 }));
 
 // Reactive, so a leg can change the code under a mounted page, as an SPA
@@ -49,6 +50,10 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 // declined (codex r2): both force a refetch, which also orders out any older one.
 vi.mock('$lib/stores/pendingInvitations.svelte', () => ({
 	pendingInvitations: { refresh: mocks.refreshInvitations },
+}));
+vi.mock('$lib/invitations/proof', () => ({
+	captureInvitationProof: () => '',
+	clearInvitationProof: mocks.clearProof,
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { loadAll: vi.fn(async () => {}) } }));
 
@@ -290,5 +295,71 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(byTestId('join-accept')).not.toBeNull();
 		expect(document.body.textContent).toContain('Beta Co');
 		expect(mocks.accept).not.toHaveBeenCalled();
+	});
+
+	// codex r6
+	it('a code change empties the form it carried, so B is never submitted with what was typed for A', async () => {
+		mocks.session.mockResolvedValue({ authenticated: false });
+		mocks.preview.mockResolvedValue({ found: true, email: 'new@example.com', has_account: false, workspace_name: 'Acme' });
+		render(JoinPage);
+		await settle();
+		const typed = (ph: string, v: string) =>
+			fireEvent.input(document.querySelector<HTMLInputElement>(`input[placeholder="${ph}"]`)!, { target: { value: v } });
+		await typed('Name', 'For A');
+		await typed('Password', 'password123');
+		await typed('Confirm password', 'password123');
+		mocks.preview.mockResolvedValue({ found: true, email: 'other@example.com', has_account: false, workspace_name: 'Beta Co' });
+		page.params = { code: 'def456' };
+		await settle();
+		for (const ph of ['Name', 'Username', 'Password', 'Confirm password']) {
+			expect(document.querySelector<HTMLInputElement>(`input[placeholder="${ph}"]`)!.value, ph).toBe('');
+		}
+	});
+
+	it('a sign-in still out when the code changes keeps the form busy, so a second one cannot start', async () => {
+		mocks.session.mockResolvedValue({ authenticated: false });
+		let signedIn!: (v: unknown) => void;
+		mocks.login.mockReturnValue(new Promise((r) => (signedIn = r)));
+		render(JoinPage);
+		await settle();
+		await fireEvent.input(document.querySelector<HTMLInputElement>('input[type="password"]')!, {
+			target: { value: 'password123' },
+		});
+		await fireEvent.click(submitBtn());
+		await settle();
+		mocks.preview.mockResolvedValue(BETA_PREVIEW);
+		page.params = { code: 'def456' };
+		await settle();
+		const busy = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((b) =>
+			/^Signing in/.test(b.textContent?.trim() ?? '')
+		);
+		expect(busy?.disabled).toBe(true);
+		mocks.session.mockResolvedValue({ authenticated: true });
+		signedIn({});
+		await settle();
+		expect(byTestId('join-accept')).not.toBeNull();
+		expect(mocks.login).toHaveBeenCalledTimes(1);
+	});
+
+	it('a signup that completes after the code changed still clears its own spent proof', async () => {
+		mocks.session.mockResolvedValue({ authenticated: false });
+		mocks.preview.mockResolvedValue({ found: true, email: 'new@example.com', has_account: false, workspace_name: 'Acme' });
+		let registered!: (v: unknown) => void;
+		mocks.register.mockReturnValue(new Promise((r) => (registered = r)));
+		render(JoinPage);
+		await settle();
+		await fireEvent.input(document.querySelector<HTMLInputElement>('input[placeholder="Name"]')!, { target: { value: 'New' } });
+		const pws = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
+		await fireEvent.input(pws[0], { target: { value: 'password123' } });
+		await fireEvent.input(pws[1], { target: { value: 'password123' } });
+		await fireEvent.click(submitBtn());
+		await settle();
+		mocks.preview.mockResolvedValue(BETA_PREVIEW);
+		page.params = { code: 'def456' };
+		await settle();
+		registered({ accepted_invitation: { workspace_slug: 'acme', owner_username: 'o' } });
+		await settle();
+		expect(mocks.clearProof).toHaveBeenCalledWith('abc123');
+		expect(mocks.goto).not.toHaveBeenCalled();
 	});
 });
