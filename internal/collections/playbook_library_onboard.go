@@ -133,6 +133,8 @@ For each rewritten convention, propose it to the user. Confirm. Create via ` + "
 
 If the library has nothing close to what the user needs, INVENT a convention.
 
+**Triggers and scopes.** A blank workspace starts with one trigger (` + "`always`" + `) and one scope (` + "`all`" + `). Any trigger or scope the library uses is added to the collection's options automatically the first time you use it; the response notes what was added. A trigger you INVENT (e.g. ` + "`on-experiment-run`" + `) is refused until it is in the options, so add it first: read the schema (` + "`pad collection list --format json`" + `), append the word to the ` + "`trigger`" + ` field's ` + "`options`" + `, and send it back with ` + "`pad collection update conventions --schema '<json>'`" + ` (or ` + "`pad_collection`" + ` with ` + "`action: update`" + `). That is owner-only; if you are not the owner, ask the user to do it or pick a library trigger.
+
 **Independent code reviewer (software projects).** One library convention is worth
 calling out specially: **"Independent AI code review."** The principle — a reviewer
 model DIFFERENT from your implementer model catches far more than self-review;

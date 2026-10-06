@@ -122,6 +122,17 @@
 		field unique: the server writes one sentence per drop, naming the value
 		and, when the actor may see it, the item that holds it.
 	-->
+	<!--
+		BUG-3446. A create can add a library trigger or scope to its collection's
+		options (a blank workspace seeds one of each). This row is the record the
+		owner reads: which words were added, to which collection, by this write.
+	-->
+	{#if activity.action === 'created' && metadata.options_added}
+		<div class="dropped">
+			<span class="dropped-label">Added to {metadata.options_added_collection || 'collection'} options:</span>
+			<span class="dropped-keys">{metadata.options_added}</span>
+		</div>
+	{/if}
 	{#if activity.action === 'moved' && metadata.not_unique}
 		<div class="dropped">
 			<span class="dropped-label">Not unique:</span>

@@ -365,6 +365,7 @@ Run with --help-collections to see available collections and their status values
 			// into a parser — which is exactly the caller most likely to have
 			// sent a mistyped key and least likely to notice (codex round 2).
 			warnUndeclaredFields(item)
+			warnOptionsAdded(item)
 			warnContentPendingFlush(item)
 
 			if formatFlag == "json" {
@@ -4325,6 +4326,25 @@ func warnUndeclaredFields(item *models.Item) {
 	fmt.Fprintf(os.Stderr, "warning: %s not declared by this collection's schema — stored as-is: %s\n",
 		pluralize(len(item.Warnings.UndeclaredFields), "field", "fields"),
 		strings.Join(item.Warnings.UndeclaredFields, ", "))
+}
+
+// warnOptionsAdded prints one line to STDERR when the create added library
+// trigger or scope words to its collection's options (BUG-3446), so the
+// schema change is never silent. Stderr for the same reason as above.
+func warnOptionsAdded(item *models.Item) {
+	if item == nil || item.Warnings == nil || len(item.Warnings.OptionsAdded) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(item.Warnings.OptionsAdded))
+	for k := range item.Warnings.OptionsAdded {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+": "+strings.Join(item.Warnings.OptionsAdded[k], ", "))
+	}
+	fmt.Fprintf(os.Stderr, "note: added to this collection's options (library vocabulary): %s\n", strings.Join(parts, "; "))
 }
 
 // warnContentStale prints one line to STDERR when a READ served a body the server
