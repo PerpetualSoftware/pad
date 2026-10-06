@@ -873,6 +873,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// If registering via invitation, automatically add the user to the
 	// workspace and mark the invitation as accepted.
+	// The role the account holds in the invited workspace, as the claim
+	// reports it: an existing membership keeps its own (codex r5).
+	joinedRole := ""
 	if invitation != nil {
 		if s.registerInvitationPreClaimHook != nil {
 			s.registerInvitationPreClaimHook(invitation.ID)
@@ -892,7 +895,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// the account is removed too, so the retry this refusal permits exists.
 		// This is the store call the two accept doors make
 		// (acceptInvitationCore), so the three doors agree.
-		_, _, addErr := s.store.AcceptWorkspaceInvitation(invitation.ID, invitation.WorkspaceID, user.ID, invitation.Role, s.workspaceLimitMintOpts()...)
+		_, heldRole, addErr := s.store.AcceptWorkspaceInvitation(invitation.ID, invitation.WorkspaceID, user.ID, invitation.Role, s.workspaceLimitMintOpts()...)
 		if errors.Is(addErr, store.ErrInvitationGone) {
 			slog.Info("invitation signup: the invitation was gone at its claim; rolling back the account",
 				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)
@@ -905,6 +908,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
 			return
 		}
+		joinedRole = heldRole
 		if addErr != nil {
 			// RECONCILE BEFORE DESTROYING — here too (codex round 2).
 			//
@@ -946,6 +950,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				// as it does at the accept doors (codex r1).
 				stored, ierr := s.store.GetInvitation(invitation.ID)
 				if ierr == nil && stored != nil && stored.AcceptedAt != nil {
+					joinedRole = member.Role
 					// LANDED despite the reported error: the user HAS access and
 					// the signup succeeded; refusing would delete a working account.
 					slog.Warn("invitation signup: the claim reported an error but the membership and the "+
@@ -1025,7 +1030,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// the client can land IN it, as an accept does (BUG-3284, PLAN-3002 Q5).
 	// Additive; absent without an invitation.
 	if invitation != nil {
-		resp["accepted_invitation"] = s.invitationAcceptedFields(invitation, invitation.Role)
+		if joinedRole == "" {
+			joinedRole = invitation.Role
+		}
+		resp["accepted_invitation"] = s.invitationAcceptedFields(invitation, joinedRole)
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
