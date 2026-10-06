@@ -168,7 +168,6 @@
 		},
 		captureReturnFocus: () => {},
 		setBypassNavGuard: () => {},
-		getPaneScrollTop: () => paneHostEl?.getPaneScrollTop() ?? null,
 	});
 	const {
 		openItemPaneByRef,

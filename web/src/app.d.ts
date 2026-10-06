@@ -13,8 +13,6 @@ declare global {
 		interface PageState {
 			paneDepth?: number;
 			paneOwned?: boolean;
-			/** Pane scroll offset saved when drilling forward from this entry (BUG-2182). */
-			paneScrollTop?: number;
 		}
 		// interface Platform {}
 	}
