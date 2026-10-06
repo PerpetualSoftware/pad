@@ -598,6 +598,16 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRegister creates a new user account.
+// rollbackSignup removes an account this signup created moments ago and is
+// now refusing (BUG-3438). It is the full account deletion, not a bare
+// DELETE FROM users: the account exists from CreateUser on, so a sign-in, a
+// /forgot-password or the signup's own verification mint can add rows that
+// reference it before the refusal, and DeleteAccountAtomic removes or
+// detaches every such row and retries one that lands late.
+func (s *Server) rollbackSignup(userID string) error {
+	return s.store.DeleteAccountAtomic(userID)
+}
+
 // restoreSpentProof puts back the invitation proof a refused signup spent
 // (BUG-3438), so the same emailed link still verifies on the retry. A failure
 // is logged, not fatal: the retry then needs the verification email instead.
@@ -809,6 +819,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if needsVerification && invitation != nil && input.InvitationProof != "" {
 		ok, perr := s.store.ConsumeInvitationProof(invitation.ID, user.ID, strings.TrimSpace(input.InvitationProof))
 		if perr != nil {
+			// The commit may have landed, so count the proof as possibly
+			// spent: a rollback's restore rewrites only a proof that IS spent
+			// (codex r3).
+			spentProof = strings.TrimSpace(input.InvitationProof)
 			slog.Error("invitation proof: consume failed; continuing unverified", "error", perr, "user_id", user.ID)
 		} else if ok {
 			spentProof = strings.TrimSpace(input.InvitationProof)
@@ -840,7 +854,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		vtoken, verr := s.store.CreateEmailVerification(user.ID)
 		if verr != nil {
 			slog.Error("failed to create email verification token; rolling back signup", "error", verr, "user_id", user.ID)
-			if derr := s.store.DeleteUser(user.ID); derr != nil {
+			if derr := s.rollbackSignup(user.ID); derr != nil {
 				slog.Error("failed to roll back user after verification-token error", "error", derr, "user_id", user.ID)
 			}
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to start email verification")
@@ -881,7 +895,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			slog.Info("invitation signup: the invitation was gone at its claim; rolling back the account",
 				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)
 			s.restoreSpentProof(invitation.ID, spentProof)
-			if derr := s.store.DeleteUser(user.ID); derr != nil {
+			if derr := s.rollbackSignup(user.ID); derr != nil {
 				slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
 					"account with no workspace access",
 					"user_id", user.ID, "error", derr)
@@ -960,7 +974,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 					"invitation redeemable",
 					"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
 				s.restoreSpentProof(invitation.ID, spentProof)
-				if derr := s.store.DeleteUser(user.ID); derr != nil {
+				if derr := s.rollbackSignup(user.ID); derr != nil {
 					slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
 						"account with no workspace access",
 						"user_id", user.ID, "error", derr)
