@@ -120,9 +120,12 @@ func TestBUG3333_DeletedCollectionNotVisibleThroughAGrant(t *testing.T) {
 		}
 	}
 
-	after := []string{"Doc in a granted collection", "Task in an assigned collection"}
+	// Nothing from either deleted collection lists: BUG-3425 leaves a
+	// soft-deleted collection's items out of every ListItems reader, the
+	// whole-collection grant's doc included (it listed here before BUG-3425).
+	after := []string{"Task in an assigned collection"}
 	if got := listTitles(); !bug3333Equal(got, after) {
-		t.Errorf("after deleting the collections the member lists %v, want %v (nothing from the item-granted collection)", got, after)
+		t.Errorf("after deleting the collections the member lists %v, want %v (nothing from either deleted collection)", got, after)
 	}
 	for _, it := range []*models.Item{hidden, granted} {
 		if canOpen(it) {
