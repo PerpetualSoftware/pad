@@ -1835,6 +1835,11 @@ type ItemListParams struct {
 	// an outgoing parent/implements item_link. Incoming links do not count.
 	Unparented      bool
 	IncludeArchived bool
+	// IncludeDeletedCollections returns items whose collection is
+	// soft-deleted. Every read leaves them out by default (BUG-3425): a
+	// collection's delete leaves its items live. Only the account data
+	// export sets it, so a user's export still holds everything they own.
+	IncludeDeletedCollections bool
 	// NonTerminal, when true, restricts results to items whose resolved
 	// done-field value is NOT one of their collection's terminal options.
 	// Each collection is evaluated against its OWN terminal_options (falling

@@ -48,6 +48,8 @@ func graphEdgeType(linkType string) string {
 // Both queries exclude edges whose source or target item is soft-deleted,
 // matching GetParentMap's posture (BUG-734) — a dangling edge to an
 // archived item would render as a node the items query never returned.
+// For the same reason they exclude an endpoint whose COLLECTION is
+// soft-deleted, since ListItems leaves those items out (BUG-3425).
 //
 // Wiki-link rows are deduplicated per (source, target) pair — an item
 // that mentions [[TASK-5]] three times is still one edge — and
@@ -62,6 +64,8 @@ func (s *Store) ListWorkspaceGraphLinks(workspaceID string) ([]GraphLink, error)
 		FROM item_links il
 		JOIN items src ON src.id = il.source_id AND src.deleted_at IS NULL
 		JOIN items tgt ON tgt.id = il.target_id AND tgt.deleted_at IS NULL
+		JOIN collections sc ON sc.id = src.collection_id AND sc.deleted_at IS NULL
+		JOIN collections tc ON tc.id = tgt.collection_id AND tc.deleted_at IS NULL
 		WHERE il.workspace_id = ?
 	`), workspaceID)
 	if err != nil {
@@ -89,6 +93,8 @@ func (s *Store) ListWorkspaceGraphLinks(workspaceID string) ([]GraphLink, error)
 		FROM item_wiki_links wl
 		JOIN items src ON src.id = wl.source_item_id AND src.deleted_at IS NULL
 		JOIN items tgt ON tgt.id = wl.target_item_id AND tgt.deleted_at IS NULL
+		JOIN collections sc ON sc.id = src.collection_id AND sc.deleted_at IS NULL
+		JOIN collections tc ON tc.id = tgt.collection_id AND tc.deleted_at IS NULL
 		WHERE src.workspace_id = ?
 		  AND wl.target_item_id IS NOT NULL
 		  AND wl.target_workspace_id IS NULL

@@ -1299,6 +1299,11 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	if !params.IncludeArchived {
 		query += " AND i.deleted_at IS NULL"
 	}
+	// A soft-deleted collection leaves its items live (BUG-3425): every
+	// reader leaves them out unless it opts in.
+	if !params.IncludeDeletedCollections {
+		query += " AND c.deleted_at IS NULL"
+	}
 
 	if params.CollectionSlug != "" {
 		query += " AND c.slug = ?"
@@ -2075,6 +2080,10 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		// "no such column: 5" — see BUG-818. Postgres handles raw input via
 		// the OR-combined plainto_tsquery in the dialect (BUG-842).
 		args = []interface{}{workspaceID, sanitizeFTSQuery(params.Search)}
+	}
+	// As in ListItems (BUG-3425).
+	if !params.IncludeDeletedCollections {
+		query += " AND c.deleted_at IS NULL"
 	}
 
 	if params.CollectionSlug != "" {
@@ -4653,11 +4662,11 @@ func (s *Store) childrenDoneFiltersForParent(parentItemID string) []collectionDo
 // breakdowns) that need to evaluate "is done?" for every item regardless
 // of which collection it belongs to.
 //
-// Includes soft-deleted collections: callers (e.g. GetRoleBreakdown)
-// count items in the workspace without filtering by collection
-// deleted_at, so excluding soft-deleted collections here would leave
-// their items without a matching per-collection clause and cause them
-// to always register as non-terminal.
+// Includes soft-deleted collections, so that a caller counting items
+// without a collection deleted_at filter still finds a per-collection
+// clause for every item (an item with none would always register as
+// non-terminal). GetRoleBreakdown now excludes those items itself
+// (BUG-3425); keeping them here is harmless for it.
 func (s *Store) doneFiltersForWorkspace(workspaceID string) []collectionDoneFilter {
 	rows, err := s.db.Query(
 		s.q(`SELECT id, schema, settings FROM collections WHERE workspace_id = ?`),

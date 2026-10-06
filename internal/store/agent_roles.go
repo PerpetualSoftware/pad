@@ -62,12 +62,17 @@ func (s *Store) GetAgentRole(workspaceID, idOrSlug string) (*models.AgentRole, e
 }
 
 func (s *Store) ListAgentRoles(workspaceID string) ([]models.AgentRole, error) {
+	// item_count leaves out a soft-deleted collection's items: the role board
+	// lists its items through ListItems, which does (BUG-3425), and the count
+	// must agree. The check sits in the LEFT JOIN's ON so a role with no
+	// items still lists. (A comment inside this SQL broke it on Postgres.)
 	rows, err := s.db.Query(s.q(`
 		SELECT r.id, r.workspace_id, r.slug, r.name, r.description, r.icon, r.tools, r.sort_order,
 		       r.created_at, r.updated_at,
 		       COUNT(i.id) as item_count
 		FROM agent_roles r
 		LEFT JOIN items i ON i.agent_role_id = r.id AND i.deleted_at IS NULL
+			AND EXISTS (SELECT 1 FROM collections rc WHERE rc.id = i.collection_id AND rc.deleted_at IS NULL)
 		WHERE r.workspace_id = ?
 		GROUP BY r.id
 		ORDER BY r.sort_order ASC, r.name ASC
@@ -190,6 +195,7 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT i.agent_role_id, COUNT(*) as cnt, %s as users
 		FROM items i
+		JOIN collections rc ON rc.id = i.collection_id AND rc.deleted_at IS NULL
 		LEFT JOIN users u ON u.id = i.assigned_user_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
 		  AND NOT %s

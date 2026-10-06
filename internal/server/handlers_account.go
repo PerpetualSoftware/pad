@@ -391,7 +391,9 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 			wsData["collections"] = collections
 
 			// Stream items per workspace (each workspace loaded individually, then GC'd)
-			items, err := s.store.ListItems(ws.ID, models.ItemListParams{IncludeArchived: true})
+			// IncludeDeletedCollections: a user's own export keeps the items
+			// of collections they deleted, as it always has (BUG-3425).
+			items, err := s.store.ListItems(ws.ID, models.ItemListParams{IncludeArchived: true, IncludeDeletedCollections: true})
 			if err != nil {
 				slog.Error("export: failed to list items", "workspace", ws.Slug, "error", err)
 				wsData["items"] = []interface{}{}
