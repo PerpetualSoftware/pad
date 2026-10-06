@@ -15,12 +15,16 @@ package collections
 //     for conventions (universal "follow this" rule), `manual` for
 //     playbooks (the seeded onboard playbook itself is
 //     manual-triggered), and `all` for both scopes.
-//   - The /pad onboard playbook broadens these via `pad collection
-//     update` (TASK-1510) once the interview reveals the workspace's
-//     actual domain — software adds `on-commit`/`on-implement`,
-//     hiring adds `on-candidate-advance`, research adds
-//     `on-experiment-run`, etc. Keeping the seed minimal forces that
-//     conversation up-front rather than carrying baked-in assumptions.
+//   - They grow two ways. A trigger or scope the convention/playbook
+//     LIBRARY uses is added by the server the first time a write uses
+//     it, and reported (BUG-3446, collections.LibraryOptionVocabulary):
+//     the onboard playbook used to say nothing about widening, so every
+//     triggered library convention was refused here. A word the library
+//     does not use (hiring's `on-candidate-advance`, research's
+//     `on-experiment-run`) is still added deliberately, by the owner,
+//     via `pad collection update` (TASK-1510); the onboard playbook's B3
+//     says how. Keeping the seed minimal still means only the words a
+//     workspace actually uses end up listed.
 
 var (
 	BlankConventionTriggers = []string{"always"}

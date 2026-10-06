@@ -101,6 +101,10 @@ type ItemWriteWarnings struct {
 	UndeclaredFields    []string `json:"undeclared_fields,omitempty"`
 	DroppedFields       []string `json:"dropped_fields,omitempty"`
 	UnresolvedRelations []string `json:"unresolved_relations,omitempty"`
+	// OptionsAdded names the select options this write added to its
+	// collection's schema (BUG-3446): a library trigger or scope a `blank`
+	// workspace's system collection did not list yet. Keyed by field.
+	OptionsAdded map[string][]string `json:"options_added,omitempty"`
 	// ContentOutcome names where a content write ended up, in the same vocabulary
 	// the content_not_applied error uses. On a 200 it takes exactly one value,
 	// "applied_pending_flush": the content went to the collaborative document rather

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"sort"
 	"strconv"
@@ -894,6 +895,27 @@ const (
 )
 
 func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string, posture relationPosture) (*models.Item, *itemCreateError) {
+	// BUG-3446: a library trigger/scope a blank workspace's system collection
+	// does not list yet is added before validation, and reported below. An
+	// artifact import (relationsCarry) keeps its own clear-and-warn handling
+	// of foreign select values, which runs before this and leaves nothing
+	// unlisted; the posture check makes that a rule rather than a sequence.
+	var optionsAdded map[string][]string
+	if posture == relationsRefuse {
+		if wanted := libraryOptionsWanted(coll, schema, fieldMap); len(wanted) > 0 {
+			// Validate against the widened schema first, on a copy (the
+			// pipeline injects defaults into its map), so a create that would
+			// be refused anyway never changes the collection (codex round 2).
+			if _, _, _, _, cerr := s.prepareCreateFields(r, workspaceID, coll, withSelectOptions(schema, wanted), maps.Clone(fieldMap), posture); cerr != nil {
+				return nil, cerr
+			}
+			var werr *itemCreateError
+			coll, schema, optionsAdded, werr = s.widenLibraryOptions(r, workspaceID, coll, schema, fieldMap)
+			if werr != nil {
+				return nil, werr
+			}
+		}
+	}
 	fieldMap, droppedDefaults, unresolved, undeclared, cerr := s.prepareCreateFields(r, workspaceID, coll, schema, fieldMap, posture)
 	if cerr != nil {
 		return nil, cerr
@@ -992,7 +1014,17 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 
 	actor, source := actorFromRequest(r)
 	actorNameForCreate := actorNameFromRequest(r)
-	s.logActivity(workspaceID, item.ID, "created", r)
+	if len(optionsAdded) > 0 {
+		// BUG-3446: the record of the schema change, where the owner reads
+		// it — the item's own timeline and the workspace activity feed.
+		meta, _ := json.Marshal(map[string]string{
+			"options_added":            formatOptionsAdded(optionsAdded),
+			"options_added_collection": coll.Name,
+		})
+		s.logActivityWithMeta(workspaceID, item.ID, "created", r, string(meta))
+	} else {
+		s.logActivity(workspaceID, item.ID, "created", r)
+	}
 	s.publishItemEventWithName(sseItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
 
 	// Assignment-at-creation (TASK-2533): unlike an update, a freshly
@@ -1019,11 +1051,12 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 
 	// Attach after the write succeeded: these are advisory notes about a
 	// stored item, not a reason to refuse one (BUG-2850).
-	if len(undeclared) > 0 || len(droppedDefaults) > 0 || len(unresolved) > 0 {
+	if len(undeclared) > 0 || len(droppedDefaults) > 0 || len(unresolved) > 0 || len(optionsAdded) > 0 {
 		item.Warnings = &models.ItemWriteWarnings{
 			UndeclaredFields:    undeclared,
 			DroppedFields:       droppedDefaults,
 			UnresolvedRelations: unresolved,
+			OptionsAdded:        optionsAdded,
 		}
 	}
 

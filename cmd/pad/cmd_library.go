@@ -400,6 +400,7 @@ Examples:
 				if err := verifyConventionLanded(item); err != nil {
 					return err
 				}
+				warnOptionsAdded(item)
 
 				if formatFlag == "json" {
 					return cli.PrintJSON(item)
@@ -467,6 +468,8 @@ Examples:
 					}
 					return err
 				}
+
+				warnOptionsAdded(item)
 
 				if formatFlag == "json" {
 					return cli.PrintJSON(item)

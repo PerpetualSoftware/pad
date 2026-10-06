@@ -872,6 +872,13 @@ export interface ItemWriteWarnings {
 	 */
 	unresolved_relations?: string[];
 	/**
+	 * Select options this create ADDED to its collection's schema, keyed by
+	 * field (BUG-3446): a library trigger or scope a `blank` workspace's
+	 * Conventions or Playbooks collection did not list yet. Only words the
+	 * library itself uses are ever added; anything else is refused.
+	 */
+	options_added?: Record<string, string[]>;
+	/**
 	 * Carried values a move or copy dropped because the destination declares
 	 * the field unique and another item already holds the value (BUG-2367).
 	 * Their keys are also in `dropped_fields`; `message` is the sentence to show.

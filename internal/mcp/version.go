@@ -1738,6 +1738,19 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.67 — BUG-3446 (lead ruling, day 89). ADDITIVE bump on the v0.62 /
+//     v0.64 grounds: in a SYSTEM conventions or playbooks collection, a
+//     create whose `trigger` / `scope` is a word the convention or playbook
+//     LIBRARY itself uses now ADDS that word to the select's options instead
+//     of being refused, so `pad_library.activate` and `pad_item.action=create`
+//     succeed in a `blank` workspace, where every triggered library
+//     convention used to be refused. The create's result gains an
+//     `omitempty` `warnings.options_added` (keyed by field) on both
+//     transports. A word the library does not use is refused exactly as
+//     before, so the options grow only by library words. Absent when nothing
+//     was added, so a consumer that ignores it is unaffected. No name, enum
+//     or param moved.
+//
 //     0.66 — BUG-2136 (lead ruling, day 87). BEHAVIOR bump on the v0.52 /
 //     v0.43 grounds: `pad_workspace.action=invite` no longer ADDS an existing
 //     account to the workspace. Every invite now creates a pending
@@ -1792,7 +1805,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.66"
+const ToolSurfaceVersion = "0.67"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
