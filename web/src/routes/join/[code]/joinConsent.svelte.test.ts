@@ -224,4 +224,71 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(document.body.textContent).toContain('Beta Co');
 		expect(document.body.textContent).not.toContain('Acme');
 	});
+
+	// codex r5: an action still in flight when the code changes must not land on
+	// the new code's page.
+	const BETA_PREVIEW = { found: true, email: 'inv@example.com', has_account: true, workspace_name: 'Beta Co' };
+
+	it('an accept that answers after the code changed neither lands nor touches the new card', async () => {
+		mocks.session.mockResolvedValue({ authenticated: true });
+		let answer!: (v: unknown) => void;
+		mocks.accept.mockReturnValue(new Promise((r) => (answer = r)));
+		render(JoinPage);
+		await settle();
+		await fireEvent.click(byTestId('join-accept')!);
+		await settle();
+		mocks.preview.mockResolvedValue(BETA_PREVIEW);
+		page.params = { code: 'def456' };
+		await settle();
+		answer({ workspace_slug: 'acme', owner_username: 'o' });
+		await settle();
+		expect(mocks.goto).not.toHaveBeenCalled();
+		expect(document.body.textContent).toContain('Beta Co');
+		expect(byTestId('join-accept')).not.toBeNull();
+	});
+
+	it('a decline that answers after the code changed does not report the new invitation declined', async () => {
+		mocks.session.mockResolvedValue({ authenticated: true });
+		let answer!: (v: unknown) => void;
+		mocks.decline.mockReturnValue(new Promise((r) => (answer = r)));
+		render(JoinPage);
+		await settle();
+		await fireEvent.click(byTestId('join-decline')!);
+		await settle();
+		mocks.preview.mockResolvedValue(BETA_PREVIEW);
+		page.params = { code: 'def456' };
+		await settle();
+		answer(undefined);
+		await settle();
+		expect(document.body.textContent).not.toContain('Invitation declined');
+		expect(byTestId('join-accept')).not.toBeNull();
+	});
+
+	it('a sign-in that completes after the code changed lands on the NEW card, signed in', async () => {
+		// Signed out for A. Signing in is pending when the code changes; the new
+		// code's own session probe is still out when the sign-in lands, and
+		// answers "signed out" (it was sent before the cookie was set).
+		mocks.session.mockResolvedValueOnce({ authenticated: false });
+		let signedIn!: (v: unknown) => void;
+		mocks.login.mockReturnValue(new Promise((r) => (signedIn = r)));
+		render(JoinPage);
+		await settle();
+		const pw = document.querySelector<HTMLInputElement>('input[type="password"]')!;
+		await fireEvent.input(pw, { target: { value: 'password123' } });
+		await fireEvent.click(submitBtn());
+		await settle();
+		let probeB!: (v: unknown) => void;
+		mocks.session.mockReturnValueOnce(new Promise((r) => (probeB = r)));
+		mocks.session.mockResolvedValue({ authenticated: true });
+		mocks.preview.mockResolvedValue(BETA_PREVIEW);
+		page.params = { code: 'def456' };
+		await settle();
+		signedIn({});
+		await settle();
+		probeB({ authenticated: false });
+		await settle();
+		expect(byTestId('join-accept')).not.toBeNull();
+		expect(document.body.textContent).toContain('Beta Co');
+		expect(mocks.accept).not.toHaveBeenCalled();
+	});
 });
