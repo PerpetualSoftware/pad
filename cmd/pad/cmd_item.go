@@ -832,7 +832,7 @@ on stderr instead. --format json carries it as the content_state field.`,
 								continue
 							}
 						}
-						fmt.Printf("%-12s %v\n", k+":", v)
+						fmt.Printf("%-12s %s\n", k+":", cli.FormatFieldValue(v))
 					}
 					fmt.Println("---")
 				}
@@ -881,7 +881,7 @@ on stderr instead. --format json carries it as the content_state field.`,
 			}
 
 			if item.Convention != nil {
-				fmt.Println("\n--- Convention Metadata ---")
+				fmt.Printf("\n--- %s Metadata ---\n", metadataKindLabel(item.CollectionName))
 				if item.Convention.Category != "" {
 					fmt.Printf("Category:    %s\n", item.Convention.Category)
 				}
@@ -2823,6 +2823,21 @@ func itemCopyList(items []string) string {
 		parts[i] = strconv.Quote(s)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// metadataKindLabel names the trigger/surfaces metadata block for the item's
+// own kind (BUG-3448): a playbook's block said "Convention Metadata". The
+// collection's display name, singular, so a renamed collection is named as
+// it is now: "Conventions" -> "Convention", "Playbooks" -> "Playbook".
+func metadataKindLabel(collectionName string) string {
+	name := strings.TrimSpace(collectionName)
+	if name == "" {
+		return "Item"
+	}
+	if len(name) > 1 && strings.HasSuffix(name, "s") && !strings.HasSuffix(name, "ss") {
+		name = name[:len(name)-1]
+	}
+	return name
 }
 
 // itemCopyValue renders a carried field value without lying about it: a

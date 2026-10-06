@@ -412,6 +412,43 @@ func PrintItemTitles(items []models.Item) {
 	}
 }
 
+// FormatFieldValue renders one field value for a human: a string as itself, a
+// structured value (a json field's object or array) as compact JSON, anything
+// else as Go prints it. Go's own `%v` printed a json field as
+// `[map[name:target …]]`, which is neither JSON nor readable (BUG-3448).
+func FormatFieldValue(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case map[string]any, []any:
+		if b, err := json.Marshal(t); err == nil {
+			return string(b)
+		}
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// summariseFieldValue is FormatFieldValue for a one-line summary: a
+// structured value is reported by its size, so one json field cannot turn
+// the line into a paragraph (BUG-3448).
+func summariseFieldValue(v any) string {
+	switch t := v.(type) {
+	case []any:
+		if len(t) == 1 {
+			return "(1 entry)"
+		}
+		return fmt.Sprintf("(%d entries)", len(t))
+	case map[string]any:
+		if len(t) == 1 {
+			return "(1 key)"
+		}
+		return fmt.Sprintf("(%d keys)", len(t))
+	}
+	return FormatFieldValue(v)
+}
+
 // FormatFieldSummary returns a formatted summary of item fields.
 // Example output: "status: open | priority: high | category: platform"
 func FormatFieldSummary(fieldsJSON string) string {
@@ -437,9 +474,8 @@ func FormatFieldSummary(fieldsJSON string) string {
 
 	var parts []string
 	for _, k := range keys {
-		v := fields[k]
-		str := fmt.Sprintf("%v", v)
-		if str == "" || str == "<nil>" {
+		str := summariseFieldValue(fields[k])
+		if str == "" {
 			continue
 		}
 		// Colorize well-known fields
