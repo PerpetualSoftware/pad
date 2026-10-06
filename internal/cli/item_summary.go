@@ -203,7 +203,8 @@ func agentItemFields(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	var fields map[string]any
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	// Numbers keep their digits through the re-marshal (BUG-3448, codex r2).
+	if err := models.DecodeJSONKeepingNumbers(raw, &fields); err != nil {
 		return raw
 	}
 	delete(fields, models.ItemFieldImplementationNotes)
