@@ -593,6 +593,11 @@ type Server struct {
 	// while tests may write it. Tests must set it BEFORE connecting the
 	// stream they want to drive — a write after setup is not observed.
 	watchRevalTickOverride atomic.Pointer[chan time.Time]
+
+	// In-app tutorials (TASK-3452): the catalog and posters fetched from
+	// getpad.dev on Pad Cloud, and the client tests swap in.
+	tutorials     tutorialsCache
+	tutorialsHTTP *http.Client
 }
 
 // goAsync spawns fn in a goroutine that's tracked by s.bg, so Stop() can
@@ -1986,6 +1991,14 @@ func (s *Server) setupRouter() {
 			// Pending invitations addressed to the caller's verified email,
 			// and accepting one by id (PLAN-3002 U4b / TASK-3277). Web
 			// client only.
+			// One-time UI suggestions the caller dismissed (TASK-3452), and
+			// the in-app tutorial catalog, Pad Cloud only (404 self-hosted;
+			// the client links out to getpad.dev/learn). Web client only.
+			r.Get("/me/ui-dismissals", s.handleListUIDismissals)
+			r.Put("/me/ui-dismissals/{key}", s.handleDismissUI)
+			r.Get("/tutorials", s.handleListTutorials)
+			r.Get("/tutorials/posters/{slug}", s.handleTutorialPoster)
+
 			r.Get("/me/invitations", s.handleListMyInvitations)
 			r.Post("/me/invitations/{id}/accept", s.handleAcceptMyInvitation)
 			r.Post("/me/invitations/{id}/decline", s.handleDeclineMyInvitation)
@@ -2498,9 +2511,16 @@ func (s *Server) spaHandler() http.Handler {
 		//   for older browsers that don't implement strict-dynamic.
 		// - script-src-attr 'none' blocks inline event handlers regardless of the
 		//   script-src nonce — per CSP spec, event attributes bypass script-src.
+		// - frame-src: Pad Cloud only, the in-app tutorial player's
+		//   youtube-nocookie iframe (TASK-3452), mounted only after the viewer
+		//   presses play. A self-hosted server adds nothing: it links out.
+		frameSrc := ""
+		if s.cloudMode {
+			frameSrc = " frame-src https://www.youtube-nocookie.com;"
+		}
 		w.Header().Set("Content-Security-Policy", fmt.Sprintf(
-			"default-src 'self'; script-src 'self' 'nonce-%s' 'strict-dynamic'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
-			nonce))
+			"default-src 'self'; script-src 'self' 'nonce-%s' 'strict-dynamic'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';%s frame-ancestors 'none'",
+			nonce, frameSrc))
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")

@@ -9,6 +9,7 @@
 	import Chip from '$lib/components/common/Chip.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import TutorialSuggestion from '$lib/components/tutorials/TutorialSuggestion.svelte';
 	import type { Workspace } from '$lib/types';
 
 	let workspaces = $state<Workspace[]>([]);
@@ -92,6 +93,12 @@
 							</Button>
 						{/snippet}
 					</EmptyState>
+					<!-- TASK-3452: a first-time user's tutorial, once per user. -->
+					<TutorialSuggestion
+						dismissKey="tutorials.console"
+						slug="new-project"
+						fallbackTitle="Start a new project with Pad"
+					/>
 				</div>
 			{:else}
 				<div class="workspace-grid">

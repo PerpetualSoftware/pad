@@ -20,6 +20,10 @@ const SRC = fileURLToPath(new URL('../..', import.meta.url));
 
 const KEPT: RegExp[] = [
 	/^https:\/\/getpad\.dev\/docs(\/|#|$)/,
+	// TASK-3452: the tutorial library. How-to content like the docs, selling
+	// nothing; the user menu's Tutorials entry and the first-time cards link
+	// here on a self-hosted instance (Cloud shows them in-app).
+	/^https:\/\/getpad\.dev\/learn(\/|$)/,
 	/^https:\/\/getpad\.dev\/(changelog|privacy|terms|subprocessors|security|connect)$/,
 	/^https:\/\/status\.getpad\.dev$/,
 	/^mailto:support@getpad\.dev$/

@@ -286,13 +286,14 @@ Always the same order. This is the contract:
 1. GitHub *(external)*
 2. Community *(external — the repo's GitHub Discussions; TASK-2888)*
 3. Docs
-4. Changelog
-5. Contribute
-6. FAQ
-7. Security
-8. Privacy
-9. Terms
-10. Sub-processors
+4. Tutorials *(TASK-3452: in-app on Pad Cloud, getpad.dev/learn elsewhere; the app's user menu carries it, the marketing footer omits it while /learn is unlisted)*
+5. Changelog
+6. Contribute
+7. FAQ
+8. Security
+9. Privacy
+10. Terms
+11. Sub-processors
 
 If a surface omits a link (e.g. self-hosted footer skips Changelog
 because there's no Changelog page on a self-hosted install), keep the

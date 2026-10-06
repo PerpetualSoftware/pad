@@ -3061,3 +3061,50 @@ export interface WorkspaceApp {
 	app_name?: string;
 	role: string;
 }
+
+// ── In-app tutorials (TASK-3452) ─────────────────────────────────────────
+
+export interface TutorialChapter {
+	/** Seconds from the start of the video. */
+	t: number;
+	title: string;
+}
+
+/** A tutorial from GET /tutorials (Pad Cloud only). */
+export interface TutorialEntry {
+	slug: string;
+	title: string;
+	summary?: string;
+	path?: string;
+	/** null until the video is uploaded. */
+	youtube_id: string | null;
+	/** null for a tutorial that is planned but not made yet. */
+	seconds: number | null;
+	/** A same-origin poster path, or null. */
+	poster: string | null;
+	chapters?: TutorialChapter[];
+	/** The tutorial's page on getpad.dev (it has the transcript). */
+	url?: string;
+	next?: string | null;
+}
+
+export interface TutorialPath {
+	id: string;
+	title: string;
+	blurb: string;
+}
+
+export interface TutorialsResponse {
+	/** false when the server could not fetch the catalog; the UI links out. */
+	available: boolean;
+	paths: TutorialPath[];
+	tutorials: TutorialEntry[];
+	demos: TutorialEntry[];
+}
+
+/** One-time UI suggestions the user dismissed (models.UIDismissalKeys). */
+export type UIDismissalKey = 'tutorials.console' | 'tutorials.launchpad';
+
+export interface UIDismissalsResponse {
+	dismissed: UIDismissalKey[];
+}

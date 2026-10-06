@@ -19,6 +19,8 @@
 	 * the parent swaps back to the normal dashboard — so this view is
 	 * inherently transient.
 	 */
+	import TutorialSuggestion from '$lib/components/tutorials/TutorialSuggestion.svelte';
+
 	interface Props {
 		workspaceName: string;
 		/**
@@ -116,6 +118,13 @@
 							<code>{s.cmd}</code></span
 						>{#if i < shortcuts.length - 1}<span class="lp-sep"> · </span>{/if}{/each}
 				</p>
+				<!-- TASK-3452: the tutorial for exactly this step, once per user. -->
+				<TutorialSuggestion
+					dismissKey="tutorials.launchpad"
+					slug="onboard"
+					fallbackTitle="Set up your workspace with /pad onboard"
+					lead="See it first?"
+				/>
 			</div>
 		</li>
 

@@ -94,7 +94,10 @@ import type {
 	ClaimCodeResponse,
 	ImportArtifactResult,
 	ItemAppAction,
-	WorkspaceApp
+	WorkspaceApp,
+	TutorialsResponse,
+	UIDismissalKey,
+	UIDismissalsResponse
 } from '$lib/types';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
@@ -2457,6 +2460,20 @@ export const api = {
 	},
 
 	// ── Activity ──────────────────────────────────────────────────────────────
+
+	// In-app tutorials (TASK-3452). Pad Cloud only: a self-hosted server
+	// answers 404 and the UI links to getpad.dev/learn instead.
+	tutorials: {
+		list: () => request<TutorialsResponse>('/tutorials')
+	},
+
+	// One-time UI suggestions the caller dismissed (TASK-3452). Stored on the
+	// user, so a dismissal holds on every device.
+	uiDismissals: {
+		list: () => request<UIDismissalsResponse>('/me/ui-dismissals'),
+		dismiss: (key: UIDismissalKey) =>
+			request<UIDismissalsResponse>(`/me/ui-dismissals/${encodeURIComponent(key)}`, { method: 'PUT' })
+	},
 
 	activity: {
 		list: (
