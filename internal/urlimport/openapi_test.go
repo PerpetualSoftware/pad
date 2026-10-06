@@ -45,8 +45,10 @@ func TestConvertOpenAPI_Petstore(t *testing.T) {
 		// Request body
 		"**Request body** *(required)*",
 		"Content-Type: `application/json`",
-		// Example body
+		// Example body, rendered as the author's YAML (TASK-3422: a
+		// marshaller from the wrong yaml package drops it)
 		"name: Rex",
+		"  ```\n  id: 42\n  name: Rex\n  status: available\n  ```",
 		// Responses
 		"**Responses**",
 		"| `200` |",
