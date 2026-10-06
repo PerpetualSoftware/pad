@@ -14,6 +14,17 @@ func TestRebindQuery(t *testing.T) {
 		{"multiple params", "INSERT INTO t (a, b, c) VALUES (?, ?, ?)", "INSERT INTO t (a, b, c) VALUES ($1, $2, $3)"},
 		{"string literal preserved", "SELECT * FROM t WHERE name = 'what?' AND id = ?", "SELECT * FROM t WHERE name = 'what?' AND id = $1"},
 		{"mixed", "SELECT * FROM t WHERE a = ? AND b = 'foo?' AND c = ?", "SELECT * FROM t WHERE a = $1 AND b = 'foo?' AND c = $2"},
+		// BUG-3430: an apostrophe in a comment used to start "string mode",
+		// leaving every later ? unbound on Postgres only.
+		{"apostrophe in line comment", "SELECT * FROM t\n-- the collection's items\nWHERE a = ? AND b = ?", "SELECT * FROM t\n-- the collection's items\nWHERE a = $1 AND b = $2"},
+		{"line comment ends at newline", "SELECT ? -- what? isn't bound\n, ?", "SELECT $1 -- what? isn't bound\n, $2"},
+		{"line comment at end of query", "SELECT ? -- trailing, no newline?", "SELECT $1 -- trailing, no newline?"},
+		{"apostrophe in block comment", "SELECT * FROM t /* don't */ WHERE a = ?", "SELECT * FROM t /* don't */ WHERE a = $1"},
+		{"? in block comment", "SELECT ? /* is ? bound? no */ , ?", "SELECT $1 /* is ? bound? no */ , $2"},
+		{"multi-line block comment", "SELECT ?\n/* it's\n a ? */\nWHERE b = ?", "SELECT $1\n/* it's\n a ? */\nWHERE b = $2"},
+		{"comment markers inside a string", "SELECT 'a--b?' , '/* c? */' , ?", "SELECT 'a--b?' , '/* c? */' , $1"},
+		{"escaped quote in a string", "SELECT 'it''s ?' , ?", "SELECT 'it''s ?' , $1"},
+		{"apostrophe and ? in a quoted identifier", `SELECT "it's?" FROM t WHERE a = ?`, `SELECT "it's?" FROM t WHERE a = $1`},
 	}
 
 	for _, tt := range tests {
