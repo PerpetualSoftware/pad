@@ -52,7 +52,11 @@ func TestSearch_ExcludesSoftDeletedCollections(t *testing.T) {
 	if resp.Total != len(resp.Results) {
 		t.Errorf("total %d disagrees with %d results", resp.Total, len(resp.Results))
 	}
-	if resp.Facets != nil && resp.Facets.Collections[w.doomColl.Slug] != 0 {
+	// The facet query swallows its own errors into empty maps, so the live
+	// collection's count is asserted too: an empty map cannot pass.
+	if resp.Facets == nil || resp.Facets.Collections[w.liveColl.Slug] != 1 {
+		t.Errorf("facets lost the live collection: %+v", resp.Facets)
+	} else if resp.Facets.Collections[w.doomColl.Slug] != 0 {
 		t.Errorf("facets still count the soft-deleted collection: %v", resp.Facets.Collections)
 	}
 	if ref, _ := searchIDs(t, w.s, w.ws, refOf(w.doomed)); ref[w.doomed.ID] {
@@ -140,10 +144,17 @@ func TestChildrenAndProgress_ExcludeSoftDeletedCollections(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s GetAllItemProgress: %v", when, err)
 		}
+		found := false
 		for _, p := range all {
-			if p.ItemID == parent.ID && p.Total != wantTotal {
-				t.Errorf("%s GetAllItemProgress total = %d, want %d", when, p.Total, wantTotal)
+			if p.ItemID == parent.ID {
+				found = true
+				if p.Total != wantTotal {
+					t.Errorf("%s GetAllItemProgress total = %d, want %d", when, p.Total, wantTotal)
+				}
 			}
+		}
+		if !found {
+			t.Errorf("%s GetAllItemProgress has no row for the parent", when)
 		}
 	}
 	check("before the delete (control)", true, 2)
@@ -176,5 +187,31 @@ func TestGetChildItemsTx_StillIncludesSoftDeletedCollections(t *testing.T) {
 	}
 	if !hasItem(kids, w.doomed.ID) {
 		t.Errorf("the guard's child read no longer sees a soft-deleted collection's child; that changes what blocks closing a parent")
+	}
+}
+
+// Codex r1: has_children must agree with the children list. A child whose only
+// child lives in a soft-deleted collection has none to list, so it must not
+// claim to have any.
+func TestPopulateHasChildren_ExcludesSoftDeletedCollections(t *testing.T) {
+	t.Parallel()
+	w := newBug3425World(t)
+	s := w.s
+	middle := w.live
+	if _, err := s.CreateItemLink(w.ws.ID, models.ItemLinkCreate{TargetID: middle.ID, LinkType: "parent"}, w.doomed.ID); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	flag := func() bool {
+		t.Helper()
+		items := []models.Item{*middle}
+		s.PopulateHasChildren(items)
+		return items[0].HasChildren
+	}
+	if !flag() {
+		t.Fatalf("control: has_children should be true before the delete")
+	}
+	w.deleteDoomed(t)
+	if flag() {
+		t.Errorf("has_children still true when the only child is in a soft-deleted collection")
 	}
 }
