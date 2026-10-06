@@ -945,6 +945,11 @@ func (s *Store) guardOwnerLossTx(tx *sql.Tx, workspaceID, userID string) error {
 
 // --- Invitations ---
 
+// createInvitationAfterCommitHook, when non-nil, runs in CreateInvitation
+// after its transaction commits. Test seam only (BUG-3460): it lets a test
+// replace the invitation in exactly the window a concurrent re-invite can.
+var createInvitationAfterCommitHook func(invitationID string)
+
 // CreateInvitation creates a pending workspace invitation.
 // Generates a 128-bit (16-byte) random code and stores only its SHA-256 hash.
 // The plaintext code is returned once to be shared with the invitee.
@@ -1009,6 +1014,9 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("insert invitation: commit: %w", err)
+	}
+	if createInvitationAfterCommitHook != nil {
+		createInvitationAfterCommitHook(id)
 	}
 
 	inv, err := s.GetInvitation(id)
