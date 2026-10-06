@@ -26,9 +26,26 @@ const mocks = vi.hoisted(() => ({
 		reorder: vi.fn(),
 		update: vi.fn(),
 	},
+	// BUG-2136 U2: the "+" badge reads the pending-invitations store, which
+	// the bar refreshes on mount, window focus and every navigation.
+	invitationCount: 0,
+	refreshInvitations: vi.fn(async () => {}),
+	afterNavigate: [] as Array<() => void>,
 }));
 
-vi.mock('$app/navigation', () => ({ goto: mocks.goto }));
+vi.mock('$app/navigation', () => ({
+	goto: mocks.goto,
+	afterNavigate: (fn: () => void) => mocks.afterNavigate.push(fn),
+}));
+
+vi.mock('$lib/stores/pendingInvitations.svelte', () => ({
+	pendingInvitations: {
+		get count() {
+			return mocks.invitationCount;
+		},
+		refresh: mocks.refreshInvitations,
+	},
+}));
 
 vi.mock('$lib/api/client', () => ({
 	PadApiError: class extends Error {},
@@ -103,6 +120,9 @@ async function settleClose() {
 
 beforeEach(() => {
 	mocks.goto.mockClear();
+	mocks.invitationCount = 0;
+	mocks.refreshInvitations.mockClear();
+	mocks.afterNavigate.length = 0;
 	mocks.current = { slug: 'beta', name: 'Beta', owner_username: 'u' };
 	for (const fn of Object.values(mocks.tabs)) fn.mockReset();
 	uiStore.clearAddWorkspaceHighlight();
@@ -286,5 +306,42 @@ describe('TopBar: no window key owner (successor to TASK-2430)', () => {
 			window.dispatchEvent(e);
 			expect(e.defaultPrevented, k).toBe(false);
 		}
+	});
+});
+
+describe('TopBar "+" invitation badge (BUG-2136 U2)', () => {
+	const addBtn = () => document.querySelector<HTMLButtonElement>('.workspace-add')!;
+	const badge = () => document.querySelector('[data-testid="invitation-badge"]');
+
+	it('shows no badge and the plain label with nothing pending', async () => {
+		await mountWith([BETA]);
+		expect(badge()).toBeNull();
+		expect(addBtn().getAttribute('aria-label')).toBe('Find or create a workspace');
+	});
+
+	it('shows the count and names it in the accessible label', async () => {
+		mocks.invitationCount = 2;
+		await mountWith([BETA]);
+		expect(badge()?.textContent?.trim()).toBe('2');
+		expect(addBtn().getAttribute('aria-label')).toBe('Find or create a workspace (2 pending invitations)');
+	});
+
+	it('uses the singular for one invitation', async () => {
+		mocks.invitationCount = 1;
+		await mountWith([BETA]);
+		expect(addBtn().getAttribute('aria-label')).toBe('Find or create a workspace (1 pending invitation)');
+	});
+
+	it('refreshes on mount, on window focus and after every navigation, and stops on unmount', async () => {
+		await mountWith([BETA]);
+		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(1);
+		window.dispatchEvent(new Event('focus'));
+		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(2);
+		expect(mocks.afterNavigate).toHaveLength(1);
+		mocks.afterNavigate[0]();
+		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(3);
+		cleanup();
+		window.dispatchEvent(new Event('focus'));
+		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(3);
 	});
 });

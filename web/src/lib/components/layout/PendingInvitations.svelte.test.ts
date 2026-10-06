@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
 	goto: vi.fn(async () => {}),
 	listMyInvitations: vi.fn(),
 	acceptMyInvitation: vi.fn(),
+	declineMyInvitation: vi.fn(),
+	storeSet: vi.fn(),
+	storeRemove: vi.fn(),
 	loadAll: vi.fn(async () => {}),
 	tabsOpen: vi.fn(async () => {}),
 	toast: vi.fn(),
@@ -24,6 +27,7 @@ vi.mock('$lib/api/client', () => ({
 		members: {
 			listMyInvitations: mocks.listMyInvitations,
 			acceptMyInvitation: mocks.acceptMyInvitation,
+			declineMyInvitation: mocks.declineMyInvitation,
 		},
 	},
 }));
@@ -33,6 +37,9 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: { identityFence: () => () => mocks.sameIdentity },
 }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: mocks.toast } }));
+vi.mock('$lib/stores/pendingInvitations.svelte', () => ({
+	pendingInvitations: { set: mocks.storeSet, remove: mocks.storeRemove },
+}));
 
 import PendingInvitations from './PendingInvitations.svelte';
 
@@ -65,7 +72,17 @@ async function mount(list: ReturnType<typeof inv>[], verified = true) {
 beforeEach(() => {
 	mocks.calls.length = 0;
 	mocks.sameIdentity = true;
-	for (const f of [mocks.goto, mocks.listMyInvitations, mocks.acceptMyInvitation, mocks.loadAll, mocks.tabsOpen, mocks.toast]) {
+	for (const f of [
+		mocks.goto,
+		mocks.listMyInvitations,
+		mocks.acceptMyInvitation,
+		mocks.declineMyInvitation,
+		mocks.storeSet,
+		mocks.storeRemove,
+		mocks.loadAll,
+		mocks.tabsOpen,
+		mocks.toast,
+	]) {
 		f.mockReset();
 	}
 	mocks.goto.mockImplementation(async () => {
@@ -193,5 +210,47 @@ describe('PendingInvitations', () => {
 		expect(mocks.acceptMyInvitation).toHaveBeenCalledTimes(1);
 		release({ accepted: true, workspace_id: 'w', role: 'editor' });
 		await waitFor(() => expect(mocks.goto).toHaveBeenCalledTimes(1));
+	});
+
+	// BUG-2136 U2
+	it('reports the fetched list to the badge store', async () => {
+		await mount([inv('a', 'Alpha')]);
+		expect(mocks.storeSet).toHaveBeenCalledWith([expect.objectContaining({ id: 'a' })]);
+	});
+
+	it('declines by id: the row leaves the list and the badge, with no navigation', async () => {
+		mocks.declineMyInvitation.mockResolvedValue(undefined);
+		const { getByRole, queryByText } = await mount([inv('a', 'Alpha'), inv('b', 'Beta')]);
+		await fireEvent.click(getByRole('button', { name: 'Decline the invitation to Alpha' }));
+		await settle();
+		expect(mocks.declineMyInvitation).toHaveBeenCalledWith('a');
+		expect(queryByText('Alpha')).toBeNull();
+		expect(queryByText('Beta')).toBeTruthy();
+		expect(mocks.storeRemove).toHaveBeenCalledWith('a');
+		expect(mocks.acceptMyInvitation).not.toHaveBeenCalled();
+		expect(mocks.goto).not.toHaveBeenCalled();
+	});
+
+	it('a failed decline keeps the row and says so', async () => {
+		mocks.declineMyInvitation.mockRejectedValue(new Error('Invitation not found or already accepted'));
+		const { getByRole } = await mount([inv('a', 'Alpha')]);
+		mocks.listMyInvitations.mockResolvedValue({ invitations: [inv('a', 'Alpha')], email_verified: true });
+		await fireEvent.click(getByRole('button', { name: 'Decline the invitation to Alpha' }));
+		await settle();
+		expect(mocks.toast).toHaveBeenCalledWith('Invitation not found or already accepted', 'error');
+		expect(mocks.storeRemove).not.toHaveBeenCalled();
+	});
+
+	it('an accept in flight disables Decline, and a decline in flight disables Accept', async () => {
+		let release!: () => void;
+		mocks.declineMyInvitation.mockReturnValue(new Promise<void>((r) => (release = r)));
+		const { getByRole } = await mount([inv('a', 'Alpha')]);
+		await fireEvent.click(getByRole('button', { name: 'Decline the invitation to Alpha' }));
+		await settle();
+		expect((getByRole('button', { name: 'Accept the invitation to Alpha' }) as HTMLButtonElement).disabled).toBe(true);
+		await fireEvent.click(getByRole('button', { name: 'Accept the invitation to Alpha' }));
+		expect(mocks.acceptMyInvitation).not.toHaveBeenCalled();
+		release();
+		await settle();
 	});
 });
