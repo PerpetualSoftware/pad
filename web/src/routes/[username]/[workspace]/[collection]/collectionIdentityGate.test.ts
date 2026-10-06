@@ -90,9 +90,10 @@ identityGateSuite({
 			updateUrlFilters: '39d00857c2a1',
 			writeDefaultViewId: '79d9180fa119',
 		},
-		identifierCallbacks: [
-			{ text: 'queueMicrotask(scrollRestoration.skipNextRestore())', count: 1, why: 'afterNavigate: queues the release skipNextRestore() returns, one microtask later; no identity state', reviewed: 'd3a12e809aa0' },
-		],
+		// TASK-3423: the restore-skip release used to be handed to
+		// queueMicrotask; it is now called from beforeNavigate, so no
+		// identifier is passed to a scheduler here.
+		identifierCallbacks: [],
 	},
 	mutants: [
 		{

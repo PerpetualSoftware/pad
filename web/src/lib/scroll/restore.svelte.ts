@@ -177,10 +177,12 @@ export interface ScrollRestoration {
 	 * value with it) instead of applied. For a page that positioned its own
 	 * scroller for the navigation in flight, where the entry's saved pixel
 	 * offset would undo that (BUG-3165: the collection list's pane open/close
-	 * handoff). Call it from `afterNavigate`, which SvelteKit runs synchronously
-	 * right before it restores a popstate's snapshot, and call the returned
-	 * release in a microtask so a navigation that restores nothing cannot leave
-	 * it armed for a later, genuine restore.
+	 * handoff). Call it from `afterNavigate`; SvelteKit restores a popstate's
+	 * snapshot after those callbacks, past an `await` since kit 3. Call the
+	 * returned release when the NEXT navigation starts (`beforeNavigate`), so a
+	 * navigation that restores nothing cannot leave it armed for a later,
+	 * genuine restore. Not in a microtask: that releases it before kit 3's
+	 * restore runs (TASK-3423).
 	 */
 	skipNextRestore: () => () => void;
 }
