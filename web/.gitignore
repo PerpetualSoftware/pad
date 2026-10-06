@@ -29,3 +29,6 @@ vite.config.ts.timestamp-*
 
 # Build source stamp written by vite build (TASK-3233); copied into build/.
 /static/build-source.json
+
+# Written and removed by src/test/runesMode.svelte.test.ts (TASK-3423)
+/src/test/.runes-fixture
