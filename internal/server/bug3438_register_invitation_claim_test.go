@@ -1,9 +1,11 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -153,5 +155,79 @@ func TestRegisterWithCode_FailedClaimBesideAMembershipIsNotAJoin(t *testing.T) {
 	}
 	if !e.stillPending(t, inv) {
 		t.Error("the invitation was consumed by a claim that failed")
+	}
+}
+
+// Codex r2: the account exists from CreateUser on, so a sign-in can mint it a
+// session before the claim. The rollback must still remove the account.
+func TestRegisterWithCode_SessionMintedBeforeTheClaimDoesNotBlockTheRollback(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newAccessFixture(t, d)
+		inv := f.invite("signedin@example.com", "editor")
+		f.srv.registerInvitationPreClaimHook = func(invID string) {
+			u, err := f.srv.store.GetUserByEmail("signedin@example.com")
+			if err != nil || u == nil {
+				t.Fatalf("lookup the new account: %v", err)
+			}
+			if _, err := f.srv.store.CreateSession(u.ID, "go-test", "192.0.2.1", "", time.Hour); err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+			if err := f.srv.store.DeleteInvitation(f.wsID, invID); err != nil {
+				t.Fatalf("DeleteInvitation: %v", err)
+			}
+		}
+		rr := doRequest(f.srv, "POST", "/api/v1/auth/register", map[string]string{
+			"email": "signedin@example.com", "name": "Invitee",
+			"password": "correct-horse-battery-staple", "invitation_code": inv.Code,
+		})
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("signup: %d %s, want 404", rr.Code, rr.Body.String())
+		}
+		if u, _ := f.srv.store.GetUserByEmail("signedin@example.com"); u != nil {
+			t.Fatal("a session minted in the window kept the refused signup's account")
+		}
+	})
+}
+
+// Codex r2: a signup that came through the invitation EMAIL spends its proof
+// before the claim. When the claim then fails and the invitation stays
+// pending, the proof is restored, so retrying the same emailed link still
+// verifies the address.
+func TestRegisterWithCode_RefusedSignupKeepsTheProofForTheRetry(t *testing.T) {
+	srv, mails, adminTok, ws := newProofFixture(t)
+	_, code, proof := inviteByEmail(t, srv, mails, adminTok, ws.Slug, "proved@example.com")
+	admin, err := srv.store.GetUserByEmail("admin@pad.test")
+	if err != nil || admin == nil {
+		t.Fatalf("admin lookup: %v", err)
+	}
+	count := func() int {
+		members, err := srv.store.ListWorkspaceMembers(ws.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(members)
+	}
+	setCap := func(n int) {
+		if err := srv.store.SetUserPlanOverrides(admin.ID, fmt.Sprintf(`{"members_per_workspace":%d}`, n)); err != nil {
+			t.Fatalf("SetUserPlanOverrides: %v", err)
+		}
+	}
+	body := map[string]string{
+		"email": "proved@example.com", "name": "Invitee", "password": "correct-horse-battery-staple",
+		"invitation_code": code, "invitation_proof": proof,
+	}
+	// The workspace fills in the window: the claim is refused, the invitation
+	// stays pending.
+	srv.registerInvitationPreClaimHook = func(string) { setCap(count()) }
+	if rr := doRequest(srv, "POST", "/api/v1/auth/register", body); rr.Code == http.StatusCreated {
+		t.Fatalf("control: the signup should be refused at the cap: %s", rr.Body.String())
+	}
+	srv.registerInvitationPreClaimHook = nil
+	setCap(count() + 10)
+	if rr := doRequest(srv, "POST", "/api/v1/auth/register", body); rr.Code != http.StatusCreated {
+		t.Fatalf("retry with room: %d %s", rr.Code, rr.Body.String())
+	}
+	if !verified(t, srv, "proved@example.com") {
+		t.Error("the retry through the same emailed link did not verify the address: the refused signup spent its proof")
 	}
 }
