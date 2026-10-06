@@ -842,6 +842,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// If registering via invitation, automatically add the user to the
 	// workspace and mark the invitation as accepted.
 	if invitation != nil {
+		if s.registerInvitationPreClaimHook != nil {
+			s.registerInvitationPreClaimHook(invitation.ID)
+		}
 		// THE MEMBERSHIP WRITE IS FATAL, AND THE ORDER IS THE FIX (BUG-2715).
 		//
 		// (The ACCEPT below is deliberately not fatal; the reason is with it.
