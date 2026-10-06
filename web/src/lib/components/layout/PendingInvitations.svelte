@@ -104,6 +104,8 @@
 		try {
 			await api.members.declineMyInvitation(inv.id);
 			if (!isSameIdentity()) return;
+			// A list fetch issued before the decline must not bring it back.
+			seq++;
 			invitations = invitations.filter((i) => i.id !== inv.id);
 			pendingInvitations.remove(inv.id);
 			toastStore.show(`Declined the invitation to "${inv.workspace_name}"`, 'success');
