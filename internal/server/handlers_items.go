@@ -264,6 +264,9 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	if s.itemDoorAfterRowsHook != nil {
+		s.itemDoorAfterRowsHook()
+	}
 	if result == nil {
 		result = []models.Item{}
 	}
@@ -411,6 +414,9 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	if s.itemDoorAfterRowsHook != nil {
+		s.itemDoorAfterRowsHook()
 	}
 
 	// Enrich with parent metadata so the local cache rows match the

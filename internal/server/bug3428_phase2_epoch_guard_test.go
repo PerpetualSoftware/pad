@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // BUG-3428 phase 2 (lead ruling, day 86: option A). Deleting a collection
@@ -211,5 +212,69 @@ func TestOpenChildrenGuard_IgnoresChildrenOfSoftDeletedCollections(t *testing.T)
 	}
 	if code := closePlan(); code != http.StatusOK {
 		t.Errorf("an open child in a soft-deleted collection still blocks closing its parent: %d", code)
+	}
+}
+
+// Codex r1: a door must not pair rows read BEFORE a collection's delete with
+// the epoch AFTER it. That response would hold the deleted collection's rows
+// under the new epoch, every later poll would agree with it, and nothing would
+// evict them. The hook commits the delete right after each door's row query;
+// the response's epoch must then still be the pre-delete one, so the next poll
+// sees a change and resyncs.
+func TestItemDoors_EpochIsNotNewerThanTheirRows(t *testing.T) {
+	for _, door := range []string{"items-index", "items-changes"} {
+		t.Run(door, func(t *testing.T) {
+			f := newEpochFixture(t, false)
+			pre := f.index(t).AccessEpoch
+			fired := false
+			f.srv.itemDoorAfterRowsHook = func() {
+				if fired {
+					return
+				}
+				fired = true
+				if err := f.srv.store.DeleteCollection(f.doomColl.ID, ""); err != nil {
+					t.Errorf("delete in hook: %v", err)
+				}
+			}
+			var gotEpoch string
+			var heldDoomed bool
+			if door == "items-index" {
+				resp := f.index(t)
+				gotEpoch = resp.AccessEpoch
+				for _, it := range resp.Items {
+					heldDoomed = heldDoomed || it.ID == f.doomed.ID
+				}
+			} else {
+				resp := f.delta(t)
+				gotEpoch = resp.AccessEpoch
+				for _, c := range resp.Changes {
+					heldDoomed = heldDoomed || (c.ID == f.doomed.ID && !c.Deleted && !c.MovedOut)
+				}
+			}
+			f.srv.itemDoorAfterRowsHook = nil
+			if !fired {
+				t.Fatalf("control: the hook never ran")
+			}
+			if !heldDoomed {
+				t.Fatalf("control: the rows were read before the delete, so they should hold the doomed row")
+			}
+			if gotEpoch != pre {
+				t.Errorf("the response pairs pre-delete rows with a post-delete epoch (%q, was %q): a warm client would keep the rows forever", gotEpoch, pre)
+			}
+			if next := f.index(t).AccessEpoch; next == gotEpoch {
+				t.Errorf("the next poll did not show an epoch change, so the client would never resync")
+			}
+		})
+	}
+}
+
+func TestItemDoorAfterRowsHookIsNilInProduction(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Skipf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if New(s).itemDoorAfterRowsHook != nil {
+		t.Fatal("New left the BUG-3428 test-only item-door hook set")
 	}
 }
