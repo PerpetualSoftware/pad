@@ -516,6 +516,13 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 	// key direct adds take. A refusal rolls the transaction back, so the
 	// invitation stays pending and can be accepted once there is room.
 	added, role, err := s.store.AcceptWorkspaceInvitation(inv.ID, inv.WorkspaceID, user.ID, inv.Role, s.workspaceLimitMintOpts()...)
+	// Declined, replaced or cancelled after the door read it (BUG-2136): the
+	// store rolled the accept back, so this is the not-found every door gives
+	// an invitation that is gone. No reconcile: nothing was written.
+	if errors.Is(err, store.ErrInvitationGone) {
+		writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
+		return "", false
+	}
 	if err != nil {
 		// RECONCILE BEFORE REFUSING (BUG-3026). The store returns the raw
 		// commit error, so a lost acknowledgement lands the membership and the

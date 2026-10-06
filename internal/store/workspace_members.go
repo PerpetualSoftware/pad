@@ -175,8 +175,24 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 		return false, "", err
 	}
 	// The first accept's timestamp stands; a concurrent loser leaves it alone.
-	if _, err := tx.Exec(s.q(`UPDATE workspace_invitations SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL`), now(), invitationID); err != nil {
+	res, err := tx.Exec(s.q(`UPDATE workspace_invitations SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL`), now(), invitationID)
+	if err != nil {
 		return false, "", fmt.Errorf("accept workspace invitation: %w", err)
+	}
+	// Nothing updated is one of two things (BUG-2136). The row is still there,
+	// accepted: a concurrent accept won, and this one is the idempotent loser
+	// (BUG-3281). The row is GONE: it was declined, replaced or cancelled after
+	// the caller read it, and this accept must not land, so the membership
+	// written above is rolled back. On Postgres the UPDATE holds the row's lock
+	// until commit, so a decline racing it waits and then finds nothing pending.
+	if n, rerr := res.RowsAffected(); rerr == nil && n == 0 {
+		var one int
+		switch qerr := tx.QueryRow(s.q(`SELECT 1 FROM workspace_invitations WHERE id = ?`), invitationID).Scan(&one); {
+		case errors.Is(qerr, sql.ErrNoRows):
+			return false, "", ErrInvitationGone
+		case qerr != nil:
+			return false, "", fmt.Errorf("accept workspace invitation: recheck: %w", qerr)
+		}
 	}
 	if err := s.commitWorkspaceMemberTx(tx); err != nil {
 		// added and effectiveRole describe what this transaction wrote, so they
