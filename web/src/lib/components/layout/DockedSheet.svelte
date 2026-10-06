@@ -35,6 +35,7 @@
 	const DISMISS_PX = 90;
 
 	let panelEl = $state<HTMLElement | null>(null);
+	let contentEl = $state<HTMLElement | null>(null);
 
 	/**
 	 * TASK-2430 — this sheet is a GLOBAL Escape/gesture owner (three instances
@@ -106,6 +107,48 @@
 		dragY = 0;
 	}
 
+	/*
+	 * BUG-3386: a downward drag in the CONTENT closes the sheet too, when the
+	 * content is already scrolled to its top. That is the grip's gesture
+	 * continued into the list, the way a native sheet behaves; before, the
+	 * same drag pulled the page underneath to refresh. A drag that starts
+	 * with the list scrolled, or that moves up first, is a scroll and is
+	 * left alone. CONTENT_SLOP keeps a tap or a jitter from engaging it.
+	 */
+	const CONTENT_SLOP = 8;
+	let contentArmed = false;
+	function onContentTouchStart(e: TouchEvent) {
+		contentArmed = false;
+		if (blockedByFrontLayer()) return;
+		if (!contentEl || contentEl.scrollTop > 0) return;
+		startY = e.touches[0].clientY;
+		contentArmed = true;
+	}
+	function onContentTouchMove(e: TouchEvent) {
+		if (dragging) {
+			onTouchMove(e);
+			return;
+		}
+		if (!contentArmed || !contentEl) return;
+		const dy = e.touches[0].clientY - startY;
+		if (dy < 0 || contentEl.scrollTop > 0) {
+			contentArmed = false; // a scroll, not a pull
+			return;
+		}
+		if (dy > CONTENT_SLOP) {
+			if (blockedByFrontLayer()) {
+				contentArmed = false;
+				return;
+			}
+			startY = e.touches[0].clientY;
+			dragging = true;
+		}
+	}
+	function onContentTouchEnd() {
+		contentArmed = false;
+		if (dragging) onTouchEnd();
+	}
+
 	function onKeydown(e: KeyboardEvent) {
 		if (!open || e.key !== 'Escape') return;
 		// A HELD Escape fires many auto-repeat keydowns, and each is a FRESH
@@ -160,7 +203,15 @@
 		>
 			<span class="ds-handle" aria-hidden="true"></span>
 		</div>
-		<div class="ds-content">
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="ds-content"
+			bind:this={contentEl}
+			ontouchstart={onContentTouchStart}
+			ontouchmove={onContentTouchMove}
+			ontouchend={onContentTouchEnd}
+			ontouchcancel={onContentTouchEnd}
+		>
 			{@render children()}
 		</div>
 	</div>
@@ -207,10 +258,22 @@
 		border-radius: 999px;
 		background: var(--border);
 	}
+	/* The list is the scroller, so it is the element that has to stop scroll
+	   chaining (BUG-3386): `contain` on .ds-panel, which never scrolls, did
+	   nothing, and a pull at the list's top chained to the page and
+	   pull-to-refreshed it. */
 	.ds-content {
 		overflow-y: auto;
+		overscroll-behavior: contain;
 		padding: 0 0 var(--space-3);
 		flex: 1 1 auto;
 		min-height: 0;
+	}
+	/* And no page pull-to-refresh at all while a sheet is open (BUG-3386):
+	   a drag on the backdrop, on the grip, or on a list too short to scroll
+	   never reaches a scroller of the sheet's, and would reach the page. */
+	:global(html:has(.ds-panel)),
+	:global(body:has(.ds-panel)) {
+		overscroll-behavior-y: none;
 	}
 </style>
