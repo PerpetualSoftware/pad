@@ -578,6 +578,8 @@ test.describe('landings open an ephemeral tab (TASK-3279)', () => {
 			await actAs(context, account);
 
 			await page.goto(`/join/${inv.code}`);
+			// Signed in: the link asks first (BUG-2136); accepting joins.
+			await page.getByTestId('join-accept').click();
 			await expect(page).toHaveURL(new RegExp(`/${inviter.account.username}/${shared}$`));
 			await expectEphemeral(page, account, shared);
 		} finally {

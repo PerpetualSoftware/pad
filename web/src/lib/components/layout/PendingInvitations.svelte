@@ -15,6 +15,7 @@
 	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 	import type { MyInvitation } from '$lib/types';
 
 	interface Props {
@@ -29,6 +30,9 @@
 	let invitations = $state<MyInvitation[]>([]);
 	// Id being accepted: a double-click cannot fire two accepts.
 	let acceptingId = $state<string | null>(null);
+	// Id being declined (BUG-2136); either action in flight disables both.
+	let decliningId = $state<string | null>(null);
+	const busy = $derived(acceptingId !== null || decliningId !== null);
 	// Guards list responses: an older fetch cannot re-surface an invitation
 	// the post-accept refresh has already dropped.
 	let seq = 0;
@@ -37,7 +41,11 @@
 		const mine = ++seq;
 		try {
 			const res = await api.members.listMyInvitations();
-			if (mine === seq) invitations = res.invitations ?? [];
+			if (mine === seq) {
+				invitations = res.invitations ?? [];
+				// The "+" badge counts what this list shows (BUG-2136 U2).
+				pendingInvitations.set(invitations);
+			}
 		} catch {
 			if (mine === seq) invitations = [];
 		}
@@ -48,7 +56,7 @@
 	});
 
 	async function accept(inv: MyInvitation) {
-		if (acceptingId) return;
+		if (busy) return;
 		acceptingId = inv.id;
 		const isSameIdentity = authStore.identityFence();
 		try {
@@ -70,6 +78,7 @@
 				return;
 			}
 			if (!isSameIdentity()) return;
+			pendingInvitations.remove(inv.id);
 			toastStore.show(`Joined "${inv.workspace_name}"`, 'success');
 			onaccepted?.();
 			// The membership is committed; everything below is best-effort. The
@@ -83,6 +92,30 @@
 			await goto(owner && slug ? `/${owner}/${slug}` : '/console');
 		} finally {
 			acceptingId = null;
+		}
+	}
+
+	// Declining deletes the invitation (BUG-2136): it leaves this list and
+	// the badge, and the inviter's pending list.
+	async function decline(inv: MyInvitation) {
+		if (busy) return;
+		decliningId = inv.id;
+		const isSameIdentity = authStore.identityFence();
+		try {
+			await api.members.declineMyInvitation(inv.id);
+			if (!isSameIdentity()) return;
+			invitations = invitations.filter((i) => i.id !== inv.id);
+			pendingInvitations.remove(inv.id);
+			toastStore.show(`Declined the invitation to "${inv.workspace_name}"`, 'success');
+		} catch (err) {
+			if (!isSameIdentity()) return;
+			toastStore.show(
+				err instanceof Error && err.message ? err.message : `Couldn't decline the invitation to "${inv.workspace_name}"`,
+				'error'
+			);
+			void load();
+		} finally {
+			decliningId = null;
 		}
 	}
 </script>
@@ -106,10 +139,19 @@
 						type="button"
 						class="accept-btn"
 						onclick={() => accept(inv)}
-						disabled={acceptingId !== null}
+						disabled={busy}
 						aria-label={`Accept the invitation to ${inv.workspace_name}`}
 					>
 						{acceptingId === inv.id ? 'Joining…' : 'Accept'}
+					</button>
+					<button
+						type="button"
+						class="decline-btn"
+						onclick={() => decline(inv)}
+						disabled={busy}
+						aria-label={`Decline the invitation to ${inv.workspace_name}`}
+					>
+						{decliningId === inv.id ? 'Declining…' : 'Decline'}
 					</button>
 				</li>
 			{/each}
@@ -176,4 +218,16 @@
 	}
 	.accept-btn:hover:not(:disabled) { background: var(--bg-hover); }
 	.accept-btn:disabled { opacity: 0.6; cursor: default; }
+	.decline-btn {
+		flex-shrink: 0;
+		padding: var(--space-1) var(--space-2);
+		background: none;
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 0.85em;
+	}
+	.decline-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+	.decline-btn:disabled { opacity: 0.6; cursor: default; }
 </style>

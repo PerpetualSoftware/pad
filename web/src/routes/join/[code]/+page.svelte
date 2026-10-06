@@ -21,12 +21,17 @@
 	let proof = $state('');
 	// OAuth completes outside the SPA and returns via a full-page navigation to
 	// this same /join/<code> URL, where onMount's session probe sees
-	// `authenticated` and calls acceptInvitation. Thread the code through the
+	// `authenticated` and shows the accept/decline card (BUG-2136). Thread the code through the
 	// SSO link's ?redirect= so that round trip lands back here to finish
 	// accepting the invite (BUG-1931 / DR-8). validateRedirect keeps this to a
 	// same-origin relative path — no open redirect.
 	let oauthRedirectTarget = $derived(validateRedirect(`/join/${code}`));
-	let status = $state<'loading' | 'login' | 'register' | 'accepting' | 'error' | 'setup' | '2fa'>('loading');
+	let status = $state<
+		'loading' | 'login' | 'register' | 'confirm' | 'accepting' | 'declining' | 'declined' | 'error' | 'setup' | '2fa'
+	>('loading');
+	// The invited workspace's name, from the preview, for the accept/decline
+	// card (BUG-2136 U2).
+	let invitedWorkspaceName = $state('');
 	let errorMsg = $state('');
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
 
@@ -86,8 +91,10 @@
 		try {
 			const session = await api.auth.session();
 			if (session.authenticated) {
-				// Already logged in — try to accept directly
-				await acceptInvitation();
+				// Already signed in: ASK (BUG-2136, lead ruling). Opening the link
+				// is not consent; the card offers accept or decline.
+				await applyPreview(previewPromise);
+				status = 'confirm';
 				return;
 			}
 			if (session.setup_required) {
@@ -115,6 +122,7 @@
 	// returning user flip to login.
 	async function applyPreview(previewPromise: Promise<InvitationPreview | null>) {
 		const preview = await previewPromise;
+		if (preview?.found && preview.workspace_name) invitedWorkspaceName = preview.workspace_name;
 		if (preview?.found && preview.email) {
 			email = preview.email;
 			invitedEmail = preview.email;
@@ -165,6 +173,19 @@
 			await landInJoinedWorkspace(result);
 		} catch (err: unknown) {
 			errorMsg = err instanceof Error ? err.message : 'Failed to accept invitation';
+			status = 'error';
+		}
+	}
+
+	// Decline from the link (BUG-2136): deletes the invitation; nothing joins.
+	async function declineInvitation() {
+		status = 'declining';
+		try {
+			await api.members.declineInvitation(code);
+			clearInvitationProof(code);
+			status = 'declined';
+		} catch (err: unknown) {
+			errorMsg = err instanceof Error ? err.message : 'Failed to decline invitation';
 			status = 'error';
 		}
 	}
@@ -254,8 +275,11 @@
 					return;
 				}
 			}
-			// Logged in via login — now accept the invitation
-			await acceptInvitation();
+			// Signed in from the link: ask, as for a visitor who was already
+			// signed in (BUG-2136). Only REGISTERING through the code joins in one
+			// step, because creating the account here is the intent to join.
+			submitting = false;
+			status = 'confirm';
 		} catch (err: unknown) {
 			formError = err instanceof Error ? err.message : 'Authentication failed';
 			submitting = false;
@@ -281,8 +305,9 @@
 				await api.auth.verify2FA(challengeToken, undefined, code);
 			}
 
-			// 2FA verified — now accept the invitation
-			await acceptInvitation();
+			// 2FA verified: ask, as above (BUG-2136).
+			submitting = false;
+			status = 'confirm';
 		} catch (err: unknown) {
 			formError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
 			submitting = false;
@@ -318,8 +343,22 @@
 
 		{#if status === 'loading'}
 			<p class="subtitle">Checking invitation...</p>
+		{:else if status === 'confirm'}
+			<p class="subtitle">
+				You've been invited to join
+				{#if invitedWorkspaceName}<strong>{invitedWorkspaceName}</strong>{:else}a workspace{/if}.
+			</p>
+			<div class="form confirm-actions">
+				<button onclick={acceptInvitation} data-testid="join-accept">Accept invitation</button>
+				<button class="secondary-button" onclick={declineInvitation} data-testid="join-decline" type="button">Decline</button>
+			</div>
 		{:else if status === 'accepting'}
 			<p class="subtitle">Joining workspace...</p>
+		{:else if status === 'declining'}
+			<p class="subtitle">Declining invitation...</p>
+		{:else if status === 'declined'}
+			<p class="subtitle">Invitation declined. You were not added to the workspace.</p>
+			<a href="/console" class="link">Go to Pad</a>
 		{:else if status === 'setup'}
 			<SetupRequiredNotice
 				{setupMethod}
@@ -437,7 +476,7 @@
 					{#if submitting}
 						{mode === 'register' ? 'Creating account...' : 'Signing in...'}
 					{:else}
-						{mode === 'register' ? 'Create account & join' : 'Sign in & join'}
+						{mode === 'register' ? 'Create account & join' : 'Sign in'}
 					{/if}
 				</button>
 			</div>
@@ -566,6 +605,16 @@
 	}
 	button:hover:not(:disabled) { opacity: 0.9; }
 	button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+	.secondary-button {
+		background: transparent;
+		color: var(--text-secondary);
+		border: 1px solid var(--border);
+	}
+	.secondary-button:hover:not(:disabled) {
+		color: var(--text-primary);
+		opacity: 1;
+	}
 
 	.back-button {
 		background: transparent;
