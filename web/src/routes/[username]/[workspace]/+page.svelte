@@ -364,7 +364,11 @@
 			}
 		});
 		unsubscribeItems = sseService.onItemEvent((event) => {
-			if (!needsOnboarding) return;
+			// Ignored only once THIS workspace's board is known to be past
+			// onboarding. Before its first load commits, the load in flight may
+			// have read the state before the agent's write, so the event still
+			// arms a reload (codex r2).
+			if (dashboardSlug === wsSlug && !needsOnboarding) return;
 			if (event.type !== 'item_created' && event.type !== 'collection_updated') return;
 			// Trailing debounce: a burst re-arms one timer, whose body is only
 			// the fenced load() call, and only for the workspace it was armed

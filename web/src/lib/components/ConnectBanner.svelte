@@ -123,7 +123,9 @@
 	let recheckTimer: ReturnType<typeof setTimeout> | undefined;
 	const unsubscribeItems = browser
 		? sseService.onItemEvent((event) => {
-				if (hasAgentActivity !== false || dismissed) return;
+				// Unknown (the first check still out) counts: its answer may
+				// predate the write (codex r2). Only KNOWN activity stops it.
+				if (hasAgentActivity === true || dismissed) return;
 				if (event.type !== 'item_created') return;
 				// Only for the workspace it was armed in: after a switch it would
 				// supersede the next workspace's own re-check (codex r1).
