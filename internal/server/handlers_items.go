@@ -259,6 +259,16 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The live collection set the epoch fingerprints (BUG-3428 phase 2),
+	// read BEFORE the rows (codex r1). Read after them, a delete committing
+	// in between paired the deleted collection's rows with the post-delete
+	// epoch, and no later poll would evict them. Read before, the response
+	// carries the older epoch, so the next poll sees the change and resyncs.
+	liveCollIDs, liveErr := s.store.LiveCollectionIDs(workspaceID)
+	if liveErr != nil {
+		writeInternalError(w, liveErr)
+		return
+	}
 	result, err := s.store.ListItemsIndex(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -283,12 +293,6 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	cursor := strconv.FormatInt(cursorSeq, 10)
 
-	// The epoch fingerprints the live collection set (BUG-3428 phase 2).
-	liveCollIDs, liveErr := s.store.LiveCollectionIDs(workspaceID)
-	if liveErr != nil {
-		writeInternalError(w, liveErr)
-		return
-	}
 	writeJSON(w, http.StatusOK, itemsIndexResponse{
 		Items:                      result,
 		Total:                      len(result),
@@ -410,6 +414,16 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		params.ItemIDs = grantedItemIDs
 	}
 
+	// The live collection set the epoch fingerprints (BUG-3428 phase 2),
+	// read BEFORE the rows (codex r1). Read after them, a delete committing
+	// in between paired the deleted collection's rows with the post-delete
+	// epoch, and no later poll would evict them. Read before, the response
+	// carries the older epoch, so the next poll sees the change and resyncs.
+	liveCollIDs, liveErr := s.store.LiveCollectionIDs(workspaceID)
+	if liveErr != nil {
+		writeInternalError(w, liveErr)
+		return
+	}
 	rows, err := s.store.ListItemsChangesSince(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -507,12 +521,6 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	liveFullCollIDs, liveGrantedItemIDs, liveGrantErr := s.guestResourceFilter(r, workspaceID)
 	if liveGrantErr != nil {
 		writeInternalError(w, liveGrantErr)
-		return
-	}
-	// The epoch fingerprints the live collection set (BUG-3428 phase 2).
-	liveCollIDs, liveErr := s.store.LiveCollectionIDs(workspaceID)
-	if liveErr != nil {
-		writeInternalError(w, liveErr)
 		return
 	}
 	writeJSON(w, http.StatusOK, itemsChangesResponse{
