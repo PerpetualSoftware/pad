@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -84,4 +85,73 @@ func TestRegisterWithCode_InvitationGoneBeforeClaimJoinsNothing(t *testing.T) {
 			})
 		}
 	})
+}
+
+// Codex r1: on cloud with email, the signup mints an email-verification token
+// before the claim, and that row references the account. The rollback must
+// still remove the account, or the email stays held and a retry with a live
+// code meets the duplicate-email 409.
+func TestRegisterWithCode_InvitationGoneOnCloudStillRollsTheAccountBack(t *testing.T) {
+	srv, _ := newCloudEmailServer(t)
+	admin, err := srv.store.GetUserByEmail("admin@pad.test")
+	if err != nil || admin == nil {
+		t.Fatalf("admin lookup: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Cloud Invite WS", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	register := func(code string) *httptest.ResponseRecorder {
+		return doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+			"email":           "late@example.com",
+			"name":            "Late",
+			"password":        "correct-horse-battery-staple",
+			"invitation_code": code,
+		})
+	}
+	inv, err := srv.store.CreateInvitation(ws.ID, "late@example.com", "editor", admin.ID)
+	if err != nil {
+		t.Fatalf("CreateInvitation: %v", err)
+	}
+	srv.registerInvitationPreClaimHook = func(invID string) {
+		if err := srv.store.DeleteInvitation(ws.ID, invID); err != nil {
+			t.Fatalf("DeleteInvitation: %v", err)
+		}
+	}
+	if rr := register(inv.Code); rr.Code != http.StatusNotFound {
+		t.Fatalf("signup with an invitation gone before its claim: %d %s, want 404", rr.Code, rr.Body.String())
+	}
+	srv.registerInvitationPreClaimHook = nil
+	if u, _ := srv.store.GetUserByEmail("late@example.com"); u != nil {
+		t.Fatal("the refused cloud signup left its account behind, holding the email")
+	}
+	// The retry the refusal exists to permit: a new invitation, a clean signup.
+	again, err := srv.store.CreateInvitation(ws.ID, "late@example.com", "editor", admin.ID)
+	if err != nil {
+		t.Fatalf("CreateInvitation (again): %v", err)
+	}
+	if rr := register(again.Code); rr.Code != http.StatusCreated {
+		t.Fatalf("retry with a live code: %d %s, want 201", rr.Code, rr.Body.String())
+	}
+}
+
+// Codex r1: the claim now commits with the membership, so a membership alone no
+// longer proves the claim landed. A failed claim beside a membership that came
+// from elsewhere must not be reported as a joined signup.
+func TestRegisterWithCode_FailedClaimBesideAMembershipIsNotAJoin(t *testing.T) {
+	e := newAcceptLimitEnv(t)
+	inv := e.invite(t, "beside@example.com")
+	// The claim fails (the workspace reaches its cap in the window), and the
+	// membership read finds a row, as an admin's concurrent add would leave.
+	e.srv.registerInvitationPreClaimHook = func(string) { e.setMemberCap(t, e.members(t)) }
+	e.srv.membershipCheck = func(workspaceID, userID string) (*models.WorkspaceMember, error) {
+		return &models.WorkspaceMember{WorkspaceID: workspaceID, UserID: userID, Role: "editor"}, nil
+	}
+	rr := e.register("beside@example.com", inv)
+	if rr.Code == http.StatusCreated {
+		t.Fatalf("a signup whose claim failed was reported joined: %s", rr.Body.String())
+	}
+	if !e.stillPending(t, inv) {
+		t.Error("the invitation was consumed by a claim that failed")
+	}
 }
