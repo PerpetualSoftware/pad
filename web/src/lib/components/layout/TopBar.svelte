@@ -42,7 +42,9 @@
 			: 'Find or create a workspace'
 	);
 	onMount(() => {
-		void pendingInvitations.refresh();
+		// A mount is a page load: it skips the throttle, so a remount within the
+		// window still fetches.
+		void pendingInvitations.refresh(true);
 		const onFocus = () => void pendingInvitations.refresh();
 		window.addEventListener('focus', onFocus);
 		return () => window.removeEventListener('focus', onFocus);
