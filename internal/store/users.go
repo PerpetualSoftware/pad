@@ -1096,10 +1096,25 @@ func (s *Store) SetUserRole(userID, role string) error {
 	return nil
 }
 
-// DeleteUser permanently deletes a user by ID.
+// DeleteUser permanently deletes a user by ID. It is the signup rollback
+// (and nothing else in production): an account created moments ago by the
+// request that is now refusing it. Its email-verification tokens go with it in
+// the same transaction, because the signup mints one before the steps that can
+// refuse, and that row's foreign key would otherwise refuse the delete and
+// leave the email held (BUG-3438).
 func (s *Store) DeleteUser(id string) error {
-	_, err := s.db.Exec(s.q(`DELETE FROM users WHERE id = ?`), id)
+	tx, err := s.db.Begin()
 	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(s.q(`DELETE FROM email_verification_tokens WHERE user_id = ?`), id); err != nil {
+		return fmt.Errorf("delete user: verification tokens: %w", err)
+	}
+	if _, err := tx.Exec(s.q(`DELETE FROM users WHERE id = ?`), id); err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("delete user: %w", err)
 	}
 	return nil

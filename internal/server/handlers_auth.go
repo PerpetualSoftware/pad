@@ -907,13 +907,31 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				writeInternalError(w, addErr)
 				return
 			case member != nil:
-				// LANDED despite the reported error. The account is minutes old,
-				// so its membership can only be this transaction's, which also
-				// claimed the invitation. The user HAS access and the signup
-				// succeeded; refusing here would delete a working account.
-				slog.Warn("invitation signup: the membership write reported an error but the row is present; "+
-					"reconciled to success",
-					"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
+				// The membership alone does not prove THIS transaction landed:
+				// it also claimed the invitation, and a membership can come from
+				// elsewhere (an admin's add in the window). So the claim decides,
+				// as it does at the accept doors (codex r1).
+				stored, ierr := s.store.GetInvitation(invitation.ID)
+				if ierr == nil && stored != nil && stored.AcceptedAt != nil {
+					// LANDED despite the reported error: the user HAS access and
+					// the signup succeeded; refusing would delete a working account.
+					slog.Warn("invitation signup: the claim reported an error but the membership and the "+
+						"claim are present; reconciled to success",
+						"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
+					break
+				}
+				// Not this signup's join. A membership exists, so the account is
+				// KEPT (deleting it cannot be undone, and it has access through
+				// whatever added it), and the signup is refused.
+				slog.Error("invitation signup: the claim failed beside a membership it did not write; "+
+					"KEEPING the account and refusing the signup",
+					"workspace_id", invitation.WorkspaceID, "user_id", user.ID,
+					"error", addErr, "check_error", ierr)
+				if s.writeStoreMemberLimitError(w, r, invitation.WorkspaceID, addErr) {
+					return
+				}
+				writeInternalError(w, addErr)
+				return
 			default:
 				// ABSENT — no membership. Refuse, and roll the account back so
 				// the retry this refusal exists to permit actually exists:
