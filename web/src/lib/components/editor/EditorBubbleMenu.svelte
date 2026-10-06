@@ -327,17 +327,22 @@
 	let boundBlur: (() => void) | null = null;
 
 	$effect(() => {
-		if (!editor) return;
+		// The cleanup unsubscribes from the editor THIS run subscribed to, not
+		// the live prop: reading the prop during teardown re-entered Svelte's
+		// flush (state_unsafe_mutation) and, once the parent had nulled it,
+		// threw on `.off`, which blanked the item page (TASK-3423).
+		const ed = editor;
+		if (!ed) return;
 
 		boundSelectionUpdate = handleSelectionUpdate;
 		boundBlur = handleBlur;
 
-		editor.on('selectionUpdate', boundSelectionUpdate);
-		editor.on('blur', boundBlur);
+		ed.on('selectionUpdate', boundSelectionUpdate);
+		ed.on('blur', boundBlur);
 
 		return () => {
-			if (boundSelectionUpdate) editor.off('selectionUpdate', boundSelectionUpdate);
-			if (boundBlur) editor.off('blur', boundBlur);
+			if (boundSelectionUpdate) ed.off('selectionUpdate', boundSelectionUpdate);
+			if (boundBlur) ed.off('blur', boundBlur);
 		};
 	});
 </script>
