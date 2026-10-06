@@ -39,11 +39,19 @@ vi.mock('$app/navigation', () => ({
 }));
 
 vi.mock('$lib/stores/pendingInvitations.svelte', () => ({
+	// The "+" surface's invitation list renders this store's list too, so the
+	// double carries the whole surface the component reads.
 	pendingInvitations: {
 		get count() {
 			return mocks.invitationCount;
 		},
+		get invitations() {
+			return [];
+		},
 		refresh: mocks.refreshInvitations,
+		reserve: () => 0,
+		set: () => {},
+		remove: () => {},
 	},
 }));
 
