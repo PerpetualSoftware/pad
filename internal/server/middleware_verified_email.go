@@ -80,11 +80,17 @@ func isMutatingMethod(method string) bool {
 // callers have no currentUser, so emailUnverifiedBlocked already
 // returned false.
 func verifiedEmailExemptPath(path string) bool {
-	// Invitation accept — matched structurally so any {code} passes,
-	// while /invitations/{code}/preview (GET, already public) and any
-	// other /invitations subpath are unaffected.
-	if strings.HasPrefix(path, "/api/v1/invitations/") && strings.HasSuffix(path, "/accept") {
-		return true
+	// Invitation accept and decline (BUG-2136): the two answers to one
+	// invitation, matched structurally so any {code} passes, while
+	// /invitations/{code}/preview (GET, already public) and any other
+	// /invitations subpath are unaffected.
+	// Exactly two segments after the prefix (codex r2), so no nested path
+	// that happens to end in /accept or /decline is exempted.
+	if rest, ok := strings.CutPrefix(path, "/api/v1/invitations/"); ok {
+		if code, action, found := strings.Cut(rest, "/"); found && code != "" &&
+			(action == "accept" || action == "decline") {
+			return true
+		}
 	}
 	switch path {
 	case "/api/v1/auth/logout",

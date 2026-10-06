@@ -390,7 +390,7 @@ directory for `claude-code`, and an `[mcp_servers.pad]` table in
 project-scoped, it's install-on-request only — `--all` and `pad mcp status` cover
 the per-user clients (including Codex) and skip it.
 
-**Tool catalog (v0.65)** — ten resource × action tools plus `pad_set_workspace`. Undeclared input keys are rejected with a structured error rather than silently dropped, and field values are typed against the collection schema on the server:
+**Tool catalog (v0.66)** — ten resource × action tools plus `pad_set_workspace`. Undeclared input keys are rejected with a structured error rather than silently dropped, and field values are typed against the collection schema on the server:
 
 | Tool | Actions |
 |---|---|
@@ -414,7 +414,7 @@ Plus resources at `pad://workspaces`, `pad://workspace/{ws}/dashboard`,
 and `pad://_meta/version`.
 
 **Stability contract.** The catalog is versioned
-(`tool_surface_version: "0.65"`) and advertised in the initialize handshake and at
+(`tool_surface_version: "0.66"`) and advertised in the initialize handshake and at
 `pad://_meta/version`, so external agents can pin against it; the per-version
 changelog lives in [`internal/mcp/version.go`](internal/mcp/version.go). Errors
 come back as structured envelopes (`{error: {code, message, hint, ...}}`) from a

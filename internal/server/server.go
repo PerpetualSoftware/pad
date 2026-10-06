@@ -1915,6 +1915,7 @@ func (s *Server) setupRouter() {
 
 			// Invitations (outside workspace scope)
 			r.Post("/invitations/{code}/accept", s.handleAcceptInvitation)
+			r.Post("/invitations/{code}/decline", s.handleDeclineInvitation)
 
 			// Non-consuming invitation preview (BUG-1934). Public/pre-auth
 			// (exempted in isPublicAPIPath) so the logged-out /join page can
@@ -1975,6 +1976,7 @@ func (s *Server) setupRouter() {
 			// client only.
 			r.Get("/me/invitations", s.handleListMyInvitations)
 			r.Post("/me/invitations/{id}/accept", s.handleAcceptMyInvitation)
+			r.Post("/me/invitations/{id}/decline", s.handleDeclineMyInvitation)
 
 			// Workspaces
 			r.Route("/workspaces", func(r chi.Router) {

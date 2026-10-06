@@ -499,3 +499,42 @@ func TestVerifiedEmail_OAuthAuthorize_BlocksUnverified(t *testing.T) {
 	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
 	assertBlocked(t, rr, "unverified oauth authorize render")
 }
+
+// BUG-2136, codex r1: declining by code is the other answer to the same
+// invitation, so it passes the gate exactly as accepting does.
+func TestVerifiedEmail_InvitationDecline_CarveOut(t *testing.T) {
+	f := newVerifiedEmailFixture(t, true)
+	admin, err := f.srv.store.GetUserByEmail("admin@ve.test")
+	if err != nil || admin == nil {
+		t.Fatalf("GetUserByEmail admin: %v", err)
+	}
+	otherWS, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Decline Target", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	inv, err := f.srv.store.CreateInvitation(otherWS.ID, f.unv.email, "editor", admin.ID)
+	if err != nil {
+		t.Fatalf("CreateInvitation: %v", err)
+	}
+	rr := doRequestWithCookie(f.srv, "POST", "/api/v1/invitations/"+inv.Code+"/decline", nil, f.unv.session)
+	assertNotEmailBlocked(t, rr, "unverified invitation-decline")
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("unverified invitation-decline: expected 204, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestVerifiedEmailExemptPath_InvitationAnswersOnly(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/api/v1/invitations/abc/accept":        true,
+		"/api/v1/invitations/abc/decline":       true,
+		"/api/v1/invitations/abc/preview":       false,
+		"/api/v1/invitations/abc/nested/accept": false,
+		"/api/v1/invitations/x/y/decline":       false,
+		"/api/v1/invitations//accept":           false,
+		"/api/v1/invitations/abc":               false,
+	} {
+		if got := verifiedEmailExemptPath(path); got != want {
+			t.Errorf("verifiedEmailExemptPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}

@@ -94,13 +94,17 @@ func TestMyInvitations_ListFilters(t *testing.T) {
 		f.owner.Username = "ownerhandle"
 
 		mine := f.invite("me@example.com", "editor")
-		// Case differs only in how the inviter typed it; stored lowercased.
+		// Case differs only in how the inviter typed it; stored lowercased,
+		// so this is a RE-INVITE of the same address and replaces `mine`
+		// (BUG-2136: one live invitation per workspace and address).
 		mineUpper := f.invite("  ME@Example.com ", "viewer")
 		f.invite("other@example.com", "editor")
-		expired := f.invite("me@example.com", "editor")
-		expireInvitation(t, f.srv, expired.ID)
-		accepted := f.invite("me@example.com", "editor")
-		if err := f.srv.store.AcceptInvitation(accepted.ID); err != nil {
+		// The expired and accepted rows are inserted directly: CreateInvitation
+		// would replace the live one, and these legs test the LIST's filters.
+		expired := insertRawInvitation(t, f, d, "me@example.com", "editor")
+		expireInvitation(t, f.srv, expired)
+		accepted := insertRawInvitation(t, f, d, "me@example.com", "editor")
+		if err := f.srv.store.AcceptInvitation(accepted); err != nil {
 			t.Fatalf("AcceptInvitation: %v", err)
 		}
 
@@ -108,9 +112,9 @@ func TestMyInvitations_ListFilters(t *testing.T) {
 		if !got.EmailVerified {
 			t.Fatalf("verified caller reported email_verified=false")
 		}
-		if want := sortedIDs(mine.ID, mineUpper.ID); !reflect.DeepEqual(invitationIDs(got.Invitations), want) {
-			t.Fatalf("listed %v, want %v (not expired %s, not accepted %s, not other's)",
-				invitationIDs(got.Invitations), want, expired.ID, accepted.ID)
+		if want := sortedIDs(mineUpper.ID); !reflect.DeepEqual(invitationIDs(got.Invitations), want) {
+			t.Fatalf("listed %v, want %v (not the replaced %s, not expired %s, not accepted %s, not other's)",
+				invitationIDs(got.Invitations), want, mine.ID, expired, accepted)
 		}
 		for _, inv := range got.Invitations {
 			if inv.WorkspaceSlug != f.wsSlug || inv.WorkspaceName != "Access WS" || inv.WorkspaceOwnerUsername != f.owner.Username {

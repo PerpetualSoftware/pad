@@ -112,6 +112,13 @@ async function seed(fixture: SuiteFixture): Promise<World> {
 		await owner.api.post(`/api/v1/workspaces/${shared}/members/invite`, { data: { email: member.email, role: 'editor' } }),
 		'invite'
 	);
+	// BUG-2136: an invite asks; the member joins when they accept.
+	const list = (await (await ok(await member.api.get('/api/v1/me/invitations'), 'list invitations')).json()) as {
+		invitations: { id: string; workspace_slug: string }[];
+	};
+	const inv = list.invitations.find((i) => i.workspace_slug === shared);
+	if (!inv) throw new Error(`no pending invitation to ${shared}`);
+	await ok(await member.api.post(`/api/v1/me/invitations/${inv.id}/accept`), 'accept');
 	await setOpenSet(member, [own, shared]);
 	return { owner, member, own, shared };
 }

@@ -145,6 +145,11 @@ func (s *Store) commitWorkspaceMemberTx(tx *sql.Tx) error {
 	return tx.Commit()
 }
 
+// ErrInvitationGone: the invitation an accept was admitted on no longer
+// exists, because it was declined, replaced or cancelled after the caller read
+// it (BUG-2136). The accept is rolled back.
+var ErrInvitationGone = errors.New("invitation no longer pending")
+
 // AcceptWorkspaceInvitation accepts an invitation in one transaction: the
 // membership through addWorkspaceMemberTx, then the invitation's accepted_at.
 // An existing membership is an idempotent success (BUG-3281, lead ruling):
@@ -170,8 +175,24 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 		return false, "", err
 	}
 	// The first accept's timestamp stands; a concurrent loser leaves it alone.
-	if _, err := tx.Exec(s.q(`UPDATE workspace_invitations SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL`), now(), invitationID); err != nil {
+	res, err := tx.Exec(s.q(`UPDATE workspace_invitations SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL`), now(), invitationID)
+	if err != nil {
 		return false, "", fmt.Errorf("accept workspace invitation: %w", err)
+	}
+	// Nothing updated is one of two things (BUG-2136). The row is still there,
+	// accepted: a concurrent accept won, and this one is the idempotent loser
+	// (BUG-3281). The row is GONE: it was declined, replaced or cancelled after
+	// the caller read it, and this accept must not land, so the membership
+	// written above is rolled back. On Postgres the UPDATE holds the row's lock
+	// until commit, so a decline racing it waits and then finds nothing pending.
+	if n, rerr := res.RowsAffected(); rerr == nil && n == 0 {
+		var one int
+		switch qerr := tx.QueryRow(s.q(`SELECT 1 FROM workspace_invitations WHERE id = ?`), invitationID).Scan(&one); {
+		case errors.Is(qerr, sql.ErrNoRows):
+			return false, "", ErrInvitationGone
+		case qerr != nil:
+			return false, "", fmt.Errorf("accept workspace invitation: recheck: %w", qerr)
+		}
 	}
 	if err := s.commitWorkspaceMemberTx(tx); err != nil {
 		// added and effectiveRole describe what this transaction wrote, so they
@@ -963,10 +984,22 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 		return nil, fmt.Errorf("insert invitation: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// One live invitation per (workspace, address) (BUG-2136): a re-invite
+	// REPLACES the pending one, so a fresh code, role and expiry win and the
+	// old code stops working. The workspace lock serializes two concurrent
+	// invites of one address on Postgres (SQLite's write lock already does);
+	// it is taken first, the order the other workspace writers use.
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return nil, fmt.Errorf("insert invitation: lock: %w", err)
+	}
 	if invitedBy != "" {
 		if err := s.requireActiveUserTx(tx, invitedBy); err != nil {
 			return nil, err
 		}
+	}
+	if _, err := tx.Exec(s.q(`DELETE FROM workspace_invitations WHERE workspace_id = ? AND email = ? AND accepted_at IS NULL`),
+		workspaceID, strings.ToLower(strings.TrimSpace(email))); err != nil {
+		return nil, fmt.Errorf("insert invitation: replace pending: %w", err)
 	}
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at, expires_at, proof_hash)

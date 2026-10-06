@@ -151,6 +151,24 @@ async function createItems(
 	return items;
 }
 
+/**
+ * Accept, as the invitee, the pending invitation to workspace `ws` (BUG-2136:
+ * an invite no longer adds an existing account, it asks).
+ */
+async function acceptInvitationTo(baseURL: string, token: string, ws: string, key: string): Promise<void> {
+	const invitee = await bearer(baseURL, token);
+	try {
+		const list = (await (
+			await expectOk(await invitee.get('/api/v1/me/invitations'), `list invitations for ${key}`)
+		).json()) as { invitations: { id: string; workspace_slug: string }[] };
+		const inv = list.invitations.find((i) => i.workspace_slug === ws);
+		if (!inv) throw new Error(`no pending invitation to ${ws} for ${key}`);
+		await expectOk(await invitee.post(`/api/v1/me/invitations/${inv.id}/accept`), `accept for ${key}`);
+	} finally {
+		await invitee.dispose();
+	}
+}
+
 /** Seed one walk world. Each call builds a fresh, independent one. */
 export async function seedPermissionWalk(): Promise<PermissionWalk> {
 	const { baseURL, adminSessionToken } = suiteFixture();
@@ -195,6 +213,8 @@ export async function seedPermissionWalk(): Promise<PermissionWalk> {
 				}),
 				`invite ${key}`
 			);
+			// BUG-2136: an invite asks; the account joins when it accepts.
+			await acceptInvitationTo(baseURL, accounts[key].token, ws, key);
 		}
 
 		const tasksColl = (await (

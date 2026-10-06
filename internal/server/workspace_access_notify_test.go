@@ -203,10 +203,18 @@ func TestWorkspaceAccessChanged_ImportJSONAndBundle(t *testing.T) {
 func TestWorkspaceAccessChanged_InviteExistingUser(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
-		mkUser(t, f.srv, "invitee@example.com")
+		invitee := mkUser(t, f.srv, "invitee@example.com")
 		since := f.mark()
 		f.must(f.do("POST", "/api/v1/workspaces/"+f.wsSlug+"/members/invite", f.ownerTok,
 			map[string]any{"email": "invitee@example.com", "role": "editor"}), http.StatusCreated, "invite")
+		// BUG-2136: inviting an existing account asks it; nothing is gained
+		// until it accepts.
+		f.expect(since)
+		ids := myInvitationIDs(t, f, f.token(invitee))
+		if len(ids) != 1 {
+			t.Fatalf("the invitee lists %d invitations, want 1", len(ids))
+		}
+		f.must(f.do("POST", "/api/v1/me/invitations/"+ids[0]+"/accept", f.token(invitee), nil), http.StatusOK, "accept")
 		f.expect(since, f.line("gained", "invitee@example.com"))
 	})
 }
@@ -455,6 +463,12 @@ func TestWorkspaceAccessChanged_StreamOptInAndAddressing(t *testing.T) {
 
 	f.must(f.do("POST", "/api/v1/workspaces/"+f.wsSlug+"/members/invite", f.ownerTok,
 		map[string]any{"email": "target@example.com", "role": "viewer"}), http.StatusCreated, "invite target")
+	// BUG-2136: the gain happens on accept, not on invite.
+	tids := myInvitationIDs(t, f, ttok)
+	if len(tids) != 1 {
+		t.Fatalf("the target lists %d invitations, want 1", len(tids))
+	}
+	f.must(f.do("POST", "/api/v1/me/invitations/"+tids[0]+"/accept", ttok, nil), http.StatusOK, "target accepts")
 	ev := waitForWatchEvent(t, targetAccess, 3*time.Second)
 	var p watchEventPayload
 	if err := json.Unmarshal([]byte(ev.Data), &p); err != nil {

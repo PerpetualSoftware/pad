@@ -1738,6 +1738,19 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.66 — BUG-2136 (lead ruling, day 87). BEHAVIOR bump on the v0.52 /
+//     v0.43 grounds: `pad_workspace.action=invite` no longer ADDS an existing
+//     account to the workspace. Every invite now creates a pending
+//     invitation that the invitee accepts or declines (in the web app, or
+//     with `pad workspace invitations` / `accept` / `decline`, CLI-only by
+//     ruling), on both transports. The result loses the direct-add shape
+//     (`added`, `user_id`, `name`) and is always `{invited, code, email,
+//     role, join_url?}`, so it also stops saying whether the address has an
+//     account. A re-invite of an address with a pending invitation replaces
+//     it (a fresh code, role and 14-day expiry; the old code stops working).
+//     An agent that invited a user and then acted on them as a member must
+//     now wait for their acceptance. No name, enum or param moved.
+//
 //     0.65 — TASK-3413 (SPEC-6 U9c). ADDITIVE bump on the v0.53 grounds:
 //     an item an installed APP created, a comment an app wrote and a version
 //     row an app's write made gain `omitempty` `via_app` (the install id) and
@@ -1779,7 +1792,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.65"
+const ToolSurfaceVersion = "0.66"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

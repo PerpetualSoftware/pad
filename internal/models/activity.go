@@ -12,25 +12,28 @@ var ValidActions = []string{
 
 // Audit action constants for auth/admin events
 const (
-	ActionLogin            = "login"
-	ActionLoginFailed      = "login_failed"
-	ActionLogout           = "logout"
-	ActionBootstrap        = "bootstrap"
-	ActionRegister         = "register"
-	ActionPasswordChanged  = "password_changed"
-	ActionPasswordReset    = "password_reset"
-	ActionTokenCreated     = "token_created"
-	ActionTokenRevoked     = "token_revoked"
-	ActionTokenRotated     = "token_rotated"
-	ActionTOTPEnabled      = "totp_enabled"
-	ActionTOTPDisabled     = "totp_disabled"
-	ActionMemberInvited    = "member_invited"
-	ActionMemberRemoved    = "member_removed"
-	ActionRoleChanged      = "role_changed"
-	ActionSettingsChanged  = "settings_changed"
-	ActionOAuthLogin       = "oauth_login"
-	ActionOAuthLoginFailed = "oauth_login_failed"
-	ActionPlanChanged      = "plan_changed"
+	ActionLogin           = "login"
+	ActionLoginFailed     = "login_failed"
+	ActionLogout          = "logout"
+	ActionBootstrap       = "bootstrap"
+	ActionRegister        = "register"
+	ActionPasswordChanged = "password_changed"
+	ActionPasswordReset   = "password_reset"
+	ActionTokenCreated    = "token_created"
+	ActionTokenRevoked    = "token_revoked"
+	ActionTokenRotated    = "token_rotated"
+	ActionTOTPEnabled     = "totp_enabled"
+	ActionTOTPDisabled    = "totp_disabled"
+	ActionMemberInvited   = "member_invited"
+	// ActionMemberInviteDeclined: the invitee declined a pending invitation
+	// (BUG-2136). The invitation row is deleted; this is its trail.
+	ActionMemberInviteDeclined = "member_invite_declined"
+	ActionMemberRemoved        = "member_removed"
+	ActionRoleChanged          = "role_changed"
+	ActionSettingsChanged      = "settings_changed"
+	ActionOAuthLogin           = "oauth_login"
+	ActionOAuthLoginFailed     = "oauth_login_failed"
+	ActionPlanChanged          = "plan_changed"
 	// ActionPlanOverridesChanged is logged when an admin updates a
 	// user's plan_overrides JSON via the admin user-detail page.
 	// Surfaces per-user storage / workspace / API-token quota

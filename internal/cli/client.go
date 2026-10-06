@@ -2495,3 +2495,48 @@ func (c *Client) AckReminder(wsSlug, reminderID string) (*models.Reminder, error
 func (c *Client) DeleteReminder(wsSlug, reminderID string) error {
 	return c.delete("/workspaces/" + wsSlug + "/reminders/" + reminderID)
 }
+
+// MyInvitation is one pending invitation addressed to the signed-in account
+// (GET /api/v1/me/invitations, BUG-2136).
+type MyInvitation struct {
+	ID                     string     `json:"id"`
+	Role                   string     `json:"role"`
+	WorkspaceSlug          string     `json:"workspace_slug"`
+	WorkspaceName          string     `json:"workspace_name"`
+	WorkspaceOwnerUsername string     `json:"workspace_owner_username"`
+	InvitedByName          string     `json:"invited_by_name"`
+	CreatedAt              time.Time  `json:"created_at"`
+	ExpiresAt              *time.Time `json:"expires_at,omitempty"`
+}
+
+// ListMyInvitations returns the pending invitations addressed to the caller,
+// and whether the caller's email is verified (only a verified email is
+// matched).
+func (c *Client) ListMyInvitations() ([]MyInvitation, bool, error) {
+	var body struct {
+		Invitations   []MyInvitation `json:"invitations"`
+		EmailVerified bool           `json:"email_verified"`
+	}
+	if err := c.get("/me/invitations", &body); err != nil {
+		return nil, false, err
+	}
+	return body.Invitations, body.EmailVerified, nil
+}
+
+// AcceptMyInvitation accepts a pending invitation by id and returns the role
+// held and the workspace slug.
+func (c *Client) AcceptMyInvitation(id string) (role, workspaceSlug string, err error) {
+	var body struct {
+		Role          string `json:"role"`
+		WorkspaceSlug string `json:"workspace_slug"`
+	}
+	if err := c.post("/me/invitations/"+url.PathEscape(id)+"/accept", nil, &body); err != nil {
+		return "", "", err
+	}
+	return body.Role, body.WorkspaceSlug, nil
+}
+
+// DeclineMyInvitation declines (deletes) a pending invitation by id.
+func (c *Client) DeclineMyInvitation(id string) error {
+	return c.post("/me/invitations/"+url.PathEscape(id)+"/decline", nil, nil)
+}

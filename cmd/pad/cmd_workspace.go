@@ -212,13 +212,15 @@ func inviteCmd() *cobra.Command {
 
 			green := color.New(color.FgGreen).SprintFunc()
 
+			// A server before BUG-2136 still adds an existing account directly.
 			if added, ok := result["added"].(bool); ok && added {
 				name, _ := result["name"].(string)
 				role, _ := result["role"].(string)
 				fmt.Printf("%s Added %s (%s) as %s\n", green("✓"), name, email, role)
 			} else {
 				role, _ := result["role"].(string)
-				fmt.Printf("%s Invitation created for %s (%s)\n", green("✓"), email, role)
+				fmt.Printf("%s Invited %s (%s): pending until they accept\n", green("✓"), email, role)
+				fmt.Printf("  They will see it in Pad (the + menu), or with: pad workspace invitations\n")
 				if joinURL, ok := result["join_url"].(string); ok && joinURL != "" {
 					fmt.Printf("  Share this link: %s\n", joinURL)
 				} else {
@@ -252,6 +254,76 @@ func joinCmd() *cobra.Command {
 			green := color.New(color.FgGreen).SprintFunc()
 			role, _ := result["role"].(string)
 			fmt.Printf("%s Joined workspace as %s\n", green("✓"), role)
+			return nil
+		},
+	}
+}
+
+// myInvitationsCmd lists the pending invitations addressed to the signed-in
+// account (BUG-2136): what an invitee answers with accept or decline.
+func myInvitationsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "invitations",
+		Short: "List workspace invitations waiting for your answer",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			invs, verified, err := client.ListMyInvitations()
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{"invitations": invs, "email_verified": verified})
+			}
+			if !verified {
+				fmt.Println("Your email address is not verified, so no invitations are listed. Verify it, or use the link in the invitation email.")
+				return nil
+			}
+			if len(invs) == 0 {
+				fmt.Println("No pending invitations.")
+				return nil
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "ID\tWORKSPACE\tROLE\tINVITED BY")
+			for _, inv := range invs {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", inv.ID, inv.WorkspaceName, inv.Role, inv.InvitedByName)
+			}
+			w.Flush()
+			fmt.Println("\nAnswer with: pad workspace accept <id>  or  pad workspace decline <id>")
+			return nil
+		},
+	}
+}
+
+func acceptInvitationCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "accept <invitation-id>",
+		Short: "Accept a workspace invitation from pad workspace invitations",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			role, slug, err := client.AcceptMyInvitation(args[0])
+			if err != nil {
+				return fmt.Errorf("failed to accept invitation: %w", err)
+			}
+			green := color.New(color.FgGreen).SprintFunc()
+			fmt.Printf("%s Joined %s as %s\n", green("✓"), slug, role)
+			return nil
+		},
+	}
+}
+
+func declineInvitationCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "decline <invitation-id>",
+		Short: "Decline a workspace invitation from pad workspace invitations",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			if err := client.DeclineMyInvitation(args[0]); err != nil {
+				return fmt.Errorf("failed to decline invitation: %w", err)
+			}
+			fmt.Println("Invitation declined.")
 			return nil
 		},
 	}
