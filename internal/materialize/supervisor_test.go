@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,6 +101,15 @@ func runScript(w *bufio.Writer, req WorkerRequest) bool {
 		ok("echo:" + arg)
 	case "timeout": // echoes the soft deadline it was handed
 		ok(strconv.FormatInt(req.TimeoutMs, 10))
+	case "await": // mark arg+".started", then answer once arg exists (BUG-3435)
+		_ = os.WriteFile(arg+".started", nil, 0o600)
+		for {
+			if _, err := os.Stat(arg); err == nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		ok("awaited")
 	case "sleep": // answer after arg milliseconds
 		ms, _ := strconv.Atoi(arg)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
@@ -1048,22 +1058,86 @@ func TestSupervisorJobDuringIdleStop(t *testing.T) {
 // only holding the job slot, and a job still in flight holds it. (Closing
 // stdin alone would let the job finish; the kill after the grace would not,
 // so the grace is shorter than the job here.)
+// The idle timer firing while a job holds the slot leaves that job's worker
+// alone, and the job's end re-arms the timer. BUG-3435: this used to be
+// staged with wall-clock sleeps (a 300ms timer, a 200ms pause, a 400ms job),
+// so a loaded runner could fire the timer in the gap BEFORE the second job
+// and fail with two spawns. Now nothing fires on its own (a one-hour idle):
+// the test fires the timer itself once the job is provably inside the worker,
+// waits for onIdleBusy to report that the stop found the slot taken, and only
+// then lets the job finish.
 func TestSupervisorIdleTimerDuringJob(t *testing.T) {
+	busy := make(chan struct{}, 1)
 	h := newHarness(t, "script", func(c *SupervisorConfig) {
-		c.idleExact = 300 * time.Millisecond
+		c.idleExact = time.Hour
 		c.idleGrace = 50 * time.Millisecond
+		c.onIdleBusy = func() {
+			select {
+			case busy <- struct{}{}:
+			default:
+			}
+		}
 	})
 	if _, err := h.s.Materialize(context.Background(), script("echo:x")); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond) // the timer fires 100ms into the next job
-	if md, err := h.s.Materialize(context.Background(), script("sleep:400")); err != nil || md != "slept:400" {
-		t.Fatalf("a job running when the idle timer fired: %q, %v", md, err)
+	gate := filepath.Join(t.TempDir(), "release")
+	type result struct {
+		md  string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		md, err := h.s.Materialize(context.Background(), script("await:"+gate))
+		done <- result{md, err}
+	}()
+	// The job is inside the worker, holding the slot.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(gate + ".started"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the job never reached the worker")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Fire the idle timer now, mid-job, as if the worker had been idle for
+	// the whole timeout.
+	h.s.mu.Lock()
+	c := h.s.child
+	if c == nil || c.idleTimer == nil {
+		h.s.mu.Unlock()
+		t.Fatal("no worker or no idle timer after the first job")
+	}
+	c.lastJob = time.Now().Add(-2 * time.Hour)
+	c.idleTimer.Reset(0)
+	h.s.mu.Unlock()
+	select {
+	case <-busy:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the idle timer never fired")
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.err != nil || r.md != "awaited" {
+		t.Fatalf("a job running when the idle timer fired: %q, %v", r.md, r.err)
 	}
 	if n := h.f.calls.Load(); n != 1 {
 		t.Fatalf("%d spawns; the running job's worker was stopped under it", n)
 	}
-	// And the job's end re-armed the timer: the worker still goes idle later.
+	// The job's end re-armed the timer: lastJob moved to the job's end, and a
+	// worker idle for the whole timeout since then still stops.
+	h.s.mu.Lock()
+	if h.s.child != c || time.Since(c.lastJob) > time.Hour {
+		h.s.mu.Unlock()
+		t.Fatal("the job's end did not re-arm the idle timer on the same worker")
+	}
+	c.lastJob = time.Now().Add(-2 * time.Hour)
+	c.idleTimer.Reset(0)
+	h.s.mu.Unlock()
 	waitIdleStopped(t, h)
 }
 

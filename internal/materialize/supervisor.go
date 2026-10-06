@@ -123,6 +123,7 @@ type SupervisorConfig struct {
 	extraEnv      []string      // appended last to the worker's environment
 	idleExact     time.Duration // > 0: the idle timeout, unclamped
 	onIdleStop    func()        // runs while an idle stop holds the job slot
+	onIdleBusy    func()        // runs when the idle timer fires while a job holds the slot
 	idleGrace     time.Duration // how long an idle stop waits for EOF before a kill (0: 5s)
 }
 
@@ -325,6 +326,9 @@ func (s *Supervisor) idleStop(c *child) {
 	select {
 	case s.slot <- struct{}{}:
 	default:
+		if s.cfg.onIdleBusy != nil {
+			s.cfg.onIdleBusy()
+		}
 		return
 	}
 	defer func() { <-s.slot }()
