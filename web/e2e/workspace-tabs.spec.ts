@@ -432,9 +432,8 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 		try {
 			inviter = await seed(fixture, ['Invited To']);
 			const shared = inviter.slugs[0];
-			// Invite an address with no account yet, so the invite stays a
-			// pending invitation rather than a direct add, then create the
-			// account (admin-created, hence verified).
+			// Invite the address, then create the account (admin-created, hence
+			// verified). Every invite is a pending invitation since BUG-2136.
 			const tag = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 			await ok(
 				await inviter.account.api.post(`/api/v1/workspaces/${shared}/members/invite`, {
@@ -450,6 +449,8 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 
 			await page.goto(`/${account.username}/${home}`);
 			await expect(tabs(page)).toHaveCount(1);
+			// BUG-2136 U2: the "+" carries the count before anything is opened.
+			await expect(page.getByTestId('invitation-badge')).toHaveText('1');
 			await page.getByTitle('Find or create a workspace').click();
 			const section = page.getByRole('region', { name: 'Invitations' });
 			await expect(section).toBeVisible();
@@ -457,11 +458,52 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 			await section.getByRole('button', { name: /^Accept the invitation to Invited To/ }).click();
 
 			await expect(page).toHaveURL(new RegExp(`/${inviter.account.username}/${shared}$`));
+			await expect(page.getByTestId('invitation-badge')).toHaveCount(0);
 			await expect(tab(page, shared)).toHaveCount(1);
 			await expect(tab(page, shared)).toHaveClass(/ephemeral/);
 			await expect.poll(() => serverOrder(account)).toContain(shared);
 
 			// Accepted: the server no longer lists it.
+			const mine = (await (await ok(await account.api.get('/api/v1/me/invitations'), 'list invitations')).json()) as {
+				invitations: unknown[];
+			};
+			expect(mine.invitations).toHaveLength(0);
+		} finally {
+			await teardown(invitee);
+			await teardown(inviter);
+		}
+	});
+	// BUG-2136 U2: an invitation is declined from "+": it leaves the list and
+	// the badge, nothing is joined, and the server no longer lists it.
+	test('an invitation in "+" is declined and joins nothing', async ({ page, context, fixture }) => {
+		let inviter: World | undefined;
+		let invitee: World | undefined;
+		try {
+			inviter = await seed(fixture, ['Declined From']);
+			const shared = inviter.slugs[0];
+			const tag = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+			await ok(
+				await inviter.account.api.post(`/api/v1/workspaces/${shared}/members/invite`, {
+					data: { email: `tabs${tag}@example.com`, role: 'editor' }
+				}),
+				'invite'
+			);
+			const account = await mintAccount(fixture, tag);
+			invitee = { account, slugs: [await createWorkspace(account, `Home ${tag}`)] };
+			const home = invitee.slugs[0];
+			await setOpenSet(account, [home]);
+			await actAs(context, account);
+
+			await page.goto(`/${account.username}/${home}`);
+			await expect(page.getByTestId('invitation-badge')).toHaveText('1');
+			await page.getByTitle('Find or create a workspace').click();
+			const section = page.getByRole('region', { name: 'Invitations' });
+			await section.getByRole('button', { name: /^Decline the invitation to Declined From/ }).click();
+
+			await expect(section).toHaveCount(0);
+			await expect(page.getByTestId('invitation-badge')).toHaveCount(0);
+			await expect(page).toHaveURL(new RegExp(`/${account.username}/${home}$`));
+			await expect(tab(page, shared)).toHaveCount(0);
 			const mine = (await (await ok(await account.api.get('/api/v1/me/invitations'), 'list invitations')).json()) as {
 				invitations: unknown[];
 			};
@@ -595,7 +637,8 @@ test.describe('landings open an ephemeral tab (TASK-3279)', () => {
 		let inviter: World | undefined;
 		let invitee: Account | undefined;
 		// Signed OUT: the suite's default page is the shared admin, and a signed-in
-		// join page accepts as that account instead of offering registration.
+		// join page offers that account the accept/decline card instead of
+		// registration.
 		const context = await browser.newContext({ baseURL: fixture.baseURL, storageState: { cookies: [], origins: [] } });
 		const page = await context.newPage();
 		await page.setViewportSize(DESKTOP);
