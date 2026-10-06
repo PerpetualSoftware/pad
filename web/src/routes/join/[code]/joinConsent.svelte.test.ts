@@ -18,6 +18,9 @@ const mocks = vi.hoisted(() => ({
 	refreshInvitations: vi.fn(async () => {}),
 }));
 
+// Reactive, so a leg can change the code under a mounted page, as an SPA
+// navigation from one /join link to another does (codex r4).
+vi.mock('$app/state', async () => ({ page: (await import('../../../test/mocks/reactivePage.svelte')).page }));
 vi.mock('$app/navigation', () => ({ goto: mocks.goto, replaceState: vi.fn() }));
 vi.mock('$lib/api/client', () => ({
 	api: {
@@ -121,6 +124,9 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(mocks.accept).not.toHaveBeenCalled();
 		expect(mocks.goto).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain('Invitation declined');
+		// Announced: the focused buttons are gone, so the result must be spoken
+		// (codex r4).
+		expect(document.querySelector('[role="status"]')?.textContent).toContain('Invitation declined');
 	});
 
 	it('a failed decline reports the error', async () => {
@@ -132,6 +138,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		await settle();
 		expect(document.body.textContent).toContain('Invitation not found');
 		expect(document.body.textContent).not.toContain('Invitation declined');
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain('Invitation not found');
 	});
 
 	it('signing in from the link lands on the card, not an accept', async () => {
@@ -185,5 +192,36 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(mocks.register).toHaveBeenCalled();
 		expect(byTestId('join-accept')).toBeNull();
 		expect(mocks.goto).toHaveBeenCalledWith('/o/acme', { replaceState: true });
+	});
+
+	it('a different /join code under the mounted page shows and acts on THAT invitation (codex r4)', async () => {
+		mocks.session.mockResolvedValue({ authenticated: true });
+		render(JoinPage);
+		await settle();
+		expect(document.body.textContent).toContain('Acme');
+		mocks.preview.mockResolvedValue({ found: true, email: 'inv@example.com', has_account: true, workspace_name: 'Beta Co' });
+		page.params = { code: 'def456' };
+		await settle();
+		expect(mocks.preview).toHaveBeenLastCalledWith('def456');
+		expect(document.body.textContent).toContain('Beta Co');
+		expect(document.body.textContent).not.toContain('Acme');
+		await fireEvent.click(byTestId('join-accept')!);
+		await settle();
+		expect(mocks.accept).toHaveBeenCalledWith('def456', undefined);
+	});
+
+	it('a preview for the previous code that answers late does not replace the current one (codex r4)', async () => {
+		mocks.session.mockResolvedValue({ authenticated: true });
+		let answerA!: (v: unknown) => void;
+		mocks.preview.mockReturnValueOnce(new Promise((r) => (answerA = r)));
+		render(JoinPage);
+		await settle();
+		mocks.preview.mockResolvedValue({ found: true, email: 'inv@example.com', has_account: true, workspace_name: 'Beta Co' });
+		page.params = { code: 'def456' };
+		await settle();
+		answerA({ found: true, email: 'inv@example.com', has_account: true, workspace_name: 'Acme' });
+		await settle();
+		expect(document.body.textContent).toContain('Beta Co');
+		expect(document.body.textContent).not.toContain('Acme');
 	});
 });
