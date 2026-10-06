@@ -104,7 +104,7 @@
 			paneMintRef = r;
 		},
 		// A drill still in flight when the window ends applies itself (TASK-3423).
-		deferWhile: () => navigating.current !== null,
+		deferWhile: () => navigating.type !== null,
 	});
 	afterNavigate((nav) => {
 		const samePathname =
