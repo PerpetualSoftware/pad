@@ -147,6 +147,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 
 		refQuery, refArgs = appendSearchPermissionFilter(refQuery, refArgs, params)
+		refQuery = appendLiveCollectionFilter(refQuery)
 
 		// Apply content filters to ref lookup too
 		refQuery, refArgs = appendSearchCollectionFilter(refQuery, refArgs, params)
@@ -240,6 +241,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 
 		numQuery, numArgs = appendSearchPermissionFilter(numQuery, numArgs, params)
+		numQuery = appendLiveCollectionFilter(numQuery)
 
 		// Apply content filters to numeric lookup too
 		numQuery, numArgs = appendSearchCollectionFilter(numQuery, numArgs, params)
@@ -406,6 +408,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	}
 
 	query, args = appendSearchPermissionFilter(query, args, params)
+	query = appendLiveCollectionFilter(query)
 
 	// Collection filter — the resolved per-workspace set, or a literal slug.
 	query, args = appendSearchCollectionFilter(query, args, params)
@@ -618,6 +621,7 @@ func (s *Store) appendSearchFilters(query string, args []interface{}, params Sea
 	}
 
 	query, args = appendSearchPermissionFilter(query, args, params)
+	query = appendLiveCollectionFilter(query)
 
 	query, args = appendSearchCollectionFilter(query, args, params)
 
@@ -788,6 +792,14 @@ func appendSearchPermissionFilter(query string, args []interface{}, params Searc
 		args = append(args, id)
 	}
 	return query, args
+}
+
+// appendLiveCollectionFilter leaves out the items of a soft-deleted collection
+// (BUG-3428), for every caller alike. Every search query joins collections as
+// c and calls it beside appendSearchPermissionFilter, so the results, the
+// total and the facets agree.
+func appendLiveCollectionFilter(query string) string {
+	return query + ` AND c.deleted_at IS NULL`
 }
 
 func appendSearchCollectionFilter(query string, args []interface{}, params SearchParams) (string, []interface{}) {

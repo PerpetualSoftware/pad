@@ -165,10 +165,11 @@ func TestGetItemProgress_DefaultsToStatusWithoutSettings(t *testing.T) {
 }
 
 // TestGetItemProgress_HonorsSoftDeletedChildCollections verifies a
-// regression Codex flagged: soft-deleted child collections must still
-// contribute done filters, otherwise their items can never satisfy the
-// per-collection `collection_id = ? AND ...` clause and would always be
-// counted as active.
+// regression Codex flagged: a child whose collection was soft-deleted must
+// never be counted as ACTIVE because its collection's done rule went
+// missing. Since BUG-3428 such a child is left out of progress entirely, as
+// every other item read leaves it out, which closes that miscount at the
+// source: it is neither open nor done.
 func TestGetItemProgress_HonorsSoftDeletedChildCollections(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -211,18 +212,14 @@ func TestGetItemProgress_HonorsSoftDeletedChildCollections(t *testing.T) {
 		t.Fatalf("soft delete tasks: %v", err)
 	}
 
-	// Expect the same done count — soft-deleted collections still
-	// contribute their done rules.
-	_, doneAfter, err := s.GetItemProgress(plan.ID)
+	// Both children were in the deleted collection: out of BOTH counts, so
+	// the open one is not counted as active work and the plan reads 0/0.
+	totalAfter, doneAfter, err := s.GetItemProgress(plan.ID)
 	if err != nil {
 		t.Fatalf("GetItemProgress after soft-delete: %v", err)
 	}
-	if doneAfter != 1 {
-		t.Errorf(
-			"expected done count to remain 1 after collection soft-delete, got %d — "+
-				"soft-deleted collections must still contribute done filters",
-			doneAfter,
-		)
+	if totalAfter != 0 || doneAfter != 0 {
+		t.Errorf("after the collection's soft-delete want 0/0 (its children leave progress, BUG-3428), got %d/%d", doneAfter, totalAfter)
 	}
 }
 
