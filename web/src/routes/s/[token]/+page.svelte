@@ -278,7 +278,7 @@
 	// non-default base (e.g. List on a board-default share) MUST keep the
 	// param so the link reproduces the viewer's choice (Codex round 2).
 	function syncUrl() {
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		const handle = selectedKind === 'saved' ? `saved:${selectedSavedSlug}` : selectedBase;
 		if (selectedKind === 'base' && selectedBase === defaultView) {
 			url.searchParams.delete('view');

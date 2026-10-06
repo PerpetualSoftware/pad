@@ -11,7 +11,7 @@ import { resolve } from 'node:path';
  * a clear that stops matching its key is silent.
  */
 
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 vi.mock('$lib/components/editor/attachment-metadata', () => ({
 	clearAttachmentMetadataCache: vi.fn(),
 }));

@@ -104,13 +104,12 @@
 	 * so this is a cheap client-side URL swap.
 	 */
 	function clearAttachmentItem() {
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		if (!url.searchParams.has('attachment_item')) return;
 		url.searchParams.delete('attachment_item');
 		void goto(`${url.pathname}${url.search}${url.hash}`, {
 			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 		});
 	}
 	let loading = $state(true);

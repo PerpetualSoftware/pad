@@ -2,7 +2,7 @@
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { page, navigating } from '$app/state';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, isConflictOrNotFound } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
@@ -642,8 +642,7 @@
 		// instead of go(-1)). PLAN-2154 R13. Harmless no-op when no pane is open.
 		goto(newUrl, {
 			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 			state: currentPaneState(),
 		});
 	}
@@ -830,7 +829,7 @@
 	let skipUrlQueryValue: string | null = null;
 
 	function loadUrlFilters() {
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		const skipQuery = skipUrlQueryValue;
 		skipUrlQueryValue = null;
 		const filters: Record<string, string> = {};
@@ -951,13 +950,12 @@
 		// string means only the previous session's own query is suppressed.
 		skipUrlQueryValue = page.url.searchParams.get('q');
 		if (browser) {
-			const url = new URL(page.url);
+			const url = new URL(page.url.href);
 			if (url.searchParams.has('q')) {
 				url.searchParams.delete('q');
 				void goto(url.pathname + url.search, {
 					replaceState: true,
-					noScroll: true,
-					keepFocus: true,
+					reset: false,
 					// PRESERVED (codex round 2 [P2]). Omitting it lets SvelteKit
 					// default the history state to `{}`, losing `paneDepth` and
 					// `paneOwned` — after which closing a drilled pane takes the

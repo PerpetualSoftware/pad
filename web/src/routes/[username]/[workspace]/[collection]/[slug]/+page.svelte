@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto, afterNavigate } from '$app/navigation';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { onDestroy, onMount } from 'svelte';
 	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
 	import PaneHost from '$lib/components/collections/PaneHost.svelte';
@@ -412,12 +412,11 @@
 		if (!masterItem) return;
 		const current = openItemRef;
 		if (!current || !isMasterRef(current)) return;
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		url.searchParams.delete('item');
 		void goto(`${url.pathname}${url.search}`, {
 			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 		});
 	});
 

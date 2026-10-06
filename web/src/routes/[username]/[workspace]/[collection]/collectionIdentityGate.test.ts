@@ -77,7 +77,7 @@ identityGateSuite({
 			buildViewConfig: '5516adadc557',
 			cancelPaneFollow: '95ae6c0fb20b',
 			captureIdentity: '7f6903e09e84',
-			captureReturnFocus: 'e6f93e3c0bd1',
+			captureReturnFocus: 'f97edb43de71',
 			clearActiveView: 'e083431f7f1a',
 			defaultViewKey: '538c4231d0be',
 			fieldLabelFor: '97d4689b8359',

@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { clearAttachmentMetadataCache } from '$lib/components/editor/attachment-metadata';
 import { CURSOR_STORAGE_PREFIX } from '$lib/collab/wsProvider.svelte';
 

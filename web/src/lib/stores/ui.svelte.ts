@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { viewport, MOBILE_MEDIA_QUERY } from '$lib/stores/breakpoint.svelte';
 
 let sidebarOpen = $state(browser ? !viewport.isMobile : true);
