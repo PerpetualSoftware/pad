@@ -14,6 +14,10 @@ import { quietCrossActorToasts } from './fixtures';
  *      removes the "Connect an AI agent" banner, before any item exists;
  *   2. the agent's first item swaps the launchpad for the dashboard.
  *
+ * The outcome assertions are SOFT, so a build that misses several reports
+ * each one rather than stopping at the first (the red run on main shows all
+ * three). The preconditions stay hard.
+ *
  * Each run mints its own account and workspace: the launchpad is per
  * workspace, and the shared admin's workspaces are not new.
  */
@@ -146,13 +150,13 @@ test.describe('BUG-3447: the launchpad follows an onboarding agent live', () => 
 				'create collection'
 			);
 			const coll = (await created.json()) as { slug: string };
-			await expect(sidebarCollection, 'the new collection did not reach the sidebar live').toBeVisible({ timeout: LIVE });
+			await expect.soft(sidebarCollection, 'the new collection did not reach the sidebar live').toBeVisible({ timeout: LIVE });
 			// An agent's collection is agent activity (lead ruling): the step
 			// ticks and the banner goes, before any item exists.
-			await expect(agentStep, 'the Agent connected step did not tick on the agent\'s collection').toHaveClass(/\bdone\b/, {
+			await expect.soft(agentStep, 'the Agent connected step did not tick on the agent\'s collection').toHaveClass(/\bdone\b/, {
 				timeout: LIVE
 			});
-			await expect(banner, 'the connect banner did not see the agent\'s collection').toHaveCount(0, { timeout: LIVE });
+			await expect.soft(banner, 'the connect banner did not see the agent\'s collection').toHaveCount(0, { timeout: LIVE });
 			await expect(page.locator('.launchpad'), 'control: no item yet, the launchpad stays').toBeVisible();
 
 			// 2 and 3. The agent creates its first item.
@@ -162,10 +166,10 @@ test.describe('BUG-3447: the launchpad follows an onboarding agent live', () => 
 				}),
 				'create item'
 			);
-			await expect(page.locator('.launchpad'), 'the launchpad did not give way to the dashboard live').toHaveCount(0, {
+			await expect.soft(page.locator('.launchpad'), 'the launchpad did not give way to the dashboard live').toHaveCount(0, {
 				timeout: LIVE
 			});
-			await expect(page.locator('.dash-header')).toBeVisible({ timeout: LIVE });
+			await expect.soft(page.locator('.dash-header')).toBeVisible({ timeout: LIVE });
 		} finally {
 			await account.api.dispose();
 		}
