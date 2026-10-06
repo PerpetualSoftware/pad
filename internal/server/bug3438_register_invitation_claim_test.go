@@ -89,12 +89,23 @@ func TestRegisterWithCode_InvitationGoneBeforeClaimJoinsNothing(t *testing.T) {
 	})
 }
 
-// Codex r1: on cloud with email, the signup mints an email-verification token
-// before the claim, and that row references the account. The rollback must
-// still remove the account, or the email stays held and a retry with a live
-// code meets the duplicate-email 409.
-func TestRegisterWithCode_InvitationGoneOnCloudStillRollsTheAccountBack(t *testing.T) {
-	srv, _ := newCloudEmailServer(t)
+// notJoinedBody is the 201 of a signup kept without its invitation.
+type notJoinedBody struct {
+	Token     string         `json:"token"`
+	Accepted  map[string]any `json:"accepted_invitation"`
+	NotJoined *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"invitation_not_joined"`
+}
+
+// Lead ruling on #1834: the account is rolled back only when the invitation
+// was the signup's ADMISSION. Where registration is open anyway (Pad Cloud
+// with a deliverable verification email, the self-serve path), the account is
+// KEPT, nothing is joined, and the response says the invitation is no longer
+// valid. The self-hosted legs above are the admission case and roll back.
+func TestRegisterWithCode_OpenRegistrationKeepsTheAccountWhenTheInvitationIsGone(t *testing.T) {
+	srv, mails := newCloudEmailServer(t)
 	admin, err := srv.store.GetUserByEmail("admin@pad.test")
 	if err != nil || admin == nil {
 		t.Fatalf("admin lookup: %v", err)
@@ -102,14 +113,6 @@ func TestRegisterWithCode_InvitationGoneOnCloudStillRollsTheAccountBack(t *testi
 	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Cloud Invite WS", OwnerID: admin.ID})
 	if err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
-	}
-	register := func(code string) *httptest.ResponseRecorder {
-		return doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
-			"email":           "late@example.com",
-			"name":            "Late",
-			"password":        "correct-horse-battery-staple",
-			"invitation_code": code,
-		})
 	}
 	inv, err := srv.store.CreateInvitation(ws.ID, "late@example.com", "editor", admin.ID)
 	if err != nil {
@@ -120,20 +123,42 @@ func TestRegisterWithCode_InvitationGoneOnCloudStillRollsTheAccountBack(t *testi
 			t.Fatalf("DeleteInvitation: %v", err)
 		}
 	}
-	if rr := register(inv.Code); rr.Code != http.StatusNotFound {
-		t.Fatalf("signup with an invitation gone before its claim: %d %s, want 404", rr.Code, rr.Body.String())
+	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
+		"email": "late@example.com", "name": "Late",
+		"password": "correct-horse-battery-staple", "invitation_code": inv.Code,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("open-registration signup with a gone invitation: %d %s, want 201 (account kept)", rr.Code, rr.Body.String())
 	}
-	srv.registerInvitationPreClaimHook = nil
-	if u, _ := srv.store.GetUserByEmail("late@example.com"); u != nil {
-		t.Fatal("the refused cloud signup left its account behind, holding the email")
+	var body notJoinedBody
+	parseJSON(t, rr, &body)
+	if body.Token == "" {
+		t.Error("the kept account was not signed in")
 	}
-	// The retry the refusal exists to permit: a new invitation, a clean signup.
-	again, err := srv.store.CreateInvitation(ws.ID, "late@example.com", "editor", admin.ID)
-	if err != nil {
-		t.Fatalf("CreateInvitation (again): %v", err)
+	if body.Accepted != nil {
+		t.Errorf("a signup that joined nothing reported accepted_invitation %v", body.Accepted)
 	}
-	if rr := register(again.Code); rr.Code != http.StatusCreated {
-		t.Fatalf("retry with a live code: %d %s, want 201", rr.Code, rr.Body.String())
+	if body.NotJoined == nil || body.NotJoined.Code != "invitation_gone" || body.NotJoined.Message == "" {
+		t.Errorf("invitation_not_joined = %+v, want code invitation_gone with a message", body.NotJoined)
+	}
+	u, _ := srv.store.GetUserByEmail("late@example.com")
+	if u == nil {
+		t.Fatal("open registration: the account was rolled back")
+	}
+	if member, _ := srv.store.IsWorkspaceMember(ws.ID, u.ID); member {
+		t.Error("the kept account joined through an invitation that was gone")
+	}
+	// Kept like any self-serve signup: unverified, with its link sent.
+	if u.IsEmailVerified() {
+		t.Error("the kept account is verified, though nothing proved the address")
+	}
+	select {
+	case m := <-mails:
+		if m.to != "late@example.com" {
+			t.Errorf("verification mail went to %q", m.to)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the kept account was sent no verification link")
 	}
 }
 
@@ -194,11 +219,11 @@ func TestRegisterWithCode_CredentialsMintedBeforeTheClaimDoNotBlockTheRollback(t
 	})
 }
 
-// Codex r2: a signup that came through the invitation EMAIL spends its proof
-// before the claim. When the claim then fails and the invitation stays
-// pending, the proof is restored, so retrying the same emailed link still
-// verifies the address.
-func TestRegisterWithCode_RefusedSignupKeepsTheProofForTheRetry(t *testing.T) {
+// Open registration, a claim refused for another reason (the workspace filled
+// in the window): the account is kept and verified by its emailed proof,
+// nothing is joined, the invitation stays pending, and the kept account
+// accepts it from its own list once there is room.
+func TestRegisterWithCode_OpenRegistrationKeepsTheAccountWhenTheClaimIsRefused(t *testing.T) {
 	srv, mails, adminTok, ws := newProofFixture(t)
 	_, code, proof := inviteByEmail(t, srv, mails, adminTok, ws.Slug, "proved@example.com")
 	admin, err := srv.store.GetUserByEmail("admin@pad.test")
@@ -217,23 +242,32 @@ func TestRegisterWithCode_RefusedSignupKeepsTheProofForTheRetry(t *testing.T) {
 			t.Fatalf("SetUserPlanOverrides: %v", err)
 		}
 	}
-	body := map[string]string{
+	srv.registerInvitationPreClaimHook = func(string) { setCap(count()) }
+	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email": "proved@example.com", "name": "Invitee", "password": "correct-horse-battery-staple",
 		"invitation_code": code, "invitation_proof": proof,
-	}
-	// The workspace fills in the window: the claim is refused, the invitation
-	// stays pending.
-	srv.registerInvitationPreClaimHook = func(string) { setCap(count()) }
-	if rr := doRequest(srv, "POST", "/api/v1/auth/register", body); rr.Code == http.StatusCreated {
-		t.Fatalf("control: the signup should be refused at the cap: %s", rr.Body.String())
-	}
+	})
 	srv.registerInvitationPreClaimHook = nil
-	setCap(count() + 10)
-	if rr := doRequest(srv, "POST", "/api/v1/auth/register", body); rr.Code != http.StatusCreated {
-		t.Fatalf("retry with room: %d %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("open-registration signup refused at the cap: %d %s, want 201 (account kept)", rr.Code, rr.Body.String())
+	}
+	var body notJoinedBody
+	parseJSON(t, rr, &body)
+	if body.Accepted != nil || body.NotJoined == nil || body.NotJoined.Code != "invitation_not_applied" {
+		t.Errorf("accepted_invitation = %v, invitation_not_joined = %+v; want none and code invitation_not_applied", body.Accepted, body.NotJoined)
 	}
 	if !verified(t, srv, "proved@example.com") {
-		t.Error("the retry through the same emailed link did not verify the address: the refused signup spent its proof")
+		t.Error("the kept account is not verified, though its emailed proof was spent on it")
+	}
+	pending, err := srv.store.GetInvitationByCode(code)
+	if err != nil || pending == nil {
+		t.Fatalf("the invitation should stay pending: %v %v", pending, err)
+	}
+	// With room, the kept account accepts it from its own list.
+	setCap(count() + 10)
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/me/invitations/"+pending.ID+"/accept", nil, body.Token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("accepting from the list afterwards: %d %s", rr.Code, rr.Body.String())
 	}
 }
 
