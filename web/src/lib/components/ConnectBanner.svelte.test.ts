@@ -106,4 +106,18 @@ describe('ConnectBanner follows agent activity live (BUG-3447)', () => {
 		expect(mocks.gets, 'the stale re-check fired into the next workspace').toBe(2);
 		expect(banner(), "the next workspace's own answer stands").not.toBeNull();
 	});
+
+	it('an item event during the first check still re-checks: that answer may predate the write (codex r2)', async () => {
+		let answer!: (v: { has_agent_activity: boolean }) => void;
+		mocks.answers = [new Promise((r) => (answer = r)), { has_agent_activity: true }];
+		render(ConnectBanner, { props: { wsSlug: 'ws', serverUrl: 'http://x' } });
+		await flush();
+		fire({ type: 'item_created', item_id: 'i1', actor: 'agent' });
+		answer({ has_agent_activity: false });
+		await flush();
+		await vi.advanceTimersByTimeAsync(2000);
+		await flush();
+		expect(mocks.gets, 'the event during the first check was dropped').toBe(2);
+		expect(banner()).toBeNull();
+	});
 });

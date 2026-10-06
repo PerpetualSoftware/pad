@@ -182,4 +182,21 @@ describe('the launchpad follows the agent live (BUG-3447)', () => {
 		await flush();
 		expect(dashboardGets(), 'the stale debounce fired a load into the next workspace').toBe(afterSwitch);
 	});
+
+	it('an event during the first load still arms a reload: that load may predate the write (codex r2)', async () => {
+		let answer!: (v: unknown) => void;
+		(api.dashboard.get as unknown as { mockImplementationOnce: (f: () => Promise<unknown>) => void })
+			.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+		page.params = { username: 'dave', workspace: 'ws' };
+		page.url = new URL('http://localhost/dave/ws');
+		render(DashboardPage);
+		await flush();
+		expect(dashboardGets()).toBe(1);
+		fire({ type: 'collection_updated', collection_id: 'c1' });
+		answer(board(true));
+		await flush();
+		await vi.advanceTimersByTimeAsync(2000);
+		await flush();
+		expect(dashboardGets(), 'the event during the first load was dropped').toBe(2);
+	});
 });
