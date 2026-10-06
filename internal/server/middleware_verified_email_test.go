@@ -522,3 +522,19 @@ func TestVerifiedEmail_InvitationDecline_CarveOut(t *testing.T) {
 		t.Fatalf("unverified invitation-decline: expected 204, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 }
+
+func TestVerifiedEmailExemptPath_InvitationAnswersOnly(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/api/v1/invitations/abc/accept":        true,
+		"/api/v1/invitations/abc/decline":       true,
+		"/api/v1/invitations/abc/preview":       false,
+		"/api/v1/invitations/abc/nested/accept": false,
+		"/api/v1/invitations/x/y/decline":       false,
+		"/api/v1/invitations//accept":           false,
+		"/api/v1/invitations/abc":               false,
+	} {
+		if got := verifiedEmailExemptPath(path); got != want {
+			t.Errorf("verifiedEmailExemptPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}

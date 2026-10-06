@@ -84,9 +84,13 @@ func verifiedEmailExemptPath(path string) bool {
 	// invitation, matched structurally so any {code} passes, while
 	// /invitations/{code}/preview (GET, already public) and any other
 	// /invitations subpath are unaffected.
-	if strings.HasPrefix(path, "/api/v1/invitations/") &&
-		(strings.HasSuffix(path, "/accept") || strings.HasSuffix(path, "/decline")) {
-		return true
+	// Exactly two segments after the prefix (codex r2), so no nested path
+	// that happens to end in /accept or /decline is exempted.
+	if rest, ok := strings.CutPrefix(path, "/api/v1/invitations/"); ok {
+		if code, action, found := strings.Cut(rest, "/"); found && code != "" &&
+			(action == "accept" || action == "decline") {
+			return true
+		}
 	}
 	switch path {
 	case "/api/v1/auth/logout",
