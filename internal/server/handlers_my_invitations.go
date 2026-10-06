@@ -88,3 +88,33 @@ func (s *Server) handleAcceptMyInvitation(w http.ResponseWriter, r *http.Request
 	}
 	s.writeInvitationAccepted(w, inv, role)
 }
+
+// handleDeclineMyInvitation answers POST /api/v1/me/invitations/{id}/decline
+// (BUG-2136): the invitee says no from the in-app list. Same admission as the
+// accept beside it: a signed-in person with a VERIFIED email, and an id that is
+// not a pending invitation addressed to them answers 404 identical to an
+// unknown id. Declining deletes the invitation, as an owner's cancel does, so
+// every pending list drops it and its code stops working; the audit event is
+// its trail. An expired invitation may be declined too, which only tidies it.
+func (s *Server) handleDeclineMyInvitation(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	if user == nil || user.IsApp() {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to decline an invitation")
+		return
+	}
+	if !user.IsEmailVerified() {
+		writeError(w, http.StatusForbidden, "email_not_verified",
+			"Verify your email address to decline invitations from this list, or use the link in the invitation email.")
+		return
+	}
+	inv, err := s.store.GetPendingInvitationForEmail(chi.URLParam(r, "id"), user.Email)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if inv == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
+		return
+	}
+	s.declineInvitation(w, r, inv)
+}

@@ -144,38 +144,25 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// BUG-3348: only an account that has PROVEN this address is added
-	// directly. Anyone can register an address on a self-serve instance, so
-	// an unverified account matching the invite is not evidence of who will
-	// read the workspace; it gets the ordinary invitation below, whose code
-	// goes to the address itself. Accepting it verifies the account.
-	if existingUser != nil && existingUser.IsEmailVerified() {
-		// User exists and owns the address — add them directly
-		alreadyMember, _ := s.store.IsWorkspaceMember(workspaceID, existingUser.ID)
+	// BUG-2136 (lead ruling, day 87): an existing account is ASKED, never
+	// added. Every invite is a pending invitation the invitee accepts or
+	// declines, in-app (GET /me/invitations) or from the email when one is
+	// sent. The response is the same whether or not the address has an
+	// account, so it no longer tells the inviter that either. BUG-3348's
+	// direct add of a verified account is gone with it.
+	if existingUser != nil {
+		alreadyMember, merr := s.store.IsWorkspaceMember(workspaceID, existingUser.ID)
+		if merr != nil {
+			writeInternalError(w, merr)
+			return
+		}
 		if alreadyMember {
 			writeError(w, http.StatusConflict, "conflict", "User is already a member of this workspace")
 			return
 		}
-		if err := s.store.AddWorkspaceMember(workspaceID, existingUser.ID, input.Role, s.workspaceLimitMintOpts()...); err != nil {
-			if writeStorePlanLimitError(w, r, err, "") {
-				return
-			}
-			writeInternalError(w, err)
-			return
-		}
-		s.logWorkspaceAuditEvent(workspaceID, models.ActionMemberInvited, r, auditMeta(map[string]string{"email": existingUser.Email, "role": input.Role, "added_directly": "true"}))
-		s.publishWorkspaceAccessChangedFromRequest(r, workspaceID, watchevents.AccessGained, existingUser.ID)
-		writeJSON(w, http.StatusCreated, map[string]interface{}{
-			"added":   true,
-			"user_id": existingUser.ID,
-			"email":   existingUser.Email,
-			"name":    existingUser.Name,
-			"role":    input.Role,
-		})
-		return
 	}
 
-	// User doesn't exist — create an invitation
+	// Create (or, for a re-invite, replace) the pending invitation.
 	inv, err := s.store.CreateInvitation(workspaceID, input.Email, input.Role, inviterID)
 	if writeAccountDisabledIf(w, err) {
 		return
@@ -463,6 +450,51 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	// only by the verification link.
 
 	s.writeInvitationAccepted(w, inv, role)
+}
+
+// handleDeclineInvitation answers POST /api/v1/invitations/{code}/decline
+// (BUG-2136): declining from the join link. The caller must be signed in as
+// the invited address, exactly as accepting by code requires, so a forwarded
+// code cannot be used to decline on someone else's behalf.
+func (s *Server) handleDeclineInvitation(w http.ResponseWriter, r *http.Request) {
+	inv, err := s.store.GetInvitationByCode(chi.URLParam(r, "code"))
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if inv == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
+		return
+	}
+	user := currentUser(r)
+	if user == nil || user.IsApp() {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to decline an invitation")
+		return
+	}
+	if !invitationEmailMatches(user.Email, inv.Email) {
+		writeError(w, http.StatusForbidden, "invitation_email_mismatch",
+			"This invitation was sent to a different email address. Sign in with that account to decline.")
+		return
+	}
+	s.declineInvitation(w, r, inv)
+}
+
+// declineInvitation is what declining means behind both doors: the pending
+// invitation is deleted and a member_invite_declined audit event records it.
+// A row gone in between (accepted, cancelled or declined concurrently) is the
+// same 404 an unknown invitation gets.
+func (s *Server) declineInvitation(w http.ResponseWriter, r *http.Request, inv *models.WorkspaceInvitation) {
+	if err := s.store.DeleteInvitationAdmin(inv.ID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+	s.logWorkspaceAuditEvent(inv.WorkspaceID, models.ActionMemberInviteDeclined, r,
+		auditMeta(map[string]string{"email": inv.Email, "role": inv.Role}))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // acceptInvitationCore is the one accept path behind both invitation doors:

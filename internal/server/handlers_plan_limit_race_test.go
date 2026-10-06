@@ -542,27 +542,11 @@ func (e *planLimitEnv) itemImportRace(t *testing.T) workspaceRace {
 	})
 }
 
-// W3: the invite door's direct add of an existing user.
-func (e *planLimitEnv) memberAddRace(t *testing.T) workspaceRace {
-	invitee := e.newUser(t, "invitee@example.com")
-	rival := e.newUser(t, "rival@example.com")
-	return workspaceRace{
-		feature: "members_per_workspace",
-		count: func(t *testing.T) int {
-			return e.countIn(t, `SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ?`)
-		},
-		compete: func(t *testing.T) {
-			if err := e.srv.store.AddWorkspaceMember(e.home.ID, rival.ID, "editor"); err != nil {
-				t.Errorf("competing AddWorkspaceMember: %v", err)
-			}
-		},
-		door: func(t *testing.T) *httptest.ResponseRecorder {
-			body, _ := json.Marshal(map[string]any{"email": invitee.Email, "role": "editor"})
-			return e.do("POST", "/api/v1/workspaces/"+e.home.Slug+"/members/invite", "application/json", body, "")
-		},
-		admitted: http.StatusCreated,
-	}
-}
+// The members door is gone from this harness (BUG-2136): an invite no longer
+// creates a membership, so there is nothing for it to admit at the cap. The
+// door that does is the accept, whose cap the store decides alone; it is
+// covered by handlers_invitation_accept_limit_test.go (BUG-3098), including
+// the register race and the self-hosted leg.
 
 // W4: the webhook create door. Literal IPs keep ValidateWebhookURL off DNS.
 func (e *planLimitEnv) webhookRace(t *testing.T) workspaceRace {
@@ -604,16 +588,6 @@ func TestPlanLimitRace_ItemsImport_NoCompetitor_Admitted(t *testing.T) {
 	e.runWorkspaceRace(t, e.itemImportRace(t), false)
 }
 
-func TestPlanLimitRace_Members_CompetingAddInWindow_Refused(t *testing.T) {
-	e := newPlanLimitEnv(t)
-	e.runWorkspaceRace(t, e.memberAddRace(t), true)
-}
-
-func TestPlanLimitRace_Members_NoCompetitor_Admitted(t *testing.T) {
-	e := newPlanLimitEnv(t)
-	e.runWorkspaceRace(t, e.memberAddRace(t), false)
-}
-
 func TestPlanLimitRace_Webhooks_CompetingCreateInWindow_Refused(t *testing.T) {
 	e := newPlanLimitEnv(t)
 	e.runWorkspaceRace(t, e.webhookRace(t), true)
@@ -653,7 +627,6 @@ func TestPlanLimit_SelfHosted_NotEnforced(t *testing.T) {
 	}{
 		{"Items", (*planLimitEnv).itemCreateRace},
 		{"ItemsImport", (*planLimitEnv).itemImportRace},
-		{"Members", (*planLimitEnv).memberAddRace},
 		{"Webhooks", (*planLimitEnv).webhookRace},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

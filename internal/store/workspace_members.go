@@ -963,10 +963,22 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 		return nil, fmt.Errorf("insert invitation: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// One live invitation per (workspace, address) (BUG-2136): a re-invite
+	// REPLACES the pending one, so a fresh code, role and expiry win and the
+	// old code stops working. The workspace lock serializes two concurrent
+	// invites of one address on Postgres (SQLite's write lock already does);
+	// it is taken first, the order the other workspace writers use.
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return nil, fmt.Errorf("insert invitation: lock: %w", err)
+	}
 	if invitedBy != "" {
 		if err := s.requireActiveUserTx(tx, invitedBy); err != nil {
 			return nil, err
 		}
+	}
+	if _, err := tx.Exec(s.q(`DELETE FROM workspace_invitations WHERE workspace_id = ? AND email = ? AND accepted_at IS NULL`),
+		workspaceID, strings.ToLower(strings.TrimSpace(email))); err != nil {
+		return nil, fmt.Errorf("insert invitation: replace pending: %w", err)
 	}
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at, expires_at, proof_hash)

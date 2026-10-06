@@ -1,7 +1,9 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -233,11 +235,13 @@ func TestBUG2136_InvitingAMemberIsRefused(t *testing.T) {
 	})
 }
 
+var rawInvitationSeq atomic.Int64
+
 // insertRawInvitation inserts a pending invitation row directly, bypassing
 // CreateInvitation's replace, to model two invites that raced past it.
 func insertRawInvitation(t *testing.T, f *accessFixture, d store.DriverType, email, role string) string {
 	t.Helper()
-	id := "raw-" + email
+	id := fmt.Sprintf("raw-%d-%s", rawInvitationSeq.Add(1), email)
 	q := `INSERT INTO workspace_invitations (id, workspace_id, email, role, invited_by, code, code_hash, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if d == store.DriverPostgres {

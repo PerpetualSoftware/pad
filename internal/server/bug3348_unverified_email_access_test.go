@@ -44,15 +44,24 @@ func TestBUG3348_InviteDoesNotDirectAddUnverifiedAccount(t *testing.T) {
 			t.Fatalf("unverified squatter read the workspace: %d %s", rr.Code, rr.Body.String())
 		}
 
-		// Control: a verified account is still added directly.
-		mkUser(t, f.srv, "real@example.com")
+		// Control: a verified account gets the same pending invitation (since
+		// BUG-2136 no account is added directly), and as the owner of the
+		// address it can accept it from its own in-app list, which the
+		// squatter cannot.
+		real := mkUser(t, f.srv, "real@example.com")
 		rr = f.do("POST", "/api/v1/workspaces/"+f.wsSlug+"/members/invite", f.ownerTok,
 			map[string]any{"email": "real@example.com", "role": "editor"})
 		f.must(rr, http.StatusCreated, "invite verified")
+		body.Added, body.Invited = false, false
 		parseJSON(t, rr, &body)
-		if !body.Added {
-			t.Fatalf("verified account was not added directly: %s", rr.Body.String())
+		if body.Added || !body.Invited {
+			t.Fatalf("verified account: got %s, want a pending invitation (BUG-2136)", rr.Body.String())
 		}
+		ids := myInvitationIDs(t, f, f.token(real))
+		if len(ids) != 1 {
+			t.Fatalf("the verified invitee lists %d invitations, want 1", len(ids))
+		}
+		f.must(f.do("POST", "/api/v1/me/invitations/"+ids[0]+"/accept", f.token(real), nil), http.StatusOK, "verified accept")
 	})
 }
 

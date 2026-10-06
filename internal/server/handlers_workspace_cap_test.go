@@ -242,7 +242,9 @@ func TestPlanLimitError_ResponseShape(t *testing.T) {
 	wsSlug := wsResp.Slug
 
 	// Add existing users until we're at the member cap (3 for free tier).
-	// The owner themselves count as 1, so invite 2 more real users.
+	// The owner themselves count as 1, so add 2 more. Added through the store:
+	// since BUG-2136 an invite only asks, and this test's subject is the
+	// invite door's refusal AT the cap.
 	for i := 2; i <= 3; i++ {
 		member, err := srv.store.CreateUser(models.UserCreate{
 			Email:    fmt.Sprintf("member%d@test.com", i),
@@ -253,10 +255,12 @@ func TestPlanLimitError_ResponseShape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateUser(member%d): %v", i, err)
 		}
-		invRR := doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/members/invite",
-			map[string]string{"email": member.Email, "role": "editor"}, ownerToken)
-		if invRR.Code != http.StatusCreated {
-			t.Fatalf("invite member %d: expected 201, got %d: %s", i, invRR.Code, invRR.Body.String())
+		ws, err := srv.store.GetWorkspaceBySlug(wsSlug)
+		if err != nil || ws == nil {
+			t.Fatalf("GetWorkspaceBySlug: %v", err)
+		}
+		if err := srv.store.AddWorkspaceMember(ws.ID, member.ID, "editor"); err != nil {
+			t.Fatalf("AddWorkspaceMember(member%d): %v", i, err)
 		}
 	}
 
