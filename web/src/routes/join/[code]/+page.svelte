@@ -77,8 +77,15 @@
 	// the code changes (an SPA navigation from one /join link to another), so
 	// the flow restarts for each code, every action addresses the code whose
 	// invitation is on screen, and an answer for an earlier code is dropped
-	// (BUG-2136 U2, codex r4).
+	// (BUG-2136 U2, codex r4). Every restart bumps flowSeq, and every await
+	// below checks it, so nothing an earlier flow started (a preview, a session
+	// probe, an accept, a decline, a sign-in) lands on the current one (codex r5).
 	let flowCode = '';
+	let flowSeq = 0;
+	const flowFence = () => {
+		const mine = flowSeq;
+		return () => mine === flowSeq;
+	};
 	$effect(() => {
 		const c = code;
 		if (c !== untrack(() => flowCode)) untrack(() => void start(c));
@@ -86,6 +93,8 @@
 
 	async function start(c: string) {
 		flowCode = c;
+		flowSeq++;
+		const current = flowFence();
 		status = 'loading';
 		invitedWorkspaceName = '';
 		invitedEmail = null;
@@ -94,7 +103,7 @@
 		errorMsg = '';
 		formError = '';
 		challengeToken = '';
-		const current = () => c === flowCode;
+		submitting = false;
 		proof = captureInvitationProof(c, window.location.hash);
 		if (window.location.hash) {
 			replaceState(window.location.pathname + window.location.search, page.state);
@@ -190,7 +199,10 @@
 	// out", and the landing, the tab bar and the workspace list all wait on
 	// it. A tab that was already signed in as the same user re-reads the same
 	// session, which notifies nobody.
-	async function landInJoinedWorkspace(joined: { workspace_slug?: string; owner_username?: string } | undefined) {
+	async function landInJoinedWorkspace(
+		joined: { workspace_slug?: string; owner_username?: string } | undefined,
+		current: () => boolean
+	) {
 		const session = await authStore.load().catch(() => null);
 		// load() joins a session read already in flight, and one sent before
 		// this page's sign-in set the cookie answers "signed out" (codex r1).
@@ -201,19 +213,24 @@
 			joined?.workspace_slug && joined.owner_username
 				? `/${encodeURIComponent(joined.owner_username)}/${encodeURIComponent(joined.workspace_slug)}`
 				: '/console';
+		if (!current()) return;
 		await goto(dest, { replaceState: true });
 	}
 
 	async function acceptInvitation() {
+		const c = flowCode;
+		const current = flowFence();
 		status = 'accepting';
 		try {
-			const result = await api.members.acceptInvitation(flowCode, proof || undefined);
-			clearInvitationProof(flowCode);
+			const result = await api.members.acceptInvitation(c, proof || undefined);
 			// The "+" badge must stop counting it, and the throttle would hold a
-			// navigation's refetch back (BUG-2136 U2).
+			// navigation's refetch back (BUG-2136 U2). Whatever page is showing now.
 			void pendingInvitations.refresh(true);
-			await landInJoinedWorkspace(result);
+			if (!current()) return;
+			clearInvitationProof(c);
+			await landInJoinedWorkspace(result, current);
 		} catch (err: unknown) {
+			if (!current()) return;
 			errorMsg = err instanceof Error ? err.message : 'Failed to accept invitation';
 			status = 'error';
 		}
@@ -221,13 +238,17 @@
 
 	// Decline from the link (BUG-2136): deletes the invitation; nothing joins.
 	async function declineInvitation() {
+		const c = flowCode;
+		const current = flowFence();
 		status = 'declining';
 		try {
-			await api.members.declineInvitation(flowCode);
-			clearInvitationProof(flowCode);
+			await api.members.declineInvitation(c);
 			void pendingInvitations.refresh(true);
+			if (!current()) return;
+			clearInvitationProof(c);
 			status = 'declined';
 		} catch (err: unknown) {
+			if (!current()) return;
 			errorMsg = err instanceof Error ? err.message : 'Failed to decline invitation';
 			status = 'error';
 		}
@@ -279,9 +300,20 @@
 		}, 400);
 	}
 
+	// A sign-in or signup that completes after the code changed belongs to the
+	// earlier flow: the current one re-reads the session, which now carries the
+	// new sign-in, rather than taking this one's result (codex r5).
+	function restartIfMovedOn(current: () => boolean): boolean {
+		if (current()) return false;
+		void start(flowCode);
+		return true;
+	}
+
 	async function handleSubmit() {
 		formError = '';
 		submitting = true;
+		const c = flowCode;
+		const current = flowFence();
 
 		try {
 			if (mode === 'register') {
@@ -298,18 +330,21 @@
 					name.trim(),
 					password,
 					username || undefined,
-					flowCode,
+					c,
 					proof || undefined
 				);
-				clearInvitationProof(flowCode);
+				void pendingInvitations.refresh(true);
+				if (restartIfMovedOn(current)) return;
+				clearInvitationProof(c);
 				// Registration with invitation_code already accepted the invite,
 				// so land directly instead of calling acceptInvitation().
-				await landInJoinedWorkspace(registered.accepted_invitation);
+				await landInJoinedWorkspace(registered.accepted_invitation, current);
 				return;
 			} else {
 				if (!email.trim()) { formError = 'Email is required'; submitting = false; return; }
 				if (!password) { formError = 'Password is required'; submitting = false; return; }
 				const response = await api.auth.login(email.trim(), password);
+				if (restartIfMovedOn(current)) return;
 
 				if (response.requires_2fa && response.challenge_token) {
 					challengeToken = response.challenge_token;
@@ -324,6 +359,7 @@
 			submitting = false;
 			status = 'confirm';
 		} catch (err: unknown) {
+			if (!current()) return;
 			formError = err instanceof Error ? err.message : 'Authentication failed';
 			submitting = false;
 		}
@@ -339,6 +375,7 @@
 		}
 
 		submitting = true;
+		const current = flowFence();
 		try {
 			const isTotp = /^\d{6}$/.test(code);
 
@@ -348,10 +385,12 @@
 				await api.auth.verify2FA(challengeToken, undefined, code);
 			}
 
+			if (restartIfMovedOn(current)) return;
 			// 2FA verified: ask, as above (BUG-2136).
 			submitting = false;
 			status = 'confirm';
 		} catch (err: unknown) {
+			if (!current()) return;
 			formError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
 			submitting = false;
 		}
