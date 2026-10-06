@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { api, PadApiError } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
@@ -54,7 +54,7 @@
 	// default); `oauthRedirectAmpQuery` composes the same encoding behind a
 	// '&' separator so it can append onto banner URLs that already carry
 	// `?force=1`.
-	const redirectTarget = $derived(validateRedirect($page.url.searchParams.get('redirect')));
+	const redirectTarget = $derived(validateRedirect(page.url.searchParams.get('redirect')));
 	const oauthRedirectQuery = $derived(redirectQueryFragment(redirectTarget, '?'));
 	const oauthRedirectAmpQuery = $derived(redirectQueryFragment(redirectTarget, '&'));
 

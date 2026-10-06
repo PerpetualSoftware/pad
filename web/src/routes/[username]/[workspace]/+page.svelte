@@ -3,7 +3,7 @@
 	import { ATTENTION_CAP, PLANS_CAP, orderAttention, visibleRows, loadExpanded, saveExpanded } from '$lib/dashboard/caps';
 	import { page } from '$app/state';
 	import { onMount, onDestroy, untrack } from 'svelte';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { statusColor, priorityColor } from '$lib/utils/fieldColors';
 	import { api, PadApiError } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';

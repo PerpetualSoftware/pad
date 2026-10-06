@@ -1,8 +1,8 @@
-// Test-only stand-in for SvelteKit's `$app/environment`.
+// Test-only stand-in for SvelteKit's `$app/env`.
 //
 // The jsdom vitest project runs WITHOUT the SvelteKit vite plugin (it uses the
 // plain `@sveltejs/vite-plugin-svelte` plugin so `.svelte` / `.svelte.ts` files
-// compile), so `$app/environment` has no provider. vitest.config.ts aliases the
+// compile), so `$app/env` has no provider. vitest.config.ts aliases the
 // import to this file for the jsdom project. `browser = true` puts modules like
 // `breakpoint.svelte.ts` on their client code path (they guard `matchMedia`
 // wiring behind `if (browser)`).

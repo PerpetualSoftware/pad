@@ -22,7 +22,7 @@
 	// reusing the one mounted instance + its single collab provider + SSE
 	// subscription). The ONLY mount/unmount is the host's outer `{#if
 	// openItemRef}` gate, which mounts/unmounts THIS whole component.
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { readPaneScrollTop } from '$lib/collections/paneController';

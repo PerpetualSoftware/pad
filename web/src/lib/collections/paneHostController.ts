@@ -24,7 +24,7 @@
 
 import { goto, afterNavigate, replaceState } from '$app/navigation';
 import { page } from '$app/state';
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { itemUrlId, type Item, type PaneTarget } from '$lib/types';
 import {
 	readPaneState,
@@ -232,7 +232,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	function openItemPaneByRef(targetRef: string) {
 		if (paneNavInFlight()) return;
 		controllerActionSeq++;
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		const alreadyOpen = url.searchParams.has('item');
 		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
 		// row re-click on an open pane) keeps the ORIGINAL trigger as the
@@ -259,12 +259,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 				// own popstate (Codex review).
 				if (!page.url.searchParams.has('item')) return false;
 				if (currentPaneState().paneDepth !== 0) return false;
-				const u = new URL(page.url);
+				const u = new URL(page.url.href);
 				u.searchParams.set('item', targetRef);
 				goto(`${u.pathname}${u.search}`, {
 					replaceState: true,
-					noScroll: true,
-					keepFocus: true,
+					reset: false,
 					state: resetState,
 				});
 				return true;
@@ -274,8 +273,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		url.searchParams.set('item', targetRef);
 		goto(`${url.pathname}${url.search}`, {
 			replaceState: plan.kind === 'replace',
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 			state: plan.state,
 		});
 	}
@@ -313,12 +311,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 				replaceState('', { ...(page.state as PaneHistoryState), paneScrollTop: top });
 			}
 		}
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		url.searchParams.set('item', target);
 		goto(`${url.pathname}${url.search}`, {
 			replaceState: plan.kind === 'replace',
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 			state: plan.state,
 		});
 		// Focus per hop (R1): pull focus into the stable pane region NOW, before
@@ -409,8 +406,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		deps.setBypassNavGuard(true);
 		void goto(url, {
 			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 			state: { paneDepth: 0, paneOwned: false },
 		}).finally(() => {
 			deps.setBypassNavGuard(false);
@@ -430,12 +426,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		if (plan.kind === 'replace-delete') {
 			// Cold-loaded base with no drills: drop `?item=` in place. No pre-pane
 			// history entry to unwind to.
-			const url = new URL(page.url);
+			const url = new URL(page.url.href);
 			url.searchParams.delete('item');
 			goto(`${url.pathname}${url.search}`, {
 				replaceState: true,
-				noScroll: true,
-				keepFocus: true,
+				reset: false,
 			});
 			return;
 		}
@@ -462,12 +457,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 			// elsewhere leaves it armed (R14 fence-on-continuation).
 			if (!page.url.searchParams.has('item')) return false;
 			if (currentPaneState().paneDepth !== 0) return false;
-			const u = new URL(page.url);
+			const u = new URL(page.url.href);
 			u.searchParams.delete('item');
 			goto(`${u.pathname}${u.search}`, {
 				replaceState: true,
-				noScroll: true,
-				keepFocus: true,
+				reset: false,
 			});
 			return true;
 		});
