@@ -845,33 +845,40 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		if s.registerInvitationPreClaimHook != nil {
 			s.registerInvitationPreClaimHook(invitation.ID)
 		}
-		// THE MEMBERSHIP WRITE IS FATAL, AND THE ORDER IS THE FIX (BUG-2715).
-		//
-		// (The ACCEPT below is deliberately not fatal; the reason is with it.
-		// An earlier revision of this line said "both writes are fatal", which
-		// its own neighbour contradicted.)
-		//
-		// The membership write's error was discarded and the invitation was
-		// consumed on the next line regardless, so a failure burned the code
-		// AND left the user with no access — unrecoverable without an admin,
-		// because the invitation cannot be redeemed twice.
+		// THE MEMBERSHIP WRITE IS FATAL (BUG-2715), AND IT CLAIMS THE
+		// INVITATION IN THE SAME TRANSACTION (BUG-3438).
 		//
 		// Refusing the registration leaves the invitation OPEN, which is the
-		// recoverable state: the user retries with the same code. That is the
-		// whole reason the membership goes first and the accept second.
+		// recoverable state: the user retries with the same code. A failure
+		// that burned the code while leaving the user with no access needed an
+		// admin to undo.
 		//
-		// This is not a new posture — it is making two doors agree.
-		// handleAcceptInvitation (handlers_members.go) is the authenticated
-		// counterpart and refuses the same way: a membership that did not land
-		// leaves the invitation pending. There the two writes commit in one
-		// transaction (BUG-3281); this door was the one that diverged.
-		if addErr := s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role, s.workspaceLimitMintOpts()...); addErr != nil {
+		// The invitation was read before the account was created, and it can
+		// be declined, cancelled or replaced since. The claim (accepted_at on a
+		// row still pending) commits with the membership, and a claim that
+		// finds no row rolls the membership back and answers ErrInvitationGone:
+		// the account is removed too, so the retry this refusal permits exists.
+		// This is the store call the two accept doors make
+		// (acceptInvitationCore), so the three doors agree.
+		_, _, addErr := s.store.AcceptWorkspaceInvitation(invitation.ID, invitation.WorkspaceID, user.ID, invitation.Role, s.workspaceLimitMintOpts()...)
+		if errors.Is(addErr, store.ErrInvitationGone) {
+			slog.Info("invitation signup: the invitation was gone at its claim; rolling back the account",
+				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)
+			if derr := s.store.DeleteUser(user.ID); derr != nil {
+				slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
+					"account with no workspace access",
+					"user_id", user.ID, "error", derr)
+			}
+			writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
+			return
+		}
+		if addErr != nil {
 			// RECONCILE BEFORE DESTROYING — here too (codex round 2).
 			//
 			// Round 1 added a DeleteUser rollback here and got the ORDER of
-			// reasoning wrong: AddWorkspaceMember returns the raw tx.Commit()
-			// error, so a lost acknowledgement LANDS THE MEMBERSHIP and reports
-			// failure. Deleting the account on that error destroys a signup that
+			// reasoning wrong: the store returns the raw tx.Commit() error, so a
+			// lost acknowledgement LANDS THE MEMBERSHIP (and, since BUG-3438, the
+			// claim in the same transaction) and reports failure. Deleting the account on that error destroys a signup that
 			// actually succeeded — the BUG-3026 shape, reintroduced forty lines
 			// from the helper written to prevent it, by a fix for a different
 			// finding in the same unit.
@@ -900,10 +907,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				writeInternalError(w, addErr)
 				return
 			case member != nil:
-				// LANDED despite the reported error. The user HAS access, so the
-				// signup succeeded and the only thing left is the bookkeeping
-				// below. Falling through is the honest outcome; refusing here
-				// would delete a working account.
+				// LANDED despite the reported error. The account is minutes old,
+				// so its membership can only be this transaction's, which also
+				// claimed the invitation. The user HAS access and the signup
+				// succeeded; refusing here would delete a working account.
 				slog.Warn("invitation signup: the membership write reported an error but the row is present; "+
 					"reconciled to success",
 					"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
@@ -930,28 +937,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				writeInternalError(w, addErr)
 				return
 			}
-		}
-		if err := s.store.AcceptInvitation(invitation.ID); err != nil {
-			// The membership LANDED, so the user has access and the only
-			// casualty is the invitation row still reading unaccepted. Refusing
-			// here would report failure for a registration that succeeded, and
-			// a retry would then hit the duplicate-email path. An invitation
-			// that stays open alongside a membership that exists is the benign
-			// direction of this pair — the accept is bookkeeping, the
-			// membership is the access.
-			//
-			// DELIBERATE DIVERGENCE from handleAcceptInvitation, which treats
-			// this same error as fatal. There the caller is an EXISTING,
-			// authenticated user, so a 500 is cleanly retryable. Here the
-			// account was created moments ago by this very request: refusing
-			// now would report failure for a registration that succeeded, and
-			// the retry would land on the duplicate-email path with no way
-			// forward. The ORDER is shared with that door, which is what the
-			// ruling specified; the second write's disposition differs because
-			// the rollback cost does.
-			slog.Error("invitation signup: member added but the invitation was not marked accepted",
-				"workspace_id", invitation.WorkspaceID, "user_id", user.ID,
-				"invitation_id", invitation.ID, "error", err)
 		}
 	}
 
