@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -35,6 +36,10 @@ func TestSearch_ExcludesSoftDeletedCollections(t *testing.T) {
 	if ref, _ := searchIDs(t, w.s, w.ws, refOf(w.doomed)); !ref[w.doomed.ID] {
 		t.Fatalf("control: a ref search should find the doomed item before the delete")
 	}
+	num := strconv.Itoa(*w.doomed.ItemNumber)
+	if byNum, _ := searchIDs(t, w.s, w.ws, num); !byNum[w.doomed.ID] {
+		t.Fatalf("control: a bare-number search should find the doomed item before the delete")
+	}
 
 	w.deleteDoomed(t)
 	ids, resp := searchIDs(t, w.s, w.ws, "Zephyr")
@@ -52,6 +57,12 @@ func TestSearch_ExcludesSoftDeletedCollections(t *testing.T) {
 	}
 	if ref, _ := searchIDs(t, w.s, w.ws, refOf(w.doomed)); ref[w.doomed.ID] {
 		t.Errorf("a ref search still finds an item from a soft-deleted collection")
+	}
+	if byNum, _ := searchIDs(t, w.s, w.ws, num); byNum[w.doomed.ID] {
+		t.Errorf("a bare-number search still finds an item from a soft-deleted collection")
+	}
+	if byNum, _ := searchIDs(t, w.s, w.ws, strconv.Itoa(*w.live.ItemNumber)); !byNum[w.live.ID] {
+		t.Errorf("a bare-number search lost the live item")
 	}
 }
 
