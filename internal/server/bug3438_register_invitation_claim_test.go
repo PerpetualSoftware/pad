@@ -236,3 +236,38 @@ func TestRegisterWithCode_RefusedSignupKeepsTheProofForTheRetry(t *testing.T) {
 		t.Error("the retry through the same emailed link did not verify the address: the refused signup spent its proof")
 	}
 }
+
+// Codex r5: the claim keeps a membership that already exists (an admin's add
+// in the window) at ITS role, and the signup must report that role, as the
+// accept doors do, not the invitation's.
+func TestRegisterWithCode_ReportsTheRoleTheAccountHolds(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newAccessFixture(t, d)
+		inv := f.invite("added@example.com", "editor")
+		f.srv.registerInvitationPreClaimHook = func(string) {
+			u, err := f.srv.store.GetUserByEmail("added@example.com")
+			if err != nil || u == nil {
+				t.Fatalf("lookup the new account: %v", err)
+			}
+			if err := f.srv.store.AddWorkspaceMember(f.wsID, u.ID, "viewer"); err != nil {
+				t.Fatalf("AddWorkspaceMember: %v", err)
+			}
+		}
+		rr := doRequest(f.srv, "POST", "/api/v1/auth/register", map[string]string{
+			"email": "added@example.com", "name": "Invitee",
+			"password": "correct-horse-battery-staple", "invitation_code": inv.Code,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("signup: %d %s", rr.Code, rr.Body.String())
+		}
+		var body struct {
+			Accepted struct {
+				Role string `json:"role"`
+			} `json:"accepted_invitation"`
+		}
+		parseJSON(t, rr, &body)
+		if body.Accepted.Role != "viewer" {
+			t.Errorf("accepted_invitation.role = %q, want the role held (viewer)", body.Accepted.Role)
+		}
+	})
+}
