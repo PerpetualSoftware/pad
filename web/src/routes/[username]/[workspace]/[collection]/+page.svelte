@@ -287,6 +287,8 @@
 		onSettle: (ref) => {
 			paneMintRef = ref;
 		},
+		// A drill still in flight when the window ends applies itself (TASK-3423).
+		deferWhile: () => navigating.current !== null,
 	});
 	afterNavigate((nav) => {
 		const samePathname =

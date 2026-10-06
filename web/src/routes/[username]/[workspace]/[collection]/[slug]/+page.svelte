@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/state';
+	import { page, navigating } from '$app/state';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { browser } from '$app/env';
 	import { onDestroy, onMount } from 'svelte';
@@ -103,6 +103,8 @@
 		onSettle: (r) => {
 			paneMintRef = r;
 		},
+		// A drill still in flight when the window ends applies itself (TASK-3423).
+		deferWhile: () => navigating.current !== null,
 	});
 	afterNavigate((nav) => {
 		const samePathname =
