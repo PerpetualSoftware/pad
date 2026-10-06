@@ -24,8 +24,7 @@
 	// openItemRef}` gate, which mounts/unmounts THIS whole component.
 	import { browser } from '$app/env';
 	import { onDestroy, untrack } from 'svelte';
-	import { page } from '$app/state';
-	import { readPaneScrollTop } from '$lib/collections/paneController';
+	import { snapshot } from '$app/navigation';
 	import type { Component } from 'svelte';
 	import { loadItemDetailComponent } from '$lib/components/items/itemDetailLoader';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
@@ -114,10 +113,6 @@
 	// Exposed as a Svelte 5 instance export (PLAN-2154 Architecture E / TASK-2170)
 	// so the host can wire it as the controller's `focusPaneRegion` dep AND its
 	// list→pane Tab bridge, both via `paneHostEl?.focusPaneRegion()`.
-	/** The pane's scroll offset, for the controller's forward-drill save (BUG-2182). */
-	export function getPaneScrollTop(): number | null {
-		return paneEl ? paneEl.scrollTop : null;
-	}
 
 	// BUG-2182: a Back/Forward traversal onto an entry that saved a scroll
 	// position (see PaneHistoryState.paneScrollTop) puts the reader back there.
@@ -223,14 +218,18 @@
 		return finish;
 	}
 
-	// The window's popstate, not afterNavigate: saving the position makes the
-	// entry being left a SvelteKit SHALLOW entry (replaceState), and traversing
-	// back to a shallow entry updates page.state without running a navigation,
-	// so afterNavigate never fires for it (measured). SvelteKit applies the
-	// entry's state in its own popstate handler; the read waits a task for it.
+	// SvelteKit's snapshot() keeps the position per history entry (TASK-3423).
+	// Kit captures it when the entry is left by a new navigation or a traversal,
+	// drops it when the entry is REPLACED (a capped drill overwrites the entry
+	// it would be saved on), and calls restore() only on a Back/Forward onto an
+	// entry that has one, after it has applied that entry. A replaceState on
+	// the current entry never restores, so unrelated state writes cannot yank
+	// the reader back. Under kit 2 this was a window popstate listener that
+	// read page.state one task later; kit 3 applies the popped entry after an
+	// await, so that read found nothing (BUG-2182's legs, on kit 3.0.1).
 	//
 	// The restore then waits for ItemDetail's onReady(true) — the LOADED item
-	// matching the requested ref — before it starts. Starting at the popstate
+	// matching the requested ref — before it starts. Starting at the traversal
 	// measured against the PREVIOUS item still on screen (it read B's height,
 	// then the swap collapsed it) and let the 1s cap run out on the network
 	// fetch. onReady is the same switch boundary the full-page scroll restore
@@ -251,17 +250,18 @@
 		for (const ev of GESTURES) paneEl?.removeEventListener(ev, dropPending);
 	}
 
-	function onPopState() {
-		cancelRestore?.();
-		cancelRestore = null;
-		dropPending();
-		setTimeout(() => {
-			const target = readPaneScrollTop(page.state);
-			if (target === null || !paneEl) return;
+	snapshot<number | null>({
+		id: 'pane-scroll',
+		capture: () => (paneEl && paneEl.scrollTop > 0 ? Math.floor(paneEl.scrollTop) : null),
+		restore: (target) => {
+			cancelRestore?.();
+			cancelRestore = null;
+			dropPending();
+			if (typeof target !== 'number' || !(target > 0) || !paneEl) return;
 			pendingRestore = { target, gen: readyGen };
 			for (const ev of GESTURES) paneEl.addEventListener(ev, dropPending, { passive: true });
-		}, 0);
-	}
+		},
+	});
 
 	function handleItemReady(ready: boolean) {
 		// The pane is leaving the item it was restoring (a drill, a workspace
@@ -288,7 +288,6 @@
 		restoreWs = wsSlug;
 		cancelRestore = restorePaneScroll(paneEl, p.target);
 	}
-	if (browser) window.addEventListener('popstate', onPopState);
 
 	export function focusPaneRegion() {
 		if (!browser) return;
@@ -681,7 +680,6 @@
 		paneDestroyed = true;
 		cancelRestore?.();
 		dropPending();
-		if (browser) window.removeEventListener('popstate', onPopState);
 		if (resizingPane && browser) {
 			document.body.style.userSelect = '';
 			document.body.style.cursor = '';
