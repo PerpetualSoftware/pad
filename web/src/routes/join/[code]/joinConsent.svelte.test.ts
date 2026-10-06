@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 	login: vi.fn(),
 	register: vi.fn(),
 	verify2FA: vi.fn(),
+	refreshInvitations: vi.fn(async () => {}),
 }));
 
 vi.mock('$app/navigation', () => ({ goto: mocks.goto, replaceState: vi.fn() }));
@@ -40,6 +41,11 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		ensureLoaded: vi.fn(async () => {}),
 		load: vi.fn(async () => ({ authenticated: true })),
 	},
+}));
+// The "+" badge must not keep counting an invitation this page accepted or
+// declined (codex r2): both force a refetch, which also orders out any older one.
+vi.mock('$lib/stores/pendingInvitations.svelte', () => ({
+	pendingInvitations: { refresh: mocks.refreshInvitations },
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { loadAll: vi.fn(async () => {}) } }));
 
@@ -100,6 +106,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		await settle();
 		expect(mocks.accept).toHaveBeenCalledWith('abc123', undefined);
 		expect(mocks.goto).toHaveBeenCalledWith('/o/acme', { replaceState: true });
+		expect(mocks.refreshInvitations).toHaveBeenCalledWith(true);
 		expect(mocks.decline).not.toHaveBeenCalled();
 	});
 
@@ -110,6 +117,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		await fireEvent.click(byTestId('join-decline')!);
 		await settle();
 		expect(mocks.decline).toHaveBeenCalledWith('abc123');
+		expect(mocks.refreshInvitations).toHaveBeenCalledWith(true);
 		expect(mocks.accept).not.toHaveBeenCalled();
 		expect(mocks.goto).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain('Invitation declined');
@@ -153,7 +161,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		const totp = document.querySelector<HTMLInputElement>('input[inputmode="numeric"]')!;
 		await fireEvent.input(totp, { target: { value: '123456' } });
 		await fireEvent.click(
-			Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((b) => /^Verify/.test(b.textContent?.trim() ?? ''))!
+			Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent?.trim() === 'Verify')!
 		);
 		await settle();
 		expect(mocks.verify2FA).toHaveBeenCalled();
