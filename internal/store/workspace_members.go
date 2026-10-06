@@ -145,6 +145,11 @@ func (s *Store) commitWorkspaceMemberTx(tx *sql.Tx) error {
 	return tx.Commit()
 }
 
+// ErrInvitationGone: the invitation an accept was admitted on no longer
+// exists, because it was declined, replaced or cancelled after the caller read
+// it (BUG-2136). The accept is rolled back.
+var ErrInvitationGone = errors.New("invitation no longer pending")
+
 // AcceptWorkspaceInvitation accepts an invitation in one transaction: the
 // membership through addWorkspaceMemberTx, then the invitation's accepted_at.
 // An existing membership is an idempotent success (BUG-3281, lead ruling):
