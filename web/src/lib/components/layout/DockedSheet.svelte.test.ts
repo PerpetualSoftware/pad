@@ -342,3 +342,94 @@ describe('DockedSheet — swipe-to-dismiss (TASK-2430)', () => {
 		expect(onclose).not.toHaveBeenCalled();
 	});
 });
+
+function content(): HTMLElement {
+	const el = document.querySelector('.ds-content');
+	if (!el) throw new Error('.ds-content not found');
+	return el as HTMLElement;
+}
+
+describe('DockedSheet — pull down in the content (BUG-3386)', () => {
+	it('a pull from the TOP of the list closes the sheet, like the grip', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+
+		const c = content();
+		c.dispatchEvent(touch('touchstart', 100));
+		c.dispatchEvent(touch('touchmove', 120)); // past the slop: engages at y=120
+		c.dispatchEvent(touch('touchmove', 320));
+		flushSync();
+		expect(panel().style.transform).toBe('translateY(200px)');
+		c.dispatchEvent(touch('touchend', 320));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('a short pull from the top snaps back without closing', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+
+		const c = content();
+		c.dispatchEvent(touch('touchstart', 100));
+		c.dispatchEvent(touch('touchmove', 120));
+		c.dispatchEvent(touch('touchmove', 150));
+		c.dispatchEvent(touch('touchend', 150));
+		flushSync();
+		expect(onclose).not.toHaveBeenCalled();
+		expect(panel().style.transform).toBe('');
+	});
+
+	it('a pull in a list that is SCROLLED is a scroll: the sheet does not move', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+
+		const c = content();
+		c.scrollTop = 40; // jsdom keeps the value it is given
+		c.dispatchEvent(touch('touchstart', 100));
+		// Two moves: a pull that engaged at the first would translate at the second.
+		c.dispatchEvent(touch('touchmove', 140));
+		c.dispatchEvent(touch('touchmove', 400));
+		flushSync();
+		expect(panel().style.transform).toBe('');
+		c.dispatchEvent(touch('touchend', 400));
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('a drag that moves UP first is a scroll, even if it then comes back down', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+
+		const c = content();
+		c.dispatchEvent(touch('touchstart', 300));
+		c.dispatchEvent(touch('touchmove', 250));
+		c.dispatchEvent(touch('touchmove', 320));
+		c.dispatchEvent(touch('touchmove', 500));
+		flushSync();
+		expect(panel().style.transform).toBe('');
+		c.dispatchEvent(touch('touchend', 500));
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('does not engage while a viewer lease is frontmost', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+
+		acquire(mountViewer());
+		const c = content();
+		c.dispatchEvent(touch('touchstart', 100));
+		c.dispatchEvent(touch('touchmove', 400));
+		flushSync();
+		expect(panel().style.transform).toBe('');
+		c.dispatchEvent(touch('touchend', 400));
+		expect(onclose).not.toHaveBeenCalled();
+	});
+});
