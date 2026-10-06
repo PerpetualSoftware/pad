@@ -54,9 +54,13 @@ func TestBUG2136_InviteAsksAVerifiedExistingUser(t *testing.T) {
 		if body.Added || !body.Invited || body.Code == "" {
 			t.Fatalf("invite of an existing user: got %s, want a pending invitation", rr.Body.String())
 		}
-		// The response no longer says whether the address has an account.
-		if body.UserID != "" || body.Name != "" {
-			t.Errorf("invite response discloses the account: %s", rr.Body.String())
+		// The response has the invitation's shape, with no direct-add keys.
+		var keys map[string]any
+		parseJSON(t, rr, &keys)
+		for _, k := range []string{"added", "user_id", "name"} {
+			if _, ok := keys[k]; ok {
+				t.Errorf("invite response carries the direct-add key %q: %s", k, rr.Body.String())
+			}
 		}
 		if member, err := f.srv.store.IsWorkspaceMember(f.wsID, invitee.ID); err != nil || member {
 			t.Fatalf("the invitee became a member without accepting (member=%v err=%v)", member, err)

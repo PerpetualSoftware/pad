@@ -542,11 +542,14 @@ func (e *planLimitEnv) itemImportRace(t *testing.T) workspaceRace {
 	})
 }
 
-// The members door is gone from this harness (BUG-2136): an invite no longer
-// creates a membership, so there is nothing for it to admit at the cap. The
-// door that does is the accept, whose cap the store decides alone; it is
-// covered by handlers_invitation_accept_limit_test.go (BUG-3098), including
-// the register race and the self-hosted leg.
+// The members door is gone from this harness (BUG-2136). The invite still runs
+// its members_per_workspace pre-check (refusing an invitation at the cap, as it
+// always did for code invitations), but it no longer creates a membership, so
+// this harness's member count cannot measure it. The door that creates the
+// membership is the accept, whose cap the store decides alone; it is covered
+// by handlers_invitation_accept_limit_test.go (BUG-3098), including the
+// register race and the self-hosted leg. The invite's refusal at the cap is
+// handlers_workspace_cap_test.go.
 
 // W4: the webhook create door. Literal IPs keep ValidateWebhookURL off DNS.
 func (e *planLimitEnv) webhookRace(t *testing.T) workspaceRace {

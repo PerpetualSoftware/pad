@@ -147,8 +147,10 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 	// BUG-2136 (lead ruling, day 87): an existing account is ASKED, never
 	// added. Every invite is a pending invitation the invitee accepts or
 	// declines, in-app (GET /me/invitations) or from the email when one is
-	// sent. The response is the same whether or not the address has an
-	// account, so it no longer tells the inviter that either. BUG-3348's
+	// sent. The response has the same SHAPE whether or not the address has
+	// an account. It is not an account-existence guarantee: a code holder,
+	// the inviter included, can still read has_account from the public
+	// invitation preview, which the join page needs (pre-existing). BUG-3348's
 	// direct add of a verified account is gone with it.
 	if existingUser != nil {
 		alreadyMember, merr := s.store.IsWorkspaceMember(workspaceID, existingUser.ID)
