@@ -239,3 +239,42 @@ func (s *Store) UserKinds(userIDs []string) (map[string]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// ItemIDsInCollectionsQ keeps the item IDs whose item sits in one of
+// collectionIDs, in input order (BUG-3424: an app request's item grants are
+// narrowed to its read ceiling). Never nil; empty in, empty out.
+func (s *Store) ItemIDsInCollectionsQ(q Queryer, itemIDs, collectionIDs []string) ([]string, error) {
+	out := []string{}
+	if len(itemIDs) == 0 || len(collectionIDs) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(itemIDs)+len(collectionIDs))
+	for _, id := range itemIDs {
+		args = append(args, id)
+	}
+	for _, id := range collectionIDs {
+		args = append(args, id)
+	}
+	rows, err := q.Query(s.q(`SELECT id FROM items WHERE id IN (`+placeholders(len(itemIDs))+`) AND collection_id IN (`+placeholders(len(collectionIDs))+`)`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("items in collections: %w", err)
+	}
+	defer rows.Close()
+	in := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("items in collections: %w", err)
+		}
+		in[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("items in collections: %w", err)
+	}
+	for _, id := range itemIDs {
+		if in[id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
