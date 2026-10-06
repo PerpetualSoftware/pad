@@ -2714,7 +2714,7 @@ export const api = {
 			invitation_code?: string,
 			invitation_proof?: string
 		) =>
-			request<{ user: { id: string; email: string; username: string; name: string; role: string; email_verified?: boolean }; token: string; accepted_invitation?: InvitationAcceptedFields }>('/auth/register', {
+			request<{ user: { id: string; email: string; username: string; name: string; role: string; email_verified?: boolean }; token: string; accepted_invitation?: InvitationAcceptedFields; invitation_not_joined?: { code: string; message: string } }>('/auth/register', {
 				method: 'POST',
 				body: JSON.stringify({
 					email,

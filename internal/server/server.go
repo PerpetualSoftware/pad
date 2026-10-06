@@ -458,6 +458,18 @@ type Server struct {
 	// read-then-insert would race (BUG-2792).
 	autoAddPreInsertHook func(requestID, workspaceID string)
 
+	// registerInvitationPreClaimHook, when non-nil, runs in handleRegister
+	// after the invitation was read and validated and before the signup
+	// claims it (BUG-3438). Test seam only (rowlessPreDeleteHook precedent):
+	// it lets a test decline, cancel or replace the invitation inside that
+	// window.
+	registerInvitationPreClaimHook func(invitationID string)
+
+	// signupRollbackDelete, when non-nil, replaces DeleteAccountAtomic in
+	// rollbackSignup (BUG-3438). Test seam only: it lets a test make the
+	// rollback fail.
+	signupRollbackDelete func(userID string) error
+
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
 	// the server can drain them before shutdown / test cleanup. Without

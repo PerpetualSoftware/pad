@@ -28,7 +28,7 @@
 	// same-origin relative path — no open redirect.
 	let oauthRedirectTarget = $derived(validateRedirect(`/join/${code}`));
 	let status = $state<
-		'loading' | 'login' | 'register' | 'confirm' | 'accepting' | 'declining' | 'declined' | 'error' | 'setup' | '2fa'
+		'loading' | 'login' | 'register' | 'confirm' | 'accepting' | 'declining' | 'declined' | 'not-joined' | 'error' | 'setup' | '2fa'
 	>('loading');
 	// The invited workspace's name, from the preview, for the accept/decline
 	// card (BUG-2136 U2).
@@ -357,6 +357,17 @@
 				if (restartIfMovedOn(current)) return;
 				// Registration with invitation_code already accepted the invite,
 				// so land directly instead of calling acceptInvitation().
+				// Kept without its invitation (BUG-3438): registration was open
+				// anyway, so the account exists, but the invitation was gone or
+				// could not be applied. Say so, and land nowhere.
+				if (registered.invitation_not_joined) {
+					await authStore.load().catch(() => {});
+					if (!current()) return;
+					submitting = false;
+					errorMsg = registered.invitation_not_joined.message;
+					status = 'not-joined';
+					return;
+				}
 				await landInJoinedWorkspace(registered.accepted_invitation, current);
 				return;
 			} else {
@@ -476,6 +487,9 @@
 				actionHref="/login"
 				actionLabel="Go to login"
 			/>
+		{:else if status === 'not-joined'}
+			<p class="subtitle error-text" role="alert">{errorMsg}</p>
+			<a href="/console" class="link">Go to Pad</a>
 		{:else if status === 'error'}
 			<p class="subtitle error-text" role="alert">{errorMsg}</p>
 			<a href="/login" class="link">Go to login</a>

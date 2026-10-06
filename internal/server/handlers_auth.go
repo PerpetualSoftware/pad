@@ -598,6 +598,37 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRegister creates a new user account.
+// invitationNotJoined is the additive register response member for a signup
+// that was kept without its invitation (BUG-3438): open registration, where
+// the invitation was not the admission and failed at its claim.
+type invitationNotJoined struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// rollbackSignup removes an account this signup created moments ago and is
+// now refusing (BUG-3438). It is the full account deletion, not a bare
+// DELETE FROM users: the account exists from CreateUser on, so a sign-in, a
+// /forgot-password or the signup's own verification mint can add rows that
+// reference it before the refusal, and DeleteAccountAtomic removes or
+// detaches every such row and retries one that lands late.
+//
+// Like every account deletion it then kicks the account's connections
+// (TASK-3365): a sign-in in the same window can have opened a stream, which
+// would otherwise run until its next revalidation tick (codex r6). The kick
+// runs on an error too: a lost commit acknowledgement can land the deletion,
+// and a kick for an account that survived only makes its connections
+// re-check and keep going (codex r7).
+func (s *Server) rollbackSignup(userID string) error {
+	del := s.store.DeleteAccountAtomic
+	if s.signupRollbackDelete != nil {
+		del = s.signupRollbackDelete
+	}
+	err := del(userID)
+	s.invalidateUserAccess(userID)
+	return err
+}
+
 // Registration is restricted to admins or users with a valid invitation code
 // so invitees can create an account via the /join/[code] flow.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -695,9 +726,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// fails SAFE (verified), never write-locked.
 	selfServe := false
 	adminCreated := false
+	reqUser := currentUser(r)
+	isAdmin := reqUser != nil && reqUser.Role == "admin"
+	// inviteIsAdmission: the invitation is what let this signup in, i.e. it
+	// would have been refused without one. Only then does an invitation that
+	// fails at its claim take the account with it; where registration is open
+	// anyway, the account is kept and the invitation reported not applied
+	// (BUG-3438, lead ruling).
+	inviteIsAdmission := invitation != nil &&
+		!(isAdmin && (!isAPITokenAuth(r) || s.adminAcceptsAPITokens())) &&
+		!(s.cloudMode && s.emailConfigured())
 	if invitation == nil {
-		reqUser := currentUser(r)
-		isAdmin := reqUser != nil && reqUser.Role == "admin"
 		switch {
 		case isAdmin && isAPITokenAuth(r) && !s.adminAcceptsAPITokens():
 			// Creating an account is platform administration (BUG-3361):
@@ -794,6 +833,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if needsVerification && invitation != nil && input.InvitationProof != "" {
 		ok, perr := s.store.ConsumeInvitationProof(invitation.ID, user.ID, strings.TrimSpace(input.InvitationProof))
 		if perr != nil {
+			// NOT counted as spent, even though a lost commit acknowledgement
+			// could have spent it. Restoring a proof the caller merely SENT
+			// would install an unproven secret on any pending invitation whose
+			// proof was already empty (codex r4). The residual is the safe
+			// direction: a refused signup after such an error leaves the proof
+			// spent, and the retry is verified by the email link instead.
 			slog.Error("invitation proof: consume failed; continuing unverified", "error", perr, "user_id", user.ID)
 		} else if ok {
 			needsVerification = false
@@ -824,7 +869,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		vtoken, verr := s.store.CreateEmailVerification(user.ID)
 		if verr != nil {
 			slog.Error("failed to create email verification token; rolling back signup", "error", verr, "user_id", user.ID)
-			if derr := s.store.DeleteUser(user.ID); derr != nil {
+			if derr := s.rollbackSignup(user.ID); derr != nil {
 				slog.Error("failed to roll back user after verification-token error", "error", derr, "user_id", user.ID)
 			}
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to start email verification")
@@ -841,34 +886,66 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// If registering via invitation, automatically add the user to the
 	// workspace and mark the invitation as accepted.
+	// The role the account holds in the invited workspace, as the claim
+	// reports it: an existing membership keeps its own (codex r5).
+	joinedRole := ""
+	// notJoined is set when the signup is kept but its invitation was not
+	// applied: open registration only (inviteIsAdmission false).
+	var notJoined *invitationNotJoined
 	if invitation != nil {
-		// THE MEMBERSHIP WRITE IS FATAL, AND THE ORDER IS THE FIX (BUG-2715).
-		//
-		// (The ACCEPT below is deliberately not fatal; the reason is with it.
-		// An earlier revision of this line said "both writes are fatal", which
-		// its own neighbour contradicted.)
-		//
-		// The membership write's error was discarded and the invitation was
-		// consumed on the next line regardless, so a failure burned the code
-		// AND left the user with no access — unrecoverable without an admin,
-		// because the invitation cannot be redeemed twice.
+		if s.registerInvitationPreClaimHook != nil {
+			s.registerInvitationPreClaimHook(invitation.ID)
+		}
+		// THE MEMBERSHIP WRITE IS FATAL (BUG-2715), AND IT CLAIMS THE
+		// INVITATION IN THE SAME TRANSACTION (BUG-3438).
 		//
 		// Refusing the registration leaves the invitation OPEN, which is the
-		// recoverable state: the user retries with the same code. That is the
-		// whole reason the membership goes first and the accept second.
+		// recoverable state: the user retries with the same code. A failure
+		// that burned the code while leaving the user with no access needed an
+		// admin to undo.
 		//
-		// This is not a new posture — it is making two doors agree.
-		// handleAcceptInvitation (handlers_members.go) is the authenticated
-		// counterpart and refuses the same way: a membership that did not land
-		// leaves the invitation pending. There the two writes commit in one
-		// transaction (BUG-3281); this door was the one that diverged.
-		if addErr := s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role, s.workspaceLimitMintOpts()...); addErr != nil {
+		// The invitation was read before the account was created, and it can
+		// be declined, cancelled or replaced since. The claim (accepted_at on a
+		// row still pending) commits with the membership, and a claim that
+		// finds no row rolls the membership back and answers ErrInvitationGone:
+		// the account is removed too, so the retry this refusal permits exists
+		// — when the invitation was the admission. Where registration is open
+		// anyway the account is kept and the invitation reported not applied.
+		// This is the store call the two accept doors make
+		// (acceptInvitationCore), so the three doors agree.
+		_, heldRole, addErr := s.store.AcceptWorkspaceInvitation(invitation.ID, invitation.WorkspaceID, user.ID, invitation.Role, s.workspaceLimitMintOpts()...)
+		if errors.Is(addErr, store.ErrInvitationGone) && !inviteIsAdmission {
+			slog.Info("invitation signup: the invitation was gone at its claim; registration is open, so the "+
+				"account is kept and joins nothing",
+				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)
+			notJoined = &invitationNotJoined{Code: "invitation_gone",
+				Message: "This invitation is no longer valid. Your account was created, but you were not added to the workspace."}
+			addErr = nil
+		} else if errors.Is(addErr, store.ErrInvitationGone) {
+			slog.Info("invitation signup: the invitation was gone at its claim; rolling back the account",
+				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)
+			if derr := s.rollbackSignup(user.ID); derr != nil {
+				// Not rolled back: the account still holds the email, so the
+				// rolled-back 404 would be false (codex r9).
+				slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
+					"account with no workspace access",
+					"user_id", user.ID, "error", derr)
+				writeInternalError(w, derr)
+				return
+			}
+			writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
+			return
+		}
+		if notJoined == nil {
+			joinedRole = heldRole
+		}
+		if addErr != nil {
 			// RECONCILE BEFORE DESTROYING — here too (codex round 2).
 			//
 			// Round 1 added a DeleteUser rollback here and got the ORDER of
-			// reasoning wrong: AddWorkspaceMember returns the raw tx.Commit()
-			// error, so a lost acknowledgement LANDS THE MEMBERSHIP and reports
-			// failure. Deleting the account on that error destroys a signup that
+			// reasoning wrong: the store returns the raw tx.Commit() error, so a
+			// lost acknowledgement LANDS THE MEMBERSHIP (and, since BUG-3438, the
+			// claim in the same transaction) and reports failure. Deleting the account on that error destroys a signup that
 			// actually succeeded — the BUG-3026 shape, reintroduced forty lines
 			// from the helper written to prevent it, by a fix for a different
 			// finding in the same unit.
@@ -882,7 +959,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			if s.membershipCheck != nil {
 				membershipCheck = s.membershipCheck
 			}
-			member, cerr := membershipCheck(invitation.WorkspaceID, user.ID)
+			// The store returns the held role only with a COMMIT error; a claim
+			// it refused before committing (heldRole empty) is definitely not
+			// landed, so it needs no reconcile read, and a failing read must
+			// not turn it into a 500 (codex r9).
+			var member *models.WorkspaceMember
+			var cerr error
+			refusedBeforeCommit := heldRole == ""
+			if !refusedBeforeCommit {
+				member, cerr = membershipCheck(invitation.WorkspaceID, user.ID)
+			}
 			switch {
 			case cerr != nil:
 				// UNREADABLE — cannot tell an ack-lost success from a genuine
@@ -897,13 +983,42 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				writeInternalError(w, addErr)
 				return
 			case member != nil:
-				// LANDED despite the reported error. The user HAS access, so the
-				// signup succeeded and the only thing left is the bookkeeping
-				// below. Falling through is the honest outcome; refusing here
-				// would delete a working account.
-				slog.Warn("invitation signup: the membership write reported an error but the row is present; "+
-					"reconciled to success",
+				// The membership alone does not prove THIS transaction landed:
+				// it also claimed the invitation, and a membership can come from
+				// elsewhere (an admin's add in the window). So the claim decides,
+				// as it does at the accept doors (codex r1).
+				stored, ierr := s.store.GetInvitation(invitation.ID)
+				if ierr == nil && stored != nil && stored.AcceptedAt != nil {
+					joinedRole = member.Role
+					// LANDED despite the reported error: the user HAS access and
+					// the signup succeeded; refusing would delete a working account.
+					slog.Warn("invitation signup: the claim reported an error but the membership and the "+
+						"claim are present; reconciled to success",
+						"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
+					break
+				}
+				// Not this signup's join. A membership exists, so the account is
+				// KEPT (deleting it cannot be undone, and it has access through
+				// whatever added it), and the signup is refused.
+				slog.Error("invitation signup: the claim failed beside a membership it did not write; "+
+					"KEEPING the account and refusing the signup",
+					"workspace_id", invitation.WorkspaceID, "user_id", user.ID,
+					"error", addErr, "check_error", ierr)
+				if s.writeStoreMemberLimitError(w, r, invitation.WorkspaceID, addErr) {
+					return
+				}
+				writeInternalError(w, addErr)
+				return
+			case !inviteIsAdmission:
+				// ABSENT, on open registration: the account did not need the
+				// invitation, so it is KEPT and joins nothing; the invitation
+				// stays pending, and the account can accept it from its own
+				// list once whatever refused it clears (lead ruling).
+				slog.Warn("invitation signup: the claim was refused; registration is open, so the account is "+
+					"kept and joins nothing",
 					"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
+				notJoined = &invitationNotJoined{Code: "invitation_not_applied",
+					Message: "Your account was created, but the invitation could not be applied, so you were not added to the workspace."}
 			default:
 				// ABSENT — no membership. Refuse, and roll the account back so
 				// the retry this refusal exists to permit actually exists:
@@ -914,10 +1029,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				slog.Error("invitation signup: member was not added; rolling back the account and leaving the "+
 					"invitation redeemable",
 					"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
-				if derr := s.store.DeleteUser(user.ID); derr != nil {
+				if derr := s.rollbackSignup(user.ID); derr != nil {
 					slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
 						"account with no workspace access",
 						"user_id", user.ID, "error", derr)
+					writeInternalError(w, derr)
+					return
 				}
 				// BUG-3098: a member cap reached after the pre-check is a
 				// refusal the invitee can act on, not a server fault.
@@ -927,28 +1044,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				writeInternalError(w, addErr)
 				return
 			}
-		}
-		if err := s.store.AcceptInvitation(invitation.ID); err != nil {
-			// The membership LANDED, so the user has access and the only
-			// casualty is the invitation row still reading unaccepted. Refusing
-			// here would report failure for a registration that succeeded, and
-			// a retry would then hit the duplicate-email path. An invitation
-			// that stays open alongside a membership that exists is the benign
-			// direction of this pair — the accept is bookkeeping, the
-			// membership is the access.
-			//
-			// DELIBERATE DIVERGENCE from handleAcceptInvitation, which treats
-			// this same error as fatal. There the caller is an EXISTING,
-			// authenticated user, so a 500 is cleanly retryable. Here the
-			// account was created moments ago by this very request: refusing
-			// now would report failure for a registration that succeeded, and
-			// the retry would land on the duplicate-email path with no way
-			// forward. The ORDER is shared with that door, which is what the
-			// ruling specified; the second write's disposition differs because
-			// the rollback cost does.
-			slog.Error("invitation signup: member added but the invitation was not marked accepted",
-				"workspace_id", invitation.WorkspaceID, "user_id", user.ID,
-				"invitation_id", invitation.ID, "error", err)
 		}
 	}
 
@@ -984,8 +1079,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// A signup with an invitation code has already joined the workspace, so
 	// the client can land IN it, as an accept does (BUG-3284, PLAN-3002 Q5).
 	// Additive; absent without an invitation.
-	if invitation != nil {
-		resp["accepted_invitation"] = s.invitationAcceptedFields(invitation, invitation.Role)
+	if notJoined != nil {
+		resp["invitation_not_joined"] = notJoined
+	} else if invitation != nil {
+		if joinedRole == "" {
+			joinedRole = invitation.Role
+		}
+		resp["accepted_invitation"] = s.invitationAcceptedFields(invitation, joinedRole)
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }

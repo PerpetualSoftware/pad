@@ -181,6 +181,31 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(mocks.accept).not.toHaveBeenCalled();
 	});
 
+	it('a registration kept without its invitation says so and lands nowhere (BUG-3438)', async () => {
+		mocks.session.mockResolvedValue({ authenticated: false });
+		mocks.preview.mockResolvedValue({ found: true, email: 'new@example.com', has_account: false, workspace_name: 'Acme' });
+		mocks.register.mockResolvedValue({
+			user: { id: 'u', email: 'new@example.com' },
+			token: 't',
+			invitation_not_joined: {
+				code: 'invitation_gone',
+				message: 'This invitation is no longer valid. Your account was created, but you were not added to the workspace.',
+			},
+		});
+		render(JoinPage);
+		await settle();
+		await fireEvent.input(document.querySelector<HTMLInputElement>('input[placeholder="Name"]')!, { target: { value: 'New' } });
+		const pws = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
+		await fireEvent.input(pws[0], { target: { value: 'password123' } });
+		await fireEvent.input(pws[1], { target: { value: 'password123' } });
+		await fireEvent.click(submitBtn());
+		await settle();
+		expect(mocks.goto).not.toHaveBeenCalled();
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain('This invitation is no longer valid');
+		const toPad = Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).find((a) => a.getAttribute('href') === '/console');
+		expect(toPad).toBeTruthy();
+	});
+
 	it('registering a new account through the code still joins in one step', async () => {
 		mocks.session.mockResolvedValue({ authenticated: false });
 		mocks.preview.mockResolvedValue({ found: true, email: 'new@example.com', has_account: false, workspace_name: 'Acme' });
