@@ -91,7 +91,7 @@ describe('pendingInvitations', () => {
 	it('an older response cannot re-surface an invitation removed after it was issued', async () => {
 		let resolve!: (v: unknown) => void;
 		mocks.list.mockReturnValue(new Promise((r) => (resolve = r)));
-		pendingInvitations.set([inv('a'), inv('b')]);
+		pendingInvitations.set([inv('a'), inv('b')], pendingInvitations.reserve());
 		const pending = pendingInvitations.refresh(true);
 		pendingInvitations.remove('a');
 		resolve({ invitations: [inv('a'), inv('b')], email_verified: true });
@@ -100,9 +100,35 @@ describe('pendingInvitations', () => {
 	});
 
 	it('keeps the last list when a refetch fails', async () => {
-		pendingInvitations.set([inv('a')]);
+		pendingInvitations.set([inv('a')], pendingInvitations.reserve());
 		mocks.list.mockRejectedValue(new Error('offline'));
 		await pendingInvitations.refresh(true);
 		expect(pendingInvitations.count).toBe(1);
+	});
+
+	// codex r7: the "+" list fetches on its own; it reserves a token in the
+	// store's order when it starts, so its answer cannot overwrite anything newer.
+	it('a list reserved before a forced refresh cannot overwrite that refresh', async () => {
+		pendingInvitations.set([inv('a')], pendingInvitations.reserve());
+		const listToken = pendingInvitations.reserve();
+		mocks.list.mockResolvedValue({ invitations: [], email_verified: true });
+		await pendingInvitations.refresh(true);
+		pendingInvitations.set([inv('a')], listToken);
+		expect(pendingInvitations.count).toBe(0);
+	});
+
+	it('a list reserved before a remove cannot bring the removed invitation back', () => {
+		pendingInvitations.set([inv('a'), inv('b')], pendingInvitations.reserve());
+		const listToken = pendingInvitations.reserve();
+		pendingInvitations.remove('a');
+		pendingInvitations.set([inv('a'), inv('b')], listToken);
+		expect(pendingInvitations.invitations.map((i) => i.id)).toEqual(['b']);
+	});
+
+	it('a list reserved after everything else applies', () => {
+		pendingInvitations.remove('zzz');
+		const listToken = pendingInvitations.reserve();
+		pendingInvitations.set([inv('c')], listToken);
+		expect(pendingInvitations.invitations.map((i) => i.id)).toEqual(['c']);
 	});
 });

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 	declineMyInvitation: vi.fn(),
 	storeSet: vi.fn(),
 	storeRemove: vi.fn(),
+	storeReserve: vi.fn(),
 	loadAll: vi.fn(async () => {}),
 	tabsOpen: vi.fn(async () => {}),
 	toast: vi.fn(),
@@ -38,7 +39,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: mocks.toast } }));
 vi.mock('$lib/stores/pendingInvitations.svelte', () => ({
-	pendingInvitations: { set: mocks.storeSet, remove: mocks.storeRemove },
+	pendingInvitations: { set: mocks.storeSet, remove: mocks.storeRemove, reserve: mocks.storeReserve },
 }));
 
 import PendingInvitations from './PendingInvitations.svelte';
@@ -79,6 +80,7 @@ beforeEach(() => {
 		mocks.declineMyInvitation,
 		mocks.storeSet,
 		mocks.storeRemove,
+		mocks.storeReserve,
 		mocks.loadAll,
 		mocks.tabsOpen,
 		mocks.toast,
@@ -213,9 +215,20 @@ describe('PendingInvitations', () => {
 	});
 
 	// BUG-2136 U2
-	it('reports the fetched list to the badge store', async () => {
-		await mount([inv('a', 'Alpha')]);
-		expect(mocks.storeSet).toHaveBeenCalledWith([expect.objectContaining({ id: 'a' })]);
+	it('reports the fetched list to the badge store under the token it reserved BEFORE fetching (codex r7)', async () => {
+		const order: string[] = [];
+		mocks.storeReserve.mockImplementation(() => {
+			order.push('reserve');
+			return 7;
+		});
+		mocks.listMyInvitations.mockImplementation(async () => {
+			order.push('fetch');
+			return { invitations: [inv('a', 'Alpha')], email_verified: true };
+		});
+		render(PendingInvitations, { props: { active: true } });
+		await settle();
+		expect(order).toEqual(['reserve', 'fetch']);
+		expect(mocks.storeSet).toHaveBeenCalledWith([expect.objectContaining({ id: 'a' })], 7);
 	});
 
 	it('declines by id: the row leaves the list and the badge, with no navigation', async () => {
