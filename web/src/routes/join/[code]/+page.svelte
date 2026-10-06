@@ -103,7 +103,20 @@
 		errorMsg = '';
 		formError = '';
 		challengeToken = '';
-		submitting = false;
+		// Nothing typed for the previous invitation is carried to this one
+		// (codex r6). `submitting` is left alone: a sign-in still out keeps the
+		// form busy until it answers, so a second one cannot overlap it.
+		name = '';
+		username = '';
+		password = '';
+		confirmPassword = '';
+		totpCode = '';
+		usernameManuallyEdited = false;
+		if (checkTimeout) clearTimeout(checkTimeout);
+		checkTimeout = null;
+		usernameChecking = false;
+		usernameAvailable = null;
+		usernameError = '';
 		proof = captureInvitationProof(c, window.location.hash);
 		if (window.location.hash) {
 			replaceState(window.location.pathname + window.location.search, page.state);
@@ -287,16 +300,19 @@
 		}
 
 		usernameChecking = true;
+		const current = flowFence();
 		checkTimeout = setTimeout(async () => {
 			try {
 				const result = await api.auth.checkUsername(username);
+				if (!current()) return;
 				usernameAvailable = result.available;
 				usernameError = result.message || '';
 			} catch {
+				if (!current()) return;
 				usernameError = '';
 				usernameAvailable = null;
 			} finally {
-				usernameChecking = false;
+				if (current()) usernameChecking = false;
 			}
 		}, 400);
 	}
@@ -306,6 +322,7 @@
 	// new sign-in, rather than taking this one's result (codex r5).
 	function restartIfMovedOn(current: () => boolean): boolean {
 		if (current()) return false;
+		submitting = false;
 		void start(flowCode);
 		return true;
 	}
@@ -335,8 +352,9 @@
 					proof || undefined
 				);
 				void pendingInvitations.refresh(true);
-				if (restartIfMovedOn(current)) return;
+				// Spent whichever page is showing now.
 				clearInvitationProof(c);
+				if (restartIfMovedOn(current)) return;
 				// Registration with invitation_code already accepted the invite,
 				// so land directly instead of calling acceptInvitation().
 				await landInJoinedWorkspace(registered.accepted_invitation, current);
@@ -360,7 +378,10 @@
 			submitting = false;
 			status = 'confirm';
 		} catch (err: unknown) {
-			if (!current()) return;
+			if (!current()) {
+				submitting = false;
+				return;
+			}
 			formError = err instanceof Error ? err.message : 'Authentication failed';
 			submitting = false;
 		}
@@ -391,7 +412,10 @@
 			submitting = false;
 			status = 'confirm';
 		} catch (err: unknown) {
-			if (!current()) return;
+			if (!current()) {
+				submitting = false;
+				return;
+			}
 			formError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
 			submitting = false;
 		}
