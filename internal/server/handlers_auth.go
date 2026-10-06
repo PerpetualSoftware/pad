@@ -607,13 +607,14 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 //
 // Like every account deletion it then kicks the account's connections
 // (TASK-3365): a sign-in in the same window can have opened a stream, which
-// would otherwise run until its next revalidation tick (codex r6).
+// would otherwise run until its next revalidation tick (codex r6). The kick
+// runs on an error too: a lost commit acknowledgement can land the deletion,
+// and a kick for an account that survived only makes its connections
+// re-check and keep going (codex r7).
 func (s *Server) rollbackSignup(userID string) error {
-	if err := s.store.DeleteAccountAtomic(userID); err != nil {
-		return err
-	}
+	err := s.store.DeleteAccountAtomic(userID)
 	s.invalidateUserAccess(userID)
-	return nil
+	return err
 }
 
 // restoreSpentProof puts back the invitation proof a refused signup spent
