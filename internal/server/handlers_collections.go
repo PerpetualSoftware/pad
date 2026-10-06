@@ -304,6 +304,9 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Provenance from the auth shape, never the body (BUG-3447): an agent's
+	// collection is agent activity for the launchpad and the connect banner.
+	_, input.Source = actorFromRequest(r)
 	coll, err := s.store.CreateCollection(workspaceID, input)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -324,6 +327,13 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, err)
 		return
 	}
+
+	// A create is announced as the existing collection_updated kind (BUG-3447,
+	// lead: prefer an existing kind), carrying the new collection's stable id
+	// and slug. Open tabs reload their collection list on it, which is what
+	// lets the first-run launchpad show a collection an agent just made
+	// instead of waiting for some other event to refresh the sidebar.
+	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.ID, coll.Slug, "", false)
 
 	if len(collapsed) > 0 {
 		coll.Warnings = &models.CollectionWriteWarnings{CollapsedDuplicateKeys: collapsed}

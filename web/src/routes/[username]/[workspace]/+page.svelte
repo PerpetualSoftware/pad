@@ -9,6 +9,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
+	import { sseService } from '$lib/services/sse.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { agentNameFromMetadata } from '$lib/utils/agentActor';
 	import { formatChangesForDisplay } from '$lib/utils/activityChanges';
@@ -334,6 +335,20 @@
 	});
 
 	let unsubscribeSync: (() => void) | null = null;
+	let unsubscribeItems: (() => void) | null = null;
+
+	// LIVE WHILE ONBOARDING (BUG-3447). The launchpad promises that an agent's
+	// collections and first items appear here without a refresh, and the swap
+	// to the dashboard comes from `needs_onboarding` going false — both were
+	// waiting on the 30 s poll, because item and collection events update the
+	// sidebar, not this page. While the workspace still needs onboarding, those
+	// events schedule one silent reload, coalesced so an agent's burst of
+	// writes costs one request. Once onboarding is over the board is the
+	// aggregated view the poll and sync already keep, and events are ignored.
+	// The callback is synchronous and only schedules `load`, which carries its
+	// own identity fence and sequence token.
+	const LIVE_ONBOARDING_RELOAD_MS = 400;
+	let liveReloadTimer: ReturnType<typeof setTimeout> | undefined;
 
 	onMount(() => {
 		pollTimer = setInterval(() => {
@@ -348,11 +363,30 @@
 				load(wsSlug, true);
 			}
 		});
+		unsubscribeItems = sseService.onItemEvent((event) => {
+			// Ignored only once THIS workspace's board is known to be past
+			// onboarding. Before its first load commits, the load in flight may
+			// have read the state before the agent's write, so the event still
+			// arms a reload (codex r2).
+			if (dashboardSlug === wsSlug && !needsOnboarding) return;
+			if (event.type !== 'item_created' && event.type !== 'collection_updated') return;
+			// Trailing debounce: a burst re-arms one timer, whose body is only
+			// the fenced load() call, and only for the workspace it was armed
+			// in: a timer that outlives a workspace switch would otherwise
+			// start a load for the next one and supersede its own (codex r1).
+			const armedFor = wsSlug;
+			clearTimeout(liveReloadTimer);
+			liveReloadTimer = setTimeout(() => {
+				if (wsSlug && wsSlug === armedFor) load(wsSlug, true);
+			}, LIVE_ONBOARDING_RELOAD_MS);
+		});
 		return () => clearInterval(pollTimer);
 	});
 
 	onDestroy(() => {
 		unsubscribeSync?.();
+		unsubscribeItems?.();
+		clearTimeout(liveReloadTimer);
 	});
 
 	// Monotonic load token (plain, non-reactive) guarding against a

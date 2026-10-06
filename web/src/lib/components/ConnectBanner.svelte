@@ -2,6 +2,8 @@
 	import { browser } from '$app/environment';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { sseService } from '$lib/services/sse.svelte';
+	import { onDestroy } from 'svelte';
 	import ConnectWorkspaceModal from './ConnectWorkspaceModal.svelte';
 
 	interface Props {
@@ -62,10 +64,13 @@
 	// Failures fall back to `false` (fail-open: better to show the banner
 	// than to hide it on a transient error).
 	let fetchSeq = 0;
-	function refreshHasAgentActivity(slug: string) {
+	// `quiet` (BUG-3447): an event-driven re-check keeps the banner as it is
+	// while the request is out, instead of blanking it, and keeps it on a
+	// failure; only an answer changes it.
+	function refreshHasAgentActivity(slug: string, quiet = false) {
 		if (!slug) return;
 		const mySeq = ++fetchSeq;
-		hasAgentActivity = null;
+		if (!quiet) hasAgentActivity = null;
 		api.dashboard
 			.get(slug)
 			.then((d) => {
@@ -76,7 +81,11 @@
 			.catch(() => {
 				if (mySeq !== fetchSeq) return;
 				if (slug !== wsSlug) return;
-				hasAgentActivity = false;
+				// A quiet failure keeps a KNOWN answer; from unknown (it overtook
+				// the first check, which its sequence then discarded) it falls
+				// back to false like any failure, or the banner hides for good
+				// (codex r3).
+				if (!quiet || hasAgentActivity === null) hasAgentActivity = false;
 			});
 	}
 
@@ -107,6 +116,34 @@
 			refreshHasAgentActivity(wsSlug);
 		}
 		prevOpen = connectOpen;
+	});
+
+	// LIVE (BUG-3447): the banner used to learn of agent activity only on a
+	// workspace change or when its own modal closed, so it stayed up while an
+	// agent was visibly creating items. While it is showing, an item or
+	// collection creation schedules one quiet re-check, coalesced across a
+	// burst; once activity is known, events are ignored.
+	const AGENT_RECHECK_MS = 400;
+	let recheckTimer: ReturnType<typeof setTimeout> | undefined;
+	const unsubscribeItems = browser
+		? sseService.onItemEvent((event) => {
+				// Unknown (the first check still out) counts: its answer may
+				// predate the write (codex r2). Only KNOWN activity stops it.
+				if (hasAgentActivity === true || dismissed) return;
+				// An agent's collection is agent activity too (BUG-3447, lead).
+				if (event.type !== 'item_created' && event.type !== 'collection_updated') return;
+				// Only for the workspace it was armed in: after a switch it would
+				// supersede the next workspace's own re-check (codex r1).
+				const armedFor = wsSlug;
+				clearTimeout(recheckTimer);
+				recheckTimer = setTimeout(() => {
+					if (wsSlug === armedFor) refreshHasAgentActivity(armedFor, true);
+				}, AGENT_RECHECK_MS);
+			})
+		: () => {};
+	onDestroy(() => {
+		unsubscribeItems();
+		clearTimeout(recheckTimer);
 	});
 
 	let visible = $derived(

@@ -160,6 +160,21 @@ type CollectionCreate struct {
 	Traits      string `json:"traits,omitempty"`
 	IsDefault   bool   `json:"is_default,omitempty"`
 	IsSystem    bool   `json:"is_system,omitempty"`
+	// Source is how the collection was created ('web' | 'cli' | 'mcp'), set by
+	// the server from the request's auth shape, never from the body (BUG-3447).
+	// Empty leaves the column's '' (provenance unknown, never agent).
+	Source string `json:"-"`
+}
+
+// ValidCollectionSource returns source when it is one the server writes
+// ('web' | 'cli' | 'mcp') and ” (provenance unknown, never agent) otherwise:
+// the gate a bundle import's value passes before it is stored (BUG-3447).
+func ValidCollectionSource(source string) string {
+	switch source {
+	case "web", "cli", "mcp":
+		return source
+	}
+	return ""
 }
 
 // FieldMigration describes a bulk update to apply to existing items when

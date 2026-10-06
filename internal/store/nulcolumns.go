@@ -375,6 +375,7 @@ func NULProtectedColumns() []nulColumn {
 // class entirely.
 var nulExcluded = map[string]string{
 	"activities.action":                      "fixed enum, models.ValidActions",
+	"collections.source":                     "server enum 'web' | 'cli' | 'mcp' from actorFromRequest's auth shape, never the body (BUG-3447, migration 126); a bundle import carries the bundle's value only after models.ValidCollectionSource accepts it, else ''",
 	"event_outbox.last_error":                "Go error string, server-composed",
 	"mcp_audit_log.tool_name":                "server enum, mcp_audit.go",
 	"mcp_audit_log.error_kind":               "server enum, mcp_audit.go",

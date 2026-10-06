@@ -104,8 +104,12 @@ type CollectionExport struct {
 	// the migration then backfills re-exports WITH declarations. Round-tripping
 	// an old archive through a current deployment is expected to gain traits —
 	// that is the backfill working, not export drift.
-	Traits    string `json:"traits,omitempty"`
-	Prefix    string `json:"prefix"`
+	Traits string `json:"traits,omitempty"`
+	Prefix string `json:"prefix"`
+	// Source is how the collection was created ('web' | 'cli' | 'mcp'),
+	// BUG-3447. omitempty: an older bundle has none, and imports it as ''
+	// (provenance unknown). A value outside that set imports as '' too.
+	Source    string `json:"source,omitempty"`
 	SortOrder int    `json:"sort_order"`
 	IsDefault bool   `json:"is_default"`
 	IsSystem  bool   `json:"is_system"`

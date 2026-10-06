@@ -105,7 +105,8 @@ describe('the dashboard fences every async commit point', () => {
 		expect([...src.asyncFunctions().keys()]).toEqual(['load']);
 		expect(src.markupAsyncArrows(), 'an inline async arrow appeared in the markup').toHaveLength(0);
 		expect(src.nestedAsyncCallbacks(), 'an async callback arrived').toHaveLength(0);
-		expect(src.deferredTimers(), 'a setTimeout/setInterval arrived or left').toHaveLength(1);
+		// 2 since BUG-3447: the 30 s poll and the live-onboarding reload.
+		expect(src.deferredTimers(), 'a setTimeout/setInterval arrived or left').toHaveLength(2);
 		expect(src.effectBlocks(), 'an $effect arrived or left — disposition it below').toHaveLength(7);
 	});
 
@@ -142,6 +143,13 @@ describe('the dashboard fences every async commit point', () => {
 			return CODE.slice(open, close + 1);
 		}
 
+		/** The callback body of the page's one timer of this kind. */
+		function timerBody(kind: 'setInterval' | 'setTimeout'): string {
+			const found = src.deferredTimers().filter((t) => t.label.startsWith(kind));
+			expect(found, `expected exactly one ${kind} — re-point this guard`).toHaveLength(1);
+			return found[0]!.body;
+		}
+
 		const SITES: Array<{ name: string; body: string; call: RegExp; allowedWrites: string[] }> = [
 			{
 				name: 'the keyed load effect',
@@ -149,7 +157,10 @@ describe('the dashboard fences every async commit point', () => {
 				call: /\bload\(wsSlug\)/,
 				allowedWrites: ['dashboard', 'dashboardSlug', 'collections', 'dashError', 'onboardingTrack', 'justCreatedSlugs', 'lastLoadKey'],
 			},
-			{ name: 'the 30 s poll', body: src.deferredTimers()[0]?.body ?? '', call: /\bload\(wsSlug, true\)/, allowedWrites: [] },
+			{ name: 'the 30 s poll', body: timerBody('setInterval'), call: /\bload\(wsSlug, true\)/, allowedWrites: [] },
+			// BUG-3447: an item or collection event while onboarding re-arms this
+			// debounce; its body is only the load() call.
+			{ name: 'the live-onboarding reload', body: timerBody('setTimeout'), call: /\bload\(wsSlug, true\)/, allowedWrites: [] },
 			{ name: 'the sync-subscription callback', body: syncCallbackBody(), call: /\bload\(wsSlug, true\)/, allowedWrites: [] },
 			{ name: 'the Retry button', body: attributeBody('onclick', '>Retry</Button>'), call: /\bload\(wsSlug\)/, allowedWrites: [] },
 			{
