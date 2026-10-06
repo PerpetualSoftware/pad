@@ -304,6 +304,9 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Provenance from the auth shape, never the body (BUG-3447): an agent's
+	// collection is agent activity for the launchpad and the connect banner.
+	_, input.Source = actorFromRequest(r)
 	coll, err := s.store.CreateCollection(workspaceID, input)
 	if err != nil {
 		if isUniqueViolation(err) {

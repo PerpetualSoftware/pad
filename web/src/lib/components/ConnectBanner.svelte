@@ -120,9 +120,9 @@
 
 	// LIVE (BUG-3447): the banner used to learn of agent activity only on a
 	// workspace change or when its own modal closed, so it stayed up while an
-	// agent was visibly creating items. While it is showing, an item creation
-	// schedules one quiet re-check, coalesced across a burst; once activity is
-	// known, events are ignored.
+	// agent was visibly creating items. While it is showing, an item or
+	// collection creation schedules one quiet re-check, coalesced across a
+	// burst; once activity is known, events are ignored.
 	const AGENT_RECHECK_MS = 400;
 	let recheckTimer: ReturnType<typeof setTimeout> | undefined;
 	const unsubscribeItems = browser
@@ -130,7 +130,8 @@
 				// Unknown (the first check still out) counts: its answer may
 				// predate the write (codex r2). Only KNOWN activity stops it.
 				if (hasAgentActivity === true || dismissed) return;
-				if (event.type !== 'item_created') return;
+				// An agent's collection is agent activity too (BUG-3447, lead).
+				if (event.type !== 'item_created' && event.type !== 'collection_updated') return;
 				// Only for the workspace it was armed in: after a switch it would
 				// supersede the next workspace's own re-check (codex r1).
 				const armedFor = wsSlug;

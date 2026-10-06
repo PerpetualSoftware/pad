@@ -6281,6 +6281,32 @@ func (s *Store) WorkspaceHasAgentActivity(workspaceID string, collectionIDs, ite
 	if err := s.db.QueryRow(s.q(query), args...).Scan(&has); err != nil {
 		return false, fmt.Errorf("workspace has agent activity: %w", err)
 	}
+	if has {
+		return true, nil
+	}
+
+	// An agent-created COLLECTION counts too (BUG-3447): during onboarding an
+	// agent makes collections minutes before its first item. Visibility is
+	// the collection's own: a caller sees it only through collectionIDs (nil
+	// means unfiltered). A caller with item grants alone (a guest) sees no
+	// collection, so it is not asked.
+	if collectionIDs != nil && len(collectionIDs) == 0 {
+		return false, nil
+	}
+	cq := `SELECT EXISTS(SELECT 1 FROM collections WHERE workspace_id = ? AND source IN ('cli', 'mcp') AND deleted_at IS NULL`
+	cargs := []interface{}{workspaceID}
+	if len(collectionIDs) > 0 {
+		placeholders := make([]string, len(collectionIDs))
+		for i, id := range collectionIDs {
+			placeholders[i] = "?"
+			cargs = append(cargs, id)
+		}
+		cq += " AND id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	cq += ")"
+	if err := s.db.QueryRow(s.q(cq), cargs...).Scan(&has); err != nil {
+		return false, fmt.Errorf("workspace has agent activity: collections: %w", err)
+	}
 	return has, nil
 }
 

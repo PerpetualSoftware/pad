@@ -164,9 +164,9 @@ func (s *Store) createCollectionTx(tx *sql.Tx, workspaceID string, input models.
 		via = viaApp
 	}
 	_, err = tx.Exec(s.q(`
-		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, via_app, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, traits, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), via, ts, ts)
+		INSERT INTO collections (id, workspace_id, name, slug, prefix, icon, description, schema, settings, traits, sort_order, is_default, is_system, via_app, source, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, workspaceID, input.Name, slug, prefix, icon, description, schema, settings, traits, 0, s.dialect.BoolToInt(input.IsDefault), s.dialect.BoolToInt(input.IsSystem), via, input.Source, ts, ts)
 	if err != nil {
 		return "", fmt.Errorf("insert collection: %w", err)
 	}

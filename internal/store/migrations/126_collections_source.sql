@@ -1,0 +1,11 @@
+-- Migration 126: record how a collection was created (web UI / CLI / MCP)
+-- (BUG-3447). During a real onboarding an agent creates collections minutes
+-- before its first item, and the launchpad's "Agent connected" step and the
+-- connect banner read has_agent_activity, which counted only agent-created
+-- ITEMS. An agent-created collection now counts too.
+--
+-- Same shape as 069_workspace_source.sql: existing rows predate the tracking
+-- and default to '' ("provenance unknown"), which is never treated as
+-- agent-created. New collections set 'web' | 'cli' | 'mcp' at creation from
+-- the request's auth shape, never from the body.
+ALTER TABLE collections ADD COLUMN source TEXT NOT NULL DEFAULT '';

@@ -160,6 +160,10 @@ type CollectionCreate struct {
 	Traits      string `json:"traits,omitempty"`
 	IsDefault   bool   `json:"is_default,omitempty"`
 	IsSystem    bool   `json:"is_system,omitempty"`
+	// Source is how the collection was created ('web' | 'cli' | 'mcp'), set by
+	// the server from the request's auth shape, never from the body (BUG-3447).
+	// Empty leaves the column's '' (provenance unknown, never agent).
+	Source string `json:"-"`
 }
 
 // FieldMigration describes a bulk update to apply to existing items when
