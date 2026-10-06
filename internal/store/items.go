@@ -1437,7 +1437,8 @@ func (s *Store) ListWorkspaceTags(workspaceID string, collectionIDs, itemIDs []s
 	query := `
 		SELECT ` + valueExpr + ` AS tag, COUNT(DISTINCT i.id) AS cnt
 		FROM items i, ` + fromExpr + `
-		WHERE i.workspace_id = ? AND i.deleted_at IS NULL`
+		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		  AND EXISTS (SELECT 1 FROM collections c WHERE c.id = i.collection_id AND c.deleted_at IS NULL)`
 	args := []interface{}{workspaceID}
 
 	if len(collectionIDs) > 0 && len(itemIDs) > 0 {
@@ -4610,6 +4611,7 @@ func (s *Store) GetItemProgress(parentItemID string) (total int, done int, err e
 		SELECT COUNT(CASE WHEN NOT %s THEN 1 END),
 		       COUNT(CASE WHEN %s AND NOT %s THEN 1 END)
 		FROM items i
+		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
 		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
 		WHERE i.deleted_at IS NULL
 	`, abandonedExpr, doneExpr, abandonedExpr, childLinkTypeSQL())), args...).Scan(&total, &done)
@@ -4909,6 +4911,7 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string, includeAr
 		LEFT JOIN item_links il ON il.link_type IN (%s) AND il.target_id = p.id
 		LEFT JOIN items t ON t.id = il.source_id
 		                  AND t.deleted_at IS NULL
+		                  AND EXISTS (SELECT 1 FROM collections tc WHERE tc.id = t.collection_id AND tc.deleted_at IS NULL)
 		WHERE p.workspace_id = ?
 		  AND pc.slug = ?
 		  %s
@@ -4935,8 +4938,11 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string, includeAr
 
 // GetChildItems returns all non-deleted child items linked to the given parent
 // via item_links. Returns children from any collection.
+//
+// A child in a soft-deleted collection is left out (BUG-3428), as every other
+// item read leaves it out.
 func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
-	return s.getChildItems(s.db, parentItemID)
+	return s.getChildItems(s.db, parentItemID, false)
 }
 
 // GetChildItemsTx is the in-transaction variant of GetChildItems. The
@@ -4962,10 +4968,13 @@ func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
 // `SELECT DISTINCT … FOR UPDATE`. The advisory-lock pattern sidesteps
 // that constraint while still giving us a serialized snapshot.
 func (s *Store) GetChildItemsTx(tx *sql.Tx, parentItemID string) ([]models.Item, error) {
+	// The open-children guard is this function's caller, and it still counts
+	// a child in a soft-deleted collection as open work (BUG-3428 leaves that
+	// write rule to a ruling), so this read keeps those children.
 	if tx == nil {
-		return s.GetChildItems(parentItemID)
+		return s.getChildItems(s.db, parentItemID, true)
 	}
-	return s.getChildItems(tx, parentItemID)
+	return s.getChildItems(tx, parentItemID, true)
 }
 
 // acquireParentChildrenLocksForUpdate is the in-tx helper UpdateItem
@@ -5198,7 +5207,11 @@ type childQueryer interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }
 
-func (s *Store) getChildItems(q childQueryer, parentItemID string) ([]models.Item, error) {
+func (s *Store) getChildItems(q childQueryer, parentItemID string, includeDeletedCollections bool) ([]models.Item, error) {
+	collFilter := " AND c.deleted_at IS NULL"
+	if includeDeletedCollections {
+		collFilter = ""
+	}
 	rows, err := q.Query(s.q(fmt.Sprintf(`
 		SELECT DISTINCT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -5212,9 +5225,9 @@ func (s *Store) getChildItems(q childQueryer, parentItemID string) ([]models.Ite
 		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE i.deleted_at IS NULL
+		WHERE i.deleted_at IS NULL%s
 		ORDER BY i.sort_order ASC, i.created_at ASC
-	`, childLinkTypeSQL())), parentItemID)
+	`, childLinkTypeSQL(), collFilter)), parentItemID)
 	if err != nil {
 		return nil, fmt.Errorf("get child items: %w", err)
 	}
@@ -5263,7 +5276,7 @@ func (s *Store) GetChildItemsForParents(parentIDs []string) (map[string][]models
 		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id IN (%s)
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-		WHERE i.deleted_at IS NULL
+		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
 		ORDER BY i.sort_order ASC, i.created_at ASC
 	`, childLinkTypeSQL(), strings.Join(placeholders, ","))), args...)
 	if err != nil {
@@ -5371,6 +5384,7 @@ func (s *Store) PopulateHasChildren(items []models.Item) {
 	query := fmt.Sprintf(`
 		SELECT DISTINCT il.target_id FROM item_links il
 		JOIN items child ON child.id = il.source_id AND child.deleted_at IS NULL
+		JOIN collections cc ON cc.id = child.collection_id AND cc.deleted_at IS NULL
 		WHERE il.link_type IN (%s) AND il.target_id IN (%s)
 	`, childLinkTypeSQL(), strings.Join(placeholders, ","))
 
