@@ -166,6 +166,17 @@ type CollectionCreate struct {
 	Source string `json:"-"`
 }
 
+// ValidCollectionSource returns source when it is one the server writes
+// ('web' | 'cli' | 'mcp') and ” (provenance unknown, never agent) otherwise:
+// the gate a bundle import's value passes before it is stored (BUG-3447).
+func ValidCollectionSource(source string) string {
+	switch source {
+	case "web", "cli", "mcp":
+		return source
+	}
+	return ""
+}
+
 // FieldMigration describes a bulk update to apply to existing items when
 // a collection schema changes (e.g. renaming select options).
 type FieldMigration struct {

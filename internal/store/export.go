@@ -197,7 +197,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	// silently DELETE live, addressable rows during a SQLite→Postgres
 	// migration: a worse defect than the lossy backup it would fix.
 	rows, err := q.Query(s.q(`
-		SELECT id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at, COALESCE(deleted_at, '')
+		SELECT id, name, slug, icon, description, schema, settings, traits, prefix, source, sort_order, is_default, is_system, created_at, updated_at, COALESCE(deleted_at, '')
 		FROM collections WHERE workspace_id = ?
 		ORDER BY sort_order, name`), ws.ID)
 	if err != nil {
@@ -207,7 +207,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	for rows.Next() {
 		var c models.CollectionExport
 		var isDefault, isSystem bool
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Traits, &c.Prefix, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Traits, &c.Prefix, &c.Source, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt); err != nil {
 			return nil, fmt.Errorf("scan collection: %w", err)
 		}
 		c.IsDefault = isDefault
@@ -812,9 +812,9 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// collection LIVE. That direction is what keeps old bundles working;
 		// only a non-empty mark reproduces an archive.
 		_, err := tx.Exec(s.q(`
-			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, traits, prefix, sort_order, is_default, is_system, created_at, updated_at, deleted_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`),
-			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, settings, traits, prefix, c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
+			INSERT INTO collections (id, workspace_id, name, slug, icon, description, schema, settings, traits, prefix, source, sort_order, is_default, is_system, created_at, updated_at, deleted_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`),
+			newCollID, ws.ID, c.Name, c.Slug, c.Icon, c.Description, c.Schema, settings, traits, prefix, models.ValidCollectionSource(c.Source), c.SortOrder, s.dialect.BoolToInt(c.IsDefault), s.dialect.BoolToInt(c.IsSystem),
 			c.CreatedAt, c.UpdatedAt, c.DeletedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import collection %s: %w", c.Name, err)
