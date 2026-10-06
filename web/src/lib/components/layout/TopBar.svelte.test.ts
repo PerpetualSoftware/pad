@@ -334,12 +334,16 @@ describe('TopBar "+" invitation badge (BUG-2136 U2)', () => {
 
 	it('refreshes on mount, on window focus and after every navigation, and stops on unmount', async () => {
 		await mountWith([BETA]);
-		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(1);
+		// A mount is a page load: it skips the store's throttle (codex r3), so a
+		// remount within the window still fetches. Focus and navigation do not.
+		expect(mocks.refreshInvitations.mock.calls).toEqual([[true]]);
 		window.dispatchEvent(new Event('focus'));
 		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(2);
+		expect(mocks.refreshInvitations.mock.calls[1]).toEqual([]);
 		expect(mocks.afterNavigate).toHaveLength(1);
 		mocks.afterNavigate[0]();
 		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(3);
+		expect(mocks.refreshInvitations.mock.calls[2]).toEqual([]);
 		cleanup();
 		window.dispatchEvent(new Event('focus'));
 		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(3);
