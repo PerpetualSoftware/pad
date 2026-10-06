@@ -12,9 +12,6 @@ const mocks = vi.hoisted(() => ({
 	listMyInvitations: vi.fn(),
 	acceptMyInvitation: vi.fn(),
 	declineMyInvitation: vi.fn(),
-	storeSet: vi.fn(),
-	storeRemove: vi.fn(),
-	storeReserve: vi.fn(),
 	loadAll: vi.fn(async () => {}),
 	tabsOpen: vi.fn(async () => {}),
 	toast: vi.fn(),
@@ -35,13 +32,17 @@ vi.mock('$lib/api/client', () => ({
 vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { loadAll: mocks.loadAll } }));
 vi.mock('$lib/stores/tabs.svelte', () => ({ tabsStore: { open: mocks.tabsOpen } }));
 vi.mock('$lib/stores/auth.svelte', () => ({
-	authStore: { identityFence: () => () => mocks.sameIdentity },
+	authStore: {
+		userId: 'u1',
+		identityFence: () => () => mocks.sameIdentity,
+		onIdentityChange: () => () => {},
+	},
 }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: mocks.toast } }));
-vi.mock('$lib/stores/pendingInvitations.svelte', () => ({
-	pendingInvitations: { set: mocks.storeSet, remove: mocks.storeRemove, reserve: mocks.storeReserve },
-}));
 
+// The REAL badge store (codex r8): the list renders from it, so the rows and
+// the count cannot disagree, and every write goes through its one order.
+import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 import PendingInvitations from './PendingInvitations.svelte';
 
 const inv = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
@@ -71,6 +72,7 @@ async function mount(list: ReturnType<typeof inv>[], verified = true) {
 }
 
 beforeEach(() => {
+	pendingInvitations.set([], pendingInvitations.reserve());
 	mocks.calls.length = 0;
 	mocks.sameIdentity = true;
 	for (const f of [
@@ -78,9 +80,6 @@ beforeEach(() => {
 		mocks.listMyInvitations,
 		mocks.acceptMyInvitation,
 		mocks.declineMyInvitation,
-		mocks.storeSet,
-		mocks.storeRemove,
-		mocks.storeReserve,
 		mocks.loadAll,
 		mocks.tabsOpen,
 		mocks.toast,
@@ -215,20 +214,35 @@ describe('PendingInvitations', () => {
 	});
 
 	// BUG-2136 U2
-	it('reports the fetched list to the badge store under the token it reserved BEFORE fetching (codex r7)', async () => {
-		const order: string[] = [];
-		mocks.storeReserve.mockImplementation(() => {
-			order.push('reserve');
-			return 7;
-		});
-		mocks.listMyInvitations.mockImplementation(async () => {
-			order.push('fetch');
-			return { invitations: [inv('a', 'Alpha')], email_verified: true };
-		});
-		render(PendingInvitations, { props: { active: true } });
+	it('the rows are the badge store\'s list', async () => {
+		await mount([inv('a', 'Alpha')]);
+		expect(pendingInvitations.invitations.map((i) => i.id)).toEqual(['a']);
+	});
+
+	it('a newer badge refresh wins over an older list fetch, in the rows as in the count (codex r8)', async () => {
+		let answer!: (v: unknown) => void;
+		mocks.listMyInvitations.mockReturnValueOnce(new Promise((r) => (answer = r)));
+		const { queryByText } = render(PendingInvitations, { props: { active: true } });
 		await settle();
-		expect(order).toEqual(['reserve', 'fetch']);
-		expect(mocks.storeSet).toHaveBeenCalledWith([expect.objectContaining({ id: 'a' })], 7);
+		mocks.listMyInvitations.mockResolvedValueOnce({ invitations: [], email_verified: true });
+		await pendingInvitations.refresh(true);
+		answer({ invitations: [inv('a', 'Withdrawn')], email_verified: true });
+		await settle();
+		expect(queryByText('Withdrawn')).toBeNull();
+		expect(pendingInvitations.count).toBe(0);
+	});
+
+	it('an older list fetch that fails does not clear a newer list (codex r8)', async () => {
+		let fail!: (e: Error) => void;
+		mocks.listMyInvitations.mockReturnValueOnce(new Promise((_, f) => (fail = f)));
+		const { queryByText } = render(PendingInvitations, { props: { active: true } });
+		await settle();
+		mocks.listMyInvitations.mockResolvedValueOnce({ invitations: [inv('b', 'Beta')], email_verified: true });
+		await pendingInvitations.refresh(true);
+		await settle();
+		fail(new Error('offline'));
+		await settle();
+		expect(queryByText('Beta')).toBeTruthy();
 	});
 
 	it('declines by id: the row leaves the list and the badge, with no navigation', async () => {
@@ -239,7 +253,7 @@ describe('PendingInvitations', () => {
 		expect(mocks.declineMyInvitation).toHaveBeenCalledWith('a');
 		expect(queryByText('Alpha')).toBeNull();
 		expect(queryByText('Beta')).toBeTruthy();
-		expect(mocks.storeRemove).toHaveBeenCalledWith('a');
+		expect(pendingInvitations.invitations.map((i) => i.id)).toEqual(['b']);
 		expect(mocks.acceptMyInvitation).not.toHaveBeenCalled();
 		expect(mocks.goto).not.toHaveBeenCalled();
 	});
@@ -251,7 +265,7 @@ describe('PendingInvitations', () => {
 		await fireEvent.click(getByRole('button', { name: 'Decline the invitation to Alpha' }));
 		await settle();
 		expect(mocks.toast).toHaveBeenCalledWith('Invitation not found or already accepted', 'error');
-		expect(mocks.storeRemove).not.toHaveBeenCalled();
+		expect(pendingInvitations.invitations.map((i) => i.id)).toEqual(['a']);
 	});
 
 	it('a decline in flight disables Accept', async () => {
@@ -307,7 +321,7 @@ describe('PendingInvitations', () => {
 		answer({ invitations: [inv('a', 'Alpha')], email_verified: true });
 		await settle();
 		expect(queryByText('Alpha')).toBeNull();
-		expect(mocks.storeSet).not.toHaveBeenCalled();
+		expect(pendingInvitations.count).toBe(0);
 	});
 
 	it('a list fetch issued before an accept cannot bring the accepted row back (codex r1)', async () => {
@@ -315,7 +329,6 @@ describe('PendingInvitations', () => {
 		// still out, and the refetch answers with the list as it stood.
 		mocks.acceptMyInvitation.mockRejectedValueOnce(new Error('nope'));
 		const { getByRole, queryByText } = await mount([inv('a', 'Alpha'), inv('b', 'Beta')]);
-		mocks.storeSet.mockClear();
 		let answer!: (v: unknown) => void;
 		mocks.listMyInvitations.mockReturnValue(new Promise((r) => (answer = r)));
 		await fireEvent.click(getByRole('button', { name: 'Accept the invitation to Alpha' }));
@@ -326,8 +339,6 @@ describe('PendingInvitations', () => {
 		answer({ invitations: [inv('a', 'Alpha'), inv('b', 'Beta')], email_verified: true });
 		await settle();
 		expect(queryByText('Beta')).toBeNull();
-		for (const [list] of mocks.storeSet.mock.calls) {
-			expect((list as { id: string }[]).map((i) => i.id)).not.toContain('b');
-		}
+		expect(pendingInvitations.invitations.map((i) => i.id)).not.toContain('b');
 	});
 });
