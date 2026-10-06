@@ -11,6 +11,7 @@ import {
 	findUnsatisfiedProjects,
 	formatUnsatisfiedProjectsError,
 } from './src/test/vitestProjects.ts';
+import { dynamicCompileOptions } from './svelteCompileOptions.ts';
 
 // Multi-project vitest setup (TASK-2081 / PLAN-1984, plus `idb` from
 // PLAN-2636 unit 1):
@@ -139,7 +140,10 @@ export default defineConfig(async () => {
 		nodeProject,
 		idbProject,
 		{
-			plugins: [svelte(), svelteTesting()],
+			// The compile options come from the module vite.config.ts uses too,
+			// and configFile: false stops vite-plugin-svelte looking for a
+			// svelte.config.js of its own (TASK-3423).
+			plugins: [svelte({ configFile: false, dynamicCompileOptions }), svelteTesting()],
 			resolve: {
 				alias: {
 					$lib,
