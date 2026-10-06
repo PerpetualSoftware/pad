@@ -95,3 +95,27 @@ func TestItemShowLabelsTheMetadataBlockForTheItemsKind(t *testing.T) {
 		t.Errorf("a convention lost its metadata label:\n%s", conv)
 	}
 }
+
+// Codex r1: a number above 2^53 keeps its digits; a JSON null is shown as
+// null, not as an empty value.
+func TestItemShowKeepsNumbersAndNull(t *testing.T) {
+	out := runShow3448(t, showFixture("playbooks", "Playbooks", map[string]any{
+		"arguments":     []any{map[string]any{"default": json.Number("9007199254740993")}},
+		"configuration": nil,
+	}))
+	if !strings.Contains(out, "9007199254740993") {
+		t.Errorf("a large number lost its digits:\n%s", out)
+	}
+	if !strings.Contains(out, "configuration: null") {
+		t.Errorf("a JSON null did not print as null:\n%s", out)
+	}
+}
+
+// Codex r1: no guessing at plurals. The two system kinds have exact labels;
+// any other collection is named as it is.
+func TestItemShowMetadataLabelUsesTheNameAsIs(t *testing.T) {
+	out := runShow3448(t, showFixture("analysis", "Analysis", map[string]any{"trigger": "manual"}))
+	if !strings.Contains(out, "--- Analysis Metadata ---") {
+		t.Errorf("a collection name ending in s was mangled:\n%s", out)
+	}
+}

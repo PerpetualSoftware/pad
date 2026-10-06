@@ -22,3 +22,10 @@ func TestFormatFieldSummarySummarisesStructuredValues(t *testing.T) {
 		t.Errorf("control: the scalar status is missing from %q", got)
 	}
 }
+
+// Codex r1: a number above 2^53 keeps its digits in the summary too.
+func TestFormatFieldSummaryKeepsLargeNumbers(t *testing.T) {
+	if got := FormatFieldSummary(`{"budget":9007199254740993}`); !strings.Contains(got, "9007199254740993") {
+		t.Errorf("summary %q lost the number's digits", got)
+	}
+}
