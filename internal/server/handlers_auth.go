@@ -819,10 +819,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if needsVerification && invitation != nil && input.InvitationProof != "" {
 		ok, perr := s.store.ConsumeInvitationProof(invitation.ID, user.ID, strings.TrimSpace(input.InvitationProof))
 		if perr != nil {
-			// The commit may have landed, so count the proof as possibly
-			// spent: a rollback's restore rewrites only a proof that IS spent
-			// (codex r3).
-			spentProof = strings.TrimSpace(input.InvitationProof)
+			// NOT counted as spent, even though a lost commit acknowledgement
+			// could have spent it. Restoring a proof the caller merely SENT
+			// would install an unproven secret on any pending invitation whose
+			// proof was already empty (codex r4). The residual is the safe
+			// direction: a refused signup after such an error leaves the proof
+			// spent, and the retry is verified by the email link instead.
 			slog.Error("invitation proof: consume failed; continuing unverified", "error", perr, "user_id", user.ID)
 		} else if ok {
 			spentProof = strings.TrimSpace(input.InvitationProof)
