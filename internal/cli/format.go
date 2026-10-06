@@ -416,12 +416,19 @@ func PrintItemTitles(items []models.Item) {
 // structured value (a json field's object or array) as compact JSON, anything
 // else as Go prints it. Go's own `%v` printed a json field as
 // `[map[name:target …]]`, which is neither JSON nor readable (BUG-3448).
+//
+// Decode the field blob with models.DecodeJSONKeepingNumbers so a number
+// arrives as json.Number and keeps its digits; a float64 rounds anything
+// above 2^53 (codex r1). A JSON null prints as null, which an empty value
+// would not say.
 func FormatFieldValue(v any) string {
 	switch t := v.(type) {
 	case nil:
-		return ""
+		return "null"
 	case string:
 		return t
+	case json.Number:
+		return t.String()
 	case map[string]any, []any:
 		if b, err := json.Marshal(t); err == nil {
 			return string(b)
@@ -435,6 +442,8 @@ func FormatFieldValue(v any) string {
 // the line into a paragraph (BUG-3448).
 func summariseFieldValue(v any) string {
 	switch t := v.(type) {
+	case nil:
+		return "" // an empty field has nothing to summarise
 	case []any:
 		if len(t) == 1 {
 			return "(1 entry)"
@@ -457,7 +466,7 @@ func FormatFieldSummary(fieldsJSON string) string {
 	}
 
 	var fields map[string]any
-	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+	if err := models.DecodeJSONKeepingNumbers([]byte(fieldsJSON), &fields); err != nil {
 		return ""
 	}
 

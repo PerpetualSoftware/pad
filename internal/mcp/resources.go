@@ -14,6 +14,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -388,14 +389,16 @@ func formatItemAsMarkdown(jsonBlob string) (string, error) {
 	// string-encoded object on the wire — unmarshal a second time.
 	if fieldsStr, ok := item["fields"].(string); ok && fieldsStr != "" && fieldsStr != "{}" {
 		var fields map[string]any
-		if json.Unmarshal([]byte(fieldsStr), &fields) == nil && len(fields) > 0 {
+		// Numbers keep their digits and structured values print as JSON
+		// (BUG-3448), as `pad item show` does.
+		if models.DecodeJSONKeepingNumbers([]byte(fieldsStr), &fields) == nil && len(fields) > 0 {
 			keys := make([]string, 0, len(fields))
 			for k := range fields {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				fmt.Fprintf(&b, "- **%s:** %v\n", k, fields[k])
+				fmt.Fprintf(&b, "- **%s:** %s\n", k, cli.FormatFieldValue(fields[k]))
 			}
 			b.WriteString("\n")
 		}

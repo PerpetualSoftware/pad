@@ -813,7 +813,8 @@ on stderr instead. --format json carries it as the content_state field.`,
 			// Print fields (skip internal keys like github_pr which are shown separately)
 			if item.Fields != "" && item.Fields != "{}" {
 				var fields map[string]interface{}
-				if err := json.Unmarshal([]byte(item.Fields), &fields); err == nil {
+				// Numbers keep their digits (BUG-3448, codex r1).
+				if err := models.DecodeJSONKeepingNumbers([]byte(item.Fields), &fields); err == nil {
 					for k, v := range fields {
 						if models.IsReservedItemField(k) {
 							continue // shown in dedicated section below
@@ -881,7 +882,7 @@ on stderr instead. --format json carries it as the content_state field.`,
 			}
 
 			if item.Convention != nil {
-				fmt.Printf("\n--- %s Metadata ---\n", metadataKindLabel(item.CollectionName))
+				fmt.Printf("\n--- %s Metadata ---\n", metadataKindLabel(item.CollectionSlug, item.CollectionName))
 				if item.Convention.Category != "" {
 					fmt.Printf("Category:    %s\n", item.Convention.Category)
 				}
@@ -2826,18 +2827,21 @@ func itemCopyList(items []string) string {
 }
 
 // metadataKindLabel names the trigger/surfaces metadata block for the item's
-// own kind (BUG-3448): a playbook's block said "Convention Metadata". The
-// collection's display name, singular, so a renamed collection is named as
-// it is now: "Conventions" -> "Convention", "Playbooks" -> "Playbook".
-func metadataKindLabel(collectionName string) string {
-	name := strings.TrimSpace(collectionName)
-	if name == "" {
-		return "Item"
+// own kind (BUG-3448): a playbook's block said "Convention Metadata". The two
+// system kinds that carry this metadata have exact labels; any other
+// collection is named as it is, because guessing at plurals mangles real
+// names ("Analysis", "Status"; codex r1).
+func metadataKindLabel(collectionSlug, collectionName string) string {
+	switch collectionSlug {
+	case "conventions":
+		return "Convention"
+	case "playbooks":
+		return "Playbook"
 	}
-	if len(name) > 1 && strings.HasSuffix(name, "s") && !strings.HasSuffix(name, "ss") {
-		name = name[:len(name)-1]
+	if name := strings.TrimSpace(collectionName); name != "" {
+		return name
 	}
-	return name
+	return "Item"
 }
 
 // itemCopyValue renders a carried field value without lying about it: a
