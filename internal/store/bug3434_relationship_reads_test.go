@@ -69,9 +69,12 @@ func TestGetItemLinks_ExcludesSoftDeletedCollections(t *testing.T) {
 func TestParentReads_ExcludeSoftDeletedCollections(t *testing.T) {
 	t.Parallel()
 	w := newBug3434World(t)
-	// live -> doomed parent; partner -> live parent (control).
+	// live -> doomed parent; partner -> live parent (control); and the
+	// doomed item as a CHILD, so both ends of a parent link are exercised.
 	w.link(t, w.live, w.doomed, "parent")
 	w.link(t, w.partner, w.live, "parent")
+	extra := createTestItem(t, w.s, w.ws.ID, w.doomColl.ID, "Zephyr doomed child", "")
+	w.link(t, extra, w.partner, "parent")
 
 	check := func(when string, wantDoomedParent bool) {
 		t.Helper()
@@ -95,6 +98,12 @@ func TestParentReads_ExcludeSoftDeletedCollections(t *testing.T) {
 		if m[w.partner.ID] != w.live.ID {
 			t.Errorf("%s control: GetParentMap lost the live parent", when)
 		}
+		if _, got := m[extra.ID]; got != wantDoomedParent {
+			t.Errorf("%s GetParentMap has the doomed child = %v, want %v", when, got, wantDoomedParent)
+		}
+		if p, _ := w.s.GetParentForItem(extra.ID); (p != nil) != wantDoomedParent {
+			t.Errorf("%s GetParentForItem(doomed child) found a parent = %v, want %v", when, p != nil, wantDoomedParent)
+		}
 		lin, err := w.s.GetItemLineageByIDs([]string{w.doomed.ID, w.live.ID})
 		if err != nil {
 			t.Fatalf("%s GetItemLineageByIDs: %v", when, err)
@@ -116,6 +125,9 @@ func TestGetBlocksEdges_ExcludesSoftDeletedCollections(t *testing.T) {
 	w := newBug3434World(t)
 	w.link(t, w.doomed, w.live, "blocks")
 	w.link(t, w.partner, w.live, "blocks")
+	// And a live blocker of a doomed target, so both ends are exercised.
+	extra := createTestItem(t, w.s, w.ws.ID, w.doomColl.ID, "Zephyr doomed blocked", "")
+	w.link(t, w.partner, extra, "blocks")
 	edges := func() (doomed, partner bool) {
 		t.Helper()
 		es, err := w.s.GetBlocksEdges(w.ws.ID)
@@ -123,8 +135,8 @@ func TestGetBlocksEdges_ExcludesSoftDeletedCollections(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, e := range es {
-			doomed = doomed || e.SourceID == w.doomed.ID || e.TargetID == w.doomed.ID
-			partner = partner || e.SourceID == w.partner.ID
+			doomed = doomed || e.SourceID == w.doomed.ID || e.TargetID == w.doomed.ID || e.TargetID == extra.ID
+			partner = partner || (e.SourceID == w.partner.ID && e.TargetID == w.live.ID)
 		}
 		return
 	}
