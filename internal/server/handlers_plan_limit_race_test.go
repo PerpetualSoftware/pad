@@ -491,15 +491,6 @@ func (e *planLimitEnv) collectionID(t *testing.T, slug string) string {
 	return coll.ID
 }
 
-func (e *planLimitEnv) newUser(t *testing.T, email string) *models.User {
-	t.Helper()
-	u, err := e.srv.store.CreateUser(models.UserCreate{Email: email, Name: email, Password: "pw-limit-12345"})
-	if err != nil {
-		t.Fatalf("CreateUser(%s): %v", email, err)
-	}
-	return u
-}
-
 func (e *planLimitEnv) itemRace(t *testing.T, door func(t *testing.T) *httptest.ResponseRecorder) workspaceRace {
 	tasks := e.collectionID(t, "tasks")
 	return workspaceRace{
