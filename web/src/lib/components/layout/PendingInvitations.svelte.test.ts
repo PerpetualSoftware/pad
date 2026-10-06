@@ -241,7 +241,7 @@ describe('PendingInvitations', () => {
 		expect(mocks.storeRemove).not.toHaveBeenCalled();
 	});
 
-	it('an accept in flight disables Decline, and a decline in flight disables Accept', async () => {
+	it('a decline in flight disables Accept', async () => {
 		let release!: () => void;
 		mocks.declineMyInvitation.mockReturnValue(new Promise<void>((r) => (release = r)));
 		const { getByRole } = await mount([inv('a', 'Alpha')]);
@@ -252,5 +252,36 @@ describe('PendingInvitations', () => {
 		expect(mocks.acceptMyInvitation).not.toHaveBeenCalled();
 		release();
 		await settle();
+	});
+
+	it('an accept in flight disables Decline', async () => {
+		let release!: (v: unknown) => void;
+		mocks.acceptMyInvitation.mockReturnValue(new Promise((r) => (release = r)));
+		const { getByRole } = await mount([inv('a', 'Alpha')]);
+		await fireEvent.click(getByRole('button', { name: 'Accept the invitation to Alpha' }));
+		await settle();
+		expect((getByRole('button', { name: 'Decline the invitation to Alpha' }) as HTMLButtonElement).disabled).toBe(true);
+		await fireEvent.click(getByRole('button', { name: 'Decline the invitation to Alpha' }));
+		expect(mocks.declineMyInvitation).not.toHaveBeenCalled();
+		release({ workspace_slug: 'alpha', owner_username: 'o' });
+		await settle();
+	});
+
+	it('a list fetch issued before a decline cannot bring the declined row back', async () => {
+		// A failed decline of A refetches; B is declined while that refetch is
+		// still out, and the refetch answers with the list as it stood (B in it).
+		mocks.declineMyInvitation.mockRejectedValueOnce(new Error('nope'));
+		const { getByRole, queryByText } = await mount([inv('a', 'Alpha'), inv('b', 'Beta')]);
+		let answer!: (v: unknown) => void;
+		mocks.listMyInvitations.mockReturnValue(new Promise((r) => (answer = r)));
+		await fireEvent.click(getByRole('button', { name: 'Decline the invitation to Alpha' }));
+		await settle();
+		mocks.declineMyInvitation.mockResolvedValue(undefined);
+		await fireEvent.click(getByRole('button', { name: 'Decline the invitation to Beta' }));
+		await settle();
+		expect(queryByText('Beta')).toBeNull();
+		answer({ invitations: [inv('a', 'Alpha'), inv('b', 'Beta')], email_verified: true });
+		await settle();
+		expect(queryByText('Beta')).toBeNull();
 	});
 });
