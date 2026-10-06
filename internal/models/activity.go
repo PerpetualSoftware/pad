@@ -182,13 +182,19 @@ type TimelineEntry struct {
 	// do NOT get it: their name already lives in Activity.Metadata, and a
 	// second copy there would be a second source that can drift (TASK-2760,
 	// lead ruling on the trail).
-	AgentName string                  `json:"agent_name,omitempty"`
-	Source    string                  `json:"source"`
-	Comment   *Comment                `json:"comment,omitempty"`
-	Activity  *Activity               `json:"activity,omitempty"`
-	Version   *Version                `json:"version,omitempty"`
-	Note      *ItemImplementationNote `json:"note,omitempty"`
-	Decision  *ItemDecisionLogEntry   `json:"decision,omitempty"`
+	AgentName string `json:"agent_name,omitempty"`
+	// CommentOnUpdate is set on a "comment" entry whose comment an item update
+	// carried (`pad item update --comment`, the update's "updated" activity),
+	// and false for a comment written on its own, whose linked activity is its
+	// own "commented" row (BUG-3437). The card's "commented on update" label
+	// keys on it; it used to key on activity_id, which EVERY comment has.
+	CommentOnUpdate bool                    `json:"comment_on_update,omitempty"`
+	Source          string                  `json:"source"`
+	Comment         *Comment                `json:"comment,omitempty"`
+	Activity        *Activity               `json:"activity,omitempty"`
+	Version         *Version                `json:"version,omitempty"`
+	Note            *ItemImplementationNote `json:"note,omitempty"`
+	Decision        *ItemDecisionLogEntry   `json:"decision,omitempty"`
 	// AutosaveRun is set on a collab-snapshot version entry that stands for a
 	// collapsed run of autosaves (PLAN-2348 U3): the entry is the run's
 	// NEWEST row, and this says what the dropped older rows were.

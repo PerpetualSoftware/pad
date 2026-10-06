@@ -547,8 +547,11 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 			// Derived from the nested comment (see TimelineEntry.AgentName);
 			// the store's join is the only writer of the value being copied.
 			AgentName: c.AgentName,
-			Source:    c.Source,
-			Comment:   &comments[i],
+			// A comment an update carried links to the update's activity; one
+			// written on its own links to its own "commented" row (BUG-3437).
+			CommentOnUpdate: c.LinkedActivityAction != "" && c.LinkedActivityAction != "commented",
+			Source:          c.Source,
+			Comment:         &comments[i],
 		}
 		entries = append(entries, entry)
 	}

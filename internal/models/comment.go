@@ -33,8 +33,17 @@ type Comment struct {
 	Imported bool `json:"imported,omitempty"`
 
 	// Populated by joins (not stored)
-	ItemTitle string `json:"item_title,omitempty"`
-	ItemSlug  string `json:"item_slug,omitempty"`
+	//
+	// LinkedActivityAction is the action of the activity ActivityID points at,
+	// read by the same list join as AgentName (BUG-3437): "commented" for a
+	// comment or reply on its own, "updated" (or another change) for a comment
+	// an item update carried. Never serialized: the item timeline turns it into
+	// TimelineEntry.CommentOnUpdate, and nothing else needs it, so the
+	// comments API and MCP keep their shape. Empty on a comment read any other
+	// way, and on one with no linked activity.
+	LinkedActivityAction string `json:"-"`
+	ItemTitle            string `json:"item_title,omitempty"`
+	ItemSlug             string `json:"item_slug,omitempty"`
 	// AgentName is the display name the writing agent declared (the
 	// X-Pad-Agent header), read off the activity this comment's ActivityID
 	// points at — the `commented` row a comment or reply logs, or the

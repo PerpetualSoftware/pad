@@ -135,6 +135,7 @@
 				{#if entry.kind === 'comment' && entry.comment}
 					<TimelineCommentCard
 						comment={entry.comment}
+						onUpdate={entry.comment_on_update === true}
 						{wsSlug}
 						{username}
 						{items}
