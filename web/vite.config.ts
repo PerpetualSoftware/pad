@@ -37,6 +37,8 @@ export default defineConfig({
 				assets: 'build',
 				fallback: 'index.html'
 			}),
+			// SvelteKit 3 removed the built-in `$lib`; this keeps it (TASK-3423).
+			alias: { $lib: 'src/lib' },
 			dynamicCompileOptions
 		})
 	],
