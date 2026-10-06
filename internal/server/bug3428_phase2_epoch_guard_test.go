@@ -278,3 +278,58 @@ func TestItemDoorAfterRowsHookIsNilInProduction(t *testing.T) {
 		t.Fatal("New left the BUG-3428 test-only item-door hook set")
 	}
 }
+
+// Codex r2: the same invariant for a grant-filtered caller on /items-changes,
+// whose epoch reads the live GRANT set too. A restricted member holds a
+// whole-collection grant on the doomed collection plus an item grant
+// elsewhere; the hook deletes the doomed collection right after the rows.
+func TestItemsChanges_GrantFilteredEpochIsNotNewerThanItsRows(t *testing.T) {
+	f := newEpochFixture(t, true)
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, f.user.ID, "specific", []string{f.live.CollectionID}); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := f.srv.store.GetUserByEmail("owner@example.com")
+	if err != nil || owner == nil {
+		t.Fatalf("owner: %v", err)
+	}
+	if _, err := f.srv.store.CreateCollectionGrant(f.ws.ID, f.doomColl.ID, f.user.ID, "view", owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	other, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Other", Slug: "other", Prefix: "OTH"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted, err := f.srv.store.CreateItem(f.ws.ID, other.ID, models.ItemCreate{Title: "Granted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.CreateItemGrant(f.ws.ID, granted.ID, f.user.ID, "view", owner.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	pre := f.delta(t).AccessEpoch
+	fired := false
+	f.srv.itemDoorAfterRowsHook = func() {
+		if !fired {
+			fired = true
+			if err := f.srv.store.DeleteCollection(f.doomColl.ID, ""); err != nil {
+				t.Errorf("delete in hook: %v", err)
+			}
+		}
+	}
+	resp := f.delta(t)
+	f.srv.itemDoorAfterRowsHook = nil
+	held := false
+	for _, c := range resp.Changes {
+		held = held || (c.ID == f.doomed.ID && !c.Deleted && !c.MovedOut)
+	}
+	if !fired || !held {
+		t.Fatalf("control: hook fired=%v, pre-delete rows held the doomed row=%v", fired, held)
+	}
+	if resp.AccessEpoch != pre {
+		t.Errorf("a grant-filtered delta pairs pre-delete rows with a post-delete epoch (%q, was %q)", resp.AccessEpoch, pre)
+	}
+	if next := f.delta(t).AccessEpoch; next == resp.AccessEpoch {
+		t.Errorf("the next poll did not show an epoch change, so the client would never resync")
+	}
+}
