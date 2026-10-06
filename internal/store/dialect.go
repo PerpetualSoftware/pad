@@ -371,6 +371,11 @@ func dateBucketSubstr(column, granularity string) string {
 // collection's items") used to flip the string state, so every later "?" was
 // left unbound and the query failed on Postgres only; SQLite takes "?"
 // natively and never comes here.
+//
+// NOT handled, deliberately: Postgres dollar-quoted strings ($$...$$,
+// $tag$...$tag$) and E'...' escape strings (where \' does not close). A "?"
+// inside either would be bound. No store SQL uses either form (audited for
+// BUG-3430); write a plain '...' literal, or bind the value as an argument.
 func rebindQuery(query string) string {
 	var buf strings.Builder
 	buf.Grow(len(query) + 16)
