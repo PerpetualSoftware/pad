@@ -29,7 +29,7 @@ func claudeSkillPath(project string) string {
 	return filepath.Join(project, ".claude", "skills", "pad", "SKILL.md")
 }
 
-func writeSkill(t *testing.T, project, content string) {
+func writeSkillFile(t *testing.T, project, content string) {
 	t.Helper()
 	p := claudeSkillPath(project)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -60,7 +60,7 @@ func testStamp(body, ver string) string {
 func TestBUG3466_InitKeepsAnEditedSkill(t *testing.T) {
 	project := setupSkillTest(t)
 	const mine = "---\nname: pad\n---\n\nOur team's own /pad rules.\n"
-	writeSkill(t, project, mine)
+	writeSkillFile(t, project, mine)
 	ensureSkills()
 	if got := readSkill(t, project); got != mine {
 		t.Fatalf("pad init overwrote an edited skill:\n%s", got)
@@ -71,7 +71,7 @@ func TestBUG3466_InitDoesNotDowngradeANewerSkill(t *testing.T) {
 	project := setupSkillTest(t)
 	body := "---\nname: pad\n---\n\nThe skill a newer pad wrote.\n"
 	newer := body + testStamp(body, "v99.0.0")
-	writeSkill(t, project, newer)
+	writeSkillFile(t, project, newer)
 	ensureSkills()
 	if got := readSkill(t, project); got != newer {
 		t.Fatalf("an older pad rewrote a newer pad's skill:\n%s", got)

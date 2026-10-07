@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,7 +12,6 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	pad "github.com/PerpetualSoftware/pad"
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -563,40 +561,28 @@ func ensureSkills() skillResult {
 	}
 
 	for _, tool := range detected {
-		expected := cli.FormatForTool(tool, pad.PadSkill)
-
-		if cli.ToolInstalled(tool) {
-			// Check if content is up to date
-			path := cli.ToolSkillPath(tool)
-			existing, err := os.ReadFile(path)
-			if err == nil && bytes.Equal(existing, expected) {
-				result.upToDate++
-				result.tools = append(result.tools, tool.Label)
-				continue
-			}
-
-			// Outdated — update silently
-			path, err = cli.InstallForTool(tool, expected)
-			if err != nil {
-				continue
-			}
+		// BUG-3466: one door decides. An edited skill, or one a newer pad
+		// wrote, is kept and reported (writeSkill says how to replace it);
+		// pad's own unedited text from this or an older pad updates quietly.
+		res, err := writeSkill(tool, false)
+		if err != nil {
+			continue
+		}
+		switch {
+		case res.Action == cli.SkillUnchanged:
+			result.upToDate++
+			result.tools = append(result.tools, tool.Label)
+		case res.Wrote && res.Action == cli.SkillInstall:
 			green.Print("✓ ")
-			fmt.Printf("Updated /pad skill for %s %s\n", tool.Label, dim.Sprint("→ "+path))
-			recordInstallation(tool.Name, path)
+			fmt.Printf("Installed /pad skill for %s %s\n", tool.Label, dim.Sprint("→ "+res.Path))
+			result.installed++
+			result.tools = append(result.tools, tool.Label)
+		case res.Wrote:
+			green.Print("✓ ")
+			fmt.Printf("Updated /pad skill for %s %s\n", tool.Label, dim.Sprint("→ "+res.Path))
 			result.updated++
 			result.tools = append(result.tools, tool.Label)
-		} else {
-			// Not installed — install. In interactive mode this proceeds
-			// without prompting because it's part of the init flow and the
-			// user already opted in.
-			path, err := cli.InstallForTool(tool, expected)
-			if err != nil {
-				continue
-			}
-			green.Print("✓ ")
-			fmt.Printf("Installed /pad skill for %s %s\n", tool.Label, dim.Sprint("→ "+path))
-			recordInstallation(tool.Name, path)
-			result.installed++
+		default:
 			result.tools = append(result.tools, tool.Label)
 		}
 	}

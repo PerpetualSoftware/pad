@@ -51,7 +51,7 @@ func TestAgentInstallNonInteractiveNoPrompt(t *testing.T) {
 		done <- string(buf)
 	}()
 
-	instErr := installInteractive()
+	instErr := installInteractive(false)
 
 	pw.Close()
 	os.Stdout = origStdout

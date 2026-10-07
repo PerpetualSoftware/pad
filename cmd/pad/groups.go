@@ -219,13 +219,16 @@ func dbCmd() *cobra.Command {
 }
 
 func agentUpdateCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update installed Pad skills across all supported tools",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return installUpdate()
+			force, _ := cmd.Flags().GetBool("force")
+			return installUpdate(force)
 		},
 	}
+	cmd.Flags().Bool("force", false, "replace a skill file even when it was edited or written by a newer pad (BUG-3466)")
+	return cmd
 }
 
 func agentStatusCmd() *cobra.Command {

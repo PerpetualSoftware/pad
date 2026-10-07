@@ -16,7 +16,6 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	pad "github.com/PerpetualSoftware/pad"
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -835,13 +834,11 @@ func offerSkillInstall() {
 			if cli.ToolInstalled(tool) {
 				continue
 			}
-			content := cli.FormatForTool(tool, pad.PadSkill)
-			path, err := cli.InstallForTool(tool, content)
-			if err != nil {
+			res, err := writeSkill(tool, false)
+			if err != nil || !res.Wrote {
 				continue
 			}
-			fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, path)
-			recordInstallation(tool.Name, path)
+			fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, res.Path)
 		}
 		return
 	}
@@ -877,15 +874,16 @@ func offerSkillInstall() {
 			}
 			continue
 		}
-		content := cli.FormatForTool(tool, pad.PadSkill)
-		path, err := cli.InstallForTool(tool, content)
+		res, err := writeSkill(tool, false)
 		if err != nil {
 			color.New(color.FgRed).Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
 			continue
 		}
+		if !res.Wrote {
+			continue
+		}
 		color.New(color.FgGreen).Printf("  ✓ %s", tool.Label)
-		fmt.Printf(" → %s\n", color.New(color.Faint).Sprint(path))
-		recordInstallation(tool.Name, path)
+		fmt.Printf(" → %s\n", color.New(color.Faint).Sprint(res.Path))
 	}
 }
 

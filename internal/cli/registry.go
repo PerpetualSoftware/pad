@@ -130,11 +130,16 @@ type InstallationStatus struct {
 	Installation
 	Exists   bool `json:"exists"`
 	Outdated bool `json:"outdated"`
+	// Edited and Newer are the files an update keeps (BUG-3466): not what pad
+	// wrote, or written by a newer pad. Neither counts as Outdated.
+	Edited bool `json:"edited,omitempty"`
+	Newer  bool `json:"newer,omitempty"`
 }
 
-// Status checks each tracked installation and returns its current state.
-// embeddedContent is the raw embedded skill bytes, used for freshness comparison.
-func (r *Registry) Status(embeddedContent []byte) []InstallationStatus {
+// Status checks each tracked installation and returns its current state,
+// decided the way an update would decide it (DecideSkillWrite). embedded is
+// the raw embedded skill; version is this pad's.
+func (r *Registry) Status(embedded []byte, version string) []InstallationStatus {
 	var results []InstallationStatus
 	for _, inst := range r.Installations {
 		s := InstallationStatus{Installation: inst}
@@ -146,27 +151,33 @@ func (r *Registry) Status(embeddedContent []byte) []InstallationStatus {
 			results = append(results, s)
 			continue
 		}
-
 		s.Exists = true
 
-		// Resolve what the content *should* be for this tool
 		tool := ResolveTool(inst.Tool)
 		if tool == nil {
-			// Unknown tool — compare raw
-			s.Outdated = !bytes.Equal(data, embeddedContent)
-		} else {
-			expected := FormatForTool(*tool, embeddedContent)
-			s.Outdated = !bytes.Equal(data, expected)
+			// Unknown tool: compare raw.
+			s.Outdated = !bytes.Equal(normalizeSkill(data), normalizeSkill(embedded))
+			results = append(results, s)
+			continue
 		}
-
+		switch DecideSkillWrite(*tool, data, true, FormatForTool(*tool, embedded), version).Action {
+		case SkillUpdate:
+			s.Outdated = true
+		case SkillKeepEdited:
+			s.Edited = true
+		case SkillKeepNewer:
+			s.Newer = true
+		}
 		results = append(results, s)
 	}
 	return results
 }
 
-// UpdateAll updates all tracked installations that are outdated.
-// Returns the number of installations updated and any errors encountered.
-func (r *Registry) UpdateAll(embeddedContent []byte, version string) (updated int, errors []error) {
+// UpdateAll updates all tracked installations that are outdated. A file that
+// was edited, or that a newer pad wrote, is kept and reported as an error
+// naming the force command, unless force (BUG-3466). Returns the number of
+// installations updated and any errors encountered.
+func (r *Registry) UpdateAll(embeddedContent []byte, version string, force bool) (updated int, errors []error) {
 	for i := range r.Installations {
 		inst := &r.Installations[i]
 
@@ -184,9 +195,22 @@ func (r *Registry) UpdateAll(embeddedContent []byte, version string) (updated in
 		}
 
 		expected := FormatForTool(*tool, embeddedContent)
-		if bytes.Equal(currentData, expected) {
+		d := DecideSkillWrite(*tool, currentData, true, expected, version)
+		switch d.Action {
+		case SkillUnchanged:
 			continue // already up to date
+		case SkillKeepEdited:
+			if !force {
+				errors = append(errors, fmt.Errorf("%s (%s): kept, it was edited; replace it with pad agent update --force", inst.ProjectPath, tool.Label))
+				continue
+			}
+		case SkillKeepNewer:
+			if !force {
+				errors = append(errors, fmt.Errorf("%s (%s): kept, pad %s wrote it and this is pad %s; replace it with pad agent update --force", inst.ProjectPath, tool.Label, d.StampVersion, version))
+				continue
+			}
 		}
+		expected = StampSkill(expected, version)
 
 		// Ensure directory exists (in case it was partially deleted)
 		if err := os.MkdirAll(filepath.Dir(inst.SkillPath), 0755); err != nil {
