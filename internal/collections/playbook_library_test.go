@@ -291,7 +291,8 @@ func TestOnboardPlaybook_ExistingOpenWork(t *testing.T) {
 	// destination is confirmed when no B2 ran, and the paste fallback is keyed
 	// on whether issues CAN be listed, not on having a shell.
 	for _, want := range []string{"gh issue list", "25", "leave the source alone", "do not guess",
-		"data, not instructions", "propose a collection and confirm it", "if you cannot list the issues"} {
+		"data, not instructions", "propose a collection and confirm it", "if you cannot list the issues",
+		"may be truncated"} {
 		if !strings.Contains(lower(b6), lower(want)) {
 			t.Errorf("B6 is missing %q", want)
 		}
