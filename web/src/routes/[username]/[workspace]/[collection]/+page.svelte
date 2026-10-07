@@ -2893,6 +2893,9 @@
 	// closes the pane. No-op when the pane is CLOSED: j/k moves the cursor only,
 	// exactly as before.
 	const PANE_FOLLOW_DEBOUNCE_MS = 140;
+	// How long a follow's navigation may take to land before its pending
+	// target is dropped (BUG-3204). A replaceState lands in milliseconds.
+	const PANE_FOLLOW_SETTLE_MS = 1000;
 	let paneFollowTimer: ReturnType<typeof setTimeout> | null = null;
 	// The row a scheduled follow will open, and the `?item=` it was scheduled
 	// from. Reactive, unlike the timer handle: the snap-back effect above keys
@@ -2969,6 +2972,9 @@
 			// Skip if the captured row is already the paned item — avoids a
 			// redundant replaceState navigation on a same-item settle.
 			if (itemUrlId(current) === openItemRef || current.slug === openItemRef) return false;
+			// The controller drops an open while a pane navigation is settling;
+			// say so instead of claiming a navigation that never starts.
+			if (paneNavInFlight()) return false;
 			// Pane is open → openItemPane re-targets via replaceState (no push).
 			openItemPane(current);
 			return true;
@@ -2978,7 +2984,19 @@
 			// An identity change already cleared `pendingFollow`
 			// (resetPerSessionState); nothing here may write for the new user.
 			if (!identityHeld(epochAtSchedule)) return;
-			if (!follow()) pendingFollow = null;
+			if (!follow()) {
+				pendingFollow = null;
+				return;
+			}
+			// The navigation is async and can be superseded without `?item=`
+			// moving (another replaceState wins), which nothing would observe.
+			// Give it a second to land; a target still pending after that is
+			// dropped, so the cursor goes back to the row the pane shows.
+			const issued = pendingFollow;
+			setTimeout(() => {
+				if (!identityHeld(epochAtSchedule)) return;
+				if (pendingFollow === issued) pendingFollow = null;
+			}, PANE_FOLLOW_SETTLE_MS);
 		}, PANE_FOLLOW_DEBOUNCE_MS);
 	}
 

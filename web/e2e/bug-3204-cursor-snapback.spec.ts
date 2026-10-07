@@ -192,17 +192,19 @@ test.describe('BUG-3204: the list cursor during a pending pane follow', () => {
 		}
 	});
 
-	test('a follow that opens nothing leaves the cursor on the open item', async ({
+	test('a keypress that targets the open row keeps the cursor there through a list change', async ({
 		page,
 		fixture,
 		request
 	}, testInfo) => {
-		// k on the top row schedules a follow whose target is the row already
-		// open, so the follow opens nothing. A list change inside its debounce
-		// used to blank the cursor (the list-change reset ran and nothing put it
-		// back), and the pane was left with no highlighted row. (A target
-		// DELETED during the debounce ends the follow the same way; a deletion
-		// reaches the list by more than one door, so it cannot be held here.)
+		// k on the top row targets the row already open. A list change inside
+		// the debounce runs the list-change reset, which blanks the cursor; the
+		// snap-back must put it back on the open row. Main does. This fix's
+		// first version, which merely PAUSED the snap-back while a follow was
+		// pending, left it on no row, and this failed 10/10 against it. What this does NOT reach: a follow whose target vanished or
+		// whose open the controller dropped (the timer's no-op branch). A
+		// deletion reaches the list by more than one door and cannot be held
+		// here, and the drop needs a pane navigation in flight.
 		const s = await setup(page, request, fixture, testInfo.repeatEachIndex);
 		try {
 			const [top] = s.keys;
