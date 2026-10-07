@@ -46,8 +46,7 @@ func (d *HTTPHandlerDispatcher) dispatchLibraryActivate(
 	const cmdKey = "library activate"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	title, _ := input["title"].(string)
 	if title == "" {

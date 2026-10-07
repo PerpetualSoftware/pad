@@ -76,7 +76,7 @@ func (d *HTTPHandlerDispatcher) resolveAssignName(
 
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return nil, fmt.Errorf("workspace is required to resolve --assign")
+		return nil, fmt.Errorf("%w (to resolve --assign)", errWorkspaceRequired)
 	}
 
 	userID, err := d.lookupAssigneeID(ctx, user, workspace, assign)
@@ -135,7 +135,7 @@ func (d *HTTPHandlerDispatcher) resolveRoleSlug(
 
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return nil, fmt.Errorf("workspace is required to resolve --role")
+		return nil, fmt.Errorf("%w (to resolve --role)", errWorkspaceRequired)
 	}
 
 	roleID, err := d.lookupRoleID(ctx, user, workspace, role)
@@ -285,8 +285,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	workspace, _ := input["workspace"].(string)
 	ref, _ := input["ref"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	if ref == "" {
 		return validationFailedResult(cmdKey, "ref is required",

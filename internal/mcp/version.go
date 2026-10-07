@@ -1738,6 +1738,19 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.69 — TASK-2314. BEHAVIOR bump on the v0.42 / v0.45 grounds (an
+//     error CODE a caller receives changed, with no name, enum or param
+//     moved): on the REMOTE transport, every route that needs a workspace
+//     and lacks one (a routeTable mapper, a special route, a link route, the
+//     `assign` / `role` resolvers) answers `no_workspace` with
+//     `available_workspaces` and a hint, the envelope stdio has always
+//     given, where it answered `validation_failed` "workspace is required".
+//     The single-workspace default (TASK-1076) now runs before the `assign`
+//     / `role` resolvers, so such a caller who omits `workspace` gets them
+//     resolved in that workspace instead of a refusal. The no_workspace
+//     hint is never empty: with no list it names `pad_workspace
+//     action=list`. Stdio is unchanged except for that fallback hint.
+//
 //     0.68 — BUG-3448 (lead ruling). BEHAVIOR bump on the v0.62 / v0.64
 //     grounds (an output shape a consumer reads changed, with no name, enum
 //     or param moved): the item resource `pad://workspace/{ws}/items/{ref}`
@@ -1815,7 +1828,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.68"
+const ToolSurfaceVersion = "0.69"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

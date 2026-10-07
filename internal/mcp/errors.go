@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -307,16 +308,29 @@ func NewErrorResult(p ErrorPayload) *CallToolResult {
 	return res
 }
 
+// errWorkspaceRequired is what a remote route mapper or resolver returns
+// when the call needs a workspace and none resolved. Dispatch turns it into
+// noWorkspaceResult, the structured no_workspace envelope with
+// available_workspaces that stdio already gives (TASK-2314); before it, the
+// remote transport answered a bare validation_failed "workspace is required".
+var errWorkspaceRequired = errors.New("workspace is required — pass workspace=<slug> explicitly")
+
 // noWorkspaceResult builds the standard ErrNoWorkspace envelope with
 // available_workspaces populated by the supplied lookup. Lookup is
 // best-effort: failures (e.g. no auth) yield an envelope with empty
 // AvailableWorkspaces rather than dropping the whole error.
 func noWorkspaceResult(ctx context.Context, lookup WorkspaceLister) *CallToolResult {
 	hints := bestEffortWorkspaceHints(ctx, lookup)
+	hint := workspaceHintLine(hints)
+	if hint == "" {
+		// No list resolved (no lister, a lookup error, or a caller in no
+		// workspace): still say how to recover (TASK-1079, TASK-2314).
+		hint = "Pass workspace=<slug>; pad_workspace action=list shows the workspaces you can use."
+	}
 	return NewErrorResult(ErrorPayload{
 		Code:                ErrNoWorkspace,
 		Message:             "No workspace context. Pass `workspace` explicitly, call pad_set_workspace first, or run from a directory with .pad.toml.",
-		Hint:                workspaceHintLine(hints),
+		Hint:                hint,
 		AvailableWorkspaces: hints,
 	})
 }

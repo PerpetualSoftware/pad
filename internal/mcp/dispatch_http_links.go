@@ -184,8 +184,7 @@ func (d *HTTPHandlerDispatcher) dispatchCreateItemLink(
 ) (*CallToolResult, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(spec.cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 
 	urlRef, _ := input[spec.urlRefKey].(string)
@@ -243,8 +242,7 @@ func (d *HTTPHandlerDispatcher) dispatchDeleteItemLink(
 ) (*CallToolResult, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(spec.cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 
 	urlRef, _ := input[spec.urlRefKey].(string)
@@ -334,8 +332,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemDeps(
 	const cmdKey = "item deps"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	ref, _ := input["ref"].(string)
 	if ref == "" {
@@ -385,8 +382,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemRelated(
 	const cmdKey = "item related"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	ref, _ := input["ref"].(string)
 	if ref == "" {
@@ -432,8 +428,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemImplementedBy(
 	const cmdKey = "item implemented-by"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	ref, _ := input["ref"].(string)
 	if ref == "" {

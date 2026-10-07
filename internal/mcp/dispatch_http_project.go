@@ -97,8 +97,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectNext(
 	const cmdKey = "project next"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/next"
 	return d.executeRequest(ctx, cmdKey, user, http.MethodGet, path, nil)
@@ -126,8 +125,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
 	const cmdKey = "project standup"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/standup"
 	if q := buildQuery(input, map[string]string{"days": "days"}); q != "" {
@@ -161,8 +159,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectChangelog(
 	const cmdKey = "project changelog"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/changelog"
 	if q := buildQuery(input, map[string]string{"days": "days", "since": "since", "parent": "parent"}); q != "" {
@@ -187,8 +184,7 @@ func (d *HTTPHandlerDispatcher) fetchDashboardJSON(
 ) (map[string]any, *CallToolResult) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return nil, validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace.")
+		return nil, noWorkspaceResult(ctx, d.Lister)
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/dashboard"
 	req, err := d.buildAuthedRequest(ctx, http.MethodGet, path, nil, user)
@@ -295,8 +291,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 
 	refs, err := bulkUpdateRefs(input["ref"])
@@ -475,8 +470,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemNote(
 	ref, _ := input["ref"].(string)
 	summary, _ := input["summary"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	if ref == "" {
 		return validationFailedResult(cmdKey, "ref is required",
@@ -523,8 +517,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 	ref, _ := input["ref"].(string)
 	decision, _ := input["decision"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	if ref == "" {
 		return validationFailedResult(cmdKey, "ref is required",

@@ -46,32 +46,33 @@ func TestDispatcher_AllErrorsUseStructuredEnvelope(t *testing.T) {
 		input    map[string]any
 		wantCode ErrorCode // expected envelope code
 	}{
-		// Missing workspace on every workspace-required dispatcher.
+		// Missing workspace on every workspace-required dispatcher:
+		// the structured no_workspace code stdio gives (TASK-2314).
 		// The cmdPath list mirrors the special-case switch in
 		// HTTPHandlerDispatcher.Dispatch — adding a new entry there
 		// without a matching case here is a smell.
-		{"item update no workspace", []string{"item", "update"}, map[string]any{}, ErrValidationFailed},
-		{"item deps no workspace", []string{"item", "deps"}, map[string]any{}, ErrValidationFailed},
-		{"item related no workspace", []string{"item", "related"}, map[string]any{}, ErrValidationFailed},
-		{"item implemented-by no workspace", []string{"item", "implemented-by"}, map[string]any{}, ErrValidationFailed},
-		{"item bulk-update no workspace", []string{"item", "bulk-update"}, map[string]any{}, ErrValidationFailed},
-		{"item note no workspace", []string{"item", "note"}, map[string]any{}, ErrValidationFailed},
-		{"item decide no workspace", []string{"item", "decide"}, map[string]any{}, ErrValidationFailed},
-		{"project ready no workspace", []string{"project", "ready"}, map[string]any{}, ErrValidationFailed},
-		{"project stale no workspace", []string{"project", "stale"}, map[string]any{}, ErrValidationFailed},
-		{"project next no workspace", []string{"project", "next"}, map[string]any{}, ErrValidationFailed},
-		{"project standup no workspace", []string{"project", "standup"}, map[string]any{}, ErrValidationFailed},
-		{"project changelog no workspace", []string{"project", "changelog"}, map[string]any{}, ErrValidationFailed},
-		{"attachment list no workspace", []string{"attachment", "list"}, map[string]any{}, ErrValidationFailed},
-		{"attachment show no workspace", []string{"attachment", "show"}, map[string]any{}, ErrValidationFailed},
+		{"item update no workspace", []string{"item", "update"}, map[string]any{}, ErrNoWorkspace},
+		{"item deps no workspace", []string{"item", "deps"}, map[string]any{}, ErrNoWorkspace},
+		{"item related no workspace", []string{"item", "related"}, map[string]any{}, ErrNoWorkspace},
+		{"item implemented-by no workspace", []string{"item", "implemented-by"}, map[string]any{}, ErrNoWorkspace},
+		{"item bulk-update no workspace", []string{"item", "bulk-update"}, map[string]any{}, ErrNoWorkspace},
+		{"item note no workspace", []string{"item", "note"}, map[string]any{}, ErrNoWorkspace},
+		{"item decide no workspace", []string{"item", "decide"}, map[string]any{}, ErrNoWorkspace},
+		{"project ready no workspace", []string{"project", "ready"}, map[string]any{}, ErrNoWorkspace},
+		{"project stale no workspace", []string{"project", "stale"}, map[string]any{}, ErrNoWorkspace},
+		{"project next no workspace", []string{"project", "next"}, map[string]any{}, ErrNoWorkspace},
+		{"project standup no workspace", []string{"project", "standup"}, map[string]any{}, ErrNoWorkspace},
+		{"project changelog no workspace", []string{"project", "changelog"}, map[string]any{}, ErrNoWorkspace},
+		{"attachment list no workspace", []string{"attachment", "list"}, map[string]any{}, ErrNoWorkspace},
+		{"attachment show no workspace", []string{"attachment", "show"}, map[string]any{}, ErrNoWorkspace},
 
 		// Link commands — workspace required, then refs.
-		{"item block no workspace", []string{"item", "block"}, map[string]any{}, ErrValidationFailed},
-		{"item blocked-by no workspace", []string{"item", "blocked-by"}, map[string]any{}, ErrValidationFailed},
-		{"item unblock no workspace", []string{"item", "unblock"}, map[string]any{}, ErrValidationFailed},
+		{"item block no workspace", []string{"item", "block"}, map[string]any{}, ErrNoWorkspace},
+		{"item blocked-by no workspace", []string{"item", "blocked-by"}, map[string]any{}, ErrNoWorkspace},
+		{"item unblock no workspace", []string{"item", "unblock"}, map[string]any{}, ErrNoWorkspace},
 
 		// Library commands.
-		{"library activate no workspace", []string{"library", "activate"}, map[string]any{}, ErrValidationFailed},
+		{"library activate no workspace", []string{"library", "activate"}, map[string]any{}, ErrNoWorkspace},
 	}
 
 	for _, tc := range cases {

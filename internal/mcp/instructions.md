@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.68)
+## Tool surface (v0.69)
 
 Ten resource × action tools, plus `pad_set_workspace`. Eleven tools total.
 
@@ -72,7 +72,7 @@ Every action that operates within a workspace accepts an optional `workspace` pa
 2. On a single-user local server only: the session default set via `pad_set_workspace`.
 3. On a single-user local server only: the CWD-linked workspace from `.pad.toml`.
 
-A multi-user/remote server does **not** persist a session default — pass `workspace` explicitly on every call. If none resolves, the action returns a structured `no_workspace` error with `available_workspaces`.
+A multi-user/remote server does **not** persist a session default — pass `workspace` explicitly on every call. If none resolves, the action returns a structured `no_workspace` error with `available_workspaces`, on both the local and the remote transport.
 
 ## Update flow: read first, then patch
 

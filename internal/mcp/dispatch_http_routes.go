@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -535,7 +536,7 @@ func init() {
 func mapCollectionCreate(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	name, _ := input["name"].(string)
 	if name == "" {
@@ -746,7 +747,7 @@ func titleCaseLabel(key string) string {
 func mapItemStarred(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/starred"
 	if all, _ := input["all"].(bool); all {
@@ -828,7 +829,7 @@ func mapItemClaim(input map[string]any) (string, string, []byte, error) {
 func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	slug, _ := input["slug"].(string)
 	if slug == "" {
@@ -925,7 +926,7 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 func mapRoleUpdate(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	slug, _ := input["slug"].(string)
 	if slug == "" {
@@ -977,7 +978,7 @@ func mapRoleUpdate(input map[string]any) (string, string, []byte, error) {
 func mapRoleCreate(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	name, _ := input["name"].(string)
 	if name == "" {
@@ -1024,7 +1025,7 @@ func mapRoleCreate(input map[string]any) (string, string, []byte, error) {
 func mapWebhookCreate(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	urlVal, _ := input["url"].(string)
 	if urlVal == "" {
@@ -1196,7 +1197,7 @@ func mapWorkspaceCreate(input map[string]any) (string, string, []byte, error) {
 func mapWorkspaceClaim(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	code, _ := input["code"].(string)
 	if code == "" {
@@ -1219,7 +1220,7 @@ func mapWorkspaceClaim(input map[string]any) (string, string, []byte, error) {
 func mapWorkspaceInvite(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	email, _ := input["email"].(string)
 	if email == "" {
@@ -1275,7 +1276,7 @@ func mapWorkspaceInvite(input map[string]any) (string, string, []byte, error) {
 func mapItemList(input map[string]any) (string, string, []byte, error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	// Early MCP-HTTP-side feedback for the parent/unparented conflict; canonical
 	// enforcement lives in validateUnparentedListRequest
@@ -1406,6 +1407,9 @@ func (d *HTTPHandlerDispatcher) dispatchItemList(
 ) (*CallToolResult, error) {
 	const cmdKey = "item list"
 	method, urlPath, _, err := mapItemList(input)
+	if errors.Is(err, errWorkspaceRequired) {
+		return noWorkspaceResult(ctx, d.Lister), nil
+	}
 	if err != nil {
 		return validationFailedResult(cmdKey, err.Error(),
 			"Check the input shape against the tool's schema."), nil
@@ -1534,8 +1538,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 	workspace, _ := input["workspace"].(string)
 	ref, _ := input["ref"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass workspace=<slug> or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	if ref == "" {
 		return validationFailedResult(cmdKey, "ref is required",
@@ -1643,7 +1646,7 @@ func mapItemMove(input map[string]any) (string, string, []byte, error) {
 	ref, _ := input["ref"].(string)
 	target, _ := input["target_collection"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	if ref == "" {
 		return "", "", nil, fmt.Errorf("ref is required")
@@ -1735,7 +1738,7 @@ func itemCommentTarget(input map[string]any) (string, error) {
 	ref, _ := input["ref"].(string)
 	commentID, _ := input["comment_id"].(string)
 	if workspace == "" {
-		return "", fmt.Errorf("workspace is required")
+		return "", errWorkspaceRequired
 	}
 	if ref == "" {
 		return "", fmt.Errorf("ref is required")
@@ -1776,6 +1779,9 @@ func (d *HTTPHandlerDispatcher) dispatchItemCommentDelete(
 ) (*CallToolResult, error) {
 	const cmdKey = "item comment-delete"
 	urlPath, err := itemCommentTarget(input)
+	if errors.Is(err, errWorkspaceRequired) {
+		return noWorkspaceResult(ctx, d.Lister), nil
+	}
 	if err != nil {
 		return validationFailedResult(cmdKey, err.Error(), "Pass ref and comment_id (ids come from list-comments)."), nil
 	}
@@ -1799,7 +1805,7 @@ func mapItemComment(input map[string]any) (string, string, []byte, error) {
 	ref, _ := input["ref"].(string)
 	message, _ := input["message"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required")
+		return "", "", nil, errWorkspaceRequired
 	}
 	if ref == "" {
 		return "", "", nil, fmt.Errorf("ref is required")
