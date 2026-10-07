@@ -135,29 +135,31 @@ Examples:
 			listFlag, _ := cmd.Flags().GetBool("list")
 			allFlag, _ := cmd.Flags().GetBool("all")
 			updateFlag, _ := cmd.Flags().GetBool("update")
+			force, _ := cmd.Flags().GetBool("force")
 
 			if listFlag {
 				return installList()
 			}
 
 			if updateFlag {
-				return installUpdate()
+				return installUpdate(force)
 			}
 
 			if len(args) > 0 {
-				return installForTool(args[0])
+				return installForTool(args[0], force)
 			}
 
 			if allFlag {
-				return installAll()
+				return installAll(force)
 			}
 
-			return installInteractive()
+			return installInteractive(force)
 		},
 	}
 	cmd.Flags().Bool("list", false, "list supported tools and installation status")
 	cmd.Flags().Bool("all", false, "install for all detected tools")
 	cmd.Flags().Bool("update", false, "update all installed tool integrations")
+	cmd.Flags().Bool("force", false, "replace a skill file even when it was edited or written by a newer pad (BUG-3466)")
 	return cmd
 }
 
@@ -171,9 +173,20 @@ func installList() error {
 	fmt.Println("Supported tools:")
 	fmt.Println()
 	for _, tool := range cli.SupportedTools {
+		// The same decision an update makes (BUG-3466, codex r2), so an edited
+		// or newer committed skill is not shown as healthy.
 		status := "  not installed"
-		if cli.ToolInstalled(tool) {
-			status = "  installed ✓"
+		if action, stampVer, exists := cli.SkillState(tool, pad.PadSkill, version); exists {
+			switch action {
+			case cli.SkillKeepEdited:
+				status = "  installed, edited: kept (pad agent install " + tool.Name + " --force replaces)"
+			case cli.SkillKeepNewer:
+				status = "  installed by pad " + stampVer + ": kept (upgrade pad, or pad agent install " + tool.Name + " --force)"
+			case cli.SkillUpdate:
+				status = "  installed, update available (pad agent update)"
+			default:
+				status = "  installed ✓"
+			}
 		}
 		det := ""
 		if detected[tool.Name] {
@@ -195,7 +208,7 @@ func installList() error {
 	reg.Prune()
 	_ = reg.Save()
 
-	statuses := reg.Status(pad.PadSkill)
+	statuses := reg.Status(pad.PadSkill, version)
 	if len(statuses) == 0 {
 		return nil
 	}
@@ -204,7 +217,7 @@ func installList() error {
 	fmt.Println("Tracked installations:")
 	fmt.Println()
 
-	outdatedCount := 0
+	outdatedCount, keptCount := 0, 0
 	for _, s := range statuses {
 		tool := cli.ResolveTool(s.Tool)
 		toolLabel := s.Tool
@@ -218,6 +231,12 @@ func installList() error {
 		} else if s.Outdated {
 			state = "⟳ update available"
 			outdatedCount++
+		} else if s.Edited {
+			state = "! edited, kept (--force replaces)"
+			keptCount++
+		} else if s.Newer {
+			state = "! newer pad wrote it, kept (upgrade pad, or --force replaces)"
+			keptCount++
 		}
 
 		fmt.Printf("  %-40s  %-28s  %s\n", s.ProjectPath, toolLabel, state)
@@ -226,70 +245,80 @@ func installList() error {
 	if outdatedCount > 0 {
 		fmt.Printf("\n  %d installation(s) can be updated. Run 'pad agent update' to update all.\n", outdatedCount)
 	}
+	if keptCount > 0 {
+		fmt.Printf("\n  %d installation(s) are kept as they are. Run 'pad agent update --force' to replace them.\n", keptCount)
+	}
 
 	return nil
 }
 
-func installUpdate() error {
-	// Phase 1: Update tools installed in the current directory
-	localUpdated := 0
+func installUpdate(force bool) error {
+	// Phase 1: Update tools installed in the current directory. A kept file
+	// (edited, or a newer pad's) is reported by writeSkill and counted, so
+	// the summary below never claims nothing is installed (BUG-3466).
+	localUpdated, kept, localPresent := 0, 0, 0
 	for _, tool := range cli.SupportedTools {
 		if !cli.ToolInstalled(tool) {
 			continue
 		}
-		content := cli.FormatForTool(tool, pad.PadSkill)
-		path, err := cli.InstallForTool(tool, content)
+		res, err := writeSkill(tool, force)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
 			continue
 		}
-		fmt.Printf("  ✓ Updated %s → %s\n", tool.Label, path)
-		recordInstallation(tool.Name, path)
-		localUpdated++
+		localPresent++
+		if res.Wrote {
+			fmt.Printf("  ✓ Updated %s → %s\n", tool.Label, res.Path)
+			localUpdated++
+		} else if res.Action == cli.SkillKeepEdited || res.Action == cli.SkillKeepNewer {
+			kept++
+		}
 	}
 
 	// Phase 2: Update all tracked installations across other projects
 	reg, err := cli.LoadRegistry()
 	if err != nil {
-		if localUpdated == 0 {
-			fmt.Println("No tools installed. Run 'pad agent install' first.")
-		}
+		printUpdateSummary(localUpdated, 0, kept, localPresent > 0)
 		return nil
 	}
 
 	cwd, _ := os.Getwd()
 	reg.Prune()
-	globalUpdated, updateErrors := reg.UpdateAll(pad.PadSkill, version)
+	globalUpdated, keptElsewhere, updateErrors := reg.UpdateAll(pad.PadSkill, version, force)
 	_ = reg.Save()
 
 	for _, e := range updateErrors {
 		fmt.Fprintf(os.Stderr, "  warning: %v\n", e)
 	}
-
-	// Subtract local updates that were also counted as global (same project path)
-	overlapCount := 0
-	for _, inst := range reg.Installations {
-		if inst.ProjectPath == cwd {
-			overlapCount++
+	for _, k := range keptElsewhere {
+		// This project's own kept files were reported in phase 1.
+		if strings.HasPrefix(k, cwd+" (") {
+			continue
 		}
+		fmt.Fprintf(os.Stderr, "  ! %s\n", k)
+		kept++
 	}
-
-	remoteUpdated := globalUpdated
-	total := localUpdated + remoteUpdated
-	if total == 0 {
-		if localUpdated == 0 && len(reg.Installations) == 0 {
-			fmt.Println("No tools installed. Run 'pad agent install' first.")
-		} else {
-			fmt.Println("All installations are up to date.")
-		}
-	} else {
-		if remoteUpdated > 0 {
-			fmt.Printf("\nUpdated %d installation(s) across all projects.\n", total)
-		} else {
-			fmt.Printf("\nUpdated %d tool(s) in current project.\n", localUpdated)
-		}
-	}
+	printUpdateSummary(localUpdated, globalUpdated, kept, localPresent > 0 || len(reg.Installations) > 0)
 	return nil
+}
+
+// printUpdateSummary closes pad agent update. Kept files are named, so a run
+// that kept an edited skill never ends by saying nothing is installed.
+func printUpdateSummary(local, global, kept int, tracked bool) {
+	total := local + global
+	switch {
+	case total > 0 && global > 0:
+		fmt.Printf("\nUpdated %d installation(s) across all projects.\n", total)
+	case total > 0:
+		fmt.Printf("\nUpdated %d tool(s) in current project.\n", local)
+	case kept == 0 && !tracked && local == 0:
+		fmt.Println("No tools installed. Run 'pad agent install' first.")
+	case kept == 0:
+		fmt.Println("All installations are up to date.")
+	}
+	if kept > 0 {
+		fmt.Printf("%d skill file(s) kept: edited, or written by a newer pad. Add --force to replace them.\n", kept)
+	}
 }
 
 // recordInstallation stores a skill install in the global registry (~/.pad/installations.json).
@@ -309,23 +338,26 @@ func recordInstallation(toolName, skillPath string) {
 	_ = reg.Save()
 }
 
-func installForTool(name string) error {
+func installForTool(name string, force bool) error {
 	tool := cli.ResolveTool(name)
 	if tool == nil {
 		return fmt.Errorf("unknown tool %q. Run 'pad agent status' to see supported tools", name)
 	}
 
-	content := cli.FormatForTool(*tool, pad.PadSkill)
-	path, err := cli.InstallForTool(*tool, content)
+	res, err := writeSkill(*tool, force)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, path)
-	recordInstallation(tool.Name, path)
+	switch {
+	case res.Wrote:
+		fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, res.Path)
+	case res.Action == cli.SkillUnchanged:
+		fmt.Printf("/pad skill for %s is up to date → %s\n", tool.Label, res.Path)
+	}
 	return nil
 }
 
-func installAll() error {
+func installAll(force bool) error {
 	detected := cli.DetectTools()
 	if len(detected) == 0 {
 		fmt.Println("No AI coding tools detected. Installing for Claude Code by default.")
@@ -333,19 +365,19 @@ func installAll() error {
 	}
 
 	for _, tool := range detected {
-		content := cli.FormatForTool(tool, pad.PadSkill)
-		path, err := cli.InstallForTool(tool, content)
+		res, err := writeSkill(tool, force)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
 			continue
 		}
-		fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
-		recordInstallation(tool.Name, path)
+		if res.Wrote {
+			fmt.Printf("  ✓ %s → %s\n", tool.Label, res.Path)
+		}
 	}
 	return nil
 }
 
-func installInteractive() error {
+func installInteractive(force bool) error {
 	detected := cli.DetectTools()
 
 	// Always include Claude if not already detected
@@ -372,13 +404,14 @@ func installInteractive() error {
 	if !canPromptForConfig() {
 		// Non-interactive: install for all detected tools
 		for _, tool := range detected {
-			content := cli.FormatForTool(tool, pad.PadSkill)
-			path, err := cli.InstallForTool(tool, content)
+			res, err := writeSkill(tool, force)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
 				continue
 			}
-			fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
+			if res.Wrote {
+				fmt.Printf("  ✓ %s → %s\n", tool.Label, res.Path)
+			}
 		}
 		return nil
 	}
@@ -405,14 +438,14 @@ func installInteractive() error {
 
 	fmt.Println()
 	for _, tool := range detected {
-		content := cli.FormatForTool(tool, pad.PadSkill)
-		path, err := cli.InstallForTool(tool, content)
+		res, err := writeSkill(tool, force)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
 			continue
 		}
-		fmt.Printf("  ✓ %s → %s\n", tool.Label, path)
-		recordInstallation(tool.Name, path)
+		if res.Wrote {
+			fmt.Printf("  ✓ %s → %s\n", tool.Label, res.Path)
+		}
 	}
 	return nil
 }

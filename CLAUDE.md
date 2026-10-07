@@ -311,6 +311,12 @@ pad item edit <ref> [--force] # Open in $EDITOR. The save is guarded by the seq 
                               # overwrite_pending_edits on the save (BUG-3133)
 pad workspace init [--template X]  # Create workspace
 pad agent install [tool]      # Install /pad skill for AI tools
+                              # Every skill file pad writes ends with a stamp line (<!-- pad:skill v=… sha256=… -->,
+                              # BUG-3466). pad init / workspace init / agent install / agent update KEEP a file that
+                              # was edited (its body no longer hashes to its stamp, or an unstamped file matching no
+                              # past release's output in internal/cli/skill_legacy_hashes.go) or that a newer pad
+                              # wrote, and say so; --force (on agent install and agent update) replaces it. Hashes
+                              # ignore CRLF and trailing newlines. A dev build never refuses as a downgrade.
 # Workspace onboarding: run `/pad onboard` from an agent session inside the
 # workspace (Claude Code, MCP, etc.). The /pad onboard playbook is
 # auto-seeded into every new workspace.

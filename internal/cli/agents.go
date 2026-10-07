@@ -263,6 +263,22 @@ func StripFrontmatter(content []byte) []byte {
 	return []byte(strings.TrimLeft(s[4+idx+5:], "\n"))
 }
 
+// agentsFrontmatter and copilotFrontmatter head those tools' skill files. Named
+// so the legacy-hash generator rebuilds past releases' output with the same
+// bytes (unchanged in every tag).
+const agentsFrontmatter = `---
+name: pad
+description: "Talk to your project. Natural-language project management — create items, check status, create plans, brainstorm ideas, and more."
+---
+
+`
+
+const copilotFrontmatter = `---
+applyTo: "**"
+---
+
+`
+
 // FormatForTool takes the raw embedded skill content and formats it for a specific tool.
 // Returns the appropriately formatted content with tool-specific frontmatter.
 func FormatForTool(tool AgentTool, embeddedContent []byte) []byte {
@@ -274,23 +290,12 @@ func FormatForTool(tool AgentTool, embeddedContent []byte) []byte {
 	case "agents":
 		// Codex/Cursor/Windsurf/OpenCode use a compact eager dispatcher.
 		// Detailed guidance remains available through `pad agent guide`.
-		fm := `---
-name: pad
-description: "Talk to your project. Natural-language project management — create items, check status, create plans, brainstorm ideas, and more."
----
-
-`
-		return []byte(fm + agentsSkillBody)
+		return []byte(agentsFrontmatter + agentsSkillBody)
 
 	case "copilot":
 		// GitHub Copilot uses applyTo frontmatter
 		body := StripFrontmatter(embeddedContent)
-		fm := `---
-applyTo: "**"
----
-
-`
-		return append([]byte(fm), body...)
+		return append([]byte(copilotFrontmatter), body...)
 
 	default:
 		// Amazon Q, Junie, and others: no frontmatter, just the body

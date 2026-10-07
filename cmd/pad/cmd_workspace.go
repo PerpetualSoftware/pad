@@ -16,7 +16,6 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	pad "github.com/PerpetualSoftware/pad"
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -798,24 +797,27 @@ func offerSkillInstall() {
 		detected = append([]cli.AgentTool{cli.SupportedTools[0]}, detected...)
 	}
 
-	// Check if any are already installed
+	// Installed tools go through the same door as pad init (BUG-3466, codex
+	// r1): pad's own unedited text updates quietly, an edited file or a
+	// newer pad's is kept and reported. They used to be skipped outright, so
+	// an older copy never updated here.
 	allInstalled := true
 	for _, tool := range detected {
 		if !cli.ToolInstalled(tool) {
 			allInstalled = false
-			break
+			continue
+		}
+		res, err := writeSkill(tool, false)
+		if err != nil {
+			continue
+		}
+		if !res.Wrote {
+			recordInstallation(tool.Name, res.Path)
 		}
 	}
 
 	if allInstalled && len(detected) > 0 {
-		// Ensure existing installations are tracked in the registry
-		for _, tool := range detected {
-			path := cli.ToolSkillPath(tool)
-			if path != "" {
-				recordInstallation(tool.Name, path)
-			}
-		}
-		fmt.Printf("\n/pad skill already installed for %d tool(s). Run 'pad agent update' to update.\n", len(detected))
+		fmt.Printf("\n/pad skill is installed for %d tool(s).\n", len(detected))
 		return
 	}
 
@@ -835,13 +837,11 @@ func offerSkillInstall() {
 			if cli.ToolInstalled(tool) {
 				continue
 			}
-			content := cli.FormatForTool(tool, pad.PadSkill)
-			path, err := cli.InstallForTool(tool, content)
-			if err != nil {
+			res, err := writeSkill(tool, false)
+			if err != nil || !res.Wrote {
 				continue
 			}
-			fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, path)
-			recordInstallation(tool.Name, path)
+			fmt.Printf("Installed /pad skill for %s → %s\n", tool.Label, res.Path)
 		}
 		return
 	}
@@ -877,15 +877,16 @@ func offerSkillInstall() {
 			}
 			continue
 		}
-		content := cli.FormatForTool(tool, pad.PadSkill)
-		path, err := cli.InstallForTool(tool, content)
+		res, err := writeSkill(tool, false)
 		if err != nil {
 			color.New(color.FgRed).Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
 			continue
 		}
+		if !res.Wrote {
+			continue
+		}
 		color.New(color.FgGreen).Printf("  ✓ %s", tool.Label)
-		fmt.Printf(" → %s\n", color.New(color.Faint).Sprint(path))
-		recordInstallation(tool.Name, path)
+		fmt.Printf(" → %s\n", color.New(color.Faint).Sprint(res.Path))
 	}
 }
 
