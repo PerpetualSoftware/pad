@@ -80,11 +80,36 @@ func question(body string) decision.Question {
 	)
 }
 
+// withLinks builds the state as the `conventions` set does (TASK-3119 U1a),
+// with the item's links. From the dump that is the PARENT link only
+// (parent_ref / parent_title in `pad item show`): blocking links are not in
+// that JSON. For CONVE-1286, whose subject is the parent, that is the link
+// that matters.
+var withLinks bool
+
+func build(item *models.Item, comments []models.Comment, parentRef, parentTitle string) (decision.BuiltState, error) {
+	if !withLinks {
+		return decision.BuildItemState(item, comments)
+	}
+	links := []decision.ItemStateLink{}
+	if parentRef != "" {
+		links = append(links, decision.ItemStateLink{Relation: "parent", Ref: parentRef, Title: parentTitle})
+	}
+	return decision.BuildItemStateWithLinks(item, comments, links)
+}
+
 func state(dump string, m member) ([]byte, bool, error) {
 	if m.Constructed {
 		it := models.Item{Title: m.Item.Title, CollectionSlug: m.Item.CollectionSlug, Fields: m.Item.Fields, Content: m.Item.Content}
-		st, err := decision.BuildItemState(&it, nil)
+		st, err := build(&it, nil, "", "")
 		return st.Bytes, st.Truncated, err
+	}
+	var parent struct {
+		Ref   string `json:"parent_ref"`
+		Title string `json:"parent_title"`
+	}
+	if err := readJSON(filepath.Join(dump, "items", m.Ref+".json"), &parent); err != nil {
+		return nil, false, err
 	}
 	var item models.Item
 	var comments []models.Comment
@@ -107,7 +132,7 @@ func state(dump string, m member) ([]byte, bool, error) {
 		}
 		return kept[i].ID < kept[j].ID
 	})
-	st, err := decision.BuildItemState(&item, kept)
+	st, err := build(&item, kept, parent.Ref, parent.Title)
 	return st.Bytes, st.Truncated, err
 }
 
@@ -115,7 +140,10 @@ func main() {
 	dump := flag.String("dump", "", "directory holding population.json, conventions.json and items/")
 	dry := flag.Bool("dry-run", false, "build every state and question, print one, call nothing")
 	workers := flag.Int("workers", 6, "concurrent provider calls")
+	links := flag.Bool("links", false, "build states with the item's links, as the conventions set does (TASK-3119 U1a)")
+	only := flag.String("only", "", "run only this convention (e.g. CONVE-1286)")
 	flag.Parse()
+	withLinks = *links
 	if *dump == "" {
 		fmt.Fprintln(os.Stderr, "-dump is required")
 		os.Exit(2)
@@ -124,6 +152,15 @@ func main() {
 	mustRead(filepath.Join(*dump, "population.json"), &pop)
 	var convs map[string]string
 	mustRead(filepath.Join(*dump, "conventions.json"), &convs)
+	if *only != "" {
+		kept := pop[:0]
+		for _, m := range pop {
+			if m.Convention == *only {
+				kept = append(kept, m)
+			}
+		}
+		pop = kept
+	}
 
 	if *dry {
 		for _, m := range pop {
@@ -195,7 +232,7 @@ func main() {
 
 func report(rows []row, took time.Duration) {
 	order := []string{"CONVE-2", "CONVE-1286", "CONVE-1285", "CONVE-1287", "CONVE-2693", "CONVE-13"}
-	fmt.Printf("TASK-3119 U0: model %s, threshold %.1f\n\n", decision.DefaultModel, threshold)
+	fmt.Printf("TASK-3119 U0: model %s, threshold %.1f, links in state: %v\n\n", decision.DefaultModel, threshold, withLinks)
 	fmt.Printf("%-11s %-9s %4s %4s %4s %4s  %-9s %-9s  %s\n", "convention", "set", "tp", "fp", "fn", "tn", "precision", "recall", "breaks-rate")
 	for _, c := range order {
 		for _, set := range []string{"all", "real-only"} {
