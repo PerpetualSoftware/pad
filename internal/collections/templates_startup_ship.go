@@ -66,8 +66,9 @@ For each task in order:
 
 ### 1. Load the task
 
-` + "`pad item show <TASK-REF> --format markdown`" + ` — read the full content, not just
-the title. Check the parent plan's or spec's content for additional context —
+` + "`pad item show <TASK-REF> --agent`" + ` — read the full content, not just
+the title: its fields and its body, in one read. (` + "`--format markdown`" + ` prints
+the body only, which is empty for a title-only task.) Check the parent plan's or spec's content for additional context —
 for a spec parent, this includes its acceptance criteria, which the PR will
 need to cite in step 8. Load linked items if wiki-links are present.
 

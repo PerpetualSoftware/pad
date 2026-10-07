@@ -18,7 +18,7 @@ spec" step SDD tools promise and most don't deliver — it's what makes
 
 ## Pre-flight
 
-1. **Resolve the target.** ` + "`pad item show <target> --format markdown`" + `. If it doesn't resolve or isn't in the specs collection, stop and report.
+1. **Resolve the target.** ` + "`pad item show <target> --agent`" + `. If it doesn't resolve or isn't in the specs collection, stop and report.
 2. **Confirm it has acceptance criteria.** Parse the ` + "`## Acceptance criteria`" + ` section. If there are none (or the spec is still ` + "`draft`" + `), tell the user there's nothing to verify yet and stop — don't invent criteria to check. Otherwise note the spec's current status — you'll need it in Resolve to decide whether an all-pass result can actually flip the spec, since the flip is gated on approval, not just on criteria holding.
 3. **Load the relevant code.** If ` + "`diff-only`" + ` is set, ` + "`git diff <base>...HEAD`" + ` (or ` + "`git status`" + ` + ` + "`git diff`" + ` for uncommitted work). Otherwise, use the spec's ` + "`area`" + ` field and Specified behavior section to identify which code paths to check directly.
 

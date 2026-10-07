@@ -40,7 +40,7 @@ can claim, work, and ship.
 
 ## Pre-flight
 
-1. **Resolve the target.** Run ` + "`pad item show <target> --format markdown`" + ` and read the full body. If the ref doesn't resolve or isn't a plan-like or spec-like item, stop and report — don't guess.
+1. **Resolve the target.** Run ` + "`pad item show <target> --agent`" + ` and read the full item: its fields and its body. If the ref doesn't resolve or isn't a plan-like or spec-like item, stop and report — don't guess.
 2. **Verify the child collection exists.** Run ` + "`pad collection list --format json`" + ` and confirm the ` + "`collection`" + ` argument resolves. If it doesn't, ask the user which collection to use.
 3. **Load existing children.** Run ` + "`pad item list <collection> --parent <target> --all --format json`" + ` to see what's already linked. The source item may have been partially decomposed before — don't duplicate.
 

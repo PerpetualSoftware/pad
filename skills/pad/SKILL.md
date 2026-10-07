@@ -197,7 +197,7 @@ All commands accepting an item reference take issue IDs (e.g. `TASK-5`, `BUG-8`)
 ```bash
 pad item create <collection> "title" [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--field key=value] [--content "..." | --stdin]
 pad item list [collection] [--status X] [--role X] [--assign X] [--parent REF] [--all] [--field key=value]
-pad item show TASK-5 [--agent | --format markdown]
+pad item show TASK-5 [--agent]   # --agent: title, ref, status, fields AND body in one read. (--format markdown is the body only, for an edit round-trip with update --stdin; empty for a title-only item)
 pad item update TASK-5 [--status X] [--role X] [--assign X] [--comment "..."] [--stdin | --clear-content]
 pad item delete TASK-5
 pad item search "query"
@@ -327,7 +327,7 @@ Run the **onboard** invokable playbook — see the **Onboarding** entry under Na
 
 ### Retrospective: "Plan X is done, let's retro"
 
-1. Load the plan: `pad item show PLAN-2 --format markdown`
+1. Load the plan: `pad item show PLAN-2 --agent`
 2. Load tasks: `pad item list tasks --all --format json --full` (filter to plan) — `--full` matters here: a retro needs the actual content/notes on each task, not just titles
 3. Generate retro: What shipped, what was deferred, lessons learned
 4. Offer to save: `pad item create doc "Plan N Retrospective" --category retro --stdin`

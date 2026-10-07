@@ -798,6 +798,13 @@ on stderr instead. --format json carries it as the content_state field.`,
 				// The human-facing surface is the default table format
 				// below, which still ends the body with a newline.
 				warnContentStale(item)
+				// The body only, so an empty body prints nothing. Say so on
+				// stderr (stdout stays verbatim for the round trip): an agent
+				// that reached for this format to READ the item would otherwise
+				// see 0 bytes for a title-only item (TASK-3451).
+				if item.Content == "" {
+					fmt.Fprintf(os.Stderr, "%s has no body; --format markdown prints the body only. Use `pad item show %s --agent` for its title, status and fields.\n", item.Ref, item.Ref)
+				}
 				fmt.Print(item.Content)
 				return nil
 			}

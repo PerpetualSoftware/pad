@@ -40,7 +40,7 @@ const promptRetroBody = `# Pad: Retrospective workflow
 
 You are helping the user run a retrospective on a completed Plan. Use your MCP tools — no shell required. (CLI-capable agents can run the parenthetical ` + "`pad`" + ` commands instead.)
 
-1. **Load the plan.** Call ` + "`pad_item`" + ` with ` + "`action: get`" + `, ` + "`ref: PLAN-N`" + ` (CLI: ` + "`pad item show PLAN-N --format markdown`" + `).
+1. **Load the plan.** Call ` + "`pad_item`" + ` with ` + "`action: get`" + `, ` + "`ref: PLAN-N`" + ` (CLI: ` + "`pad item show PLAN-N --agent`" + `).
 2. **Load the tasks.** Call ` + "`pad_item`" + ` with ` + "`action: list`" + `, ` + "`collection: tasks`" + ` (CLI: ` + "`pad item list tasks --all`" + `), then filter to the plan.
 3. **Generate the retro:**
    - What shipped: completed tasks + impact.

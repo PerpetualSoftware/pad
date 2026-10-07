@@ -33,7 +33,7 @@ nothing gets written until the user confirms.
 
 Detect which mode the user invoked by inspecting the first positional:
 
-- **Looks like a ref** (matches ` + "`^[A-Z][A-Z0-9]*-\\d+$`" + ` and resolves to a real item in the workspace) → **elaborate mode**. Load the item with ` + "`pad item show <ref> --format markdown`" + `, ask the user what they want to expand or clarify, and update the item via ` + "`pad item update <ref> --stdin`" + ` with the agreed-upon body.
+- **Looks like a ref** (matches ` + "`^[A-Z][A-Z0-9]*-\\d+$`" + ` and resolves to a real item in the workspace) → **elaborate mode**. Load the item with ` + "`pad item show <ref> --agent`" + `, ask the user what they want to expand or clarify, and update the item via ` + "`pad item update <ref> --stdin`" + ` with the agreed-upon body.
 - **Otherwise** → **create-new mode**. Run the full Conversation flow below to design and create a fresh plan.
 
 Quick-action prompts that invoke this playbook with a ref + title and trailing intent — e.g. ` + "`plan <REF> \"<title>\" — outline goals, deliverables, and timeline`" + ` (shortcut form ` + "`/pad plan …`" + ` in Claude Code) — are the elaborate-mode entry point; the freeform text after the title is conversational context, not extra positional args.
@@ -49,7 +49,7 @@ are grounded in what already exists.
 2. **Load the current dashboard.** Run ` + "`pad project dashboard --format json`" + ` to
    see active plans, recent activity, and what's already in flight. Use this to
    spot overlap with existing work and to time-box the proposal sensibly.
-3. **If ` + "`parent`" + ` is set, load it.** Run ` + "`pad item show <parent-ref> --format markdown`" + `
+3. **If ` + "`parent`" + ` is set, load it.** Run ` + "`pad item show <parent-ref> --agent`" + `
    and read the full body. The new plan should be a faithful reification of
    the parent's intent.
 4. **Search for related items.** Run ` + "`pad item search \"<topic>\" --format json`" + ` to
