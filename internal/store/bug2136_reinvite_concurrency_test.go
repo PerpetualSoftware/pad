@@ -4,6 +4,8 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // BUG-2136: a re-invite replaces the pending invitation for its (workspace,
@@ -91,5 +93,49 @@ func TestAcceptWorkspaceInvitation_RowGoneAddsNoMembership(t *testing.T) {
 	// (BUG-3281): the loser of two concurrent accepts.
 	if _, _, err := s.AcceptWorkspaceInvitation(ctl.ID, ws.ID, ctlUser.ID, "editor"); err != nil {
 		t.Errorf("re-accepting an accepted invitation must stay idempotent, got %v", err)
+	}
+}
+
+// BUG-3460: CreateInvitation re-read its own row AFTER committing, outside
+// the transaction. A concurrent re-invite of the same address could replace
+// that row in between, so a call whose replace succeeded answered "deleted
+// concurrently". Each call must return the invitation it wrote, the later
+// replace wins, and exactly one stays pending. Deterministic: the second
+// invite runs in exactly that window.
+func TestCreateInvitation_ReplacedRightAfterCommitStillReturnsItsOwn(t *testing.T) {
+	s := testStore(t)
+	owner := createTestUser(t, s, "owner-3460@example.com", "Owner", "password123")
+	ws := createTestWorkspace(t, s, "Readback race")
+	if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+
+	var second *models.WorkspaceInvitation
+	createInvitationAfterCommitHook = func(string) {
+		createInvitationAfterCommitHook = nil // the replace itself runs unhooked
+		var err error
+		second, err = s.CreateInvitation(ws.ID, "raced@example.com", "viewer", owner.ID)
+		if err != nil {
+			t.Errorf("the replacing invite failed: %v", err)
+		}
+	}
+	t.Cleanup(func() { createInvitationAfterCommitHook = nil })
+
+	first, err := s.CreateInvitation(ws.ID, "raced@example.com", "editor", owner.ID)
+	if err != nil {
+		t.Fatalf("an invite whose replace succeeded reported an error: %v", err)
+	}
+	if first == nil || first.Role != "editor" || first.Code == "" {
+		t.Fatalf("the first invite did not return the invitation it wrote: %+v", first)
+	}
+	if second == nil {
+		t.Fatal("control: the replacing invite never ran")
+	}
+	pending, err := s.ListWorkspaceInvitations(ws.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ID != second.ID {
+		t.Fatalf("pending = %+v, want exactly the later invitation %s", pending, second.ID)
 	}
 }

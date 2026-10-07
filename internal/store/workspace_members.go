@@ -945,6 +945,11 @@ func (s *Store) guardOwnerLossTx(tx *sql.Tx, workspaceID, userID string) error {
 
 // --- Invitations ---
 
+// createInvitationAfterCommitHook, when non-nil, runs in CreateInvitation
+// after its transaction commits. Test seam only (BUG-3460): it lets a test
+// replace the invitation in exactly the window a concurrent re-invite can.
+var createInvitationAfterCommitHook func(invitationID string)
+
 // CreateInvitation creates a pending workspace invitation.
 // Generates a 128-bit (16-byte) random code and stores only its SHA-256 hash.
 // The plaintext code is returned once to be shared with the invitee.
@@ -1007,19 +1012,25 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	`), id, workspaceID, strings.ToLower(strings.TrimSpace(email)), role, invitedBy, id, codeHash, ts, expiresAt, proofHash); err != nil {
 		return nil, fmt.Errorf("insert invitation: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("insert invitation: commit: %w", err)
-	}
-
-	inv, err := s.GetInvitation(id)
+	// Read the row back INSIDE the transaction, before commit (BUG-3460). A
+	// read after the commit raced the next writer: a concurrent re-invite of
+	// the same address replaces this row the moment the workspace lock is
+	// released, and an invite whose replace had succeeded then answered
+	// "deleted concurrently". Read here, the row is this transaction's own
+	// and cannot be gone; what the caller gets back is what it wrote, and a
+	// later replace superseding it is the ordinary last-writer-wins.
+	inv, err := getInvitationQ(s, tx, id)
 	if err != nil {
 		return nil, err
 	}
 	if inv == nil {
-		// Deleted between the insert and this read, e.g. by the inviter's
-		// account deletion, which deletes the invitations it sent
-		// (BUG-3289). GetInvitation answers nil, nil for a missing row.
-		return nil, fmt.Errorf("create invitation: deleted concurrently: %w", sql.ErrNoRows)
+		return nil, fmt.Errorf("create invitation: row missing inside its own transaction: %w", sql.ErrNoRows)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("insert invitation: commit: %w", err)
+	}
+	if createInvitationAfterCommitHook != nil {
+		createInvitationAfterCommitHook(id)
 	}
 	// Return the plaintext code to the caller (not stored in DB)
 	inv.Code = code
@@ -1093,11 +1104,17 @@ func (s *Store) ConsumeInvitationProof(invitationID, userID, proof string) (bool
 
 // GetInvitation retrieves an invitation by ID.
 func (s *Store) GetInvitation(id string) (*models.WorkspaceInvitation, error) {
+	return getInvitationQ(s, s.db, id)
+}
+
+// getInvitationQ is GetInvitation over any executor, so CreateInvitation can
+// read its own row inside its transaction (BUG-3460).
+func getInvitationQ(s *Store, q Queryer, id string) (*models.WorkspaceInvitation, error) {
 	var inv models.WorkspaceInvitation
 	var acceptedAt, expiresAt *string
 	var createdAt string
 
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT id, workspace_id, email, role, invited_by, code, accepted_at, expires_at, created_at
 		FROM workspace_invitations WHERE id = ?
 	`), id).Scan(
