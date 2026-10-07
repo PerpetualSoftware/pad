@@ -1738,6 +1738,20 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.70 — BUG-3453 (lead ruling). BEHAVIOR bump on the v0.49 grounds
+//     (a default call's content changed, with no name, enum or param
+//     moved): `pad_project.action=next` and `ready`, which return the
+//     dashboard's suggested-next list, now fill any slot the existing tiers
+//     leave empty with ordinary open items, from collections that are not
+//     system collections and declare `priority` or `severity`. Open means
+//     the collection's done field is not terminal and the item is not in
+//     progress, so an initial status like `new` counts. They rank by
+//     priority (else severity), then age, below every item admitted before,
+//     so a workspace that filled three slots gets the same list; one that
+//     got "nothing ready" for a moved-in backlog now gets it. The `ready`
+//     description is corrected: it is the same capped top three as `next`,
+//     not the full backlog.
+//
 //     0.69 — TASK-2314. BEHAVIOR bump on the v0.42 / v0.45 grounds (an
 //     error CODE a caller receives changed, with no name, enum or param
 //     moved): on the REMOTE transport, every route that needs a workspace
@@ -1828,7 +1842,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.69"
+const ToolSurfaceVersion = "0.70"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

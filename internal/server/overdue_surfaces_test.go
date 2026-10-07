@@ -166,6 +166,16 @@ func TestFutureDeadlineIsNotOverdue(t *testing.T) {
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title": "Plenty of time", "fields": `{"status":"open","priority":"low","due_date":"2099-12-31"}`,
 	})
+	// Three high-priority tasks fill every slot. Since BUG-3453 an ordinary
+	// open item fills an EMPTY slot from a fallback tier below them, so the
+	// item's absence only discriminates when no slot is empty: an
+	// unconditional bypass would rank it FIRST (overdue leads the list),
+	// the fallback cannot reach it.
+	for _, title := range []string{"High one", "High two", "High three"} {
+		createItem(t, srv, slug, "tasks", map[string]interface{}{
+			"title": title, "fields": `{"status":"open","priority":"high"}`,
+		})
+	}
 
 	resp := getDashboard(t, srv, slug)
 	if got := len(filterAttention(resp.Attention, "overdue")); got != 0 {

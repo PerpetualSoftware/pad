@@ -891,10 +891,10 @@ func TestDashboardSuggestedNextFromPlannedPlan(t *testing.T) {
 }
 
 // TestDashboardSuggestedNextOrphan_InProgressBeatsPriority pins
-// BUG-1082's gating rule for the orphan branch: in-progress items
-// surface regardless of priority, but open items must be high or
-// critical to surface (avoids flooding suggestions with low-priority
-// open work). The "continue what's in flight" signal beats priority.
+// BUG-1082's ranking for the orphan branch: in-progress items surface
+// regardless of priority, and rank above open work. A low-priority open
+// orphan used to be excluded outright; since BUG-3453 it fills an empty slot
+// BELOW the in-progress one, so "continue what's in flight" still leads.
 func TestDashboardSuggestedNextOrphan_InProgressBeatsPriority(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
@@ -905,7 +905,7 @@ func TestDashboardSuggestedNextOrphan_InProgressBeatsPriority(t *testing.T) {
 		"title":  "Low-Pri In-Progress Orphan",
 		"fields": `{"status":"in-progress","priority":"low"}`,
 	})
-	// Low-priority OPEN orphan should NOT surface.
+	// Low-priority OPEN orphan fills the next slot, below it (BUG-3453).
 	createItem(t, srv, slug, "tasks", map[string]interface{}{
 		"title":  "Low-Pri Open Orphan",
 		"fields": `{"status":"open","priority":"low"}`,
@@ -913,12 +913,15 @@ func TestDashboardSuggestedNextOrphan_InProgressBeatsPriority(t *testing.T) {
 
 	resp := getDashboard(t, srv, slug)
 
-	if len(resp.SuggestedNext) != 1 {
-		t.Fatalf("expected exactly 1 suggested_next (in-progress only), got %d: %+v",
+	if len(resp.SuggestedNext) != 2 {
+		t.Fatalf("expected 2 suggested_next (in-progress, then the open fallback), got %d: %+v",
 			len(resp.SuggestedNext), resp.SuggestedNext)
 	}
 	if got := resp.SuggestedNext[0].ItemTitle; got != "Low-Pri In-Progress Orphan" {
-		t.Errorf("expected in-progress orphan, got %q", got)
+		t.Errorf("expected in-progress orphan first, got %q", got)
+	}
+	if got := resp.SuggestedNext[1].ItemTitle; got != "Low-Pri Open Orphan" {
+		t.Errorf("expected the open orphan second, got %q", got)
 	}
 }
 

@@ -32,11 +32,14 @@ func readyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "ready",
 		Short: "Show actionable next items for an agent",
-		Long: `List the items that Pad currently considers ready to work on.
+		Long: `List up to three items Pad suggests working on next, best first.
 
-This is the broader query-oriented counterpart to 'pad project next'. It reuses the
-dashboard's suggested-next logic and returns the current actionable backlog
-for active plans.`,
+It is the same ranked list as 'pad project next' and the dashboard's Up next:
+fired reminders, then overdue work, in-progress work, open items in active
+plans, and high or critical priority items. Any slot left over is filled with
+other open items from collections that track priority or severity (Tasks,
+Bugs, Features, Backlog), ranked by priority (else severity), then age.
+Blocked items are never listed; 'pad project stale' shows them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -55,7 +58,10 @@ for active plans.`,
 			}
 
 			if len(suggestions) == 0 {
-				fmt.Println("No ready items found.")
+				// With the fallback tier (BUG-3453) an empty answer means there
+				// is genuinely nothing open and unblocked to work on.
+				fmt.Println("Nothing ready: no open, unblocked items in a collection that tracks priority or severity.")
+				fmt.Println("Run 'pad project stale' for blocked or stalled work.")
 				return nil
 			}
 
