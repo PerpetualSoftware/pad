@@ -43,6 +43,17 @@ func task3462ItemByTitle(t *testing.T, srv *Server, wsSlug, coll, title string) 
 	return models.Item{}
 }
 
+func task3462ItemBySlug(t *testing.T, srv *Server, wsSlug, itemSlug string) models.Item {
+	t.Helper()
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+wsSlug+"/items/"+itemSlug, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get %s: %d %s", itemSlug, rr.Code, rr.Body.String())
+	}
+	var it models.Item
+	parseJSON(t, rr, &it)
+	return it
+}
+
 func task3462Origin(t *testing.T, srv *Server, itemID string) *models.BuiltinOrigin {
 	t.Helper()
 	o, err := srv.store.GetItemBuiltinOrigin(itemID)
@@ -249,7 +260,9 @@ func TestTASK3462_OriginThroughTheItemLifecycle(t *testing.T) {
 		}
 		var imported models.Workspace
 		parseJSON(t, rr, &imported)
-		got := task3462Origin(t, srv, task3462ItemByTitle(t, srv, imported.Slug, "playbooks", "Ship tasks").ID)
+		// By slug: the copy above is also titled "Ship tasks" and, being
+		// user-made, rightly has no origin.
+		got := task3462Origin(t, srv, task3462ItemBySlug(t, srv, imported.Slug, ship.Slug).ID)
 		if got == nil || *got != *want {
 			t.Errorf("after export/import: %+v, want %+v", got, want)
 		}
@@ -267,7 +280,7 @@ func TestTASK3462_OriginThroughTheItemLifecycle(t *testing.T) {
 			t.Fatalf("import with malformed origins: %d %s", rr.Code, rr.Body.String())
 		}
 		parseJSON(t, rr, &imported)
-		if o := task3462Origin(t, srv, task3462ItemByTitle(t, srv, imported.Slug, "playbooks", "Ship tasks").ID); o != nil {
+		if o := task3462Origin(t, srv, task3462ItemBySlug(t, srv, imported.Slug, ship.Slug).ID); o != nil {
 			t.Errorf("a malformed origin was imported: %+v", o)
 		}
 	})
