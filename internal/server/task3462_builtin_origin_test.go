@@ -272,3 +272,29 @@ func TestTASK3462_OriginThroughTheItemLifecycle(t *testing.T) {
 		}
 	})
 }
+
+// The activate door lands an entry in the collection that DECLARES its
+// artifact kind, whatever that collection is called (BUG-2702, whose MCP-side
+// coverage moved here when the server took the resolution over), and only
+// falls back to the canonical slug when nothing declares it.
+func TestTASK3462_ActivateFollowsTheDeclaredKind(t *testing.T) {
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		slug, wsID := task3462Workspace(t, srv, "Renamed 3462", "blank")
+		conv, err := srv.store.GetCollectionBySlug(wsID, "conventions")
+		if err != nil || conv == nil {
+			t.Fatalf("conventions: %v", err)
+		}
+		if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`UPDATE collections SET slug = 'house-rules' WHERE id = ?`), conv.ID); err != nil {
+			t.Fatal(err)
+		}
+		rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/library/activate", map[string]string{"title": "Conventional commit format"})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("activate into a renamed collection: %d %s", rr.Code, rr.Body.String())
+		}
+		var it models.Item
+		parseJSON(t, rr, &it)
+		if it.CollectionID != conv.ID {
+			t.Fatalf("landed in collection %s, want the declaring one %s", it.CollectionID, conv.ID)
+		}
+	})
+}

@@ -274,6 +274,12 @@ var nulColumns = []nulColumn{
 	// before the store sees it; the trigger holds the rule for every writer.
 	// The table's other text columns are ids and timestamps the server mints.
 	{"user_workspace_tabs", "last_route", classText},
+	// TASK-3462: a built-in's seed text. Written by this binary from its own
+	// library, and by a workspace import from the bundle (validated, and the
+	// text must hash to the seed hash, but a hash can be computed for any
+	// text). seed_fields is parsed as JSON by the state and update paths.
+	{"item_builtin_origin", "seed_content", classText},
+	{"item_builtin_origin", "seed_fields", classJSON},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -296,6 +302,7 @@ var nulTriggerMigrations = []string{
 	"084_nul_invariant_triggers.sql",
 	"094_nul_invariant_triggers_post084.sql",
 	"099_nul_invariant_triggers_post098.sql",
+	"129_nul_invariant_triggers_post128.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -305,6 +312,9 @@ var nulColumnTriggerFile = map[string]string{
 	"item_decisions.model": "094_nul_invariant_triggers_post084.sql",
 	// 098 introduced the table (TASK-3256).
 	"user_workspace_tabs.last_route": "099_nul_invariant_triggers_post098.sql",
+	// 128 introduced the table (TASK-3462).
+	"item_builtin_origin.seed_content": "129_nul_invariant_triggers_post128.sql",
+	"item_builtin_origin.seed_fields":  "129_nul_invariant_triggers_post128.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -374,6 +384,10 @@ func NULProtectedColumns() []nulColumn {
 // on an unlisted column are to fail on every known exclusion or to ignore the
 // class entirely.
 var nulExcluded = map[string]string{
+	"item_builtin_origin.item_id":     "server-minted item UUID, a foreign key to items(id) (TASK-3462, migration 128)",
+	"item_builtin_origin.created_at":  "server timestamp from now() (TASK-3462)",
+	"item_builtin_origin.builtin_key": "refused by models.BuiltinOrigin.Validate unless it matches a lowercase [a-z0-9-/] path, so no NUL can be stored, on every write including import (TASK-3462)",
+	"item_builtin_origin.seed_hash":   "refused by models.BuiltinOrigin.Validate unless it is 64 lowercase hex digits, on every write including import (TASK-3462)",
 	"activities.action":                      "fixed enum, models.ValidActions",
 	"collections.source":                     "server enum 'web' | 'cli' | 'mcp' from actorFromRequest's auth shape, never the body (BUG-3447, migration 126); a bundle import carries the bundle's value only after models.ValidCollectionSource accepts it, else ''",
 	"event_outbox.last_error":                "Go error string, server-composed",
