@@ -135,25 +135,33 @@ test('TASK-2224: requests per external update on the collection page, and under 
 	expect(total(one), 'one external update').toBeLessThanOrEqual(3);
 	expect(total(one), 'control: the tab heard the update at all').toBeGreaterThan(0);
 
-	// Concurrently, so the burst lands inside one coalescing window however
-	// slow the box is (codex r1: a serial loop on a slow CI runner spans
-	// several windows, each a legitimate run).
+	// Concurrently. The server may still spread the commits (and their events)
+	// on a slow box, and every max-wait window (1 s) is a legitimate run, so
+	// the bounds below scale with how long the burst actually took (codex r2).
+	const burstStartAt = Date.now();
 	await Promise.all(
 		slugs.slice(1, 21).map(async (slug) =>
 			ok(await account.api.patch(`/api/v1/workspaces/${ws}/items/${slug}`, { data: { fields_patch: { status: 'in-progress' } } }), 'burst')
 		)
 	);
 	const burstDoneAt = Date.now();
+	const windows = Math.ceil((burstDoneAt - burstStartAt) / 1000) + 1;
+	// The gate only discriminates if the burst is short against the 20 events
+	// it would otherwise cost; on a box too slow for that, it says so.
+	expect(burstDoneAt - burstStartAt, 'the burst took too long for the request budget to mean anything').toBeLessThan(15_000);
 	// The tab must catch up with the LAST update: a reconcile read issued
 	// after the burst finished (codex r1: a title still on screen proved nothing).
-	await expect.poll(() => rec.readSince(burstDoneAt), { timeout: 5000 }).toBe(true);
+	// 20 s: a reconcile may queue behind one already in flight for up to 15 s.
+	await expect.poll(() => rec.readSince(burstDoneAt), { timeout: 20_000 }).toBe(true);
 	await sleep(3000);
 	const burst = rec.take();
 	console.log('MEASURE 20-update burst:', total(burst), JSON.stringify(burst));
 	const kind = (k: string) => Object.entries(burst).filter(([p]) => p.includes(k)).reduce((a, [, n]) => a + n, 0);
-	expect.soft(kind('/collections'), 'collection reloads for a 20-update burst (main: 20)').toBeLessThanOrEqual(4);
-	expect.soft(kind('/items-changes'), 'items-changes reads for a 20-update burst (main: 20)').toBeLessThanOrEqual(10);
-	expect.soft(total(burst), 'requests for a 20-update burst (main: 40)').toBeLessThanOrEqual(14);
+	// One reload and one two-read reconcile per max-wait window the burst
+	// spanned, plus one of each trailing it. Measured on a quiet box: 1 and 2.
+	expect.soft(kind('/collections'), `collection reloads for a 20-update burst over ${windows} window(s) (main: 20)`).toBeLessThanOrEqual(windows + 1);
+	expect.soft(kind('/items-changes'), `items-changes reads for a 20-update burst over ${windows} window(s) (main: 20)`).toBeLessThanOrEqual(2 * (windows + 1));
+	expect.soft(total(burst), `requests for a 20-update burst over ${windows} window(s) (main: 40)`).toBeLessThanOrEqual(3 * (windows + 1));
 
 
 	// Item pane open on T0; comments land on a DIFFERENT item.

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { createKeyedCoalescer } from '$lib/utils/keyedCoalescer';
+	import { createKeyedCoalescer, CoalescerCancelled } from '$lib/utils/keyedCoalescer';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { tabsStore } from '$lib/stores/tabs.svelte';
@@ -339,8 +339,13 @@
 			if (eventWs && localIndex.classifySSEEvent(eventWs, event) !== 'stale') {
 				try {
 					await reconcileSoon.run(eventWs);
-				} catch {
-					// As above: the cache-state readers own the reaction.
+				} catch (err) {
+					// Cancelled: the layout was destroyed inside the coalescing
+					// window, and nothing below is this callback's to do any more
+					// (codex r2: carrying on reloaded the old workspace's
+					// collections and toasted onto the next screen).
+					if (err instanceof CoalescerCancelled) return;
+					// Otherwise as above: the cache-state readers own the reaction.
 				}
 			}
 
