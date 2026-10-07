@@ -65,7 +65,6 @@
 	--status-draft: #666666;
 	--status-active: #4ade80;
 	--status-completed: #4a9eff;
-	--status-archived: #444444;
 
 	--topbar-height: 44px;
 	--bottom-nav-height: 56px;
@@ -145,8 +144,22 @@ input, textarea, select {
 	padding: var(--space-2) var(--space-3);
 	outline: none;
 }
-input:focus, textarea:focus {
+input:focus, textarea:focus, select:focus {
 	border-color: var(--accent-blue);
+}
+/* TASK-2262 (audit C10): a keyboard user must SEE where focus is. The rule
+   above strips the browser outline from every field in favour of a 1px
+   border hue shift, and selects were left out of it entirely (no indicator
+   at all; measured on settings' invite-role selects). Every field now gets a
+   2px ring on keyboard focus.
+   `:focus-visible` is repeated on purpose: components reset fields with a
+   scoped `input { outline: none }`, whose specificity (0,1,1) ties this
+   rule's and wins by loading later. Doubling it gives (0,2,1), which beats a
+   plain reset while a component's own deliberate `.x:focus` styling (0,3,0
+   with Svelte's hash) still wins. */
+:is(input, textarea, select):focus-visible:focus-visible {
+	outline: 2px solid var(--accent-blue);
+	outline-offset: 1px;
 }
 
 /* Scrollbar. `width` styles the VERTICAL scrollbar; `height` styles the
@@ -693,7 +706,6 @@ dialog.attachment-crop-modal::backdrop {
 	--status-draft: #999999;
 	--status-active: #16a34a;
 	--status-completed: #2563eb;
-	--status-archived: #bbbbbb;
 }
 
 @media (prefers-color-scheme: light) {
@@ -732,7 +744,6 @@ dialog.attachment-crop-modal::backdrop {
 		--status-draft: #999999;
 		--status-active: #16a34a;
 		--status-completed: #2563eb;
-		--status-archived: #bbbbbb;
 	}
 }
 
