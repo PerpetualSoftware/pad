@@ -2813,12 +2813,21 @@
 	// is cleared (see `focusedItemId`), so snapping would be meaningless — bail.
 	// On unwind back to depth 0 both `openItemRef` and `page.state` change, so
 	// this re-runs and restores the base row's highlight.
+	//
+	// PENDING-FOLLOW gate (BUG-3204): j/k moves the cursor at once and the pane
+	// follows ~PANE_FOLLOW_DEBOUNCE_MS later. A list change inside that window
+	// re-ran this effect while `?item=` still named the OLD item, snapping the
+	// cursor back; the pane then followed and it snapped forward again, a
+	// visible flicker whenever the list updated mid-move (and the owner-2 flake
+	// in attachment-viewer-owners). While a follow is pending the cursor is the
+	// newer intent, so this yields; the follow's own `?item=` change re-runs it.
 	$effect(() => {
 		if (!openItemRef) return;
 		if (currentPaneState().paneDepth > 0) return;
 		const idx = filteredItems.findIndex(
 			(i) => itemUrlId(i) === openItemRef || i.slug === openItemRef,
 		);
+		if (paneFollowTimer !== null) return;
 		if (idx >= 0) focusedIndex = idx;
 	});
 
