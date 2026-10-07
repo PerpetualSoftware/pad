@@ -974,7 +974,10 @@
 		padding: 0 var(--space-1);
 		border-radius: var(--radius-sm);
 		line-height: 1;
-		opacity: 0.5;
+		/* 0.8, not 0.5 (TASK-2262): an icon-only control needs 3:1 against its
+		   background at rest (WCAG 1.4.11). --text-muted at 0.8 measures 3.72:1
+		   dark and 3.42:1 light on the sidebar; at 0.5 it was 2.25 / 2.03. */
+		opacity: 0.8;
 		transition: opacity 0.15s, color 0.15s;
 	}
 	.section-header:hover .section-add-btn {
@@ -1000,7 +1003,10 @@
 		border-radius: var(--radius-sm);
 		cursor: pointer;
 		padding: 0;
-		opacity: 0.5;
+		/* 0.8, not 0.5 (TASK-2262): an icon-only control needs 3:1 against its
+		   background at rest (WCAG 1.4.11). --text-muted at 0.8 measures 3.72:1
+		   dark and 3.42:1 light on the sidebar; at 0.5 it was 2.25 / 2.03. */
+		opacity: 0.8;
 		transition: opacity 0.15s, color 0.15s, background 0.15s;
 	}
 	.nav-item:hover .nav-quick-add {
