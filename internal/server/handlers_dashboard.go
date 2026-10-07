@@ -229,6 +229,14 @@ func priorityRank(priority string) int {
 
 // isActiveStatus returns true if the status indicates work actively in progress.
 // It excludes both initial/queued states and terminal/completed states.
+// itemNumber is the item's workspace-sequential number, 0 when unset.
+func itemNumber(it models.Item) int {
+	if it.ItemNumber == nil {
+		return 0
+	}
+	return *it.ItemNumber
+}
+
 func isActiveStatus(status string) bool {
 	s := strings.ToLower(strings.ReplaceAll(status, "-", "_"))
 	switch s {
@@ -1006,8 +1014,30 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		// entry and the suggestion would drift.
 		overdue       bool
 		overdueReason string
+		// fallback marks the BUG-3453 tier: an ordinary open item outside any
+		// active plan, admitted only to fill slots the tiers above leave empty.
+		fallback bool
 	}
 	var candidates []suggestion
+
+	// workable: the collections whose open items may fill the fallback tier
+	// (BUG-3453, lead-ruled): not a system collection, and the schema
+	// declares a `priority` or `severity` field. Across every built-in
+	// template that is Tasks, Features, Backlog and Bugs; Conventions (a
+	// system collection with a priority field), Ideas, Docs, Plans and the
+	// people templates' collections stay out. No collection is named.
+	workable := make(map[string]bool, len(collections))
+	for _, c := range collections {
+		if c.IsSystem {
+			continue
+		}
+		for _, f := range ctxMap[c.ID].schema.Fields {
+			if f.Key == "priority" || f.Key == "severity" {
+				workable[c.ID] = true
+				break
+			}
+		}
+	}
 
 	for _, dp := range resp.ActivePlans {
 		// Reuse the children batched once above (BUG-2002) instead of
@@ -1098,11 +1128,41 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		taskStatus := extractFieldValue(item.Fields, "status")
 		isInProgress := isActiveStatus(taskStatus)
 		isOpen := taskStatus == "open"
-		if !isInProgress && !isOpen {
-			continue
-		}
 		pri := extractFieldValue(item.Fields, "priority")
 		odField, odValue, isOverdue := itemOverdue(item.Fields, todayStr)
+		// The tiers below admit only the literal status `open` and, for open
+		// items, a high/critical priority or a passed deadline. An item they
+		// turn away can still FILL AN EMPTY SLOT (BUG-3453): a moved-in
+		// backlog of ordinary open tasks and bugs, with no priority set and
+		// an initial status like `new`, used to answer "nothing ready".
+		// It is open when its collection's done field is not terminal and it
+		// is not in progress; the sort keeps every fallback item below every
+		// item admitted above, so a workspace that fills its slots today gets
+		// the same list.
+		admitted := isInProgress || (isOpen && (isOverdue || pri == "high" || pri == "critical"))
+		if !admitted {
+			if !workable[item.CollectionID] || isItemDone(item.Fields, item.CollectionID, ctxMap) {
+				continue
+			}
+			if _, blocked := firstActiveBlocker[item.ID]; blocked {
+				continue
+			}
+			// One rank on the low..critical scale: the priority when set,
+			// else the severity. A Bugs collection declares only severity,
+			// so a high-severity bug ranks with high-priority tasks rather
+			// than below every task that has any priority at all.
+			rank := priorityRank(pri)
+			if pri == "" {
+				rank = priorityRank(extractFieldValue(item.Fields, "severity"))
+			}
+			candidates = append(candidates, suggestion{
+				item:     item,
+				status:   taskStatus,
+				priority: rank,
+				fallback: true,
+			})
+			continue
+		}
 		// Open orphans must be high or critical to surface — open
 		// in-progress items always do (continuing-work signal beats
 		// priority gating).
@@ -1113,9 +1173,6 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		// where the deadline would quietly stop: a low-priority orphan three
 		// weeks late would be reported by `stale` and never suggested by
 		// `next`, which is the exact split GitHub #1010 is about.
-		if !isInProgress && !isOverdue && pri != "high" && pri != "critical" {
-			continue
-		}
 		if _, blocked := firstActiveBlocker[item.ID]; blocked {
 			continue
 		}
@@ -1135,6 +1192,24 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// "active-plan continuation" suggestion stays at the top when
 	// both are present. Lower rank = higher priority.
 	sort.Slice(candidates, func(i, j int) bool {
+		// The fallback tier (BUG-3453) sits below everything: it only fills
+		// slots, never displaces. Within it: the rank (priority, else
+		// severity), then the oldest first, so a moved-in backlog reads in
+		// the order it was written down.
+		if candidates[i].fallback != candidates[j].fallback {
+			return candidates[j].fallback
+		}
+		if candidates[i].fallback {
+			if candidates[i].priority != candidates[j].priority {
+				return candidates[i].priority < candidates[j].priority
+			}
+			if !candidates[i].item.CreatedAt.Equal(candidates[j].item.CreatedAt) {
+				return candidates[i].item.CreatedAt.Before(candidates[j].item.CreatedAt)
+			}
+			// created_at is stored to the second; the item number is the
+			// workspace's creation sequence and breaks the tie.
+			return itemNumber(candidates[i].item) < itemNumber(candidates[j].item)
+		}
 		// OVERDUE FIRST, above in-progress (IDEA-2641). The list is capped at
 		// three, so a rank below in-progress would not merely order the
 		// deadline lower — on any workspace with three things in flight it
@@ -1189,6 +1264,10 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 		if pri != "" {
 			reason += " (" + pri + " priority)"
+		} else if sev := extractFieldValue(c.item.Fields, "severity"); c.fallback && sev != "" {
+			// Fallback items only: an item the tiers above admit reads exactly
+			// as it did before BUG-3453.
+			reason += " (" + sev + " severity)"
 		}
 		if c.overdue {
 			// Prefixed rather than appended: the deadline is why this is at

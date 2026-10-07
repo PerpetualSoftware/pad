@@ -70,9 +70,11 @@ Actions:
                Required: workspace.
   next       — Recommended next item to work on (uses dashboard's suggestion logic).
                Required: workspace.
-  ready      — Actionable backlog: items Pad considers ready to work on now.
-               The query-oriented counterpart to next (reuses the same
-               suggested-next logic, returns the full list).
+  ready      — Up to three items to work on next, best first: the same
+               ranked list as next. Reminders, overdue, in-progress, active-
+               plan and high/critical items lead; leftover slots are filled
+               with other open items from collections that track priority
+               or severity. Blocked items are excluded (see stale).
                Required: workspace.
   stale      — Items needing attention — stalled, blocked, overdue, or
                otherwise falling out of the active workflow.
