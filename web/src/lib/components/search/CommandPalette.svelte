@@ -9,7 +9,12 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { localSearch, parseSearchQuery, parseGoToTarget } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
-	import { groupResultsByCollection, inRenderedOrder } from './groupResults';
+	import {
+		groupResultsByCollection,
+		inRenderedOrder,
+		reselectAfterAppend,
+		resultAnnouncement
+	} from './groupResults';
 	import type {
 		SearchResult,
 		SearchFacets,
@@ -157,12 +162,10 @@
 					: undefined
 	);
 	// What the live region says: the count of what a search found.
+	// Content matches are results too (codex r1): a body-only match has a
+	// local total of 0, so nothing is said until the content search answers.
 	let announcement = $derived(
-		// Content matches are results too (codex r1): a body-only match has
-		// a local total of 0.
-		query.trim() && !loading
-			? `${total + contentResults.length} result${total + contentResults.length === 1 ? '' : 's'}`
-			: ''
+		resultAnnouncement(query, loading, contentLoading, total + contentResults.length)
 	);
 
 	$effect(() => {
@@ -645,7 +648,9 @@
 					localIndex.bootstrapStateFor(snapshotWsSlug) === 'ready';
 				if (liveCurrentReady) return;
 			}
+			const before = flatResults;
 			results = [...results, ...(resp.results ?? [])];
+			selectedIdx = reselectAfterAppend(before, flatResults, selectedIdx);
 		} catch {
 			// ignore
 		} finally {
