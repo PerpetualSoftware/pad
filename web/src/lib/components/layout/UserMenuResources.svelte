@@ -29,6 +29,7 @@
 		COMMUNITY_URL,
 		DOCS_URL,
 		GITHUB_REPO_URL,
+		LEARN_URL,
 		STATUS_URL,
 		SUPPORT_MAILTO
 	} from '$lib/brand/links';
@@ -47,6 +48,10 @@
 	type ResourceLink = {
 		label: string;
 		href: string;
+		// In-app (same tab, no external icon). Only Cloud's Tutorials entry
+		// (TASK-3452): Cloud shows the tutorials at /console/tutorials, while a
+		// self-hosted instance links out to getpad.dev/learn like Docs.
+		internal?: boolean;
 		// Most links open in a new tab. The Support entry on Cloud uses a
 		// mailto:, which doesn't navigate the browser but still benefits
 		// from `noopener` semantics; we keep target="_blank" for parity
@@ -65,6 +70,7 @@
 		{ label: 'GitHub', href: GITHUB_REPO_URL },
 		{ label: 'Community', href: COMMUNITY_URL },
 		{ label: 'Docs', href: DOCS_URL },
+		{ label: 'Tutorials', href: '/console/tutorials', internal: true },
 		{ label: 'Changelog', href: CHANGELOG_URL },
 		{ label: 'Status', href: STATUS_URL },
 		{ label: 'Support', href: SUPPORT_MAILTO }
@@ -77,7 +83,8 @@
 	const selfHostedLinks: ResourceLink[] = [
 		{ label: 'GitHub', href: GITHUB_REPO_URL },
 		{ label: 'Community', href: COMMUNITY_URL },
-		{ label: 'Docs', href: DOCS_URL }
+		{ label: 'Docs', href: DOCS_URL },
+		{ label: 'Tutorials', href: LEARN_URL }
 	];
 
 	const links = $derived(cloudMode ? cloudLinks : selfHostedLinks);
@@ -88,14 +95,14 @@
 {#each links as link (link.label)}
 	<a
 		href={link.href}
-		target="_blank"
-		rel="noopener noreferrer"
+		target={link.internal ? undefined : '_blank'}
+		rel={link.internal ? undefined : 'noopener noreferrer'}
 		class="dropdown-item resources-item"
 		role="menuitem"
 		onclick={() => onclose?.()}
 	>
 		<span>{link.label}</span>
-		<svg
+		{#if !link.internal}<svg
 			class="external-icon"
 			xmlns="http://www.w3.org/2000/svg"
 			width="12"
@@ -111,7 +118,7 @@
 			<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
 			<polyline points="15 3 21 3 21 9" />
 			<line x1="10" y1="14" x2="21" y2="3" />
-		</svg>
+		</svg>{/if}
 	</a>
 {/each}
 

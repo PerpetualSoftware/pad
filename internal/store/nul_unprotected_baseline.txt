@@ -353,6 +353,7 @@ users.plan_subscription_id
 users.role
 users.stripe_customer_id
 users.totp_secret
+users.ui_dismissals
 users.updated_at
 versions.created_at
 versions.document_id

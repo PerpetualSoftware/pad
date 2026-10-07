@@ -457,6 +457,11 @@ func TestEveryRequestHandoffIsClassified(t *testing.T) {
 		"github.com/gorilla/websocket.Upgrader.Upgrade":   "hijacks the connection after checking headers; a GET upgrade has no body",
 		"net/http.Handler.ServeHTTP":                      "interface DISPATCH: the router and middleware chains passing the request on to the next handler, whose own reads are counted where they are written. Which handler runs is not resolvable statically",
 		"github.com/go-chi/chi/v5.Mux.ServeHTTP":          "dispatch into the router, as above",
+		// TASK-3452: the Cloud tutorial catalog and poster fetch. The request is
+		// OUTBOUND, built by this package with no body; an inbound server
+		// request cannot be passed here at all (Client.Do refuses one with
+		// RequestURI set), so no caller's body can reach this callee.
+		"net/http.Client.Do": "sends an outbound request this package built (no body); never receives an inbound request",
 	}
 	// Body readers by delegation: fosite parses the OAuth form body itself.
 	// Each POST handler here sits behind ValidateFormBody (BUG-2811), so the

@@ -25,6 +25,12 @@ export const COMMUNITY_URL = `${GITHUB_REPO_URL}/discussions`;
 /** Canonical project documentation — the same for Cloud and self-hosted. */
 export const DOCS_URL = 'https://getpad.dev/docs';
 
+/**
+ * The tutorial library (TASK-3452). Self-hosted instances link here; Pad
+ * Cloud shows the same tutorials in-app at /tutorials.
+ */
+export const LEARN_URL = 'https://getpad.dev/learn';
+
 /** Cloud-only surfaces. Self-hosted operators have their own, if any. */
 export const CHANGELOG_URL = 'https://getpad.dev/changelog';
 export const STATUS_URL = 'https://status.getpad.dev';
