@@ -1,9 +1,12 @@
 package decision
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 	"testing"
@@ -312,5 +315,97 @@ func TestConventions_DeleteBetweenSplitCallsStopsTheRest(t *testing.T) {
 	}
 	if len(fx.f.requests) != 1 {
 		t.Fatalf("provider calls = %d; the second chunk was sent after the delete", len(fx.f.requests))
+	}
+}
+
+// spendLines reads every "decision evaluation" line the runner logged.
+func spendLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("log line is not JSON: %q", line)
+		}
+		if m["msg"] == "decision evaluation" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// One spend line per evaluation that reached the provider, carrying the
+// summed counts and nothing of the item's, a question's or an answer's text
+// (TASK-3119: the log is how a box without /metrics reads the spend).
+func TestConventions_EvaluationLogsItsSpend(t *testing.T) {
+	fx := newConvFixture(t)
+	var buf bytes.Buffer
+	fx.r.logger = slog.New(slog.NewJSONHandler(&buf, nil))
+	for i := 0; i < 7; i++ {
+		fx.convention(t, "Rule", `{"status":"active","trigger":"always"}`, "SECRET-RULE-"+string(rune('a'+i)))
+	}
+	item, err := fx.s.CreateItem(fx.ws.ID, fx.tasks.ID, models.ItemCreate{Title: "SECRET-TITLE", Fields: `{"status":"open"}`, Content: "SECRET-BODY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called, err := fx.r.Evaluate(context.Background(), item.ID, ConventionsSetName); err != nil || !called {
+		t.Fatalf("evaluate: called=%v err=%v", called, err)
+	}
+	lines := spendLines(t, &buf)
+	if len(lines) != 1 {
+		t.Fatalf("spend lines = %d, want 1: %s", len(lines), buf.String())
+	}
+	got := lines[0]
+	// Two calls (5 + 2 questions) at the fake's 10 in / 5 out each.
+	want := map[string]any{
+		"level": "INFO", "set": ConventionsSetName, "workspace_id": fx.ws.ID,
+		"item_ref": item.Ref, "item_id": item.ID, "questions": float64(7), "calls": float64(2),
+		"input_tokens": float64(20), "output_tokens": float64(10), "truncated": false, "outcome": "stored",
+	}
+	if item.Ref == "" {
+		t.Fatal("fixture item has no ref")
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %v, want %v", k, got[k], v)
+		}
+	}
+	if strings.Contains(buf.String(), "SECRET") {
+		t.Fatalf("the spend line carries text: %s", buf.String())
+	}
+
+	// Answers stored for this state: no call, so no line.
+	buf.Reset()
+	if called, err := fx.r.Evaluate(context.Background(), item.ID, ConventionsSetName); err != nil || called {
+		t.Fatalf("re-evaluate: called=%v err=%v", called, err)
+	}
+	if n := len(spendLines(t, &buf)); n != 0 {
+		t.Fatalf("an evaluation with no call logged %d spend lines", n)
+	}
+}
+
+// A failed call is spend too: logged with outcome=failed and without the
+// provider's error text, which can quote the request.
+func TestConventions_FailedEvaluationLogsItsSpend(t *testing.T) {
+	fx := newConvFixture(t)
+	var buf bytes.Buffer
+	fx.r.logger = slog.New(slog.NewJSONHandler(&buf, nil))
+	fx.convention(t, "Rule", `{"status":"active","trigger":"always"}`, "a rule")
+	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"detail":"SECRET-DETAIL"}`, http.StatusBadRequest)
+	})
+	item := fx.task(t, "A task")
+	if called, err := fx.r.Evaluate(context.Background(), item.ID, ConventionsSetName); err == nil || !called {
+		t.Fatalf("evaluate: called=%v err=%v, want a call and an error", called, err)
+	}
+	lines := spendLines(t, &buf)
+	if len(lines) != 1 || lines[0]["outcome"] != "failed" || lines[0]["calls"] != float64(1) {
+		t.Fatalf("spend lines = %v, want one failed line with calls=1", lines)
+	}
+	if strings.Contains(buf.String(), "SECRET") {
+		t.Fatalf("the spend line carries the provider's error text: %s", buf.String())
 	}
 }
