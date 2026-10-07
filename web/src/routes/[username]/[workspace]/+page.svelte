@@ -752,7 +752,7 @@
 				<div class="plan-list">
 					{#each dashboard.active_plans as plan (plan.slug)}
 						<a href="/{username}/{wsSlug}/plans/{plan.slug}" class="plan-row">
-							<span class="plan-title">{plan.title}</span>
+							<span class="plan-title" title={plan.title}>{plan.title}</span>
 							<div class="progress-bar">
 								<div class="progress-fill" style="width: {plan.progress}%"></div>
 							</div>
@@ -1263,11 +1263,19 @@
 		font-weight: 600;
 		font-size: 0.9em;
 		color: var(--text-primary);
-		min-width: 120px;
+		/* BUG-3440: a long title shrinks and clips with an ellipsis instead of
+		   pushing the row (and the page) wider; the full text is in its title
+		   attribute for hover. min-width: 0 is what lets a flex item shrink
+		   below its content. */
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.progress-bar {
 		flex: 1;
+		min-width: 48px;
 		height: 6px;
 		background: var(--bg-tertiary);
 		border-radius: 3px;
@@ -1285,6 +1293,17 @@
 		white-space: nowrap;
 		min-width: 80px;
 		text-align: right;
+		flex-shrink: 0;
+	}
+	/* On a phone the title takes its own line, so the bar and the counts are
+	   not squeezed to nothing beside it (BUG-3440). */
+	@media (max-width: 480px) {
+		.plan-row {
+			flex-wrap: wrap;
+		}
+		.plan-title {
+			flex-basis: 100%;
+		}
 	}
 
 	/* ── Collections Grid ───────────────────────────────────────────────── */
