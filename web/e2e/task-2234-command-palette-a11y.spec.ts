@@ -1,5 +1,5 @@
 import { test, expect, type SuiteFixture } from './fixtures';
-import { request, type APIRequestContext, type BrowserContext } from '@playwright/test';
+import { request, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { quietCrossActorToasts } from './fixtures';
 
@@ -20,6 +20,22 @@ interface Account {
 	api: APIRequestContext;
 }
 
+
+/** Waits until no CSS transition is running anywhere in the document. */
+async function settleTransitions(page: Page) {
+	await page.evaluate(async () => {
+		for (;;) {
+			// Flush style so a change written since the last recalc has started.
+			void getComputedStyle(document.documentElement).color;
+			const live = document
+				.getAnimations()
+				.filter((a) => a instanceof CSSTransition && a.playState !== 'finished' && a.playState !== 'idle');
+			if (live.length === 0) return;
+			// A retargeted transition is cancelled, which rejects `finished`.
+			await Promise.all(live.map((a) => a.finished.catch(() => undefined)));
+		}
+	});
+}
 async function ok(resp: Awaited<ReturnType<APIRequestContext['get']>>, what: string) {
 	if (!resp.ok()) throw new Error(`palette seed: ${what} failed (${resp.status()}): ${await resp.text()}`);
 	return resp;
@@ -135,9 +151,15 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 		// so the dark scan sets the attribute and proves it took.
 		await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 		await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+		// The chips fade their colours (`transition: all 0.15s`), so a scan taken
+		// as the theme flips reads in-between colours that are neither theme's.
+		// That failed CI on #1851 with #9b9baa on #3b3b44 (4.04:1), passing 13/13
+		// locally. Scan only once every transition has finished.
+		await settleTransitions(page);
 		const dark = await new AxeBuilder({ page }).include('.palette').analyze();
 		expect(dark.violations.map((v) => `${v.id}: ${v.help}`), 'axe on the open palette with results, dark theme').toEqual([]);
 		await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+		await settleTransitions(page);
 
 		// Enter opens the selected result.
 		const title = (await options.nth(1).locator('.result-title').textContent())?.trim();

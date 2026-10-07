@@ -34,3 +34,12 @@ export function defaultInstallTab(): InstallTab {
 	if (p === 'other') return 'macos';
 	return p;
 }
+
+/**
+ * A Mod+key shortcut as this platform writes it: `⌘K` on macOS, `Ctrl+K`
+ * elsewhere (BUG-3465). The handlers accept either modifier (`isMod`), but a
+ * label must name the key the reader actually has.
+ */
+export function modKeyLabel(key: string): string {
+	return detectPlatform() === 'macos' ? `⌘${key}` : `Ctrl+${key}`;
+}

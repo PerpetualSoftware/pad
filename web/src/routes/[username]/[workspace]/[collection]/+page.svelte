@@ -67,6 +67,7 @@
 	import { hasForeignEscapeOwner, isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 	import { fieldMatches } from '$lib/fields/fieldShape';
+	import { characterKey } from '$lib/a11y/characterShortcuts.svelte';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -3148,8 +3149,13 @@
 		// (Codex P1). Desktop split is unaffected; ESC (handled above) still closes.
 		if (viewport.isMobile && openItemRef) return;
 
-		switch (e.key) {
-			case 'j':
+		// j/k/h/l are vim aliases for the arrows. They are single-character
+		// shortcuts, so they come through characterKey() and stop when the
+		// single-key switch is off (WCAG 2.1.4, BUG-3465); the arrows never do.
+		const ch = characterKey(e);
+		const vimArrows: Record<string, string> = { j: 'ArrowDown', k: 'ArrowUp', h: 'ArrowLeft', l: 'ArrowRight' };
+		const key = ch !== null && ch in vimArrows ? vimArrows[ch] : e.key;
+		switch (key) {
 			case 'ArrowDown':
 				e.preventDefault();
 				// Board: move down WITHIN the focused column (rendered order).
@@ -3162,7 +3168,6 @@
 					schedulePaneFollow();
 				}
 				break;
-			case 'k':
 			case 'ArrowUp':
 				e.preventDefault();
 				if (viewMode === 'board') {
@@ -3173,7 +3178,6 @@
 					schedulePaneFollow();
 				}
 				break;
-			case 'h':
 			case 'ArrowLeft':
 				// Column switching is board-only (h/l are vim aliases); in
 				// list/table these keys keep their default behavior.
@@ -3182,7 +3186,6 @@
 					moveBoardFocus('left');
 				}
 				break;
-			case 'l':
 			case 'ArrowRight':
 				if (viewMode === 'board') {
 					e.preventDefault();

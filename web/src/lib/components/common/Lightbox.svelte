@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { characterKey } from '$lib/a11y/characterShortcuts.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { IMPORTED_TITLE } from '$lib/utils/imported';
 	/**
@@ -2284,25 +2285,29 @@
 		// `shiftKey` is fine (on most layouts `+` IS Shift+`=`), so it is absent
 		// from the guard.
 		if (e.ctrlKey || e.metaKey || e.altKey) return;
+		// They are single-character shortcuts, so they come through
+		// characterKey(): the single-key switch (WCAG 2.1.4, BUG-3465) turns them
+		// off, and the zoom buttons remain.
+		const ch = characterKey(e);
 		// Zoom keys are DISABLED, not merely no-ops, while no bitmap exists — the
 		// mobile `deferred` cell shows a placeholder with nothing to zoom
 		// (TASK-2460). Consume the key so it can't leak past the modal, but do not
 		// act. (`+`/`-` are already inert via `readGeometry`; `0` would otherwise
 		// still reset.)
-		const isZoomKey = e.key === '+' || e.key === '=' || e.key === '-' || e.key === '0';
+		const isZoomKey = ch === '+' || ch === '=' || ch === '-' || ch === '0';
 		if (isZoomKey && !bitmapPresent) {
 			e.preventDefault();
 			return;
 		}
-		if (e.key === '+' || e.key === '=') {
+		if (ch === '+' || ch === '=') {
 			// `+` — including the numpad, whose `.key` is also `'+'` — and bare `=`.
 			e.preventDefault();
 			stepZoom(ZOOM_STEP);
-		} else if (e.key === '-') {
+		} else if (ch === '-') {
 			// `-`, including the numpad, whose `.key` is also `'-'`.
 			e.preventDefault();
 			stepZoom(1 / ZOOM_STEP);
-		} else if (e.key === '0') {
+		} else if (ch === '0') {
 			e.preventDefault();
 			zoom = resetZoom();
 			rebaseDrag(); // keyboard reset mid-drag must not desync the pan baseline

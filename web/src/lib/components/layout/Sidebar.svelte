@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { modKeyLabel } from '$lib/utils/platform';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { dndzone } from 'svelte-dnd-action';
@@ -698,7 +699,7 @@
 
 		<div class="sidebar-footer">
 			<button class="search-btn" onclick={() => { uiStore.openSearch(); uiStore.onNavigate(); }}>
-				🔍 Search <kbd>⌘K</kbd>
+				🔍 Search <kbd>{modKeyLabel('K')}</kbd>
 			</button>
 			<div class="footer-row">
 				{#if wsSlug && !isGuest}
@@ -710,7 +711,7 @@
 					<button
 						class="collapse-sidebar-btn"
 						onclick={() => uiStore.closeSidebar()}
-						title="Hide sidebar (⌘\)"
+						title="Hide sidebar ({modKeyLabel('\\')})"
 						aria-label="Hide sidebar"
 					>
 						<svg width="16" height="16" viewBox="0 0 16 16" fill="none">

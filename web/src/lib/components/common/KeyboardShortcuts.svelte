@@ -1,5 +1,8 @@
 <script lang="ts">
 	import Modal from './Modal.svelte';
+	import CharacterShortcutsToggle from './CharacterShortcutsToggle.svelte';
+	import { characterShortcuts } from '$lib/a11y/characterShortcuts.svelte';
+	import { modKeyLabel } from '$lib/utils/platform';
 
 	interface Props {
 		visible: boolean;
@@ -9,7 +12,10 @@
 	let { visible, onclose }: Props = $props();
 
 	interface Shortcut {
-		key: string;
+		/** Keys that always work. */
+		keys: string;
+		/** The single-character alias, if any; governed by the single-key switch. */
+		single?: string;
 		description: string;
 	}
 
@@ -18,33 +24,42 @@
 		shortcuts: Shortcut[];
 	}
 
+	// Labels name the key this platform has: ⌘ on macOS, Ctrl elsewhere.
 	const groups: ShortcutGroup[] = [
 		{
 			title: 'Global',
 			shortcuts: [
-				{ key: '⌘K', description: 'Search / Command palette' },
-				{ key: '⌘N', description: 'New item' },
-				{ key: '⌘\\', description: 'Toggle sidebar' },
-				{ key: '?', description: 'Show keyboard shortcuts' }
+				{ keys: modKeyLabel('K'), description: 'Search / Command palette' },
+				// ⌘N/Ctrl+N is still bound, but browsers keep it for a new window and
+				// never deliver it to the page (BUG-3465), so it is not advertised.
+				{ keys: '', single: 'C', description: 'New item' },
+				{ keys: modKeyLabel('\\'), description: 'Toggle sidebar' },
+				{ keys: '', single: '?', description: 'Show keyboard shortcuts' }
 			]
 		},
 		{
 			title: 'Navigation',
 			shortcuts: [
-				{ key: 'j / ↓', description: 'Move down' },
-				{ key: 'k / ↑', description: 'Move up' },
-				{ key: 'Enter', description: 'Open selected item' },
-				{ key: 'Esc', description: 'Go back / Close' }
+				{ keys: '↓', single: 'j', description: 'Move down' },
+				{ keys: '↑', single: 'k', description: 'Move up' },
+				{ keys: '← / →', single: 'h / l', description: 'Move between board columns' },
+				{ keys: 'Enter', description: 'Open selected item' },
+				{ keys: 'Esc', description: 'Go back / Close' }
 			]
 		},
 		{
 			title: 'Item Detail',
 			shortcuts: [
-				{ key: '⌘Enter', description: 'Save' },
-				{ key: 'Esc', description: 'Cancel editing' }
+				{ keys: modKeyLabel('Enter'), description: 'Save' },
+				{ keys: 'Esc', description: 'Cancel editing' }
 			]
 		}
 	];
+
+	function label(s: Shortcut): string {
+		if (!s.single || !characterShortcuts.enabled) return s.keys;
+		return s.keys ? `${s.single} / ${s.keys}` : s.single;
+	}
 </script>
 
 <!-- The native <dialog> (via <Modal>) owns Escape, backdrop dismiss, the focus
@@ -72,15 +87,19 @@
 			<div class="group">
 				<h3 class="group-title">{group.title}</h3>
 				<div class="shortcut-list">
-					{#each group.shortcuts as shortcut (shortcut.key)}
-						<div class="shortcut-row">
-							<kbd class="key">{shortcut.key}</kbd>
-							<span class="description">{shortcut.description}</span>
+					{#each group.shortcuts as shortcut (shortcut.description)}
+						{@const keys = label(shortcut)}
+						<div class="shortcut-row" class:off={!keys}>
+							<kbd class="key">{keys || shortcut.single}</kbd>
+							<span class="description">
+								{shortcut.description}{#if !keys}<span class="off-note"> (single-key shortcuts are off)</span>{/if}
+							</span>
 						</div>
 					{/each}
 				</div>
 			</div>
 		{/each}
+		<CharacterShortcutsToggle />
 	</div>
 </Modal>
 
@@ -132,6 +151,15 @@
 		letter-spacing: 0.05em;
 		color: var(--text-muted);
 		margin-bottom: var(--space-2);
+	}
+
+	.shortcut-row.off .key,
+	.shortcut-row.off .description {
+		opacity: 0.55;
+	}
+
+	.off-note {
+		color: var(--text-muted);
 	}
 
 	.shortcut-list {

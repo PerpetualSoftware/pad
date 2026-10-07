@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { modKeyLabel } from '$lib/utils/platform';
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -24,6 +25,7 @@
 	import OpenChildrenDialog from '$lib/components/OpenChildrenDialog.svelte';
 	import PendingEditsDialog from '$lib/components/PendingEditsDialog.svelte';
 	import { isMod, isInputFocused } from '$lib/utils/keyboard';
+	import { characterKey } from '$lib/a11y/characterShortcuts.svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import KeyboardShortcuts from '$lib/components/common/KeyboardShortcuts.svelte';
 
@@ -308,7 +310,20 @@
 		// Chrome does not reserve them, so it delivers them here, and the ⌘]
 		// that used to sit here cancelled Forward to toggle state no component
 		// rendered.
+		// Quick-add is `c` (BUG-3465). Mod+N stays bound but reaches a page only
+		// in an installed-app window: Chrome and Edge reserve it for a new window
+		// (Chromium IsReservedCommandOrKey), Firefox declares accel+N
+		// reserved="true", and Safari reportedly does not dispatch it (no Apple
+		// statement; evidence on BUG-3465).
 		if (isMod(e) && e.key === 'n') {
+			e.preventDefault();
+			uiStore.requestQuickAdd();
+			return;
+		}
+		// Single-character shortcuts go through characterKey(), so the
+		// "single-key shortcuts" switch (WCAG 2.1.4) turns every one of them off.
+		const ch = characterKey(e);
+		if (ch === 'c' && !isInputFocused()) {
 			e.preventDefault();
 			uiStore.requestQuickAdd();
 			return;
@@ -324,7 +339,7 @@
 			}
 			return;
 		}
-		if (e.key === '?' && !isInputFocused()) {
+		if (ch === '?' && !isInputFocused()) {
 			e.preventDefault();
 			showShortcuts = !showShortcuts;
 			return;
@@ -399,7 +414,7 @@
 				class="topbar-expand-btn"
 				onclick={() => uiStore.openTopbar()}
 				aria-label="Show workspace bar"
-				title="Show workspace bar (⌘\)"
+				title="Show workspace bar ({modKeyLabel('\\')})"
 			>
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<path d="M3 6L8 11L13 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -413,7 +428,7 @@
 					class="sidebar-expand-btn"
 					onclick={() => uiStore.openSidebar()}
 					aria-label="Open sidebar"
-					title="Open sidebar (⌘\)"
+					title="Open sidebar ({modKeyLabel('\\')})"
 				>
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
