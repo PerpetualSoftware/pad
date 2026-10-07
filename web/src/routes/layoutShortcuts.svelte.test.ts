@@ -42,6 +42,7 @@ vi.mock('$lib/api/client', () => {
 
 import Layout from './+layout.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
+import { characterShortcuts } from '$lib/a11y/characterShortcuts.svelte';
 import { acquire, __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
 
 const childSnippet = createRawSnippet(() => ({ render: () => `<div>child</div>` }));
@@ -74,6 +75,8 @@ beforeEach(async () => {
 
 afterEach(() => {
 	cleanup();
+	characterShortcuts.set(true);
+	uiStore.clearQuickAddRequest();
 	__resetViewerBackdropForTests();
 	if (uiStore.searchOpen) uiStore.closeSearch();
 	vi.restoreAllMocks();
@@ -113,6 +116,45 @@ describe('+layout app-shell shortcuts — defer to a frontmost surface (TASK-243
 		expect(press('k', true).defaultPrevented).toBe(true);
 	});
 
+	it('BUG-3465: `c` opens quick-add, but not while typing or with a modifier held', () => {
+		const e = press('c');
+		flushSync();
+		expect(e.defaultPrevented).toBe(true);
+		expect(uiStore.quickAddRequested).toBe(true);
+		uiStore.clearQuickAddRequest();
+
+		// Ctrl+C / Cmd+C is copy: never ours.
+		const copy = new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true });
+		window.dispatchEvent(copy);
+		expect({ prevented: copy.defaultPrevented, requested: uiStore.quickAddRequested }).toEqual({
+			prevented: false,
+			requested: false
+		});
+
+		// Typing a c in a field is text.
+		const input = document.createElement('input');
+		document.body.appendChild(input);
+		input.focus();
+		const typed = press('c');
+		expect({ prevented: typed.defaultPrevented, requested: uiStore.quickAddRequested }).toEqual({
+			prevented: false,
+			requested: false
+		});
+	});
+
+	it('BUG-3465: with the single-key switch off, `c` and `?` do nothing and modifier shortcuts still work', () => {
+		characterShortcuts.set(false);
+		for (const key of ['c', '?']) {
+			expect({ key, prevented: press(key).defaultPrevented }).toEqual({ key, prevented: false });
+		}
+		flushSync();
+		expect(uiStore.quickAddRequested).toBe(false);
+		// The switch covers single keys only.
+		expect(press('k', true).defaultPrevented).toBe(true);
+		flushSync();
+		expect(uiStore.searchOpen).toBe(true);
+	});
+
 	it('declines EVERY shortcut this handler owns while a viewer lease is frontmost', () => {
 		// All of them, not a sample: a per-key guard (rather than the single
 		// handler-level bail) would let whichever keys it missed straight
@@ -125,6 +167,7 @@ describe('+layout app-shell shortcuts — defer to a frontmost surface (TASK-243
 			['k', true],
 			['\\', true],
 			['n', true],
+			['c', false],
 			['f', true],
 			['?', false],
 			['Escape', false],

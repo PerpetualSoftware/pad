@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { modKeyLabel } from '$lib/utils/platform';
 	import { dndzone, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -730,7 +731,7 @@
 			<button
 				class="collapse-btn"
 				onclick={() => uiStore.closeTopbar()}
-				title="Hide workspace bar (⌘\)"
+				title="Hide workspace bar ({modKeyLabel('\\')})"
 				aria-label="Hide workspace bar"
 			>
 				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">

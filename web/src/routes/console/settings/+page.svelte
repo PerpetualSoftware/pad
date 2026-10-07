@@ -7,6 +7,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { exportAndDownloadAccountData } from '$lib/utils/artifacts';
 	import Button from '$lib/components/common/Button.svelte';
+	import CharacterShortcutsToggle from '$lib/components/common/CharacterShortcutsToggle.svelte';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
 
 	// Profile
@@ -532,6 +533,15 @@
 						{profileSaving ? 'Saving...' : 'Save Changes'}
 					</Button>
 				</div>
+			</div>
+		</section>
+
+		<!-- Keyboard (BUG-3465): the single-key switch lives here too, because
+		     the shortcuts modal is opened by `?`, which the switch turns off. -->
+		<section class="card">
+			<h2 class="card-title">Keyboard</h2>
+			<div class="card-body">
+				<CharacterShortcutsToggle />
 			</div>
 		</section>
 

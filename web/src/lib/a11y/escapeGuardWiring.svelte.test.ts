@@ -215,9 +215,10 @@ describe('collection route — nav keys are behind the arbitration guard', () =>
 		expect(body).not.toBeNull();
 		const arbitrationAt = body!.search(ARBITRATION_GUARD);
 		const escapeDispatchAt = body!.search(/runTopEscape\s*\(/);
-		// The `j` case is the first arm of the nav switch; `moveBoardFocus` is the
-		// board half. Both must be downstream of the guard.
-		const navAt = body!.search(/case\s+'j'\s*:/);
+		// The `ArrowDown` case is the first arm of the nav switch (j/k/h/l map
+		// onto the arrow cases through characterKey(), BUG-3465); `moveBoardFocus`
+		// is the board half. Both must be downstream of the guard.
+		const navAt = body!.search(/case\s+'ArrowDown'\s*:/);
 		const boardAt = body!.search(/moveBoardFocus\s*\(/);
 		for (const at of [arbitrationAt, escapeDispatchAt, navAt, boardAt]) {
 			expect(at).toBeGreaterThan(-1);

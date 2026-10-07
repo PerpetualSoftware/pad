@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { modKeyLabel } from '$lib/utils/platform';
 	import { page } from '$app/state';
 	import { api, isPlanLimitError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
@@ -726,7 +727,7 @@
 													<div class="expanded-actions">
 														<Button variant="primary" size="sm" disabled={saving || !workspaceStore.canEditItem(item)} title={workspaceStore.canEditItem(item) ? undefined : 'You can no longer edit this convention'} onclick={() => saveEditing(item)}>{saving ? 'Saving...' : 'Save'}</Button>
 														<Button variant="secondary" size="sm" onclick={cancelEditing}>Cancel</Button>
-														<span class="edit-hint">⌘+Enter to save · Esc to cancel</span>
+														<span class="edit-hint">{modKeyLabel('Enter')} to save · Esc to cancel</span>
 													</div>
 												{:else}
 													{#if item.content}
