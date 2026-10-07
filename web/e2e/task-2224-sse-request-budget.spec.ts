@@ -112,19 +112,33 @@ function recorder(page: Page) {
 	const log: string[] = [];
 	const itemsChangesAt: number[] = [];
 	let lastAt = Date.now();
+	// Requests still open (codex r6): a response landing after the count can
+	// issue the next read, so quiet means none in flight AND none started.
+	const open = new Set<unknown>();
+	const isApi = (url: string) => {
+		const p = new URL(url).pathname;
+		return p.startsWith('/api/v1/') && !p.startsWith('/api/v1/events');
+	};
+	page.on('requestfinished', (r) => {
+		if (open.delete(r)) lastAt = Date.now();
+	});
+	page.on('requestfailed', (r) => {
+		if (open.delete(r)) lastAt = Date.now();
+	});
 	page.on('request', (r) => {
 		const u = new URL(r.url());
 		if (!u.pathname.startsWith('/api/v1/') || u.pathname.startsWith('/api/v1/events')) return;
 		const shape = u.pathname.replace(/\/items\/[^/]+/, '/items/:ref').replace(/\/workspaces\/[^/]+/, '/workspaces/:ws');
 		log.push(`${r.method()} ${shape}${u.search.includes('since') ? '?since' : ''}`);
 		if (u.pathname.endsWith('/items-changes')) itemsChangesAt.push(Date.now());
+		if (isApi(r.url())) open.add(r);
 		lastAt = Date.now();
 	});
 	return {
-		/** Wait until the tab has issued no API request for `quietMs` (codex r4: late events must count). */
+		/** Wait until no API request is open and none started or finished for `quietMs` (codex r4, r6). */
 		async quiet(quietMs: number, maxMs: number) {
 			const start = Date.now();
-			while (Date.now() - lastAt < quietMs && Date.now() - start < maxMs) await sleep(200);
+			while ((open.size > 0 || Date.now() - lastAt < quietMs) && Date.now() - start < maxMs) await sleep(200);
 		},
 		/** Was an /items-changes read issued at or after `t`? */
 		readSince(t: number) {
