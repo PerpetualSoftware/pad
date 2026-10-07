@@ -495,7 +495,6 @@
 
 	.email-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.email-input::placeholder {
@@ -519,7 +518,6 @@
 
 	.permission-select:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.share-btn {
@@ -740,7 +738,6 @@
 	}
 
 	.new-link-url:focus {
-		outline: none;
 		border-color: var(--accent-blue);
 	}
 

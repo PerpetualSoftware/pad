@@ -800,7 +800,6 @@
 
 	.qa-label-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.qa-prompt-input {
@@ -822,7 +821,6 @@
 
 	.qa-prompt-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.qa-help {

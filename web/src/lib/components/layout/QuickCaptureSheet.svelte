@@ -195,7 +195,6 @@
 	}
 	.capture-title:focus,
 	.capture-collection:focus {
-		outline: none;
 		border-color: var(--accent-blue);
 	}
 	.capture-actions {

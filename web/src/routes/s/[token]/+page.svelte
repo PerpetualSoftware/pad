@@ -1122,7 +1122,6 @@
 	}
 
 	.password-input:focus {
-		outline: none;
 		border-color: var(--accent-blue);
 	}
 

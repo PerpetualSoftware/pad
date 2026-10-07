@@ -619,7 +619,6 @@
 		border-color: var(--text-muted);
 	}
 	.filter-select:focus {
-		outline: none;
 		border-color: var(--accent-blue);
 	}
 	.view-toggle {

@@ -1035,7 +1035,6 @@
 
 	.name-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.form-group {
@@ -1068,7 +1067,6 @@
 
 	.form-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.form-input::placeholder {

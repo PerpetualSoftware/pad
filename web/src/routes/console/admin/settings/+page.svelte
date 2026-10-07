@@ -809,7 +809,6 @@
 	}
 	.email-field select:focus,
 	.email-field input:focus {
-		outline: none;
 		border-color: var(--accent-blue);
 	}
 	.email-subheading {

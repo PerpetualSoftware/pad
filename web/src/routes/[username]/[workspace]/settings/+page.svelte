@@ -1402,7 +1402,7 @@
 	.context-chip-value { color: var(--text-primary); font-weight: 600; }
 	.context-label { font-size: 0.82em; color: var(--text-secondary); }
 	.context-editor { width: 100%; min-height: 320px; resize: vertical; padding: var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); line-height: 1.5; }
-	.context-editor:focus { outline: none; border-color: var(--accent-blue); }
+	.context-editor:focus { border-color: var(--accent-blue); }
 	.context-help { margin: 0; font-size: 0.8em; color: var(--text-muted); }
 	.context-help code { font-family: var(--font-mono); font-size: 0.95em; }
 	.context-error { margin: 0; font-size: 0.82em; color: var(--accent-red); }
@@ -1465,7 +1465,9 @@
 	.danger-input-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 	.slug-hint { font-size: 0.82em; padding: var(--space-1) var(--space-2); background: var(--bg-tertiary); border-radius: var(--radius-sm); color: var(--text-muted); font-family: var(--font-mono); }
 	.danger-input { flex: 1; min-width: 180px; max-width: 300px; padding: var(--space-2); font-size: 0.88em; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-family: var(--font-mono); }
-	.danger-input:focus { outline: none; border-color: var(--accent-red); }
+	.danger-input:focus { border-color: var(--accent-red); }
+	/* The global focus ring (app.css, TASK-2262) in this field's own red (TASK-3461). */
+	.danger-input:focus-visible { outline-color: var(--accent-red); }
 	.danger-actions { display: flex; gap: var(--space-2); }
 	.section-desc { font-size: 0.85em; color: var(--text-muted); margin-bottom: var(--space-3); }
 </style>

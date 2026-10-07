@@ -714,9 +714,9 @@
 	.filter-bar { display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-4); flex-wrap: wrap; }
 	.search-input { flex: 1; min-width: 160px; padding: var(--space-1) var(--space-3); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85em; color: var(--text-primary); }
 	.search-input::placeholder { color: var(--text-muted); }
-	.search-input:focus { border-color: var(--accent-blue); outline: none; }
+	.search-input:focus { border-color: var(--accent-blue); }
 	.filter-select { padding: var(--space-1) var(--space-3); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.82em; color: var(--text-primary); cursor: pointer; }
-	.filter-select:focus { border-color: var(--accent-blue); outline: none; }
+	.filter-select:focus { border-color: var(--accent-blue); }
 	.cards { display: flex; flex-direction: column; gap: var(--space-3); }
 	.card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-lg); transition: border-color 0.15s; }
 	.card:hover { border-color: var(--accent-blue); }
@@ -750,7 +750,7 @@
 	.form-row { display: flex; flex-direction: column; gap: var(--space-1); }
 	.form-label { font-size: 0.8em; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
 	.form-input { padding: var(--space-2) var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-size: 0.95em; }
-	.form-input:focus, .form-textarea:focus { border-color: var(--accent-blue); outline: none; }
+	.form-input:focus, .form-textarea:focus { border-color: var(--accent-blue); }
 	.form-textarea { padding: var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9em; line-height: 1.6; min-height: 200px; resize: vertical; }
 	.form-actions { display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-4); }
 	@media (max-width: 1024px) {

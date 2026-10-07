@@ -395,7 +395,6 @@
 		color: var(--text-muted);
 	}
 	.search-input:focus {
-		outline: none;
 		border-color: var(--accent, #6366f1);
 	}
 

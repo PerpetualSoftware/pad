@@ -485,7 +485,6 @@
 	.title-input:focus {
 		border-color: var(--accent-blue);
 		background: var(--bg-secondary);
-		outline: none;
 	}
 	.header-actions {
 		display: flex;
@@ -532,7 +531,6 @@
 	}
 	.body-textarea:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 	@media (max-width: 1024px) {
 		.edit-grid {
