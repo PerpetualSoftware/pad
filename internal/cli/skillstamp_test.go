@@ -139,6 +139,12 @@ func TestSkillVersionNewer(t *testing.T) {
 		{"v0.19.0", "dev", false},
 		{"unknown", "v0.18.0", false},
 		{"v0.19", "v0.18.0", false},
+		// Codex r1: SemVer numbers have no size limit.
+		{"v99999999999999999999.0.0", "v1.0.0", true},
+		{"v1.0.0", "v99999999999999999999.0.0", false},
+		{"v1.0.0-rc.99999999999999999999", "v1.0.0-rc.2", true},
+		{"v1.0.0-rc.2", "v1.0.0-rc.99999999999999999999", false},
+		{"v1.0.0-rc.99999999999999999999", "v1.0.0-rc.alpha", false},
 	} {
 		if got := skillVersionNewer(c.stamp, c.running); got != c.want {
 			t.Errorf("newer(%q, %q) = %v, want %v", c.stamp, c.running, got, c.want)

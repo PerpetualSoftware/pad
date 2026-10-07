@@ -77,3 +77,86 @@ func TestBUG3466_InitDoesNotDowngradeANewerSkill(t *testing.T) {
 		t.Fatalf("an older pad rewrote a newer pad's skill:\n%s", got)
 	}
 }
+
+// captureStdout runs fn with os.Stdout redirected and returns what it printed.
+func captureSkillStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = pw
+	done := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		buf := make([]byte, 4096)
+		for {
+			n, err := pr.Read(buf)
+			b.Write(buf[:n])
+			if err != nil {
+				break
+			}
+		}
+		done <- b.String()
+	}()
+	fn()
+	pw.Close()
+	os.Stdout = orig
+	return <-done
+}
+
+// Codex r1: pad workspace init/link skipped every installed skill, so an
+// unedited older copy was never updated there. It now asks the same door.
+func TestBUG3466_WorkspaceInitUpdatesAnOlderUneditedSkill(t *testing.T) {
+	project := setupSkillTest(t)
+	withClosedStdin(t)
+	body := "---\nname: pad\n---\n\nAn older pad's skill.\n"
+	writeSkillFile(t, project, body+testStamp(body, "v0.17.0"))
+	captureSkillStdout(t, offerSkillInstall)
+	got := readSkill(t, project)
+	if strings.Contains(got, "An older pad's skill.") || !strings.Contains(got, "<!-- pad:skill v=v0.18.0 ") {
+		t.Fatalf("workspace init left an unedited older skill in place:\n%s", got)
+	}
+
+	mine := "---\nname: pad\n---\n\nOur own rules.\n"
+	writeSkillFile(t, project, mine)
+	captureSkillStdout(t, offerSkillInstall)
+	if got := readSkill(t, project); got != mine {
+		t.Fatalf("workspace init overwrote an edited skill:\n%s", got)
+	}
+}
+
+// Codex r1: after keeping an edited file, pad agent update must not then say
+// nothing is installed or everything is up to date.
+func TestBUG3466_AgentUpdateDoesNotContradictAKeep(t *testing.T) {
+	project := setupSkillTest(t)
+	writeSkillFile(t, project, "---\nname: pad\n---\n\nOur own rules.\n")
+	out := captureSkillStdout(t, func() { _ = installUpdate(false) })
+	for _, wrong := range []string{"No tools installed", "All installations are up to date"} {
+		if strings.Contains(out, wrong) {
+			t.Errorf("agent update kept an edited file and then said %q:\n%s", wrong, out)
+		}
+	}
+	if !strings.Contains(out, "kept") {
+		t.Errorf("agent update did not say a file was kept:\n%s", out)
+	}
+}
+
+// Codex r1: the status listing names --force for a newer pad's file too.
+func TestBUG3466_ListNamesForceForANewerSkill(t *testing.T) {
+	project := setupSkillTest(t)
+	body := "---\nname: pad\n---\n\nThe skill a newer pad wrote.\n"
+	writeSkillFile(t, project, body+testStamp(body, "v99.0.0"))
+	recordInstallation("claude", claudeSkillPath(project))
+	out := captureSkillStdout(t, func() { _ = installList() })
+	line := ""
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "newer pad") {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "--force") {
+		t.Fatalf("the newer-pad status line names no way to replace it:\n%s", out)
+	}
+}
