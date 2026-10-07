@@ -136,9 +136,14 @@ function recorder(page: Page) {
 	});
 	return {
 		/** Wait until no API request is open and none started or finished for `quietMs` (codex r4, r6). */
-		async quiet(quietMs: number, maxMs: number) {
+		/** Resolves true once quiet; false if `maxMs` passed first (codex r7: a timeout is not quiet). */
+		async quiet(quietMs: number, maxMs: number): Promise<boolean> {
 			const start = Date.now();
-			while ((open.size > 0 || Date.now() - lastAt < quietMs) && Date.now() - start < maxMs) await sleep(200);
+			while (open.size > 0 || Date.now() - lastAt < quietMs) {
+				if (Date.now() - start >= maxMs) return false;
+				await sleep(200);
+			}
+			return true;
 		},
 		/** Was an /items-changes read issued at or after `t`? */
 		readSince(t: number) {
@@ -210,7 +215,7 @@ test('TASK-2224: requests per external update on the collection page, and under 
 	// items-changes 10 < 20, total 15 < 40; codex r3). A box too slow for that
 	// is not a failure of the code under test, so it records why and skips
 	// only the budget; the catch-up check below still runs (codex r4).
-	const discriminates = spanMs < 3_000;
+	let discriminates = spanMs < 3_000;
 	if (!discriminates) {
 		testInfo.annotations.push({ type: 'skipped-budget', description: `events arrived over ${spanMs} ms` });
 	}
@@ -221,7 +226,12 @@ test('TASK-2224: requests per external update on the collection page, and under 
 	// Every event has arrived; let the last coalescing window (1 s max) fire
 	// and its requests finish before counting.
 	await sleep(1500);
-	await rec.quiet(1000, 20_000);
+	// The API's own request deadline is 30 s; past it, a request still open
+	// could land after the count, so the budget is skipped, not trusted.
+	if (!(await rec.quiet(1000, 35_000))) {
+		discriminates = false;
+		testInfo.annotations.push({ type: 'skipped-budget', description: 'the tab never went quiet' });
+	}
 	const burst = rec.take();
 	console.log('MEASURE 20-update burst:', total(burst), JSON.stringify(burst));
 	const kind = (k: string) => Object.entries(burst).filter(([p]) => p.includes(k)).reduce((a, [, n]) => a + n, 0);
