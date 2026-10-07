@@ -101,7 +101,12 @@ test('sidebar footer: Settings is the only shrinkable control in the row', async
 }) => {
 	await page.setViewportSize(DESKTOP);
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
-	await expect(page.locator('.sidebar-footer .footer-row')).toBeVisible();
+	// PREMISE FIRST, as the line-box test above does: the row renders before
+	// the workspace has loaded, and Settings only joins it once
+	// `workspaceStore.current` names the workspace (it is hidden from guests).
+	// Measuring at the row's first paint read the other controls alone, all
+	// `flex-shrink: 0`, and failed with [] (CI run 37248099139, mobile project).
+	await expect(page.locator('.sidebar-footer .footer-row .settings-btn')).toBeVisible();
 
 	const shrinkable = await page.evaluate(() => {
 		const row = document.querySelector('.sidebar-footer .footer-row');
