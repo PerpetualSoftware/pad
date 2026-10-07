@@ -44,46 +44,54 @@ test.describe('TASK-3119: links to the /-/r/ resolver open their target', () => 
 				data: { title: `T3119 subject ${stamp}` },
 			}),
 		);
-		// The decisions the chip reads, as the server serialises them.
-		await page.route(`**/api/v1/workspaces/${ws}/items/*/decisions`, (route) =>
-			route.fulfill({
-				json: {
-					ref: subject.ref,
-					decisions: [
-						{
-							id: 'd1',
-							item_id: 'x',
-							question_set: 'conventions',
-							question_key: `conv:${target.ref}`,
-							kind: 'noul',
-							answer: { type: 'noul', noul: 0.97 },
-							confidence: null,
-							provider: 'typesafe',
-							model: 'jev-1.13.0',
-							evaluated_at: new Date().toISOString(),
-							current: true,
-						},
-					],
-				},
-			}),
-		);
+		try {
+			// The decisions the chip reads, as the server serialises them.
+			await page.route(`**/api/v1/workspaces/${ws}/items/*/decisions`, (route) =>
+				route.fulfill({
+					json: {
+						ref: subject.ref,
+						decisions: [
+							{
+								id: 'd1',
+								item_id: 'x',
+								question_set: 'conventions',
+								question_key: `conv:${target.ref}`,
+								kind: 'noul',
+								answer: { type: 'noul', noul: 0.97 },
+								confidence: null,
+								provider: 'typesafe',
+								model: 'jev-1.13.0',
+								evaluated_at: new Date().toISOString(),
+								current: true,
+							},
+						],
+					},
+				}),
+			);
 
-		await browserLogin(page);
-		await page.goto(`/${fixture.adminUsername}/${ws}/tasks/${subject.ref}`);
-		const chip = page.locator('a.convention-chip');
-		await expect(chip).toHaveText(`Possibly breaks ${target.ref}`, { timeout: 20_000 });
-		await chip.click();
+			await browserLogin(page);
+			await page.goto(`/${fixture.adminUsername}/${ws}/tasks/${subject.ref}`);
+			const chip = page.locator('a.convention-chip');
+			await expect(chip).toHaveText(`Possibly breaks ${target.ref}`, { timeout: 20_000 });
+			await chip.click();
 
-		await page.waitForURL((u) => !u.pathname.startsWith('/-/r/') && u.pathname.endsWith(`/${target.ref}`), {
-			timeout: 20_000,
-		});
-		await expect(page.getByText(target.title).first()).toBeVisible({ timeout: 20_000 });
-		await expect(page.getByText('Could not load item')).toHaveCount(0);
+			await page.waitForURL((u) => !u.pathname.startsWith('/-/r/') && u.pathname.endsWith(`/${target.ref}`), {
+				timeout: 20_000,
+			});
+			await expect(page.getByText(target.title).first()).toBeVisible({ timeout: 20_000 });
+			await expect(page.getByText('Could not load item')).toHaveCount(0);
+		} finally {
+			// The fixture workspace is shared: leave nothing behind.
+			for (const it of [subject, target]) {
+				await request.delete(`/api/v1/workspaces/${ws}/items/${it.slug}`, { headers: h }).catch(() => {});
+			}
+		}
 	});
 
 	test('a cross-workspace wiki-link in a comment opens the other workspace\'s item', async ({ page, fixture, request }) => {
 		const h = { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' };
 		const ws = fixture.workspaceSlug;
+		let subjectSlug = '';
 		const other = `t3119-${test.info().workerIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 		await created(
 			await request.post('/api/v1/workspaces', { headers: h, data: { name: 'T3119 other', slug: other, template: 'startup' } }),
@@ -101,6 +109,7 @@ test.describe('TASK-3119: links to the /-/r/ resolver open their target', () => 
 					data: { title: `T3119 linker ${other}` },
 				}),
 			);
+			subjectSlug = subject.slug;
 			await created(
 				await request.post(`/api/v1/workspaces/${ws}/items/${subject.slug}/comments`, {
 					headers: h,
@@ -121,6 +130,9 @@ test.describe('TASK-3119: links to the /-/r/ resolver open their target', () => 
 			await expect(page.getByText(target.title).first()).toBeVisible({ timeout: 20_000 });
 			await expect(page.getByText('Could not load item')).toHaveCount(0);
 		} finally {
+			if (subjectSlug) {
+				await request.delete(`/api/v1/workspaces/${ws}/items/${subjectSlug}`, { headers: h }).catch(() => {});
+			}
 			await request.delete(`/api/v1/workspaces/${other}`, { headers: h }).catch(() => {});
 		}
 	});
