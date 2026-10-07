@@ -631,3 +631,27 @@ func TestCopyItem_UndecodableSuccessIsNotAmbiguous(t *testing.T) {
 		t.Error("the raw bytes should still be returned so a caller can show them")
 	}
 }
+
+// BUG-3456: a carried number above 2^53 keeps every digit through the
+// preflight decode. Plain json.Unmarshal made it a float64, so the dry run
+// previewed 9007199254740992 for a stored 9007199254740993.
+func TestCopyItemPreflight_KeepsNumberDigits(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"fields":{"carried":[{"key":"n","type":"number","value":9007199254740993,"from":"migrated"}],"dropped":[],"needs_value":[]}}`))
+	}))
+	defer ts.Close()
+
+	c := newCopyTestClient(t, ts)
+	p, _, err := c.CopyItemPreflight("ws", "TASK-1", ItemCopyRequest{TargetWorkspace: "b", TargetCollection: "tasks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Fields.Carried) != 1 {
+		t.Fatalf("carried = %+v", p.Fields.Carried)
+	}
+	got, _ := json.Marshal(p.Fields.Carried[0].Value)
+	if string(got) != "9007199254740993" {
+		t.Fatalf("carried value re-encodes as %s, want 9007199254740993", got)
+	}
+}
