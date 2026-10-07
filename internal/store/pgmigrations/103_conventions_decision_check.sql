@@ -9,8 +9,7 @@ SET schema = jsonb_set(
         'key', 'decision_check',
         'label', 'Convention check',
         'type', 'select',
-        'options', jsonb_build_array('on', 'off'),
-        'default', 'on'
+        'options', jsonb_build_array('on', 'off')
     )
 )
 WHERE traits->'artifact_kind'->>'kind' = 'convention'

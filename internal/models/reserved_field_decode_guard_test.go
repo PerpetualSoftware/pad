@@ -61,12 +61,13 @@ var rawDecodeAllowed = map[string]string{
 	// GENERIC decode helper whose callers choose the concrete type, and none
 	// of them can be converted without breaking every other thing they decode.
 	// A new one shows up here and has to be reasoned about, which is the point.
-	"internal/cli/client.go::result":             "generic HTTP response decoder: the caller supplies the destination, so this call has no schema to strip — a caller that wants an item-field schema must decode one itself",
-	"internal/oauth/storage.go::session":         "fosite session hydration: decodes an OAuth session blob, never a collection schema",
-	"internal/server/server.go::v":               "the shared request-body decoder (BUG-2803): decodes a handler's own input struct, and a handler taking a schema goes through the collection-definition doors above",
-	"scripts/decision-eval/attention/main.go::v": "offline eval tool (TASK-3137): readJSON decodes local `pad item show|comments|history` and activity dumps into items, comments, versions and activity rows; nothing it reads is a collection definition",
-	"internal/models/fields_json.go::v":          "DecodeJSONKeepingNumbers (BUG-3202): the number-preserving decoder for item FIELD blobs and field-value request members on the write doors. Its callers decode item fields, never a collection definition; a schema decoded through it would bypass this guard the same way one decoded through client.go::result would",
-	"internal/server/handlers_bootstrap.go::s":   "trimRedundantSchemaLabels decodes into the parallel bootstrapSchema struct and strips reserved keys in the same loop — the parallel-struct twin of UnmarshalItemFieldSchema, and it cannot call it because the whole point of that struct is a different FieldDef shape",
+	"internal/cli/client.go::result":               "generic HTTP response decoder: the caller supplies the destination, so this call has no schema to strip — a caller that wants an item-field schema must decode one itself",
+	"internal/oauth/storage.go::session":           "fosite session hydration: decodes an OAuth session blob, never a collection schema",
+	"internal/server/server.go::v":                 "the shared request-body decoder (BUG-2803): decodes a handler's own input struct, and a handler taking a schema goes through the collection-definition doors above",
+	"scripts/decision-eval/attention/main.go::v":   "offline eval tool (TASK-3137): readJSON decodes local `pad item show|comments|history` and activity dumps into items, comments, versions and activity rows; nothing it reads is a collection definition",
+	"scripts/decision-eval/conventions/main.go::v": "offline eval tool (TASK-3119): readJSON decodes local `pad item show|comments` dumps, the hand-labelled population and convention bodies into items, comments and labels; nothing it reads is a collection definition",
+	"internal/models/fields_json.go::v":            "DecodeJSONKeepingNumbers (BUG-3202): the number-preserving decoder for item FIELD blobs and field-value request members on the write doors. Its callers decode item fields, never a collection definition; a schema decoded through it would bypass this guard the same way one decoded through client.go::result would",
+	"internal/server/handlers_bootstrap.go::s":     "trimRedundantSchemaLabels decodes into the parallel bootstrapSchema struct and strips reserved keys in the same loop — the parallel-struct twin of UnmarshalItemFieldSchema, and it cannot call it because the whole point of that struct is a different FieldDef shape",
 
 	"internal/server/handlers_collections.go::schema":     "collection create/update INPUT — the declaration is what is being validated, by validateNoReservedFieldKeys",
 	"internal/server/handlers_collections.go::prevSchema": "the grandfather test's own baseline: a stripped prevSchema would reclassify every EXISTING declaration as newly introduced and refuse every update to such a collection",
@@ -559,7 +560,7 @@ func TestGuardAllowListHasNoDeadEntries(t *testing.T) {
 // 22 since BUG-3202 added models/fields_json.go's generic number-preserving
 // decoder, a fourth INTERFACE destination. 25 since TASK-3397 U8b2 added the
 // two app-upgrade DEFINITION decodes in store/app_upgrade.go.
-const rawDecodeSiteCount = 25
+const rawDecodeSiteCount = 26
 
 func TestGuardSeesEveryKnownDecodeSite(t *testing.T) {
 	sites := collectSchemaDecodes(t, repoRoot(t))
