@@ -224,7 +224,6 @@
 		font-size: 0.9em;
 	}
 	.discovery-search:focus {
-		outline: none;
 		border-color: var(--accent-blue);
 	}
 	.discovery-options {

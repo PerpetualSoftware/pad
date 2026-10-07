@@ -141,7 +141,6 @@
 
 	.setting-select:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	@media (max-width: 640px) {

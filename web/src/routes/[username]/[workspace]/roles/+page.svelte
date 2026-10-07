@@ -1236,7 +1236,6 @@
 		width: 100%;
 	}
 	.new-item-title-input:focus {
-		outline: none;
 		border-color: var(--accent-blue);
 	}
 	.new-item-create-btn {

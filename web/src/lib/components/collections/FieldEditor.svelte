@@ -704,7 +704,6 @@
 
 	.field-label-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	/* ── Key block (new fields only) ───────────────────────────────────────── */
@@ -755,7 +754,6 @@
 		border-color: var(--accent-blue);
 		background: var(--bg-secondary);
 		color: var(--text-primary);
-		outline: none;
 	}
 
 	.field-key-input.has-error {
@@ -796,7 +794,6 @@
 
 	.field-type-select:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.field-remove-btn {
@@ -935,7 +932,6 @@
 
 	.option-name-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.option-done-toggle {
@@ -1167,7 +1163,6 @@
 
 	.advanced-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.advanced-input:disabled {

@@ -63,7 +63,6 @@
 	}
 	.raw-textarea:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	/* Print: let the raw markdown source flow naturally — no textarea

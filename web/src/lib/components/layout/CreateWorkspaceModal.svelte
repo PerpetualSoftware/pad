@@ -610,7 +610,7 @@
 		color: var(--text-primary);
 		font-size: 0.9em;
 	}
-	.modal-body input:focus { outline: none; border-color: var(--accent-blue); }
+	.modal-body input:focus { border-color: var(--accent-blue); }
 
 	.field-optional {
 		text-transform: none;
@@ -630,7 +630,7 @@
 		font-family: inherit;
 		resize: vertical;
 	}
-	.desc-input:focus { outline: none; border-color: var(--accent-blue); }
+	.desc-input:focus { border-color: var(--accent-blue); }
 	.field-hint {
 		margin: calc(-1 * var(--space-1)) 0 0;
 		font-size: 0.78em;

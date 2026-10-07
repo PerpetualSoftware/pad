@@ -759,7 +759,6 @@
 
 	.name-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	/* -- Description ------------------------------------------------------- */
@@ -780,7 +779,6 @@
 
 	.desc-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.desc-input::placeholder {

@@ -345,7 +345,6 @@
 
 	.qa-label-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	.qa-card-btns {
@@ -401,7 +400,6 @@
 
 	.qa-prompt-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	/* ── Live preview ─────────────────────────────────────────────────────── */

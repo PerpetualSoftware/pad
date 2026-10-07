@@ -675,7 +675,6 @@
 	.form-input:focus,
 	.form-select:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 	.form-input[aria-invalid='true'] {
 		border-color: var(--accent-orange);

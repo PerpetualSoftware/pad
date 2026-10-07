@@ -383,7 +383,6 @@
 	}
 	.parent-filter:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 
 	/* Mobile: chip trigger for the parent filter. Styled to match the
@@ -549,6 +548,5 @@
 
 	.search-input:focus {
 		border-color: var(--accent-blue);
-		outline: none;
 	}
 </style>
