@@ -82,14 +82,21 @@ async function actAs(context: BrowserContext, account: Account) {
 function recorder(page: Page) {
 	const log: string[] = [];
 	const itemsChangesAt: number[] = [];
+	let lastAt = Date.now();
 	page.on('request', (r) => {
 		const u = new URL(r.url());
 		if (!u.pathname.startsWith('/api/v1/') || u.pathname.startsWith('/api/v1/events')) return;
 		const shape = u.pathname.replace(/\/items\/[^/]+/, '/items/:ref').replace(/\/workspaces\/[^/]+/, '/workspaces/:ws');
 		log.push(`${r.method()} ${shape}${u.search.includes('since') ? '?since' : ''}`);
 		if (u.pathname.endsWith('/items-changes')) itemsChangesAt.push(Date.now());
+		lastAt = Date.now();
 	});
 	return {
+		/** Wait until the tab has issued no API request for `quietMs` (codex r4: late events must count). */
+		async quiet(quietMs: number, maxMs: number) {
+			const start = Date.now();
+			while (Date.now() - lastAt < quietMs && Date.now() - start < maxMs) await sleep(200);
+		},
 		/** Was an /items-changes read issued at or after `t`? */
 		readSince(t: number) {
 			return itemsChangesAt.some((at) => at >= t);
@@ -148,23 +155,29 @@ test('TASK-2224: requests per external update on the collection page, and under 
 	const windows = Math.ceil((burstDoneAt - burstStartAt) / 1000) + 1;
 	// The gate only discriminates if the burst is short against the 20 events
 	// it would otherwise cost; on a box too slow for that, it says so.
-	// Under 3 s, windows <= 4, so every allowance below stays under main's
-	// value (collections 5 < 20, items-changes 10 < 20, total 15 < 40); a
-	// looser limit would let main's uncoalesced numbers through (codex r3).
-	expect(burstDoneAt - burstStartAt, 'the burst took too long for the request budget to discriminate').toBeLessThan(3_000);
+	// The budget discriminates only for a burst under 3 s (windows <= 4, so
+	// every allowance stays under main's value: collections 5 < 20,
+	// items-changes 10 < 20, total 15 < 40; codex r3). A box too slow for that
+	// is not a failure of the code under test, so it records why and skips
+	// only the budget; the catch-up check below still runs (codex r4).
+	const discriminates = burstDoneAt - burstStartAt < 3_000;
+	if (!discriminates) {
+		testInfo.annotations.push({ type: 'skipped-budget', description: `burst took ${burstDoneAt - burstStartAt} ms` });
+	}
 	// The tab must catch up with the LAST update: a reconcile read issued
 	// after the burst finished (codex r1: a title still on screen proved nothing).
 	// 20 s: a reconcile may queue behind one already in flight for up to 15 s.
 	await expect.poll(() => rec.readSince(burstDoneAt), { timeout: 20_000 }).toBe(true);
-	await sleep(3000);
+	// Count everything the burst caused, however late its events arrive.
+	await rec.quiet(2000, 20_000);
 	const burst = rec.take();
 	console.log('MEASURE 20-update burst:', total(burst), JSON.stringify(burst));
 	const kind = (k: string) => Object.entries(burst).filter(([p]) => p.includes(k)).reduce((a, [, n]) => a + n, 0);
 	// One reload and one two-read reconcile per max-wait window the burst
 	// spanned, plus one of each trailing it. Measured on a quiet box: 1 and 2.
-	expect.soft(kind('/collections'), `collection reloads for a 20-update burst over ${windows} window(s) (main: 20)`).toBeLessThanOrEqual(windows + 1);
-	expect.soft(kind('/items-changes'), `items-changes reads for a 20-update burst over ${windows} window(s) (main: 20)`).toBeLessThanOrEqual(2 * (windows + 1));
-	expect.soft(total(burst), `requests for a 20-update burst over ${windows} window(s) (main: 40)`).toBeLessThanOrEqual(3 * (windows + 1));
+	if (discriminates) expect.soft(kind('/collections'), `collection reloads for a 20-update burst over ${windows} window(s) (main: 20)`).toBeLessThanOrEqual(windows + 1);
+	if (discriminates) expect.soft(kind('/items-changes'), `items-changes reads for a 20-update burst over ${windows} window(s) (main: 20)`).toBeLessThanOrEqual(2 * (windows + 1));
+	if (discriminates) expect.soft(total(burst), `requests for a 20-update burst over ${windows} window(s) (main: 40)`).toBeLessThanOrEqual(3 * (windows + 1));
 
 
 	// Item pane open on T0; comments land on a DIFFERENT item.

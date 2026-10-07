@@ -48,8 +48,12 @@ export function createKeyedCoalescer<K, T>(
 			set!.delete(p);
 			if (set!.size === 0 && running.get(key) === set) running.delete(key);
 		};
-		// Settling an already-rejected (cancelled) promise is a no-op.
-		fn(key).then(
+		// Settling an already-rejected (cancelled) promise is a no-op. Invoked
+		// inside a promise so a synchronous throw rejects the callers too
+		// (codex r4), rather than escaping the timer and stranding them.
+		Promise.resolve()
+			.then(() => fn(key))
+			.then(
 			(v) => {
 				done();
 				p.resolve(v);
