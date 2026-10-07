@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 // BUG-3466: pad init used to rewrite every installed skill file that differed
@@ -159,4 +161,46 @@ func TestBUG3466_ListNamesForceForANewerSkill(t *testing.T) {
 	if !strings.Contains(line, "--force") {
 		t.Fatalf("the newer-pad status line names no way to replace it:\n%s", out)
 	}
+}
+
+// Codex r2: the local part of --list asks the same decision, so an edited
+// committed skill in a fresh checkout (nothing in the registry) is not shown
+// as healthy.
+func TestBUG3466_ListFlagsAnUntrackedEditedSkill(t *testing.T) {
+	project := setupSkillTest(t)
+	writeSkillFile(t, project, "---\nname: pad\n---\n\nOur own rules.\n")
+	out := captureSkillStdout(t, func() { _ = installList() })
+	if !strings.Contains(out, "edited") || !strings.Contains(out, "--force") {
+		t.Fatalf("an untracked edited skill was listed as healthy:\n%s", out)
+	}
+}
+
+// Codex r2: an untracked skill that is already current is installed, so
+// agent update must not say nothing is installed; and it is recorded.
+func TestBUG3466_UpdateCountsAnUntrackedCurrentSkill(t *testing.T) {
+	_ = setupSkillTest(t)
+	if _, err := writeSkill(*cliToolClaude(), false); err != nil {
+		t.Fatal(err)
+	}
+	// Forget the registry entry the install made.
+	home, _ := os.UserHomeDir()
+	_ = os.Remove(filepath.Join(home, ".pad", "installations.json"))
+	out := captureSkillStdout(t, func() { _ = installUpdate(false) })
+	if strings.Contains(out, "No tools installed") {
+		t.Fatalf("agent update said nothing is installed beside a current skill:\n%s", out)
+	}
+	reg, err := loadRegistryForTest()
+	if err != nil || len(reg) == 0 {
+		t.Fatalf("a current skill was not recorded by agent update: %v %v", reg, err)
+	}
+}
+
+func cliToolClaude() *cli.AgentTool { return cli.ResolveTool("claude") }
+
+func loadRegistryForTest() ([]cli.Installation, error) {
+	reg, err := cli.LoadRegistry()
+	if err != nil {
+		return nil, err
+	}
+	return reg.Installations, nil
 }
