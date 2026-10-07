@@ -77,6 +77,35 @@ async function createWorkspace(account: Account, name: string): Promise<string> 
 async function actAs(context: BrowserContext, account: Account) {
 	await context.setExtraHTTPHeaders({ Authorization: `Bearer ${account.token}` });
 	await quietCrossActorToasts(context);
+	// Timestamp every SSE event the PAGE receives, by type (codex r5): the
+	// budget's windows are decided by when events arrive in the browser, not
+	// by when the REST calls that caused them returned.
+	await context.addInitScript(() => {
+		const w = window as unknown as { __sseArrivals: Array<[string, number]> };
+		w.__sseArrivals = [];
+		const add = EventSource.prototype.addEventListener;
+		EventSource.prototype.addEventListener = function (this: EventSource, type: string, listener: unknown, opts?: unknown) {
+			if (typeof listener === 'function') {
+				const inner = listener as (e: Event) => void;
+				const wrapped = function (this: EventSource, e: Event) {
+					w.__sseArrivals.push([type, Date.now()]);
+					return inner.call(this, e);
+				};
+				return add.call(this, type, wrapped as EventListener, opts as AddEventListenerOptions);
+			}
+			return add.call(this, type, listener as EventListener, opts as AddEventListenerOptions);
+		} as typeof EventSource.prototype.addEventListener;
+	});
+}
+
+/** Arrival times of `type` events delivered to the page since `since` (page clock). */
+async function arrivals(page: Page, type: string, since: number): Promise<number[]> {
+	return page.evaluate(
+		([t, s]) => (window as unknown as { __sseArrivals: Array<[string, number]> }).__sseArrivals
+			.filter(([k, at]) => k === t && at >= s)
+			.map(([, at]) => at),
+		[type, since] as [string, number],
+	);
 }
 
 function recorder(page: Page) {
@@ -142,34 +171,43 @@ test('TASK-2224: requests per external update on the collection page, and under 
 	expect(total(one), 'one external update').toBeLessThanOrEqual(3);
 	expect(total(one), 'control: the tab heard the update at all').toBeGreaterThan(0);
 
-	// Concurrently. The server may still spread the commits (and their events)
-	// on a slow box, and every max-wait window (1 s) is a legitimate run, so
-	// the bounds below scale with how long the burst actually took (codex r2).
-	const burstStartAt = Date.now();
+	// Concurrently. The server and the browser may still spread the events on
+	// a slow box, and every max-wait window (1 s) is a legitimate run, so the
+	// bounds below scale with how the 20 events actually ARRIVED (codex r5).
+	const pageNow = () => page.evaluate(() => Date.now());
+	const burstStartAt = await pageNow();
 	await Promise.all(
 		slugs.slice(1, 21).map(async (slug) =>
 			ok(await account.api.patch(`/api/v1/workspaces/${ws}/items/${slug}`, { data: { fields_patch: { status: 'in-progress' } } }), 'burst')
 		)
 	);
-	const burstDoneAt = Date.now();
-	const windows = Math.ceil((burstDoneAt - burstStartAt) / 1000) + 1;
+	// All 20 delivered to the page, then the windows from first to last arrival.
+	let arrived: number[] = [];
+	await expect
+		.poll(async () => (arrived = await arrivals(page, 'item_updated', burstStartAt)).length, { timeout: 20_000 })
+		.toBeGreaterThanOrEqual(20);
+	const spanMs = Math.max(...arrived) - Math.min(...arrived);
+	const windows = Math.ceil(spanMs / 1000) + 1;
+	const burstDoneAt = Math.max(...arrived);
 	// The gate only discriminates if the burst is short against the 20 events
 	// it would otherwise cost; on a box too slow for that, it says so.
-	// The budget discriminates only for a burst under 3 s (windows <= 4, so
-	// every allowance stays under main's value: collections 5 < 20,
+	// The budget discriminates only for events delivered within 3 s (windows
+	// <= 4, so every allowance stays under main's value: collections 5 < 20,
 	// items-changes 10 < 20, total 15 < 40; codex r3). A box too slow for that
 	// is not a failure of the code under test, so it records why and skips
 	// only the budget; the catch-up check below still runs (codex r4).
-	const discriminates = burstDoneAt - burstStartAt < 3_000;
+	const discriminates = spanMs < 3_000;
 	if (!discriminates) {
-		testInfo.annotations.push({ type: 'skipped-budget', description: `burst took ${burstDoneAt - burstStartAt} ms` });
+		testInfo.annotations.push({ type: 'skipped-budget', description: `events arrived over ${spanMs} ms` });
 	}
 	// The tab must catch up with the LAST update: a reconcile read issued
 	// after the burst finished (codex r1: a title still on screen proved nothing).
 	// 20 s: a reconcile may queue behind one already in flight for up to 15 s.
 	await expect.poll(() => rec.readSince(burstDoneAt), { timeout: 20_000 }).toBe(true);
-	// Count everything the burst caused, however late its events arrive.
-	await rec.quiet(2000, 20_000);
+	// Every event has arrived; let the last coalescing window (1 s max) fire
+	// and its requests finish before counting.
+	await sleep(1500);
+	await rec.quiet(1000, 20_000);
 	const burst = rec.take();
 	console.log('MEASURE 20-update burst:', total(burst), JSON.stringify(burst));
 	const kind = (k: string) => Object.entries(burst).filter(([p]) => p.includes(k)).reduce((a, [, n]) => a + n, 0);
