@@ -720,6 +720,8 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	// traffic until PLAN-2558 S6 (TASK-2591) reworded it and bumped the
 	// plugin version — installed plugins are version-pinned at install
 	// (live-proven day-33), so the bump is what made the fix reach users.
+	// The manifest no longer carries a version (BUG-3463), so an update
+	// now follows the commit that changed plugin/.
 
 	// Push (IDEA-2544 Phase 1) is semantically DIFFERENT from assignment,
 	// not just a same-shaped variant, and that difference is why this
