@@ -442,7 +442,12 @@ type Metrics struct {
 	// PlanWritesTotal counts /admin/plan writes by source and outcome
 	// (applied / source / stale_revision / no_revision for a stripe write
 	// that applied without one), BUG-3356.
-	PlanWritesTotal            *prometheus.CounterVec
+	PlanWritesTotal *prometheus.CounterVec
+	// DecisionCallsTotal and DecisionTokensTotal count decision-provider
+	// calls and their tokens by question set (TASK-3119): what a set costs
+	// per write, visible before any rollout decision.
+	DecisionCallsTotal         *prometheus.CounterVec
+	DecisionTokensTotal        *prometheus.CounterVec
 	OAuthFlowDuration          *prometheus.HistogramVec
 	OAuthTokenRevocationsTotal *prometheus.CounterVec
 	OAuthTokenTTLSeconds       prometheus.Histogram
@@ -587,6 +592,15 @@ func New() *Metrics {
 		Name: "pad_plan_writes_total",
 		Help: "Writes to /admin/plan by source and outcome (applied, refused by the source rule or as a stale revision, or a stripe write applied with no revision).",
 	}, []string{"source", "outcome"})
+
+	decisionCallsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_decision_calls_total",
+		Help: "Decision-provider calls by question set.",
+	}, []string{"set"})
+	decisionTokensTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_decision_tokens_total",
+		Help: "Decision-provider tokens by question set and direction (input, output).",
+	}, []string{"set", "direction"})
 
 	oauthResourceMissingTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_oauth_resource_missing_total",
@@ -753,6 +767,8 @@ func New() *Metrics {
 		oauthFlowsTotal,
 		oauthResourceMissingTotal,
 		planWritesTotal,
+		decisionCallsTotal,
+		decisionTokensTotal,
 		oauthFlowDuration,
 		oauthTokenRevocationsTotal,
 		oauthTokenTTLSeconds,
@@ -798,6 +814,8 @@ func New() *Metrics {
 		OAuthFlowsTotal:              oauthFlowsTotal,
 		OAuthResourceMissingTotal:    oauthResourceMissingTotal,
 		PlanWritesTotal:              planWritesTotal,
+		DecisionCallsTotal:           decisionCallsTotal,
+		DecisionTokensTotal:          decisionTokensTotal,
 		OAuthFlowDuration:            oauthFlowDuration,
 		OAuthTokenRevocationsTotal:   oauthTokenRevocationsTotal,
 		OAuthTokenTTLSeconds:         oauthTokenTTLSeconds,

@@ -518,6 +518,16 @@ func conventionsCollection(sortOrder int, triggerOptions, scopeOptions []string)
 					Label: "Role",
 					Type:  "text",
 				},
+				// TASK-3119: whether the decision provider checks items
+				// against this convention ("Possibly breaks CONVE-N"). On
+				// unless set off (Dave's opt-out ruling); absent reads as on.
+				{
+					Key:     "decision_check",
+					Label:   "Convention check",
+					Type:    "select",
+					Options: []string{"on", "off"},
+					Default: "on",
+				},
 			},
 		},
 		Settings: models.CollectionSettings{

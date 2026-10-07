@@ -49,6 +49,24 @@ type QuestionSet struct {
 	// item's job is dropped without a provider call; the next write
 	// re-enqueues it, so an item reopened later is evaluated then.
 	Eligible func(item *models.Item, coll *models.Collection) bool
+
+	// Resolve, when set, supplies the questions per WORKSPACE at evaluation
+	// time, in place of Questions (TASK-3119: one question per active
+	// convention, which change when a convention is edited or switched off).
+	// It is called on every evaluation and every currency check, so an
+	// answer to a question no longer asked is never current. An empty map
+	// means nothing to ask: the job completes with no provider call.
+	Resolve func(ctx context.Context, s *store.Store, workspaceID string) (map[string]Question, error)
+
+	// WithLinks adds the item's parent and blocking links to the state
+	// (TASK-3119: a convention whose subject is a relation cannot be judged
+	// without them). Only a set that asks for it gets them: the shared
+	// builder's bytes, and so every other set's state hashes, are unchanged.
+	WithLinks bool
+
+	// MaxPerCall bounds the questions sent in one provider call; a larger
+	// set is split into several calls. Zero sends them all in one.
+	MaxPerCall int
 }
 
 func (qs QuestionSet) appliesTo(collectionSlug string) bool {
@@ -79,8 +97,11 @@ func (r *Registry) Register(qs QuestionSet) error {
 	if qs.Name == "" {
 		return errors.New("decision: question set has no name")
 	}
-	if len(qs.Questions) == 0 {
+	if len(qs.Questions) == 0 && qs.Resolve == nil {
 		return fmt.Errorf("decision: question set %q has no questions", qs.Name)
+	}
+	if len(qs.Questions) > 0 && qs.Resolve != nil {
+		return fmt.Errorf("decision: question set %q has both Questions and Resolve", qs.Name)
 	}
 	for key, q := range qs.Questions {
 		if key == "" {
@@ -153,6 +174,19 @@ type ItemState struct {
 	Fields     map[string]any    `json:"fields"`
 	Body       string            `json:"body"`
 	Trail      []ItemStateRemark `json:"recent_trail"`
+	// Links is present only for a set built WithLinks (TASK-3119), and then
+	// always, as [] when the item has none: "this item has no parent" is
+	// exactly what a relation convention needs to read. A pointer so nil
+	// is omitted and every other set's bytes stay as they were.
+	Links *[]ItemStateLink `json:"links,omitempty"`
+}
+
+// ItemStateLink is one of the item's parent or blocking links, as the item
+// sees it: relation is "parent", "blocks" or "blocked_by".
+type ItemStateLink struct {
+	Relation string `json:"relation"`
+	Ref      string `json:"ref"`
+	Title    string `json:"title"`
 }
 
 // ItemStateRemark is one trail comment. The timestamp is included because
@@ -187,6 +221,19 @@ type BuiltState struct {
 // nothing else — a role-board reorder, a wiki-link re-resolution. Including
 // them would make those writes cost a provider call (TASK-3117 ruling 2).
 func BuildItemState(item *models.Item, comments []models.Comment) (BuiltState, error) {
+	return buildItemState(item, comments, nil)
+}
+
+// BuildItemStateWithLinks is BuildItemState plus the item's links, for a set
+// built WithLinks. links may be empty but not nil: the member is then [].
+func BuildItemStateWithLinks(item *models.Item, comments []models.Comment, links []ItemStateLink) (BuiltState, error) {
+	if links == nil {
+		links = []ItemStateLink{}
+	}
+	return buildItemState(item, comments, &links)
+}
+
+func buildItemState(item *models.Item, comments []models.Comment, links *[]ItemStateLink) (BuiltState, error) {
 	fields := map[string]any{}
 	if item.Fields != "" {
 		dec := json.NewDecoder(strings.NewReader(item.Fields))
@@ -202,6 +249,7 @@ func BuildItemState(item *models.Item, comments []models.Comment) (BuiltState, e
 		Fields:     fields,
 		Body:       body,
 		Trail:      []ItemStateRemark{},
+		Links:      links,
 	}
 	if len(comments) > RecentTrailWindow {
 		comments = comments[len(comments)-RecentTrailWindow:]
@@ -269,6 +317,20 @@ type Runner struct {
 	// before the final liveness check that precedes the provider call, so a
 	// test can land a delete in exactly the window that check exists for.
 	beforeAsk func()
+
+	// usage, when set, is told what every provider call consumed, by set
+	// (TASK-3119: the per-write spend must be visible before any Cloud
+	// rollout). The server wires it to its metrics.
+	usage func(set string, u Usage)
+}
+
+// SetUsageObserver installs fn, called after every provider call with the
+// set's name and the call's usage. nil removes it. Not safe to call while
+// jobs run; the server sets it once at startup.
+func (r *Runner) SetUsageObserver(fn func(set string, u Usage)) {
+	if r != nil {
+		r.usage = fn
+	}
 }
 
 // NewRunner returns a runner, or nil when provider is nil — the configured-off
@@ -336,8 +398,14 @@ var ErrUnknownSet = errors.New("decision: question set is not registered")
 // CURRENT collection — the item moved after the job was owed: dropped.
 var ErrSetNotApplicable = errors.New("decision: question set does not apply to the item's collection")
 
-// State builds the item's current state.
+// State builds the item's current state, as a set without links sees it.
 func (r *Runner) State(itemID string) (*models.Item, BuiltState, error) {
+	return r.stateFor(itemID, QuestionSet{})
+}
+
+// stateFor builds the item's current state as qs sees it: with its links
+// when qs is WithLinks.
+func (r *Runner) stateFor(itemID string, qs QuestionSet) (*models.Item, BuiltState, error) {
 	item, err := r.store.GetItem(itemID)
 	if err != nil {
 		return nil, BuiltState{}, fmt.Errorf("decision: read item %s: %w", itemID, err)
@@ -349,8 +417,68 @@ func (r *Runner) State(itemID string) (*models.Item, BuiltState, error) {
 	if err != nil {
 		return nil, BuiltState{}, err
 	}
-	st, err := BuildItemState(item, comments)
+	if !qs.WithLinks {
+		st, err := BuildItemState(item, comments)
+		return item, st, err
+	}
+	links, err := r.stateLinks(itemID)
+	if err != nil {
+		return nil, BuiltState{}, err
+	}
+	st, err := BuildItemStateWithLinks(item, comments, links)
 	return item, st, err
+}
+
+// stateLinks is the item's parent and blocking links as the item sees them,
+// in a fixed order so the hash moves only when the links do.
+func (r *Runner) stateLinks(itemID string) ([]ItemStateLink, error) {
+	rows, err := r.store.GetItemLinks(itemID)
+	if err != nil {
+		return nil, fmt.Errorf("decision: read links of %s: %w", itemID, err)
+	}
+	out := []ItemStateLink{}
+	for _, l := range rows {
+		switch {
+		case l.LinkType == models.ItemLinkTypeParent && l.SourceID == itemID:
+			out = append(out, ItemStateLink{Relation: "parent", Ref: l.TargetRef, Title: l.TargetTitle})
+		case l.LinkType == models.ItemLinkTypeBlocks && l.SourceID == itemID:
+			out = append(out, ItemStateLink{Relation: "blocks", Ref: l.TargetRef, Title: l.TargetTitle})
+		case l.LinkType == models.ItemLinkTypeBlocks && l.TargetID == itemID:
+			out = append(out, ItemStateLink{Relation: "blocked_by", Ref: l.SourceRef, Title: l.SourceTitle})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Relation != out[j].Relation {
+			return out[i].Relation < out[j].Relation
+		}
+		if out[i].Ref != out[j].Ref {
+			return out[i].Ref < out[j].Ref
+		}
+		return out[i].Title < out[j].Title
+	})
+	return out, nil
+}
+
+// questionsFor is the set's questions for the item's workspace now: its
+// fixed Questions, or what Resolve returns. Each resolved question is
+// validated, so a malformed one fails the evaluation instead of being sent.
+func (r *Runner) questionsFor(ctx context.Context, qs QuestionSet, workspaceID string) (map[string]Question, error) {
+	if qs.Resolve == nil {
+		return qs.Questions, nil
+	}
+	qmap, err := qs.Resolve(ctx, r.store, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("decision: resolve set %q: %w", qs.Name, err)
+	}
+	for k, q := range qmap {
+		if k == "" {
+			return nil, fmt.Errorf("decision: set %q resolved an empty question key", qs.Name)
+		}
+		if err := q.Validate(); err != nil {
+			return nil, fmt.Errorf("decision: set %q, question %q: %w", qs.Name, k, err)
+		}
+	}
+	return qmap, nil
 }
 
 // Evaluate asks the named set about the item, unless answers for its current
@@ -363,7 +491,7 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 	if !ok {
 		return false, ErrUnknownSet
 	}
-	item, st, err := r.State(itemID)
+	item, st, err := r.stateFor(itemID, qs)
 	if err != nil {
 		return false, err
 	}
@@ -376,9 +504,18 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 	} else if !ok {
 		return false, ErrSetNotApplicable
 	}
-	keys := make([]string, 0, len(qs.Questions))
-	qhash := make(map[string]string, len(qs.Questions))
-	for k, q := range qs.Questions {
+	questions, err := r.questionsFor(ctx, qs, item.WorkspaceID)
+	if err != nil {
+		return false, err
+	}
+	if len(questions) == 0 {
+		// Nothing to ask in this workspace now (no convention in scope):
+		// the job is done, with no call.
+		return false, nil
+	}
+	keys := make([]string, 0, len(questions))
+	qhash := make(map[string]string, len(questions))
+	for k, q := range questions {
 		keys = append(keys, k)
 		qhash[k] = QuestionFingerprint(r.provider.Model(), q)
 	}
@@ -414,9 +551,30 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 	if !wsLive {
 		return false, ErrWorkspaceDeleted
 	}
-	answers, usage, err := r.provider.Ask(ctx, st.Bytes, qs.Questions)
-	if err != nil {
-		return true, err
+	// One call, or several of at most MaxPerCall questions each (in key
+	// order, so a set is always split the same way). Rows are written only
+	// once every call has answered: a partial set would fail the idempotency
+	// check and be re-asked in full anyway.
+	answers := make(map[string]Answer, len(keys))
+	var usage Usage
+	for _, chunk := range chunkKeys(keys, qs.MaxPerCall) {
+		cq := make(map[string]Question, len(chunk))
+		for _, k := range chunk {
+			cq[k] = questions[k]
+		}
+		got, u, err := r.provider.Ask(ctx, st.Bytes, cq)
+		if r.usage != nil {
+			r.usage(qs.Name, u)
+		}
+		if err != nil {
+			return true, err
+		}
+		for k, a := range got {
+			answers[k] = a
+		}
+		usage.InputTokens += u.InputTokens
+		usage.OutputTokens += u.OutputTokens
+		usage.StateTruncated = usage.StateTruncated || u.StateTruncated
 	}
 	rows := make([]models.ItemDecision, 0, len(answers))
 	for _, key := range keys {
@@ -491,12 +649,42 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 	if len(rows) == 0 {
 		return []models.ItemDecision{}, nil
 	}
-	item, st, err := r.State(itemID)
+	item, _, err := r.State(itemID)
 	if err != nil {
 		if errors.Is(err, ErrItemGone) {
 			return []models.ItemDecision{}, nil
 		}
 		return nil, err
+	}
+	// Each set is judged against ITS state (with links or not) and ITS
+	// questions as they stand now (a resolved set re-resolves), built once
+	// per set.
+	type setNow struct {
+		st        BuiltState
+		questions map[string]Question
+		ok        bool
+	}
+	nows := map[string]*setNow{}
+	nowFor := func(name string) (*setNow, error) {
+		if n, seen := nows[name]; seen {
+			return n, nil
+		}
+		n := &setNow{}
+		nows[name] = n
+		qs, registered := r.registry.Get(name)
+		if !registered {
+			return n, nil
+		}
+		_, st, err := r.stateFor(itemID, qs)
+		if err != nil {
+			return nil, err
+		}
+		qm, err := r.questionsFor(context.Background(), qs, item.WorkspaceID)
+		if err != nil {
+			return nil, err
+		}
+		n.st, n.questions, n.ok = st, qm, true
+		return n, nil
 	}
 	model := r.provider.Model()
 	applies := map[string]bool{}
@@ -508,16 +696,20 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 		// the state hash: a collection schema edit can make an item terminal,
 		// and so ineligible, without changing a byte of its state (codex
 		// round 2 on TASK-3118).
+		now, err := nowFor(rows[i].QuestionSet)
+		if err != nil {
+			return nil, err
+		}
 		qhashNow := ""
-		qs, registered := r.registry.Get(rows[i].QuestionSet)
-		if registered {
-			if q, ok := qs.Questions[rows[i].QuestionKey]; ok {
+		if now.ok {
+			if q, ok := now.questions[rows[i].QuestionKey]; ok {
 				qhashNow = QuestionFingerprint(model, q)
 			}
 		}
-		if !(rows[i].StateHash == st.Hash && qhashNow != "" && rows[i].QuestionHash == qhashNow) {
+		if !(now.ok && rows[i].StateHash == now.st.Hash && qhashNow != "" && rows[i].QuestionHash == qhashNow) {
 			continue
 		}
+		qs, _ := r.registry.Get(rows[i].QuestionSet)
 		ok, seen := applies[qs.Name]
 		if !seen {
 			ok, err = r.appliesNow(qs, item)
@@ -664,4 +856,17 @@ func (r *Runner) release(j store.DecisionJob) {
 	if err := r.store.ReleaseDecisionJob(j); err != nil {
 		slog.Error("decision job not released", "item_id", j.ItemID, "question_set", j.QuestionSet, "error", err)
 	}
+}
+
+// chunkKeys splits keys into runs of at most n; n <= 0 is one run.
+func chunkKeys(keys []string, n int) [][]string {
+	if n <= 0 || len(keys) <= n {
+		return [][]string{keys}
+	}
+	var out [][]string
+	for len(keys) > n {
+		out = append(out, keys[:n])
+		keys = keys[n:]
+	}
+	return append(out, keys)
 }

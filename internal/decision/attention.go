@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
@@ -104,6 +105,9 @@ func ProductionRegistry() (*Registry, error) {
 	if err := reg.Register(AttentionSet()); err != nil {
 		return nil, err
 	}
+	if err := reg.Register(ConventionsSet()); err != nil {
+		return nil, err
+	}
 	return reg, nil
 }
 
@@ -136,8 +140,14 @@ func (r *Runner) WorkspaceFlags(workspaceID, setName string, threshold float64) 
 		return nil, false, ErrUnknownSet
 	}
 	model := r.provider.Model()
-	qhashNow := make(map[string]string, len(qs.Questions))
-	for k, q := range qs.Questions {
+	// The set's questions as they stand now: fixed, or resolved for this
+	// workspace (TASK-3119).
+	questions, err := r.questionsFor(context.Background(), qs, workspaceID)
+	if err != nil {
+		return nil, false, err
+	}
+	qhashNow := make(map[string]string, len(questions))
+	for k, q := range questions {
 		qhashNow[k] = QuestionFingerprint(model, q)
 	}
 	rows, err := r.store.LatestWorkspaceDecisions(workspaceID, setName)
@@ -167,7 +177,7 @@ func (r *Runner) WorkspaceFlags(workspaceID, setName string, threshold float64) 
 	}
 	flags = make(map[string]map[string]float64)
 	for _, itemID := range order {
-		item, st, serr := r.State(itemID)
+		item, st, serr := r.stateFor(itemID, qs)
 		if errors.Is(serr, ErrItemGone) {
 			continue
 		}
