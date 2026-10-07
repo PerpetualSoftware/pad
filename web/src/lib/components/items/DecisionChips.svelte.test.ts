@@ -103,4 +103,18 @@ describe('DecisionChips', () => {
 		await settle();
 		expect(document.querySelector('.decision-chips')).not.toBeNull();
 	});
+
+	it('TASK-3119: a convention break is a "Possibly breaks" link; a low or absent one shows nothing', async () => {
+		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
+		flushSync();
+		const c = (key: string, noul: number): ItemDecision => ({ ...answer(key, noul), question_set: 'conventions' });
+		pending.get('a')!({ ref: 'A-1', decisions: [c('conv:CONVE-17', 0.95), c('conv:CONVE-2', 0.4)] });
+		await settle();
+		const links = [...document.querySelectorAll('a.convention-chip')] as HTMLAnchorElement[];
+		expect(links.map((l) => l.textContent?.trim())).toEqual(['Possibly breaks CONVE-17']);
+		expect(links[0].getAttribute('href')).toBe('/-/r/ws/CONVE-17');
+		// Nothing anywhere reads as compliance: not the text, and not the
+		// title or any other attribute (codex r1 caught it in the title).
+		expect(document.body.innerHTML).not.toMatch(/complies|compliant|passes/i);
+	});
 });
