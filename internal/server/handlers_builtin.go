@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -204,6 +207,53 @@ func (s *Server) visibleWorkspaceBuiltins(r *http.Request, workspaceID string) (
 	return out, nil
 }
 
+// builtinReplacedFields describes each key of patch whose value differs from
+// the item's current one, as `key: old → new` (a nil new value reads
+// "removed", an absent old one "none"), in key order. Values are JSON,
+// bounded so a long arguments list cannot swamp the summary.
+func builtinReplacedFields(current, patch map[string]any) string {
+	keys := make([]string, 0, len(patch))
+	for k := range patch {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	show := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "?"
+		}
+		const max = 120
+		if len(b) > max {
+			return string(b[:max]) + "…"
+		}
+		return string(b)
+	}
+	var parts []string
+	for _, k := range keys {
+		old, had := current[k]
+		next := patch[k]
+		if next == nil && !had {
+			continue
+		}
+		if had && next != nil {
+			ob, oerr := json.Marshal(old)
+			nb, nerr := json.Marshal(next)
+			if oerr == nil && nerr == nil && bytes.Equal(ob, nb) {
+				continue
+			}
+		}
+		from, to := "none", "removed"
+		if had {
+			from = show(old)
+		}
+		if next != nil {
+			to = show(next)
+		}
+		parts = append(parts, k+": "+from+" → "+to)
+	}
+	return strings.Join(parts, "; ")
+}
+
 // builtinUpdatesOnOffer counts the entries an update is on offer for: the
 // library changed and the item is unedited, or both changed. unknown_origin
 // (a legacy item, TASK-3462 U4) is not counted: its version is unknown, so
@@ -313,6 +363,28 @@ func (s *Server) handleBuiltinUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	content := entry.Content
 	summary := "Updated from Pad's built-in " + origin.Key
+	// Version history keeps BODIES only, so the values this update replaces
+	// in the item's other fields would leave no trace (TASK-3462 U3a,
+	// night-43 review note). The summary names each one it changes.
+	current, err := builtinTextOf("", item.Fields)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	replaced := patch
+	if convention != nil || clearConvention {
+		replaced = map[string]any{}
+		for k, v := range patch {
+			replaced[k] = v
+		}
+		replaced[models.ItemFieldConvention] = nil
+		if convention != nil {
+			replaced[models.ItemFieldConvention] = libFields[models.ItemFieldConvention]
+		}
+	}
+	if changes := builtinReplacedFields(current.Fields, replaced); changes != "" {
+		summary += ". Replaced fields: " + changes
+	}
 	newSeed := models.BuiltinOrigin{Key: origin.Key, SeedHash: entry.Hash(), SeedContent: entry.Content, SeedFields: entry.Fields}
 	s.updateItem(w, r, &builtinItemUpdate{
 		input: models.ItemUpdate{
