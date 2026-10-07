@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // BuiltinOrigin is the built-in convention or playbook an item was made from
@@ -49,10 +50,40 @@ func (o BuiltinOrigin) Validate() error {
 		return fmt.Errorf("built-in origin seed text for %q is over %d bytes", o.Key, MaxBuiltinSeedBytes)
 	}
 	if o.SeedFields != "" {
-		var m map[string]json.RawMessage
+		var m map[string]any
 		if err := json.Unmarshal([]byte(o.SeedFields), &m); err != nil || m == nil {
 			return fmt.Errorf("built-in origin seed_fields for %q is not a JSON object", o.Key)
 		}
+		// An escape decoding to NUL is refused like a raw one (codex r1):
+		// Postgres's jsonb refuses it, and SQLite's trigger 129 refuses both,
+		// and a refused insert there poisons the whole import.
+		if jsonHoldsNUL(m) {
+			return fmt.Errorf("built-in origin seed_fields for %q holds a NUL", o.Key)
+		}
+	}
+	if strings.ContainsRune(o.SeedContent, 0) || strings.ContainsRune(o.SeedFields, 0) {
+		return fmt.Errorf("built-in origin seed text for %q holds a NUL", o.Key)
 	}
 	return nil
+}
+
+// jsonHoldsNUL reports whether any decoded string or key in v contains NUL.
+func jsonHoldsNUL(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.ContainsRune(t, 0)
+	case map[string]any:
+		for k, x := range t {
+			if strings.ContainsRune(k, 0) || jsonHoldsNUL(x) {
+				return true
+			}
+		}
+	case []any:
+		for _, x := range t {
+			if jsonHoldsNUL(x) {
+				return true
+			}
+		}
+	}
+	return false
 }

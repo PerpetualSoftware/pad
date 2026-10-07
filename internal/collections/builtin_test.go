@@ -163,3 +163,22 @@ func TestBuiltinStateOfAcrossAChangedKeySet(t *testing.T) {
 		t.Fatalf("an edited item: %s, want diverged", got)
 	}
 }
+
+// A number hashes by value, not spelling: Postgres stores fields as jsonb and
+// may respell what the seed text spells another way (codex r1). Different
+// values still differ, however close.
+func TestBuiltinStateHashNumbersByValue(t *testing.T) {
+	h := func(raw string) string {
+		var f map[string]any
+		if err := models.DecodeJSONKeepingNumbers([]byte(raw), &f); err != nil {
+			t.Fatal(err)
+		}
+		return BuiltinStateHash("b", f)
+	}
+	if h(`{"n":1000,"a":[1.50]}`) != h(`{"n":1e3,"a":[1.5]}`) {
+		t.Error("one value in two spellings hashed differently")
+	}
+	if h(`{"n":9007199254740993}`) == h(`{"n":9007199254740992}`) {
+		t.Error("two values above 2^53 hashed the same")
+	}
+}

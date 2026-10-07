@@ -144,13 +144,24 @@ func (s *Store) WorkspaceBuiltinItems(workspaceID string) ([]BuiltinItem, error)
 }
 
 // SetItemBuiltinSeed records that an item has been given a built-in's text
-// at this version (TASK-3462): after an update from the library. The key is
-// unchanged; an item with no origin row is left alone.
+// at this version (TASK-3462). The built-in update does this inside its write
+// (ItemUpdate.BuiltinSeed); this standalone form is for tests and repair. The
+// key is unchanged; an item with no origin row is left alone.
 func (s *Store) SetItemBuiltinSeed(itemID string, o models.BuiltinOrigin) error {
+	return s.setBuiltinSeedExec(s.db, itemID, o)
+}
+
+func (s *Store) setBuiltinSeedTx(tx *sql.Tx, itemID string, o models.BuiltinOrigin) error {
+	return s.setBuiltinSeedExec(tx, itemID, o)
+}
+
+func (s *Store) setBuiltinSeedExec(ex interface {
+	Exec(string, ...any) (sql.Result, error)
+}, itemID string, o models.BuiltinOrigin) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(s.q(`
+	_, err := ex.Exec(s.q(`
 		UPDATE item_builtin_origin SET seed_hash = ?, seed_content = ?, seed_fields = ?
 		WHERE item_id = ? AND builtin_key = ?
 	`), nullIfEmpty(o.SeedHash), nullIfEmpty(o.SeedContent), nullIfEmpty(o.SeedFields), itemID, o.Key)

@@ -154,8 +154,8 @@ type builtinListEntry struct {
 
 // handleListWorkspaceBuiltins: GET /workspaces/{ws}/builtins, the state of
 // every item made from a built-in, for the library page. One query reads them
-// all (a join), and visibility is decided once per collection: an item is
-// listed only when the caller sees its WHOLE collection, so an item-grant
+// all (a join), and visibility is one set computed once: an item is listed
+// only when the caller sees its WHOLE collection, so an item-grant
 // guest is never shown the titles of items it was not granted. A guest's one
 // granted built-in is therefore not listed here; its item page still reads
 // its own state.
@@ -169,21 +169,15 @@ func (s *Server) handleListWorkspaceBuiltins(w http.ResponseWriter, r *http.Requ
 		writeInternalError(w, err)
 		return
 	}
-	fully := map[string]bool{}
+	// The fully visible set, once, however many collections the rows span.
+	fully, err := s.fullyVisibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	out := []builtinListEntry{}
 	for _, row := range rows {
-		seen, done := fully[row.CollectionID]
-		if !done {
-			seen = appCeilingAllows(r, row.CollectionID)
-			if seen {
-				if seen, err = s.checkCollectionFullyVisible(r, workspaceID, row.CollectionID); err != nil {
-					writeInternalError(w, err)
-					return
-				}
-			}
-			fully[row.CollectionID] = seen
-		}
-		if !seen {
+		if !appCeilingAllows(r, row.CollectionID) || !isCollectionVisible(row.CollectionID, fully) {
 			continue
 		}
 		state, _, entry, err := collections.BuiltinStateOf(row.Origin, row.Content, row.Fields)
@@ -298,10 +292,9 @@ func (s *Server) handleBuiltinUpdate(w http.ResponseWriter, r *http.Request) {
 			// version throttle's window: a diverged item's edits are
 			// what that history keeps.
 			ForceVersion: true,
+			// Recorded in the write's own transaction (codex r1).
+			BuiltinSeed: &newSeed,
 		},
 		convention: convention,
-		applied: func(updated *models.Item) error {
-			return s.store.SetItemBuiltinSeed(updated.ID, newSeed)
-		},
 	})
 }

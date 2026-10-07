@@ -1340,11 +1340,6 @@ type builtinItemUpdate struct {
 	// patch AFTER the caller-facing reserved-key refusal, as github_pr is: a
 	// value this server built from its own library, not one a caller sent.
 	convention *models.ItemConventionMetadata
-	// applied runs after a successful write, before the response: it
-	// records the new seed. A failure there is logged and not surfaced,
-	// because the write landed and the item now holds the library's text,
-	// which reads as current whatever the seed says.
-	applied func(updated *models.Item) error
 }
 
 // updateItem is handleUpdateItem, or a built-in update when b is set.
@@ -2762,13 +2757,6 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			warnings.ContentOutcome = contentOutcomeAppliedPendingFlush
 		}
 		updated.Warnings = warnings
-	}
-
-	if b != nil && b.applied != nil {
-		if err := b.applied(updated); err != nil {
-			slog.Warn("built-in update: the write landed but recording its seed failed",
-				"item_id", updated.ID, "error", err)
-		}
 	}
 
 	writeJSON(w, http.StatusOK, updated)

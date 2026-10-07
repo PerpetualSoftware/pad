@@ -384,10 +384,10 @@ func NULProtectedColumns() []nulColumn {
 // on an unlisted column are to fail on every known exclusion or to ignore the
 // class entirely.
 var nulExcluded = map[string]string{
-	"item_builtin_origin.item_id":     "server-minted item UUID, a foreign key to items(id) (TASK-3462, migration 128)",
-	"item_builtin_origin.created_at":  "server timestamp from now() (TASK-3462)",
-	"item_builtin_origin.builtin_key": "refused by models.BuiltinOrigin.Validate unless it matches a lowercase [a-z0-9-/] path, so no NUL can be stored, on every write including import (TASK-3462)",
-	"item_builtin_origin.seed_hash":   "refused by models.BuiltinOrigin.Validate unless it is 64 lowercase hex digits, on every write including import (TASK-3462)",
+	"item_builtin_origin.item_id":            "server-minted item UUID, a foreign key to items(id) (TASK-3462, migration 128)",
+	"item_builtin_origin.created_at":         "server timestamp from now() (TASK-3462)",
+	"item_builtin_origin.builtin_key":        "refused by models.BuiltinOrigin.Validate unless it matches a lowercase [a-z0-9-/] path, so no NUL can be stored, on every write including import (TASK-3462)",
+	"item_builtin_origin.seed_hash":          "refused by models.BuiltinOrigin.Validate unless it is 64 lowercase hex digits, on every write including import (TASK-3462)",
 	"activities.action":                      "fixed enum, models.ValidActions",
 	"collections.source":                     "server enum 'web' | 'cli' | 'mcp' from actorFromRequest's auth shape, never the body (BUG-3447, migration 126); a bundle import carries the bundle's value only after models.ValidCollectionSource accepts it, else ''",
 	"event_outbox.last_error":                "Go error string, server-composed",

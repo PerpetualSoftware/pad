@@ -3271,6 +3271,14 @@ func (s *Store) updateItemWithParentLinkOnce(
 		}
 	}
 
+	// TASK-3462: a built-in update records the version it gave the item in
+	// the same transaction as the write, so the two cannot disagree.
+	if input.BuiltinSeed != nil {
+		if err := s.setBuiltinSeedTx(tx, id, *input.BuiltinSeed); err != nil {
+			return nil, err
+		}
+	}
+
 	// BUG-2013: apply the parent-link mutation INSIDE this tx, after the
 	// field write. A failure here (cycle detected, DB error) rolls the
 	// whole transaction back, so the caller can never observe the field

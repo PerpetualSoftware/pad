@@ -1556,6 +1556,11 @@ type ItemUpdate struct {
 	// sets are re-validated against the new schema and a failure refuses the
 	// write. Nil (internal callers) keeps the store's contract unchanged.
 	ValidatedSchema *string `json:"-"`
+	// BuiltinSeed, when set, moves the item's built-in origin to this seed
+	// inside the update's own transaction (TASK-3462, codex r1): the item and
+	// the record of which version of Pad's text it holds commit together.
+	// Internal-only: set by the built-in update, never by a request body.
+	BuiltinSeed *BuiltinOrigin `json:"-"`
 }
 
 // ItemImplementationNoteAppend is the request shape of

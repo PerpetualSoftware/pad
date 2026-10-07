@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"sort"
 	"sync"
 
@@ -125,6 +126,7 @@ func BuiltinStateHash(content string, fields map[string]any) string {
 	if fields == nil {
 		fields = map[string]any{}
 	}
+	fields = canonicalNumbers(fields).(map[string]any)
 	b, err := json.Marshal(struct {
 		Content string         `json:"content"`
 		Fields  map[string]any `json:"fields"`
@@ -134,6 +136,62 @@ func BuiltinStateHash(content string, fields map[string]any) string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// canonicalNumbers rewrites every json.Number to one exact spelling, so a
+// value hashes the same however it was written: Postgres stores fields as
+// jsonb and may respell a number the seed text spells differently (codex
+// r1). big.Rat is exact, so two values that differ anywhere still differ.
+func canonicalNumbers(v any) any {
+	switch t := v.(type) {
+	case json.Number:
+		// Bounded: every value here came through DecodeJSONKeepingNumbers,
+		// which refuses a number outside float64's range, so an exponent
+		// cannot ask big.Rat for more than a few hundred digits.
+		if r, ok := new(big.Rat).SetString(t.String()); ok {
+			return json.Number(exactDecimal(r))
+		}
+		return t
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[k] = canonicalNumbers(x)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = canonicalNumbers(x)
+		}
+		return out
+	}
+	return v
+}
+
+// exactDecimal prints r as a plain decimal with no loss. Every JSON number is
+// a terminating decimal, so r's reduced denominator is 2^a*5^b and
+// max(a, b) fractional digits print it exactly.
+func exactDecimal(r *big.Rat) string {
+	if r.IsInt() {
+		return r.Num().String()
+	}
+	d := new(big.Int).Set(r.Denom())
+	two, five, zero := big.NewInt(2), big.NewInt(5), big.NewInt(0)
+	a, b := 0, 0
+	m := new(big.Int)
+	for m.Mod(d, two).Cmp(zero) == 0 {
+		d.Div(d, two)
+		a++
+	}
+	for m.Mod(d, five).Cmp(zero) == 0 {
+		d.Div(d, five)
+		b++
+	}
+	prec := a
+	if b > prec {
+		prec = b
+	}
+	return r.FloatString(prec)
 }
 
 var (
