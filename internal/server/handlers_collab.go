@@ -366,7 +366,8 @@ func (s *Server) collabRevalidationLoop(
 			// `CloseConn` with a policy violation, matching the
 			// item-disappeared branch below rather than inventing a fourth way
 			// to end a collab connection.
-			if !s.streamCredentialStillValid(r) {
+			switch s.credentialLiveness(r) {
+			case credentialInvalid:
 				slog.Info("collab: credential invalidated mid-stream, closing connection",
 					"item_id", itemID,
 					"user_id", userID,
@@ -377,6 +378,19 @@ func (s *Server) collabRevalidationLoop(
 					"Your session has ended.",
 				)
 				return
+			case credentialUnknown:
+				// The re-check itself failed (a store error). Not a
+				// revocation, so the conn stays open, but it is an errored
+				// tick, so it goes READ-ONLY and skips authorization until a
+				// tick succeeds (BUG-3474, codex r1: this used to read as
+				// valid, and the tick went on to set write from the role).
+				s.collab.SetConnWritable(itemID, conn, false)
+				slog.Warn("collab: revalidation credential check failed; keeping connection open, read-only",
+					"item_id", itemID,
+					"user_id", userID,
+				)
+				timer.Reset(interval)
+				continue
 			}
 			// Re-fetch the item every tick so a mid-session move
 			// (item collection changed to one the user can't see)
