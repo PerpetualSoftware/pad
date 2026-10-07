@@ -57,9 +57,12 @@ func stampVersion(v string) string {
 }
 
 // parseSkillStamp splits a file into its body and its marker. ok is false when
-// the last non-empty line is not a well-formed marker.
+// the last line with any non-whitespace on it is not a well-formed marker.
 func parseSkillStamp(file []byte) (body []byte, ver, hash string, ok bool) {
-	n := normalizeSkill(file)
+	// Whitespace after the stamp (an editor's trailing blank line, spaces on
+	// the stamp line) must not hide it (codex r5). Trimmed only to FIND the
+	// stamp; the body before it is hashed as it stands.
+	n := bytes.TrimRight(normalizeSkill(file), " \t\r\n")
 	i := bytes.LastIndexByte(n, '\n')
 	last := n[i+1:]
 	m := skillStampLine.FindSubmatch(last)
