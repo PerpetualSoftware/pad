@@ -15,11 +15,11 @@ import type { Page } from '@playwright/test';
  *
  * The load-bearing correctness property is that crossing the breakpoint is
  * PURE PRESENTATION: it must NOT drop `?item=`. `ui.svelte.ts` has a matchMedia
- * handler that force-closes the legacy `detailPanelOpen` boolean on mobile
- * entry; the URL-derived pane is deliberately NOT wired to it. If a regression
- * ever routes pane visibility through that boolean, entering mobile would
- * silently clear the open item — this spec drives a real breakpoint crossing
- * and asserts `?item=` survives it in both directions.
+ * handler that collapses the sidebar on mobile entry; the URL-derived pane is
+ * deliberately NOT wired to it. If a regression ever routes pane visibility
+ * through that handler, entering mobile would silently clear the open item —
+ * this spec drives a real breakpoint crossing and asserts `?item=` survives it
+ * in both directions.
  *
  * The URL assertions are placed AFTER `settleBreakpoint()`, which blocks until
  * the app's matchMedia `change` listeners AND the Svelte effect flush have run
@@ -138,7 +138,7 @@ test.describe('mobile split-pane full-screen overlay (PLAN-2105 Phase 4 / TASK-2
 		await pane.evaluate((el) => ((el as HTMLElement).dataset.t2121 = 'persist'));
 
 		// Enter mobile (768px): the ui.svelte.ts matchMedia handler fires here
-		// (detailPanelOpen = false). Assert AFTER settleBreakpoint so the async
+		// (sidebarOpen = false). Assert AFTER settleBreakpoint so the async
 		// handler has definitely run — the URL-derived pane must NOT be dropped.
 		await settleBreakpoint(page, OVERLAY);
 		await expect.poll(() => panePosition(page)).toBe('fixed');

@@ -96,6 +96,23 @@ describe('+layout app-shell shortcuts — defer to a frontmost surface (TASK-243
 		expect(uiStore.sidebarOpen).toBe(!before);
 	});
 
+	it('BUG-2666: Mod+[ and Mod+] are left to the browser (Back/Forward), with either modifier', () => {
+		// They are history keys in Chrome and Safari on macOS and in Firefox on
+		// macOS and Linux, and Chrome does not reserve them, so it delivers them
+		// here. A shell that prevents them takes Back/Forward away; the ⌘] that
+		// used to be bound here did exactly that to toggle state nothing rendered.
+		for (const key of ['[', ']']) {
+			for (const mod of ['metaKey', 'ctrlKey'] as const) {
+				const e = new KeyboardEvent('keydown', { key, [mod]: true, bubbles: true, cancelable: true });
+				window.dispatchEvent(e);
+				expect({ key, mod, prevented: e.defaultPrevented }).toEqual({ key, mod, prevented: false });
+			}
+		}
+		// Control: the same dispatch path DOES reach the handler, or the
+		// assertion above would hold with no handler at all.
+		expect(press('k', true).defaultPrevented).toBe(true);
+	});
+
 	it('declines EVERY shortcut this handler owns while a viewer lease is frontmost', () => {
 		// All of them, not a sample: a per-key guard (rather than the single
 		// handler-level bail) would let whichever keys it missed straight
@@ -107,7 +124,6 @@ describe('+layout app-shell shortcuts — defer to a frontmost surface (TASK-243
 		for (const [key, mod] of [
 			['k', true],
 			['\\', true],
-			[']', true],
 			['n', true],
 			['f', true],
 			['?', false],

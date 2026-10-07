@@ -302,11 +302,12 @@
 			uiStore.toggleTopbar();
 			return;
 		}
-		if (isMod(e) && e.key === ']') {
-			e.preventDefault();
-			uiStore.toggleDetailPanel();
-			return;
-		}
+		// Nothing here binds Mod+[ or Mod+] (BUG-2666): they are Back/Forward in
+		// Chrome and Safari on macOS and in Firefox on macOS and Linux, and a
+		// page that prevents them takes the browser's history keys away.
+		// Chrome does not reserve them, so it delivers them here, and the ⌘]
+		// that used to sit here cancelled Forward to toggle state no component
+		// rendered.
 		if (isMod(e) && e.key === 'n') {
 			e.preventDefault();
 			uiStore.requestQuickAdd();

@@ -309,10 +309,9 @@
 	// No resize primitive existed in the repo, so this is built from
 	// scratch: a draggable divider between the list column and the pane,
 	// pointer-captured so the drag can't select text or fall through to a
-	// row-click. The width persists to localStorage under a GLOBAL key that
-	// deliberately does NOT collide with the vestigial `pad-detail-panel`
-	// key in ui.svelte.ts, reusing the read-on-init / write-on-change idiom
-	// from that store (the `pad-topbar` pattern).
+	// row-click. The width persists to localStorage under a GLOBAL key,
+	// reusing the read-on-init / write-on-change idiom from ui.svelte.ts
+	// (the `pad-topbar` pattern).
 	const PANE_WIDTH_KEY = 'pad-pane-width';
 	const PANE_WIDTH_MIN = 360; // mirrors the CSS clamp() floor
 	const PANE_WIDTH_MAX = 720; // generous ceiling (CSS clamp maxed at 640)
@@ -909,11 +908,10 @@
 	   (ItemDetail `.graph-drawer`: fixed, `width: 100vw`, no border).
 
 	   Pane visibility stays URL-derived (`?item=`); this overlay is pure
-	   presentation keyed off the viewport, NOT the vestigial
-	   `uiStore.detailPanelOpen` boolean — whose mobile-entry force-close
-	   must never reach `?item=` (see the reconciliation note in
-	   ui.svelte.ts). So crossing the 768px boundary only swaps
-	   split ⇄ overlay; it never closes the pane or drops the open item.
+	   presentation keyed off the viewport, and the ui.svelte.ts
+	   mobile-crossing handler must never reach `?item=` (see the note
+	   there). So crossing the 768px boundary only swaps split ⇄ overlay;
+	   it never closes the pane or drops the open item.
 
 	   `position: fixed` is viewport-relative here because no ancestor
 	   (.collection-page / .main-content / .app-shell) establishes a

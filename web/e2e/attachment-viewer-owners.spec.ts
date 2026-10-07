@@ -244,9 +244,10 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		// The root shortcuts were entirely unguarded before TASK-2430, and
 		// `isInputFocused()` cannot help: a focused viewer BUTTON is not a text
 		// control, so every one of them used to fire straight through the viewer.
-		// All six are checked, because the guard is one `return` covering all of
-		// them — and a test for only one of them would leave five that a
-		// re-ordering could resurrect.
+		// All five are checked, because the guard is one `return` covering all of
+		// them — and a test for only one of them would leave four that a
+		// re-ordering could resurrect. (Cmd+] was a sixth until BUG-2666 removed
+		// it: it toggled state nothing rendered.)
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Owner shortcuts');
 		await uploadAttachment(fixture, request, doc.id, 'shortcuts.png');
@@ -258,7 +259,6 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 				palette: !!document.querySelector('.palette'),
 				shortcutsModal: !!document.querySelector('#keyboard-shortcuts-title'),
 				quickAdd: !!document.querySelector('.quick-add-modal'),
-				detailPanel: localStorage.getItem('pad-detail-panel'),
 				sidebarCollapsed: !!document.querySelector('aside.sidebar.collapsed'),
 				filterBar: !!document.querySelector('.filter-bar'),
 				// Cmd+F's effect once the bar is already open is to FOCUS the
@@ -272,11 +272,6 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await expect.poll(async () => (await state()).palette).toBe(true);
 		await page.keyboard.press('Escape');
 		await expect.poll(async () => (await state()).palette).toBe(false);
-
-		const detailBefore = (await state()).detailPanel;
-		await page.keyboard.press('Control+]');
-		await expect.poll(async () => (await state()).detailPanel).not.toBe(detailBefore);
-		const detailAfterToggle = (await state()).detailPanel;
 
 		const sidebarBefore = (await state()).sidebarCollapsed;
 		await page.keyboard.press('Control+\\');
@@ -307,15 +302,14 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		// ── WITH A VIEWER FRONTMOST: nothing moves ──
 		await openViewer(page);
 		const before = await state();
-		for (const key of ['Control+k', 'Control+]', 'Control+\\', 'Control+n', 'Control+f', '?']) {
+		for (const key of ['Control+k', 'Control+\\', 'Control+n', 'Control+f', '?']) {
 			await page.keyboard.press(key);
 		}
 		// Give any of them a chance to land before asserting nothing did.
 		await page.waitForTimeout(300);
 		expect(await state(), 'no root shortcut may act while a viewer is frontmost').toEqual(before);
 		// Sanity: the values asserted-unchanged are the ones the baseline moved,
-		// so "unchanged" is a real claim about six live shortcuts.
-		expect(before.detailPanel).toBe(detailAfterToggle);
+		// so "unchanged" is a real claim about five live shortcuts.
 		expect(before.sidebarCollapsed).toBe(sidebarAfterToggle);
 		expect(before.filterBar).toBe(true);
 		expect(

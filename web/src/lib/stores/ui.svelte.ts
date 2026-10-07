@@ -13,7 +13,6 @@ let isTouch = $state(browser ? 'ontouchstart' in window : false);
 // viewport, leaving the delta ~0. Consumers (e.g. BottomNav) hide fixed bottom
 // chrome so it doesn't sit stranded above the keyboard. PLAN-1694.
 let keyboardVisible = $state(false);
-let detailPanelOpen = $state(browser ? localStorage.getItem('pad-detail-panel') !== 'closed' && !viewport.isMobile : false);
 let createWorkspaceOpen = $state(false);
 // Set when the last workspace tab is closed and the user lands on /console
 // (PLAN-3002 Q2): the console page highlights its create button as the way
@@ -32,25 +31,21 @@ let connectAfterNavigateSlug = $state<string | null>(null);
 if (browser) {
 	// `isMobile` itself is owned by the shared breakpoint store (one app-wide
 	// listener). Here we only run the layout side effects that must fire when
-	// the viewport crosses the mobile breakpoint: collapse the sidebar/detail
-	// panel entering mobile, restore the sidebar leaving it. `change` fires only
-	// on a crossing, so no manual before/after comparison is needed.
+	// the viewport crosses the mobile breakpoint: collapse the sidebar entering
+	// mobile, restore it leaving. `change` fires only on a crossing, so no
+	// manual before/after comparison is needed.
 	//
-	// `detailPanelOpen` is the pre-PLAN-2105 legacy panel boolean — it is
-	// mutated here but no component reads it to render anything anymore, so
-	// this force-close is inert. The collection page's split-pane detail view
-	// (PLAN-2105 / TASK-2121) is deliberately NOT wired to it: pane state is
-	// URL-derived (`?item=`), and on mobile the pane simply restyles to a
-	// full-screen overlay via CSS (see the `@media (max-width: 768px)` block
-	// in the collection +page.svelte). Routing pane visibility through this
-	// boolean would silently drop `?item=` on every mobile-entry crossing —
-	// the exact bug TASK-2121 must avoid. If a future consumer starts reading
-	// `detailPanelOpen`, keep this handler's reach limited to that legacy
-	// panel and off the URL-derived pane.
+	// The collection page's split-pane detail view (PLAN-2105 / TASK-2121) is
+	// deliberately NOT touched here: pane state is URL-derived (`?item=`), and
+	// on mobile the pane simply restyles to a full-screen overlay via CSS (see
+	// the `@media (max-width: 768px)` block in PaneHost). Closing it on a
+	// crossing would silently drop `?item=` on every mobile entry, the exact
+	// bug TASK-2121 avoids. (The legacy `detailPanelOpen` boolean this handler
+	// used to force-close had no reader since the first release and was
+	// removed with its ⌘] shortcut, BUG-2666.)
 	window.matchMedia(MOBILE_MEDIA_QUERY).addEventListener('change', (e) => {
 		if (e.matches) {
 			sidebarOpen = false;
-			detailPanelOpen = false;
 		} else {
 			sidebarOpen = true;
 		}
@@ -88,7 +83,6 @@ export const uiStore = {
 	get isMobile() { return viewport.isMobile; },
 	get isTouch() { return isTouch; },
 	get keyboardVisible() { return keyboardVisible; },
-	get detailPanelOpen() { return detailPanelOpen; },
 	get createWorkspaceOpen() { return createWorkspaceOpen; },
 
 	toggleSidebar() { sidebarOpen = !sidebarOpen; },
@@ -111,18 +105,6 @@ export const uiStore = {
 	closeSearch() { searchOpen = false; },
 	toggleSearch() { searchOpen = !searchOpen; },
 
-	toggleDetailPanel() {
-		detailPanelOpen = !detailPanelOpen;
-		if (browser) localStorage.setItem('pad-detail-panel', detailPanelOpen ? 'open' : 'closed');
-	},
-	openDetailPanel() {
-		detailPanelOpen = true;
-		if (browser) localStorage.setItem('pad-detail-panel', 'open');
-	},
-	closeDetailPanel() {
-		detailPanelOpen = false;
-		if (browser) localStorage.setItem('pad-detail-panel', 'closed');
-	},
 
 	openCreateWorkspace() {
 		createWorkspaceOpen = true;
