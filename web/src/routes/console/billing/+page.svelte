@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { api, withRequestDeadline } from '$lib/api/client';
+	import { api, withRequestDeadline, BillingCheckoutError, type BillingInterval } from '$lib/api/client';
+	import BillingIntervalPicker from '$lib/components/billing/BillingIntervalPicker.svelte';
+	import { decideCheckout, unavailableMessage } from '$lib/billing/checkoutDecision';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import { goto } from '$app/navigation';
@@ -52,6 +54,23 @@
 	// fetch is in flight so the button shows a spinner and prevents
 	// double-submission.
 	let checkoutInProgress = $state(false);
+
+	// The interval to buy (TASK-3468), shared by both pickers on the page, and
+	// the intervals the sidecar has said it cannot sell this visit (a 503, or
+	// an echo that refused). An unsellable interval gets a plain inline
+	// message and its option is disabled, rather than a button that fails.
+	let interval = $state<BillingInterval>('monthly');
+	let unavailable = $state<BillingInterval[]>([]);
+	let intervalNotice = $state<string | null>(null);
+
+	function markUnavailable(i: BillingInterval) {
+		if (!unavailable.includes(i)) unavailable = [...unavailable, i];
+		intervalNotice = unavailableMessage(i);
+		if (interval === i) {
+			const other: BillingInterval = i === 'annual' ? 'monthly' : 'annual';
+			if (!unavailable.includes(other)) interval = other;
+		}
+	}
 
 	// Upgrade-confirmation state. After Stripe Checkout redirects back with
 	// ?checkout=success, pad-cloud's webhook handler needs a moment to land
@@ -202,12 +221,26 @@
 	async function startCheckout() {
 		if (checkoutInProgress) return;
 		checkoutInProgress = true;
+		intervalNotice = null;
+		const picked = interval;
 		try {
-			const result = await api.billing.createCheckoutSession();
+			const result = await api.billing.createCheckoutSession(picked);
+			// Only to a session priced at the interval the user picked
+			// (decideCheckout): never an annual pick charged monthly.
+			const decision = decideCheckout(picked, result);
+			if (decision.kind === 'refuse') {
+				checkoutInProgress = false;
+				markUnavailable(decision.interval);
+				return;
+			}
 			// Redirect to Stripe Checkout — leaves the SPA.
-			window.location.href = result.url;
+			window.location.href = decision.url;
 		} catch (err) {
 			checkoutInProgress = false;
+			if (err instanceof BillingCheckoutError && err.status === 503) {
+				markUnavailable(picked);
+				return;
+			}
 			const msg = err instanceof Error ? err.message : 'Failed to start checkout. Please try again.';
 			toastStore.show(msg, 'error');
 		}
@@ -302,10 +335,14 @@
 				<a href="/billing/portal" class="secondary-btn">Manage Billing</a>
 			{:else if stripeAvailable}
 				<div class="cta-line">
+					<BillingIntervalPicker name="interval-plan" bind:value={interval} {unavailable} disabled={checkoutInProgress} />
+					{#if intervalNotice}
+						<p class="interval-notice" role="status">{intervalNotice}</p>
+					{/if}
 					<Button
 						variant="primary"
 						onclick={startCheckout}
-						disabled={checkoutInProgress}
+						disabled={checkoutInProgress || unavailable.includes(interval)}
 					>
 						{checkoutInProgress ? 'Redirecting…' : 'Upgrade to Pro'}
 					</Button>
@@ -375,10 +412,16 @@
 			{#if !isPro}
 				{#if stripeAvailable}
 					<div class="compare-cta">
+						<BillingIntervalPicker name="interval-compare" bind:value={interval} {unavailable} disabled={checkoutInProgress} />
+						{#if intervalNotice}
+							<!-- Same words, no role: the live region by the first button
+							     announces it once (two status regions would say it twice). -->
+							<p class="interval-notice">{intervalNotice}</p>
+						{/if}
 						<Button
 							variant="primary"
 							onclick={startCheckout}
-							disabled={checkoutInProgress}
+							disabled={checkoutInProgress || unavailable.includes(interval)}
 						>
 							{checkoutInProgress ? 'Redirecting…' : 'Upgrade to Pro'}
 						</Button>
@@ -398,6 +441,12 @@
 </div>
 
 <style>
+	.interval-notice {
+		margin: 0 0 var(--space-2);
+		font-size: 0.85em;
+		color: var(--text-secondary);
+	}
+
 	.billing-page {
 		display: flex;
 		flex-direction: column;
@@ -588,6 +637,12 @@
 		border-top: 1px solid var(--border);
 		display: flex;
 		justify-content: flex-end;
+	}
+
+	/* The interval picker and its notice stack above the button (TASK-3468). */
+	.compare-cta:not(.coming-soon) {
+		flex-direction: column;
+		align-items: flex-end;
 	}
 
 	.compare-cta.coming-soon {

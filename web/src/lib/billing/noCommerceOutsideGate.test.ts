@@ -31,7 +31,9 @@ const GATED = new Set([
 	'lib/components/layout/YouSheet.svelte',
 	'routes/console/+layout.svelte',
 	'routes/console/settings/+page.svelte',
-	'routes/console/billing/+page.svelte'
+	'routes/console/billing/+page.svelte',
+	// TASK-3468: renders Pad Pro prices, and reads the gate itself.
+	'lib/components/billing/BillingIntervalPicker.svelte'
 ]);
 
 const PATTERNS: [string, RegExp][] = [
@@ -39,7 +41,9 @@ const PATTERNS: [string, RegExp][] = [
 	['billing page link', /["'`]\/console\/billing["'`?#]/],
 	['billing portal link', /\/billing\/portal/],
 	['view plans copy', /View Plans/],
-	['manage billing copy', /Manage Billing/]
+	['manage billing copy', /Manage Billing/],
+	// TASK-3468: a price is commerce too ("$8 / month").
+	['price copy', /\$\d+(\.\d+)?\s*\/\s*(month|year|mo|yr)\b/]
 ];
 
 function sources(dir: string): string[] {

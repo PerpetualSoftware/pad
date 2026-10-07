@@ -3316,9 +3316,12 @@ export const api = {
 
 	billing: {
 		/**
-		 * POST /billing/checkout — create a Stripe Checkout session.
-		 * Returns `{ url: string }` on success; the caller must do
-		 * `window.location.href = url` to start the Stripe-hosted flow.
+		 * POST /billing/checkout — create a Stripe Checkout session for the
+		 * chosen billing interval (TASK-3468). Returns `{ url, interval }`: the
+		 * interval the sidecar actually priced, absent from a sidecar that
+		 * predates it. The caller checks it (decideCheckout) before doing
+		 * `window.location.href = url`. A refusal throws BillingCheckoutError
+		 * carrying the HTTP status; 503 also means "this interval is not sold".
 		 * Returns HTTP 503 with `{ error: string }` when Stripe is not
 		 * configured (PAD_BILLING_AVAILABLE not yet set on the sidecar).
 		 *
@@ -3333,7 +3336,9 @@ export const api = {
 		 * convention) rather than pad's nested `{ error: { code, message } }` from
 		 * TASK-788. Parse accordingly below.
 		 */
-		createCheckoutSession: async (): Promise<{ url: string }> => {
+		createCheckoutSession: async (
+			interval: BillingInterval = 'monthly'
+		): Promise<{ url: string; interval?: string }> => {
 			// Under the request deadline (BUG-3211): the billing page holds
 			// `checkoutInProgress` across this await, and its Upgrade button stays
 			// disabled on "Redirecting…" until it settles.
@@ -3343,16 +3348,19 @@ export const api = {
 					method: 'POST',
 					credentials: 'same-origin',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({}),
+					body: JSON.stringify({ interval }),
 					signal: deadline.signal
 				});
 				if (!r.ok) {
 					const body = await r.json().catch(() => ({}));
-					throw new Error(
-						(body as { error?: string }).error || `Checkout request failed (${r.status})`
+					throw new BillingCheckoutError(
+						(body as { error?: string }).error || `Checkout request failed (${r.status})`,
+						r.status
 					);
 				}
-				return (await r.json()) as { url: string };
+				// `interval` is the one the sidecar priced (TASK-3468); a sidecar
+				// from before TASK-3367 omits it. The caller decides.
+				return (await r.json()) as { url: string; interval?: string };
 			} catch (err) {
 				if (deadline.timedOut()) throw requestTimeoutError(false);
 				throw err;
@@ -3362,6 +3370,19 @@ export const api = {
 		}
 	}
 };
+
+/** Billing intervals Pad Pro is sold at (TASK-3468). */
+export type BillingInterval = 'monthly' | 'annual';
+
+/** A refused checkout, carrying the sidecar's HTTP status (TASK-3468). */
+export class BillingCheckoutError extends Error {
+	readonly status: number;
+	constructor(message: string, status: number) {
+		super(message);
+		this.name = 'BillingCheckoutError';
+		this.status = status;
+	}
+}
 
 export {
 	PadApiError,
