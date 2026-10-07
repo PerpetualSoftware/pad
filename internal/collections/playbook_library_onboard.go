@@ -83,6 +83,7 @@ seeded to the project at hand.
 
 4. **If ` + "`skip-codebase`" + ` is unset AND the agent can read files**, look at the workspace's working directory. Whether to even mention the codebase depends on what you find:
    - Code project markers: ` + "`README.md`" + `, ` + "`package.json`" + `, ` + "`go.mod`" + `, ` + "`Cargo.toml`" + `, ` + "`pyproject.toml`" + `, ` + "`Makefile`" + `, ` + "`.github/workflows/`" + ` — note the language, build tool, test command, CI provider. You'll surface these in the interview.
+   - Where open work already lives — note it, don't act on it yet: ` + "`TODO.md`" + ` / ` + "`TODO`" + ` / ` + "`ROADMAP.md`" + ` / ` + "`BACKLOG.md`" + ` / ` + "`docs/todo*`" + `, unchecked ` + "`- [ ]`" + ` lists in the README, and whether the repo has a GitHub remote (its issues may be the real backlog). You'll ask about these in B1 and offer to bring them in at B6.
    - Non-code markers or empty directory — skip the codebase angle entirely.
    - **If the agent cannot read files** (pure MCP user), skip this step silently. You'll ask the user directly in the interview.
 
@@ -97,6 +98,8 @@ The user picked the blank template (or somehow ended up with a workspace that ha
 If ` + "`workspace.description`" + ` was set at creation, lead by reflecting it back instead of asking cold: "You mentioned this workspace is for <description> — let's build around that. Tell me more about how you work?" Only fall back to the open question — "What is this workspace for?" — when no description was captured. Listen to the answer either way.
 
 Use the codebase context if you have it. Example: "I see a Go project with a Makefile and GitHub Actions — does this workspace track software development for that codebase?"
+
+Then ask: "Where does your open work live today?" — files in the repo, GitHub issues, another tracker, or nowhere yet. Reflect back what pre-flight found ("I see a TODO.md with 14 unchecked lines, and the repo is on GitHub"). Don't bring anything in here; just learn where it is. B6 picks it up.
 
 Common domains and what they imply (these are HINTS, not a menu — the user might say something else entirely):
 - Software development → Tasks, Ideas, Plans, Bugs, Docs collections. Conventions around commits / tests / PR reviews. Roles like Planner / Implementer / Reviewer.
@@ -173,9 +176,17 @@ Browse it the same way as conventions — ` + "`pad library list --type playbook
 - If it needs project-specific tweaks (the seeded ` + "`ship`" + ` references ` + "`make install`" + ` — change it if the project uses ` + "`npm run build`" + ` instead), activate AND THEN immediately edit the playbook body via ` + "`pad item update <PLAYB-ref> --stdin`" + ` with the rewritten content.
 - If it doesn't fit at all, skip.
 
-### B6. Seed a first item
+### B6. Bring in existing open work, or seed a first item
 
-Help the user create their first task / idea / plan / whatever the dominant collection is. The point is to get the workspace to "user-created items > 0" state so the bootstrap nudge clears and the workspace feels lived-in. Suggest something concrete and short. Get user input on what it should be.
+**If the project already has open work** (found in pre-flight, or named in B1), offer to bring it in. First say plainly, so the user's expectation is right: "Pad has no importer for other trackers, so I'll read what's there, show you the list, and create the items myself once you say yes." Then:
+
+1. **Gather the candidates.** One per open TODO line or unchecked ` + "`- [ ]`" + ` entry in the files you found, and one per open issue. With a shell and the GitHub CLI: ` + "`gh issue list --state open --json number,title,url --limit 100`" + `. With neither, ask the user to paste the list, or skip this branch.
+2. **Do not guess.** A line that isn't clearly a piece of work (a heading, a note, a done item someone forgot to tick) is asked about, not created. Drop duplicates, and anything the workspace already has.
+3. **Show the list and get a yes.** Title per item, where it came from, and the collection it will land in (the dominant one from B2 unless the user says otherwise). Let the user drop, merge or rename entries before you write anything.
+4. **Create one item per confirmed entry.** Put the source in the body: the file and line ("From TODO.md, line 12") or the issue URL. Work in batches of 25 and check in between batches. If the server answers 429, wait the Retry-After it gives before the next write.
+5. **Leave the source alone.** Don't delete TODO lines, close issues or edit the tracker unless the user asks you to. Pad now holds a copy; retiring the old list is their call.
+
+**Otherwise** (or as well, if the user wants a fresh start), help the user create their first task / idea / plan / whatever the dominant collection is. The point is to get the workspace to "user-created items > 0" state so the bootstrap nudge clears and the workspace feels lived-in. Suggest something concrete and short. Get user input on what it should be.
 
 ### B7. Recap
 
@@ -221,7 +232,11 @@ The seeded ` + "`ship`" + ` playbook is the most common one to rewrite — its d
 
 If the workspace seeded roles (some templates do, some don't), ask whether the role names + descriptions match how this team divides work. Edit via ` + "`pad role update <slug>`" + `. Delete unused roles via ` + "`pad role delete <slug>`" + `.
 
-### A6. Recap
+### A6. Existing open work
+
+A templated workspace can still sit on top of a project with years of history. If pre-flight found open-work files or a GitHub remote, or the user mentions a backlog elsewhere, run the B6 open-work branch: say there's no importer, gather, don't guess, confirm the list, create one item per entry with its source, leave the source alone.
+
+### A7. Recap
 
 Same as B7: summarize what was changed, point at the dashboard.
 
@@ -231,7 +246,7 @@ User-created items already exist. The user is running onboard to change somethin
 
 ### R1. Ask what they want to revisit
 
-Open question: "You've onboarded this workspace already — what do you want to revisit? Common reasons people re-run this: adding a new collection, rewriting a convention, adjusting role descriptions, or activating a new library playbook."
+Open question: "You've onboarded this workspace already — what do you want to revisit? Common reasons people re-run this: adding a new collection, rewriting a convention, adjusting role descriptions, activating a new library playbook, or bringing in open work that still lives in a TODO file or another tracker." That last one runs the B6 open-work branch.
 
 ### R2. Drop into the relevant audit branch
 
@@ -245,7 +260,7 @@ The ` + "`defaults`" + ` flag short-circuits the interview. Use the codebase-det
 - Collections: a standard set for the inferred domain (software → Tasks/Ideas/Plans/Bugs/Docs).
 - Conventions: activate library defaults for the domain, rewritten with the detected commands.
 - Roles: skip unless the user explicitly opts in.
-- First item: prompt the user for one sentence.
+- First item: if pre-flight found open work, offer to bring it in through the B6 open-work branch (it still says there's no importer and still confirms the list); otherwise prompt the user for one sentence.
 
 Report what was picked. Tell the user they can re-run onboarding in audit mode any time — say "audit my workspace setup" (shortcut ` + "`/pad onboard mode=audit`" + ` in Claude Code) — to walk through and adjust.
 
