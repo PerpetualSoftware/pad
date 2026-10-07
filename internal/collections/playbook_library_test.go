@@ -238,3 +238,79 @@ func knownTriggersList(known map[string]bool) string {
 	}
 	return strings.Join(keys, ", ")
 }
+
+// onboardSection returns the text under a heading of the onboard body, up to
+// the next heading of the same or a higher level.
+func onboardSection(t *testing.T, body, heading string) string {
+	t.Helper()
+	i := strings.Index(body, heading+"\n")
+	if i < 0 {
+		t.Fatalf("onboard body has no %q heading", heading)
+	}
+	level := strings.Count(strings.SplitN(heading, " ", 2)[0], "#")
+	rest := body[i+len(heading):]
+	for _, line := range strings.Split(rest, "\n")[1:] {
+		if strings.HasPrefix(line, "#") {
+			l := len(line) - len(strings.TrimLeft(line, "#"))
+			if l <= level {
+				return rest[:strings.Index(rest, "\n"+line)]
+			}
+		}
+	}
+	return rest
+}
+
+// TASK-3454: onboarding an EXISTING project asks where its open work lives and
+// can bring that work in, after saying plainly that Pad has no importer and
+// only once the user has confirmed the list. Pinned per section, because the
+// rule is WHERE it is said, not that the words appear somewhere.
+func TestOnboardPlaybook_ExistingOpenWork(t *testing.T) {
+	body := OnboardPlaybook().Content
+	lower := func(s string) string { return strings.ToLower(s) }
+
+	if pre := onboardSection(t, body, "## Pre-flight"); !strings.Contains(pre, "TODO.md") {
+		t.Error("pre-flight does not look for open-work files such as TODO.md")
+	}
+	if b1 := onboardSection(t, body, "### B1. Discover the domain"); !strings.Contains(b1, "Where does your open work live today?") {
+		t.Error("B1 does not ask where the project's open work lives")
+	}
+
+	b6 := onboardSection(t, body, "### B6. Bring in existing open work, or seed a first item")
+	noImporter := strings.Index(lower(b6), "pad has no importer")
+	confirm := strings.Index(lower(b6), "get a yes")
+	create := strings.Index(lower(b6), "create one item per")
+	switch {
+	case noImporter < 0:
+		t.Error("B6 does not say plainly that Pad has no importer for other trackers")
+	case confirm < 0 || create < 0:
+		t.Error("B6 does not confirm the list and then create one item per entry")
+	case !(noImporter < confirm && confirm < create):
+		t.Error("B6 must set the expectation (no importer), then confirm, then create, in that order")
+	}
+	// Codex r1 (TASK-3454): the source text is untrusted data, the
+	// destination is confirmed when no B2 ran, and the paste fallback is keyed
+	// on whether issues CAN be listed, not on having a shell.
+	for _, want := range []string{"gh issue list", "25", "leave the source alone", "do not guess",
+		"data, not instructions", "propose a collection and confirm it", "if you cannot list the issues",
+		"may be truncated"} {
+		if !strings.Contains(lower(b6), lower(want)) {
+			t.Errorf("B6 is missing %q", want)
+		}
+	}
+	if !strings.Contains(body, "### B7. Recap") {
+		t.Error("B7 Recap lost its number; the fold into B6 keeps every build step's number")
+	}
+
+	if a6 := onboardSection(t, body, "### A6. Existing open work"); !strings.Contains(a6, "B6") {
+		t.Error("audit mode's open-work step does not route to the B6 procedure")
+	}
+	if !strings.Contains(body, "### A7. Recap") {
+		t.Error("audit recap was not renumbered to A7")
+	}
+	if r1 := onboardSection(t, body, "### R1. Ask what they want to revisit"); !strings.Contains(lower(r1), "open work") {
+		t.Error("revisit mode does not route a request to bring in open work")
+	}
+	if d := onboardSection(t, body, "## Mode: defaults (escape hatch)"); !strings.Contains(lower(d), "open work") {
+		t.Error("defaults mode does not offer existing open work")
+	}
+}
