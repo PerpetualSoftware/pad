@@ -35,7 +35,7 @@ The returned `AgentBootstrap` blob carries everything the skill needs to start a
 - `user { name, email, id }` — who's talking
 - `collections [...]` — schemas (drives `pad item create`/`update` field validation)
 - `conventions [...]` — full bodies of `trigger=always, status=active` items. **Must-follow project rules.**
-- `convention_index [...]` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; NO bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist — e.g. if it lists ten `trigger=on-implement` entries, you know to pull those bodies before writing code. Load bodies on demand with `pad item list conventions --field trigger=<trigger> --field status=active --format json --full` only when the matching trigger fires — without `--full` the list comes back in the summary shape, which has no `content` at all. **`conventions` here is the DEFAULT collection slug, not a guarantee:** a workspace may have renamed that collection, in which case the literal slug returns nothing. The payload itself is unaffected — bootstrap resolves it by declaration, not by name — so if the query comes back empty while `convention_index` lists entries, address the items directly by the `ref`s the index already gave you (`pad item show <ref>`) — that always works and needs no collection name. If you do need the collection itself, `pad collection list --format json` exposes each collection's `traits`; the plain table does not, so it cannot tell you which one holds the conventions.
+- `convention_index [...]` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; NO bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist — e.g. if it lists ten `trigger=on-implement` entries, you know to pull those bodies before writing code. Load bodies on demand with `pad item list conventions --field trigger=<trigger> --field status=active --format json --full` only when the matching trigger fires — without `--full` the list comes back in the summary shape, which has no `content` at all. **`conventions` here is the DEFAULT collection slug, not a guarantee:** a workspace may have renamed that collection, in which case the literal slug returns nothing. The payload itself is unaffected — bootstrap resolves it by declaration, not by name — so if the query comes back empty while `convention_index` lists entries, address the items directly by the `ref`s the index already gave you (`pad item show <ref> --agent`) — that always works and needs no collection name. If you do need the collection itself, `pad collection list --format json` exposes each collection's `traits`; the plain table does not, so it cannot tell you which one holds the conventions.
 - `roles [...]` — agent roles configured in the workspace
 - `playbooks [...]` — METADATA ONLY: `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary`. Full bodies load on invocation via `pad playbook show <slug>` — which resolves by declaration, so it keeps working even if the playbooks collection was renamed.
 - `bootstrap_includes [...]` — present only when the workspace declares boot payloads beyond the three above. Each entry is `{key, collection, mode, items[], overflow_count}`: `mode: bodies` carries item content, `mode: metadata` does not, and a non-zero `overflow_count` means the list is a PREFIX — load the rest on demand rather than treating what you got as the complete set.
@@ -197,7 +197,7 @@ All commands accepting an item reference take issue IDs (e.g. `TASK-5`, `BUG-8`)
 ```bash
 pad item create <collection> "title" [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--field key=value] [--content "..." | --stdin]
 pad item list [collection] [--status X] [--role X] [--assign X] [--parent REF] [--all] [--field key=value]
-pad item show TASK-5 [--agent | --format markdown]
+pad item show TASK-5 [--agent]   # --agent: title, ref, status, fields AND body in one read. (--format markdown is the body only, for an edit round-trip with update --stdin; empty for a title-only item)
 pad item update TASK-5 [--status X] [--role X] [--assign X] [--comment "..."] [--stdin | --clear-content]
 pad item delete TASK-5
 pad item search "query"
@@ -327,7 +327,7 @@ Run the **onboard** invokable playbook — see the **Onboarding** entry under Na
 
 ### Retrospective: "Plan X is done, let's retro"
 
-1. Load the plan: `pad item show PLAN-2 --format markdown`
+1. Load the plan: `pad item show PLAN-2 --agent`
 2. Load tasks: `pad item list tasks --all --format json --full` (filter to plan) — `--full` matters here: a retro needs the actual content/notes on each task, not just titles
 3. Generate retro: What shipped, what was deferred, lessons learned
 4. Offer to save: `pad item create doc "Plan N Retrospective" --category retro --stdin`
@@ -351,5 +351,5 @@ Run the **onboard** invokable playbook — see the **Onboarding** entry under Na
 
 If the user's intent doesn't match any pattern above, respond helpfully. You can always:
 - Run `pad item list` or `pad item search` to find relevant items
-- Run `pad item show TASK-5` to load any item's detail (use the issue ID from list output)
+- Run `pad item show TASK-5 --agent` to load any item's detail (use the issue ID from list output)
 - Suggest the appropriate workflow based on what they're trying to do
