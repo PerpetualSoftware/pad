@@ -80,4 +80,13 @@ describe('createKeyedCoalescer (TASK-2224)', () => {
 		expect((got as { e?: unknown }).e).toBeInstanceOf(CoalescerCancelled);
 		finish(42); // the late result reaches nobody
 	});
+
+	it('a function that throws synchronously rejects every joined caller (codex r4)', async () => {
+		const c = createKeyedCoalescer<string, number>(() => {
+			throw new Error('sync boom');
+		}, { waitMs: 10, maxWaitMs: 100 });
+		const ps = [c.run('a'), c.run('a')].map((p) => p.catch((e: Error) => e.message));
+		await vi.advanceTimersByTimeAsync(10);
+		expect(await Promise.all(ps)).toEqual(['sync boom', 'sync boom']);
+	});
 });
