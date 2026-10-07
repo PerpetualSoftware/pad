@@ -177,15 +177,21 @@ func compareDigits(a, b string) int {
 
 func parseSemver(v string) (semverParts, bool) {
 	v = strings.TrimPrefix(v, "v")
+	var p semverParts
 	if i := strings.IndexByte(v, '+'); i >= 0 {
+		// Build metadata is ignored for ordering, but must be well formed.
+		for _, id := range strings.Split(v[i+1:], ".") {
+			if !isIdentifier(id) {
+				return p, false
+			}
+		}
 		v = v[:i]
 	}
-	var p semverParts
 	core := v
 	if i := strings.IndexByte(v, '-'); i >= 0 {
 		core, p.pre = v[:i], strings.Split(v[i+1:], ".")
 		for _, id := range p.pre {
-			if id == "" {
+			if !isIdentifier(id) || (isDigits(id) && len(id) > 1 && id[0] == '0') {
 				return p, false
 			}
 		}
@@ -195,12 +201,25 @@ func parseSemver(v string) (semverParts, bool) {
 		return p, false
 	}
 	for i, n := range nums {
-		if !isDigits(n) {
+		if !isDigits(n) || (len(n) > 1 && n[0] == '0') {
 			return p, false
 		}
 		p.core[i] = n
 	}
 	return p, true
+}
+
+// isIdentifier is a SemVer identifier: non-empty, [0-9A-Za-z-] only.
+func isIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // compareSemver orders by core, then a release above any of its

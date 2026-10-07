@@ -29,7 +29,6 @@ var legacySkillHashes = map[string]map[string]bool{
 		"2d00aca85c8ebff54679871e9219540f1d9cfcdefdac565984a67318371457a2": true,
 		"3b4c22b92d7c0d4e743f66dd70cb9f730c57c1d14b0121cfb8951ceceb490059": true,
 		"419c7a86cd6e76f3df3da2e9f7dd427ca9722ced0dd87476e7a673b16bc9a223": true,
-		"453a906ab2950bcf6459cfddb37b5d0951f1966bba0b5560fd492b669a100237": true,
 		"af1a238b0d8949e2b92fd237a39e63ddb780c3e0852b5b52add7b1b464322124": true,
 		"c5873c9545109ec3d1200d69a5bc1d2a9787775ce47438684e3f073fb65b6e64": true,
 		"e92774f9a49e8f42124509275bab4fd96410188fe5530375538573511fc67a43": true,
@@ -39,7 +38,6 @@ var legacySkillHashes = map[string]map[string]bool{
 	},
 	"claude": {
 		"0070bab701ecf31699e66b1cb3cd014c2774e01f99a2a9ad4dcae8eb3ccf2c29": true,
-		"0eb7cfd54ed87c5aa385adc7a8c3ee7ea9a821d66d50ac156ff6e61fb2f9bd23": true,
 		"1f55bd44deba9494f55f1110374b68de173943546cf371d66a1d753ce5c7d212": true,
 		"23cd7eb998a9eb0f6da4c5786505f9c14e95f086f79a13c8cc6cf4b0bb9f793a": true,
 		"3942b777f519d841d6e327b0373ed902a71860b67074b0559efab987c3847ecd": true,
@@ -57,7 +55,6 @@ var legacySkillHashes = map[string]map[string]bool{
 	"copilot": {
 		"279c38e5b8eba742f83bbd9df8f20d999895f379ad3c81342d6bff611d974a6a": true,
 		"3b387094c87deed5665e3cc34b0ac1b88db4b1d5c7ceece0e2d21066771fe2e6": true,
-		"4c5b38798d2cc519e9c5a5d1dfb4ae06e76d33ab43f2506bf4f99b0ca4078635": true,
 		"6d4b2a3a7d2b553867fee09f12cbca2e3e33cb6b484f207b1b8d6b44cae268e4": true,
 		"71a3670c0f171902e55b0e519fbfd453ee6a3ca8e7d65f4f7cc70cbed58d5c3d": true,
 		"78840d0f72a2d5fc91c58b50b0f1f26c3e19b95b1733c00c2310a6bb0b0b6175": true,
