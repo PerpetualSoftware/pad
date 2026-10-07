@@ -326,6 +326,11 @@ type Server struct {
 	importReadIdle    time.Duration
 	importReadCeiling time.Duration
 
+	// importOutcomes records what became of each keyed import attempt, for
+	// GET /workspaces/import-status (BUG-3475). Built on first use.
+	importOutcomes     *importOutcomeRegistry
+	importOutcomesOnce sync.Once
+
 	// importArtifactMaxBytes caps a single playbook/convention artifact
 	// import (POST /workspaces/{ws}/import-artifact). 0 →
 	// defaultImportArtifactMaxBytes (1 MiB). A single artifact is tiny;
@@ -2008,6 +2013,7 @@ func (s *Server) setupRouter() {
 				r.Get("/", s.handleListWorkspaces)
 				r.Post("/", s.handleCreateWorkspace)
 				r.Post("/import", s.handleImportWorkspace)
+				r.Get("/import-status", s.handleImportStatus)
 				r.Put("/reorder", s.handleReorderWorkspaces)
 
 				// Soft-delete recovery (PLAN-1969 / TASK-1970). Both live

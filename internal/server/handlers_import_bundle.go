@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -232,12 +233,58 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			"Attachment storage is not configured on this server")
 		return
 	}
+	// BUG-3475: the caller may name this attempt so it can ask what became
+	// of it when the response does not arrive (GET /workspaces/import-status).
+	// Checked before the body is read, so a malformed key costs no upload.
+	importKey := r.URL.Query().Get("import_key")
+	if importKey != "" && !importKeyPattern.MatchString(importKey) {
+		writeError(w, http.StatusBadRequest, "validation_error", "import_key must be 8-64 letters, digits or hyphens")
+		return
+	}
+	var outcomes *importOutcomeRegistry
+	if importKey != "" && mint.OwnerID != "" {
+		outcomes = s.importOutcomesRegistry()
+		if !outcomes.begin(mint.OwnerID, importKey) {
+			writeError(w, http.StatusConflict, "import_key_in_use", "An import with this key is already running")
+			return
+		}
+	}
+	ownerUsername := ""
+	if u := currentUser(r); u != nil {
+		ownerUsername = u.Username
+	}
+	// report records the attempt's end. Only a workspace the caller can open
+	// is named: a removed one has nothing to link to.
+	report := func(state string, ws *models.Workspace) {
+		if outcomes == nil {
+			return
+		}
+		slug, name := "", ""
+		if ws != nil && (state == importStateComplete || state == importStateKept) {
+			slug, name = ws.Slug, ws.Name
+		}
+		outcomes.finish(mint.OwnerID, importKey, state, slug, name, ownerUsername)
+	}
+
+	// BUG-3475: did the BODY itself fail (a stall past the per-Read deadline,
+	// a reset, a client that went away)? Wrapped beneath the size cap so the
+	// cap's own refusal is not mistaken for one. A truncated file that
+	// arrives in full reads to a clean EOF here, so it stays a DATA error.
+	body := &importTransportBody{ReadCloser: r.Body}
+	r.Body = body
+
 	// Bound the request body BEFORE the gzip reader spools any of it.
 	maxBytes := s.effectiveImportBundleMaxBytes()
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 
 	gz, err := gzip.NewReader(r.Body)
 	if err != nil {
+		report(importStateNotCreated, nil)
+		if body.failed() {
+			writeError(w, http.StatusBadRequest, "import_interrupted",
+				"The upload was interrupted before the bundle arrived; nothing was created ("+err.Error()+")")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "bad_bundle",
 			"Could not read gzip stream: "+err.Error())
 		return
@@ -261,6 +308,36 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// partial workspace to keep or remove: answer the same 403 the
 		// pre-check does and stop.
 		if writeStorePlanLimitError(w, r, err, "") {
+			report(importStateNotCreated, nil)
+			return
+		}
+
+		// A TRANSPORT failure rolls the partial workspace back (BUG-3475,
+		// lead ruling). The KEEP door below exists so the importer can
+		// inspect what arrived, and it can only say so in this response — a
+		// response that cannot reach a client whose upload stalled or whose
+		// connection died. A kept partial nobody is told about is a husk with
+		// an owner (the BUG-3184 shape, now visible in their list), and a
+		// retry would make a second workspace beside it. Checked FIRST: the
+		// gzip or tar error a cut-off stream produces is a consequence of the
+		// transport failure, not a fact about the bundle.
+		if body.failed() {
+			state := importStateNotCreated
+			msg := "The upload was interrupted before the bundle finished arriving; nothing was created"
+			if ws != nil {
+				if rerr := s.rollBackPartialImport("import bundle (interrupted)", ws, mint.OwnerID, err); rerr != nil {
+					state = importStateUnknown
+					msg = fmt.Sprintf("The upload was interrupted before the bundle finished arriving, and the partial workspace %q could not be removed; check your workspace list", ws.Slug)
+				} else {
+					state = importStateRemoved
+					msg = "The upload was interrupted before the bundle finished arriving; the partial workspace was removed"
+				}
+			}
+			slog.Warn("import: upload interrupted", "workspace_created", ws != nil, "outcome", state, "error", err)
+			report(state, nil)
+			// The cause rides along for whoever does receive it (an operator,
+			// a client that is slow rather than gone): a timeout reads as one.
+			writeError(w, http.StatusBadRequest, "import_interrupted", msg+" ("+err.Error()+")")
 			return
 		}
 		// Errors from importBundle are already shaped with status hints —
@@ -290,27 +367,15 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// manifest decode path notes "workspace created but
 		// attachments not restored" and that decision is tracked
 		// separately under TASK-896 (partial-import design).
-		if isValidationReject && ws != nil {
-			if n, attErr := s.store.SoftDeleteWorkspaceAttachments(ws.ID); attErr != nil {
-				slog.Warn("import: failed to tombstone partial-workspace attachments",
-					"workspace_id", ws.ID, "error", attErr)
-			} else if n > 0 {
-				slog.Info("import: rolled back partial-workspace attachments",
-					"workspace_id", ws.ID, "rows", n)
-			}
-			// The removal is the shared soft-delete-plus-purge (BUG-3094). A
-			// bare DeleteWorkspace left a husk: ListDeletedWorkspaces is scoped
-			// by owner_id and the owner row is only added after success, so
-			// the rejected import sat in the importer's deleted-workspaces
-			// list and restoring it returned a workspace with no member row.
-			// The helper reclaims the rehydrated blobs before it purges (the
-			// tombstones above are what it and the sweeper fallback read) and
-			// its other-members guard is trivially satisfied here: nothing
-			// writes a member row before this point.
-			_ = s.removeUnusableWorkspace("import bundle", ws.ID, ws.Slug, mint.OwnerID, err)
-		}
-
 		if isValidationReject {
+			state := importStateNotCreated
+			if ws != nil {
+				state = importStateRemoved
+				if rerr := s.rollBackPartialImport("import bundle", ws, mint.OwnerID, err); rerr != nil {
+					state = importStateUnknown
+				}
+			}
+			report(state, nil)
 			if statusErr.details != nil {
 				writeError2(w, statusErr.status, statusErr.code, statusErr.message, statusErr.details)
 				return
@@ -332,6 +397,10 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// error text. A caller with no resolved user (legacy token, fresh-
 		// install window) has nobody to attach and keeps today's answer.
 		msg := err.Error()
+		keptState := importStateNotCreated
+		if ws != nil {
+			keptState = importStateKept
+		}
 		if ws != nil && mint.OwnerID != "" {
 			if oerr := s.addOwnerOrCompensate("import bundle (partial)", ws.ID, ws.Slug, mint.OwnerID); oerr != nil {
 				slog.Error("import: partial workspace could not be attached to the importer",
@@ -341,14 +410,17 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 				// membership that still permits reading (codex round 2), so
 				// the message says ownership is unconfirmed, not unreachable.
 				if live, lerr := s.store.GetWorkspaceBySlug(ws.Slug); lerr == nil && live == nil {
+					keptState = importStateRemoved
 					msg += "; the partial workspace could not be attached to your account and was removed"
 				} else {
+					keptState = importStateUnknown
 					msg += fmt.Sprintf("; the partial workspace %q still exists but your ownership of it could not be confirmed — see the server log", ws.Slug)
 				}
 			} else {
 				msg += fmt.Sprintf("; the partial workspace %q was kept and is yours to inspect or delete", ws.Slug)
 			}
 		}
+		report(keptState, ws)
 		writeError(w, http.StatusBadRequest, "import_failed", msg)
 		return
 	}
@@ -359,6 +431,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	// is not a successful import.
 	if mint.OwnerID != "" {
 		if err := s.addOwnerOrCompensate("import bundle", ws.ID, ws.Slug, mint.OwnerID); err != nil {
+			report(importStateUnknown, nil)
 			writeInternalError(w, err)
 			return
 		}
@@ -374,7 +447,66 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	repair.SetHeader(w)
 	staleBodies.SetHeader(w)
 	setImportCollapsedHeader(w, importReport)
+	report(importStateComplete, ws)
 	writeJSON(w, http.StatusCreated, ws)
+}
+
+// rollBackPartialImport removes a workspace an import created and could not
+// finish, with its rehydrated attachments: the validation-reject door (codex
+// P1 on PR #308) and, since BUG-3475, the interrupted-upload door. A non-nil
+// error means it was KEPT (removeUnusableWorkspace's keep arms) and the
+// caller cannot say it is gone.
+func (s *Server) rollBackPartialImport(door string, ws *models.Workspace, ownerID string, cause error) error {
+	// Cascade: a duplicate manifest.json or duplicate pad-export.json can
+	// fire AFTER blobs have already been rehydrated — those attachment rows
+	// would otherwise stay live (deleted_at IS NULL), pin their blobs from
+	// orphan-GC, and count toward the importing user's storage usage.
+	// Tombstone every attachment in the partial workspace BEFORE removing the
+	// workspace itself so orphan-GC reclaims the blobs after the grace window.
+	// Codex P1 round 2 on PR #308.
+	if n, attErr := s.store.SoftDeleteWorkspaceAttachments(ws.ID); attErr != nil {
+		slog.Warn("import: failed to tombstone partial-workspace attachments",
+			"workspace_id", ws.ID, "error", attErr)
+	} else if n > 0 {
+		slog.Info("import: rolled back partial-workspace attachments",
+			"workspace_id", ws.ID, "rows", n)
+	}
+	// The removal is the shared soft-delete-plus-purge (BUG-3094). A bare
+	// DeleteWorkspace left a husk: ListDeletedWorkspaces is scoped by
+	// owner_id and the owner row is only added after success, so the rejected
+	// import sat in the importer's deleted-workspaces list and restoring it
+	// returned a workspace with no member row. The helper reclaims the
+	// rehydrated blobs before it purges (the tombstones above are what it and
+	// the sweeper fallback read) and its other-members guard is trivially
+	// satisfied here: nothing writes a member row before this point.
+	return s.removeUnusableWorkspace(door, ws.ID, ws.Slug, ownerID, cause)
+}
+
+// importTransportBody records whether reading the request body itself failed
+// with anything but a clean end (BUG-3475): the per-Read deadline expiring on
+// a stalled upload, a reset, or a client that went away before the last byte.
+type importTransportBody struct {
+	io.ReadCloser
+	mu  sync.Mutex
+	err error
+}
+
+func (b *importTransportBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF {
+		b.mu.Lock()
+		if b.err == nil {
+			b.err = err
+		}
+		b.mu.Unlock()
+	}
+	return n, err
+}
+
+func (b *importTransportBody) failed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.err != nil
 }
 
 // importBundle reads a tar (already gzip-decompressed) from r and
