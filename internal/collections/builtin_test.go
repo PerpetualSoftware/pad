@@ -182,3 +182,23 @@ func TestBuiltinStateHashNumbersByValue(t *testing.T) {
 		t.Error("two values above 2^53 hashed the same")
 	}
 }
+
+// A library change that ONLY drops a field is still a change: an item that
+// carries the dropped field is offered the removal (codex r2).
+func TestBuiltinStateOfDropOnly(t *testing.T) {
+	e, _ := LookupBuiltin("playbook/ship")
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(e.Fields), &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["legacy_note"] = "x"
+	fb, _ := json.Marshal(fields)
+	seed := BuiltinEntry{Key: e.Key, Content: e.Content, Fields: string(fb)}
+	o := models.BuiltinOrigin{Key: e.Key, SeedHash: seed.Hash(), SeedContent: seed.Content, SeedFields: seed.Fields}
+	if got, _, _, _ := BuiltinStateOf(o, seed.Content, seed.Fields); got != BuiltinUpdateAvailable {
+		t.Fatalf("an unedited item still carrying a dropped field: %s, want update_available", got)
+	}
+	if got, _, _, _ := BuiltinStateOf(o, e.Content, e.Fields); got != BuiltinCurrent {
+		t.Fatalf("an item without the dropped field: %s, want current", got)
+	}
+}

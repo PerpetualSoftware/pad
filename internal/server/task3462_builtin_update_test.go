@@ -3,9 +3,12 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -321,5 +324,57 @@ func TestTASK3462_ListingAndUpdateRespectAccess(t *testing.T) {
 	_ = json.Unmarshal([]byte(body), &st)
 	if code, body := as(viewer, "POST", base+"/items/"+ship.Slug+"/builtin/update", map[string]any{"expected_seq": st.Seq}); code != http.StatusForbidden {
 		t.Errorf("viewer update: %d %s, want 403", code, body)
+	}
+}
+
+// With the item open in an editor the body travels through the live document
+// (the applier path), and the row write lands first. If the apply then fails,
+// the item keeps its old body, so its seed must stay where it was and the
+// update must still be on offer (codex r2: the seed had committed with the
+// row and every later offer answered builtin_up_to_date).
+func TestTASK3462_FailedApplyLeavesTheSeedAndTheOffer(t *testing.T) {
+	restore := collab.SetApplierTimeoutsForTesting(150*time.Millisecond, 150*time.Millisecond)
+	t.Cleanup(restore)
+	srv := testServerWithCollab(t)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	slug, _ := task3462Workspace(t, srv, "Applier 3462", "startup")
+	ship := task3462ItemByTitle(t, srv, slug, "playbooks", "Ship tasks")
+	stageOldSeed(t, srv, ship, "playbook/ship", "the old ship body", nil)
+	before, _ := srv.store.GetItemBuiltinOrigin(ship.ID)
+
+	conn, resp, err := dialCollab(t, ts.URL, ship.ID, nil, "")
+	if err != nil {
+		status := ""
+		if resp != nil {
+			status = resp.Status
+		}
+		t.Fatalf("dialCollab: %v (%s)", err, status)
+	}
+	stop := silentApplier(t, conn)
+	t.Cleanup(stop)
+	deadline := time.Now().Add(3 * time.Second)
+	for !srv.collab.HasElectableApplier(ship.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("the conn never became electable; this would measure the direct path")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	st := task3462GetState(t, srv, slug, ship.Slug)
+	if st.State != collections.BuiltinUpdateAvailable {
+		t.Fatalf("staged: %s", st.State)
+	}
+	r := task3462Update(srv, slug, ship.Slug, map[string]any{"expected_seq": st.Seq})
+	if r.code != http.StatusConflict || !strings.Contains(r.body, "content_not_applied") {
+		t.Fatalf("an update whose apply fails: %d %s, want 409 content_not_applied", r.code, r.body)
+	}
+	after, _ := srv.store.GetItemBuiltinOrigin(ship.ID)
+	if after == nil || after.SeedHash != before.SeedHash {
+		t.Fatalf("the seed moved although the body did not land: %+v, want %+v", after, before)
+	}
+	if again := task3462GetState(t, srv, slug, ship.Slug); again.State != collections.BuiltinUpdateAvailable {
+		t.Fatalf("after a failed apply the offer is gone: %s", again.State)
 	}
 }

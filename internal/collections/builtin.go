@@ -301,8 +301,29 @@ func BuiltinStateOf(o models.BuiltinOrigin, content, fieldsJSON string) (state, 
 		return "", "", entry, err
 	}
 	library := entry.Hash()
+	// The seed's text, when it is known and readable.
+	var seed *BuiltinEntry
+	if o.SeedFields != "" {
+		s := BuiltinEntry{Key: o.Key, Content: o.SeedContent, Fields: o.SeedFields}
+		if _, herr := s.HashErr(); herr == nil {
+			seed = &s
+		}
+	}
+	// Matching the library over the library's keys is not enough when the
+	// library DROPPED a field (codex r2): the projection cannot see it, so an
+	// item still carrying it would read current and never be offered the
+	// removal. It holds the library text only when the seed's dropped keys
+	// are gone from it too.
+	holdsLibrary := itemHash == library
+	if holdsLibrary && seed != nil {
+		dropped, derr := droppedKeysPresent(entry, *seed, fieldsJSON)
+		if derr != nil {
+			return "", "", entry, derr
+		}
+		holdsLibrary = !dropped
+	}
 	switch {
-	case itemHash == library:
+	case holdsLibrary:
 		return BuiltinCurrent, itemHash, entry, nil
 	case o.SeedHash == "":
 		return BuiltinUnknownOrigin, itemHash, entry, nil
@@ -310,18 +331,36 @@ func BuiltinStateOf(o models.BuiltinOrigin, content, fieldsJSON string) (state, 
 		return BuiltinCurrent, itemHash, entry, nil
 	}
 	vsSeed := itemHash
-	if o.SeedFields != "" {
-		seed := BuiltinEntry{Key: o.Key, Content: o.SeedContent, Fields: o.SeedFields}
-		if _, herr := seed.HashErr(); herr == nil {
-			if vsSeed, err = seed.ItemStateHash(content, fieldsJSON); err != nil {
-				return "", "", entry, err
-			}
+	if seed != nil {
+		if vsSeed, err = seed.ItemStateHash(content, fieldsJSON); err != nil {
+			return "", "", entry, err
 		}
 	}
 	if vsSeed == o.SeedHash {
 		return BuiltinUpdateAvailable, itemHash, entry, nil
 	}
 	return BuiltinDiverged, itemHash, entry, nil
+}
+
+// droppedKeysPresent reports whether the item still carries a non-null value
+// for an update field the seed had and the library no longer has.
+func droppedKeysPresent(library, seed BuiltinEntry, fieldsJSON string) (bool, error) {
+	lib := map[string]bool{}
+	for _, k := range library.UpdateFieldKeys() {
+		lib[k] = true
+	}
+	item := map[string]any{}
+	if fieldsJSON != "" {
+		if err := models.DecodeJSONKeepingNumbers([]byte(fieldsJSON), &item); err != nil {
+			return false, fmt.Errorf("decode item fields: %w", err)
+		}
+	}
+	for _, k := range seed.UpdateFieldKeys() {
+		if v, ok := item[k]; !lib[k] && ok && v != nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // UpdateFields is the entry's update fields as a map: what an update from the
