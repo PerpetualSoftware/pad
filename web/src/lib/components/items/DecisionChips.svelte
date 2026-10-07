@@ -61,7 +61,7 @@
 			<a
 				class="decision-chip convention-chip"
 				href={chip.href}
-				title="{chip.label}: judged {chip.percent}% likely from the item's text, links and recent comments. Advisory only; no chip does not mean the item complies."
+				title="{chip.label}: judged {chip.percent}% likely from the item's text, links and recent comments. Advisory only; a missing chip is not a verdict."
 			>
 				<span class="decision-chip-label">{chip.label}</span>
 			</a>

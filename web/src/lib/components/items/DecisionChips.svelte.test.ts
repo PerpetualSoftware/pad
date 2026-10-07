@@ -113,7 +113,8 @@ describe('DecisionChips', () => {
 		const links = [...document.querySelectorAll('a.convention-chip')] as HTMLAnchorElement[];
 		expect(links.map((l) => l.textContent?.trim())).toEqual(['Possibly breaks CONVE-17']);
 		expect(links[0].getAttribute('href')).toBe('/-/r/ws/CONVE-17');
-		// Nothing anywhere reads as compliance.
-		expect(document.body.textContent ?? '').not.toMatch(/complies|compliant|passes/i);
+		// Nothing anywhere reads as compliance: not the text, and not the
+		// title or any other attribute (codex r1 caught it in the title).
+		expect(document.body.innerHTML).not.toMatch(/complies|compliant|passes/i);
 	});
 });
