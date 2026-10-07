@@ -42,6 +42,10 @@ func TestDecideSkillWrite(t *testing.T) {
 		{"extra final newline on an unedited older file", append(stamp(older, "v0.17.0"), '\n', '\n'), true, "v0.18.0", SkillUpdate},
 		{"CRLF copy of the current file", crlf(stamp([]byte(testSkill), "v0.18.0")), true, "v0.18.0", SkillUnchanged},
 		{"unstamped, already this text", expected, true, "v0.18.0", SkillUpdate},
+		// Codex r5: whitespace after the stamp (an editor's trailing blank
+		// line, or spaces on the stamp line) does not hide it.
+		{"whitespace-only lines after the stamp", append(stamp(older, "v0.17.0"), []byte("  \n\t\n \n")...), true, "v0.18.0", SkillUpdate},
+		{"trailing spaces on the stamp line", []byte(strings.TrimRight(string(stamp(older, "v0.17.0")), "\n") + "   \n"), true, "v0.18.0", SkillUpdate},
 		{"unstamped, matches no release", []byte("hand-written skill\n"), true, "v0.18.0", SkillKeepEdited},
 	}
 	for _, c := range cases {

@@ -180,3 +180,65 @@ func evalString(e ast.Expr) (string, error) {
 	}
 	return "", fmt.Errorf("unexpected expression %T", e)
 }
+
+// Real copies a released pad binary wrote (Claude Code and the shared
+// agents file, installed by a v0.14.0-era pad on 2026-08-16), pinned by
+// hash. Independent of releasedSkillOutputs (codex r5): if the
+// reconstruction were wrong, the generator and the coverage test above would
+// agree on the same wrong hashes; these would still fail.
+func TestLegacySkillHashesIncludeRealInstalledCopies(t *testing.T) {
+	for f, h := range map[string]string{
+		"claude": "9769cd691eaa8ab3666f8c41467b044ccd71bd3545af76a20c930706318bbb9d",
+		"agents": "47840f4539c5428b2042a82f9c801803e3c635231dc56ae93fc046b0e1b3de10",
+	} {
+		if !legacySkillHashes[f][h] {
+			t.Errorf("a real %s skill a released pad wrote (%s) is not in the frozen list", f, h)
+		}
+	}
+}
+
+// The reconstruction assumes every tag formatted output with today's
+// StripFrontmatter and frontmatter literals. Check that per tag rather than
+// assume it (codex r5): a tag that formatted differently fails here.
+func TestReleasedSkillFormattingMatchesToday(t *testing.T) {
+	tags := unstampedReleaseTags(t)
+	if len(tags) == 0 {
+		t.Skip("no release tags in this checkout; the release workflow, which fetches them, runs this")
+	}
+	today, err := os.ReadFile("agents.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := funcSource(string(today), "StripFrontmatter")
+	if want == "" {
+		t.Fatal("today's agents.go has no StripFrontmatter")
+	}
+	for _, tag := range tags {
+		src, err := exec.Command("git", "show", tag+":internal/cli/agents.go").Output()
+		if err != nil {
+			t.Fatalf("%s: %v", tag, err)
+		}
+		if got := funcSource(string(src), "StripFrontmatter"); got != want {
+			t.Errorf("%s's StripFrontmatter differs from today's; releasedSkillOutputs would rebuild its output wrongly", tag)
+		}
+		for name, lit := range map[string]string{"agents": agentsFrontmatter, "copilot": copilotFrontmatter} {
+			if !strings.Contains(string(src), "`"+lit+"`") {
+				t.Errorf("%s does not carry today's %s frontmatter literal", tag, name)
+			}
+		}
+	}
+}
+
+// funcSource is a top-level function's source text, from "func Name(" to its
+// closing brace at column 0.
+func funcSource(src, name string) string {
+	i := strings.Index(src, "\nfunc "+name+"(")
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(src[i:], "\n}\n")
+	if j < 0 {
+		return ""
+	}
+	return src[i : i+j+3]
+}
