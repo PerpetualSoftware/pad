@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createKeyedCoalescer } from './keyedCoalescer';
+import { createKeyedCoalescer, CoalescerCancelled } from './keyedCoalescer';
 
 describe('createKeyedCoalescer (TASK-2224)', () => {
 	beforeEach(() => vi.useFakeTimers());
@@ -38,13 +38,25 @@ describe('createKeyedCoalescer (TASK-2224)', () => {
 		expect(fn).toHaveBeenCalledTimes(3);
 	});
 
-	it('cancel drops a pending run', async () => {
+	it('cancel drops a pending run and settles its callers, rejected (codex r1)', async () => {
 		const fn = vi.fn(async () => 1);
 		const c = createKeyedCoalescer(fn, { waitMs: 300, maxWaitMs: 1000 });
-		void c.run('a');
+		const a = c.run('a').catch((e) => e);
+		const b = c.run('b').catch((e) => e);
 		c.cancel('a');
+		expect(await a).toBeInstanceOf(CoalescerCancelled);
+		c.cancelAll();
+		expect(await b).toBeInstanceOf(CoalescerCancelled);
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(fn).not.toHaveBeenCalled();
+	});
+
+	it('a solitary call is capped by maxWaitMs too (codex r1)', async () => {
+		const fn = vi.fn(async () => 1);
+		const c = createKeyedCoalescer(fn, { waitMs: 5000, maxWaitMs: 1000 });
+		void c.run('a');
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(fn).toHaveBeenCalledTimes(1);
 	});
 
 	it('a failing run rejects every joined caller', async () => {

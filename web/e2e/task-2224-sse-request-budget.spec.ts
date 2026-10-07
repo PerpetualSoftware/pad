@@ -81,13 +81,19 @@ async function actAs(context: BrowserContext, account: Account) {
 
 function recorder(page: Page) {
 	const log: string[] = [];
+	const itemsChangesAt: number[] = [];
 	page.on('request', (r) => {
 		const u = new URL(r.url());
 		if (!u.pathname.startsWith('/api/v1/') || u.pathname.startsWith('/api/v1/events')) return;
 		const shape = u.pathname.replace(/\/items\/[^/]+/, '/items/:ref').replace(/\/workspaces\/[^/]+/, '/workspaces/:ws');
 		log.push(`${r.method()} ${shape}${u.search.includes('since') ? '?since' : ''}`);
+		if (u.pathname.endsWith('/items-changes')) itemsChangesAt.push(Date.now());
 	});
 	return {
+		/** Was an /items-changes read issued at or after `t`? */
+		readSince(t: number) {
+			return itemsChangesAt.some((at) => at >= t);
+		},
 		take() {
 			const counts: Record<string, number> = {};
 			for (const l of log.splice(0)) counts[l] = (counts[l] ?? 0) + 1;
@@ -129,18 +135,26 @@ test('TASK-2224: requests per external update on the collection page, and under 
 	expect(total(one), 'one external update').toBeLessThanOrEqual(3);
 	expect(total(one), 'control: the tab heard the update at all').toBeGreaterThan(0);
 
-	for (let i = 1; i <= 20; i++) {
-		await ok(await account.api.patch(`/api/v1/workspaces/${ws}/items/${slugs[i]}`, { data: { fields_patch: { status: 'in-progress' } } }), 'burst');
-	}
-	await sleep(8000);
+	// Concurrently, so the burst lands inside one coalescing window however
+	// slow the box is (codex r1: a serial loop on a slow CI runner spans
+	// several windows, each a legitimate run).
+	await Promise.all(
+		slugs.slice(1, 21).map(async (slug) =>
+			ok(await account.api.patch(`/api/v1/workspaces/${ws}/items/${slug}`, { data: { fields_patch: { status: 'in-progress' } } }), 'burst')
+		)
+	);
+	const burstDoneAt = Date.now();
+	// The tab must catch up with the LAST update: a reconcile read issued
+	// after the burst finished (codex r1: a title still on screen proved nothing).
+	await expect.poll(() => rec.readSince(burstDoneAt), { timeout: 5000 }).toBe(true);
+	await sleep(3000);
 	const burst = rec.take();
 	console.log('MEASURE 20-update burst:', total(burst), JSON.stringify(burst));
 	const kind = (k: string) => Object.entries(burst).filter(([p]) => p.includes(k)).reduce((a, [, n]) => a + n, 0);
 	expect.soft(kind('/collections'), 'collection reloads for a 20-update burst (main: 20)').toBeLessThanOrEqual(4);
 	expect.soft(kind('/items-changes'), 'items-changes reads for a 20-update burst (main: 20)').toBeLessThanOrEqual(10);
 	expect.soft(total(burst), 'requests for a 20-update burst (main: 40)').toBeLessThanOrEqual(14);
-	// The tab did catch up: the last update is on screen.
-	await expect(page.getByText('T20', { exact: true }).first()).toBeVisible();
+
 
 	// Item pane open on T0; comments land on a DIFFERENT item.
 	await page.goto(`/${account.username}/${ws}/tasks/${slugs[0]}`);

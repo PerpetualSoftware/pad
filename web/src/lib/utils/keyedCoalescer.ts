@@ -8,9 +8,17 @@
 // 20 updates in a second used to cost 20 reloads.
 export interface KeyedCoalescer<K, T> {
 	run(key: K): Promise<T>;
-	/** Drop a pending run without starting it; its callers' promise never settles. */
+	/** Drop a pending run without starting it; its joined callers are rejected with CoalescerCancelled. */
 	cancel(key: K): void;
 	cancelAll(): void;
+}
+
+/** The rejection a joined caller gets when its pending run is cancelled. */
+export class CoalescerCancelled extends Error {
+	constructor() {
+		super('coalesced run cancelled');
+		this.name = 'CoalescerCancelled';
+	}
 }
 
 export function createKeyedCoalescer<K, T>(
@@ -49,19 +57,26 @@ export function createKeyedCoalescer<K, T>(
 				resolve = res;
 				reject = rej;
 			});
-			const timer = setTimeout(() => fire(key), opts.waitMs);
+			// A solitary call is capped by maxWaitMs too (codex r1).
+			const timer = setTimeout(() => fire(key), Math.min(opts.waitMs, opts.maxWaitMs));
 			pending.set(key, { promise, resolve, reject, timer, firstAt: now });
 			return promise;
 		},
+		// Every joined caller is SETTLED, rejected, so nothing waits forever on
+		// a run that will never start (codex r1).
 		cancel(key) {
 			const p = pending.get(key);
 			if (p) {
 				clearTimeout(p.timer);
 				pending.delete(key);
+				p.reject(new CoalescerCancelled());
 			}
 		},
 		cancelAll() {
-			for (const p of pending.values()) clearTimeout(p.timer);
+			for (const p of pending.values()) {
+				clearTimeout(p.timer);
+				p.reject(new CoalescerCancelled());
+			}
 			pending.clear();
 		},
 	};

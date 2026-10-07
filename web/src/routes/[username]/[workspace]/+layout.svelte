@@ -297,6 +297,9 @@
 	const collectionsSoon = createKeyedCoalescer(async (ws: string) => {
 		if (ws === wsSlug) await collectionStore.loadCollections(ws);
 	}, sseCoalesceTiming);
+	// Fire-and-forget: a cancelled run (the layout went away) or a failed
+	// reload is nothing for an SSE callback to act on.
+	const reloadCollectionsSoon = (ws: string) => void collectionsSoon.run(ws).catch(() => {});
 	onDestroy(() => {
 		reconcileSoon.cancelAll();
 		collectionsSoon.cancelAll();
@@ -357,7 +360,7 @@
 			switch (event.type) {
 				case 'item_created': {
 					// Reload collections to update counts
-					void collectionsSoon.run(eventWs);
+					reloadCollectionsSoon(eventWs);
 					try {
 						const item = await api.items.get(eventWs, event.item_id);
 						collectionStore.addItem(item);
@@ -385,7 +388,7 @@
 
 					// Only reload collections for external/non-editor updates
 					// (e.g. status changes, field edits from another tab)
-					void collectionsSoon.run(eventWs);
+					reloadCollectionsSoon(eventWs);
 
 					if (activeItem && activeItem.id === event.item_id) {
 						if (editorStore.dirty) {
@@ -419,13 +422,13 @@
 				}
 
 				case 'item_archived': {
-					void collectionsSoon.run(eventWs);
+					reloadCollectionsSoon(eventWs);
 					collectionStore.removeItem(event.item_id);
 					break;
 				}
 
 				case 'item_restored': {
-					void collectionsSoon.run(eventWs);
+					reloadCollectionsSoon(eventWs);
 					break;
 				}
 
@@ -452,7 +455,7 @@
 					// Refresh sidebar/pickers for EVERY collection_updated —
 					// icon / name / sort-order changes matter to the nav
 					// even without a rename (codex round 1 P2).
-					void collectionsSoon.run(eventWs);
+					reloadCollectionsSoon(eventWs);
 					break;
 				}
 			}
