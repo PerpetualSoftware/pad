@@ -67,4 +67,17 @@ describe('createKeyedCoalescer (TASK-2224)', () => {
 		await vi.advanceTimersByTimeAsync(10);
 		expect(await Promise.all(ps)).toEqual(['boom', 'boom']);
 	});
+
+	it('cancelling a run already in flight rejects its callers at once, and its result is discarded (codex r3)', async () => {
+		let finish!: (v: number) => void;
+		const fn = vi.fn(() => new Promise<number>((r) => (finish = r)));
+		const c = createKeyedCoalescer(fn, { waitMs: 10, maxWaitMs: 100 });
+		const p = c.run('a').then((v) => ({ v }), (e) => ({ e }));
+		await vi.advanceTimersByTimeAsync(10);
+		expect(fn).toHaveBeenCalledTimes(1); // in flight
+		c.cancelAll();
+		const got = await p;
+		expect((got as { e?: unknown }).e).toBeInstanceOf(CoalescerCancelled);
+		finish(42); // the late result reaches nobody
+	});
 });
