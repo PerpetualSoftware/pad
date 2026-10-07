@@ -1738,6 +1738,17 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.71 — TASK-3462 U3a (lead ruling). ADDITIVE bump on the v0.63 /
+//     v0.53 grounds: the bootstrap every bootstrap door returns
+//     (`pad_set_workspace`'s embed, `pad_meta.action=bootstrap`, the
+//     `pad://workspace/{ws}/bootstrap` resource) gains an `omitempty`
+//     `builtin_updates` count: the conventions and playbooks Pad ships whose
+//     library text changed since the workspace's copy was made (unedited, or
+//     edited too), among the items the caller sees in full. The server
+//     instructions gain a section telling the agent to mention it once and
+//     never apply an update itself. No name, enum or param moved; a
+//     workspace with nothing on offer reads byte-identical to before.
+//
 //     0.70 — BUG-3453 (lead ruling). BEHAVIOR bump on the v0.49 grounds
 //     (a default call's content changed, with no name, enum or param
 //     moved): `pad_project.action=next` and `ready`, which return the
@@ -1842,7 +1853,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.70"
+const ToolSurfaceVersion = "0.71"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

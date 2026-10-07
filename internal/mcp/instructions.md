@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.70)
+## Tool surface (v0.71)
 
 Ten resource × action tools, plus `pad_set_workspace`. Eleven tools total.
 
@@ -118,6 +118,10 @@ For brand-new workspaces, `pad_workspace.create` with `{name: "<name>"}` (and op
 The bootstrap blob carries `needs_onboarding: bool` — true when the workspace has zero user-created items (template seeds don't count). When it's true, **lead with an active offer before anything else**: *"This workspace is brand new and isn't set up yet. Want me to set it up? I'll ask a few quick questions and adapt it to your project."*
 
 This is an **offer, not an auto-run** — wait for the user to say yes before running onboarding. If they accept, run the `onboard` playbook (use the `pad_onboard` prompt, or load the body via `pad_playbook` `action: get`, `ref: onboard`). If they decline, or already declined earlier in the session, respect that and skip the offer. The flag flips to false the moment any item exists, so it won't nag past first setup.
+
+## Built-in updates: mention once
+
+The bootstrap blob may carry `builtin_updates: int` (absent when there are none): how many of the conventions and playbooks Pad ships have newer text in Pad's library than this workspace's copy. When it is present, mention it **once per session**, in one line, then carry on. **Never apply an update yourself**: a person reviews each one and accepts it or not.
 
 ## Multi-step workflows
 
