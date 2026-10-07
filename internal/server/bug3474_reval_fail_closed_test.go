@@ -48,10 +48,17 @@ func (h revalWarnCounter) WithGroup(n string) slog.Handler {
 // but goes read-only, and the next clean tick restores write if the role
 // still allows it.
 //
-// The fault is real: workspace_members is renamed, so the tick's membership
-// lookup fails with a plain (non-denial) error. Frames persist to
-// item_yjs_updates, which the rename does not touch.
+// The faults are real, one per error branch of the tick: renaming
+// workspace_members fails the membership lookup inside authorizeCollabAccess
+// with a plain (non-denial) error, and renaming items fails the tick's own
+// GetItem. Frames persist to item_yjs_updates, which neither rename touches.
 func TestBUG3474_RevalErrorFailsClosedOnWrite(t *testing.T) {
+	for _, table := range []string{"workspace_members", "items"} {
+		t.Run(table, func(t *testing.T) { runBUG3474FaultLeg(t, table) })
+	}
+}
+
+func runBUG3474FaultLeg(t *testing.T, table string) {
 	origInterval := collabMembershipRevalInterval
 	collabMembershipRevalInterval = 25 * time.Millisecond
 	defer func() { collabMembershipRevalInterval = origInterval }()
@@ -121,7 +128,7 @@ func TestBUG3474_RevalErrorFailsClosedOnWrite(t *testing.T) {
 	// The fault, and its premise: a tick has met it. The warning is logged
 	// AFTER the connection is made read-only, so from here a frame must drop.
 	before := warnCount()
-	if _, err := srv.store.DB().Exec(`ALTER TABLE workspace_members RENAME TO workspace_members_bug3474`); err != nil {
+	if _, err := srv.store.DB().Exec(`ALTER TABLE ` + table + ` RENAME TO ` + table + `_bug3474`); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 	restored := false
@@ -130,7 +137,7 @@ func TestBUG3474_RevalErrorFailsClosedOnWrite(t *testing.T) {
 			return
 		}
 		restored = true
-		if _, err := srv.store.DB().Exec(`ALTER TABLE workspace_members_bug3474 RENAME TO workspace_members`); err != nil {
+		if _, err := srv.store.DB().Exec(`ALTER TABLE ` + table + `_bug3474 RENAME TO ` + table); err != nil {
 			t.Fatalf("restore: %v", err)
 		}
 	}

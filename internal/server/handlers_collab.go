@@ -384,7 +384,10 @@ func (s *Server) collabRevalidationLoop(
 			// snapshot captured at upgrade time isn't enough.
 			fresh, ferr := s.store.GetItem(itemID)
 			if ferr != nil {
-				slog.Warn("collab: revalidation GetItem failed; keeping connection open",
+				// FAIL CLOSED ON WRITE (BUG-3474): kept open, made read-only
+				// until a clean tick; see the default branch below.
+				s.collab.SetConnWritable(itemID, conn, false)
+				slog.Warn("collab: revalidation GetItem failed; keeping connection open, read-only",
 					"item_id", itemID,
 					"user_id", userID,
 					"error", ferr,
@@ -440,8 +443,19 @@ func (s *Server) collabRevalidationLoop(
 				// operator notices a sustained pattern, but we
 				// MUST NOT close the conn — a single failed
 				// query shouldn't punt every active editor.
+				//
+				// FAIL CLOSED ON WRITE (BUG-3474, lead ruling): the conn
+				// stays open but goes READ-ONLY until a tick succeeds. It
+				// used to keep the write permission it last had, so an
+				// editor demoted while the store was failing kept writing
+				// until the first clean tick. The next successful tick
+				// restores write through SetConnWritable above if the role
+				// still allows it. The cost is an editor briefly read-only
+				// during a DB blip, which is cheaper than a demoted editor
+				// writing through one.
+				s.collab.SetConnWritable(itemID, conn, false)
 				// Re-arm and try again on the next tick.
-				slog.Warn("collab: revalidation error; keeping connection open",
+				slog.Warn("collab: revalidation error; keeping connection open, read-only",
 					"item_id", itemID,
 					"user_id", userID,
 					"error", err,
