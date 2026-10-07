@@ -65,6 +65,13 @@ type AgentBootstrap struct {
 	// exclude template seeds rather than enumerating user-side source
 	// values.
 	NeedsOnboarding bool `json:"needs_onboarding"`
+	// BuiltinUpdates counts the conventions and playbooks Pad ships whose
+	// library text changed since this workspace's copy was made (unedited, or
+	// edited too), among the ones the caller can see in full (TASK-3462 U3a).
+	// Dave's ruling: an agent mentions it once; nothing updates on its own.
+	// omitempty, so a workspace with nothing on offer is byte-identical to
+	// before.
+	BuiltinUpdates int `json:"builtin_updates,omitempty"`
 }
 
 // BootstrapCollection is the lightweight collection projection delivered
@@ -706,6 +713,15 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	hasUserItems, hErr := s.store.WorkspaceHasUserCreatedItems(workspaceID)
 	if hErr == nil {
 		out.NeedsOnboarding = !hasUserItems
+	}
+
+	// BuiltinUpdates: per caller, through the same visibility the library
+	// page's listing applies, so it needs the request. On an error it stays
+	// zero, like NeedsOnboarding: a missed mention, never a wrong one.
+	if r != nil {
+		if entries, bErr := s.visibleWorkspaceBuiltins(r, workspaceID); bErr == nil {
+			out.BuiltinUpdates = builtinUpdatesOnOffer(entries)
+		}
 	}
 
 	return out, nil

@@ -164,16 +164,28 @@ func (s *Server) handleListWorkspaceBuiltins(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	rows, err := s.store.WorkspaceBuiltinItems(workspaceID)
+	out, err := s.visibleWorkspaceBuiltins(r, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// visibleWorkspaceBuiltins is every item made from a built-in that the caller
+// sees its WHOLE collection of, with its state. One query reads them all (a
+// join), and visibility is one set computed once. The listing and the
+// bootstrap count (TASK-3462 U3a) both read it, so the count never names an
+// item the listing would hide.
+func (s *Server) visibleWorkspaceBuiltins(r *http.Request, workspaceID string) ([]builtinListEntry, error) {
+	rows, err := s.store.WorkspaceBuiltinItems(workspaceID)
+	if err != nil {
+		return nil, err
+	}
 	// The fully visible set, once, however many collections the rows span.
 	fully, err := s.fullyVisibleCollectionIDs(r, workspaceID)
 	if err != nil {
-		writeInternalError(w, err)
-		return
+		return nil, err
 	}
 	out := []builtinListEntry{}
 	for _, row := range rows {
@@ -182,15 +194,28 @@ func (s *Server) handleListWorkspaceBuiltins(w http.ResponseWriter, r *http.Requ
 		}
 		state, _, entry, err := collections.BuiltinStateOf(row.Origin, row.Content, row.Fields)
 		if err != nil {
-			writeInternalError(w, err)
-			return
+			return nil, err
 		}
 		out = append(out, builtinListEntry{
 			ItemID: row.ItemID, Ref: row.Ref, Slug: row.Slug, Title: row.Title,
 			CollectionSlug: row.CollectionSlug, Key: row.Origin.Key, Kind: entry.Kind, State: state,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
+}
+
+// builtinUpdatesOnOffer counts the entries an update is on offer for: the
+// library changed and the item is unedited, or both changed. unknown_origin
+// (a legacy item, TASK-3462 U4) is not counted: its version is unknown, so
+// nothing says the library moved.
+func builtinUpdatesOnOffer(entries []builtinListEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.State == collections.BuiltinUpdateAvailable || e.State == collections.BuiltinDiverged {
+			n++
+		}
+	}
+	return n
 }
 
 // builtinUpdateRequest is POST /items/{ref}/builtin/update.
