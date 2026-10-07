@@ -802,7 +802,9 @@ on stderr instead. --format json carries it as the content_state field.`,
 				// stderr (stdout stays verbatim for the round trip): an agent
 				// that reached for this format to READ the item would otherwise
 				// see 0 bytes for a title-only item (TASK-3451).
-				if item.Content == "" {
+				// Not when the stored body is stale: the live document may hold
+				// text, and the warning above already says so (codex r1).
+				if item.Content == "" && !models.IsContentStateStale(item.ContentState) {
 					fmt.Fprintf(os.Stderr, "%s has no body; --format markdown prints the body only. Use `pad item show %s --agent` for its title, status and fields.\n", item.Ref, item.Ref)
 				}
 				fmt.Print(item.Content)
