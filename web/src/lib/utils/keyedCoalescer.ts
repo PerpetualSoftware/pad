@@ -8,7 +8,7 @@
 // 20 updates in a second used to cost 20 reloads.
 export interface KeyedCoalescer<K, T> {
 	run(key: K): Promise<T>;
-	/** Drop a pending run without starting it; its joined callers are rejected with CoalescerCancelled. */
+	/** Drop a pending run, and abandon one in flight: either way its joined callers are rejected with CoalescerCancelled. */
 	cancel(key: K): void;
 	cancelAll(): void;
 }
@@ -33,12 +33,39 @@ export function createKeyedCoalescer<K, T>(
 		firstAt: number;
 	}
 	const pending = new Map<K, Pending>();
+	// Runs that have started, so a cancel still reaches their callers: the
+	// owner going away mid-run must not have them resume afterwards (codex r3).
+	const running = new Map<K, Set<Pending>>();
 
 	function fire(key: K) {
 		const p = pending.get(key);
 		if (!p) return;
 		pending.delete(key);
-		fn(key).then(p.resolve, p.reject);
+		let set = running.get(key);
+		if (!set) running.set(key, (set = new Set()));
+		set.add(p);
+		const done = () => {
+			set!.delete(p);
+			if (set!.size === 0 && running.get(key) === set) running.delete(key);
+		};
+		// Settling an already-rejected (cancelled) promise is a no-op.
+		fn(key).then(
+			(v) => {
+				done();
+				p.resolve(v);
+			},
+			(e) => {
+				done();
+				p.reject(e);
+			},
+		);
+	}
+
+	function cancelRunning(key: K) {
+		const set = running.get(key);
+		if (!set) return;
+		running.delete(key);
+		for (const p of set) p.reject(new CoalescerCancelled());
 	}
 
 	return {
@@ -71,6 +98,7 @@ export function createKeyedCoalescer<K, T>(
 				pending.delete(key);
 				p.reject(new CoalescerCancelled());
 			}
+			cancelRunning(key);
 		},
 		cancelAll() {
 			for (const p of pending.values()) {
@@ -78,6 +106,7 @@ export function createKeyedCoalescer<K, T>(
 				p.reject(new CoalescerCancelled());
 			}
 			pending.clear();
+			for (const key of [...running.keys()]) cancelRunning(key);
 		},
 	};
 }

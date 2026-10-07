@@ -148,7 +148,10 @@ test('TASK-2224: requests per external update on the collection page, and under 
 	const windows = Math.ceil((burstDoneAt - burstStartAt) / 1000) + 1;
 	// The gate only discriminates if the burst is short against the 20 events
 	// it would otherwise cost; on a box too slow for that, it says so.
-	expect(burstDoneAt - burstStartAt, 'the burst took too long for the request budget to mean anything').toBeLessThan(15_000);
+	// Under 3 s, windows <= 4, so every allowance below stays under main's
+	// value (collections 5 < 20, items-changes 10 < 20, total 15 < 40); a
+	// looser limit would let main's uncoalesced numbers through (codex r3).
+	expect(burstDoneAt - burstStartAt, 'the burst took too long for the request budget to discriminate').toBeLessThan(3_000);
 	// The tab must catch up with the LAST update: a reconcile read issued
 	// after the burst finished (codex r1: a title still on screen proved nothing).
 	// 20 s: a reconcile may queue behind one already in flight for up to 15 s.
