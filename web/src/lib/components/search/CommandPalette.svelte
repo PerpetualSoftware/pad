@@ -122,6 +122,40 @@
 	// (their index is `results.length + i`). TASK-2008.
 	let flatResults = $derived([...results, ...contentResults]);
 
+	// ARIA COMBOBOX (TASK-2234, audit C8/C45), mirroring GraphToolbar's: the
+	// input controls the listbox(es) on screen and points at the selected
+	// option with aria-activedescendant, so a screen reader hears what the
+	// arrows select and what Enter will open. With an empty query the recent
+	// searches are the listbox, and the arrows and Enter work on them too.
+	const LISTBOX_ID = 'cp-listbox';
+	const CONTENT_LISTBOX_ID = 'cp-listbox-content';
+	const RECENTS_LISTBOX_ID = 'cp-listbox-recents';
+	let showingRecents = $derived(!query.trim() && recentSearches.length > 0);
+	let showingResults = $derived(results.length > 0 || contentResults.length > 0 || contentLoading);
+	let navCount = $derived(showingRecents ? recentSearches.length : flatResults.length);
+	let comboboxControls = $derived(
+		showingRecents
+			? RECENTS_LISTBOX_ID
+			: showingResults
+				? [results.length > 0 ? LISTBOX_ID : '', contentLoading || contentResults.length > 0 ? CONTENT_LISTBOX_ID : '']
+						.filter(Boolean)
+						.join(' ')
+				: undefined
+	);
+	let activeDescendant = $derived(
+		selectedIdx < 0
+			? undefined
+			: showingRecents
+				? `cp-recent-${selectedIdx}`
+				: selectedIdx < flatResults.length
+					? `cp-opt-${selectedIdx}`
+					: undefined
+	);
+	// What the live region says: the count of what a search found.
+	let announcement = $derived(
+		query.trim() && !loading ? `${total} result${total === 1 ? '' : 's'}` : ''
+	);
+
 	$effect(() => {
 		if (uiStore.searchOpen) {
 			requestAnimationFrame(() => inputEl?.focus());
@@ -627,7 +661,7 @@
 
 	function scrollSelectedIntoView() {
 		requestAnimationFrame(() => {
-			const el = document.querySelector('.result.selected');
+			const el = document.querySelector('.result.selected, .recent-item.selected');
 			el?.scrollIntoView({ block: 'nearest' });
 		});
 	}
@@ -637,17 +671,24 @@
 			uiStore.closeSearch();
 		} else if (e.key === 'ArrowDown') {
 			e.preventDefault();
-			// From -1 ("nothing armed") this lands on 0, the first result.
-			selectedIdx = Math.min(selectedIdx + 1, flatResults.length - 1);
+			// From -1 ("nothing armed") this lands on 0, the first result, or
+			// the first recent search when the query is empty (TASK-2234).
+			selectedIdx = Math.min(selectedIdx + 1, navCount - 1);
 			scrollSelectedIntoView();
 		} else if (e.key === 'ArrowUp') {
 			e.preventDefault();
 			// Clamp at 0 — once the user has armed a selection, ArrowUp
 			// shouldn't deselect back to -1.
-			selectedIdx = Math.max(selectedIdx - 1, 0);
+			if (navCount > 0) selectedIdx = Math.max(selectedIdx - 1, 0);
 			scrollSelectedIntoView();
 		} else if (e.key === 'Enter') {
 			e.preventDefault();
+			// Enter on a selected recent search runs it (TASK-2234, audit C45).
+			if (showingRecents) {
+				const recent = selectedIdx >= 0 ? recentSearches[selectedIdx] : undefined;
+				if (recent !== undefined) useRecentSearch(recent);
+				return;
+			}
 			// Go-to mode: a bare number (BUG-910) or a full `TASK-1345`-style
 			// ref (BUG-2128) + Enter jumps directly to that item — the search
 			// palette doubles as a quick "go to item" jump. See BUG-864 for
@@ -864,6 +905,12 @@
 					bind:value={query}
 					placeholder="Search items, collections, docs..."
 					class="search-input"
+					role="combobox"
+					aria-label="Search"
+					aria-autocomplete="list"
+					aria-expanded={comboboxControls !== undefined}
+					aria-controls={comboboxControls}
+					aria-activedescendant={activeDescendant}
 				/>
 				{#if loading}
 					<span class="search-spinner"></span>
@@ -987,8 +1034,9 @@
 			{/if}
 
 			<!-- Result count -->
+			<div class="sr-only" aria-live="polite">{announcement}</div>
 			{#if results.length > 0 && query.trim()}
-				<div class="result-count">
+				<div class="result-count" aria-hidden="true">
 					{total} result{total === 1 ? '' : 's'}
 				</div>
 			{/if}
@@ -996,11 +1044,13 @@
 			<!-- Results -->
 			{#if results.length > 0 || contentResults.length > 0 || contentLoading}
 				<div class="results">
+					{#if results.length > 0}
+					<div role="listbox" id={LISTBOX_ID} aria-label="Search results">
 					{#if groupedResults && !filterCollection}
 						<!-- Grouped by collection -->
 						{#each Object.entries(groupedResults) as [slug, group] (slug)}
-							<div class="result-group">
-								<div class="group-header">
+							<div class="result-group" role="group" aria-label={group.name}>
+								<div class="group-header" aria-hidden="true">
 									<span class="group-icon">{group.icon}</span>
 									<span class="group-name">{group.name}</span>
 									<span class="group-count">{group.results.length}</span>
@@ -1011,6 +1061,10 @@
 									<button
 										class="result"
 										class:selected={idx === selectedIdx}
+										role="option"
+										id="cp-opt-{idx}"
+										aria-selected={idx === selectedIdx}
+										tabindex="-1"
 										onclick={() => selectResult(r)}
 									>
 										<div class="result-main">
@@ -1032,7 +1086,7 @@
 											{#if meta.status}
 												<span
 													class="result-status"
-													style="background: color-mix(in srgb, {statusColor(meta.status)} 15%, transparent); color: {statusColor(meta.status)};"
+													style="background: color-mix(in srgb, {statusColor(meta.status)} 15%, transparent); color: color-mix(in srgb, {statusColor(meta.status)} 55%, var(--text-primary));"
 												>
 													{meta.status.replace(/_/g, ' ')}
 												</span>
@@ -1060,6 +1114,10 @@
 							<button
 								class="result"
 								class:selected={i === selectedIdx}
+								role="option"
+								id="cp-opt-{i}"
+								aria-selected={i === selectedIdx}
+								tabindex="-1"
 								onclick={() => selectResult(r)}
 							>
 								<div class="result-main">
@@ -1081,7 +1139,7 @@
 									{#if meta.status}
 										<span
 											class="result-status"
-											style="background: color-mix(in srgb, {statusColor(meta.status)} 15%, transparent); color: {statusColor(meta.status)};"
+											style="background: color-mix(in srgb, {statusColor(meta.status)} 15%, transparent); color: color-mix(in srgb, {statusColor(meta.status)} 55%, var(--text-primary));"
 										>
 											{meta.status.replace(/_/g, ' ')}
 										</span>
@@ -1097,6 +1155,8 @@
 								{/if}
 							</button>
 						{/each}
+					{/if}
+					</div>
 					{/if}
 
 					<!-- Load more -->
@@ -1118,8 +1178,8 @@
 						state if it resolves empty with no local hits.
 					-->
 					{#if contentLoading || contentResults.length > 0}
-						<div class="result-group content-group">
-							<div class="group-header">
+						<div class="result-group content-group" role="listbox" id={CONTENT_LISTBOX_ID} aria-label="Matches in content">
+							<div class="group-header" aria-hidden="true">
 								<span class="group-icon">🔎</span>
 								<span class="group-name">Matches in content</span>
 								{#if searchAllWorkspaces && otherReadyWorkspaceCount > 0}
@@ -1143,6 +1203,10 @@
 								<button
 									class="result"
 									class:selected={idx === selectedIdx}
+									role="option"
+									id="cp-opt-{idx}"
+									aria-selected={idx === selectedIdx}
+									tabindex="-1"
 									onclick={() => selectResult(r)}
 								>
 									<div class="result-main">
@@ -1160,7 +1224,7 @@
 										{#if meta.status}
 											<span
 												class="result-status"
-												style="background: color-mix(in srgb, {statusColor(meta.status)} 15%, transparent); color: {statusColor(meta.status)};"
+												style="background: color-mix(in srgb, {statusColor(meta.status)} 15%, transparent); color: color-mix(in srgb, {statusColor(meta.status)} 55%, var(--text-primary));"
 											>
 												{meta.status.replace(/_/g, ' ')}
 											</span>
@@ -1189,10 +1253,15 @@
 								>Clear recent</button
 							>
 						</div>
+						<div role="listbox" id={RECENTS_LISTBOX_ID} aria-label="Recent searches">
 						{#each recentSearches as recent, i (recent)}
 							<button
 								class="recent-item"
 								class:selected={i === selectedIdx}
+								role="option"
+								id="cp-recent-{i}"
+								aria-selected={i === selectedIdx}
+								tabindex="-1"
 								onclick={() => useRecentSearch(recent)}
 							>
 								<svg
@@ -1210,6 +1279,7 @@
 								<span class="recent-text">{recent}</span>
 							</button>
 						{/each}
+						</div>
 					</div>
 				{:else}
 					<div class="search-tips">
@@ -1775,5 +1845,16 @@
 			overscroll-behavior: contain;
 			-webkit-overflow-scrolling: touch;
 		}
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 </style>

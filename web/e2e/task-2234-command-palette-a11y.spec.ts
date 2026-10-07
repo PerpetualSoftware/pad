@@ -125,6 +125,12 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 
 		const withResults = await new AxeBuilder({ page }).include('.palette').analyze();
 		expect(withResults.violations.map((v) => `${v.id}: ${v.help}`), 'axe on the open palette with results').toEqual([]);
+		// And in the dark theme: the status pills' text is a mix with the
+		// theme's text colour, which has to clear 4.5:1 in both.
+		await page.emulateMedia({ colorScheme: 'dark' });
+		const dark = await new AxeBuilder({ page }).include('.palette').analyze();
+		expect(dark.violations.map((v) => `${v.id}: ${v.help}`), 'axe on the open palette with results, dark theme').toEqual([]);
+		await page.emulateMedia({ colorScheme: 'light' });
 
 		// Enter opens the selected result.
 		const title = (await options.nth(1).locator('.result-title').textContent())?.trim();
