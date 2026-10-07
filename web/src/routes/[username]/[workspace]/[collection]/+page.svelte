@@ -973,8 +973,11 @@
 		// means the new user never sees the dialog at all.
 		pendingNav = null;
 		showLeaveDialog = false;
-		// Keyboard focus into a list that is about to be replaced.
+		// Keyboard focus into a list that is about to be replaced, and the row
+		// a pending j/k follow was steering it to (BUG-3204). The follow's own
+		// timer is fenced by identityHeld and opens nothing after this.
 		focusedIndex = -1;
+		pendingFollow = null;
 		// The default-view gate. `loadCollection` does not reset it — only the
 		// route effect does — so on a same-route identity reload it stayed true
 		// and the NEW user's default view was never applied (codex round 1 [P3]).
@@ -2949,7 +2952,6 @@
 		// until `?item=` reaches the row (the snap-back effect clears it); if it
 		// did not, it clears here so the cursor returns to the open item.
 		const follow = (): boolean => {
-			if (!identityHeld(epochAtSchedule)) return false;
 			// Re-check: the pane may have closed OR drilled during the debounce
 			// window (R14 fence-on-continuation).
 			if (!openItemRef) return false;
@@ -2973,6 +2975,9 @@
 		};
 		paneFollowTimer = setTimeout(() => {
 			paneFollowTimer = null;
+			// An identity change already cleared `pendingFollow`
+			// (resetPerSessionState); nothing here may write for the new user.
+			if (!identityHeld(epochAtSchedule)) return;
 			if (!follow()) pendingFollow = null;
 		}, PANE_FOLLOW_DEBOUNCE_MS);
 	}
