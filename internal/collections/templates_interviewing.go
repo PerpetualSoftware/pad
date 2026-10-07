@@ -248,16 +248,19 @@ func interviewingContactsCollection(sortOrder int) DefaultCollection {
 func interviewingStarterConventions() []SeedConvention {
 	return []SeedConvention{
 		{
+			Key:     "interviewing/convention/create-prep-notes-48-hours-before-each-interview",
 			Title:   "Create prep notes 48 hours before each interview",
 			Content: "When an Interview is scheduled, create a Doc (or detailed content on the Interview item) with: the role and company context, expected questions for this round, STAR stories you'll use, and questions you'll ask them. Target 48 hours before the scheduled time so you have buffer to refine.",
 			Fields:  `{"status":"active","trigger":"on-interview-scheduled","scope":"interviews","priority":"should"}`,
 		},
 		{
+			Key:     "interviewing/convention/log-lessons-when-an-application-ends-rejected-or-withdrawn",
 			Title:   "Log lessons when an Application ends (rejected or withdrawn)",
 			Content: "When an Application hits a terminal stage (rejected, withdrawn), add a final comment summarizing what you learned — fit signals, question types that surprised you, rapport observations. Over the search this builds a personal retro that sharpens the next pass.",
 			Fields:  `{"status":"active","trigger":"on-stage-change","scope":"applications","priority":"should"}`,
 		},
 		{
+			Key:     "interviewing/convention/send-a-thank-you-within-24-hours-of-every-interview",
 			Title:   "Send a thank-you within 24 hours of every interview",
 			Content: "After each Interview Round completes, send a brief thank-you email to each interviewer within 24 hours. Reference something specific from the conversation. Log it on the Interview item (or a follow-up Task) so you can see at a glance who still needs one.",
 			Fields:  `{"status":"active","trigger":"on-interview-completed","scope":"followups","priority":"should"}`,
@@ -270,6 +273,7 @@ func interviewingStarterConventions() []SeedConvention {
 func interviewingStarterPlaybooks() []SeedPlaybook {
 	return []SeedPlaybook{
 		{
+			Key:   "interviewing/playbook/log-an-interview",
 			Title: "Log an Interview",
 			Content: `1. Find the Interview item (or create it as a child of the Application if you haven't already).
 2. Update prep_status to "completed".
@@ -282,6 +286,7 @@ func interviewingStarterPlaybooks() []SeedPlaybook {
 			Fields: `{"status":"active","trigger":"on-interview-completed","scope":"interviews"}`,
 		},
 		{
+			Key:   "interviewing/playbook/weekly-job-search-review",
 			Title: "Weekly Job Search Review",
 			Content: `1. List active Applications grouped by stage — where's the funnel thin? where's it thick?
 2. Flag stalled Applications — anything without a stage-change or comment in the last 10 days. Decide: follow up, give up, or wait.
@@ -295,6 +300,7 @@ func interviewingStarterPlaybooks() []SeedPlaybook {
 			Fields: `{"status":"active","trigger":"weekly-review","scope":"all"}`,
 		},
 		{
+			Key:   "interviewing/playbook/interviewing-workspace-onboarding",
 			Title: "Interviewing Workspace Onboarding",
 			Content: `1. Ask the user what roles they're targeting — capture those as starter Applications (with stage="researching" if they haven't applied yet).
 2. For each Application, capture the Company — create a Company item if it doesn't exist, or link by wiki-link from the Application content: [[Acme Corp]].

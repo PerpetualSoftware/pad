@@ -148,6 +148,7 @@ func ExtractSpecsPlaybook() SeedPlaybook {
 	}
 	encoded, _ := json.Marshal(fields)
 	return SeedPlaybook{
+		Key:     "spec/playbook/extract-specs",
 		Title:   "Extract specs from the codebase",
 		Content: extractSpecsPlaybookBody,
 		Fields:  string(encoded),

@@ -288,6 +288,12 @@ func (s *Server) applierFirstWrite(
 	// row write's transaction, before the live document changes, and is never
 	// written to the row.
 	rowInput.ExternalContent = &content
+	// A built-in update's seed is NOT recorded with the row (TASK-3462, codex
+	// r2): the body is not in the row yet, and if the apply below fails the
+	// item keeps its old body, so a seed written here would claim a version
+	// the item never received and refuse every later offer to take it. It is
+	// recorded once the apply has confirmed.
+	rowInput.BuiltinSeed = nil
 
 	updated, uerr := s.store.UpdateItemWithParentLink(item.ID, rowInput, openChildrenPrecheck, parentLink)
 	if uerr != nil {
@@ -318,6 +324,17 @@ func (s *Server) applierFirstWrite(
 		)
 		writeContentNotAppliedError(w, itemRefOrSlug(*item), landedFieldNames(input), updated.UpdatedAt, outcome, aerr.Error())
 		return contentRouteHandled, nil
+	}
+
+	// The apply confirmed: the live document holds the built-in text, so the
+	// seed may say so. Not in the row write's transaction, so a crash between
+	// the two leaves the OLD seed, which is the safe side: the item then holds
+	// the library's text and reads current, and is never refused an offer.
+	if input.BuiltinSeed != nil {
+		if err := s.store.SetItemBuiltinSeed(item.ID, *input.BuiltinSeed); err != nil {
+			slog.Warn("built-in update: the content applied but recording its seed failed",
+				"item_id", item.ID, "error", err)
+		}
 	}
 
 	return contentRouteApplierWrote, updated

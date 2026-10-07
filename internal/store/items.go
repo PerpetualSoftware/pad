@@ -385,6 +385,15 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		}
 	}
 
+	// The built-in this item is made from (TASK-3462), in the create's own
+	// transaction so an item never lands without the origin its door meant
+	// to record. A copy reaches this function too, and never sets one.
+	if input.BuiltinOrigin != nil {
+		if err := s.insertBuiltinOriginTx(tx, id, *input.BuiltinOrigin, ts); err != nil {
+			return err
+		}
+	}
+
 	// Index [[...]] wiki-links from the new content. Lives inside the
 	// same tx as the items INSERT so partial state never lands and a
 	// content rollback also rolls back the index rows. Empty content
@@ -3259,6 +3268,14 @@ func (s *Store) updateItemWithParentLinkOnce(
 		}
 		if _, err := s.replaceRelationLinks(tx, id, existing.WorkspaceID, existing.CollectionID, storedFields); err != nil {
 			return nil, fmt.Errorf("index relation links: %w", err)
+		}
+	}
+
+	// TASK-3462: a built-in update records the version it gave the item in
+	// the same transaction as the write, so the two cannot disagree.
+	if input.BuiltinSeed != nil {
+		if err := s.setBuiltinSeedTx(tx, id, *input.BuiltinSeed); err != nil {
+			return nil, err
 		}
 	}
 

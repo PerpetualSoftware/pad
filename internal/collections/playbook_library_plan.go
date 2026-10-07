@@ -193,6 +193,7 @@ var planPlaybookArguments = []map[string]any{
 // uses "Ship tasks" — same naming style).
 func PlanPlaybook() LibraryPlaybook {
 	return LibraryPlaybook{
+		Key:            "playbook/plan",
 		Title:          "Plan a new initiative",
 		Category:       "agent-workflows",
 		Trigger:        "manual",

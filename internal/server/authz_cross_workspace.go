@@ -854,9 +854,21 @@ func (s *Server) crossWorkspaceEditAllowed(ws *models.Workspace, user *models.Us
 // guestResourceFilter read the request only for the current user and
 // the bearer flag, never for a workspace-scoped context value.
 func (s *Server) checkCollectionFullyVisible(r *http.Request, workspaceID, collectionID string) (bool, error) {
-	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	visibleIDs, err := s.fullyVisibleCollectionIDs(r, workspaceID)
 	if err != nil {
 		return false, err
+	}
+	return isCollectionVisible(collectionID, visibleIDs), nil
+}
+
+// fullyVisibleCollectionIDs is the set checkCollectionFullyVisible decides
+// against, computed once, for a caller that asks about many collections
+// (TASK-3462's /builtins listing, codex r1). nil means unrestricted, as for
+// visibleCollectionIDs.
+func (s *Server) fullyVisibleCollectionIDs(r *http.Request, workspaceID string) ([]string, error) {
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		return nil, err
 	}
 	if visibleIDs != nil {
 		// Restricted caller: when any item-level grant is in play,
@@ -865,7 +877,7 @@ func (s *Server) checkCollectionFullyVisible(r *http.Request, workspaceID, colle
 		// collection-wide operation.
 		fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID)
 		if gErr != nil {
-			return false, gErr
+			return nil, gErr
 		}
 		if len(grantedItemIDs) > 0 {
 			// isCollectionVisible reads nil as "unrestricted", so a
@@ -885,5 +897,5 @@ func (s *Server) checkCollectionFullyVisible(r *http.Request, workspaceID, colle
 			visibleIDs = fullCollIDs
 		}
 	}
-	return isCollectionVisible(collectionID, visibleIDs), nil
+	return visibleIDs, nil
 }

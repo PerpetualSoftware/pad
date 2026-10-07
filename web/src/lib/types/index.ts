@@ -2175,6 +2175,8 @@ export interface SearchFilters {
 // ─── Convention Library ──────────────────────────────────────────────────────
 
 export interface LibraryConvention {
+	/** Stable identity of the built-in (TASK-3462); absent from an older server. */
+	key?: string;
 	title: string;
 	content: string;
 	category: string;
@@ -2206,6 +2208,8 @@ export interface LibraryPlaybookArgument {
 }
 
 export interface LibraryPlaybook {
+	/** Stable identity of the built-in (TASK-3462); absent from an older server. */
+	key?: string;
 	title: string;
 	content: string;
 	category: string;

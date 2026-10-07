@@ -3,6 +3,10 @@ package collections
 // LibraryConvention holds a pre-built convention definition that can be
 // activated (created as an item) in a workspace's Conventions collection.
 type LibraryConvention struct {
+	// Key is the entry's stable identity (TASK-3462): what an item seeded or
+	// activated from it records as its origin, so a later fix to the text can
+	// be offered to that item. Never derived from Title, which may be renamed.
+	Key         string   `json:"key"`
 	Title       string   `json:"title"`
 	Content     string   `json:"content"`
 	Category    string   `json:"category"`    // git, quality, pm, docs, build
@@ -27,6 +31,7 @@ func ConventionLibrary() []LibraryCategory {
 			Description: "Git workflow conventions",
 			Conventions: []LibraryConvention{
 				{
+					Key:         "convention/commit-after-task-completion",
 					Title:       "Commit after task completion",
 					Content:     "Create a git commit with a descriptive message after completing each discrete unit of work. Reference the task slug or item number in the commit message.",
 					Category:    "git",
@@ -36,6 +41,7 @@ func ConventionLibrary() []LibraryCategory {
 					Commands:    []string{"git commit -m \"feat(scope): summary\""},
 				},
 				{
+					Key:         "convention/work-in-worktrees-per-task",
 					Title:       "Work in worktrees per task",
 					Content:     "Create a git worktree for each task to isolate work. Branch name should match the task slug. Run: git worktree add ../worktree-<slug> -b <slug>",
 					Category:    "git",
@@ -45,6 +51,7 @@ func ConventionLibrary() []LibraryCategory {
 					Commands:    []string{"git worktree add ../worktree-<slug> -b <slug>"},
 				},
 				{
+					Key:         "convention/create-pr-on-task-completion",
 					Title:       "Create PR on task completion",
 					Content:     "Create a pull request using `gh pr create` when finishing a task. Include the task title in the PR title and link the task in the PR description.",
 					Category:    "git",
@@ -54,6 +61,7 @@ func ConventionLibrary() []LibraryCategory {
 					Commands:    []string{"gh pr create"},
 				},
 				{
+					Key:         "convention/conventional-commit-format",
 					Title:       "Conventional commit format",
 					Content:     "Use conventional commit format for all commit messages: feat:, fix:, docs:, refactor:, test:, chore:. Include scope when relevant, e.g. feat(api): add user endpoint",
 					Category:    "git",
@@ -62,6 +70,7 @@ func ConventionLibrary() []LibraryCategory {
 					Enforcement: "should",
 				},
 				{
+					Key:         "convention/never-push-directly-to-main",
 					Title:       "Never push directly to main",
 					Content:     "Never commit or push directly to the main/master branch. Always use feature branches and merge via pull request.",
 					Category:    "git",
@@ -76,6 +85,7 @@ func ConventionLibrary() []LibraryCategory {
 			Description: "Code quality conventions",
 			Conventions: []LibraryConvention{
 				{
+					Key:         "convention/run-tests-before-completing-tasks",
 					Title:       "Run tests before completing tasks",
 					Content:     "Run the project's test suite before marking any task as done. If tests fail, fix them before completing the task.",
 					Category:    "quality",
@@ -85,6 +95,7 @@ func ConventionLibrary() []LibraryCategory {
 					Commands:    []string{"go test ./...", "npm run build", "make install"},
 				},
 				{
+					Key:         "convention/run-linter-before-committing",
 					Title:       "Run linter before committing",
 					Content:     "Run the project's linter/formatter before committing code to ensure consistent code style.",
 					Category:    "quality",
@@ -93,6 +104,7 @@ func ConventionLibrary() []LibraryCategory {
 					Enforcement: "should",
 				},
 				{
+					Key:         "convention/add-tests-for-new-code",
 					Title:       "Add tests for new code",
 					Content:     "When adding new functions, endpoints, or components, add corresponding test coverage. Aim for testing the happy path and key error cases.",
 					Category:    "quality",
@@ -101,6 +113,7 @@ func ConventionLibrary() []LibraryCategory {
 					Enforcement: "should",
 				},
 				{
+					Key:         "convention/review-your-own-changes-before-pr",
 					Title:       "Review your own changes before PR",
 					Content:     "Before creating a PR, review your own diff. Check for: debug code left behind, missing error handling, unclear variable names, and unintended changes.",
 					Category:    "quality",
@@ -109,6 +122,7 @@ func ConventionLibrary() []LibraryCategory {
 					Enforcement: "should",
 				},
 				{
+					Key:         "convention/independent-ai-code-review",
 					Title:       "Independent AI code review",
 					Content:     "Have an independent AI reviewer look at your changes before merge — and use a DIFFERENT model than the one that implemented them. A second, independent model catches issues self-review misses; reviewing with the same model that wrote the code is closer to self-review. Use whatever review tool you have (a review CLI, `claude review`, a GitHub review bot); the loop shape is request review → address every finding → re-review until clean. Pick the reviewer model to differ from your implementer model (e.g. implement with one model, review with another).",
 					Category:    "quality",
@@ -123,6 +137,7 @@ func ConventionLibrary() []LibraryCategory {
 			Description: "Project management conventions",
 			Conventions: []LibraryConvention{
 				{
+					Key:         "convention/update-task-status-when-starting-work",
 					Title:       "Update task status when starting work",
 					Content:     "When starting work on a task, update its status to in-progress: `pad item update <ref> --status in-progress`",
 					Category:    "pm",
@@ -132,6 +147,7 @@ func ConventionLibrary() []LibraryCategory {
 					Commands:    []string{"pad item update <ref> --status in-progress"},
 				},
 				{
+					Key:         "convention/summarize-completed-work",
 					Title:       "Summarize completed work",
 					Content:     "When completing a task, add a brief summary of what was done and any decisions made to the task's content body.",
 					Category:    "pm",
@@ -140,6 +156,7 @@ func ConventionLibrary() []LibraryCategory {
 					Enforcement: "should",
 				},
 				{
+					Key:         "convention/retrospective-on-plan-completion",
 					Title:       "Retrospective on plan completion",
 					Content:     "When all tasks in a plan are done, suggest running a retrospective before marking the plan complete. Capture: what shipped, what was deferred, and lessons learned.",
 					Category:    "pm",
@@ -148,6 +165,7 @@ func ConventionLibrary() []LibraryCategory {
 					Enforcement: "nice-to-have",
 				},
 				{
+					Key:         "convention/link-related-items",
 					Title:       "Link related items",
 					Content:     "When working on a task that relates to other items (ideas, docs, other tasks), add [[wiki-links]] in the content to create connections.",
 					Category:    "pm",
@@ -162,6 +180,7 @@ func ConventionLibrary() []LibraryCategory {
 			Description: "Documentation conventions",
 			Conventions: []LibraryConvention{
 				{
+					Key:         "convention/update-docs-on-api-changes",
 					Title:       "Update docs on API changes",
 					Content:     "When modifying API endpoints (adding, changing, or removing), update the corresponding API documentation to reflect the changes.",
 					Category:    "docs",
@@ -170,6 +189,7 @@ func ConventionLibrary() []LibraryCategory {
 					Enforcement: "should",
 				},
 				{
+					Key:         "convention/document-architecture-decisions",
 					Title:       "Document architecture decisions",
 					Content:     "When making a significant architectural choice, create a Doc item with category 'decision' explaining the rationale, alternatives considered, and trade-offs.",
 					Category:    "docs",
@@ -184,6 +204,7 @@ func ConventionLibrary() []LibraryCategory {
 			Description: "Build and deploy conventions",
 			Conventions: []LibraryConvention{
 				{
+					Key:         "convention/rebuild-after-code-changes",
 					Title:       "Rebuild after code changes",
 					Content:     "After modifying source code, run the project's build command to verify everything compiles and builds successfully.",
 					Category:    "build",
@@ -192,6 +213,7 @@ func ConventionLibrary() []LibraryCategory {
 					Enforcement: "must",
 				},
 				{
+					Key:         "convention/verify-locally-before-pr",
 					Title:       "Verify locally before PR",
 					Content:     "Before creating a PR, verify the changes work locally: build succeeds, tests pass, and the feature works as expected.",
 					Category:    "build",

@@ -1263,7 +1263,10 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 	// exists in the target collection. Missing target collections (a
 	// template-authoring mistake) are silently skipped; real DB errors are
 	// propagated so callers can detect partial init failures and retry.
-	seedItem := func(collSlug, title, content, fields string) error {
+	// builtinKey is the seed's built-in key (TASK-3462), "" for a sample item.
+	// A seed with one records it as the item's origin, with the hash of the
+	// text it was given.
+	seedItem := func(collSlug, builtinKey, title, content, fields string) error {
 		coll, err := s.GetCollectionBySlug(workspaceID, collSlug)
 		if err != nil {
 			return fmt.Errorf("lookup %s collection for seeding %q: %w", collSlug, title, err)
@@ -1294,6 +1297,13 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 			Fields:    fields,
 			CreatedBy: "system",
 			Source:    "template",
+			BuiltinOrigin: func() *models.BuiltinOrigin {
+				if builtinKey == "" {
+					return nil
+				}
+				entry := collections.BuiltinEntry{Key: builtinKey, Content: content, Fields: fields}
+				return &models.BuiltinOrigin{Key: builtinKey, SeedHash: entry.Hash(), SeedContent: content, SeedFields: fields}
+			}(),
 		})
 		if err != nil {
 			return fmt.Errorf("seed item %q in %s: %w", title, collSlug, err)
@@ -1304,7 +1314,7 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 
 	// Sample items
 	for _, item := range seedItems {
-		if err := seedItem(item.CollectionSlug, item.Title, item.Content, item.Fields); err != nil {
+		if err := seedItem(item.CollectionSlug, "", item.Title, item.Content, item.Fields); err != nil {
 			return err
 		}
 	}
@@ -1328,7 +1338,7 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 	// Starter conventions
 	if conventionsSlug != "" {
 		for _, conv := range seedConventions {
-			if err := seedItem(conventionsSlug, conv.Title, conv.Content, conv.Fields); err != nil {
+			if err := seedItem(conventionsSlug, conv.Key, conv.Title, conv.Content, conv.Fields); err != nil {
 				return err
 			}
 		}
@@ -1336,7 +1346,7 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 	// Starter playbooks
 	if playbooksSlug != "" {
 		for _, pb := range seedPlaybooks {
-			if err := seedItem(playbooksSlug, pb.Title, pb.Content, pb.Fields); err != nil {
+			if err := seedItem(playbooksSlug, pb.Key, pb.Title, pb.Content, pb.Fields); err != nil {
 				return err
 			}
 		}
@@ -1361,7 +1371,7 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 	// the seedItem helper is idempotent by title inside a collection.
 	if templateName != "" && playbooksSlug != "" {
 		onboardSeed := collections.OnboardSeedPlaybook()
-		if err := seedItem(playbooksSlug, onboardSeed.Title, onboardSeed.Content, onboardSeed.Fields); err != nil {
+		if err := seedItem(playbooksSlug, onboardSeed.Key, onboardSeed.Title, onboardSeed.Content, onboardSeed.Fields); err != nil {
 			return err
 		}
 	}

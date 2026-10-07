@@ -2,8 +2,10 @@ import { test, expect } from './fixtures';
 import { browserLogin } from './lib/collab-helpers';
 
 /**
- * BUG-3163 — create's `fields` refuses every reserved metadata key, so both web
- * convention writers send the metadata as the typed `convention` create member.
+ * BUG-3163 — create's `fields` refuses every reserved metadata key, so the web
+ * convention writers must not put the metadata there: the Conventions page sends
+ * it as the typed `convention` create member, and the Library page (TASK-3462)
+ * names the entry to POST /library/activate, which builds the item itself.
  * The unit tests vouch for the request shapes; these legs vouch for the pages
  * calling them against the real server: a writer left on the old shape would
  * be answered 400, and the stored `convention` key is the only witness that
@@ -45,7 +47,11 @@ test.describe('BUG-3163: web convention writers', () => {
 		expect(storedConvention(await res.json())).toMatchObject({ trigger: 'always', enforcement: 'should' });
 	});
 
-	test('library activate stores convention metadata', async ({ page, fixture }) => {
+	// Since TASK-3462 the Library page names the entry and the SERVER builds the
+	// item (POST /library/activate), so there is no client-built fields blob to
+	// inspect: the stored `convention` key is the witness, plus the item's
+	// built-in origin, which only that door records.
+	test('library activate stores convention metadata and its built-in origin', async ({ page, fixture }) => {
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/library`);
 		const card = page.locator('.card').filter({ has: page.locator('button.activate-btn') }).first();
 		await expect(card).toBeVisible();
@@ -53,15 +59,24 @@ test.describe('BUG-3163: web convention writers', () => {
 		expect(title).toBeTruthy();
 
 		const write = page.waitForResponse(
-			(r) => r.request().method() === 'POST' && /\/collections\/conventions\/items$/.test(new URL(r.url()).pathname),
+			(r) => r.request().method() === 'POST' && /\/library\/activate$/.test(new URL(r.url()).pathname),
 		);
 		await card.locator('button.activate-btn').click();
 		const res = await write;
 
 		expect(res.status(), await res.text()).toBe(201);
-		const sent = res.request().postDataJSON() as { fields: string; convention?: unknown };
-		expect(sent.convention).toBeTruthy();
-		expect(JSON.parse(sent.fields)).not.toHaveProperty('convention');
-		expect(storedConvention(await res.json())).toBeTruthy();
+		const sent = res.request().postDataJSON() as { key?: string; title?: string };
+		expect(sent.key ?? sent.title).toBeTruthy();
+		expect(sent).not.toHaveProperty('fields');
+		const item = (await res.json()) as { slug: string; fields?: string };
+		expect(storedConvention(item)).toBeTruthy();
+
+		const origin = await page.request.get(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/items/${item.slug}/builtin`,
+		);
+		expect(origin.status(), await origin.text()).toBe(200);
+		const state = (await origin.json()) as { key: string; state: string };
+		expect(state.state).toBe('current');
+		if (sent.key) expect(state.key).toBe(sent.key);
 	});
 });

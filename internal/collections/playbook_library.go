@@ -7,6 +7,8 @@ package collections
 // set, the library entry becomes user-callable as `/pad <slug>`. Leave
 // both unset for trigger-only checklist playbooks (legacy shape).
 type LibraryPlaybook struct {
+	// Key is the entry's stable identity (TASK-3462); see LibraryConvention.Key.
+	Key            string           `json:"key"`
 	Title          string           `json:"title"`
 	Content        string           `json:"content,omitempty"`         // omitted when summary mode is on (?summary=true)
 	Summary        string           `json:"summary,omitempty"`         // injected when summary mode is on; first non-heading paragraph, ~240 char cap
@@ -49,6 +51,7 @@ func PlaybookLibrary() []PlaybookCategory {
 				// title) renders this as "Active" in `startup`
 				// workspaces where it's already seeded.
 				{
+					Key:            "playbook/ship",
 					Title:          "Ship tasks",
 					Category:       "agent-workflows",
 					Trigger:        "manual",

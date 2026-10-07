@@ -305,6 +305,7 @@ func OnboardSeedPlaybook() SeedPlaybook {
 	}
 	encoded, _ := json.Marshal(fields)
 	return SeedPlaybook{
+		Key:     "playbook/onboard",
 		Title:   "Onboard a workspace",
 		Content: onboardPlaybookBody,
 		Fields:  string(encoded),
@@ -320,6 +321,7 @@ func OnboardSeedPlaybook() SeedPlaybook {
 // invocation; the body teaches the agent what to do.
 func OnboardPlaybook() LibraryPlaybook {
 	return LibraryPlaybook{
+		Key:            "playbook/onboard",
 		Title:          "Onboard a workspace",
 		Category:       "agent-workflows",
 		Trigger:        "manual",

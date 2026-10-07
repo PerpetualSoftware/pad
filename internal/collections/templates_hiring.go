@@ -224,16 +224,19 @@ func hiringFeedbackCollection(sortOrder int) DefaultCollection {
 func hiringStarterConventions() []SeedConvention {
 	return []SeedConvention{
 		{
+			Key:     "hiring/convention/never-paste-candidate-pii-into-comments-or-content",
 			Title:   "Never paste candidate PII into comments or content",
 			Content: "Keep emails, phone numbers, addresses, and any identifying PII out of free-text comments and item content. Use the structured fields (candidate title, recruiter field) so access control and redaction work. If you need to record a note tied to a candidate's real identity, put it in the structured field, not prose.",
 			Fields:  `{"status":"active","trigger":"always","scope":"all","priority":"must"}`,
 		},
 		{
+			Key:     "hiring/convention/every-candidate-should-link-to-a-requisition",
 			Title:   "Every Candidate should link to a Requisition",
 			Content: "Create Candidates as children of the Requisition they're being considered for. This makes the open-roles view a complete picture of who is in-flight per req and simplifies closing the req when it's filled.",
 			Fields:  `{"status":"active","trigger":"always","scope":"sourcing","priority":"should"}`,
 		},
 		{
+			Key:     "hiring/convention/record-debrief-outcome-within-24h-of-an-interview-loop",
 			Title:   "Record debrief outcome within 24h of an interview loop",
 			Content: "After an Interview Loop completes, submit Feedback items for every scheduled interviewer and set the loop's result (advance/hold/reject) within 24 hours. Stale loops without a decision blur the pipeline and leave candidates hanging.",
 			Fields:  `{"status":"active","trigger":"on-feedback-submitted","scope":"interviewing","priority":"should"}`,
@@ -246,6 +249,7 @@ func hiringStarterConventions() []SeedConvention {
 func hiringStarterPlaybooks() []SeedPlaybook {
 	return []SeedPlaybook{
 		{
+			Key:   "hiring/playbook/advance-a-candidate",
 			Title: "Advance a Candidate",
 			Content: `1. Update the Candidate's stage field to the new stage (sourced → applied → screen → onsite → offer → hired).
 2. If the new stage introduces an interview round, create an Interview Loop as a child of the Candidate with the appropriate loop_type and a scheduled date.
@@ -257,6 +261,7 @@ func hiringStarterPlaybooks() []SeedPlaybook {
 			Fields: `{"status":"active","trigger":"on-candidate-advance","scope":"all"}`,
 		},
 		{
+			Key:   "hiring/playbook/hiring-workspace-onboarding",
 			Title: "Hiring Workspace Onboarding",
 			Content: `1. Ask the user what role they're hiring for first — capture it as a Requisition (team, level, location, target start date).
 2. Prompt them to add any Candidates already in-flight as children of the Requisition, with the right stage.

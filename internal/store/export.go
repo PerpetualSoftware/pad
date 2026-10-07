@@ -283,6 +283,33 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		return nil, err
 	}
 
+	// Built-in origins (TASK-3462), attached to their items: one join, read
+	// through the same executor as the items.
+	originRows, err := q.Query(s.q(`
+		SELECT o.item_id, o.builtin_key, o.seed_hash, o.seed_content, o.seed_fields
+		FROM item_builtin_origin o
+		JOIN items i ON i.id = o.item_id
+		WHERE i.workspace_id = ? AND i.deleted_at IS NULL`), ws.ID)
+	if err != nil {
+		return nil, fmt.Errorf("export built-in origins: %w", err)
+	}
+	defer originRows.Close()
+	for originRows.Next() {
+		var itemID string
+		var o models.BuiltinOrigin
+		var hash, content, fields sql.NullString
+		if err := originRows.Scan(&itemID, &o.Key, &hash, &content, &fields); err != nil {
+			return nil, fmt.Errorf("scan built-in origin: %w", err)
+		}
+		o.SeedHash, o.SeedContent, o.SeedFields = hash.String, content.String, fields.String
+		if i, ok := itemIndex[itemID]; ok {
+			export.Items[i].BuiltinOrigin = &o
+		}
+	}
+	if err := originRows.Err(); err != nil {
+		return nil, err
+	}
+
 	// Comments
 	commentRows, err := q.Query(s.q(`
 		SELECT c.id, c.item_id, c.author, c.body, c.created_by, c.source, c.created_at, c.updated_at
@@ -1353,6 +1380,28 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 				newItemID, sa.OpLogID, sa.UpdateData, sa.SchemaVersion, createdAt, setAsideAt); err != nil {
 				return nil, fmt.Errorf("import set-aside edit: %w", err)
 			}
+		}
+	}
+
+	// Import built-in origins (TASK-3462). Checked before the insert, for the
+	// set-aside loop's reason: a failed statement poisons a Postgres
+	// transaction. A malformed origin is skipped with a warning and the item
+	// imports without one, which only means it is offered no updates.
+	for _, it := range data.Items {
+		if it.BuiltinOrigin == nil {
+			continue
+		}
+		newItemID := itemMap[it.ID]
+		if !insertedItems[newItemID] {
+			continue
+		}
+		if err := validImportedBuiltinOrigin(*it.BuiltinOrigin); err != nil {
+			slog.Warn("workspace import: skipping a malformed built-in origin",
+				"workspace_id", ws.ID, "item_id", newItemID, "error", err)
+			continue
+		}
+		if err := s.insertBuiltinOriginTx(tx, newItemID, *it.BuiltinOrigin, now()); err != nil {
+			return nil, fmt.Errorf("import built-in origin: %w", err)
 		}
 	}
 

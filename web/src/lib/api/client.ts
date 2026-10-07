@@ -2487,89 +2487,39 @@ export const api = {
 	library: {
 		get: () => request<ConventionLibraryResponse>('/convention-library'),
 
+		/**
+		 * Activate a library convention. The server builds the item and
+		 * records its built-in origin (TASK-3462), so this, the CLI and MCP
+		 * create the same item; the fields blob this used to build itself is
+		 * gone. Named by key when the entry carries one.
+		 */
 		activate: (ws: string, convention: LibraryConvention) =>
-			request<Item>(`/workspaces/${ws}/collections/conventions/items`, {
-				method: 'POST',
-				body: JSON.stringify({
-					title: convention.title,
-					content: convention.content,
-					fields: JSON.stringify({
-						status: 'active',
-						category: convention.category,
-						trigger: convention.trigger,
-						scope: convention.surfaces?.[0] ?? 'all',
-						priority: convention.enforcement,
-						enforcement: convention.enforcement,
-						surfaces: convention.surfaces,
-						commands: convention.commands ?? []
-					}),
-					// BUG-3163: create's `fields` refuses the reserved `convention`
-					// key, so the metadata travels as the typed member.
-					convention: {
-						category: convention.category,
-						trigger: convention.trigger,
-						surfaces: convention.surfaces,
-						enforcement: convention.enforcement,
-						commands: convention.commands ?? []
-					}
-				})
-			}),
+			api.library.activateEntry(ws, convention),
 
 		getPlaybooks: () => request<PlaybookLibraryResponse>('/playbook-library'),
 
-		activatePlaybook: (ws: string, playbook: LibraryPlaybook) => {
-			// Forward invocation_slug + arguments only when set so legacy
-			// library entries (without them) seed with the original
-			// three-field shape. Mirrors ShipPlaybook() in
-			// internal/collections/templates_startup_ship.go.
-			const fields: Record<string, unknown> = {
-				status: 'active',
-				trigger: playbook.trigger,
-				scope: playbook.scope
-			};
-			if (playbook.invocation_slug) {
-				fields.invocation_slug = playbook.invocation_slug;
-			}
-			if (playbook.arguments && playbook.arguments.length > 0) {
-				fields.arguments = playbook.arguments;
-			}
-			return request<Item>(`/workspaces/${ws}/collections/playbooks/items`, {
+		/** Activate a library playbook; see `activate`. */
+		activatePlaybook: (ws: string, playbook: LibraryPlaybook) =>
+			api.library.activateEntry(ws, playbook),
+
+		activateEntry: (ws: string, entry: { key?: string; title: string }) =>
+			request<Item>(`/workspaces/${ws}/library/activate`, {
 				method: 'POST',
-				body: JSON.stringify({
-					title: playbook.title,
-					content: playbook.content,
-					fields: JSON.stringify(fields)
-				})
-			});
-		},
+				body: JSON.stringify(entry.key ? { key: entry.key } : { title: entry.title })
+			}),
 
 		/**
-		 * Activate a library convention or playbook by its exact title.
-		 * Resolves the title against the global library client-side
-		 * (conventions first, then playbooks — the same precedence the CLI
-		 * `pad library activate` and the MCP `pad_library.action=activate`
-		 * use) and creates the matching workspace item. There is no
-		 * server-side activate-by-title endpoint; the resolution lives in
-		 * the client, mirroring cmd/pad/main.go::libraryActivateCmd.
-		 *
-		 * Throws when no entry matches the title.
+		 * Activate a library convention or playbook by its exact title. The
+		 * server resolves it, conventions first and then playbooks (the
+		 * precedence the CLI `pad library activate` and MCP
+		 * `pad_library.action=activate` use), and answers 404 `not_found`
+		 * when no entry has that title.
 		 */
-		activateByTitle: async (ws: string, title: string): Promise<Item> => {
-			const conv = await api.library.get();
-			for (const cat of conv.categories ?? []) {
-				const match = (cat.conventions ?? []).find((c) => c.title === title);
-				if (match) return api.library.activate(ws, match);
-			}
-			const plib = await api.library.getPlaybooks();
-			for (const cat of plib.categories ?? []) {
-				const match = (cat.playbooks ?? []).find((p) => p.title === title);
-				if (match) return api.library.activatePlaybook(ws, match);
-			}
-			throw new PadApiError({
-				code: 'not_found',
-				message: `no library convention or playbook titled ${JSON.stringify(title)}`
-			});
-		}
+		activateByTitle: (ws: string, title: string): Promise<Item> =>
+			request<Item>(`/workspaces/${ws}/library/activate`, {
+				method: 'POST',
+				body: JSON.stringify({ title })
+			})
 	},
 
 	// ── Raw requests ──────────────────────────────────────────────────────────

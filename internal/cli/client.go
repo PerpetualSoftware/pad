@@ -54,6 +54,7 @@ type serverCapabilityFlags struct {
 	SearchCollectionResolution bool `json:"search_collection_resolution"`
 	ItemScopedCommentWrites    bool `json:"item_scoped_comment_writes"`
 	AttachmentAttach           bool `json:"attachment_attach"`
+	LibraryActivate            bool `json:"library_activate"`
 }
 
 func NewClient(host string, port int) *Client {
@@ -821,6 +822,22 @@ func (c *Client) ServerSupportsItemScopedCommentWrites() bool {
 func (c *Client) ServerSupportsAttachmentAttach() bool {
 	caps, definitive := c.serverCapabilities()
 	return definitive && caps.AttachmentAttach
+}
+
+// ServerSupportsLibraryActivate reports whether this server activates a
+// library entry itself, recording its built-in origin (TASK-3462). An
+// indeterminate probe answers false: the legacy client-built create still
+// activates the entry, it only records no origin.
+func (c *Client) ServerSupportsLibraryActivate() bool {
+	caps, definitive := c.serverCapabilities()
+	return definitive && caps.LibraryActivate
+}
+
+// ActivateLibraryEntry creates an item from the library entry with this
+// title, server-side (TASK-3462).
+func (c *Client) ActivateLibraryEntry(wsSlug, title string) (*models.Item, error) {
+	var result models.Item
+	return &result, c.post("/workspaces/"+wsSlug+"/library/activate", map[string]string{"title": title}, &result)
 }
 
 // AttachmentAttachResult is the attach response.
