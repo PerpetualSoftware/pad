@@ -58,7 +58,9 @@ export function reselectAfterAppend(
 	after: SearchResult[],
 	idx: number,
 ): number {
-	return idx;
+	const selected = idx >= 0 ? before[idx] : undefined;
+	if (!selected) return idx < 0 ? -1 : idx;
+	return after.findIndex((r) => r.item.id === selected.item.id);
 }
 
 /**
@@ -71,6 +73,6 @@ export function resultAnnouncement(
 	contentLoading: boolean,
 	count: number,
 ): string {
-	if (!query.trim() || loading) return '';
+	if (!query.trim() || loading || contentLoading) return '';
 	return `${count} result${count === 1 ? '' : 's'}`;
 }
