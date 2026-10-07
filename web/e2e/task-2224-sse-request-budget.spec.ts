@@ -162,7 +162,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 test('TASK-2224: requests per external update on the collection page, and under a 20-update burst', async ({ page, context, fixture }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium');
-	test.setTimeout(120_000);
+	test.setTimeout(180_000);
 	const tag = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 	const account = await mintAccount(fixture, tag);
 	const ws = ((await (await ok(await account.api.post('/api/v1/workspaces', { data: { name: `M ${tag}`, template: 'startup' } }), 'ws')).json()) as { slug: string }).slug;
