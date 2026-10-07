@@ -298,6 +298,8 @@ func TestConventions_DeleteBetweenSplitCallsStopsTheRest(t *testing.T) {
 		fx.convention(t, "Rule", `{"status":"active","trigger":"always"}`, "rule "+string(rune('a'+i)))
 	}
 	item := fx.task(t, "A task")
+	var buf bytes.Buffer
+	fx.r.logger = slog.New(slog.NewJSONHandler(&buf, nil))
 	fx.r.beforeAsk = nil
 	// Delete the item from inside the first provider call.
 	deleted := false
@@ -315,6 +317,11 @@ func TestConventions_DeleteBetweenSplitCallsStopsTheRest(t *testing.T) {
 	}
 	if len(fx.f.requests) != 1 {
 		t.Fatalf("provider calls = %d; the second chunk was sent after the delete", len(fx.f.requests))
+	}
+	// The call that was made is still spend.
+	lines := spendLines(t, &buf)
+	if len(lines) != 1 || lines[0]["calls"] != float64(1) || lines[0]["input_tokens"] != float64(10) || lines[0]["outcome"] != "failed" {
+		t.Fatalf("spend lines = %v, want one failed line with calls=1, input_tokens=10", lines)
 	}
 }
 
