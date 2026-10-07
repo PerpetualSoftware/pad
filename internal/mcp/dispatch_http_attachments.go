@@ -38,8 +38,7 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentList(
 	const cmdKey = "attachment list"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 
 	attached, _ := input["attached"].(bool)
@@ -119,8 +118,7 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentShow(
 	const cmdKey = "attachment show"
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	attachmentID, _ := input["attachment_id"].(string)
 	if attachmentID == "" {

@@ -47,8 +47,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemImport(
 
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return validationFailedResult(cmdKey, "workspace is required",
-			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	artifact, _ := input["artifact"].(string)
 	if strings.TrimSpace(artifact) == "" {

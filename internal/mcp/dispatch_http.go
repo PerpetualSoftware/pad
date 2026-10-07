@@ -323,6 +323,24 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		input = map[string]any{}
 	}
 
+	// Preprocess input: workspace auto-default from OAuth-token
+	// allow-list (TASK-1076). When a tool call doesn't carry an
+	// explicit `workspace` param, try to default from the resolved
+	// workspaces the lister returns. Single resolved workspace →
+	// inject; otherwise leave alone (the route mapper will surface
+	// a "missing required input" error if the route needs it,
+	// which is informative enough for agents to retry with an
+	// explicit param). Routes that don't need workspace (like
+	// `pad_workspace list`) just see an extra unused field — harmless.
+	//
+	// Caller-passed workspace ALWAYS wins. Tests + non-OAuth paths
+	// (no Lister wired) skip the injection entirely so behavior
+	// stays unchanged for them.
+	input = d.maybeInjectWorkspace(ctx, input)
+	// It runs BEFORE the --assign / --role resolution below (TASK-2314):
+	// both resolve against the workspace, so a single-workspace caller who
+	// omits `workspace` must get it injected first, not be refused.
+
 	// Preprocess input: resolve --assign name → assigned_user_id for
 	// commands that accept the shorthand. Mappers downstream see only
 	// the resolved UUID; agents that already pass an ID via
@@ -330,6 +348,9 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	if _, ok := commandsAcceptingAssignByName[cmdKey]; ok {
 		var err error
 		input, err = d.resolveAssignName(ctx, user, input)
+		if errors.Is(err, errWorkspaceRequired) {
+			return noWorkspaceResult(ctx, d.Lister), nil
+		}
 		if err != nil {
 			return validationFailedResult(cmdKey, "resolve --assign: "+err.Error(),
 				"Pass `assign=<user-name|email>` matching a workspace member, or `assigned_user_id=<uuid>` directly."), nil
@@ -345,26 +366,14 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	if _, ok := commandsAcceptingRoleBySlug[cmdKey]; ok {
 		var err error
 		input, err = d.resolveRoleSlug(ctx, user, input)
+		if errors.Is(err, errWorkspaceRequired) {
+			return noWorkspaceResult(ctx, d.Lister), nil
+		}
 		if err != nil {
 			return validationFailedResult(cmdKey, "resolve --role: "+err.Error(),
 				"Pass `role=<slug>` matching an existing agent role, or `agent_role_id=<uuid>` directly."), nil
 		}
 	}
-
-	// Preprocess input: workspace auto-default from OAuth-token
-	// allow-list (TASK-1076). When a tool call doesn't carry an
-	// explicit `workspace` param, try to default from the resolved
-	// workspaces the lister returns. Single resolved workspace →
-	// inject; otherwise leave alone (the route mapper will surface
-	// a "missing required input" error if the route needs it,
-	// which is informative enough for agents to retry with an
-	// explicit param). Routes that don't need workspace (like
-	// `pad_workspace list`) just see an extra unused field — harmless.
-	//
-	// Caller-passed workspace ALWAYS wins. Tests + non-OAuth paths
-	// (no Lister wired) skip the injection entirely so behavior
-	// stays unchanged for them.
-	input = d.maybeInjectWorkspace(ctx, input)
 
 	// Special-case routes that need read-modify-write or other
 	// in-handler prefetches. These live as methods on the dispatcher
@@ -406,6 +415,11 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	}
 
 	method, urlPath, body, err := mapper(input)
+	if errors.Is(err, errWorkspaceRequired) {
+		// The structured envelope stdio gives (TASK-2314), so an agent
+		// learns which workspaces it can use instead of a bare refusal.
+		return noWorkspaceResult(ctx, d.Lister), nil
+	}
 	if err != nil {
 		return validationFailedResult(cmdKey, err.Error(),
 			"Check the input shape against the tool's schema (most route-mapper errors are missing required path placeholders)."), nil
@@ -777,7 +791,7 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 	workspace, _ := input["workspace"].(string)
 	collection, _ := input["collection"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required — pass workspace=<slug> explicitly")
+		return "", "", nil, errWorkspaceRequired
 	}
 	if collection == "" {
 		return "", "", nil, fmt.Errorf("collection is required")
@@ -1050,7 +1064,7 @@ func ingestFieldKVP(s string, dst map[string]any) error {
 func mapPlaybookRun(input map[string]any) (method, path string, body []byte, err error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required — pass workspace=<slug> explicitly")
+		return "", "", nil, errWorkspaceRequired
 	}
 	ref, _ := input["ref"].(string)
 	if ref == "" {
