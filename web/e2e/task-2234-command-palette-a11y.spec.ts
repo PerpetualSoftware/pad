@@ -90,6 +90,8 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 		for (const t of ['Zephyr alpha', 'Zephyr beta', 'Zephyr gamma']) {
 			await ok(await account.api.post(`/api/v1/workspaces/${ws}/collections/tasks/items`, { data: { title: t, fields: '{"status":"open"}' } }), 'item');
 		}
+		// Found only by its body: the title does not contain the word.
+		await ok(await account.api.post(`/api/v1/workspaces/${ws}/collections/tasks/items`, { data: { title: 'Plain title', content: 'a quokkaword lives here', fields: '{"status":"open"}' } }), 'body item');
 		await actAs(context, account);
 		await page.setViewportSize({ width: 1280, height: 800 });
 		await page.goto(`/${account.username}/${ws}`);
@@ -103,10 +105,12 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 
 		await expect(input).toHaveAttribute('role', 'combobox');
 		await expect(input).toHaveAttribute('aria-expanded', 'true');
-		const listboxId = await input.getAttribute('aria-controls');
-		expect(listboxId, 'the combobox names the listbox it controls').toBeTruthy();
-		const listbox = page.locator(`[id="${listboxId}"]`);
-		await expect(listbox).toHaveAttribute('role', 'listbox');
+		// aria-controls is an ID LIST: local results and content matches can
+		// both be on screen (codex r1).
+		const controls = ((await input.getAttribute('aria-controls')) ?? '').split(/\s+/).filter(Boolean);
+		expect(controls.length, 'the combobox names the listbox(es) it controls').toBeGreaterThan(0);
+		for (const id of controls) await expect(page.locator(`[id="${id}"]`)).toHaveAttribute('role', 'listbox');
+		const listbox = page.locator(`[id="${controls[0]}"]`);
 		const options = listbox.getByRole('option');
 		await expect(options).toHaveCount(3);
 		// The count is announced.
@@ -127,10 +131,13 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 		expect(withResults.violations.map((v) => `${v.id}: ${v.help}`), 'axe on the open palette with results').toEqual([]);
 		// And in the dark theme: the status pills' text is a mix with the
 		// theme's text colour, which has to clear 4.5:1 in both.
-		await page.emulateMedia({ colorScheme: 'dark' });
+		// The app pins data-theme, which overrides the media query (codex r1),
+		// so the dark scan sets the attribute and proves it took.
+		await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+		await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 		const dark = await new AxeBuilder({ page }).include('.palette').analyze();
 		expect(dark.violations.map((v) => `${v.id}: ${v.help}`), 'axe on the open palette with results, dark theme').toEqual([]);
-		await page.emulateMedia({ colorScheme: 'light' });
+		await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
 
 		// Enter opens the selected result.
 		const title = (await options.nth(1).locator('.result-title').textContent())?.trim();
@@ -158,6 +165,13 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 
 		await page.keyboard.press('Enter');
 		await expect(input, 'Enter on a recent runs that search').toHaveValue('Zephyr');
+
+		// A match found only in an item's BODY is announced too (codex r1): the
+		// local count is 0 there, and the content matches are the results.
+		await input.fill('');
+		await page.keyboard.type('quokkaword');
+		await expect(page.locator('.palette [role="option"]').first()).toBeVisible({ timeout: 10_000 });
+		await expect(page.locator('.palette [aria-live="polite"]')).toContainText('1 result');
 	} finally {
 		await account.api.dispose();
 	}

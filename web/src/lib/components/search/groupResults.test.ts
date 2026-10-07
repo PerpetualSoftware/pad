@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SearchResult } from '$lib/types';
-import { groupResultsByCollection } from './groupResults';
+import { groupResultsByCollection, inRenderedOrder } from './groupResults';
 
 // BUG-3054: grouped by a user-chosen collection slug. A collection named
 // "Constructor" (slug `constructor`) found Object's constructor on a plain
@@ -35,5 +35,15 @@ describe('groupResultsByCollection (BUG-3054)', () => {
 		expect(Object.keys(groups)).toEqual(['constructor', 'tasks']);
 		const ctor: string = 'constructor';
 		expect(groups[ctor].results.map((r) => r.item.id)).toEqual(['a', 'c']);
+	});
+});
+
+// TASK-2234 (codex r1): the palette renders results GROUPED by collection, so
+// keyboard navigation (and aria-activedescendant) must walk them in that
+// order, not in rank order: ranked A1, B1, A2 renders A1, A2, B1.
+describe('inRenderedOrder (TASK-2234)', () => {
+	it('flattens the groups in the order they render', () => {
+		const groups = groupResultsByCollection([hit('a1', 'a'), hit('b1', 'b'), hit('a2', 'a')], []);
+		expect(inRenderedOrder(groups).map((r) => r.item.id)).toEqual(['a1', 'a2', 'b1']);
 	});
 });
