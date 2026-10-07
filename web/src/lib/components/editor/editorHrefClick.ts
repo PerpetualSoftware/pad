@@ -12,7 +12,7 @@
 // stays responsible for the DOM side effects (preventDefault, hiding the
 // popover, actually calling `goto`/`onOpenTarget`/`window.location.assign`).
 
-import { isSameWorkspaceItemHref } from '$lib/collections/paneTarget';
+import { isCrossWorkspaceHref, isSameWorkspaceItemHref } from '$lib/collections/paneTarget';
 
 /**
  * The subset of `MouseEvent` the decision reads. Narrowed to a plain
@@ -87,6 +87,10 @@ export function planHrefClick(
 	}
 
 	const isInternal = href.startsWith('/') && !href.startsWith('//');
+	// The `/-/r/` resolver is a SERVER redirect with no client route behind
+	// it: `goto` would render it as `[username]=-` / `[workspace]=r`
+	// ("Workspace not found"). A full load lets the server answer it.
+	if (isInternal && isCrossWorkspaceHref(href)) return { kind: 'external', href };
 	if (
 		isInternal &&
 		ctx.hasOnOpenTarget &&

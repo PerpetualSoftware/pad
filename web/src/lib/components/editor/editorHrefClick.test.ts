@@ -90,11 +90,17 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 	});
 
 	describe('cross-workspace links — never drill the current pane (Codex review)', () => {
-		it('falls back to goto for a /-/r/{workspace}/{ref} resolver link', () => {
+		it('loads a /-/r/{workspace}/{ref} resolver link in full, never through goto (TASK-3119)', () => {
+			// /-/r/ is a SERVER redirect with no client route: goto rendered it
+			// as [username]=- / [workspace]=r, "Workspace not found".
 			expect(planHrefClick(leftClick, '/-/r/other-workspace/TASK-9', ctx())).toEqual({
-				kind: 'goto',
+				kind: 'external',
 				href: '/-/r/other-workspace/TASK-9',
 			});
+			// With no pane host too: the plan must not depend on the drill wiring.
+			expect(
+				planHrefClick(leftClick, '/-/r/other-workspace/TASK-9', ctx({ hasOnOpenTarget: false })),
+			).toEqual({ kind: 'external', href: '/-/r/other-workspace/TASK-9' });
 		});
 
 		it('falls back to goto for a DIFFERENT workspace item as a plain path (would open the wrong item)', () => {

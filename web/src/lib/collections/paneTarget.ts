@@ -58,7 +58,7 @@ const HREF_PARSE_BASE = 'http://pad.invalid';
 const HREF_PARSE_HOST = new URL(HREF_PARSE_BASE).host;
 
 /** True when `href` is (or resolves to) the cross-workspace resolver route. */
-function isCrossWorkspaceHref(href: string): boolean {
+export function isCrossWorkspaceHref(href: string): boolean {
 	try {
 		return new URL(href, HREF_PARSE_BASE).pathname.startsWith(CROSS_WORKSPACE_HREF_PREFIX);
 	} catch {

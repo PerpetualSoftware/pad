@@ -443,7 +443,12 @@ export function renderMarkdown(
 			// verbatim, so the encode/no-encode choice is symmetric across
 			// both functions (Codex round-1 sanity sweep).
 			const safeDisplay = escapeHtml(xw.display ?? `${xw.workspace}::${xw.ref}`);
-			return `<a href="/-/r/${xw.workspace}/${xw.ref}" class="doc-link cross-workspace">${safeDisplay}</a>`;
+			// rel="external" makes the SvelteKit router leave the click to the
+			// browser: `/-/r/` is a SERVER redirect with no client route, and a
+			// client-side navigation renders it as `[username]=-` /
+			// `[workspace]=r` ("Workspace not found"). `rel` is already on the
+			// sanitizer allowlist; data-sveltekit-reload would widen it.
+			return `<a href="/-/r/${xw.workspace}/${xw.ref}" class="doc-link cross-workspace" rel="external">${safeDisplay}</a>`;
 		}
 		// Same-workspace resolution, shared with wikiLinksToMarkdown (the
 		// Tiptap editor path) so the two renderers resolve [[REF]] /
