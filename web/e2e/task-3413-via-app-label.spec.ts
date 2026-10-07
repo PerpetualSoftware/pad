@@ -65,10 +65,12 @@ function stamp(value: unknown, itemId: string, name = APP): void {
  * reported against a test whose assertions had all passed: CI runs
  * 37315527477 and 37409948924. Reproduced by closing the context while a
  * handler holds a fetched response. Nobody is waiting for that request, so
- * the handler drops it; any other error still fails the test.
+ * the handler drops it. Only those two messages: "Route is already handled"
+ * would mean two handlers raced for one route, a real defect, so it and any
+ * other error still fail the test.
  */
 function requestAbandoned(err: unknown): boolean {
-	return /has been disposed|Target page, context or browser has been closed|Request context disposed|Route is already handled/i.test(
+	return /Response has been disposed|Target page, context or browser has been closed/.test(
 		String((err as Error)?.message ?? err)
 	);
 }
@@ -128,11 +130,7 @@ test('TASK-3413 U9c: a long unbroken app name wraps inside the viewport (codex r
 	const { collSlug, item } = await seed(fixture, request);
 	await page.route(`**/api/v1/workspaces/${fixture.workspaceSlug}/**`, async (route: Route) => {
 		if (route.request().method() !== 'GET') return route.fallback();
-		const response = await route.fetch();
-		if (!(response.headers()['content-type'] ?? '').includes('application/json')) return route.fulfill({ response });
-		const json = await response.json();
-		stamp(json, item.id, long);
-		return route.fulfill({ response, json });
+		await rewriteJson(route, (json) => stamp(json, item.id, long));
 	});
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${collSlug}/${item.slug}`);
 	await expect(page.locator('.meta-via-app')).toContainText(long);
