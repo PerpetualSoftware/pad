@@ -2992,8 +2992,11 @@
 			// moving (another replaceState wins), which nothing would observe.
 			// Give it a second to land; a target still pending after that is
 			// dropped, so the cursor goes back to the row the pane shows.
+			// The same handle as the debounce, so cancelPaneFollow (a new keypress,
+			// a landed follow, close, destroy) clears it too.
 			const issued = pendingFollow;
-			setTimeout(() => {
+			paneFollowTimer = setTimeout(() => {
+				paneFollowTimer = null;
 				if (!identityHeld(epochAtSchedule)) return;
 				if (pendingFollow === issued) pendingFollow = null;
 			}, PANE_FOLLOW_SETTLE_MS);
