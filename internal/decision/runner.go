@@ -540,29 +540,37 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 	//
 	// This is the ONE liveness guard on the send path. A second, earlier copy
 	// in State was redundant with it (mutant M26 survived its removal), so it
-	// is gone; State serves the read path too, where nothing is sent.
-	itemLive, wsLive, err := r.store.ItemLiveness(item.ID)
-	if err != nil {
-		return false, err
-	}
-	if !itemLive {
-		return false, ErrItemGone
-	}
-	if !wsLive {
-		return false, ErrWorkspaceDeleted
-	}
+	// is gone; State serves the read path too, where nothing is sent. It runs
+	// inside the loop below, immediately before each call.
+	//
 	// One call, or several of at most MaxPerCall questions each (in key
 	// order, so a set is always split the same way). Rows are written only
 	// once every call has answered: a partial set would fail the idempotency
 	// check and be re-asked in full anyway.
 	answers := make(map[string]Answer, len(keys))
 	var usage Usage
+	calls := 0
 	for _, chunk := range chunkKeys(keys, qs.MaxPerCall) {
 		cq := make(map[string]Question, len(chunk))
 		for _, k := range chunk {
 			cq[k] = questions[k]
 		}
+		// Liveness as the LAST statement before EACH send (codex r1 on
+		// TASK-3119): a split set makes several calls, and a delete landing
+		// between them must stop the rest. A call already made is reported
+		// as made.
+		itemLive, wsLive, err := r.store.ItemLiveness(item.ID)
+		if err != nil {
+			return calls > 0, err
+		}
+		if !itemLive {
+			return calls > 0, ErrItemGone
+		}
+		if !wsLive {
+			return calls > 0, ErrWorkspaceDeleted
+		}
 		got, u, err := r.provider.Ask(ctx, st.Bytes, cq)
+		calls++
 		if r.usage != nil {
 			r.usage(qs.Name, u)
 		}

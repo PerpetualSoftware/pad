@@ -286,3 +286,31 @@ func TestConventions_CurrencyFollowsTheConventionAndTheLinks(t *testing.T) {
 		t.Fatal("answer current after its convention was switched off")
 	}
 }
+
+// Codex r1: liveness is checked before EACH call of a split set. An item
+// deleted while the first call is in flight is not sent in the second.
+func TestConventions_DeleteBetweenSplitCallsStopsTheRest(t *testing.T) {
+	fx := newConvFixture(t)
+	for i := 0; i < 7; i++ {
+		fx.convention(t, "Rule", `{"status":"active","trigger":"always"}`, "rule "+string(rune('a'+i)))
+	}
+	item := fx.task(t, "A task")
+	fx.r.beforeAsk = nil
+	// Delete the item from inside the first provider call.
+	deleted := false
+	fx.f.onRequest = func() {
+		if !deleted {
+			deleted = true
+			if err := fx.s.DeleteItem(item.ID); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	called, err := fx.r.Evaluate(context.Background(), item.ID, ConventionsSetName)
+	if !errors.Is(err, ErrItemGone) || !called {
+		t.Fatalf("called=%v err=%v; want the first call made, then ErrItemGone", called, err)
+	}
+	if len(fx.f.requests) != 1 {
+		t.Fatalf("provider calls = %d; the second chunk was sent after the delete", len(fx.f.requests))
+	}
+}
