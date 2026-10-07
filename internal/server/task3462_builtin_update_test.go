@@ -378,3 +378,32 @@ func TestTASK3462_FailedApplyLeavesTheSeedAndTheOffer(t *testing.T) {
 		t.Fatalf("after a failed apply the offer is gone: %s", again.State)
 	}
 }
+
+// A seed that carried convention metadata the library no longer has: the
+// update removes it through the typed lowering, and the item is then current
+// with no stale reserved key (codex r3: the drop was skipped while the seed
+// advanced, hiding the leftover for good).
+func TestTASK3462_UpdateClearsDroppedConventionMetadata(t *testing.T) {
+	srv := testServer(t)
+	slug, _ := task3462Workspace(t, srv, "Drop convention 3462", "startup")
+	ship := task3462ItemByTitle(t, srv, slug, "playbooks", "Ship tasks")
+	stageOldSeed(t, srv, ship, "playbook/ship", "the old ship body", map[string]any{
+		"convention": map[string]any{"category": "git", "trigger": "manual"},
+	})
+	st := task3462GetState(t, srv, slug, ship.Slug)
+	if st.State != collections.BuiltinUpdateAvailable {
+		t.Fatalf("staged: %s", st.State)
+	}
+	if r := task3462Update(srv, slug, ship.Slug, map[string]any{"expected_seq": st.Seq}); r.code != http.StatusOK {
+		t.Fatalf("update: %d %s", r.code, r.body)
+	}
+	got, _ := srv.store.GetItem(ship.ID)
+	var f map[string]any
+	_ = json.Unmarshal([]byte(got.Fields), &f)
+	if _, ok := f["convention"]; ok {
+		t.Fatalf("the dropped convention metadata survived the update: %s", got.Fields)
+	}
+	if after := task3462GetState(t, srv, slug, ship.Slug); after.State != collections.BuiltinCurrent {
+		t.Fatalf("after the update: %s", after.State)
+	}
+}

@@ -202,3 +202,30 @@ func TestBuiltinStateOfDropOnly(t *testing.T) {
 		t.Fatalf("an item without the dropped field: %s, want current", got)
 	}
 }
+
+// A field the library ADDED that the user had already set to their own value
+// is an edit: the item is diverged, so the update is not promised to lose
+// nothing (codex r3). The library's own value there is not an edit.
+func TestBuiltinStateOfAddedKeyAlreadySet(t *testing.T) {
+	e, _ := LookupBuiltin("playbook/ship")
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(e.Fields), &fields); err != nil {
+		t.Fatal(err)
+	}
+	libArgs := fields["arguments"]
+	delete(fields, "arguments") // the seed predates arguments
+	sb, _ := json.Marshal(fields)
+	seed := BuiltinEntry{Key: e.Key, Content: "old body", Fields: string(sb)}
+	o := models.BuiltinOrigin{Key: e.Key, SeedHash: seed.Hash(), SeedContent: seed.Content, SeedFields: seed.Fields}
+
+	fields["arguments"] = []any{map[string]any{"name": "mine"}}
+	mine, _ := json.Marshal(fields)
+	if got, _, _, _ := BuiltinStateOf(o, seed.Content, string(mine)); got != BuiltinDiverged {
+		t.Fatalf("user set the added field: %s, want diverged", got)
+	}
+	fields["arguments"] = libArgs
+	same, _ := json.Marshal(fields)
+	if got, _, _, _ := BuiltinStateOf(o, seed.Content, string(same)); got != BuiltinUpdateAvailable {
+		t.Fatalf("the added field already holds the library's value: %s, want update_available", got)
+	}
+}

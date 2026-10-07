@@ -1340,6 +1340,9 @@ type builtinItemUpdate struct {
 	// patch AFTER the caller-facing reserved-key refusal, as github_pr is: a
 	// value this server built from its own library, not one a caller sent.
 	convention *models.ItemConventionMetadata
+	// clearConvention removes the convention metadata (the library dropped
+	// it), through the same lowering.
+	clearConvention bool
 }
 
 // updateItem is handleUpdateItem, or a built-in update when b is set.
@@ -1536,11 +1539,15 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	}
 	// TASK-3462: a built-in update's convention metadata, lowered after the
 	// refusal above for the reason github_pr is lowered after it below.
-	if b != nil && b.convention != nil {
+	if b != nil && (b.convention != nil || b.clearConvention) {
 		if input.FieldsPatch == nil {
 			input.FieldsPatch = map[string]any{}
 		}
-		input.FieldsPatch[models.ItemFieldConvention] = b.convention
+		if b.convention != nil {
+			input.FieldsPatch[models.ItemFieldConvention] = b.convention
+		} else {
+			input.FieldsPatch[models.ItemFieldConvention] = nil
+		}
 	}
 
 	// BUG-2696: the typed github_pr door. Checked AFTER the caller's own

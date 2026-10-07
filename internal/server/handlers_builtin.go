@@ -246,6 +246,7 @@ func (s *Server) handleBuiltinUpdate(w http.ResponseWriter, r *http.Request) {
 	libFields := entry.UpdateFields()
 	patch := map[string]any{}
 	var convention *models.ItemConventionMetadata
+	var clearConvention bool
 	for k, v := range libFields {
 		if k == models.ItemFieldConvention {
 			b, err := json.Marshal(v)
@@ -273,9 +274,16 @@ func (s *Server) handleBuiltinUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for k := range seed.Fields {
-			if _, kept := libFields[k]; !kept && k != models.ItemFieldConvention {
-				patch[k] = nil
+			if _, kept := libFields[k]; kept {
+				continue
 			}
+			if k == models.ItemFieldConvention {
+				// Reserved: cleared through the typed lowering, not the
+				// caller-facing patch (codex r3).
+				clearConvention = true
+				continue
+			}
+			patch[k] = nil
 		}
 	}
 	content := entry.Content
@@ -295,6 +303,7 @@ func (s *Server) handleBuiltinUpdate(w http.ResponseWriter, r *http.Request) {
 			// Recorded in the write's own transaction (codex r1).
 			BuiltinSeed: &newSeed,
 		},
-		convention: convention,
+		convention:      convention,
+		clearConvention: clearConvention,
 	})
 }

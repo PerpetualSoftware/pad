@@ -335,6 +335,19 @@ func BuiltinStateOf(o models.BuiltinOrigin, content, fieldsJSON string) (state, 
 		if vsSeed, err = seed.ItemStateHash(content, fieldsJSON); err != nil {
 			return "", "", entry, err
 		}
+		// A field the library ADDED is outside the seed's keys, so the hash
+		// above cannot see it (codex r3). An item that already holds its own
+		// value there was edited: taking the update would overwrite that
+		// value, and fields have no history to recover it from.
+		if vsSeed == o.SeedHash {
+			conflict, cerr := addedKeysConflict(entry, *seed, fieldsJSON)
+			if cerr != nil {
+				return "", "", entry, cerr
+			}
+			if conflict {
+				return BuiltinDiverged, itemHash, entry, nil
+			}
+		}
 	}
 	if vsSeed == o.SeedHash {
 		return BuiltinUpdateAvailable, itemHash, entry, nil
@@ -357,6 +370,33 @@ func droppedKeysPresent(library, seed BuiltinEntry, fieldsJSON string) (bool, er
 	}
 	for _, k := range seed.UpdateFieldKeys() {
 		if v, ok := item[k]; !lib[k] && ok && v != nil {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// addedKeysConflict reports whether the item holds a non-null value, other
+// than the library's own, for an update field the library has and the seed
+// did not.
+func addedKeysConflict(library, seed BuiltinEntry, fieldsJSON string) (bool, error) {
+	seedKeys := map[string]bool{}
+	for _, k := range seed.UpdateFieldKeys() {
+		seedKeys[k] = true
+	}
+	item := map[string]any{}
+	if fieldsJSON != "" {
+		if err := models.DecodeJSONKeepingNumbers([]byte(fieldsJSON), &item); err != nil {
+			return false, fmt.Errorf("decode item fields: %w", err)
+		}
+	}
+	lib := library.UpdateFields()
+	for k, want := range lib {
+		got, ok := item[k]
+		if seedKeys[k] || !ok || got == nil {
+			continue
+		}
+		if BuiltinStateHash("", map[string]any{"v": got}) != BuiltinStateHash("", map[string]any{"v": want}) {
 			return true, nil
 		}
 	}
