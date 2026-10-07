@@ -129,21 +129,25 @@ func specsCollection(sortOrder int) DefaultCollection {
 func specStarterConventions() []SeedConvention {
 	return []SeedConvention{
 		{
+			Key:     "spec/convention/no-implementation-without-an-approved-spec",
 			Title:   "No implementation without an approved spec",
 			Content: "Before implementing, load the governing SPEC-N and confirm its status is `approved` (or `implemented`, for follow-up work against an already-shipped spec). If the relevant behavior isn't covered by an approved spec yet, stop and draft one first (`/pad spec`) — don't implement against a draft or in-review spec, its acceptance criteria can still change out from under you.",
 			Fields:  `{"status":"active","trigger":"on-implement","scope":"all","priority":"must"}`,
 		},
 		{
+			Key:     "spec/convention/prs-cite-the-spec-and-which-criteria-they-satisfy",
 			Title:   "PRs cite the spec and which criteria they satisfy",
 			Content: "Every PR body that implements spec-governed behavior must cite the SPEC-N ref and list which AC-N acceptance criteria it satisfies (e.g. \"Implements SPEC-4, satisfies AC-1, AC-2\"). This is what makes `/pad verify` fast — the reviewer walks the cited criteria against the diff instead of re-deriving what the PR is supposed to do.",
 			Fields:  `{"status":"active","trigger":"on-pr-create","scope":"all","priority":"must"}`,
 		},
 		{
+			Key:     "spec/convention/approved-specs-are-superseded-not-mutated",
 			Title:   "Approved specs are superseded, not mutated",
 			Content: "Once a spec's status is `approved` (or later), don't edit its Context/Goals/Specified behavior/Acceptance criteria in place — that silently invalidates whatever was reviewed and whatever work already cites it. If the spec needs to change: (1) minor clarifications that don't change meaning are fine as edits with a comment explaining what and why; (2) anything that changes what must be true requires either re-review (bump status back to `in-review`, get it re-approved) or a new spec that supersedes this one (`status: superseded` on the old, a fresh SPEC-N referencing it) — supersede, don't mutate.",
 			Fields:  `{"status":"active","trigger":"on-spec-change","scope":"all","priority":"must"}`,
 		},
 		{
+			Key:     "spec/convention/spec-code-drift-is-a-bug-in-one-of-them",
 			Title:   "Spec-code drift is a bug — in one of them",
 			Content: "When a spec says X and the code does Y, that's a bug — either the code needs to change to match the spec, or the spec was wrong and needs to change (see: approved specs are superseded, not mutated). Don't let drift sit unresolved; surface it as soon as it's noticed rather than working around it silently.",
 			Fields:  `{"status":"active","trigger":"always","scope":"all","priority":"should"}`,

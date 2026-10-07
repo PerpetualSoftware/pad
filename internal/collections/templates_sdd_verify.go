@@ -104,6 +104,7 @@ func VerifyPlaybook() SeedPlaybook {
 	}
 	encoded, _ := json.Marshal(fields)
 	return SeedPlaybook{
+		Key:     "spec/playbook/verify",
 		Title:   "Verify a spec",
 		Content: verifyPlaybookBody,
 		Fields:  string(encoded),

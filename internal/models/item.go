@@ -1277,6 +1277,11 @@ type ItemCreate struct {
 	// sets are re-validated against the new schema and a failure refuses the
 	// write. Nil (internal callers) keeps the store's contract unchanged.
 	ValidatedSchema *string `json:"-"`
+	// BuiltinOrigin, when set, records the built-in convention or playbook
+	// this item is made from (TASK-3462), in the create's own transaction.
+	// Internal-only: set by template seeding and library activation, never
+	// by a request body, so a caller cannot claim an origin for its own text.
+	BuiltinOrigin *BuiltinOrigin `json:"-"`
 }
 
 // ValidateConventionMetadata normalizes a typed convention member and refuses

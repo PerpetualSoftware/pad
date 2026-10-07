@@ -1325,6 +1325,30 @@ func quotedList(keys []string) string {
 }
 
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
+	s.updateItem(w, r, nil)
+}
+
+// builtinItemUpdate is an update from a built-in's current library text
+// (TASK-3462), run through the same door as any PATCH so it takes every
+// guard a PATCH takes (the version token, pending collab edits, the applier,
+// the uniqueness checks, activity and events). Only handleBuiltinUpdate
+// builds one; nothing in a request body can.
+type builtinItemUpdate struct {
+	// input replaces the decoded request body.
+	input models.ItemUpdate
+	// convention is the entry's typed convention metadata, lowered into the
+	// patch AFTER the caller-facing reserved-key refusal, as github_pr is: a
+	// value this server built from its own library, not one a caller sent.
+	convention *models.ItemConventionMetadata
+	// applied runs after a successful write, before the response: it
+	// records the new seed. A failure there is logged and not surfaced,
+	// because the write landed and the item now holds the library's text,
+	// which reads as current whatever the seed says.
+	applied func(updated *models.Item) error
+}
+
+// updateItem is handleUpdateItem, or a built-in update when b is set.
+func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinItemUpdate) {
 	// BUG-3080: set once the write has COMMITTED, read by the client_write
 	// release deferred below — the tab's mark moves only for a write that
 	// went through, and for every such write, even if the response then fails.
@@ -1374,7 +1398,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input models.ItemUpdate
-	if err := decodeJSON(r, &input); err != nil {
+	if b != nil {
+		input = b.input
+	} else if err := decodeJSON(r, &input); err != nil {
 		// Surface the domain-level errors from ItemUpdate.UnmarshalJSON
 		// (BUG-1144) without the "invalid JSON: ..." wrapper from
 		// decodeJSON, so callers see a clean message naming the field.
@@ -1512,6 +1538,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if bad := items.PatchRefusedFieldKeysIn(input.FieldsPatch); len(bad) > 0 {
 		writeError(w, http.StatusBadRequest, "validation_error", reservedFieldPatchMessage(bad, item.Fields))
 		return
+	}
+	// TASK-3462: a built-in update's convention metadata, lowered after the
+	// refusal above for the reason github_pr is lowered after it below.
+	if b != nil && b.convention != nil {
+		if input.FieldsPatch == nil {
+			input.FieldsPatch = map[string]any{}
+		}
+		input.FieldsPatch[models.ItemFieldConvention] = b.convention
 	}
 
 	// BUG-2696: the typed github_pr door. Checked AFTER the caller's own
@@ -2728,6 +2762,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			warnings.ContentOutcome = contentOutcomeAppliedPendingFlush
 		}
 		updated.Warnings = warnings
+	}
+
+	if b != nil && b.applied != nil {
+		if err := b.applied(updated); err != nil {
+			slog.Warn("built-in update: the write landed but recording its seed failed",
+				"item_id", updated.ID, "error", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, updated)

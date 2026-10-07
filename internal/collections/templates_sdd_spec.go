@@ -222,6 +222,7 @@ func SpecPlaybook() SeedPlaybook {
 	}
 	encoded, _ := json.Marshal(fields)
 	return SeedPlaybook{
+		Key:     "spec/playbook/spec",
 		Title:   "Draft a spec",
 		Content: specPlaybookBody,
 		Fields:  string(encoded),

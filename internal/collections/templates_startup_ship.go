@@ -355,6 +355,7 @@ func ShipPlaybook() SeedPlaybook {
 	}
 	encoded, _ := json.Marshal(fields)
 	return SeedPlaybook{
+		Key:     "playbook/ship",
 		Title:   "Ship tasks",
 		Content: shipPlaybookBody,
 		Fields:  string(encoded),

@@ -166,6 +166,7 @@ var decomposePlaybookArguments = []map[string]any{
 // library card and pair naturally with "Plan a new initiative" (T4).
 func DecomposePlaybook() LibraryPlaybook {
 	return LibraryPlaybook{
+		Key:            "playbook/decompose",
 		Title:          "Decompose a plan into tasks",
 		Category:       "agent-workflows",
 		Trigger:        "manual",

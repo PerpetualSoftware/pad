@@ -2035,6 +2035,13 @@ func (s *Server) setupRouter() {
 					// is enforced inside the handler against the destination
 					// collection.
 					r.Post("/import-artifact", s.handleImportArtifact)
+					// Activate a convention or playbook library entry: create
+					// it server-side and record its built-in origin
+					// (TASK-3462). Editor+ gate inside, as for import-artifact.
+					r.Post("/library/activate", s.handleActivateLibraryEntry)
+					// Every item made from a built-in, with its state, for
+					// the library page (TASK-3462).
+					r.Get("/builtins", s.handleListWorkspaceBuiltins)
 
 					// Activity (workspace level)
 					r.Get("/activity", s.handleListWorkspaceActivity)
@@ -2140,6 +2147,10 @@ func (s *Server) setupRouter() {
 						r.Delete("/", s.handleDeleteItem)
 						r.Post("/restore", s.handleRestoreItem)
 						r.Post("/move", s.handleMoveItem)
+						// Built-in origin (TASK-3462): what Pad's current
+						// text offers this item, and the opt-in update.
+						r.Get("/builtin", s.handleGetItemBuiltin)
+						r.Post("/builtin/update", s.handleBuiltinUpdate)
 						// SPEC-6 U11 (TASK-3414): app item actions for the
 						// item pane, and the link-out's context-code mint.
 						r.Get("/app-actions", s.handleListItemAppActions)

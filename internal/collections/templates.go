@@ -2,6 +2,7 @@ package collections
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -121,6 +122,10 @@ type SeedItem struct {
 // SeedConvention defines a convention seeded into a workspace when a template
 // is applied. It targets the workspace's "conventions" collection.
 type SeedConvention struct {
+	// Key is the built-in's stable identity (TASK-3462), recorded as the
+	// seeded item's origin. A seed built from a library entry carries that
+	// entry's key.
+	Key     string
 	Title   string
 	Content string
 	Fields  string // JSON string of field values (trigger, scope, priority, status, role)
@@ -129,6 +134,8 @@ type SeedConvention struct {
 // SeedPlaybook defines a playbook seeded into a workspace when a template is
 // applied. It targets the workspace's "playbooks" collection.
 type SeedPlaybook struct {
+	// Key is the built-in's stable identity (TASK-3462); see SeedConvention.Key.
+	Key     string
 	Title   string
 	Content string
 	Fields  string // JSON string of field values (trigger, scope, status)
@@ -307,25 +314,44 @@ var softwareStarterPlaybookTitles = []string{
 	"Decompose a plan into tasks",
 }
 
-// seedConventionFromLibrary converts a LibraryConvention into a SeedConvention
-// by marshaling its domain-specific fields (status, trigger, scope, priority)
-// into the JSON shape expected by the conventions collection.
+// seedConventionFromLibrary converts a LibraryConvention into a SeedConvention.
+//
+// Its fields are LibraryConventionFields, the blob library ACTIVATION stores
+// too (TASK-3462). Seeding used to write only status, trigger, scope and
+// priority, so the same entry stored two different shapes depending on which
+// door brought it in, and the seeded copy lacked the typed `convention`
+// metadata (category, surfaces, commands) the activated one carried.
 func seedConventionFromLibrary(c LibraryConvention) SeedConvention {
-	scope := "all"
-	if len(c.Surfaces) > 0 {
-		scope = c.Surfaces[0]
-	}
-	fields, _ := json.Marshal(map[string]string{
-		"status":   "active",
-		"trigger":  c.Trigger,
-		"scope":    scope,
-		"priority": c.Enforcement,
-	})
 	return SeedConvention{
+		Key:     c.Key,
 		Title:   c.Title,
 		Content: c.Content,
-		Fields:  string(fields),
+		Fields:  LibraryConventionFields(c),
 	}
+}
+
+// LibraryConventionMetadata is the typed convention metadata a library
+// convention carries.
+func LibraryConventionMetadata(c LibraryConvention) *models.ItemConventionMetadata {
+	return &models.ItemConventionMetadata{
+		Category:    c.Category,
+		Trigger:     c.Trigger,
+		Surfaces:    c.Surfaces,
+		Enforcement: c.Enforcement,
+		Commands:    c.Commands,
+	}
+}
+
+// LibraryConventionFields is the stored fields blob for an active item made
+// from a library convention, the `convention` metadata key included. Every
+// door that brings one in (template seed, library activation) stores this.
+func LibraryConventionFields(c LibraryConvention) string {
+	fields, err := models.BuildConventionItemFields("active", LibraryConventionMetadata(c))
+	if err != nil {
+		// Built from a compiled-in entry; TestBuiltinRegistry builds every one.
+		panic(fmt.Sprintf("library convention %q: %v", c.Key, err))
+	}
+	return fields
 }
 
 // seedPlaybookFromLibrary converts a LibraryPlaybook into a SeedPlaybook.
@@ -336,6 +362,18 @@ func seedConventionFromLibrary(c LibraryConvention) SeedConvention {
 // leave them empty produce the legacy trigger-only field set, so
 // activation behavior is backward-compatible.
 func seedPlaybookFromLibrary(p LibraryPlaybook) SeedPlaybook {
+	return SeedPlaybook{
+		Key:     p.Key,
+		Title:   p.Title,
+		Content: p.Content,
+		Fields:  LibraryPlaybookFields(p),
+	}
+}
+
+// LibraryPlaybookFields is the stored fields blob for an active item made
+// from a library playbook. Every door that brings one in (template seed,
+// library activation) stores this (TASK-3462).
+func LibraryPlaybookFields(p LibraryPlaybook) string {
 	scope := p.Scope
 	if scope == "" {
 		scope = "all"
@@ -351,12 +389,12 @@ func seedPlaybookFromLibrary(p LibraryPlaybook) SeedPlaybook {
 	if len(p.Arguments) > 0 {
 		fields["arguments"] = p.Arguments
 	}
-	encoded, _ := json.Marshal(fields)
-	return SeedPlaybook{
-		Title:   p.Title,
-		Content: p.Content,
-		Fields:  string(encoded),
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		// Built from a compiled-in entry; TestBuiltinRegistry builds every one.
+		panic(fmt.Sprintf("library playbook %q: %v", p.Key, err))
 	}
+	return string(encoded)
 }
 
 // SoftwareStarterConventions returns the curated convention seed pack for

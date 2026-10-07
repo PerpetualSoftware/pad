@@ -173,17 +173,22 @@ type ItemExport struct {
 	// can be kept. Additive and omitempty, on the same no-version-bump grounds
 	// as ContentState.
 	CollabSetAside []YjsSetAsideExport `json:"collab_set_aside,omitempty"`
-	Fields         string              `json:"fields"`
-	Tags           string              `json:"tags"`
-	Pinned         bool                `json:"pinned"`
-	SortOrder      int                 `json:"sort_order"`
-	ParentID       string              `json:"parent_id,omitempty"`
-	CreatedBy      string              `json:"created_by"`
-	LastModifiedBy string              `json:"last_modified_by"`
-	Source         string              `json:"source"`
-	ItemNumber     int                 `json:"item_number"`
-	CreatedAt      string              `json:"created_at"`
-	UpdatedAt      string              `json:"updated_at"`
+	// BuiltinOrigin is the built-in convention or playbook this item was made
+	// from (TASK-3462), so a restored workspace can still be offered updates
+	// to Pad's text. Additive and omitempty on the same grounds as
+	// CollabSetAside; a content hash means the same thing on any instance.
+	BuiltinOrigin  *BuiltinOrigin `json:"builtin_origin,omitempty"`
+	Fields         string         `json:"fields"`
+	Tags           string         `json:"tags"`
+	Pinned         bool           `json:"pinned"`
+	SortOrder      int            `json:"sort_order"`
+	ParentID       string         `json:"parent_id,omitempty"`
+	CreatedBy      string         `json:"created_by"`
+	LastModifiedBy string         `json:"last_modified_by"`
+	Source         string         `json:"source"`
+	ItemNumber     int            `json:"item_number"`
+	CreatedAt      string         `json:"created_at"`
+	UpdatedAt      string         `json:"updated_at"`
 }
 
 // YjsSetAsideExport is one set-aside edit row in a bundle (BUG-3244). The item

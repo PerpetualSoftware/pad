@@ -22,8 +22,9 @@ import (
 //
 //   - CLI `pad library activate` / remote MCP `pad_library.activate`:
 //     models.BuildConventionItemCreate + the typed `convention` member;
-//   - the web Library page's Activate button: its own fields blob
-//     (web/src/lib/api/client.ts `library.activate`), which also names scope;
+//   - POST /library/activate, which the web Library page's Activate button,
+//     the CLI against a current server, and remote MCP all use since
+//     TASK-3462 (the web's own client-built fields blob is gone);
 //   - B3's literal `pad item create conventions --field trigger=<t>
 //     --field status=active`.
 //
@@ -75,29 +76,6 @@ func cliConventionBody(t *testing.T, c collections.LibraryConvention) map[string
 	return map[string]any{"title": c.Title, "content": c.Content, "fields": fields, "convention": conv}
 }
 
-// webConventionBody mirrors web/src/lib/api/client.ts `library.activate`.
-func webConventionBody(c collections.LibraryConvention) map[string]any {
-	scope := "all"
-	if len(c.Surfaces) > 0 {
-		scope = c.Surfaces[0]
-	}
-	commands := c.Commands
-	if commands == nil {
-		commands = []string{}
-	}
-	fields, _ := json.Marshal(map[string]any{
-		"status": "active", "category": c.Category, "trigger": c.Trigger, "scope": scope,
-		"priority": c.Enforcement, "enforcement": c.Enforcement, "surfaces": c.Surfaces, "commands": commands,
-	})
-	return map[string]any{
-		"title": c.Title, "content": c.Content, "fields": string(fields),
-		"convention": map[string]any{
-			"category": c.Category, "trigger": c.Trigger, "surfaces": c.Surfaces,
-			"enforcement": c.Enforcement, "commands": commands,
-		},
-	}
-}
-
 func playbookBody(p collections.LibraryPlaybook) map[string]any {
 	f := map[string]any{"status": "active", "trigger": p.Trigger, "scope": p.Scope}
 	if p.InvocationSlug != "" {
@@ -140,18 +118,23 @@ func TestBUG3446_EveryLibraryEntryActivatesInABlankWorkspace(t *testing.T) {
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		for _, door := range []struct {
 			name string
-			body func(*testing.T, collections.LibraryConvention) map[string]any
+			post func(t *testing.T, slug string, c collections.LibraryConvention) (int, string)
 		}{
-			{"cli-mcp", cliConventionBody},
-			{"web", func(_ *testing.T, c collections.LibraryConvention) map[string]any { return webConventionBody(c) }},
+			{"cli-mcp", func(t *testing.T, slug string, c collections.LibraryConvention) (int, string) {
+				rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/conventions/items", cliConventionBody(t, c))
+				return rr.Code, rr.Body.String()
+			}},
+			{"activate", func(_ *testing.T, slug string, c collections.LibraryConvention) (int, string) {
+				rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/library/activate", map[string]string{"key": c.Key})
+				return rr.Code, rr.Body.String()
+			}},
 		} {
 			t.Run(door.name, func(t *testing.T) {
 				slug, wsID := bug3446BlankWorkspace(t, srv, "Blank 3446 "+door.name)
 				var triggers, scopes []string
 				for _, c := range libraryConventions() {
-					rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/conventions/items", door.body(t, c))
-					if rr.Code != http.StatusCreated {
-						t.Errorf("activate convention %q (trigger %s): %d %s", c.Title, c.Trigger, rr.Code, rr.Body.String())
+					if code, body := door.post(t, slug, c); code != http.StatusCreated {
+						t.Errorf("activate convention %q (trigger %s): %d %s", c.Title, c.Trigger, code, body)
 						continue
 					}
 					triggers = append(triggers, c.Trigger)

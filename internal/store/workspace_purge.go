@@ -183,6 +183,7 @@ var purgeWorkspaceChildDeletes = []struct{ what, query string }{
 	{"item versions", `DELETE FROM item_versions WHERE item_id IN (SELECT id FROM items WHERE workspace_id = ?)`},
 	{"item links", `DELETE FROM item_links WHERE workspace_id = ?`},
 	{"item stars", `DELETE FROM item_stars WHERE item_id IN (SELECT id FROM items WHERE workspace_id = ?)`},
+	{"item built-in origins", `DELETE FROM item_builtin_origin WHERE item_id IN (SELECT id FROM items WHERE workspace_id = ?)`},
 	{"item yjs op-log", `DELETE FROM item_yjs_updates WHERE item_id IN (SELECT id FROM items WHERE workspace_id = ?)`},
 	{"item wiki links", `DELETE FROM item_wiki_links WHERE source_item_id IN (SELECT id FROM items WHERE workspace_id = ?)`},
 	{"item collection moves", `DELETE FROM item_collection_moves WHERE workspace_id = ?`},

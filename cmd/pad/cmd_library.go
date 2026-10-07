@@ -342,6 +342,31 @@ Examples:
 
 			title := args[0]
 
+			// A server that activates entries itself records the item's
+			// built-in origin, so a later fix to the entry can be offered
+			// to it (TASK-3462). An older one gets the client-built create
+			// below, which records none.
+			if client.ServerSupportsLibraryActivate() {
+				item, err := client.ActivateLibraryEntry(ws, title)
+				if err != nil {
+					if apiErr, ok := err.(*cli.APIError); ok && apiErr.AsPlanLimit() != nil {
+						cli.WritePlanLimitError(os.Stderr, apiErr)
+						return fmt.Errorf("library activation blocked: plan limit reached")
+					}
+					return err
+				}
+				warnOptionsAdded(item)
+				if formatFlag == "json" {
+					return cli.PrintJSON(item)
+				}
+				kind := "playbook"
+				if verifyConventionLanded(item) == nil {
+					kind = "convention"
+				}
+				fmt.Printf("Activated %s: %s (%s)\n", kind, item.Title, item.Slug)
+				return nil
+			}
+
 			// First check conventions library. No category filter; activate
 			// needs to scan the whole list. Bodies are full by default.
 			lib, err := client.GetConventionLibrary("")
