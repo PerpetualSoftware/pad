@@ -137,6 +137,11 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 		await page.keyboard.press('Enter');
 		await expect(page.locator('.palette')).toHaveCount(0);
 		await expect(page.getByText(title!).first()).toBeVisible();
+		// The item page focuses its own controls as it mounts; reopen the
+		// palette only once it has settled, as a person would, or the late
+		// focus lands after the palette opens and takes the keys with it.
+		await page.waitForURL(/\/tasks\//);
+		await page.waitForTimeout(1500);
 
 		// Recents: an empty query lists them, and the keyboard works on them (C45).
 		await page.keyboard.press('Control+k');
