@@ -296,14 +296,16 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_attachments.go::multipartValues::MultipartForm":                    2,
 		"handlers_cloud.go::hasCloudSecretMarker::Body":                              1,
 		"handlers_cloud.go::bodyHasCloudSecret::Body":                                2,
-		"handlers_import_bundle.go::Server.handleImportWorkspaceBundle::Body":        3,
-		"handlers_item_lease.go::Server.resolveLeaseRequest::Body":                   1,
-		"middleware_form_body.go::ValidateFormBody::Body":                            6,
-		"handlers_oauth.go::Server.handleOAuthAuthorize::ParseForm":                  1,
-		"handlers_oauth.go::Server.handleOAuthAuthorizeDecide::ParseForm":            1,
-		"handlers_oauth.go::Server.handleOAuthAuthorizeDecide::FormValue":            1,
-		"handlers_oauth.go::Server.parseConsentPayload::FormValue":                   4,
-		"handlers_oauth.go::Server.parseConsentPayload::PostForm":                    2,
+		// BUG-3475: +2 for the transport tracker, which wraps the raw body
+		// BENEATH the MaxBytesReader, so every read still passes the cap.
+		"handlers_import_bundle.go::Server.handleImportWorkspaceBundle::Body": 5,
+		"handlers_item_lease.go::Server.resolveLeaseRequest::Body":            1,
+		"middleware_form_body.go::ValidateFormBody::Body":                     6,
+		"handlers_oauth.go::Server.handleOAuthAuthorize::ParseForm":           1,
+		"handlers_oauth.go::Server.handleOAuthAuthorizeDecide::ParseForm":     1,
+		"handlers_oauth.go::Server.handleOAuthAuthorizeDecide::FormValue":     1,
+		"handlers_oauth.go::Server.parseConsentPayload::FormValue":            4,
+		"handlers_oauth.go::Server.parseConsentPayload::PostForm":             2,
 		// TASK-3394: parsed as fosite parses it (multipart included), so the
 		// client classified for the install-client rules is fosite's client.
 		"handlers_oauth.go::Server.handleOAuthToken::ParseMultipartForm": 1,
