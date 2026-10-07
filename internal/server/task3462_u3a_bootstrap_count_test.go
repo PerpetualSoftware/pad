@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
@@ -70,6 +71,54 @@ func TestTASK3462U3a_BootstrapCountsBuiltinUpdates(t *testing.T) {
 		}
 		if n, _ := task3462BootstrapUpdates(t, srv, slug); n != 2 {
 			t.Fatalf("one available + one diverged: builtin_updates %d, want 2", n)
+		}
+	})
+}
+
+// TASK-3462 U3a (night-43 review note): version history keeps BODIES only, so
+// an accepted update that replaces an edited trigger, scope or arguments left
+// no record of the values it replaced. The update's change summary now names
+// each field whose value it changed, with the value it replaced.
+func TestTASK3462U3a_UpdateRecordsReplacedFields(t *testing.T) {
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		slug, _ := task3462Workspace(t, srv, "Replaced 3462", "startup")
+		plan := task3462ItemByTitle(t, srv, slug, "playbooks", "Plan a new initiative")
+		// Seeded with an older trigger the library has since changed, and the
+		// body edited too: diverged.
+		old := stageOldSeed(t, srv, plan, "playbook/plan", "the old plan body", map[string]any{"trigger": "on-release"})
+		edited := "the old plan body, edited"
+		if _, err := srv.store.UpdateItem(old.ID, models.ItemUpdate{Content: &edited}); err != nil {
+			t.Fatal(err)
+		}
+		st := task3462GetState(t, srv, slug, plan.Slug)
+		if st.State != collections.BuiltinDiverged {
+			t.Fatalf("state %s, want diverged", st.State)
+		}
+		if r := task3462Update(srv, slug, plan.Slug, map[string]any{"expected_seq": st.Seq}); r.code != http.StatusOK {
+			t.Fatalf("update: %d %s", r.code, r.body)
+		}
+		current, _ := srv.store.GetItem(plan.ID)
+		versions, err := srv.store.ListItemVersionsResolved(plan.ID, current.Content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var summary string
+		for _, v := range versions {
+			if strings.HasPrefix(v.ChangeSummary, "Updated from Pad's built-in") {
+				summary = v.ChangeSummary
+				break
+			}
+		}
+		if summary == "" {
+			t.Fatal("no version row carries the update's change summary")
+		}
+		if !strings.Contains(summary, "trigger") || !strings.Contains(summary, "on-release") {
+			t.Fatalf("the change summary does not record the replaced trigger value: %q", summary)
+		}
+		// A field the update did not change is not listed: the record is of
+		// what was replaced, not of every field the library writes.
+		if strings.Contains(summary, "invocation_slug") {
+			t.Fatalf("the change summary lists a field whose value did not change: %q", summary)
 		}
 	})
 }
