@@ -287,8 +287,12 @@ func (c *Client) CopyItemPreflight(wsSlug, itemRef string, req ItemCopyRequest) 
 	if err != nil {
 		return nil, nil, err
 	}
+	// Carried values are `any`, and plain json.Unmarshal turns a number into a
+	// float64, rounding one above 2^53. The dry run would then preview a value
+	// the copy itself never writes (the server keeps the stored digits).
+	// json.Number keeps them (BUG-3456, the BUG-3448 family).
 	var out ItemCopyPreflight
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := models.DecodeJSONKeepingNumbers(raw, &out); err != nil {
 		return nil, raw, fmt.Errorf("decode copy preflight response: %w", err)
 	}
 	return &out, raw, nil
