@@ -303,3 +303,14 @@ func WriteSkill(tool AgentTool, embedded []byte, version string, force bool) (Sk
 	res.Path, res.Wrote = written, true
 	return res, nil
 }
+
+// SkillState is DecideSkillWrite for the file currently at the tool's skill
+// path, for status displays: exists is false when there is no file.
+func SkillState(tool AgentTool, embedded []byte, version string) (action SkillAction, stampVersion string, exists bool) {
+	data, err := os.ReadFile(ToolSkillPath(tool))
+	if err != nil {
+		return SkillInstall, "", false
+	}
+	d := DecideSkillWrite(tool, data, true, FormatForTool(tool, embedded), version)
+	return d.Action, d.StampVersion, true
+}

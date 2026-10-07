@@ -173,9 +173,20 @@ func installList() error {
 	fmt.Println("Supported tools:")
 	fmt.Println()
 	for _, tool := range cli.SupportedTools {
+		// The same decision an update makes (BUG-3466, codex r2), so an edited
+		// or newer committed skill is not shown as healthy.
 		status := "  not installed"
-		if cli.ToolInstalled(tool) {
-			status = "  installed ✓"
+		if action, stampVer, exists := cli.SkillState(tool, pad.PadSkill, version); exists {
+			switch action {
+			case cli.SkillKeepEdited:
+				status = "  installed, edited: kept (pad agent install " + tool.Name + " --force replaces)"
+			case cli.SkillKeepNewer:
+				status = "  installed by pad " + stampVer + ": kept (upgrade pad, or pad agent install " + tool.Name + " --force)"
+			case cli.SkillUpdate:
+				status = "  installed, update available (pad agent update)"
+			default:
+				status = "  installed ✓"
+			}
 		}
 		det := ""
 		if detected[tool.Name] {
@@ -245,7 +256,7 @@ func installUpdate(force bool) error {
 	// Phase 1: Update tools installed in the current directory. A kept file
 	// (edited, or a newer pad's) is reported by writeSkill and counted, so
 	// the summary below never claims nothing is installed (BUG-3466).
-	localUpdated, kept := 0, 0
+	localUpdated, kept, localPresent := 0, 0, 0
 	for _, tool := range cli.SupportedTools {
 		if !cli.ToolInstalled(tool) {
 			continue
@@ -255,6 +266,7 @@ func installUpdate(force bool) error {
 			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
 			continue
 		}
+		localPresent++
 		if res.Wrote {
 			fmt.Printf("  ✓ Updated %s → %s\n", tool.Label, res.Path)
 			localUpdated++
@@ -266,7 +278,7 @@ func installUpdate(force bool) error {
 	// Phase 2: Update all tracked installations across other projects
 	reg, err := cli.LoadRegistry()
 	if err != nil {
-		printUpdateSummary(localUpdated, 0, kept, false)
+		printUpdateSummary(localUpdated, 0, kept, localPresent > 0)
 		return nil
 	}
 
@@ -286,7 +298,7 @@ func installUpdate(force bool) error {
 		fmt.Fprintf(os.Stderr, "  ! %s\n", k)
 		kept++
 	}
-	printUpdateSummary(localUpdated, globalUpdated, kept, len(reg.Installations) > 0)
+	printUpdateSummary(localUpdated, globalUpdated, kept, localPresent > 0 || len(reg.Installations) > 0)
 	return nil
 }
 
