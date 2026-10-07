@@ -97,10 +97,12 @@ import type {
 	WorkspaceApp,
 	TutorialsResponse,
 	UIDismissalKey,
-	UIDismissalsResponse
+	UIDismissalsResponse,
+	ImportOutcome
 } from '$lib/types';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
+import { uploadImportBundle } from './importUpload';
 
 const BASE = '/api/v1';
 
@@ -1427,22 +1429,38 @@ export const api = {
 		// intersection type rather than a new shape: every existing caller reads
 		// Workspace fields and is unaffected, and a server that does not set the
 		// header simply leaves the field undefined.
+		//
+		// BUG-3475: over XMLHttpRequest (./importUpload), for upload progress
+		// and the stall / finishing bounds. It rejects with an
+		// ImportTransportError when NO response arrived; the server may then
+		// have finished, kept or removed the import, which `importStatus`
+		// answers for the same `importKey`.
 		importBundle: async (
 			file: File,
-			name?: string
+			name?: string,
+			opts: {
+				importKey?: string;
+				onProgress?: (sent: number, total: number) => void;
+				onUploaded?: () => void;
+				signal?: AbortSignal;
+			} = {}
 		): Promise<Workspace & { stale_bodies?: number }> => {
 			const headers: Record<string, string> = { 'Content-Type': 'application/gzip' };
 			const csrf = getCSRFToken();
 			if (csrf) headers['X-CSRF-Token'] = csrf;
 
-			const url = name
-				? `${BASE}/workspaces/import?name=${encodeURIComponent(name)}`
-				: `${BASE}/workspaces/import`;
-			const resp = await fetch(url, {
-				method: 'POST',
+			const q = new URLSearchParams();
+			if (name) q.set('name', name);
+			if (opts.importKey) q.set('import_key', opts.importKey);
+			const qs = q.toString();
+			const url = `${BASE}/workspaces/import${qs ? `?${qs}` : ''}`;
+			const resp = await uploadImportBundle({
+				url,
 				headers,
-				credentials: 'same-origin',
-				body: file
+				body: file,
+				onProgress: opts.onProgress,
+				onUploaded: opts.onUploaded,
+				signal: opts.signal
 			});
 			if (resp.status === 401) {
 				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
@@ -1450,12 +1468,18 @@ export const api = {
 				}
 				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 			}
-			if (!resp.ok) {
-				const body = await resp.json().catch(() => null);
+			let parsed: unknown = null;
+			try {
+				parsed = JSON.parse(resp.body);
+			} catch {
+				parsed = null;
+			}
+			if (resp.status < 200 || resp.status >= 300) {
+				const body = parsed as { error?: { code: string; message: string } } | null;
 				if (body?.error) throw new PadApiError(body.error);
 				throw new Error(`API error: ${resp.status}`);
 			}
-			const ws = (await resp.json()) as Workspace;
+			const ws = parsed as Workspace;
 			// Absent, unparseable or zero all mean "nothing to report": the
 			// field stays undefined rather than 0, so a caller can render on
 			// presence without treating a clean import as a fact worth showing.
@@ -1478,7 +1502,7 @@ export const api = {
 			// and JS would quietly round one; the count is of items in one
 			// workspace, so any value near that bound is a malformed header
 			// rather than a fact.
-			const raw = resp.headers.get('X-Pad-Import-Stale-Bodies');
+			const raw = resp.header('X-Pad-Import-Stale-Bodies');
 			if (raw !== null && /^[0-9]+$/.test(raw)) {
 				const n = Number(raw);
 				if (n > 0 && n <= Number.MAX_SAFE_INTEGER) {
@@ -1486,6 +1510,18 @@ export const api = {
 				}
 			}
 			return ws;
+		},
+
+		// BUG-3475: what became of the caller's own keyed import. null when
+		// this server holds no such key (never started here, expired, or lost
+		// to a restart): the outcome is UNKNOWN, never "nothing was created".
+		importStatus: async (key: string): Promise<ImportOutcome | null> => {
+			try {
+				return await request<ImportOutcome>(`/workspaces/import-status?key=${encodeURIComponent(key)}`);
+			} catch (err) {
+				if (err instanceof PadApiError && err.code === 'not_found') return null;
+				throw err;
+			}
 		}
 	},
 
