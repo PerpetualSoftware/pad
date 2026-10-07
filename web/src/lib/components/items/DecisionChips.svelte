@@ -55,12 +55,18 @@
 	});
 </script>
 
+<!--
+	data-sveltekit-reload: /-/r/{ws}/{ref} is a SERVER redirect route with no
+	client route behind it, so the SvelteKit router must not take the click
+	(it matches [username]=- / [workspace]=r and shows "Workspace not found").
+-->
 {#if convChips.length > 0}
 	<div class="decision-chips" aria-label="Convention checks">
 		{#each convChips as chip (chip.ref)}
 			<a
 				class="decision-chip convention-chip"
 				href={chip.href}
+				data-sveltekit-reload
 				title="{chip.label}: judged {chip.percent}% likely from the item's text, links and recent comments. Advisory only; a missing chip is not a verdict."
 			>
 				<span class="decision-chip-label">{chip.label}</span>
