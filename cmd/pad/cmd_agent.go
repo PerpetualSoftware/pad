@@ -206,7 +206,7 @@ func installList() error {
 	fmt.Println("Tracked installations:")
 	fmt.Println()
 
-	outdatedCount := 0
+	outdatedCount, keptCount := 0, 0
 	for _, s := range statuses {
 		tool := cli.ResolveTool(s.Tool)
 		toolLabel := s.Tool
@@ -222,8 +222,10 @@ func installList() error {
 			outdatedCount++
 		} else if s.Edited {
 			state = "! edited, kept (--force replaces)"
+			keptCount++
 		} else if s.Newer {
-			state = "! newer pad wrote it, kept"
+			state = "! newer pad wrote it, kept (upgrade pad, or --force replaces)"
+			keptCount++
 		}
 
 		fmt.Printf("  %-40s  %-28s  %s\n", s.ProjectPath, toolLabel, state)
@@ -232,13 +234,18 @@ func installList() error {
 	if outdatedCount > 0 {
 		fmt.Printf("\n  %d installation(s) can be updated. Run 'pad agent update' to update all.\n", outdatedCount)
 	}
+	if keptCount > 0 {
+		fmt.Printf("\n  %d installation(s) are kept as they are. Run 'pad agent update --force' to replace them.\n", keptCount)
+	}
 
 	return nil
 }
 
 func installUpdate(force bool) error {
-	// Phase 1: Update tools installed in the current directory
-	localUpdated := 0
+	// Phase 1: Update tools installed in the current directory. A kept file
+	// (edited, or a newer pad's) is reported by writeSkill and counted, so
+	// the summary below never claims nothing is installed (BUG-3466).
+	localUpdated, kept := 0, 0
 	for _, tool := range cli.SupportedTools {
 		if !cli.ToolInstalled(tool) {
 			continue
@@ -248,55 +255,58 @@ func installUpdate(force bool) error {
 			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", tool.Label, err)
 			continue
 		}
-		if !res.Wrote {
-			continue
+		if res.Wrote {
+			fmt.Printf("  ✓ Updated %s → %s\n", tool.Label, res.Path)
+			localUpdated++
+		} else if res.Action == cli.SkillKeepEdited || res.Action == cli.SkillKeepNewer {
+			kept++
 		}
-		fmt.Printf("  ✓ Updated %s → %s\n", tool.Label, res.Path)
-		localUpdated++
 	}
 
 	// Phase 2: Update all tracked installations across other projects
 	reg, err := cli.LoadRegistry()
 	if err != nil {
-		if localUpdated == 0 {
-			fmt.Println("No tools installed. Run 'pad agent install' first.")
-		}
+		printUpdateSummary(localUpdated, 0, kept, false)
 		return nil
 	}
 
 	cwd, _ := os.Getwd()
 	reg.Prune()
-	globalUpdated, updateErrors := reg.UpdateAll(pad.PadSkill, version, force)
+	globalUpdated, keptElsewhere, updateErrors := reg.UpdateAll(pad.PadSkill, version, force)
 	_ = reg.Save()
 
 	for _, e := range updateErrors {
 		fmt.Fprintf(os.Stderr, "  warning: %v\n", e)
 	}
-
-	// Subtract local updates that were also counted as global (same project path)
-	overlapCount := 0
-	for _, inst := range reg.Installations {
-		if inst.ProjectPath == cwd {
-			overlapCount++
+	for _, k := range keptElsewhere {
+		// This project's own kept files were reported in phase 1.
+		if strings.HasPrefix(k, cwd+" (") {
+			continue
 		}
+		fmt.Fprintf(os.Stderr, "  ! %s\n", k)
+		kept++
 	}
-
-	remoteUpdated := globalUpdated
-	total := localUpdated + remoteUpdated
-	if total == 0 {
-		if localUpdated == 0 && len(reg.Installations) == 0 {
-			fmt.Println("No tools installed. Run 'pad agent install' first.")
-		} else {
-			fmt.Println("All installations are up to date.")
-		}
-	} else {
-		if remoteUpdated > 0 {
-			fmt.Printf("\nUpdated %d installation(s) across all projects.\n", total)
-		} else {
-			fmt.Printf("\nUpdated %d tool(s) in current project.\n", localUpdated)
-		}
-	}
+	printUpdateSummary(localUpdated, globalUpdated, kept, len(reg.Installations) > 0)
 	return nil
+}
+
+// printUpdateSummary closes pad agent update. Kept files are named, so a run
+// that kept an edited skill never ends by saying nothing is installed.
+func printUpdateSummary(local, global, kept int, tracked bool) {
+	total := local + global
+	switch {
+	case total > 0 && global > 0:
+		fmt.Printf("\nUpdated %d installation(s) across all projects.\n", total)
+	case total > 0:
+		fmt.Printf("\nUpdated %d tool(s) in current project.\n", local)
+	case kept == 0 && !tracked && local == 0:
+		fmt.Println("No tools installed. Run 'pad agent install' first.")
+	case kept == 0:
+		fmt.Println("All installations are up to date.")
+	}
+	if kept > 0 {
+		fmt.Printf("%d skill file(s) kept: edited, or written by a newer pad. Add --force to replace them.\n", kept)
+	}
 }
 
 // recordInstallation stores a skill install in the global registry (~/.pad/installations.json).

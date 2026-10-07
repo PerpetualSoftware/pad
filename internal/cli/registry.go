@@ -174,10 +174,10 @@ func (r *Registry) Status(embedded []byte, version string) []InstallationStatus 
 }
 
 // UpdateAll updates all tracked installations that are outdated. A file that
-// was edited, or that a newer pad wrote, is kept and reported as an error
-// naming the force command, unless force (BUG-3466). Returns the number of
-// installations updated and any errors encountered.
-func (r *Registry) UpdateAll(embeddedContent []byte, version string, force bool) (updated int, errors []error) {
+// was edited, or that a newer pad wrote, is kept unless force (BUG-3466) and
+// described in kept, naming the force command. Returns the number of
+// installations updated, the ones kept, and any errors encountered.
+func (r *Registry) UpdateAll(embeddedContent []byte, version string, force bool) (updated int, kept []string, errors []error) {
 	for i := range r.Installations {
 		inst := &r.Installations[i]
 
@@ -201,12 +201,12 @@ func (r *Registry) UpdateAll(embeddedContent []byte, version string, force bool)
 			continue // already up to date
 		case SkillKeepEdited:
 			if !force {
-				errors = append(errors, fmt.Errorf("%s (%s): kept, it was edited; replace it with pad agent update --force", inst.ProjectPath, tool.Label))
+				kept = append(kept, fmt.Sprintf("%s (%s): kept, it was edited; replace it with pad agent update --force", inst.ProjectPath, tool.Label))
 				continue
 			}
 		case SkillKeepNewer:
 			if !force {
-				errors = append(errors, fmt.Errorf("%s (%s): kept, pad %s wrote it and this is pad %s; replace it with pad agent update --force", inst.ProjectPath, tool.Label, d.StampVersion, version))
+				kept = append(kept, fmt.Sprintf("%s (%s): kept, pad %s wrote it and this is pad %s; replace it with pad agent update --force", inst.ProjectPath, tool.Label, d.StampVersion, version))
 				continue
 			}
 		}
@@ -228,5 +228,5 @@ func (r *Registry) UpdateAll(embeddedContent []byte, version string, force bool)
 		updated++
 	}
 
-	return updated, errors
+	return updated, kept, errors
 }

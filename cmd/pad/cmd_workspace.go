@@ -797,24 +797,27 @@ func offerSkillInstall() {
 		detected = append([]cli.AgentTool{cli.SupportedTools[0]}, detected...)
 	}
 
-	// Check if any are already installed
+	// Installed tools go through the same door as pad init (BUG-3466, codex
+	// r1): pad's own unedited text updates quietly, an edited file or a
+	// newer pad's is kept and reported. They used to be skipped outright, so
+	// an older copy never updated here.
 	allInstalled := true
 	for _, tool := range detected {
 		if !cli.ToolInstalled(tool) {
 			allInstalled = false
-			break
+			continue
+		}
+		res, err := writeSkill(tool, false)
+		if err != nil {
+			continue
+		}
+		if !res.Wrote {
+			recordInstallation(tool.Name, res.Path)
 		}
 	}
 
 	if allInstalled && len(detected) > 0 {
-		// Ensure existing installations are tracked in the registry
-		for _, tool := range detected {
-			path := cli.ToolSkillPath(tool)
-			if path != "" {
-				recordInstallation(tool.Name, path)
-			}
-		}
-		fmt.Printf("\n/pad skill already installed for %d tool(s). Run 'pad agent update' to update.\n", len(detected))
+		fmt.Printf("\n/pad skill is installed for %d tool(s).\n", len(detected))
 		return
 	}
 

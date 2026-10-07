@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -143,8 +142,37 @@ func skillVersionNewer(stamp, running string) bool {
 // here rather than importing golang.org/x/mod/semver so the module's vendor
 // set (and the Nix vendorHash) does not move for one comparison.
 type semverParts struct {
-	core [3]int
+	core [3]string // digit strings: SemVer numbers have no size limit
 	pre  []string
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// compareDigits compares two digit strings as numbers of any size.
+func compareDigits(a, b string) int {
+	a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	switch {
+	case len(a) != len(b):
+		if len(a) < len(b) {
+			return -1
+		}
+		return 1
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
 }
 
 func parseSemver(v string) (semverParts, bool) {
@@ -167,11 +195,10 @@ func parseSemver(v string) (semverParts, bool) {
 		return p, false
 	}
 	for i, n := range nums {
-		x, err := strconv.Atoi(n)
-		if err != nil || x < 0 || n == "" {
+		if !isDigits(n) {
 			return p, false
 		}
-		p.core[i] = x
+		p.core[i] = n
 	}
 	return p, true
 }
@@ -181,11 +208,8 @@ func parseSemver(v string) (semverParts, bool) {
 // numerically and below alphanumeric ones, which compare as text.
 func compareSemver(a, b semverParts) int {
 	for i := 0; i < 3; i++ {
-		if a.core[i] != b.core[i] {
-			if a.core[i] < b.core[i] {
-				return -1
-			}
-			return 1
+		if c := compareDigits(a.core[i], b.core[i]); c != 0 {
+			return c
 		}
 	}
 	switch {
@@ -197,22 +221,19 @@ func compareSemver(a, b semverParts) int {
 		return -1
 	}
 	for i := 0; i < len(a.pre) && i < len(b.pre); i++ {
-		x, errX := strconv.Atoi(a.pre[i])
-		y, errY := strconv.Atoi(b.pre[i])
+		x, y := a.pre[i], b.pre[i]
+		nx, ny := isDigits(x), isDigits(y)
 		switch {
-		case errX == nil && errY == nil:
-			if x != y {
-				if x < y {
-					return -1
-				}
-				return 1
+		case nx && ny:
+			if c := compareDigits(x, y); c != 0 {
+				return c
 			}
-		case errX == nil:
+		case nx:
 			return -1
-		case errY == nil:
+		case ny:
 			return 1
-		case a.pre[i] != b.pre[i]:
-			if a.pre[i] < b.pre[i] {
+		case x != y:
+			if x < y {
 				return -1
 			}
 			return 1
