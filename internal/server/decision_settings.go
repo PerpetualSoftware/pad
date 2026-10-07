@@ -79,6 +79,14 @@ func (s *Server) reconfigureDecisionsLocked() error {
 		provider = nil
 	}
 	runner := decision.NewRunner(s.store, provider, sets)
+	if runner != nil && s.metrics != nil {
+		m := s.metrics
+		runner.SetUsageObserver(func(set string, u decision.Usage) {
+			m.DecisionCallsTotal.WithLabelValues(set).Inc()
+			m.DecisionTokensTotal.WithLabelValues(set, "input").Add(float64(u.InputTokens))
+			m.DecisionTokensTotal.WithLabelValues(set, "output").Add(float64(u.OutputTokens))
+		})
+	}
 	s.SetDecisionRunner(runner)
 	if runner != nil {
 		s.StartDecisionTick()

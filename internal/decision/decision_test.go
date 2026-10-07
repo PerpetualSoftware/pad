@@ -29,6 +29,9 @@ type fake struct {
 	// the typed wireRequest would have normalised it away.
 	rawBodies []string
 	slept     []time.Duration
+	// onRequest, when set, runs as each request arrives, before the answer:
+	// a test can change the store while a call is in flight.
+	onRequest func()
 }
 
 func newFake(t *testing.T, handler func(f *fake, req wireRequest, raw []byte, w http.ResponseWriter)) (*typesafeProvider, *fake) {
@@ -55,6 +58,9 @@ func newFake(t *testing.T, handler func(f *fake, req wireRequest, raw []byte, w 
 		}
 		f.requests = append(f.requests, req)
 		f.rawBodies = append(f.rawBodies, string(raw))
+		if f.onRequest != nil {
+			f.onRequest()
+		}
 		handler(f, req, raw, w)
 	}))
 	t.Cleanup(f.srv.Close)

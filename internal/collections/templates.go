@@ -518,6 +518,19 @@ func conventionsCollection(sortOrder int, triggerOptions, scopeOptions []string)
 					Label: "Role",
 					Type:  "text",
 				},
+				// TASK-3119: whether the decision provider checks items
+				// against this convention ("Possibly breaks CONVE-N"). On
+				// unless set off (Dave's opt-out ruling): ABSENT reads as on,
+				// so there is deliberately no default. A default would be
+				// written into every new convention, change every exported
+				// artifact, and make every activated built-in read as diverged
+				// from its seed (TASK-3462).
+				{
+					Key:     "decision_check",
+					Label:   "Convention check",
+					Type:    "select",
+					Options: []string{"on", "off"},
+				},
 			},
 		},
 		Settings: models.CollectionSettings{
