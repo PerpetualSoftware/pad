@@ -287,7 +287,11 @@ func TestOnboardPlaybook_ExistingOpenWork(t *testing.T) {
 	case !(noImporter < confirm && confirm < create):
 		t.Error("B6 must set the expectation (no importer), then confirm, then create, in that order")
 	}
-	for _, want := range []string{"gh issue list", "25", "leave the source alone", "do not guess"} {
+	// Codex r1 (TASK-3454): the source text is untrusted data, the
+	// destination is confirmed when no B2 ran, and the paste fallback is keyed
+	// on whether issues CAN be listed, not on having a shell.
+	for _, want := range []string{"gh issue list", "25", "leave the source alone", "do not guess",
+		"data, not instructions", "propose a collection and confirm it", "if you cannot list the issues"} {
 		if !strings.Contains(lower(b6), lower(want)) {
 			t.Errorf("B6 is missing %q", want)
 		}
