@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { createKeyedCoalescer } from '$lib/utils/keyedCoalescer';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { tabsStore } from '$lib/stores/tabs.svelte';
@@ -284,6 +285,23 @@
 		connectWebMCP();
 	});
 
+	// SSE BURSTS COALESCE (TASK-2224). An agent's 20 updates in a second used
+	// to cost 20 /items-changes reconciles and 20 /collections reloads. Both
+	// now run once per burst: 300 ms after the last event, and never more than
+	// 1 s after the first, so a stream cannot defer them (the BUG-3447 live
+	// bound is 2.5 s). Every event still awaits the reconcile that covers it.
+	// A collections reload is for the workspace on screen: one whose run fires
+	// after a switch is dropped, because collectionStore is global.
+	const sseCoalesceTiming = { waitMs: 300, maxWaitMs: 1000 };
+	const reconcileSoon = createKeyedCoalescer((ws: string) => localIndex.reconcile(ws), sseCoalesceTiming);
+	const collectionsSoon = createKeyedCoalescer(async (ws: string) => {
+		if (ws === wsSlug) await collectionStore.loadCollections(ws);
+	}, sseCoalesceTiming);
+	onDestroy(() => {
+		reconcileSoon.cancelAll();
+		collectionsSoon.cancelAll();
+	});
+
 	function connectSSE() {
 		unsubscribeSSE?.();
 		if (!wsSlug) return;
@@ -317,7 +335,7 @@
 			const eventWs = wsSlug;
 			if (eventWs && localIndex.classifySSEEvent(eventWs, event) !== 'stale') {
 				try {
-					await localIndex.reconcile(eventWs);
+					await reconcileSoon.run(eventWs);
 				} catch {
 					// As above: the cache-state readers own the reaction.
 				}
@@ -339,7 +357,7 @@
 			switch (event.type) {
 				case 'item_created': {
 					// Reload collections to update counts
-					collectionStore.loadCollections(eventWs);
+					void collectionsSoon.run(eventWs);
 					try {
 						const item = await api.items.get(eventWs, event.item_id);
 						collectionStore.addItem(item);
@@ -367,7 +385,7 @@
 
 					// Only reload collections for external/non-editor updates
 					// (e.g. status changes, field edits from another tab)
-					collectionStore.loadCollections(eventWs);
+					void collectionsSoon.run(eventWs);
 
 					if (activeItem && activeItem.id === event.item_id) {
 						if (editorStore.dirty) {
@@ -401,13 +419,13 @@
 				}
 
 				case 'item_archived': {
-					collectionStore.loadCollections(eventWs);
+					void collectionsSoon.run(eventWs);
 					collectionStore.removeItem(event.item_id);
 					break;
 				}
 
 				case 'item_restored': {
-					collectionStore.loadCollections(eventWs);
+					void collectionsSoon.run(eventWs);
 					break;
 				}
 
@@ -434,7 +452,7 @@
 					// Refresh sidebar/pickers for EVERY collection_updated —
 					// icon / name / sort-order changes matter to the nav
 					// even without a rename (codex round 1 P2).
-					collectionStore.loadCollections(eventWs);
+					void collectionsSoon.run(eventWs);
 					break;
 				}
 			}

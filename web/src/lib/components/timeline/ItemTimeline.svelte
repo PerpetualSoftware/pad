@@ -1196,6 +1196,10 @@
 	if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityChange);
 
 	const unsubscribe = sseService.onItemEvent((event) => {
+		// A comment or reaction on ANOTHER item is not this timeline's
+		// (TASK-2224): onItemEvent is workspace-wide, and these events carry
+		// the item they belong to. An event with no item_id still refreshes.
+		if (relevantEvents.has(event.type) && itemId && event.item_id && event.item_id !== itemId) return;
 		if (relevantEvents.has(event.type)) {
 			clearTimeout(sseRefreshTimer);
 			sseRefreshTimer = setTimeout(() => void refreshFromSSE(), 500);
