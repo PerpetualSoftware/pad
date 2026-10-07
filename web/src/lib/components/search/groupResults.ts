@@ -36,3 +36,13 @@ export function groupResultsByCollection(
 	}
 	return groups;
 }
+
+/**
+ * The grouped results in the order the palette RENDERS them (TASK-2234):
+ * group by group, each in first-seen order. Keyboard navigation and
+ * aria-activedescendant walk this order, so the selection moves down the list
+ * the user sees rather than jumping between groups in rank order.
+ */
+export function inRenderedOrder(groups: Record<string, ResultGroup>): SearchResult[] {
+	return Object.values(groups).flatMap((g) => g.results);
+}

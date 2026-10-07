@@ -9,7 +9,7 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { localSearch, parseSearchQuery, parseGoToTarget } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
-	import { groupResultsByCollection } from './groupResults';
+	import { groupResultsByCollection, inRenderedOrder } from './groupResults';
 	import type {
 		SearchResult,
 		SearchFacets,
@@ -120,7 +120,12 @@
 	// Derived: flat index list for keyboard navigation. Content matches
 	// are appended after the local results so Arrow/Enter can reach them
 	// (their index is `results.length + i`). TASK-2008.
-	let flatResults = $derived([...results, ...contentResults]);
+	// Grouped, they walk in the RENDERED order (TASK-2234, codex r1): ranked
+	// A1, B1, A2 renders A1, A2, B1, and the arrows follow what is on screen.
+	let flatResults = $derived([
+		...(groupedResults ? inRenderedOrder(groupedResults) : results),
+		...contentResults
+	]);
 
 	// ARIA COMBOBOX (TASK-2234, audit C8/C45), mirroring GraphToolbar's: the
 	// input controls the listbox(es) on screen and points at the selected
@@ -153,7 +158,11 @@
 	);
 	// What the live region says: the count of what a search found.
 	let announcement = $derived(
-		query.trim() && !loading ? `${total} result${total === 1 ? '' : 's'}` : ''
+		// Content matches are results too (codex r1): a body-only match has
+		// a local total of 0.
+		query.trim() && !loading
+			? `${total + contentResults.length} result${total + contentResults.length === 1 ? '' : 's'}`
+			: ''
 	);
 
 	$effect(() => {
