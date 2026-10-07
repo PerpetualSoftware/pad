@@ -322,6 +322,10 @@ type Runner struct {
 	// (TASK-3119: the per-write spend must be visible before any Cloud
 	// rollout). The server wires it to its metrics.
 	usage func(set string, u Usage)
+
+	// logger receives the per-evaluation spend line; nil means slog.Default().
+	// A field rather than the global so a test can read its own lines.
+	logger *slog.Logger
 }
 
 // SetUsageObserver installs fn, called after every provider call with the
@@ -483,7 +487,7 @@ func (r *Runner) questionsFor(ctx context.Context, qs QuestionSet, workspaceID s
 
 // Evaluate asks the named set about the item, unless answers for its current
 // state are already stored. It reports whether the provider was called.
-func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, error) {
+func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (called bool, err error) {
 	if r == nil {
 		return false, nil
 	}
@@ -550,6 +554,14 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 	answers := make(map[string]Answer, len(keys))
 	var usage Usage
 	calls := 0
+	// One line per evaluation that reached the provider, whatever came of it,
+	// so the spend is readable from the server log on a box whose /metrics is
+	// out of reach (TASK-3119).
+	defer func() {
+		if calls > 0 {
+			r.logSpend(qs.Name, item, len(keys), calls, usage, st.Truncated || usage.StateTruncated, err)
+		}
+	}()
 	for _, chunk := range chunkKeys(keys, qs.MaxPerCall) {
 		cq := make(map[string]Question, len(chunk))
 		for _, k := range chunk {
@@ -574,15 +586,15 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 		if r.usage != nil {
 			r.usage(qs.Name, u)
 		}
+		usage.InputTokens += u.InputTokens
+		usage.OutputTokens += u.OutputTokens
+		usage.StateTruncated = usage.StateTruncated || u.StateTruncated
 		if err != nil {
 			return true, err
 		}
 		for k, a := range got {
 			answers[k] = a
 		}
-		usage.InputTokens += u.InputTokens
-		usage.OutputTokens += u.OutputTokens
-		usage.StateTruncated = usage.StateTruncated || u.StateTruncated
 	}
 	rows := make([]models.ItemDecision, 0, len(answers))
 	for _, key := range keys {
@@ -613,6 +625,31 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (bool, er
 		})
 	}
 	return true, r.store.InsertItemDecisions(item.WorkspaceID, rows)
+}
+
+// logSpend writes the evaluation's spend line: counts and identifiers only,
+// never a question, an answer, the item's text or an error message (a
+// provider error can quote the request).
+func (r *Runner) logSpend(set string, item *models.Item, questions, calls int, u Usage, truncated bool, err error) {
+	l := r.logger
+	if l == nil {
+		l = slog.Default()
+	}
+	outcome := "stored"
+	if err != nil {
+		outcome = "failed"
+	}
+	l.Info("decision evaluation",
+		"set", set,
+		"workspace_id", item.WorkspaceID,
+		"item_ref", item.Ref,
+		"item_id", item.ID,
+		"questions", questions,
+		"calls", calls,
+		"input_tokens", u.InputTokens,
+		"output_tokens", u.OutputTokens,
+		"truncated", truncated,
+		"outcome", outcome)
 }
 
 // storedAnswer is the persisted shape of an [Answer]: the provider's wire
