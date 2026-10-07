@@ -351,5 +351,5 @@ Run the **onboard** invokable playbook — see the **Onboarding** entry under Na
 
 If the user's intent doesn't match any pattern above, respond helpfully. You can always:
 - Run `pad item list` or `pad item search` to find relevant items
-- Run `pad item show TASK-5` to load any item's detail (use the issue ID from list output)
+- Run `pad item show TASK-5 --agent` to load any item's detail (use the issue ID from list output)
 - Suggest the appropriate workflow based on what they're trying to do

@@ -86,7 +86,16 @@ func TestItemShowMarkdownBodyStaysVerbatim(t *testing.T) {
 // body-only format, in either flag spelling and with the flag before or after
 // `item show` (codex r1). `pad playbook show --format markdown` is not matched:
 // a playbook's body IS its script.
-var loadsWithMarkdown = regexp.MustCompile("item show\\b[^\n`\"]*?--format[= ]markdown|--format[= ]markdown[^\n`\"]*?item show\\b")
+var loadsWithMarkdown = regexp.MustCompile("item (show|read)\\b[^\n`]*?--format[= ]markdown|--format[= ]markdown[^\n`]*?item (show|read)\\b")
+
+// roundTripDescriptions are the only exemptions: text that names the format
+// to DESCRIBE the edit round trip it exists for, never an instruction to load
+// (codex r2: an exemption on any line naming `update --stdin` let the old
+// plan instruction, which loads and then writes back, through).
+var roundTripDescriptions = []string{
+	"is the body only, for an edit round-trip",
+	"is the body verbatim for `update --stdin`",
+}
 
 // The guard: no agent-facing instruction loads an item with --format markdown
 // to READ it. A line may name the format only to describe the edit round trip
@@ -98,10 +107,18 @@ func TestNoAgentFacingTextLoadsAnItemWithMarkdown(t *testing.T) {
 		"Run `pad item show <target> --format=markdown` and read",
 		"Run `pad item show --workspace w <target> --format markdown` and read",
 		"Run `pad --format markdown item show <target>` and read",
+		"Run `pad item show \"$ref\" --format markdown` and read",
+		"Run `pad item read <target> --format markdown` and read",
 	} {
 		if !loadsWithMarkdown.MatchString(shape) {
 			t.Fatalf("control: the guard's pattern misses %q", shape)
 		}
+	}
+	// The old plan instruction loads AND writes back; it is a load, and must
+	// not pass as a description of the round trip.
+	old := "Load the item with `pad item show <ref> --format markdown`, ask the user, and update the item via `pad item update <ref> --stdin`"
+	if !loadsWithMarkdown.MatchString(old) || isRoundTripDescription(old) {
+		t.Fatal("control: the old plan load instruction would pass the guard")
 	}
 	if loadsWithMarkdown.MatchString("`pad playbook show ship --format markdown`") {
 		t.Fatal("control: a playbook's body is its script; the guard must not flag it")
@@ -130,7 +147,7 @@ func TestNoAgentFacingTextLoadsAnItemWithMarkdown(t *testing.T) {
 			t.Fatalf("read %s: %v", rel, err)
 		}
 		for i, line := range strings.Split(string(b), "\n") {
-			if loadsWithMarkdown.MatchString(line) && !strings.Contains(line, "update --stdin") {
+			if loadsWithMarkdown.MatchString(line) && !isRoundTripDescription(line) {
 				t.Errorf("%s:%d loads an item with --format markdown (body only, empty for a title-only item); use --agent:\n  %s",
 					rel, i+1, strings.TrimSpace(line))
 			}
@@ -192,4 +209,13 @@ func TestItemShowMarkdownStaleEmptyBodyDoesNotClaimNoBody(t *testing.T) {
 	if stderr == "" {
 		t.Error("control: the stale warning itself is missing")
 	}
+}
+
+func isRoundTripDescription(line string) bool {
+	for _, d := range roundTripDescriptions {
+		if strings.Contains(line, d) {
+			return true
+		}
+	}
+	return false
 }
