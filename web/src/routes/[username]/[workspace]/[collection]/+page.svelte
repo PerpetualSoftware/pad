@@ -973,8 +973,11 @@
 		// means the new user never sees the dialog at all.
 		pendingNav = null;
 		showLeaveDialog = false;
-		// Keyboard focus into a list that is about to be replaced.
+		// Keyboard focus into a list that is about to be replaced, and the row
+		// a pending j/k follow was steering it to (BUG-3204). The follow's own
+		// timer is fenced by identityHeld and opens nothing after this.
 		focusedIndex = -1;
+		pendingFollow = null;
 		// The default-view gate. `loadCollection` does not reset it — only the
 		// route effect does — so on a same-route identity reload it stayed true
 		// and the NEW user's default view was never applied (codex round 1 [P3]).
@@ -2813,12 +2816,42 @@
 	// is cleared (see `focusedItemId`), so snapping would be meaningless — bail.
 	// On unwind back to depth 0 both `openItemRef` and `page.state` change, so
 	// this re-runs and restores the base row's highlight.
+	//
+	// PENDING FOLLOW (BUG-3204): j/k moves the cursor at once and the pane
+	// follows ~PANE_FOLLOW_DEBOUNCE_MS later. A list change inside that window
+	// re-ran this effect while `?item=` still named the OLD item, so it snapped
+	// the cursor back, and the follow snapped it forward again: a visible
+	// flicker whenever the list updated mid-move (and attachment-viewer-owners'
+	// owner-2 flake). While a follow is pending the cursor belongs on the row
+	// it will open, so that row is the target, found by id because the list
+	// may have moved it. It stays pending until `?item=` reaches that row (the
+	// follow's navigation is async). When the follow ends without opening it
+	// (the row was deleted, it was already open, identity moved)
+	// `pendingFollow` clears and this re-runs onto the open item, so the pane
+	// never loses its highlight.
+	// A `?item=` that changed by any other door (a click, Back) supersedes the
+	// keypress: the follow is cancelled rather than allowed to re-target the
+	// pane away from what the user just opened.
 	$effect(() => {
 		if (!openItemRef) return;
 		if (currentPaneState().paneDepth > 0) return;
-		const idx = filteredItems.findIndex(
-			(i) => itemUrlId(i) === openItemRef || i.slug === openItemRef,
-		);
+		const pending = pendingFollow;
+		const target = pending ? filteredItems.find((i) => i.id === pending.id) : undefined;
+		if (pending) {
+			const landed = !!target && (itemUrlId(target) === openItemRef || target.slug === openItemRef);
+			if (landed || pending.fromRef !== openItemRef) {
+				// The follow landed, or another door moved `?item=`: either way the
+				// pending target is spent. Clearing it re-runs this on the open item.
+				cancelPaneFollow();
+				return;
+			}
+		}
+		let idx = target ? filteredItems.indexOf(target) : -1;
+		if (idx < 0) {
+			idx = filteredItems.findIndex(
+				(i) => itemUrlId(i) === openItemRef || i.slug === openItemRef,
+			);
+		}
 		if (idx >= 0) focusedIndex = idx;
 	});
 
@@ -2860,12 +2893,20 @@
 	// closes the pane. No-op when the pane is CLOSED: j/k moves the cursor only,
 	// exactly as before.
 	const PANE_FOLLOW_DEBOUNCE_MS = 140;
+	// How long a follow's navigation may take to land before its pending
+	// target is dropped (BUG-3204). A replaceState lands in milliseconds.
+	const PANE_FOLLOW_SETTLE_MS = 1000;
 	let paneFollowTimer: ReturnType<typeof setTimeout> | null = null;
+	// The row a scheduled follow will open, and the `?item=` it was scheduled
+	// from. Reactive, unlike the timer handle: the snap-back effect above keys
+	// the cursor on it, and must re-run when it clears (BUG-3204).
+	let pendingFollow = $state<{ id: string; fromRef: string } | null>(null);
 	function cancelPaneFollow() {
 		if (paneFollowTimer) {
 			clearTimeout(paneFollowTimer);
 			paneFollowTimer = null;
 		}
+		pendingFollow = null;
 	}
 	function schedulePaneFollow() {
 		if (!browser) return;
@@ -2895,7 +2936,10 @@
 		// the keypress before this change, 0 of 12 after. Suppressing the
 		// snap-back $effect during the debounce was tried first and fixed
 		// NOTHING (12 of 12) — the stale index lands on the paned item on its
-		// own, so there is nothing for the snap-back to be blamed for.
+		// own, so there is nothing for the snap-back to be blamed for. (That was
+		// the lost keypress. The snap-back DID cause a different symptom, the
+		// cursor flicking back mid-move, which BUG-3204 fixed by pointing it at
+		// `pendingFollow`.)
 		const targetId =
 			focusedIndex >= 0 && focusedIndex < filteredItems.length
 				? filteredItems[focusedIndex].id
@@ -2906,13 +2950,15 @@
 		// Captured at SCHEDULE time — the keypress is the intent, and the commit
 		// is a `replaceState` navigation ~140ms later (BUG-3084).
 		const epochAtSchedule = captureIdentity();
-		paneFollowTimer = setTimeout(() => {
-			paneFollowTimer = null;
-			if (!identityHeld(epochAtSchedule)) return;
+		pendingFollow = { id: targetId, fromRef: openItemRef };
+		// Whether the follow navigated. If it did, `pendingFollow` stays set
+		// until `?item=` reaches the row (the snap-back effect clears it); if it
+		// did not, it clears here so the cursor returns to the open item.
+		const follow = (): boolean => {
 			// Re-check: the pane may have closed OR drilled during the debounce
 			// window (R14 fence-on-continuation).
-			if (!openItemRef) return;
-			if (currentPaneState().paneDepth > 0) return;
+			if (!openItemRef) return false;
+			if (currentPaneState().paneDepth > 0) return false;
 			// RE-RESOLVE BY ID, do not reuse the snapshot. What is captured is
 			// the identity; the OBJECT may be stale by the time this fires,
 			// because a rename during the debounce changes the slug and
@@ -2922,12 +2968,38 @@
 			// point, while a row DELETED during the debounce has nothing to
 			// follow to and is skipped.
 			const current = filteredItems.find((i) => i.id === targetId);
-			if (!current) return;
+			if (!current) return false;
 			// Skip if the captured row is already the paned item — avoids a
 			// redundant replaceState navigation on a same-item settle.
-			if (itemUrlId(current) === openItemRef || current.slug === openItemRef) return;
+			if (itemUrlId(current) === openItemRef || current.slug === openItemRef) return false;
+			// The controller drops an open while a pane navigation is settling;
+			// say so instead of claiming a navigation that never starts.
+			if (paneNavInFlight()) return false;
 			// Pane is open → openItemPane re-targets via replaceState (no push).
 			openItemPane(current);
+			return true;
+		};
+		paneFollowTimer = setTimeout(() => {
+			paneFollowTimer = null;
+			// An identity change already cleared `pendingFollow`
+			// (resetPerSessionState); nothing here may write for the new user.
+			if (!identityHeld(epochAtSchedule)) return;
+			if (!follow()) {
+				pendingFollow = null;
+				return;
+			}
+			// The navigation is async and can be superseded without `?item=`
+			// moving (another replaceState wins), which nothing would observe.
+			// Give it a second to land; a target still pending after that is
+			// dropped, so the cursor goes back to the row the pane shows.
+			// The same handle as the debounce, so cancelPaneFollow (a new keypress,
+			// a landed follow, close, destroy) clears it too.
+			const issued = pendingFollow;
+			paneFollowTimer = setTimeout(() => {
+				paneFollowTimer = null;
+				if (!identityHeld(epochAtSchedule)) return;
+				if (pendingFollow === issued) pendingFollow = null;
+			}, PANE_FOLLOW_SETTLE_MS);
 		}, PANE_FOLLOW_DEBOUNCE_MS);
 	}
 
