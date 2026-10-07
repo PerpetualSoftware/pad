@@ -182,7 +182,15 @@
 	// Sync once on mount (and after field identity changes): open if the field
 	// has any pre-set advanced value. Tracked by `field.key` so reopening the
 	// modal or switching field order doesn't clobber the user's manual toggle.
-	let lastSyncedKey = $state<string | undefined>(undefined);
+	//
+	// PLAIN variable, not $state (TASK-2186): it is edge-detection read AND
+	// written inside the effect below, and as $state that made the effect
+	// self-invalidating. Under Svelte 5.55 that wedged both collection modals
+	// after the first keystroke in a new field's label (key stuck at one
+	// letter, "+ Add field" dead, the dialog unclosable). Svelte 5.56 happened
+	// to stop it; this stops it whatever the runtime does. The same class as
+	// CreateCollectionModal's prevOpen (BUG-1687).
+	let lastSyncedKey: string | undefined = undefined;
 	$effect.pre(() => {
 		if (field.key !== lastSyncedKey) {
 			lastSyncedKey = field.key;
