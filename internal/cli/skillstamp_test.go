@@ -33,6 +33,10 @@ func TestDecideSkillWrite(t *testing.T) {
 		{"edited after stamping", append(stamp(older, "v0.17.0"), []byte("my line\n")...), true, "v0.18.0", SkillKeepEdited},
 		{"edited body, stamp left", []byte(strings.Replace(string(stamp(older, "v0.17.0")), "older", "edited", 1)), true, "v0.18.0", SkillKeepEdited},
 		{"newer pad's text", stamp(older, "v0.19.0"), true, "v0.18.0", SkillKeepNewer},
+		// Deliberate (codex r6, declined): a newer pad that wrote the SAME text
+		// leaves nothing to downgrade, so the file is current; no warning, and
+		// no re-stamp to an older version.
+		{"newer pad wrote this same text", stamp([]byte(testSkill), "v0.19.0"), true, "v0.18.0", SkillUnchanged},
 		{"newer rc than this release", stamp(older, "v0.18.0-rc.9"), true, "v0.18.0-rc.7", SkillKeepNewer},
 		{"dev build wrote it", stamp(older, "dev"), true, "v0.18.0", SkillUpdate},
 		{"running a dev build", stamp(older, "v0.19.0"), true, "dev", SkillUpdate},

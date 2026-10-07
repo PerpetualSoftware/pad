@@ -113,6 +113,9 @@ func DecideSkillWrite(tool AgentTool, existing []byte, exists bool, expected []b
 		if skillHash(body) != hash {
 			return SkillDecision{Action: SkillKeepEdited, StampVersion: ver}
 		}
+		// Before the newer-version check, deliberately: a newer pad that wrote
+		// this same text leaves nothing to downgrade, so the file is current
+		// and is neither warned about nor re-stamped to an older version.
 		if bytes.Equal(body, want) {
 			return SkillDecision{Action: SkillUnchanged, StampVersion: ver}
 		}
