@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -25,7 +26,10 @@ type revalWarnCounter struct {
 }
 
 func (h revalWarnCounter) Handle(ctx context.Context, rec slog.Record) error {
-	if strings.HasPrefix(rec.Message, "collab: revalidation") {
+	// The stream helper's message too: before BUG-3474 the collab tick's
+	// credential re-check logged through it, so the sessions leg reaches its
+	// real assertion (does the frame persist?) on the unfixed code.
+	if strings.HasPrefix(rec.Message, "collab: revalidation") || strings.HasPrefix(rec.Message, "stream: credential re-check failed") {
 		h.mu.Lock()
 		*h.count++
 		h.mu.Unlock()
@@ -48,12 +52,14 @@ func (h revalWarnCounter) WithGroup(n string) slog.Handler {
 // but goes read-only, and the next clean tick restores write if the role
 // still allows it.
 //
-// The faults are real, one per error branch of the tick: renaming
+// The faults are real, one per error branch of the tick: renaming sessions
+// makes the credential re-check UNKNOWN (codex r1: it used to read as valid,
+// so that tick went on and set write from the role); renaming
 // workspace_members fails the membership lookup inside authorizeCollabAccess
-// with a plain (non-denial) error, and renaming items fails the tick's own
-// GetItem. Frames persist to item_yjs_updates, which neither rename touches.
+// with a plain (non-denial) error; renaming items fails the tick's own
+// GetItem. Frames persist to item_yjs_updates, which no rename touches.
 func TestBUG3474_RevalErrorFailsClosedOnWrite(t *testing.T) {
-	for _, table := range []string{"workspace_members", "items"} {
+	for _, table := range []string{"sessions", "workspace_members", "items"} {
 		t.Run(table, func(t *testing.T) { runBUG3474FaultLeg(t, table) })
 	}
 }
@@ -150,11 +156,12 @@ func runBUG3474FaultLeg(t *testing.T, table string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x00, 0x22}); err != nil {
+	faulted := []byte{0x00, 0x22}
+	if err := conn.WriteMessage(websocket.BinaryMessage, faulted); err != nil {
 		t.Fatalf("faulted write: %v", err)
 	}
-	// In-process persistence is sub-millisecond, so a leaked frame shows well
-	// inside this window.
+	// In-process persistence is sub-millisecond, so a leaked frame usually
+	// shows inside this window. The decisive check is the one after recovery.
 	settle := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(settle) {
 		rows, err := srv.store.LoadYjsUpdatesSince(item.ID, 0)
@@ -168,27 +175,40 @@ func runBUG3474FaultLeg(t *testing.T, table string) {
 	}
 
 	// Write comes back after a clean tick: still an editor, so the next
-	// successful revalidation restores it. Frames are re-sent until one lands,
-	// because the clean tick's timing is not observable from here; each is
-	// distinct so none is deduplicated.
+	// successful revalidation restores it. Frames are re-sent until one of
+	// THEM lands (each distinct, so none is deduplicated), because the clean
+	// tick's timing is not observable from here. One connection's frames are
+	// handled in order, so once a recovery frame has landed the faulted frame
+	// has been handled too, and its absence is then a fact rather than a
+	// window (codex r1: a count could not tell the two apart).
 	restore()
+	sent := map[string]bool{}
 	landed := false
 	resend := time.Now().Add(5 * time.Second)
-	for i := byte(0); time.Now().Before(resend); i++ {
-		if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x00, 0x30, i}); err != nil {
+	var rows []models.YjsUpdate
+	for i := byte(0); time.Now().Before(resend) && !landed; i++ {
+		frame := []byte{0x00, 0x30, i}
+		sent[string(frame)] = true
+		if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
 			t.Fatalf("recovered write: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
-		rows, err := srv.store.LoadYjsUpdatesSince(item.ID, 0)
+		rows, err = srv.store.LoadYjsUpdatesSince(item.ID, 0)
 		if err != nil {
 			t.Fatalf("LoadYjsUpdatesSince: %v", err)
 		}
-		if len(rows) > 1 {
-			landed = true
-			break
+		for _, row := range rows {
+			if sent[string(row.UpdateData)] {
+				landed = true
+			}
 		}
 	}
 	if !landed {
 		t.Fatal("write never came back after the store recovered")
+	}
+	for _, row := range rows {
+		if bytes.Equal(row.UpdateData, faulted) {
+			t.Fatal("the frame sent while revalidation was failing persisted: the connection kept write")
+		}
 	}
 }
