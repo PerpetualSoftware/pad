@@ -57,16 +57,41 @@ function stamp(value: unknown, itemId: string, name = APP): void {
 	for (const v of Object.values(o)) stamp(v, itemId, name);
 }
 
+/**
+ * This route handles every workspace GET, background ones included. When the
+ * test ends, its browser context closes; a handler still between
+ * `route.fetch()` and reading the body then gets "Response has been disposed"
+ * (Playwright maps the closed target to that message), and the throw was
+ * reported against a test whose assertions had all passed: CI runs
+ * 37315527477 and 37409948924. Reproduced by closing the context while a
+ * handler holds a fetched response. Nobody is waiting for that request, so
+ * the handler drops it; any other error still fails the test.
+ */
+function requestAbandoned(err: unknown): boolean {
+	return /has been disposed|Target page, context or browser has been closed|Request context disposed|Route is already handled/i.test(
+		String((err as Error)?.message ?? err)
+	);
+}
+
+async function rewriteJson(route: Route, edit: (json: unknown) => void): Promise<void> {
+	try {
+		const response = await route.fetch();
+		const type = response.headers()['content-type'] ?? '';
+		if (!type.includes('application/json')) return await route.fulfill({ response });
+		const json = await response.json();
+		edit(json);
+		await route.fulfill({ response, json });
+	} catch (err) {
+		if (requestAbandoned(err)) return;
+		throw err;
+	}
+}
+
 test('TASK-3413 U9c: an item and its comment read "via <App>" beside their author', async ({ page, fixture, request }) => {
 	const { collSlug, item } = await seed(fixture, request);
 	await page.route(`**/api/v1/workspaces/${fixture.workspaceSlug}/**`, async (route: Route) => {
 		if (route.request().method() !== 'GET') return route.fallback();
-		const response = await route.fetch();
-		const type = response.headers()['content-type'] ?? '';
-		if (!type.includes('application/json')) return route.fulfill({ response });
-		const json = await response.json();
-		stamp(json, item.id);
-		return route.fulfill({ response, json });
+		await rewriteJson(route, (json) => stamp(json, item.id));
 	});
 
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${collSlug}/${item.slug}`);
@@ -82,10 +107,9 @@ test('TASK-3413 U9c: an item and its comment read "via <App>" beside their autho
 test('TASK-3413 U9c: the members list shows apps in their own section, not as members', async ({ page, fixture }) => {
 	await page.route(`**/api/v1/workspaces/${fixture.workspaceSlug}/members`, async (route: Route) => {
 		if (route.request().method() !== 'GET') return route.fallback();
-		const response = await route.fetch();
-		const json = await response.json();
-		json.apps = [{ id: 'bot-e2e', display_name: 'portal-bot', app_name: APP, role: 'editor' }];
-		return route.fulfill({ response, json });
+		await rewriteJson(route, (json) => {
+			(json as { apps: unknown[] }).apps = [{ id: 'bot-e2e', display_name: 'portal-bot', app_name: APP, role: 'editor' }];
+		});
 	});
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/settings#members`);
 	const section = page.getByTestId('members-apps');
