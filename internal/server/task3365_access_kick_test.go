@@ -410,9 +410,13 @@ type blockingTransport struct {
 	release   chan struct{}
 	cancelled chan struct{}
 	once      sync.Once
+	// entered is closed when the worker first calls Publish (BUG-3464).
+	entered     chan struct{}
+	enteredOnce sync.Once
 }
 
 func (b *blockingTransport) Publish(ctx context.Context, _ accesskick.Message) error {
+	b.enteredOnce.Do(func() { close(b.entered) })
 	select {
 	case <-b.release:
 	case <-ctx.Done():
@@ -426,7 +430,7 @@ func (b *blockingTransport) Subscribe(func(accesskick.Message)) func() { return 
 // this instance's own connections are kicked at once (codex r2).
 func TestTASK3365_StalledTransportDoesNotBlockTheRequest(t *testing.T) {
 	srv := testServer(t)
-	bt := &blockingTransport{release: make(chan struct{}), cancelled: make(chan struct{})}
+	bt := &blockingTransport{release: make(chan struct{}), cancelled: make(chan struct{}), entered: make(chan struct{})}
 	srv.SetAccessKickTransport(bt)
 	kick, unreg := srv.accessKicks().register("u1", "")
 	defer unreg()
@@ -448,7 +452,16 @@ func TestTASK3365_StalledTransportDoesNotBlockTheRequest(t *testing.T) {
 	waitKick(t, kick, "local kick with a stalled transport")
 
 	// Clearing the transport cancels the publish its worker is blocked in
-	// (codex r3), without the transport ever being released.
+	// (codex r3), without the transport ever being released. The worker must
+	// BE in that publish first (BUG-3464): cleared before it was scheduled,
+	// it finds both `done` closed and a full queue, its select picks either
+	// at random, and choosing `done` returns without ever publishing. That
+	// drop is correct production behaviour, and not what this asserts.
+	select {
+	case <-bt.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the publisher worker never called Publish on a full queue")
+	}
 	srv.SetAccessKickTransport(nil)
 	select {
 	case <-bt.cancelled:
