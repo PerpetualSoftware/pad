@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -222,11 +223,18 @@ func builtinReplacedFields(current, patch map[string]any) string {
 		if err != nil {
 			return "?"
 		}
+		// At most max bytes INCLUDING the ellipsis, cut on a rune boundary
+		// so the summary stays valid UTF-8 (codex r1).
 		const max = 120
-		if len(b) > max {
-			return string(b[:max]) + "…"
+		const ellipsis = "…"
+		if len(b) <= max {
+			return string(b)
 		}
-		return string(b)
+		cut := max - len(ellipsis)
+		for cut > 0 && !utf8.RuneStart(b[cut]) {
+			cut--
+		}
+		return string(b[:cut]) + ellipsis
 	}
 	var parts []string
 	for _, k := range keys {
@@ -236,8 +244,10 @@ func builtinReplacedFields(current, patch map[string]any) string {
 			continue
 		}
 		if had && next != nil {
-			ob, oerr := json.Marshal(old)
-			nb, nerr := json.Marshal(next)
+			// Canonical numbers: item fields keep a number as written, so
+			// 1e3 and 1000 would otherwise compare unequal (codex r1).
+			ob, oerr := json.Marshal(models.CanonicalJSONNumbers(old))
+			nb, nerr := json.Marshal(models.CanonicalJSONNumbers(next))
 			if oerr == nil && nerr == nil && bytes.Equal(ob, nb) {
 				continue
 			}
