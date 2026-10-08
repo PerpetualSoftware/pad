@@ -2,7 +2,8 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy, untrack } from 'svelte';
-	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
+	import { api, isPlanLimitError } from '$lib/api/client';
+	import { PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
