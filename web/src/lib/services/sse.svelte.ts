@@ -172,6 +172,15 @@ function createSSEService() {
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	// The leader is asking for a slot (an await inside the lock callback).
 	let slotPending = false;
+	// Bumped by disconnect(). A lock callback still awaiting its slot when the
+	// tab disconnects (and maybe reconnects to the SAME workspace) must not
+	// go on to stream: the workspace check alone cannot tell the two
+	// connections apart (codex r1 on BUG-3320).
+	let leaderGeneration = 0;
+	// A slot is kept through a reconnect ladder and an offline spell, on
+	// purpose: the tab holds no connection meanwhile, and a blip should not
+	// reshuffle which workspaces stream. It is released when the tab stops
+	// leading (disconnect, a workspace switch, page unload) or loses access.
 
 	function stopPolling() {
 		if (pollTimer) {
@@ -473,6 +482,7 @@ function createSSEService() {
 				reconnectPending = false;
 				status = 'unauthorized';
 				broadcast({ type: 'status', status: 'unauthorized' });
+				releaseSlot(); // BUG-3320: no stream will follow, so free the seat
 				currentWorkspace = '';
 			});
 		} else {
@@ -629,6 +639,7 @@ function createSSEService() {
 			broadcast({ type: 'status', status: 'unauthorized' });
 			source.close();
 			eventSource = null;
+			releaseSlot(); // BUG-3320: no stream will follow, so free the seat
 			currentWorkspace = '';
 		});
 
@@ -688,6 +699,7 @@ function createSSEService() {
 		// Note this is strictly MORE coverage, not a trade: every case the
 		// heuristic classified as "promoted" still arms, plus the first
 		// connect it was never able to classify at all.
+		const generation = leaderGeneration;
 		navigator.locks
 			.request(
 				`pad-sse-leader-${workspaceSlug}`,
@@ -696,7 +708,7 @@ function createSSEService() {
 					// User may have already navigated away by the time
 					// we acquire the lock. Bail before opening a stale
 					// connection.
-					if (currentWorkspace !== workspaceSlug) return;
+					if (currentWorkspace !== workspaceSlug || generation !== leaderGeneration) return;
 					isLeader = true;
 					// BUG-3320: on HTTP/1.1 a stream needs a slot.
 					let streamAllowed = true;
@@ -704,7 +716,7 @@ function createSSEService() {
 						slotPending = true;
 						const release = await tryTakeStreamSlot();
 						slotPending = false;
-						if (currentWorkspace !== workspaceSlug) {
+						if (currentWorkspace !== workspaceSlug || generation !== leaderGeneration) {
 							release?.();
 							isLeader = false;
 							return;
@@ -813,6 +825,7 @@ function createSSEService() {
 		cancelOnlineReopen();
 		stopPolling();
 		releaseSlot();
+		leaderGeneration++;
 		closedForOffline = false;
 		// Release the leader lock first so a peer tab can take over
 		// even on the same browser session (e.g. workspace switch).

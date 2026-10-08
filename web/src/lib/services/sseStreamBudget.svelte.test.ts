@@ -23,7 +23,15 @@ class FakeEventSource {
 		this.url = url;
 		sources.push(this);
 	}
-	addEventListener() {}
+	private listeners = new Map<string, Array<() => void>>();
+	addEventListener(type: string, cb: () => void) {
+		const l = this.listeners.get(type) ?? [];
+		l.push(cb);
+		this.listeners.set(type, l);
+	}
+	fire(type: string) {
+		for (const cb of this.listeners.get(type) ?? []) cb();
+	}
 	close() {
 		this.closed = true;
 		this.readyState = FakeEventSource.CLOSED;
@@ -195,6 +203,34 @@ describe('BUG-3320: the HTTP/1.1 stream budget', () => {
 		const before = syncs;
 		await vi.advanceTimersByTimeAsync(POLL_EVERY_MS * 3);
 		expect(syncs).toBe(before);
+	});
+
+	it('a disconnect and same-workspace reconnect during the slot request leaves one leader and one stream (codex r1)', async () => {
+		setProtocol('http/1.1');
+		const { svc } = await loadService();
+		svc.connect('ws-a'); // the lock callback runs and awaits its slot
+		svc.disconnect();
+		svc.connect('ws-a'); // queued behind the first callback's lock
+		await flush();
+		const live = sources.filter((s) => !s.closed);
+		expect(live).toHaveLength(1);
+		expect(svc.isLeader).toBe(true);
+		expect([0, 1, 2].filter((i) => held.has(`pad-sse-slot-${i}`))).toHaveLength(1);
+		svc.disconnect();
+		await flush();
+		expect([0, 1, 2].filter((i) => held.has(`pad-sse-slot-${i}`))).toHaveLength(0);
+	});
+
+	it('losing access frees the slot (codex r1)', async () => {
+		setProtocol('http/1.1');
+		const { svc } = await loadService();
+		svc.connect('ws-a');
+		await flush();
+		expect(held.has('pad-sse-slot-0')).toBe(true);
+		sources[0].fire('unauthorized');
+		await flush();
+		expect(svc.status).toBe('unauthorized');
+		expect(held.has('pad-sse-slot-0')).toBe(false);
 	});
 
 	for (const protocol of ['h2', 'h3', '']) {
