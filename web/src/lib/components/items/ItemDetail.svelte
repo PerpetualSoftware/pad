@@ -86,6 +86,7 @@
 	import PushToAgentDialog from '$lib/components/items/PushToAgentDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
 	import DecisionChips from '$lib/components/items/DecisionChips.svelte';
+	import BuiltinUpdateNotice from '$lib/components/items/BuiltinUpdateNotice.svelte';
 	import AttachmentSurfaceHost from '$lib/components/attachments/AttachmentSurfaceHost.svelte';
 	import {
 		announceAttachmentParentRestored,
@@ -6224,6 +6225,30 @@
 				</span>
 			{/if}
 		</div>
+
+		<!-- Built-in update nudge (TASK-3462 U3b): a convention or playbook Pad
+		     ships whose library text is newer. Renders nothing otherwise; the
+		     server's not_builtin answer decides, not the collection, because an
+		     origin survives a move and activation can target any collection of
+		     the right kind (codex r6). -->
+			<!-- Keyed by item: an item switch remounts it, so nothing from the
+			     previous item's preview survives into the next. -->
+			{#key item.id}
+			{#key identityKey}{@const handedDown = identityKey}
+			<BuiltinUpdateNotice
+				{wsSlug}
+				itemId={item.id}
+				itemRef={item.slug}
+				seq={item.seq ?? 0}
+				currentContent={item.content}
+				currentFields={item.fields}
+				{canEdit}
+				hasUnsavedEdits={() => rawContentSaver.dirty || saveStatus === 'saving' || (collabProvider !== null && collabProvider.state !== 'synced')}
+				onAccepted={() => { if (handedDown !== identityKey) return; if (collabProvider || rawContentSaver.dirty) return; void loadData(); }}
+				flushEdits={() => { const ctx = activeCollabContext; if (!collabProvider || !ctx || ctx.retired) return Promise.resolve('deduped' as const); return collabFlusher.flushAndWait(ctx); }}
+			/>
+			{/key}
+			{/key}
 
 		<!-- Attention signals (TASK-3118); renders nothing without a provider. -->
 		{#if visibility.seenVisible}

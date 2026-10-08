@@ -109,6 +109,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		BacklinksPanel: ['onCountChange'],
 		EditCollectionModal: ['onupdated', 'onclose'],
 		CopyItemDialog: ['onmove', 'oncopied'],
+		BuiltinUpdateNotice: ['onAccepted'],
 	};
 
 	it('the listener bumps the identity key', () => {

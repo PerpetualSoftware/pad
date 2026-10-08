@@ -190,6 +190,7 @@ describe('the library page fences every async commit point', () => {
 			playbookCategories: 'page DATA — loadData replaces it on both arms',
 			activeConventionTitles: 'page DATA — loadData replaces it on both arms',
 			activePlaybookTitles: 'page DATA — loadData replaces it on both arms',
+			builtinEntries: 'page DATA (TASK-3462 U3b) — loadData replaces it on both arms',
 			loading: "owned by loadData's generation-guarded finally",
 			activeTab:
 				'a view preference read from the URL, not interaction state: it belongs to the ' +

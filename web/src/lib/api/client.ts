@@ -1,4 +1,6 @@
 import type {
+	BuiltinListEntry,
+	BuiltinStateResponse,
 	DecisionSettings,
 	MCPSettings,
 	DecisionSettingsInput,
@@ -2519,6 +2521,31 @@ export const api = {
 	},
 
 	// ── Convention Library ────────────────────────────────────────────────────
+
+	/**
+	 * Built-in conventions and playbooks (TASK-3462): the state of each item
+	 * made from one relative to Pad's current text, and the opt-in update.
+	 */
+	builtins: {
+		/** Every item made from a built-in whose whole collection the caller sees. */
+		list: (ws: string) => request<BuiltinListEntry[]>(`/workspaces/${ws}/builtins`),
+
+		/** One item's state; 404 `not_builtin` for an item made from no built-in. */
+		get: (ws: string, ref: string) =>
+			request<BuiltinStateResponse>(`/workspaces/${ws}/items/${ref}/builtin`),
+
+		/**
+		 * Take the library's text. `expected_seq` is the seq read with the
+		 * preview; the server refuses if the item changed since (409
+		 * `update_conflict`), or while a tab holds unflushed edits (409
+		 * `content_pending_flush`, lifted by `overwrite_pending_edits`).
+		 */
+		update: (ws: string, ref: string, body: { expected_seq: number; overwrite_pending_edits?: boolean }) =>
+			request<Item>(`/workspaces/${ws}/items/${ref}/builtin/update`, {
+				method: 'POST',
+				body: JSON.stringify(body)
+			})
+	},
 
 	library: {
 		get: () => request<ConventionLibraryResponse>('/convention-library'),

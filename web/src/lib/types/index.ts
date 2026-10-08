@@ -2221,6 +2221,48 @@ export interface LibraryPlaybook {
 	arguments?: LibraryPlaybookArgument[];
 }
 
+/**
+ * A built-in's state relative to Pad's current text (TASK-3462). Derived on
+ * read by the server; nothing ever updates an item on its own.
+ */
+export type BuiltinState = 'current' | 'update_available' | 'diverged' | 'unknown_origin' | 'unknown_entry';
+
+/** A built-in's text: the body and the fields an update writes. */
+export interface BuiltinText {
+	content: string;
+	fields: Record<string, unknown>;
+}
+
+/** GET /workspaces/{ws}/items/{ref}/builtin. */
+export interface BuiltinStateResponse {
+	key: string;
+	kind?: string;
+	state: BuiltinState;
+	seed_hash?: string;
+	library_hash?: string;
+	item_hash?: string;
+	/** Pad's current text, present whenever an update is on offer. */
+	library?: BuiltinText;
+	/** The text the item was made from, when known: seed -> library is what the LIBRARY changed. */
+	seed?: BuiltinText;
+	/** The item's own text, from the same read as `seq` (absent from a server before it). */
+	current?: BuiltinText;
+	/** The item's version token at the read; the update sends it back. */
+	seq: number;
+}
+
+/** One row of GET /workspaces/{ws}/builtins. */
+export interface BuiltinListEntry {
+	item_id: string;
+	ref?: string;
+	slug: string;
+	title: string;
+	collection_slug: string;
+	key: string;
+	kind?: string;
+	state: BuiltinState;
+}
+
 export interface PlaybookCategory {
 	name: string;
 	description: string;

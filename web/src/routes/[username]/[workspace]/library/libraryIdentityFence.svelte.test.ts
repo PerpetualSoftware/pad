@@ -81,6 +81,7 @@ vi.mock('$lib/api/client', () => ({
 			})),
 		},
 		items: { listByCollection: vi.fn(async () => []) },
+		builtins: { list: vi.fn(async () => []) },
 	},
 }));
 
