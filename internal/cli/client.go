@@ -1880,6 +1880,41 @@ func IsCommentHasReplies(err error) (*APIError, bool) {
 	return nil, false
 }
 
+// LeaseHeldCode is the structured code for a claim on an item another holder
+// leases (BUG-3496). Keep it, and the hint, in lockstep with internal/mcp's
+// allowedStructuredErrorCodes and LeaseHeldHint.
+const LeaseHeldCode = "lease_held"
+
+// LeaseHeldHint is the recovery guidance for LeaseHeldCode.
+const LeaseHeldHint = "Another holder (details.holder) has claimed this item until details.expires_at. " +
+	"Pick other work, or wait until the lease expires; claiming again before then is refused the same way."
+
+// IsLeaseHeld reports whether err is the lease refusal.
+func IsLeaseHeld(err error) (*APIError, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == LeaseHeldCode {
+		return apiErr, true
+	}
+	return nil, false
+}
+
+// WriteLeaseHeldError writes the structured marker line for the lease
+// refusal, so the stdio MCP transport reports lease_held with its holder and
+// expiry instead of inferring a code from the prose.
+func WriteLeaseHeldError(w io.Writer, apiErr *APIError) {
+	body := map[string]any{
+		"code":    LeaseHeldCode,
+		"message": apiErr.Message,
+		"hint":    LeaseHeldHint,
+	}
+	if len(apiErr.Details) > 0 {
+		body["details"] = apiErr.Details
+	}
+	if data, err := json.Marshal(map[string]any{"error": body}); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+}
+
 // CommentDeletedCode is the structured code for a write addressed to a
 // comment tombstone (BUG-3252): an edit, a reply or a reaction. Keep it, and
 // the hint, in lockstep with internal/mcp's allowedStructuredErrorCodes and

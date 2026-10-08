@@ -85,6 +85,11 @@ func writeRootStructuredError(w io.Writer, err error) {
 	// BUG-3252: an edit, reply or reaction addressed to a tombstone.
 	if apiErr, ok := cli.IsCommentDeleted(err); ok {
 		cli.WriteCommentDeletedError(w, apiErr)
+		return
+	}
+	// BUG-3496: a claim on an item another holder leases.
+	if apiErr, ok := cli.IsLeaseHeld(err); ok {
+		cli.WriteLeaseHeldError(w, apiErr)
 	}
 }
 

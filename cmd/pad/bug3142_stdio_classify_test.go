@@ -250,3 +250,47 @@ func TestStdioCommentDeletedClassifies(t *testing.T) {
 		t.Fatalf("hint = %q, want the shared CommentDeletedHint", env.Error.Hint)
 	}
 }
+
+// BUG-3496, end to end on stdio: a claim on an item another holder leases
+// reaches the caller as lease_held with the holder and expiry, instead of
+// server_error. The fake answers with the bytes writeLeaseHeldError writes.
+func TestStdioLeaseHeldClassifies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"lease_held","message":"item is leased to claude-code#3f9a12","details":{"ref":"TASK-1","holder":"claude-code#3f9a12","acquired_at":"2026-10-08T10:00:00Z","expires_at":"2026-10-08T10:30:00Z"}}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv(padHelperEnv, "1")
+	t.Setenv("HOME", t.TempDir())
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	d := &mcp.ExecDispatcher{Binary: bin}
+	res, err := d.Dispatch(context.Background(), []string{"item", "claim"},
+		[]string{"--url", srv.URL, "--workspace", "ws", "--format", "json", "--", "TASK-1"})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	env, ok := res.StructuredContent.(mcp.ErrorEnvelope)
+	if !ok {
+		t.Fatalf("PRECONDITION: the call should have failed; got %T", res.StructuredContent)
+	}
+	if env.Error.Code != mcp.ErrLeaseHeld {
+		t.Fatalf("code = %q (message %q, hint %q), want %q",
+			env.Error.Code, env.Error.Message, env.Error.Hint, mcp.ErrLeaseHeld)
+	}
+	if env.Error.Hint != mcp.LeaseHeldHint {
+		t.Fatalf("hint = %q, want the shared LeaseHeldHint", env.Error.Hint)
+	}
+	var details struct {
+		Holder    string `json:"holder"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(env.Error.Details, &details); err != nil ||
+		details.Holder != "claude-code#3f9a12" || details.ExpiresAt != "2026-10-08T10:30:00Z" {
+		t.Fatalf("details = %s, want the holder and expires_at (err %v)", env.Error.Details, err)
+	}
+}

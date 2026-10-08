@@ -43,6 +43,10 @@ type Options struct {
 	// Experimental replaces capabilities.experimental when non-nil. Nil
 	// keeps experimentalCapabilities().
 	Experimental map[string]any
+
+	// Clients, when set, records each session's declared clientInfo at
+	// initialize for the remote dispatcher (BUG-2772). Remote transports only.
+	Clients *ClientRegistry
 }
 
 // NewServer constructs a pad MCP server. Call Run(ctx) to start it.
@@ -64,9 +68,7 @@ func NewServer(opts Options) *Server {
 	if experimental == nil {
 		experimental = experimentalCapabilities()
 	}
-	mcp := server.NewMCPServer(
-		ServerName,
-		version,
+	options := []server.ServerOption{
 		// Declare tool capability up-front so clients know the server
 		// CAN serve tools. The list stays empty until TASK-945 wires
 		// in the cmdhelp-derived registry.
@@ -87,7 +89,12 @@ func NewServer(opts Options) *Server {
 		// versioned with the binary; HTTPHandlerDispatcher (PLAN-943)
 		// advertises the same string.
 		server.WithInstructions(instructions),
-	)
+	}
+	if opts.Clients != nil {
+		// BUG-2772: record each session's declared client at initialize.
+		options = append(options, server.WithHooks(opts.Clients.hooks()))
+	}
+	mcp := server.NewMCPServer(ServerName, version, options...)
 	return &Server{mcp: mcp, debug: opts.Debug}
 }
 

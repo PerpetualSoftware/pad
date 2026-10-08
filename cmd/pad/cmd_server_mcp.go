@@ -76,7 +76,10 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 		Homepage: padHomepage,
 		MaxDepth: -1,
 	})
-	mcpSrv := mcpserver.NewServer(mcpserver.Options{Version: fullVersion()})
+	// One registry of declared MCP clients (BUG-2772): both remote servers
+	// record into it at initialize, and the dispatcher reads it per call.
+	mcpClients := mcpserver.NewClientRegistry()
+	mcpSrv := mcpserver.NewServer(mcpserver.Options{Version: fullVersion(), Clients: mcpClients})
 	// CurrentUserFromContext returns (*User, bool); the dispatcher's
 	// UserResolver signature is just (ctx) *User. The bool is "found",
 	// which equals "non-nil pointer" for the path the MCP middleware
@@ -84,6 +87,7 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 	// flatten with a closure.
 	dispatcher := &mcpserver.HTTPHandlerDispatcher{
 		Handler: srv,
+		Clients: mcpClients,
 		UserResolver: func(ctx context.Context) *models.User {
 			u, _ := server.CurrentUserFromContext(ctx)
 			return u

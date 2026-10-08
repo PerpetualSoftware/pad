@@ -199,6 +199,9 @@ func TestEveryCLIMarkerCodeIsInTheStdioVocabulary(t *testing.T) {
 		"WriteCommentDeletedError": func(w *bytes.Buffer) {
 			cli.WriteCommentDeletedError(w, api("comment_deleted"))
 		},
+		"WriteLeaseHeldError": func(w *bytes.Buffer) {
+			cli.WriteLeaseHeldError(w, api("lease_held"))
+		},
 	}
 
 	for name, write := range writers {

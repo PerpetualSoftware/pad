@@ -1738,6 +1738,27 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.77 — BUG-2772 (lead ruling; IDEA-2791 Tier B). BEHAVIOR bump on the
+//     v0.76 / v0.49 grounds: a write over REMOTE /mcp is now recorded as an
+//     AGENT write (created_by / actor "agent"), named by the client's declared
+//     MCP clientInfo.name ("claude-code"), where it was recorded as the
+//     human. The name comes from a modern request's own _meta clientInfo,
+//     else the clientInfo the session sent at initialize (remembered per
+//     instance by the Mcp-Session-Id pad issued and the account that
+//     presented it, 30-minute idle TTL), else
+//     none: an unnamed agent write, never the human and never a guessed name.
+//     The default lease holder of a remote call is that name (or
+//     "mcp-client") plus a short id from the session, e.g.
+//     "claude-code#3f9a12c4", so two connections of one client do not share a
+//     lease; a reconnect gets a new session id, so the agent's own earlier
+//     lease reads as foreign until it expires (at most 15 minutes by
+//     default). Stdio is unchanged. No name, enum or param moved.
+//     BUG-3496 rides with it: a claim refused because another holder has
+//     the lease reaches the caller as `lease_held` (details ref, holder,
+//     acquired_at, expires_at, and a hint not to retry before expiry) on
+//     both transports, where remote answered `conflict` and stdio
+//     `server_error`.
+//
 //     0.76 — TASK-1809 (lead ruling). BEHAVIOR bump on the v0.70 / v0.49
 //     grounds: no tool name, action enum or param shape moved. Two
 //     changes, one identity:
@@ -1916,7 +1937,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.76"
+const ToolSurfaceVersion = "0.77"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

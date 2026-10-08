@@ -18,10 +18,16 @@ import (
 // and experimental capabilities. Not mounted yet; TASK-3321 U2 serves it at
 // its own URL behind a setting.
 func newChatGPTMCPServer(doc *cmdhelp.Document, dispatcher mcpserver.Dispatcher) (*mcpserver.Server, error) {
+	// The same declared-client registry the dispatcher reads (BUG-2772).
+	var clients *mcpserver.ClientRegistry
+	if hd, ok := dispatcher.(*mcpserver.HTTPHandlerDispatcher); ok {
+		clients = hd.Clients
+	}
 	srv := mcpserver.NewServer(mcpserver.Options{
 		Version:      fullVersion(),
 		Instructions: mcpserver.ChatGPTInstructions,
 		Experimental: mcpserver.ChatGPTExperimentalCapabilities(),
+		Clients:      clients,
 	})
 	if _, err := mcpserver.RegisterChatGPTCatalog(srv.MCP(), mcpserver.ChatGPTCatalogOptions{
 		Catalog: mcpserver.CatalogOptions{

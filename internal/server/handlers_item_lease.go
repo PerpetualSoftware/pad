@@ -154,8 +154,10 @@ func (s *Server) resolveLeaseRequest(w http.ResponseWriter, r *http.Request) (it
 
 // defaultLeaseHolder is the holder a claim or release names when the caller
 // passes none, and the identity `pad project next` / `ready` compare leases
-// against (TASK-1809): the request's agent name (X-Pad-Agent, which the CLI
-// sets from the session registry), else the account's email, else its id.
+// against (TASK-1809): for a remote MCP call, its client name plus a short
+// session id (BUG-2772); else the request's agent name (X-Pad-Agent, which
+// the CLI sets from the session registry); else the account's email, else its
+// id.
 //
 // The agent name comes first because several agents commonly share ONE
 // account. With the email default, a second agent's claim matched the first
@@ -164,6 +166,13 @@ func (s *Server) resolveLeaseRequest(w http.ResponseWriter, r *http.Request) (it
 // is still bound to the authenticated account (BUG-3341), so it can only
 // split the caller's own claims, never reach into another account's.
 func defaultLeaseHolder(r *http.Request, user *models.User) string {
+	// A remote MCP caller holds by its declared client name plus a short id
+	// from its MCP session (BUG-2772, lead ruling): two connections of one
+	// client, both "claude-code", must not silently share a lease. Ahead of
+	// X-Pad-Agent, which carries only the name.
+	if c, ok := remoteMCPCaller(r); ok && c.LeaseHolder != "" {
+		return c.LeaseHolder
+	}
 	if name := agentNameFromRequest(r); name != "" {
 		return name
 	}
