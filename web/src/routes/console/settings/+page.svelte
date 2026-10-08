@@ -82,6 +82,13 @@
 	let tokenDeleting = $state(false);
 	let tokenDeleteError = $state('');
 	let tokenCopied = $state(false);
+	// TASK-3505: rotating keeps a token's name, scopes and workspace and gives
+	// it a new secret; the old one stops working at once. The new key is shown
+	// once, in the same reveal a new token uses.
+	let tokenToRotate = $state<APIToken | null>(null);
+	let tokenRotating = $state(false);
+	let tokenRotateError = $state('');
+	let rotatedFrom = $state<string | null>(null);
 	let tokenError = $state('');
 
 	// Danger Zone — export my data (TASK-1961)
@@ -402,6 +409,7 @@
 		try {
 			const token = await api.auth.tokens.create(newTokenName.trim());
 			createdToken = token;
+			rotatedFrom = null;
 			tokenCopied = false;
 			tokens = [...tokens, token];
 			newTokenName = '';
@@ -445,6 +453,42 @@
 			tokenDeleteError = err instanceof Error ? err.message : 'Failed to delete the token.';
 		} finally {
 			tokenDeleting = false;
+		}
+	}
+
+	function askRotateToken(token: APIToken) {
+		tokenRotateError = '';
+		tokenToRotate = token;
+	}
+
+	function closeRotateToken() {
+		if (tokenRotating) return;
+		tokenToRotate = null;
+		tokenRotateError = '';
+	}
+
+	async function rotateToken() {
+		const target = tokenToRotate;
+		if (!target || tokenRotating) return;
+		tokenRotating = true;
+		tokenRotateError = '';
+		// IDENTITY fence (BUG-3105), as for delete.
+		const isSameIdentity = authStore.identityFence();
+		try {
+			const rotated = await api.auth.tokens.rotate(target.id);
+			if (!isSameIdentity()) return;
+			// The list keeps metadata only; the secret lives in the one-time reveal.
+			const { token: _secret, ...meta } = rotated;
+			tokens = tokens.map((t) => (t.id === target.id ? { ...t, ...meta } : t));
+			createdToken = rotated;
+			rotatedFrom = target.name;
+			tokenCopied = false;
+			tokenToRotate = null;
+		} catch (err) {
+			if (!isSameIdentity()) return;
+			tokenRotateError = err instanceof Error ? err.message : 'Failed to rotate the token.';
+		} finally {
+			tokenRotating = false;
 		}
 	}
 
@@ -889,6 +933,9 @@
 				{#if createdToken}
 					<div class="token-created">
 						<p class="token-warning">Copy this token now. It will not be shown again.</p>
+						{#if rotatedFrom}
+							<p class="token-rotated-note">The new key for “{rotatedFrom}”. The old key no longer works.</p>
+						{/if}
 						<div class="token-value-row">
 							<code class="token-value">{createdToken.token}</code>
 							<Button variant="secondary" size="sm" onclick={copyCreatedToken}>
@@ -927,7 +974,10 @@
 										{/if}
 									</span>
 								</div>
-								<Button variant="danger" size="sm" onclick={() => askDeleteToken(token)}>Delete</Button>
+								<div class="token-row-actions">
+									<Button variant="secondary" size="sm" onclick={() => askRotateToken(token)}>Rotate</Button>
+									<Button variant="danger" size="sm" onclick={() => askDeleteToken(token)}>Delete</Button>
+								</div>
 							</div>
 						{/each}
 					</div>
@@ -1090,6 +1140,35 @@
 				<Button variant="secondary" onclick={closeDeleteToken} disabled={tokenDeleting}>Cancel</Button>
 				<Button variant="danger" onclick={deleteToken} disabled={tokenDeleting}>
 					{tokenDeleting ? 'Deleting…' : 'Delete token'}
+				</Button>
+			</div>
+		</div>
+	{/if}
+</Modal>
+
+<Modal
+	open={!!tokenToRotate}
+	onclose={closeRotateToken}
+	labelledby="rotate-token-title"
+	maxWidth="420px"
+	placement="center"
+	--modal-bg="var(--bg-primary)"
+	--modal-radius="var(--radius)"
+	--modal-shadow="0 20px 60px rgba(0, 0, 0, 0.3)"
+>
+	{#if tokenToRotate}
+		<div class="delete-token-modal">
+			<h3 id="rotate-token-title" class="modal-title">Rotate the token “{tokenToRotate.name}”?</h3>
+			<p class="modal-body">
+				It keeps its name, scopes and workspace and gets a new key. The current key stops working immediately, so update every agent, script or MCP connection that uses it.
+			</p>
+			{#if tokenRotateError}
+				<p class="modal-error" role="alert">{tokenRotateError}</p>
+			{/if}
+			<div class="modal-actions">
+				<Button variant="secondary" onclick={closeRotateToken} disabled={tokenRotating}>Cancel</Button>
+				<Button variant="primary" onclick={rotateToken} disabled={tokenRotating}>
+					{tokenRotating ? 'Rotating…' : 'Rotate token'}
 				</Button>
 			</div>
 		</div>
@@ -1273,6 +1352,16 @@
 		margin-bottom: var(--space-2);
 	}
 
+	.token-row-actions {
+		display: flex;
+		gap: var(--space-2);
+		flex-shrink: 0;
+	}
+	.token-rotated-note {
+		margin: 0 0 var(--space-2);
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+	}
 	.token-value-row {
 		display: flex;
 		align-items: flex-start;
