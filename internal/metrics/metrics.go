@@ -357,6 +357,12 @@ type Metrics struct {
 	// EXPECT ZERO.
 	EventHeartbeatPublishFailuresTotal prometheus.Counter
 
+	// EventSequenceCounterRepairsTotal counts deletions of a corrupted event
+	// sequence counter, by shape (BUG-2744). Each one starts a new id space.
+	// EXPECT ZERO: counting never gets there, so a non-zero count means
+	// something else wrote the key. The warning logged beside it names it.
+	EventSequenceCounterRepairsTotal *prometheus.CounterVec
+
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
 	// directions, so a generic alert on the total leads a responder to
@@ -726,6 +732,11 @@ func New() *Metrics {
 		Help: "Liveness heartbeats this instance could not publish (BUG-2738). Read as DETECTION DEGRADED, not as a peer being broken: while it fires, idle detection for those workspaces is suspended, because silence cannot be read as evidence of a dead receive path when the probe never went out. PUBLISH and pub/sub use different connection pools, so this points at the OUTBOUND path — pool exhaustion, a wedged outbound route, or Redis refusing writes. Such an instance is also failing to deliver its own events to every other instance. Expect zero.",
 	})
 
+	eventSequenceCounterRepairsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_event_sequence_counter_repairs_total",
+		Help: "Times the shared event sequence counter held something it cannot count from (shape: wrong_type, not_integer, too_large) and was deleted, starting a new id space that every subscriber resyncs across (BUG-2744). Expect zero: counting never gets there, so a non-zero count means something else wrote the key — another installation sharing the Redis keyspace, a hand edit, or a restore. The warning logged beside it names the key, its type and its length.",
+	}, []string{"shape"})
+
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_session_presence_failures_total",
 		Help: "Failed session-presence operations by op. READ THE LABEL — register/renew RISK a live session being unlisted and untargetable, deregister risks a DEAD one staying listed, list returns 503, prune is benign. A failure means an error was reported; Redis can fail after applying.",
@@ -748,6 +759,7 @@ func New() *Metrics {
 		eventSubscriptionUnconfirmedTotal,
 		eventSubscriptionCycledTotal,
 		eventHeartbeatPublishFailuresTotal,
+		eventSequenceCounterRepairsTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -792,6 +804,7 @@ func New() *Metrics {
 		EventSubscriptionUnconfirmedTotal:  eventSubscriptionUnconfirmedTotal,
 		EventSubscriptionCycledTotal:       eventSubscriptionCycledTotal,
 		EventHeartbeatPublishFailuresTotal: eventHeartbeatPublishFailuresTotal,
+		EventSequenceCounterRepairsTotal:   eventSequenceCounterRepairsTotal,
 		WatchReceiveLoopExitsTotal:         watchReceiveLoopExitsTotal,
 		WatchHeartbeatPublishFailuresTotal: watchHeartbeatPublishFailuresTotal,
 		SessionPresenceFailuresTotal:       sessionPresenceFailuresTotal,
