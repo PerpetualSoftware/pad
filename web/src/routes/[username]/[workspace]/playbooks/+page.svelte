@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { fieldMatches, safeText } from '$lib/fields/fieldShape';
 	import { page } from '$app/state';
 	import { ownValue } from '$lib/utils/ownValue';
@@ -8,6 +9,7 @@
 	import { parseFields, parseSchema, itemUrlId, formatItemRef, type Collection, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { canCreateIn } from '$lib/collections/canCreateIn';
+	import { artifactSlugFor } from '$lib/collections/artifactSlug';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import {
 		categoricalValueFor,
@@ -60,8 +62,12 @@
 	// Create and import render only for an account that may create here
 	// (BUG-3264); the server refuses the rest. An artifact may be either kind,
 	// so import needs either collection.
-	let canCreatePlaybook = $derived(canCreateIn('playbooks'));
-	let canImport = $derived(canCreateIn('playbooks') || canCreateIn('conventions'));
+	// BUG-3481: addressed by the collections' CURRENT slugs, so a renamed
+	// playbooks or conventions collection keeps this page working.
+	const playbooksSlug = $derived(artifactSlugFor(wsSlug, 'playbook'));
+	const conventionsSlug = $derived(artifactSlugFor(wsSlug, 'convention'));
+	let canCreatePlaybook = $derived(canCreateIn(playbooksSlug));
+	let canImport = $derived(canCreateIn(playbooksSlug) || canCreateIn(conventionsSlug));
 	let deleting = $state<string | null>(null);
 	let confirmDeleteSlug = $state<string | null>(null);
 	let togglingStatus = $state<string | null>(null);
@@ -98,19 +104,22 @@
 	});
 
 	$effect(() => {
+		const pb = playbooksSlug;
 		if (wsSlug) {
-			loadPlaybooks(wsSlug);
-			loadPlaybooksCollection(wsSlug);
+			untrack(() => {
+				loadPlaybooks(wsSlug, pb);
+				loadPlaybooksCollection(wsSlug, pb);
+			});
 		}
 	});
-	async function loadPlaybooks(ws: string) {
+	async function loadPlaybooks(ws: string, pb: string = playbooksSlug) {
 		loading = true;
-		try { playbooks = await api.items.listByCollection(ws, 'playbooks', {}); }
+		try { playbooks = await api.items.listByCollection(ws, pb, {}); }
 		catch { playbooks = []; }
 		finally { loading = false; }
 	}
 
-	async function loadPlaybooksCollection(ws: string) {
+	async function loadPlaybooksCollection(ws: string, pb: string) {
 		// Clear any previous workspace's schema before the fetch. Until the
 		// new response lands, createTriggers/createScopes fall back to the
 		// hardcoded software defaults — correct for a workspace whose schema
@@ -118,7 +127,7 @@
 		// rendering the previous workspace's vocabulary on the new page.
 		playbooksCollection = null;
 		try {
-			const coll = await api.collections.get(ws, 'playbooks');
+			const coll = await api.collections.get(ws, pb);
 			// Stale-response guard: if the user has since moved to another
 			// workspace, drop the result rather than overwriting state with
 			// schema from a workspace we are no longer on.
@@ -278,7 +287,7 @@
 			if (newInvocationSlug.trim()) {
 				fieldsObj.invocation_slug = newInvocationSlug.trim();
 			}
-			await api.items.create(wsSlug, 'playbooks', {
+			await api.items.create(wsSlug, playbooksSlug, {
 				title: newTitle.trim(),
 				content: newContent,
 				fields: JSON.stringify(fieldsObj)
@@ -350,7 +359,7 @@
 					isSetAside(item.content_state) ? 'set_aside' : 'pending'))) {
 				return;
 			}
-			await api.items.create(wsSlug, 'playbooks', {
+			await api.items.create(wsSlug, playbooksSlug, {
 				title: copyTitle(item.title),
 				content: item.content,
 				fields: JSON.stringify(dupFields)
@@ -588,10 +597,9 @@
 					     staleness question does not arise, because the fetch is
 					     already workspace-guarded; and the lookup uses that object's
 					     OWN slug, so it survives a rename of the playbooks collection
-					     where a hardcoded `'playbooks'` literal would not. The rest
-					     of this page still addresses the collection by literal, so
-					     the page as a whole does not yet survive that rename — this
-					     read simply stops adding to the problem. -->
+					     where a hardcoded `'playbooks'` literal would not. Since
+					     BUG-3481 the rest of the page resolves the collection by its
+					     artifact-kind trait too, so the page survives that rename. -->
 					{@const declaredStatus = categoricalValueFor(playbooksCollection ? [playbooksCollection] : [], { collection_slug: playbooksCollection?.slug }, 'status', fields.status)}
 					<!-- "NO SCHEMA YET" IS NOT "DRAFT" (BUG-3067 round 5). The two
 					     loaders are independent — `loadPlaybooks` clears `loading` on
