@@ -43,6 +43,11 @@ type builtinStateResponse struct {
 	// changed (seed -> library), apart from what the item's user changed
 	// (seed -> the item's current text, which the caller already has).
 	Seed *builtinText `json:"seed,omitempty"`
+	// Current is the item's own text, read in the same request as Seq, present
+	// whenever there is something to offer (TASK-3462 U3b, codex r5). A client
+	// comparing against its own copy of the item could pair this seq with an
+	// older body, and accept text it never showed.
+	Current *builtinText `json:"current,omitempty"`
 	// Seq is the item's version token at the read: send it back as
 	// expected_seq to take the update.
 	Seq int64 `json:"seq"`
