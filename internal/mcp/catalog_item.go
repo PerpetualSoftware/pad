@@ -181,7 +181,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "reminder_id", Type: "string", Description: "A reminder's id, as returned when it was armed. Required for: ack-reminder. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not."},
 
 	// ── Execution lease ── (#1221)
-	{Name: "holder", Type: "string", Description: "Lease holder identity for action=claim/release. Optional — defaults to the authenticated user. Use a stable per-runner name (e.g. \"sweep-runner-2\") when several runners share one account, so a 409 names which one holds the item."},
+	{Name: "holder", Type: "string", Description: "Lease holder for action=claim/release. Optional — defaults to your agent name, else the account's email (remote /mcp: the email). Set it only for a runner with no agent name (e.g. \"sweep-runner-2\"); next/ready compare against the default, so a custom holder's items leave your own next/ready."},
 	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"). Optional — server default 15m, max 24h. Whole seconds cross the wire: minimum 1s (shorter is refused), fractional seconds truncate. A re-claim by the live holder extends the expiry from now (heartbeat); size the TTL to your polling/heartbeat cadence, not to the whole job."},
 
 	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import — this is the artifact a prior `export` produced. NOT the same as `content` (which is just the item's Markdown body)."},
@@ -391,7 +391,7 @@ Actions:
     because a reminder may have been armed to fire after the
     work was done.
   claim         — Atomically claim an item for execution (lease with expiry).
-    Required: ref. Optional: holder (default: you), ttl (Go
+    Required: ref. Optional: holder (default: your agent name), ttl (Go
     duration, default 15m, max 24h).
     Exactly one concurrent claimer wins; the loser gets a 409
     naming the live holder and expiry — log it and skip, don't

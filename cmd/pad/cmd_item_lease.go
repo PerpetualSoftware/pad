@@ -31,6 +31,17 @@ Fails with the live holder and expiry when someone else holds the item, so
 the loser can log who won and skip instead of double-working. The lease
 expires on its own; a crashed holder blocks nobody past the TTL.
 
+Without --holder the lease is held by this session's agent name (the name
+"pad session register" recorded, else .pad.toml's agent_name, else
+$PAD_AGENT, else the detected runtime), falling back to your account's
+email. So two agents on one account get distinct leases: the second one's
+claim is refused, naming the first. Register each session under its own
+name; two unregistered sessions of the same runtime share one name.
+
+"pad project next" / "ready" leave out items another holder has leased.
+They compare against this same default, so an item you claimed with a
+custom --holder is left out of your own next / ready too.
+
 Examples:
   pad item claim TASK-5
   pad item claim TASK-5 --holder sweep-runner --ttl 30m`,
@@ -77,7 +88,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&holderFlag, "holder", "", "lease holder identity (default: the authenticated user)")
+	cmd.Flags().StringVar(&holderFlag, "holder", "", "lease holder identity (default: this session's agent name, else your email). A custom holder's items are hidden from your own project next / ready")
 	cmd.Flags().StringVar(&ttlFlag, "ttl", "", "lease duration, e.g. 15m, 1h (default: 15m; max 24h)")
 
 	return cmd
@@ -117,7 +128,7 @@ holder's LIVE lease is refused.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&holderFlag, "holder", "", "lease holder identity (default: the authenticated user)")
+	cmd.Flags().StringVar(&holderFlag, "holder", "", "lease holder identity (default: this session's agent name, else your email; must match the claim's)")
 
 	return cmd
 }
