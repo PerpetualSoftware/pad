@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy, untrack } from 'svelte';
-	import { api, isPlanLimitError } from '$lib/api/client';
+	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -641,13 +641,13 @@
 			if (!identityHeld(epochAtEntry)) return;
 			members = members.filter(m => m.user_id !== userId);
 			toastStore.show(`Removed ${name}`, 'success');
-		} catch {
+		} catch (err) {
 			// The FAILURE report is fenced too. A toast naming another
 			// workspace's member is the half the server cannot bound: the
 			// request is refused for the new user, and the message still
 			// reaches them.
 			if (!identityHeld(epochAtEntry)) return;
-			toastStore.show('Failed to remove member', 'error');
+			toastStore.show(memberChangeFailure(err, 'Failed to remove member'), 'error');
 		}
 	}
 
@@ -667,7 +667,29 @@
 		}
 	}
 
-	async function handleChangeRole(userId: string, newRole: string) {
+	// TASK-2190: a refused member change says why. The server refuses
+	// demoting or removing the workspace's owner (canonical_owner) or its last
+	// owner (last_owner), and removing yourself, each with a message for the
+	// person; a bare "Failed to ..." used to hide it.
+	function memberChangeFailure(err: unknown, fallback: string): string {
+		return err instanceof PadApiError && err.message ? err.message : fallback;
+	}
+
+	async function handleChangeRole(userId: string, newRole: string, select?: HTMLSelectElement) {
+		const previous = members.find((m) => m.user_id === userId)?.role;
+		// The select shows the person's choice before the server has agreed
+		// to it; put the stored role back whenever the change does not land.
+		const revert = () => {
+			if (select && previous) select.value = previous;
+		};
+		// TASK-2190: demoting YOURSELF from owner takes away your own access to
+		// members, collections and settings here, so it is confirmed first.
+		if (userId === sessionUserId && previous === 'owner' && newRole !== 'owner') {
+			if (!confirm('Give up your owner role? You will no longer be able to manage members, collections or settings in this workspace.')) {
+				revert();
+				return;
+			}
+		}
 		// Captured at ENTRY, before any await: the only epoch that cannot be
 		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
@@ -676,9 +698,10 @@
 			if (!identityHeld(epochAtEntry)) return;
 			members = members.map(m => m.user_id === userId ? { ...m, role: newRole } : m);
 			toastStore.show('Role updated', 'success');
-		} catch {
+		} catch (err) {
 			if (!identityHeld(epochAtEntry)) return;
-			toastStore.show('Failed to update role', 'error');
+			revert();
+			toastStore.show(memberChangeFailure(err, 'Failed to update role'), 'error');
 		}
 	}
 
@@ -1028,15 +1051,18 @@
 											<select
 												class="role-select"
 												value={member.role}
-												onchange={(e) => handleChangeRole(member.user_id, (e.target as HTMLSelectElement).value)}
+												onchange={(e) => handleChangeRole(member.user_id, (e.target as HTMLSelectElement).value, e.target as HTMLSelectElement)}
 											>
 												<option value="owner">Owner</option>
 												<option value="editor">Editor</option>
 												<option value="viewer">Viewer</option>
 											</select>
-											<Button variant="danger" size="sm" onclick={() => handleRemoveMember(member.user_id, member.user_name)}>
-												Remove
-											</Button>
+											<!-- TASK-2190: no Remove on your own row; the server refuses it. -->
+											{#if member.user_id !== sessionUserId}
+												<Button variant="danger" size="sm" onclick={() => handleRemoveMember(member.user_id, member.user_name)}>
+													Remove
+												</Button>
+											{/if}
 										{:else}
 											<Chip color="var(--accent-gray)">{member.role}</Chip>
 										{/if}
