@@ -229,7 +229,7 @@ test('on Desktop: native rules, no hint line, Settings on the top row, the ref i
   await settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
   expect(await ui.find({ type: 'Text', text: /^─+$/ })).toBeUndefined()
-  expect((await ui.findAll({ type: 'Svg' })).length).toBe(2) // one native rule under the header, one over the footer
+  expect((await ui.findAll({ type: 'Svg' })).length).toBe(3) // a spacer over the tabs, a rule under the header, one over the footer
   expect(await ui.find({ type: 'Text', text: /move · ⏎ open/ })).toBeUndefined()
   expect(await ui.find({ key: 'tab-settings' })).toBeDefined()
   expect((await ui.find({ key: 'row-now-TASK-7' }))?.props.label).toBe('Fix the login bug')

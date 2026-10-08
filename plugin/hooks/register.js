@@ -503,6 +503,9 @@ function draw($, e) {
   // translucent, 2400-wide version drew nothing.
   // The line sits at the top of an 8px leaf, so 6px of space follows it.
   const RULE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="8" viewBox="0 0 600 8" preserveAspectRatio="none"><rect x="0" y="0" width="600" height="2" fill="#888888"/></svg>'
+  // Desktop only: a few pixels of air, as an empty vector leaf (it lays out
+  // exactly; a blank Text would cost a whole row).
+  const spacer = (px) => (desktop && ui.Svg ? ui.Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="${px}"></svg>`, alt: '', height: px }) : null)
   const rule = () =>
     desktop
       ? (ui.Svg ? ui.Svg({ source: RULE_SVG, alt: 'divider', height: 8 }) : null)
@@ -531,6 +534,7 @@ function draw($, e) {
           }),
         ],
       }),
+      spacer(6),
       Box({
         flexDirection: 'row',
         columnGap: desktop ? 1 : 2,
