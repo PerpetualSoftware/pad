@@ -336,6 +336,22 @@ export class CollabProvider {
 	private cursorAnchored = false;
 
 	/**
+	 * TASK-2199: this tab holds local edits the server has not been sent.
+	 *
+	 * Set when a LOCAL update cannot go out: the socket is not open (send()
+	 * is a no-op then, nothing is queued), or the session is not anchored yet
+	 * and the update is buffered. Cleared only when the local state has been
+	 * WRITTEN to an open socket: the reconnect's catch-up frame (the whole
+	 * doc) or the pre-anchor flush. There is no ack for a sync update, so
+	 * "written to an open socket" is the strongest signal the client has; the
+	 * server persists a sync update on receipt.
+	 *
+	 * Reactive: the page reads it to warn before the tab closes, and to tell a
+	 * force_refresh that discards local edits from one that discards nothing.
+	 */
+	unsentLocalEdits = $state(false);
+
+	/**
 	 * Buffer of local Yjs updates that fired before
 	 * `cursorAnchored` flipped true. Each entry is the raw
 	 * `update` Uint8Array from `ydoc.on('update', ...)`. On
@@ -490,11 +506,15 @@ export class CollabProvider {
 					return;
 				}
 				this.preAnchorUpdates.push(update);
+				this.unsentLocalEdits = true;
 				return;
 			}
 			const enc = encoding.createEncoder();
 			encoding.writeVarUint(enc, MESSAGE_SYNC);
 			syncProtocol.writeUpdate(enc, update);
+			// TASK-2199: a closed socket drops this frame (send() queues
+			// nothing); the reconnect's catch-up frame carries it instead.
+			if (!this.socketOpen()) this.unsentLocalEdits = true;
 			this.send(encoding.toUint8Array(enc));
 		};
 
@@ -794,6 +814,8 @@ export class CollabProvider {
 			const enc3 = encoding.createEncoder();
 			encoding.writeVarUint(enc3, MESSAGE_SYNC);
 			syncProtocol.writeUpdate(enc3, Y.encodeStateAsUpdate(this.ydoc));
+			// TASK-2199: the whole doc, so every local edit is in it.
+			if (this.socketOpen()) this.unsentLocalEdits = false;
 			this.send(encoding.toUint8Array(enc3));
 		}
 
@@ -1030,6 +1052,8 @@ export class CollabProvider {
 				if (!wasAnchored && this.preAnchorUpdates.length > 0) {
 					const buffered = this.preAnchorUpdates;
 					this.preAnchorUpdates = [];
+					// TASK-2199: every buffered update goes out on this socket.
+					if (this.socketOpen()) this.unsentLocalEdits = false;
 					for (const upd of buffered) {
 						const enc = encoding.createEncoder();
 						encoding.writeVarUint(enc, MESSAGE_SYNC);
@@ -1247,6 +1271,10 @@ export class CollabProvider {
 			this.reconnectTimer = undefined;
 			this.connect();
 		}, delay);
+	}
+
+	private socketOpen(): boolean {
+		return !!this.ws && this.ws.readyState === this.WebSocketImpl.OPEN;
 	}
 
 	private send(data: Uint8Array): void {

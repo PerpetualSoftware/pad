@@ -110,6 +110,8 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		EditCollectionModal: ['onupdated', 'onclose'],
 		CopyItemDialog: ['onmove', 'oncopied'],
 		BuiltinUpdateNotice: ['onAccepted'],
+		// TASK-2199: the copy result arrives after the clipboard await.
+		OfflineRecoveryNotice: ['oncopied', 'oncopyfailed'],
 	};
 
 	it('the listener bumps the identity key', () => {

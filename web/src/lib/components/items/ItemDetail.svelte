@@ -64,6 +64,7 @@
 	import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
 	import RelationBacklinksPanel from '$lib/components/RelationBacklinksPanel.svelte';
 	import { goto } from '$app/navigation';
+	import { beforeNavigate } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { canonicalEditorMarkdown } from '$lib/collab/canonicalMarkdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -95,6 +96,8 @@
 	import { reconcileArchivedState } from '$lib/attachments/archivedItemRegistry';
 	import { createViewerResourceGen } from '$lib/attachments/viewerResource.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { leaveQuestion, offlineRecoveryOnForceRefresh, unloadLosesEdits, type OfflineRecovery } from '$lib/collab/offlineEdits';
+	import OfflineRecoveryNotice from './OfflineRecoveryNotice.svelte';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { isSamePaneTarget, breadcrumbParentTarget } from '$lib/collections/paneTarget';
 	import { readPaneState } from '$lib/collections/paneController';
@@ -1141,6 +1144,33 @@
 	 * delete by mistake. Callers fall back to `item.content` when this
 	 * returns null.
 	 */
+	// ── Offline edits a reload discarded (TASK-2199) ─────────────────────────
+	// A reconnect can't always carry a tab's offline edits: a force_refresh
+	// (the server pruned or rebuilt the op-log while the tab was away), a stale
+	// cursor=0, or an overflowing pre-anchor buffer rebuilds the editor from
+	// the server's text, and old-doc updates can't be applied to the new doc.
+	// So the tab's version is captured before the rebuild and handed back:
+	// a notice with Copy, never a write over the server's text. Until it is
+	// copied or dismissed, leaving the item or closing the tab asks first.
+	let offlineRecovery = $state<OfflineRecovery | null>(null);
+
+	// In-app navigation (another item, another page) with offline edits still
+	// at risk asks first. Closing or reloading the tab is the beforeunload
+	// handler's job, so a 'leave' navigation is left to it.
+	beforeNavigate((nav) => {
+		if (nav.type === 'leave') return;
+		const question = leaveQuestion({
+			unsentLocalEdits: collabProvider?.unsentLocalEdits ?? false,
+			recovery: offlineRecovery
+		});
+		if (!question) return;
+		if (!confirm(question)) {
+			nav.cancel();
+			return;
+		}
+		offlineRecovery = null;
+	});
+
 	function liveEditorMarkdown(): string | null {
 		if (!editorInstance || editorInstance.isDestroyed) return null;
 		try {
@@ -2761,6 +2791,15 @@
 			// either flushes a real difference or dedupes and stamps.
 			onOpLogCursor: () => settleCollabIfCurrent(ctx),
 			onForceRefresh: () => {
+				// TASK-2199: local edits this rebuild discards are captured first
+				// and handed back, never written over the server's text.
+				const recovered = offlineRecoveryOnForceRefresh({
+					unsentLocalEdits: provider.unsentLocalEdits,
+					liveMarkdown: liveEditorMarkdown(),
+					storedContent: item?.content ?? '',
+					itemId: ctx.itemId
+				});
+				if (recovered) offlineRecovery = recovered;
 				toastStore.show(
 					'Editor refreshed — rejoining with the latest content from the server.',
 					'info',
@@ -3025,7 +3064,16 @@
 			// work that has not been confirmed saved. Tying the prompt to the
 			// latch would silently stop warning whenever a visibilitychange
 			// happened to fire first.
-			if (rawContentSaver.dirty && item) {
+			// TASK-2199: collab edits the server hasn't been sent, and an offline
+			// version a reload handed back that hasn't been copied, are lost on
+			// close the same way.
+			if (
+				unloadLosesEdits({
+					rawDirty: rawContentSaver.dirty && !!item,
+					unsentLocalEdits: collabProvider?.unsentLocalEdits ?? false,
+					recovery: offlineRecovery
+				})
+			) {
 				event.preventDefault();
 				event.returnValue = '';
 			}
@@ -5859,8 +5907,11 @@
 		switch (s) {
 			case 'synced': return 'Real-time collaboration active. Changes sync instantly.';
 			case 'connecting': return 'Connecting to the collaboration server…';
-			case 'reconnecting': return 'Connection dropped. Trying to reconnect…';
-			case 'offline': return 'Could not reconnect. Edits are saved locally and will sync when the connection is restored.';
+			case 'reconnecting': return 'Connection dropped. Trying to reconnect… Your edits are kept in this tab until then; closing the tab loses them.';
+			// TASK-2199: they are held in THIS TAB only (no browser storage). If
+			// the item changed on the server meanwhile, the reload hands them
+			// back to copy instead.
+			case 'offline': return "Can't reach the server. Your edits are kept in this tab and will sync when the connection returns. Closing the tab before then loses them.";
 		}
 	}
 </script>
@@ -6243,6 +6294,27 @@
 				</span>
 			{/if}
 		</div>
+
+		{#if offlineRecovery && item && offlineRecovery.itemId === item.id}
+			<!-- TASK-2199: a reload discarded offline edits; hand them back. -->
+			<!-- Its copy callbacks run after the clipboard await, so they refuse
+			     under another identity (the BUG-3084 class C fence). -->
+			{#key identityKey}{@const handedDown = identityKey}
+			<OfflineRecoveryNotice
+				text={offlineRecovery.text}
+				oncopied={() => {
+					if (handedDown !== identityKey) return;
+					offlineRecovery = null;
+					toastStore.show('Your version is on the clipboard.', 'success');
+				}}
+				oncopyfailed={() => {
+					if (handedDown !== identityKey) return;
+					toastStore.show('Could not copy. Open "Show your version" and copy it by hand.', 'error');
+				}}
+				ondismiss={() => (offlineRecovery = null)}
+			/>
+			{/key}
+		{/if}
 
 		<!-- Built-in update nudge (TASK-3462 U3b): a convention or playbook Pad
 		     ships whose library text is newer. Renders nothing otherwise; the

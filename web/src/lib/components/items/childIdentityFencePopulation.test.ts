@@ -177,6 +177,9 @@ const POPULATION: string[] = [
 	'lib/components/items/ItemAttachmentStrip.svelte',
 	'lib/components/items/DecisionChips.svelte',
 	'lib/components/items/BuiltinUpdateNotice.svelte',
+	// TASK-2199: no requests; its one await is the clipboard write, and the
+	// callbacks it fires after it are fenced on the parent side (class C).
+	'lib/components/items/OfflineRecoveryNotice.svelte',
 	// SPEC-6 U9d (TASK-3413): installed apps' item actions; its list load and
 	// its mint each fence with authStore.identityFence() after the await.
 	'lib/components/items/ItemAppActions.svelte',

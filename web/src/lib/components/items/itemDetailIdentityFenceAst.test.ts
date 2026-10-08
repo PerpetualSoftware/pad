@@ -231,14 +231,14 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'connection state of this instance\'s own provider', reviewed: 'b0f9f4cc5f23',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration', reviewed: 'b4f84a20381f' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration', reviewed: 'e34ec27ff651' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await', reviewed: '08975801d51f' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it)', reviewed: 'cdaed297f822' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked', reviewed: '204516396fe0',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved', reviewed: '92d2b34446e7',
 		may: ['teardownFlushed'],
 	},
 	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '38d145ab47d5' },
@@ -318,6 +318,8 @@ const CONTINUATIONS: SignedRow[] = [
  * one is an edit to every unit that reaches it.
  */
 const HELPERS: Record<string, string> = {
+	// TASK-2199: read by onForceRefresh; a pure read of the live editor.
+	liveEditorMarkdown: '898dfa3cfe31',
 	primeCanonicalSeed: '59c3a38ec887',
 	adoptCollection: '56ea87102958',
 	// BUG-3050 U3: the kept local body keeps ITS content_state. Still synchronous,
