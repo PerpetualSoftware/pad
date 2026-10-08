@@ -21,6 +21,16 @@
 //      from .pad.toml.
 
 const MCP_SERVER_GUESSES = ['pad', 'claude.ai pad', 'plugin:pad:pad', 'getpad']
+const PAD_CLOUD_APP = 'https://app.getpad.dev'
+
+// An MCP endpoint's web app: Pad Cloud serves MCP from its own host, and a
+// self-hosted Pad serves it at <base>/mcp.
+export function webBaseFromMcp(url) {
+  let u
+  try { u = new URL(url) } catch { return PAD_CLOUD_APP }
+  if (u.hostname === 'mcp.getpad.dev') return PAD_CLOUD_APP
+  return (u.origin + u.pathname.replace(/\/mcp\/?$/, '')).replace(/\/+$/, '')
+}
 
 // .pad.toml from the session directory upwards: { workspace, url }.
 async function readPadToml($) {
@@ -116,15 +126,35 @@ function makeClient($, settings, toml) {
     )
   }
 
+  let webBase = null
+  async function resolveWebBase() {
+    const clean = (u) => String(u).trim().replace(/\/+$/, '')
+    if (toml?.url) return clean(toml.url)
+    try {
+      if (transport === 'cli') {
+        const info = await cli(['server', 'info'])
+        if (info?.config?.base_url) return clean(info.config.base_url)
+      } else if (transport === 'mcp' && mcpServer && !mcpServer.startsWith('claude.ai ')) {
+        const r = await $.process.run(['claude', 'mcp', 'get', mcpServer], { timeoutMs: 10000 })
+        const url = (String(r.stdout || '').match(/URL:\s*(\S+)/) || [])[1]
+        if (url) return webBaseFromMcp(url)
+      }
+    } catch {}
+    return PAD_CLOUD_APP
+  }
+
   const via = (cliFn, mcpFn) => (...a) => (transport === 'cli' ? cliFn(...a) : mcpFn(...a))
 
   return {
     connect,
     get transport() { return transport },
     get workspace() { return ws },
-    webUrl(ref) {
-      const base = (toml?.url || 'https://app.getpad.dev').replace(/\/$/, '')
-      return `${base}/-/r/${ws}/${ref}`
+    // The web address of an item on the server this pane talks to (BUG-3484):
+    // .pad.toml's url, else the CLI's configured server, else the MCP server's
+    // own URL (Pad Cloud's MCP host maps to the app), else Pad Cloud.
+    async webUrl(ref) {
+      if (!webBase) webBase = await resolveWebBase()
+      return `${webBase}/-/r/${ws}/${ref}`
     },
     dashboard: via(() => cli(['project', 'dashboard']), () => mcp('pad_project', { action: 'dashboard' })),
     ready: via(() => cli(['project', 'ready']), () => mcp('pad_project', { action: 'ready' })),
@@ -858,7 +888,7 @@ function draw($, e) {
             $.ui.toast('In your prompt: edit it or press Enter')
           }),
           act('copy', 'copy ref', 'y', (press) => { $.ui.copy({ text: item.ref, surface: press?.surface }); $.ui.toast('Copied ' + item.ref) }),
-          act('open', 'copy link', 'o', (press) => { const url = client.webUrl(item.ref); $.ui.copy({ text: url, surface: press?.surface }); $.ui.toast('Link copied') }),
+          act('open', 'copy link', 'o', async (press) => { const url = await client.webUrl(item.ref); $.ui.copy({ text: url, surface: press?.surface }); $.ui.toast('Link copied') }),
           act('back', 'back', 'h', () => back($)),
         ],
       }),

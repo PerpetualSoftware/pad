@@ -44,12 +44,13 @@ function cliAnswer(argv: readonly string[], calls: string[][]) {
     'item update': { ref: a[2] },
     'item comment': { ok: true },
     'item create': { ref: 'TASK-10', title: a[3] },
+    'server info': { config: { base_url: 'http://pad.lan:7777/' } },
   }
   const k = a[0] === 'bootstrap' ? 'bootstrap' : key
   return { exitCode: 0, stdout: JSON.stringify(out[k] ?? {}), stderr: '' }
 }
 
-function stubs(on: any, opts: { cli?: boolean; mcp?: boolean; linked?: boolean; onFill?: (t: string) => void; claudeRuns?: string[][] } = {}) {
+function stubs(on: any, opts: { cli?: boolean; mcp?: boolean; linked?: boolean; onFill?: (t: string) => void; claudeRuns?: string[][]; copied?: string[]; tomlUrl?: string } = {}) {
   const cli = opts.cli !== false
   const mcp = opts.mcp !== false
   const linked = opts.linked !== false
@@ -61,7 +62,7 @@ function stubs(on: any, opts: { cli?: boolean; mcp?: boolean; linked?: boolean; 
   on('tool.call', () => ({ result: 'ok' }))
   on('session.cwd', () => ({ value: '/work/demo' }))
   on('fs.exists', ($: any, e: any) => ({ value: linked && e.path === '/work/demo/.pad.toml' }))
-  on('fs.read', () => ({ value: 'workspace = "demo"\nurl = "https://pad.example"\n' }))
+  on('fs.read', () => ({ value: 'workspace = "demo"\n' + (opts.tomlUrl ? `url = "${opts.tomlUrl}"\n` : '') }))
   on('store.get', ($: any, e: any) => ({ value: saved.get(e.key) }))
   on('store.set', ($: any, e: any) => { saved.set(e.key, e.value); return { value: undefined } })
   on('process.run', ($: any, e: any) => {
@@ -85,7 +86,7 @@ function stubs(on: any, opts: { cli?: boolean; mcp?: boolean; linked?: boolean; 
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
-  on('ui.copy', () => ({ value: undefined }))
+  on('ui.copy', ($: any, e: any) => { (opts as any).copied?.push(e.text); return { value: undefined } })
   on('prompt.fill', ($: any, e: any) => { opts.onFill?.(e.text); return { isFilled: true } })
   on('command.register', () => ({ value: undefined }))
   on('clock.every', () => ({ value: undefined }))
@@ -272,5 +273,20 @@ test('with no CLI and no MCP server, the pane guides setup; Pad Cloud is added o
   await ui.press({ key: 'gs-server' })
   await settle()
   expect(filled[2]).toMatch(/self-hosted Pad server/)
+  await ui.unmount()
+})
+
+test('copy link points at the server this pane talks to, not always Pad Cloud (BUG-3484)', async ($, on) => {
+  const copied: string[] = []
+  stubs(on, { copied })
+  await $.session.start({ cwd: '/work/demo' })
+  await $.command.run({ command: 'pad-pane', args: '' })
+  await settle()
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'row-now-TASK-7' })
+  await settle()
+  await ui.press({ key: 'do-open' })
+  await settle()
+  expect(copied).toEqual(['http://pad.lan:7777/-/r/demo/TASK-7'])
   await ui.unmount()
 })
