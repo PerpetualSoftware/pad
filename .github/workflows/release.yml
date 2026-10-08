@@ -183,3 +183,46 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: "dist/pad_*_*_*.tar.gz,dist/pad_*_*_*.zip"
+
+  # TASK-3487: point the Claude Code plugin marketplace at this release.
+  # `.claude-plugin/marketplace.json` on main is what `/plugin marketplace add
+  # PerpetualSoftware/pad` reads; the script pins its pad entry to this tag
+  # (git-subdir, path plugin) and pushes to main. STABLE TAGS ONLY: the brew
+  # cask never gets an rc, so the plugin pairs with the CLI people have.
+  #
+  # Its own job, after the release, and it never fails the run: the release is
+  # the product and the pin is bookkeeping. A pin that cannot land opens an
+  # issue instead, so a maintainer can run the script by hand.
+  pin-plugin:
+    name: Pin the plugin marketplace to this release
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    # One pin at a time; the script also refuses to move the pin backwards,
+    # for two releases that finish out of order.
+    concurrency:
+      group: pin-plugin
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Pin the marketplace to ${{ github.ref_name }}
+        id: pin
+        continue-on-error: true
+        run: scripts/pin-plugin-marketplace.sh --push "$GITHUB_REF_NAME"
+
+      - name: Report a pin that did not land
+        if: ${{ steps.pin.outcome == 'failure' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::warning::The plugin marketplace was not pinned to $GITHUB_REF_NAME; see the opened issue."
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Plugin marketplace not pinned to $GITHUB_REF_NAME" \
+            --body "The release workflow's pin step failed (run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). The release itself is published. Pin by hand from an up-to-date main: \`scripts/pin-plugin-marketplace.sh --push $GITHUB_REF_NAME\` (TASK-3487)."
