@@ -1502,6 +1502,14 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification, gen int64) {
 	defer func() { b.flush(&pending) }()
 
 	b.mu.Lock()
+	if b.closed {
+		// A frame that won the receive loop's select after Close (BUG-2741):
+		// Close cancels the context AND closes the pubsub, so both cases can be
+		// ready and Go picks one at random. A closed bus has no subscribers to
+		// be honest to, so it records nothing and reports nothing.
+		b.mu.Unlock()
+		return
+	}
 	if b.subGen != gen {
 		// A straggler from a subscription that has already been replaced. It
 		// arrived on a socket this instance has stopped believing, so it is not
@@ -1562,6 +1570,12 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if b.closed {
+		// Checked here too, under the lock that appends, for the reason the
+		// subGen check below is: fanOutFromRedis checks in an earlier
+		// acquisition, and Close can land between the two (BUG-2741).
+		return
+	}
 	if b.subGen != gen {
 		// A straggler from a replaced subscription. Checked HERE, under the
 		// lock that appends, because fanOutFromRedis's check happens in a
@@ -1815,6 +1829,11 @@ func (b *RedisBus) dropCoverageChecked(reason string, gen *int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if b.closed {
+		// A closed bus covers nothing and has no one to signal; a report from
+		// here would be a reset counted after shutdown (BUG-2741).
+		return
+	}
 	if gen != nil && b.subGen != *gen {
 		return
 	}
