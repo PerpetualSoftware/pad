@@ -220,6 +220,11 @@ let settings = { ...DEFAULTS }
 let client = null
 let conn = null // { transport, ws } once connected
 let connError = null
+// Get started: what this machine has, read when the pane can't connect.
+const PAD_CLOUD_MCP = 'https://mcp.getpad.dev'
+let setup = null // { hasCli, linked } once checked
+let cloudStep = null // null | 'confirm' | 'added' | 'failed'
+let cloudError = null
 let open = false
 
 let view = 'now'
@@ -239,7 +244,7 @@ let notice = null
 // scroll whenever the drawing is taller than the pane, so the drawing is always
 // kept one row taller, and the two hooks below give each key its own meaning.
 const ring = { order: [], cur: null, lastRow: {}, terminal: true }
-const LIST_KEY = /^(row-|coll-|act-|empty-back$)/
+const LIST_KEY = /^(row-|coll-|act-|empty-back$|gs-)/
 const NOT_A_STOP = /^(refresh|add)$/ // footer actions: their hotkeys reach them
 const stopOf = (k) => (LIST_KEY.test(k) ? 'LIST' : k)
 const listKeys = () => ring.order.filter((k) => LIST_KEY.test(k))
@@ -304,7 +309,35 @@ async function ensureClient($) {
   } catch (err) {
     conn = null
     connError = msg(err)
+    await checkSetup($)
     return false
+  }
+}
+
+async function checkSetup($) {
+  let hasCli = false
+  try {
+    hasCli = (await $.process.run(['pad', '--version'], { timeoutMs: 5000 })).exitCode === 0
+  } catch {}
+  setup = { hasCli, linked: !!(await readPadToml($)) }
+}
+
+// Pad Cloud needs no install: add its MCP server to Claude Code (user scope),
+// then the person sends /reload-plugins and signs in from /mcp. Listing it in
+// the plugin manifest instead would nag every session, self-hosters included
+// (PLAN-3490).
+async function addPadCloud($) {
+  try {
+    const r = await $.process.run(['claude', 'mcp', 'add', '--scope', 'user', '--transport', 'http', 'pad', PAD_CLOUD_MCP], { timeoutMs: 20000 })
+    if (r.exitCode !== 0) throw new Error((r.stderr || r.stdout || 'claude mcp add failed').trim().split('\n')[0])
+    cloudStep = 'added'
+    cloudError = null
+    settings = { ...settings, transport: 'auto' }
+    client = null
+    await $.prompt.fill({ text: '/reload-plugins' }).catch(() => {})
+  } catch (err) {
+    cloudStep = 'failed'
+    cloudError = msg(err)
   }
 }
 
@@ -470,6 +503,9 @@ function draw($, e) {
   // translucent, 2400-wide version drew nothing.
   // The line sits at the top of an 8px leaf, so 6px of space follows it.
   const RULE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="8" viewBox="0 0 600 8" preserveAspectRatio="none"><rect x="0" y="0" width="600" height="2" fill="#888888"/></svg>'
+  // Desktop only: a few pixels of air, as an empty vector leaf (it lays out
+  // exactly; a blank Text would cost a whole row).
+  const spacer = (px) => (desktop && ui.Svg ? ui.Svg({ source: `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="${px}"></svg>`, alt: '', height: px }) : null)
   const rule = () =>
     desktop
       ? (ui.Svg ? ui.Svg({ source: RULE_SVG, alt: 'divider', height: 8 }) : null)
@@ -498,6 +534,7 @@ function draw($, e) {
           }),
         ],
       }),
+      spacer(6),
       Box({
         flexDirection: 'row',
         columnGap: desktop ? 1 : 2,
@@ -547,12 +584,52 @@ function draw($, e) {
   const empty = (t) => [dim(busy ? '  loading…' : '  ' + t)]
 
   let body = []
-  if (!conn) {
+  if (!conn && !setup) {
+    body = [dim(busy || !connError ? '  connecting…' : '  ' + clip(connError, W * 3))]
+  } else if (!conn) {
+    const have = (ok, label) => T((ok ? '✔ ' : '○ ') + label, { color: ok ? C.done : C.muted })
+    const fill = (text) => $.prompt.fill({ text }).catch(() => {})
+    const path = (key, hotkey, label, note, onPress) =>
+      Box({
+        flexDirection: 'column',
+        children: [
+          Button({ key: 'gs-' + key, hotkey, plain: true, label, onPress, ...(key === 'cloud' ? { autoFocus: true } : {}) }),
+          dim('   ' + clip(note, W * 2)),
+        ],
+      })
     body = [
-      T('Not connected to Pad', { bold: true, color: C.blocked }),
-      T(clip(connError || 'Connecting…', W * 3)),
+      section('Get started with Pad'),
+      dim(clip('Pad is shared memory for you and your agents. Pick how to connect; you can change it later.', W * 2)),
       gap(),
-      dim('Link this folder with `pad init`, or connect the Pad MCP server with /mcp, then press r.'),
+      have(setup.hasCli, 'pad CLI installed'),
+      have(setup.linked, 'this folder is linked to a workspace'),
+      gap(),
+      path('cloud', '1', 'Use Pad Cloud — nothing to install',
+        cloudStep === 'confirm'
+          ? 'Adds Pad Cloud to Claude Code: claude mcp add --transport http pad ' + PAD_CLOUD_MCP + '. Press 1 again to go ahead.'
+          : 'Sign in or sign up in your browser; Claude Code talks to Pad Cloud over MCP.',
+        async () => {
+          if (cloudStep !== 'confirm') { cloudStep = 'confirm'; return redraw($) }
+          await addPadCloud($)
+          redraw($)
+        }),
+      ...(cloudStep === 'added'
+        ? [T(clip('Added. Send /reload-plugins (it is in your prompt), then open /mcp → pad → Authenticate. Press r once you are signed in.', W * 3), { color: C.done })]
+        : cloudStep === 'failed'
+          ? [T(clip('Could not add it: ' + (cloudError || '') + '. Run it yourself: claude mcp add --transport http pad ' + PAD_CLOUD_MCP, W * 3), { color: C.blocked })]
+          : []),
+      gap(),
+      path('local', '2', setup.hasCli ? 'Set up this folder with the pad CLI' : 'Run Pad on this machine',
+        setup.hasCli ? 'Claude runs /pad:onboard: a workspace for this folder and a first item.' : 'Claude installs the pad CLI (Homebrew or a release binary), then sets up this folder.',
+        () => fill(setup.hasCli
+          ? '/pad:onboard'
+          : 'Install the Pad CLI for me (brew install PerpetualSoftware/tap/pad, or the binary for this OS from https://github.com/PerpetualSoftware/pad/releases), then run /pad:onboard to set up this folder.')),
+      gap(),
+      path('server', '3', 'Connect to your own Pad server',
+        'Claude links this folder to a self-hosted Pad (pad init --url …, then pad auth login).',
+        () => fill('Connect this folder to my self-hosted Pad server: ask me for its URL, then run pad init --url <url> and pad auth login. If I have no server yet, point me to https://getpad.dev/docs/self-hosting')),
+      gap(),
+      dim(clip('r: check again', W)),
     ]
   } else if (mode === 'add') {
     const colls = data.collections.filter((c) => !c.system)
