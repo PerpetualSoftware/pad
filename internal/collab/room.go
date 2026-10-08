@@ -635,6 +635,12 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 	// own op-log id. All or nothing: a failed batch publishes every frame
 	// with id 0, as one failed frame always was.
 	results, err := r.store.AppendSyncFrames(r.itemID, batch, r.schemaVersion)
+	if err == nil && len(results) != len(batch) {
+		// The contract is one result per frame. A store that answered
+		// otherwise is treated as a failed batch rather than indexed past
+		// its end (codex r2).
+		err = errors.New("AppendSyncFrames did not return one result per frame")
+	}
 	if err != nil {
 		slog.Error("collab: append op-log",
 			"item_id", r.itemID,
