@@ -2602,7 +2602,36 @@ func parseErrorBody(status int, body []byte) error {
 		errResp.Error.Status = status
 		return &errResp.Error
 	}
-	return fmt.Errorf("API error: %d %s", status, string(body))
+	return &StatusError{Status: status, Body: string(body)}
+}
+
+// StatusError is a non-2xx answer whose body was not the server's JSON error
+// envelope: a proxy's page, an empty body, a stub. It used to be a plain
+// fmt error, which kept the status only inside its text, so a caller could
+// not tell a 401 from a network failure (BUG-2706). Error() is the text the
+// plain error had.
+type StatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("API error: %d %s", e.Status, e.Body)
+}
+
+// HTTPStatus is the HTTP status a request error carries, or 0 when the
+// request got no answer at all (the server was unreachable) or the error did
+// not come from an HTTP answer.
+func HTTPStatus(err error) int {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Status
+	}
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Status
+	}
+	return 0
 }
 
 // --- Item reminders (IDEA-2641) ---

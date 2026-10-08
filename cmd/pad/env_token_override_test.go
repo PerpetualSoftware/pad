@@ -96,8 +96,9 @@ func TestWhoami_UsesEnvToken(t *testing.T) {
 	}
 }
 
-// Without PAD_TOKEN and without credentials, whoami keeps its existing
-// "Not logged in" behaviour and never contacts the server.
+// Without PAD_TOKEN and without credentials, whoami says "not logged in"
+// and never contacts the server. Since BUG-2706 it says so as an error (exit
+// non-zero): exit 0 told scripts they were signed in.
 func TestWhoami_NoTokenNoStoreUnchanged(t *testing.T) {
 	setTempHomeMain(t)
 	srv := newStubAuthServer(t, "unused")
@@ -105,8 +106,8 @@ func TestWhoami_NoTokenNoStoreUnchanged(t *testing.T) {
 	t.Setenv("PAD_TOKEN", "")
 
 	cmd := whoamiCmd()
-	if err := cmd.RunE(cmd, nil); err != nil {
-		t.Fatalf("whoami: %v", err)
+	if err := cmd.RunE(cmd, nil); err == nil || !strings.Contains(err.Error(), "not logged in") {
+		t.Fatalf("whoami: err = %v, want a not-logged-in error", err)
 	}
 	if srv.meHits != 0 {
 		t.Errorf("expected no server contact when unauthenticated, got %d /auth/me hits", srv.meHits)
