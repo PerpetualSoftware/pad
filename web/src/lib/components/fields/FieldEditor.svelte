@@ -1312,7 +1312,9 @@ handlers — onchange is never called.
 	function numberTextInvalid(text: string | null): boolean {
 		if (text === null) return false;
 		const t = text.trim();
-		return t !== '' && !PARTIAL_NUMBER.test(t) && isNaN(Number(t));
+		// Not finite counts as invalid (codex r1): `Infinity` parses but is no
+		// value a number field can hold.
+		return t !== '' && !PARTIAL_NUMBER.test(t) && !Number.isFinite(Number(t));
 	}
 	const numberInvalid = $derived(field.type === 'number' && numberTextInvalid(typedDisplay));
 
@@ -1321,9 +1323,11 @@ handlers — onchange is never called.
 		// Recorded even when the text does not parse: `1.` and `-` are on their
 		// way to a number and must not be rewritten under the cursor.
 		typedDisplay = target.value;
-		if (target.value === '') { scheduleSave(null); return; }
-		const num = Number(target.value);
-		if (!isNaN(num)) { scheduleSave(num); return; }
+		// Whitespace only is EMPTY, not the 0 that Number('  ') gives (codex r1).
+		const text = target.value.trim();
+		if (text === '') { scheduleSave(null); return; }
+		const num = Number(text);
+		if (Number.isFinite(num)) { scheduleSave(num); return; }
 		if (numberTextInvalid(target.value) && hasPending) {
 			clearTimeout(typingTimer);
 			typingTimer = undefined;
@@ -1334,7 +1338,7 @@ handlers — onchange is never called.
 
 	function handleNumberBlur() {
 		const t = (typedDisplay ?? '').trim();
-		if (typedDisplay !== null && t !== '' && isNaN(Number(t))) {
+		if (typedDisplay !== null && t !== '' && !Number.isFinite(Number(t))) {
 			// Not a number (or a partial one): nothing was sent for it, so show
 			// the stored value again rather than keep text that is not saved.
 			typedDisplay = null;

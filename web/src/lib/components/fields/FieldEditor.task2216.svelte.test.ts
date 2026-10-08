@@ -87,6 +87,18 @@ describe('TASK-2216: number entry', () => {
 		expect(onchange).not.toHaveBeenCalled();
 	});
 
+	it('whitespace only clears instead of saving 0, and Infinity is invalid (codex r1)', async () => {
+		const onchange = vi.fn();
+		const { container } = render(FieldEditor, { field: numberField, value: 3, onchange, ariaLabel: 'Effort' });
+		const input = container.querySelector<HTMLInputElement>('input.number-input')!;
+		await type(input, 'Infinity');
+		expect(input.getAttribute('aria-invalid')).toBe('true');
+		await type(input, '   ');
+		await vi.advanceTimersByTimeAsync(DEBOUNCE_MS * 2);
+		expect(onchange).toHaveBeenCalledTimes(1);
+		expect(onchange).toHaveBeenCalledWith(null);
+	});
+
 	it('CONTROL: a number is sent, and a partial like "-" is not flagged while typing', async () => {
 		const onchange = vi.fn();
 		const { container } = render(FieldEditor, { field: numberField, value: 3, onchange, ariaLabel: 'Effort' });
