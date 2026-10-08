@@ -26,12 +26,19 @@ import (
 //   - after any failure that is not the server's own answer, it asks the
 //     key once and reports what the server knows, or that nobody knows.
 type importWatch struct {
-	total      int64
-	body       *cli.CountingReader
-	stderr     io.Writer
-	tty        bool
-	tick       time.Duration // progress line cadence
-	stallAfter time.Duration // no bytes taken for this long = stalled
+	total  int64
+	body   *cli.CountingReader
+	stderr io.Writer
+	tty    bool
+	tick   time.Duration // progress line cadence
+	// stallAfter: the transport took no bytes for this long. A read means the
+	// transport took bytes, not that they arrived, so this measures the
+	// connection's progress, which is what blocks on a dead path. The CLI
+	// uses 90s, past the server's own 60s per-Read deadline: by then the
+	// server has stopped waiting, so going on cannot succeed. The clock
+	// starts before the connection, so a dial that hangs counts too. An
+	// abandoned attempt is resolved through its key, never guessed.
+	stallAfter time.Duration
 	pollEvery  time.Duration // import-status cadence after the upload
 	settleWait time.Duration // how long to wait for a RUNNING attempt to settle after a failure
 	upload     func(ctx context.Context) (http.Header, error)
@@ -121,7 +128,7 @@ func (w *importWatch) afterFailure(err, cause error) (http.Header, *importResolv
 	why := err.Error()
 	switch {
 	case errors.Is(cause, errUploadStalled):
-		why = fmt.Sprintf("the upload stalled: no bytes were accepted for %s", w.stallAfter)
+		why = fmt.Sprintf("the upload stalled: the connection took no more of the bundle for %s", w.stallAfter)
 	case errors.Is(cause, errAnswerLost):
 		why = errAnswerLost.Error()
 	}
