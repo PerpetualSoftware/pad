@@ -220,7 +220,9 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		// The prompt must NOT be inside the latch: if an earlier pagehide
 		// flushed, `dirty` is still true until the PATCH lands, and the user
 		// must still be warned.
-		expect(body).toMatch(/if\s*\(rawContentSaver\.dirty\s*&&\s*item\)\s*\{\s*event\.preventDefault/);
+		// TASK-2199: the condition moved into unloadLosesEdits, which also counts
+		// unsent collab edits and an uncopied offline version; still outside it.
+		expect(body).toMatch(/unloadLosesEdits\(\{\s*rawDirty:\s*rawContentSaver\.dirty\s*&&\s*!!item[\s\S]*?\}\)\s*\)\s*\{\s*event\.preventDefault/);
 	});
 
 	it('gates the collab cleanup flush on the identity too', () => {
