@@ -7,8 +7,13 @@ import (
 	protocol "github.com/mark3labs/mcp-go/mcp"
 )
 
-// These budgets record the existing prompt-bearing MCP payloads with modest
-// headroom. Later prompt-reduction changes should lower them, not spend them.
+// These budgets are FIXED CEILINGS on the prompt-bearing MCP payloads every
+// agent receives (lead ruling, TASK-3489). Aim to keep about 2 KiB of headroom
+// under each. When the headroom drops under about 512 bytes, TRIM the text
+// (move detail into docs/mcp.md, keeping every rule an agent acts on) rather
+// than raising the ceiling. A trim does not lower the ceiling either: a budget
+// that ratchets down on every reduction turns the next small addition into a
+// budget fight, while a fixed ceiling and a trim rule keep growth visible.
 const (
 	mcpInitializePromptBudget = 24 * 1024
 	mcpToolListPromptBudget   = 54 * 1024
