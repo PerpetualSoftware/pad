@@ -87,6 +87,16 @@ describe('network_unreachable (TASK-2202)', () => {
 		expect(notified).toBe(0);
 	});
 
+	it('the direct-fetch WRITES (attachment upload, artifact import) report it too (codex r1)', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))));
+		const upload = await api.attachments.upload('ws', new Blob(['x'])).catch((e) => e);
+		expect(upload.code).toBe('network_unreachable');
+		expect(upload.message).toContain('may not have been saved');
+		const imported = await api.importArtifact('ws', '# body').catch((e) => e);
+		expect(imported.code).toBe('network_unreachable');
+		expect(notified).toBe(2);
+	});
+
 	it('a TypeError after a response arrived is not relabelled as an outage', async () => {
 		vi.stubGlobal(
 			'fetch',

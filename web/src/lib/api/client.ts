@@ -563,6 +563,24 @@ export function networkUnreachableError(isIdempotent: boolean): PadApiError {
 	});
 }
 
+/**
+ * `fetch` for a direct WRITE that bypasses request() (TASK-2202, codex r1):
+ * attachment upload and transform, artifact import, checkout. Same rule as
+ * requestAttempt: an abort keeps its own path (each site's deadline turns its
+ * timeout into request_timeout), and any other rejection, which happened
+ * before a response existed, reports the outage and becomes
+ * network_unreachable instead of a raw TypeError.
+ */
+async function fetchWrite(input: string, init: RequestInit): Promise<Response> {
+	try {
+		return await fetch(input, init);
+	} catch (err) {
+		if (init.signal?.aborted) throw err;
+		notifyNetworkUnreachable();
+		throw networkUnreachableError(false);
+	}
+}
+
 /** True for the error a request throws when the server could not be reached. */
 export function isNetworkUnreachable(err: unknown): boolean {
 	return err instanceof PadApiError && err.code === 'network_unreachable';
@@ -3043,7 +3061,7 @@ export const api = {
 			if (csrf) headers['X-CSRF-Token'] = csrf;
 
 			const qs = itemId ? `?item_id=${encodeURIComponent(itemId)}` : '';
-			const resp = await fetch(`${BASE}/workspaces/${workspaceSlug}/attachments${qs}`, {
+			const resp = await fetchWrite(`${BASE}/workspaces/${workspaceSlug}/attachments${qs}`, {
 				method: 'POST',
 				headers,
 				credentials: 'same-origin',
@@ -3111,7 +3129,7 @@ export const api = {
 			// created.
 			const deadline = requestDeadline(TRANSFORM_TIMEOUT_MS);
 			try {
-				const resp = await fetch(
+				const resp = await fetchWrite(
 					`${BASE}/workspaces/${workspaceSlug}/attachments/${attachmentId}/transform`,
 					{
 						method: 'POST',
@@ -3382,7 +3400,7 @@ export const api = {
 		const headers: Record<string, string> = { 'Content-Type': 'text/markdown' };
 		const csrf = getCSRFToken();
 		if (csrf) headers['X-CSRF-Token'] = csrf;
-		const resp = await fetch(`${BASE}/workspaces/${ws}/import-artifact`, {
+		const resp = await fetchWrite(`${BASE}/workspaces/${ws}/import-artifact`, {
 			method: 'POST',
 			headers,
 			credentials: 'same-origin',
@@ -3486,7 +3504,7 @@ export const api = {
 			// disabled on "Redirecting…" until it settles.
 			const deadline = requestDeadline(requestTimeoutMs);
 			try {
-				const r = await fetch('/billing/checkout', {
+				const r = await fetchWrite('/billing/checkout', {
 					method: 'POST',
 					credentials: 'same-origin',
 					headers: { 'Content-Type': 'application/json' },
