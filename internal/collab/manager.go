@@ -65,6 +65,9 @@ type RoomManagerConfig struct {
 // designated-applier hooks in TASK-1257) shares — multiple buses
 // would silo their fan-out and break cross-tab live editing.
 type RoomManager struct {
+	// Embedded so SetObserver is part of the type's surface (TASK-3501).
+	observable
+
 	store         opLogStore
 	bus           OpBus
 	schemaVersion string
@@ -396,6 +399,11 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 	m.mu.Unlock()
 	defer m.activeJoins.Done()
 
+	// Counted once per Join, before the retry loop below (TASK-3501).
+	if since > 0 {
+		m.reportResumeJoined()
+	}
+
 	itemLock := m.itemLock(itemID)
 
 	for attempt := 0; attempt < 3; attempt++ {
@@ -452,6 +460,13 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 				)
 				_ = sendForceRefreshFrame(conn)
 				itemLock.Unlock()
+				// Reported after the unlock: observer callbacks never run under
+				// itemLock (TASK-3501).
+				if hasMin {
+					m.reportResumeForceRefreshed(ResumeRefreshBehindMin)
+				} else {
+					m.reportResumeForceRefreshed(ResumeRefreshPruned)
+				}
 				return ErrForceRefreshSent
 			}
 		}
@@ -505,6 +520,12 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 				)
 				_ = sendForceRefreshFrame(conn)
 				itemLock.Unlock()
+				// Only a RESUME is counted here: the measurement is about tabs
+				// coming back, and a since=0 tab is a fresh seed (TASK-3501).
+				// After the unlock, as above.
+				if since > 0 {
+					m.reportResumeForceRefreshed(ResumeRefreshRestored)
+				}
 				return ErrForceRefreshSent
 			}
 		}
