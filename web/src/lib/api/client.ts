@@ -2898,10 +2898,13 @@ export const api = {
 					method: 'POST',
 					body: JSON.stringify({ code, secret })
 				}),
-			disable: (password: string) =>
+			// An account with a password gives it; one without (signed up with
+			// Google, GitHub or Apple) gives a current code or a recovery code
+			// instead (TASK-2190).
+			disable: (factor: string | { password?: string; code?: string; recovery_code?: string }) =>
 				request<TOTPDisableResponse>('/auth/2fa/disable', {
 					method: 'POST',
-					body: JSON.stringify({ password })
+					body: JSON.stringify(typeof factor === 'string' ? { password: factor } : factor)
 				})
 		},
 		tokens: {

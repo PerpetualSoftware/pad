@@ -189,6 +189,32 @@
 		}
 	}
 
+	// TASK-2190: an account that signed up with Google, GitHub or Apple has no
+	// password. The change form below would demand a current one it cannot
+	// give, so such an account is offered the reset email instead, which SETS
+	// a password (completing it marks the account as having one). Only an
+	// explicit false counts: while the profile loads the form shows, as before.
+	const hasNoPassword = $derived(profile?.password_set === false);
+	const noEmailRecovery = $derived(!authStore.cloudMode && !authStore.emailConfigured);
+	let setPasswordSending = $state(false);
+	let setPasswordMsg = $state('');
+	let setPasswordError = $state('');
+
+	async function sendSetPasswordEmail() {
+		if (!profile?.email || setPasswordSending) return;
+		setPasswordSending = true;
+		setPasswordMsg = '';
+		setPasswordError = '';
+		try {
+			await api.auth.forgotPassword(profile.email);
+			setPasswordMsg = `We sent a link to ${profile.email}. Open it to choose a password. Setting it signs you out everywhere, so sign in again afterwards.`;
+		} catch (err) {
+			setPasswordError = err instanceof Error ? err.message : 'Failed to send the email';
+		} finally {
+			setPasswordSending = false;
+		}
+	}
+
 	async function changePassword() {
 		passwordError = '';
 		passwordMsg = '';
@@ -287,14 +313,25 @@
 
 	async function disableTOTP() {
 		totpError = '';
-		if (!disablePassword) {
-			totpError = 'Please enter your password to disable 2FA.';
+		// TASK-2190: an account with no password proves itself with the second
+		// factor instead: a code from the authenticator app, or a recovery code.
+		const factor = disablePassword.trim();
+		if (!factor) {
+			totpError = hasNoPassword
+				? 'Enter a code from your authenticator app, or a recovery code, to disable 2FA.'
+				: 'Please enter your password to disable 2FA.';
 			return;
 		}
 
 		totpSaving = true;
 		try {
-			await api.auth.totp.disable(disablePassword);
+			await api.auth.totp.disable(
+				hasNoPassword
+					? /^\d{6}$/.test(factor)
+						? { code: factor }
+						: { recovery_code: factor }
+					: disablePassword
+			);
 			totpMsg = 'Two-factor authentication has been disabled.';
 			showDisableConfirm = false;
 			disablePassword = '';
@@ -549,29 +586,56 @@
 		<section class="card">
 			<h2 class="card-title">Password</h2>
 			<div class="card-body">
-				<div class="field">
-					<label for="current-pw">Current password</label>
-					<input id="current-pw" type="password" bind:value={currentPassword} disabled={passwordSaving} autocomplete="current-password" />
-				</div>
-				<div class="field">
-					<label for="new-pw">New password</label>
-					<input id="new-pw" type="password" bind:value={newPassword} disabled={passwordSaving} autocomplete="new-password" />
-				</div>
-				<div class="field">
-					<label for="confirm-pw">Confirm new password</label>
-					<input id="confirm-pw" type="password" bind:value={confirmPassword} disabled={passwordSaving} autocomplete="new-password" />
-				</div>
-				{#if passwordError}
-					<p class="error">{passwordError}</p>
+				{#if hasNoPassword}
+					<!-- TASK-2190: no current password to give, so no change form. -->
+					{#if noEmailRecovery}
+						<p class="section-desc">
+							This account signs in with a connected provider and has no password. This Pad
+							instance cannot send email, so ask whoever runs the server to set one from the host:
+						</p>
+						<pre class="recovery-cmd">pad auth reset-password {profile?.email ?? 'you@example.com'}</pre>
+					{:else}
+						<p class="section-desc">
+							This account signs in with a connected provider and has no password. Set one to
+							have a second way in: we email you a link to choose it.
+						</p>
+						{#if setPasswordError}
+							<p class="error">{setPasswordError}</p>
+						{/if}
+						{#if setPasswordMsg}
+							<p class="success">{setPasswordMsg}</p>
+						{/if}
+						<div class="btn-row">
+							<Button variant="primary" onclick={sendSetPasswordEmail} disabled={setPasswordSending || !profile?.email}>
+								{setPasswordSending ? 'Sending...' : 'Email me a link to set a password'}
+							</Button>
+						</div>
+					{/if}
+				{:else}
+					<div class="field">
+						<label for="current-pw">Current password</label>
+						<input id="current-pw" type="password" bind:value={currentPassword} disabled={passwordSaving} autocomplete="current-password" />
+					</div>
+					<div class="field">
+						<label for="new-pw">New password</label>
+						<input id="new-pw" type="password" bind:value={newPassword} disabled={passwordSaving} autocomplete="new-password" />
+					</div>
+					<div class="field">
+						<label for="confirm-pw">Confirm new password</label>
+						<input id="confirm-pw" type="password" bind:value={confirmPassword} disabled={passwordSaving} autocomplete="new-password" />
+					</div>
+					{#if passwordError}
+						<p class="error">{passwordError}</p>
+					{/if}
+					{#if passwordMsg}
+						<p class="success">{passwordMsg}</p>
+					{/if}
+					<div class="btn-row">
+						<Button variant="primary" onclick={changePassword} disabled={passwordSaving}>
+							{passwordSaving ? 'Changing...' : 'Change Password'}
+						</Button>
+					</div>
 				{/if}
-				{#if passwordMsg}
-					<p class="success">{passwordMsg}</p>
-				{/if}
-				<div class="btn-row">
-					<Button variant="primary" onclick={changePassword} disabled={passwordSaving}>
-						{passwordSaving ? 'Changing...' : 'Change Password'}
-					</Button>
-				</div>
 			</div>
 		</section>
 
@@ -592,16 +656,30 @@
 						{#if profile?.totp_enabled}
 							{#if showDisableConfirm}
 								<div class="disable-confirm">
-									<p class="section-desc">Enter your password to disable 2FA.</p>
-									<div class="field">
-										<input
-											type="password"
-											placeholder="Current password"
-											bind:value={disablePassword}
-											disabled={totpSaving}
-											autocomplete="current-password"
-										/>
-									</div>
+									{#if hasNoPassword}
+										<p class="section-desc">This account has no password. Enter a code from your authenticator app, or one of your recovery codes, to disable 2FA.</p>
+										<div class="field">
+											<input
+												type="text"
+												placeholder="123456 or a recovery code"
+												bind:value={disablePassword}
+												disabled={totpSaving}
+												autocomplete="one-time-code"
+												aria-label="Authenticator code or recovery code"
+											/>
+										</div>
+									{:else}
+										<p class="section-desc">Enter your password to disable 2FA.</p>
+										<div class="field">
+											<input
+												type="password"
+												placeholder="Current password"
+												bind:value={disablePassword}
+												disabled={totpSaving}
+												autocomplete="current-password"
+											/>
+										</div>
+									{/if}
 									{#if totpError}
 										<p class="error">{totpError}</p>
 									{/if}
@@ -1024,6 +1102,15 @@
 	input[readonly] {
 		color: var(--text-muted);
 		cursor: not-allowed;
+	}
+
+	.recovery-cmd {
+		margin: 0 0 var(--space-3);
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-secondary);
+		border-radius: var(--radius-sm);
+		font-size: 0.85em;
+		overflow-x: auto;
 	}
 
 	.error {

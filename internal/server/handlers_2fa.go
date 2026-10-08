@@ -186,28 +186,58 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Password string `json:"password"`
+		Password     string `json:"password"`
+		Code         string `json:"code"`
+		RecoveryCode string `json:"recovery_code"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
 		return
 	}
 
-	if input.Password == "" {
-		writeError(w, http.StatusBadRequest, "validation_error", "Password is required to disable 2FA")
-		return
-	}
+	if user.HasPassword() {
+		if input.Password == "" {
+			writeError(w, http.StatusBadRequest, "validation_error", "Password is required to disable 2FA")
+			return
+		}
 
-	// Verify password
-	valid, err := s.store.ValidatePassword(user.Email, input.Password)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if valid == nil {
-		time.Sleep(500 * time.Millisecond)
-		writeError(w, http.StatusForbidden, "invalid_password", "Incorrect password")
-		return
+		// Verify password
+		valid, err := s.store.ValidatePassword(user.Email, input.Password)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if valid == nil {
+			time.Sleep(500 * time.Millisecond)
+			writeError(w, http.StatusForbidden, "invalid_password", "Incorrect password")
+			return
+		}
+	} else {
+		// TASK-2190: an account with no password (signed up with Google,
+		// GitHub or Apple) had no way to pass this door, so it could never
+		// turn 2FA off. It proves itself with the second factor instead, a
+		// current code or a recovery code, through login's own check: the
+		// same limiter (six an hour, counted per user) and the same
+		// single-use claim, so a stolen session cannot grind the code.
+		if input.Code == "" && input.RecoveryCode == "" {
+			writeError(w, http.StatusBadRequest, "validation_error",
+				"This account has no password: enter a code from your authenticator app, or a recovery code, to disable 2FA")
+			return
+		}
+		full, err := s.store.GetUser(user.ID)
+		if err != nil || full == nil {
+			writeInternalError(w, fmt.Errorf("load user for 2fa disable: %w", err))
+			return
+		}
+		verified, answered := s.checkSecondFactor(w, full, "user:"+full.ID, input.Code, input.RecoveryCode)
+		if answered {
+			return
+		}
+		if !verified {
+			time.Sleep(500 * time.Millisecond)
+			writeError(w, http.StatusForbidden, "invalid_code", "Invalid verification code")
+			return
+		}
 	}
 
 	if err := s.store.DisableTOTP(user.ID); err != nil {
@@ -290,103 +320,12 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verified := false
-
-	// Try TOTP code first
-	if input.Code != "" {
-		// Per-challenge attempt cap on the TOTP branch, mirroring the
-		// recovery-code branch below: a captured challenge token shouldn't be
-		// a license to grind the 6-digit space before it expires. Reuses the
-		// existing RecoveryCode limiter (keyed on a SHA-256 of the challenge
-		// token, distinct "totp:" prefix) rather than adding a new limiter.
-		if s.rateLimiters != nil && s.rateLimiters.RecoveryCode != nil {
-			h := sha256.Sum256([]byte(input.ChallengeToken))
-			key := "totp:" + hex.EncodeToString(h[:])
-			if !s.rateLimiters.RecoveryCode.allow(key) {
-				slog.Warn("rate limited", "user_id", user.ID, "limiter", "totp")
-				writeRateLimitResponse(w, s.rateLimiters.RecoveryCode.config)
-				return
-			}
-		}
-		// Capture the clock ONCE so validation and step derivation agree on the
-		// window. totp.Validate reads its own time.Now(); if a boundary crosses
-		// between it and deriveTOTPStep, a code valid under one clock could
-		// derive to a step outside the other's ±1 window and be spuriously
-		// rejected. ValidateCustom with the same `now` + the opts Validate bakes
-		// in (period 30, skew 1, SHA1, 6 digits) closes that race.
-		now := time.Now().UTC()
-		valid, _ := totp.ValidateCustom(input.Code, user.TOTPSecret, now, totp.ValidateOpts{
-			Period:    totpPeriod,
-			Skew:      1,
-			Digits:    otp.DigitsSix,
-			Algorithm: otp.AlgorithmSHA1,
-		})
-		if valid {
-			// Single-use enforcement (BUG-2054): a valid TOTP code is otherwise
-			// replayable within its ~30s window (plus skew). Derive the step
-			// the code actually matched and atomically claim it; a step already
-			// consumed means this is a replay, so leave verified=false and let
-			// it fall through to the same invalid-code response (no replay
-			// signal is leaked to the caller).
-			if step, ok := deriveTOTPStep(input.Code, user.TOTPSecret, now); ok {
-				consumed, err := s.store.ConsumeTOTPStep(user.ID, user.TOTPSecret, step)
-				if err != nil {
-					writeInternalError(w, err)
-					return
-				}
-				verified = consumed
-			}
-		}
-	}
-
-	// Try recovery code (hashed comparison) — rate-limited per challenge
-	// token so a single captured challenge can't be used to grind through
-	// the (small) recovery-code space before it expires. 6 tries is enough
-	// for a legitimate user who mistypes a dash or two; anything more than
-	// that is almost certainly automation.
-	if !verified && input.RecoveryCode != "" {
-		if s.rateLimiters != nil && s.rateLimiters.RecoveryCode != nil {
-			// Key on a SHA-256 of the challenge token so the limiter map
-			// never stores the raw HMAC token in-memory.
-			h := sha256.Sum256([]byte(input.ChallengeToken))
-			key := "rc:" + hex.EncodeToString(h[:])
-			if !s.rateLimiters.RecoveryCode.allow(key) {
-				slog.Warn("rate limited", "user_id", user.ID, "limiter", "recovery_code")
-				writeRateLimitResponse(w, s.rateLimiters.RecoveryCode.config)
-				return
-			}
-		}
-		// Normalize so users can type/paste codes however they were
-		// displayed: generated codes (post-TASK-658) are uppercase
-		// base32 [A-Z2-7] with no separators, but mobile keyboards
-		// default to lowercase, and some people paste codes wrapped
-		// with dashes or spaces. Strip those and uppercase before
-		// hashing.
-		normalized := normalizeRecoveryCode(input.RecoveryCode)
-		consumed, err := s.store.ConsumeRecoveryCode(user.ID, normalized)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if !consumed {
-			// Legacy-code fallback: pre-TASK-658 codes were generated
-			// with hex.EncodeToString (lowercase). Uppercasing them as
-			// part of normalization changes the SHA-256 and locks out
-			// users whose stored hash is of the lowercase form. Retry
-			// with the whitespace-trimmed raw input (no case change)
-			// so the original lowercase hex still validates. Doesn't
-			// cost an extra rate-limit slot — the Allow() above has
-			// already charged this attempt.
-			trimmed := strings.TrimSpace(input.RecoveryCode)
-			if trimmed != "" && trimmed != normalized {
-				consumed, err = s.store.ConsumeRecoveryCode(user.ID, trimmed)
-				if err != nil {
-					writeInternalError(w, err)
-					return
-				}
-			}
-		}
-		verified = consumed
+	// Keyed on the challenge (hashed, so the limiter map never holds the raw
+	// HMAC token): a captured challenge is not a license to grind codes.
+	ch := sha256.Sum256([]byte(input.ChallengeToken))
+	verified, answered := s.checkSecondFactor(w, user, hex.EncodeToString(ch[:]), input.Code, input.RecoveryCode)
+	if answered {
+		return
 	}
 
 	if !verified {
@@ -412,6 +351,110 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		"user":  sessionUserPayload(user),
 		"token": token,
 	})
+}
+
+// checkSecondFactor verifies a TOTP code, or failing that a recovery code,
+// for user, the way login does. Every door that accepts a second factor uses
+// it, so none has an attempt path of its own (TASK-2190):
+//   - each branch is charged against the RecoveryCode limiter (6 an hour) under
+//     "totp:"+attemptKey and "rc:"+attemptKey before it is checked;
+//   - a TOTP code is single-use: the step it matched is claimed (BUG-2054), so
+//     a replay reads as an invalid code;
+//   - a recovery code is consumed when it matches.
+//
+// attemptKey names whose attempts are counted: login passes its challenge
+// (hashed), a door behind a session passes "user:"+id, so a stolen session
+// gets the same six tries an hour as a stolen challenge.
+//
+// user must be loaded from the store (it carries the TOTP secret). answered is
+// true when it already wrote the response (rate limited, or a store error);
+// the caller then returns. A false verified with answered false is a wrong,
+// replayed or missing code.
+func (s *Server) checkSecondFactor(w http.ResponseWriter, user *models.User, attemptKey, code, recoveryCode string) (verified, answered bool) {
+	// Try TOTP code first
+	if code != "" {
+		if s.rateLimiters != nil && s.rateLimiters.RecoveryCode != nil {
+			if !s.rateLimiters.RecoveryCode.allow("totp:" + attemptKey) {
+				slog.Warn("rate limited", "user_id", user.ID, "limiter", "totp")
+				writeRateLimitResponse(w, s.rateLimiters.RecoveryCode.config)
+				return false, true
+			}
+		}
+		// Capture the clock ONCE so validation and step derivation agree on the
+		// window. totp.Validate reads its own time.Now(); if a boundary crosses
+		// between it and deriveTOTPStep, a code valid under one clock could
+		// derive to a step outside the other's ±1 window and be spuriously
+		// rejected. ValidateCustom with the same `now` + the opts Validate bakes
+		// in (period 30, skew 1, SHA1, 6 digits) closes that race.
+		now := time.Now().UTC()
+		valid, _ := totp.ValidateCustom(code, user.TOTPSecret, now, totp.ValidateOpts{
+			Period:    totpPeriod,
+			Skew:      1,
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+		if valid {
+			// Single-use enforcement (BUG-2054): a valid TOTP code is otherwise
+			// replayable within its ~30s window (plus skew). Derive the step
+			// the code actually matched and atomically claim it; a step already
+			// consumed means this is a replay, so leave verified=false and let
+			// it fall through to the same invalid-code response (no replay
+			// signal is leaked to the caller).
+			if step, ok := deriveTOTPStep(code, user.TOTPSecret, now); ok {
+				consumed, err := s.store.ConsumeTOTPStep(user.ID, user.TOTPSecret, step)
+				if err != nil {
+					writeInternalError(w, err)
+					return false, true
+				}
+				verified = consumed
+			}
+		}
+	}
+
+	// Try recovery code (hashed comparison), rate-limited the same way. 6
+	// tries is enough for a legitimate user who mistypes a dash or two;
+	// anything more than that is almost certainly automation.
+	if !verified && recoveryCode != "" {
+		if s.rateLimiters != nil && s.rateLimiters.RecoveryCode != nil {
+			if !s.rateLimiters.RecoveryCode.allow("rc:" + attemptKey) {
+				slog.Warn("rate limited", "user_id", user.ID, "limiter", "recovery_code")
+				writeRateLimitResponse(w, s.rateLimiters.RecoveryCode.config)
+				return false, true
+			}
+		}
+		// Normalize so users can type/paste codes however they were
+		// displayed: generated codes (post-TASK-658) are uppercase
+		// base32 [A-Z2-7] with no separators, but mobile keyboards
+		// default to lowercase, and some people paste codes wrapped
+		// with dashes or spaces. Strip those and uppercase before
+		// hashing.
+		normalized := normalizeRecoveryCode(recoveryCode)
+		consumed, err := s.store.ConsumeRecoveryCode(user.ID, normalized)
+		if err != nil {
+			writeInternalError(w, err)
+			return false, true
+		}
+		if !consumed {
+			// Legacy-code fallback: pre-TASK-658 codes were generated
+			// with hex.EncodeToString (lowercase). Uppercasing them as
+			// part of normalization changes the SHA-256 and locks out
+			// users whose stored hash is of the lowercase form. Retry
+			// with the whitespace-trimmed raw input (no case change)
+			// so the original lowercase hex still validates. Doesn't
+			// cost an extra rate-limit slot — the Allow() above has
+			// already charged this attempt.
+			trimmed := strings.TrimSpace(recoveryCode)
+			if trimmed != "" && trimmed != normalized {
+				consumed, err = s.store.ConsumeRecoveryCode(user.ID, trimmed)
+				if err != nil {
+					writeInternalError(w, err)
+					return false, true
+				}
+			}
+		}
+		verified = consumed
+	}
+	return verified, false
 }
 
 // normalizeRecoveryCode prepares a user-entered recovery code for
