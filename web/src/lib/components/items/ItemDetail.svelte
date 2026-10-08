@@ -6302,8 +6302,11 @@
 			{#key identityKey}{@const handedDown = identityKey}
 			<OfflineRecoveryNotice
 				text={offlineRecovery.text}
-				oncopied={() => {
+				oncopied={(copied) => {
 					if (handedDown !== identityKey) return;
+					// Only the version that was copied: by now this may be another
+					// item's recovery (codex r1).
+					if (offlineRecovery?.text !== copied) return;
 					offlineRecovery = null;
 					toastStore.show('Your version is on the clipboard.', 'success');
 				}}

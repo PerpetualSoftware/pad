@@ -46,7 +46,7 @@ describe('TASK-2199: ItemDetail protects edits that have not reached the server'
 	it('renders the recovery notice for this item, and copy or dismiss drops it', () => {
 		expect(SRC).toMatch(/\{#if offlineRecovery && item && offlineRecovery\.itemId === item\.id\}[\s\S]{0,400}?<OfflineRecoveryNotice/);
 		const notice = between('<OfflineRecoveryNotice', '/>');
-		expect(notice).toMatch(/oncopied=\{\(\) => \{\s*if \(handedDown !== identityKey\) return;\s*offlineRecovery = null;/);
+		expect(notice).toMatch(/oncopied=\{\(copied\) => \{\s*if \(handedDown !== identityKey\) return;\s*if \(offlineRecovery\?\.text !== copied\) return;\s*offlineRecovery = null;/);
 		expect(notice).toMatch(/ondismiss=\{\(\) => \(offlineRecovery = null\)\}/);
 	});
 

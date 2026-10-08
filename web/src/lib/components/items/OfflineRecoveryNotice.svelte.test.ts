@@ -25,7 +25,7 @@ describe('OfflineRecoveryNotice', () => {
 		render(Notice, { props: { text: 'my offline version', oncopied, ondismiss: vi.fn() } });
 		expect((screen.getByLabelText('Your offline version') as HTMLTextAreaElement).value).toBe('my offline version');
 		screen.getByRole('button', { name: 'Copy your version' }).click();
-		await waitFor(() => expect(oncopied).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(oncopied).toHaveBeenCalledWith('my offline version'));
 		expect(clip.copied).toEqual(['my offline version']);
 	});
 

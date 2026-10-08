@@ -7,8 +7,9 @@
 
 	interface Props {
 		text: string;
-		/** The text is on the clipboard: the caller drops the notice. */
-		oncopied: () => void;
+		/** This text is on the clipboard: the caller drops the notice, if it still
+		 * holds this text (codex r1: a copy can resolve after an item switch). */
+		oncopied: (copied: string) => void;
 		/** The user chose to discard it. */
 		ondismiss: () => void;
 		/** Reports a copy that failed; the notice stays. */
@@ -21,9 +22,10 @@
 		// The clipboard write is awaited; the result is reported only to the
 		// identity that asked for it (BUG-3095's rule for a child's await).
 		const isSameIdentity = authStore.identityFence();
-		const ok = await copyToClipboard(text);
+		const copied = text;
+		const ok = await copyToClipboard(copied);
 		if (!isSameIdentity()) return;
-		if (ok) oncopied();
+		if (ok) oncopied(copied);
 		else oncopyfailed?.();
 	}
 </script>
