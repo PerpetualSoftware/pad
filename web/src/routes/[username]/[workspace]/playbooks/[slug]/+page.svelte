@@ -3,7 +3,7 @@
 	import { artifactSlugFor } from '$lib/collections/artifactSlug';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
+	import { beforeNavigate, goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, formatItemRef, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -87,6 +87,28 @@
 	// What the form held when the item loaded: save sends only the keys the
 	// user changed from it (BUG-3075, see $lib/playbooks/editorPatch).
 	let loadedForm = $state<PlaybookFormSnapshot | null>(null);
+	// TASK-2191: what the form held when it was last loaded or saved. The page
+	// is dirty when the form differs from it, which is exactly this person's
+	// own edits: the body is a plain textarea, not the collaborative editor,
+	// and nothing remote rewrites the form while the page is open.
+	let baseline = $state<string | null>(null);
+	const formKey = $derived(
+		JSON.stringify([title, bodyContent, status, trigger, scope, invocationSlug, argumentsToJSON(args)])
+	);
+	const dirty = $derived(baseline !== null && formKey !== baseline);
+
+	// Every way off the page with unsaved changes asks first: Cancel, the back
+	// link, any other link, browser back, and closing or reloading the tab
+	// (cancelling a `leave` navigation raises the browser's own prompt).
+	beforeNavigate((nav) => {
+		if (!dirty) return;
+		if (nav.type === 'leave') {
+			nav.cancel();
+			return;
+		}
+		if (!confirm('Discard your unsaved changes to this playbook?')) nav.cancel();
+	});
+
 	/** The stored values themselves, for the note on one the form cannot show. */
 	let storedRaw = $state<{ status: unknown; trigger: unknown; scope: unknown }>({
 		status: undefined,
@@ -178,6 +200,7 @@
 			args = argumentsFromJSON(fields.arguments);
 			loadedForm = { status, trigger, scope, invocationSlug, args: argumentsToJSON(args) };
 			storedRaw = { status: fields.status, trigger: fields.trigger, scope: fields.scope };
+			baseline = formKey;
 		} catch {
 			if (ws !== wsSlug || slugOrRef !== ref || !isSameIdentity()) return;
 			// Explicit null on the current-request error path so a failed
@@ -247,7 +270,11 @@
 
 	let storedMismatches = $derived(storedFormMismatches(storedRaw, statuses, scopes));
 
-	async function save() {
+	// TASK-2191: Save stays on the page, so the next edit needs no re-open;
+	// Save and close goes back to the list. Either way the form is
+	// re-baselined BEFORE any navigation, so leaving right after a successful
+	// save never asks about changes that were just stored.
+	async function save(close = false) {
 		if (!item || !canEdit) return;
 		// BUG-3115: refuse a too-long title before sending; the form keeps it.
 		// Only a CHANGED title: save() always re-sends it, and a legacy title
@@ -286,9 +313,11 @@
 			// BUG-3230 U2/U3: what the save did beyond saving (another tab's edits
 			// discarded, or the body sent to an open tab's live document).
 			let saveNote: string | null = null;
+			let saved: Item;
 			try {
 				// BUG-3230 U3: a body applied to an open tab's live document says so.
-				saveNote = contentOutcomeNotice(await api.items.update(wsSlug, item.slug, payload));
+				saved = await api.items.update(wsSlug, item.slug, payload);
+				saveNote = contentOutcomeNotice(saved);
 			} catch (err) {
 				if (!isContentPendingFlush(err)) throw err;
 				if (!isSameIdentity()) return;
@@ -306,11 +335,18 @@
 				}
 				const resent = await api.items.update(wsSlug, item.slug, { ...payload, overwrite_pending_edits: true });
 				saveNote = prunedEditsNotice(resent) ?? contentOutcomeNotice(resent);
+				saved = resent;
 			}
 			if (!isSameIdentity()) return;
 			if (saveNote) toastStore.show(`Playbook saved. ${saveNote}`, 'info');
 			else toastStore.show('Playbook saved', 'success');
-			goto(`/${username}/${wsSlug}/playbooks`);
+			// What was sent is now what is stored: the row's token for the next
+			// save, the keys the next patch is computed from, and the baseline.
+			item = { ...item, ...saved };
+			loadedForm = { status, trigger, scope, invocationSlug, args: argumentsToJSON(args) };
+			storedRaw = { status, trigger, scope };
+			baseline = formKey;
+			if (close) goto(`/${username}/${wsSlug}/playbooks`);
 		} catch (err) {
 			if (!isSameIdentity()) return;
 			toastStore.show((err as Error)?.message || 'Failed to save playbook', 'error');
@@ -379,9 +415,16 @@
 				</Button>
 				{#if canEdit}
 					<Button
+						variant="secondary"
+						disabled={saving || !title.trim()}
+						onclick={() => save(true)}
+					>
+						Save and close
+					</Button>
+					<Button
 						variant="primary"
 						disabled={saving || !title.trim()}
-						onclick={save}
+						onclick={() => save()}
 					>
 						{saving ? 'Saving…' : 'Save'}
 					</Button>

@@ -141,6 +141,10 @@ function stringifyDefault(v: string | boolean | number): string {
 	return v;
 }
 
+// The line an empty arguments section shows; the only line in the section
+// updateArgumentsInBody owns outright.
+const NO_ARGUMENTS_PLACEHOLDER = '(No arguments — this playbook takes no inputs.)';
+
 /**
  * renderArgumentsSection produces the full `## Arguments` section as a
  * string (heading + blank line + one bullet per argument + trailing
@@ -149,40 +153,112 @@ function stringifyDefault(v: string | boolean | number): string {
  */
 export function renderArgumentsSection(args: PlaybookArgument[]): string {
 	if (args.length === 0) {
-		return `## Arguments\n\n(No arguments — this playbook takes no inputs.)\n`;
+		return `## Arguments\n\n${NO_ARGUMENTS_PLACEHOLDER}\n`;
 	}
 	const lines = args.map(formatArgumentLine);
 	return `## Arguments\n\n${lines.join('\n')}\n`;
 }
 
 /**
- * updateArgumentsInBody splices a fresh `## Arguments` section into
- * `body`, preserving everything before and after. If the body has no
- * existing `## Arguments` heading, the new section is appended (with a
- * leading blank line so it doesn't collide with the prior content).
+ * updateArgumentsInBody writes `args` into the body's `## Arguments`
+ * section, preserving everything before and after it. If the body has no
+ * such heading, the rendered section is appended (with a leading blank line
+ * so it doesn't collide with the prior content).
  *
- * Used to keep the structured form's view of arguments in sync with
- * the markdown body: the form is canonical, the markdown is the
- * human-readable mirror.
+ * TASK-2191: the section is edited IN PLACE, not regenerated. It used to be
+ * replaced wholesale with bullets on every keystroke in the arguments form,
+ * which deleted any prose an author wrote there and rewrote every bullet in
+ * canonical form, dropping the tokens parseArgumentLine tolerates. Now:
+ * - every line that is not an argument bullet (prose, blank lines, a
+ *   sub-heading) stays where it is;
+ * - the existing bullet lines are slots, filled in the form's order; an
+ *   argument the form left unchanged keeps its ORIGINAL line verbatim, and a
+ *   changed one is re-rendered in its slot;
+ * - an argument with no slot left goes after the last bullet; a slot with no
+ *   argument left is removed;
+ * - the "no arguments" placeholder is the one line this owns: it is dropped
+ *   when there are arguments, and added when there are none and nothing
+ *   else is in the section.
+ *
+ * An unchanged argument is found by name first, then by position among
+ * those left, so a rename re-renders its own bullet rather than moving.
  */
 export function updateArgumentsInBody(body: string, args: PlaybookArgument[]): string {
-	const newSection = renderArgumentsSection(args).replace(/\n+$/, '\n');
 	const split = splitAroundArguments(body);
-	if (split) {
-		// Trim trailing newlines on `before` then re-add a single blank
-		// line so we don't accumulate gaps on repeated round-trips.
-		const before = split.before.replace(/\n+$/, '');
-		const after = split.after.replace(/^\n+/, '');
-		const pieces: string[] = [];
-		if (before) pieces.push(before, '\n\n');
-		pieces.push(newSection);
-		if (after) pieces.push('\n', after);
-		return pieces.join('');
+	if (!split) {
+		const newSection = renderArgumentsSection(args).replace(/\n+$/, '\n');
+		const trimmed = body.replace(/\n+$/, '');
+		const prefix = trimmed.length > 0 ? `${trimmed}\n\n` : '';
+		return `${prefix}${newSection}`;
 	}
-	// No existing Arguments heading — append.
-	const trimmed = body.replace(/\n+$/, '');
-	const prefix = trimmed.length > 0 ? `${trimmed}\n\n` : '';
-	return `${prefix}${newSection}`;
+
+	const [heading, ...rest] = split.section.split('\n');
+	const lines = rest.filter((l) => l.trim() !== NO_ARGUMENTS_PLACEHOLDER);
+	const slots: number[] = [];
+	const existing: (PlaybookArgument | null)[] = lines.map((l) => parseArgumentLine(l));
+	existing.forEach((a, i) => {
+		if (a) slots.push(i);
+	});
+
+	// Pair each new argument with the old bullet it came from: by name, then
+	// by position among the bullets nobody claimed by name.
+	const claimed = new Set<number>();
+	const source: (number | null)[] = args.map((a) => {
+		const at = slots.find((i) => !claimed.has(i) && existing[i]!.name === a.name);
+		if (at === undefined) return null;
+		claimed.add(at);
+		return at;
+	});
+	source.forEach((at, k) => {
+		if (at !== null) return;
+		const free = slots.find((i) => !claimed.has(i));
+		if (free !== undefined) {
+			claimed.add(free);
+			source[k] = free;
+		}
+	});
+
+	const rendered = args.map((a, k) => {
+		const at = source[k];
+		if (at !== null && formatArgumentLine(existing[at]!) === formatArgumentLine(a)) return lines[at];
+		return formatArgumentLine(a);
+	});
+
+	// Fill the slots in order; extra arguments go after the last slot.
+	const out: string[] = [];
+	let next = 0;
+	const lastSlot = slots.length > 0 ? slots[slots.length - 1] : -1;
+	lines.forEach((line, i) => {
+		if (existing[i]) {
+			if (next < rendered.length) out.push(rendered[next++]);
+		} else {
+			out.push(line);
+		}
+		if (i === lastSlot) while (next < rendered.length) out.push(rendered[next++]);
+	});
+	if (next < rendered.length) {
+		// No bullet to follow: after the heading's blank line, before any
+		// trailing blank lines.
+		let at = out.length;
+		while (at > 0 && out[at - 1].trim() === '') at--;
+		const insert = rendered.slice(next);
+		if (at === 0) out.splice(0, 0, '', ...insert);
+		else out.splice(at, 0, ...insert);
+	}
+
+	const hasContent = out.some((l) => l.trim() !== '');
+	if (args.length === 0 && !hasContent) {
+		out.splice(0, out.length, '', NO_ARGUMENTS_PLACEHOLDER);
+	}
+
+	const section = [heading, ...out].join('\n').replace(/\n+$/, '') + '\n';
+	const after = split.after.replace(/^\n+/, '');
+	const before = split.before.replace(/\n+$/, '');
+	const pieces: string[] = [];
+	if (before) pieces.push(before, '\n\n');
+	pieces.push(section);
+	if (after) pieces.push('\n', after);
+	return pieces.join('');
 }
 
 const BULLET_RE = /^\s*-\s*`([^`]+)`\s*(?:\(([^)]*)\))?\s*(?:[—–-]\s*(.*))?$/;
