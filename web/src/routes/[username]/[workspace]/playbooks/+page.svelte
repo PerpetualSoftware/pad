@@ -114,9 +114,20 @@
 	});
 	async function loadPlaybooks(ws: string, pb: string = playbooksSlug) {
 		loading = true;
-		try { playbooks = await api.items.listByCollection(ws, pb, {}); }
-		catch { playbooks = []; }
-		finally { loading = false; }
+		// Dropped when the route or the resolved slug moved while in flight
+		// (codex r1 on BUG-3481): a load for the default slug must not land
+		// over the one for the renamed collection that superseded it.
+		const current = () => ws === wsSlug && pb === playbooksSlug;
+		try {
+			const list = await api.items.listByCollection(ws, pb, {});
+			if (!current()) return;
+			playbooks = list;
+		} catch {
+			if (!current()) return;
+			playbooks = [];
+		} finally {
+			if (current()) loading = false;
+		}
 	}
 
 	async function loadPlaybooksCollection(ws: string, pb: string) {
@@ -129,12 +140,12 @@
 		try {
 			const coll = await api.collections.get(ws, pb);
 			// Stale-response guard: if the user has since moved to another
-			// workspace, drop the result rather than overwriting state with
-			// schema from a workspace we are no longer on.
-			if (ws !== wsSlug) return;
+			// workspace, or the playbooks collection resolved to another slug
+			// (BUG-3481), drop the result rather than overwriting newer state.
+			if (ws !== wsSlug || pb !== playbooksSlug) return;
 			playbooksCollection = coll;
 		} catch {
-			if (ws !== wsSlug) return;
+			if (ws !== wsSlug || pb !== playbooksSlug) return;
 			playbooksCollection = null;
 		}
 	}
