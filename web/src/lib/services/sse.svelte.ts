@@ -2,7 +2,58 @@ import { SvelteSet } from 'svelte/reactivity';
 import { probeRefusal, reconnectDelayMs } from './sseReconnect';
 import { syncRequiredSpreadDelayMs } from './syncSpread';
 
-export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unauthorized';
+// 'polling' (BUG-3320): this tab's workspace has no stream slot on an
+// HTTP/1.1 page, so it reconciles on a timer instead of streaming.
+export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unauthorized' | 'polling';
+
+// ── Stream budget on HTTP/1.1 (BUG-3320) ────────────────────────────────────
+// A browser allows 6 connections per host over HTTP/1.1, and every live
+// stream holds one for good. Measured on BUG-3320: the user-scoped access
+// stream plus one stream per distinct workspace leader filled the 6 at FIVE
+// workspaces, and the next tab's first fetch never left the browser (a sixth
+// tab could not load its HTML). So on an HTTP/1.1 page a workspace leader also
+// needs one of STREAM_SLOTS browser-wide slots (navigator.locks, which is per
+// origin and per browser profile, like the connection pool). Without one it
+// POLLS: the same /items-changes reconcile a reconnect runs, every
+// POLL_EVERY_MS, retrying for a slot each time. 1 access stream + 3 workspace
+// streams leaves 2 connections for fetches.
+//
+// h2 and h3 multiplex every stream over one connection, so they have no such
+// limit and take no slot: Cloud behind its proxy keeps a live stream in every
+// tab (lead ruling). The one-stream-per-browser shape is IDEA-3498.
+export const STREAM_SLOTS = 3;
+export const POLL_EVERY_MS = 15_000;
+
+/** True when this page was loaded over HTTP/1.x, where streams share the 6-per-host pool. */
+export function streamBudgetApplies(): boolean {
+	if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') return false;
+	const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+	// '' means the browser did not report it: no evidence of a pool limit, so
+	// behave as before rather than poll on a guess.
+	return (nav?.nextHopProtocol ?? '').toLowerCase().startsWith('http/1');
+}
+
+/**
+ * Take a free browser-wide stream slot, or answer null when all are held.
+ * The returned function releases it. Never waits: ifAvailable.
+ */
+async function tryTakeStreamSlot(): Promise<(() => void) | null> {
+	for (let i = 0; i < STREAM_SLOTS; i++) {
+		const release = await new Promise<(() => void) | null>((resolve) => {
+			navigator.locks
+				.request(`pad-sse-slot-${i}`, { ifAvailable: true }, (lock) => {
+					if (!lock) {
+						resolve(null);
+						return;
+					}
+					return new Promise<void>((done) => resolve(() => done()));
+				})
+				.catch(() => resolve(null));
+		});
+		if (release) return release;
+	}
+	return null;
+}
 
 export interface ItemEvent {
 	type: string;
@@ -114,6 +165,73 @@ function createSSEService() {
 	// releases the lock; another waiting tab then acquires it and
 	// becomes the new leader. Null when this tab is not the leader.
 	let releaseLeaderLock: (() => void) | null = null;
+
+	// BUG-3320: the browser-wide stream slot this leader holds (HTTP/1.1
+	// only), and the poll that stands in for a stream when it holds none.
+	let releaseStreamSlot: (() => void) | null = null;
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	// The leader is asking for a slot (an await inside the lock callback).
+	let slotPending = false;
+	// Bumped by disconnect(). A lock callback still awaiting its slot when the
+	// tab disconnects (and maybe reconnects to the SAME workspace) must not
+	// go on to stream: the workspace check alone cannot tell the two
+	// connections apart (codex r1 on BUG-3320).
+	let leaderGeneration = 0;
+	// A slot is kept through a reconnect ladder and an offline spell, on
+	// purpose: the tab holds no connection meanwhile, and a blip should not
+	// reshuffle which workspaces stream. It is released when the tab stops
+	// leading (disconnect, a workspace switch, page unload) or loses access.
+
+	function stopPolling() {
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
+	}
+
+	function releaseSlot() {
+		if (releaseStreamSlot) {
+			const release = releaseStreamSlot;
+			releaseStreamSlot = null;
+			release();
+		}
+	}
+
+	/**
+	 * Leader without a stream slot: reconcile on a timer. Each tick first
+	 * tries for a slot (another workspace's tab may have closed), and opens a
+	 * stream if it gets one; otherwise it runs the same /items-changes
+	 * reconcile a reconnect runs, here and in this workspace's follower tabs.
+	 */
+	function startPolling(workspaceSlug: string) {
+		stopPolling();
+		status = 'polling';
+		broadcast({ type: 'status', status: 'polling' });
+		// The first-connect gap (BUG-2540) is covered at once, as a stream's
+		// open would cover it.
+		dispatchSyncRequired();
+		broadcast({ type: 'sync_required' });
+		pollTimer = setInterval(async () => {
+			if (currentWorkspace !== workspaceSlug || !isLeader) {
+				stopPolling();
+				return;
+			}
+			const release = await tryTakeStreamSlot();
+			if (currentWorkspace !== workspaceSlug || !isLeader || pollTimer === null) {
+				release?.();
+				return;
+			}
+			if (release) {
+				stopPolling();
+				releaseStreamSlot = release;
+				pendingSyncOnConnect = true;
+				openEventSource(workspaceSlug);
+				return;
+			}
+			dispatchSyncRequired();
+			broadcast({ type: 'sync_required' });
+		}, POLL_EVERY_MS);
+	}
 
 	// True iff this tab currently holds the leader Web Lock.
 	let isLeader = false;
@@ -364,6 +482,7 @@ function createSSEService() {
 				reconnectPending = false;
 				status = 'unauthorized';
 				broadcast({ type: 'status', status: 'unauthorized' });
+				releaseSlot(); // BUG-3320: no stream will follow, so free the seat
 				currentWorkspace = '';
 			});
 		} else {
@@ -520,6 +639,7 @@ function createSSEService() {
 			broadcast({ type: 'status', status: 'unauthorized' });
 			source.close();
 			eventSource = null;
+			releaseSlot(); // BUG-3320: no stream will follow, so free the seat
 			currentWorkspace = '';
 		});
 
@@ -579,6 +699,7 @@ function createSSEService() {
 		// Note this is strictly MORE coverage, not a trade: every case the
 		// heuristic classified as "promoted" still arms, plus the first
 		// connect it was never able to classify at all.
+		const generation = leaderGeneration;
 		navigator.locks
 			.request(
 				`pad-sse-leader-${workspaceSlug}`,
@@ -587,16 +708,34 @@ function createSSEService() {
 					// User may have already navigated away by the time
 					// we acquire the lock. Bail before opening a stale
 					// connection.
-					if (currentWorkspace !== workspaceSlug) return;
+					if (currentWorkspace !== workspaceSlug || generation !== leaderGeneration) return;
 					isLeader = true;
-					// Armed unconditionally — see `pendingSyncOnConnect`.
-					// Deliberately not narrowed to "only if this tab has
-					// already fetched something": the service has no view
-					// of what its consumers read, and guessing would
-					// reintroduce exactly the coverage hole this fixes.
-					// One delta request per connect is the right price.
-					pendingSyncOnConnect = true;
-					openEventSource(workspaceSlug);
+					// BUG-3320: on HTTP/1.1 a stream needs a slot.
+					let streamAllowed = true;
+					if (streamBudgetApplies()) {
+						slotPending = true;
+						const release = await tryTakeStreamSlot();
+						slotPending = false;
+						if (currentWorkspace !== workspaceSlug || generation !== leaderGeneration) {
+							release?.();
+							isLeader = false;
+							return;
+						}
+						releaseStreamSlot = release;
+						streamAllowed = release !== null;
+					}
+					if (streamAllowed) {
+						// Armed unconditionally — see `pendingSyncOnConnect`.
+						// Deliberately not narrowed to "only if this tab has
+						// already fetched something": the service has no view
+						// of what its consumers read, and guessing would
+						// reintroduce exactly the coverage hole this fixes.
+						// One delta request per connect is the right price.
+						pendingSyncOnConnect = true;
+						openEventSource(workspaceSlug);
+					} else {
+						startPolling(workspaceSlug);
+					}
 					// Hold the lock until release is signaled (by
 					// disconnect() or a workspace switch). The promise
 					// returned from this callback is what
@@ -605,6 +744,8 @@ function createSSEService() {
 						releaseLeaderLock = () => {
 							releaseLeaderLock = null;
 							isLeader = false;
+							stopPolling();
+							releaseSlot();
 							resolve();
 						};
 					});
@@ -648,6 +789,11 @@ function createSSEService() {
 			if (bc && !eventSource && !isLeader) {
 				return; // peer tab, still listening
 			}
+			// BUG-3320: a leader polling for want of a stream slot, or still
+			// asking for one, has no EventSource and is not torn down for it.
+			if (isLeader && (pollTimer !== null || slotPending)) {
+				return;
+			}
 		}
 
 		// Different workspace or closed connection — tear down first.
@@ -677,6 +823,9 @@ function createSSEService() {
 		clearReconnect();
 		stopWatchdog();
 		cancelOnlineReopen();
+		stopPolling();
+		releaseSlot();
+		leaderGeneration++;
 		closedForOffline = false;
 		// Release the leader lock first so a peer tab can take over
 		// even on the same browser session (e.g. workspace switch).
