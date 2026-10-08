@@ -482,11 +482,15 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		// could use or remove. Compensating only the owner step would have left
 		// the invariant true of one failure point and false of its neighbour.
 		userID := currentUserID(r)
+		msg := "Failed to seed collections: " + err.Error()
 		if rerr := s.removeUnusableWorkspace("create workspace (seed)", ws.ID, ws.Slug, userID, err); rerr != nil {
 			slog.Error("workspace seeding failed and the workspace could not be removed",
 				"workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", rerr)
+			// BUG-3479: the caller is told the half-made workspace survived,
+			// since it holds the name and a retry will land on name-2.
+			msg += fmt.Sprintf("; the unusable workspace %q could not be removed and still holds its name (see the server log)", ws.Slug)
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to seed collections: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "internal_error", msg)
 		return
 	}
 
