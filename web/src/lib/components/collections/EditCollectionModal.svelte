@@ -76,12 +76,22 @@
 
 	let confirmArchive = $state(false);
 	let archiving = $state(false);
+	// TASK-2189: archiving a big collection asks for its name to be typed, as
+	// deleting a workspace asks for its slug. Below the threshold, the count
+	// in the confirm is the guard.
+	const TYPED_ARCHIVE_THRESHOLD = 25;
+	let archiveTyped = $state('');
+	const archiveItemCount = $derived(collection.item_count);
+	const archiveNeedsTyping = $derived((archiveItemCount ?? 0) >= TYPED_ARCHIVE_THRESHOLD);
+	const archiveConfirmed = $derived(!archiveNeedsTyping || archiveTyped.trim() === collection.name);
 
 	async function handleArchive() {
 		if (!confirmArchive) {
 			confirmArchive = true;
+			archiveTyped = '';
 			return;
 		}
+		if (!archiveConfirmed) return;
 		archiving = true;
 		// Target the SEEDED collection identity, NOT the live props — the props
 		// may now identify a different collection while this form still shows
@@ -100,8 +110,27 @@
 		// delete -> list -> delete, so the second DELETE — destructive — would
 		// otherwise be issued on behalf of a user who is gone.
 		const isSameIdentity = authStore.identityFence();
+		// The Undo outlives this modal, so it carries what it restores and the
+		// identity it was offered to, checked again at CLICK time: the workspace
+		// delete's pattern (BUG-3006), since the toast store is global.
+		const epochAtArchive = authStore.identityEpoch;
 		const finishArchived = () => {
-			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
+			toastStore.show(`Archived "${editedCollectionName}"`, 'success', 12000, undefined, {
+				label: 'Undo',
+				onAction: () => {
+					if (authStore.identityEpoch !== epochAtArchive) return;
+					api.collections
+						.restore(editedWsSlug, editedCollectionId)
+						.then(() => {
+							if (authStore.identityEpoch !== epochAtArchive) return;
+							toastStore.show(`Restored "${editedCollectionName}"`, 'success');
+						})
+						.catch(() => {
+							if (authStore.identityEpoch !== epochAtArchive) return;
+							toastStore.show(`Failed to restore "${editedCollectionName}"`, 'error');
+						});
+				}
+			});
 			onupdated(undefined, editedCollectionId, editedCollectionSlug, editedWsSlug);
 			onclose();
 		};
@@ -794,22 +823,39 @@
 								<header class="danger-zone-header">
 									<h3 id="danger-zone-heading" class="danger-zone-title">Danger zone</h3>
 									<p class="danger-zone-hint">
-										Archiving removes this collection and all its items from the workspace.
-										This can't be undone from the UI.
+										Archiving hides this collection and all its items from the workspace.
+										Nothing is deleted: restore it any time from Settings › Collections.
 									</p>
 								</header>
 
 								{#if confirmArchive}
 									<div class="danger-zone-confirm" role="alertdialog" aria-labelledby="archive-confirm-msg">
 										<p id="archive-confirm-msg" class="danger-zone-confirm-msg">
-											Archive <strong>"{collection.name}"</strong> and all its items?
+											{#if archiveItemCount !== undefined}
+												Archive <strong>"{collection.name}"</strong> and its
+												{archiveItemCount} {archiveItemCount === 1 ? 'item' : 'items'}?
+											{:else}
+												Archive <strong>"{collection.name}"</strong> and all its items?
+											{/if}
 										</p>
+										{#if archiveNeedsTyping}
+											<label class="danger-zone-typed">
+												Type <strong>{collection.name}</strong> to confirm
+												<input
+													type="text"
+													bind:value={archiveTyped}
+													autocomplete="off"
+													spellcheck="false"
+													aria-label={`Type ${collection.name} to confirm archiving`}
+												/>
+											</label>
+										{/if}
 										<div class="danger-zone-confirm-actions">
 											<button
 												class="btn-archive-confirm"
 												type="button"
 												onclick={handleArchive}
-												disabled={archiving}
+												disabled={archiving || !archiveConfirmed}
 											>
 												{archiving ? 'Archiving…' : 'Yes, archive'}
 											</button>
@@ -1249,6 +1295,21 @@
 		gap: var(--space-3);
 	}
 
+	.danger-zone-typed {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		font-size: 0.85em;
+		color: var(--text-secondary);
+	}
+	.danger-zone-typed input {
+		padding: var(--space-1) var(--space-2);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm, 6px);
+		background: var(--bg-primary);
+		color: var(--text-primary);
+		font: inherit;
+	}
 	.danger-zone-confirm-msg {
 		margin: 0;
 		font-size: 0.9em;

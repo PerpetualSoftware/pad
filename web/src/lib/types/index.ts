@@ -3167,3 +3167,18 @@ export interface ImportOutcome {
 	workspace_name?: string;
 	owner_username?: string;
 }
+
+/**
+ * An archived collection, from `GET /workspaces/{ws}/archived-collections`
+ * (TASK-2189). Archiving hides the collection and its items; nothing is
+ * deleted, and `api.collections.restore` brings both back.
+ */
+export interface ArchivedCollection {
+	id: string;
+	name: string;
+	slug: string;
+	prefix: string;
+	icon?: string;
+	item_count: number;
+	archived_at: string;
+}
