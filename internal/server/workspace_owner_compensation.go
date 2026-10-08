@@ -202,7 +202,10 @@ func (s *Server) removeUnusableWorkspace(door, workspaceID, workspaceSlug, userI
 	if delErr := s.store.DeleteWorkspace(workspaceSlug); delErr != nil {
 		slog.Error(door+": failed to soft-delete the workspace; manual intervention required",
 			"workspace_id", workspaceID, "workspace_slug", workspaceSlug, "user_id", userID, "error", delErr)
-		return nil
+		// An ERROR, per this function's contract (BUG-3479): the workspace is
+		// still live and still holds its slug. This returned nil, so every
+		// caller reported a removal that had not happened.
+		return fmt.Errorf("%w (the workspace could not be removed: %v)", cause, delErr)
 	}
 	// TASK-3365: nobody should hold a live connection to a workspace minted
 	// moments ago, but if anyone does it re-checks now.

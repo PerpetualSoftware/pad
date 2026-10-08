@@ -1751,7 +1751,11 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 	if err := s.store.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
 		slog.Error("auto-create workspace: failed to seed collections; the workspace is unusable and is being removed",
 			"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
-		_ = s.removeUnusableWorkspace("cloud auto-create", ws.ID, ws.Slug, user.ID, err)
+		if rerr := s.removeUnusableWorkspace("cloud auto-create", ws.ID, ws.Slug, user.ID, err); rerr != nil {
+			// BUG-3479: say it, rather than leave "is being removed" as the last word.
+			slog.Error("auto-create workspace: the unusable workspace could NOT be removed and is still live",
+				"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", rerr)
+		}
 		return
 	}
 
@@ -1816,7 +1820,10 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 				// other members, which this arm never checked.
 				slog.Error("auto-create workspace: add owner member failed after retry; the workspace is unusable and is being removed",
 					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
-				_ = s.removeUnusableWorkspace("cloud auto-create", ws.ID, ws.Slug, user.ID, err)
+				if rerr := s.removeUnusableWorkspace("cloud auto-create", ws.ID, ws.Slug, user.ID, err); rerr != nil {
+					slog.Error("auto-create workspace: the unusable workspace could NOT be removed and is still live",
+						"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", rerr)
+				}
 				return
 			// The literal matches the AddWorkspaceMember call above and every other
 			// role comparison in this package; there is no shared constant.
