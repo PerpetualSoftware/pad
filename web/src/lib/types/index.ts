@@ -2245,6 +2245,8 @@ export interface BuiltinStateResponse {
 	library?: BuiltinText;
 	/** The text the item was made from, when known: seed -> library is what the LIBRARY changed. */
 	seed?: BuiltinText;
+	/** The item's own text, from the same read as `seq` (absent from a server before it). */
+	current?: BuiltinText;
 	/** The item's version token at the read; the update sends it back. */
 	seq: number;
 }

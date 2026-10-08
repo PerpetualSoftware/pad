@@ -120,8 +120,15 @@
 		}
 	}
 
+	// What the dialog compares against: the item's text from the SAME read as
+	// the seq Accept sends (codex r5), so a fresh seq is never paired with a
+	// stale body. The pane's own copy is the fallback for a server that does
+	// not send it.
+	let previewContent = $derived(offer?.current?.content ?? currentContent);
+	let previewFields = $derived(offer?.current?.fields ?? parseFields(currentFields));
+
 	let fieldChanges = $derived(
-		offer?.library ? builtinFieldChanges(parseFields(currentFields), offer.library.fields, offer.seed?.fields) : []
+		offer?.library ? builtinFieldChanges(previewFields, offer.library.fields, offer.seed?.fields) : []
 	);
 
 	let badgeLabel = $derived(
@@ -227,7 +234,7 @@
 					Pad's library has a newer version of this {offer.kind ?? 'item'}. Your copy is unedited, so accepting
 					only brings in the library's changes.
 				</p>
-				<DiffView oldContent={currentContent} newContent={offer.library.content} oldLabel="Your copy" newLabel="Pad's library" />
+				<DiffView oldContent={previewContent} newContent={offer.library.content} oldLabel="Your copy" newLabel="Pad's library" />
 			{:else if offer.state === 'diverged' && offer.seed}
 				<p class="lead">
 					Pad's library has a newer version of this {offer.kind ?? 'item'}, and your copy was edited too.
@@ -236,13 +243,13 @@
 				<h3 class="section">What Pad's library changed</h3>
 				<DiffView oldContent={offer.seed.content} newContent={offer.library.content} oldLabel="When added" newLabel="Pad's library" />
 				<h3 class="section">What you changed</h3>
-				<DiffView oldContent={offer.seed.content} newContent={currentContent} oldLabel="When added" newLabel="Your copy" />
+				<DiffView oldContent={offer.seed.content} newContent={previewContent} oldLabel="When added" newLabel="Your copy" />
 			{:else}
 				<p class="lead">
 					This copy was added before Pad recorded which version it came from, so it may have been edited.
 					Compare it with the library's text before deciding.
 				</p>
-				<DiffView oldContent={currentContent} newContent={offer.library.content} oldLabel="Your copy" newLabel="Pad's library" />
+				<DiffView oldContent={previewContent} newContent={offer.library.content} oldLabel="Your copy" newLabel="Pad's library" />
 			{/if}
 
 			{#if fieldChanges.length > 0}

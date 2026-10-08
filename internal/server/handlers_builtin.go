@@ -123,6 +123,11 @@ func builtinStateFor(item *models.Item, origin *models.BuiltinOrigin) (*builtinS
 	resp.LibraryHash = entry.Hash()
 	if builtinOffers(state) {
 		resp.Library = &builtinText{Content: entry.Content, Fields: entry.UpdateFields()}
+		current, err := builtinTextOf(item.Content, item.Fields)
+		if err != nil {
+			return nil, entry, err
+		}
+		resp.Current = current
 		if origin.SeedHash != "" && (origin.SeedContent != "" || origin.SeedFields != "") {
 			seed, err := builtinTextOf(origin.SeedContent, origin.SeedFields)
 			if err != nil {

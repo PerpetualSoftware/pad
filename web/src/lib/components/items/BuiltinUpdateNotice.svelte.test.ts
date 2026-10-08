@@ -265,6 +265,20 @@ describe('BuiltinUpdateNotice', () => {
 		expect(document.querySelector('.error')?.textContent).toMatch(/could not be saved/);
 	});
 
+	it('compares against the text read with the seq, not the pane\'s copy (codex r5)', async () => {
+		render();
+		state.get[0]!.resolve(
+			offer('update_available', { current: { content: 'text as the server has it', fields: { trigger: 'on-commit' } } })
+		);
+		await settle();
+		badge()!.click();
+		flushSync();
+		const body = document.querySelector('.modal-body')?.textContent ?? '';
+		expect(body).toContain('text as the server has it');
+		expect(body).not.toContain('my body');
+		expect(document.querySelector('.field-changes')?.textContent).toContain('on-commit');
+	});
+
 	it('closes the dialog when the offer goes away under it (codex r1)', async () => {
 		render();
 		state.get[0]!.resolve(offer('update_available'));
