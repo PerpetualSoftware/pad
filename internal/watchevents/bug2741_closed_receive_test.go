@@ -1,6 +1,9 @@
 package watchevents
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // BUG-2741: Close cancels the receive loop's context AND closes its pubsub,
 // so both select cases can be ready at once and Go picks one at random. When
@@ -102,5 +105,29 @@ func TestBUG2741_DropCoverageAfterCloseRecordsNothing(t *testing.T) {
 	defer b.mu.Unlock()
 	if b.lastAppendedID != 1 {
 		t.Fatalf("a coverage drop after Close rewrote the bus: lastAppendedID %d, want 1", b.lastAppendedID)
+	}
+}
+
+func TestBUG2741_StampLastSeenAfterCloseRecordsNothing(t *testing.T) {
+	// PREMISE: on an open bus, a received frame stamps the liveness clock.
+	stamp := time.Unix(1_000, 0)
+	open, _ := closedReceiveBus(t)
+	open.nowFunc = func() time.Time { return stamp }
+	open.stampLastSeen(open.currentGen())
+	if !open.lastSeen.Equal(stamp) {
+		t.Fatalf("premise: an open bus did not stamp lastSeen (got %v)", open.lastSeen)
+	}
+	open.Close()
+
+	b, _ := closedReceiveBus(t)
+	b.nowFunc = func() time.Time { return stamp }
+	b.Close()
+
+	b.stampLastSeen(b.currentGen())
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.lastSeen.IsZero() {
+		t.Fatalf("a frame after Close stamped lastSeen = %v; a closed bus has no subscription to vouch for", b.lastSeen)
 	}
 }
