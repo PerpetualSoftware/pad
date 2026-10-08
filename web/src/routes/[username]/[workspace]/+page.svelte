@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
+	import { ATTENTION_CAP, PLANS_CAP, orderAttention, visibleRows, loadExpanded, saveExpanded } from '$lib/dashboard/caps';
 	import { page } from '$app/state';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { browser } from '$app/environment';
@@ -110,6 +111,10 @@
 	export const snapshot = scrollRestoration.snapshot;
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let onboardingDismissed = $state(false);
+	// Whether the person expanded a capped list here (TASK-2210): per
+	// workspace, per browser, like `onboardingDismissed`.
+	let attentionExpanded = $state(false);
+	let plansExpanded = $state(false);
 	let connectOpen = $state(false);
 	let showCreateCollection = $state(false);
 
@@ -211,12 +216,32 @@
 		});
 	});
 
-	// Sync dismissed state from localStorage when workspace changes
+	// Sync the per-workspace preferences from localStorage when the workspace
+	// changes: the onboarding dismissal and the capped lists' expansion
+	// (TASK-2210).
 	$effect(() => {
 		if (browser && wsSlug) {
-			onboardingDismissed = localStorage.getItem(`pad-onboarding-dismissed-${wsSlug}`) === 'true';
+			attentionExpanded = loadExpanded(wsSlug, 'attention');
+			plansExpanded = loadExpanded(wsSlug, 'plans');
+			// Storage can throw (blocked site data); the dismissal then defaults
+			// to not dismissed rather than taking the effect down (codex r1).
+			try {
+				onboardingDismissed = localStorage.getItem(`pad-onboarding-dismissed-${wsSlug}`) === 'true';
+			} catch {
+				onboardingDismissed = false;
+			}
 		}
 	});
+	function toggleAttention() {
+		attentionExpanded = !attentionExpanded;
+		saveExpanded(wsSlug, 'attention', attentionExpanded);
+	}
+	function togglePlans() {
+		plansExpanded = !plansExpanded;
+		saveExpanded(wsSlug, 'plans', plansExpanded);
+	}
+	// Most urgent first, so a capped list shows the rows that matter.
+	let attentionOrdered = $derived(dashboard ? orderAttention(dashboard.attention) : []);
 
 	// Phase F (PLAN-1519 / TASK-1526): consume the post-create Connect-modal
 	// auto-open signal staged by CreateWorkspaceModal via +layout.svelte.
@@ -750,7 +775,7 @@
 					<span class="section-label">Active Plans</span>
 				</div>
 				<div class="plan-list">
-					{#each dashboard.active_plans as plan (plan.slug)}
+					{#each visibleRows(dashboard.active_plans, PLANS_CAP, plansExpanded) as plan (plan.slug)}
 						<a href="/{username}/{wsSlug}/plans/{plan.slug}" class="plan-row">
 							<span class="plan-title" title={plan.title}>{plan.title}</span>
 							<div class="progress-bar">
@@ -760,6 +785,11 @@
 						</a>
 					{/each}
 				</div>
+				{#if dashboard.active_plans.length > PLANS_CAP}
+					<button type="button" class="show-all-btn" aria-expanded={plansExpanded} onclick={togglePlans}>
+						{plansExpanded ? 'Show fewer' : `Show all (${dashboard.active_plans.length})`}
+					</button>
+				{/if}
 			</section>
 		{/if}
 
@@ -828,7 +858,7 @@
 							<span class="section-badge">{dashboard.attention.length}</span>
 						</div>
 						<div class="attention-list">
-							{#each dashboard.attention as alert (`${alert.type}:${alert.item_slug}`)}
+							{#each visibleRows(attentionOrdered, ATTENTION_CAP, attentionExpanded) as alert (`${alert.type}:${alert.item_slug}`)}
 								<div class="attention-card">
 									<span class="attention-icon">{attentionIcon(alert.type)}</span>
 									<div class="attention-content">
@@ -838,6 +868,11 @@
 								</div>
 							{/each}
 						</div>
+						{#if dashboard.attention.length > ATTENTION_CAP}
+							<button type="button" class="show-all-btn" aria-expanded={attentionExpanded} onclick={toggleAttention}>
+								{attentionExpanded ? 'Show fewer' : `Show all (${dashboard.attention.length})`}
+							</button>
+						{/if}
 					</div>
 				{/if}
 				{#if dashboard.suggested_next.length > 0}
@@ -1423,6 +1458,18 @@
 	}
 
 	/* ── Attention ──────────────────────────────────────────────────────── */
+	.show-all-btn {
+		margin-top: var(--space-2, 8px);
+		background: none;
+		border: none;
+		padding: 4px 0;
+		color: var(--accent, var(--text-secondary));
+		font-size: 0.85em;
+		cursor: pointer;
+	}
+	.show-all-btn:hover {
+		text-decoration: underline;
+	}
 	.attention-list {
 		display: flex;
 		flex-direction: column;

@@ -412,6 +412,8 @@ describe('the dashboard fences every async commit point', () => {
 			onboardingDismissed:
 				'a per-workspace preference in localStorage: it belongs to the browser, not to ' +
 				'either identity, and carries nothing about the previous session',
+			attentionExpanded: 'a per-workspace list expansion in localStorage (TASK-2210), like onboardingDismissed',
+			plansExpanded: 'a per-workspace list expansion in localStorage (TASK-2210), like onboardingDismissed',
 		};
 
 		// Enumerated by the core, by STATEMENT (M12): this page is the one whose
