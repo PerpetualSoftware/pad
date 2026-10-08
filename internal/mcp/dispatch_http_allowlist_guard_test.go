@@ -288,7 +288,11 @@ func pathIsWorkspaceScoped(urlPath string) bool {
 var staticWorkspaceSiblingSegments = map[string]bool{
 	"deleted": true,
 	"import":  true,
-	"reorder": true,
+	// BUG-3475: the caller's OWN keyed import outcome. Keys are held per
+	// user, nothing in the URL names a workspace, and the answer names only
+	// a workspace that import made for this caller. Not on the MCP catalog.
+	"import-status": true,
+	"reorder":       true,
 }
 
 // routesRegisteredOutsideWorkspaceMiddleware are prefix/suffix pairs

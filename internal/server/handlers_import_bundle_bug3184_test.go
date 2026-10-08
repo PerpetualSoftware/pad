@@ -191,11 +191,15 @@ func tarNextFailureGoesThroughTheKeepDoor(t *testing.T, driver store.DriverType)
 		assertKeptThroughTheDoor(t, srv, u.ID, tok, "capped", rr, "request body too large")
 	})
 
+	// A client that went away is a TRANSPORT failure, which since BUG-3475
+	// rolls the partial workspace back instead of keeping it: the keep door's
+	// 400 is the only thing that could tell the importer it exists, and it
+	// cannot reach a client that is gone. See the BUG-3475 tests.
 	t.Run("client went away", func(t *testing.T) {
 		srv := attachmentsServerOn(t, driver)
 		u, tok := memberImporter(t, srv)
 		rr := importBodyAs(srv, "dropped", &failingAfter{data: bytes.NewReader(prefix), err: io.ErrUnexpectedEOF}, tok)
-		assertKeptThroughTheDoor(t, srv, u.ID, tok, "dropped", rr, "unexpected EOF")
+		assertRolledBack(t, srv, u.ID, "dropped", rr, "unexpected EOF")
 	})
 }
 
