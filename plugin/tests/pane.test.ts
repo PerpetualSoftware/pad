@@ -49,8 +49,10 @@ function cliAnswer(argv: readonly string[], calls: string[][]) {
   return { exitCode: 0, stdout: JSON.stringify(out[k] ?? {}), stderr: '' }
 }
 
-function stubs(on: any, opts: { cli?: boolean; onFill?: (t: string) => void } = {}) {
+function stubs(on: any, opts: { cli?: boolean; mcp?: boolean; linked?: boolean; onFill?: (t: string) => void; claudeRuns?: string[][] } = {}) {
   const cli = opts.cli !== false
+  const mcp = opts.mcp !== false
+  const linked = opts.linked !== false
   const calls: string[][] = []
   const mcpCalls: { tool: string; args: Record<string, unknown> }[] = []
   const saved = new Map<string, unknown>()
@@ -58,17 +60,18 @@ function stubs(on: any, opts: { cli?: boolean; onFill?: (t: string) => void } = 
   on('command.run', () => ({}))
   on('tool.call', () => ({ result: 'ok' }))
   on('session.cwd', () => ({ value: '/work/demo' }))
-  on('fs.exists', ($: any, e: any) => ({ value: e.path === '/work/demo/.pad.toml' }))
+  on('fs.exists', ($: any, e: any) => ({ value: linked && e.path === '/work/demo/.pad.toml' }))
   on('fs.read', () => ({ value: 'workspace = "demo"\nurl = "https://pad.example"\n' }))
   on('store.get', ($: any, e: any) => ({ value: saved.get(e.key) }))
   on('store.set', ($: any, e: any) => { saved.set(e.key, e.value); return { value: undefined } })
   on('process.run', ($: any, e: any) => {
+    if (e.argv[0] === 'claude') { opts.claudeRuns?.push(e.argv); return { value: { exitCode: 0, stdout: 'Added', stderr: '' } } }
     if (!cli) throw new Error('spawn pad ENOENT')
     return { value: cliAnswer(e.argv, calls) }
   })
   on('mcp.call', ($: any, e: any) => {
     mcpCalls.push({ tool: e.tool, args: e.args })
-    if (e.server !== 'pad') return { value: { isError: true, content: [{ type: 'text', text: 'no such server' }] } }
+    if (!mcp || e.server !== 'pad') return { value: { isError: true, content: [{ type: 'text', text: 'no such server' }] } }
     const map: Record<string, unknown> = {
       'pad_collection:list': COLLECTIONS,
       'pad_project:dashboard': DASHBOARD,
@@ -237,4 +240,37 @@ test('on Desktop: native rules, no hint line, Settings on the top row, the ref i
   expect(await term.find({ type: 'Text', text: /^─+$/ })).toBeDefined()
   expect((await term.find({ key: 'row-now-TASK-7' }))?.props.label).toMatch(/^TASK-7\s+Fix the login bug/)
   await term.unmount()
+})
+
+test('with no CLI and no MCP server, the pane guides setup; Pad Cloud is added only on a second press', async ($, on) => {
+  const filled: string[] = []
+  const claudeRuns: string[][] = []
+  stubs(on, { cli: false, mcp: false, linked: false, onFill: (t) => filled.push(t), claudeRuns })
+  await $.session.start({ cwd: '/work/demo' })
+  await $.command.run({ command: 'pad-pane', args: '' })
+  await settle()
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: 'Get started with Pad' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '○ pad CLI installed' })).toBeDefined()
+
+  // Pad Cloud: the first press explains, the second adds it and fills /reload-plugins
+  await ui.press({ key: 'gs-cloud' })
+  await settle()
+  expect(claudeRuns).toEqual([])
+  expect(await ui.find({ type: 'Text', text: /Press 1 again/ })).toBeDefined()
+  await ui.press({ key: 'gs-cloud' })
+  await settle()
+  expect(claudeRuns).toEqual([['claude', 'mcp', 'add', '--scope', 'user', '--transport', 'http', 'pad', 'https://mcp.getpad.dev']])
+  expect(filled).toEqual(['/reload-plugins'])
+  expect(await ui.find({ type: 'Text', text: /Authenticate/ })).toBeDefined()
+
+  // this machine, without the CLI: Claude is asked to install it, never run unasked
+  await ui.press({ key: 'gs-local' })
+  await settle()
+  expect(filled[1]).toMatch(/^Install the Pad CLI for me/)
+  // own server
+  await ui.press({ key: 'gs-server' })
+  await settle()
+  expect(filled[2]).toMatch(/self-hosted Pad server/)
+  await ui.unmount()
 })
