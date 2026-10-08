@@ -58,6 +58,10 @@
 		// Leaving this item (or this identity) clears its comment chips, so a
 		// stale answer never paints on a card.
 		return () => {
+			// Invalidate the request too (codex r1 on U2b): a response still
+			// in flight would otherwise pass the token check and repaint the
+			// chips this just cleared.
+			latest++;
 			if (id) commentChipsStore.clearFor(id);
 		};
 	});
