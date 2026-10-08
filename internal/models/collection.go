@@ -126,6 +126,21 @@ type CollectionWriteWarnings struct {
 	// declaration's own encoding, so SQLite's unique index (json_extract, the
 	// FIRST occurrence) and the resolver (Go, the LAST) read one declaration.
 	CollapsedDuplicateKeys []string `json:"collapsed_duplicate_keys,omitempty"`
+	// Orphaned (TASK-2188) names each field or select option an UPDATE's
+	// schema removed that live items still hold, with how many. The values
+	// stay stored: a removed field's value is kept as an undeclared key and
+	// comes back if a field with that key is declared again, and a removed
+	// option's value stays on its items. Nothing was refused.
+	Orphaned []OrphanedValue `json:"orphaned,omitempty"`
+}
+
+// OrphanedValue is one removal a schema edit made that left values behind:
+// a field (Option empty) or one select option, and how many live items still
+// hold it.
+type OrphanedValue struct {
+	Field  string `json:"field"`
+	Option string `json:"option,omitempty"`
+	Items  int    `json:"items"`
 }
 
 // CanonicalTraitsIfDuplicated returns raw unchanged unless some object in it

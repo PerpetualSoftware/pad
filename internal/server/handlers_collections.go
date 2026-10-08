@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -450,6 +451,9 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// TASK-2188: the schemas before and after, kept for the orphan report
+	// on the response.
+	var prevSchemaForOrphans, nextSchemaForOrphans models.CollectionSchema
 	if input.Schema != nil {
 		var schema models.CollectionSchema
 		if err := json.Unmarshal([]byte(*input.Schema), &schema); err != nil {
@@ -471,6 +475,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
+		prevSchemaForOrphans, nextSchemaForOrphans = prevSchema, schema
 	}
 
 	// Field-value migrations (select-option renames) are applied ATOMICALLY
@@ -556,6 +561,22 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 
 	if len(updateCollapsed) > 0 {
 		updated.Warnings = &models.CollectionWriteWarnings{CollapsedDuplicateKeys: updateCollapsed}
+	}
+	// TASK-2188: a schema edit that removed a field or a select option names
+	// how many live items still hold what it removed. The edit is accepted
+	// either way; this is so the caller (an agent above all, which has no
+	// dialog to warn it) sees what it did. Read AFTER the commit, so a value
+	// an option rename migrated is not reported. The caller passed the same
+	// owner and full-visibility gates as the count endpoint, so the counts
+	// disclose nothing it could not read. A failed scan omits the report
+	// rather than failing a write that already committed.
+	if input.Schema != nil {
+		if orphans := s.orphanedBySchemaEdit(coll.ID, prevSchemaForOrphans, nextSchemaForOrphans); len(orphans) > 0 {
+			if updated.Warnings == nil {
+				updated.Warnings = &models.CollectionWriteWarnings{}
+			}
+			updated.Warnings.Orphaned = orphans
+		}
 	}
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -803,4 +824,52 @@ func (s *Server) handleRestoreCollection(w http.ResponseWriter, r *http.Request)
 	s.invalidateWorkspaceAccess(workspaceID)
 	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.ID, coll.Slug, "", true)
 	writeJSON(w, http.StatusOK, coll)
+}
+
+// orphanedBySchemaEdit is the TASK-2188 report for one committed schema edit.
+// It scans only when the edit removed something, so an ordinary edit costs no
+// item read.
+func (s *Server) orphanedBySchemaEdit(collectionID string, prev, next models.CollectionSchema) []models.OrphanedValue {
+	if !store.SchemaEditRemoves(prev, next) {
+		return nil
+	}
+	usage, err := s.store.CollectionFieldUsage(collectionID)
+	if err != nil {
+		slog.Warn("collection update: orphan report skipped", "collection_id", collectionID, "error", err)
+		return nil
+	}
+	return store.OrphanedBySchemaEdit(prev, next, usage)
+}
+
+// handleCollectionFieldUsage answers how many live items hold a value per
+// field key, and per string value (TASK-2188): the counts a schema editor
+// shows before removing a field or an option. Owner-only and
+// full-visibility, the gates of the PATCH it informs, so a caller who cannot
+// edit the schema learns nothing about items it may not see.
+func (s *Server) handleCollectionFieldUsage(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	coll, err := s.store.GetCollectionBySlug(workspaceID, chi.URLParam(r, "collSlug"))
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if coll == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
+		return
+	}
+	usage, err := s.store.CollectionFieldUsage(coll.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
 }

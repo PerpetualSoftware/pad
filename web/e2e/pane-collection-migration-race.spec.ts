@@ -250,6 +250,15 @@ test('a collection migration completing after a rapid A->B pane switch refreshes
 		(r) => r.url().endsWith(`/collections/${coll.slug}`) && r.method() === 'PATCH',
 	);
 	await page.locator('button.btn-save', { hasText: 'Save Changes' }).click();
+	// TASK-2188: a rename that moves items' values is confirmed before it is
+	// sent. Enabled once the counts have loaded (an unknown count asks for the
+	// collection name typed instead). The race this spec guards still holds:
+	// the confirm only delays when the PATCH is ISSUED, the route gate above
+	// still holds it in flight until releaseMigration(), and nothing below
+	// moves until patchSeen.
+	const saveAnyway = page.locator('.impact-confirm').getByRole('button', { name: 'Save anyway' });
+	await expect(saveAnyway).toBeEnabled();
+	await saveAnyway.click();
 	await patchSeen;
 
 	// Close the modal WITHOUT waiting for the (held) save to resolve — a
@@ -429,6 +438,15 @@ test('a collection migration completing after a cross-collection navigation does
 		(r) => r.url().endsWith(`/collections/${collA.slug}`) && r.method() === 'PATCH',
 	);
 	await page.locator('button.btn-save', { hasText: 'Save Changes' }).click();
+	// TASK-2188: a rename that moves items' values is confirmed before it is
+	// sent. Enabled once the counts have loaded (an unknown count asks for the
+	// collection name typed instead). The race this spec guards still holds:
+	// the confirm only delays when the PATCH is ISSUED, the route gate above
+	// still holds it in flight until releaseMigration(), and nothing below
+	// moves until patchSeen.
+	const saveAnyway = page.locator('.impact-confirm').getByRole('button', { name: 'Save anyway' });
+	await expect(saveAnyway).toBeEnabled();
+	await saveAnyway.click();
 	await patchSeen;
 
 	await page.locator('button.btn-cancel', { hasText: 'Cancel' }).click();

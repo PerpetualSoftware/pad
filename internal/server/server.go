@@ -2095,6 +2095,9 @@ func (s *Server) setupRouter() {
 							r.Get("/", s.handleGetCollection)
 							r.Patch("/", s.handleUpdateCollection)
 							r.Delete("/", s.handleDeleteCollection)
+							// What items hold per field and option, for a schema edit that
+							// removes one (TASK-2188). Same gates as the PATCH above.
+							r.Get("/field-usage", s.handleCollectionFieldUsage)
 							// Items within collection
 							r.Get("/items", s.handleListCollectionItems)
 							r.Post("/items", s.handleCreateItem)

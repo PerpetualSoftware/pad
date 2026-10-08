@@ -127,6 +127,8 @@ Actions:
             This is the adaptation primitive for the onboarding playbook
             (/pad onboard) — rewrite seeded collections to match the
             project's actual vocabulary instead of template defaults.
+            Removing a field or option that items hold is allowed; they
+            keep the value, and warnings.orphaned says how many.
   delete  — Archive a collection: it and its items leave every view. Owner-only.
             Reversible with restore. Required: workspace, slug.
             Constraints:

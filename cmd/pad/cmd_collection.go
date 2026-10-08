@@ -347,6 +347,7 @@ issue-ID equivalent for collections themselves.`,
 			if err != nil {
 				return err
 			}
+			warnOrphanedValues(updated)
 
 			if formatFlag == "json" {
 				return cli.PrintJSON(updated)
@@ -558,3 +559,21 @@ func normalizeCollectionSlug(input string) string {
 }
 
 // --- library ---
+
+// warnOrphanedValues prints to STDERR, one line per removal, what a schema
+// update left behind on items (TASK-2188): a removed field, or a removed
+// select option, that live items still hold. Stderr so --format json stays
+// parseable; the same list is in the JSON response's warnings.orphaned.
+func warnOrphanedValues(coll *models.Collection) {
+	if coll == nil || coll.Warnings == nil {
+		return
+	}
+	for _, o := range coll.Warnings.Orphaned {
+		items := pluralize(o.Items, "item", "items")
+		if o.Option == "" {
+			fmt.Fprintf(os.Stderr, "warning: removed field %q, held by %s: the values are kept, hidden, and come back if a field with that key is declared again\n", o.Field, items)
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: removed option %q from %q, held by %s: they keep it, but it is no longer valid, so a write that sets it or carries it in a full fields blob is refused\n", o.Option, o.Field, items)
+		}
+	}
+}
