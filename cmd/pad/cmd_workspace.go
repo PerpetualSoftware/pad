@@ -796,6 +796,12 @@ func offerSkillInstall() {
 	if !hasClaude {
 		detected = append([]cli.AgentTool{cli.SupportedTools[0]}, detected...)
 	}
+	// Claude Code users get the plugin pointer at the end of every path
+	// below (TASK-3488), but only when Claude Code was actually DETECTED,
+	// not merely added to the install set above.
+	if hasClaude {
+		defer printClaudePluginHint(os.Stdout)
+	}
 
 	// Installed tools go through the same door as pad init (BUG-3466, codex
 	// r1): pad's own unedited text updates quietly, an edited file or a
@@ -888,6 +894,61 @@ func offerSkillInstall() {
 		color.New(color.FgGreen).Printf("  ✓ %s", tool.Label)
 		fmt.Printf(" → %s\n", color.New(color.Faint).Sprint(res.Path))
 	}
+}
+
+// claudePluginCommands are what a Claude Code user types to install the pad
+// plugin (README, getpad.dev/docs/claude-code).
+var claudePluginCommands = []string{
+	"/plugin marketplace add PerpetualSoftware/pad",
+	"/plugin install pad@pad",
+}
+
+// printClaudePluginHint points a Claude Code user at the pad plugin, which
+// carries the /pad skill plus the panel and live notifications, and updates
+// itself (TASK-3488). Silent when the plugin is already installed.
+func printClaudePluginHint(w io.Writer) {
+	if claudePadPluginInstalled() {
+		return
+	}
+	faint := color.New(color.Faint)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Using Claude Code? The pad plugin carries the /pad skill plus the panel and live")
+	fmt.Fprintln(w, "notifications, and updates itself. In Claude Code, run:")
+	for _, c := range claudePluginCommands {
+		fmt.Fprintf(w, "  %s\n", faint.Sprint(c))
+	}
+}
+
+// claudePadPluginKey is the plugin's key in installed_plugins.json: the pad
+// plugin from the pad marketplace, which is what the commands above install.
+// Exact, so a plugin named pad from another marketplace does not count (codex r1).
+const claudePadPluginKey = "pad@pad"
+
+// claudePadPluginInstalled reports whether Claude Code has the pad plugin
+// installed, from its installed_plugins.json (keys are "<plugin>@<marketplace>").
+// Under $CLAUDE_CONFIG_DIR when set, else ~/.claude. A file that is missing or
+// unreadable reads as NOT installed, so the hint errs toward being shown.
+func claudePadPluginInstalled() bool {
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		dir = filepath.Join(home, ".claude")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "plugins", "installed_plugins.json"))
+	if err != nil {
+		return false
+	}
+	var f struct {
+		Plugins map[string]json.RawMessage `json:"plugins"`
+	}
+	if json.Unmarshal(data, &f) != nil {
+		return false
+	}
+	_, ok := f.Plugins[claudePadPluginKey]
+	return ok
 }
 
 func readChoice() string {
