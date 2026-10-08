@@ -59,6 +59,11 @@ func TestTASK3462U4_LegacyAdoption(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Pinned AFTER the migration: in a test the migration and this create
+		// can share a second, and the cutoff includes that second.
+		if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`UPDATE items SET created_at = '2999-01-01T00:00:00Z' WHERE id = ?`), fresh.ID); err != nil {
+			t.Fatal(err)
+		}
 
 		res, err := srv.store.AdoptLegacyBuiltins()
 		if err != nil {
@@ -122,6 +127,7 @@ func TestTASK3462U4_MatchLegacyBuiltin(t *testing.T) {
 		{Key: "a/one", Kind: "convention", Title: "Same title", Content: "body one"},
 		{Key: "b/one", Kind: "convention", Title: "Same title", Content: "body two"},
 		{Key: "p/x", Kind: "playbook", Title: "Exes", Content: "x", Fields: `{"invocation_slug":"exes"}`},
+		{Key: "p/y", Kind: "playbook", Title: "Wyes", Content: "y", Fields: `{"invocation_slug":"wyes"}`},
 	}
 	cases := []struct {
 		name, kind, title, slug, content, want string
@@ -131,10 +137,36 @@ func TestTASK3462U4_MatchLegacyBuiltin(t *testing.T) {
 		{"wrong kind", "playbook", "Same title", "", "body one", ""},
 		{"playbook by slug", "playbook", "Renamed", "exes", "x", "p/x"},
 		{"no match", "convention", "Other", "", "", ""},
+		// codex r1: the title names one playbook and the slug another, so it
+		// is ambiguous and nothing is adopted.
+		{"title and slug disagree", "playbook", "Exes", "wyes", "x", ""},
 	}
 	for _, c := range cases {
 		if got := collections.MatchLegacyBuiltin(entries, c.kind, c.title, c.slug, c.content); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
+}
+
+// codex r1 (High): an item created in the very second the origin migration
+// was applied (timestamps are second-precision) is still a legacy item.
+func TestTASK3462U4_SameSecondAsTheMigrationIsLegacy(t *testing.T) {
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		_, wsID := task3462Workspace(t, srv, "Same second 3462", "startup")
+		makeLegacy(t, srv, wsID)
+		var appliedAt string
+		if err := srv.store.DB().QueryRow(srv.store.D().Rebind(`SELECT applied_at FROM schema_migrations WHERE version LIKE ?`), "%item_builtin_origin.sql").Scan(&appliedAt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`UPDATE items SET created_at = ? WHERE workspace_id = ?`), appliedAt, wsID); err != nil {
+			t.Fatal(err)
+		}
+		res, err := srv.store.AdoptLegacyBuiltins()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Adopted == 0 {
+			t.Fatalf("items created in the migration's second were not adopted: %+v", res)
+		}
+	})
 }

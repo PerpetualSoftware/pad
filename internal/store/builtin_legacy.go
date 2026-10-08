@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
@@ -52,35 +53,91 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 		return res, fmt.Errorf("parse the origin migration's time %q: %w", appliedAt, err)
 	}
 
-	type candidate struct {
-		id, title, content, fields, createdAt, traits string
-	}
-	rows, err := s.db.Query(s.q(`
-		SELECT i.id, i.title, i.content, i.fields, i.created_at, c.traits
-		FROM items i
-		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
-		LEFT JOIN item_builtin_origin o ON o.item_id = i.id
-		WHERE o.item_id IS NULL AND i.deleted_at IS NULL
-	`))
+	// The convention and playbook collections first, so the item read below
+	// touches only their items (codex r1: reading every originless item's body
+	// on the instance cost startup time and memory in proportion to it).
+	kindOf := map[string]string{}
+	crows, err := s.db.Query(s.q(`SELECT id, traits FROM collections WHERE deleted_at IS NULL`))
 	if err != nil {
-		return res, fmt.Errorf("list items without an origin: %w", err)
+		return res, fmt.Errorf("list collections: %w", err)
+	}
+	for crows.Next() {
+		var id string
+		var traits *string
+		if err := crows.Scan(&id, &traits); err != nil {
+			crows.Close()
+			return res, fmt.Errorf("scan collection: %w", err)
+		}
+		if traits == nil {
+			continue
+		}
+		t, err := models.ParseCollectionTraits(*traits)
+		if err != nil || t.ArtifactKind == nil {
+			continue
+		}
+		if k := t.ArtifactKind.Kind; k == collections.BuiltinConvention || k == collections.BuiltinPlaybook {
+			kindOf[id] = k
+		}
+	}
+	crows.Close()
+	if err := crows.Err(); err != nil {
+		return res, err
+	}
+
+	type candidate struct {
+		id, title, content, fields, collectionID string
 	}
 	var cands []candidate
-	for rows.Next() {
-		var c candidate
-		var traits *string
-		if err := rows.Scan(&c.id, &c.title, &c.content, &c.fields, &c.createdAt, &traits); err != nil {
-			rows.Close()
-			return res, fmt.Errorf("scan item: %w", err)
-		}
-		if traits != nil {
-			c.traits = *traits
-		}
-		cands = append(cands, c)
+	ids := make([]string, 0, len(kindOf))
+	for id := range kindOf {
+		ids = append(ids, id)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return res, err
+	const chunk = 400
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		part := ids[start:end]
+		args := make([]any, 0, len(part))
+		ph := make([]string, len(part))
+		for i, id := range part {
+			ph[i] = "?"
+			args = append(args, id)
+		}
+		rows, err := s.db.Query(s.q(`
+			SELECT i.id, i.title, i.content, i.fields, i.collection_id, i.created_at
+			FROM items i
+			LEFT JOIN item_builtin_origin o ON o.item_id = i.id
+			WHERE o.item_id IS NULL AND i.deleted_at IS NULL
+			  AND i.collection_id IN (`+strings.Join(ph, ",")+`)
+		`), args...)
+		if err != nil {
+			return res, fmt.Errorf("list legacy items: %w", err)
+		}
+		for rows.Next() {
+			var c candidate
+			var createdAt string
+			if err := rows.Scan(&c.id, &c.title, &c.content, &c.fields, &c.collectionID, &createdAt); err != nil {
+				rows.Close()
+				return res, fmt.Errorf("scan item: %w", err)
+			}
+			// AT OR BEFORE the migration's second (codex r1): timestamps are
+			// second-precision, so an item made in that very second is still
+			// a legacy item, and missing it now would miss it for good once the
+			// marker is written. Parsed, not compared as text, because an
+			// imported item keeps the timestamp format it was exported with;
+			// one that does not parse is left alone.
+			created, err := time.Parse(time.RFC3339, createdAt)
+			if err != nil || created.After(cutoff) {
+				continue
+			}
+			cands = append(cands, c)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return res, err
+		}
 	}
 
 	entries := collections.BuiltinEntries()
@@ -91,18 +148,7 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 	defer tx.Rollback() //nolint:errcheck
 	ts := now()
 	for _, c := range cands {
-		t, err := models.ParseCollectionTraits(c.traits)
-		if err != nil || t.ArtifactKind == nil {
-			continue
-		}
-		kind := t.ArtifactKind.Kind
-		if kind != collections.BuiltinConvention && kind != collections.BuiltinPlaybook {
-			continue
-		}
-		created, err := time.Parse(time.RFC3339, c.createdAt)
-		if err != nil || !created.Before(cutoff) {
-			continue
-		}
+		kind := kindOf[c.collectionID]
 		res.Considered++
 		var f struct {
 			InvocationSlug string `json:"invocation_slug"`

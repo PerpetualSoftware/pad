@@ -24,50 +24,63 @@ func BuiltinEntries() []BuiltinEntry {
 //   - several such entries (templates can share a title): the one whose body
 //     is exactly the item's, or none;
 //   - no title match, for a playbook: the one entry whose invocation_slug is
-//     the item's (a rename keeps the slug).
+//     the item's (a rename keeps the slug);
+//   - a title naming one entry and a slug naming another: nothing.
 //
 // Nothing else is adopted: a wrong origin would offer someone else's text as
 // an "update".
 func MatchLegacyBuiltin(entries []BuiltinEntry, kind, title, invocationSlug, content string) string {
-	var byTitle []BuiltinEntry
+	byTitle := ""
+	var titled []BuiltinEntry
 	for _, e := range entries {
 		if e.Kind == kind && e.Title == title {
-			byTitle = append(byTitle, e)
+			titled = append(titled, e)
 		}
 	}
-	switch len(byTitle) {
-	case 1:
-		return byTitle[0].Key
+	switch len(titled) {
 	case 0:
+	case 1:
+		byTitle = titled[0].Key
 	default:
 		var byBody []BuiltinEntry
-		for _, e := range byTitle {
+		for _, e := range titled {
 			if e.Content == content {
 				byBody = append(byBody, e)
 			}
 		}
-		if len(byBody) == 1 {
-			return byBody[0].Key
+		if len(byBody) != 1 {
+			return ""
 		}
+		byTitle = byBody[0].Key
+	}
+
+	bySlug := ""
+	if kind == BuiltinPlaybook && invocationSlug != "" {
+		var slugged []BuiltinEntry
+		for _, e := range entries {
+			if e.Kind != BuiltinPlaybook {
+				continue
+			}
+			var f struct {
+				InvocationSlug string `json:"invocation_slug"`
+			}
+			if json.Unmarshal([]byte(e.Fields), &f) == nil && f.InvocationSlug == invocationSlug {
+				slugged = append(slugged, e)
+			}
+		}
+		if len(slugged) == 1 {
+			bySlug = slugged[0].Key
+		}
+	}
+
+	switch {
+	case byTitle != "" && bySlug != "" && byTitle != bySlug:
+		// The title names one built-in and the slug another (codex r1):
+		// either could be the rename, so neither is adopted.
 		return ""
+	case byTitle != "":
+		return byTitle
+	default:
+		return bySlug
 	}
-	if kind != BuiltinPlaybook || invocationSlug == "" {
-		return ""
-	}
-	var bySlug []BuiltinEntry
-	for _, e := range entries {
-		if e.Kind != BuiltinPlaybook {
-			continue
-		}
-		var f struct {
-			InvocationSlug string `json:"invocation_slug"`
-		}
-		if json.Unmarshal([]byte(e.Fields), &f) == nil && f.InvocationSlug == invocationSlug {
-			bySlug = append(bySlug, e)
-		}
-	}
-	if len(bySlug) == 1 {
-		return bySlug[0].Key
-	}
-	return ""
 }
