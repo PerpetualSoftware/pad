@@ -6229,7 +6229,9 @@
 		<!-- Built-in update nudge (TASK-3462 U3b): a convention or playbook Pad
 		     ships whose library text is newer. Renders nothing otherwise. -->
 		{#if collection?.is_system}
-			{#key identityKey}{@const handedDown = identityKey}
+			<!-- Keyed by item: an item switch remounts it, so nothing from the
+			     previous item's preview survives into the next. -->
+			{#key item.id}
 			<BuiltinUpdateNotice
 				{wsSlug}
 				itemRef={item.slug}
@@ -6237,7 +6239,7 @@
 				currentContent={item.content}
 				currentFields={item.fields}
 				{canEdit}
-				onUpdated={() => { if (handedDown !== identityKey) return; void loadData(); }}
+				hasUnsavedEdits={() => rawContentSaver.dirty || saveStatus === 'saving'}
 			/>
 			{/key}
 		{/if}

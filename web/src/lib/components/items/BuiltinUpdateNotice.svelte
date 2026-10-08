@@ -22,11 +22,20 @@
 		currentContent: string;
 		currentFields: string;
 		canEdit: boolean;
-		/** Called after an accepted update, so the pane reloads the item. */
-		onUpdated: () => void;
+		/**
+		 * Whether the pane holds edits it has not saved yet (a pending raw
+		 * draft, a save in flight). Accept refuses while it does: a draft saved
+		 * after the update would replace the library's text (codex r1).
+		 * Asked at the press, synchronously.
+		 */
+		hasUnsavedEdits?: () => boolean;
 	}
 
-	let { wsSlug, itemRef, seq, currentContent, currentFields, canEdit, onUpdated }: Props = $props();
+	// No callback back into the pane (codex r1): after an accepted update the
+	// item's own `item_updated` event refreshes the pane, and this reads the
+	// state again when the item's seq moves. A reload from here would flush a
+	// pending raw draft over the update and cancel the collab editor's flush.
+	let { wsSlug, itemRef, seq, currentContent, currentFields, canEdit, hasUnsavedEdits }: Props = $props();
 
 	let offer = $state<BuiltinStateResponse | null>(null);
 	let open = $state(false);
@@ -46,11 +55,14 @@
 			const st = await api.builtins.get(ws, ref);
 			if (!isSameIdentity() || myLoad !== loadGen) return;
 			offer = st.state === 'update_available' || st.state === 'diverged' || st.state === 'unknown_origin' ? st : null;
+			// A preview with nothing behind it would be an empty dialog.
+			if (!offer) open = false;
 		} catch {
 			// 404 not_builtin (an item made from no built-in), a server before
 			// TASK-3462, or a failed read: no offer.
 			if (!isSameIdentity() || myLoad !== loadGen) return;
 			offer = null;
+			open = false;
 		}
 	}
 
@@ -108,22 +120,30 @@
 
 	async function accept() {
 		if (!offer || busy || !canEdit) return;
+		if (hasUnsavedEdits?.()) {
+			errorMessage = 'This item has edits that are still being saved. Wait for them to save, then accept.';
+			return;
+		}
 		const isSameIdentity = authStore.identityFence();
+		// The item this press is about: a response that settles after the pane
+		// moved to another item commits nothing here (codex r1).
+		const ws = wsSlug;
+		const ref = itemRef;
+		const stillThisItem = () => isSameIdentity() && wsSlug === ws && itemRef === ref;
 		const discard = pendingEdits;
 		busy = true;
 		errorMessage = null;
 		try {
-			await api.builtins.update(wsSlug, itemRef, {
+			await api.builtins.update(ws, ref, {
 				expected_seq: offer.seq,
 				...(discard ? { overwrite_pending_edits: true } : {})
 			});
-			if (!isSameIdentity()) return;
+			if (!stillThisItem()) return;
 			open = false;
 			offer = null;
 			pendingEdits = false;
-			onUpdated();
 		} catch (err) {
-			if (!isSameIdentity()) return;
+			if (!stillThisItem()) return;
 			const code = (err as { code?: string }).code;
 			if (code === 'content_pending_flush') {
 				pendingEdits = true;
@@ -131,7 +151,7 @@
 					'This item has edits an open editor has not saved yet. Accepting again replaces them as well.';
 			} else if (code === 'update_conflict') {
 				errorMessage = 'The item changed since this preview opened. The preview has been refreshed; review it again.';
-				void load(wsSlug, itemRef);
+				void load(ws, ref);
 			} else if (code === 'builtin_up_to_date') {
 				open = false;
 				offer = null;
@@ -139,7 +159,7 @@
 				errorMessage = (err as Error)?.message || 'The update failed.';
 			}
 		} finally {
-			if (isSameIdentity()) busy = false;
+			if (stillThisItem()) busy = false;
 		}
 	}
 </script>
@@ -195,8 +215,14 @@
 			{/if}
 
 			<p class="note">
-				Your current text stays in this item's version history. The settings above are not kept there; the update's
-				history entry records the values it replaced. Status and title are never changed.
+				{#if pendingEdits}
+					The unsaved edits from the open editor are discarded and are not kept anywhere. The last saved text stays
+					in this item's version history.
+				{:else}
+					Your current text stays in this item's version history.
+				{/if}
+				The settings above are not kept there; the update's history entry records the values it replaced. Status and
+				title are never changed.
 			</p>
 			{#if errorMessage}
 				<p class="error" role="alert">{errorMessage}</p>

@@ -50,6 +50,17 @@ export function builtinOfferLabel(entries: BuiltinListEntry[], key: string | und
 			title: "Pad's library has a newer version, and this workspace's copy was edited. Open it to compare before deciding."
 		};
 	}
+	// A copy added before Pad recorded versions (legacy, TASK-3462 U4) whose
+	// text differs from the library's: there is something to review, though
+	// whether it was edited is unknown (codex r1).
+	const unknown = mine.find((e) => e.state === 'unknown_origin');
+	if (unknown) {
+		return {
+			entry: unknown,
+			label: 'Library version differs',
+			title: "This copy differs from Pad's library, and it was added before Pad recorded versions, so it may have been edited. Open it to compare."
+		};
+	}
 	return null;
 }
 

@@ -24,9 +24,9 @@ describe('builtinActive (TASK-3462 U3b)', () => {
 });
 
 describe('builtinOfferLabel (TASK-3462 U3b)', () => {
-	it('offers nothing for a current item, an unknown origin, or no key', () => {
+	it('offers nothing for a current item, an unknown entry, or no key', () => {
 		expect(builtinOfferLabel([row('k', 'current')], 'k')).toBeNull();
-		expect(builtinOfferLabel([row('k', 'unknown_origin')], 'k')).toBeNull();
+		expect(builtinOfferLabel([row('k', 'unknown_entry')], 'k')).toBeNull();
 		expect(builtinOfferLabel([row('k', 'update_available')], undefined)).toBeNull();
 	});
 	it('says "Update available" for an unedited copy', () => {
@@ -34,6 +34,9 @@ describe('builtinOfferLabel (TASK-3462 U3b)', () => {
 	});
 	it('says "Library changed" for an edited one', () => {
 		expect(builtinOfferLabel([row('k', 'diverged')], 'k')?.label).toBe('Library changed');
+	});
+	it('says "Library version differs" for a copy of unknown origin (codex r1)', () => {
+		expect(builtinOfferLabel([row('k', 'unknown_origin')], 'k')?.label).toBe('Library version differs');
 	});
 	it('prefers the unedited copy when two items share the key', () => {
 		const offer = builtinOfferLabel([row('k', 'diverged', 'a'), row('k', 'update_available', 'b')], 'k');

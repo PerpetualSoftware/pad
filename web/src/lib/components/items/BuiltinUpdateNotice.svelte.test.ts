@@ -65,23 +65,30 @@ function apiError(code: string): Error & { code: string } {
 }
 
 let cmp: ReturnType<typeof mount> | null = null;
-let updated = 0;
+let unsaved = false;
+// Reactive props, so a test can move the pane to another item or bump seq.
+let props: {
+	wsSlug: string;
+	itemRef: string;
+	seq: number;
+	currentContent: string;
+	currentFields: string;
+	canEdit: boolean;
+	hasUnsavedEdits: () => boolean;
+};
 
 function render(canEdit = true) {
-	cmp = mount(BuiltinUpdateNotice, {
-		target: document.body,
-		props: {
-			wsSlug: 'ws',
-			itemRef: 'plan',
-			seq: 7,
-			currentContent: 'my body',
-			currentFields: JSON.stringify({ trigger: 'on-release' }),
-			canEdit,
-			onUpdated: () => {
-				updated++;
-			},
-		},
+	const reactive = $state({
+		wsSlug: 'ws',
+		itemRef: 'plan',
+		seq: 7,
+		currentContent: 'my body',
+		currentFields: JSON.stringify({ trigger: 'on-release' }),
+		canEdit,
+		hasUnsavedEdits: () => unsaved,
 	});
+	props = reactive;
+	cmp = mount(BuiltinUpdateNotice, { target: document.body, props });
 	flushSync();
 }
 
@@ -90,7 +97,7 @@ const acceptBtn = () =>
 	[...document.querySelectorAll<HTMLButtonElement>('.modal-footer button')].find((b) => /accept/i.test(b.textContent ?? ''));
 
 beforeEach(() => {
-	updated = 0;
+	unsaved = false;
 	state.get.length = 0;
 	state.update.length = 0;
 });
@@ -130,7 +137,7 @@ describe('BuiltinUpdateNotice', () => {
 		}
 	});
 
-	it('accepts only on a press, sending the seq it previewed, then asks the pane to reload', async () => {
+	it('accepts only on a press, sending the seq it previewed, and closes', async () => {
 		render();
 		state.get[0]!.resolve(offer('diverged'));
 		await settle();
@@ -143,8 +150,52 @@ describe('BuiltinUpdateNotice', () => {
 		expect(state.update[0]!.body).toEqual({ expected_seq: 7 });
 		state.update[0]!.resolve({});
 		await settle();
-		expect(updated).toBe(1);
 		expect(badge()).toBeNull();
+		expect(document.querySelector('dialog')?.open ?? false).toBe(false);
+	});
+
+	it('refuses to accept while the pane holds unsaved edits (codex r1)', async () => {
+		render();
+		state.get[0]!.resolve(offer('update_available'));
+		await settle();
+		badge()!.click();
+		flushSync();
+		unsaved = true;
+		acceptBtn()!.click();
+		flushSync();
+		expect(state.update).toHaveLength(0);
+		expect(document.querySelector('.error')?.textContent).toMatch(/still being saved/);
+	});
+
+	it('a response for the item the pane has left commits nothing (codex r1)', async () => {
+		render();
+		state.get[0]!.resolve(offer('update_available'));
+		await settle();
+		badge()!.click();
+		flushSync();
+		acceptBtn()!.click();
+		flushSync();
+		props.itemRef = 'other';
+		flushSync();
+		const getsBefore = state.get.length;
+		state.update[0]!.reject(apiError('update_conflict'));
+		await settle();
+		expect(document.querySelector('.error')).toBeNull();
+		expect(state.get.length).toBe(getsBefore);
+	});
+
+	it('closes the dialog when the offer goes away under it (codex r1)', async () => {
+		render();
+		state.get[0]!.resolve(offer('update_available'));
+		await settle();
+		badge()!.click();
+		flushSync();
+		props.seq = 8;
+		flushSync();
+		state.get[state.get.length - 1]!.resolve(offer('current'));
+		await settle();
+		expect(badge()).toBeNull();
+		expect(document.querySelector('dialog')?.open ?? false).toBe(false);
 	});
 
 	it('names the field values accepting would replace', async () => {
@@ -170,7 +221,7 @@ describe('BuiltinUpdateNotice', () => {
 		state.update[0]!.reject(apiError('content_pending_flush'));
 		await settle();
 		expect(acceptBtn()!.textContent).toMatch(/discard unsaved edits/i);
-		expect(updated).toBe(0);
+		expect(document.querySelector('.note')?.textContent).toMatch(/not kept anywhere/);
 		acceptBtn()!.click();
 		flushSync();
 		expect(state.update[1]!.body).toEqual({ expected_seq: 7, overwrite_pending_edits: true });
@@ -186,7 +237,6 @@ describe('BuiltinUpdateNotice', () => {
 		flushSync();
 		state.update[0]!.reject(apiError('update_conflict'));
 		await settle();
-		expect(updated).toBe(0);
 		expect(state.get).toHaveLength(2);
 		expect(document.querySelector('.error')?.textContent).toMatch(/changed since this preview/);
 	});
@@ -200,9 +250,13 @@ describe('BuiltinUpdateNotice', () => {
 		acceptBtn()!.click();
 		flushSync();
 		auth.changeIdentity();
-		state.update[0]!.resolve({});
+		// The new identity's own read lands first and offers again.
+		state.get[state.get.length - 1]!.resolve(offer('update_available'));
 		await settle();
-		expect(updated).toBe(0);
+		state.update[0]!.reject(apiError('update_conflict'));
+		await settle();
+		expect(document.querySelector('.error')).toBeNull();
+		expect(badge()).not.toBeNull();
 	});
 
 	it('offers no Accept to someone who cannot edit the item', async () => {
