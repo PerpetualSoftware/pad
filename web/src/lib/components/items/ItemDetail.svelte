@@ -86,6 +86,7 @@
 	import PushToAgentDialog from '$lib/components/items/PushToAgentDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
 	import DecisionChips from '$lib/components/items/DecisionChips.svelte';
+	import BuiltinUpdateNotice from '$lib/components/items/BuiltinUpdateNotice.svelte';
 	import AttachmentSurfaceHost from '$lib/components/attachments/AttachmentSurfaceHost.svelte';
 	import {
 		announceAttachmentParentRestored,
@@ -6224,6 +6225,22 @@
 				</span>
 			{/if}
 		</div>
+
+		<!-- Built-in update nudge (TASK-3462 U3b): a convention or playbook Pad
+		     ships whose library text is newer. Renders nothing otherwise. -->
+		{#if collection?.is_system}
+			{#key identityKey}{@const handedDown = identityKey}
+			<BuiltinUpdateNotice
+				{wsSlug}
+				itemRef={item.slug}
+				seq={item.seq ?? 0}
+				currentContent={item.content}
+				currentFields={item.fields}
+				{canEdit}
+				onUpdated={() => { if (handedDown !== identityKey) return; void loadData(); }}
+			/>
+			{/key}
+		{/if}
 
 		<!-- Attention signals (TASK-3118); renders nothing without a provider. -->
 		{#if visibility.seenVisible}

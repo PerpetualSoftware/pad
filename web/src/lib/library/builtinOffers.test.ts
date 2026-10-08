@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { builtinActive, builtinOfferLabel } from './builtinOffers';
+import { builtinActive, builtinOfferLabel, builtinFieldChanges } from './builtinOffers';
 import type { BuiltinListEntry } from '$lib/types';
 
 const row = (key: string, state: BuiltinListEntry['state'], slug = key): BuiltinListEntry => ({
@@ -38,5 +38,28 @@ describe('builtinOfferLabel (TASK-3462 U3b)', () => {
 	it('prefers the unedited copy when two items share the key', () => {
 		const offer = builtinOfferLabel([row('k', 'diverged', 'a'), row('k', 'update_available', 'b')], 'k');
 		expect(offer?.entry.slug).toBe('b');
+	});
+});
+
+describe('builtinFieldChanges (TASK-3462 U3b)', () => {
+	it('lists only fields whose value the update changes, never status', () => {
+		const changes = builtinFieldChanges(
+			{ trigger: 'on-release', scope: 'all', status: 'deprecated' },
+			{ trigger: 'manual', scope: 'all', status: 'active' }
+		);
+		expect(changes).toEqual([{ key: 'trigger', current: 'on-release', library: 'manual' }]);
+	});
+	it('ignores key order inside an object value', () => {
+		expect(builtinFieldChanges({ convention: { a: 1, b: 2 } }, { convention: { b: 2, a: 1 } })).toEqual([]);
+	});
+	it('lists a field the seed had and the library dropped as removed', () => {
+		expect(builtinFieldChanges({ legacy_note: 'x' }, {}, { legacy_note: 'x' })).toEqual([
+			{ key: 'legacy_note', current: 'x', library: undefined }
+		]);
+	});
+	it('lists a field the library adds', () => {
+		expect(builtinFieldChanges({}, { invocation_slug: 'plan' })).toEqual([
+			{ key: 'invocation_slug', current: undefined, library: 'plan' }
+		]);
 	});
 });

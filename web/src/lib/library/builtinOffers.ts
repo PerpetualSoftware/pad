@@ -52,3 +52,47 @@ export function builtinOfferLabel(entries: BuiltinListEntry[], key: string | und
 	}
 	return null;
 }
+
+export interface BuiltinFieldChange {
+	key: string;
+	/** The item's current value, or undefined when it has none. */
+	current: unknown;
+	/** The library's value, or undefined when the library drops the field. */
+	library: unknown;
+}
+
+/**
+ * The field values accepting the library's text would replace: every key the
+ * library writes whose value differs from the item's, and every key the seed
+ * had that the library no longer does (the update removes those). `status`
+ * and the title are never touched by an update, so they are never listed.
+ * Compared as JSON, so a value's key order inside an object does not count.
+ */
+export function builtinFieldChanges(
+	current: Record<string, unknown>,
+	library: Record<string, unknown>,
+	seed?: Record<string, unknown>
+): BuiltinFieldChange[] {
+	const canon = (v: unknown): string => JSON.stringify(sortKeys(v));
+	const keys = new Set(Object.keys(library));
+	if (seed) for (const k of Object.keys(seed)) if (!(k in library)) keys.add(k);
+	keys.delete('status');
+	const out: BuiltinFieldChange[] = [];
+	for (const key of [...keys].sort()) {
+		const cur = current[key];
+		const lib = library[key];
+		if (lib === undefined && cur === undefined) continue;
+		if (lib !== undefined && cur !== undefined && canon(cur) === canon(lib)) continue;
+		out.push({ key, current: cur, library: lib });
+	}
+	return out;
+}
+
+function sortKeys(v: unknown): unknown {
+	if (Array.isArray(v)) return v.map(sortKeys);
+	if (v && typeof v === 'object') {
+		const o = v as Record<string, unknown>;
+		return Object.fromEntries(Object.keys(o).sort().map((k) => [k, sortKeys(o[k])]));
+	}
+	return v;
+}

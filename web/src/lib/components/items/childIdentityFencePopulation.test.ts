@@ -176,6 +176,7 @@ const POPULATION: string[] = [
 	'lib/components/items/ItemPicker.svelte',
 	'lib/components/items/ItemAttachmentStrip.svelte',
 	'lib/components/items/DecisionChips.svelte',
+	'lib/components/items/BuiltinUpdateNotice.svelte',
 	// SPEC-6 U9d (TASK-3413): installed apps' item actions; its list load and
 	// its mint each fence with authStore.identityFence() after the await.
 	'lib/components/items/ItemAppActions.svelte',
