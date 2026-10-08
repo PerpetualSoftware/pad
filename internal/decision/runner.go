@@ -73,6 +73,11 @@ type QuestionSet struct {
 	// no state was truncated.
 	NoTrail bool
 
+	// PerComment asks the set's questions about each of the item's recent
+	// comments, one comment per state, instead of about the item
+	// (TASK-3119 U2b; see per_comment.go). Row keys carry the comment id.
+	PerComment bool
+
 	// MaxPerCall bounds the questions sent in one provider call; a larger
 	// set is split into several calls. Zero sends them all in one.
 	MaxPerCall int
@@ -507,6 +512,9 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (called b
 	if !ok {
 		return false, ErrUnknownSet
 	}
+	if qs.PerComment {
+		return r.evaluatePerComment(ctx, qs, itemID)
+	}
 	item, st, err := r.stateFor(itemID, qs)
 	if err != nil {
 		return false, err
@@ -745,6 +753,7 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 	}
 	model := r.provider.Model()
 	applies := map[string]bool{}
+	commentHashes := map[string]string{}
 	for i := range rows {
 		// Current needs all of these to still hold: the item state, the
 		// question as registered now under the model pinned now, and the set
@@ -758,12 +767,31 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 			return nil, err
 		}
 		qhashNow := ""
+		stateNow := now.st.Hash
+		key := rows[i].QuestionKey
+		if qs, reg := r.registry.Get(rows[i].QuestionSet); reg && qs.PerComment {
+			// A per-comment row is judged against ITS comment as it stands
+			// now, at any age (TASK-3119 U2b): a comment gone or edited is
+			// not current; ten newer comments do not change that.
+			base, commentID, ok := SplitCommentKey(key)
+			if !ok {
+				continue
+			}
+			h, err := r.commentStateNow(item, commentID, commentHashes)
+			if err != nil {
+				return nil, err
+			}
+			if h == "" {
+				continue
+			}
+			key, stateNow = base, h
+		}
 		if now.ok {
-			if q, ok := now.questions[rows[i].QuestionKey]; ok {
+			if q, ok := now.questions[key]; ok {
 				qhashNow = QuestionFingerprint(model, q)
 			}
 		}
-		if !(now.ok && rows[i].StateHash == now.st.Hash && qhashNow != "" && rows[i].QuestionHash == qhashNow) {
+		if !(now.ok && rows[i].StateHash == stateNow && qhashNow != "" && rows[i].QuestionHash == qhashNow) {
 			continue
 		}
 		qs, _ := r.registry.Get(rows[i].QuestionSet)

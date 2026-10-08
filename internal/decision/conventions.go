@@ -73,6 +73,26 @@ func ConventionsSet() QuestionSet {
 	}
 }
 
+// ConventionsCommentsSetName is the comment subject of the conventions check
+// (TASK-3119 U2b): the same questions, asked about each comment alone.
+const ConventionsCommentsSetName = "conventions_comments"
+
+// ConventionsCommentsSet returns the `conventions_comments` question set:
+// ConventionsSet's questions, asked about each of the item's recent comments
+// with the item's title and collection for context (BuildCommentState).
+func ConventionsCommentsSet() QuestionSet {
+	return QuestionSet{
+		Name:       ConventionsCommentsSetName,
+		Resolve:    resolveConventions,
+		PerComment: true,
+		// stateFor is not used for this set's asking; NoTrail keeps the item
+		// state Decisions builds for it from reading comments it ignores.
+		NoTrail:    true,
+		MaxPerCall: conventionsPerCall,
+		Eligible:   func(_ *models.Item, coll *models.Collection) bool { return !coll.IsSystem },
+	}
+}
+
 // resolveConventions is the workspace's active `always` conventions whose
 // check is not switched off, one question each, keyed conv:<ref>.
 func resolveConventions(_ context.Context, s *store.Store, workspaceID string) (map[string]Question, error) {

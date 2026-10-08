@@ -34,6 +34,7 @@ const auth = vi.hoisted(() => {
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: auth }));
 
 import DecisionChips from './DecisionChips.svelte';
+import { commentChipsStore } from '$lib/decisions/commentChips.svelte';
 
 function answer(key: string, noul: number): ItemDecision {
 	return {
@@ -58,6 +59,35 @@ afterEach(() => {
 });
 
 describe('DecisionChips', () => {
+	it('TASK-3119 U2b: publishes the comment cards\' chips from its read, and clears them when the item goes', async () => {
+		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
+		flushSync();
+		pending.get('a')!({
+			ref: 'A-1',
+			decisions: [{ ...answer('conv:CONVE-2@c-1', 0.96), question_set: 'conventions_comments' }],
+		});
+		await settle();
+		expect(commentChipsStore.chipsFor('A', 'c-1').map((c) => c.label)).toEqual(['Possibly breaks CONVE-2']);
+		unmount(cmp);
+		cmp = null;
+		flushSync();
+		expect(commentChipsStore.chipsFor('A', 'c-1')).toEqual([]);
+	});
+
+	it('TASK-3119 U2b: a response that lands after the item went does not repopulate its comment chips', async () => {
+		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'late', itemId: 'L' } });
+		flushSync();
+		unmount(cmp);
+		cmp = null;
+		flushSync();
+		pending.get('late')!({
+			ref: 'L-1',
+			decisions: [{ ...answer('conv:CONVE-2@c-1', 0.96), question_set: 'conventions_comments' }],
+		});
+		await settle();
+		expect(commentChipsStore.chipsFor('L', 'c-1')).toEqual([]);
+	});
+
 	it('renders nothing when the item has no answers', async () => {
 		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
 		flushSync();

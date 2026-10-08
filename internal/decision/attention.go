@@ -108,6 +108,9 @@ func ProductionRegistry() (*Registry, error) {
 	if err := reg.Register(ConventionsSet()); err != nil {
 		return nil, err
 	}
+	if err := reg.Register(ConventionsCommentsSet()); err != nil {
+		return nil, err
+	}
 	return reg, nil
 }
 
