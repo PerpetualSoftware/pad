@@ -101,7 +101,8 @@ import type {
 	UIDismissalKey,
 	UIDismissalsResponse,
 	ImportOutcome,
-	ArchivedCollection
+	ArchivedCollection,
+	CollectionFieldUsage
 } from '$lib/types';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
