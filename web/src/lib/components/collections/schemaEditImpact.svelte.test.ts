@@ -116,6 +116,43 @@ describe('removing an option is never a rename (TASK-2187)', () => {
 		});
 	}
 
+	it('an option added after a removal is not read as a rename (codex r1)', async () => {
+		usageMock.mockResolvedValue(usage({}));
+		await open();
+		removeOption('doing');
+		await settle();
+		button(/add option/i)!.click();
+		await settle();
+		const inputs = document.querySelectorAll<HTMLInputElement>('.option-name-input');
+		const added = inputs[inputs.length - 1];
+		added.value = 'blocked';
+		added.dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		save().click();
+		await settle();
+		expect(sent().migrations ?? []).toEqual([]);
+		expect(stageOptions(sent())).toEqual(['todo', 'done', 'blocked']);
+	});
+
+	it('the counts landing do not close a confirm that is open (codex r1)', async () => {
+		let answer: (u: CollectionFieldUsage) => void = () => {};
+		usageMock.mockReturnValue(new Promise<CollectionFieldUsage>((r) => (answer = r)));
+		await open();
+		removeOption('doing');
+		await settle();
+		save().click();
+		await settle();
+		const typed = document.querySelector<HTMLInputElement>('.impact-confirm input')!;
+		typed.value = 'Deals';
+		typed.dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		answer(usage({ doing: 30 }));
+		await settle();
+		expect(document.querySelector('.impact-confirm')?.textContent).toContain('30 items have “doing”');
+		expect(document.querySelector<HTMLInputElement>('.impact-confirm input')?.value).toBe('Deals');
+		expect(button(/save anyway/i)!.disabled).toBe(false);
+	});
+
 	it('a rename after a removal still migrates the renamed option only', async () => {
 		usageMock.mockResolvedValue(usage({}));
 		await open();

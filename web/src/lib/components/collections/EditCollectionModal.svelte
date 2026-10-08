@@ -253,9 +253,11 @@
 	let impactTyped = $state('');
 	const impactNeedsTyping = $derived(schemaEditNeedsTyping(schemaImpacts));
 	const impactConfirmed = $derived(!impactNeedsTyping || impactTyped.trim() === seededCollectionName);
-	// A confirm answers for the list it showed: when the list changes, it is
-	// asked again.
-	const schemaImpactsKey = $derived(JSON.stringify(schemaImpacts));
+	// A confirm answers for the list it showed: when WHAT is removed or moved
+	// changes, it is asked again. The counts are left out of the key, so the
+	// usage answer landing (unknown → a number) does not close a confirm the
+	// user is typing into; the list and the typed rule update in place.
+	const schemaImpactsKey = $derived(JSON.stringify(schemaImpacts.map((i) => ({ ...i, items: null }))));
 	$effect(() => {
 		void schemaImpactsKey;
 		confirmImpacts = false;
