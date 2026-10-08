@@ -9,6 +9,7 @@ function mockApi() {
 		search: vi.fn(async () => ({ results: [] })),
 		items: {
 			list: vi.fn(async () => []),
+			listByCollection: vi.fn(async () => []),
 			get: vi.fn(async () => ({ id: 'uuid-target', ref: 'TASK-1' })),
 			backlinks: vi.fn(async () => []),
 			create: vi.fn(async () => ({ ref: 'TASK-9' })),
@@ -130,6 +131,14 @@ describe('dispatch — wsSlug injection (DR-4)', () => {
 		const api = mockApi();
 		await run(api, 'pad_item', { action: 'list', status: 'open' });
 		expect(api.items.list).toHaveBeenCalledWith(WS, expect.objectContaining({ status: 'open' }));
+	});
+
+	it('lists one collection through its path, never a ?collection= filter (BUG-3480)', async () => {
+		const api = mockApi();
+		await run(api, 'pad_item', { action: 'list', collection: 'bugs', status: 'open' });
+		expect(api.items.listByCollection).toHaveBeenCalledWith(WS, 'bugs', expect.objectContaining({ status: 'open' }));
+		expect(api.items.listByCollection.mock.calls[0][2]).not.toHaveProperty('collection');
+		expect(api.items.list).not.toHaveBeenCalled();
 	});
 
 	it('injects wsSlug into search filters', async () => {

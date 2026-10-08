@@ -1738,6 +1738,21 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.75 — BUG-3480 (lead ruling). BEHAVIOR bump on the v0.43 / v0.29
+//     grounds: `pad_item.action=list` on both transports REFUSES a filter
+//     key (a `field` entry, or `priority` on a collection without one)
+//     that no schema in scope declares and no item in scope stores, with
+//     400 / `validation_failed` and a message starting "invalid list
+//     filter". It used to answer an empty list, indistinguishable from "no
+//     rows match". A key that is not a field key (only letters, digits,
+//     `_`, `-`) is refused too; the store used to DROP it and answer the
+//     unfiltered list. Scope: on a collection list, that collection's
+//     schema; on the workspace-wide list, any collection the caller can
+//     see. A key no schema declares but items in scope store is still
+//     honoured (the BUG-2850 census), and the REST response names it in
+//     `X-Pad-Undeclared-Filter-Keys`, which the CLI prints to stderr; the
+//     MCP result does not carry it. No name, enum or param moved.
+//
 //     0.74 — TASK-2188 (lead ruling). ADDITIVE bump on the v0.67 grounds
 //     (an omitempty warning on a write result): `pad_collection.action=update`
 //     answers, on both transports, with `warnings.orphaned`
@@ -1872,7 +1887,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.74"
+const ToolSurfaceVersion = "0.75"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -1242,6 +1242,11 @@ func isAlpha(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_'
 }
 
+// IsValidFieldKey reports whether key is a field name the store will filter
+// on; a list filter key that is not one is refused (BUG-3480) rather than
+// dropped, which used to answer the unfiltered list.
+func IsValidFieldKey(key string) bool { return isValidFieldKey(key) }
+
 // isValidFieldKey checks that a field name contains only safe characters
 // (alphanumeric, underscore, hyphen). This prevents SQL injection when
 // field keys from user input are interpolated into JSON path expressions.

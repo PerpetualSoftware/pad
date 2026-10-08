@@ -253,12 +253,29 @@ func (c *Client) RestoreCollection(wsSlug, collRef string) (*models.Collection, 
 // ListItems returns items across all collections in a workspace.
 // Use params for filtering, sorting, grouping, pagination, etc.
 func (c *Client) ListItems(wsSlug string, params url.Values) ([]models.Item, error) {
+	items, _, err := c.ListItemsReport(wsSlug, params)
+	return items, err
+}
+
+// ListItemsReport is ListItems plus the filter keys the server honoured
+// although no schema declares them (BUG-3480's X-Pad-Undeclared-Filter-Keys),
+// for a caller that warns about them.
+func (c *Client) ListItemsReport(wsSlug string, params url.Values) ([]models.Item, []string, error) {
 	var result []models.Item
 	path := "/workspaces/" + wsSlug + "/items"
 	if len(params) > 0 {
 		path += "?" + params.Encode()
 	}
-	return result, c.get(path, &result)
+	h, err := c.getWithHeader(path, &result)
+	return result, undeclaredFilterKeys(h), err
+}
+
+func undeclaredFilterKeys(h http.Header) []string {
+	v := h.Get("X-Pad-Undeclared-Filter-Keys")
+	if v == "" {
+		return nil
+	}
+	return strings.Split(v, ",")
 }
 
 // ListTags returns the distinct tags used across a workspace's items with
@@ -270,12 +287,20 @@ func (c *Client) ListTags(wsSlug string) ([]models.TagCount, error) {
 
 // ListCollectionItems returns items within a specific collection.
 func (c *Client) ListCollectionItems(wsSlug, collSlug string, params url.Values) ([]models.Item, error) {
+	items, _, err := c.ListCollectionItemsReport(wsSlug, collSlug, params)
+	return items, err
+}
+
+// ListCollectionItemsReport is ListCollectionItems plus the undeclared filter
+// keys the server honoured (see ListItemsReport).
+func (c *Client) ListCollectionItemsReport(wsSlug, collSlug string, params url.Values) ([]models.Item, []string, error) {
 	var result []models.Item
 	path := "/workspaces/" + wsSlug + "/collections/" + collSlug + "/items"
 	if len(params) > 0 {
 		path += "?" + params.Encode()
 	}
-	return result, c.get(path, &result)
+	h, err := c.getWithHeader(path, &result)
+	return result, undeclaredFilterKeys(h), err
 }
 
 func (c *Client) CreateItem(wsSlug, collSlug string, input models.ItemCreate) (*models.Item, error) {
@@ -2357,16 +2382,23 @@ func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request,
 }
 
 func (c *Client) get(path string, result interface{}) error {
+	_, err := c.getWithHeader(path, result)
+	return err
+}
+
+// getWithHeader is get that also returns the response headers (nil when no
+// response arrived).
+func (c *Client) getWithHeader(path string, result interface{}) (http.Header, error) {
 	req, err := c.newRequest("GET", path, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	return c.handleResponse(resp, result)
+	return resp.Header, c.handleResponse(resp, result)
 }
 
 func (c *Client) post(path string, body interface{}, result interface{}) error {

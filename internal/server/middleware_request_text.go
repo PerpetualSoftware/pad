@@ -213,6 +213,9 @@ func bindableText(s string) bool {
 // parseItemListParams folds every parameter it does not recognise into
 // a field filter (params.Fields, or params.FieldsAnyOf for a comma list), so `?email=`, `?type=` and `?anything-at-all=` become
 // field filters and reach a text comparison exactly as `?search=` does.
+// (Since BUG-3480 the list handlers refuse a key no schema in scope declares
+// and no item stores, but that check reads the database for the key, AFTER
+// this middleware, and the set it admits is still data-defined, not a list.)
 // There is no finite list of points to validate, because the wildcard
 // branch is what turns an undeclared name into a filter in the first
 // place.

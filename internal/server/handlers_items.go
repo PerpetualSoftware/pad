@@ -71,6 +71,34 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 		params.ItemIDs = grantedItemIDs
 	}
 
+	// Every filter key must name a field (BUG-3480): here, a field some
+	// collection the caller can see declares.
+	if len(params.Fields) > 0 || len(params.FieldsAnyOf) > 0 {
+		colls, err := s.store.ListCollections(workspaceID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		var schemas []models.CollectionSchema
+		for _, c := range colls {
+			if !isCollectionVisible(c.ID, visibleIDs) || c.Schema == "" {
+				continue
+			}
+			var sc models.CollectionSchema
+			if models.UnmarshalItemFieldSchema([]byte(c.Schema), &sc) == nil {
+				schemas = append(schemas, sc)
+			}
+		}
+		undeclared, err := s.checkListFilterKeys(workspaceID, params, schemas, "no collection in this workspace")
+		if err != nil {
+			writeListFilterKeyError(w, err)
+			return
+		}
+		if len(undeclared) > 0 {
+			w.Header().Set(undeclaredFilterKeysHeader, strings.Join(undeclared, ","))
+		}
+	}
+
 	result, err := s.store.ListItems(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -633,6 +661,16 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	if err := s.resolveParentFilter(r, workspaceID, &params, collSchema); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
+	}
+	// Every filter key must name a field this collection declares
+	// (BUG-3480), or one its items store.
+	undeclared, err := s.checkListFilterKeys(workspaceID, params, []models.CollectionSchema{collSchema}, fmt.Sprintf("collection %q", coll.Slug))
+	if err != nil {
+		writeListFilterKeyError(w, err)
+		return
+	}
+	if len(undeclared) > 0 {
+		w.Header().Set(undeclaredFilterKeysHeader, strings.Join(undeclared, ","))
 	}
 
 	result, err := s.store.ListItems(workspaceID, params)
@@ -4201,7 +4239,9 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 		params.NonTerminal = true
 	}
 
-	// Extract field filters: any query param that isn't a known param is a field filter.
+	// Extract field filters: any query param that isn't a known param is a field
+	// filter. The handlers then refuse one that names no field (BUG-3480,
+	// checkListFilterKeys).
 	knownParams := map[string]bool{
 		"sort": true, "group_by": true, "search": true, "parent_id": true,
 		"tag": true, "include_archived": true, "limit": true, "offset": true,
@@ -4280,6 +4320,84 @@ func validateUnparentedListRequest(r *http.Request, params models.ItemListParams
 		}
 	}
 	return nil
+}
+
+// undeclaredFilterKeysHeader names the list filter keys that no schema in
+// scope declares but that items in scope store (BUG-3480). The list body is a
+// bare array, so the warning rides a header, as the import warnings do.
+const undeclaredFilterKeysHeader = "X-Pad-Undeclared-Filter-Keys"
+
+// checkListFilterKeys refuses a field filter the list cannot honour (BUG-3480).
+// parseItemListParams reads every query parameter it does not know as a
+// field filter, so a parameter the server never had (the web Library page's
+// `all`, WebMCP's `collection`) answered 200 with an empty list and nothing
+// said why. A key must now be declared by a schema in scope (the collection's,
+// or for the workspace-wide list any visible collection's). A key no schema
+// declares is still honoured when items in scope store it (the BUG-2850
+// census found undeclared keys in live use) and is returned so the caller can
+// warn; otherwise the request is refused. Call it after resolveParentFilter
+// has consumed parent/plan and with params' scope and permission members set.
+func (s *Server) checkListFilterKeys(workspaceID string, params models.ItemListParams, schemas []models.CollectionSchema, where string) (undeclared []string, err error) {
+	var keys []string
+	for k := range params.Fields {
+		keys = append(keys, k)
+	}
+	for k := range params.FieldsAnyOf {
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	sort.Strings(keys)
+	var unknown []string
+	for _, k := range keys {
+		if !store.IsValidFieldKey(k) {
+			return nil, listFilterRefusal(fmt.Sprintf("invalid list filter %q: a field key may hold only letters, digits, '_' and '-'", k))
+		}
+		declared := false
+		for _, sc := range schemas {
+			if schemaHasField(sc, k) {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil, nil
+	}
+	stored, err := s.store.StoredFieldKeys(workspaceID, params, unknown)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range unknown {
+		if !stored[k] {
+			return nil, listFilterRefusal(fmt.Sprintf("invalid list filter %q: it is not a list parameter, %s declares no such field, and no item stores one", k, where))
+		}
+		undeclared = append(undeclared, k)
+	}
+	return undeclared, nil
+}
+
+// listFilterRefusal is checkListFilterKeys' 400; any other error it returns
+// is a store failure. Both messages start "invalid list filter": local stdio
+// MCP derives the error code from the CLI's stderr prose, and "invalid" is
+// what classifies it validation_failed rather than a retryable server_error.
+type listFilterRefusal string
+
+func (e listFilterRefusal) Error() string { return string(e) }
+
+// writeListFilterKeyError answers checkListFilterKeys' error: a refusal is a
+// 400, anything else a store failure.
+func writeListFilterKeyError(w http.ResponseWriter, err error) {
+	var refusal listFilterRefusal
+	if errors.As(err, &refusal) {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+	writeInternalError(w, err)
 }
 
 // handleListItemActivity returns the activity feed for a specific item.
