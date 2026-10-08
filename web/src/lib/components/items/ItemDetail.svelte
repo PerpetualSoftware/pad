@@ -6232,15 +6232,19 @@
 			<!-- Keyed by item: an item switch remounts it, so nothing from the
 			     previous item's preview survives into the next. -->
 			{#key item.id}
+			{#key identityKey}{@const handedDown = identityKey}
 			<BuiltinUpdateNotice
 				{wsSlug}
+				itemId={item.id}
 				itemRef={item.slug}
 				seq={item.seq ?? 0}
 				currentContent={item.content}
 				currentFields={item.fields}
 				{canEdit}
-				hasUnsavedEdits={() => rawContentSaver.dirty || saveStatus === 'saving'}
+				hasUnsavedEdits={() => rawContentSaver.dirty || saveStatus === 'saving' || localDirty || (collabProvider !== null && collabProvider.state !== 'synced')}
+				onAccepted={() => { if (handedDown !== identityKey) return; if (collabProvider || rawContentSaver.dirty) return; void loadData(); }}
 			/>
+			{/key}
 			{/key}
 		{/if}
 

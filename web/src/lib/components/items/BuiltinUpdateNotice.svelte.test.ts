@@ -67,8 +67,10 @@ function apiError(code: string): Error & { code: string } {
 let cmp: ReturnType<typeof mount> | null = null;
 let unsaved = false;
 // Reactive props, so a test can move the pane to another item or bump seq.
+let accepted = 0;
 let props: {
 	wsSlug: string;
+	itemId: string;
 	itemRef: string;
 	seq: number;
 	currentContent: string;
@@ -80,12 +82,16 @@ let props: {
 function render(canEdit = true) {
 	const reactive = $state({
 		wsSlug: 'ws',
+		itemId: 'id-plan',
 		itemRef: 'plan',
 		seq: 7,
 		currentContent: 'my body',
 		currentFields: JSON.stringify({ trigger: 'on-release' }),
 		canEdit,
 		hasUnsavedEdits: () => unsaved,
+		onAccepted: () => {
+			accepted++;
+		},
 	});
 	props = reactive;
 	cmp = mount(BuiltinUpdateNotice, { target: document.body, props });
@@ -98,6 +104,7 @@ const acceptBtn = () =>
 
 beforeEach(() => {
 	unsaved = false;
+	accepted = 0;
 	state.get.length = 0;
 	state.update.length = 0;
 });
@@ -152,6 +159,7 @@ describe('BuiltinUpdateNotice', () => {
 		await settle();
 		expect(badge()).toBeNull();
 		expect(document.querySelector('dialog')?.open ?? false).toBe(false);
+		expect(accepted).toBe(1);
 	});
 
 	it('refuses to accept while the pane holds unsaved edits (codex r1)', async () => {
@@ -164,7 +172,7 @@ describe('BuiltinUpdateNotice', () => {
 		acceptBtn()!.click();
 		flushSync();
 		expect(state.update).toHaveLength(0);
-		expect(document.querySelector('.error')?.textContent).toMatch(/still being saved/);
+		expect(document.querySelector('.error')?.textContent).toMatch(/not reached the server/);
 	});
 
 	it('a response for the item the pane has left commits nothing (codex r1)', async () => {
@@ -175,6 +183,7 @@ describe('BuiltinUpdateNotice', () => {
 		flushSync();
 		acceptBtn()!.click();
 		flushSync();
+		props.itemId = 'id-other';
 		props.itemRef = 'other';
 		flushSync();
 		const getsBefore = state.get.length;
@@ -182,6 +191,24 @@ describe('BuiltinUpdateNotice', () => {
 		await settle();
 		expect(document.querySelector('.error')).toBeNull();
 		expect(state.get.length).toBe(getsBefore);
+	});
+
+	it('a rename during the request is the same item: Accept comes back (codex r2)', async () => {
+		render();
+		state.get[0]!.resolve(offer('update_available'));
+		await settle();
+		badge()!.click();
+		flushSync();
+		acceptBtn()!.click();
+		flushSync();
+		expect(acceptBtn()!.disabled).toBe(true);
+		props.itemRef = 'plan-renamed';
+		flushSync();
+		state.get[state.get.length - 1]!.resolve(offer('update_available'));
+		await settle();
+		state.update[0]!.reject(apiError('content_pending_flush'));
+		await settle();
+		expect(acceptBtn()!.disabled).toBe(false);
 	});
 
 	it('closes the dialog when the offer goes away under it (codex r1)', async () => {
@@ -257,6 +284,7 @@ describe('BuiltinUpdateNotice', () => {
 		await settle();
 		expect(document.querySelector('.error')).toBeNull();
 		expect(badge()).not.toBeNull();
+		expect(accepted).toBe(0);
 	});
 
 	it('offers no Accept to someone who cannot edit the item', async () => {

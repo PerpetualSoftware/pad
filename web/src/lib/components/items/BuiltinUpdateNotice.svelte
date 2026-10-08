@@ -29,13 +29,19 @@
 		 * Asked at the press, synchronously.
 		 */
 		hasUnsavedEdits?: () => boolean;
+		/** The item's id: what a press is about, which a rename does not change. */
+		itemId: string;
+		/**
+		 * Called after an accepted update. The pane decides what to reload: the
+		 * collab editor receives the new body through the room and its own
+		 * refresh, so it must NOT reload there (a reload cancels the editor's
+		 * flush); the raw editor keeps its body on an SSE refresh, so it must.
+		 */
+		onAccepted?: () => void;
 	}
 
-	// No callback back into the pane (codex r1): after an accepted update the
-	// item's own `item_updated` event refreshes the pane, and this reads the
-	// state again when the item's seq moves. A reload from here would flush a
-	// pending raw draft over the update and cancel the collab editor's flush.
-	let { wsSlug, itemRef, seq, currentContent, currentFields, canEdit, hasUnsavedEdits }: Props = $props();
+	let { wsSlug, itemId, itemRef, seq, currentContent, currentFields, canEdit, hasUnsavedEdits, onAccepted }: Props =
+		$props();
 
 	let offer = $state<BuiltinStateResponse | null>(null);
 	let open = $state(false);
@@ -121,7 +127,8 @@
 	async function accept() {
 		if (!offer || busy || !canEdit) return;
 		if (hasUnsavedEdits?.()) {
-			errorMessage = 'This item has edits that are still being saved. Wait for them to save, then accept.';
+			errorMessage =
+				'This item has edits that have not reached the server yet. Wait until they are saved (and the editor is connected), then accept.';
 			return;
 		}
 		const isSameIdentity = authStore.identityFence();
@@ -129,7 +136,9 @@
 		// moved to another item commits nothing here (codex r1).
 		const ws = wsSlug;
 		const ref = itemRef;
-		const stillThisItem = () => isSameIdentity() && wsSlug === ws && itemRef === ref;
+		const id = itemId;
+		// By id, not ref: a rename during the request is the same item (codex r2).
+		const stillThisItem = () => isSameIdentity() && itemId === id;
 		const discard = pendingEdits;
 		busy = true;
 		errorMessage = null;
@@ -142,6 +151,7 @@
 			open = false;
 			offer = null;
 			pendingEdits = false;
+			onAccepted?.();
 		} catch (err) {
 			if (!stillThisItem()) return;
 			const code = (err as { code?: string }).code;
