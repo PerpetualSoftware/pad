@@ -511,17 +511,170 @@ Examples:
 
 // --- export ---
 
-// TASK-3462 U3c stubs (red commit).
-func libraryDiffCmd() *cobra.Command {
-	return &cobra.Command{Use: "diff <ref>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return fmt.Errorf("not implemented")
-	}}
+// builtinOfferHeadline names an offered state for a person.
+func builtinOfferHeadline(st *cli.BuiltinState) string {
+	switch st.State {
+	case "update_available":
+		return "Update available: Pad's library has newer text, and this copy is unedited."
+	case "diverged":
+		return "Library changed: Pad's library has newer text, and this copy was edited too."
+	case "unknown_origin":
+		return "Library version differs: this copy was added before Pad recorded versions, so it may have been edited."
+	case "current":
+		return "Up to date: this item has Pad's current text."
+	case "unknown_entry":
+		return "This Pad does not ship the built-in " + st.Key + ", so there is no text to compare with."
+	}
+	return st.State
 }
 
+// readBuiltinState refuses an older server (its bare 404 reads exactly like
+// not_builtin), then reads the item's state, turning not_builtin into a
+// sentence.
+func readBuiltinState(client *cli.Client, ws, ref string) (*cli.BuiltinState, error) {
+	if !client.ServerSupportsBuiltinUpdate() {
+		return nil, fmt.Errorf("this server is older than this CLI: it does not serve built-in updates (TASK-3462); upgrade the server")
+	}
+	st, err := client.GetItemBuiltin(ws, ref)
+	if err != nil {
+		if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code == "not_builtin" {
+			return nil, fmt.Errorf("%s was not made from a convention or playbook Pad ships, so there is nothing to compare", ref)
+		}
+		return nil, err
+	}
+	return st, nil
+}
+
+// libraryDiffCmd: pad library diff <ref> (TASK-3462 U3c).
+func libraryDiffCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "diff <ref>",
+		Short: "Compare a built-in convention or playbook with Pad's current library text",
+		Long: `Show how an item made from one of the conventions or playbooks Pad ships
+differs from the library's current text: what the library changed since the
+item was made, what you changed, and which settings an update would replace.
+Read-only. Take the update with "pad library update <ref>".
+
+Examples:
+  pad library diff PLAYB-12
+  pad library diff PLAYB-12 --format json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			ref := args[0]
+			st, err := readBuiltinState(client, ws, ref)
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(st)
+			}
+			fmt.Printf("%s (%s)\n", builtinOfferHeadline(st), st.Key)
+			if st.Library == nil {
+				return nil
+			}
+			current := st.Current
+			if current == nil {
+				// A server that does not send it: read the item itself.
+				item, err := client.GetItem(ws, ref)
+				if err != nil {
+					return err
+				}
+				fields := map[string]any{}
+				_ = json.Unmarshal([]byte(item.Fields), &fields)
+				current = &cli.BuiltinText{Content: item.Content, Fields: fields}
+			}
+			section := func(title, oldText, newText string) {
+				fmt.Printf("\n== %s ==\n", title)
+				if d := cli.FormatLineDiff(oldText, newText, 3); d != "" {
+					fmt.Print(d)
+				} else {
+					fmt.Println("  (no change)")
+				}
+			}
+			if st.State == "diverged" && st.Seed != nil {
+				section("What Pad's library changed", st.Seed.Content, st.Library.Content)
+				section("What you changed", st.Seed.Content, current.Content)
+			} else {
+				section("Your copy -> Pad's library", current.Content, st.Library.Content)
+			}
+			var seedFields map[string]any
+			if st.Seed != nil {
+				seedFields = st.Seed.Fields
+			}
+			if changes := cli.BuiltinFieldChanges(current.Fields, st.Library.Fields, seedFields); len(changes) > 0 {
+				fmt.Println("\n== Settings an update would replace ==")
+				for _, c := range changes {
+					to := cli.ShowFieldValue(c.Library, c.HasLib)
+					if !c.HasLib {
+						to = "(removed)"
+					}
+					fmt.Printf("  %s: %s → %s\n", c.Key, cli.ShowFieldValue(c.Current, c.HasCur), to)
+				}
+			}
+			fmt.Printf("\nTake it with: pad library update %s\n", ref)
+			fmt.Println("Your current text stays in the item's version history; the settings above are recorded in the update's history entry. Status and title are never changed.")
+			return nil
+		},
+	}
+}
+
+// libraryUpdateCmd: pad library update <ref> (TASK-3462 U3c).
 func libraryUpdateCmd() *cobra.Command {
-	c := &cobra.Command{Use: "update <ref>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		return fmt.Errorf("not implemented")
-	}}
-	c.Flags().Bool("overwrite-pending-edits", false, "")
-	return c
+	var overwrite bool
+	cmd := &cobra.Command{
+		Use:   "update <ref>",
+		Short: "Replace a built-in convention or playbook with Pad's current library text",
+		Long: `Give an item made from one of the conventions or playbooks Pad ships the
+library's current text: its body and the settings an update writes. Status and
+title are never changed, and the item's previous text stays in its version
+history. Review first with "pad library diff <ref>"; nothing updates on its own.
+
+The update is guarded by the version read just before it: if the item changes
+in between, it is refused rather than applied over the change.
+
+Examples:
+  pad library update PLAYB-12
+  pad library update PLAYB-12 --overwrite-pending-edits`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			ref := args[0]
+			st, err := readBuiltinState(client, ws, ref)
+			if err != nil {
+				return err
+			}
+			switch st.State {
+			case "current":
+				fmt.Printf("%s already has Pad's current text; nothing to update.\n", ref)
+				return nil
+			case "unknown_entry":
+				return fmt.Errorf("%s", builtinOfferHeadline(st))
+			}
+			item, err := client.UpdateItemBuiltin(ws, ref, st.Seq, overwrite)
+			if err != nil {
+				if apiErr, ok := err.(*cli.APIError); ok {
+					switch apiErr.Code {
+					case "content_pending_flush":
+						return fmt.Errorf("%s has edits an open editor has not saved yet; nothing was changed. Re-run with --overwrite-pending-edits to replace them too (they are not kept)", ref)
+					case "update_conflict":
+						return fmt.Errorf("%s changed while this ran; nothing was changed. Review it again with \"pad library diff %s\"", ref, ref)
+					case "builtin_up_to_date":
+						fmt.Printf("%s already has Pad's current text; nothing to update.\n", ref)
+						return nil
+					}
+				}
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(item)
+			}
+			fmt.Printf("Updated %s to Pad's current %s text (%s).\n", ref, st.Key, item.Title)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&overwrite, "overwrite-pending-edits", false, "Also replace edits an open editor has not saved yet (they are not kept)")
+	return cmd
 }

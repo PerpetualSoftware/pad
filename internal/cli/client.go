@@ -55,6 +55,7 @@ type serverCapabilityFlags struct {
 	ItemScopedCommentWrites    bool `json:"item_scoped_comment_writes"`
 	AttachmentAttach           bool `json:"attachment_attach"`
 	LibraryActivate            bool `json:"library_activate"`
+	BuiltinUpdate              bool `json:"builtin_update"`
 }
 
 func NewClient(host string, port int) *Client {
@@ -848,6 +849,59 @@ func (c *Client) ServerSupportsAttachmentAttach() bool {
 func (c *Client) ServerSupportsLibraryActivate() bool {
 	caps, definitive := c.serverCapabilities()
 	return definitive && caps.LibraryActivate
+}
+
+// ServerSupportsBuiltinUpdate reports whether this server serves the
+// built-in state and update routes (TASK-3462 U3c). An older build answers
+// them with a bare 404 that reads exactly like "not made from a built-in", so
+// an indeterminate probe answers false and the caller refuses.
+func (c *Client) ServerSupportsBuiltinUpdate() bool {
+	caps, definitive := c.serverCapabilities()
+	return definitive && caps.BuiltinUpdate
+}
+
+// BuiltinText is a built-in's text: the body and the fields an update writes.
+type BuiltinText struct {
+	Content string         `json:"content"`
+	Fields  map[string]any `json:"fields"`
+}
+
+// BuiltinState is GET /workspaces/{ws}/items/{ref}/builtin (TASK-3462).
+type BuiltinState struct {
+	Key         string       `json:"key"`
+	Kind        string       `json:"kind,omitempty"`
+	State       string       `json:"state"`
+	SeedHash    string       `json:"seed_hash,omitempty"`
+	LibraryHash string       `json:"library_hash,omitempty"`
+	ItemHash    string       `json:"item_hash,omitempty"`
+	Library     *BuiltinText `json:"library,omitempty"`
+	Seed        *BuiltinText `json:"seed,omitempty"`
+	Current     *BuiltinText `json:"current,omitempty"`
+	Seq         int64        `json:"seq"`
+}
+
+// GetItemBuiltin reads an item's state relative to Pad's current text.
+func (c *Client) GetItemBuiltin(wsSlug, ref string) (*BuiltinState, error) {
+	var st BuiltinState
+	if err := c.get("/workspaces/"+wsSlug+"/items/"+ref+"/builtin", &st); err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
+// UpdateItemBuiltin takes the library's text for an item, guarded by the seq
+// the caller read (TASK-3462). overwritePendingEdits lifts
+// content_pending_flush, as on any PATCH.
+func (c *Client) UpdateItemBuiltin(wsSlug, ref string, expectedSeq int64, overwritePendingEdits bool) (*models.Item, error) {
+	body := map[string]any{"expected_seq": expectedSeq}
+	if overwritePendingEdits {
+		body["overwrite_pending_edits"] = true
+	}
+	var result models.Item
+	if err := c.post("/workspaces/"+wsSlug+"/items/"+ref+"/builtin/update", body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 // ActivateLibraryEntry creates an item from the library entry with this
