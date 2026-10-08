@@ -153,6 +153,10 @@
 				return;
 			}
 			if (session.setup_required) {
+				// Ahead of the preview on purpose (TASK-2251, codex r1): an
+				// instance with no admin yet holds no invitations, so the
+				// preview could only say found:false, and "an admin must finish
+				// setup" is the message that can actually be acted on.
 				setupMethod = session.setup_method;
 				status = 'setup';
 				return;
