@@ -2337,7 +2337,40 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 		}
 		query += " AND (" + strings.Join(conds, " OR ") + ")"
 	}
+	if key := params.FieldKeyPresent; key != "" && isValidFieldKey(key) {
+		query += " AND " + s.dialect.JSONExtractText("i.fields", key) + " IS NOT NULL"
+	}
 	return query, args
+}
+
+// StoredFieldKeys reports which of keys some item within scope stores in its
+// fields (BUG-3480: a list filter on a key no schema declares is honoured,
+// with a warning, only when items actually carry it). Only scope's
+// collection scope, permission pair and include_archived are used, and each
+// key is asked through ListItems, so the permission clauses are the list's own.
+func (s *Store) StoredFieldKeys(workspaceID string, scope models.ItemListParams, keys []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if !isValidFieldKey(key) {
+			continue
+		}
+		found, err := s.ListItems(workspaceID, models.ItemListParams{
+			ScopeCollectionID: scope.ScopeCollectionID,
+			CollectionIDs:     scope.CollectionIDs,
+			ItemIDs:           scope.ItemIDs,
+			IncludeArchived:   scope.IncludeArchived,
+			FieldKeyPresent:   key,
+			NoContent:         true,
+			Limit:             1,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(found) > 0 {
+			out[key] = true
+		}
+	}
+	return out, nil
 }
 
 // scalarRelationFilterKeys returns the scalar `relation` keys of the collection

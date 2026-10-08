@@ -1836,15 +1836,20 @@ type ItemListParams struct {
 	// one producer of an OR from caller input is parseItemListParams, which
 	// lowers a `?key=a,b` query value here to keep the documented list
 	// contract; everything else asks for an OR by name.
-	FieldsAnyOf    map[string][]string
-	Sort           string // e.g. "priority:desc,created_at:asc"
-	GroupBy        string
-	Search         string // FTS query
-	ParentID       string
-	Tag            string
-	AssignedUserID string // filter by assigned user
-	AgentRoleID    string // filter by agent role (ID or slug)
-	ParentLinkID   string // filter by parent link (item ID of the parent)
+	FieldsAnyOf map[string][]string
+	// FieldKeyPresent keeps only items whose fields store this key with a
+	// non-null value. Used by the list handlers' check of an undeclared
+	// filter key (BUG-3480), through ListItems so it shares the
+	// scope/permission clauses.
+	FieldKeyPresent string
+	Sort            string // e.g. "priority:desc,created_at:asc"
+	GroupBy         string
+	Search          string // FTS query
+	ParentID        string
+	Tag             string
+	AssignedUserID  string // filter by assigned user
+	AgentRoleID     string // filter by agent role (ID or slug)
+	ParentLinkID    string // filter by parent link (item ID of the parent)
 	// Unparented keeps only items with neither the legacy parent_id column nor
 	// an outgoing parent/implements item_link. Incoming links do not count.
 	Unparented      bool

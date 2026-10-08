@@ -552,6 +552,7 @@ Examples:
 			}
 
 			var items []models.Item
+			var undeclared []string
 			var err error
 
 			if len(args) > 0 {
@@ -559,13 +560,20 @@ Examples:
 				// by its singular alias (BUG-2630); the fallback preserves
 				// shorthand against pre-resolver servers (BUG-2578).
 				items, err = cli.WithCollectionAliasFallback(args[0], client.CollectionNotFoundIsAuthoritative, func(slug string) ([]models.Item, error) {
-					return client.ListCollectionItems(ws, slug, params)
+					got, keys, lerr := client.ListCollectionItemsReport(ws, slug, params)
+					undeclared = keys
+					return got, lerr
 				})
 			} else {
-				items, err = client.ListItems(ws, params)
+				items, undeclared, err = client.ListItemsReport(ws, params)
 			}
 			if err != nil {
 				return err
+			}
+			// Stderr, like the write warnings, so --format json stays
+			// parseable (BUG-3480).
+			if len(undeclared) > 0 {
+				fmt.Fprintf(os.Stderr, "warning: filtered on %s, which no schema declares (matched against the value items store)\n", strings.Join(undeclared, ", "))
 			}
 
 			if formatFlag == "json" {

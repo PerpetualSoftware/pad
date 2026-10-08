@@ -135,24 +135,38 @@ func TestValidateQueryAllowsValidText(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		target string
+		// handlerRefuses: the middleware must let the request through, and the
+		// HANDLER refuses it for its own reason. Asserted by the error code,
+		// which says whose refusal it is.
+		handlerRefuses string
 	}{
-		{"no query at all", "/api/v1/workspaces/" + ws + "/items"},
-		{"empty query", "/api/v1/workspaces/" + ws + "/items?"},
-		{"plain ascii", "/api/v1/workspaces/" + ws + "/items?search=hello"},
-		{"escaped accented text", "/api/v1/workspaces/" + ws + "/items?search=caf%C3%A9"},
-		{"unescaped accented text", "/api/v1/workspaces/" + ws + "/items?search=café"},
-		{"escaped emoji", "/api/v1/workspaces/" + ws + "/items?search=%F0%9F%9A%80"},
-		{"plus as space", "/api/v1/workspaces/" + ws + "/items?search=two+words"},
-		{"escaped space", "/api/v1/workspaces/" + ws + "/items?search=two%20words"},
-		{"escaped ampersand in value", "/api/v1/workspaces/" + ws + "/items?search=a%26b"},
-		{"escaped equals in value", "/api/v1/workspaces/" + ws + "/items?search=a%3Db"},
-		{"empty value", "/api/v1/workspaces/" + ws + "/items?search="},
-		{"key with no equals", "/api/v1/workspaces/" + ws + "/items?search"},
-		{"repeated key", "/api/v1/workspaces/" + ws + "/items?search=a&search=b"},
-		{"non-ascii key", "/api/v1/workspaces/" + ws + "/items?caf%C3%A9=x"},
+		{"no query at all", "/api/v1/workspaces/" + ws + "/items", ""},
+		{"empty query", "/api/v1/workspaces/" + ws + "/items?", ""},
+		{"plain ascii", "/api/v1/workspaces/" + ws + "/items?search=hello", ""},
+		{"escaped accented text", "/api/v1/workspaces/" + ws + "/items?search=caf%C3%A9", ""},
+		{"unescaped accented text", "/api/v1/workspaces/" + ws + "/items?search=café", ""},
+		{"escaped emoji", "/api/v1/workspaces/" + ws + "/items?search=%F0%9F%9A%80", ""},
+		{"plus as space", "/api/v1/workspaces/" + ws + "/items?search=two+words", ""},
+		{"escaped space", "/api/v1/workspaces/" + ws + "/items?search=two%20words", ""},
+		{"escaped ampersand in value", "/api/v1/workspaces/" + ws + "/items?search=a%26b", ""},
+		{"escaped equals in value", "/api/v1/workspaces/" + ws + "/items?search=a%3Db", ""},
+		{"empty value", "/api/v1/workspaces/" + ws + "/items?search=", ""},
+		{"key with no equals", "/api/v1/workspaces/" + ws + "/items?search", ""},
+		{"repeated key", "/api/v1/workspaces/" + ws + "/items?search=a&search=b", ""},
+		// Valid UTF-8, so the middleware passes it; since BUG-3480 the list
+		// handler refuses a filter key that is not a field key (letters,
+		// digits, '_', '-'), which the store used to drop, answering the
+		// unfiltered list.
+		{"non-ascii key", "/api/v1/workspaces/" + ws + "/items?caf%C3%A9=x", "validation_error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := doRequest(srv, "GET", tc.target, nil)
+			if tc.handlerRefuses != "" {
+				if rr.Code != http.StatusBadRequest || pathErrorCode(t, rr) != tc.handlerRefuses {
+					t.Fatalf("GET %s: expected the handler's 400 %s, got %d: %s", tc.target, tc.handlerRefuses, rr.Code, rr.Body.String())
+				}
+				return
+			}
 			if rr.Code != http.StatusOK {
 				t.Fatalf("GET %s: expected 200, got %d: %s", tc.target, rr.Code, rr.Body.String())
 			}

@@ -412,15 +412,23 @@ const HANDLERS: Record<string, Handler> = {
 		}),
 
 	// ── pad_item reads ──
-	'pad_item:list': (api, ws, args) =>
-		api.items.list(ws, {
-			collection: str(args, 'collection'),
+	// A collection is a PATH segment, never a query parameter (BUG-3480): the
+	// workspace-wide list read `?collection=` as a filter on a field nobody
+	// declares and answered [] for every collection-scoped call; it now
+	// refuses the parameter outright.
+	'pad_item:list': (api, ws, args) => {
+		const filters = {
 			status: str(args, 'status'),
 			priority: str(args, 'priority'),
 			parent: str(args, 'parent'),
 			tag: str(args, 'tag'),
 			limit: num(args, 'limit'),
-		}),
+		};
+		const collection = str(args, 'collection');
+		return collection
+			? api.items.listByCollection(ws, collection, filters)
+			: api.items.list(ws, filters);
+	},
 	'pad_item:get': (api, ws, args) => api.items.get(ws, requireRef(args)),
 	'pad_item:deps': (api, ws, args) => api.links.list(ws, requireRef(args)),
 	'pad_item:list-comments': (api, ws, args) =>
