@@ -78,3 +78,28 @@ func TestTASK1069_ServerStartWiresBothChecks(t *testing.T) {
 		t.Error("server start no longer reports a blocked MCP at startup")
 	}
 }
+
+// pad-cloud's PRODUCTION shape, through the real environment loading (lead
+// ruling): its compose sets PAD_MCP_PUBLIC_URL=${MCP_PUBLIC_URL:-}, so the
+// variable is PRESENT but EMPTY, beside PUBLIC_URL and PAD_AUTH_SERVER_URL
+// set to the https domain, and no PAD_URL. A refused start on Cloud is an
+// outage, so this shape must start, read the way the server reads it.
+func TestTASK1069_PadCloudProductionEnvStarts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no config.toml can contribute
+	t.Setenv("PAD_URL", "")
+	t.Setenv("PUBLIC_URL", "https://app.getpad.dev")
+	t.Setenv("PAD_MCP_PUBLIC_URL", "")
+	t.Setenv("PAD_AUTH_SERVER_URL", "https://app.getpad.dev")
+	t.Setenv("PAD_MODE", "cloud")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	ep := cfg.ResolveMCPEndpoints()
+	if err := validateCloudMCPOAuth(ep); err != nil {
+		t.Fatalf("pad-cloud's production env is refused: %v", err)
+	}
+	if ep.ResourceURL != "https://app.getpad.dev/mcp" || ep.AuthServerURL != "https://app.getpad.dev" {
+		t.Fatalf("resolved MCP URL %q / issuer %q, want the PUBLIC_URL-derived https pair", ep.ResourceURL, ep.AuthServerURL)
+	}
+}
