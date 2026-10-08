@@ -449,10 +449,10 @@ func sendForceRefreshFrame(conn *websocket.Conn) error {
 // broadcast only. Returns when the WS read returns an error
 // (close frame or transport failure). The caller then runs
 // removeConn and waits for writeLoop to exit.
-// maxSyncBatch bounds how many waiting sync frames one transaction takes
-// (BUG-3253). A typed burst is one frame per keystroke; past this the next
-// transaction takes the rest.
-const maxSyncBatch = 64
+// maxSyncBatch bounds how many waiting frames one run takes (BUG-3253). A
+// typed keystroke is TWO frames, its sync update and the cursor's awareness
+// update, so this is about 64 keystrokes; past it the next run takes the rest.
+const maxSyncBatch = 128
 
 // inboundFrame is one ReadMessage result, handed from the socket reader to
 // readLoop in order.
@@ -515,15 +515,19 @@ func (r *Room) readLoop(rc *roomConn) error {
 
 		switch data[0] {
 		case yMessageSync:
-			// Take every sync frame already waiting, in order. Any other
-			// frame (a control message, awareness, an error) ends the run
-			// and is handled next, so the order of everything is kept.
+			// Take every sync and awareness frame already waiting, in order.
+			// Awareness rides along because every keystroke sends one right
+			// behind its sync update: stopping at it (the first version of
+			// this) kept every run at one frame, measured. Anything else (a
+			// control message, an error) ends the run and is handled next,
+			// so the order of everything is kept.
 			batch := [][]byte{data}
 		drain:
 			for len(batch) < maxSyncBatch {
 				select {
 				case g := <-frames:
-					if g.err == nil && g.msgType == websocket.BinaryMessage && len(g.data) > 0 && g.data[0] == yMessageSync {
+					if g.err == nil && g.msgType == websocket.BinaryMessage && len(g.data) > 0 &&
+						(g.data[0] == yMessageSync || g.data[0] == yMessageAwareness) {
 						batch = append(batch, g.data)
 						continue
 					}
@@ -552,10 +556,18 @@ func (r *Room) readLoop(rc *roomConn) error {
 	}
 }
 
-// persistSyncFrames persists and publishes a run of sync frames read from
-// one connection (BUG-3253: one frame, or every sync frame already waiting
-// behind it).
-func (r *Room) persistSyncFrames(rc *roomConn, batch [][]byte) {
+// persistSyncFrames persists and publishes a run of frames read from one
+// connection (BUG-3253): a sync frame and every sync or awareness frame
+// already waiting behind it. The sync frames persist in one transaction;
+// then every frame is published in the order it arrived. Awareness frames
+// are never persisted and are relayed even when the sync frames are not.
+func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
+	var batch [][]byte
+	for _, f := range run {
+		if f[0] == yMessageSync {
+			batch = append(batch, f)
+		}
+	}
 	// Hold appendMu across the persist+publish sequence so we
 	// uphold TASK-1252's single-writer-per-item contract. The
 	// dumb-relay design intends one writer per Room, but each
@@ -597,10 +609,12 @@ func (r *Room) persistSyncFrames(rc *roomConn, batch [][]byte) {
 		// path can tell, durably, that a frame in this conn's apply bracket
 		// was dropped by the freeze → the external content did NOT land.
 		rc.frozenDropSeq.Add(int64(len(batch)))
+		r.publishAwareness(rc, run)
 		r.appendMu.Unlock()
 		return
 	}
 	if !rc.canWrite.Load() || rc.evicted.Load() {
+		r.publishAwareness(rc, run)
 		r.appendMu.Unlock()
 		return
 	}
@@ -634,8 +648,14 @@ func (r *Room) persistSyncFrames(rc *roomConn, batch [][]byte) {
 		// event (we'd be advertising a fictional id).
 		results = make([]store.SyncFrameAppend, len(batch))
 	}
-	for i, data := range batch {
+	i := 0
+	for _, data := range run {
+		if data[0] != yMessageSync {
+			r.bus.Publish(OpEvent{ItemID: r.itemID, ClientID: rc.id, Type: OpTypeAwareness, Data: data})
+			continue
+		}
 		appended := results[i]
+		i++
 		persistedID := appended.ID
 		if appended.Persisted && persistedID > 0 {
 			// Advance the conn's durable high-water (BUG-2276 residual 2). Only
@@ -661,6 +681,17 @@ func (r *Room) persistSyncFrames(rc *roomConn, batch [][]byte) {
 	// could overtake older peer ops queued in rc.bus and
 	// let the client persist a cursor past undelivered
 	// binaries — the round-23 [P1] hazard.
+}
+
+// publishAwareness relays a run's awareness frames, in order, when its sync
+// frames are not persisted (BUG-3253): presence is relayed for every
+// connection, read-only and frozen ones included, as it always was.
+func (r *Room) publishAwareness(rc *roomConn, run [][]byte) {
+	for _, data := range run {
+		if data[0] == yMessageAwareness {
+			r.bus.Publish(OpEvent{ItemID: r.itemID, ClientID: rc.id, Type: OpTypeAwareness, Data: data})
+		}
+	}
 }
 
 // writeLoop drains the bus subscription channel and writes every
