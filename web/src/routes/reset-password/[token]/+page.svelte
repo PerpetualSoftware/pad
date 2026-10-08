@@ -6,6 +6,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
+	import { autofocus } from '$lib/a11y/autofocus';
 
 	let token = $derived(page.params.token ?? '');
 
@@ -55,12 +56,6 @@
 			loading = false;
 		}
 	}
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') {
-			handleSubmit();
-		}
-	}
 </script>
 
 <AuthHeader cloudMode={authStore.cloudMode} />
@@ -72,37 +67,42 @@
 		{/if}
 		<p class="subtitle">Set a new password</p>
 
-		<div class="form">
+		<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+			<label class="sr-only" for="reset-password">New password</label>
 			<input
+				id="reset-password"
+				name="new-password"
+				use:autofocus
 				type="password"
 				placeholder="New password"
 				bind:value={password}
-				onkeydown={handleKeydown}
 				disabled={loading}
 				autocomplete="new-password"
 			/>
 
+			<label class="sr-only" for="reset-confirm-password">Confirm new password</label>
 			<input
+				id="reset-confirm-password"
+				name="confirm-password"
 				type="password"
 				placeholder="Confirm new password"
 				bind:value={confirmPassword}
-				onkeydown={handleKeydown}
 				disabled={loading}
 				autocomplete="new-password"
 			/>
 
 			{#if error}
-				<p class="error">{error}</p>
+				<p class="error" role="alert">{error}</p>
 			{/if}
 
-			<button onclick={handleSubmit} disabled={loading}>
+			<button type="submit" disabled={loading}>
 				{#if loading}
 					Resetting...
 				{:else}
 					Reset password
 				{/if}
 			</button>
-		</div>
+		</form>
 
 		<p class="back-link">
 			<a href="/login">Back to sign in</a>

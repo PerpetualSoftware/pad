@@ -4,6 +4,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
+	import { autofocus } from '$lib/a11y/autofocus';
 
 	let email = $state('');
 	let error = $state('');
@@ -47,12 +48,6 @@
 			loading = false;
 		}
 	}
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') {
-			handleSubmit();
-		}
-	}
 </script>
 
 <AuthHeader cloudMode={authStore.cloudMode} />
@@ -92,28 +87,31 @@
 				Enter your email address and we'll send you a link to reset your password.
 			</p>
 
-			<div class="form">
+			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+				<label class="sr-only" for="forgot-email">Email</label>
 				<input
+					id="forgot-email"
+					name="email"
+					use:autofocus
 					type="email"
 					placeholder="Email"
 					bind:value={email}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="email"
 				/>
 
 				{#if error}
-					<p class="error">{error}</p>
+					<p class="error" role="alert">{error}</p>
 				{/if}
 
-				<button onclick={handleSubmit} disabled={loading}>
+				<button type="submit" disabled={loading}>
 					{#if loading}
 						Sending...
 					{:else}
 						Send reset link
 					{/if}
 				</button>
-			</div>
+			</form>
 
 			<p class="back-link">
 				<a href="/login">Back to sign in</a>
