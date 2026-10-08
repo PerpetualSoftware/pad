@@ -229,6 +229,11 @@ type mcpSettingsResponse struct {
 // panel's "blocked" state, the startup error and the health flag, so they
 // cannot disagree. Read per call: the setting can change at runtime.
 func (s *Server) MCPBlockedReason() string {
+	// Cloud and usable addressing can never be blocked, so they skip the
+	// setting read: health calls this on every probe (codex r1).
+	if s.cloudMode || s.mcpEndpoints.Usable() {
+		return ""
+	}
 	on, _ := s.mcpSetting()
 	if !on || s.mcpAvailableWith(on) {
 		return ""

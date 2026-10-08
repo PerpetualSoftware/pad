@@ -25,6 +25,20 @@ func TestTASK1069_ValidateCloudMCPOAuth(t *testing.T) {
 		{"no origin is refused, naming PAD_URL", config.Config{}, "no public origin is configured"},
 		{"an http origin is refused (OAuth needs https)", config.Config{URL: "http://app.example.com"}, "is not https"},
 		{"an unusable value is refused with the problem", config.Config{URL: "not a url"}, `PAD_URL "not a url"`},
+		// Combinations (codex r1). PAD_URL wins over PUBLIC_URL, so an http
+		// PAD_URL leaves no https issuer: OAuth was never constructed in this
+		// shape, and the refusal says so instead of serving PAT-only.
+		{"http PAD_URL beside an https PUBLIC_URL is refused", config.Config{
+			URL: "http://10.0.0.5:7777", PublicURL: "https://app.example.com",
+		}, "is not https"},
+		// An explicit https issuer makes OAuth constructible again, so it starts.
+		{"http PAD_URL with an explicit https PAD_AUTH_SERVER_URL starts", config.Config{
+			URL: "http://10.0.0.5:7777", AuthServerURL: "https://app.example.com", MCPPublicURL: "https://mcp.example.com",
+		}, ""},
+		// An https MCP URL does not rescue an http issuer.
+		{"https PAD_MCP_PUBLIC_URL with an http issuer is refused", config.Config{
+			URL: "http://10.0.0.5:7777", MCPPublicURL: "https://mcp.example.com",
+		}, "is not https"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateCloudMCPOAuth(tc.cfg.ResolveMCPEndpoints())
