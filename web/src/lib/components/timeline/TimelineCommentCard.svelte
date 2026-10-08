@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { commentChipsStore } from '$lib/decisions/commentChips.svelte';
+	import type { ConventionChip } from '$lib/decisions/conventionChips';
 	import type { Comment, Item, Reaction } from '$lib/types';
 	import { relativeTime, renderMarkdown } from '$lib/utils/markdown';
 	import { IMPORTED_TITLE } from '$lib/utils/imported';
@@ -205,7 +207,28 @@
 	}
 
 	const reactionGroups = $derived(groupReactions(comment.reactions));
+	// TASK-3119 U2b: "Possibly breaks CONVE-N" for THIS comment, judged on its
+	// own; none means nothing, as on the item.
+	const conventionChips = $derived(comment.deleted ? [] : commentChipsStore.chipsFor(comment.item_id, comment.id));
 </script>
+
+<!--
+	TASK-3119 U2b. data-sveltekit-reload: /-/r/ is a SERVER redirect route
+	(see DecisionChips). The title says what the chip is and is not: a missing
+	chip is not a verdict.
+-->
+{#snippet conventionChipRow(list: ConventionChip[])}
+	<div class="comment-convention-chips" aria-label="Convention checks">
+		{#each list as chip (chip.ref)}
+			<a
+				class="convention-chip"
+				href={chip.href}
+				data-sveltekit-reload
+				title="{chip.label}: judged {chip.percent}% likely from this comment and its item's title. Advisory only; a missing chip is not a verdict."
+			>{chip.label}</a>
+		{/each}
+	</div>
+{/snippet}
 
 <div class="comment-card {getBorderClass(comment.created_by)}">
 	<div class="comment-header">
@@ -279,6 +302,9 @@
 		<div class="comment-body prose">
 			{@html renderMarkdown(comment.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
 		</div>
+		{#if conventionChips.length > 0}
+			{@render conventionChipRow(conventionChips)}
+		{/if}
 	{/if}
 
 	{#if !comment.deleted}
@@ -398,6 +424,10 @@
 						<div class="reply-body prose">
 							{@html renderMarkdown(reply.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
 						</div>
+						{@const replyChips = commentChipsStore.chipsFor(comment.item_id, reply.id)}
+						{#if replyChips.length > 0}
+							{@render conventionChipRow(replyChips)}
+						{/if}
 					{/if}
 
 						{#if !reply.deleted}
@@ -618,6 +648,27 @@
 	}
 
 	/* A tombstone (BUG-3252): the placeholder stands where the body was. */
+	/* TASK-3119 U2b: matches the item page's convention chip. */
+	.comment-convention-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1);
+		margin-top: var(--space-1);
+	}
+	.convention-chip {
+		display: inline-flex;
+		align-items: center;
+		font-size: 0.75em;
+		padding: 1px var(--space-2);
+		border: 1px solid var(--accent-amber, var(--accent-blue));
+		border-radius: 999px;
+		color: var(--text-primary);
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.convention-chip:hover {
+		background: color-mix(in srgb, var(--accent-amber, var(--accent-blue)) 12%, transparent);
+	}
 	.comment-deleted {
 		color: var(--text-muted);
 		font-style: italic;

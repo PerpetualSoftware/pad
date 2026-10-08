@@ -10,7 +10,8 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { attentionChips, type AttentionChip } from '$lib/decisions/attentionChips';
-	import { conventionChips, type ConventionChip } from '$lib/decisions/conventionChips';
+	import { commentConventionChips, conventionChips, type ConventionChip } from '$lib/decisions/conventionChips';
+	import { commentChipsStore } from '$lib/decisions/commentChips.svelte';
 
 	interface Props {
 		wsSlug: string;
@@ -30,7 +31,7 @@
 	$effect(() => {
 		const ws = wsSlug;
 		const ref = itemRef;
-		void itemId; // re-fetch on identity change, not only on ref text
+		const id = itemId; // re-fetch on identity change, not only on ref text
 		const token = ++latest;
 		// `latest` answers "is this still the item on screen", which a sign-out
 		// or an account swap does not change — the answer is computed from what
@@ -45,6 +46,8 @@
 				if (token === latest && isSameIdentity()) {
 					chips = attentionChips(res.decisions);
 					convChips = conventionChips(res.decisions, ws);
+					// TASK-3119 U2b: the comment cards' chips, from the same read.
+					if (id) commentChipsStore.setFor(id, commentConventionChips(res.decisions, ws));
 				}
 			})
 			.catch((err) => {
@@ -52,6 +55,11 @@
 				// error, and is logged so it is not invisible.
 				if (token === latest) console.warn('decision chips: read failed', err);
 			});
+		// Leaving this item (or this identity) clears its comment chips, so a
+		// stale answer never paints on a card.
+		return () => {
+			if (id) commentChipsStore.clearFor(id);
+		};
 	});
 </script>
 

@@ -63,9 +63,10 @@ func TestProductionRegistryRegisters(t *testing.T) {
 	if _, ok := reg.Get(ConventionsSetName); !ok {
 		t.Fatal("conventions set not registered")
 	}
-	// TASK-3119 adds `conventions` beside `attention`.
-	if sets := reg.SetsFor("tasks"); len(sets) != 2 || sets[0] != AttentionSetName || sets[1] != ConventionsSetName {
-		t.Fatalf("SetsFor(tasks) = %v, want [attention conventions]", sets)
+	// TASK-3119 adds `conventions` beside `attention`, and U2b its comment
+	// subject.
+	if sets := reg.SetsFor("tasks"); len(sets) != 3 || sets[0] != AttentionSetName || sets[1] != ConventionsSetName || sets[2] != ConventionsCommentsSetName {
+		t.Fatalf("SetsFor(tasks) = %v, want [attention conventions conventions_comments]", sets)
 	}
 }
 
