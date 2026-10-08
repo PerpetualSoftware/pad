@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { arrowStep, tabStep } from '../hooks/register.js'
+import { arrowStep, tabStep, webBaseFromMcp } from '../hooks/register.js'
 
 // The Browse view as drawn: six tabs, two collection rows, then the footer actions.
 const ORDER = ['tab-now', 'tab-next', 'tab-browse', 'tab-find', 'tab-activity', 'tab-settings', 'coll-tasks', 'coll-conventions', 'refresh', 'add']
@@ -29,4 +29,11 @@ test('Up and Down walk the rows; page moves and the list edges still scroll', as
   expect(arrowStep(ORDER, 'tab-browse', 1, 'coll-conventions')).toBe('coll-conventions') // Down from the menu enters the list
   expect(arrowStep(ORDER, 'coll-tasks', 30, 'coll-tasks')).toBeNull() // a page key
   expect(arrowStep(['tab-now', 'refresh'], 'tab-now', 1, undefined)).toBeNull() // a view with no list
+})
+
+test("an MCP endpoint's web app: Pad Cloud's MCP host maps to the app; a self-hosted /mcp to its base", async () => {
+  expect(webBaseFromMcp('https://mcp.getpad.dev')).toBe('https://app.getpad.dev')
+  expect(webBaseFromMcp('https://pad.example.com/mcp')).toBe('https://pad.example.com')
+  expect(webBaseFromMcp('http://192.168.1.89:7777/mcp/')).toBe('http://192.168.1.89:7777')
+  expect(webBaseFromMcp('not a url')).toBe('https://app.getpad.dev')
 })
