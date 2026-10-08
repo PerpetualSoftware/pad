@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -57,6 +58,21 @@ func TestBUG3361_EveryAdminRouteRefusesAnAdminPAT(t *testing.T) {
 		rr := doRequestWithBearer(f.srv, method, path, f.pat, nil)
 		if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "session_required") {
 			t.Errorf("admin PAT %s %s: %d %s, want 403 session_required", method, route, rr.Code, rr.Body.String())
+		}
+		// AND every route still administers for the admin's sessions, browser
+		// and CLI (BUG-1926, Dave day 89: admin needs a session; PATs are the
+		// line). The placeholder params and empty bodies may well answer 400
+		// or 404: what must never come back is a refusal of the credential or
+		// of the role.
+		for kind, sess := range map[string]func() *httptest.ResponseRecorder{
+			"browser session": func() *httptest.ResponseRecorder { return doRequestWithCookie(f.srv, method, path, nil, f.session) },
+			"CLI session":     func() *httptest.ResponseRecorder { return doRequestWithBearer(f.srv, method, path, f.session, nil) },
+		} {
+			got := sess()
+			body := got.Body.String()
+			if strings.Contains(body, "session_required") || strings.Contains(body, "Admin access required") {
+				t.Errorf("admin %s %s %s: refused %d %s", kind, method, route, got.Code, body)
+			}
 		}
 		return nil
 	})

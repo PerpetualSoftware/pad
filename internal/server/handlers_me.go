@@ -91,8 +91,13 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Admin platform users get owner-equivalent access regardless of
-	// membership — surface that as "all" with no filtering.
-	if user.Role == "admin" {
+	// membership — surface that as "all" with no filtering. But only where
+	// the workspace middleware actually grants it: a bearer (an API token,
+	// a CLI session, an MCP request) gets no admin bypass (BUG-1616's
+	// suppression, isBearerAuth in RequireWorkspaceAccess), so over a bearer
+	// an admin is answered as the member they are, and the summary no longer
+	// advertises access the gates will deny (BUG-1926).
+	if user.Role == "admin" && !isBearerAuth(r) {
 		resp.CollectionGrants = []models.CollectionGrant{}
 		resp.ItemGrants = []models.ItemGrant{}
 		writeJSON(w, http.StatusOK, resp)
