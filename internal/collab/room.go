@@ -249,6 +249,9 @@ type opLogStore interface {
 	// byte-identical duplicate of an earlier row (BUG-3135). Either way the
 	// returned ID is what the frame is acknowledged with.
 	AppendSyncFrame(itemID string, data []byte, schemaVersion string) (store.SyncFrameAppend, error)
+	// AppendSyncFrames is AppendSyncFrame for a run of frames in one
+	// transaction, all or nothing, one result per frame in order (BUG-3253).
+	AppendSyncFrames(itemID string, frames [][]byte, schemaVersion string) ([]store.SyncFrameAppend, error)
 	LoadYjsUpdatesSince(itemID string, sinceID int64) ([]models.YjsUpdate, error)
 	// LatestYjsUpdateSchemaVersion + SetAsideAndClearOpLog power the
 	// schema-mismatch rebuild (TASK-1268). The room manager checks the most
@@ -446,12 +449,54 @@ func sendForceRefreshFrame(conn *websocket.Conn) error {
 // broadcast only. Returns when the WS read returns an error
 // (close frame or transport failure). The caller then runs
 // removeConn and waits for writeLoop to exit.
+// maxSyncBatch bounds how many waiting sync frames one transaction takes
+// (BUG-3253). A typed burst is one frame per keystroke; past this the next
+// transaction takes the rest.
+const maxSyncBatch = 64
+
+// inboundFrame is one ReadMessage result, handed from the socket reader to
+// readLoop in order.
+type inboundFrame struct {
+	msgType int
+	data    []byte
+	err     error
+}
+
+// readLoop is the inbound side: pull frames off the WebSocket, route
+// sync frames through the op-log + broadcast, awareness frames to
+// broadcast only. Returns when the WS read returns an error
+// (close frame or transport failure). The caller then runs
+// removeConn and waits for writeLoop to exit.
+//
+// BUG-3253: a goroutine reads the socket (it is the connection's only
+// reader) and hands frames over in order, so readLoop can see which sync
+// frames are already waiting and persist them together. It used to commit
+// one op-log row per frame before reading the next, so a typed burst
+// drained at one store commit per keystroke. The reader exits on its first
+// error, which readLoop returns after handling every frame before it.
 func (r *Room) readLoop(rc *roomConn) error {
-	for {
-		msgType, data, err := rc.conn.ReadMessage()
-		if err != nil {
-			return err
+	frames := make(chan inboundFrame, maxSyncBatch)
+	go func() {
+		for {
+			msgType, data, err := rc.conn.ReadMessage()
+			frames <- inboundFrame{msgType: msgType, data: data, err: err}
+			if err != nil {
+				return
+			}
 		}
+	}()
+	var held *inboundFrame
+	for {
+		var f inboundFrame
+		if held != nil {
+			f, held = *held, nil
+		} else {
+			f = <-frames
+		}
+		if f.err != nil {
+			return f.err
+		}
+		msgType, data := f.msgType, f.data
 
 		// TextMessage frames carry JSON control messages (currently
 		// just designated-applier acks; future entries can extend
@@ -470,100 +515,25 @@ func (r *Room) readLoop(rc *roomConn) error {
 
 		switch data[0] {
 		case yMessageSync:
-			// Hold appendMu across the persist+publish sequence so we
-			// uphold TASK-1252's single-writer-per-item contract. The
-			// dumb-relay design intends one writer per Room, but each
-			// peer has its own readLoop — without serialisation here,
-			// two peers' sync frames would race AppendYjsUpdate and
-			// could surface a Postgres cursor gap (allocation order ≠
-			// commit order). awareness frames and OTHER rooms are
-			// unaffected by this lock.
-			r.appendMu.Lock()
-			// Read-only participants (workspace viewers / view-only
-			// guests, TASK-265) are admitted for live view + presence
-			// but MUST NOT mutate content. Drop their inbound sync
-			// frames — these are the frames that would otherwise persist
-			// to item_yjs_updates and get canonicalized into
-			// items.content by a co-present editor's authorized flush.
-			// Awareness (presence) frames below are still relayed so the
-			// viewer's cursor stays visible to editors. This is the
-			// collab-side mirror of the REST requireEditPermission gate.
-			//
-			// The canWrite check is INSIDE appendMu and SetConnWritable
-			// takes appendMu when flipping the flag, so a demotion that
-			// races an in-flight frame can't slip between the check and
-			// the persist: either the frame's whole persist runs before
-			// the demotion, or the demotion is observed and the frame is
-			// dropped. Without this fencing a reader could read
-			// canWrite=true, block on appendMu, and persist AFTER
-			// SetConnWritable(false) returned (TOCTOU).
-			//
-			// The `frozen` check shares the same appendMu fence and closes
-			// the restore-prune window (BUG-2264): a readLoop that already
-			// read a frame and is queued on appendMu when ForceRefreshRoom
-			// sets frozen=true will, on acquiring appendMu, drop the frame
-			// instead of appending it AFTER the prune (which would survive as
-			// a stale post-boundary op). It is a separate flag from canWrite
-			// so the auth revalidation loop can't thaw it mid-restore.
-			if rc.frozen.Load() {
-				// Frozen by an in-progress version restore: this frame is dropped.
-				// Record the drop (BUG-2276 residual 2) so the applier flow's ack
-				// path can tell, durably, that a frame in this conn's apply bracket
-				// was dropped by the freeze → the external content did NOT land.
-				rc.frozenDropSeq.Add(1)
-				r.appendMu.Unlock()
-				continue
+			// Take every sync frame already waiting, in order. Any other
+			// frame (a control message, awareness, an error) ends the run
+			// and is handled next, so the order of everything is kept.
+			batch := [][]byte{data}
+		drain:
+			for len(batch) < maxSyncBatch {
+				select {
+				case g := <-frames:
+					if g.err == nil && g.msgType == websocket.BinaryMessage && len(g.data) > 0 && g.data[0] == yMessageSync {
+						batch = append(batch, g.data)
+						continue
+					}
+					held = &g
+					break drain
+				default:
+					break drain
+				}
 			}
-			if !rc.canWrite.Load() || rc.evicted.Load() {
-				r.appendMu.Unlock()
-				continue
-			}
-			// Persist before broadcast so a server crash between
-			// persist and broadcast loses at most a live keystroke
-			// that the originating peer will replay on reconnect
-			// anyway.
-			// BUG-3135: a byte-identical re-send is not stored, but it is
-			// broadcast and acknowledged exactly like a stored frame. Its ack
-			// id is the item's current MAX(id), read under appendMu: every row
-			// at or below it was published to each conn's bus before this
-			// event, so the cursor cannot overtake an undelivered binary (the
-			// round-23 hazard below).
-			appended, err := r.store.AppendSyncFrame(r.itemID, data, r.schemaVersion)
-			persistedID := appended.ID
-			if err != nil {
-				slog.Error("collab: append op-log",
-					"item_id", r.itemID,
-					"client_id", rc.id,
-					"error", err,
-				)
-				// Continue: broadcast keeps the live mesh consistent
-				// even when persistence is blipping. persistedID == 0
-				// → no cursor frame is emitted by writeLoop for this
-				// event (we'd be advertising a fictional id).
-			}
-			if appended.Persisted && persistedID > 0 {
-				// Advance the conn's durable high-water (BUG-2276 residual 2). Only
-				// frames that actually landed advance it, so a restore's finalization
-				// can read it (under appendMu) to know this conn's applier frame
-				// persisted BEFORE the freeze. Still under appendMu, so it is ordered
-				// with the finalization's read.
-				rc.lastPersistedOpID.Store(persistedID)
-			}
-			r.bus.Publish(OpEvent{
-				ItemID:   r.itemID,
-				ClientID: rc.id,
-				Type:     OpTypeSync,
-				Data:     data,
-				OpLogID:  persistedID,
-			})
-			r.appendMu.Unlock()
-			// Originator cursor delivery is handled by writeLoop:
-			// it processes the self event from rc.bus, skips the
-			// binary echo, and emits the cursor frame for OpLogID.
-			// Sending the cursor from here (the original design)
-			// could overtake older peer ops queued in rc.bus and
-			// let the client persist a cursor past undelivered
-			// binaries — the round-23 [P1] hazard.
+			r.persistSyncFrames(rc, batch)
 
 		case yMessageAwareness:
 			// Awareness is presence — ephemeral. Never persisted.
@@ -580,6 +550,117 @@ func (r *Room) readLoop(rc *roomConn) error {
 			// would spam the operator under any client misbehaviour.
 		}
 	}
+}
+
+// persistSyncFrames persists and publishes a run of sync frames read from
+// one connection (BUG-3253: one frame, or every sync frame already waiting
+// behind it).
+func (r *Room) persistSyncFrames(rc *roomConn, batch [][]byte) {
+	// Hold appendMu across the persist+publish sequence so we
+	// uphold TASK-1252's single-writer-per-item contract. The
+	// dumb-relay design intends one writer per Room, but each
+	// peer has its own readLoop — without serialisation here,
+	// two peers' sync frames would race AppendYjsUpdate and
+	// could surface a Postgres cursor gap (allocation order ≠
+	// commit order). awareness frames and OTHER rooms are
+	// unaffected by this lock.
+	r.appendMu.Lock()
+	// Read-only participants (workspace viewers / view-only
+	// guests, TASK-265) are admitted for live view + presence
+	// but MUST NOT mutate content. Drop their inbound sync
+	// frames — these are the frames that would otherwise persist
+	// to item_yjs_updates and get canonicalized into
+	// items.content by a co-present editor's authorized flush.
+	// Awareness (presence) frames below are still relayed so the
+	// viewer's cursor stays visible to editors. This is the
+	// collab-side mirror of the REST requireEditPermission gate.
+	//
+	// The canWrite check is INSIDE appendMu and SetConnWritable
+	// takes appendMu when flipping the flag, so a demotion that
+	// races an in-flight frame can't slip between the check and
+	// the persist: either the frame's whole persist runs before
+	// the demotion, or the demotion is observed and the frame is
+	// dropped. Without this fencing a reader could read
+	// canWrite=true, block on appendMu, and persist AFTER
+	// SetConnWritable(false) returned (TOCTOU).
+	//
+	// The `frozen` check shares the same appendMu fence and closes
+	// the restore-prune window (BUG-2264): a readLoop that already
+	// read a frame and is queued on appendMu when ForceRefreshRoom
+	// sets frozen=true will, on acquiring appendMu, drop the frame
+	// instead of appending it AFTER the prune (which would survive as
+	// a stale post-boundary op). It is a separate flag from canWrite
+	// so the auth revalidation loop can't thaw it mid-restore.
+	if rc.frozen.Load() {
+		// Frozen by an in-progress version restore: this frame is dropped.
+		// Record the drop (BUG-2276 residual 2) so the applier flow's ack
+		// path can tell, durably, that a frame in this conn's apply bracket
+		// was dropped by the freeze → the external content did NOT land.
+		rc.frozenDropSeq.Add(int64(len(batch)))
+		r.appendMu.Unlock()
+		return
+	}
+	if !rc.canWrite.Load() || rc.evicted.Load() {
+		r.appendMu.Unlock()
+		return
+	}
+	// Persist before broadcast so a server crash between
+	// persist and broadcast loses at most a live keystroke
+	// that the originating peer will replay on reconnect
+	// anyway.
+	// BUG-3135: a byte-identical re-send is not stored, but it is
+	// broadcast and acknowledged exactly like a stored frame. Its ack
+	// id is the item's current MAX(id), read under appendMu: every row
+	// at or below it was published to each conn's bus before this
+	// event, so the cursor cannot overtake an undelivered binary (the
+	// round-23 hazard below).
+	//
+	// BUG-3253: the frames of a burst that are already waiting are persisted
+	// in ONE transaction (AppendSyncFrames), each with exactly the treatment
+	// it had alone, and published below one by one in order, each with its
+	// own op-log id. All or nothing: a failed batch publishes every frame
+	// with id 0, as one failed frame always was.
+	results, err := r.store.AppendSyncFrames(r.itemID, batch, r.schemaVersion)
+	if err != nil {
+		slog.Error("collab: append op-log",
+			"item_id", r.itemID,
+			"client_id", rc.id,
+			"frames", len(batch),
+			"error", err,
+		)
+		// Continue: broadcast keeps the live mesh consistent
+		// even when persistence is blipping. persistedID == 0
+		// → no cursor frame is emitted by writeLoop for this
+		// event (we'd be advertising a fictional id).
+		results = make([]store.SyncFrameAppend, len(batch))
+	}
+	for i, data := range batch {
+		appended := results[i]
+		persistedID := appended.ID
+		if appended.Persisted && persistedID > 0 {
+			// Advance the conn's durable high-water (BUG-2276 residual 2). Only
+			// frames that actually landed advance it, so a restore's finalization
+			// can read it (under appendMu) to know this conn's applier frame
+			// persisted BEFORE the freeze. Still under appendMu, so it is ordered
+			// with the finalization's read.
+			rc.lastPersistedOpID.Store(persistedID)
+		}
+		r.bus.Publish(OpEvent{
+			ItemID:   r.itemID,
+			ClientID: rc.id,
+			Type:     OpTypeSync,
+			Data:     data,
+			OpLogID:  persistedID,
+		})
+	}
+	r.appendMu.Unlock()
+	// Originator cursor delivery is handled by writeLoop:
+	// it processes the self event from rc.bus, skips the
+	// binary echo, and emits the cursor frame for OpLogID.
+	// Sending the cursor from here (the original design)
+	// could overtake older peer ops queued in rc.bus and
+	// let the client persist a cursor past undelivered
+	// binaries — the round-23 [P1] hazard.
 }
 
 // writeLoop drains the bus subscription channel and writes every

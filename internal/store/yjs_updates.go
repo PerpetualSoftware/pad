@@ -98,6 +98,54 @@ type SyncFrameAppend struct {
 // Same per-item serialisation CONTRACT as AppendYjsUpdate: the MAX(id) read
 // and the insert are only meaningful under the caller's per-item lock.
 func (s *Store) AppendSyncFrame(itemID string, data []byte, schemaVersion string) (SyncFrameAppend, error) {
+	return s.appendSyncFrameQ(s.db, itemID, data, schemaVersion)
+}
+
+// yjsExecQueryer is what one frame's append runs on: the pool, or the
+// transaction AppendSyncFrames holds.
+type yjsExecQueryer interface {
+	Queryer
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// AppendSyncFrames is AppendSyncFrame for a run of frames from one
+// connection, in ONE transaction (BUG-3253). The relay used to commit one
+// row per keystroke, so a typed burst drained its socket at the speed of one
+// store commit per character, and an item reopened meanwhile replayed a
+// body missing the burst's end (measured: the last frame persisted up to
+// 14.6s after typing ended, under 8 writers). Each frame gets exactly
+// AppendSyncFrame's treatment, in order: the duplicate and twin checks run
+// inside the transaction, so they see the batch's own earlier rows. The
+// result is one SyncFrameAppend per frame, in order. All or nothing: on an
+// error nothing is stored, and the caller treats every frame as unpersisted.
+func (s *Store) AppendSyncFrames(itemID string, frames [][]byte, schemaVersion string) ([]SyncFrameAppend, error) {
+	if len(frames) == 1 {
+		one, err := s.AppendSyncFrame(itemID, frames[0], schemaVersion)
+		if err != nil {
+			return nil, err
+		}
+		return []SyncFrameAppend{one}, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("append sync frames (begin): %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	out := make([]SyncFrameAppend, 0, len(frames))
+	for _, data := range frames {
+		one, err := s.appendSyncFrameQ(tx, itemID, data, schemaVersion)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, one)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("append sync frames (commit): %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) appendSyncFrameQ(q yjsExecQueryer, itemID string, data []byte, schemaVersion string) (SyncFrameAppend, error) {
 	if itemID == "" {
 		return SyncFrameAppend{}, errors.New("AppendSyncFrame: itemID is required")
 	}
@@ -121,7 +169,7 @@ func (s *Store) AppendSyncFrame(itemID string, data []byte, schemaVersion string
 		// rely on that.)
 		var maxID int64
 		var exact bool
-		if err := s.db.QueryRow(s.q(`
+		if err := q.QueryRow(s.q(`
 			SELECT COALESCE(MAX(id), 0),
 			       EXISTS (SELECT 1 FROM item_yjs_updates
 			               WHERE item_id = ? AND content_hash = ? AND update_data = ?)
@@ -135,14 +183,14 @@ func (s *Store) AppendSyncFrame(itemID string, data []byte, schemaVersion string
 		// yjsIdenticalEarlierRowQ, asked directly so the exact lookup above is
 		// not repeated on every keystroke frame.
 		if twinBytes, ok := yjsSyncSubtypeTwin(data); ok {
-			twin, err := s.yjsExactEarlierRowQ(s.db, itemID, twinBytes, yjsFrameHash(twinBytes), 0)
+			twin, err := s.yjsExactEarlierRowQ(q, itemID, twinBytes, yjsFrameHash(twinBytes), 0)
 			if err != nil {
 				return SyncFrameAppend{}, fmt.Errorf("append sync frame (twin check): %w", err)
 			}
 			bearing = !twin
 		}
 	}
-	id, err := s.insertYjsFrame(itemID, data, schemaVersion, now, hash, bearing)
+	id, err := s.insertYjsFrameQ(q, itemID, data, schemaVersion, now, hash, bearing)
 	if err != nil {
 		return SyncFrameAppend{}, err
 	}
@@ -151,6 +199,10 @@ func (s *Store) AppendSyncFrame(itemID string, data []byte, schemaVersion string
 
 // insertYjsFrame writes one classified op-log row and returns its id.
 func (s *Store) insertYjsFrame(itemID string, data []byte, schemaVersion, now, hash string, bearing bool) (int64, error) {
+	return s.insertYjsFrameQ(s.db, itemID, data, schemaVersion, now, hash, bearing)
+}
+
+func (s *Store) insertYjsFrameQ(q yjsExecQueryer, itemID string, data []byte, schemaVersion, now, hash string, bearing bool) (int64, error) {
 	bearingArg := s.dialect.BoolToInt(bearing)
 
 	// Postgres needs RETURNING; SQLite gives us the new rowid via
@@ -162,13 +214,13 @@ func (s *Store) insertYjsFrame(itemID string, data []byte, schemaVersion, now, h
 			RETURNING id
 		`)
 		var id int64
-		if err := s.db.QueryRow(query, itemID, data, schemaVersion, now, hash, bearingArg).Scan(&id); err != nil {
+		if err := q.QueryRow(query, itemID, data, schemaVersion, now, hash, bearingArg).Scan(&id); err != nil {
 			return 0, fmt.Errorf("append yjs update (postgres): %w", err)
 		}
 		return id, nil
 	}
 
-	res, err := s.db.Exec(
+	res, err := q.Exec(
 		`INSERT INTO item_yjs_updates (item_id, update_data, schema_version, created_at, content_hash, content_bearing)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		itemID, data, schemaVersion, now, hash, bearingArg,
