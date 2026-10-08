@@ -44,6 +44,32 @@
 		}
 	}
 
+	// Completed items (TASK-2211, audit C105). A tag page used to mix them in
+	// with no way to leave them out, so a long-lived tag read as open work.
+	// "Show completed" defaults ON, as the collection list shows completed
+	// items, and is remembered per workspace like the view mode above. Off,
+	// the list asks the server for non-terminal items only (non_terminal=true,
+	// resolved per collection from each schema's terminal options).
+	const completedStorageKey = $derived(`pad-tag-completed-${wsSlug}`);
+	let showCompleted = $state(true);
+	$effect(() => {
+		if (!browser) return;
+		try {
+			showCompleted = localStorage.getItem(completedStorageKey) !== 'hide';
+		} catch {
+			showCompleted = true;
+		}
+	});
+	function setShowCompleted(show: boolean) {
+		showCompleted = show;
+		if (!browser) return;
+		try {
+			localStorage.setItem(completedStorageKey, show ? 'show' : 'hide');
+		} catch {
+			// Storage unavailable — keep the in-session choice only.
+		}
+	}
+
 	const scrollRestoration = createScrollRestoration({
 		ready: () => !loading,
 		persistKey: () => (wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null)
@@ -56,15 +82,16 @@
 	$effect(() => {
 		const ws = wsSlug;
 		const t = tag;
-		if (ws && t) loadTagged(ws, t);
+		const completed = showCompleted;
+		if (ws && t) loadTagged(ws, t, completed);
 	});
 
-	async function loadTagged(ws: string, t: string) {
+	async function loadTagged(ws: string, t: string, completed: boolean) {
 		loading = true;
 		const seq = ++loadSeq;
 		try {
 			const [items, colls] = await Promise.all([
-				api.items.list(ws, { tag: t }),
+				api.items.list(ws, completed ? { tag: t } : { tag: t, non_terminal: true }),
 				api.collections.list(ws)
 			]);
 			if (seq !== loadSeq) return;
@@ -140,26 +167,36 @@
 			<h1>{tag}</h1>
 			<span class="item-count">{fetchedItems.length} item{fetchedItems.length !== 1 ? 's' : ''}</span>
 		</div>
-		{#if fetchedItems.length > 0}
-			<div class="view-toggle" role="group" aria-label="View mode">
-				<button
-					type="button"
-					class="view-btn"
-					class:active={viewMode === 'list'}
-					onclick={() => setViewMode('list')}
-				>
-					List
-				</button>
-				<button
-					type="button"
-					class="view-btn"
-					class:active={viewMode === 'board'}
-					onclick={() => setViewMode('board')}
-				>
-					Board
-				</button>
-			</div>
-		{/if}
+		<div class="page-header-right">
+			<label class="completed-toggle">
+				<input
+					type="checkbox"
+					checked={showCompleted}
+					onchange={(e) => setShowCompleted(e.currentTarget.checked)}
+				/>
+				Show completed
+			</label>
+			{#if fetchedItems.length > 0}
+				<div class="view-toggle" role="group" aria-label="View mode">
+					<button
+						type="button"
+						class="view-btn"
+						class:active={viewMode === 'list'}
+						onclick={() => setViewMode('list')}
+					>
+						List
+					</button>
+					<button
+						type="button"
+						class="view-btn"
+						class:active={viewMode === 'board'}
+						onclick={() => setViewMode('board')}
+					>
+						Board
+					</button>
+				</div>
+			{/if}
+		</div>
 	</div>
 
 	{#if loading}
@@ -171,11 +208,19 @@
 			</div>
 		</div>
 	{:else if fetchedItems.length === 0}
-		<EmptyState
-			icon="🏷"
-			title={`No items tagged “${tag}”`}
-			message="Add this tag to an item from its detail page to group it here."
-		/>
+		{#if showCompleted}
+			<EmptyState
+				icon="🏷"
+				title={`No items tagged “${tag}”`}
+				message="Add this tag to an item from its detail page to group it here."
+			/>
+		{:else}
+			<EmptyState
+				icon="🏷"
+				title={`No open items tagged “${tag}”`}
+				message="Completed items are hidden. Turn on “Show completed” to see them."
+			/>
+		{/if}
 	{:else if viewMode === 'board'}
 		<!-- Board: one lane per collection (the shared axis). Read-only — no
 		     drag/status changes, since moving a card between collection lanes
@@ -267,6 +312,20 @@
 		color: var(--text-muted);
 	}
 
+	.page-header-right {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+	}
+	.completed-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		white-space: nowrap;
+		cursor: pointer;
+	}
 	.view-toggle {
 		display: inline-flex;
 		border: 1px solid var(--border);

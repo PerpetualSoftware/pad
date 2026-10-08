@@ -4332,12 +4332,15 @@
 					<p>This collection is empty.</p>
 				{/if}
 			</div>
-		{:else if filteredItems.length === 0 && (searchQuery || Object.keys(activeFilters).length > 0 || unparentedApplied)}
+		<!-- TASK-2211: keyed on hasActiveFilters, which counts the tag filter. A
+		     tag-only filter matching nothing used to fall through to the views'
+		     "create your first item" state on a full collection. -->
+		{:else if filteredItems.length === 0 && hasActiveFilters}
 			<div class="empty-state-box">
 				<div class="empty-icon">🔍</div>
 				<h2>No matches</h2>
 				<p>No items match your current filters.
-					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultRank = null; unparentedFilter = false; updateUrlFilters(); }}>Clear filters</button>
+					<button class="clear-link" onclick={() => { activeFilters = {}; selectedTags = []; searchQuery = ''; searchResultRank = null; unparentedFilter = false; updateUrlFilters(); }}>Clear filters</button>
 				</p>
 			</div>
 		{:else if viewMode === 'board'}
