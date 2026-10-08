@@ -305,6 +305,10 @@ const KNOWN_CONTINUATIONS: Record<string, string> = {
 		'fenced: authStore.identityEpoch compared with the epoch captured at archive time (TASK-2189)',
 	'lib/components/collections/EditCollectionModal.svelte::onAction::api.collections.restore.catch':
 		'fenced: authStore.identityEpoch compared with the epoch captured at archive time (TASK-2189)',
+	// TASK-2191: the unsaved-edit baseline, read a tick after the form is
+	// seeded. It copies the form's own state into a local; no request's data.
+	'lib/components/collections/EditCollectionModal.svelte::<callback of $effect>::tick.then':
+		'ui: draft baseline (TASK-2191), local state only',
 };
 
 
