@@ -190,7 +190,16 @@ jobs:
         # goroutine-dump panic, just up to 15m later. The real fix
         # (cheaper suite: shared fixtures / sharding) is tracked on
         # BUG-1913.
-        run: go test -race -timeout=45m ./...
+        #
+        # checkptr is OFF for modernc.org/... only (BUG-3483). -race turns on
+        # checkptr, which checks unsafe.Pointer arithmetic, and modernc's
+        # SQLite is C transpiled to Go that does such arithmetic in every VM
+        # step: measured at 27% of the server package's CPU under -race. Its
+        # findings would be about a third-party library's translated C, not
+        # our code. Race detection itself stays on everywhere, modernc
+        # included, and checkptr stays on for every other package.
+        # Measured: -25% on 267 serial server tests, -40% on a 40-test probe.
+        run: go test -race -gcflags='modernc.org/...=-d=checkptr=0' -timeout=45m ./...
 
       - name: Build binary
         run: go build -o pad ./cmd/pad
@@ -515,7 +524,8 @@ jobs:
         # BUG-1913: raised 30m → 45m alongside the SQLite step — the
         # suite's aggregate runtime crossed the old budget (this job
         # variant failed main at f235a04 with the same timeout panic).
-        run: go test -race -timeout=45m ./... -count=1
+        # checkptr off for modernc.org/... only: see the SQLite race step (BUG-3483).
+        run: go test -race -gcflags='modernc.org/...=-d=checkptr=0' -timeout=45m ./... -count=1
 
   web:
     name: Web

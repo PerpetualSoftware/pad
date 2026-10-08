@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // The enforcement population for the NUL invariant (DOC-2823 S2, Layer B).
@@ -468,7 +469,7 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 
 	// name -> the exact CREATE statement the list renders, so the check can
 	// compare DEFINITIONS.
-	want := renderedNULTriggers(applied)
+	want := renderedNULTriggersFor(applied)
 
 	// The SET, not the count (codex round 2). A database with the right NUMBER
 	// of triggers but a missing one and an extra one read as healthy, and
@@ -478,14 +479,6 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 	// character wildcard, so 'pad_nul_%' also matches names this code never
 	// generates — a loose pattern in a health check is a health check that can
 	// be satisfied by the wrong thing.
-	files := make([]string, 0, len(applied))
-	for _, name := range applied {
-		data, err := migrationsFS.ReadFile("migrations/" + name)
-		if err != nil {
-			return false, fmt.Errorf("read %s: %w", name, err)
-		}
-		files = append(files, string(data))
-	}
 
 	// TRANSACTION FIRST, THEN INSPECT (codex rounds 2 and 3).
 	//
@@ -532,6 +525,17 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 	}
 	if !missing {
 		return false, nil
+	}
+
+	// Read only on the path that restores (BUG-3483): every open used to read
+	// the files whether or not anything was missing.
+	files := make([]string, 0, len(applied))
+	for _, name := range applied {
+		data, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			return false, fmt.Errorf("read %s: %w", name, err)
+		}
+		files = append(files, string(data))
 	}
 
 	// Drop first, so a stale DEFINITION is actually replaced rather than
@@ -604,7 +608,7 @@ func readNULTriggers(q Queryer, prefix string, out map[string]string) error {
 		if err := rows.Scan(&n, &sqlText); err != nil {
 			return err
 		}
-		out[n] = normalizeTriggerSQL(sqlText.String)
+		out[n] = normalizeStoredTriggerSQL(sqlText.String)
 	}
 	return rows.Err()
 }
@@ -635,6 +639,64 @@ func nulTriggerPrefix(file string) string {
 // rather than names is what lets the restoration replace a stale trigger — a
 // same-name no-op body satisfies CREATE TRIGGER IF NOT EXISTS forever, so a
 // name check can never repair one (codex round 3).
+// renderedNULTriggersFor is renderedNULTriggers computed once per process for
+// each list of applied files (BUG-3483). The rendering is a constant of the
+// binary and that list, yet every store open rebuilt it, which under -race cost
+// about 0.15s per open and dominated a test suite that opens a store per test.
+// Keyed by the list, so a database with a different set of trigger files
+// applied gets its own rendering. The result is shared and must not be
+// modified. The CHECK is not cached: every open still reads sqlite_master and
+// compares against this.
+func renderedNULTriggersFor(files []string) map[string]string {
+	key := strings.Join(files, "\n")
+	renderedMu.Lock()
+	e, ok := renderedByFiles[key]
+	if !ok {
+		e = &renderedEntry{}
+		renderedByFiles[key] = e
+	}
+	renderedMu.Unlock()
+	e.once.Do(func() { e.m = renderedNULTriggers(files) })
+	return e.m
+}
+
+type renderedEntry struct {
+	once sync.Once
+	m    map[string]string
+}
+
+var (
+	renderedMu      sync.Mutex
+	renderedByFiles = map[string]*renderedEntry{}
+)
+
+// normalizeStoredTriggerSQL is normalizeTriggerSQL over a trigger's stored SQL,
+// memoized by the exact stored text (BUG-3483): a pure function of its input,
+// so a cached answer is the answer. Bounded, because the input comes from the
+// database; past the bound it computes without caching.
+func normalizeStoredTriggerSQL(raw string) string {
+	normalizedMu.Lock()
+	v, ok := normalizedByRaw[raw]
+	normalizedMu.Unlock()
+	if ok {
+		return v
+	}
+	v = normalizeTriggerSQL(raw)
+	normalizedMu.Lock()
+	if len(normalizedByRaw) < maxNormalizedTriggerMemo {
+		normalizedByRaw[raw] = v
+	}
+	normalizedMu.Unlock()
+	return v
+}
+
+const maxNormalizedTriggerMemo = 4096
+
+var (
+	normalizedMu    sync.Mutex
+	normalizedByRaw = map[string]string{}
+)
+
 func renderedNULTriggers(files []string) map[string]string {
 	out := map[string]string{}
 	var all strings.Builder
