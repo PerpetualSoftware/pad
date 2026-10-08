@@ -94,7 +94,7 @@ vi.mock('$lib/services/sync.svelte', () => ({
 // Delegates to the REACTIVE fake. A factory may not close over an import, so it
 // imports the module itself.
 vi.mock('$lib/stores/localIndex.svelte', () => ({
-	localIndex: { bootstrap: vi.fn(async () => {}), getAll: () => [], retagCollection: vi.fn() },
+	localIndex: { bootstrap: vi.fn(async () => {}), getAll: () => [], retagCollection: vi.fn(), bootstrapStateFor: () => 'cold' },
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
 	workspaceStore: { canEditItem: () => true, get isOwner() { return true; }, setCurrent: vi.fn(async () => {}) },
