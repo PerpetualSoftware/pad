@@ -208,6 +208,16 @@ func serveCmd() *cobra.Command {
 				)
 			}
 
+			// Give conventions and playbooks made before built-in origins were
+			// recorded the origin their exact title names (TASK-3462 U4), once
+			// per instance. Non-fatal: an unadopted item simply offers no
+			// update, which is how it behaved before.
+			if la, err := s.AdoptLegacyBuiltins(); err != nil {
+				slog.Warn("legacy built-in adoption failed; non-fatal", "error", err)
+			} else if !la.Skipped {
+				slog.Info("Legacy built-in adoption complete", "considered", la.Considered, "adopted", la.Adopted)
+			}
+
 			// Rewrite attachment names stored with Bidi_Control characters
 			// (BUG-3153), which display an extension the file does not have.
 			// Each rewrite is logged with its old name; the count is logged
