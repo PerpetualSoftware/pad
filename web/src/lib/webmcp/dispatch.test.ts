@@ -9,7 +9,7 @@ function mockApi() {
 		search: vi.fn(async () => ({ results: [] })),
 		items: {
 			list: vi.fn(async () => []),
-			listByCollection: vi.fn(async () => []),
+			listByCollection: vi.fn(async (_ws: string, _coll: string, _params?: Record<string, unknown>) => []),
 			get: vi.fn(async () => ({ id: 'uuid-target', ref: 'TASK-1' })),
 			backlinks: vi.fn(async () => []),
 			create: vi.fn(async () => ({ ref: 'TASK-9' })),
