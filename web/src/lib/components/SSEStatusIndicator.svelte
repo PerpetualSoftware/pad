@@ -20,6 +20,7 @@
 	const label = $derived(
 		{
 			connected: 'Live',
+			polling: 'Live (polling)',
 			reconnecting: 'Reconnecting…',
 			disconnected: 'Offline',
 			unauthorized: 'Disconnected'
@@ -29,6 +30,10 @@
 	const title = $derived(
 		{
 			connected: 'Real-time updates are live. The board reflects changes as they happen.',
+			// BUG-3320: over plain HTTP a browser has room for only a few live
+			// streams, so this tab checks for changes on a timer instead.
+			polling:
+				'Changes show within 15 seconds: other tabs hold the live connections this browser has room for over plain HTTP. Close some, or use HTTPS, for instant updates.',
 			reconnecting: 'Connection dropped. Trying to reconnect… The board may be out of date.',
 			disconnected: 'Not connected to the live update stream. The board may be out of date.',
 			unauthorized:
@@ -115,8 +120,12 @@
 	.sse-state-connected {
 		color: var(--text-muted);
 	}
-	.sse-state-connected .sse-state-dot {
+	.sse-state-connected .sse-state-dot,
+	.sse-state-polling .sse-state-dot {
 		background: var(--accent-green, #2e9e5b);
+	}
+	.sse-state-polling {
+		color: var(--text-muted);
 	}
 
 	.sse-state-reconnecting {
