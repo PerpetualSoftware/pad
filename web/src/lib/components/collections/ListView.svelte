@@ -98,6 +98,14 @@
 		 * page, so other surfaces keep full-page anchor navigation.
 		 */
 		onItemOpen?: (item: Item) => void;
+		/**
+		 * Reports the ids of the rows this view RENDERS, in on-screen order
+		 * (BUG-3492). The page's j/k step this list: re-deriving the order
+		 * there had the list rendered in sortMode order while j/k walked
+		 * `filteredItems` (updated order), so j landed on a row that was not
+		 * the one below.
+		 */
+		onOrderRendered?: (ids: string[]) => void;
 	}
 
 	let {
@@ -118,7 +126,8 @@
 		canEdit = true,
 		preserveOrder = false,
 		sortMode = 'manual',
-		onItemOpen
+		onItemOpen,
+		onOrderRendered
 	}: Props = $props();
 
 	let confirmArchiveGroup = $state<string | null>(null);
@@ -335,6 +344,24 @@
 			}
 		}
 		return result;
+	});
+
+	// The rows on screen, in order (BUG-3492): group order × each group's
+	// rendered rows, skipping collapsed groups and DnD shadow placeholders, so
+	// j/k never land on a row the user cannot see or a phantom mid-drag.
+	let renderedOrder = $derived(
+		groupItems
+			.filter((g: any) => !g[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+			.flatMap((g) =>
+				collapsedGroups.has(g.id)
+					? []
+					: (groupData[laneKey(g.id)] ?? [])
+							.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+							.map((i) => i.id)
+			)
+	);
+	$effect(() => {
+		onOrderRendered?.(renderedOrder);
 	});
 
 	/**

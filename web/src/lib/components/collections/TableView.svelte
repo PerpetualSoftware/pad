@@ -43,6 +43,14 @@
 		 */
 		onItemOpen?: (item: Item) => void;
 		/**
+		 * Reports the ids of the rows this view RENDERS, in on-screen order
+		 * (BUG-3492). The page's j/k step this list: re-deriving the order
+		 * there had the list rendered in sortMode order while j/k walked
+		 * `filteredItems` (updated order), so j landed on a row that was not
+		 * the one below.
+		 */
+		onOrderRendered?: (ids: string[]) => void;
+		/**
 		 * Highlights the row whose detail pane is open (PLAN-2105 / TASK-2112),
 		 * mirroring the focused-row marker List/Board already show. Null =
 		 * nothing highlighted.
@@ -63,6 +71,7 @@
 		preserveOrder = false,
 		sortMode = 'manual',
 		onItemOpen,
+		onOrderRendered,
 		focusedItemId = null
 	}: Props = $props();
 
@@ -146,6 +155,11 @@
 		});
 
 		return sorted;
+	});
+
+	// The rows on screen, in order, for the page's j/k (BUG-3492).
+	$effect(() => {
+		onOrderRendered?.(sortedItems.map((i) => i.id));
 	});
 
 	function toggleSort(key: string) {

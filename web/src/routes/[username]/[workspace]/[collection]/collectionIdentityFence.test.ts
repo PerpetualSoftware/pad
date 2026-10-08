@@ -294,6 +294,7 @@ describe('the collection page fences every async commit point', () => {
 			metaLoading: 'owned by loadCollection',
 			progressLabel: 'replaced by the reload',
 			boardColumns: 'derived from the item list the reload replaces',
+			listOrder: 'derived from the item list the reload replaces; the list or table view re-reports it (BUG-3492)',
 			defaultViewId: 're-read from localStorage on render',
 			// CORRECTED (codex round 1 [P3]): the previous justification said
 			// "reset by the load it gates", and `loadCollection` never resets it

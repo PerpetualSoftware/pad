@@ -66,6 +66,7 @@
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { hasForeignEscapeOwner, isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
+	import { listKeyNav } from '$lib/collections/listNav';
 	import { fieldMatches } from '$lib/fields/fieldShape';
 	import { characterKey } from '$lib/a11y/characterShortcuts.svelte';
 
@@ -2794,6 +2795,19 @@
 		boardColumns = cols;
 	}
 
+	// List / table render order, reported by the view that drew it
+	// (BUG-3492). j/k step THIS, as the board steps `boardColumns`: the views
+	// sort and group rows themselves (sortMode, a column sort, collapsed
+	// groups), so `filteredItems` order is not what is on screen. Stepping it
+	// sent j to the next row by UPDATE time, which after an edit to an old
+	// item is not the row below.
+	// Null until a view reports: `[]` is a real answer (every group collapsed,
+	// nothing on screen) and must not fall back to `filteredItems` (codex r1).
+	let listOrder = $state<string[] | null>(null);
+	function handleListOrderRendered(ids: string[]) {
+		listOrder = ids;
+	}
+
 	// Reset focus when items or filters change
 	$effect(() => {
 		filteredItems;
@@ -3043,6 +3057,22 @@
 		schedulePaneFollow();
 	}
 
+	// One j/k step in list/table, over the rows on screen (BUG-3492, listKeyNav).
+	function moveListFocus(step: 1 | -1) {
+		const order = listOrder ?? filteredItems.map((i) => i.id);
+		const focusedId =
+			focusedIndex >= 0 && focusedIndex < filteredItems.length
+				? filteredItems[focusedIndex].id
+				: null;
+		const nextId = listKeyNav(order, focusedId, step);
+		if (nextId == null) return;
+		const idx = filteredItems.findIndex((i) => i.id === nextId);
+		if (idx < 0) return;
+		focusedIndex = idx;
+		scrollFocusedIntoView();
+		schedulePaneFollow();
+	}
+
 	function handlePageKeydown(e: KeyboardEvent) {
 		const target = e.target as HTMLElement | null;
 
@@ -3231,23 +3261,19 @@
 			case 'ArrowDown':
 				e.preventDefault();
 				// Board: move down WITHIN the focused column (rendered order).
-				// List/table: step the flat list, exactly as before.
+				// List/table: step the rows on screen (BUG-3492).
 				if (viewMode === 'board') {
 					moveBoardFocus('down');
-				} else if (filteredItems.length > 0) {
-					focusedIndex = Math.min(focusedIndex + 1, filteredItems.length - 1);
-					scrollFocusedIntoView();
-					schedulePaneFollow();
+				} else {
+					moveListFocus(1);
 				}
 				break;
 			case 'ArrowUp':
 				e.preventDefault();
 				if (viewMode === 'board') {
 					moveBoardFocus('up');
-				} else if (filteredItems.length > 0) {
-					focusedIndex = Math.max(focusedIndex - 1, 0);
-					scrollFocusedIntoView();
-					schedulePaneFollow();
+				} else {
+					moveListFocus(-1);
 				}
 				break;
 			case 'ArrowLeft':
@@ -4364,6 +4390,7 @@
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
 				onItemOpen={openItemPane}
+				onOrderRendered={handleListOrderRendered}
 			/>
 		{:else}
 			<ListView
@@ -4385,6 +4412,7 @@
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
 				onItemOpen={openItemPane}
+				onOrderRendered={handleListOrderRendered}
 			/>
 		{/if}
 	{/if}
