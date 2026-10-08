@@ -6227,8 +6227,10 @@
 		</div>
 
 		<!-- Built-in update nudge (TASK-3462 U3b): a convention or playbook Pad
-		     ships whose library text is newer. Renders nothing otherwise. -->
-		{#if collection?.is_system}
+		     ships whose library text is newer. Renders nothing otherwise; the
+		     server's not_builtin answer decides, not the collection, because an
+		     origin survives a move and activation can target any collection of
+		     the right kind (codex r6). -->
 			<!-- Keyed by item: an item switch remounts it, so nothing from the
 			     previous item's preview survives into the next. -->
 			{#key item.id}
@@ -6247,7 +6249,6 @@
 			/>
 			{/key}
 			{/key}
-		{/if}
 
 		<!-- Attention signals (TASK-3118); renders nothing without a provider. -->
 		{#if visibility.seenVisible}
