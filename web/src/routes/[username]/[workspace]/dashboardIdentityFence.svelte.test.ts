@@ -290,31 +290,47 @@ describe('the dashboard stops a commit when the identity moves mid-flight', () =
 		await spin(() => shown('Synced board'), 'the sync reload never painted — the refusal leg above measures nothing');
 	});
 
-	it('a load that has lost its identity between its awaits issues no fetch', async () => {
-		// The check between `await setCurrent` and the board fetch. Held on the
-		// FIRST await; the identity moves; the continuation must not go on to
-		// request the board on the previous user's behalf.
+	it('the board fetch goes out with setCurrent, not after it (TASK-2229)', async () => {
+		// The open used to serialise: setCurrent's workspace + /me round trips,
+		// THEN the board. Held on setCurrent, the board request must already
+		// be out.
 		holdSetCurrent.on = true;
 		page.params = { username: 'dave', workspace: 'ws' };
 		page.url = new URL('http://localhost/dave/ws');
 		render(DashboardPage);
-		await spin(() => setCurrentCalls.length > 0, 'load() never awaited setCurrent');
+		await spin(() => setCurrentCalls.length > 0, 'load() never called setCurrent');
+		await spin(() => dashboardCalls.length > 0, 'the board fetch waited for setCurrent');
+	});
+
+	it('an identity that moves while setCurrent is held gets no commit', async () => {
+		// Every request went out at entry under the identity captured there;
+		// the commit is what the fence refuses once it has moved.
+		holdSetCurrent.on = true;
+		page.params = { username: 'dave', workspace: 'ws' };
+		page.url = new URL('http://localhost/dave/ws');
+		render(DashboardPage);
+		const call = await nextDashboardCall(0);
+		call.resolve(board('Previous user board'));
+		await tick();
 		flipIdentity();
 		setCurrentCalls[0]!();
 		await tick();
 		await tick();
 		await tick();
-		expect(dashboardCalls.length, 'the board was fetched on behalf of an identity that had already moved').toBe(0);
+		expect(shown('Previous user board'), 'the previous identity\'s board was painted for the new one').toBe(false);
 	});
 
-	it('CONTROL: with the identity unchanged the fetch follows setCurrent', async () => {
+	it('CONTROL: with the identity unchanged the board paints once setCurrent answers', async () => {
 		holdSetCurrent.on = true;
 		page.params = { username: 'dave', workspace: 'ws' };
 		page.url = new URL('http://localhost/dave/ws');
 		render(DashboardPage);
-		await spin(() => setCurrentCalls.length > 0, 'load() never awaited setCurrent');
+		const call = await nextDashboardCall(0);
+		call.resolve(board('Held board'));
+		await tick();
+		expect(shown('Held board'), 'the board painted before setCurrent answered, so the leg above proves nothing about the hold').toBe(false);
 		setCurrentCalls[0]!();
-		await spin(() => dashboardCalls.length > 0, 'the board fetch never followed setCurrent — the leg above measures nothing');
+		await spin(() => shown('Held board'), 'the board never painted after setCurrent answered');
 	});
 
 	it("a FAILED load after the identity moved shows no Retry state to the new user", async () => {

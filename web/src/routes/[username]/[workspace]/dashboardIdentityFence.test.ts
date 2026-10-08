@@ -162,6 +162,16 @@ describe('the dashboard fences every async commit point', () => {
 			// debounce; its body is only the load() call.
 			{ name: 'the live-onboarding reload', body: timerBody('setTimeout'), call: /\bload\(wsSlug, true\)/, allowedWrites: [] },
 			{ name: 'the sync-subscription callback', body: syncCallbackBody(), call: /\bload\(wsSlug, true\)/, allowedWrites: [] },
+			// TASK-2227: a hidden tab coming back with no live stream catches up.
+			{
+				name: 'the visibility catch-up',
+				body: (() => {
+					const at = CODE.indexOf('const onVisible = () => {');
+					return at < 0 ? '' : CODE.slice(at, CODE.indexOf('\n\t\t};', at));
+				})(),
+				call: /\bload\(wsSlug, true\)/,
+				allowedWrites: [],
+			},
 			{ name: 'the Retry button', body: attributeBody('onclick', '>Retry</Button>'), call: /\bload\(wsSlug\)/, allowedWrites: [] },
 			{
 				name: 'CreateCollectionModal oncreated',
@@ -291,16 +301,20 @@ describe('the dashboard fences every async commit point', () => {
 	});
 
 	it('a lost identity issues no requests on behalf of the previous user', () => {
-		// The check between the two awaits. `setCurrent` is awaited first; a
-		// load that has lost its identity there must not go on to fetch the
-		// board — the cookie is the new user's, the answer would be theirs, and
-		// the continuation must discard it anyway.
+		// Every request goes out at ENTRY, in one Promise.all with setCurrent
+		// (TASK-2229), before load's first await, so each carries the identity
+		// captured there. Nothing is issued after an await, which is where an
+		// identity could have moved: that is the rule the old check between the
+		// two awaits kept, held now by having no second await to check.
 		const body = loadBody();
-		const first = body.indexOf('await workspaceStore.setCurrent(');
-		const fetch = body.indexOf('api.dashboard.get(');
-		expect(first).toBeGreaterThan(-1);
-		expect(fetch).toBeGreaterThan(first);
-		expect(body.slice(first, fetch)).toMatch(/if \(!identityHeld\(epochAtEntry\)\) return;/);
+		const all = body.indexOf('await Promise.all([');
+		expect(all, 'load() no longer issues its requests together — re-point this guard').toBeGreaterThan(-1);
+		const firstAwait = body.search(/\bawait\b/);
+		expect(firstAwait, 'an await precedes the requests: one could be issued after the identity moved').toBe(all);
+		const list = body.slice(all, body.indexOf(']);', all));
+		for (const req of ['workspaceStore.setCurrent(', 'api.dashboard.get(', 'api.collections.list(']) {
+			expect(list, `${req} is not issued with the others at entry`).toContain(req);
+		}
 	});
 
 	it('the deferred timer delegates to load() and writes nothing itself', () => {

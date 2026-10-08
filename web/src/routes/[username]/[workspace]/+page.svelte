@@ -110,6 +110,12 @@
 	});
 	export const snapshot = scrollRestoration.snapshot;
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
+	// TASK-2227: a poll tick is wanted only for a visible tab without a live
+	// stream.
+	function pollTickWanted(): boolean {
+		if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+		return sseService.status !== 'connected';
+	}
 	let onboardingDismissed = $state(false);
 	// Whether the person expanded a capped list here (TASK-2210): per
 	// workspace, per browser, like `onboardingDismissed`.
@@ -376,8 +382,16 @@
 	let liveReloadTimer: ReturnType<typeof setTimeout> | undefined;
 
 	onMount(() => {
+		// The 30 s poll is the fallback for a board with no live stream
+		// (TASK-2227). It used to tick unconditionally: every open tab, hidden
+		// or not, refetched the server's heaviest aggregation twice a minute,
+		// even with SSE connected and syncService already reloading on real
+		// changes. It now skips a tick in a hidden tab and while the stream is
+		// live, and runs when it is reconnecting, refused, or polling under the
+		// HTTP/1.1 stream budget (BUG-3320). A hidden tab coming back with no
+		// live stream catches up once.
 		pollTimer = setInterval(() => {
-			if (wsSlug) load(wsSlug, true);
+			if (wsSlug && pollTickWanted()) load(wsSlug, true);
 		}, 30000);
 		// Dashboard always does a full reload on any sync signal since it's
 		// an aggregated view (counts, activity, suggestions change with any item update)
@@ -405,7 +419,16 @@
 				if (wsSlug && wsSlug === armedFor) load(wsSlug, true);
 			}, LIVE_ONBOARDING_RELOAD_MS);
 		});
-		return () => clearInterval(pollTimer);
+		const onVisible = () => {
+			if (document.visibilityState === 'visible' && wsSlug && sseService.status !== 'connected') {
+				load(wsSlug, true);
+			}
+		};
+		document.addEventListener('visibilitychange', onVisible);
+		return () => {
+			clearInterval(pollTimer);
+			document.removeEventListener('visibilitychange', onVisible);
+		};
 	});
 
 	onDestroy(() => {
@@ -432,12 +455,16 @@
 		const epochAtEntry = captureIdentity();
 		if (!silent) loading = true;
 		try {
-			await workspaceStore.setCurrent(slug);
-			// A load that has lost its identity issues no requests on its behalf:
-			// the cookie is the NEW user's, and the answer would be theirs, spent
-			// on a continuation that must discard it anyway.
-			if (!identityHeld(epochAtEntry)) return;
-			const [dash, colls] = await Promise.all([
+			// All three requests go out TOGETHER, at entry (TASK-2229). The board
+			// and the collection list authorise themselves server-side, so they
+			// never needed to wait for setCurrent's workspace + /me round trips,
+			// which used to serialise ~300-400 ms in front of them on an 80 ms
+			// RTT. Issued at entry, every request carries the identity the load
+			// started under, so a load still issues nothing on behalf of an
+			// identity it has lost (the rule the old check between the awaits
+			// kept); the commit below is fenced as before.
+			const [, dash, colls] = await Promise.all([
+				workspaceStore.setCurrent(slug),
 				api.dashboard.get(slug),
 				api.collections.list(slug)
 			]);
