@@ -14,7 +14,7 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			loadData: {
-				reviewed: '98c7eb8f1808',
+				reviewed: '1a49c520fffd',
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
 			activateConvention: {
@@ -29,9 +29,9 @@ identityGateSuite({
 		nested: [],
 		markup: [],
 		continuations: [
-			{ call: /'conventions'\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: '94433923f937' },
-			{ call: /'playbooks'\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: '94433923f937' },
-			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing', reviewed: 'f565f1c2aa46' },
+			{ call: /\(ws, convSlug\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: 'cb8bf2ca350f' },
+			{ call: /\(ws, pbSlug\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: 'cb8bf2ca350f' },
+			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing', reviewed: 'eb80d2613170' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activateConvention', count: 2, why: `activateConvention toast timer, one per arm: ${TIMER_WHY}`, reviewed: '14cf7fba65c1' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activatePlaybook', count: 2, why: `activatePlaybook toast timer, one per arm: ${TIMER_WHY}`, reviewed: 'e66e8d41273e' },
 		],
@@ -53,8 +53,8 @@ identityGateSuite({
 		{
 			cls: 2,
 			what: 'an async object method at component level',
-			old: '\tasync function loadData(ws: string) {\n',
-			new: '\tconst extra = { async run() { await Promise.resolve(); toast = null; } };\n\tasync function loadData(ws: string) {\n',
+			old: '\tasync function loadData(ws: string, convSlug: string = conventionsSlug, pbSlug: string = playbooksSlug) {\n',
+			new: '\tconst extra = { async run() { await Promise.resolve(); toast = null; } };\n\tasync function loadData(ws: string, convSlug: string = conventionsSlug, pbSlug: string = playbooksSlug) {\n',
 			names: 'nested async function',
 		},
 		{
