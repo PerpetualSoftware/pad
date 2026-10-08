@@ -35,6 +35,13 @@
 	let newlyCreatedLinkId = $state<string | null>(null);
 	let deletingLinkId = $state<string | null>(null);
 
+	// TASK-2193: revoking a grant or a share link used to be one click on a
+	// small ×, with no way back (a link's token is shown once, so a revoked
+	// link cannot be recreated identically). The × now asks first, in the
+	// row, naming what goes. In the row rather than a second modal, since
+	// this dialog is one.
+	let confirmRevoke = $state<{ kind: 'grant' | 'link'; id: string } | null>(null);
+
 	// Track previous open state to detect open transitions. This is a PLAIN
 	// variable (not $state) on purpose: it's only read/written inside the
 	// effect below for edge-detection. Making it $state turned the effect
@@ -49,6 +56,7 @@
 			permission = 'view';
 			shareError = '';
 			newlyCreatedLinkId = null;
+			confirmRevoke = null;
 			loadGrants();
 			loadShareLinks();
 		}
@@ -307,15 +315,31 @@
 									</div>
 									<div class="grant-actions">
 										<span class="permission-badge">{formatPermission(grant.permission)}</span>
-										<button
-											class="revoke-btn"
-											type="button"
-											title="Revoke access"
-											onclick={() => handleRevoke(grant.id)}
-											disabled={revokingId === grant.id}
-										>
-											{revokingId === grant.id ? '...' : '\u00D7'}
-										</button>
+										{#if confirmRevoke?.kind === 'grant' && confirmRevoke.id === grant.id}
+											<span class="revoke-confirm" role="group" aria-label="Confirm revoking access">
+												<span class="revoke-confirm-text">Revoke {grantDisplayName(grant)}&rsquo;s access?</span>
+												<button
+													class="revoke-confirm-yes"
+													type="button"
+													onclick={() => {
+														confirmRevoke = null;
+														void handleRevoke(grant.id);
+													}}>Revoke</button
+												>
+												<button class="revoke-confirm-no" type="button" onclick={() => (confirmRevoke = null)}>Cancel</button>
+											</span>
+										{:else}
+											<button
+												class="revoke-btn"
+												type="button"
+												title="Revoke access"
+												aria-label="Revoke {grantDisplayName(grant)}’s access"
+												onclick={() => (confirmRevoke = { kind: 'grant', id: grant.id })}
+												disabled={revokingId === grant.id}
+											>
+												{revokingId === grant.id ? '...' : '\u00D7'}
+											</button>
+										{/if}
 									</div>
 								</div>
 							{/each}
@@ -400,15 +424,31 @@
 											</div>
 										</div>
 									{/if}
-									<button
-										class="revoke-btn"
-										type="button"
-										title="Revoke share link"
-										onclick={() => handleDeleteShareLink(link.id)}
-										disabled={deletingLinkId === link.id}
-									>
-										{deletingLinkId === link.id ? '...' : '\u00D7'}
-									</button>
+									{#if confirmRevoke?.kind === 'link' && confirmRevoke.id === link.id}
+										<span class="revoke-confirm" role="group" aria-label="Confirm revoking the share link">
+											<span class="revoke-confirm-text">Revoke this link? Anyone using it loses access, and it can&rsquo;t be recreated.</span>
+											<button
+												class="revoke-confirm-yes"
+												type="button"
+												onclick={() => {
+													confirmRevoke = null;
+													void handleDeleteShareLink(link.id);
+												}}>Revoke</button
+											>
+											<button class="revoke-confirm-no" type="button" onclick={() => (confirmRevoke = null)}>Cancel</button>
+										</span>
+									{:else}
+										<button
+											class="revoke-btn"
+											type="button"
+											title="Revoke share link"
+											aria-label="Revoke share link"
+											onclick={() => (confirmRevoke = { kind: 'link', id: link.id })}
+											disabled={deletingLinkId === link.id}
+										>
+											{deletingLinkId === link.id ? '...' : '\u00D7'}
+										</button>
+									{/if}
 								</div>
 							{/each}
 						</div>
@@ -616,6 +656,32 @@
 		white-space: nowrap;
 	}
 
+	/* TASK-2193: the in-row revoke confirm. */
+	.revoke-confirm {
+		display: inline-flex;
+		align-items: center;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: var(--space-2);
+		font-size: 0.8rem;
+	}
+	.revoke-confirm-text {
+		color: var(--text-secondary);
+	}
+	.revoke-confirm-yes,
+	.revoke-confirm-no {
+		padding: 2px var(--space-2);
+		border-radius: var(--radius);
+		border: 1px solid var(--border);
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.revoke-confirm-yes {
+		border-color: var(--accent-red);
+		color: var(--accent-red);
+	}
 	.revoke-btn {
 		display: flex;
 		align-items: center;

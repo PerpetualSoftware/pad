@@ -7,6 +7,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { exportAndDownloadAccountData } from '$lib/utils/artifacts';
 	import Button from '$lib/components/common/Button.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import CharacterShortcutsToggle from '$lib/components/common/CharacterShortcutsToggle.svelte';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
 
@@ -75,6 +76,12 @@
 	let newTokenName = $state('');
 	let createdToken = $state<APITokenWithSecret | null>(null);
 	let tokenCreating = $state(false);
+	// TASK-2193: deleting a token used to fire on the first click and swallow
+	// failures. It now asks first, naming the token, and says when it fails.
+	let tokenToDelete = $state<APIToken | null>(null);
+	let tokenDeleting = $state(false);
+	let tokenDeleteError = $state('');
+	let tokenCopied = $state(false);
 	let tokenError = $state('');
 
 	// Danger Zone — export my data (TASK-1961)
@@ -395,6 +402,7 @@
 		try {
 			const token = await api.auth.tokens.create(newTokenName.trim());
 			createdToken = token;
+			tokenCopied = false;
 			tokens = [...tokens, token];
 			newTokenName = '';
 		} catch (err) {
@@ -408,13 +416,42 @@
 		}
 	}
 
-	async function deleteToken(tokenId: string) {
+	function askDeleteToken(token: APIToken) {
+		tokenDeleteError = '';
+		tokenToDelete = token;
+	}
+
+	function closeDeleteToken() {
+		if (tokenDeleting) return;
+		tokenToDelete = null;
+		tokenDeleteError = '';
+	}
+
+	async function deleteToken() {
+		const target = tokenToDelete;
+		if (!target || tokenDeleting) return;
+		tokenDeleting = true;
+		tokenDeleteError = '';
+		// IDENTITY fence (BUG-3105, codex r1): an answer that lands after a
+		// sign-in change must not edit the next identity's token list.
+		const isSameIdentity = authStore.identityFence();
 		try {
-			await api.auth.tokens.delete(tokenId);
-			tokens = tokens.filter((t) => t.id !== tokenId);
-		} catch {
-			// Silent failure acceptable for delete
+			await api.auth.tokens.delete(target.id);
+			if (!isSameIdentity()) return;
+			tokens = tokens.filter((t) => t.id !== target.id);
+			tokenToDelete = null;
+		} catch (err) {
+			if (!isSameIdentity()) return;
+			tokenDeleteError = err instanceof Error ? err.message : 'Failed to delete the token.';
+		} finally {
+			tokenDeleting = false;
 		}
+	}
+
+	async function copyCreatedToken() {
+		if (!createdToken) return;
+		tokenCopied = await copyToClipboard(createdToken.token);
+		if (!tokenCopied) toastStore.show('Could not copy. Select the token and copy it by hand.', 'error');
 	}
 
 	// Export the current user's account data as a single JSON download
@@ -852,7 +889,12 @@
 				{#if createdToken}
 					<div class="token-created">
 						<p class="token-warning">Copy this token now. It will not be shown again.</p>
-						<code class="token-value">{createdToken.token}</code>
+						<div class="token-value-row">
+							<code class="token-value">{createdToken.token}</code>
+							<Button variant="secondary" size="sm" onclick={copyCreatedToken}>
+								{tokenCopied ? 'Copied' : 'Copy'}
+							</Button>
+						</div>
 					</div>
 				{/if}
 
@@ -885,7 +927,7 @@
 										{/if}
 									</span>
 								</div>
-								<Button variant="danger" size="sm" onclick={() => deleteToken(token.id)}>Delete</Button>
+								<Button variant="danger" size="sm" onclick={() => askDeleteToken(token)}>Delete</Button>
 							</div>
 						{/each}
 					</div>
@@ -1024,6 +1066,35 @@
 		</section>
 	{/if}
 </div>
+
+<Modal
+	open={!!tokenToDelete}
+	onclose={closeDeleteToken}
+	labelledby="delete-token-title"
+	maxWidth="420px"
+	placement="center"
+	--modal-bg="var(--bg-primary)"
+	--modal-radius="var(--radius)"
+	--modal-shadow="0 20px 60px rgba(0, 0, 0, 0.3)"
+>
+	{#if tokenToDelete}
+		<div class="delete-token-modal">
+			<h3 id="delete-token-title" class="modal-title">Delete the token “{tokenToDelete.name}”?</h3>
+			<p class="modal-body">
+				Anything using it (an agent, a script, an MCP connection) loses access immediately. This can&rsquo;t be undone.
+			</p>
+			{#if tokenDeleteError}
+				<p class="modal-error" role="alert">{tokenDeleteError}</p>
+			{/if}
+			<div class="modal-actions">
+				<Button variant="secondary" onclick={closeDeleteToken} disabled={tokenDeleting}>Cancel</Button>
+				<Button variant="danger" onclick={deleteToken} disabled={tokenDeleting}>
+					{tokenDeleting ? 'Deleting…' : 'Delete token'}
+				</Button>
+			</div>
+		</div>
+	{/if}
+</Modal>
 
 <style>
 	.settings-page {
@@ -1202,12 +1273,56 @@
 		margin-bottom: var(--space-2);
 	}
 
+	.token-value-row {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-2);
+	}
 	.token-value {
 		display: block;
+		flex: 1;
+		min-width: 0;
 		font-family: var(--font-mono);
 		font-size: 0.8rem;
 		color: var(--text-primary);
 		word-break: break-all;
+		/* One click selects the whole token (TASK-2193). */
+		user-select: all;
+	}
+
+	/* Token delete confirm (TASK-2193), the connected-apps revoke modal's look. */
+	.delete-token-modal {
+		padding: var(--space-5);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.modal-title {
+		margin: 0;
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--text-primary);
+		overflow-wrap: anywhere;
+	}
+	.modal-body {
+		margin: 0;
+		font-size: 0.9rem;
+		color: var(--text-secondary);
+	}
+	.modal-error {
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--accent-red);
+		padding: var(--space-2) var(--space-3);
+		background: rgba(239, 68, 68, 0.08);
+		border: 1px solid rgba(239, 68, 68, 0.3);
+		border-radius: var(--radius);
+	}
+	.modal-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--space-2);
+		margin-top: var(--space-2);
 	}
 
 	.token-create-row {
