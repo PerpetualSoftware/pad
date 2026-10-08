@@ -101,6 +101,22 @@ describe('TASK-2191: the Edit Collection dialog keeps edits', () => {
 		expect(onclose).not.toHaveBeenCalled();
 	});
 
+	it('closing while a save is in flight does not ask: the save owns the edits', async () => {
+		let finish: (v: unknown) => void = () => {};
+		updateMock.mockImplementation(() => new Promise((r) => (finish = r)));
+		await open();
+		rename('Pipeline');
+		await settle();
+		[...document.querySelectorAll<HTMLButtonElement>('button')].find((b) => /^\s*save changes/i.test(b.textContent ?? ''))!.click();
+		await settle();
+		const ask = vi.spyOn(window, 'confirm');
+		cancel();
+		expect(ask).not.toHaveBeenCalled();
+		expect(onclose).toHaveBeenCalledTimes(1);
+		finish({ ...collection });
+		await settle();
+	});
+
 	it('after a successful save, closing does not ask', async () => {
 		await open();
 		rename('Pipeline');

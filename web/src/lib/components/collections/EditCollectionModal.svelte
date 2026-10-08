@@ -406,7 +406,8 @@
 	const editDirty = $derived(editSeedKey !== null && editKey !== editSeedKey);
 
 	function requestClose() {
-		if (editDirty && !confirm('Discard your changes to this collection?')) return;
+		// A save in flight owns the edits: closing then is not a discard.
+		if (editDirty && !saving && !confirm('Discard your changes to this collection?')) return;
 		onclose();
 	}
 

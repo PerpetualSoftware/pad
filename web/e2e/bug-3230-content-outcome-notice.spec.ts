@@ -79,7 +79,7 @@ test.describe('a body saved into an open tab\'s live document says so (BUG-3230 
 		const editor = await openTab(browser, fixture, request, pb.ref, pb.id);
 
 		await page.locator('textarea').first().fill('Body typed in the playbook editor.');
-		await page.getByRole('button', { name: /^Save/ }).click();
+		await page.getByRole('button', { name: /^Save$/ }).click();
 		await expect(page.getByText(/^Playbook saved\. The item is open in another tab/)).toBeVisible({ timeout: 10_000 });
 		await expect(editor).toContainText('Body typed in the playbook editor.');
 	});

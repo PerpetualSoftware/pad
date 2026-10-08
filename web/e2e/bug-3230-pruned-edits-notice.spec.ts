@@ -81,7 +81,7 @@ test.describe('an overwrite that deletes another tab\'s edits says so (BUG-3230 
 		await strandEdit(browser, fixture, request, pb.ref, pb.id);
 
 		await page.locator('textarea').first().fill('Replacement playbook body.');
-		await page.getByRole('button', { name: /^Save/ }).click();
+		await page.getByRole('button', { name: /^Save$/ }).click();
 		const dialog = page.getByRole('dialog', { name: 'Unsaved edits in an open tab' });
 		await expect(dialog).toBeVisible({ timeout: 10_000 });
 		await dialog.getByRole('button', { name: 'Overwrite them' }).click();

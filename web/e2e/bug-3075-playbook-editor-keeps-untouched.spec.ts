@@ -77,7 +77,7 @@ test.describe('the playbook editor keeps a field the user did not touch (BUG-307
 			await expect(page.locator('.stored-mismatch')).toContainText('Status is stored as 5');
 
 			await page.locator('.title-input').fill('Numbered, renamed');
-			await page.getByRole('button', { name: /^Save/ }).click();
+			await page.getByRole('button', { name: /^Save$/ }).click();
 			await expect.poll(async () => (await stored(fixture, request, ws, id)).title).toBe('Numbered, renamed');
 			// The untouched status is still the stored number, not the form's default.
 			expect((await stored(fixture, request, ws, id)).status).toBe(5);

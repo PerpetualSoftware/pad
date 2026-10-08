@@ -241,7 +241,8 @@
 	const draftDirty = $derived(step === 'editor' && seedKey !== null && draftKey !== seedKey);
 
 	function confirmDiscard(): boolean {
-		return !draftDirty || confirm('Discard this new collection? What you entered will be lost.');
+		// A create in flight owns the draft: closing then is not a discard.
+		return !draftDirty || creating || confirm('Discard this new collection? What you entered will be lost.');
 	}
 
 	function requestClose() {

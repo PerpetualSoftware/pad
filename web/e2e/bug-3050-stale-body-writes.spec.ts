@@ -65,7 +65,8 @@ test.describe('stale body writes (BUG-3050 U1)', () => {
 		const editor = await tabTyping(page, fixture, pb.ref, marker);
 
 		await b.locator('.title-input').fill(`Stale PB ${stamp} renamed`);
-		await b.getByRole('button', { name: /^Save/ }).click();
+		// TASK-2191: Save stays on the page; Save and close goes back to the list.
+		await b.getByRole('button', { name: /^Save and close$/ }).click();
 		await expect(b).toHaveURL(/\/playbooks$/);
 		// The save landed (the title), and the tab's text is still there.
 		await expect(page.locator('body')).toContainText(`Stale PB ${stamp} renamed`, { timeout: 10_000 });
@@ -84,7 +85,7 @@ test.describe('stale body writes (BUG-3050 U1)', () => {
 		const editor = await tabTyping(page, fixture, pb.ref, marker);
 
 		await b.locator('textarea').first().fill('A body typed in the playbook editor.');
-		await b.getByRole('button', { name: /^Save/ }).click();
+		await b.getByRole('button', { name: /^Save$/ }).click();
 		// Refused one way or another: the pending-edits choice (tab edits not
 		// stored yet), or a plain conflict (they flushed first, so the token no
 		// longer matches). Never a silent replace.
