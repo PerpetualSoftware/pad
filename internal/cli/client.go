@@ -856,8 +856,17 @@ func (c *Client) ServerSupportsLibraryActivate() bool {
 // them with a bare 404 that reads exactly like "not made from a built-in", so
 // an indeterminate probe answers false and the caller refuses.
 func (c *Client) ServerSupportsBuiltinUpdate() bool {
+	supported, definitive := c.BuiltinUpdateSupport()
+	return definitive && supported
+}
+
+// BuiltinUpdateSupport is ServerSupportsBuiltinUpdate with the probe's
+// certainty kept apart (codex r1): definitive false means the capabilities
+// probe failed, which is not the same as an older server and must not be
+// reported as one.
+func (c *Client) BuiltinUpdateSupport() (supported, definitive bool) {
 	caps, definitive := c.serverCapabilities()
-	return definitive && caps.BuiltinUpdate
+	return caps.BuiltinUpdate, definitive
 }
 
 // BuiltinText is a built-in's text: the body and the fields an update writes.

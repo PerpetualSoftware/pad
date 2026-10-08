@@ -532,7 +532,11 @@ func builtinOfferHeadline(st *cli.BuiltinState) string {
 // not_builtin), then reads the item's state, turning not_builtin into a
 // sentence.
 func readBuiltinState(client *cli.Client, ws, ref string) (*cli.BuiltinState, error) {
-	if !client.ServerSupportsBuiltinUpdate() {
+	supported, definitive := client.BuiltinUpdateSupport()
+	if !definitive {
+		return nil, fmt.Errorf("could not tell whether this server serves built-in updates: its capabilities could not be read; nothing was sent, try again")
+	}
+	if !supported {
 		return nil, fmt.Errorf("this server is older than this CLI: it does not serve built-in updates (TASK-3462); upgrade the server")
 	}
 	st, err := client.GetItemBuiltin(ws, ref)
@@ -567,6 +571,18 @@ Examples:
 			if err != nil {
 				return err
 			}
+			if st.Library != nil && st.Current == nil {
+				// A server that does not send it: read the item itself, for
+				// the JSON shape too (codex r1). status is never part of it.
+				item, err := client.GetItem(ws, ref)
+				if err != nil {
+					return err
+				}
+				fields := map[string]any{}
+				_ = json.Unmarshal([]byte(item.Fields), &fields)
+				delete(fields, "status")
+				st.Current = &cli.BuiltinText{Content: item.Content, Fields: fields}
+			}
 			if formatFlag == "json" {
 				return cli.PrintJSON(st)
 			}
@@ -575,16 +591,6 @@ Examples:
 				return nil
 			}
 			current := st.Current
-			if current == nil {
-				// A server that does not send it: read the item itself.
-				item, err := client.GetItem(ws, ref)
-				if err != nil {
-					return err
-				}
-				fields := map[string]any{}
-				_ = json.Unmarshal([]byte(item.Fields), &fields)
-				current = &cli.BuiltinText{Content: item.Content, Fields: fields}
-			}
 			section := func(title, oldText, newText string) {
 				fmt.Printf("\n== %s ==\n", title)
 				if d := cli.FormatLineDiff(oldText, newText, 3); d != "" {
@@ -646,10 +652,16 @@ Examples:
 			if err != nil {
 				return err
 			}
-			switch st.State {
-			case "current":
+			noop := func() error {
+				if formatFlag == "json" {
+					return cli.PrintJSON(map[string]any{"ref": ref, "key": st.Key, "state": "current", "updated": false})
+				}
 				fmt.Printf("%s already has Pad's current text; nothing to update.\n", ref)
 				return nil
+			}
+			switch st.State {
+			case "current":
+				return noop()
 			case "unknown_entry":
 				return fmt.Errorf("%s", builtinOfferHeadline(st))
 			}
@@ -658,16 +670,21 @@ Examples:
 				if apiErr, ok := err.(*cli.APIError); ok {
 					switch apiErr.Code {
 					case "content_pending_flush":
-						return fmt.Errorf("%s has edits an open editor has not saved yet; nothing was changed. Re-run with --overwrite-pending-edits to replace them too (they are not kept)", ref)
+						// The shared rendering names set-aside rows apart from an
+						// open editor's (codex r1).
+						cli.WriteContentPendingFlushError(os.Stderr, apiErr)
+						return fmt.Errorf("%s was not updated: it holds edits that are not in its stored text (see above); --overwrite-pending-edits replaces them, and they are not kept", ref)
 					case "update_conflict":
 						return fmt.Errorf("%s changed while this ran; nothing was changed. Review it again with \"pad library diff %s\"", ref, ref)
 					case "builtin_up_to_date":
-						fmt.Printf("%s already has Pad's current text; nothing to update.\n", ref)
-						return nil
+						return noop()
 					}
 				}
 				return err
 			}
+			// The write's own warnings, as on any content write (codex r1).
+			warnContentPendingFlush(item)
+			warnPrunedPendingEdits(item)
 			if formatFlag == "json" {
 				return cli.PrintJSON(item)
 			}
@@ -675,6 +692,6 @@ Examples:
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&overwrite, "overwrite-pending-edits", false, "Also replace edits an open editor has not saved yet (they are not kept)")
+	cmd.Flags().BoolVar(&overwrite, "overwrite-pending-edits", false, "Also replace edits that are not in the item's stored text (unsaved typing, or edits set aside by an editor upgrade); they are not kept")
 	return cmd
 }

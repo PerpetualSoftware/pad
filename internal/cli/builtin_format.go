@@ -17,6 +17,9 @@ func FormatLineDiff(oldText, newText string, context int) string {
 	if oldText == newText {
 		return ""
 	}
+	// A change to the final newline alone renders as two identical-looking
+	// lines, so it is named (codex r1), as diff does.
+	oldNL, newNL := strings.HasSuffix(oldText, "\n"), strings.HasSuffix(newText, "\n")
 	dmp := diffmatchpatch.New()
 	a, b, lines := dmp.DiffLinesToChars(oldText, newText)
 	diffs := dmp.DiffCharsToLines(dmp.DiffMain(a, b, false), lines)
@@ -64,6 +67,13 @@ func FormatLineDiff(oldText, newText string, context int) string {
 		}
 		out.WriteString(l.text)
 		out.WriteString("\n")
+	}
+	if oldNL != newNL {
+		side := "new"
+		if !oldNL {
+			side = "old"
+		}
+		out.WriteString("\\ No newline at end of file (" + side + ")\n")
 	}
 	return out.String()
 }
