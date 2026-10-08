@@ -13,6 +13,27 @@
 # were removed when the nixpkgs input was updated to a revision shipping
 # go 1.26.7 (BUG-2085). vulnscan.sh fails on any of them reappearing.
 #
+# ── Go stdlib: 12, until nixpkgs ships go 1.26.9 (2026-10-08) ───────────
+# Published 2026-10-08, fixed in go1.26.9. The release binaries and images
+# build with go1.26.9 (go.mod toolchain line), so they are clean; only this
+# Nix artifact lags, because nixos-26.05 still ships go 1.26.8. The bump is
+# NixOS/nixpkgs#571801 (merged to master) and its staging-26.05 backport
+# #571809 (open). Remove this whole block when the nixpkgs input is updated
+# to a revision with go 1.26.9; vulnscan.sh then fails if any reappears.
+# rc.9 reachability for each is in PR #1922's description.
+GO-2026-6599  html/template context reset (go1.26.9)
+GO-2026-6600  html/template yield preceder (go1.26.9)
+GO-2026-6603  net/http HTTP/2 Trailer memory (go1.26.9)
+GO-2026-6605  net/http client CONNECT desync (go1.26.9)
+GO-2026-6607  crypto/tls ECH extension refs (go1.26.9)
+GO-2026-6608  mime/multipart header limit bypass (go1.26.9)
+GO-2026-6609  net/http Range header limit (go1.26.9)
+GO-2026-6610  net/http HTTP/2 transport framing (go1.26.9)
+GO-2026-6611  net/http HTTP/2 window changes (go1.26.9)
+GO-2026-6612  net/http HTTP/2 flow-control refund (go1.26.9)
+GO-2026-6613  net/http server CONNECT desync (go1.26.9)
+GO-2026-6617  net/http HTTP/2 HPACK race (go1.26.9)
+#
 # ── Precision artifacts of the stripped binary (1) ───────────────────────
 # nix/package.nix builds with ldflags "-s -w", which strips the symbols
 # govulncheck needs to prune its call graph, so on this artifact it
