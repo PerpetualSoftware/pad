@@ -25,6 +25,9 @@ func makeLegacy(t *testing.T, srv *Server, wsID string) {
 	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`UPDATE items SET created_at = '2020-01-01T00:00:00Z' WHERE workspace_id = ?`), wsID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`UPDATE workspaces SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?`), wsID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestTASK3462U4_LegacyAdoption(t *testing.T) {
@@ -167,6 +170,56 @@ func TestTASK3462U4_SameSecondAsTheMigrationIsLegacy(t *testing.T) {
 		}
 		if res.Adopted == 0 {
 			t.Fatalf("items created in the migration's second were not adopted: %+v", res)
+		}
+	})
+}
+
+// codex r2 (High): workspace import keeps each item's created_at from the
+// bundle, so an old bundle imported after the origin migration but before the
+// pass first ran would look pre-cutoff. Every import mints a NEW workspace
+// (none writes into an existing one), so the workspace's own created_at is
+// the arrival bound.
+func TestTASK3462U4_ImportedAfterTheCutoffIsNotLegacy(t *testing.T) {
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		slug, wsID := task3462Workspace(t, srv, "Import src 3462", "startup")
+		makeLegacy(t, srv, wsID)
+		data, err := srv.store.ExportWorkspace(slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range data.Items {
+			data.Items[i].BuiltinOrigin = nil
+		}
+		ws, err := srv.store.ImportWorkspace(data, "import-dst-3462", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Pinned after the migration: in a test the two can share a second.
+		if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`UPDATE workspaces SET created_at = '2999-01-01T00:00:00Z' WHERE id = ?`), ws.ID); err != nil {
+			t.Fatal(err)
+		}
+		var oldItems int
+		if err := srv.store.DB().QueryRow(srv.store.D().Rebind(`SELECT COUNT(*) FROM items WHERE workspace_id = ? AND created_at = '2020-01-01T00:00:00Z'`), ws.ID).Scan(&oldItems); err != nil {
+			t.Fatal(err)
+		}
+		if oldItems == 0 {
+			t.Fatal("precondition: the import did not keep the bundle's item timestamps")
+		}
+		res, err := srv.store.AdoptLegacyBuiltins()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The legacy source is adopted (it shows the pass ran and matched
+		// these very titles); the import is not.
+		if res.Adopted == 0 {
+			t.Fatalf("precondition: the legacy source was not adopted: %+v", res)
+		}
+		var adopted int
+		if err := srv.store.DB().QueryRow(srv.store.D().Rebind(`SELECT COUNT(*) FROM item_builtin_origin o JOIN items i ON i.id = o.item_id WHERE i.workspace_id = ?`), ws.ID).Scan(&adopted); err != nil {
+			t.Fatal(err)
+		}
+		if adopted != 0 {
+			t.Fatalf("%d items imported after the cutoff were adopted", adopted)
 		}
 	})
 }

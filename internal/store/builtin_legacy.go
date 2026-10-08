@@ -30,7 +30,8 @@ type LegacyBuiltinAdoption struct {
 // ruling: no historical hashes).
 //
 // ONCE per instance, recorded in platform_settings, and only for items created
-// before the origin migration was applied. After that, an item with no origin
+// before the origin migration was applied, in a workspace that also predates
+// it (an import keeps its items' old timestamps). After that, an item with no origin
 // is one that deliberately has none (a copy, an import of an older bundle, a
 // hand-made item with a library title), and adopting it by title would offer
 // it someone else's text.
@@ -106,8 +107,9 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 			args = append(args, id)
 		}
 		rows, err := s.db.Query(s.q(`
-			SELECT i.id, i.title, i.content, i.fields, i.collection_id, i.created_at
+			SELECT i.id, i.title, i.content, i.fields, i.collection_id, i.created_at, w.created_at
 			FROM items i
+			JOIN workspaces w ON w.id = i.workspace_id
 			LEFT JOIN item_builtin_origin o ON o.item_id = i.id
 			WHERE o.item_id IS NULL AND i.deleted_at IS NULL
 			  AND i.collection_id IN (`+strings.Join(ph, ",")+`)
@@ -117,8 +119,8 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 		}
 		for rows.Next() {
 			var c candidate
-			var createdAt string
-			if err := rows.Scan(&c.id, &c.title, &c.content, &c.fields, &c.collectionID, &createdAt); err != nil {
+			var createdAt, wsCreatedAt string
+			if err := rows.Scan(&c.id, &c.title, &c.content, &c.fields, &c.collectionID, &createdAt, &wsCreatedAt); err != nil {
 				rows.Close()
 				return res, fmt.Errorf("scan item: %w", err)
 			}
@@ -130,6 +132,17 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 			// one that does not parse is left alone.
 			created, err := time.Parse(time.RFC3339, createdAt)
 			if err != nil || created.After(cutoff) {
+				continue
+			}
+			// The WORKSPACE must predate the cutoff too (codex r2): import
+			// keeps each item's created_at from the bundle, so an old bundle
+			// imported after the migration but before this pass first ran
+			// would read as legacy. Every import door (workspace import,
+			// bundle import, db migrate-to-pg) mints a new workspace, and none
+			// writes into an existing one, so the workspace's created_at is
+			// when its items arrived.
+			wsCreated, err := time.Parse(time.RFC3339, wsCreatedAt)
+			if err != nil || wsCreated.After(cutoff) {
 				continue
 			}
 			cands = append(cands, c)
