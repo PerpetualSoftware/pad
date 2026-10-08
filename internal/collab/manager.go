@@ -458,15 +458,15 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 					"min_id", minID,
 					"has_min", hasMin,
 				)
-				// Counted BEFORE the frame goes out, so a client that has read
-				// the frame can rely on the count (TASK-3501).
+				_ = sendForceRefreshFrame(conn)
+				itemLock.Unlock()
+				// Reported after the unlock: observer callbacks never run under
+				// itemLock (TASK-3501).
 				if hasMin {
 					m.reportResumeForceRefreshed(ResumeRefreshBehindMin)
 				} else {
 					m.reportResumeForceRefreshed(ResumeRefreshPruned)
 				}
-				_ = sendForceRefreshFrame(conn)
-				itemLock.Unlock()
 				return ErrForceRefreshSent
 			}
 		}
@@ -518,14 +518,14 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 					"content_seq", contentSeq,
 					"last_restore_seq", lastRestoreSeq,
 				)
+				_ = sendForceRefreshFrame(conn)
+				itemLock.Unlock()
 				// Only a RESUME is counted here: the measurement is about tabs
 				// coming back, and a since=0 tab is a fresh seed (TASK-3501).
-				// Before the frame, as above.
+				// After the unlock, as above.
 				if since > 0 {
 					m.reportResumeForceRefreshed(ResumeRefreshRestored)
 				}
-				_ = sendForceRefreshFrame(conn)
-				itemLock.Unlock()
 				return ErrForceRefreshSent
 			}
 		}

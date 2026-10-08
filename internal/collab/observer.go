@@ -21,6 +21,11 @@ import "sync"
 // A force_refresh on a resume is an UPPER BOUND on hand-backs
 // (OfflineRecoveryNotice): the client shows one only when it also held unsent
 // edits, which the server cannot see.
+//
+// CALLBACKS RUN ON THE JOIN GOROUTINE, outside every manager lock, but before
+// Join returns: a slow callback delays that connection's teardown, and one
+// that calls Join itself is not supported. The metrics adapter only
+// increments counters.
 type Observer interface {
 	// ResumeJoined counts one Join with a cursor (since > 0), once per Join
 	// whatever its outcome.

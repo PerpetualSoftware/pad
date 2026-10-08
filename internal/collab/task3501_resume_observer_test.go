@@ -123,6 +123,12 @@ func TestTASK3501_ResumeCounts(t *testing.T) {
 				}
 			}
 
+			// Reports fire after the frame, outside the lock, before Join
+			// returns. Closing the client ends an admitted Join, and
+			// mgr.Close waits for every in-flight Join, so this reads the
+			// counts after the reports, for every outcome.
+			c.Close()
+			mgr.Close()
 			resumes, refreshes := obs.snapshot()
 			if resumes != tc.wantResumes {
 				t.Errorf("resumes = %d, want %d", resumes, tc.wantResumes)

@@ -48,6 +48,11 @@ func TestTheCollabRoomManagerReportsToMetrics(t *testing.T) {
 		t.Fatalf("want a force_refresh frame, got %q (err %v)", msg, err)
 	}
 
+	// The refusal is reported after the frame, before Join returns; Close
+	// waits for in-flight Joins, so the counts below are final.
+	c.Close()
+	rm.Close()
+
 	if got := gatheredCounter(t, m, "pad_collab_resumes_total", ""); got != 1 {
 		t.Errorf("pad_collab_resumes_total = %v, want 1", got)
 	}
