@@ -184,6 +184,12 @@ export function renderArgumentsSection(args: PlaybookArgument[]): string {
  * those left, so a rename re-renders its own bullet rather than moving.
  */
 export function updateArgumentsInBody(body: string, args: PlaybookArgument[]): string {
+	// A body saved with CRLF (codex r1): a bullet's trailing \r hid it from the
+	// parser, so its slot was missed and an edit left the old bullet beside
+	// the new one. Edit it as LF and give the CRLF back.
+	if (body.includes('\r\n')) {
+		return updateArgumentsInBody(body.replace(/\r\n/g, '\n'), args).replace(/\n/g, '\r\n');
+	}
 	const split = splitAroundArguments(body);
 	if (!split) {
 		const newSection = renderArgumentsSection(args).replace(/\n+$/, '\n');
@@ -350,7 +356,7 @@ export function parseArgumentsSection(body: string): PlaybookArgument[] {
 	const split = splitAroundArguments(body);
 	if (!split) return [];
 	// Strip the heading line itself.
-	const lines = split.section.split('\n');
+	const lines = split.section.split(/\r?\n/);
 	const out: PlaybookArgument[] = [];
 	for (const line of lines) {
 		const arg = parseArgumentLine(line);

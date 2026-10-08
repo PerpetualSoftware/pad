@@ -87,6 +87,16 @@ describe('updateArgumentsInBody keeps what it did not change', () => {
 		expect(updateArgumentsInBody(BODY, [])).not.toContain('No arguments');
 	});
 
+	it('a CRLF body is edited in place and keeps CRLF (codex r1)', () => {
+		const crlf = BODY.replace(/\n/g, '\r\n');
+		expect(args(crlf).map((a) => a.name)).toEqual(['target', 'dry-run']);
+		expect(updateArgumentsInBody(crlf, args(crlf))).toBe(crlf);
+		const out = updateArgumentsInBody(crlf, [...args(crlf), { name: 'limit', type: 'number' }]);
+		expect(out.match(/`dry-run`/g)).toHaveLength(1);
+		expect(out).toContain('- `limit` (number)\r\n');
+		expect(out.replace(/\r\n/g, '')).not.toContain('\n');
+	});
+
 	it('a body with no section gets one appended, as before', () => {
 		expect(updateArgumentsInBody('# T\n\nBody.\n', [{ name: 'x', type: 'string' }])).toBe(
 			'# T\n\nBody.\n\n## Arguments\n\n- `x` (string)\n'
