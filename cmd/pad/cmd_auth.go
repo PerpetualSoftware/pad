@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -874,6 +875,27 @@ func logoutCmd() *cobra.Command {
 	}
 }
 
+// whoamiFailure says what a failed identity check actually established
+// (BUG-2706). Only a 401 or 403 means the credential was refused. Anything
+// else, unreachable, a server error, a body that would not decode, means the
+// credential was NOT checked, and it used to be reported as rejected or
+// expired, which sends the operator to rotate a healthy token. Every failure
+// exits non-zero: whoami is the safe-check scripts and agents run first, and
+// exit 0 told them they were signed in.
+func whoamiFailure(err error, envToken bool, baseURL string) error {
+	switch status := cli.HTTPStatus(err); {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		if envToken {
+			return fmt.Errorf("PAD_TOKEN is set but the server rejected it (HTTP %d). Fix or unset PAD_TOKEN", status)
+		}
+		return errors.New("session expired. Run 'pad auth login'")
+	case status != 0:
+		return fmt.Errorf("could not check your credentials: %s answered HTTP %d (%v). They were not rejected; try again", baseURL, status, err)
+	default:
+		return fmt.Errorf("could not check your credentials: no usable answer from %s (%v). They were not rejected; try again", baseURL, err)
+	}
+}
+
 func whoamiCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "whoami",
@@ -899,8 +921,7 @@ func whoamiCmd() *cobra.Command {
 				}
 				creds = store.Get(cfg.BaseURL())
 				if creds == nil || creds.Token == "" {
-					fmt.Println("Not logged in. Run 'pad auth login'.")
-					return nil
+					return errors.New("not logged in. Run 'pad auth login'")
 				}
 			}
 
@@ -916,12 +937,7 @@ func whoamiCmd() *cobra.Command {
 
 			user, err := client.GetCurrentUser()
 			if err != nil {
-				if envToken != "" {
-					fmt.Println("PAD_TOKEN is set but the server rejected it.")
-					return nil
-				}
-				fmt.Println("Session expired. Run 'pad auth login'.")
-				return nil
+				return whoamiFailure(err, envToken != "", cfg.BaseURL())
 			}
 
 			if formatFlag == "json" {
