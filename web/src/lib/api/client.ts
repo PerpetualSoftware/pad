@@ -2922,7 +2922,11 @@ export const api = {
 					body: JSON.stringify({ name })
 				}),
 			delete: (tokenId: string) =>
-				request<void>(`/auth/tokens/${tokenId}`, { method: 'DELETE' })
+				request<void>(`/auth/tokens/${tokenId}`, { method: 'DELETE' }),
+			/** Same name, scopes and workspace; a new secret. The old one stops
+			 *  working at once (TASK-3505). Needs a session, not a PAT. */
+			rotate: (tokenId: string) =>
+				request<APITokenWithSecret>(`/auth/tokens/${encodeURIComponent(tokenId)}/rotate`, { method: 'POST' })
 		},
 		cli: {
 			getSession: (code: string) =>
