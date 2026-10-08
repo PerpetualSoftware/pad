@@ -87,7 +87,15 @@ func question(body string) decision.Question {
 // that matters.
 var withLinks bool
 
+// noTrail builds the item state WITHOUT its comment trail, as the conventions
+// set's item subject does from TASK-3119 U2a (the comments are asked about
+// one at a time instead, see gates.go).
+var noTrail bool
+
 func build(item *models.Item, comments []models.Comment, parentRef, parentTitle string) (decision.BuiltState, error) {
+	if noTrail {
+		comments = nil
+	}
 	if !withLinks {
 		return decision.BuildItemState(item, comments)
 	}
@@ -142,6 +150,7 @@ func main() {
 	workers := flag.Int("workers", 6, "concurrent provider calls")
 	links := flag.Bool("links", false, "build states with the item's links, as the conventions set does (TASK-3119 U1a)")
 	only := flag.String("only", "", "run only this convention (e.g. CONVE-1286)")
+	gates := flag.Bool("gates", false, "run the TASK-3119 U2 gates (item state without trail, comment subjects, 12-question batches) and print PASS/FAIL")
 	flag.Parse()
 	withLinks = *links
 	if *dump == "" {
@@ -160,6 +169,15 @@ func main() {
 			}
 		}
 		pop = kept
+	}
+
+	if *gates {
+		withLinks, noTrail = true, true
+		var p decision.Provider
+		if !*dry {
+			p = mustProvider()
+		}
+		os.Exit(runGates(*dump, pop, convs, p, *workers))
 	}
 
 	if *dry {
@@ -185,16 +203,7 @@ func main() {
 		return
 	}
 
-	key := os.Getenv("TYPESAFE_API_KEY")
-	if key == "" {
-		fmt.Fprintln(os.Stderr, "TYPESAFE_API_KEY is not set")
-		os.Exit(2)
-	}
-	p, err := decision.New(decision.Config{Provider: decision.ProviderTypesafe, APIKey: key, Model: decision.DefaultModel})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	p := mustProvider()
 
 	rows := make([]row, len(pop))
 	sem := make(chan struct{}, *workers)
@@ -288,6 +297,21 @@ func report(rows []row, took time.Duration) {
 		}
 		fmt.Printf("  %-11s %-12s %-12s %.3f%s\n", r.m.Convention, r.m.Ref, lab, r.p, map[bool]string{true: "  ERR", false: ""}[r.err != ""])
 	}
+}
+
+// mustProvider reads the key from TYPESAFE_API_KEY and never prints it.
+func mustProvider() decision.Provider {
+	key := os.Getenv("TYPESAFE_API_KEY")
+	if key == "" {
+		fmt.Fprintln(os.Stderr, "TYPESAFE_API_KEY is not set")
+		os.Exit(2)
+	}
+	p, err := decision.New(decision.Config{Provider: decision.ProviderTypesafe, APIKey: key, Model: decision.DefaultModel})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return p
 }
 
 func ratio(a, b int) string {
