@@ -363,6 +363,18 @@ type Metrics struct {
 	// something else wrote the key. The warning logged beside it names it.
 	EventSequenceCounterRepairsTotal *prometheus.CounterVec
 
+	// CollabResumesTotal counts collab Joins that announce a cursor: an editor
+	// tab that had been anchored reconnecting (TASK-3501). A PROXY for offline
+	// episodes, biased: inflated by sleep, blips and restarts; blind to a tab
+	// closed while offline. See collab.Observer.
+	CollabResumesTotal prometheus.Counter
+
+	// CollabResumeForceRefreshesTotal counts resumes refused with
+	// force_refresh, by reason (pruned, behind_min, restored). An upper bound
+	// on offline hand-backs: the client shows one only when it held unsent
+	// edits, which the server cannot see.
+	CollabResumeForceRefreshesTotal *prometheus.CounterVec
+
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
 	// directions, so a generic alert on the total leads a responder to
@@ -736,6 +748,14 @@ func New() *Metrics {
 		Name: "pad_event_sequence_counter_repairs_total",
 		Help: "Times the shared event sequence counter held something it cannot count from (shape: wrong_type, not_integer, too_large) and was deleted, starting a new id space that every subscriber resyncs across (BUG-2744). Expect zero: counting never gets there, so a non-zero count means something else wrote the key — another installation sharing the Redis keyspace, a hand edit, or a restore. The warning logged beside it names the key, its type and its length.",
 	}, []string{"shape"})
+	collabResumesTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_collab_resumes_total",
+		Help: "Collab joins that announce a cursor: an editor tab that had been anchored reconnecting (TASK-3501). A PROXY for offline episodes and a biased one: inflated by laptop sleep, network blips and server restarts, and blind to a tab that went offline and was closed or crashed, and to whether the tab edited while away.",
+	})
+	collabResumeForceRefreshesTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_collab_resume_force_refreshes_total",
+		Help: "Resumes refused with force_refresh, by reason: pruned (the whole op-log is gone), behind_min (rows the tab needed were pruned), restored (a version restore since its seed). The tab rebuilds from the server; an UPPER BOUND on offline edits handed back, since the client hands back only when it held unsent edits (TASK-3501).",
+	}, []string{"reason"})
 
 	sessionPresenceFailuresTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_session_presence_failures_total",
@@ -760,6 +780,8 @@ func New() *Metrics {
 		eventSubscriptionCycledTotal,
 		eventHeartbeatPublishFailuresTotal,
 		eventSequenceCounterRepairsTotal,
+		collabResumesTotal,
+		collabResumeForceRefreshesTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -805,6 +827,8 @@ func New() *Metrics {
 		EventSubscriptionCycledTotal:       eventSubscriptionCycledTotal,
 		EventHeartbeatPublishFailuresTotal: eventHeartbeatPublishFailuresTotal,
 		EventSequenceCounterRepairsTotal:   eventSequenceCounterRepairsTotal,
+		CollabResumesTotal:                 collabResumesTotal,
+		CollabResumeForceRefreshesTotal:    collabResumeForceRefreshesTotal,
 		WatchReceiveLoopExitsTotal:         watchReceiveLoopExitsTotal,
 		WatchHeartbeatPublishFailuresTotal: watchHeartbeatPublishFailuresTotal,
 		SessionPresenceFailuresTotal:       sessionPresenceFailuresTotal,

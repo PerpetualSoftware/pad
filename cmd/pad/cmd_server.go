@@ -714,7 +714,7 @@ func serveCmd() *cobra.Command {
 			// MemoryOpBus is in-process; the OpBus interface keeps the
 			// door open for a RedisOpBus drop-in later.
 			collabBus := collab.NewMemoryOpBus()
-			srv.SetCollabRoomManager(collab.NewRoomManager(s, collabBus))
+			srv.SetCollabRoomManager(newObservedRoomManager(s, collabBus, m))
 			slog.Info("Collab room manager wired (Yjs over /api/v1/collab/{itemID})")
 
 			// Op-log prune sweeper (TASK-1309). Periodic background
@@ -1358,6 +1358,16 @@ func newObservedEventBus(cfg *config.Config, rc *redis.Client, redisKeys redisns
 	bus := events.New()
 	bus.SetObserver(metrics.NewEventsObserver(m))
 	return bus
+}
+
+// newObservedRoomManager builds the collab room manager with its metrics
+// observer attached (TASK-3501). Extracted for the same reason as
+// newObservedEventBus: inline, the SetObserver line is a claim no test can
+// reach (CONVE-19).
+func newObservedRoomManager(s *store.Store, bus collab.OpBus, m *metrics.Metrics) *collab.RoomManager {
+	rm := collab.NewRoomManager(s, bus)
+	rm.SetObserver(metrics.NewCollabObserver(m))
+	return rm
 }
 
 // registerRemoteMCP registers everything the remote /mcp transport serves on
