@@ -1,6 +1,6 @@
 {
   "name": "pad",
-  "description": "Talk to your project. Pad is local-first project management for developers and AI agents — this plugin gives Claude Code a conversational Pad skill, typed shortcuts (/pad:status, /pad:capture, /pad:onboard, /pad:connect, /pad:disconnect), and consent-gated live item-change notifications.",
+  "description": "Talk to your project. Pad is local-first project management for developers and AI agents — this plugin gives Claude Code a conversational Pad skill, typed shortcuts (/pad:status, /pad:capture, /pad:onboard, /pad:connect, /pad:disconnect), a /pad-pane side panel for browsing and updating your workspace, and consent-gated live item-change notifications.",
   "author": {
     "name": "Perpetual Software LLC",
     "url": "https://getpad.dev"
