@@ -29,7 +29,8 @@
 # `version`: that tag would freeze every install at the pinned string.
 #
 # It rewrites only the pad entry's `source`; every other byte of the file is
-# kept. Re-running for the tag already pinned changes nothing and exits 0.
+# kept. Re-running for the tag already pinned changes nothing and exits 0, and
+# so does a tag OLDER than the one pinned: releases can finish out of order.
 #
 # Usage:
 #   scripts/pin-plugin-marketplace.sh v0.18.0           # rewrite the file
@@ -64,7 +65,7 @@ market=".claude-plugin/marketplace.json"
 [ -f "$market" ] || die "$market not found"
 
 git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null ||
-	git fetch -q origin "refs/tags/$tag:refs/tags/$tag" ||
+	git fetch -q --force origin "+refs/tags/$tag:refs/tags/$tag" ||
 	die "tag $tag not found"
 
 manifest=$(git show "$tag:plugin/.claude-plugin/plugin.json" 2>/dev/null) ||
@@ -83,9 +84,20 @@ want = {"source": "git-subdir", "url": "https://github.com/PerpetualSoftware/pad
 hits = [p for p in doc.get("plugins", []) if p.get("name") == "pad"]
 if len(hits) != 1:
     sys.exit("pin-plugin-marketplace: expected exactly one plugin named pad, found %d" % len(hits))
-if hits[0].get("source") == want:
+cur = hits[0].get("source")
+if cur == want:
     print("no")
     sys.exit(0)
+# Never move backwards (codex r1): two stable releases can finish out of order,
+# and the older one must not replace a newer pin.
+def ver(t):
+    return tuple(int(x) for x in t[1:].split("."))
+if isinstance(cur, dict) and cur.get("source") == "git-subdir":
+    ref = cur.get("ref", "")
+    import re
+    if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", ref) and ver(ref) > ver(tag):
+        print("newer:" + ref)
+        sys.exit(0)
 hits[0]["source"] = want
 with open(path, "w", encoding="utf-8") as f:
     f.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
@@ -95,6 +107,10 @@ PY
 
 if [ "$changed" = "no" ]; then
 	echo "pin-plugin-marketplace: already pinned to $tag"
+	exit 0
+fi
+if [ "${changed#newer:}" != "$changed" ]; then
+	echo "pin-plugin-marketplace: already pinned to ${changed#newer:}, newer than $tag; left as it is"
 	exit 0
 fi
 echo "pin-plugin-marketplace: pinned the pad plugin to $tag"

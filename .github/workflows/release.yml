@@ -198,6 +198,11 @@ jobs:
     needs: release
     if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
+    # One pin at a time; the script also refuses to move the pin backwards,
+    # for two releases that finish out of order.
+    concurrency:
+      group: pin-plugin
+      cancel-in-progress: false
     permissions:
       contents: write
       issues: write
