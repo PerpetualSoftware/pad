@@ -29,6 +29,7 @@ import (
 // with separate sentinels, so parity is a property that has to be tested, not
 // inherited.
 func TestItemRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -159,6 +160,7 @@ func TestItemRename_OrdinaryCascadeStillSucceeds(t *testing.T) {
 // to the wrong axis, and a grep for the store call inside one function would
 // have found all three immediately.
 func TestItemRenameCascadeTooLarge_MappedOnTheCollabSnapshotPath(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -225,6 +227,7 @@ func TestItemRenameCascadeTooLarge_MappedOnTheCollabSnapshotPath(t *testing.T) {
 // observable that discriminates is how much WORK the cascade did, counted via
 // the store's build observer.
 func TestItemRenameCascadeTooLarge_CollabEditPathDoesNotRunTheCascadeTwice(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 

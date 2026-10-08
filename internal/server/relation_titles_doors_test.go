@@ -405,6 +405,7 @@ func TestRelationTitleDoors_HydrationUsesITEMVisibilityNotCollectionVisibility(t
 // match count changes the answer. This drives well past the page size with a
 // single visible match: it must still resolve.
 func TestRelationTitleDoors_VisibilityNarrowingHasNoCountBoundary(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 
 	// One visible match. Creation ORDER does not place it in the walk — the

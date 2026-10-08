@@ -206,6 +206,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 }
 
 func TestImportOutcomeRegistry_BUG3475(t *testing.T) {
+	t.Parallel()
 	if importOutcomeRunningTTL <= defaultImportReadCeiling {
 		t.Fatalf("importOutcomeRunningTTL (%s) must outlast the import read ceiling (%s): a key expiring mid-upload can begin again",
 			importOutcomeRunningTTL, defaultImportReadCeiling)

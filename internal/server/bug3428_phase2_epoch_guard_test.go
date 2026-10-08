@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
-	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // BUG-3428 phase 2 (lead ruling, day 86: option A). Deleting a collection
@@ -269,12 +268,10 @@ func TestItemDoors_EpochIsNotNewerThanTheirRows(t *testing.T) {
 }
 
 func TestItemDoorAfterRowsHookIsNilInProduction(t *testing.T) {
-	s, err := store.New(":memory:")
-	if err != nil {
-		t.Skipf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if New(s).itemDoorAfterRowsHook != nil {
+	t.Parallel()
+	// testServer copies the once-built template (storetest), where store.New(":memory:")
+	// ran the whole migration chain, about 17s under -race (TASK-3493).
+	if testServer(t).itemDoorAfterRowsHook != nil {
 		t.Fatal("New left the BUG-3428 test-only item-door hook set")
 	}
 }

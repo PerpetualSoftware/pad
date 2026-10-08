@@ -127,6 +127,7 @@ func TestActivityCursorIsRefusedWhenMalformed(t *testing.T) {
 }
 
 func TestAdminUserActivityReturnsAKeysetCursor(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	admin, err := srv.store.GetUserByEmail("admin@test.com")

@@ -158,6 +158,7 @@ func assertRefusalParity(t *testing.T, got bothRR, wantStatus int, wantCode stri
 // TestCopyAuthorizationParityMatrix is the matrix proper. Each subtest
 // arranges one refusal and requires both endpoints to produce it identically.
 func TestCopyAuthorizationParityMatrix(t *testing.T) {
+	t.Parallel()
 	// --- unresolvable source, both variants -----------------------------
 	//
 	// Resolution runs BEFORE the body is decoded in both handlers. If it did

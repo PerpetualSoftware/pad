@@ -12,7 +12,6 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
-	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // BUG-3334: a store error on an access decision fails CLOSED. Faults are real:
@@ -362,23 +361,19 @@ func mustUserID(t *testing.T, srv *Server, email string) string {
 }
 
 func TestVisibleCollectionIDsFaultIsNilInProduction(t *testing.T) {
-	s, err := store.New(":memory:")
-	if err != nil {
-		t.Skipf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if New(s).visibleCollectionIDsFault != nil {
+	t.Parallel()
+	// testServer copies the once-built template (storetest), where store.New(":memory:")
+	// ran the whole migration chain, about 17s under -race (TASK-3493).
+	if testServer(t).visibleCollectionIDsFault != nil {
 		t.Fatal("New left the BUG-3334 test-only fault seam set")
 	}
 }
 
 func TestUserCountFaultIsNilInProduction(t *testing.T) {
-	s, err := store.New(":memory:")
-	if err != nil {
-		t.Skipf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if New(s).userCountFault != nil {
+	t.Parallel()
+	// testServer copies the once-built template (storetest), where store.New(":memory:")
+	// ran the whole migration chain, about 17s under -race (TASK-3493).
+	if testServer(t).userCountFault != nil {
 		t.Fatal("New left the BUG-3334 test-only user-count seam set")
 	}
 }

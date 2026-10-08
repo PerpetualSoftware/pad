@@ -29,6 +29,7 @@ func resolveShareWithPassword(srv *Server, token, password, remoteIP string) *ht
 // there's burst budget, and once the burst is exhausted further attempts
 // (right or wrong) get a 429.
 func TestResolveShareLink_PasswordBruteForceLimiter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSForTest(t, srv)
 
@@ -133,6 +134,7 @@ func TestResolveShareLink_PasswordBruteForceLimiter(t *testing.T) {
 // charged before the password compare, so once exhausted even a would-be-
 // correct guess is blocked — no password oracle survives the link-wide cap.
 func TestResolveShareLink_AggregateCap(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSForTest(t, srv)
 

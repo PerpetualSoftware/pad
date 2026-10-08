@@ -116,6 +116,7 @@ func TestBUG3355_LastOwnerCannotLeave(t *testing.T) {
 // concurrently, so the workspace keeps an owner. Each losing call must fail
 // with the invariant's error, not with a deadlock or another 500.
 func TestBUG3355_ConcurrentDemotionsKeepTheCanonicalOwner(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		for round := 0; round < 10; round++ {
 			f := newAccessFixture(t, d)

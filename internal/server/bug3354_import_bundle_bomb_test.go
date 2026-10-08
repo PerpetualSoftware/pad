@@ -76,6 +76,7 @@ func workspaceListed(t *testing.T, srv *Server, name string) bool {
 // ceiling is refused with 413 before the oversize entry is inflated, and the
 // workspace its pad-export.json already minted is rolled back.
 func TestBUG3354_DecompressionBombRefused(t *testing.T) {
+	t.Parallel()
 	export := exportJSONFrom(t)
 	const bodyCap = 1 << 20 // decompressed ceiling: 4 MiB + 200 MiB of metadata room
 	bomb := gzipTar(t, []bundleEntry{
@@ -117,6 +118,7 @@ func TestBUG3354_DecompressionBombRefused(t *testing.T) {
 // refused too: the declared-size check is per entry, so the cumulative
 // count is what catches them.
 func TestBUG3354_CumulativeEntriesRefused(t *testing.T) {
+	t.Parallel()
 	export := exportJSONFrom(t)
 	const bodyCap = 1 << 20 // decompressed ceiling: 4 MiB + 200 MiB of metadata room
 	filler := make([]byte, 50<<20)
@@ -137,6 +139,7 @@ func TestBUG3354_CumulativeEntriesRefused(t *testing.T) {
 
 // More tar headers than importBundleMaxEntries are refused, however small.
 func TestBUG3354_EntryCountRefused(t *testing.T) {
+	t.Parallel()
 	entries := make([]bundleEntry, importBundleMaxEntries+1)
 	for i := range entries {
 		entries[i] = bundleEntry{name: fmt.Sprintf("e%d", i)}
@@ -269,6 +272,7 @@ func TestBUG3354_SparseEntriesChargedLogically(t *testing.T) {
 // Codex r1 P2: extension headers are consumed inside Next, invisible to the
 // entry count. The header blocks Next reads are counted instead.
 func TestBUG3354_ExtensionHeaderChainRefused(t *testing.T) {
+	t.Parallel()
 	raw := rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t))
 	extension := rawTarEntry(t, "pax", tar.TypeXHeader, nil) // one block each
 	raw = append(raw, bytes.Repeat(extension, int(importBundleMaxHeaderBlocks)+1)...)
@@ -293,6 +297,7 @@ func TestBUG3354_ExtensionHeaderChainRefused(t *testing.T) {
 // declares a size that fits, and only its padding crosses the ceiling. The
 // deferred conversion answers 413 and the minted workspace is rolled back.
 func TestBUG3354_ReaderOverflowConvertsTo413(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	srv.SetImportBundleMaxBytes(1 << 20)
 	var out bytes.Buffer
@@ -399,6 +404,7 @@ func (c *countingBody) Read(p []byte) (int, error) {
 // limit is enforced inside the walk: a chain of three times the cap, under
 // the default byte ceilings, is refused having read about a third of it.
 func TestBUG3354_HeaderLimitStopsTheWalk(t *testing.T) {
+	t.Parallel()
 	raw := rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t))
 	extension := rawTarEntry(t, "pax", tar.TypeXHeader, nil) // one block each
 	raw = append(raw, bytes.Repeat(extension, 3*int(importBundleMaxHeaderBlocks))...)
