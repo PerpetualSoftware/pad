@@ -10,16 +10,32 @@ import { api } from './client';
 // what the CLI rejects (`Number()` trims and takes decimals); round 3 caught the
 // rest of the gap — exponent notation, hex, and integers past 2^53, all of which
 // Go's strconv.Atoi refuses and `Number()` happily converts or rounds.
+//
+// The upload goes over XMLHttpRequest since BUG-3475 (for progress and the
+// stall bounds), so the double is an XHR that answers as soon as it is sent.
+// getResponseHeader joins a repeated header with ", " exactly as
+// Headers.get did, so the repeated-header case below means the same thing.
 function mockImportOnce(headerValue: string | null) {
-	vi.stubGlobal(
-		'fetch',
-		vi.fn(async () => ({
-			status: 201,
-			ok: true,
-			headers: { get: (k: string) => (k === 'X-Pad-Import-Stale-Bodies' ? headerValue : null) },
-			json: async () => ({ id: 'w1', name: 'Restored', slug: 'restored' })
-		}))
-	);
+	class AnsweringXHR {
+		upload: { onprogress: unknown; onload: unknown } = { onprogress: null, onload: null };
+		onload: (() => void) | null = null;
+		onerror: unknown = null;
+		ontimeout: unknown = null;
+		onabort: unknown = null;
+		withCredentials = false;
+		status = 201;
+		responseText = JSON.stringify({ id: 'w1', name: 'Restored', slug: 'restored' });
+		open() {}
+		setRequestHeader() {}
+		abort() {}
+		getResponseHeader(k: string) {
+			return k === 'X-Pad-Import-Stale-Bodies' ? headerValue : null;
+		}
+		send() {
+			queueMicrotask(() => this.onload?.());
+		}
+	}
+	vi.stubGlobal('XMLHttpRequest', AnsweringXHR);
 }
 
 afterEach(() => {

@@ -3112,3 +3112,16 @@ export type UIDismissalKey = 'tutorials.console' | 'tutorials.launchpad';
 export interface UIDismissalsResponse {
 	dismissed: UIDismissalKey[];
 }
+
+/**
+ * What became of a keyed workspace import (BUG-3475), from
+ * `GET /workspaces/import-status?key=`. `workspace_*` and `owner_username`
+ * are present only for `complete` and `kept`, the states with a workspace to
+ * open.
+ */
+export interface ImportOutcome {
+	state: 'running' | 'complete' | 'kept' | 'removed' | 'not_created' | 'unknown';
+	workspace_slug?: string;
+	workspace_name?: string;
+	owner_username?: string;
+}

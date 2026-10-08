@@ -395,14 +395,14 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		expect(api.workspaces.importBundle).toHaveBeenCalledTimes(2);
 
 		// PRECONDITION: B's button really is disabled while B's upload runs.
-		expect(btn(container, /Importing/).disabled).toBe(true);
+		expect(btn(container, /^Uploading/).disabled).toBe(true);
 
 		// Now A's stale import settles.
 		resolveA(WS);
 		await settle();
 
 		// B's button must still be disabled — their upload is still running.
-		expect(btn(container, /Importing/).disabled).toBe(true);
+		expect(btn(container, /^Uploading/).disabled).toBe(true);
 
 		resolveB(WS);
 		await settle();

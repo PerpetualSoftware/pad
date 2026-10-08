@@ -34,6 +34,14 @@
 	import { groupTemplatesByCategory } from '$lib/utils/templates';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import { ImportTransportError } from '$lib/api/importUpload';
+	import { formatBytes } from '$lib/attachments/display';
+	import {
+		describeImportOutcome,
+		newImportKey,
+		resolveImportOutcome,
+		type ImportOutcomeView
+	} from '$lib/workspaces/importOutcome';
 
 	interface Props {
 		/**
@@ -69,6 +77,13 @@
 	let loadingTemplates = $state(false);
 	let importing = $state(false);
 	let importFile = $state<File | null>(null);
+	// BUG-3475: where an import is, so the dialog can say so instead of a
+	// bare "Importing..." that never ended when the upload stalled.
+	let importPhase = $state<'idle' | 'uploading' | 'finishing' | 'resolving' | 'outcome'>('idle');
+	let importSent = $state(0);
+	let importTotal = $state(0);
+	let importOutcome = $state<ImportOutcomeView | null>(null);
+	let importAbort: AbortController | null = null;
 	let fileInputEl = $state<HTMLInputElement>();
 	let nameInputEl = $state<HTMLInputElement>();
 	let dragging = $state(false);
@@ -120,6 +135,18 @@
 			templatesExpanded = false;
 			importFile = null;
 			importing = false;
+			// A NEW OPEN ENDS any earlier operation (BUG-3475). A continuation
+			// still resolving an import's outcome would otherwise paint it onto
+			// this fresh dialog: the reset below clears the phase, and nothing
+			// else stops a late write. Here rather than in close(), because the
+			// dialog is also closed through the store directly (the identity
+			// listener's path, and any caller of closeCreateWorkspace), which
+			// close() never sees.
+			importAbort?.abort();
+			opSeq++;
+			importPhase = 'idle';
+			importOutcome = null;
+			importAbort = null;
 			// Load templates
 			// Guarded on `loadingTemplates` as well as emptiness (codex round
 			// 5): close-and-reopen, or a destroy-and-remount, before the first
@@ -135,7 +162,21 @@
 	});
 
 	function close() {
+		// Closing mid-upload stops it: the server then rolls the partial
+		// workspace back (BUG-3475). After the last byte there is nothing left
+		// to stop; the import finishes and appears in the workspace list.
+		importAbort?.abort();
+		// Closing ends the import's operation too, so an aborted upload does
+		// not go on polling for its outcome behind a closed dialog (codex r1).
+		// The success path calls close() after its last fenced side effect,
+		// and the reopen reset below advances the token again for a close
+		// that bypasses this function (the store, directly).
+		if (importing) opSeq++;
 		uiStore.closeCreateWorkspace();
+	}
+
+	function cancelUpload() {
+		importAbort?.abort();
 	}
 
 	// A DRAFT IS PER-USER TOO (codex round 7). The operations are fenced, but a
@@ -272,8 +313,29 @@
 		// The store is safe on its own — `loadAll` has its own identity fence —
 		// so this guards the SIDE EFFECTS: the callback, the toast and the goto.
 		const callUser = authStore.userId;
+		// BUG-3475: one key per ATTEMPT, so a retry is never mistaken for the
+		// attempt it replaces.
+		const importKey = newImportKey();
+		const abort = new AbortController();
+		importAbort = abort;
+		const current = () => alive && myOp === opSeq && authStore.userId === callUser;
+		importOutcome = null;
+		importSent = 0;
+		importTotal = importFile.size;
+		importPhase = 'uploading';
 		try {
-			const ws = await api.workspaces.importBundle(importFile, newName.trim() || undefined);
+			const ws = await api.workspaces.importBundle(importFile, newName.trim() || undefined, {
+				importKey,
+				signal: abort.signal,
+				onProgress: (sent, total) => {
+					if (!current()) return;
+					importSent = sent;
+					importTotal = total;
+				},
+				onUploaded: () => {
+					if (current()) importPhase = 'finishing';
+				}
+			});
 			if (!alive || myOp !== opSeq) return;
 			// Return without closing — see the create path for why (codex round
 			// 8): the identity listener has already closed this modal, and a
@@ -299,6 +361,7 @@
 			// imported workspaces, and the user explicitly opted into this
 			// modal so opening the Connect modal post-import isn't surprising.
 			onWorkspaceCreated?.(ws);
+			importPhase = 'idle';
 			close();
 			// BUG-3032: some bodies in the bundle were already behind their live
 			// editor when it was exported. Said in the SUCCESS toast, because
@@ -324,10 +387,52 @@
 			// keep. The same applies when `loadAll` is what rejected.
 			if (!alive || myOp !== opSeq) return;
 			if (authStore.userId !== callUser) return;
+			// BUG-3475: no response arrived, so the server's outcome is not
+			// known here. Ask for it by the attempt's key, then say exactly
+			// that: finished, kept, nothing kept, or unknown.
+			if (err instanceof ImportTransportError) {
+				importPhase = 'resolving';
+				const outcome = await resolveImportOutcome(importKey, {
+					status: (k) => api.workspaces.importStatus(k),
+					live: current
+				});
+				if (!current()) return;
+				importOutcome = describeImportOutcome(err, outcome);
+				importPhase = 'outcome';
+				if (importOutcome.kind === 'complete' || importOutcome.kind === 'kept') {
+					// So the workspace is in the list the user is told to check.
+					await workspaceStore.loadAll().catch(() => {});
+				}
+				return;
+			}
+			importPhase = 'idle';
 			toastStore.show(`Import failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
 		} finally {
-			if (alive && myOp === opSeq) importing = false;
+			if (alive && myOp === opSeq) {
+				importing = false;
+				if (importAbort === abort) importAbort = null;
+			}
 		}
+	}
+
+	// The outcome panel's "Open workspace": the success path's navigation,
+	// for an import whose 201 never arrived.
+	async function openImported(view: ImportOutcomeView) {
+		if (view.kind !== 'complete' && view.kind !== 'kept') return;
+		// Fenced like every other post-await side effect here (codex r1): a
+		// user change, an unmount or a fresh open during the tab write must
+		// not close that dialog or navigate.
+		const myOp = opSeq;
+		const callUser = authStore.userId;
+		await tabsStore.open(view.slug).catch(() => {});
+		if (!alive || myOp !== opSeq || authStore.userId !== callUser) return;
+		// Closed while the tab write was in flight (codex r2): `importing` is
+		// already false here, so close() did not advance the token, and the
+		// user who dismissed the dialog asked for no navigation. A reopen in
+		// between advanced it through the open reset.
+		if (!uiStore.createWorkspaceOpen) return;
+		close();
+		goto(`/${view.owner}/${view.slug}`);
 	}
 
 	function isAcceptedBundleFile(name: string): boolean {
@@ -532,6 +637,29 @@
 				{#if importFile}
 					<p class="import-hint">Creates a new workspace with regenerated IDs (items, comments, attachments, version history all preserved). Original data is unchanged.</p>
 				{/if}
+				{#if importPhase === 'uploading' || importPhase === 'finishing'}
+					<div class="import-progress" role="status" aria-live="polite">
+						<progress
+							max={importTotal || 1}
+							value={importPhase === 'finishing' ? importTotal || 1 : importSent}
+						></progress>
+						<span class="import-progress-text">
+							{#if importPhase === 'uploading'}
+								Uploading {formatBytes(importSent)} of {formatBytes(importTotal)}
+							{:else}
+								Upload complete. Finishing the import…
+							{/if}
+						</span>
+					</div>
+				{:else if importPhase === 'resolving'}
+					<p class="import-progress-text" role="status" aria-live="polite">
+						The connection was lost. Checking with the server what was imported…
+					</p>
+				{:else if importPhase === 'outcome' && importOutcome}
+					<div class="import-outcome import-outcome-{importOutcome.kind}" role="alert">
+						{importOutcome.text}
+					</div>
+				{/if}
 			{/if}
 		</div>
 
@@ -541,9 +669,21 @@
 				<Button variant="primary" onclick={createWorkspace} disabled={!newName.trim()}>
 					Create Workspace
 				</Button>
+			{:else if importPhase === 'uploading' || importPhase === 'finishing'}
+				<Button variant="secondary" onclick={cancelUpload} disabled={importPhase === 'finishing'}>
+					Stop upload
+				</Button>
+				<Button variant="primary" disabled>
+					{importPhase === 'uploading' ? 'Uploading…' : 'Finishing…'}
+				</Button>
+			{:else if importPhase === 'resolving'}
+				<Button variant="primary" disabled>Checking…</Button>
+			{:else if importPhase === 'outcome' && importOutcome && (importOutcome.kind === 'complete' || importOutcome.kind === 'kept')}
+				{@const view = importOutcome}
+				<Button variant="primary" onclick={() => openImported(view)}>Open workspace</Button>
 			{:else}
 				<Button variant="primary" onclick={importWorkspace} disabled={!importFile || importing}>
-					{importing ? 'Importing...' : 'Import Workspace'}
+					{importPhase === 'outcome' ? 'Try again' : importing ? 'Importing...' : 'Import Workspace'}
 				</Button>
 			{/if}
 		</div>
@@ -797,6 +937,19 @@
 	.drop-file-name { font-size: 0.88em; font-weight: 500; color: var(--text-primary); }
 	.drop-hint { font-size: 0.75em; color: var(--text-muted); }
 	.import-hint { font-size: 0.8em; color: var(--text-muted); margin: 0; }
+	.import-progress { display: flex; flex-direction: column; gap: var(--space-1); }
+	.import-progress progress { width: 100%; height: 6px; accent-color: var(--accent); }
+	.import-progress-text { font-size: 0.8em; color: var(--text-secondary); margin: 0; }
+	.import-outcome {
+		font-size: 0.85em;
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius-sm, 6px);
+		border: 1px solid var(--border);
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+	}
+	.import-outcome-unknown,
+	.import-outcome-kept { border-color: var(--warning, #b45309); }
 
 	.modal-footer {
 		display: flex; align-items: center; justify-content: flex-end;
