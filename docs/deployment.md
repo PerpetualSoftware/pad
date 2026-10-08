@@ -1157,6 +1157,21 @@ variable, and MCP stays unavailable ("blocked", with the reason, in
 `GET /api/v1/admin/mcp`). All five are read at startup, so changing any of
 them needs a restart. The toggle does not.
 
+When MCP is **turned on** (the toggle, or `PAD_MCP_ENABLED=true`) but cannot
+be served, because no usable origin is set, startup logs one error,
+`mcp: MCP is turned on but cannot be served`, with the reason, and
+`GET /api/v1/health` carries `"mcp_blocked": true` for as long as it stays
+that way. The health flag says only that it is blocked; the reason is in the
+admin endpoint above (TASK-1069).
+
+**Pad Cloud refuses to start without an `https` origin.** On Cloud, MCP is
+always available and its clients use OAuth, which needs an `https` issuer. A
+cloud start whose addressing gives no `https` OAuth audience (no `PAD_URL` or
+`PUBLIC_URL`, an `http` one, or an unusable value) exits with an error naming
+the variable to set. Before this, it started and served `/mcp` with personal
+access tokens only, and every OAuth client failed with nothing in the log
+(TASK-1069).
+
 #### Turning it on
 
 An admin turns MCP on and off at runtime, with no restart: in the console

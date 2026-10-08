@@ -301,6 +301,14 @@ func serveCmd() *cobra.Command {
 				slog.Warn("mcp: PAD_MCP_ENABLED is not true/false; ignoring it", "value", cfg.MCPEnabledEnvRaw)
 			}
 			srv.SetMCPConfig(mcpEndpoints, cfg.MCPEnabledEnv)
+			// TASK-1069: MCP turned on (setting or PAD_MCP_ENABLED) but not
+			// servable says so once, loudly, naming what to set. Self-host
+			// only: cloud refuses to start instead, below.
+			if !cfg.IsCloudServer() {
+				if reason := srv.MCPBlockedReason(); reason != "" {
+					slog.Error("mcp: MCP is turned on but cannot be served", "reason", reason)
+				}
+			}
 			srv.SetTrustedProxies(cfg.TrustedProxies)
 			srv.SetMetricsToken(cfg.MetricsToken)
 			srv.SetIPChangeEnforce(cfg.IPChangeEnforce)
@@ -366,6 +374,10 @@ func serveCmd() *cobra.Command {
 				// B7 (TASK-1932): fail fast rather than relying on the
 				// operator to always pair PAD_CLOUD with PAD_SECURE_COOKIES.
 				if err := cfg.ValidateCloudSecureCookies(); err != nil {
+					return err
+				}
+				// TASK-1069: no silent PAT-only /mcp on cloud.
+				if err := validateCloudMCPOAuth(mcpEndpoints); err != nil {
 					return err
 				}
 				srv.SetCloudMode(cfg.CloudSecret)
