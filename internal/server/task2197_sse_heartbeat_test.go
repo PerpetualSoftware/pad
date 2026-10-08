@@ -65,3 +65,52 @@ func TestSSE_TASK2197_HeartbeatIsOptIn(t *testing.T) {
 		t.Errorf("only heartbeat=1 opts in; heartbeat=yes gave %q", got)
 	}
 }
+
+// Codex r1 asked whether a stream busy with other events still gets
+// heartbeats. The keepalive ticker is never reset by an event write, so a
+// heartbeat arrives on schedule however much else the stream carries; this
+// keeps it that way.
+func TestSSE_TASK2197_HeartbeatsArriveOnABusyStream(t *testing.T) {
+	srv := testServerWithEvents(t)
+	srv.sseKeepaliveOverride = 200 * time.Millisecond
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	slug := createTestWorkspace(t, ts.URL, "Busy")
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			case <-time.After(20 * time.Millisecond):
+				resp := apiRequest(t, ts.URL, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]any{"title": "busy", "fields": "{}"})
+				resp.Body.Close()
+			}
+		}
+	}()
+	// Read the stream: item events must flow, and a heartbeat must still come.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/events?workspace="+slug+"&heartbeat=1", nil)
+	resp, err := isolatedTestClient().Do(req)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer resp.Body.Close()
+	sc := bufio.NewScanner(resp.Body)
+	items := 0
+	for sc.Scan() {
+		switch sc.Text() {
+		case "event: item_created":
+			items++
+		case "event: heartbeat":
+			if items < 3 {
+				t.Fatalf("heartbeat after only %d item events; the stream was not busy, so this proves nothing", items)
+			}
+			return
+		}
+	}
+	t.Fatalf("no heartbeat on a busy stream (%d item events seen): %v", items, sc.Err())
+}

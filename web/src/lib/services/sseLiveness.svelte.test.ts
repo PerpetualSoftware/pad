@@ -203,6 +203,21 @@ describe('SSE liveness (TASK-2197)', () => {
 		sse.disconnect();
 	});
 
+	it('a source due while the browser is offline is not opened; online opens it (codex r1)', async () => {
+		const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+		const sse = await loadService();
+		sse.connect('ws-a'); // e.g. a follower promoted mid-outage
+		await flush();
+		expect(sources).toHaveLength(0);
+		expect(sse.status).toBe('reconnecting');
+		online.mockReturnValue(true);
+		vi.spyOn(Math, 'random').mockReturnValue(0);
+		window.dispatchEvent(new Event('online'));
+		await vi.advanceTimersByTimeAsync(10);
+		expect(sources).toHaveLength(1);
+		sse.disconnect();
+	});
+
 	it('online with nothing closed for offline opens nothing', async () => {
 		const sse = await connected();
 		window.dispatchEvent(new Event('online'));

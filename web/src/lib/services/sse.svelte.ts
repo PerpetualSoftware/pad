@@ -372,6 +372,17 @@ function createSSEService() {
 	}
 
 	function openEventSource(workspaceSlug: string) {
+		// TASK-2197 (codex r1): never open while the browser says it is offline.
+		// A follower promoted to leader during an outage, or a ladder retry that
+		// fires mid-outage, would otherwise fail straight back into the backoff
+		// ladder and miss the prompt reopen on `online`. Marked closed for
+		// offline instead, so `online` opens it (with the catch-up armed).
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			closedForOffline = true;
+			status = 'reconnecting';
+			broadcast({ type: 'status', status: 'reconnecting' });
+			return;
+		}
 		const url = `/api/v1/events?workspace=${encodeURIComponent(workspaceSlug)}&heartbeat=1`;
 		const source = new EventSource(url);
 		eventSource = source;
