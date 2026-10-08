@@ -244,7 +244,7 @@ func TestTASK3462U3c_JSONDiffCarriesCurrentFromAnOlderServer(t *testing.T) {
 	withFormat(t, "json")
 	st := divergedState()
 	delete(st, "current")
-	f := &u3cFake{caps: true, state: st, item: map[string]any{"id": "i1", "slug": "plan", "content": "the item's own body", "fields": `{"trigger":"on-release"}`}}
+	f := &u3cFake{caps: true, state: st, item: map[string]any{"id": "i1", "slug": "plan", "seq": 7, "content": "the item's own body", "fields": `{"trigger":"on-release"}`}}
 	out, err := u3cRun(t, f.server(t), func() u3cCmd { return libraryDiffCmd() }, "plan")
 	if err != nil {
 		t.Fatalf("diff: %v", err)
@@ -311,5 +311,33 @@ func TestTASK3462U3c_SetAsideRowsAreNamedAsSuch(t *testing.T) {
 	}
 	if strings.Contains(err.Error()+stderr, "open editor has not saved") || !strings.Contains(stderr, "discard those edits") {
 		t.Fatalf("set-aside refusal misdescribed: err=%v stderr=%q", err, stderr)
+	}
+}
+
+// codex r2 (P1): numbers keep their digits, so two integers above 2^53 that a
+// float64 would merge still show as a change.
+func TestTASK3462U3c_LargeNumbersAreNotRounded(t *testing.T) {
+	st := divergedState()
+	st["library"].(map[string]any)["fields"] = map[string]any{"limit": json.Number("9007199254740993")}
+	st["current"].(map[string]any)["fields"] = map[string]any{"limit": json.Number("9007199254740992")}
+	f := &u3cFake{caps: true, state: st}
+	out, err := u3cRun(t, f.server(t), func() u3cCmd { return libraryDiffCmd() }, "plan")
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if !strings.Contains(out, "limit: 9007199254740992 → 9007199254740993") {
+		t.Fatalf("a large-number change was rounded away:\n%s", out)
+	}
+}
+
+// codex r2 (P2): a fallback read of a newer version than the state described
+// is refused, not mixed in.
+func TestTASK3462U3c_FallbackFromAnotherVersionIsRefused(t *testing.T) {
+	st := divergedState()
+	delete(st, "current")
+	f := &u3cFake{caps: true, state: st, item: map[string]any{"id": "i1", "slug": "plan", "seq": 8, "content": "newer", "fields": `{}`}}
+	_, err := u3cRun(t, f.server(t), func() u3cCmd { return libraryDiffCmd() }, "plan")
+	if err == nil || !strings.Contains(err.Error(), "changed while") {
+		t.Fatalf("want the version-mismatch refusal, got %v", err)
 	}
 }
