@@ -137,7 +137,9 @@ func (b *RedisBus) now() time.Time {
 // answer to an unreadable message; cycling the connection is not.
 func (b *RedisBus) stampLastSeen(gen int64) {
 	b.mu.Lock()
-	if b.subGen == gen {
+	// Not after Close (BUG-2741): a frame that wins the receive loop's select
+	// after shutdown is not evidence that a live subscription is healthy.
+	if !b.closed && b.subGen == gen {
 		b.lastSeen = b.now()
 	}
 	b.mu.Unlock()
