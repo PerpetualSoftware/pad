@@ -12,8 +12,8 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			load: {
-				reviewed: '46a055c105cd',
-				why: 'identityHeld(epochAtEntry) before the fetches; dashLoadSeq and identityHeld before every commit on both arms; the finally clears loading on the sequence alone, deliberately (#1378)',
+				reviewed: '0d1d88d24e94',
+				why: 'setCurrent and both fetches issued together at entry, under the identity captured there (TASK-2229); dashLoadSeq and identityHeld before every commit on both arms; the finally clears loading on the sequence alone, deliberately (#1378)',
 			},
 		},
 		nested: [],
@@ -24,28 +24,29 @@ identityGateSuite({
 				body: /load\(wsSlug, true\)/,
 				in: 'onMount(…)',
 				why: 'the 30s poll: calls load, which captures the identity at its own entry',
-				reviewed: 'd0e5ea7729a5',
+				reviewed: '18d239ed4efa',
 			},
 			{
 				call: /^setTimeout\($/,
 				body: /load\(wsSlug, true\)/,
 				in: 'sseService.onItemEvent(…)',
 				why: 'the live-onboarding reload (BUG-3447): a debounce an item or collection event re-arms while the workspace needs onboarding; its body only calls load, which captures the identity at its own entry, and only for the workspace it was armed in (codex r1)',
-				reviewed: '5258e5b882ac',
+				reviewed: 'b149944bd618',
 			},
 		],
 		helpers: {
 			captureIdentity: '7f6903e09e84',
 			identityHeld: 'e4fd3989a707',
+			pollTickWanted: 'c7b2d559cec3',
 		},
 		identifierCallbacks: [],
 	},
 	mutants: [
 		{
 			cls: 1,
-			what: 'a commit between the workspace switch and the identity check',
-			old: '\t\t\tawait workspaceStore.setCurrent(slug);\n',
-			new: '\t\t\tawait workspaceStore.setCurrent(slug);\n\t\t\tdashError = null;\n',
+			what: 'a commit between the answers and the identity check',
+			old: '\t\t\t\tapi.collections.list(slug)\n\t\t\t]);\n',
+			new: '\t\t\t\tapi.collections.list(slug)\n\t\t\t]);\n\t\t\tdashError = null;\n',
 			names: 'load()',
 		},
 		{
