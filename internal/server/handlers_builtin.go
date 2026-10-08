@@ -1,9 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -164,16 +168,28 @@ func (s *Server) handleListWorkspaceBuiltins(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	rows, err := s.store.WorkspaceBuiltinItems(workspaceID)
+	out, err := s.visibleWorkspaceBuiltins(r, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// visibleWorkspaceBuiltins is every item made from a built-in that the caller
+// sees its WHOLE collection of, with its state. One query reads them all (a
+// join), and visibility is one set computed once. The listing and the
+// bootstrap count (TASK-3462 U3a) both read it, so the count never names an
+// item the listing would hide.
+func (s *Server) visibleWorkspaceBuiltins(r *http.Request, workspaceID string) ([]builtinListEntry, error) {
+	rows, err := s.store.WorkspaceBuiltinItems(workspaceID)
+	if err != nil {
+		return nil, err
+	}
 	// The fully visible set, once, however many collections the rows span.
 	fully, err := s.fullyVisibleCollectionIDs(r, workspaceID)
 	if err != nil {
-		writeInternalError(w, err)
-		return
+		return nil, err
 	}
 	out := []builtinListEntry{}
 	for _, row := range rows {
@@ -182,15 +198,84 @@ func (s *Server) handleListWorkspaceBuiltins(w http.ResponseWriter, r *http.Requ
 		}
 		state, _, entry, err := collections.BuiltinStateOf(row.Origin, row.Content, row.Fields)
 		if err != nil {
-			writeInternalError(w, err)
-			return
+			return nil, err
 		}
 		out = append(out, builtinListEntry{
 			ItemID: row.ItemID, Ref: row.Ref, Slug: row.Slug, Title: row.Title,
 			CollectionSlug: row.CollectionSlug, Key: row.Origin.Key, Kind: entry.Kind, State: state,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
+}
+
+// builtinReplacedFields describes each key of patch whose value differs from
+// the item's current one, as `key: old → new` (a nil new value reads
+// "removed", an absent old one "none"), in key order. Values are JSON,
+// bounded so a long arguments list cannot swamp the summary.
+func builtinReplacedFields(current, patch map[string]any) string {
+	keys := make([]string, 0, len(patch))
+	for k := range patch {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	show := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return "?"
+		}
+		// At most max bytes INCLUDING the ellipsis, cut on a rune boundary
+		// so the summary stays valid UTF-8 (codex r1).
+		const max = 120
+		const ellipsis = "…"
+		if len(b) <= max {
+			return string(b)
+		}
+		cut := max - len(ellipsis)
+		for cut > 0 && !utf8.RuneStart(b[cut]) {
+			cut--
+		}
+		return string(b[:cut]) + ellipsis
+	}
+	var parts []string
+	for _, k := range keys {
+		old, had := current[k]
+		next := patch[k]
+		if next == nil && !had {
+			continue
+		}
+		if had && next != nil {
+			// Canonical numbers: item fields keep a number as written, so
+			// 1e3 and 1000 would otherwise compare unequal (codex r1).
+			ob, oerr := json.Marshal(models.CanonicalJSONNumbers(old))
+			nb, nerr := json.Marshal(models.CanonicalJSONNumbers(next))
+			if oerr == nil && nerr == nil && bytes.Equal(ob, nb) {
+				continue
+			}
+		}
+		from, to := "none", "removed"
+		if had {
+			from = show(old)
+		}
+		if next != nil {
+			to = show(next)
+		}
+		parts = append(parts, k+": "+from+" → "+to)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// builtinUpdatesOnOffer counts the entries an update is on offer for: the
+// library changed and the item is unedited, or both changed. unknown_origin
+// (a legacy item, TASK-3462 U4) is not counted: its version is unknown, so
+// nothing says the library moved.
+func builtinUpdatesOnOffer(entries []builtinListEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.State == collections.BuiltinUpdateAvailable || e.State == collections.BuiltinDiverged {
+			n++
+		}
+	}
+	return n
 }
 
 // builtinUpdateRequest is POST /items/{ref}/builtin/update.
@@ -288,6 +373,28 @@ func (s *Server) handleBuiltinUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	content := entry.Content
 	summary := "Updated from Pad's built-in " + origin.Key
+	// Version history keeps BODIES only, so the values this update replaces
+	// in the item's other fields would leave no trace (TASK-3462 U3a,
+	// night-43 review note). The summary names each one it changes.
+	current, err := builtinTextOf("", item.Fields)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	replaced := patch
+	if convention != nil || clearConvention {
+		replaced = map[string]any{}
+		for k, v := range patch {
+			replaced[k] = v
+		}
+		replaced[models.ItemFieldConvention] = nil
+		if convention != nil {
+			replaced[models.ItemFieldConvention] = libFields[models.ItemFieldConvention]
+		}
+	}
+	if changes := builtinReplacedFields(current.Fields, replaced); changes != "" {
+		summary += ". Replaced fields: " + changes
+	}
 	newSeed := models.BuiltinOrigin{Key: origin.Key, SeedHash: entry.Hash(), SeedContent: entry.Content, SeedFields: entry.Fields}
 	s.updateItem(w, r, &builtinItemUpdate{
 		input: models.ItemUpdate{
