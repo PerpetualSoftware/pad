@@ -6241,7 +6241,7 @@
 				currentContent={item.content}
 				currentFields={item.fields}
 				{canEdit}
-				hasUnsavedEdits={() => rawContentSaver.dirty || saveStatus === 'saving' || localDirty || (collabProvider !== null && collabProvider.state !== 'synced')}
+				hasUnsavedEdits={() => rawContentSaver.dirty || saveStatus === 'saving' || (collabProvider !== null && collabProvider.state !== 'synced')}
 				onAccepted={() => { if (handedDown !== identityKey) return; if (collabProvider || rawContentSaver.dirty) return; void loadData(); }}
 			/>
 			{/key}

@@ -8,13 +8,13 @@ import type { BuiltinStateResponse } from '$lib/types';
 // reads each refusal for what it is.
 
 const state = vi.hoisted(() => ({
-	get: [] as Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }>,
+	get: [] as Array<{ ref: string; resolve: (v: unknown) => void; reject: (e: unknown) => void }>,
 	update: [] as Array<{ body: unknown; resolve: (v: unknown) => void; reject: (e: unknown) => void }>,
 }));
 vi.mock('$lib/api/client', () => ({
 	api: {
 		builtins: {
-			get: vi.fn(() => new Promise((resolve, reject) => state.get.push({ resolve, reject }))),
+			get: vi.fn((_ws: string, ref: string) => new Promise((resolve, reject) => state.get.push({ ref, resolve, reject }))),
 			update: vi.fn((_ws: string, _ref: string, body: unknown) =>
 				new Promise((resolve, reject) => state.update.push({ body, resolve, reject }))),
 		},
@@ -209,6 +209,21 @@ describe('BuiltinUpdateNotice', () => {
 		state.update[0]!.reject(apiError('content_pending_flush'));
 		await settle();
 		expect(acceptBtn()!.disabled).toBe(false);
+	});
+
+	it('a conflict after a rename refreshes the preview by the item\'s current ref (codex r3)', async () => {
+		render();
+		state.get[0]!.resolve(offer('update_available'));
+		await settle();
+		badge()!.click();
+		flushSync();
+		acceptBtn()!.click();
+		flushSync();
+		props.itemRef = 'plan-renamed';
+		flushSync();
+		state.update[0]!.reject(apiError('update_conflict'));
+		await settle();
+		expect(state.get[state.get.length - 1]!.ref).toBe('plan-renamed');
 	});
 
 	it('closes the dialog when the offer goes away under it (codex r1)', async () => {

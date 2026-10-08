@@ -23,10 +23,12 @@
 		currentFields: string;
 		canEdit: boolean;
 		/**
-		 * Whether the pane holds edits it has not saved yet (a pending raw
-		 * draft, a save in flight). Accept refuses while it does: a draft saved
-		 * after the update would replace the library's text (codex r1).
-		 * Asked at the press, synchronously.
+		 * Whether the pane holds edits the server cannot see yet: a pending raw
+		 * draft, a save in flight, or a collab editor that is not synced (its
+		 * typing is buffered or dropped, not in the op-log). Accept refuses
+		 * while it does (codex r1, r2). A synced collab editor's typing IS in
+		 * the op-log, where the server's content_pending_flush refusal covers
+		 * it. Asked at the press, synchronously.
 		 */
 		hasUnsavedEdits?: () => boolean;
 		/** The item's id: what a press is about, which a rename does not change. */
@@ -161,7 +163,9 @@
 					'This item has edits an open editor has not saved yet. Accepting again replaces them as well.';
 			} else if (code === 'update_conflict') {
 				errorMessage = 'The item changed since this preview opened. The preview has been refreshed; review it again.';
-				void load(ws, ref);
+				// The LIVE ref: a rename, which is what usually moves seq here,
+				// leaves the captured one pointing at nothing (codex r3).
+				void load(wsSlug, itemRef);
 			} else if (code === 'builtin_up_to_date') {
 				open = false;
 				offer = null;
