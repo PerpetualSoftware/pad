@@ -888,6 +888,11 @@ func whoamiFailure(err error, envToken bool, baseURL string) error {
 		if envToken {
 			return fmt.Errorf("PAD_TOKEN is set but the server rejected it (HTTP %d). Fix or unset PAD_TOKEN", status)
 		}
+		if status == http.StatusForbidden {
+			// Not an expiry: the server knows the session and refuses it
+			// (a disabled account, say), so logging in again may not help.
+			return errors.New("the server refused your stored session (HTTP 403). Run 'pad auth login', and ask an admin if it persists")
+		}
 		return errors.New("session expired. Run 'pad auth login'")
 	case status != 0:
 		return fmt.Errorf("could not check your credentials: %s answered HTTP %d (%v). They were not rejected; try again", baseURL, status, err)

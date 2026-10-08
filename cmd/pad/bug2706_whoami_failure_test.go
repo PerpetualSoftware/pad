@@ -46,6 +46,14 @@ func TestBUG2706_WhoamiSaysWhatTheFailureEstablished(t *testing.T) {
 			want: "session expired",
 		},
 		{
+			name: "stored session forbidden (403)", envToken: false,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":"forbidden","message":"Forbidden"}}`))
+			},
+			want: "refused your stored session (HTTP 403)", mustNot: "expired",
+		},
+		{
 			name: "server error (JSON 500)", envToken: true,
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
