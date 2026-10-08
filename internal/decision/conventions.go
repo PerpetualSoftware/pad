@@ -38,8 +38,12 @@ const (
 	// logged by ref.
 	conventionMaxBodyBytes = 4096
 
-	// conventionsPerCall bounds the questions in one provider call.
-	conventionsPerCall = 5
+	// conventionsPerCall bounds the questions in one provider call. 12, from
+	// the U2 gates' measure C (TASK-3119 trail): up to 13 questions in ONE
+	// call gave identical precision and recall to one question per call on
+	// every convention, and moved 0 of 116 answers by more than 0.2. The
+	// state is sent once per call, so fewer calls is most of the saving.
+	conventionsPerCall = 12
 
 	// decisionCheckField is the conventions schema field that switches a
 	// convention's check off (value "off"); absent or anything else is on.
@@ -61,6 +65,7 @@ func ConventionsSet() QuestionSet {
 		Name:       ConventionsSetName,
 		Resolve:    resolveConventions,
 		WithLinks:  true,
+		NoTrail:    true,
 		MaxPerCall: conventionsPerCall,
 		// User collections only: a convention or playbook is not work an
 		// item-content rule is about.

@@ -123,7 +123,7 @@ func TestConventions_ResolveScope(t *testing.T) {
 // stored, and the observer sees each call.
 func TestConventions_SplitsCallsAndStoresEveryAnswer(t *testing.T) {
 	fx := newConvFixture(t)
-	for i := 0; i < 7; i++ {
+	for i := 0; i < 13; i++ {
 		fx.convention(t, "Rule", `{"status":"active","trigger":"always"}`, "rule "+string(rune('a'+i)))
 	}
 	item := fx.task(t, "A task")
@@ -134,10 +134,11 @@ func TestConventions_SplitsCallsAndStoresEveryAnswer(t *testing.T) {
 	if len(fx.f.requests) != 2 {
 		t.Fatalf("provider calls = %d, want 2", len(fx.f.requests))
 	}
+	// MaxPerCall 12 (U2 measure C): 13 questions split 12 + 1.
 	sizes := []int{len(fx.f.requests[0].Questions), len(fx.f.requests[1].Questions)}
 	sort.Ints(sizes)
-	if sizes[0] != 2 || sizes[1] != 5 {
-		t.Fatalf("questions per call = %v, want [2 5]", sizes)
+	if sizes[0] != 1 || sizes[1] != 12 {
+		t.Fatalf("questions per call = %v, want [1 12]", sizes)
 	}
 	if strings.Join(fx.usage, ",") != "conventions,conventions" {
 		t.Fatalf("usage observer saw %v", fx.usage)
@@ -152,8 +153,8 @@ func TestConventions_SplitsCallsAndStoresEveryAnswer(t *testing.T) {
 			current++
 		}
 	}
-	if current != 7 {
-		t.Fatalf("current conventions answers = %d, want 7", current)
+	if current != 13 {
+		t.Fatalf("current conventions answers = %d, want 13", current)
 	}
 }
 
@@ -294,7 +295,7 @@ func TestConventions_CurrencyFollowsTheConventionAndTheLinks(t *testing.T) {
 // deleted while the first call is in flight is not sent in the second.
 func TestConventions_DeleteBetweenSplitCallsStopsTheRest(t *testing.T) {
 	fx := newConvFixture(t)
-	for i := 0; i < 7; i++ {
+	for i := 0; i < 13; i++ {
 		fx.convention(t, "Rule", `{"status":"active","trigger":"always"}`, "rule "+string(rune('a'+i)))
 	}
 	item := fx.task(t, "A task")
@@ -351,7 +352,7 @@ func TestConventions_EvaluationLogsItsSpend(t *testing.T) {
 	fx := newConvFixture(t)
 	var buf bytes.Buffer
 	fx.r.logger = slog.New(slog.NewJSONHandler(&buf, nil))
-	for i := 0; i < 7; i++ {
+	for i := 0; i < 13; i++ {
 		fx.convention(t, "Rule", `{"status":"active","trigger":"always"}`, "SECRET-RULE-"+string(rune('a'+i)))
 	}
 	item, err := fx.s.CreateItem(fx.ws.ID, fx.tasks.ID, models.ItemCreate{Title: "SECRET-TITLE", Fields: `{"status":"open"}`, Content: "SECRET-BODY"})
@@ -366,10 +367,10 @@ func TestConventions_EvaluationLogsItsSpend(t *testing.T) {
 		t.Fatalf("spend lines = %d, want 1: %s", len(lines), buf.String())
 	}
 	got := lines[0]
-	// Two calls (5 + 2 questions) at the fake's 10 in / 5 out each.
+	// Two calls (12 + 1 questions) at the fake's 10 in / 5 out each.
 	want := map[string]any{
 		"level": "INFO", "set": ConventionsSetName, "workspace_id": fx.ws.ID,
-		"item_ref": item.Ref, "item_id": item.ID, "questions": float64(7), "calls": float64(2),
+		"item_ref": item.Ref, "item_id": item.ID, "questions": float64(13), "calls": float64(2),
 		"input_tokens": float64(20), "output_tokens": float64(10), "truncated": false, "outcome": "stored",
 	}
 	if item.Ref == "" {
@@ -414,5 +415,48 @@ func TestConventions_FailedEvaluationLogsItsSpend(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "SECRET") {
 		t.Fatalf("the spend line carries the provider's error text: %s", buf.String())
+	}
+}
+
+// TASK-3119 U2a: the conventions set asks about the ITEM, so its state carries
+// no comment trail (comments get their own subject in U2b). Two consequences,
+// both pinned: no comment text reaches the provider in this set's state, and
+// a comment write does not change the state, so it costs no conventions call.
+func TestConventions_StateHasNoTrail_AndACommentCostsNoCall(t *testing.T) {
+	fx := newConvFixture(t)
+	fx.convention(t, "Rule", `{"status":"active","trigger":"always"}`, "rule")
+	item := fx.task(t, "A task")
+	if _, err := fx.s.CreateComment(fx.ws.ID, item.ID, "", models.CommentCreate{Author: "wren", Body: "TRAIL-SENTINEL one"}); err != nil {
+		t.Fatal(err)
+	}
+	if called, err := fx.r.Evaluate(context.Background(), item.ID, ConventionsSetName); err != nil || !called {
+		t.Fatalf("evaluate: called=%v err=%v", called, err)
+	}
+	if len(fx.f.rawBodies) != 1 {
+		t.Fatalf("provider calls = %d, want 1", len(fx.f.rawBodies))
+	}
+	body := fx.f.rawBodies[0]
+	if strings.Contains(body, "TRAIL-SENTINEL") {
+		t.Fatalf("a comment reached the conventions state: %s", body)
+	}
+	if !strings.Contains(body, `"recent_trail":[]`) || !strings.Contains(body, `"links":[]`) {
+		t.Fatalf(`state is not the U2a shape (empty trail, links present): %s`, body)
+	}
+
+	// A further comment changes nothing this set reads.
+	if _, err := fx.s.CreateComment(fx.ws.ID, item.ID, "", models.CommentCreate{Author: "wren", Body: "TRAIL-SENTINEL two"}); err != nil {
+		t.Fatal(err)
+	}
+	if called, err := fx.r.Evaluate(context.Background(), item.ID, ConventionsSetName); err != nil || called {
+		t.Fatalf("re-evaluate after a comment: called=%v err=%v, want no call", called, err)
+	}
+	ds, err := fx.r.Decisions(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ds {
+		if d.QuestionSet == ConventionsSetName && !d.Current {
+			t.Fatalf("a comment made the conventions answer not current: %+v", d)
+		}
 	}
 }

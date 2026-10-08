@@ -64,6 +64,15 @@ type QuestionSet struct {
 	// builder's bytes, and so every other set's state hashes, are unchanged.
 	WithLinks bool
 
+	// NoTrail leaves the comment trail out of the state (TASK-3119 U2a). The
+	// conventions set asks about the ITEM: a trail is discussion, it was
+	// clipped at 2,000 runes per comment (so a break past that was invisible
+	// anyway), and it was most of every call's input. Comments are asked about
+	// one at a time instead (U2b). The U2 gates measured this state against
+	// U0's labels: precision held at 100%, recall rose on two conventions, and
+	// no state was truncated.
+	NoTrail bool
+
 	// MaxPerCall bounds the questions sent in one provider call; a larger
 	// set is split into several calls. Zero sends them all in one.
 	MaxPerCall int
@@ -408,7 +417,7 @@ func (r *Runner) State(itemID string) (*models.Item, BuiltState, error) {
 }
 
 // stateFor builds the item's current state as qs sees it: with its links
-// when qs is WithLinks.
+// when qs is WithLinks, and without the comment trail when qs is NoTrail.
 func (r *Runner) stateFor(itemID string, qs QuestionSet) (*models.Item, BuiltState, error) {
 	item, err := r.store.GetItem(itemID)
 	if err != nil {
@@ -417,9 +426,12 @@ func (r *Runner) stateFor(itemID string, qs QuestionSet) (*models.Item, BuiltSta
 	if item == nil || item.DeletedAt != nil {
 		return nil, BuiltState{}, ErrItemGone
 	}
-	comments, err := r.store.RecentComments(itemID, RecentTrailWindow)
-	if err != nil {
-		return nil, BuiltState{}, err
+	var comments []models.Comment
+	if !qs.NoTrail {
+		comments, err = r.store.RecentComments(itemID, RecentTrailWindow)
+		if err != nil {
+			return nil, BuiltState{}, err
+		}
 	}
 	if !qs.WithLinks {
 		st, err := BuildItemState(item, comments)
