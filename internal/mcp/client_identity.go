@@ -9,6 +9,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	padserver "github.com/PerpetualSoftware/pad/internal/server"
 )
 
 // Remote MCP caller identity (BUG-2772, IDEA-2791 Tier B).
@@ -41,13 +43,22 @@ const (
 )
 
 // ClientRegistry remembers each legacy session's clientInfo by the
-// Mcp-Session-Id pad issued at initialize. Per instance and in memory: a
-// request that lands on another instance, or after a restart, falls back to
-// the nameless agent write.
+// Mcp-Session-Id pad issued at initialize AND the user who initialized it.
+// Per instance and in memory: a request that lands on another instance, or
+// after a restart, falls back to the nameless agent write.
+//
+// The user is part of the key because the transport accepts any incoming
+// Mcp-Session-Id: keyed on the id alone, a caller who learned another
+// session's id could send it and have its own writes carry that session's
+// declared name. Keyed on (user, id), the only name a caller can reach is
+// one its own account declared.
 type ClientRegistry struct {
 	mu      sync.Mutex
 	entries map[string]*clientEntry
 	now     func() time.Time
+	// owner returns the authenticated user's id from a request's context,
+	// "" when there is none (then nothing is recorded or looked up).
+	owner func(context.Context) string
 }
 
 type clientEntry struct {
@@ -57,13 +68,31 @@ type clientEntry struct {
 
 // NewClientRegistry returns an empty registry.
 func NewClientRegistry() *ClientRegistry {
-	return &ClientRegistry{entries: map[string]*clientEntry{}, now: time.Now}
+	return &ClientRegistry{entries: map[string]*clientEntry{}, now: time.Now, owner: currentUserID}
+}
+
+// currentUserID is the id of the user the /mcp auth middleware put on the
+// request's context.
+func currentUserID(ctx context.Context) string {
+	if u, ok := padserver.CurrentUserFromContext(ctx); ok && u != nil {
+		return u.ID
+	}
+	return ""
+}
+
+// registryKey binds a session id to the user who presented it; "" when
+// either is missing, which records and finds nothing.
+func registryKey(userID, sessionID string) string {
+	if userID == "" || sessionID == "" {
+		return ""
+	}
+	return userID + "\x00" + sessionID
 }
 
 // record stores a session's client name, evicting expired and, past the
 // bound, the stalest entries.
-func (r *ClientRegistry) record(sessionID, name string) {
-	if r == nil || sessionID == "" || name == "" {
+func (r *ClientRegistry) record(key, name string) {
+	if r == nil || key == "" || name == "" {
 		return
 	}
 	r.mu.Lock()
@@ -85,23 +114,23 @@ func (r *ClientRegistry) record(sessionID, name string) {
 			delete(r.entries, oldestID)
 		}
 	}
-	r.entries[sessionID] = &clientEntry{name: name, seen: now}
+	r.entries[key] = &clientEntry{name: name, seen: now}
 }
 
 // lookup returns a live session's client name and refreshes it.
-func (r *ClientRegistry) lookup(sessionID string) string {
-	if r == nil || sessionID == "" {
+func (r *ClientRegistry) lookup(key string) string {
+	if r == nil || key == "" {
 		return ""
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	e, ok := r.entries[sessionID]
+	e, ok := r.entries[key]
 	if !ok {
 		return ""
 	}
 	now := r.now()
 	if now.Sub(e.seen) > clientRegistryTTL {
-		delete(r.entries, sessionID)
+		delete(r.entries, key)
 		return ""
 	}
 	e.seen = now
@@ -129,7 +158,7 @@ func (r *ClientRegistry) hooks() *server.Hooks {
 			"protocol_version", msg.Params.ProtocolVersion,
 			"transport", "streamable-http",
 			"session_tracked", sessionID != "")
-		r.record(sessionID, cleanClientName(info.Name))
+		r.record(registryKey(r.owner(ctx), sessionID), cleanClientName(info.Name))
 	})
 	return h
 }
@@ -170,8 +199,8 @@ func (r *ClientRegistry) resolveRemoteCaller(ctx context.Context) RemoteCaller {
 	if s := server.ClientSessionFromContext(ctx); s != nil {
 		sessionID = s.SessionID()
 	}
-	if name == "" {
-		name = r.lookup(sessionID)
+	if name == "" && r != nil {
+		name = r.lookup(registryKey(r.owner(ctx), sessionID))
 	}
 	base := name
 	if base == "" {

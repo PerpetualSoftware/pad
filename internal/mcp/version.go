@@ -1744,7 +1744,8 @@ const CmdhelpVersion = "0.1"
 //     MCP clientInfo.name ("claude-code"), where it was recorded as the
 //     human. The name comes from a modern request's own _meta clientInfo,
 //     else the clientInfo the session sent at initialize (remembered per
-//     instance by the Mcp-Session-Id pad issued, 30-minute idle TTL), else
+//     instance by the Mcp-Session-Id pad issued and the account that
+//     presented it, 30-minute idle TTL), else
 //     none: an unnamed agent write, never the human and never a guessed name.
 //     The default lease holder of a remote call is that name (or
 //     "mcp-client") plus a short id from the session, e.g.

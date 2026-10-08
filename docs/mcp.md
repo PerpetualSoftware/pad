@@ -76,7 +76,7 @@ In `relation_targets`, a `multi_relation` key carries a JSON **ARRAY** of the sa
 A write over remote `/mcp` is an **agent** write (BUG-2772, IDEA-2791 Tier B). Every surface that records who wrote something (`created_by`, activity `actor`, the activity `agent` name, comments) records the remote call as `agent`, named by the client's own declaration, MCP `clientInfo.name`, recorded verbatim (self-declared, like the CLI's `X-Pad-Agent`):
 
 1. a **modern** request (protocol 2026-07-28) carries `clientInfo` in its own `_meta`, used as is;
-2. a **legacy** client sends `clientInfo` once, at `initialize`, and echoes the `Mcp-Session-Id` pad issued (measured: Claude Code 2.1.294 sends `{"name":"claude-code"}` and echoes the id). The server remembers the name by that id, in memory per instance, for 30 minutes idle;
+2. a **legacy** client sends `clientInfo` once, at `initialize`, and echoes the `Mcp-Session-Id` pad issued (measured: Claude Code 2.1.294 sends `{"name":"claude-code"}` and echoes the id). The server remembers the name by that id together with the account that sent it, in memory per instance, for 30 minutes idle, so a caller presenting another account's session id gets no name;
 3. otherwise the write is an agent write with **no name**: never the human, and never a guessed name. That covers a client that declared no name, a request landing on another instance, and a restart.
 
 Each `initialize` logs one line, `mcp client initialized`, with `client_name`, `client_version`, `protocol_version` and `transport` (no tokens or headers), which is how what each client sends gets measured in production.

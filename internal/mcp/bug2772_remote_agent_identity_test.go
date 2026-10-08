@@ -63,9 +63,19 @@ func newBUG2772World(t *testing.T) *bug2772World {
 	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
 		t.Fatal(err)
 	}
+	other, err := s.CreateUser(models.UserCreate{Email: "mcp-2772-other@example.com", Name: "Other", Password: "correct-horse-battery-staple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddWorkspaceMember(ws.ID, other.ID, "editor"); err != nil {
+		t.Fatal(err)
+	}
 
 	clients := NewClientRegistry()
-	d := &HTTPHandlerDispatcher{Handler: srv, Clients: clients, UserResolver: func(context.Context) *models.User { return owner }}
+	d := &HTTPHandlerDispatcher{Handler: srv, Clients: clients, UserResolver: func(ctx context.Context) *models.User {
+		u, _ := padserver.CurrentUserFromContext(ctx)
+		return u
+	}}
 	mcpSrv := NewServer(Options{Version: "test", Clients: clients})
 	mcpSrv.MCP().AddTool(mcp.NewTool("create_task", mcp.WithString("title")), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		input := map[string]any{"workspace": ws.Slug, "collection": "tasks", "title": req.GetString("title", "")}
@@ -82,10 +92,22 @@ func newBUG2772World(t *testing.T) *bug2772World {
 	mcpSrv.MCP().AddTool(mcp.NewTool("next"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return d.Dispatch(WithDispatchInput(ctx, map[string]any{"workspace": ws.Slug}), []string{"project", "next"}, nil)
 	})
-	ts := httptest.NewServer(NewRemoteTransport(mcpSrv.MCP(), bug2772Sessions{}))
+	// Stands in for the /mcp auth middleware: the request's user goes on its
+	// context, the owner unless the test names the other member.
+	transport := NewRemoteTransport(mcpSrv.MCP(), bug2772Sessions{})
+	ts := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		u := owner
+		if r.Header.Get(bug2772UserHeader) == "other" {
+			u = other
+		}
+		transport.ServeHTTP(rw, r.WithContext(padserver.WithCurrentUser(r.Context(), u)))
+	}))
 	t.Cleanup(ts.Close)
 	return &bug2772World{t: t, s: s, srv: srv, ws: ws, url: ts.URL + "/mcp", owner: owner}
 }
+
+// bug2772UserHeader picks the request's user in the test world.
+const bug2772UserHeader = "X-Test-User"
 
 func (w *bug2772World) post(body, session string, headers map[string]string) (string, string) {
 	w.t.Helper()
@@ -207,6 +229,26 @@ func TestBUG2772_RemoteMCPWritesAreAgentWrites(t *testing.T) {
 		}
 	})
 
+	t.Run("another user's session id carries no name", func(t *testing.T) {
+		// The transport accepts any Mcp-Session-Id, so a caller who learned
+		// another account's session id can send it. The name that session
+		// declared stays with the account that declared it.
+		session := w.initialize("claude-code")
+		title := "borrowed session id"
+		raw, _ := w.post(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_task","arguments":{"title":`+mustJSONString(title)+`}}}`,
+			session, map[string]string{"MCP-Protocol-Version": "2025-11-25", bug2772UserHeader: "other"})
+		if strings.Contains(raw, `"isError":true`) {
+			t.Fatalf("create failed: %s", raw)
+		}
+		if by, agent := w.stored(title); by != "agent" || agent != "" {
+			t.Fatalf("created_by=%q agent=%q, want agent / (none): the other user wrote under the owner's session name", by, agent)
+		}
+		// The owner, on the same session, still gets its name.
+		if _, agent := w.create("owner on its own session", session); agent != "claude-code" {
+			t.Fatalf("the owner's own session lost its name: %q", agent)
+		}
+	})
+
 	t.Run("CONTROL: the dispatcher's own request, minus the remote-caller mark, is the human's", func(t *testing.T) {
 		// buildHTTPRequest is what the dispatcher sends, without the
 		// WithRemoteMCPCaller mark: so the mark, and nothing else about the
@@ -297,7 +339,6 @@ func TestBUG2772_RemoteLeaseHolderIsPerConnection(t *testing.T) {
 
 func TestBUG2772_ResolveRemoteCaller(t *testing.T) {
 	r := NewClientRegistry()
-	r.record("pad-mcp-3f9a12c4-0000-0000-0000-000000000000", "claude-code")
 
 	t.Run("a modern request's own _meta clientInfo wins", func(t *testing.T) {
 		ctx := server.WithRequestProtocolInfo(context.Background(), &server.RequestProtocolInfo{
