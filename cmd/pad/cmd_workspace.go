@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
@@ -1220,9 +1222,50 @@ Format is detected by file extension. Override workspace name with --name.`,
 			defer f.Close()
 
 			var ws models.Workspace
-			header, err := client.PostStreamWithContentTypeHeaders(path, f, contentType, &ws)
-			if err != nil {
-				return fmt.Errorf("import: %w", err)
+			var header http.Header
+			if contentType == "application/gzip" {
+				// BUG-3476: a bundle can be large and slow. Name the attempt
+				// so its outcome can be asked for when the answer does not
+				// arrive (BUG-3475), and watch the upload.
+				importKey := uuid.NewString()
+				sep := "?"
+				if strings.Contains(path, "?") {
+					sep = "&"
+				}
+				path += sep + "import_key=" + importKey
+				var total int64
+				if fi, statErr := f.Stat(); statErr == nil {
+					total = fi.Size()
+				}
+				body := cli.NewCountingReader(f)
+				watch := &importWatch{
+					total: total, body: body, stderr: os.Stderr,
+					tty:        term.IsTerminal(int(os.Stderr.Fd())),
+					tick:       5 * time.Second,
+					stallAfter: 90 * time.Second,
+					pollEvery:  10 * time.Second,
+					settleWait: 90 * time.Second,
+					upload: func(ctx context.Context) (http.Header, error) {
+						return client.PostStreamContext(ctx, path, body, contentType, &ws)
+					},
+					status: func() (*cli.ImportStatus, error) { return client.GetImportStatus(importKey) },
+				}
+				h, resolved, werr := watch.run()
+				if werr != nil {
+					return fmt.Errorf("import: %w", werr)
+				}
+				if resolved != nil {
+					fmt.Printf("Imported workspace %q (slug: %s)\n", resolved.status.WorkspaceName, resolved.status.WorkspaceSlug)
+					fmt.Println("  The server's answer was lost on the way back; it reported the import complete. Nothing needs re-running.")
+					return nil
+				}
+				header = h
+			} else {
+				h, err := client.PostStreamWithContentTypeHeaders(path, f, contentType, &ws)
+				if err != nil {
+					return fmt.Errorf("import: %w", err)
+				}
+				header = h
 			}
 
 			fmt.Printf("Imported workspace %q (slug: %s)\n", ws.Name, ws.Slug)
