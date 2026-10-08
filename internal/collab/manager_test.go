@@ -28,6 +28,11 @@ type fakeOpLog struct {
 	nextID  int64
 	failOn  string // if non-empty, AppendYjsUpdate returns this as an error message for any row
 	appendN int
+	// batchSizes records each AppendSyncFrames call's frame count (BUG-3253).
+	batchSizes []int
+	// appendGate, when set, holds the FIRST AppendSyncFrames call until it is
+	// closed, so a burst queues up behind it (BUG-3253).
+	appendGate chan struct{}
 
 	// contentFlushedIDs simulates the items.content_flushed_op_log_id
 	// watermark per item (TASK-1309 round 4). Tests populate this
@@ -61,6 +66,35 @@ type fakeOpLog struct {
 	// the conditional-DELETE path because it inserted the recent row
 	// before the listing query.
 	onListDormantHook func(f *fakeOpLog)
+}
+
+// AppendSyncFrames mirrors store.AppendSyncFrames: each frame as
+// AppendSyncFrame, all or nothing (BUG-3253). batchSizes records each call's
+// frame count.
+func (f *fakeOpLog) AppendSyncFrames(itemID string, frames [][]byte, schemaVersion string) ([]store.SyncFrameAppend, error) {
+	f.mu.Lock()
+	gate := f.appendGate
+	f.appendGate = nil
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	f.mu.Lock()
+	before := len(f.rows)
+	f.batchSizes = append(f.batchSizes, len(frames))
+	f.mu.Unlock()
+	out := make([]store.SyncFrameAppend, 0, len(frames))
+	for _, data := range frames {
+		one, err := f.AppendSyncFrame(itemID, data, schemaVersion)
+		if err != nil {
+			f.mu.Lock()
+			f.rows = f.rows[:before]
+			f.mu.Unlock()
+			return nil, err
+		}
+		out = append(out, one)
+	}
+	return out, nil
 }
 
 // AppendSyncFrame mirrors store.AppendSyncFrame's contract (BUG-3135): an
