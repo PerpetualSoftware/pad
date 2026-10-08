@@ -14,8 +14,9 @@
 	} from '$lib/stores/identityReload.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
-	import { setAccessRevokedHandler, setRateLimitHandler, setIdentityProvider } from '$lib/api/client';
+	import { setAccessRevokedHandler, setRateLimitHandler, setIdentityProvider, setNetworkUnreachableHandler } from '$lib/api/client';
 	import { notifyServerBusy } from '$lib/api/serverBusyToast';
+	import { notifyNetworkUnreachable } from '$lib/api/networkUnreachableToast';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
@@ -124,6 +125,12 @@
 	// toast-store import, matching the access-revoked split above.
 	setRateLimitHandler((retryAfterMs) => {
 		notifyServerBusy(retryAfterMs);
+	});
+	// A request whose fetch rejected before any response (TASK-2202): one
+	// deduped "can't reach the server" error toast, beside whatever the call
+	// site shows. Same split as the busy toast above.
+	setNetworkUnreachableHandler(() => {
+		notifyNetworkUnreachable();
 	});
 
 	onMount(() => {

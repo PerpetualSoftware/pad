@@ -522,6 +522,70 @@ function notifyRateLimited(retryAfterMs?: number): void {
 	}
 }
 
+type NetworkUnreachableHandler = () => void;
+
+let networkUnreachableHandler: NetworkUnreachableHandler | null = null;
+
+/**
+ * Register a single callback fired when a request cannot reach the server at
+ * all (TASK-2202): the browser's fetch rejected before any response, which is
+ * what an offline laptop or a dead route looks like. +layout.svelte wires it to
+ * a deduped "can't reach the server" toast, the same split as
+ * setRateLimitHandler, so client.ts stays free of the toast store.
+ */
+export function setNetworkUnreachableHandler(handler: NetworkUnreachableHandler | null): void {
+	networkUnreachableHandler = handler;
+}
+
+function notifyNetworkUnreachable(): void {
+	if (!networkUnreachableHandler) return;
+	try {
+		networkUnreachableHandler();
+	} catch (err) {
+		// eslint-disable-next-line no-console
+		console.warn('network-unreachable handler threw', err);
+	}
+}
+
+/**
+ * The error a request throws when the server could not be reached (TASK-2202).
+ * Its own code, so call sites and the toast can tell it from a refusal the
+ * server made. A WRITE's message does not claim the change was lost: a fetch
+ * can fail after the request left (a connection reset mid-response), so, as
+ * with request_timeout, "not saved" is a claim nobody can make.
+ */
+export function networkUnreachableError(isIdempotent: boolean): PadApiError {
+	return new PadApiError({
+		code: 'network_unreachable',
+		message: isIdempotent
+			? "Can't reach the server. Check your connection and try again."
+			: "Can't reach the server, so your change may not have been saved. Check your connection and try again.",
+	});
+}
+
+/**
+ * `fetch` for a direct WRITE that bypasses request() (TASK-2202, codex r1):
+ * attachment upload and transform, artifact import, checkout. Same rule as
+ * requestAttempt: an abort keeps its own path (each site's deadline turns its
+ * timeout into request_timeout), and any other rejection, which happened
+ * before a response existed, reports the outage and becomes
+ * network_unreachable instead of a raw TypeError.
+ */
+async function fetchWrite(input: string, init: RequestInit): Promise<Response> {
+	try {
+		return await fetch(input, init);
+	} catch (err) {
+		if (init.signal?.aborted) throw err;
+		notifyNetworkUnreachable();
+		throw networkUnreachableError(false);
+	}
+}
+
+/** True for the error a request throws when the server could not be reached. */
+export function isNetworkUnreachable(err: unknown): boolean {
+	return err instanceof PadApiError && err.code === 'network_unreachable';
+}
+
 /**
  * Parse a URL path and decide whether a 403 on it indicates that the
  * caller's READ access to the workspace's item set has been revoked.
@@ -904,12 +968,25 @@ async function requestAttempt<T>(
 	issuedAs: ReturnType<typeof currentIdentity>,
 	deadline: ReturnType<typeof requestDeadline>,
 ): Promise<T> {
-	const resp = await fetch(BASE + path, {
-		headers,
-		credentials: 'same-origin',
-		...options,
-		signal: deadline.signal,
-	});
+	let resp: Response;
+	try {
+		resp = await fetch(BASE + path, {
+			headers,
+			credentials: 'same-origin',
+			...options,
+			signal: deadline.signal,
+		});
+	} catch (err) {
+		// An abort, the caller's or our deadline's, keeps its own path:
+		// request() turns a timeout into request_timeout, and a caller's abort
+		// stays the AbortError it asked for. Anything else rejected before a
+		// response existed, so the server was not reached (TASK-2202). Only
+		// the fetch is wrapped: a TypeError from code below is a bug, not an
+		// outage, and must not be reported as one.
+		if (deadline.signal.aborted) throw err;
+		notifyNetworkUnreachable();
+		throw networkUnreachableError(isIdempotent);
+	}
 	// Every response, error statuses included, is a reading of the server's
 	// clock; the sync cursor is stamped from these, never from Date.now()
 	// (BUG-3207).
@@ -2984,7 +3061,7 @@ export const api = {
 			if (csrf) headers['X-CSRF-Token'] = csrf;
 
 			const qs = itemId ? `?item_id=${encodeURIComponent(itemId)}` : '';
-			const resp = await fetch(`${BASE}/workspaces/${workspaceSlug}/attachments${qs}`, {
+			const resp = await fetchWrite(`${BASE}/workspaces/${workspaceSlug}/attachments${qs}`, {
 				method: 'POST',
 				headers,
 				credentials: 'same-origin',
@@ -3052,7 +3129,7 @@ export const api = {
 			// created.
 			const deadline = requestDeadline(TRANSFORM_TIMEOUT_MS);
 			try {
-				const resp = await fetch(
+				const resp = await fetchWrite(
 					`${BASE}/workspaces/${workspaceSlug}/attachments/${attachmentId}/transform`,
 					{
 						method: 'POST',
@@ -3323,7 +3400,7 @@ export const api = {
 		const headers: Record<string, string> = { 'Content-Type': 'text/markdown' };
 		const csrf = getCSRFToken();
 		if (csrf) headers['X-CSRF-Token'] = csrf;
-		const resp = await fetch(`${BASE}/workspaces/${ws}/import-artifact`, {
+		const resp = await fetchWrite(`${BASE}/workspaces/${ws}/import-artifact`, {
 			method: 'POST',
 			headers,
 			credentials: 'same-origin',
@@ -3427,7 +3504,7 @@ export const api = {
 			// disabled on "Redirecting…" until it settles.
 			const deadline = requestDeadline(requestTimeoutMs);
 			try {
-				const r = await fetch('/billing/checkout', {
+				const r = await fetchWrite('/billing/checkout', {
 					method: 'POST',
 					credentials: 'same-origin',
 					headers: { 'Content-Type': 'application/json' },

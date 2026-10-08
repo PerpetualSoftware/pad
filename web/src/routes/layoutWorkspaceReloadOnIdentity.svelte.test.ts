@@ -27,6 +27,7 @@ vi.mock('$lib/api/client', () => ({
 	// without it throws before any assertion runs.
 	setIdentityProvider: () => {},
 	setRateLimitHandler: () => {},
+	setNetworkUnreachableHandler: () => {},
 	isPlanLimitError: () => false,
 	planLimitMessage: () => '',
 }));
