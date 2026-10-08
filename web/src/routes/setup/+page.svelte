@@ -24,6 +24,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
+	import { autofocus } from '$lib/a11y/autofocus';
 
 	// ── Token state ──────────────────────────────────────────────────────────
 	//
@@ -200,18 +201,6 @@
 			loading = false;
 		}
 	}
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') {
-			handleSubmit();
-		}
-	}
-
-	function handlePasteKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') {
-			handlePasteSubmit();
-		}
-	}
 </script>
 
 <AuthHeader cloudMode={authStore.cloudMode} />
@@ -231,23 +220,26 @@
 				started. It looks like a long random string.
 			</p>
 
-			<div class="form">
+			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handlePasteSubmit(); }}>
+				<label class="sr-only" for="setup-token">Bootstrap token</label>
 				<input
+					id="setup-token"
+					name="bootstrap-token"
+					use:autofocus
 					type="text"
 					placeholder="Bootstrap token"
 					bind:value={pastedToken}
-					onkeydown={handlePasteKeydown}
 					disabled={loading}
 					autocomplete="off"
 					spellcheck="false"
 				/>
 
 				{#if error}
-					<p class="error">{error}</p>
+					<p class="error" role="alert">{error}</p>
 				{/if}
 
-				<button onclick={handlePasteSubmit} disabled={loading}>Continue</button>
-			</div>
+				<button type="submit" disabled={loading}>Continue</button>
+			</form>
 		{:else}
 			<p class="subtitle">Create the first admin account</p>
 			<p class="hint">
@@ -261,55 +253,64 @@
 				</p>
 			{/if}
 
-			<div class="form">
+			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+				<label class="sr-only" for="setup-email">Email</label>
 				<input
+					id="setup-email"
+					name="email"
+					use:autofocus
 					type="email"
 					placeholder="Email"
 					bind:value={email}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="email"
 				/>
 
+				<label class="sr-only" for="setup-name">Name</label>
 				<input
+					id="setup-name"
+					name="name"
 					type="text"
 					placeholder="Name"
 					bind:value={name}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="name"
 				/>
 
+				<label class="sr-only" for="setup-password">Password (at least 8 characters)</label>
 				<input
+					id="setup-password"
+					name="password"
 					type="password"
 					placeholder="Password (min. 8 characters)"
 					bind:value={password}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="new-password"
 				/>
 
+				<label class="sr-only" for="setup-confirm-password">Confirm password</label>
 				<input
+					id="setup-confirm-password"
+					name="confirm-password"
 					type="password"
 					placeholder="Confirm password"
 					bind:value={confirmPassword}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="new-password"
 				/>
 
 				{#if error}
-					<p class="error">{error}</p>
+					<p class="error" role="alert">{error}</p>
 				{/if}
 
-				<button onclick={handleSubmit} disabled={loading}>
+				<button type="submit" disabled={loading}>
 					{#if loading}
 						Creating admin account…
 					{:else}
 						Create admin account
 					{/if}
 				</button>
-			</div>
+			</form>
 		{/if}
 	</div>
 

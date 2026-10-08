@@ -13,6 +13,7 @@
 	import { recordAuthMethod, getLastAuthMethod, type AuthMethod } from '$lib/auth/lastMethod';
 	import { validateRedirect } from '$lib/auth/redirect';
 	import { captureInvitationProof, clearInvitationProof } from '$lib/invitations/proof';
+	import { autofocus } from '$lib/a11y/autofocus';
 
 	let code = $derived(page.params.code ?? '');
 	// TASK-3352: the mailbox-only proof from the invitation EMAIL's link
@@ -439,16 +440,6 @@
 		formError = '';
 		submitting = false;
 	}
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') {
-			if (status === '2fa') {
-				handleVerify2FA();
-			} else {
-				handleSubmit();
-			}
-		}
-	}
 </script>
 
 <AuthHeader cloudMode={authStore.cloudMode} />
@@ -496,24 +487,28 @@
 		{:else if status === '2fa'}
 			<p class="subtitle">Two-factor authentication</p>
 
-			<div class="form">
-				<p class="hint">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
+			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleVerify2FA(); }}>
+				<p class="hint" id="join-totp-hint">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
 
+				<label class="sr-only" for="join-totp">Authentication code</label>
 				<input
+					id="join-totp"
+					name="totp"
+					aria-describedby="join-totp-hint"
+					use:autofocus
 					type="text"
 					placeholder="Authentication code"
 					bind:value={totpCode}
-					onkeydown={handleKeydown}
 					disabled={submitting}
 					autocomplete="one-time-code"
 					inputmode="numeric"
 				/>
 
 				{#if formError}
-					<p class="error">{formError}</p>
+					<p class="error" role="alert">{formError}</p>
 				{/if}
 
-				<button onclick={handleVerify2FA} disabled={submitting}>
+				<button type="submit" disabled={submitting}>
 					{#if submitting}
 						Verifying...
 					{:else}
@@ -524,86 +519,103 @@
 				<button class="back-button" onclick={handleBack2FA} disabled={submitting} type="button">
 					Back to sign in
 				</button>
-			</div>
+			</form>
 		{:else}
 			<p class="subtitle">You've been invited to a workspace</p>
 			<p class="hint">{mode === 'register' ? 'Create an account' : 'Sign in'} to accept</p>
 
-			<div class="form">
+			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
 				{#if mode === 'register'}
+					<label class="sr-only" for="join-name">Name</label>
 					<input
+						id="join-name"
+						name="name"
+						use:autofocus
 						type="text"
 						placeholder="Name"
 						bind:value={name}
 						oninput={handleNameInput}
-						onkeydown={handleKeydown}
 						disabled={submitting}
 						autocomplete="name"
 					/>
 
 					<div class="username-field">
+						<label class="sr-only" for="join-username">Username</label>
 						<input
+							id="join-username"
+							name="username"
+							aria-describedby="join-username-status"
 							type="text"
 							placeholder="Username"
 							bind:value={username}
 							oninput={handleUsernameInput}
-							onkeydown={handleKeydown}
 							disabled={submitting}
 							autocomplete="username"
 						/>
-						{#if usernameChecking}
-							<span class="username-status checking">checking...</span>
-						{:else if usernameAvailable === true}
-							<span class="username-status available">available</span>
-						{:else if usernameAvailable === false}
-							<span class="username-status taken">{usernameError || 'not available'}</span>
-						{/if}
+						<span id="join-username-status" aria-live="polite">
+							{#if usernameChecking}
+								<span class="username-status checking">checking...</span>
+							{:else if usernameAvailable === true}
+								<span class="username-status available">available</span>
+							{:else if usernameAvailable === false}
+								<span class="username-status taken">{usernameError || 'not available'}</span>
+							{/if}
+						</span>
 					</div>
 				{/if}
+				<label class="sr-only" for="join-email">Email</label>
 				<input
+					id="join-email"
+					name="email"
+					aria-describedby={invitedEmail !== null ? 'join-email-hint' : undefined}
+					use:autofocus={mode === 'login' && invitedEmail === null}
 					type="email"
 					placeholder="Email"
 					class:locked={invitedEmail !== null}
 					bind:value={email}
-					onkeydown={handleKeydown}
 					disabled={submitting}
 					readonly={invitedEmail !== null}
 					autocomplete="email"
 				/>
 				{#if invitedEmail !== null}
-					<p class="field-hint">This invitation was sent to this address.</p>
+					<p class="field-hint" id="join-email-hint">This invitation was sent to this address.</p>
 				{/if}
+				<label class="sr-only" for="join-password">Password</label>
 				<input
+					id="join-password"
+					name="password"
+					use:autofocus={mode === 'login' && invitedEmail !== null}
 					type="password"
 					placeholder="Password"
 					bind:value={password}
-					onkeydown={handleKeydown}
 					disabled={submitting}
 					autocomplete={mode === 'register' ? 'new-password' : 'current-password'}
 				/>
 				{#if mode === 'register'}
+					<label class="sr-only" for="join-confirm-password">Confirm password</label>
 					<input
+						id="join-confirm-password"
+						name="confirm-password"
 						type="password"
 						placeholder="Confirm password"
 						bind:value={confirmPassword}
-						onkeydown={handleKeydown}
 						disabled={submitting}
 						autocomplete="new-password"
 					/>
 				{/if}
 
 				{#if formError}
-					<p class="error">{formError}</p>
+					<p class="error" role="alert">{formError}</p>
 				{/if}
 
-				<button onclick={handleSubmit} disabled={submitting}>
+				<button type="submit" disabled={submitting}>
 					{#if submitting}
 						{mode === 'register' ? 'Creating account...' : 'Signing in...'}
 					{:else}
 						{mode === 'register' ? 'Create account & join' : 'Sign in'}
 					{/if}
 				</button>
-			</div>
+			</form>
 
 			<AuthOAuthButtons
 				cloudMode={authStore.cloudMode}

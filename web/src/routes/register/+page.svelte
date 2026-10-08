@@ -14,6 +14,7 @@
 		type AuthMethod
 	} from '$lib/auth/lastMethod';
 	import { navigateToRedirectTarget, redirectQueryFragment, validateRedirect } from '$lib/auth/redirect';
+	import { autofocus } from '$lib/a11y/autofocus';
 
 	let name = $state('');
 	let username = $state('');
@@ -210,12 +211,6 @@
 		// can't create or share until they verify.
 		await navigateToRedirectTarget(redirectTarget);
 	}
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') {
-			handleSubmit();
-		}
-	}
 </script>
 
 <AuthHeader cloudMode={authStore.cloudMode} />
@@ -267,68 +262,82 @@
 
 			<AuthIntentBanner {redirectTarget} mode="signup" />
 
-			<div class="form">
+			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+				<label class="sr-only" for="register-name">Name</label>
 				<input
+					id="register-name"
+					name="name"
+					use:autofocus
 					type="text"
 					placeholder="Name"
 					bind:value={name}
 					oninput={handleNameInput}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="name"
 				/>
 
 				<div class="username-field">
+					<label class="sr-only" for="register-username">Username</label>
 					<input
+						id="register-username"
+						name="username"
+						aria-describedby="register-username-status"
 						type="text"
 						placeholder="Username"
 						bind:value={username}
 						oninput={handleUsernameInput}
-						onkeydown={handleKeydown}
 						disabled={loading}
 						autocomplete="username"
 					/>
-					{#if usernameChecking}
-						<span class="username-status checking">checking...</span>
-					{:else if usernameAvailable === true}
-						<span class="username-status available">available</span>
-					{:else if usernameAvailable === false}
-						<span class="username-status taken">{usernameError || 'not available'}</span>
-					{/if}
+					<span id="register-username-status" aria-live="polite">
+						{#if usernameChecking}
+							<span class="username-status checking">checking...</span>
+						{:else if usernameAvailable === true}
+							<span class="username-status available">available</span>
+						{:else if usernameAvailable === false}
+							<span class="username-status taken">{usernameError || 'not available'}</span>
+						{/if}
+					</span>
 				</div>
 
+				<label class="sr-only" for="register-email">Email</label>
 				<input
+					id="register-email"
+					name="email"
 					type="email"
 					placeholder="Email"
 					bind:value={email}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="email"
 				/>
 
+				<label class="sr-only" for="register-password">Password</label>
 				<input
+					id="register-password"
+					name="password"
 					type="password"
 					placeholder="Password"
 					bind:value={password}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="new-password"
 				/>
 
+				<label class="sr-only" for="register-confirm-password">Confirm password</label>
 				<input
+					id="register-confirm-password"
+					name="confirm-password"
 					type="password"
 					placeholder="Confirm password"
 					bind:value={confirmPassword}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="new-password"
 				/>
 
 				{#if error}
-					<p class="error">{error}</p>
+					<p class="error" role="alert">{error}</p>
 				{/if}
 
-				<button onclick={handleSubmit} disabled={loading}>
+				<button type="submit" disabled={loading}>
 					{#if loading}
 						Creating account...
 					{:else}
@@ -344,7 +353,7 @@
 						<a href="https://getpad.dev/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.
 					</p>
 				{/if}
-			</div>
+			</form>
 
 			<AuthOAuthButtons
 				cloudMode={authStore.cloudMode}

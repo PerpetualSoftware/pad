@@ -15,6 +15,7 @@
 	} from '$lib/auth/lastMethod';
 	import { navigateToRedirectTarget, redirectQueryFragment, validateRedirect } from '$lib/auth/redirect';
 	import { readChallengeFragment } from '$lib/auth/challengeFragment';
+	import { autofocus } from '$lib/a11y/autofocus';
 
 	let email = $state('');
 	let password = $state('');
@@ -278,16 +279,6 @@
 		error = '';
 	}
 
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') {
-			if (step === 'credentials') {
-				handleSubmit();
-			} else {
-				handleVerify2FA();
-			}
-		}
-	}
-
 	// OAuth completion happens entirely outside the SPA — the user leaves
 	// pad, signs in with the provider, pad-cloud creates the session, and
 	// the browser is redirected back to the redirect target. There is no
@@ -382,24 +373,28 @@
 		{:else if step === '2fa'}
 			<p class="subtitle">Two-factor authentication</p>
 
-			<div class="form">
-				<p class="hint">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
+			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleVerify2FA(); }}>
+				<p class="hint" id="login-totp-hint">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
 
+				<label class="sr-only" for="login-totp">Authentication code</label>
 				<input
+					id="login-totp"
+					name="totp"
 					type="text"
 					placeholder="Authentication code"
 					bind:value={totpCode}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="one-time-code"
 					inputmode="numeric"
+					aria-describedby="login-totp-hint"
+					use:autofocus
 				/>
 
 				{#if error}
-					<p class="error">{error}</p>
+					<p class="error" role="alert">{error}</p>
 				{/if}
 
-				<button onclick={handleVerify2FA} disabled={loading}>
+				<button type="submit" disabled={loading}>
 					{#if loading}
 						Verifying...
 					{:else}
@@ -410,43 +405,48 @@
 				<button class="back-button" onclick={handleBack} disabled={loading} type="button">
 					Back to sign in
 				</button>
-			</div>
+			</form>
 		{:else}
 			<p class="subtitle">Sign in to continue</p>
 
 			<AuthIntentBanner {redirectTarget} mode="signin" />
 
-			<div class="form">
+			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+				<label class="sr-only" for="login-email">Email</label>
 				<input
+					id="login-email"
+					name="email"
 					type="email"
 					placeholder="Email"
 					bind:value={email}
-					onkeydown={handleKeydown}
 					disabled={loading}
-					autocomplete="email"
+					autocomplete="username"
+					use:autofocus
 				/>
 
+				<label class="sr-only" for="login-password">Password</label>
 				<input
+					id="login-password"
+					name="password"
 					type="password"
 					placeholder="Password"
 					bind:value={password}
-					onkeydown={handleKeydown}
 					disabled={loading}
 					autocomplete="current-password"
 				/>
 
 				{#if error}
-					<p class="error">{error}</p>
+					<p class="error" role="alert">{error}</p>
 				{/if}
 
-				<button onclick={handleSubmit} disabled={loading}>
+				<button type="submit" disabled={loading}>
 					{#if loading}
 						Signing in...
 					{:else}
 						Sign in
 					{/if}
 				</button>
-			</div>
+			</form>
 
 			<AuthOAuthButtons
 				{cloudMode}
