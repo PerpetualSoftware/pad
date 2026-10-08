@@ -82,7 +82,9 @@
 	const TYPED_ARCHIVE_THRESHOLD = 25;
 	let archiveTyped = $state('');
 	const archiveItemCount = $derived(collection.item_count);
-	const archiveNeedsTyping = $derived((archiveItemCount ?? 0) >= TYPED_ARCHIVE_THRESHOLD);
+	// An UNKNOWN count fails closed (codex r1): the confirm cannot say how
+	// much is going, so the typed guard stands in for the number.
+	const archiveNeedsTyping = $derived(archiveItemCount === undefined || archiveItemCount >= TYPED_ARCHIVE_THRESHOLD);
 	const archiveConfirmed = $derived(!archiveNeedsTyping || archiveTyped.trim() === collection.name);
 
 	async function handleArchive() {

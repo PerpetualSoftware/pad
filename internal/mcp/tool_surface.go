@@ -94,6 +94,8 @@ var readOnlyActions = map[string]map[string]bool{
 	},
 	"pad_collection": {
 		"list": true,
+		// TASK-2189: restore is a write; list-archived is read-only.
+		"list-archived": true,
 	},
 	"pad_project": {
 		"dashboard": true,

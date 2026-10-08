@@ -120,6 +120,12 @@ describe('archive confirm', () => {
 		expect(api.del).toHaveBeenCalledTimes(1);
 	});
 
+	it('an UNKNOWN item count fails closed: the name must be typed', async () => {
+		await openConfirm(undefined as unknown as number);
+		expect(document.querySelector('.danger-zone-typed')).not.toBeNull();
+		expect(button(/^Yes, archive$/)!.disabled).toBe(true);
+	});
+
 	it('the success toast carries an Undo that restores the collection by id', async () => {
 		await openConfirm(2);
 		button(/^Yes, archive$/)!.click();
