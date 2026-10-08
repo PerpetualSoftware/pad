@@ -20,22 +20,11 @@ Inputs are validated strictly: an undeclared top-level key is rejected with a st
 
 **App attribution (v0.65).** An item an installed app created, a comment an app wrote and a history row an app's write made carry `via_app` (the install id) and `via_app_name` (the app's name). On an item they name the app that CREATED it, not the last writer. They are absent for anything a person or an agent wrote.
 
-**Relation fields (v0.31).** A `relation` value may be a UUID, an issue ref (`COLO-3`), or the target item's EXACT TITLE — in that order, so an item literally titled `COLO-3` is unreachable by title while the ref resolves. Title matching is scoped to the collection the field declares: a title that is unique only workspace-wide is REFUSED, naming the collection searched, and a title matching two or more items inside the declared collection is refused as `ambiguous` rather than `not_found` — it matched too much, not too little. Only items YOU can see count towards any of that, so a match you have no access to never changes your answer.
+**Relation fields (v0.31).** A `relation` value may be a UUID, an issue ref (`COLO-3`) or the target's EXACT TITLE, tried in that order (a title that is also a ref resolves as the ref). A title matches only inside the declared collection, among items you can see; found only elsewhere, it is refused naming that collection; several matches are `ambiguous`. Full rules: docs/mcp.md.
 
 Reads carry a `relation_targets` member beside `fields`: field key → `{id, ref, title}`, so you can render a relation without a request per value. `fields` still holds the canonical id, which is what you write back. An entry with an `id` and NO `ref`/`title` means the target is gone **or** you may not see it — the two are deliberately indistinguishable, so do not render it as either "deleted" or "hidden"; "unavailable" is the honest word. An entry with `stored_as_text: true` differs: the stored value is not UUID-shaped, so it was never an id (an imported title, legacy text). Render it as text, not as unavailable.
 
-**`multi_relation` fields (v0.33).** A field declared `multi_relation` holds an ORDERED LIST of references — `["<uuid>", "COLO-3", "Red"]` — and every element resolves through the same UUID → ref → exact-title ladder, with the same collection scoping. Declare one through the `fields` DSL as `owners:multi_relation:people`: the third part is the TARGET COLLECTION, and omitting it is refused at parse time rather than building a field no write can ever satisfy.
-
-Four rules differ from a scalar `relation`, and none of them is guessable from the scalar behaviour:
-
-- **There is exactly one stored form for "no references": the key ABSENT.** Send `[]` and the write normalises it to that. A `required` `multi_relation` means at least one element that RESOLVED, so `[]` and an absent key both refuse.
-- **An empty or whitespace-only ELEMENT is refused**, naming its index — it is not skipped the way an empty scalar value is. Remove the element rather than blanking it.
-- **Order is part of the value.** `["a","b"]` and `["b","a"]` are different values, and a write preserves the order you sent.
-- **Duplicates are refused**, with reason `duplicate_referent`, naming the SECOND occurrence. Two elements can be different strings naming one item — a UUID and a ref, a ref and a title — so this is decided after resolution, and the two forms you sent may look nothing alike.
-
-If ANY element fails, the whole write is refused and nothing is stored — never a partial list. On a cross-workspace copy the value is dropped WHOLE and reported once in `warnings.dropped_fields`, so an import can never change an element count.
-
-In `relation_targets`, a `multi_relation` key carries a JSON **ARRAY** of the same `{id, ref, title}` objects, in stored order and one per stored element — including an `id`-only entry for an element that names nothing, so a position in the list lines up with the same position in `fields`. A scalar key is unchanged: still a single object, byte-identical to v0.31. Decide which shape to expect from the field's declared type, not by probing.
+**`multi_relation` fields (v0.33).** An ORDERED LIST of references, each resolved like a `relation` (UUID, ref, or exact title in the declared collection). Declare one as `owners:multi_relation:people`; the target collection is required. Rules: `[]` means absent; a blank element is refused by index; order is part of the value; duplicates are refused after resolution (`duplicate_referent`); any failing element refuses the whole write; `required` needs one resolved element; a cross-workspace copy drops the whole value (in `warnings.dropped_fields`). `relation_targets` holds an ARRAY of `{id, ref, title}` in stored order (`id`-only where unresolved); scalar keys stay single objects. Full rules: docs/mcp.md.
 
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore.
 - `pad_collection` — Collections: list / create / update / delete / list-archived / restore. `delete` archives: the collection and its items leave every view, and `restore` brings them back. An `update` that removes a field or a select option still in use answers with `warnings.orphaned`: tell the user how many items keep the removed value.
@@ -52,17 +41,7 @@ For the ten resource × action tools, always pass `action` as a top-level field.
 
 ## Resources are cheaper than tool calls
 
-Read these directly when you need workspace state:
-
-- `pad://workspace/{ws}/dashboard` — computed project overview (active items, plans, attention, suggested next).
-- `pad://workspace/{ws}/collections` — collection types + schemas.
-- `pad://workspace/{ws}/items` — list of all items (use `pad_item.action: list` for filtering).
-- `pad://workspace/{ws}/items/{ref}` — single item rendered as markdown.
-- `pad://workspace/{ws}/attachments/{id}` — image attachment as a bounded base64 `thumb-md` resource; rejects non-images and image bytes over 1 MiB (pre-base64).
-- `pad://workspace/{ws}/bootstrap` — one-shot workspace context (same payload as `pad_meta.action: bootstrap` and `pad_set_workspace`'s embedded response).
-- `pad://_meta/version` — server version + stability tiers.
-
-Resources support host-side prefetch — if the host can fetch them once at session start, you don't pay per turn.
+Read these directly when you need workspace state (described in the resource listings): `pad://workspaces`, `pad://workspace/{ws}/dashboard`, `.../collections`, `.../items` (use `pad_item` `list` to filter), `.../items/{ref}` (markdown), `.../attachments/{id}` (images only, at most 1 MiB, as base64 `thumb-md`), `.../bootstrap` (the same payload as `pad_meta` `bootstrap`), and `pad://_meta/version`. A host can prefetch them once per session.
 
 Load the bootstrap resource once per workspace and reuse its collections, conventions, roles, and playbook metadata. Refresh it after switching workspaces, after changing those configuration surfaces, when Pad reports stale schema/context, or when the user asks. For changing work state, read the affected item or use a targeted project tool instead of fetching the whole bootstrap again.
 
