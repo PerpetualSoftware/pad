@@ -22,6 +22,7 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
+	import PartialImportBanner from '$lib/components/PartialImportBanner.svelte';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -638,6 +639,14 @@
 				{/if}
 			</div>
 		</header>
+
+		<!-- Partial-import banner (TASK-896). -->
+		<PartialImportBanner
+			slug={wsSlug}
+			status={workspaceStore.current?.slug === wsSlug ? workspaceStore.current?.import_status : undefined}
+			{isOwner}
+			deleteHref="/{username}/{wsSlug}/settings#danger"
+		/>
 
 		<!-- Degraded-load banner (BUG-2014). When one or more best-effort
 			dashboard sub-queries failed server-side, the response still returns

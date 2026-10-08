@@ -384,6 +384,10 @@ func NULProtectedColumns() []nulColumn {
 // on an unlisted column are to fail on every known exclusion or to ignore the
 // class entirely.
 var nulExcluded = map[string]string{
+	"workspace_import_status.workspace_id":   "server-minted workspace UUID, a foreign key to workspaces(id) (TASK-896, migration 131)",
+	"workspace_import_status.status":         "fixed server constant store.ImportStatusPartial (TASK-896); never from a request or a bundle",
+	"workspace_import_status.note":           "composed by the server from a fixed category, a fixed detail and a server-minted correlation id (TASK-896, lead ruling): never request bytes, paths or driver text",
+	"workspace_import_status.created_at":     "server timestamp from now() (TASK-896)",
 	"item_builtin_origin.item_id":            "server-minted item UUID, a foreign key to items(id) (TASK-3462, migration 128)",
 	"item_builtin_origin.created_at":         "server timestamp from now() (TASK-3462)",
 	"item_builtin_origin.builtin_key":        "refused by models.BuiltinOrigin.Validate unless it matches a lowercase [a-z0-9-/] path, so no NUL can be stored, on every write including import (TASK-3462)",

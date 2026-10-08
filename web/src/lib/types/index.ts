@@ -286,6 +286,15 @@ export interface Workspace {
 	// on soft-deleted rows — e.g. entries from GET /workspaces/deleted; the
 	// normal switcher list omits it.
 	deleted_at?: string | null;
+	// Present only on a workspace a bundle import created and KEPT after an
+	// error partway through (TASK-896). `note` is sent to owners and admins
+	// only, and only by GET /workspaces/{slug}; the list carries the status.
+	import_status?: WorkspaceImportStatus;
+}
+
+export interface WorkspaceImportStatus {
+	status: 'partial';
+	note?: string;
 }
 
 // DeletedWorkspace is one entry from GET /api/v1/workspaces/deleted — a
@@ -422,6 +431,9 @@ export interface WorkspaceUpdate {
 	description?: string;
 	settings?: string;
 	context?: WorkspaceContext;
+	// Removes the partial-import marker (TASK-896). Owner-only, like every
+	// workspace PATCH.
+	clear_import_status?: boolean;
 }
 
 export interface WorkspaceTemplate {

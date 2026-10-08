@@ -22,6 +22,19 @@ type Workspace struct {
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 	DeletedAt *time.Time        `json:"deleted_at,omitempty"`
+	// ImportStatus is set only on a workspace a bundle import created and
+	// KEPT after a data error past the point of no return (TASK-896).
+	// Populated by the handlers from workspace_import_status, never stored
+	// on the workspaces row. Note is visible to owners and admins only.
+	ImportStatus *WorkspaceImportStatus `json:"import_status,omitempty"`
+}
+
+// WorkspaceImportStatus marks a workspace an import left partly built
+// (TASK-896). Status is "partial"; Note is a server-composed, sanitized
+// reason (a fixed category plus a correlation id the server log carries).
+type WorkspaceImportStatus struct {
+	Status string `json:"status"`
+	Note   string `json:"note,omitempty"`
 }
 
 type WorkspaceCreate struct {
@@ -47,4 +60,7 @@ type WorkspaceUpdate struct {
 	Description *string           `json:"description,omitempty"`
 	Settings    *string           `json:"settings,omitempty"`
 	Context     *WorkspaceContext `json:"context,omitempty"`
+	// ClearImportStatus removes a partial-import marker (TASK-896): the
+	// owner has inspected what an interrupted import kept and keeps it.
+	ClearImportStatus bool `json:"clear_import_status,omitempty"`
 }

@@ -1038,8 +1038,15 @@ func workspacesCmd() *cobra.Command {
 				if ws.Slug == current {
 					marker = "* "
 				}
-				fmt.Printf("%s%s (%s) — updated %s\n",
-					marker, ws.Name, ws.Slug, cli.RelativeTime(ws.UpdatedAt))
+				// TASK-896: a workspace an interrupted import kept says so.
+				// Text output only: the JSON shape mirrors the MCP
+				// workspace-list resource, which both transports must agree on.
+				partial := ""
+				if ws.ImportStatus != nil {
+					partial = " — partly imported (see its settings page)"
+				}
+				fmt.Printf("%s%s (%s) — updated %s%s\n",
+					marker, ws.Name, ws.Slug, cli.RelativeTime(ws.UpdatedAt), partial)
 			}
 			return nil
 		},
