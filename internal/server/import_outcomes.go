@@ -35,6 +35,9 @@ const (
 
 const (
 	importOutcomeTTL = time.Hour
+	// importOutcomeRunningTTL bounds a RUNNING entry: longer than the
+	// import's 1h read ceiling plus its work after the last byte.
+	importOutcomeRunningTTL = 2 * time.Hour
 	// importOutcomeMax bounds the map. A key is minted per attempt by a
 	// signed-in user, so this is far above real use; past it the oldest
 	// entries go first.
@@ -115,9 +118,20 @@ func (g *importOutcomeRegistry) get(userID, key string) (importOutcome, bool) {
 }
 
 func (g *importOutcomeRegistry) sweepLocked() {
-	cutoff := g.now().Add(-importOutcomeTTL)
+	now := g.now()
+	cutoff := now.Add(-importOutcomeTTL)
+	// A RUNNING entry outlives the TTL (codex r2): an import may read for up
+	// to its 1h ceiling (defaultImportReadCeiling) and then still finish, and
+	// expiring its key mid-upload would let the key begin again beside it.
+	// Every path that returns records an end, so a running entry this old
+	// belongs to a request that can no longer finish.
+	runningCutoff := now.Add(-importOutcomeRunningTTL)
 	for k, e := range g.entries {
-		if e.updated.Before(cutoff) {
+		limit := cutoff
+		if e.State == importStateRunning {
+			limit = runningCutoff
+		}
+		if e.updated.Before(limit) {
 			delete(g.entries, k)
 		}
 	}

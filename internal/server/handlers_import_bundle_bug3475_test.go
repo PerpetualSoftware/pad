@@ -206,6 +206,10 @@ func (c *countingReader) Read(p []byte) (int, error) {
 }
 
 func TestImportOutcomeRegistry_BUG3475(t *testing.T) {
+	if importOutcomeRunningTTL <= defaultImportReadCeiling {
+		t.Fatalf("importOutcomeRunningTTL (%s) must outlast the import read ceiling (%s): a key expiring mid-upload can begin again",
+			importOutcomeRunningTTL, defaultImportReadCeiling)
+	}
 	g := newImportOutcomeRegistry()
 	clock := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	g.now = func() time.Time { return clock }
@@ -228,9 +232,22 @@ func TestImportOutcomeRegistry_BUG3475(t *testing.T) {
 		t.Fatalf("get = %+v %v", e, ok)
 	}
 
+	// A RUNNING entry survives the TTL while its upload may still be reading
+	// (the 1h read ceiling); a settled one does not (codex r2).
+	g.begin("u3", "k-long-running")
 	clock = clock.Add(importOutcomeTTL + time.Second)
 	if _, ok := g.get("u1", "k1"); ok {
-		t.Error("an entry outlived the TTL")
+		t.Error("a settled entry outlived the TTL")
+	}
+	if e, ok := g.get("u3", "k-long-running"); !ok || e.State != importStateRunning {
+		t.Fatal("a running entry expired at the settled TTL, while its upload may still be reading")
+	}
+	if g.begin("u3", "k-long-running") {
+		t.Error("a long-running key could begin again")
+	}
+	clock = clock.Add(importOutcomeRunningTTL)
+	if _, ok := g.get("u3", "k-long-running"); ok {
+		t.Error("a running entry outlived importOutcomeRunningTTL")
 	}
 
 	// At the bound, the oldest SETTLED entry makes room; a running one never
