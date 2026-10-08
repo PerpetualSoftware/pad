@@ -203,6 +203,13 @@ const (
 	// comment_has_replies; that code stays for servers that predate it.
 	ErrCommentDeleted ErrorCode = "comment_deleted"
 
+	// ErrLeaseHeld fires on HTTP 409 responses that carry
+	// error.code="lease_held" (BUG-3496): a claim on an item another holder
+	// leases. Details carries ref, holder, acquired_at and expires_at, so the
+	// caller can see who has it and until when. A retry before expires_at
+	// refuses identically.
+	ErrLeaseHeld ErrorCode = "lease_held"
+
 	// ErrStoredStateUnreadable fires when an operation is refused because
 	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
 	// implementation_notes / decision_log field whose value is not a list
@@ -475,6 +482,9 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// BUG-3252 tombstone: a write addressed to a deleted comment that is
 	// kept only to hold its replies.
 	"comment_deleted": {},
+	// BUG-3496: a claim on an item someone else leases. details.holder and
+	// details.expires_at say who and until when.
+	"lease_held": {},
 	// BUG-2675. The only entry whose marker is written for a LOCALLY
 	// generated refusal rather than an upstream APIError — the CLI's
 	// append helpers refuse before any request is made (see
@@ -1012,6 +1022,10 @@ func classifyHTTPStatusKind(
 				// The tombstone stays a tombstone; no retry changes it.
 				hint = CommentDeletedHint
 			}
+			if upstream.Code == string(ErrLeaseHeld) {
+				// The lease stands until it expires or its holder releases it.
+				hint = LeaseHeldHint
+			}
 			if upstream.Code == string(ErrStoredStateUnreadable) {
 				// Same reason: the stored value stays undecodable, so every
 				// retry refuses identically. Since BUG-3056 the note/decide
@@ -1359,6 +1373,12 @@ const CommentHasRepliesHint = "Nothing was deleted. Delete the replies first (th
 // marker carries it on stdio; keep the two identical.
 const CommentDeletedHint = "The comment was deleted and is kept only as a placeholder for its replies, so it cannot be edited, " +
 	"replied to or reacted to. Comment on the item, or reply to one of its replies, instead."
+
+// LeaseHeldHint is the recovery guidance for ErrLeaseHeld on the remote
+// transport. Duplicated in internal/cli (LeaseHeldHint), whose marker carries
+// it on stdio; keep the two identical.
+const LeaseHeldHint = "Another holder (details.holder) has claimed this item until details.expires_at. " +
+	"Pick other work, or wait until the lease expires; claiming again before then is refused the same way."
 
 // ContentPendingFlushHint is the recovery guidance for ErrContentPendingFlush,
 // on both transports. Duplicated in internal/cli (ContentPendingFlushHint) for

@@ -1752,6 +1752,11 @@ const CmdhelpVersion = "0.1"
 //     lease; a reconnect gets a new session id, so the agent's own earlier
 //     lease reads as foreign until it expires (at most 15 minutes by
 //     default). Stdio is unchanged. No name, enum or param moved.
+//     BUG-3496 rides with it: a claim refused because another holder has
+//     the lease reaches the caller as `lease_held` (details ref, holder,
+//     acquired_at, expires_at, and a hint not to retry before expiry) on
+//     both transports, where remote answered `conflict` and stdio
+//     `server_error`.
 //
 //     0.76 — TASK-1809 (lead ruling). BEHAVIOR bump on the v0.70 / v0.49
 //     grounds: no tool name, action enum or param shape moved. Two

@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
@@ -253,12 +255,35 @@ func TestBUG2772_RemoteLeaseHolderIsPerConnection(t *testing.T) {
 		t.Fatalf("holder = %q, want %q", lease.Holder, want)
 	}
 
-	// The same client on another connection is a different holder.
-	// Refused. The remote envelope's code reads `conflict`, not `lease_held`,
-	// because the remote classifier drops that upstream code (filed
-	// separately); the holder in the message is the refusal's evidence.
-	if raw := w.call("claim_task", `{"ref":"`+it.Ref+`"}`, b); !strings.Contains(raw, `"isError":true`) || !strings.Contains(raw, "leased to") {
-		t.Fatalf("session b claimed an item session a holds: %s", raw)
+	// The same client on another connection is a different holder, refused
+	// as lease_held with the holder and expiry (BUG-3496: the remote
+	// classifier used to drop that code and answer `conflict`).
+	raw := w.call("claim_task", `{"ref":"`+it.Ref+`"}`, b)
+	var resp struct {
+		Result struct {
+			IsError           bool `json:"isError"`
+			StructuredContent struct {
+				Error struct {
+					Code    string `json:"code"`
+					Hint    string `json:"hint"`
+					Details struct {
+						Holder    string `json:"holder"`
+						ExpiresAt string `json:"expires_at"`
+					} `json:"details"`
+				} `json:"error"`
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil || !resp.Result.IsError {
+		t.Fatalf("session b claimed an item session a holds (err %v): %s", err, raw)
+	}
+	e := resp.Result.StructuredContent.Error
+	if e.Code != string(ErrLeaseHeld) || e.Hint != LeaseHeldHint {
+		t.Fatalf("code = %q hint = %q, want lease_held with LeaseHeldHint: %s", e.Code, e.Hint, raw)
+	}
+	if e.Details.Holder != lease.Holder || e.Details.ExpiresAt == "" {
+		t.Fatalf("details holder = %q expires_at = %q, want %q and an expiry: %s",
+			e.Details.Holder, e.Details.ExpiresAt, lease.Holder, raw)
 	}
 
 	// next/ready: the holder still sees its own claim; the other does not.
@@ -303,4 +328,13 @@ func TestBUG2772_ResolveRemoteCaller(t *testing.T) {
 			t.Fatalf("got %+v", c)
 		}
 	})
+}
+
+func TestCLIAndMCPAgreeOnLeaseHeld(t *testing.T) {
+	if cli.LeaseHeldCode != string(ErrLeaseHeld) {
+		t.Errorf("code strings differ: cli %q, mcp %q", cli.LeaseHeldCode, ErrLeaseHeld)
+	}
+	if cli.LeaseHeldHint != LeaseHeldHint {
+		t.Errorf("hints differ:\n cli %q\n mcp %q", cli.LeaseHeldHint, LeaseHeldHint)
+	}
 }
