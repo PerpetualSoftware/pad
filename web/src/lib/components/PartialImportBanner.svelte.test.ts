@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
 	updates: [] as Array<{ slug: string; data: Record<string, unknown> }>,
 	setCurrent: [] as unknown[],
 	current: null as { slug: string } | null,
-	epoch: 0
+	epoch: 0,
+	flipEpochOnGet: false
 }));
 
 vi.mock('$lib/api/client', () => ({
@@ -18,6 +19,7 @@ vi.mock('$lib/api/client', () => ({
 		workspaces: {
 			get: vi.fn((slug: string) => {
 				mocks.gets.push(slug);
+				if (mocks.flipEpochOnGet) mocks.epoch++;
 				return Promise.resolve({ slug, import_status: { status: 'partial', note: 'Reference imp-abc.' } });
 			}),
 			update: vi.fn((slug: string, data: Record<string, unknown>) => {
@@ -64,6 +66,7 @@ beforeEach(() => {
 	mocks.setCurrent = [];
 	mocks.current = { slug: 'ws' };
 	mocks.epoch = 0;
+	mocks.flipEpochOnGet = false;
 });
 afterEach(() => cleanup());
 
@@ -112,6 +115,14 @@ describe('PartialImportBanner', () => {
 		await flush();
 		expect(mocks.updates).toHaveLength(1);
 		expect(mocks.setCurrent).toEqual([]);
+	});
+
+	it('never shows a note fetched for a previous identity', async () => {
+		mocks.flipEpochOnGet = true;
+		render(PartialImportBanner, { slug: 'ws', status: partial, isOwner: true });
+		await flush();
+		expect(mocks.gets).toEqual(['ws']);
+		expect(document.querySelector('[data-testid="partial-import-note"]')).toBeNull();
 	});
 
 	it('offers the settings page an in-page delete', async () => {

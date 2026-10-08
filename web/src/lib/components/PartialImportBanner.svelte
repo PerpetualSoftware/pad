@@ -30,7 +30,9 @@
 	// re-resolves `current` from the PATCH answer.
 	let clearedFor = $state<string | null>(null);
 	let note = $state<string | null>(null);
-	let noteFor = $state<string | null>(null);
+	// Plain, not $state: the effect below reads AND writes it, and a rune
+	// here would re-run the effect on its own write.
+	let noteFor: string | null = null;
 	let keeping = $state(false);
 	let error = $state<string | null>(null);
 
@@ -38,13 +40,17 @@
 
 	$effect(() => {
 		const s = slug;
-		if (!visible || !isOwner || noteFor === s) return;
-		noteFor = s;
+		// Keyed on the identity too: a note fetched for one signed-in account
+		// must never be shown to the next on the same route (codex r2).
+		const epoch = authStore.identityEpoch;
+		const key = `${epoch}:${s}`;
+		if (!visible || !isOwner || noteFor === key) return;
+		noteFor = key;
 		note = null;
 		api.workspaces
 			.get(s)
 			.then((ws) => {
-				if (slug === s) note = ws.import_status?.note ?? null;
+				if (slug === s && authStore.identityEpoch === epoch) note = ws.import_status?.note ?? null;
 			})
 			.catch(() => {
 				// The banner stands without the reason.

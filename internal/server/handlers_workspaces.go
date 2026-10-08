@@ -628,10 +628,16 @@ func (s *Server) attachImportStatus(w http.ResponseWriter, r *http.Request, ws *
 	return true
 }
 
-// mayReadImportNote: the workspace's owners and instance admins.
+// mayReadImportNote: the workspace's owners, and instance admins who are
+// MEMBERS of it. An admin admitted only through a guest grant reads the
+// workspace as a guest and gets the status alone (codex r2).
 func mayReadImportNote(r *http.Request) bool {
-	if workspaceRole(r) == "owner" {
+	role := workspaceRole(r)
+	if role == "owner" {
 		return true
+	}
+	if role == "" || role == "guest" {
+		return false
 	}
 	u := currentUser(r)
 	return u != nil && u.Role == "admin"

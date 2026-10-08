@@ -2,9 +2,11 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -233,6 +235,35 @@ func TestImportPartialMarker_FailedRollbackMarks(t *testing.T) {
 		}
 		if !strings.Contains(st.Note, "could not be removed") || !strings.Contains(st.Note, "Reference imp-") {
 			t.Errorf("%s: note = %q", slug, st.Note)
+		}
+	}
+}
+
+// Who reads the note: owners, and instance admins who are MEMBERS. An admin
+// admitted as a guest reads the workspace as a guest (codex r2).
+func TestImportPartialMarker_NoteReaders(t *testing.T) {
+	admin := &models.User{ID: "a", Role: "admin"}
+	member := &models.User{ID: "m", Role: "member"}
+	for _, c := range []struct {
+		name string
+		user *models.User
+		role string
+		want bool
+	}{
+		{"owner", member, "owner", true},
+		{"editor", member, "editor", false},
+		{"viewer", member, "viewer", false},
+		{"guest", member, "guest", false},
+		{"admin editor", admin, "editor", true},
+		{"admin viewer", admin, "viewer", true},
+		{"admin guest", admin, "guest", false},
+		{"admin no role", admin, "", false},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		ctx := WithCurrentUser(r.Context(), c.user)
+		ctx = context.WithValue(ctx, ctxWorkspaceRole, c.role)
+		if got := mayReadImportNote(r.WithContext(ctx)); got != c.want {
+			t.Errorf("%s: mayReadImportNote = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
