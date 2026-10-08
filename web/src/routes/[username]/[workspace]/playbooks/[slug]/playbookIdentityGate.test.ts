@@ -14,15 +14,17 @@ identityGateSuite({
 	source: new URL('./+page.svelte', import.meta.url),
 	table: {
 		asyncFunctions: {
-			loadItem: { reviewed: '1d65e4a33dc3', why: 'workspace, ref AND the entry identity fence after the fetch, on both arms and in the finally' },
-			loadPlaybooks: { reviewed: '6825e2ad3d9b', why: 'workspace AND the entry identity fence after the fetch, on both arms' },
-			loadCollection: { reviewed: '5e49f16c7659', why: 'workspace AND the entry identity fence after the fetch, on both arms' },
+			loadItem: { reviewed: 'ddb132d1e9ed', why: 'workspace, ref AND the entry identity fence after the fetch, on both arms and in the finally' },
+			loadPlaybooks: { reviewed: 'd560f4908391', why: 'workspace AND the entry identity fence after the fetch, on both arms' },
+			loadCollection: { reviewed: '66a2b5bbd01e', why: 'workspace AND the entry identity fence after the fetch, on both arms' },
 			save: { reviewed: 'fb8f881517e3', why: 'user-initiated save; the entry identity fence before the dialog, after its answer (so the overwrite re-send never goes under another identity), before the success report and navigation, on the failure report, and on the finally that clears saving. Re-read for BUG-3270: its entry also returns, before any await, when the caller may not edit the item' },
 			handleExport: { reviewed: 'bd5b6bebfde2', why: 'user-initiated export; the entry identity fence before either toast and on the finally that clears exporting' },
 		},
 		nested: [],
 		markup: [],
-		continuations: [],
+		continuations: [
+			{ call: /collectionStore\.ensureCollections\(ws\)\.catch\($/, body: /./, why: 'loadItem collections warm-up (BUG-3481): a failure leaves the default slug in force; commits nothing', reviewed: '8f4c5496a170' },
+		],
 		helpers: {},
 		identifierCallbacks: [],
 	},
@@ -37,15 +39,15 @@ identityGateSuite({
 		{
 			cls: 2,
 			what: 'an async object method at component level',
-			old: '\tasync function loadPlaybooks(ws: string) {\n',
-			new: '\tconst extra = { async run() { await Promise.resolve(); existingPlaybooks = []; } };\n\tasync function loadPlaybooks(ws: string) {\n',
+			old: '\tasync function loadPlaybooks(ws: string, pb: string) {\n',
+			new: '\tconst extra = { async run() { await Promise.resolve(); existingPlaybooks = []; } };\n\tasync function loadPlaybooks(ws: string, pb: string) {\n',
 			names: 'nested async function',
 		},
 		{
 			cls: 3,
 			what: "loadCollection's success arm loses its own check while its failure arm keeps one",
-			old: "\t\t\tconst coll = await api.collections.get(ws, 'playbooks');\n\t\t\tif (ws !== wsSlug || !isSameIdentity()) return;\n",
-			new: "\t\t\tconst coll = await api.collections.get(ws, 'playbooks');\n",
+			old: "\t\t\tconst coll = await api.collections.get(ws, pb);\n\t\t\tif (ws !== wsSlug || pb !== playbooksSlug || !isSameIdentity()) return;\n",
+			new: "\t\t\tconst coll = await api.collections.get(ws, pb);\n",
 			names: 'loadCollection()',
 		},
 		{
@@ -58,8 +60,8 @@ identityGateSuite({
 		{
 			cls: 5,
 			what: "loadPlaybooks' success return is made conditional on something that never holds",
-			old: "\t\t\tconst list = await api.items.listByCollection(ws, 'playbooks', {});\n\t\t\tif (ws !== wsSlug || !isSameIdentity()) return;\n",
-			new: "\t\t\tconst list = await api.items.listByCollection(ws, 'playbooks', {});\n\t\t\tif ((ws !== wsSlug || !isSameIdentity()) && list === null) return;\n",
+			old: "\t\t\tconst list = await api.items.listByCollection(ws, pb, {});\n\t\t\tif (ws !== wsSlug || pb !== playbooksSlug || !isSameIdentity()) return;\n",
+			new: "\t\t\tconst list = await api.items.listByCollection(ws, pb, {});\n\t\t\tif ((ws !== wsSlug || pb !== playbooksSlug || !isSameIdentity()) && list === null) return;\n",
 			names: 'loadPlaybooks()',
 		},
 	],

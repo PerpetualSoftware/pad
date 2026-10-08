@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { artifactSlugFor } from '$lib/collections/artifactSlug';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
@@ -104,8 +106,21 @@
 			// (BUG-3236).
 			untrack(() => {
 				loadItem(ws, r);
-				loadPlaybooks(ws);
-				loadCollection(ws);
+			});
+		}
+	});
+
+	// The list and the schema follow the playbooks collection's CURRENT slug
+	// (BUG-3481), in their own effect so a slug resolving later never reloads
+	// the item or drops an open form.
+	const playbooksSlug = $derived(artifactSlugFor(wsSlug, 'playbook'));
+	$effect(() => {
+		const pb = playbooksSlug;
+		if (wsSlug) {
+			const ws = wsSlug;
+			untrack(() => {
+				loadPlaybooks(ws, pb);
+				loadCollection(ws, pb);
 			});
 		}
 	});
@@ -134,7 +149,12 @@
 			// rewrite the task's fields as a playbook (Codex round 1 P2).
 			// Gate on the loaded item's collection so the editor refuses
 			// to touch non-playbook items.
-			if (loaded.collection_slug !== 'playbooks') {
+			// The playbooks collection by its trait, not the literal slug
+			// (BUG-3481): make sure this workspace's collections are known
+			// first, or a renamed collection's playbook would be refused.
+			await collectionStore.ensureCollections(ws).catch(() => {});
+			if (ws !== wsSlug || slugOrRef !== ref || !isSameIdentity()) return;
+			if (loaded.collection_slug !== artifactSlugFor(ws, 'playbook')) {
 				const itemRef =
 					loaded.collection_prefix && loaded.item_number
 						? `${loaded.collection_prefix}-${loaded.item_number}`
@@ -169,27 +189,27 @@
 		}
 	}
 
-	async function loadPlaybooks(ws: string) {
+	async function loadPlaybooks(ws: string, pb: string) {
 		const isSameIdentity = authStore.identityFence();
 		try {
-			const list = await api.items.listByCollection(ws, 'playbooks', {});
-			if (ws !== wsSlug || !isSameIdentity()) return;
+			const list = await api.items.listByCollection(ws, pb, {});
+			if (ws !== wsSlug || pb !== playbooksSlug || !isSameIdentity()) return;
 			existingPlaybooks = list;
 		} catch {
-			if (ws !== wsSlug || !isSameIdentity()) return;
+			if (ws !== wsSlug || pb !== playbooksSlug || !isSameIdentity()) return;
 			existingPlaybooks = [];
 		}
 	}
 
-	async function loadCollection(ws: string) {
+	async function loadCollection(ws: string, pb: string) {
 		playbooksCollection = null;
 		const isSameIdentity = authStore.identityFence();
 		try {
-			const coll = await api.collections.get(ws, 'playbooks');
-			if (ws !== wsSlug || !isSameIdentity()) return;
+			const coll = await api.collections.get(ws, pb);
+			if (ws !== wsSlug || pb !== playbooksSlug || !isSameIdentity()) return;
 			playbooksCollection = coll;
 		} catch {
-			if (ws !== wsSlug || !isSameIdentity()) return;
+			if (ws !== wsSlug || pb !== playbooksSlug || !isSameIdentity()) return;
 			playbooksCollection = null;
 		}
 	}

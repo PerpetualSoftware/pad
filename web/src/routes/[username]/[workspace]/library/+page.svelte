@@ -9,6 +9,7 @@
 	import { statusColor } from '$lib/utils/fieldColors';
 	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
 	import { canCreateIn } from '$lib/collections/canCreateIn';
+	import { artifactSlugFor } from '$lib/collections/artifactSlug';
 	import type { BuiltinListEntry } from '$lib/types';
 	import { builtinOfferLabel, builtinActive } from '$lib/library/builtinOffers';
 
@@ -156,7 +157,13 @@
 		// the same class the same way; naming the real key is what makes the
 		// suppression safe rather than a blanket silencing.
 		const ws = wsSlug;
-		if (ws) untrack(() => loadData(ws));
+		// And the two collections' CURRENT slugs (BUG-3481): a renamed
+		// conventions or playbooks collection is listed under its new slug.
+		// The default slug resolves to itself, so an unrenamed workspace loads
+		// once, as before.
+		const convSlug = conventionsSlug;
+		const pbSlug = playbooksSlug;
+		if (ws) untrack(() => loadData(ws, convSlug, pbSlug));
 	});
 
 	// Bumped by every `loadData()`. The identity fence and this ask different
@@ -165,7 +172,10 @@
 	// already landed. A workspace switch produces exactly the second.
 	let loadGen = 0;
 
-	async function loadData(ws: string) {
+	const conventionsSlug = $derived(artifactSlugFor(wsSlug, 'convention'));
+	const playbooksSlug = $derived(artifactSlugFor(wsSlug, 'playbook'));
+
+	async function loadData(ws: string, convSlug: string = conventionsSlug, pbSlug: string = playbooksSlug) {
 		const epochAtEntry = captureIdentity();
 		const myLoad = ++loadGen;
 		loading = true;
@@ -177,8 +187,8 @@
 				// unknown parameter as a FIELD filter, and so answered [] here, which
 				// left the title match below matching nothing. A plain list already
 				// returns every status.
-				api.items.listByCollection(ws, 'conventions').catch(() => [] as Item[]),
-				api.items.listByCollection(ws, 'playbooks').catch(() => [] as Item[]),
+				api.items.listByCollection(ws, convSlug).catch(() => [] as Item[]),
+				api.items.listByCollection(ws, pbSlug).catch(() => [] as Item[]),
 				// A server before TASK-3462 has no listing: the title match
 				// below then decides "Active" alone, as it always did.
 				api.builtins.list(ws).catch(() => [] as BuiltinListEntry[]),
@@ -228,8 +238,8 @@
 
 	// Activate renders only for an account that may create in the collection
 	// the activation writes to (BUG-3264); the server refuses the rest.
-	let canActivateConventions = $derived(canCreateIn('conventions'));
-	let canActivatePlaybooks = $derived(canCreateIn('playbooks'));
+	let canActivateConventions = $derived(canCreateIn(conventionsSlug));
+	let canActivatePlaybooks = $derived(canCreateIn(playbooksSlug));
 
 	async function activateConvention(convention: LibraryConvention) {
 		if (builtinActive(builtinEntries, convention, activeConventionTitles) || activatingTitle) return;

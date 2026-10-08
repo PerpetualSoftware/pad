@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { modKeyLabel } from '$lib/utils/platform';
 	import { page } from '$app/state';
 	import { api, isPlanLimitError } from '$lib/api/client';
@@ -19,6 +20,7 @@
 	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
 	import { isBodyStale } from '$lib/items/staleBody';
 	import { canCreateIn } from '$lib/collections/canCreateIn';
+	import { artifactSlugFor } from '$lib/collections/artifactSlug';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 
 	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
@@ -68,8 +70,12 @@
 	// Create and import render only for an account that may create here
 	// (BUG-3264); the server refuses the rest. An artifact may be either kind,
 	// so import needs either collection.
-	let canCreateConvention = $derived(canCreateIn('conventions'));
-	let canImport = $derived(canCreateIn('conventions') || canCreateIn('playbooks'));
+	// BUG-3481: addressed by the collections' CURRENT slugs, so a renamed
+	// conventions or playbooks collection keeps this page working.
+	const conventionsSlug = $derived(artifactSlugFor(workspace, 'convention'));
+	const playbooksSlug = $derived(artifactSlugFor(workspace, 'playbook'));
+	let canCreateConvention = $derived(canCreateIn(conventionsSlug));
+	let canImport = $derived(canCreateIn(conventionsSlug) || canCreateIn(playbooksSlug));
 	let creating = $state(false);
 	let confirmDelete = $state<string | null>(null);
 	let searchQuery = $state('');
@@ -97,24 +103,33 @@
 	let newContent = $state('');
 
 	$effect(() => {
+		const cs = conventionsSlug;
 		if (workspace) {
-			loadConventions(workspace);
-			loadConventionsCollection(workspace);
+			const ws = workspace;
+			untrack(() => {
+				loadConventions(ws, cs);
+				loadConventionsCollection(ws, cs);
+			});
 		}
 	});
 
-	async function loadConventions(ws: string) {
+	async function loadConventions(ws: string, cs: string = conventionsSlug) {
 		loading = true;
+		// Dropped when the route or the resolved slug moved while in flight.
+		const current = () => ws === workspace && cs === conventionsSlug;
 		try {
-			conventions = await api.items.listByCollection(ws, 'conventions', { include_archived: false });
+			const list = await api.items.listByCollection(ws, cs, { include_archived: false });
+			if (!current()) return;
+			conventions = list;
 		} catch {
+			if (!current()) return;
 			conventions = [];
 		} finally {
-			loading = false;
+			if (current()) loading = false;
 		}
 	}
 
-	async function loadConventionsCollection(ws: string) {
+	async function loadConventionsCollection(ws: string, cs: string) {
 		// Clear any previous workspace's schema before the fetch. Until the new
 		// response lands, createTriggers/createSurfaces fall back to the
 		// hardcoded software defaults — correct for a workspace whose schema
@@ -122,14 +137,14 @@
 		// rendering the previous workspace's vocabulary on the new page.
 		conventionsCollection = null;
 		try {
-			const coll = await api.collections.get(ws, 'conventions');
+			const coll = await api.collections.get(ws, cs);
 			// Stale-response guard: if the user has since moved to another
-			// workspace, drop the result rather than overwriting state with
-			// schema from a workspace we are no longer on.
-			if (ws !== workspace) return;
+			// workspace, or the conventions collection resolved to another slug
+			// (BUG-3481), drop the result rather than overwriting newer state.
+			if (ws !== workspace || cs !== conventionsSlug) return;
 			conventionsCollection = coll;
 		} catch {
-			if (ws !== workspace) return;
+			if (ws !== workspace || cs !== conventionsSlug) return;
 			conventionsCollection = null;
 		}
 	}
@@ -282,7 +297,7 @@
 				newContent.trim(),
 				buildConventionMetadata()
 			);
-			const created = await api.items.create(workspace, 'conventions', data);
+			const created = await api.items.create(workspace, conventionsSlug, data);
 			conventions = [...conventions, created];
 			toastStore.show('Convention created', 'success');
 			resetForm();
