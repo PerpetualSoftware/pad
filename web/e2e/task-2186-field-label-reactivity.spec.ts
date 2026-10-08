@@ -24,9 +24,16 @@ async function exerciseNewField(page: Page, dialog: ReturnType<Page['getByRole']
 	await dialog.getByRole('button', { name: '+ Add field' }).click();
 	await expect(dialog.getByPlaceholder('Field name')).toHaveCount(before + 1);
 
-	// And the dialog still closes.
+	// And the dialog still closes. The form now holds an edit, so Escape asks
+	// first (TASK-2191); accepting the discard closes it.
+	const asked: string[] = [];
+	page.once('dialog', (d) => {
+		asked.push(d.message());
+		void d.accept();
+	});
 	await page.keyboard.press('Escape');
 	await expect(dialog).toBeHidden();
+	expect(asked, 'Escape on an edited form asks before discarding').toHaveLength(1);
 	expect(errors, 'page errors').toEqual([]);
 }
 

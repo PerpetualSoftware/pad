@@ -97,7 +97,7 @@ vi.mock('$lib/stores/toast.svelte', () => ({
 	toastStore: { show: (m: string) => { toasts.push(m); return 'id'; }, dismiss: () => {}, get toasts() { return []; } },
 	quietExternalToasts: () => false,
 }));
-vi.mock('$app/navigation', () => ({ goto: (u: string) => { gotos.push(u); return Promise.resolve(); } }));
+vi.mock('$app/navigation', () => ({ goto: (u: string) => { gotos.push(u); return Promise.resolve(); }, beforeNavigate: () => {} }));
 
 const auth = vi.hoisted(() => {
 	const hook = { read: null as null | (() => number), write: null as null | ((n: number) => void) };
@@ -225,9 +225,10 @@ describe('BUG-3236: the playbook editor does not act for the previous identity',
 		expect(updateCalls.length).toBe(1);
 	});
 
+	// Save and close is the save that navigates (TASK-2191: Save stays).
 	it('a save that settles after the identity changed neither reports nor navigates', async () => {
 		await loadedAndEdited();
-		screen.getByRole('button', { name: /^Save$/ }).click();
+		screen.getByRole('button', { name: /^Save and close$/ }).click();
 		await waitFor(() => expect(updateCalls.length).toBe(1));
 		flipIdentity();
 		updateCalls[0]!.d.resolve({});
@@ -249,7 +250,7 @@ describe('BUG-3236: the playbook editor does not act for the previous identity',
 
 	it('CONTROL: a save that settles uninterrupted reports and navigates', async () => {
 		await loadedAndEdited();
-		screen.getByRole('button', { name: /^Save$/ }).click();
+		screen.getByRole('button', { name: /^Save and close$/ }).click();
 		await waitFor(() => expect(updateCalls.length).toBe(1));
 		updateCalls[0]!.d.resolve({});
 		await waitFor(() => expect(toasts).toContain('Playbook saved'));

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { api, isConflictOrNotFound } from '$lib/api/client';
@@ -389,6 +390,27 @@
 		{ key: 'sort_order', label: 'Manual order' }
 	]);
 
+	// ── Unsaved-edit guard (TASK-2191) ─────────────────────────────────────
+	// Escape, a backdrop click, the ✕ and Cancel all leave through
+	// requestClose: an edited form asks first, an untouched one closes as
+	// before. The seed is read a tick after the form is seeded, so whatever
+	// the field editors normalise on mount is part of it, not an edit; a
+	// successful save re-baselines it, for a host that keeps this mounted.
+	let editSeedKey = $state<string | null>(null);
+	const editKey = $derived(
+		JSON.stringify([
+			name, selectedIcon, description, existingFields, newFields,
+			defaultView, layout, boardGroupBy, listGroupBy, listSortBy, quickActions
+		])
+	);
+	const editDirty = $derived(editSeedKey !== null && editKey !== editSeedKey);
+
+	function requestClose() {
+		// A save in flight owns the edits: closing then is not a discard.
+		if (editDirty && !saving && !confirm('Discard your changes to this collection?')) return;
+		onclose();
+	}
+
 	// ── Sync from collection when modal opens ────────────────────────────────
 
 	// Seed the form once per open transition (open false→true) OR when the
@@ -473,6 +495,10 @@
 			void loadCollectionOptions();
 			void loadPreviewContext();
 			void loadFieldUsage(wsSlug, collection.slug);
+			editSeedKey = null;
+			void tick().then(() => {
+				editSeedKey = editKey;
+			});
 		} else if (
 			open &&
 			collection &&
@@ -774,6 +800,9 @@
 					return def;
 				});
 
+			// The form as this save sends it, for the re-baseline below (codex r2
+			// on TASK-2191: an edit typed while the save is in flight stays unsaved).
+			const sentKey = editKey;
 			const allFields = [...updatedExisting, ...addedFields];
 			const migrations = buildMigrations();
 
@@ -820,6 +849,7 @@
 			// leave it mounted after a save) so a subsequent edit doesn't
 			// spuriously 409 against our own just-committed change.
 			expectedUpdatedAt = updated.updated_at;
+			editSeedKey = sentKey;
 			toastStore.show(`Updated ${name.trim()}`, 'success');
 			onupdated(updated, editedCollectionId, editedCollectionSlug, editedWsSlug);
 		} catch (err) {
@@ -843,10 +873,10 @@
 	}
 </script>
 
-<Modal {open} {onclose} labelledby="edit-collection-title" maxWidth="680px">
+<Modal {open} onclose={requestClose} labelledby="edit-collection-title" maxWidth="680px">
 	<div class="modal-header">
 		<h2 id="edit-collection-title">Edit Collection</h2>
-		<button class="close-btn" type="button" onclick={onclose}>&#10005;</button>
+		<button class="close-btn" type="button" onclick={requestClose}>&#10005;</button>
 	</div>
 
 			<div class="tab-bar">
@@ -1087,7 +1117,7 @@
 			{/if}
 
 			<div class="modal-footer">
-				<button class="btn-cancel" type="button" onclick={onclose}>Cancel</button>
+				<button class="btn-cancel" type="button" onclick={requestClose}>Cancel</button>
 				<button
 					class="btn-save"
 					type="button"

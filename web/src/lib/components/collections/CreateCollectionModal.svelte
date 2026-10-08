@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { isRelationType } from '$lib/items/relationFieldTypes';
+	import { tick } from 'svelte';
 	import { api } from '$lib/api/client';
 	import type { CollectionCreate, FieldDef, CollectionSettings, QuickAction } from '$lib/types';
 	import { COLLECTION_TEMPLATES, type CollectionTemplate } from './collection-templates';
@@ -215,11 +216,37 @@
 			}
 		}
 		step = 'editor';
+		seedKey = null;
+		void tick().then(() => {
+			seedKey = draftKey;
+		});
 	}
 
 	function goBack() {
+		if (!confirmDiscard()) return;
 		step = 'templates';
 		resetForm();
+	}
+
+	// ── Unsaved-draft guard (TASK-2191) ────────────────────────────────────
+	// Escape, a backdrop click, the ✕, Cancel and Back to templates all leave
+	// through requestClose / confirmDiscard: a draft that differs from the
+	// template it started from asks first, an untouched one closes as before.
+	// The seed is read a tick after the template is applied, so whatever the
+	// field editors normalise on mount is part of it, not an edit.
+	let seedKey = $state<string | null>(null);
+	const draftKey = $derived(
+		JSON.stringify([name, selectedIcon, description, fields, defaultView, layout, boardGroupBy, listGroupBy, listSortBy, quickActions])
+	);
+	const draftDirty = $derived(step === 'editor' && seedKey !== null && draftKey !== seedKey);
+
+	function confirmDiscard(): boolean {
+		// A create in flight owns the draft: closing then is not a discard.
+		return !draftDirty || creating || confirm('Discard this new collection? What you entered will be lost.');
+	}
+
+	function requestClose() {
+		if (confirmDiscard()) onclose();
 	}
 
 	function addField() {
@@ -405,7 +432,7 @@
 	}
 </script>
 
-<Modal {open} {onclose} labelledby="create-collection-title" maxWidth="520px">
+<Modal {open} onclose={requestClose} labelledby="create-collection-title" maxWidth="520px">
 	<div class="modal-header">
 		{#if step === 'editor'}
 			<div class="header-left">
@@ -419,7 +446,7 @@
 		{:else}
 			<h2 id="create-collection-title">New Collection</h2>
 		{/if}
-		<button class="close-btn" type="button" onclick={onclose}>&#10005;</button>
+		<button class="close-btn" type="button" onclick={requestClose}>&#10005;</button>
 	</div>
 
 			{#if step === 'templates'}
@@ -551,7 +578,7 @@
 				</div>
 
 				<div class="modal-footer">
-					<button class="btn-cancel" type="button" onclick={onclose}>Cancel</button>
+					<button class="btn-cancel" type="button" onclick={requestClose}>Cancel</button>
 					<button
 						class="btn-create"
 						type="button"
