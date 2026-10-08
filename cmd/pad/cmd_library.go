@@ -701,6 +701,9 @@ Examples:
 			// The write's own warnings, as on any content write (codex r1).
 			warnContentPendingFlush(item)
 			warnPrunedPendingEdits(item)
+			// An origin survives a move, so the item's collection may not
+			// declare the settings the library writes (codex r5).
+			warnUndeclaredFields(item)
 			if formatFlag == "json" {
 				return cli.PrintJSON(item)
 			}
