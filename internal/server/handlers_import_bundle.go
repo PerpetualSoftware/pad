@@ -463,9 +463,10 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 
 // rollBackPartialImport removes a workspace an import created and could not
 // finish, with its rehydrated attachments: the validation-reject door (codex
-// P1 on PR #308) and, since BUG-3475, the interrupted-upload door. A non-nil
-// error means it was KEPT (removeUnusableWorkspace's keep arms) and the
-// caller cannot say it is gone.
+// P1 on PR #308) and, since BUG-3475, the interrupted-upload door. nil means
+// the workspace is gone from the caller's point of view, read back from the
+// row; a non-nil error means it may still be there and the caller cannot say
+// it is gone.
 func (s *Server) rollBackPartialImport(door string, ws *models.Workspace, ownerID string, cause error) error {
 	// Cascade: a duplicate manifest.json or duplicate pad-export.json can
 	// fire AFTER blobs have already been rehydrated — those attachment rows
@@ -489,7 +490,21 @@ func (s *Server) rollBackPartialImport(door string, ws *models.Workspace, ownerI
 	// rehydrated blobs before it purges (the tombstones above are what it and
 	// the sweeper fallback read) and its other-members guard is trivially
 	// satisfied here: nothing writes a member row before this point.
-	return s.removeUnusableWorkspace(door, ws.ID, ws.Slug, ownerID, cause)
+	if err := s.removeUnusableWorkspace(door, ws.ID, ws.Slug, ownerID, cause); err != nil {
+		return err
+	}
+	// The helper also returns nil when its own delete FAILED (it logs and
+	// leaves the workspace for an operator), so whether it is gone is read
+	// from the row, not inferred from the return (codex r3 on BUG-3475). A
+	// soft-deleted workspace reads as gone: it is out of the caller's list.
+	live, err := s.store.GetWorkspaceBySlug(ws.Slug)
+	if err != nil {
+		return fmt.Errorf("read back the rolled-back workspace: %w", err)
+	}
+	if live != nil {
+		return fmt.Errorf("workspace %q is still live after the rollback", ws.Slug)
+	}
+	return nil
 }
 
 // importTransportBody records whether reading the request body itself failed

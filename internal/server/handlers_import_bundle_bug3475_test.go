@@ -310,3 +310,30 @@ func TestImportBundle_BUG3475_PanicRecordsUnknown(t *testing.T) {
 		t.Fatalf("status = %d %+v, want unknown", code, st)
 	}
 }
+
+// removeUnusableWorkspace returns nil even when its own delete FAILS (it logs
+// and leaves the workspace for an operator), so "removed" is read back from
+// the row: a rollback that left the workspace live must report unknown and
+// say so, never removed (codex r3). A trigger refuses the soft-delete.
+func TestImportBundle_BUG3475_RollbackThatLeavesTheWorkspaceLiveIsUnknown(t *testing.T) {
+	srv := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, srv)
+	if _, err := srv.store.DB().Exec(`CREATE TRIGGER t3475_no_soft_delete BEFORE UPDATE OF deleted_at ON workspaces
+		BEGIN SELECT RAISE(ABORT, 'soft-delete refused (BUG-3475 test)'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	prefix, _ := splitAfterManifest(t, realBundleWithBlob(t))
+	rr := importKeyed(srv, "stuck", "key-stuck-0001", &failingAfter{data: bytes.NewReader(prefix), err: io.ErrUnexpectedEOF}, tok)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "import_interrupted") {
+		t.Fatalf("want 400 import_interrupted, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "could not be removed") {
+		t.Errorf("the 400 must not claim a removal that did not happen: %s", rr.Body.String())
+	}
+	if live, _ := srv.store.GetWorkspaceBySlug("stuck"); live == nil {
+		t.Fatal("precondition: the trigger should have kept the workspace live")
+	}
+	if code, st := importStatus(t, srv, "key-stuck-0001", tok); code != http.StatusOK || st.State != importStateUnknown {
+		t.Fatalf("status = %d %+v, want unknown", code, st)
+	}
+}
