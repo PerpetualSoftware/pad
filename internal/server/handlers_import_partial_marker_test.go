@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -196,5 +198,41 @@ func TestImportPartialMarker_NotExported(t *testing.T) {
 	}
 	if strings.Contains(rr.Body.String(), "import_status") || strings.Contains(rr.Body.String(), "Reference imp-") {
 		t.Errorf("export carries the partial-import marker")
+	}
+}
+
+// A rollback that FAILS leaves a workspace that may still be live, so it is
+// marked too (codex r1): on the transport arm and on the validation arm. A
+// trigger refuses the soft-delete, as in the BUG-3475 test.
+func TestImportPartialMarker_FailedRollbackMarks(t *testing.T) {
+	real := realBundleWithBlob(t)
+	srv := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, srv)
+	if _, err := srv.store.DB().Exec(`CREATE TRIGGER t896_no_soft_delete BEFORE UPDATE OF deleted_at ON workspaces
+		BEGIN SELECT RAISE(ABORT, 'soft-delete refused (TASK-896 test)'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	prefix, _ := splitAfterManifest(t, real)
+	if rr := importKeyed(srv, "cut", "key-cut-00001", &failingAfter{data: bytes.NewReader(prefix), err: io.ErrUnexpectedEOF}, tok); !strings.Contains(rr.Body.String(), "could not be removed") {
+		t.Fatalf("precondition: the interrupted rollback should fail, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr := importAs(srv, "dup", withDuplicateManifest(t, real), tok); rr.Code == http.StatusCreated {
+		t.Fatalf("precondition: duplicate manifest must be refused")
+	}
+
+	for _, slug := range []string{"cut", "dup"} {
+		live, err := srv.store.GetWorkspaceBySlug(slug)
+		if err != nil || live == nil {
+			t.Fatalf("precondition: %s should still be live: %v", slug, err)
+		}
+		st, err := srv.store.GetWorkspaceImportStatus(live.ID)
+		if err != nil || st == nil {
+			t.Errorf("%s: a rollback that left the workspace live must mark it: st=%v err=%v", slug, st, err)
+			continue
+		}
+		if !strings.Contains(st.Note, "could not be removed") || !strings.Contains(st.Note, "Reference imp-") {
+			t.Errorf("%s: note = %q", slug, st.Note)
+		}
 	}
 }
