@@ -2,7 +2,9 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -20,6 +22,9 @@ type adminPATFixture struct {
 	srv     *Server
 	pat     string
 	session string
+	// memberSession is a NON-admin's browser session: the control that makes
+	// the admin-session leg of the walk mean something (BUG-1926 codex r1).
+	memberSession string
 }
 
 func newAdminPATFixture(t *testing.T) adminPATFixture {
@@ -37,7 +42,15 @@ func newAdminPATFixture(t *testing.T) adminPATFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return adminPATFixture{srv: srv, pat: pat.Token, session: loginUser(t, srv, "admin-3361@example.com", "correct-horse-battery-staple")}
+	if _, err := srv.store.CreateUser(models.UserCreate{Email: "member-3361@example.com", Name: "Member", Password: "correct-horse-battery-staple"}); err != nil {
+		t.Fatal(err)
+	}
+	return adminPATFixture{
+		srv:           srv,
+		pat:           pat.Token,
+		session:       loginUser(t, srv, "admin-3361@example.com", "correct-horse-battery-staple"),
+		memberSession: loginUser(t, srv, "member-3361@example.com", "correct-horse-battery-staple"),
+	}
 }
 
 // Every route the router registers under /api/v1/admin refuses an admin's
@@ -48,6 +61,7 @@ func TestBUG3361_EveryAdminRouteRefusesAnAdminPAT(t *testing.T) {
 	f.srv.ensureRouter()
 	param := regexp.MustCompile(`\{[^}]*\}`)
 	checked := 0
+	var cloudGated []string
 	err := chi.Walk(f.srv.router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if !strings.HasPrefix(route, "/api/v1/admin/") {
 			return nil
@@ -58,6 +72,35 @@ func TestBUG3361_EveryAdminRouteRefusesAnAdminPAT(t *testing.T) {
 		if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "session_required") {
 			t.Errorf("admin PAT %s %s: %d %s, want 403 session_required", method, route, rr.Code, rr.Body.String())
 		}
+		// AND every route still administers for the admin's sessions, browser
+		// and CLI (BUG-1926, Dave day 89: admin needs a session; PATs are the
+		// line). The placeholder params and empty bodies may well answer 400
+		// or 404: what must never come back is a refusal of the credential or
+		// of the role. The CONTROL makes that mean something (codex r1): a
+		// non-admin's session on the very same request IS refused for its role,
+		// so the role check runs before whatever 400/404 the admin then meets,
+		// and the admin's request got past it.
+		ctl := doRequestWithCookie(f.srv, method, path, nil, f.memberSession)
+		if ctl.Code == http.StatusNotFound && route != "/api/v1/admin/" {
+			// Behind requireCloudMode: 404 for everyone off Cloud, so neither
+			// leg can mean anything here. Proven on a cloud-mode server below.
+			cloudGated = append(cloudGated, method+" "+route)
+			return nil
+		}
+		if ctl.Code != http.StatusForbidden {
+			t.Errorf("CONTROL %s %s: a non-admin session got %d %s, not a role refusal, so the admin leg proves nothing here",
+				method, route, ctl.Code, ctl.Body.String())
+		}
+		for kind, sess := range map[string]func() *httptest.ResponseRecorder{
+			"browser session": func() *httptest.ResponseRecorder { return doRequestWithCookie(f.srv, method, path, nil, f.session) },
+			"CLI session":     func() *httptest.ResponseRecorder { return doRequestWithBearer(f.srv, method, path, f.session, nil) },
+		} {
+			got := sess()
+			body := got.Body.String()
+			if strings.Contains(body, "session_required") || strings.Contains(body, "Admin access required") {
+				t.Errorf("admin %s %s %s: refused %d %s", kind, method, route, got.Code, body)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -65,6 +108,10 @@ func TestBUG3361_EveryAdminRouteRefusesAnAdminPAT(t *testing.T) {
 	}
 	if checked < 20 {
 		t.Fatalf("only %d admin routes were walked; the walk is not seeing the router", checked)
+	}
+	sort.Strings(cloudGated)
+	if got, want := strings.Join(cloudGated, ","), strings.Join(cloudOnlyAdminRoutes, ","); got != want {
+		t.Errorf("routes answering 404 to everyone off Cloud:\n got  %s\n want %s\n(a route that 404s for another reason has no proof in this walk)", got, want)
 	}
 	// The admin's own sessions still administer.
 	if rr := doRequestWithBearer(f.srv, "GET", "/api/v1/admin/settings", f.session, nil); rr.Code != http.StatusOK {
@@ -106,5 +153,53 @@ func TestBUG3361_EscapeHatchIsSelfHostOnly(t *testing.T) {
 	f.srv.cloudMode = true
 	if rr := doRequestWithBearer(f.srv, "GET", "/api/v1/admin/settings", f.pat, nil); rr.Code != http.StatusForbidden {
 		t.Fatalf("admin PAT with the escape hatch on, in cloud mode: %d, want 403", rr.Code)
+	}
+}
+
+// cloudOnlyAdminRoutes are the /admin routes behind requireCloudMode, sorted:
+// the sidecar's billing calls (the cloud secret, or a platform admin as the
+// alternative) and the billing dashboard.
+var cloudOnlyAdminRoutes = []string{
+	"GET /api/v1/admin/billing-stats",
+	"GET /api/v1/admin/user-by-customer",
+	"POST /api/v1/admin/payment-failed",
+	"POST /api/v1/admin/plan",
+	"POST /api/v1/admin/stripe-customer-id",
+	"POST /api/v1/admin/stripe-event-processed",
+	"POST /api/v1/admin/stripe-event-unmark",
+}
+
+// On Pad Cloud the billing routes take the cloud secret OR a platform admin.
+// The admin alternative is a session's, never a PAT's (BUG-1926 / BUG-3361):
+// a non-admin session without the secret is refused (the CONTROL), an admin's
+// browser and CLI sessions get past it, and an admin PAT is refused.
+func TestBUG1926_CloudBillingRoutesTakeAnAdminSessionNotAnAdminPAT(t *testing.T) {
+	t.Setenv("PAD_DISABLE_RATE_LIMITS", "1")
+	f := newAdminPATFixture(t)
+	f.srv.cloudMode = true
+	f.srv.cloudSecrets = []string{"cloud-secret-1926"}
+	for _, mr := range cloudOnlyAdminRoutes {
+		method, path, _ := strings.Cut(mr, " ")
+		// The POST handlers decode the body (where the secret travels) before
+		// they look at the caller, so an empty OBJECT, not a nil body, makes the
+		// secret-or-admin decision the first thing that can refuse.
+		var body interface{}
+		if method == http.MethodPost {
+			body = map[string]any{}
+		}
+		if pat := doRequestWithBearer(f.srv, method, path, f.pat, nil); pat.Code != http.StatusForbidden || !strings.Contains(pat.Body.String(), "session_required") {
+			t.Errorf("admin PAT %s: %d %s, want 403 session_required", mr, pat.Code, pat.Body.String())
+		}
+		if ctl := doRequestWithCookie(f.srv, method, path, body, f.memberSession); ctl.Code != http.StatusForbidden {
+			t.Errorf("CONTROL %s: a non-admin session without the secret got %d %s, want 403", mr, ctl.Code, ctl.Body.String())
+		}
+		for kind, got := range map[string]*httptest.ResponseRecorder{
+			"browser session": doRequestWithCookie(f.srv, method, path, body, f.session),
+			"CLI session":     doRequestWithBearer(f.srv, method, path, f.session, body),
+		} {
+			if got.Code == http.StatusForbidden {
+				t.Errorf("admin %s %s: refused %d %s", kind, mr, got.Code, got.Body.String())
+			}
+		}
 	}
 }
