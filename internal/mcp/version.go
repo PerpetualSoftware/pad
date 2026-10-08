@@ -1738,6 +1738,35 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.76 — TASK-1809 (lead ruling). BEHAVIOR bump on the v0.70 / v0.49
+//     grounds: no tool name, action enum or param shape moved. Two
+//     changes, one identity:
+//
+//     A `pad_item.action=claim` / `release` with no `holder` now holds the
+//     lease under the request's agent name (X-Pad-Agent, which the CLI sets
+//     from the session registry, .pad.toml, $PAD_AGENT or the detected
+//     runtime), falling back to the account's email as before. It used to
+//     be the email alone, so several agents on ONE account (the common
+//     local case) silently shared a lease: measured, a second agent's
+//     claim answered 200 by refreshing the first one's lease, and both
+//     believed they had it. Now the second claim gets 409 `lease_held`
+//     naming the first agent, and cannot release it. The lease stays bound
+//     to the account (BUG-3341), so cross-account behaviour is unchanged.
+//     Local stdio reaches this through the CLI's header; remote /mcp sends
+//     no agent name, so there the default is still the email (TASK-3495).
+//
+//     `pad_project.action=next` / `ready` (and the dashboard's
+//     suggested_next they are cut from) leave out an item whose LIVE lease
+//     a claim by the caller would lose, with that same default identity
+//     and the claim's own predicate. The filter runs before the cap of
+//     three, so a leased item frees its slot. Reminders are not filtered.
+//     A caller that claimed under a custom `holder` sees those items left
+//     out of its own next / ready (stated in the param and CLI help).
+//
+//     A lease taken before the upgrade under the email default reads as
+//     another holder's to the same agent until it expires (at most its TTL,
+//     15 minutes by default).
+//
 //     0.75 — BUG-3480 (lead ruling). BEHAVIOR bump on the v0.43 / v0.29
 //     grounds: `pad_item.action=list` on both transports REFUSES a filter
 //     key (a `field` entry, or `priority` on a collection without one)
@@ -1887,7 +1916,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.75"
+const ToolSurfaceVersion = "0.76"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

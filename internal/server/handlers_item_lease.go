@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -102,10 +103,8 @@ func (s *Server) handleReleaseItem(w http.ResponseWriter, r *http.Request) {
 
 // resolveLeaseRequest performs the shared claim/release preamble: resolve
 // workspace + item, check visibility, require an authenticated user, and
-// decode the optional body. holder falls back to the authenticated
-// user's email (their durable, human-readable identity; the #879 named
-// profiles become the natural source once layer 2 lands) and then to the
-// user id when the account has no email.
+// decode the optional body. holder falls back to defaultLeaseHolder: the
+// request's agent name, then the account's email, then its id.
 func (s *Server) resolveLeaseRequest(w http.ResponseWriter, r *http.Request) (item *resolvedLeaseItem, holder string, input itemLeaseInput, ok bool) {
 	workspaceID, wok := s.getWorkspaceID(w, r)
 	if !wok {
@@ -147,13 +146,34 @@ func (s *Server) resolveLeaseRequest(w http.ResponseWriter, r *http.Request) (it
 
 	holder = input.Holder
 	if holder == "" {
-		holder = user.Email
-	}
-	if holder == "" {
-		holder = user.ID
+		holder = defaultLeaseHolder(r, user)
 	}
 
 	return &resolvedLeaseItem{ID: resolved.ID, Ref: resolved.Ref}, holder, input, true
+}
+
+// defaultLeaseHolder is the holder a claim or release names when the caller
+// passes none, and the identity `pad project next` / `ready` compare leases
+// against (TASK-1809): the request's agent name (X-Pad-Agent, which the CLI
+// sets from the session registry), else the account's email, else its id.
+//
+// The agent name comes first because several agents commonly share ONE
+// account. With the email default, a second agent's claim matched the first
+// one's label and account, so it silently refreshed that lease and both
+// "won" (measured on TASK-1809). The header is self-declared, but the lease
+// is still bound to the authenticated account (BUG-3341), so it can only
+// split the caller's own claims, never reach into another account's.
+func defaultLeaseHolder(r *http.Request, user *models.User) string {
+	if name := agentNameFromRequest(r); name != "" {
+		return name
+	}
+	if user == nil {
+		return ""
+	}
+	if user.Email != "" {
+		return user.Email
+	}
+	return user.ID
 }
 
 // resolvedLeaseItem is the slice of the resolved item the lease handlers

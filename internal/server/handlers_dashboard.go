@@ -1187,6 +1187,31 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		})
 	}
 
+	// Items another holder has leased are not suggested (TASK-1809). A lease
+	// is a live claim that someone is executing the item, so recommending it
+	// to a second agent only sets up a lease_held refusal at claim time. The
+	// identity is the one a claim from this request would default to
+	// (defaultLeaseHolder), and the predicate is the claim's own, so this
+	// hides exactly the items such a claim would lose; the caller's own
+	// leased items stay. Filtered BEFORE the cap below, so a leased item
+	// frees its slot for the next candidate rather than emptying it.
+	// Reminders are prepended later and are not filtered: they are the
+	// user's own instruction for this moment.
+	if len(candidates) > 0 {
+		foreign, lerr := s.store.ListForeignItemLeaseIDs(workspaceID, defaultLeaseHolder(r, currentUser(r)), currentUserID(r))
+		if lerr != nil {
+			markDegraded("suggested_next.leases", lerr)
+		} else if len(foreign) > 0 {
+			kept := candidates[:0]
+			for _, c := range candidates {
+				if _, leased := foreign[c.item.ID]; !leased {
+					kept = append(kept, c)
+				}
+			}
+			candidates = kept
+		}
+	}
+
 	// Sort: in-progress first, then by priority rank within each
 	// bucket, then plan-children before orphans so the existing
 	// "active-plan continuation" suggestion stays at the top when

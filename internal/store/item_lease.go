@@ -169,6 +169,45 @@ func (s *Store) ListItemLeases(workspaceID string) (map[string]models.ItemLease,
 	return leases, rows.Err()
 }
 
+// ListForeignItemLeaseIDs returns the ids of the items in a workspace whose
+// LIVE lease a claim by (holder, userID) would be refused, i.e. every live
+// lease that is not "ours" in ClaimItemLease's sense (TASK-1809). The
+// predicate is the complement of the claim's, so `pad project next` / `ready`
+// hide exactly the items a claim would lose: a legacy lease with no user
+// is ours on its label alone, as it is to the claim.
+func (s *Store) ListForeignItemLeaseIDs(workspaceID, holder, userID string) (map[string]struct{}, error) {
+	// Spelled positively, not as NOT(<claim predicate>): with no user the
+	// claim compares lease_user_id to NULL, which is NULL, and NOT NULL is
+	// NULL too, so a user-bound lease would read as not foreign.
+	query := `
+		SELECT id FROM items
+		WHERE workspace_id = ? AND lease_holder IS NOT NULL AND lease_expires_at > ?
+		  AND (lease_holder <> ? OR lease_user_id IS NOT NULL)`
+	args := []any{workspaceID, now(), holder}
+	if userID != "" {
+		query = `
+		SELECT id FROM items
+		WHERE workspace_id = ? AND lease_holder IS NOT NULL AND lease_expires_at > ?
+		  AND (lease_holder <> ? OR (lease_user_id IS NOT NULL AND lease_user_id <> ?))`
+		args = append(args, userID)
+	}
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = struct{}{}
+	}
+	return ids, rows.Err()
+}
+
 // readItemLeaseRow reads the raw lease columns without the liveness
 // filter — the claim path needs the row it just wrote even when a test
 // wrote it pre-expired. Returns nil when the item has no lease columns
