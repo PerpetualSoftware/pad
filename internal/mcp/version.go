@@ -1738,6 +1738,15 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.72 — TASK-2189 (lead ruling). ADDITIVE bump on the v0.8 / v0.13
+//     grounds (existing CLI verbs wired onto the catalog): `pad_collection`
+//     gains `list-archived` (read-only: the workspace's archived
+//     collections with slug, id, prefix, item_count and archived_at) and
+//     `restore` (owner-only: un-archive a collection, named by `slug` or
+//     id, with its items, which the archive never deleted). The `delete`
+//     description no longer says "No restore endpoint exists": an agent's
+//     archive is now recoverable by an agent. Nothing existing moved.
+//
 //     0.71 — TASK-3462 U3a (lead ruling). ADDITIVE bump on the v0.63 /
 //     v0.53 grounds: the bootstrap every bootstrap door returns
 //     (`pad_set_workspace`'s embed, `pad_meta.action=bootstrap`, the
@@ -1853,7 +1862,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.71"
+const ToolSurfaceVersion = "0.72"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

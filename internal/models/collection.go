@@ -289,3 +289,16 @@ func (u *CollectionUpdate) UnmarshalJSON(data []byte) error {
 
 	return nil
 }
+
+// ArchivedCollection is one archived (soft-deleted) collection, as the
+// restore surfaces list it (TASK-2189). ItemCount counts its live items: an
+// archive hides them behind the collection's deleted_at and deletes none.
+type ArchivedCollection struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Slug       string `json:"slug"`
+	Prefix     string `json:"prefix"`
+	Icon       string `json:"icon,omitempty"`
+	ItemCount  int    `json:"item_count"`
+	ArchivedAt string `json:"archived_at"`
+}

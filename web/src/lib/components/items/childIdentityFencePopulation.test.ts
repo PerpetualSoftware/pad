@@ -297,6 +297,14 @@ const KNOWN_CONTINUATIONS: Record<string, string> = {
 	'lib/components/items/CopyItemDialog.svelte::<callback of $effect>::tick.then': 'ui: focus',
 	'lib/components/items/CopyItemDialog.svelte::resetForOpen::loadDestCollections.then':
 		'fenced: flowGen and identityFence() captured in resetForOpen; selects the BUG-3200 preset only from the list loadDestCollections fenced',
+	// TASK-2189: the archive toast's Undo. The toast outlives the modal, so it
+	// carries the identity epoch captured at archive time, as the workspace
+	// delete's Undo does (BUG-3006), and both continuations re-check it before
+	// toasting.
+	'lib/components/collections/EditCollectionModal.svelte::onAction::api.collections.restore.then':
+		'fenced: authStore.identityEpoch compared with the epoch captured at archive time (TASK-2189)',
+	'lib/components/collections/EditCollectionModal.svelte::onAction::api.collections.restore.catch':
+		'fenced: authStore.identityEpoch compared with the epoch captured at archive time (TASK-2189)',
 };
 
 

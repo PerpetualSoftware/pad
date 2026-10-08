@@ -355,6 +355,15 @@ func init() {
 			method:       http.MethodDelete,
 			pathTemplate: "/api/v1/workspaces/{workspace}/collections/{slug}",
 		}.toRouteMapper(),
+		// TASK-2189: archive is now reversible, by an agent too.
+		"collection archived": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/archived-collections",
+		}.toRouteMapper(),
+		"collection restore": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{workspace}/archived-collections/{slug}/restore",
+		}.toRouteMapper(),
 		"role list": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/agent-roles",

@@ -12,6 +12,7 @@
 	import { parseSchema } from '$lib/types';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
+	import ArchivedCollections from '$lib/components/collections/ArchivedCollections.svelte';
 	import StorageTab from '$lib/components/settings/StorageTab.svelte';
 	import AppsTab from '$lib/components/settings/apps/AppsTab.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
@@ -1234,6 +1235,13 @@
 						{wsSlug}
 						oncreated={handleCollectionCreated}
 						onclose={() => (showCreateModal = false)}
+					/>
+				{/if}
+				{#if isOwner}
+					<ArchivedCollections
+						{wsSlug}
+						refreshKey={collections.map((c) => c.id).join(',')}
+						onrestored={() => void refreshCollections(wsSlug)}
 					/>
 				{/if}
 				{#if editingCollection && isOwner}

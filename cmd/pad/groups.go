@@ -169,6 +169,8 @@ func collectionCmd() *cobra.Command {
 		collectionsCreateCmd(),
 		collectionsUpdateCmd(),
 		collectionsDeleteCmd(),
+		collectionsArchivedCmd(),
+		collectionsRestoreCmd(),
 	)
 	return cmd
 }

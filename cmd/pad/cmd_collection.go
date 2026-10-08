@@ -389,7 +389,7 @@ issue-ID equivalent for collections themselves.`,
 func collectionsDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <slug>",
-		Short: "Soft-delete a non-default collection (owner-only, irreversible from CLI)",
+		Short: "Archive a non-default collection and hide its items (owner-only; restore with 'pad collection restore')",
 		Long: `Soft-delete a collection by slug.
 
 Constraints:
@@ -398,11 +398,11 @@ Constraints:
     marked is_default=true). For seeded collections, use
     'pad collection update' to adapt them (rename, reshape schema,
     swap icon) instead.
-  - Items in the collection are NOT cascaded — they remain in the
-    database with the soft-deleted collection_id. The web UI hides
-    them; the API still surfaces them if queried directly.
-  - No 'undelete' subcommand or restore endpoint exists; recovery
-    is only possible from a database backup.`,
+  - Items in the collection are NOT deleted — they stay in the
+    database, hidden with the collection.
+  - Reversible: 'pad collection archived' lists archived collections
+    and 'pad collection restore <slug>' brings one back with its items
+    (TASK-2189).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -411,7 +411,59 @@ Constraints:
 			if err := client.DeleteCollection(ws, collSlug); err != nil {
 				return err
 			}
-			fmt.Printf("Deleted collection %s\n", collSlug)
+			fmt.Printf("Archived collection %s (restore with: pad collection restore %s)\n", collSlug, collSlug)
+			return nil
+		},
+	}
+}
+
+// --- archived / restore (TASK-2189) ---
+
+func collectionsArchivedCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "archived",
+		Short: "List archived collections and their item counts (owner-only)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			list, err := client.ListArchivedCollections(ws)
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(list)
+			}
+			if len(list) == 0 {
+				fmt.Println("No archived collections.")
+				return nil
+			}
+			for _, a := range list {
+				fmt.Printf("%-24s %-8s %5d items  archived %s\n", a.Slug, a.Prefix, a.ItemCount, a.ArchivedAt)
+			}
+			return nil
+		},
+	}
+}
+
+func collectionsRestoreCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restore <slug>",
+		Short: "Restore an archived collection, with its items (owner-only)",
+		Long: `Restore an archived collection by its slug (or id). Its items come back
+with it: archiving never deleted them. See 'pad collection archived'.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			coll, err := client.RestoreCollection(ws, args[0])
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(coll)
+			}
+			fmt.Printf("Restored collection %s\n", coll.Slug)
 			return nil
 		},
 	}

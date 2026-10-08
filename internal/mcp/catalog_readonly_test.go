@@ -95,6 +95,9 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_collection", "create"}: {"collection", "create"},
 		{"pad_collection", "update"}: {"collection", "update"},
 		{"pad_collection", "delete"}: {"collection", "delete"},
+		// TASK-2189: archive is reversible.
+		{"pad_collection", "list-archived"}: {"collection", "archived"},
+		{"pad_collection", "restore"}:       {"collection", "restore"},
 
 		{"pad_project", "dashboard"}: {"project", "dashboard"},
 		{"pad_project", "next"}:      {"project", "next"},
@@ -258,6 +261,9 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_collection", "create"}: {"collection", "create"},
 		{"pad_collection", "update"}: {"collection", "update"},
 		{"pad_collection", "delete"}: {"collection", "delete"},
+		// TASK-2189: archive is reversible.
+		{"pad_collection", "list-archived"}: {"collection", "archived"},
+		{"pad_collection", "restore"}:       {"collection", "restore"},
 
 		{"pad_project", "dashboard"}: {"project", "dashboard"},
 		{"pad_project", "next"}:      {"project", "next"},
@@ -525,6 +531,12 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			},
 			"collection delete": {
 				Summary: "delete col",
+				Args:    mkArgs("slug"),
+				Flags:   mkFlags("workspace"),
+			},
+			"collection archived": {Summary: "list archived cols", Flags: mkFlags("workspace")},
+			"collection restore": {
+				Summary: "restore col",
 				Args:    mkArgs("slug"),
 				Flags:   mkFlags("workspace"),
 			},

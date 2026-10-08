@@ -100,7 +100,8 @@ import type {
 	TutorialsResponse,
 	UIDismissalKey,
 	UIDismissalsResponse,
-	ImportOutcome
+	ImportOutcome,
+	ArchivedCollection
 } from '$lib/types';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
@@ -1532,6 +1533,15 @@ export const api = {
 	collections: {
 		list: (ws: string) =>
 			request<Collection[]>(`/workspaces/${ws}/collections`),
+
+		// TASK-2189: archive is reversible. Owner-only, like the archive.
+		archived: (ws: string) =>
+			request<ArchivedCollection[]>(`/workspaces/${ws}/archived-collections`),
+		// By id or slug; its items come back with it.
+		restore: (ws: string, ref: string) =>
+			request<Collection>(`/workspaces/${ws}/archived-collections/${encodeURIComponent(ref)}/restore`, {
+				method: 'POST'
+			}),
 
 		create: (ws: string, data: CollectionCreate) =>
 			request<Collection>(`/workspaces/${ws}/collections`, {
