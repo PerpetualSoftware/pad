@@ -570,8 +570,12 @@ string that is not a non-negative integer, or an integer of 18 or more digits
 is **deleted**, so the next id is 1. That is the path a deleted or evicted
 counter already takes: on phase 2 the epoch rotates, receivers report
 `epoch_change`, and a client resuming across it is told `sync_required` and
-re-fetches. On phase 1 nothing detects it, the same pre-existing limit a
-counter deleted by hand has there; phase 2 is what closes it.
+re-fetches. On a deployment that has NEVER published phase 2, receivers hold
+no epoch and their backwards-id check does not run, so nothing detects it: the
+same pre-existing limit a counter deleted by hand has there, which phase 2
+closes. (A receiver that adopted an epoch before a rollback to phase 1 does
+run that check, and catches the restart when the new ids land at or below its
+buffered high-water mark.)
 
 **Unlike the generation repair, this one is visible.** Each repair logs a
 warning naming the key, the shape, the key's type and its length (never the

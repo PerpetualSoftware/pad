@@ -158,9 +158,9 @@ func TestACorruptedSequenceCounterHealsVisiblyIntoANewSpace(t *testing.T) {
 // publish survives and the repair is reported.
 //
 // What it does NOT get is sync_required, and that is a pre-existing,
-// documented limit rather than part of this fix: a receiver on a never-flipped
-// deployment has adopted no epoch, and the backwards-id arm runs only once one
-// is adopted (see fanOut: phase-1 publishers interleave as ordinary traffic,
+// documented limit rather than part of this fix: a receiver on a NEVER-flipped
+// deployment (this fixture) has adopted no epoch, and the backwards-id arm
+// runs only once one is adopted (see fanOut: phase-1 publishers interleave as ordinary traffic,
 // so firing there would resync every client in the default configuration).
 // A counter DELETED by hand on phase 1 goes undetected the same way today, and
 // the heal deletes it, so the two are now the same case; phase 2 is what
