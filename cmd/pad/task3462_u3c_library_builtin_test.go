@@ -341,3 +341,15 @@ func TestTASK3462U3c_FallbackFromAnotherVersionIsRefused(t *testing.T) {
 		t.Fatalf("want the version-mismatch refusal, got %v", err)
 	}
 }
+
+// codex r5 (P2): an update into a collection that does not declare the
+// built-in's settings says so, as any item update does.
+func TestTASK3462U3c_UpdateReportsUndeclaredFields(t *testing.T) {
+	f := &u3cFake{caps: true, state: divergedState(), postWarn: map[string]any{"undeclared_fields": []string{"trigger"}}}
+	stderr := captureStderr(t, func() {
+		_, _ = u3cRun(t, f.server(t), func() u3cCmd { return libraryUpdateCmd() }, "plan")
+	})
+	if !strings.Contains(stderr, "trigger") {
+		t.Fatalf("undeclared field not reported: %q", stderr)
+	}
+}
