@@ -2081,6 +2081,13 @@ func (s *Server) setupRouter() {
 					})
 
 					// Collections (v2)
+					// Archived collections (TASK-2189): list and restore. A
+					// sibling of /collections rather than inside it, because
+					// /collections/{collSlug} resolves LIVE collections only
+					// and a collection could itself be slugged "archived".
+					r.Get("/archived-collections", s.handleListArchivedCollections)
+					r.Post("/archived-collections/{collRef}/restore", s.handleRestoreCollection)
+
 					r.Route("/collections", func(r chi.Router) {
 						r.Get("/", s.handleListCollections)
 						r.Post("/", s.handleCreateCollection)

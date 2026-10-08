@@ -230,6 +230,23 @@ func (c *Client) DeleteCollection(wsSlug, collSlug string) error {
 	return c.delete("/workspaces/" + wsSlug + "/collections/" + collSlug)
 }
 
+// ListArchivedCollections returns the workspace's archived collections
+// (TASK-2189).
+func (c *Client) ListArchivedCollections(wsSlug string) ([]models.ArchivedCollection, error) {
+	var out []models.ArchivedCollection
+	err := c.get("/workspaces/"+wsSlug+"/archived-collections", &out)
+	return out, err
+}
+
+// RestoreCollection un-archives a collection by slug or id (TASK-2189).
+func (c *Client) RestoreCollection(wsSlug, collRef string) (*models.Collection, error) {
+	var out models.Collection
+	if err := c.post("/workspaces/"+wsSlug+"/archived-collections/"+url.PathEscape(collRef)+"/restore", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // --- Items ---
 
 // ListItems returns items across all collections in a workspace.

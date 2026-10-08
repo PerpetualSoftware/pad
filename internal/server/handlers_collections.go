@@ -714,3 +714,93 @@ func uniqueCollectionConflictMessage(err error) string {
 		return "This change conflicts with an existing unique value"
 	}
 }
+
+// handleListArchivedCollections answers GET /workspaces/{ws}/archived-collections
+// (TASK-2189): the workspace's archived collections with their item counts.
+// Owner-only, like the archive it lists.
+func (s *Server) handleListArchivedCollections(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	list, err := s.store.ListArchivedCollections(workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	// The live list's visibility rule (a restricted owner sees only the
+	// collections granted to them), so this is not a door onto hidden ones.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if visibleIDs != nil {
+		kept := list[:0]
+		for _, a := range list {
+			if isCollectionVisible(a.ID, visibleIDs) {
+				kept = append(kept, a)
+			}
+		}
+		list = kept
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// handleRestoreCollection answers POST
+// /workspaces/{ws}/archived-collections/{collRef}/restore (TASK-2189), by id or
+// slug: it
+// un-archives the collection, and its items come back with it, since the
+// archive never deleted them. 404 for an id that is not an archived collection
+// of this workspace. Owner-only, like the archive it reverses.
+func (s *Server) handleRestoreCollection(w http.ResponseWriter, r *http.Request) {
+	if !requireMinRole(w, r, "owner") {
+		return
+	}
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	const notArchived = "No archived collection with that slug or id in this workspace"
+	id, err := s.store.ResolveArchivedCollection(workspaceID, chi.URLParam(r, "collRef"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", notArchived)
+		return
+	}
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	// The archive's own visibility rule: a collection the caller could not
+	// archive (hidden from a restricted owner) is not theirs to restore, and
+	// answers the same 404 as one that does not exist.
+	visible, err := s.checkCollectionFullyVisible(r, workspaceID, id)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if !visible {
+		writeError(w, http.StatusNotFound, "not_found", notArchived)
+		return
+	}
+	coll, err := s.store.RestoreCollection(workspaceID, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", notArchived)
+		return
+	}
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	// The archive's own side effect, reversed: the collection's grants apply
+	// again and its items re-enter views, so connections re-check (TASK-3365).
+	// The event tells open clients to refetch collections; the item-sync
+	// epoch fingerprints the live collection set, so delta clients resync and
+	// receive the restored items (BUG-3428).
+	s.invalidateWorkspaceAccess(workspaceID)
+	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.ID, coll.Slug, "", true)
+	writeJSON(w, http.StatusOK, coll)
+}

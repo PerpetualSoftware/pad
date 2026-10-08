@@ -36,7 +36,7 @@ If ANY element fails, the whole write is refused and nothing is stored — never
 In `relation_targets`, a `multi_relation` key carries a JSON **ARRAY** of the same `{id, ref, title}` objects, in stored order and one per stored element — including an `id`-only entry for an element that names nothing, so a position in the list lines up with the same position in `fields`. A scalar key is unchanged: still a single object, byte-identical to v0.31. Decide which shape to expect from the field's declared type, not by probing.
 
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore.
-- `pad_collection` — Collections: list / create / update / delete.
+- `pad_collection` — Collections: list / create / update / delete / list-archived / restore. `delete` archives: the collection and its items leave every view, and `restore` brings them back.
 - `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity. Use `ready` for the ranked top items to work on next (blocked work is left out) and `stale` for items needing attention; `activity` to catch up on what other agents/users changed since you last worked (non-streaming feed with item refs + change details).
 - `pad_role` — Agent roles: list / create / update / delete.
 - `pad_search` — Full-text search across items: query.

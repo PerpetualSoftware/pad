@@ -1,8 +1,9 @@
 package mcp
 
-// padCollectionTool exposes collection management. Four actions:
-// list (read-only), create (admin-mutating), update (admin-mutating),
-// delete (admin-mutating).
+// padCollectionTool exposes collection management. Six actions:
+// list and list-archived (read-only), create, update, delete (archive) and
+// restore (admin-mutating). restore and list-archived are TASK-2189: an
+// agent's archive is recoverable by an agent.
 //
 // `update` (TASK-1510) and `delete` (TASK-1511) are the adaptation
 // primitives for the `/pad onboard` playbook (PLAN-1496): the agent
@@ -30,7 +31,7 @@ var padCollectionTool = ToolDef{
 			{
 				Name:        "slug",
 				Type:        "string",
-				Description: "Collection slug (e.g. \"tasks\", \"conventions\"). Required for action=update and action=delete; identifies which collection to mutate.",
+				Description: "Collection slug (e.g. \"tasks\", \"conventions\"). Required for action=update, action=delete and action=restore; identifies which collection to mutate. For restore, the archived collection's slug (from list-archived) or its id.",
 			},
 			{
 				Name:        "name",
@@ -91,10 +92,13 @@ var padCollectionTool = ToolDef{
 		"create": passThrough([]string{"collection", "create"}),
 		"update": passThrough([]string{"collection", "update"}),
 		"delete": passThrough([]string{"collection", "delete"}),
+		// TASK-2189: an agent's archive is recoverable by an agent.
+		"list-archived": passThrough([]string{"collection", "archived"}),
+		"restore":       passThrough([]string{"collection", "restore"}),
 	},
 }
 
-const padCollectionToolDescription = `Collection management — list, create, update, and delete collection types.
+const padCollectionToolDescription = `Collection management — list, create, update, archive (delete) and restore collection types.
 
 Actions:
   list    — List collections in the workspace with their schemas + counts.
@@ -123,16 +127,19 @@ Actions:
             This is the adaptation primitive for the onboarding playbook
             (/pad onboard) — rewrite seeded collections to match the
             project's actual vocabulary instead of template defaults.
-  delete  — Soft-delete a collection. Owner-only. No restore endpoint
-            exists — recovery requires a database backup. Required:
-            workspace, slug.
+  delete  — Archive a collection: it and its items leave every view. Owner-only.
+            Reversible with restore. Required: workspace, slug.
             Constraints:
               - Cannot delete a default (template-seeded) collection.
                 Adapt those via update instead (rename, reshape schema).
-              - Items in the collection are NOT cascaded — they remain
-                in the database with the soft-deleted collection_id.
-                The web UI hides them; raw API queries still surface
-                them.
+              - Items in the collection are NOT deleted — they stay in the
+                database, hidden with the collection, and come back with it.
+  list-archived — The workspace's archived collections, each with its slug,
+            id, prefix, item_count and archived_at. Owner-only.
+            Required: workspace.
+  restore — Restore an archived collection, with its items. Owner-only.
+            Required: workspace, slug (the archived collection's slug from
+            list-archived, or its id).
 
 Schema for an individual collection is included in the list response — read it
 from there rather than calling list again. v0.2 does not expose a dedicated
