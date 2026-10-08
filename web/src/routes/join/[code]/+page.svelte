@@ -29,7 +29,7 @@
 	// same-origin relative path — no open redirect.
 	let oauthRedirectTarget = $derived(validateRedirect(`/join/${code}`));
 	let status = $state<
-		'loading' | 'login' | 'register' | 'confirm' | 'accepting' | 'declining' | 'declined' | 'not-joined' | 'error' | 'setup' | '2fa'
+		'loading' | 'login' | 'register' | 'confirm' | 'accepting' | 'declining' | 'declined' | 'not-joined' | 'error' | 'setup' | '2fa' | 'invalid'
 	>('loading');
 	// The invited workspace's name, from the preview, for the accept/decline
 	// card (BUG-2136 U2).
@@ -171,18 +171,29 @@
 
 	// Apply the invitation preview to the auth form: prefill + lock the invited
 	// email, and default the mode by whether an account already exists. When
-	// the preview is unavailable (invalid/expired code, or the request failed)
-	// we keep the register default — a never-registered invitee has no account
-	// to sign into, and register passes the code to auto-accept in one step
-	// (BUG-1930). The "already have an account? sign in" switch still lets a
-	// returning user flip to login.
-	// Answers false, applying nothing, when the page has moved on to another code.
+	// the preview REQUEST failed we keep the register default: a
+	// never-registered invitee has no account to sign into, and register passes
+	// the code to auto-accept in one step (BUG-1930). The "already have an
+	// account? sign in" switch still lets a returning user flip to login.
+	//
+	// A preview that ANSWERED found:false is different (TASK-2251): the server
+	// says no live invitation behind this code (unknown, expired, or its
+	// workspace deleted; it does not say which, by design). Offering a
+	// register form there sends someone through signup only to have the join
+	// fail at the end, so the page says the link is invalid instead.
+	//
+	// Answers false, applying nothing, when the page has moved on to another
+	// code, or when it has shown the invalid state; either way the caller stops.
 	async function applyPreview(
 		previewPromise: Promise<InvitationPreview | null>,
 		current: () => boolean
 	): Promise<boolean> {
 		const preview = await previewPromise;
 		if (!current()) return false;
+		if (preview && !preview.found) {
+			status = 'invalid';
+			return false;
+		}
 		if (preview?.found && preview.workspace_name) invitedWorkspaceName = preview.workspace_name;
 		if (preview?.found && preview.email) {
 			email = preview.email;
@@ -481,9 +492,17 @@
 		{:else if status === 'not-joined'}
 			<p class="subtitle error-text" role="alert">{errorMsg}</p>
 			<a href="/console" class="link">Go to Pad</a>
+		{:else if status === 'invalid'}
+			<p class="subtitle error-text" role="alert" data-testid="join-invalid">
+				This invitation link is invalid or has expired.
+			</p>
+			<p class="hint">Ask the person who invited you to send a new one.</p>
+			<a href="/console" class="link">Go to Pad</a>
 		{:else if status === 'error'}
 			<p class="subtitle error-text" role="alert">{errorMsg}</p>
-			<a href="/login" class="link">Go to login</a>
+			<!-- Back to this invitation after signing in (TASK-2251): the code
+			     used to be dropped here, stranding whoever followed the link. -->
+			<a href={`/login?redirect=${encodeURIComponent(`/join/${code}`)}`} class="link">Go to login</a>
 		{:else if status === '2fa'}
 			<p class="subtitle">Two-factor authentication</p>
 
@@ -521,7 +540,10 @@
 				</button>
 			</form>
 		{:else}
-			<p class="subtitle">You've been invited to a workspace</p>
+			<p class="subtitle">
+				You've been invited to
+				{#if invitedWorkspaceName}<strong>{invitedWorkspaceName}</strong>{:else}a workspace{/if}
+			</p>
 			<p class="hint">{mode === 'register' ? 'Create an account' : 'Sign in'} to accept</p>
 
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
