@@ -40,6 +40,7 @@ vi.mock('$lib/stores/toast.svelte', () => ({
 import CreateWorkspaceModal from './CreateWorkspaceModal.svelte';
 import { authStore } from '$lib/stores/auth.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
+import { tabsStore } from '$lib/stores/tabs.svelte';
 
 const WS = { id: 'w1', slug: 'imported', name: 'Imported', owner_username: 'alice' };
 
@@ -175,6 +176,34 @@ describe('BUG-3475: the import dialog shows where an import is', () => {
 		btn(container, /^Open workspace$/).click();
 		await settle();
 		expect(goto).toHaveBeenCalledWith('/alice/imported');
+	});
+
+	it('closing the dialog while "Open workspace" is opening the tab does not navigate', async () => {
+		const imp = controlledImport();
+		api.workspaces.importStatus.mockResolvedValue({
+			state: 'complete',
+			workspace_slug: 'imported',
+			workspace_name: 'Imported',
+			owner_username: 'alice'
+		});
+		let tabDone!: () => void;
+		const tabOpen = vi.spyOn(tabsStore, 'open').mockImplementation(() => new Promise<void>((r) => (tabDone = r)) as never);
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		await attachBundle(container);
+		btn(container, /^Import Workspace$/).click();
+		await settle();
+		imp.reject(new ImportTransportError('no_response'));
+		await settle();
+
+		btn(container, /^Open workspace$/).click();
+		await settle();
+		expect(tabOpen).toHaveBeenCalledWith('imported');
+		uiStore.closeCreateWorkspace();
+		await settle();
+		tabDone();
+		await settle();
+		expect(goto).not.toHaveBeenCalled();
+		tabOpen.mockRestore();
 	});
 
 	it('a key the server does not know is UNKNOWN, never "nothing was kept"', async () => {

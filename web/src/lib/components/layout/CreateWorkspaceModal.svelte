@@ -426,6 +426,11 @@
 		const callUser = authStore.userId;
 		await tabsStore.open(view.slug).catch(() => {});
 		if (!alive || myOp !== opSeq || authStore.userId !== callUser) return;
+		// Closed while the tab write was in flight (codex r2): `importing` is
+		// already false here, so close() did not advance the token, and the
+		// user who dismissed the dialog asked for no navigation. A reopen in
+		// between advanced it through the open reset.
+		if (!uiStore.createWorkspaceOpen) return;
 		close();
 		goto(`/${view.owner}/${view.slug}`);
 	}
