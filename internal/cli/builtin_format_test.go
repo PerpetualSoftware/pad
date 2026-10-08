@@ -42,3 +42,11 @@ func TestBuiltinFieldChanges(t *testing.T) {
 		t.Errorf("trigger change wrong: %+v", changes[1])
 	}
 }
+
+// codex r1 (P3): a change to the final newline alone is visible.
+func TestFormatLineDiffShowsAnEndOfFileNewlineChange(t *testing.T) {
+	got := FormatLineDiff("a\n", "a", 3)
+	if !strings.Contains(got, "No newline at end of file") {
+		t.Fatalf("newline change hidden:\n%q", got)
+	}
+}

@@ -11,8 +11,14 @@ import (
 // TASK-3462 U3c: `pad library diff` and `pad library update`, driven through
 // the real commands against a fake server.
 
+// u3cFormat is the --format the next u3cRun uses.
+var u3cFormat = "table"
+
 type u3cFake struct {
 	caps      bool
+	capsCode  int
+	item      map[string]any
+	postWarn  map[string]any
 	state     map[string]any
 	getCode   int
 	getBody   map[string]any
@@ -27,6 +33,10 @@ func (f *u3cFake) server(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/server/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if f.capsCode != 0 {
+			w.WriteHeader(f.capsCode)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"builtin_update": f.caps, "library_activate": true})
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws/items/plan/builtin", func(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +48,10 @@ func (f *u3cFake) server(t *testing.T) *httptest.Server {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(f.state)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws/items/plan", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(f.item)
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws/items/plan/builtin/update", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -53,7 +67,11 @@ func (f *u3cFake) server(t *testing.T) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": f.postBody})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "i1", "slug": "plan", "title": "Plan a new initiative", "seq": 9})
+		resp := map[string]any{"id": "i1", "slug": "plan", "title": "Plan a new initiative", "seq": 9}
+		if f.postWarn != nil {
+			resp["warnings"] = f.postWarn
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -70,7 +88,7 @@ func u3cRun(t *testing.T, srv *httptest.Server, build func() interface {
 	t.Setenv("PAD_TOKEN", "pad_testtoken")
 	origWS, origFormat := workspaceFlag, formatFlag
 	t.Cleanup(func() { workspaceFlag, formatFlag = origWS, origFormat })
-	workspaceFlag, formatFlag = "ws", "table"
+	workspaceFlag, formatFlag = "ws", u3cFormat
 	cmd := build()
 	cmd.SetArgs(args)
 	var err error
@@ -206,5 +224,92 @@ func TestTASK3462U3c_PendingEditsNameTheFlagAndTheFlagSendsIt(t *testing.T) {
 	}
 	if f2.posted[0]["overwrite_pending_edits"] != true {
 		t.Fatalf("the flag did not send overwrite_pending_edits: %v", f2.posted[0])
+	}
+}
+
+type u3cCmd = interface {
+	SetArgs([]string)
+	Execute() error
+}
+
+func withFormat(t *testing.T, f string) {
+	t.Helper()
+	u3cFormat = f
+	t.Cleanup(func() { u3cFormat = "table" })
+}
+
+// codex r1 (P1): the JSON diff carries the current text even from a server
+// that does not send it, read from the item itself.
+func TestTASK3462U3c_JSONDiffCarriesCurrentFromAnOlderServer(t *testing.T) {
+	withFormat(t, "json")
+	st := divergedState()
+	delete(st, "current")
+	f := &u3cFake{caps: true, state: st, item: map[string]any{"id": "i1", "slug": "plan", "content": "the item's own body", "fields": `{"trigger":"on-release"}`}}
+	out, err := u3cRun(t, f.server(t), func() u3cCmd { return libraryDiffCmd() }, "plan")
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	var got map[string]any
+	if json.Unmarshal([]byte(out), &got) != nil {
+		t.Fatalf("not JSON: %q", out)
+	}
+	cur, _ := got["current"].(map[string]any)
+	if cur == nil || cur["content"] != "the item's own body" {
+		t.Fatalf("JSON diff lacks the current text: %v", got["current"])
+	}
+}
+
+// codex r1 (P2): a no-op under --format json is JSON.
+func TestTASK3462U3c_JSONNoOpIsJSON(t *testing.T) {
+	withFormat(t, "json")
+	f := &u3cFake{caps: true, state: map[string]any{"key": "playbook/plan", "state": "current", "seq": 7}}
+	out, err := u3cRun(t, f.server(t), func() u3cCmd { return libraryUpdateCmd() }, "plan")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	var got map[string]any
+	if json.Unmarshal([]byte(out), &got) != nil || got["updated"] != false {
+		t.Fatalf("a no-op under --format json is not a JSON result: %q", out)
+	}
+}
+
+// codex r1 (P2): a probe that failed is not "the server is older".
+func TestTASK3462U3c_IndeterminateProbeIsNotCalledSkew(t *testing.T) {
+	f := &u3cFake{capsCode: http.StatusInternalServerError, state: divergedState()}
+	_, err := u3cRun(t, f.server(t), func() u3cCmd { return libraryUpdateCmd() }, "plan")
+	if err == nil || strings.Contains(err.Error(), "older than this CLI") || !strings.Contains(err.Error(), "could not tell") {
+		t.Fatalf("want the indeterminate-probe refusal, got %v", err)
+	}
+	if len(f.posted) != 0 {
+		t.Fatal("sent anyway")
+	}
+}
+
+// codex r1 (P2): the write's warnings reach the caller.
+func TestTASK3462U3c_UpdateReportsWriteWarnings(t *testing.T) {
+	f := &u3cFake{caps: true, state: divergedState(), postWarn: map[string]any{"content_outcome": "applied_pending_flush", "pruned_pending_edits": 2}}
+	var out string
+	stderr := captureStderr(t, func() {
+		out, _ = u3cRun(t, f.server(t), func() u3cCmd { return libraryUpdateCmd() }, "plan")
+	})
+	_ = out
+	if !strings.Contains(stderr, "live collaborative document") || !strings.Contains(stderr, "replaced 2 unflushed edit") {
+		t.Fatalf("warnings not reported: %q", stderr)
+	}
+}
+
+// codex r1 (P2): set-aside rows get their own remedy, not "an open editor".
+func TestTASK3462U3c_SetAsideRowsAreNamedAsSuch(t *testing.T) {
+	f := &u3cFake{caps: true, state: divergedState(), postCode: http.StatusConflict,
+		postBody: map[string]any{"code": "content_pending_flush", "message": "set aside", "details": map[string]any{"set_aside_rows": 3}}}
+	var err error
+	stderr := captureStderr(t, func() {
+		_, err = u3cRun(t, f.server(t), func() u3cCmd { return libraryUpdateCmd() }, "plan")
+	})
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if strings.Contains(err.Error()+stderr, "open editor has not saved") || !strings.Contains(stderr, "discard those edits") {
+		t.Fatalf("set-aside refusal misdescribed: err=%v stderr=%q", err, stderr)
 	}
 }
