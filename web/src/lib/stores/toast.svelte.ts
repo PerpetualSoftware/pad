@@ -27,6 +27,12 @@ export interface HistoryEntry {
 const MAX_TOASTS = 5;
 const MAX_HISTORY = 20;
 const DEFAULT_DURATION = 3000;
+/**
+ * Errors linger (TASK-2202): an error is the toast a person most needs to read,
+ * and at 3s it vanished before most could. Applied when the caller passes no
+ * duration; an explicit duration still wins.
+ */
+export const ERROR_DURATION = 10000;
 
 /**
  * Test-surface kill switch for CROSS-ACTOR notification toasts (BUG-2334).
@@ -56,13 +62,30 @@ export function quietExternalToasts(): boolean {
 let toasts = $state<Toast[]>([]);
 let history = $state<HistoryEntry[]>([]);
 let unreadCount = $state(0);
-const timers = new Map<string, ReturnType<typeof setTimeout>>();
+/**
+ * Each toast's auto-dismiss clock. `holds` counts the reasons it is paused
+ * (hover, keyboard focus: TASK-2202); the clock runs only at zero holds, and
+ * `remaining` is what is left of the duration when it was last paused.
+ */
+interface ToastClock {
+	timer: ReturnType<typeof setTimeout> | null;
+	startedAt: number;
+	remaining: number;
+	holds: number;
+}
+const timers = new Map<string, ToastClock>();
+
+function startClock(id: string, clock: ToastClock): void {
+	clock.startedAt = Date.now();
+	clock.timer = setTimeout(() => dismiss(id), clock.remaining);
+}
 
 function generateId(): string {
 	return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-function show(message: string, type: Toast['type'] = 'info', duration: number = DEFAULT_DURATION, link?: string, action?: ToastAction): string {
+function show(message: string, type: Toast['type'] = 'info', duration?: number, link?: string, action?: ToastAction): string {
+	duration ??= type === 'error' ? ERROR_DURATION : DEFAULT_DURATION;
 	const id = generateId();
 	const toast: Toast = { id, message, type, duration, link, action };
 
@@ -84,12 +107,34 @@ function show(message: string, type: Toast['type'] = 'info', duration: number = 
 	}
 
 	// Auto-dismiss after duration
-	const timer = setTimeout(() => {
-		dismiss(id);
-	}, duration);
-	timers.set(id, timer);
+	const clock: ToastClock = { timer: null, startedAt: 0, remaining: duration, holds: 0 };
+	timers.set(id, clock);
+	startClock(id, clock);
 
 	return id;
+}
+
+/**
+ * Hold a toast on screen while the pointer is over it or focus is inside it
+ * (TASK-2202): a person reading or reaching for its button should not have it
+ * vanish. Holds nest, so a hover that ends while focus stays keeps it held.
+ */
+function pause(id: string): void {
+	const clock = timers.get(id);
+	if (!clock) return;
+	clock.holds++;
+	if (clock.holds > 1 || clock.timer === null) return;
+	clearTimeout(clock.timer);
+	clock.timer = null;
+	clock.remaining = Math.max(0, clock.remaining - (Date.now() - clock.startedAt));
+}
+
+/** Release one hold; the clock resumes with what was left when the last one goes. */
+function resume(id: string): void {
+	const clock = timers.get(id);
+	if (!clock || clock.holds === 0) return;
+	clock.holds--;
+	if (clock.holds === 0) startClock(id, clock);
 }
 
 function dismiss(id: string): void {
@@ -101,9 +146,9 @@ function dismiss(id: string): void {
 }
 
 function clearTimerFor(id: string): void {
-	const timer = timers.get(id);
-	if (timer) {
-		clearTimeout(timer);
+	const clock = timers.get(id);
+	if (clock) {
+		if (clock.timer !== null) clearTimeout(clock.timer);
 		timers.delete(id);
 	}
 }
@@ -142,6 +187,8 @@ export const toastStore = {
 	},
 	show,
 	dismiss,
+	pause,
+	resume,
 	markAllRead,
 	clearHistory,
 	clearAll
