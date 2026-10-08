@@ -99,7 +99,7 @@ vi.mock('$lib/services/sync.svelte', () => ({
 	syncService: { onSync: () => () => {}, markSynced: vi.fn() },
 }));
 vi.mock('$lib/stores/localIndex.svelte', () => ({
-	localIndex: { bootstrap: vi.fn(async () => {}), getAll: () => [], retagCollection: vi.fn() },
+	localIndex: { bootstrap: vi.fn(async () => {}), getAll: () => [], retagCollection: vi.fn(), bootstrapStateFor: () => 'cold' },
 }));
 // The viewer branch: no provider is ever minted, so handleContentUpdate takes
 // its legacy (no-provider) path.

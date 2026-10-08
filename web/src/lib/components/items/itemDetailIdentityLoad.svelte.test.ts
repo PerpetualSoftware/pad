@@ -129,7 +129,7 @@ vi.mock('$lib/services/sync.svelte', () => ({
 	},
 }));
 vi.mock('$lib/stores/localIndex.svelte', () => ({
-	localIndex: { bootstrap: vi.fn(async () => {}), getAll: () => [], retagCollection: vi.fn() },
+	localIndex: { bootstrap: vi.fn(async () => {}), getAll: () => [], retagCollection: vi.fn(), bootstrapStateFor: () => 'cold' },
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
 	workspaceStore: { canEditItem: () => knobs.canEdit, get isOwner() { return true; }, setCurrent: vi.fn(async () => {}) },

@@ -2048,9 +2048,27 @@
 			// (a no-op when already hydrated). This replaced a detail-page-
 			// only 4.7MB full-content /items load that timed the page out on
 			// large workspaces; warm navigations now do ZERO extra fetch.
-			const itemsPromise = localIndex.bootstrap(wsSlug, {
+			//
+			// POPULATED is the requirement, not caught-up (BUG-3473). On an
+			// index that is already `ready`, `bootstrap` with a pending resync
+			// runs a reconcile and returns ITS promise, and that loop reads
+			// /items-changes until a page comes back empty: in a workspace
+			// others are writing to, it chased new rows for seconds and the
+			// pane sat on its skeleton the whole time. So the call is made
+			// either way (it is what schedules the catch-up), and awaited only
+			// when it is what populates the index. Read after the call, whose
+			// synchronous prefix resets a state left by another user, so a
+			// switched user still waits for its own index. Untracked for the
+			// reason `linksHeldForItemId` above is.
+			const indexBoot = localIndex.bootstrap(wsSlug, {
 				userId: authStore.userId || null,
 			});
+			const itemsPromise =
+				untrack(() => localIndex.bootstrapStateFor(wsSlug)) === 'ready'
+					? // The background pass reports its own failures (an auth
+						// error reaches the global handler inside bootstrap).
+						(indexBoot.catch(() => {}), undefined)
+					: indexBoot;
 			const [itemData, collData] = await Promise.all([
 				api.items.get(wsSlug, itemSlug).catch((err) => {
 					// Tag an item-specific not-found for the catch's cache scrub,
