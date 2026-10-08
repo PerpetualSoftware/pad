@@ -187,6 +187,9 @@ describe('ShareDialog identity fence (BUG-3105)', () => {
     expect(revoke, 'a revoke control must be reachable for this leg to mean anything').toBeTruthy();
     revoke!.click();
     flushSync();
+    // TASK-2193: the × asks first; the revoke runs from the confirm.
+    target.querySelector<HTMLButtonElement>('.revoke-confirm-yes')!.click();
+    flushSync();
 
     d.resolve();
     await settle();
@@ -205,6 +208,8 @@ describe('ShareDialog identity fence (BUG-3105)', () => {
     const revoke = target.querySelector<HTMLButtonElement>('.revoke-btn');
     expect(revoke, 'precondition: the revoke control is reachable').toBeTruthy();
     revoke!.click();
+    flushSync();
+    target.querySelector<HTMLButtonElement>('.revoke-confirm-yes')!.click(); // TASK-2193 confirm
     flushSync();
 
     // The DELETE is already out — it was issued before any await in the handler,
