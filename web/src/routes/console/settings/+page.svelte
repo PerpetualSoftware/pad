@@ -432,11 +432,16 @@
 		if (!target || tokenDeleting) return;
 		tokenDeleting = true;
 		tokenDeleteError = '';
+		// IDENTITY fence (BUG-3105, codex r1): an answer that lands after a
+		// sign-in change must not edit the next identity's token list.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			await api.auth.tokens.delete(target.id);
+			if (!isSameIdentity()) return;
 			tokens = tokens.filter((t) => t.id !== target.id);
 			tokenToDelete = null;
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			tokenDeleteError = err instanceof Error ? err.message : 'Failed to delete the token.';
 		} finally {
 			tokenDeleting = false;
