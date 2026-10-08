@@ -213,14 +213,17 @@ func (r *ClientRegistry) resolveRemoteCaller(ctx context.Context) RemoteCaller {
 	return RemoteCaller{Name: name, LeaseHolder: holder}
 }
 
-// shortSessionID is the first six hex characters of the session's UUID
-// ("pad-mcp-3f9a12c4-…" gives "3f9a12"): enough to tell one user's concurrent
-// connections apart, short enough to read in a lease.
+// shortSessionID is the first eight hex characters of the session's UUID
+// ("pad-mcp-3f9a12c4-…" gives "3f9a12c4"): enough to tell one user's
+// concurrent connections apart, short enough to read in a lease. A lease is
+// ours only when its label AND its user match (store.ClaimItemLease), so a
+// collision needs two live sessions of one ACCOUNT with the same client name
+// and the same eight digits.
 func shortSessionID(id string) string {
 	id = strings.TrimPrefix(id, "pad-mcp-")
 	var b strings.Builder
 	for _, c := range id {
-		if b.Len() == 6 {
+		if b.Len() == 8 {
 			break
 		}
 		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {

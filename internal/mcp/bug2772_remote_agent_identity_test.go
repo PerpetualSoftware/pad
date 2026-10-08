@@ -358,7 +358,7 @@ func TestBUG2772_ResolveRemoteCaller(t *testing.T) {
 	})
 
 	t.Run("short session id", func(t *testing.T) {
-		if got := shortSessionID("pad-mcp-3f9a12c4-0000"); got != "3f9a12" {
+		if got := shortSessionID("pad-mcp-3f9a12c4-0000"); got != "3f9a12c4" {
 			t.Fatalf("got %q", got)
 		}
 	})

@@ -1749,7 +1749,7 @@ const CmdhelpVersion = "0.1"
 //     none: an unnamed agent write, never the human and never a guessed name.
 //     The default lease holder of a remote call is that name (or
 //     "mcp-client") plus a short id from the session, e.g.
-//     "claude-code#3f9a12", so two connections of one client do not share a
+//     "claude-code#3f9a12c4", so two connections of one client do not share a
 //     lease; a reconnect gets a new session id, so the agent's own earlier
 //     lease reads as foreign until it expires (at most 15 minutes by
 //     default). Stdio is unchanged. No name, enum or param moved.
