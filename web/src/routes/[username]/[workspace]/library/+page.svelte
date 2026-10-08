@@ -9,6 +9,8 @@
 	import { statusColor } from '$lib/utils/fieldColors';
 	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
 	import { canCreateIn } from '$lib/collections/canCreateIn';
+	import type { BuiltinListEntry } from '$lib/types';
+	import { builtinOfferLabel, builtinActive } from '$lib/library/builtinOffers';
 
 	/**
 	 * IDENTITY FENCE — surface 3 of 7 (BUG-3084). Every async commit point on
@@ -62,6 +64,9 @@
 	let playbookCategories = $state<PlaybookCategory[]>([]);
 	let activeConventionTitles = $state<Set<string>>(new Set());
 	let activePlaybookTitles = $state<Set<string>>(new Set());
+	// Every item made from a built-in, with its state (TASK-3462 U3b): what
+	// makes an entry "Active" by KEY, and where an update is on offer.
+	let builtinEntries = $state<BuiltinListEntry[]>([]);
 	let loading = $state(true);
 
 	// Scroll position restoration (BUG-1425). persistKey includes `?tab=…`
@@ -165,11 +170,14 @@
 		const myLoad = ++loadGen;
 		loading = true;
 		try {
-			const [libraryRes, playbookRes, existingConventions, existingPlaybooks] = await Promise.all([
+			const [libraryRes, playbookRes, existingConventions, existingPlaybooks, builtins] = await Promise.all([
 				api.library.get(),
 				api.library.getPlaybooks(),
 				api.items.listByCollection(ws, 'conventions', { all: true }).catch(() => [] as Item[]),
 				api.items.listByCollection(ws, 'playbooks', { all: true }).catch(() => [] as Item[]),
+				// A server before TASK-3462 has no listing: the title match
+				// below then decides "Active" alone, as it always did.
+				api.builtins.list(ws).catch(() => [] as BuiltinListEntry[]),
 			]);
 			if (!identityHeld(epochAtEntry)) return;
 			if (myLoad !== loadGen) return;
@@ -182,6 +190,7 @@
 			// dead or duplicating.
 			activeConventionTitles = new Set(existingConventions.map((item) => item.title));
 			activePlaybookTitles = new Set(existingPlaybooks.map((item) => item.title));
+			builtinEntries = builtins;
 			// RE-STAMPED HERE, AFTER the data it vouches for has landed — never
 			// before the await (BUG-3084, the roles board's checkpoint-14
 			// lesson). `pageIdentityHeld()` means "this page's DATA belongs to
@@ -199,6 +208,7 @@
 			// is left and a failed load replaces neither set.
 			activeConventionTitles = new Set();
 			activePlaybookTitles = new Set();
+			builtinEntries = [];
 			// RE-STAMPED ON THE ERROR PATH TOO: omitting it pins the page inert
 			// for ever on a transient network error, which is the outage #1374
 			// was opened to repair, and is the worse failure of the two.
@@ -218,7 +228,7 @@
 	let canActivatePlaybooks = $derived(canCreateIn('playbooks'));
 
 	async function activateConvention(convention: LibraryConvention) {
-		if (activeConventionTitles.has(convention.title) || activatingTitle) return;
+		if (builtinActive(builtinEntries, convention, activeConventionTitles) || activatingTitle) return;
 		// BOTH QUESTIONS. `pageIdentityHeld()` first, for the reason the roles
 		// board's drag handlers need it: the convention this writes was chosen
 		// from a list `loadData` fetched under the PREVIOUS identity, and a
@@ -261,7 +271,7 @@
 	}
 
 	async function activatePlaybook(playbook: LibraryPlaybook) {
-		if (activePlaybookTitles.has(playbook.title) || activatingTitle) return;
+		if (builtinActive(builtinEntries, playbook, activePlaybookTitles) || activatingTitle) return;
 		// BOTH QUESTIONS. `pageIdentityHeld()` first, for the reason the roles
 		// board's drag handlers need it: the playbook this writes was chosen
 		// from a list `loadData` fetched under the PREVIOUS identity, and a
@@ -349,7 +359,8 @@
 
 					<div class="card-grid">
 						{#each category.conventions as convention (convention.title)}
-							{@const isActive = activeConventionTitles.has(convention.title)}
+							{@const isActive = builtinActive(builtinEntries, convention, activeConventionTitles)}
+							{@const offer = builtinOfferLabel(builtinEntries, convention.key)}
 							{@const isActivating = activatingTitle === convention.title}
 							<div class="card">
 								<div class="card-body">
@@ -369,6 +380,13 @@
 								<div class="card-action">
 									{#if isActive}
 										<Chip color={statusColor('active')}>Active</Chip>
+										{#if offer}
+											<a
+												class="builtin-offer"
+												href={`/${username}/${wsSlug}/${offer.entry.collection_slug}/${offer.entry.ref ?? offer.entry.slug}`}
+												title={offer.title}
+											>{offer.label}</a>
+										{/if}
 									{:else if canActivateConventions}
 										<button
 											class="activate-btn"
@@ -407,7 +425,8 @@
 
 					<div class="card-grid">
 						{#each category.playbooks as playbook (playbook.title)}
-							{@const isActive = activePlaybookTitles.has(playbook.title)}
+							{@const isActive = builtinActive(builtinEntries, playbook, activePlaybookTitles)}
+							{@const offer = builtinOfferLabel(builtinEntries, playbook.key)}
 							{@const isActivating = activatingTitle === playbook.title}
 							<div class="card">
 								<div class="card-body">
@@ -427,6 +446,13 @@
 								<div class="card-action">
 									{#if isActive}
 										<Chip color={statusColor('active')}>Active</Chip>
+										{#if offer}
+											<a
+												class="builtin-offer"
+												href={`/${username}/${wsSlug}/${offer.entry.collection_slug}/${offer.entry.ref ?? offer.entry.slug}`}
+												title={offer.title}
+											>{offer.label}</a>
+										{/if}
 									{:else if canActivatePlaybooks}
 										<button
 											class="activate-btn"
@@ -520,7 +546,17 @@
 	/* PLAN-1377 invocation surface — slug chip signals "this playbook is callable as /pad <slug>". */
 	.slug-text { font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace); }
 
-	.card-action { display: flex; justify-content: flex-end; }
+	.card-action { display: flex; justify-content: flex-end; align-items: center; gap: var(--space-2, 8px); flex-wrap: wrap; }
+	.builtin-offer {
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: var(--status-blue);
+		text-decoration: none;
+		border: 1px solid currentColor;
+		border-radius: 999px;
+		padding: 2px 8px;
+	}
+	.builtin-offer:hover { text-decoration: underline; }
 
 	.activate-btn {
 		padding: var(--space-1) var(--space-4);

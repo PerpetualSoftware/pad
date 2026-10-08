@@ -14,25 +14,26 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			loadData: {
-				reviewed: 'c9902dfc38b2',
+				reviewed: 'f89d0c28630e',
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
 			activateConvention: {
-				reviewed: '50860d11df9f',
+				reviewed: '648517945a1b',
 				why: 'pageIdentityHeld() before the write (the choice came from the loaded list), identityHeld(epochAtEntry) after it on both arms and in the finally',
 			},
 			activatePlaybook: {
-				reviewed: 'aeb45f588a20',
+				reviewed: '5f104126623d',
 				why: 'pageIdentityHeld() before the write (the choice came from the loaded list), identityHeld(epochAtEntry) after it on both arms and in the finally',
 			},
 		},
 		nested: [],
 		markup: [],
 		continuations: [
-			{ call: /'conventions', \{ all: true \}\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: 'f7a01aa3e757' },
-			{ call: /'playbooks', \{ all: true \}\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: 'f7a01aa3e757' },
-			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activateConvention', count: 2, why: `activateConvention toast timer, one per arm: ${TIMER_WHY}`, reviewed: 'f79adf2002cf' },
-			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activatePlaybook', count: 2, why: `activatePlaybook toast timer, one per arm: ${TIMER_WHY}`, reviewed: '59636d8fe659' },
+			{ call: /'conventions', \{ all: true \}\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: '9cd6e4f8d696' },
+			{ call: /'playbooks', \{ all: true \}\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: '9cd6e4f8d696' },
+			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing', reviewed: '63e56f7c599f' },
+			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activateConvention', count: 2, why: `activateConvention toast timer, one per arm: ${TIMER_WHY}`, reviewed: '14cf7fba65c1' },
+			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activatePlaybook', count: 2, why: `activatePlaybook toast timer, one per arm: ${TIMER_WHY}`, reviewed: 'e66e8d41273e' },
 		],
 		helpers: {
 			captureIdentity: '7f6903e09e84',
