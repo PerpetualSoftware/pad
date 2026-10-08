@@ -118,6 +118,38 @@ function createSSEService() {
 	// True iff this tab currently holds the leader Web Lock.
 	let isLeader = false;
 
+	// ── Liveness (TASK-2197) ────────────────────────────────────────────────
+	// A silently dead TCP connection never fires onerror, and the server's
+	// keepalive used to be an SSE comment, which EventSource never surfaces, so
+	// "Live" stayed up through a dead stream. The source now opens with
+	// heartbeat=1 (a named `heartbeat` event every 30s) and every signal from
+	// the CURRENT source stamps lastSignalAt. The watchdog compares that stamp
+	// with the clock; it does not count its own ticks, so a background tab whose
+	// timer runs late cannot trip it while events are still arriving.
+	const HEARTBEAT_STALE_MS = 75_000; // 2.5 × the 30s heartbeat: one may be lost
+	const WATCHDOG_EVERY_MS = 15_000;
+	const ONLINE_JITTER_MS = 2_000;
+	let lastSignalAt = 0;
+	let watchdog: ReturnType<typeof setInterval> | null = null;
+	// This tab closed its own source because the browser went offline; the
+	// `online` handler reopens it.
+	let closedForOffline = false;
+	let onlineTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function stopWatchdog() {
+		if (watchdog) {
+			clearInterval(watchdog);
+			watchdog = null;
+		}
+	}
+
+	function cancelOnlineReopen() {
+		if (onlineTimer) {
+			clearTimeout(onlineTimer);
+			onlineTimer = null;
+		}
+	}
+
 	function dispatchItemEvent(data: ItemEvent) {
 		lastEventTime = Date.now();
 		for (const cb of callbacks) {
@@ -340,9 +372,45 @@ function createSSEService() {
 	}
 
 	function openEventSource(workspaceSlug: string) {
-		const url = `/api/v1/events?workspace=${encodeURIComponent(workspaceSlug)}`;
+		// TASK-2197 (codex r1): never open while the browser says it is offline.
+		// A follower promoted to leader during an outage, or a ladder retry that
+		// fires mid-outage, would otherwise fail straight back into the backoff
+		// ladder and miss the prompt reopen on `online`. Marked closed for
+		// offline instead, so `online` opens it (with the catch-up armed).
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			closedForOffline = true;
+			status = 'reconnecting';
+			broadcast({ type: 'status', status: 'reconnecting' });
+			return;
+		}
+		const url = `/api/v1/events?workspace=${encodeURIComponent(workspaceSlug)}&heartbeat=1`;
 		const source = new EventSource(url);
 		eventSource = source;
+		closedForOffline = false;
+
+		// TASK-2197: any frame from THIS source proves it alive.
+		const touch = () => {
+			if (source === eventSource) lastSignalAt = Date.now();
+		};
+		lastSignalAt = Date.now();
+		stopWatchdog();
+		watchdog = setInterval(() => {
+			if (source !== eventSource) {
+				stopWatchdog();
+				return;
+			}
+			if (Date.now() - lastSignalAt <= HEARTBEAT_STALE_MS) return;
+			// Silent for 2.5 heartbeats: the connection is dead even though the
+			// browser never said so. Same path as onerror, so the reconnect arms
+			// the catch-up delta (BUG-2540) and the badge stops claiming Live.
+			stopWatchdog();
+			status = 'reconnecting';
+			broadcast({ type: 'status', status: 'reconnecting' });
+			source.close();
+			eventSource = null;
+			scheduleReconnect(workspaceSlug, url, false);
+		}, WATCHDOG_EVERY_MS);
+		source.addEventListener('heartbeat', touch);
 
 		/**
 		 * Claim the pending connect-sync, but only on behalf of the
@@ -369,6 +437,7 @@ function createSSEService() {
 
 		source.onopen = () => {
 			if (source !== eventSource) return;
+			touch();
 			status = 'connected';
 			reconnectAttempt = 0;
 			broadcast({ type: 'status', status: 'connected' });
@@ -377,6 +446,7 @@ function createSSEService() {
 
 		source.onerror = () => {
 			if (source !== eventSource) return;
+			stopWatchdog();
 			status = 'reconnecting';
 			broadcast({ type: 'status', status: 'reconnecting' });
 			// NOT left to the browser (BUG-2733): see scheduleReconnect. Read
@@ -390,6 +460,7 @@ function createSSEService() {
 
 		source.addEventListener('connected', () => {
 			if (source !== eventSource) return;
+			touch();
 			status = 'connected';
 			reconnectAttempt = 0;
 			broadcast({ type: 'status', status: 'connected' });
@@ -400,6 +471,7 @@ function createSSEService() {
 		});
 
 		// Handle sync_required: server's replay buffer couldn't cover the gap.
+		source.addEventListener('sync_required', touch);
 		source.addEventListener('sync_required', () => {
 			// Source-identity guard (BUG-2611, mirroring BUG-2540's
 			// onopen/onerror/'connected' guards): close() does not retract
@@ -423,6 +495,7 @@ function createSSEService() {
 		// through the same incremental backfill the gap path uses — a
 		// /items-changes delta reconciles every affected row by seq.
 		// Broadcast so peer tabs reconcile too.
+		source.addEventListener('items_bulk_updated', touch);
 		source.addEventListener('items_bulk_updated', () => {
 			if (source !== eventSource) return; // BUG-2611, see sync_required
 			dispatchSyncRequired();
@@ -453,6 +526,7 @@ function createSSEService() {
 		for (const eventType of ITEM_EVENTS) {
 			source.addEventListener(eventType, (e: MessageEvent) => {
 				if (source !== eventSource) return; // BUG-2611, see sync_required
+				touch();
 				const data: ItemEvent = JSON.parse(e.data);
 				dispatchItemEvent(data);
 				broadcast({ type: 'item_event', event: data });
@@ -601,6 +675,9 @@ function createSSEService() {
 	function disconnect() {
 		// A scheduled reconnect belongs to the connection being torn down.
 		clearReconnect();
+		stopWatchdog();
+		cancelOnlineReopen();
+		closedForOffline = false;
 		// Release the leader lock first so a peer tab can take over
 		// even on the same browser session (e.g. workspace switch).
 		if (releaseLeaderLock) {
@@ -678,6 +755,44 @@ function createSSEService() {
 
 	function clearSyncFlag() {
 		needsSync = false;
+	}
+
+	// ── Browser network state (TASK-2197) ───────────────────────────────────
+	// Mirrors the collab provider: the OS saying the network is gone is
+	// believed at once, rather than waiting out the watchdog. Only the tab that
+	// owns the stream acts (the leader, or a per-tab fallback); followers hear
+	// the status from it.
+	function onBrowserOffline() {
+		if (!currentWorkspace) return;
+		if (eventSource === null && !reconnectPending) return;
+		clearReconnect();
+		stopWatchdog();
+		if (eventSource) {
+			eventSource.close();
+			eventSource = null;
+		}
+		closedForOffline = true;
+		status = 'reconnecting';
+		broadcast({ type: 'status', status: 'reconnecting' });
+	}
+
+	function onBrowserOnline() {
+		if (!closedForOffline || !currentWorkspace) return;
+		cancelOnlineReopen();
+		const ws = currentWorkspace;
+		// Jittered (lead ruling): when a whole office's Wi-Fi comes back, every
+		// tab reopening in the same instant would hit the SSE admission budget.
+		onlineTimer = setTimeout(() => {
+			onlineTimer = null;
+			if (!closedForOffline || currentWorkspace !== ws || eventSource) return;
+			pendingSyncOnConnect = true;
+			openEventSource(ws);
+		}, Math.random() * ONLINE_JITTER_MS);
+	}
+
+	if (typeof window !== 'undefined') {
+		window.addEventListener('offline', onBrowserOffline);
+		window.addEventListener('online', onBrowserOnline);
 	}
 
 	return {

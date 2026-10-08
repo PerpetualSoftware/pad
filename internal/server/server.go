@@ -46,6 +46,11 @@ import (
 )
 
 type Server struct {
+	// sseKeepaliveOverride, when non-zero, replaces sseKeepaliveInterval for
+	// this server's SSE streams. Tests only (TASK-2197): the real interval is
+	// 30s.
+	sseKeepaliveOverride time.Duration
+
 	// clientWrites orders one browser tab's content writes to an item
 	// (BUG-3080). Nil disables it — a write is then applied exactly as it was
 	// before this existed.

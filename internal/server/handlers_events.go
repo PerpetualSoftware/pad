@@ -69,6 +69,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve workspace
 	slug := r.URL.Query().Get("workspace")
+	// TASK-2197: a client that asks for it gets each keepalive as a named
+	// `heartbeat` event instead of a comment. EventSource never surfaces a
+	// comment, so without this a client cannot tell a quiet stream from a
+	// silently dead one. Opt-in, because `pad project watch` reads this same
+	// stream and an older CLI would report an event kind it does not know;
+	// without the parameter the bytes are unchanged.
+	heartbeatEvents := r.URL.Query().Get("heartbeat") == "1"
 	if slug == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "workspace query parameter is required")
 		return
@@ -396,7 +403,11 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Keepalive ticker — see sseKeepaliveInterval doc for why the
 	// interval is linked to httpIdleTimeout.
-	keepalive := time.NewTicker(sseKeepaliveInterval)
+	keepaliveEvery := sseKeepaliveInterval
+	if s.sseKeepaliveOverride > 0 {
+		keepaliveEvery = s.sseKeepaliveOverride
+	}
+	keepalive := time.NewTicker(keepaliveEvery)
 	defer keepalive.Stop()
 
 	// Membership revalidation timer. The initial subscribe only checked
@@ -544,7 +555,11 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			// Send keepalive comment to prevent proxy/LB timeouts.
 			// Write error → client gone → exit. Same rationale as the
 			// event-write path above. BUG-1532.
-			if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {
+			keepaliveFrame := ": keepalive\n\n"
+			if heartbeatEvents {
+				keepaliveFrame = "event: heartbeat\ndata: {}\n\n"
+			}
+			if _, err := fmt.Fprint(w, keepaliveFrame); err != nil {
 				slog.Debug("SSE: keepalive write failed, closing",
 					"workspace", ws.Slug, "error", err)
 				return

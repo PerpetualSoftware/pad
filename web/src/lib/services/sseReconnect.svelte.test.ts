@@ -332,7 +332,13 @@ describe('owned reconnect in the SSE service (BUG-2733)', () => {
 		expect(sources).toHaveLength(2); // only the live refusal's 60s governs
 		await vi.advanceTimersByTimeAsync(30_001);
 		expect(sources).toHaveLength(3);
-		await vi.advanceTimersByTimeAsync(RECONNECT_CAP_MS);
+		// TASK-2197: a silent stream is now treated as dead after 75s, so the
+		// live source is kept alive here; what this checks is the stale timer.
+		sources[2].fireOpen();
+		for (let t = 0; t < RECONNECT_CAP_MS; t += 30_000) {
+			await vi.advanceTimersByTimeAsync(30_000);
+			sources[2].fire('heartbeat');
+		}
 		expect(sources).toHaveLength(3); // and no second timer fires later
 		sse.disconnect();
 	});
