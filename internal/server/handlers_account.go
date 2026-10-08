@@ -12,7 +12,6 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
-	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -161,16 +160,28 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// TOTP code — run AFTER the password/confirm identity check above so
 	// NEITHER path can skip it. This is the whole point: cloud confirm-only
 	// needs no password, so a hijacked live session would otherwise be enough
-	// to wipe a 2FA-protected account. Reuses the same totp.Validate path as
-	// login (handleTOTPLoginVerify) and disable (handleTOTPDisable). Placed
-	// before the Stripe cancel below so a failed code never leaks a cancel RPC.
+	// to wipe a 2FA-protected account. Placed before the Stripe cancel below
+	// so a failed code never leaks a cancel RPC.
+	//
+	// BUG-3482: the code goes through login's own check (checkSecondFactor):
+	// the RecoveryCode limiter, six tries an hour counted per user, and the
+	// single-use step claim. It used to be a bare totp.Validate with neither,
+	// so a hijacked session inside the reauth window could grind the six
+	// digits against this door. The per-user key is the one the 2FA-disable
+	// door uses, so the two share one budget. Only a TOTP code is accepted
+	// here, as before.
 	if fullUser.TOTPEnabled {
 		code := strings.TrimSpace(input.TOTPCode)
 		if code == "" {
 			writeError(w, http.StatusBadRequest, "totp_required", "A 2FA code is required to delete your account")
 			return
 		}
-		if !totp.Validate(code, fullUser.TOTPSecret) {
+		verified, answered := s.checkSecondFactor(w, fullUser, "user:"+fullUser.ID, code, "")
+		if answered {
+			return
+		}
+		if !verified {
+			time.Sleep(500 * time.Millisecond)
 			writeError(w, http.StatusUnauthorized, "totp_invalid", "Invalid 2FA code")
 			return
 		}
