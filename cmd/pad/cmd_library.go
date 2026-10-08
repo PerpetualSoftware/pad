@@ -510,3 +510,18 @@ Examples:
 }
 
 // --- export ---
+
+// TASK-3462 U3c stubs (red commit).
+func libraryDiffCmd() *cobra.Command {
+	return &cobra.Command{Use: "diff <ref>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return fmt.Errorf("not implemented")
+	}}
+}
+
+func libraryUpdateCmd() *cobra.Command {
+	c := &cobra.Command{Use: "update <ref>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return fmt.Errorf("not implemented")
+	}}
+	c.Flags().Bool("overwrite-pending-edits", false, "")
+	return c
+}
