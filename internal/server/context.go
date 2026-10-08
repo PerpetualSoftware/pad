@@ -281,6 +281,32 @@ func structuredEntryAuthor(r *http.Request) string {
 	return actor
 }
 
+// ctxRemoteMCPCaller marks an in-process request from the remote /mcp
+// dispatcher (BUG-2772). Set only in-process; nothing reads it from the wire.
+const ctxRemoteMCPCaller contextKey = "remote_mcp_caller"
+
+// RemoteMCPCaller is a remote MCP client acting for the authenticated user.
+type RemoteMCPCaller struct {
+	// LeaseHolder is the caller's default lease holder: its declared client
+	// name, or a fallback, plus a short id from its MCP session, so two
+	// connections of one client do not share a lease (lead ruling).
+	LeaseHolder string
+}
+
+// WithRemoteMCPCaller marks ctx as a remote MCP call. Every such write is an
+// AGENT write (an app acting for the user), named by X-Pad-Agent when the
+// client declared a name and unnamed when it did not, never the human
+// (IDEA-2791's degradation contract).
+func WithRemoteMCPCaller(ctx context.Context, c RemoteMCPCaller) context.Context {
+	return context.WithValue(ctx, ctxRemoteMCPCaller, c)
+}
+
+// remoteMCPCaller reports the remote MCP caller a request carries, if any.
+func remoteMCPCaller(r *http.Request) (RemoteMCPCaller, bool) {
+	c, ok := r.Context().Value(ctxRemoteMCPCaller).(RemoteMCPCaller)
+	return c, ok
+}
+
 // ChatGPTDoorVersionsContent is the U1b guarantee the ChatGPT catalog's
 // update_item description makes: a content write through the ChatGPT door
 // is versioned first (handleUpdateItem, isChatGPTSurface). The ChatGPT

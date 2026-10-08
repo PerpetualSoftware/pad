@@ -368,8 +368,12 @@ func actorFromRequest(r *http.Request) (actor, source string) {
 	actor = "user"
 	source = "web"
 
-	// If an agent name header is present, mark as agent
+	// If an agent name header is present, mark as agent. A remote MCP call
+	// is an agent write whether or not its client declared a name
+	// (BUG-2772): an app acting for the user, never the user typing.
 	if agentNameFromRequest(r) != "" {
+		actor = "agent"
+	} else if _, ok := remoteMCPCaller(r); ok {
 		actor = "agent"
 	}
 

@@ -68,6 +68,10 @@ import (
 // yet wire produce a clear "not yet implemented over HTTP transport"
 // error rather than failing silently — see Dispatch below.
 type HTTPHandlerDispatcher struct {
+	// Clients resolves the remote caller's declared identity (BUG-2772). Nil
+	// still records every write as an agent write, unnamed.
+	Clients *ClientRegistry
+
 	// Handler is the pad-cloud API router. *server.Server already
 	// satisfies http.Handler via its ServeHTTP method.
 	Handler http.Handler
@@ -624,9 +628,16 @@ func (d *HTTPHandlerDispatcher) buildAuthedRequest(
 	if isMutatingMethod(method) && d.RequireVerifiedEmail != nil && d.RequireVerifiedEmail(user) {
 		return nil, fmt.Errorf("%s: verify your email address before mutating content over MCP", errEmailNotVerifiedPrefix)
 	}
+	// Who is writing (BUG-2772): an agent acting for the user, named by the
+	// client's declared clientInfo when it gave one.
+	caller := d.Clients.resolveRemoteCaller(ctx)
+	ctx = server.WithRemoteMCPCaller(ctx, server.RemoteMCPCaller{LeaseHolder: caller.LeaseHolder})
 	req, err := buildHTTPRequest(ctx, method, urlPath, body, user)
 	if err != nil {
 		return nil, err
+	}
+	if caller.Name != "" {
+		req.Header.Set("X-Pad-Agent", caller.Name)
 	}
 	if d.Apply != nil {
 		req = d.Apply(req)
