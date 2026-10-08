@@ -6243,6 +6243,7 @@
 				{canEdit}
 				hasUnsavedEdits={() => rawContentSaver.dirty || saveStatus === 'saving' || (collabProvider !== null && collabProvider.state !== 'synced')}
 				onAccepted={() => { if (handedDown !== identityKey) return; if (collabProvider || rawContentSaver.dirty) return; void loadData(); }}
+				flushEdits={() => { const ctx = activeCollabContext; if (!collabProvider || !ctx || ctx.retired) return Promise.resolve('deduped' as const); return collabFlusher.flushAndWait(ctx); }}
 			/>
 			{/key}
 			{/key}

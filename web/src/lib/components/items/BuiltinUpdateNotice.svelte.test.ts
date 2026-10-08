@@ -68,6 +68,8 @@ let cmp: ReturnType<typeof mount> | null = null;
 let unsaved = false;
 // Reactive props, so a test can move the pane to another item or bump seq.
 let accepted = 0;
+let flushResult: 'flushed' | 'deduped' | 'failed' | 'skipped' = 'deduped';
+let flushCalls = 0;
 let props: {
 	wsSlug: string;
 	itemId: string;
@@ -77,6 +79,8 @@ let props: {
 	currentFields: string;
 	canEdit: boolean;
 	hasUnsavedEdits: () => boolean;
+	onAccepted: () => void;
+	flushEdits: () => Promise<'flushed' | 'deduped' | 'failed' | 'skipped'>;
 };
 
 function render(canEdit = true) {
@@ -92,6 +96,10 @@ function render(canEdit = true) {
 		onAccepted: () => {
 			accepted++;
 		},
+		flushEdits: async () => {
+			flushCalls++;
+			return flushResult;
+		},
 	});
 	props = reactive;
 	cmp = mount(BuiltinUpdateNotice, { target: document.body, props });
@@ -105,6 +113,8 @@ const acceptBtn = () =>
 beforeEach(() => {
 	unsaved = false;
 	accepted = 0;
+	flushResult = 'deduped';
+	flushCalls = 0;
 	state.get.length = 0;
 	state.update.length = 0;
 });
@@ -152,7 +162,7 @@ describe('BuiltinUpdateNotice', () => {
 		badge()!.click();
 		flushSync();
 		acceptBtn()!.click();
-		flushSync();
+		await settle();
 		expect(state.update).toHaveLength(1);
 		expect(state.update[0]!.body).toEqual({ expected_seq: 7 });
 		state.update[0]!.resolve({});
@@ -170,7 +180,7 @@ describe('BuiltinUpdateNotice', () => {
 		flushSync();
 		unsaved = true;
 		acceptBtn()!.click();
-		flushSync();
+		await settle();
 		expect(state.update).toHaveLength(0);
 		expect(document.querySelector('.error')?.textContent).toMatch(/not reached the server/);
 	});
@@ -182,7 +192,7 @@ describe('BuiltinUpdateNotice', () => {
 		badge()!.click();
 		flushSync();
 		acceptBtn()!.click();
-		flushSync();
+		await settle();
 		props.itemId = 'id-other';
 		props.itemRef = 'other';
 		flushSync();
@@ -200,7 +210,7 @@ describe('BuiltinUpdateNotice', () => {
 		badge()!.click();
 		flushSync();
 		acceptBtn()!.click();
-		flushSync();
+		await settle();
 		expect(acceptBtn()!.disabled).toBe(true);
 		props.itemRef = 'plan-renamed';
 		flushSync();
@@ -218,12 +228,41 @@ describe('BuiltinUpdateNotice', () => {
 		badge()!.click();
 		flushSync();
 		acceptBtn()!.click();
-		flushSync();
+		await settle();
 		props.itemRef = 'plan-renamed';
 		flushSync();
 		state.update[0]!.reject(apiError('update_conflict'));
 		await settle();
 		expect(state.get[state.get.length - 1]!.ref).toBe('plan-renamed');
+	});
+
+	it('saves the open editor first; text the preview did not show stops the update (codex r4)', async () => {
+		render();
+		state.get[0]!.resolve(offer('update_available'));
+		await settle();
+		badge()!.click();
+		flushSync();
+		flushResult = 'flushed';
+		const gets = state.get.length;
+		acceptBtn()!.click();
+		await settle();
+		expect(flushCalls).toBe(1);
+		expect(state.update).toHaveLength(0);
+		expect(state.get.length).toBe(gets + 1);
+		expect(document.querySelector('.error')?.textContent).toMatch(/saved first/);
+	});
+
+	it('an editor save that fails replaces nothing (codex r4)', async () => {
+		render();
+		state.get[0]!.resolve(offer('update_available'));
+		await settle();
+		badge()!.click();
+		flushSync();
+		flushResult = 'failed';
+		acceptBtn()!.click();
+		await settle();
+		expect(state.update).toHaveLength(0);
+		expect(document.querySelector('.error')?.textContent).toMatch(/could not be saved/);
 	});
 
 	it('closes the dialog when the offer goes away under it (codex r1)', async () => {
@@ -259,13 +298,13 @@ describe('BuiltinUpdateNotice', () => {
 		badge()!.click();
 		flushSync();
 		acceptBtn()!.click();
-		flushSync();
+		await settle();
 		state.update[0]!.reject(apiError('content_pending_flush'));
 		await settle();
 		expect(acceptBtn()!.textContent).toMatch(/discard unsaved edits/i);
 		expect(document.querySelector('.note')?.textContent).toMatch(/not kept anywhere/);
 		acceptBtn()!.click();
-		flushSync();
+		await settle();
 		expect(state.update[1]!.body).toEqual({ expected_seq: 7, overwrite_pending_edits: true });
 	});
 
@@ -276,7 +315,7 @@ describe('BuiltinUpdateNotice', () => {
 		badge()!.click();
 		flushSync();
 		acceptBtn()!.click();
-		flushSync();
+		await settle();
 		state.update[0]!.reject(apiError('update_conflict'));
 		await settle();
 		expect(state.get).toHaveLength(2);
@@ -290,7 +329,7 @@ describe('BuiltinUpdateNotice', () => {
 		badge()!.click();
 		flushSync();
 		acceptBtn()!.click();
-		flushSync();
+		await settle();
 		auth.changeIdentity();
 		// The new identity's own read lands first and offers again.
 		state.get[state.get.length - 1]!.resolve(offer('update_available'));

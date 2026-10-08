@@ -40,10 +40,29 @@
 		 * flush); the raw editor keeps its body on an SSE refresh, so it must.
 		 */
 		onAccepted?: () => void;
+		/**
+		 * Save the open collab editor's text before the update and say what
+		 * happened (codex r4). A synced socket proves nothing about typing the
+		 * server has stored: a frame in flight is not in the op-log yet, so the
+		 * server's content_pending_flush refusal cannot see it. 'flushed' means
+		 * the editor held text the preview did not show: the update is not
+		 * sent, and the preview is read again. Absent outside collab mode.
+		 */
+		flushEdits?: () => Promise<'flushed' | 'deduped' | 'failed' | 'skipped'>;
 	}
 
-	let { wsSlug, itemId, itemRef, seq, currentContent, currentFields, canEdit, hasUnsavedEdits, onAccepted }: Props =
-		$props();
+	let {
+		wsSlug,
+		itemId,
+		itemRef,
+		seq,
+		currentContent,
+		currentFields,
+		canEdit,
+		hasUnsavedEdits,
+		onAccepted,
+		flushEdits
+	}: Props = $props();
 
 	let offer = $state<BuiltinStateResponse | null>(null);
 	let open = $state(false);
@@ -145,6 +164,18 @@
 		busy = true;
 		errorMessage = null;
 		try {
+			const flushed = flushEdits ? await flushEdits() : 'deduped';
+			if (!stillThisItem()) return;
+			if (flushed === 'failed' || flushed === 'skipped') {
+				errorMessage = 'Your latest edits could not be saved, so nothing was replaced. Try again in a moment.';
+				return;
+			}
+			if (flushed === 'flushed') {
+				errorMessage =
+					'Your latest edits were saved first, so the comparison has changed. Review it again before accepting.';
+				void load(wsSlug, itemRef);
+				return;
+			}
 			await api.builtins.update(ws, ref, {
 				expected_seq: offer.seq,
 				...(discard ? { overwrite_pending_edits: true } : {})

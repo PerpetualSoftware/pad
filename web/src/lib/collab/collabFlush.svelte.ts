@@ -133,6 +133,8 @@ export interface CollabFlusher {
 	 *  teardown + beforeunload with keepalive=true to land the snapshot before
 	 *  the provider tears down. */
 	flushNow(ctx: CollabFlushContext, keepalive: boolean): boolean;
+	/** Foreground flush the caller awaits; see the implementation (TASK-3462 U3b). */
+	flushAndWait(ctx: CollabFlushContext): Promise<CollabFlushResult>;
 	/** Arm the idle debounce to run `flushNow(ctx, false)` — unless a flush is
 	 *  already pending, which then carries the settle too. Called when the op-log
 	 *  cursor advances without an editor update (a reconnect replay of frames
@@ -300,6 +302,20 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		return true;
 	}
 
+	/**
+	 * A foreground flush the caller awaits (TASK-3462 U3b): cancels a pending
+	 * idle flush, reads the live editor and resolves with the flush's result,
+	 * so a caller about to replace the body knows whether the editor held
+	 * text the server did not have ('flushed'), held nothing new ('deduped'),
+	 * or could not be saved ('failed' / 'skipped').
+	 */
+	async function flushAndWait(ctx: CollabFlushContext): Promise<CollabFlushResult> {
+		cancel();
+		const md = config.readEditorMarkdown();
+		if (md === null) return 'skipped';
+		return flush(ctx, md, false);
+	}
+
 	function resetDedup(): void {
 		lastFlushedContent = null;
 		// Invalidate any in-flight flush's pending record (see `gen` in flush()).
@@ -311,6 +327,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		flush,
 		prime,
 		flushNow,
+		flushAndWait,
 		settle,
 		cancel,
 		resetDedup,
