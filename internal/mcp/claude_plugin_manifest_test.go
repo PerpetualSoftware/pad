@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"testing"
 )
 
@@ -71,3 +72,45 @@ func TestClaudePlugin_NoPinnedVersion(t *testing.T) {
 		t.Fatal("marketplace.json lists no plugins; the guard is reading the wrong file")
 	}
 }
+
+// TASK-3487: the marketplace's pad entry follows STABLE releases. Its source is
+// either the in-repo "./plugin" (before the first stable tag that carries an
+// unpinned plugin) or a git-subdir of this repository's plugin/ pinned to a
+// vX.Y.Z tag, which scripts/pin-plugin-marketplace.sh writes after a stable
+// release. Never an rc tag, a branch, or a sha the release did not pick.
+func TestClaudePlugin_MarketplaceFollowsStableReleases(t *testing.T) {
+	b, err := os.ReadFile(claudeMarketplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range marketplaceEntries(doc) {
+		if e["name"] != "pad" {
+			continue
+		}
+		found = true
+		switch src := e["source"].(type) {
+		case string:
+			if src != "./plugin" {
+				t.Errorf("pad source %q: want \"./plugin\" or a git-subdir pinned to a stable tag", src)
+			}
+		case map[string]any:
+			ref, _ := src["ref"].(string)
+			if src["source"] != "git-subdir" || src["url"] != "https://github.com/PerpetualSoftware/pad.git" || src["path"] != "plugin" ||
+				!stableTag.MatchString(ref) || len(src) != 4 {
+				t.Errorf("pad source %v: want exactly {git-subdir, https://github.com/PerpetualSoftware/pad.git, plugin, vX.Y.Z}; the https URL, since the owner/repo shorthand clones over SSH", src)
+			}
+		default:
+			t.Errorf("pad source %v has an unexpected shape", src)
+		}
+	}
+	if !found {
+		t.Fatal("marketplace.json has no pad entry")
+	}
+}
+
+var stableTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
