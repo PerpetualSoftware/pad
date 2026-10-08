@@ -28,6 +28,7 @@ func TestInvitationEmailMatches(t *testing.T) {
 // BUG-3282: both entry points must compare the lowercase address bytes,
 // without EqualFold's additional equivalences (notably long s and ASCII s).
 func TestInvitationEmailBinding(t *testing.T) {
+	t.Parallel()
 	for _, door := range []string{"accept", "register"} {
 		t.Run(door, func(t *testing.T) {
 			for _, tc := range []struct {

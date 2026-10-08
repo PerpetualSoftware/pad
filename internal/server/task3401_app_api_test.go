@@ -718,6 +718,7 @@ func TestTask3401_TheRequestCeilingBindsAPersonActor(t *testing.T) {
 // its data. The response is re-validated against the install (epoch, state,
 // service access, client) before it is sent.
 func TestTask3401_ARevocationDuringAReadWithholdsItsData(t *testing.T) {
+	t.Parallel()
 	// Each change is keyed by the install id; the ones that act on other
 	// rows find them through it (codex r2: the token, the membership, the
 	// resources themselves).

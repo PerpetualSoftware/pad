@@ -82,6 +82,7 @@ func makeIntegrationJPEG(t *testing.T, w, h int) []byte {
 // goAsync goroutines, so calling it deterministically waits for the
 // thumbnail pipeline before assertions run.
 func TestThumbnails_GeneratedOnPNGUpload(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	body := makeIntegrationPNG(t, 2000, 1500)
 
@@ -205,6 +206,7 @@ func TestThumbnails_DerivedForSmallSourceImage(t *testing.T) {
 // ?variant= path should now find the derived row (instead of falling
 // back to the original) once thumbnails exist.
 func TestThumbnails_ServeViaVariantQueryParam(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	body := makeIntegrationPNG(t, 2000, 1500)
 

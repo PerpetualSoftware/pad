@@ -20,6 +20,7 @@ import (
 // control. `n` is a declared number field, `u` an undeclared key, so both the
 // validated and the carried-through paths are covered.
 func TestFieldWriteDoorsKeepIntegersAbove2Pow53(t *testing.T) {
+	t.Parallel()
 	const bigN = "9007199254740993" // declared number field
 	const bigU = "9007199254740995" // undeclared key, carried
 	const bigS = "9007199254740997" // a SUPPLIED n, distinct from the stored one so a no-op write cannot pass

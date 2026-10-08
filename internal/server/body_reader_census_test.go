@@ -265,6 +265,7 @@ func sitesByKey(sites []bodyReadSite) map[string]int {
 // It asserts BOTH directions: an unaccounted site fails, and an accounted site
 // that no longer exists fails, so the table cannot rot into stale excuses.
 func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
+	t.Parallel()
 	// WHY each file reads a body. Every site below must name a file here.
 	bodyReaderFileWhy := map[string]string{
 		"middleware_request_text.go": "the chokepoint itself: readBodyForDecode reads the body under the caller's cap so bodyDecodesNUL can scan it",

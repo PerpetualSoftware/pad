@@ -112,6 +112,7 @@ func recoverCase(t *testing.T, f *recoveryFixture, c linkFixtureCase) string {
 // in the document; the ref is a number the item already exposes in its URL
 // wherever it is linked by ref. That is the whole of the index's contribution.
 func TestMaterializeLinkIndexContributesNoTitle(t *testing.T) {
+	t.Parallel()
 	f, _, _ := newLinkWorld(t)
 	index, err := f.srv.materializeLinkIndex(f.ws.ID)
 	if err != nil {

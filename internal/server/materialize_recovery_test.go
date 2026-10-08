@@ -721,6 +721,7 @@ func TestMaterializeSetAsideSkipsAreCountedNotLogged(t *testing.T) {
 // time, the last one must still be recovered, within
 // ceil(N / limit) + 1 = 3 sweeps, at the REAL page size.
 func TestMaterializeSweepReachesEveryCandidate(t *testing.T) {
+	t.Parallel()
 	clock := time.Now().Add(time.Hour) // rows written now are dormant
 	var targetFrame, healedFrame []byte
 	fake := &fakeMaterializer{fn: func(job materialize.Job) (string, error) {

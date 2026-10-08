@@ -18,6 +18,7 @@ import (
 // single-member control through the same door, so a 400 cannot come from the
 // request being malformed in some other way.
 func TestRepeatedRequestMemberIsRefused(t *testing.T) {
+	t.Parallel()
 	// Three spellings of a repeat. The case-variant one is a repeat because
 	// encoding/json decodes `FIELDS_PATCH` into the fields_patch field. The
 	// null-first one drops nothing, but it is still two members for one field,
