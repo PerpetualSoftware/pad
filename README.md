@@ -104,6 +104,15 @@ pad server info                         # How this client is connected to Pad
 
 ### For AI Agents
 
+**Using Claude Code? Install the Pad plugin.** It bundles the `/pad` skill, typed shortcuts (`/pad:status`, `/pad:capture`, `/pad:onboard`), live item notifications and a side panel (`/pad-pane`), and it updates itself:
+
+```
+/plugin marketplace add PerpetualSoftware/pad
+/plugin install pad@pad
+```
+
+In the Claude Desktop app's Code tab: **+ → Plugins**, add the marketplace `PerpetualSoftware/pad`, then install **pad**. Open the panel with `/pad-pane`. If nothing is set up yet, it walks you through connecting to Pad Cloud, installing Pad on this machine, or linking your own server. The panel needs Claude Code 2.1.287 or later; the skills work on any version.
+
 **Your agent becomes a project partner.** Install the `/pad` skill once, and your AI coding tool can read, create, and update project items through natural language. Cursor, Codex, Windsurf, and OpenCode receive a compact dispatcher, reuse bootstrapped context within a conversation, and load detailed guidance by topic with `pad agent guide`, keeping routine turns small.
 
 ```bash
