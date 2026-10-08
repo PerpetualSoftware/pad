@@ -578,9 +578,25 @@ Examples:
 				if err != nil {
 					return err
 				}
+				// The same version the state describes, or nothing: a newer
+				// item mixed into an older state would show text the seq does
+				// not guard (codex r2).
+				if item.Seq != st.Seq {
+					return fmt.Errorf("%s changed while it was being read; run this again", ref)
+				}
 				fields := map[string]any{}
-				_ = json.Unmarshal([]byte(item.Fields), &fields)
+				if item.Fields != "" {
+					if err := models.DecodeJSONKeepingNumbers([]byte(item.Fields), &fields); err != nil {
+						return err
+					}
+				}
+				// What the server's own `current` holds: no status, no nulls.
 				delete(fields, "status")
+				for k, v := range fields {
+					if v == nil {
+						delete(fields, k)
+					}
+				}
 				st.Current = &cli.BuiltinText{Content: item.Content, Fields: fields}
 			}
 			if formatFlag == "json" {

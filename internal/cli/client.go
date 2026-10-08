@@ -875,6 +875,27 @@ type BuiltinText struct {
 	Fields  map[string]any `json:"fields"`
 }
 
+// UnmarshalJSON keeps the fields' numbers as written (codex r2): the default
+// decoder makes every number a float64, so two integers above 2^53 that
+// differ would compare equal and hide a setting an update overwrites.
+func (b *BuiltinText) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Content string          `json:"content"`
+		Fields  json.RawMessage `json:"fields"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	b.Content = raw.Content
+	b.Fields = map[string]any{}
+	if len(raw.Fields) > 0 && string(raw.Fields) != "null" {
+		if err := models.DecodeJSONKeepingNumbers(raw.Fields, &b.Fields); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // BuiltinState is GET /workspaces/{ws}/items/{ref}/builtin (TASK-3462).
 type BuiltinState struct {
 	Key         string       `json:"key"`
