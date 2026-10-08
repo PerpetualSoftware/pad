@@ -115,7 +115,7 @@ jobs:
 
       - name: Scan Nix-built binary with govulncheck
         # CI's main govulncheck job scans a `go build` binary, which honours
-        # go.mod's `toolchain go1.26.6` line — but nixpkgs pins
+        # go.mod's `toolchain go1.26.9` line — but nixpkgs pins
         # GOTOOLCHAIN=local, so the Nix artifact is built with whatever Go
         # patch the nixos-26.05 channel ships and can carry stdlib advisories
         # the main gate can no longer see (BUG-2567). This scans the artifact
