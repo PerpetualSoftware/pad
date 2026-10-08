@@ -8354,12 +8354,30 @@
 		gap: var(--space-6);
 	}
 
+	/* TASK-2209: the balanced grid answers to the BODY's width, not the
+	   viewport's. The docked pane is ~400px on a 1440px screen, so a
+	   viewport query kept two columns there and the right one ran off
+	   screen. Only `container-type` here: `contain`, `transform` or `filter`
+	   would trap the mobile BottomSheet's `position: fixed`. */
+	.item-body.layout-balanced {
+		container-type: inline-size;
+		container-name: item-body-balanced;
+	}
 	.layout-balanced .fields-panel {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		/* `minmax(0, …)`: a bare `1fr` has an `auto` minimum, so a select's or
+		   the tag input's min-content widened the grid past its panel. */
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 		gap: 0 var(--space-6);
 		padding-bottom: var(--space-4);
 		border-bottom: 1px solid var(--border);
+	}
+	/* After the base rule on purpose: a container query adds no specificity,
+	   so source order decides. */
+	@container item-body-balanced (max-width: 559.98px) {
+		.layout-balanced .fields-panel {
+			grid-template-columns: minmax(0, 1fr);
+		}
 	}
 	.layout-balanced .fields-header {
 		grid-column: 1 / -1;
