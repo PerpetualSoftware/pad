@@ -98,6 +98,16 @@ export function uploadImportBundle(opts: ImportUploadOptions): Promise<ImportUpl
 			timer = setTimer(() => fail(kind), ms);
 		};
 		const onAbort = () => fail('aborted');
+		// A caller's callback must not wedge the upload: one that throws is
+		// reported and ignored, and the transfer and its timers carry on
+		// (codex r1).
+		const notify = (fn: () => void) => {
+			try {
+				fn();
+			} catch (err) {
+				console.error('import upload callback threw', err);
+			}
+		};
 
 		if (opts.signal?.aborted) {
 			settled = true;
@@ -113,12 +123,12 @@ export function uploadImportBundle(opts: ImportUploadOptions): Promise<ImportUpl
 		xhr.upload.onprogress = (e: ProgressEvent) => {
 			if (settled) return;
 			arm(IMPORT_STALL_MS, 'stalled');
-			opts.onProgress?.(e.loaded, e.lengthComputable ? e.total : opts.body.size);
+			notify(() => opts.onProgress?.(e.loaded, e.lengthComputable ? e.total : opts.body.size));
 		};
 		xhr.upload.onload = () => {
 			if (settled) return;
 			arm(IMPORT_FINISHING_MS, 'no_response');
-			opts.onUploaded?.();
+			notify(() => opts.onUploaded?.());
 		};
 		xhr.onload = () => {
 			if (settled) return;
@@ -137,7 +147,7 @@ export function uploadImportBundle(opts: ImportUploadOptions): Promise<ImportUpl
 		// Armed before the first byte: a path dead from the start reports no
 		// progress at all.
 		arm(IMPORT_STALL_MS, 'stalled');
-		opts.onProgress?.(0, opts.body.size);
+		notify(() => opts.onProgress?.(0, opts.body.size));
 		xhr.send(opts.body);
 	});
 }

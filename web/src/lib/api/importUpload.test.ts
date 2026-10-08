@@ -143,6 +143,28 @@ describe('uploadImportBundle', () => {
 		expect(h2.live()).toEqual([]);
 	});
 
+	it('a callback that throws does not wedge the upload', async () => {
+		const h = harness();
+		const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const p = start(h, {
+			onProgress: () => {
+				throw new Error('progress bug');
+			},
+			onUploaded: () => {
+				throw new Error('uploaded bug');
+			}
+		});
+		h.xhr.progress(100, 100);
+		h.xhr.upload.onload?.();
+		h.xhr.status = 201;
+		h.xhr.responseText = '{}';
+		h.xhr.onload?.();
+		expect((await p).status).toBe(201);
+		expect(h.live()).toEqual([]);
+		expect(err).toHaveBeenCalled();
+		err.mockRestore();
+	});
+
 	it('an already-aborted signal sends nothing', async () => {
 		const h = harness();
 		const ctl = new AbortController();

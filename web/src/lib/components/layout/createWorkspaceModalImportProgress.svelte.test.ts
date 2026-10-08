@@ -212,6 +212,20 @@ describe('BUG-3475: the import dialog shows where an import is', () => {
 		expect(container.querySelector('[role="alert"]')?.textContent).toContain('The import was cancelled. Nothing was kept');
 	});
 
+	it('closing the dialog mid-upload aborts it and does not go on asking for the outcome', async () => {
+		const imp = controlledImport();
+		api.workspaces.importStatus.mockResolvedValue({ state: 'removed' });
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		await attachBundle(container);
+		btn(container, /^Import Workspace$/).click();
+		await settle();
+
+		btn(container, /^Cancel$/).click();
+		await settle();
+		expect(imp.opts.signal?.aborted).toBe(true);
+		expect(api.workspaces.importStatus).not.toHaveBeenCalled();
+	});
+
 	it('closing while the outcome is being resolved leaves nothing on the next open', async () => {
 		const imp = controlledImport();
 		let answer!: (v: unknown) => void;

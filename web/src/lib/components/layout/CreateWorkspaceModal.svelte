@@ -166,6 +166,12 @@
 		// workspace back (BUG-3475). After the last byte there is nothing left
 		// to stop; the import finishes and appears in the workspace list.
 		importAbort?.abort();
+		// Closing ends the import's operation too, so an aborted upload does
+		// not go on polling for its outcome behind a closed dialog (codex r1).
+		// The success path calls close() after its last fenced side effect,
+		// and the reopen reset below advances the token again for a close
+		// that bypasses this function (the store, directly).
+		if (importing) opSeq++;
 		uiStore.closeCreateWorkspace();
 	}
 
@@ -413,7 +419,13 @@
 	// for an import whose 201 never arrived.
 	async function openImported(view: ImportOutcomeView) {
 		if (view.kind !== 'complete' && view.kind !== 'kept') return;
+		// Fenced like every other post-await side effect here (codex r1): a
+		// user change, an unmount or a fresh open during the tab write must
+		// not close that dialog or navigate.
+		const myOp = opSeq;
+		const callUser = authStore.userId;
 		await tabsStore.open(view.slug).catch(() => {});
+		if (!alive || myOp !== opSeq || authStore.userId !== callUser) return;
 		close();
 		goto(`/${view.owner}/${view.slug}`);
 	}
