@@ -15,6 +15,7 @@ type recordingObserver struct {
 	unconfirmed   int
 	cycled        int
 	probeFailures int
+	seqRepairs    []string
 
 	// resetsChanged is closed, and cleared, by every SequenceReset; see
 	// awaitReset.
@@ -59,6 +60,18 @@ func (o *recordingObserver) HeartbeatPublishFailed() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.probeFailures++
+}
+
+func (o *recordingObserver) SequenceCounterRepaired(shape string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.seqRepairs = append(o.seqRepairs, shape)
+}
+
+func (o *recordingObserver) seqRepairList() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.seqRepairs...)
 }
 
 func (o *recordingObserver) probeFailureCount() int {
@@ -277,3 +290,5 @@ func (o callbackObserver) SubscriptionUnconfirmed() {}
 func (o callbackObserver) SubscriptionCycled() {}
 
 func (o callbackObserver) HeartbeatPublishFailed() {}
+
+func (o callbackObserver) SequenceCounterRepaired(string) {}

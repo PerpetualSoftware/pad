@@ -102,13 +102,82 @@ const (
 // clear that must happen atomically with it. It publishes nothing — the bare
 // wire form carries the id inside the JSON, so the caller marshals and
 // publishes after this returns.
-var assignScript = redis.NewScript(`
+var assignScript = redis.NewScript(seqGuardLua + `
+local repair = repair_seq(KEYS[1])
 local id = redis.call('INCR', KEYS[1])
 if id == 1 then
   redis.call('DEL', KEYS[2])
 end
-return id
+return seq_result(redis.call('GET', KEYS[1]), repair)
 `)
+
+// seqGuardLua is the sequence-counter guard both scripts run before their INCR
+// (BUG-2744). One text, prepended to each, so the two cannot drift.
+const seqGuardLua = `
+-- repair_seq DELETES the sequence counter when it holds something INCR
+-- cannot use, or a value the receivers cannot be trusted to read back
+-- (BUG-2744), and says what it found so the Go side can log and count it.
+--
+-- WHY DELETE: the INCR that follows then returns 1, which takes the EXISTING
+-- id == 1 branch, the one a deleted or evicted counter already takes. That
+-- branch is an id-space change receivers already handle: the epoch rotates (on
+-- phase 1 the stale epoch is cleared and the counter going backwards says it),
+-- buffers are dropped, and a resume across it answers sync_required. Leaving
+-- the key alone is the alternative, and it is worse: INCR aborts the script on
+-- every publish until someone repairs the key by hand.
+--
+-- THREE SHAPES, the same ones the generation guard found (BUG-2740): a key of
+-- another type (WRONGTYPE), a string that is not an integer (INCR refuses
+-- it), and an integer of 18 digits or more. The last one INCR accepts, but it
+-- is what a collided or hand-edited key looks like rather than anything
+-- counting reaches, and 17 is the ceiling under which the INCRemented id is
+-- at most 18 digits, the width the epoch guard below also admits.
+--
+-- Returns nil when the counter is usable (absent, or a non-negative integer of
+-- at most 17 digits), else {shape, type, length}: the length of a string in
+-- bytes, or the element count of an aggregate. Never the value: a corrupted
+-- key can be arbitrarily large, and its content is not ours to log.
+local function repair_seq(key)
+  local t = redis.call('TYPE', key)['ok']
+  if t == 'none' then
+    return nil
+  end
+  local shape
+  local n = -1
+  if t == 'string' then
+    local v = redis.call('GET', key)
+    if v == '0' or (string.match(v, '^[1-9][0-9]*$') and #v <= 17) then
+      return nil
+    end
+    n = #v
+    if string.match(v, '^[1-9][0-9]*$') then
+      shape = 'too_large'
+    else
+      shape = 'not_integer'
+    end
+  else
+    shape = 'wrong_type'
+    local counters = {list = 'LLEN', hash = 'HLEN', set = 'SCARD', zset = 'ZCARD'}
+    if counters[t] then
+      n = redis.call(counters[t], key)
+    end
+  end
+  redis.call('DEL', key)
+  return {shape, t, n}
+end
+
+-- seq_result is the reply both scripts return: the id READ BACK from the key
+-- (not the INCR result: Lua holds that as a double printed with %.14g, which
+-- is not faithful above about 15 digits, BUG-2744), then the repair, if any,
+-- as three more elements. Empty strings and 0 rather than nil, because a nil
+-- inside a Lua table ends the array Redis returns.
+local function seq_result(id_str, repair)
+  if repair then
+    return {id_str, repair[1], repair[2], repair[3]}
+  end
+  return {id_str, '', '', 0}
+end
+`
 
 // generationRestartSeed is the value publishScript restarts the generation
 // counter at when it finds that key corrupted (BUG-2740, ARGV[3]).
@@ -247,7 +316,7 @@ func clampGenerationSeed(unix int64) string {
 // ID. Nothing downstream can tell the two apart — both are valid and ascending
 // — and the client is not told. The token is as durable as Redis replication
 // and no more; this narrows the window rather than closing it.
-var publishScript = redis.NewScript(`
+var publishScript = redis.NewScript(seqGuardLua + `
 -- next_gen returns the next generation for the id space, REPAIRING the
 -- generation counter first if it holds something INCR cannot work with
 -- (BUG-2740).
@@ -355,9 +424,11 @@ local function next_gen()
 end
 
 if redis.call('EXISTS', KEYS[4]) == 1 then
-  return 0
+  return seq_result('0', nil)
 end
+local repair = repair_seq(KEYS[1])
 local id = redis.call('INCR', KEYS[1])
+local id_str = redis.call('GET', KEYS[1])
 if id == 1 then
   -- The counter is starting from scratch: this installation's first publish
   -- ever, or the seq key was deleted or evicted under us. Both are a NEW id
@@ -405,19 +476,13 @@ if not epoch or not string.match(epoch, '^[1-9][0-9]*$') or #epoch > 18 then
   redis.call('SET', KEYS[3], g)
   epoch = g
 end
--- NOTE (BUG-2744): 'id' is a Lua NUMBER here, so this concatenation has the
--- same %.14g precision hazard next_gen avoids by reading its value back.
--- Reachable by corruption rather than by counting — a hand-edited or collided
--- event_seq ARRIVES at that magnitude the same way the generation key does.
---
--- Left for that item rather than fixed here, and the reason is NOT that the
--- return value constrains it: this caller discards the result (.Err()), so a
--- wrong id here reaches the wire with nothing on the Go side to notice.
--- assignScript's id IS consumed, which is why the remedy spans both paths and
--- is that item's design question.
-redis.call('PUBLISH', KEYS[2], epoch .. '|' .. id .. '|' .. ARGV[1])
+-- id_str, not id: id is a Lua NUMBER, and concatenating it renders %.14g,
+-- which stops being faithful above about 15 digits (BUG-2744). Measured: a
+-- counter at 999999999999999998 increments to 999999999999999999, which
+-- concatenates as 1000000000000000000 while GET returns it exactly.
+redis.call('PUBLISH', KEYS[2], epoch .. '|' .. id_str .. '|' .. ARGV[1])
 redis.call('SET', KEYS[4], '1', 'EX', ARGV[2])
-return id
+return seq_result(id_str, repair)
 `)
 
 // RedisBus distributes events across multiple Pad instances via Redis pub/sub.
@@ -1359,8 +1424,12 @@ func (b *RedisBus) Publish(event Event) error {
 	//
 	// Deleting rather than rotating: this path publishes no epoch and has none
 	// to propose, and an absent key is exactly what phase 2 mints into.
-	id, err := assignScript.Run(b.ctx, b.client,
-		[]string{b.keys.Name(redisSeqSuffix), b.keys.Name(redisEpochSuffix)}).Int64()
+	res, err := assignScript.Run(b.ctx, b.client,
+		[]string{b.keys.Name(redisSeqSuffix), b.keys.Name(redisEpochSuffix)}).Slice()
+	var id int64
+	if err == nil {
+		id, err = b.readSeqResult(res)
+	}
 	if err != nil {
 		// NO LOCAL-COUNTER FALLBACK, and its removal is a fix rather than a
 		// regression (BUG-2731). The previous version answered a failed INCR
@@ -1412,12 +1481,13 @@ func (b *RedisBus) publishWithEpoch(channel string, event Event) error {
 	// go-redis reuses the same arguments on its own retries, so the second run
 	// of the script sees the same token and declines.
 	dedupeKey := b.keys.Name(redisDedupeSuffix) + uuid.NewString()
-	if err := publishScript.Run(b.ctx, b.client,
+	res, err := publishScript.Run(b.ctx, b.client,
 		[]string{
 			b.keys.Name(redisSeqSuffix), channel, b.keys.Name(redisEpochSuffix),
 			dedupeKey, b.keys.Name(redisEpochGenSuffix),
 		},
-		string(data), redisDedupeTTLSeconds, b.generationRestartSeed()).Err(); err != nil {
+		string(data), redisDedupeTTLSeconds, b.generationRestartSeed()).Slice()
+	if err != nil {
 		// NO LOCAL-COUNTER FALLBACK, for the same reason the phase-1 path has
 		// none (BUG-2731): an ID minted locally belongs to a different space,
 		// which every receiving instance reads as a counter reset, and this
@@ -1432,7 +1502,56 @@ func (b *RedisBus) publishWithEpoch(channel string, event Event) error {
 		// it, but a runtime error after its INCR does not undo the INCR.)
 		return fmt.Errorf("events: redis publish script (phase 2): %w", err)
 	}
+	// The event is already published here, so a reply this binary cannot read
+	// is logged rather than returned: returning it would report a delivered
+	// event as failed.
+	if _, err := b.readSeqResult(res); err != nil {
+		slog.Error("events: unreadable reply from the publish script; the event was published", "error", err)
+	}
 	return nil
+}
+
+// Sequence-counter repair shapes (BUG-2744). Bounded by construction, because
+// they become a metric label.
+const (
+	SeqRepairWrongType  = "wrong_type"
+	SeqRepairNotInteger = "not_integer"
+	SeqRepairTooLarge   = "too_large"
+)
+
+// readSeqResult reads the reply both id-assigning scripts return: the id as
+// the key holds it, then a repair report (BUG-2744). A repair is logged and
+// counted here, so a corrupted counter heals VISIBLY: a heal nobody can see
+// would hide whatever corrupted the key (lead ruling, day 89).
+func (b *RedisBus) readSeqResult(res []interface{}) (int64, error) {
+	if len(res) != 4 {
+		return 0, fmt.Errorf("events: id script returned %d elements, want 4", len(res))
+	}
+	idStr, ok := res[0].(string)
+	if !ok {
+		return 0, fmt.Errorf("events: id script returned an id of type %T", res[0])
+	}
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("events: id script returned an unreadable id: %w", err)
+	}
+	shape, _ := res[1].(string)
+	if shape == "" {
+		return id, nil
+	}
+	switch shape {
+	case SeqRepairWrongType, SeqRepairNotInteger, SeqRepairTooLarge:
+	default:
+		shape = "unknown"
+	}
+	keyType, _ := res[2].(string)
+	length, _ := res[3].(int64)
+	slog.Warn("events: the event sequence counter held something it cannot count from; deleted it, "+
+		"which starts a new id space (subscribers resync). Find what wrote the key: another installation "+
+		"sharing this Redis keyspace, a hand edit, or a restore",
+		"key", b.keys.Name(redisSeqSuffix), "shape", shape, "type", keyType, "length", length)
+	b.reportSeqCounterRepaired(shape)
+	return id, nil
 }
 
 // EventsSince returns buffered events for a workspace with IDs greater than

@@ -2,10 +2,12 @@ package events
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/alicebob/miniredis/v2/server"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -21,12 +23,15 @@ import (
 // the point of re-running it — a subtraction hides its defects as absences.
 //
 // The arrangement now reproduces a PARTIAL failure of the kind the branch
-// exists for: the sequence key holds a non-integer, so INCR fails while PUBLISH
-// keeps working. A key-type collision with another tenant of the same Redis is
-// one realistic route to that state and the cheapest to arrange here; an ACL
-// permitting PUBLISH while denying INCR is another. What matters is the shape —
-// ID assignment failing while delivery still works — because that is the only
-// shape in which a fallback ID would actually reach subscribers.
+// exists for: ID assignment fails while PUBLISH keeps working. What matters is
+// the shape, because that is the only shape in which a fallback ID would
+// actually reach subscribers.
+//
+// It used to poison the sequence key with a non-integer. Since BUG-2744 the
+// assignment script REPAIRS such a key instead of failing on it, so the route
+// here is the other one this comment always named: an ACL that permits
+// PUBLISH while denying the script, emulated by a miniredis pre-hook that
+// refuses EVAL / EVALSHA and lets everything else through.
 func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -43,10 +48,20 @@ func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 	b.Publish(Event{Type: ItemCreated, WorkspaceID: "ws-1"})
 	drain(t, ch, 1)
 
-	// INCR now fails; PUBLISH still works.
-	mr.Set("pad:event_seq", "not-a-number")
+	// The id script is now refused; PUBLISH still works.
+	mr.Server().SetPreHook(func(c *server.Peer, cmd string, _ ...string) bool {
+		if strings.EqualFold(cmd, "EVAL") || strings.EqualFold(cmd, "EVALSHA") {
+			c.WriteError("NOPERM this user has no permissions to run the script")
+			return true
+		}
+		return false
+	})
 
-	b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"})
+	// FIXTURE CHECK: the assignment really was refused, or the silence below
+	// proves nothing.
+	if err := b.Publish(Event{Type: ItemUpdated, WorkspaceID: "ws-1"}); err == nil {
+		t.Fatal("fixture: the id script must be refused here")
+	}
 
 	select {
 	case e := <-ch:

@@ -498,6 +498,7 @@ Alert on these instead:
 | `pad_event_subscription_cycled_total` | Activity-stream workspace subscriptions torn down **and replaced** because nothing arrived on them — no event, no heartbeat, no acknowledgement — within the idle timeout. It counts replacements, not teardowns: a cycle that installed nothing because the instance was shutting down, the workspace lost its last subscriber, or Redis refused the `SUBSCRIBE` does not increment it, so a restart cannot manufacture this signal and a refused replacement does not count as one. Detects a **half-open connection**: no FIN, no RST, just a route that stopped working, which go-redis cannot see because its pub/sub health check writes a PING and never reads the reply. **Expect zero.** Read this rather than `pad_event_sequence_resets_total{reason="idle_timeout"}`, which moves only when a buffer existed to drop and so under-reports exactly the early-wedge case this detector exists for. A non-zero rate means connections to Redis are being silently blackholed — a NAT idle timeout, a stateful firewall, an overlay network dropping long-lived flows; check TCP keepalive on the path before changing the interval. **On heartbeat phase 1 this counter is structurally zero** — detection is part of phase 2, so a zero there says nothing at all about whether any route has wedged. Read `heartbeat_phase` off the startup log before drawing any conclusion from it, and take it from the **"Event bus using Redis pub/sub"** line: since BUG-2769 the watch bus logs a `heartbeat_phase` of its own, on its own line, under a separate flag, and it has no bearing on this counter |
 | `pad_event_subscription_unconfirmed_total` | Activity-stream subscriptions admitted before Redis acknowledged the SUBSCRIBE, because the wait for it timed out (BUG-2747). **Expect zero.** Counts ESTABLISHMENTS, not clients — one workspace subscription that timed out increments it once however many subscribers were waiting on it. Nothing is known to have been lost; what it says is that a stream was admitted whose coverage this instance cannot describe, and that every subscriber waiting on it will be told to reconcile when the acknowledgement lands. A non-zero rate means the SUBSCRIBE round trip is slow or stalling — read it alongside SSE connect latency rather than alongside `pad_event_sequence_resets_total` |
 | `pad_event_receive_loop_exits_total` | A workspace's activity subscription loop stopped. Unlike the watch stream's twin this does **not** stay at zero — it is expected at shutdown and whenever a workspace's last local subscriber leaves. Read it as a rate against a stable subscriber count |
+| `pad_event_sequence_counter_repairs_total` | The shared event sequence counter held something it cannot count from and was deleted, starting a new id space, by `shape`: `wrong_type`, `not_integer` or `too_large` (18+ digits). **Expect zero**; see *A repaired sequence counter* |
 | `pad_session_presence_failures_total` | Presence operations failing — **read the `op` label**, the risks differ and run in opposite directions: `register`/`renew` may under-report (a live session unlisted and untargetable), `deregister` may over-report (a dead session left listed, and a push aimed at it reaches nobody), `list` returns a 503, `prune` is benign. A failure means the operation reported an error — Redis can fail a pipeline after applying it, so the write may have landed anyway |
 
 
@@ -555,6 +556,33 @@ increasing, nothing is reused, and per-workspace IDs are non-consecutive by
 construction anyway. And a receiver that never held the colliding range has
 nothing to merge; what it experiences is a gap, which is the pre-existing
 undetectable-loss case tracked as BUG-2735.
+
+#### A repaired sequence counter
+
+`event_seq` is the other shared counter, and it is corrupted the same ways:
+a namespace collision, a hand edit, a restore that mixed keyspaces. Before
+BUG-2744 a key of another type, or a string that is not an integer, made every
+publish fail until someone repaired it by hand, and a large enough value was
+published as a WRONG id (Lua renders numbers through a double).
+
+Since BUG-2744 the publish scripts check it first. A key of another type, a
+string that is not a non-negative integer, or an integer of 18 or more digits
+is **deleted**, so the next id is 1. That is the path a deleted or evicted
+counter already takes: on phase 2 the epoch rotates, receivers report
+`epoch_change`, and a client resuming across it is told `sync_required` and
+re-fetches. On a deployment that has NEVER published phase 2, receivers hold
+no epoch and their backwards-id check does not run, so nothing detects it: the
+same pre-existing limit a counter deleted by hand has there, which phase 2
+closes. (A receiver that adopted an epoch before a rollback to phase 1 does
+run that check, and catches the restart when the new ids land at or below its
+buffered high-water mark.)
+
+**Unlike the generation repair, this one is visible.** Each repair logs a
+warning naming the key, the shape, the key's type and its length (never the
+value), and increments `pad_event_sequence_counter_repairs_total{shape}`, with
+`shape` one of `wrong_type`, `not_integer` or `too_large`. Expect zero. A repair
+means something else wrote the key, so find that writer: the repair heals the
+counter, not whatever corrupted it.
 
 
 **`pad_watchevents_sequence_resets_total` has no released contract yet, and

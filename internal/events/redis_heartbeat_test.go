@@ -65,13 +65,14 @@ type resetHookObserver struct {
 	onReset func(reason string)
 }
 
-func (o resetHookObserver) ResumeGap(string)            {}
-func (o resetHookObserver) EventDropped(string)         {}
-func (o resetHookObserver) ReceiveLoopExited()          {}
-func (o resetHookObserver) SubscriptionUnconfirmed()    {}
-func (o resetHookObserver) SubscriptionCycled()         {}
-func (o resetHookObserver) HeartbeatPublishFailed()     {}
-func (o resetHookObserver) SequenceReset(reason string) { o.onReset(reason) }
+func (o resetHookObserver) ResumeGap(string)               {}
+func (o resetHookObserver) EventDropped(string)            {}
+func (o resetHookObserver) ReceiveLoopExited()             {}
+func (o resetHookObserver) SubscriptionUnconfirmed()       {}
+func (o resetHookObserver) SubscriptionCycled()            {}
+func (o resetHookObserver) HeartbeatPublishFailed()        {}
+func (o resetHookObserver) SequenceCounterRepaired(string) {}
+func (o resetHookObserver) SequenceReset(reason string)    { o.onReset(reason) }
 
 func (b *RedisBus) channelFor(workspaceID string) string {
 	return b.keys.Name(redisChannelSuffix) + workspaceID

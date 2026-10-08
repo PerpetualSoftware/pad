@@ -69,3 +69,9 @@ func (o *EventsObserver) SubscriptionCycled() {
 func (o *EventsObserver) HeartbeatPublishFailed() {
 	o.m.EventHeartbeatPublishFailuresTotal.Inc()
 }
+
+// SequenceCounterRepaired is labelled by shape, which the events package
+// bounds to three values (plus "unknown").
+func (o *EventsObserver) SequenceCounterRepaired(shape string) {
+	o.m.EventSequenceCounterRepairsTotal.WithLabelValues(shape).Inc()
+}

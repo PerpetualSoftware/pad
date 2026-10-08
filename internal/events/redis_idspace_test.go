@@ -219,7 +219,7 @@ func TestTheDedupeTokenMakesARetriedPublishANoOp(t *testing.T) {
 		redisns.Default.Name(redisEpochGenSuffix),
 	}
 
-	first, err := publishScript.Run(b.ctx, b.client, keys, string(body), redisDedupeTTLSeconds).Int64()
+	first, err := runPublishScriptID(b, keys, string(body))
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestTheDedupeTokenMakesARetriedPublishANoOp(t *testing.T) {
 		t.Fatalf("first run must assign id 1, got %d", first)
 	}
 
-	second, err := publishScript.Run(b.ctx, b.client, keys, string(body), redisDedupeTTLSeconds).Int64()
+	second, err := runPublishScriptID(b, keys, string(body))
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
@@ -976,11 +976,18 @@ func TestAScriptThatDiedBeforePublishingDoesNotBlockItsRetry(t *testing.T) {
 		redisns.Default.Name(redisEpochGenSuffix),
 	}
 
-	// Make INCR fail: a sequence key holding something that is not an integer.
-	// This stands in for any mid-script error — a wrong-typed key, an ACL
-	// denial — since the script's failure MODE is what matters, not its cause.
-	if err := mr.Set(redisns.Default.Name(redisSeqSuffix), "not-a-number"); err != nil {
-		t.Fatalf("seed sequence: %v", err)
+	// Make the script fail part way, before it publishes. This stands in for
+	// any mid-script error (an ACL denial, say), since the script's failure
+	// MODE is what matters, not its cause.
+	//
+	// It used to seed the SEQUENCE key with a non-integer, which since
+	// BUG-2744 the script repairs instead of failing on. What still aborts: a
+	// corrupted GENERATION key on a rotating publish, repaired by SET to the
+	// restart seed, called here WITHOUT that seed (no ARGV[3]), so the SET is
+	// handed nil and Lua raises. The sequence key is absent, so this first
+	// publish is id 1, which rotates.
+	if _, err := mr.Lpush(redisns.Default.Name(redisEpochGenSuffix), "not-a-counter"); err != nil {
+		t.Fatalf("seed generation: %v", err)
 	}
 	if err := publishScript.Run(b.ctx, b.client, keys, string(body), redisDedupeTTLSeconds).Err(); err == nil {
 		t.Fatal("fixture: the script must fail here, or this test proves nothing")
@@ -988,8 +995,8 @@ func TestAScriptThatDiedBeforePublishingDoesNotBlockItsRetry(t *testing.T) {
 
 	// The obstacle clears — the operator fixes the key, the ACL is restored —
 	// and go-redis retries the same logical publish with the SAME token.
-	mr.Del(redisns.Default.Name(redisSeqSuffix))
-	id, err := publishScript.Run(b.ctx, b.client, keys, string(body), redisDedupeTTLSeconds).Int64()
+	mr.Del(redisns.Default.Name(redisEpochGenSuffix))
+	id, err := runPublishScriptID(b, keys, string(body))
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
@@ -1379,4 +1386,15 @@ func TestAWrongTypedEpochKeyIsRecoveredToo(t *testing.T) {
 	if got := mr.Type(epochKey); got != "string" {
 		t.Fatalf("the key must be recovered to a string, it holds %q", got)
 	}
+}
+
+// runPublishScriptID runs publishScript directly and returns the id it
+// assigned (0 when the dedupe token declined it). Since BUG-2744 the reply is
+// {id, repair shape, type, length}, read the way the bus reads it.
+func runPublishScriptID(b *RedisBus, keys []string, body string) (int64, error) {
+	res, err := publishScript.Run(b.ctx, b.client, keys, body, redisDedupeTTLSeconds).Slice()
+	if err != nil {
+		return 0, err
+	}
+	return b.readSeqResult(res)
 }

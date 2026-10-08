@@ -159,6 +159,19 @@ type Observer interface {
 	//
 	// Expect zero.
 	HeartbeatPublishFailed()
+
+	// SequenceCounterRepaired reports that the shared event sequence counter
+	// held something INCR cannot count from (a key of another type, a string
+	// that is not an integer, or 18+ digits) and was deleted, which starts a
+	// new id space: every subscriber resyncs (BUG-2744). shape is one of the
+	// SeqRepair constants, bounded so it is safe as a label.
+	//
+	// Expect zero. Counting does not get there: a non-zero count means
+	// something else wrote the key, usually another installation sharing the
+	// Redis keyspace, a hand edit during an incident, or a restore that mixed
+	// keyspaces. The warning logged beside it names the key, its type and its
+	// length.
+	SequenceCounterRepaired(shape string)
 }
 
 // Drop reasons. Bounded by construction so they are safe as metric labels.
@@ -321,6 +334,12 @@ func (o *observable) reportSubscriptionUnconfirmed() {
 func (o *observable) reportSubscriptionCycled() {
 	if obs := o.observer(); obs != nil {
 		obs.SubscriptionCycled()
+	}
+}
+
+func (o *observable) reportSeqCounterRepaired(shape string) {
+	if obs := o.observer(); obs != nil {
+		obs.SequenceCounterRepaired(shape)
 	}
 }
 

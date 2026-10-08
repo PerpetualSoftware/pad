@@ -105,6 +105,11 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.HeartbeatPublishFailed()
 	obs.HeartbeatPublishFailed()
 	obs.HeartbeatPublishFailed()
+	// BUG-2744: by shape, with counts unlike every other series here.
+	for i := 0; i < 11; i++ {
+		obs.SequenceCounterRepaired(events.SeqRepairNotInteger)
+	}
+	obs.SequenceCounterRepaired(events.SeqRepairTooLarge)
 
 	assertCounter(t, m, "pad_event_resume_gaps_total", nil, 2)
 	// The reason must land on a LABELLED series, not on the bare counter: an
@@ -131,6 +136,10 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 		map[string]string{"reason": events.ResetReasonIdleTimeout}, 6)
 	assertCounter(t, m, "pad_event_subscription_cycled_total", nil, 7)
 	assertCounter(t, m, "pad_event_heartbeat_publish_failures_total", nil, 9)
+	assertCounter(t, m, "pad_event_sequence_counter_repairs_total",
+		map[string]string{"shape": events.SeqRepairNotInteger}, 11)
+	assertCounter(t, m, "pad_event_sequence_counter_repairs_total",
+		map[string]string{"shape": events.SeqRepairTooLarge}, 1)
 	// The counter must not leak into the reset series either, the same half
 	// that a merged-counter adapter would pass without.
 	assertCounter(t, m, "pad_event_receive_loop_exits_total", nil, 5)
