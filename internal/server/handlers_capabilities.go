@@ -61,6 +61,12 @@ type serverCapabilities struct {
 	// built-in origin (TASK-3462). Against an older build the CLI falls back
 	// to building the create itself, which records no origin.
 	LibraryActivate bool `json:"library_activate"`
+
+	// BuiltinUpdate is true when GET /workspaces/{ws}/items/{ref}/builtin and
+	// POST …/builtin/update are served (TASK-3462 U3c). An older build answers
+	// those routes with a bare 404 that reads exactly like not_builtin, so the
+	// CLI refuses instead of sending when this is absent.
+	BuiltinUpdate bool `json:"builtin_update"`
 }
 
 // WHAT A BUILD THAT CANNOT DECODE A FORMAT ACTUALLY COSTS THE READER
@@ -103,7 +109,7 @@ type serverCapabilities struct {
 // rather than 500-ing — that signals to the editor "uploads still work,
 // but disable transformation tools."
 func (s *Server) handleServerCapabilities(w http.ResponseWriter, r *http.Request) {
-	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true}
+	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true, BuiltinUpdate: true}
 	if s.imageProcessor != nil {
 		resp.Image = s.imageProcessor.Capabilities()
 	} else {

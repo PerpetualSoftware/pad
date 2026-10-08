@@ -510,3 +510,207 @@ Examples:
 }
 
 // --- export ---
+
+// builtinOfferHeadline names an offered state for a person.
+func builtinOfferHeadline(st *cli.BuiltinState) string {
+	switch st.State {
+	case "update_available":
+		return "Update available: Pad's library has newer text, and this copy is unedited."
+	case "diverged":
+		return "Library changed: Pad's library has newer text, and this copy was edited too."
+	case "unknown_origin":
+		return "Library version differs: this copy was added before Pad recorded versions, so it may have been edited."
+	case "current":
+		return "Up to date: this item has Pad's current text."
+	case "unknown_entry":
+		return "This Pad does not ship the built-in " + st.Key + ", so there is no text to compare with."
+	}
+	return st.State
+}
+
+// readBuiltinState refuses an older server (its bare 404 reads exactly like
+// not_builtin), then reads the item's state, turning not_builtin into a
+// sentence.
+func readBuiltinState(client *cli.Client, ws, ref string) (*cli.BuiltinState, error) {
+	supported, definitive := client.BuiltinUpdateSupport()
+	if !definitive {
+		return nil, fmt.Errorf("could not tell whether this server serves built-in updates: its capabilities could not be read; nothing was sent, try again")
+	}
+	if !supported {
+		return nil, fmt.Errorf("this server is older than this CLI: it does not serve built-in updates (TASK-3462); upgrade the server")
+	}
+	st, err := client.GetItemBuiltin(ws, ref)
+	if err != nil {
+		if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code == "not_builtin" {
+			return nil, fmt.Errorf("%s was not made from a convention or playbook Pad ships, so there is nothing to compare", ref)
+		}
+		return nil, err
+	}
+	return st, nil
+}
+
+// libraryDiffCmd: pad library diff <ref> (TASK-3462 U3c).
+func libraryDiffCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "diff <ref>",
+		Short: "Compare a built-in convention or playbook with Pad's current library text",
+		Long: `Show how an item made from one of the conventions or playbooks Pad ships
+differs from the library's current text: what the library changed since the
+item was made, what you changed, and which settings an update would replace.
+Read-only. Take the update with "pad library update <ref>".
+
+Examples:
+  pad library diff PLAYB-12
+  pad library diff PLAYB-12 --format json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			ref := args[0]
+			st, err := readBuiltinState(client, ws, ref)
+			if err != nil {
+				return err
+			}
+			if st.Library != nil && st.Current == nil {
+				// A server that does not send it: read the item itself, for
+				// the JSON shape too (codex r1). status is never part of it.
+				item, err := client.GetItem(ws, ref)
+				if err != nil {
+					return err
+				}
+				// The same version the state describes, or nothing: a newer
+				// item mixed into an older state would show text the seq does
+				// not guard (codex r2).
+				if item.Seq != st.Seq {
+					return fmt.Errorf("%s changed while it was being read; run this again", ref)
+				}
+				fields := map[string]any{}
+				if item.Fields != "" {
+					if err := models.DecodeJSONKeepingNumbers([]byte(item.Fields), &fields); err != nil {
+						return err
+					}
+				}
+				// What the server's own `current` holds: no status, no nulls.
+				delete(fields, "status")
+				for k, v := range fields {
+					if v == nil {
+						delete(fields, k)
+					}
+				}
+				st.Current = &cli.BuiltinText{Content: item.Content, Fields: fields}
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(st)
+			}
+			fmt.Printf("%s (%s)\n", builtinOfferHeadline(st), st.Key)
+			if st.Library == nil {
+				return nil
+			}
+			current := st.Current
+			section := func(title, oldText, newText string) {
+				fmt.Printf("\n== %s ==\n", title)
+				if d := cli.FormatLineDiff(oldText, newText, 3); d != "" {
+					fmt.Print(d)
+				} else {
+					fmt.Println("  (no change)")
+				}
+			}
+			if st.State == "diverged" && st.Seed != nil {
+				section("What Pad's library changed", st.Seed.Content, st.Library.Content)
+				section("What you changed", st.Seed.Content, current.Content)
+			} else {
+				section("Your copy -> Pad's library", current.Content, st.Library.Content)
+			}
+			var seedFields map[string]any
+			if st.Seed != nil {
+				seedFields = st.Seed.Fields
+			}
+			if changes := cli.BuiltinFieldChanges(current.Fields, st.Library.Fields, seedFields); len(changes) > 0 {
+				fmt.Println("\n== Settings an update would replace ==")
+				for _, c := range changes {
+					to := cli.ShowFieldValue(c.Library, c.HasLib)
+					if !c.HasLib {
+						to = "(removed)"
+					}
+					fmt.Printf("  %s: %s → %s\n", c.Key, cli.ShowFieldValue(c.Current, c.HasCur), to)
+				}
+			}
+			fmt.Printf("\nTake it with: pad library update %s\n", ref)
+			fmt.Println("Your current text stays in the item's version history; the settings above are recorded in the update's history entry. Status and title are never changed.")
+			return nil
+		},
+	}
+}
+
+// libraryUpdateCmd: pad library update <ref> (TASK-3462 U3c).
+func libraryUpdateCmd() *cobra.Command {
+	var overwrite bool
+	cmd := &cobra.Command{
+		Use:   "update <ref>",
+		Short: "Replace a built-in convention or playbook with Pad's current library text",
+		Long: `Give an item made from one of the conventions or playbooks Pad ships the
+library's current text: its body and the settings an update writes. Status and
+title are never changed, and the item's previous text stays in its version
+history. Review first with "pad library diff <ref>"; nothing updates on its own.
+
+The update is guarded by the version read just before it: if the item changes
+in between, it is refused rather than applied over the change.
+
+Examples:
+  pad library update PLAYB-12
+  pad library update PLAYB-12 --overwrite-pending-edits`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			ref := args[0]
+			st, err := readBuiltinState(client, ws, ref)
+			if err != nil {
+				return err
+			}
+			noop := func() error {
+				if formatFlag == "json" {
+					return cli.PrintJSON(map[string]any{"ref": ref, "key": st.Key, "state": "current", "updated": false})
+				}
+				fmt.Printf("%s already has Pad's current text; nothing to update.\n", ref)
+				return nil
+			}
+			switch st.State {
+			case "current":
+				return noop()
+			case "unknown_entry":
+				return fmt.Errorf("%s", builtinOfferHeadline(st))
+			}
+			item, err := client.UpdateItemBuiltin(ws, ref, st.Seq, overwrite)
+			if err != nil {
+				if apiErr, ok := err.(*cli.APIError); ok {
+					switch apiErr.Code {
+					case "content_pending_flush":
+						// The shared rendering names set-aside rows apart from an
+						// open editor's (codex r1).
+						cli.WriteContentPendingFlushError(os.Stderr, apiErr)
+						return fmt.Errorf("%s was not updated: it holds edits that are not in its stored text (see above); --overwrite-pending-edits replaces them, and they are not kept", ref)
+					case "update_conflict":
+						return fmt.Errorf("%s changed while this ran; nothing was changed. Review it again with \"pad library diff %s\"", ref, ref)
+					case "builtin_up_to_date":
+						return noop()
+					}
+				}
+				return err
+			}
+			// The write's own warnings, as on any content write (codex r1).
+			warnContentPendingFlush(item)
+			warnPrunedPendingEdits(item)
+			// An origin survives a move, so the item's collection may not
+			// declare the settings the library writes (codex r5).
+			warnUndeclaredFields(item)
+			if formatFlag == "json" {
+				return cli.PrintJSON(item)
+			}
+			fmt.Printf("Updated %s to Pad's current %s text (%s).\n", ref, st.Key, item.Title)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&overwrite, "overwrite-pending-edits", false, "Also replace edits that are not in the item's stored text (unsaved typing, or edits set aside by an editor upgrade); they are not kept")
+	return cmd
+}
