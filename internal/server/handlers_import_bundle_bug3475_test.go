@@ -233,18 +233,63 @@ func TestImportOutcomeRegistry_BUG3475(t *testing.T) {
 		t.Error("an entry outlived the TTL")
 	}
 
+	// At the bound, the oldest SETTLED entry makes room; a running one never
+	// does, because its key is still in use (codex r1).
 	g2 := newImportOutcomeRegistry()
 	g2.now = func() time.Time { return clock }
-	for i := 0; i < importOutcomeMax; i++ {
+	clock = clock.Add(time.Millisecond)
+	g2.begin("u", "running-oldest") // stays running, and is the oldest
+	for i := 1; i < importOutcomeMax; i++ {
 		clock = clock.Add(time.Millisecond)
-		g2.begin("u", strings.Repeat("a", 8)+strconv.Itoa(i))
+		k := "settled-" + strconv.Itoa(i)
+		g2.begin("u", k)
+		g2.finish("u", k, importStateComplete, "", "", "")
 	}
 	clock = clock.Add(time.Millisecond)
 	g2.begin("u", "newest-key")
 	if len(g2.entries) != importOutcomeMax {
 		t.Errorf("entries = %d, want the bound %d", len(g2.entries), importOutcomeMax)
 	}
-	if _, ok := g2.get("u", strings.Repeat("a", 8)+strconv.Itoa(0)); ok {
-		t.Error("the oldest entry was not the one evicted")
+	if e, ok := g2.get("u", "running-oldest"); !ok || e.State != importStateRunning {
+		t.Fatal("the oldest entry was evicted although it is still running")
+	}
+	if _, ok := g2.get("u", "settled-1"); ok {
+		t.Error("the oldest SETTLED entry was not the one evicted")
+	}
+	if g2.begin("u", "running-oldest") {
+		t.Error("a running key could begin again after the map filled")
+	}
+
+	// Full of RUNNING entries: the new attempt is accepted but untracked, so
+	// its status reads unknown, and no running key loses its 409.
+	g3 := newImportOutcomeRegistry()
+	g3.now = func() time.Time { return clock }
+	for i := 0; i < importOutcomeMax; i++ {
+		g3.begin("u", "run-"+strconv.Itoa(i))
+	}
+	if !g3.begin("u", "overflow-key") {
+		t.Fatal("an attempt over the bound was refused; it should run untracked")
+	}
+	g3.finish("u", "overflow-key", importStateComplete, "", "", "")
+	if _, ok := g3.get("u", "overflow-key"); ok {
+		t.Error("an untracked attempt was recorded")
+	}
+	if g3.begin("u", "run-0") {
+		t.Error("a running key lost its 409 when the map was full")
+	}
+}
+
+// A panic after mint skips every report in the handler; the attempt must
+// still end, as unknown, rather than read running until the TTL (codex r1).
+func TestImportBundle_BUG3475_PanicRecordsUnknown(t *testing.T) {
+	srv := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, srv)
+	panicAfterMint(srv)
+	rr := importKeyed(srv, "panicky", "key-panicked-1", bytes.NewReader(realBundleWithBlob(t)), tok)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("a panic must still answer 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if code, st := importStatus(t, srv, "key-panicked-1", tok); code != http.StatusOK || st.State != importStateUnknown {
+		t.Fatalf("status = %d %+v, want unknown", code, st)
 	}
 }

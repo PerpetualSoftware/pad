@@ -265,6 +265,16 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		}
 		outcomes.finish(mint.OwnerID, importKey, state, slug, name, ownerUsername)
 	}
+	// A PANIC skips every report below. importBundle's keep door has already
+	// kept or removed the workspace by the time it reaches here, but it does
+	// not say which, so the honest record is unknown: the client then tells
+	// the user to check their workspace list (codex r1 on BUG-3475).
+	defer func() {
+		if p := recover(); p != nil {
+			report(importStateUnknown, nil)
+			panic(p)
+		}
+	}()
 
 	// BUG-3475: did the BODY itself fail (a stall past the per-Read deadline,
 	// a reset, a client that went away)? Wrapped beneath the size cap so the

@@ -77,8 +77,12 @@ func (g *importOutcomeRegistry) begin(userID, key string) bool {
 	if e, ok := g.entries[k]; ok && e.State == importStateRunning {
 		return false
 	}
-	if len(g.entries) >= importOutcomeMax {
-		g.evictOldestLocked()
+	if len(g.entries) >= importOutcomeMax && !g.evictOldestSettledLocked() {
+		// Every entry is a running import (codex r1 on BUG-3475). Evicting
+		// one would let its key begin again beside the upload still using
+		// it, so this attempt goes untracked instead: its status reads as
+		// unknown, which is the truth about it.
+		return true
 	}
 	g.entries[k] = &importOutcome{State: importStateRunning, updated: g.now()}
 	return true
@@ -90,10 +94,9 @@ func (g *importOutcomeRegistry) finish(userID, key, state, slug, name, ownerUser
 	k := importOutcomeKey{userID, key}
 	e, ok := g.entries[k]
 	if !ok {
-		// Evicted while running: record the end anyway, it is what the
-		// client is waiting for.
-		e = &importOutcome{}
-		g.entries[k] = e
+		// Untracked at begin (the map was full of running imports): only an
+		// attempt that was tracked has an outcome to report.
+		return
 	}
 	e.State, e.WorkspaceSlug, e.WorkspaceName, e.OwnerUsername, e.updated = state, slug, name, ownerUsername, g.now()
 }
@@ -120,18 +123,25 @@ func (g *importOutcomeRegistry) sweepLocked() {
 	}
 }
 
-func (g *importOutcomeRegistry) evictOldestLocked() {
+// evictOldestSettledLocked drops the oldest entry that is NOT running and
+// reports whether there was one. A running entry is never evicted: its key
+// is still in use by an upload, and dropping it would let the key begin again.
+func (g *importOutcomeRegistry) evictOldestSettledLocked() bool {
 	var oldest importOutcomeKey
 	var at time.Time
-	first := true
+	found := false
 	for k, e := range g.entries {
-		if first || e.updated.Before(at) {
-			oldest, at, first = k, e.updated, false
+		if e.State == importStateRunning {
+			continue
+		}
+		if !found || e.updated.Before(at) {
+			oldest, at, found = k, e.updated, true
 		}
 	}
-	if !first {
+	if found {
 		delete(g.entries, oldest)
 	}
+	return found
 }
 
 func (s *Server) importOutcomesRegistry() *importOutcomeRegistry {
