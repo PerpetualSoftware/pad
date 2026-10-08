@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/events"
 )
 
 // TASK-2197: a client that passes heartbeat=1 gets each keepalive as a named
@@ -66,32 +68,36 @@ func TestSSE_TASK2197_HeartbeatIsOptIn(t *testing.T) {
 	}
 }
 
-// Codex r1 asked whether a stream busy with other events still gets
-// heartbeats. The keepalive ticker is never reset by an event write, so a
-// heartbeat arrives on schedule however much else the stream carries; this
-// keeps it that way.
+// A heartbeat must arrive while events are flowing faster than the keepalive
+// interval: a ticker that every event write RESET would fire only after a full
+// interval of silence, so on a busy stream it would never fire at all.
+//
+// Deterministic (BUG-3503). This used to drive load through the HTTP API every
+// 20ms and fail if a heartbeat came after fewer than 3 item events, which a
+// loaded -race runner tripped (item creation was slower than the interval).
+// Events are now published straight to the bus at a fixed cadence, cheap
+// enough to keep up under -race, and the claim is judged per heartbeat: one
+// QUALIFIES when at least minItems events came before it and the last one came
+// less than half an interval earlier. A heartbeat that does not qualify (the
+// runner stalled the publisher) is not evidence either way and is skipped; the
+// test fails only if no heartbeat qualifies within the deadline. A
+// reset-on-write ticker can never produce a qualifying heartbeat.
 func TestSSE_TASK2197_HeartbeatsArriveOnABusyStream(t *testing.T) {
+	const (
+		interval = 200 * time.Millisecond
+		minItems = 5
+	)
 	srv := testServerWithEvents(t)
-	srv.sseKeepaliveOverride = 200 * time.Millisecond
+	srv.sseKeepaliveOverride = interval
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	slug := createTestWorkspace(t, ts.URL, "Busy")
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("workspace: %v", err)
+	}
 
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			case <-time.After(20 * time.Millisecond):
-				resp := apiRequest(t, ts.URL, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]any{"title": "busy", "fields": "{}"})
-				resp.Body.Close()
-			}
-		}
-	}()
-	// Read the stream: item events must flow, and a heartbeat must still come.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/v1/events?workspace="+slug+"&heartbeat=1", nil)
 	resp, err := isolatedTestClient().Do(req)
@@ -99,18 +105,36 @@ func TestSSE_TASK2197_HeartbeatsArriveOnABusyStream(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer resp.Body.Close()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		tick := time.NewTicker(interval / 10)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				srv.publishActivityEvent(events.Event{Type: "item_updated", WorkspaceID: ws.ID, ItemID: "busy-item", Title: "busy"})
+			}
+		}
+	}()
+
 	sc := bufio.NewScanner(resp.Body)
-	items := 0
+	items, skipped := 0, 0
+	var lastItem time.Time
 	for sc.Scan() {
 		switch sc.Text() {
-		case "event: item_created":
+		case "event: item_updated":
 			items++
+			lastItem = time.Now()
 		case "event: heartbeat":
-			if items < 3 {
-				t.Fatalf("heartbeat after only %d item events; the stream was not busy, so this proves nothing", items)
+			if items >= minItems && time.Since(lastItem) < interval/2 {
+				return // a heartbeat in the middle of a busy stream
 			}
-			return
+			skipped++
 		}
 	}
-	t.Fatalf("no heartbeat on a busy stream (%d item events seen): %v", items, sc.Err())
+	t.Fatalf("no heartbeat arrived while events were flowing (%d item events, %d heartbeats did not qualify): %v", items, skipped, sc.Err())
 }
