@@ -890,7 +890,7 @@
 							</div>
 						</div>
 					{:else}
-						<input
+						<input aria-label="Search items to link"
 							class="add-child-input"
 							type="text"
 							placeholder="Search items to link…"

@@ -587,15 +587,26 @@
 				<h1>Password required</h1>
 				<p>Enter the password to view this shared content.</p>
 				<form class="password-form" onsubmit={(e) => { e.preventDefault(); submitPassword(); }}>
+					<!-- TASK-2236 (audit C52): the gate a stranger meets had no label,
+					     no autofocus and no autocomplete, and a wrong password was
+					     silent to a screen reader. The page's only purpose is this
+					     field, so it takes focus at once. -->
+					<label class="sr-only" for="share-password">Password</label>
+					<!-- svelte-ignore a11y_autofocus -->
 					<input
+						id="share-password"
 						type="password"
 						bind:value={passwordInput}
 						placeholder="Enter password"
 						class="password-input"
 						disabled={passwordLoading}
+						autocomplete="current-password"
+						autofocus
+						aria-invalid={passwordError ? 'true' : undefined}
+						aria-describedby={passwordError ? 'share-password-error' : undefined}
 					/>
 					{#if passwordError}
-						<p class="password-error">{passwordError}</p>
+						<p class="password-error" id="share-password-error" role="alert">{passwordError}</p>
 					{/if}
 					<button type="submit" class="auth-link" disabled={passwordLoading || !passwordInput}>
 						{passwordLoading ? 'Verifying...' : 'View content'}

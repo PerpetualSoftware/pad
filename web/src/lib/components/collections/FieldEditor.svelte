@@ -315,7 +315,7 @@
 			oninput={onLabelInput}
 			placeholder={isNew ? 'Field name' : 'Field label'}
 		/>
-		<select class="field-type-select" bind:value={field.type} title="Field type">
+		<select aria-label="Field type" class="field-type-select" bind:value={field.type} title="Field type">
 			{#each FIELD_TYPES as ft (ft)}
 				<option value={ft}>{ft.replace('_', ' ')}</option>
 			{/each}

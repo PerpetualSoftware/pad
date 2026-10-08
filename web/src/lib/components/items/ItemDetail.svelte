@@ -6789,7 +6789,7 @@
 						<span class="field-label">Assigned to</span>
 						<div class="field-value">
 							{#if canEdit}
-								<select
+								<select aria-label="Assigned to"
 									class="assignment-select"
 									value={item.assigned_user_id ?? ''}
 									onchange={(e) => {
@@ -6822,7 +6822,7 @@
 						<span class="field-label">Role</span>
 						<div class="field-value">
 							{#if canEdit}
-								<select
+								<select aria-label="Agent role"
 									class="assignment-select"
 									value={item.agent_role_id ?? ''}
 									onchange={(e) => {
@@ -7420,7 +7420,7 @@
 							<button class="add-link-close" onclick={() => { showAddLink = false; }}>×</button>
 						</div>
 						<div class="add-link-controls">
-							<select bind:value={addLinkType} class="add-link-type-select">
+							<select aria-label="Link type" bind:value={addLinkType} class="add-link-type-select">
 								<option value="related">Related</option>
 								<option value="blocks">Blocks</option>
 								<option value="implements">Implements</option>

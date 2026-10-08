@@ -630,17 +630,17 @@
 
 		{#if conventions.length > 0}
 			<div class="filter-bar">
-				<input
+				<input aria-label="Search conventions"
 					type="text"
 					class="search-input"
 					placeholder="Search conventions..."
 					bind:value={searchQuery}
 				/>
-				<select class="filter-select" bind:value={filterScope}>
+				<select aria-label="Filter by scope" class="filter-select" bind:value={filterScope}>
 					<option value="">All scopes</option>
 					{#each allSurfaces as s (s)}<option value={s}>{s}</option>{/each}
 				</select>
-				<select class="filter-select" bind:value={filterPriority}>
+				<select aria-label="Filter by priority" class="filter-select" bind:value={filterPriority}>
 					<option value="">All priorities</option>
 					{#each ENFORCEMENT_LEVELS as p (p)}<option value={p}>{p}</option>{/each}
 				</select>

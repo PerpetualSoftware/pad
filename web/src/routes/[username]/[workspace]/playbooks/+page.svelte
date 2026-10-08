@@ -555,12 +555,12 @@
 
 		{#if playbooks.length > 0 && !showNewForm}
 			<div class="filter-bar">
-				<input type="text" class="search-input" placeholder="Search playbooks..." bind:value={searchQuery} />
-				<select class="filter-select" bind:value={filterTrigger}>
+				<input aria-label="Search playbooks" type="text" class="search-input" placeholder="Search playbooks..." bind:value={searchQuery} />
+				<select aria-label="Filter by trigger" class="filter-select" bind:value={filterTrigger}>
 					<option value="">All triggers</option>
 					{#each allTriggers as t (t)}<option value={t}>{t}</option>{/each}
 				</select>
-				<select class="filter-select" bind:value={filterScope}>
+				<select aria-label="Filter by scope" class="filter-select" bind:value={filterScope}>
 					<option value="">All scopes</option>
 					{#each allScopes as s (s)}<option value={s}>{s}</option>{/each}
 				</select>

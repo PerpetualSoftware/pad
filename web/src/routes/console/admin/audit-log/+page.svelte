@@ -309,13 +309,13 @@
 
 <div class="audit-page">
 	<div class="filter-row">
-		<select class="filter-select" bind:value={filterAction}>
+		<select aria-label="Filter by action" class="filter-select" bind:value={filterAction}>
 			<option value="">All actions</option>
 			{#each ACTION_TYPES as action (action)}
 				<option value={action}>{formatAction(action)}</option>
 			{/each}
 		</select>
-		<select class="filter-select" bind:value={filterDays}>
+		<select aria-label="Time range" class="filter-select" bind:value={filterDays}>
 			<option value={7}>Last 7 days</option>
 			<option value={14}>Last 14 days</option>
 			<option value={30}>Last 30 days</option>
