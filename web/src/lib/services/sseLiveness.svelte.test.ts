@@ -78,9 +78,21 @@ function removeLocks() {
 	delete globalThis.navigator.locks;
 }
 
+// Every instance a test loads, so afterEach can retire it (BUG-3508). The
+// service adds `online` / `offline` listeners to `window` at module load, and
+// each test's vi.resetModules() import adds another set to the SAME window.
+// A test that left its instance connected (the heartbeat leg did) kept it
+// listening, so a later test's `offline` + `online` reopened ITS stream too,
+// through the stub EventSource, into the shared `sources`: 3 where 2 were
+// expected. Order-dependent, not load-dependent: --sequence.shuffle
+// reproduced it at once.
+const loaded: Array<{ disconnect(): void }> = [];
+
 async function loadService() {
 	vi.resetModules();
-	return (await import('./sse.svelte')).sseService;
+	const sse = (await import('./sse.svelte')).sseService;
+	loaded.push(sse);
+	return sse;
 }
 
 async function flush() {
@@ -104,6 +116,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	// Disconnected, an instance's window listeners return at once.
+	for (const sse of loaded.splice(0)) sse.disconnect();
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
