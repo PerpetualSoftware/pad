@@ -800,6 +800,9 @@
 					return def;
 				});
 
+			// The form as this save sends it, for the re-baseline below (codex r2
+			// on TASK-2191: an edit typed while the save is in flight stays unsaved).
+			const sentKey = editKey;
 			const allFields = [...updatedExisting, ...addedFields];
 			const migrations = buildMigrations();
 
@@ -846,7 +849,7 @@
 			// leave it mounted after a save) so a subsequent edit doesn't
 			// spuriously 409 against our own just-committed change.
 			expectedUpdatedAt = updated.updated_at;
-			editSeedKey = editKey;
+			editSeedKey = sentKey;
 			toastStore.show(`Updated ${name.trim()}`, 'success');
 			onupdated(updated, editedCollectionId, editedCollectionSlug, editedWsSlug);
 		} catch (err) {

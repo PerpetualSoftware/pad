@@ -143,6 +143,28 @@ describe('TASK-2191: the playbook editor keeps a draft', () => {
 		expect(ask).not.toHaveBeenCalled();
 	});
 
+	it('an edit typed while the save is in flight stays unsaved (codex r2)', async () => {
+		const api = (await import('$lib/api/client')).api as unknown as { items: { update: ReturnType<typeof vi.fn> } };
+		let finish: (v: unknown) => void = () => {};
+		api.items.update.mockImplementationOnce(
+			(_ws: string, _slug: string, payload: Record<string, unknown>) =>
+				new Promise((r) => {
+					updates.push(payload);
+					finish = r;
+				})
+		);
+		const title = await openAndEdit();
+		button(/^save$/i).click();
+		await waitFor(() => expect(updates).toHaveLength(1));
+		title.value = 'typed during the save';
+		title.dispatchEvent(new Event('input', { bubbles: true }));
+		finish({ ...PLAYBOOK, title: 'Ship it, edited' });
+		await waitFor(() => expect(button(/^save$/i).textContent).toMatch(/^\s*save\s*$/i));
+		const ask = vi.spyOn(window, 'confirm').mockReturnValue(false);
+		expect(leave()).toBe(true);
+		expect(ask).toHaveBeenCalledTimes(1);
+	});
+
 	it('Save and close goes back to the list without asking about what it just saved', async () => {
 		await openAndEdit();
 		const ask = vi.spyOn(window, 'confirm').mockReturnValue(false);

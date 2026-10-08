@@ -298,10 +298,12 @@
 			// a status toggle from the playbooks list page. A patch preserves
 			// unknown keys by not naming them, which is the same protection
 			// without the revert.
-			const fieldsPatch = playbookFieldsPatch(
-				{ status, trigger, scope, invocationSlug, args: argumentsToJSON(args) },
-				loadedForm
-			);
+			// What this save sends, captured before any await: the re-baseline
+			// below is THIS, not the form as it stands when the answer lands, so
+			// an edit typed while the save is in flight stays unsaved (codex r2).
+			const sentForm = { status, trigger, scope, invocationSlug, args: argumentsToJSON(args) };
+			const sentKey = formKey;
+			const fieldsPatch = playbookFieldsPatch(sentForm, loadedForm);
 			// BUG-3050 U1: the body goes only when it CHANGED, and then with the
 			// row's token, so edits an open tab has not stored yet are refused
 			// (409 content_pending_flush) rather than replaced.
@@ -343,9 +345,9 @@
 			// What was sent is now what is stored: the row's token for the next
 			// save, the keys the next patch is computed from, and the baseline.
 			item = { ...item, ...saved };
-			loadedForm = { status, trigger, scope, invocationSlug, args: argumentsToJSON(args) };
-			storedRaw = { status, trigger, scope };
-			baseline = formKey;
+			loadedForm = sentForm;
+			storedRaw = { status: sentForm.status, trigger: sentForm.trigger, scope: sentForm.scope };
+			baseline = sentKey;
 			if (close) goto(`/${username}/${wsSlug}/playbooks`);
 		} catch (err) {
 			if (!isSameIdentity()) return;
