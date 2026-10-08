@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	mrand "math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -146,14 +147,63 @@ func killStub(t *testing.T, name string) {
 	_ = exec.Command("pkill", "-KILL", "-x", name).Run()
 }
 
+// ephemeralRange is the kernel's range for :0 binds: Linux's
+// ip_local_port_range when it can be read, else 32768-60999. That fallback
+// sits below macOS's 49152-65535, so a port under 32768 is outside both.
+func ephemeralRange() (lo, hi int) {
+	lo, hi = 32768, 60999
+	b, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		return lo, hi
+	}
+	f := strings.Fields(string(b))
+	if len(f) != 2 {
+		return lo, hi
+	}
+	l, err1 := strconv.Atoi(f[0])
+	h, err2 := strconv.Atoi(f[1])
+	if err1 != nil || err2 != nil || l > h {
+		return lo, hi
+	}
+	return l, h
+}
+
+// freePort returns a loopback port that is free now, chosen OUTSIDE the
+// kernel's ephemeral range (BUG-3491).
+//
+// It used to bind :0 and close, handing back an ephemeral port, the same pool
+// every other test binary running in parallel draws from with :0. On CI
+// another package's listener took the port in the gap before the script ran
+// (`port 41891 is held by pid(s) 14993, which is not a running server
+// start`), and the script refused on the port instead of on what the test
+// asserts. The kernel never assigns a :0 port outside the range, so a port
+// outside it can only be taken by an explicit bind, which nothing else in the
+// suite does. Below the range when there is room (the usual case), else above
+// it (codex r1: a host configured with a low start).
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("free port: %v", err)
+	lo, hi := ephemeralRange()
+	from, to := lo-12768, lo // [from, to)
+	if from < 10000 {
+		from = 10000
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	if to-from < 1000 {
+		from, to = hi+1, 65536
+	}
+	if to-from < 1000 {
+		t.Fatalf("free port: the ephemeral range %d-%d leaves no room outside it", lo, hi)
+	}
+	for i := 0; i < 64; i++ {
+		port := from + mrand.IntN(to-from)
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue // taken (or another test of ours got it first): try another
+		}
+		l.Close()
+		return port
+	}
+	t.Fatalf("free port: no free loopback port in %d-%d after 64 tries", from, to-1)
+	return 0
 }
 
 func scriptPath(t *testing.T) string {
