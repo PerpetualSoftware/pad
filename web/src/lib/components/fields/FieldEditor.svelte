@@ -109,6 +109,8 @@ handlers — onchange is never called.
 	}
 
 	let { field, value: storedValue, onchange, readonly = false, ariaLabel, wsSlug, username = '', onOpenTarget, itemId }: Props = $props();
+	// Stable per-instance id for the ARIA links below (TASK-2216).
+	const fieldId = $props.id();
 
 	// ── Shape mismatch (BUG-3052 unit 2) ───────────────────────────────────
 	//
@@ -1299,15 +1301,46 @@ handlers — onchange is never called.
 		scheduleSave(target.value);
 	}
 
+	// TASK-2216 (audit C98): text that is not a number used to be shown and
+	// silently never saved, so the display stayed out of sync with no hint. It
+	// is now marked invalid (aria-invalid plus a message), any pending save of
+	// an earlier value is CANCELLED so nothing goes out behind the text on
+	// screen, and blur reverts to the stored value. `-`, `.` and `-.` are on
+	// their way to a number and are not flagged while typing; blur reverts
+	// them too, since nothing was sent for them.
+	const PARTIAL_NUMBER = /^[-+]?\.?$/;
+	function numberTextInvalid(text: string | null): boolean {
+		if (text === null) return false;
+		const t = text.trim();
+		return t !== '' && !PARTIAL_NUMBER.test(t) && isNaN(Number(t));
+	}
+	const numberInvalid = $derived(field.type === 'number' && numberTextInvalid(typedDisplay));
+
 	function handleNumberInput(e: Event) {
 		const target = e.target as HTMLInputElement;
 		// Recorded even when the text does not parse: `1.` and `-` are on their
-		// way to a number and must not be rewritten under the cursor. Nothing is
-		// SENT for them, which is unchanged.
+		// way to a number and must not be rewritten under the cursor.
 		typedDisplay = target.value;
 		if (target.value === '') { scheduleSave(null); return; }
 		const num = Number(target.value);
-		if (!isNaN(num)) scheduleSave(num);
+		if (!isNaN(num)) { scheduleSave(num); return; }
+		if (numberTextInvalid(target.value) && hasPending) {
+			clearTimeout(typingTimer);
+			typingTimer = undefined;
+			pendingValue = undefined;
+			hasPending = false;
+		}
+	}
+
+	function handleNumberBlur() {
+		const t = (typedDisplay ?? '').trim();
+		if (typedDisplay !== null && t !== '' && isNaN(Number(t))) {
+			// Not a number (or a partial one): nothing was sent for it, so show
+			// the stored value again rather than keep text that is not saved.
+			typedDisplay = null;
+			return;
+		}
+		flushPendingSave();
 	}
 
 	function handleNumberStep(delta: number) {
@@ -1524,6 +1557,7 @@ handlers — onchange is never called.
 		{#if field.options}
 			{#each field.options as option, i (option)}
 				<button
+					id="{fieldId}-option-{i}"
 					class="select-option"
 					class:selected={option === value}
 					class:focused={i === focusedIndex}
@@ -1542,15 +1576,21 @@ handlers — onchange is never called.
 		{/if}
 	{/snippet}
 
-	<!-- Custom select dropdown -->
+	<!-- Custom select dropdown. Focus stays on the trigger while the arrow keys
+	     move `focusedIndex`, so the trigger is a select-only combobox naming the
+	     option it points at in aria-activedescendant: arrow movement is
+	     announced (TASK-2216, audit C98; the TagInput / ItemPicker pattern). -->
 	<div class="select-wrapper">
 		<button
 			bind:this={triggerEl}
 			class="select-trigger"
 			type="button"
 			aria-label={ariaLabel}
+			role="combobox"
 			aria-haspopup="listbox"
 			aria-expanded={dropdownOpen}
+			aria-controls={dropdownOpen ? `${fieldId}-listbox` : undefined}
+			aria-activedescendant={dropdownOpen && focusedIndex >= 0 ? `${fieldId}-option-${focusedIndex}` : undefined}
 			onclick={toggleDropdown}
 			onkeydown={handleDropdownKeydown}
 		>
@@ -1577,7 +1617,7 @@ handlers — onchange is never called.
 				onclose={() => (dropdownOpen = false)}
 				title="Set {field.label.toLowerCase()}"
 			>
-				<div class="select-sheet-body" role="listbox" aria-label="{field.label} options">
+				<div class="select-sheet-body" id="{fieldId}-listbox" role="listbox" aria-label="{field.label} options">
 					{@render selectOptions()}
 				</div>
 			</BottomSheet>
@@ -1586,6 +1626,7 @@ handlers — onchange is never called.
 				bind:this={dropdownEl}
 				use:clickOutside={dropdownOutside}
 				class="select-dropdown"
+				id="{fieldId}-listbox"
 				role="listbox"
 				aria-label="{field.label} options"
 			>
@@ -1620,13 +1661,6 @@ handlers — onchange is never called.
 		>
 			{#if value}
 				<span class="date-label">{formatDate(value)}</span>
-				<span
-					class="clear-btn"
-					role="button"
-					tabindex="0"
-					onclick={(e) => { e.stopPropagation(); onchange(null); }}
-					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onchange(null); } }}
-				>&#x2715;</span>
 			{:else}
 				<span class="date-placeholder">Pick a date...</span>
 			{/if}
@@ -1637,6 +1671,17 @@ handlers — onchange is never called.
 				<line x1="9" y1="1.5" x2="9" y2="4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
 			</svg>
 		</button>
+		<!-- The clear control is a SIBLING of the trigger, not a span[role=button]
+		     nested inside it (TASK-2216, audit C98): interactive content inside a
+		     button is invalid and flattened by assistive tech. -->
+		{#if value}
+			<button
+				class="clear-btn date-clear"
+				type="button"
+				aria-label="Clear date"
+				onclick={() => onchange(null)}
+			>&#x2715;</button>
+		{/if}
 		<!-- Hidden from assistive tech only while it does NOT hold focus: a
 		     focused aria-hidden element is an a11y error, and once focused it
 		     is the control being operated, so it carries the field's label. -->
@@ -1683,8 +1728,11 @@ handlers — onchange is never called.
 			inputmode="numeric"
 			value={typedDisplay ?? value ?? ''}
 			oninput={handleNumberInput}
-			onblur={flushPendingSave}
+			onblur={handleNumberBlur}
 			placeholder="—"
+			aria-invalid={numberInvalid}
+			aria-describedby={numberInvalid ? `${fieldId}-number-error` : undefined}
+			class:invalid={numberInvalid}
 		/>
 		{#if field.suffix}
 			<span class="number-suffix">{field.suffix}</span>
@@ -1703,6 +1751,9 @@ handlers — onchange is never called.
 			</svg>
 		</button>
 	</div>
+	{#if numberInvalid}
+		<span class="number-error" id="{fieldId}-number-error" role="alert">Not a number: it won&rsquo;t be saved.</span>
+	{/if}
 
 {:else if field.type === 'url'}
 	<!-- URL input with link icon -->
@@ -1932,6 +1983,16 @@ handlers — onchange is never called.
 {/if}
 
 <style>
+	/* TASK-2216: a number that does not parse is marked, and says so. */
+	.number-input.invalid {
+		color: var(--accent-red);
+	}
+	.number-error {
+		display: block;
+		margin-top: var(--space-1);
+		font-size: 0.75rem;
+		color: var(--accent-red);
+	}
 	/* ── Shape mismatch (BUG-3052 unit 2) ─────────────────────────────── */
 
 	.field-mismatch {
@@ -2119,6 +2180,13 @@ handlers — onchange is never called.
 	.date-wrapper {
 		position: relative;
 		width: 100%;
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+	}
+	.date-wrapper .date-trigger {
+		flex: 1;
+		min-width: 0;
 	}
 
 	.date-trigger {
