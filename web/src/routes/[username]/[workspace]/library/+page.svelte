@@ -173,8 +173,12 @@
 			const [libraryRes, playbookRes, existingConventions, existingPlaybooks, builtins] = await Promise.all([
 				api.library.get(),
 				api.library.getPlaybooks(),
-				api.items.listByCollection(ws, 'conventions', { all: true }).catch(() => [] as Item[]),
-				api.items.listByCollection(ws, 'playbooks', { all: true }).catch(() => [] as Item[]),
+				// No `all` param (TASK-3462 U3b): the server has none, reads any
+				// unknown parameter as a FIELD filter, and so answered [] here, which
+				// left the title match below matching nothing. A plain list already
+				// returns every status.
+				api.items.listByCollection(ws, 'conventions').catch(() => [] as Item[]),
+				api.items.listByCollection(ws, 'playbooks').catch(() => [] as Item[]),
 				// A server before TASK-3462 has no listing: the title match
 				// below then decides "Active" alone, as it always did.
 				api.builtins.list(ws).catch(() => [] as BuiltinListEntry[]),

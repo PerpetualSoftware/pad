@@ -14,7 +14,7 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			loadData: {
-				reviewed: 'f89d0c28630e',
+				reviewed: '98c7eb8f1808',
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
 			activateConvention: {
@@ -29,9 +29,9 @@ identityGateSuite({
 		nested: [],
 		markup: [],
 		continuations: [
-			{ call: /'conventions', \{ all: true \}\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: '9cd6e4f8d696' },
-			{ call: /'playbooks', \{ all: true \}\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: '9cd6e4f8d696' },
-			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing', reviewed: '63e56f7c599f' },
+			{ call: /'conventions'\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: '94433923f937' },
+			{ call: /'playbooks'\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: '94433923f937' },
+			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing', reviewed: 'f565f1c2aa46' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activateConvention', count: 2, why: `activateConvention toast timer, one per arm: ${TIMER_WHY}`, reviewed: '14cf7fba65c1' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activatePlaybook', count: 2, why: `activatePlaybook toast timer, one per arm: ${TIMER_WHY}`, reviewed: 'e66e8d41273e' },
 		],
