@@ -3173,6 +3173,11 @@ export interface ImportOutcome {
  * (TASK-2189). Archiving hides the collection and its items; nothing is
  * deleted, and `api.collections.restore` brings both back.
  */
+/** TASK-2188: GET /collections/{slug}/field-usage. */
+export interface CollectionFieldUsage {
+	fields: Record<string, { items: number; values?: Record<string, number> }>;
+}
+
 export interface ArchivedCollection {
 	id: string;
 	name: string;

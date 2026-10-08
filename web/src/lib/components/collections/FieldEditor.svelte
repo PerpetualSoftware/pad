@@ -125,6 +125,14 @@
 
 	function removeOption(optIndex: number) {
 		field.options.splice(optIndex, 1);
+		// TASK-2187: the save reads a rename as originalOptions[i] → options[i],
+		// by POSITION, so a removal that left originalOptions alone shifted
+		// every later option onto the one before it: removing "b" of [a, b, c]
+		// sent b→c, and the server moved every "b" item to "c". Removing the
+		// original slot too keeps the two aligned, so a removal stays a
+		// removal. An option added this session sits past originalOptions and
+		// has no original slot.
+		if (optIndex < field.originalOptions.length) field.originalOptions.splice(optIndex, 1);
 	}
 
 	function addOption() {

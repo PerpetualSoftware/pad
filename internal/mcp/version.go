@@ -1738,6 +1738,16 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.74 — TASK-2188 (lead ruling). ADDITIVE bump on the v0.67 grounds
+//     (an omitempty warning on a write result): `pad_collection.action=update`
+//     answers, on both transports, with `warnings.orphaned`
+//     [{field, option?, items}] when its schema removed a field, or removed an
+//     option from a field that stays a select or multi_select, that live items
+//     still hold. Read after the commit, so a value an option rename migrated
+//     is not listed. Nothing is refused and nothing else moved; an update that
+//     orphans nothing reads byte-identical to before. 0.73 is BUG-3480's; if
+//     this lands first, that one takes 0.75 and 0.73 stays a gap.
+//
 //     0.72 — TASK-2189 (lead ruling). ADDITIVE bump on the v0.8 / v0.13
 //     grounds (existing CLI verbs wired onto the catalog): `pad_collection`
 //     gains `list-archived` (read-only: the workspace's archived
@@ -1862,7 +1872,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.72"
+const ToolSurfaceVersion = "0.74"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

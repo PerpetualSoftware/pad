@@ -16,7 +16,9 @@ vi.mock('$lib/api/client', () => ({
 		collections: {
 			update: (...a: unknown[]) => updateMock(...a),
 			list: vi.fn().mockResolvedValue([]),
-			delete: vi.fn()
+			delete: vi.fn(),
+			// No item holds any value, so no save here is confirmed first (TASK-2188).
+			fieldUsage: vi.fn().mockResolvedValue({ fields: {} })
 		},
 		items: { listByCollection: vi.fn().mockResolvedValue([]) }
 	},

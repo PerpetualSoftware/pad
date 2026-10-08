@@ -127,6 +127,12 @@ Actions:
             This is the adaptation primitive for the onboarding playbook
             (/pad onboard) — rewrite seeded collections to match the
             project's actual vocabulary instead of template defaults.
+            Removing a field or a select option is accepted, but items
+            keep what they held: the response's warnings.orphaned lists
+            each removal that live items still hold, with the count. A
+            removed field's values come back if a field with that key is
+            declared again; a removed option's value stays on its items
+            and is refused on the next write that sets it.
   delete  — Archive a collection: it and its items leave every view. Owner-only.
             Reversible with restore. Required: workspace, slug.
             Constraints:

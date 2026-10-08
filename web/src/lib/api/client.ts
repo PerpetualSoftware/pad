@@ -1543,6 +1543,12 @@ export const api = {
 				method: 'POST'
 			}),
 
+		// TASK-2188: per field key, how many live items hold a value, and per
+		// string value how many hold it. Owner-only, like the schema edit it
+		// informs.
+		fieldUsage: (ws: string, slug: string) =>
+			request<CollectionFieldUsage>(`/workspaces/${ws}/collections/${encodeURIComponent(slug)}/field-usage`),
+
 		create: (ws: string, data: CollectionCreate) =>
 			request<Collection>(`/workspaces/${ws}/collections`, {
 				method: 'POST',

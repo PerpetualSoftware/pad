@@ -26,6 +26,14 @@
 	} from '$lib/utils/quick-action-preview';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import type { CollectionFieldUsage } from '$lib/types';
+	import {
+		describeSchemaEditImpact,
+		schemaEditImpacts,
+		schemaEditNeedsTyping,
+		type SchemaEditImpact,
+		type SeededField
+	} from './schemaEditImpact';
 
 	interface Props {
 		open: boolean;
@@ -211,6 +219,68 @@
 	let existingFields = $state<EditableField[]>([]);
 	let newFields = $state<EditableField[]>([]);
 
+	// ── What the edit does to items (TASK-2188 / TASK-2187) ─────────────────
+	// The fields as seeded, so a removal can be told from a field that never
+	// existed; the removed fields themselves, so Undo can put one back where it
+	// was; and the collection's field usage, loaded on open. A usage that has
+	// not loaded, or failed, is null: every count is then UNKNOWN, which the
+	// confirm treats as "could be any number" (the TASK-2189 rule).
+	let seededFields = $state<SeededField[]>([]);
+	let removedFields = $state<{ field: EditableField; index: number }[]>([]);
+	let fieldUsage = $state<CollectionFieldUsage | null>(null);
+	let fieldUsageRequestToken = 0;
+
+	async function loadFieldUsage(ws: string, slug: string) {
+		const token = ++fieldUsageRequestToken;
+		// IDENTITY fence (BUG-3105): the counts are of items the CALLER may see.
+		const isSameIdentity = authStore.identityFence();
+		fieldUsage = null;
+		try {
+			const usage = await api.collections.fieldUsage(ws, slug);
+			if (token !== fieldUsageRequestToken) return;
+			if (!isSameIdentity()) return;
+			fieldUsage = usage;
+		} catch {
+			// Left null: unknown, never zero.
+		}
+	}
+
+	const schemaImpacts = $derived<SchemaEditImpact[]>(
+		schemaEditImpacts(seededFields, existingFields, buildMigrations(), fieldUsage)
+	);
+	// The save asks first when the edit touches any item, or might.
+	let confirmImpacts = $state(false);
+	let impactTyped = $state('');
+	const impactNeedsTyping = $derived(schemaEditNeedsTyping(schemaImpacts));
+	const impactConfirmed = $derived(!impactNeedsTyping || impactTyped.trim() === seededCollectionName);
+	// A confirm answers for the list it showed: when the list changes, it is
+	// asked again.
+	const schemaImpactsKey = $derived(JSON.stringify(schemaImpacts));
+	$effect(() => {
+		void schemaImpactsKey;
+		confirmImpacts = false;
+		impactTyped = '';
+	});
+
+	function undoRemovedField(field: string) {
+		const at = removedFields.findIndex((r) => r.field.key === field);
+		if (at < 0) return;
+		const [r] = removedFields.splice(at, 1);
+		existingFields.splice(Math.min(r.index, existingFields.length), 0, r.field);
+	}
+
+	// Puts a removed option back in its seeded position, in options AND
+	// originalOptions at the same index so the two stay aligned (TASK-2187).
+	function undoRemovedOption(fieldKey: string, option: string) {
+		const field = existingFields.find((f) => f.key === fieldKey);
+		const seeded = seededFields.find((f) => f.key === fieldKey);
+		if (!field || !seeded) return;
+		const seededAt = seeded.options.indexOf(option);
+		const at = field.originalOptions.filter((o) => seeded.options.indexOf(o) < seededAt).length;
+		field.options.splice(at, 0, option);
+		field.originalOptions.splice(at, 0, option);
+	}
+
 	// Workspace collections list, used to populate the relation target picker
 	// in FieldEditor for new relation-type fields. Fetched lazily on open.
 	// `collectionsRequestToken` guards against a slow older response
@@ -371,6 +441,13 @@
 				originalDefault: f.default
 			}));
 			newFields = [];
+			seededFields = schema.fields.map((f) => ({
+				key: f.key,
+				label: f.label || f.key,
+				type: f.type,
+				options: f.options ? [...f.options] : []
+			}));
+			removedFields = [];
 			error = '';
 			activeTab = initialSection ?? 'general';
 			confirmArchive = false;
@@ -393,6 +470,7 @@
 
 			void loadCollectionOptions();
 			void loadPreviewContext();
+			void loadFieldUsage(wsSlug, collection.slug);
 		} else if (
 			open &&
 			collection &&
@@ -430,7 +508,8 @@
 	}
 
 	function removeExistingField(index: number) {
-		existingFields.splice(index, 1);
+		const [removed] = existingFields.splice(index, 1);
+		if (removed) removedFields.push({ field: removed, index });
 	}
 
 	// ── New field actions ────────────────────────────────────────────────────
@@ -534,6 +613,17 @@
 
 	async function handleSave() {
 		if (!name.trim() || saving || hasNewFieldBlockingErrors) return;
+		// TASK-2188: an edit that removes or moves values items hold is
+		// confirmed first, with the list of what happens to them; a large or
+		// unknown total also asks for the collection's name.
+		if (schemaImpacts.length > 0) {
+			if (!confirmImpacts) {
+				confirmImpacts = true;
+				impactTyped = '';
+				return;
+			}
+			if (!impactConfirmed) return;
+		}
 		saving = true;
 		error = '';
 		// Target the SEEDED collection identity, NOT the live props — the form
@@ -896,6 +986,23 @@
 								</p>
 							</div>
 						{:else}
+							{#if schemaImpacts.length > 0}
+								<div class="impact-notices" role="status" aria-live="polite">
+									<p class="impact-notices-title">These changes touch items that already have values:</p>
+									<ul>
+										{#each schemaImpacts as impact (impact.kind + impact.field + (impact.kind === 'option' ? impact.option : impact.kind === 'rename' ? impact.from : ''))}
+											<li class="impact-notice">
+												<span>{describeSchemaEditImpact(impact)}</span>
+												{#if impact.kind === 'field'}
+													<button type="button" class="impact-undo" onclick={() => undoRemovedField(impact.field)}>Undo</button>
+												{:else if impact.kind === 'option'}
+													<button type="button" class="impact-undo" onclick={() => undoRemovedOption(impact.field, impact.option)}>Undo</button>
+												{/if}
+											</li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
 							<div class="fields-list">
 								{#each existingFields as field, i (field.key)}
 									<FieldEditor
@@ -949,6 +1056,34 @@
 				{/if}
 			</div>
 
+			{#if confirmImpacts && schemaImpacts.length > 0}
+				<div class="impact-confirm" role="alertdialog" aria-labelledby="impact-confirm-msg">
+					<p id="impact-confirm-msg" class="impact-confirm-msg">Save these changes? They affect items that already have values:</p>
+					<ul>
+						{#each schemaImpacts as impact (impact.kind + impact.field + (impact.kind === 'option' ? impact.option : impact.kind === 'rename' ? impact.from : ''))}
+							<li>{describeSchemaEditImpact(impact)}</li>
+						{/each}
+					</ul>
+					{#if impactNeedsTyping}
+						<label class="impact-confirm-typed">
+							Type <strong>{seededCollectionName}</strong> to confirm
+							<input
+								type="text"
+								bind:value={impactTyped}
+								autocomplete="off"
+								aria-label={`Type ${seededCollectionName} to confirm these changes`}
+							/>
+						</label>
+					{/if}
+					<div class="impact-confirm-actions">
+						<button class="btn-cancel" type="button" onclick={() => (confirmImpacts = false)}>Back</button>
+						<button class="btn-impact-confirm" type="button" onclick={handleSave} disabled={!impactConfirmed || saving}>
+							{saving ? 'Saving...' : 'Save anyway'}
+						</button>
+					</div>
+				</div>
+			{/if}
+
 			<div class="modal-footer">
 				<button class="btn-cancel" type="button" onclick={onclose}>Cancel</button>
 				<button
@@ -968,6 +1103,82 @@
 </Modal>
 
 <style>
+	/* ── Schema edit impact (TASK-2188) ───────────────────────────────────── */
+
+	.impact-notices,
+	.impact-confirm {
+		margin: 0 0 var(--space-3);
+		padding: var(--space-3) var(--space-4);
+		border: 1px solid var(--accent-amber);
+		border-radius: var(--radius);
+		background: var(--bg-secondary);
+		font-size: 0.875em;
+	}
+
+	.impact-confirm {
+		margin: 0 var(--space-6) var(--space-3);
+	}
+
+	.impact-notices ul,
+	.impact-confirm ul {
+		margin: var(--space-2) 0 0;
+		padding-left: var(--space-4);
+	}
+
+	.impact-notices-title,
+	.impact-confirm-msg {
+		margin: 0;
+		font-weight: 600;
+	}
+
+	.impact-notice {
+		display: flex;
+		gap: var(--space-2);
+		align-items: baseline;
+		justify-content: space-between;
+	}
+
+	.impact-undo {
+		flex-shrink: 0;
+		background: none;
+		border: none;
+		color: var(--accent-primary);
+		cursor: pointer;
+		padding: 0;
+		font: inherit;
+		text-decoration: underline;
+	}
+
+	.impact-confirm-typed {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		margin-top: var(--space-3);
+	}
+
+	.impact-confirm-actions {
+		display: flex;
+		gap: var(--space-2);
+		justify-content: flex-end;
+		margin-top: var(--space-3);
+	}
+
+	.btn-impact-confirm {
+		padding: var(--space-2) var(--space-4);
+		background: var(--accent-red);
+		border: 1px solid var(--accent-red);
+		border-radius: var(--radius);
+		color: #fff;
+		font-size: 0.88em;
+		font-weight: 500;
+		cursor: pointer;
+	}
+
+	.btn-impact-confirm:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
 	/* ── Header ─────────────────────────────────────────────────────────────── */
 
 	.modal-header {
