@@ -388,3 +388,36 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(mocks.goto).not.toHaveBeenCalled();
 	});
 });
+
+// TASK-2251: a preview that ANSWERED found:false is an invalid link, said so
+// with no form and no accept card; a preview REQUEST that failed keeps the
+// register fallback (BUG-1930), since the code may be fine.
+describe('invalid invitation link (TASK-2251)', () => {
+	it('signed out, found:false: the invalid state, and no form', async () => {
+		mocks.session.mockResolvedValue({ authenticated: false });
+		mocks.preview.mockResolvedValue({ found: false });
+		render(JoinPage);
+		await settle();
+		expect(byTestId('join-invalid')?.textContent).toContain('invalid or has expired');
+		expect(document.querySelectorAll('input').length).toBe(0);
+	});
+
+	it('signed in, found:false: the invalid state, and no accept card', async () => {
+		mocks.session.mockResolvedValue({ authenticated: true });
+		mocks.preview.mockResolvedValue({ found: false });
+		render(JoinPage);
+		await settle();
+		expect(byTestId('join-invalid')).not.toBeNull();
+		expect(byTestId('join-accept')).toBeNull();
+		expect(mocks.accept).not.toHaveBeenCalled();
+	});
+
+	it('a preview request that FAILED keeps the register form, not the invalid state', async () => {
+		mocks.session.mockResolvedValue({ authenticated: false });
+		mocks.preview.mockRejectedValue(new TypeError('Failed to fetch'));
+		render(JoinPage);
+		await settle();
+		expect(byTestId('join-invalid')).toBeNull();
+		expect(document.querySelector('input[placeholder="Name"]')).not.toBeNull();
+	});
+});
