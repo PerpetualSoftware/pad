@@ -165,7 +165,7 @@
 	// activity found"; a failed later page keeps what is shown and says so on
 	// the load-more button.
 	let loadError = $state<unknown>(null);
-	let moreError = $state(false);
+	let moreError = $state<unknown>(null);
 
 	async function loadActivities(slug: string, reset = false) {
 		const thisRequest = ++activityRequest;
@@ -174,14 +174,14 @@
 		const isSameIdentity = authStore.identityFence();
 		if (reset) {
 			loadError = null;
-			moreError = false;
+			moreError = null;
 			resetGeneration++;
 			loading = true;
 			loadingMore = false;
 			activities = [];
 		} else {
 			loadingMore = true;
-			moreError = false;
+			moreError = null;
 		}
 
 		try {
@@ -208,7 +208,7 @@
 		} catch (err) {
 			if (thisRequest === activityRequest && isSameIdentity()) {
 				if (reset) loadError = err;
-				else moreError = true;
+				else moreError = err;
 			}
 		} finally {
 			// Under the identity that asked only: clearing `loading` for a request
@@ -593,11 +593,11 @@
 {#snippet loadMoreButton()}
 	{#if hasMore && !filterCollection}
 		<div class="load-more-wrapper">
-			<button class="load-more-btn" onclick={loadMore} disabled={loadingMore}>
+			<button class="load-more-btn" onclick={loadMore} disabled={loadingMore || (moreError != null && !loadFailure('more activity', moreError).retryable)}>
 				{#if loadingMore}
 					Loading...
 				{:else if moreError}
-					Couldn't load more. Try again
+					{loadFailure('more activity', moreError).retryable ? "Couldn't load more. Try again" : "You don't have access to more activity"}
 				{:else}
 					Load more activity
 				{/if}

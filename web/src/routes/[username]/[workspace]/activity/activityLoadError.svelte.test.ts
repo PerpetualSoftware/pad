@@ -99,4 +99,12 @@ describe('Activity: a failed load is not an empty feed (TASK-2203)', () => {
 		await screen.findByRole('button', { name: 'Load more activity' });
 		expect(screen.queryByRole('button', { name: "Couldn't load more. Try again" })).toBeNull();
 	});
+
+	it('a refused later page says so and offers no retry (codex r4)', async () => {
+		answers.next = ['full', 'forbidden'];
+		render(ActivityPage);
+		(await screen.findByRole('button', { name: 'Load more activity' })).click();
+		const b = (await screen.findByRole('button', { name: "You don't have access to more activity" })) as HTMLButtonElement;
+		expect(b.disabled).toBe(true);
+	});
 });
