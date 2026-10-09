@@ -1738,6 +1738,13 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.80 — BUG-3533. ADDITIVE bump on the v0.62 grounds (a remote door
+//     starts doing what the catalog always promised; stdio unchanged):
+//     `pad_item.action=import` over REMOTE /mcp now imports the artifact.
+//     It answered `validation_failed` "item import: artifact is required"
+//     on every call, because the catalog action dropped `artifact` from the
+//     input the HTTP dispatcher reads. No name, enum or param moved.
+//
 //     0.79 — TASK-2863. BEHAVIOR bump, ADDITIVE in effect: a read-only
 //     grant (`read` / `pad:read`, PAT or OAuth) may now run a playbook.
 //     `pad_playbook.action=run` used to be refused for one, because run is
@@ -1966,7 +1973,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.79"
+const ToolSurfaceVersion = "0.80"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
