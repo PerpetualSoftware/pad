@@ -22,6 +22,7 @@
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 
 	let notificationPanelOpen = $state(false);
 	let showCreateCollection = $state(false);
@@ -524,7 +525,7 @@
 	class="sidebar"
 	class:collapsed={!uiStore.sidebarOpen}
 	class:mobile={uiStore.isMobile}
-	inert={!uiStore.sidebarOpen}
+	inert={!uiStore.sidebarOpen || coveredPage.active}
 	bind:this={sidebarEl}
 	ontouchstart={handleTouchStart}
 	ontouchmove={handleTouchMove}

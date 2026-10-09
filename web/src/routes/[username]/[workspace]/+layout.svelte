@@ -16,6 +16,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { registerWorkspaceTools, type WebMcpHandle } from '$lib/webmcp/register';
 	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
+	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 	import ConnectBanner from '$lib/components/ConnectBanner.svelte';
 	import VerifyEmailBanner from '$lib/components/VerifyEmailBanner.svelte';
 	import BottomNav from '$lib/components/layout/BottomNav.svelte';
@@ -485,6 +486,9 @@
 			})
 			.catch(() => {});
 	}
+
+	// TASK-3520: see the wrappers below.
+	const coverAroundNav = $derived(coveredPage.active && coveredPage.keepsBottomNav);
 </script>
 
 <!--
@@ -501,7 +505,13 @@
 	without adding a box, so the fixed chrome renders exactly as before. Off mobile
 	/ pane closed the signal is false and the attribute is absent — no desktop change.
 -->
-<div style="display: contents" inert={paneOverlay.mobileOverlayActive}>
+<!--
+	TASK-3520: an overlay that keeps the bottom nav live (a docked sheet, or the
+	palette docked above the nav) leaves the root layout's <main> live, so the
+	page around the nav is made inert here instead: the banners and context bar
+	above, and the page itself. The nav's own wrapper stays pane-only.
+-->
+<div style="display: contents" inert={paneOverlay.mobileOverlayActive || coverAroundNav}>
 	<VerifyEmailBanner />
 
 	<ConnectBanner
@@ -513,7 +523,9 @@
 	<MobileContextBar />
 </div>
 
-{@render children()}
+<div style="display: contents" inert={coverAroundNav}>
+	{@render children()}
+</div>
 
 <div style="display: contents" inert={paneOverlay.mobileOverlayActive}>
 	<BottomNav />

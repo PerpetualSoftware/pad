@@ -4,6 +4,8 @@
 	import type { HistoryEntry } from '$lib/stores/toast.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import { createFocusReturn } from '$lib/a11y/focusReturn';
+	import { coveredPage } from '$lib/stores/coveredPage.svelte';
+	import { tick } from 'svelte';
 	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
@@ -54,10 +56,19 @@
 			focusReturn.save();
 			if (!el.contains(document.activeElement)) el.focus({ preventScroll: true });
 		} else if (!visible) {
-			focusReturn.restore();
+			// After a tick (TASK-3520): the trigger may sit in a region this overlay
+	// made inert, and focus() on an inert element silently does nothing.
+			void tick().then(() => focusReturn.restore());
 		}
 	});
-	$effect(() => () => focusReturn.restore());
+	$effect(() => () => void tick().then(() => focusReturn.restore()));
+
+	// The page behind leaves the screen-reader tree while the panel is open
+	// (TASK-3520); Tab is already trapped above.
+	$effect(() => {
+		if (!visible) return;
+		return coveredPage.enter({ keepBottomNav: false });
+	});
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (!visible || !panelEl) return;

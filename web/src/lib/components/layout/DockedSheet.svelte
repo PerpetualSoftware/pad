@@ -15,6 +15,8 @@
 	import { cubicOut } from 'svelte/easing';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { createFocusReturn } from '$lib/a11y/focusReturn';
+	import { coveredPage } from '$lib/stores/coveredPage.svelte';
+	import { tick } from 'svelte';
 	import { nextTrapTargetAcross } from '$lib/collections/paneFocus';
 
 	let {
@@ -166,10 +168,19 @@
 			focusReturn.save();
 			if (!el.contains(document.activeElement)) el.focus({ preventScroll: true });
 		} else if (!open) {
-			focusReturn.restore();
+			// After a tick (TASK-3520): the trigger may sit in a region this overlay
+	// made inert, and focus() on an inert element silently does nothing.
+			void tick().then(() => focusReturn.restore());
 		}
 	});
-	$effect(() => () => focusReturn.restore());
+	$effect(() => () => void tick().then(() => focusReturn.restore()));
+
+	// The page behind leaves the screen-reader tree while the sheet is open,
+	// all but the bottom nav, which stays live by design (TASK-3520).
+	$effect(() => {
+		if (!open) return;
+		return coveredPage.enter({ keepBottomNav: true });
+	});
 
 	function onTab(e: KeyboardEvent) {
 		if (!panelEl || blockedByFrontLayer(e)) return;
