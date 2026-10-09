@@ -928,7 +928,10 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 }
 
 // barrierAckWriteTimeout bounds the barrier_ack write, which runs on the
-// conn's readLoop: a peer that stops reading must not stall its own reads.
+// conn's readLoop. It bounds the write, not the wait for writeMu: if this
+// conn's writeLoop is blocked on the same slow peer, the readLoop waits with
+// it. That stall is this conn's alone (writeMu is per conn and no room lock is
+// held here), and that peer is not reading anyway.
 const barrierAckWriteTimeout = 5 * time.Second
 
 // answerBarrier acknowledges a client's barrier (BUG-3523). readLoop handles
