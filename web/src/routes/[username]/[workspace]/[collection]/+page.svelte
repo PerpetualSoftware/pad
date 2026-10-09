@@ -70,8 +70,10 @@
 	import { listKeyNav } from '$lib/collections/listNav';
 	import { fieldMatches } from '$lib/fields/fieldShape';
 	import { characterKey } from '$lib/a11y/characterShortcuts.svelte';
+	import { type ViewMode, isViewMode, loadViewMode, storeViewMode, loadSortMode, storeSortMode } from '$lib/collections/viewPersistence';
 
-	type ViewMode = 'list' | 'board' | 'table';
+	// TASK-2212: one ViewMode predicate for the URL, storage and saved views,
+	// and workspace-scoped persistence.
 
 	// `metaLoading` tracks the collection-metadata / saved-views /
 	// members fetch. The overall `loading` indicator combines that
@@ -555,36 +557,17 @@
 	// check. So a collection-edit grant may delete a view but not save one.
 	let canSaveView = $derived(['owner', 'editor'].includes(workspaceStore.currentRole ?? ''));
 
-	// Persist view mode to localStorage per collection
+	// Persist view mode per workspace + collection (TASK-2212: it was per
+	// collection slug only, so it leaked across workspaces).
 	function saveViewMode(mode: ViewMode) {
 		viewMode = mode;
-		if (collSlug) {
-			try { localStorage.setItem(`pad-view-${collSlug}`, mode); } catch {}
-		}
+		if (wsSlug && collSlug) storeViewMode(wsSlug, collSlug, mode);
 	}
 
-	function loadSavedViewMode(coll: string, defaultMode: ViewMode): ViewMode {
-		try {
-			const saved = localStorage.getItem(`pad-view-${coll}`);
-			if (saved === 'list' || saved === 'board' || saved === 'table') return saved;
-		} catch {}
-		return defaultMode;
-	}
-
-	// Persist the page-wide sort per collection (mirrors saveViewMode).
+	// Persist the page-wide sort the same way (mirrors saveViewMode).
 	function saveSortMode(mode: SortMode) {
 		sortMode = mode;
-		if (collSlug) {
-			try { localStorage.setItem(`pad-sort-${collSlug}`, mode); } catch {}
-		}
-	}
-
-	function loadSavedSortMode(coll: string): SortMode {
-		try {
-			const saved = localStorage.getItem(`pad-sort-${coll}`);
-			if (SORT_OPTIONS.some((o) => o.value === saved)) return saved as SortMode;
-		} catch {}
-		return 'manual';
+		if (wsSlug && collSlug) storeSortMode(wsSlug, collSlug, mode);
 	}
 
 	// Sort options available for this collection: hide "Priority" when the
@@ -841,7 +824,9 @@
 		// cycle.
 		const knownParams = new Set([...KNOWN_COLLECTION_URL_PARAMS, UNPARENTED_FILTER_FIELD]);
 		for (const [k, v] of url.searchParams.entries()) {
-			if (k === 'view' && (v === 'list' || v === 'board')) {
+			// `table` too (TASK-2212): the page writes ?view=table, and a
+			// shared table link used to open as the board.
+			if (k === 'view' && isViewMode(v)) {
 				viewMode = v;
 			} else if (k === 'q') {
 				// Skipped exactly once after an identity change, and only for
@@ -1674,10 +1659,9 @@
 			if (!identityHeld(epochAtEntry)) return;
 			// Set view mode: URL param > localStorage > collection default
 			const settings = parseSettings(collData);
-			const defaultMode = (['board', 'list', 'table'].includes(settings.default_view))
-				? settings.default_view as ViewMode : 'board';
-			viewMode = loadSavedViewMode(coll, defaultMode);
-			sortMode = loadSavedSortMode(coll);
+			const defaultMode: ViewMode = isViewMode(settings.default_view) ? settings.default_view : 'board';
+			viewMode = loadViewMode(ws, coll, defaultMode);
+			sortMode = loadSortMode(ws, coll);
 
 			// Override with URL params if present
 			loadUrlFilters();
@@ -3739,7 +3723,7 @@
 	function applyViewConfig(view: View) {
 		// Set view mode
 		const vt = view.view_type;
-		if (vt === 'list' || vt === 'board' || vt === 'table') {
+		if (isViewMode(vt)) {
 			viewMode = vt;
 			saveViewMode(vt);
 		}
