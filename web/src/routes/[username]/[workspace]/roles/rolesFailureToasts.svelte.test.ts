@@ -85,6 +85,7 @@ vi.mock('svelte-dnd-action', () => ({
 }));
 
 import { api } from '$lib/api/client';
+vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
 import { page } from '$app/state';
 import RolesPage from './+page.svelte';
 
@@ -175,5 +176,18 @@ describe('roles board: a failed write is shown (TASK-2204)', () => {
 		await waitFor(() => expect(vi.mocked(api.agentRoles.reorder)).toHaveBeenCalled());
 		await tick();
 		expect(toasts.filter((t) => t.kind === 'error')).toEqual([]);
+	});
+
+	it('a failure that lands after navigating to another workspace is not toasted there (codex r1)', async () => {
+		await mountPage();
+		let reject!: (e: unknown) => void;
+		vi.mocked(api.agentRoles.update).mockReturnValueOnce(new Promise((_res, rej) => { reject = rej; }) as never);
+		await openEditModal();
+		button('Save').click();
+		await waitFor(() => expect(vi.mocked(api.agentRoles.update)).toHaveBeenCalled());
+		page.params = { username: 'dave', workspace: 'other' };
+		reject(new Error('late'));
+		await new Promise((r) => setTimeout(r, 50));
+		expect(errorToast(/Couldn't save the role/)).toBeUndefined();
 	});
 });

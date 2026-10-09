@@ -8,6 +8,7 @@
 	import { conventionCreatePayload } from '$lib/conventions/createPayload';
 	import { parseFields, parseSchema, itemUrlId, formatItemRef } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
@@ -481,6 +482,8 @@
 	async function bulkToggleGroup(group: { trigger: string; items: Item[] }, enable: boolean) {
 		if (!workspace || bulkBusy) return;
 		const ws = workspace;
+		const epoch = authStore.identityEpoch;
+		const sameContext = () => workspace === ws && authStore.identityEpoch === epoch;
 		const targetStatus = enable ? 'active' : 'disabled';
 		const toUpdate = group.items.filter(i => {
 			if (!workspaceStore.canEditItem(i)) return false;
@@ -495,8 +498,8 @@
 		try {
 			for (const [i, item] of toUpdate.entries()) {
 				if (i > 0) await new Promise((r) => setTimeout(r, BULK_WRITE_PACE_MS));
-				if (workspace !== ws) { stopped = true; break; }
-				const oldFields = item.fields;
+				if (!sameContext()) { stopped = true; break; }
+				const oldStatus = parseFields(item).status;
 				const fields = parseFields(item);
 				fields.status = targetStatus;
 				item.fields = JSON.stringify(fields);
@@ -508,15 +511,21 @@
 					await api.items.update(ws, item.slug, { fields_patch: { status: targetStatus } });
 					done++;
 				} catch {
-					item.fields = oldFields;
-					conventions = [...conventions];
+					// Only the key this run wrote, and only if it still holds this
+					// run's value: a single toggle on the row meanwhile wins (codex r1).
+					const now = parseFields(item);
+					if (now.status === targetStatus) {
+						now.status = oldStatus;
+						item.fields = JSON.stringify(now);
+						conventions = [...conventions];
+					}
 					failed++;
 				}
 			}
 		} finally {
 			bulkBusy = false;
 		}
-		if (stopped) return;
+		if (stopped || !sameContext()) return;
 		const verb = enable ? 'enabled' : 'disabled';
 		if (failed === 0) {
 			toastStore.show(`${done} convention${done === 1 ? '' : 's'} ${verb}`, 'success');

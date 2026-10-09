@@ -19,6 +19,8 @@ vi.mock('$lib/stores/auth.svelte', () => ({ authStore: auth }));
 
 const writes = vi.hoisted(() => [] as { slug: string; at: number }[]);
 const failing = vi.hoisted(() => new Set<string>());
+const held = vi.hoisted(() => new Map<string, { release: (ok: boolean) => void }>());
+const holdNext = vi.hoisted(() => new Set<string>());
 const conv = (n: number) => ({
 	id: 'c' + n, slug: 'c' + n, title: 'Rule ' + n, content: '', collection_id: 'conventions', collection_slug: 'conventions',
 	item_number: n, fields: JSON.stringify({ status: 'disabled', trigger: 'on-commit', scope: 'all', priority: 'should' })
@@ -29,6 +31,10 @@ vi.mock('$lib/api/client', () => ({
 			listByCollection: vi.fn(async () => [conv(1), conv(2), conv(3)]),
 			update: vi.fn(async (_ws: string, slug: string) => {
 				writes.push({ slug, at: Date.now() });
+				if (holdNext.has(slug)) {
+					holdNext.delete(slug);
+					await new Promise<void>((res, rej) => held.set(slug, { release: (ok) => (ok ? res() : rej(new Error('held write failed'))) }));
+				}
 				if (failing.has(slug)) throw new Error('rate limited');
 				return {};
 			})
@@ -45,6 +51,7 @@ vi.mock('$lib/scroll/restore.svelte', () => ({
 	createScrollRestoration: () => ({ snapshot: { capture: () => null, restore: () => {} } })
 }));
 
+vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
 import { page } from '$app/state';
 import { collectionStore } from '$lib/stores/collections.svelte';
 import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -55,6 +62,8 @@ afterEach(() => {
 	cleanup();
 	writes.length = 0;
 	failing.clear();
+	held.clear();
+	holdNext.clear();
 	vi.restoreAllMocks();
 });
 
@@ -93,5 +102,35 @@ describe('Conventions: Enable all (TASK-2204)', () => {
 		}, { timeout: 3000 });
 		expect(toast).toHaveBeenCalledWith('3 conventions enabled', 'success');
 		expect(screen.getAllByRole('button', { name: 'Disable convention' })).toHaveLength(3);
+	});
+
+	it('a single toggle made on a row while its bulk write is pending wins over the bulk failure (codex r1)', async () => {
+		const toast = vi.spyOn(toastStore, 'show');
+		holdNext.add('c1');
+		await fireEvent.click(await openPage());
+		await waitFor(() => { if (!held.has('c1')) throw new Error('bulk write not held yet'); });
+		// c1 shows on (optimistic); the user switches it off by hand, which writes and lands
+		const switches = screen.getAllByRole('button', { name: 'Disable convention' });
+		expect(switches).toHaveLength(1);
+		await fireEvent.click(switches[0]!);
+		await waitFor(() => { if (writes.filter((w) => w.slug === 'c1').length < 2) throw new Error('single write not sent'); });
+		held.get('c1')!.release(false); // the bulk write for c1 now fails
+		await waitFor(() => {
+			if (!toast.mock.calls.some((c) => /failed/.test(String(c[0])))) throw new Error('no bulk toast yet');
+		}, { timeout: 3000 });
+		// c1 stays as the user left it (off), not restored to the pre-bulk snapshot by the bulk failure
+		expect(screen.getAllByRole('button', { name: 'Enable convention' })).toHaveLength(1);
+		expect(screen.getAllByRole('button', { name: 'Disable convention' })).toHaveLength(2);
+	});
+
+	it('a run whose last write lands after navigating to another workspace toasts nothing there (codex r1)', async () => {
+		const toast = vi.spyOn(toastStore, 'show');
+		holdNext.add('c3');
+		await fireEvent.click(await openPage());
+		await waitFor(() => { if (!held.has('c3')) throw new Error('last write not held yet'); }, { timeout: 3000 });
+		page.params = { username: 'dave', workspace: 'ws2' };
+		held.get('c3')!.release(true);
+		await new Promise((r) => setTimeout(r, 50));
+		expect(toast.mock.calls.filter((c) => /conventions? (enabled|disabled)|failed/.test(String(c[0])))).toEqual([]);
 	});
 });
