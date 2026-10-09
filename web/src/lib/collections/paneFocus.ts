@@ -216,9 +216,11 @@ export function handoffFocus(
  *
  * The paned item's row always carries the `.focused` marker (kept in sync as
  * the pane follows j/k), so it's the canonical "row that opened it" even after
- * paging A→C. List/board rows ARE the anchor (`.item-card` is an `<a>`); table
- * rows are a `<div>` wrapping a `.title-link` anchor — so fall through to the
- * first focusable inside the row there. When no row is present (a deep-linked
+ * paging A→C. A row is a `<div>` holding its link: `.card-link` on list and
+ * board cards (TASK-2237; the card used to BE the anchor), `.title-link` on
+ * table rows. The row's own link is preferred, because a card also holds
+ * buttons (the PR badge, copy-ref) ahead of it in DOM order; any other
+ * focusable inside the row is the fallback. When no row is present (a deep-linked
  * item that isn't in the current filtered list), fall back to the captured
  * trigger element if it's still in the document.
  */
@@ -229,6 +231,8 @@ export function resolvePaneReturnTarget(
 	const row = root.querySelector<HTMLElement>('.item-card.focused, .table-row.focused');
 	if (row) {
 		if (row.matches('a[href]')) return row;
+		const link = row.querySelector<HTMLElement>('a.card-link[href], a.title-link[href]');
+		if (link) return link;
 		const inner = row.querySelector<HTMLElement>('a[href], button, [tabindex]');
 		if (inner) return inner;
 	}

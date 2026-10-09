@@ -192,7 +192,7 @@ test.describe('BUG-3165: the list keeps its position across the split pane', () 
 	test('closing a cold-loaded pane keeps the row the column was scrolled to', async ({ page, fixture, request }) => {
 		const { coll, url } = await setup(page, fixture, request, 'list');
 		try {
-			const href = await page.locator('.item-card').first().getAttribute('href');
+			const href = await page.locator('.item-card .card-link').first().getAttribute('href');
 			const ref = href!.split('/').pop()!;
 			// A fresh load of a `?item=` URL: the pane does not own the entry, so
 			// close drops `?item=` in place rather than going back.

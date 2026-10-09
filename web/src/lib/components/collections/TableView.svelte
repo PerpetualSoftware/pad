@@ -119,6 +119,12 @@
 	let sortKey = $state('');
 	let sortDir = $state<'asc' | 'desc'>('asc');
 
+	/** A header's aria-sort: set on the sorted column, absent on the rest. */
+	function ariaSort(key: string): 'ascending' | 'descending' | undefined {
+		if (sortKey !== key) return undefined;
+		return sortDir === 'asc' ? 'ascending' : 'descending';
+	}
+
 	let sortedItems = $derived.by(() => {
 		// No column-header sort active: fall back to the page-wide sort so
 		// the table reflects the same order as List/Board (manual ⇒ stored
@@ -284,18 +290,20 @@
 	<div class="table-view" role="table" style:grid-template-columns={gridTemplate}>
 		<div class="table-row table-header" role="row">
 			<div class="table-cell col-ref" role="columnheader">Ref</div>
-			<div class="table-cell col-title" role="columnheader">
+			<!-- aria-sort on the ACTIVE header only (TASK-2237, audit C29): the
+			     arrow was the only sign of the sort, and only to the eye. -->
+			<div class="table-cell col-title" role="columnheader" aria-sort={ariaSort('title')}>
 				<button class="sort-btn" onclick={() => toggleSort('title')}>
-					<span class="header-label">Title</span>{#if sortKey === 'title'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+					<span class="header-label">Title</span>{#if sortKey === 'title'}<span class="sort-arrow" aria-hidden="true">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
 				</button>
 			</div>
 			{#each visibleFields as field (field.key)}
-				<div class="table-cell" role="columnheader">
+				<div class="table-cell" role="columnheader" aria-sort={ariaSort(field.key)}>
 					<!-- BUG-2837: the label wraps to two lines, then ellipsis, and is
 					     clipped to its column; the full text is the button's title. The
 					     sort arrow is its own span, so a clamped label never hides it. -->
 					<button class="sort-btn" title={field.label || field.key} onclick={() => toggleSort(field.key)}>
-						<span class="header-label">{field.label || field.key}</span>{#if sortKey === field.key}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+						<span class="header-label">{field.label || field.key}</span>{#if sortKey === field.key}<span class="sort-arrow" aria-hidden="true">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
 					</button>
 				</div>
 			{/each}

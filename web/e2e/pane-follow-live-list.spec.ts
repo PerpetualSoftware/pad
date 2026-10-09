@@ -64,7 +64,7 @@ function openItemParam(page: Page): string | null {
 /** Refs of the rendered rows, in order. */
 async function rowRefs(page: Page): Promise<string[]> {
 	return page.evaluate(() =>
-		[...document.querySelectorAll('.item-card')].map(
+		[...document.querySelectorAll('.item-card .card-link')].map(
 			(a) => ((a as HTMLAnchorElement).getAttribute('href') ?? '').split('/').pop() ?? '',
 		),
 	);
@@ -73,7 +73,7 @@ async function rowRefs(page: Page): Promise<string[]> {
 /** Ref of the row carrying the list cursor. `.focused` is a documented hook. */
 async function focusedRef(page: Page): Promise<string | null> {
 	return page.evaluate(() => {
-		const el = document.querySelector('.item-card.focused') as HTMLAnchorElement | null;
+		const el = document.querySelector('.item-card.focused .card-link') as HTMLAnchorElement | null;
 		if (!el) return null;
 		return (el.getAttribute('href') ?? '').split('/').pop() ?? null;
 	});

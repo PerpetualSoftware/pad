@@ -502,6 +502,7 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 			await page
 				.locator('.item-card', { hasText: title })
 				.first()
+				.locator('.card-link')
 				.evaluate((el) => (el as HTMLElement).click());
 		};
 

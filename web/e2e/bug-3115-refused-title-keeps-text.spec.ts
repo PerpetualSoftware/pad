@@ -89,7 +89,7 @@ async function describeQuickAddMatches(page: Page, selector: string) {
 			return `  ${i + 1}) in sidebar list: ${!!section}; in drag clone: ${!!el.closest('#dnd-action-dragged-el')}; ` +
 				`rect ${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}\n     ${path(el)}`;
 		});
-		const hrefs = [...document.querySelectorAll('.nav-section > a.nav-item')].map((a) => a.getAttribute('href'));
+		const hrefs = [...document.querySelectorAll('.nav-section a.nav-item')].map((a) => a.getAttribute('href'));
 		const repeated = hrefs.filter((h, i) => hrefs.indexOf(h) !== i);
 		return `${matches.length} match(es) now:\n${matches.join('\n')}\n` +
 			`sidebar list: ${hrefs.length} rows, repeated hrefs: ${JSON.stringify(repeated)}`;

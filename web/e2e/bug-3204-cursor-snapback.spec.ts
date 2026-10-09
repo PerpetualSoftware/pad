@@ -257,7 +257,7 @@ test.describe('BUG-3204: the list cursor during a pending pane follow', () => {
 			// so the click is inside the debounce by construction.
 			await page.evaluate((key) => {
 				document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', code: 'KeyJ', bubbles: true }));
-				(document.querySelector(`.item-card[data-item-key="${key}"]`) as HTMLElement).click();
+				(document.querySelector(`.item-card[data-item-key="${key}"] .card-link`) as HTMLElement).click();
 			}, third);
 			await expect(page).toHaveURL(new RegExp(`[?&]item=${third}(&|$)`));
 			await s.fireFollow();

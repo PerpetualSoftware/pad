@@ -270,7 +270,7 @@ test('a collection migration completing after a rapid A->B pane switch refreshes
 	// Switch the pane to B — a client-side `?item=` re-target, not a full
 	// navigation. This is the moment the modal's still-pending save's
 	// `onupdated` closure becomes "superseded".
-	await page.locator('a.item-card', { hasText: 'BUG-2129 switch B' }).first().click();
+	await page.locator('.item-card .card-link', { hasText: 'BUG-2129 switch B' }).first().click();
 	await expect(pane.locator('.title', { hasText: /BUG-2129 switch B/ })).toBeVisible();
 
 	// Register the post-migration reload wait BEFORE releasing the gate, so

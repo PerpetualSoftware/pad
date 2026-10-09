@@ -223,10 +223,24 @@ describe('nextTrapTargetAcross (TASK-2235)', () => {
 });
 
 describe('resolvePaneReturnTarget', () => {
-	it('returns the focused list/board card anchor itself', () => {
+	it('returns the focused list/board card link', () => {
 		const root = mount(`
-			<a href="/a" class="item-card">a</a>
-			<a href="/b" class="item-card focused">b</a>
+			<div class="item-card"><a href="/a" class="card-link">a</a></div>
+			<div class="item-card focused"><a href="/b" class="card-link">b</a></div>
+		`);
+		const target = resolvePaneReturnTarget(root, null);
+		expect(target?.getAttribute('href')).toBe('/b');
+	});
+
+	it("prefers the card's own link over the buttons ahead of it (TASK-2237)", () => {
+		// A card's PR badge and copy-ref button come before its title link in
+		// DOM order; the first focusable would be the wrong return target.
+		const root = mount(`
+			<div class="item-card focused">
+				<button type="button" class="pr-badge">#12</button>
+				<button type="button" class="copy-ref-btn">copy</button>
+				<div class="card-title"><a href="/b" class="card-link">b</a></div>
+			</div>
 		`);
 		const target = resolvePaneReturnTarget(root, null);
 		expect(target?.getAttribute('href')).toBe('/b');
@@ -242,15 +256,15 @@ describe('resolvePaneReturnTarget', () => {
 	});
 
 	it('falls back to the captured trigger when no focused row exists', () => {
-		const root = mount(`<a href="/a" class="item-card">a</a>`);
+		const root = mount(`<div class="item-card"><a href="/a" class="card-link">a</a></div>`);
 		const captured = root.querySelector<HTMLElement>('a')!;
 		expect(resolvePaneReturnTarget(root, captured)).toBe(captured);
 	});
 
 	it('prefers the focused row over the captured trigger (paged A→C returns to C)', () => {
 		const root = mount(`
-			<a href="/a" class="item-card">a</a>
-			<a href="/c" class="item-card focused">c</a>
+			<div class="item-card"><a href="/a" class="card-link">a</a></div>
+			<div class="item-card focused"><a href="/c" class="card-link">c</a></div>
 		`);
 		const captured = root.querySelector<HTMLElement>('a[href="/a"]')!;
 		const target = resolvePaneReturnTarget(root, captured);
