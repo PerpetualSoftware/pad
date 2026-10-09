@@ -411,6 +411,19 @@ PNG anywhere is an export of one of them, never a hand-edited copy.
   beside an 18px wordmark). In a header the mark sits beside the wordmark
   and never replaces it.
 
+### GitHub social preview
+
+`docs/brand/social/render.mjs` renders it in GitHub's own card layout, with
+the mark where the org avatar goes:
+
+- `a`: durable facts (license, stack, hosting, agent access) in place of counts.
+- `b`: a snapshot of the counts.
+
+GitHub has no API for the social preview: an owner uploads the PNG under
+Settings › Social preview, and it stays as uploaded. Version b's numbers are
+therefore as of the render. Run `node docs/brand/social/render.mjs b` and
+re-upload to refresh them.
+
 ### Where it goes
 
 Each surface gets an export from the master set. The rollout plan by repo
