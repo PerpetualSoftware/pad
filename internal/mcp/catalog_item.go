@@ -929,14 +929,14 @@ func actionItemImport(ctx context.Context, input map[string]any, env ActionEnv) 
 			fmt.Errorf("close temp artifact file: %w", err)), nil
 	}
 
-	// Build the dispatch input from scratch: drop the catalog-only
-	// `artifact` key and inject the CLI's positional `file`, which
-	// BuildCLIArgs emits as the lone positional for `item import`.
-	out := make(map[string]any, len(input))
+	// Add the CLI's positional `file`, which BuildCLIArgs emits as the lone
+	// positional for `item import`. `artifact` STAYS in the input: the CLI
+	// never sees it (BuildCLIArgs emits only declared args and flags), but
+	// the remote transport's HTTPHandlerDispatcher reads the artifact text
+	// from it, and dropping it made every remote import answer "artifact
+	// is required" (BUG-3533).
+	out := make(map[string]any, len(input)+1)
 	for k, v := range input {
-		if k == "artifact" {
-			continue
-		}
 		out[k] = v
 	}
 	out["file"] = tmpPath

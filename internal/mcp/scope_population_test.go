@@ -86,9 +86,8 @@ func TestScopePopulation_WriteActionsAreRefusedForReadTokens(t *testing.T) {
 // read-token run is still checked: it must be an error with nothing
 // mutating reaching the handler, so the 403 replaces a refusal, never a
 // success. Remove the entry when its bug is fixed.
-var knownBrokenOverHTTP = map[string]string{
-	"pad_item.import": "BUG-3533",
-}
+// Empty since BUG-3533 fixed pad_item.import, its one entry.
+var knownBrokenOverHTTP = map[string]string{}
 
 type scopePopulationResult struct {
 	readOnly bool
