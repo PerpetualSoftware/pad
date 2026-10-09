@@ -11,6 +11,8 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
+	import { onConnectivityRecovered } from '$lib/services/connectivity.svelte';
+	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { agentNameFromMetadata } from '$lib/utils/agentActor';
 	import { formatChangesForDisplay } from '$lib/utils/activityChanges';
@@ -367,6 +369,7 @@
 	});
 
 	let unsubscribeSync: (() => void) | null = null;
+	let unsubscribeRecovered: (() => void) | null = null;
 	let unsubscribeItems: (() => void) | null = null;
 
 	// LIVE WHILE ONBOARDING (BUG-3447). The launchpad promises that an agent's
@@ -396,6 +399,12 @@
 		}, 30000);
 		// Dashboard always does a full reload on any sync signal since it's
 		// an aggregated view (counts, activity, suggestions change with any item update)
+		// TASK-2201: reload as soon as the connection returns, not on the next
+		// 30 s tick, so an error card or stale counts heal with the rest of
+		// the app. Silent: the board stays up while it refreshes.
+		unsubscribeRecovered = onConnectivityRecovered(() => {
+			if (wsSlug) load(wsSlug, true);
+		});
 		unsubscribeSync = syncService.onSync((result) => {
 			// A result names the workspace it was SYNCED FOR (TASK-2921).
 			if (result.workspace !== wsSlug) return;
@@ -434,6 +443,7 @@
 
 	onDestroy(() => {
 		unsubscribeSync?.();
+		unsubscribeRecovered?.();
 		unsubscribeItems?.();
 		clearTimeout(liveReloadTimer);
 	});
@@ -631,6 +641,9 @@
 			<div class="dash-header-left">
 				<h1>{workspaceStore.current?.name ?? wsSlug}</h1>
 				<span class="item-count">{totalItems} item{totalItems !== 1 ? 's' : ''}</span>
+				<!-- TASK-2201 (C90): an outage was invisible here; the board kept
+				     rendering with no staleness cue while its poll failed silently. -->
+				<SSEStatusIndicator compact />
 			</div>
 			<div class="dash-header-actions">
 				{#if firstCollection}
