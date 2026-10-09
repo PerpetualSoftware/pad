@@ -22,6 +22,7 @@
 		type PublicItem
 	} from '$lib/components/share/shareView';
 	import PublicFieldChips from '$lib/components/share/PublicFieldChips.svelte';
+	import { LINK_GONE, shareLoadFailure, type ShareLoadFailure } from './shareLoadFailure';
 	import type {
 		FieldDef,
 		PublicShareCollection,
@@ -53,7 +54,8 @@
 	let selectedSavedSlug = $state('');
 
 	let loading = $state(true);
-	let error = $state('');
+	// A load that failed: what to say, and whether a retry can help (TASK-2249).
+	let failure = $state<ShareLoadFailure | null>(null);
 	let requireAuth = $state(false);
 	let requirePassword = $state(false);
 	let passwordInput = $state('');
@@ -411,9 +413,13 @@
 		return html;
 	}
 
-	onMount(async () => {
+	onMount(() => void loadShare());
+
+	async function loadShare() {
+		failure = null;
+		loading = true;
 		if (!token) {
-			error = 'Invalid share link.';
+			failure = LINK_GONE;
 			loading = false;
 			return;
 		}
@@ -462,18 +468,18 @@
 				};
 				initSelection();
 			} else {
-				error = 'Unknown share type.';
+				failure = { title: "Couldn't open this link", message: 'This kind of shared content is not supported here.', retryable: false };
 			}
 		} catch (e: any) {
-			if (e.code === 'unauthorized' || e.code === 'auth_required') {
+			if (e?.code === 'unauthorized' || e?.code === 'auth_required') {
 				requireAuth = true;
 			} else {
-				error = e.message ?? 'Failed to load shared content.';
+				failure = shareLoadFailure(e);
 			}
 		} finally {
 			loading = false;
 		}
-	});
+	}
 
 	function formatFieldValue(value: unknown): string {
 		// `safeText` (BUG-3052): `join` and `String` threw on a stored
@@ -574,7 +580,9 @@
 				</div>
 				<h1>Sign in to view</h1>
 				<p>This shared content requires authentication.</p>
-				<a href="/login" class="auth-link">Sign in</a>
+				<!-- The sign-in brings the reader back to THIS link (TASK-2249, audit
+				     C13): a bare /login landed them on /console with the share gone. -->
+				<a href="/login?redirect={encodeURIComponent(`/s/${token}`)}" class="auth-link">Sign in</a>
 			</div>
 		{:else if requirePassword}
 			<div class="share-auth">
@@ -613,10 +621,13 @@
 					</button>
 				</form>
 			</div>
-		{:else if error}
-			<div class="share-error">
-				<h1>Unable to load</h1>
-				<p>{error}</p>
+		{:else if failure}
+			<div class="share-error" role="alert">
+				<h1>{failure.title}</h1>
+				<p>{failure.message}</p>
+				{#if failure.retryable}
+					<button type="button" class="auth-link share-retry" onclick={() => void loadShare()}>Try again</button>
+				{/if}
 			</div>
 		{:else if shareType === 'item' && itemData}
 			<article class="share-item">
@@ -785,10 +796,14 @@
 		display: inline-block;
 		margin-top: var(--space-2);
 		padding: var(--space-2) var(--space-6);
-		background: var(--accent-blue);
+		/* White text: AA in both themes, as on the auth pages (TASK-3509). */
+		background: var(--accent-primary-strong);
 		color: #fff;
+		border: none;
 		border-radius: var(--radius);
+		font: inherit;
 		font-weight: 500;
+		cursor: pointer;
 		text-decoration: none;
 		transition: filter 0.15s ease;
 	}
@@ -815,6 +830,7 @@
 
 	.share-error p {
 		color: var(--text-secondary);
+		max-width: 32rem;
 	}
 
 	/* Item view */
