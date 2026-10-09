@@ -12,7 +12,7 @@
   State model (CONVE-1688): the open/close effect READS `open` (a prop) and
   the DOM's `dialogEl.open`, and WRITES nothing reactive — no $state is both
   written and read inside it, so the effect can't self-invalidate. Focus
-  bookkeeping (`previouslyFocused`) is a plain `let`, never $state.
+  bookkeeping (`createFocusReturn`, TASK-2235) is plain closure state, never $state.
 
   The dialog is always mounted; visibility is toggled via showModal()/close()
   (a not-open <dialog> is display:none via the UA stylesheet). Consumers must
@@ -28,6 +28,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { backdropDismiss } from '$lib/utils/backdropDismiss';
+	import { createFocusReturn } from '$lib/a11y/focusReturn';
 
 	interface Props {
 		/** Whether the modal is shown. Single source of truth — drive it from parent state. */
@@ -65,16 +66,9 @@
 	// element is mounted. The effect only READS this; it never writes it.
 	let dialogEl = $state<HTMLDialogElement>();
 
-	// Plain variable (NOT $state): focus bookkeeping read/written only inside
-	// the effect + teardown, never in reactive position.
-	let previouslyFocused: HTMLElement | null = null;
-
-	function restoreFocus() {
-		if (previouslyFocused && document.contains(previouslyFocused)) {
-			previouslyFocused.focus();
-		}
-		previouslyFocused = null;
-	}
+	// Focus bookkeeping (TASK-2235: shared with every surface that takes focus).
+	const focusReturn = createFocusReturn();
+	const restoreFocus = () => focusReturn.restore();
 
 	// Drive the native dialog from the `open` prop. Reads `open` (prop) and
 	// `el.open` (DOM) only — writes no reactive state, so it can't loop.
@@ -82,7 +76,7 @@
 		const el = dialogEl;
 		if (!el) return;
 		if (open && !el.open) {
-			previouslyFocused = (document.activeElement as HTMLElement | null) ?? null;
+			focusReturn.save();
 			el.showModal();
 		} else if (!open && el.open) {
 			el.close();

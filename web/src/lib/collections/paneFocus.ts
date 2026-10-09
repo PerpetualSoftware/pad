@@ -117,6 +117,34 @@ export function nextTrapTarget(
 }
 
 /**
+ * {@link nextTrapTarget} for a surface that is more than one region
+ * (TASK-2235): the mobile DockedSheet sits above the bottom nav, which it
+ * deliberately leaves live, so Tab cycles through the sheet THEN the nav and
+ * never into the page the sheet's backdrop covers. It steps through the
+ * regions' tabbables in the order given and wraps at both ends; focus that is
+ * on none of them (the container itself, or anywhere outside) enters at the
+ * first, or the last on Shift+Tab. `regions[0]` holds focus when there is
+ * nothing to tab to.
+ */
+export function nextTrapTargetAcross(
+	regions: HTMLElement[],
+	active: Element | null,
+	shiftKey: boolean,
+	isVisible: (el: HTMLElement) => boolean = isFocusableVisible,
+): HTMLElement | null {
+	const container = regions[0];
+	const focusables = regions.flatMap((r) => paneFocusables(r, isVisible));
+	if (focusables.length === 0) return container;
+	// Always an explicit step, never the browser's: the regions need not be
+	// adjacent in the DOM (the sheet renders after the nav), so a native Tab
+	// off the end of one region lands outside both.
+	const i = focusables.indexOf(active as HTMLElement);
+	if (i === -1) return shiftKey ? focusables[focusables.length - 1] : focusables[0];
+	const n = focusables.length;
+	return focusables[(i + (shiftKey ? n - 1 : 1)) % n];
+}
+
+/**
  * Keep focus INSIDE a modal surface when a focused control leaves it — is
  * removed from the DOM, or becomes `disabled` (PLAN-2392 / TASK-2456).
  *

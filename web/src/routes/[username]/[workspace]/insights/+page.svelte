@@ -8,6 +8,7 @@
 	import BarChart from '$lib/components/charts/BarChart.svelte';
 	import type { ChartDatum } from '$lib/components/charts/theme';
 	import type { Collection, ReportData, ReportLayout, ReportWindow } from '$lib/types';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -76,6 +77,29 @@
 	const hiddenCards = new SvelteSet<string>();
 	// Customize panel visibility.
 	let showCustomize = $state(false);
+
+	// TASK-2235: the Customize popover closes on Escape and on a press outside
+	// it, not only by re-clicking its button. It is a disclosure, not a modal:
+	// nothing is trapped. Escape returns focus to the button when focus was in
+	// the popover (or on the button), so a keyboard user is not dropped on
+	// <body>; an outside press leaves focus where the press put it.
+	let customizeEl = $state<HTMLElement>();
+	let customizeBtn = $state<HTMLButtonElement>();
+
+	function onCustomizeKeydown(e: KeyboardEvent) {
+		if (!showCustomize || e.key !== 'Escape' || e.repeat) return;
+		if (isBlockedByModal(customizeEl, e)) return;
+		const hadFocus = !!customizeEl?.contains(document.activeElement);
+		showCustomize = false;
+		e.preventDefault();
+		if (hadFocus) customizeBtn?.focus();
+	}
+
+	function onCustomizePointerdown(e: PointerEvent) {
+		if (!showCustomize || !customizeEl) return;
+		if (e.target instanceof Node && customizeEl.contains(e.target)) return;
+		showCustomize = false;
+	}
 	// True once THIS workspace's layout has hydrated. Gates scheduleSave() so we
 	// never (a) save during the initial hydrate or (b) overwrite workspace B's
 	// layout with A's values before B's layout has loaded. Plain `let`
@@ -390,6 +414,8 @@
 	});
 </script>
 
+<svelte:window onkeydown={onCustomizeKeydown} onpointerdown={onCustomizePointerdown} />
+
 <div class="insights-page">
 	<header class="page-header">
 		<div class="page-header-left">
@@ -439,8 +465,9 @@
 
 			<a class="print-link" href={printHref}>Print report</a>
 
-			<div class="customize">
+			<div class="customize" bind:this={customizeEl}>
 				<button
+					bind:this={customizeBtn}
 					type="button"
 					class="customize-btn"
 					class:active={showCustomize}

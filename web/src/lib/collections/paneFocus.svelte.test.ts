@@ -3,6 +3,7 @@ import {
 	PANE_FOCUSABLE_SELECTOR,
 	paneFocusables,
 	nextTrapTarget,
+	nextTrapTargetAcross,
 	resolvePaneReturnTarget,
 	inExemptSurface,
 	handoffFocus,
@@ -159,6 +160,65 @@ describe('nextTrapTarget', () => {
 		const container = mount('');
 		expect(nextTrapTarget([], container, false, container)).toBe(container);
 		expect(nextTrapTarget([], container, true, container)).toBe(container);
+	});
+});
+
+describe('nextTrapTargetAcross (TASK-2235)', () => {
+	// The DockedSheet case: the sheet renders AFTER the nav in the DOM, and
+	// the cycle is sheet first, then nav.
+	function setup() {
+		document.body.innerHTML = `
+			<nav id="nav"><button id="n1">n1</button><button id="n2">n2</button></nav>
+			<main><button id="page">page</button></main>
+			<div id="sheet" tabindex="-1"><button id="s1">s1</button><button id="s2">s2</button></div>`;
+		const byId = (id: string) => document.getElementById(id) as HTMLElement;
+		return {
+			sheet: byId('sheet'),
+			nav: byId('nav'),
+			s1: byId('s1'),
+			s2: byId('s2'),
+			n1: byId('n1'),
+			n2: byId('n2'),
+			page: byId('page')
+		};
+	}
+
+	it('steps from the sheet into the nav, across the DOM gap', () => {
+		const { sheet, nav, s2, n1 } = setup();
+		expect(nextTrapTargetAcross([sheet, nav], s2, false, allVisible)).toBe(n1);
+	});
+
+	it('wraps from the end of the nav back to the sheet', () => {
+		const { sheet, nav, s1, n2 } = setup();
+		expect(nextTrapTargetAcross([sheet, nav], n2, false, allVisible)).toBe(s1);
+	});
+
+	it('Shift+Tab off the first sheet control wraps to the last nav control', () => {
+		const { sheet, nav, s1, n2 } = setup();
+		expect(nextTrapTargetAcross([sheet, nav], s1, true, allVisible)).toBe(n2);
+	});
+
+	it('Shift+Tab steps back from the nav into the sheet', () => {
+		const { sheet, nav, s2, n1 } = setup();
+		expect(nextTrapTargetAcross([sheet, nav], n1, true, allVisible)).toBe(s2);
+	});
+
+	it('steps within a region explicitly too', () => {
+		const { sheet, nav, s1, s2 } = setup();
+		expect(nextTrapTargetAcross([sheet, nav], s1, false, allVisible)).toBe(s2);
+	});
+
+	it('pulls focus on the container or outside back to an edge, never into the page', () => {
+		const { sheet, nav, s1, n2, page } = setup();
+		expect(nextTrapTargetAcross([sheet, nav], sheet, false, allVisible)).toBe(s1);
+		expect(nextTrapTargetAcross([sheet, nav], sheet, true, allVisible)).toBe(n2);
+		expect(nextTrapTargetAcross([sheet, nav], page, false, allVisible)).toBe(s1);
+	});
+
+	it('keeps focus on the first region when nothing is tabbable', () => {
+		document.body.innerHTML = `<div id="sheet" tabindex="-1"></div>`;
+		const sheet = document.getElementById('sheet') as HTMLElement;
+		expect(nextTrapTargetAcross([sheet], null, false, allVisible)).toBe(sheet);
 	});
 });
 
