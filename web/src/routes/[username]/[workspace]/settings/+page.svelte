@@ -413,6 +413,8 @@
 		// name/context/collections/members. The collections write ALSO respects
 		// collectionsGen so it doesn't revert a fresher SSE refresh.
 		const myLoad = ++loadGen;
+		// Another workspace's members failure is not this one's (TASK-2203, codex r2).
+		membersError = null;
 		const myColl = ++collectionsGen;
 		// RE-STAMPED HERE, before any await, exactly as ItemDetail's loadData
 		// does: the epoch that matters is the one current when this page's data
