@@ -20,12 +20,15 @@ test('an edit lost with its socket is handed back after a force_refresh', async 
 	const page = await ctx.newPage();
 	let drop = false;
 	let sockets = 0;
+	let droppedUpdates = 0;
 	await page.routeWebSocket(/\/api\/v1\/collab\//, (ws) => {
 		sockets++;
 		const server = ws.connectToServer();
 		server.onMessage((m) => ws.send(m));
 		ws.onMessage((m) => {
-			if (!drop) server.send(m);
+			if (!drop) return server.send(m);
+			// y-protocols sync update: message type 0, subtype 2.
+			if (typeof m !== 'string' && m[0] === 0 && m[1] === 2) droppedUpdates++;
 		});
 	});
 	await browserLogin(page);
@@ -41,6 +44,7 @@ test('an edit lost with its socket is handed back after a force_refresh', async 
 	// The edit goes out on the socket and never arrives.
 	drop = true;
 	await page.keyboard.type('Sent but never stored.');
+	await expect.poll(() => droppedUpdates, { message: 'premise: the edit went out as an update and was dropped' }).toBeGreaterThan(0);
 	// The socket dies (the tab goes offline) before any barrier could confirm it.
 	await ctx.setOffline(true);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeHidden({ timeout: SYNC_TIMEOUT });
