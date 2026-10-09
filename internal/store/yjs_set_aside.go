@@ -114,6 +114,10 @@ func (s *Store) SetAsideAndClearOpLog(itemID string) (setAside, cleared int64, e
 		}
 		setAside++
 	}
+	// A compaction snapshot, if there was one, was deleted with the log (TASK-3531).
+	if err = s.clearOpLogCompactionQ(tx, itemID); err != nil {
+		return 0, 0, err
+	}
 	if err = tx.Commit(); err != nil {
 		return 0, 0, fmt.Errorf("set aside op-log (commit): %w", err)
 	}

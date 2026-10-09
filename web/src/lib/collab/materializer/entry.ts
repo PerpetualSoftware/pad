@@ -42,7 +42,7 @@ import { api } from '$lib/api/client';
 import { unescapeDocLinks, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 import type { Item } from '$lib/types';
 import { SCHEMA_VERSION } from '$lib/collab/schemaVersion';
-import { replayFrames } from './replay';
+import { replayFrames, updateFrame } from './replay';
 import { schemaSpecOf, type SchemaSpec } from './schemaSpec';
 import {
 	installAtBlankPatch,
@@ -200,6 +200,67 @@ export function materializeWith(ed: Editor, job: MaterializeJob): string {
 	}
 }
 
+function bytesToBase64(b: Uint8Array): string {
+	let bin = '';
+	for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+	return btoa(bin);
+}
+
+/** What snapshot() returns: the markdown, and the doc's whole state as ONE op-log frame. */
+export interface SnapshotResult {
+	markdown: string;
+	/** Base64 y-protocols Update frame carrying Y.encodeStateAsUpdate of the replayed doc. */
+	frame: string;
+}
+
+/**
+ * Compact one op-log into a single frame (TASK-3531). The frame replaces the
+ * rows it was built from, so it must be exactly as good as them: the
+ * document the rows replay to, which is the document every tab replaying them
+ * holds (tabs run this same replay). It REFUSES (throws) rather than return:
+ *   - a frame whose replay alone does not give the same Yjs snapshot (state
+ *     vector and delete set) and the same markdown as the rows did;
+ *   - a document with structs left pending (they reference something no row
+ *     holds): carried in a frame but never shown, and indistinguishable
+ *     afterwards, so such an op-log is left as it is.
+ * A row that does not replay at all (a malformed frame) contributes nothing
+ * to that document, in the materializer or in a tab, so compacting it away
+ * loses nothing that ever existed.
+ */
+export function snapshot(jobJSON: string): string {
+	return JSON.stringify(snapshotWith(getEditor(), JSON.parse(jobJSON) as MaterializeJob));
+}
+
+/** snapshot() against a given headless editor (tests pass a variant). */
+export function snapshotWith(ed: Editor, job: MaterializeJob): SnapshotResult {
+	if (!job || !Array.isArray(job.rows)) throw new Error('snapshot: job.rows must be an array');
+	const doc = new Y.Doc();
+	const check = new Y.Doc();
+	try {
+		replayFrames(doc, job.rows.map(base64ToBytes));
+		if (doc.store.pendingStructs || doc.store.pendingDs) {
+			throw new Error('snapshot: the op-log leaves pending structs; refusing to compact');
+		}
+		const frame = updateFrame(Y.encodeStateAsUpdate(doc));
+		replayFrames(check, [frame]);
+		// Unreachable with a correct Yjs encoder: anything the frame lost would
+		// also change the markdown checked below. Kept as a guard against an
+		// encoder regression, which no test input can produce (TASK-3531).
+		if (!Y.equalSnapshots(Y.snapshot(doc), Y.snapshot(check))) {
+			throw new Error('snapshot: the compacted frame does not reproduce the document; refusing to compact');
+		}
+		const markdown = materializeWith(ed, job);
+		const again = materializeWith(ed, { ...job, rows: [bytesToBase64(frame)] });
+		if (again !== markdown) {
+			throw new Error('snapshot: the compacted frame renders different markdown; refusing to compact');
+		}
+		return { markdown, frame: bytesToBase64(frame) };
+	} finally {
+		doc.destroy();
+		check.destroy();
+	}
+}
+
 /** The headless editor's schema description (see schemaSpec.ts). */
 export function schemaSpec(): SchemaSpec {
 	return schemaSpecOf(getEditor());
@@ -228,6 +289,7 @@ export function atBlankPair(out: string): string {
 // primitive values.
 (globalThis as unknown as { Materializer: unknown }).Materializer = {
 	materialize,
+	snapshot,
 	schemaSpec: () => JSON.stringify(schemaSpec()),
 	schemaVersion,
 	atBlankPatched,

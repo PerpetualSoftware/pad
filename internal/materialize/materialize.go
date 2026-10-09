@@ -166,6 +166,48 @@ type jsJob struct {
 // call returns an error wrapping ErrInterrupted and ctx.Err(); the Runner is
 // usable afterwards. A JavaScript exception is returned as an error.
 func (r *Runner) Materialize(ctx context.Context, job Job) (string, error) {
+	return r.runJob(ctx, r.materialize, "materialize", job)
+}
+
+// Snapshot is one op-log compacted into a single frame (TASK-3531).
+type Snapshot struct {
+	// Markdown is what the rows (and the frame) materialize to.
+	Markdown string
+	// Frame is a y-protocols Update frame carrying the whole replayed
+	// document's state: one op-log row that replays to the same document.
+	Frame []byte
+}
+
+// Snapshot compacts job's rows into one frame (TASK-3531). The bundle refuses
+// (an error) rather than return a frame that could lose anything: a row that
+// failed to replay, structs left pending, or a frame that does not replay to
+// the same document and markdown.
+func (r *Runner) Snapshot(ctx context.Context, job Job) (Snapshot, error) {
+	fn, err := r.fn("snapshot")
+	if err != nil {
+		return Snapshot{}, err
+	}
+	out, err := r.runJob(ctx, fn, "snapshot", job)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	var res struct {
+		Markdown string `json:"markdown"`
+		Frame    string `json:"frame"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		return Snapshot{}, fmt.Errorf("snapshot: decode result: %w", err)
+	}
+	frame, err := base64.StdEncoding.DecodeString(res.Frame)
+	if err != nil || len(frame) == 0 {
+		return Snapshot{}, fmt.Errorf("snapshot: result has no frame")
+	}
+	return Snapshot{Markdown: res.Markdown, Frame: frame}, nil
+}
+
+// runJob calls one job function of the bundle (materialize or snapshot) with
+// job's JSON, under ctx's interrupt.
+func (r *Runner) runJob(ctx context.Context, fn goja.Callable, what string, job Job) (string, error) {
 	if job.SchemaVersion != r.schemaVersion {
 		return "", fmt.Errorf("%w: job %q, bundle %q", ErrSchemaVersion, job.SchemaVersion, r.schemaVersion)
 	}
@@ -202,7 +244,7 @@ func (r *Runner) Materialize(ctx context.Context, job Job) (string, error) {
 		case <-stop:
 		}
 	}()
-	v, err := r.materialize(goja.Undefined(), r.vm.ToValue(string(payload)))
+	v, err := fn(goja.Undefined(), r.vm.ToValue(string(payload)))
 	if testHookAfterCall != nil {
 		testHookAfterCall()
 	}
@@ -219,7 +261,7 @@ func (r *Runner) Materialize(ctx context.Context, job Job) (string, error) {
 			}
 			return "", fmt.Errorf("%w: %w", ErrInterrupted, cause)
 		}
-		return "", fmt.Errorf("materialize: %w", err)
+		return "", fmt.Errorf("%s: %w", what, err)
 	}
 	return v.String(), nil
 }
