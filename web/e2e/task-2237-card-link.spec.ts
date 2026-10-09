@@ -118,6 +118,11 @@ test.describe('TASK-2237: a card is a stretched link, not a link full of buttons
 		let entered = false;
 		for (let attempt = 0; attempt < 3 && !entered; attempt++) {
 			// Start ON the title text: the link itself, not just its overlay.
+			// In view first: a new card joins the END of an un-dragged lane
+			// (BUG-3527), and in the suite's shared workspace the Open lane
+			// holds enough cards to put it below the fold, where the gesture
+			// starts off-screen and no drag begins (CI, #1974's E2E run).
+			await link.scrollIntoViewIfNeeded();
 			const from = (await link.boundingBox())!;
 			const zone = (await target.locator('.column-cards').boundingBox())!;
 			await page.mouse.move(from.x + Math.min(20, from.width / 2), from.y + from.height / 2);
