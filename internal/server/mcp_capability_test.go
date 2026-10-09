@@ -53,7 +53,7 @@ func TestE2E_HTTPSSelfHostFlow(t *testing.T) {
 	user, sessionToken := loginTestUser(t, srv)
 
 	rr := doRequest(srv, "POST", "/mcp", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize"})
-	const wantChallenge = `Bearer realm="pad", resource_metadata="` + origin + `/.well-known/oauth-protected-resource/mcp"`
+	const wantChallenge = `Bearer realm="pad", scope="pad:read pad:write", resource_metadata="` + origin + `/.well-known/oauth-protected-resource/mcp"`
 	if rr.Code != http.StatusUnauthorized || rr.Header().Get("WWW-Authenticate") != wantChallenge {
 		t.Fatalf("401 challenge: status %d, WWW-Authenticate %q, want %q", rr.Code, rr.Header().Get("WWW-Authenticate"), wantChallenge)
 	}

@@ -589,7 +589,12 @@ func extractBearer(h string) (string, bool) {
 // serves — Claude Desktop, Cursor, etc. follow it to begin the OAuth
 // discovery flow described in the MCP authorization spec.
 //
-// resource_metadata is present only when OAuth is available (PLAN-2310
+// With OAuth available the challenge also names scope (TASK-2308), the
+// set a client should ask for at /oauth/authorize, and resource_metadata
+// stays the LAST parameter. The 403 for a read-only OAuth connection is
+// writeMCPInsufficientScope.
+//
+// resource_metadata (and scope) are present only when OAuth is available (PLAN-2310
 // DR-5): with MCP on over http, which is PAT-only, the header is a bare
 // `Bearer realm="pad"`, because there is no metadata document to point
 // at and a client that follows one would start an OAuth flow that cannot
@@ -609,14 +614,11 @@ func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, r *http.Request, co
 	}
 	s.recordMCPPreAuthDenied(code)
 	challenge := `Bearer realm="pad"`
-	// The challenge names THIS mount's metadata document (TASK-3321 U2b):
-	// the ChatGPT mount stamps its own resource.
-	resource := mcpResourceFromContext(r.Context())
-	if resource == "" {
-		resource = s.mcpPublicURL
-	}
-	if meta := protectedResourceMetadataURL(resource); meta != "" && s.oauthAvailable() {
-		challenge += `, resource_metadata="` + meta + `"`
+	if meta := s.mcpChallengeMetadataURL(r); meta != "" {
+		// scope tells a client what to ask for at /oauth/authorize
+		// (TASK-2308). Without it Claude Code falls back to the metadata's
+		// scopes_supported, which includes pad:admin.
+		challenge += `, scope="` + mcpChallengeScope + `", resource_metadata="` + meta + `"`
 	}
 	w.Header().Set("WWW-Authenticate", challenge)
 	w.Header().Set("Content-Type", "application/json")
@@ -627,6 +629,28 @@ func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, r *http.Request, co
 			"message": msg,
 		},
 	})
+}
+
+// mcpChallengeScope is the scope set a /mcp WWW-Authenticate challenge
+// names (TASK-2308): the tiers the consent screen offers a connection.
+// pad:admin is left out because tokenScopeAllows grants it nothing
+// pad:write does not.
+const mcpChallengeScope = "pad:read pad:write"
+
+// mcpChallengeMetadataURL is the protected-resource metadata URL a
+// challenge on r names: THIS mount's document (TASK-3321 U2b; the
+// ChatGPT mount stamps its own resource), else /mcp's. Empty when OAuth
+// is unavailable or no resource is configured, and a challenge then
+// names no metadata and no scope.
+func (s *Server) mcpChallengeMetadataURL(r *http.Request) string {
+	if !s.oauthAvailable() {
+		return ""
+	}
+	resource := mcpResourceFromContext(r.Context())
+	if resource == "" {
+		resource = s.mcpPublicURL
+	}
+	return protectedResourceMetadataURL(resource)
 }
 
 // ctxMCPResource carries the canonical OAuth resource of the MCP mount a

@@ -174,7 +174,10 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// captured as result_status="denied". The audit middleware is a
 	// no-op when the writer hasn't been spawned (selfhost / test
 	// builds), so the chain is safe to mount unconditionally.
-	r.With(s.requireMCPAvailable, s.requireConfiguredHost, s.MCPBearerAuth, s.MCPAuditLog).Mount("/mcp", transport)
+	//
+	// MCPInsufficientScope (TASK-2308) sits after MCPAuditLog so its 403
+	// is audited as denied.
+	r.With(s.requireMCPAvailable, s.requireConfiguredHost, s.MCPBearerAuth, s.MCPAuditLog, s.MCPInsufficientScope).Mount("/mcp", transport)
 
 	// Discovery endpoints — unauthenticated, oauthAvailable-gated. RFC 9728
 	// (protected-resource) and RFC 8414 (auth-server) metadata.

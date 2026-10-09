@@ -217,6 +217,24 @@ func isReadOnlyAction(toolName, action string) bool {
 	return actions[action]
 }
 
+// CallNeedsWriteScope reports whether a remote /mcp tools/call of
+// (toolName, action) is a WRITE: an action the catalog declares that is
+// not in readOnlyActions. An unknown tool or action is not one, so the
+// server passes it on to be answered as unknown. Backs the /mcp
+// insufficient_scope 403 (TASK-2308); pinned against what the
+// dispatcher actually refuses by
+// TestScopePopulation_WriteActionsAreRefusedForReadTokens.
+func CallNeedsWriteScope(toolName, action string) bool {
+	for _, def := range Catalog {
+		if def.Name != toolName {
+			continue
+		}
+		_, declared := def.Actions[action]
+		return declared && !isReadOnlyAction(toolName, action)
+	}
+	return false
+}
+
 // buildToolSurfaceTools projects a catalog slice into the serialized
 // per-tool summaries. Shared by ToolSurfaceJSON (the REST/browser path)
 // and actionMetaToolSurface (the MCP path) so the two surfaces can't
