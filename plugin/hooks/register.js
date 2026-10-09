@@ -1029,7 +1029,10 @@ function draw($, e) {
 // the path where mods do not load; pad-monitor.sh's lockfile keeps the two from
 // streaming twice in one session.
 
-const WATCH_BURST_MS = 1500 // lines arriving together go to Claude as one message
+const WATCH_BURST_MS = 1500 // a burst ends after this much quiet, and goes to Claude as one message
+const WATCH_BURST_MAX_MS = 10000 // a stream that never goes quiet still flushes this often
+let burstTimer = null
+let burstStart = 0
 let watch = null // the running pad-monitor.sh, as $.process.spawn's iterator
 let watchEpoch = 0 // bumped by stopWatch: a start still asking the CLI then spawns nothing
 let pending = [] // lines not yet handed to Claude
@@ -1108,7 +1111,18 @@ async function startWatch($) {
         const lines = (carry + chunk.text).split('\n')
         carry = lines.pop()
         for (const line of lines) if (line.trim()) pending.push(line)
-        if (pending.length) $.clock.after(WATCH_BURST_MS, () => { flushWatch($) })
+        if (!pending.length) continue
+        // Wait for the burst to go quiet (codex r4), but never longer than
+        // WATCH_BURST_MAX_MS from its first line.
+        const now = await $.clock.now()
+        if (!burstStart) burstStart = now
+        if (burstTimer) burstTimer.cancel()
+        const wait = Math.max(0, Math.min(WATCH_BURST_MS, burstStart + WATCH_BURST_MAX_MS - now))
+        burstTimer = $.clock.after(wait, () => {
+          burstTimer = null
+          burstStart = 0
+          flushWatch($)
+        })
       }
     } catch {}
     if (watch === it) watch = null
@@ -1121,6 +1135,9 @@ function stopWatch() {
   watch = null
   pending = []
   submitting = false
+  if (burstTimer) burstTimer.cancel()
+  burstTimer = null
+  burstStart = 0
   if (it) {
     try { it.return() } catch {}
   }

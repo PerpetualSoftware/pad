@@ -166,3 +166,19 @@ test('lines read after the session ended are not relayed by a flush already wait
   await settle()
   expect(s.submitted).toEqual(['first'])
 })
+
+test('a line arriving mid-burst joins it: the burst ends after quiet, not after its first line', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, { armed: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
+  await $.session.start({ cwd: '/work/demo' })
+  await settle()
+  await clock.advance(1000)
+  s.stream.release() // 'late line', 1s into the burst
+  await settle()
+  await clock.advance(1000) // 2s after the first line, 1s after the last
+  await settle()
+  expect(s.submitted).toEqual([])
+  await clock.advance(500)
+  await settle()
+  expect(s.submitted).toEqual(['first\nlate line'])
+})
