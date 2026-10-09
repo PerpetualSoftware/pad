@@ -196,8 +196,9 @@
 		return null;
 	}
 
-	// localStorage persistence keyed by share token (mirrors the logged-in
-	// collection page's `pad-view-<coll>` pattern). Stores either a base view
+	// localStorage persistence keyed by share token (the logged-in collection
+	// page keys its own by workspace and collection, `pad-view:<ws>:<coll>`,
+	// lib/collections/viewPersistence.ts). Stores either a base view
 	// type or `saved:<slug>`. Wrapped in try/catch — share pages may run in
 	// privacy contexts where localStorage throws.
 	function viewStorageKey() {
