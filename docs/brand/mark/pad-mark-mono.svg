@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 676 676" fill="currentColor" role="img" aria-label="Pad">
+<!-- Pad mark (TASK-3514). Master geometry: 3x3 tiles of 200 with 38 gaps and 37 corners, from the mobile app icon. Colours: docs/brand.md. Monochrome: currentColor; the two slate tiles at 40%. -->
+<g>
+  <rect x="0" y="0" width="200" height="200" rx="37"/>
+  <rect x="238" y="0" width="200" height="200" rx="37"/>
+  <rect x="476" y="0" width="200" height="200" rx="37"/>
+  <rect x="0" y="238" width="200" height="200" rx="37"/>
+  <rect x="238" y="238" width="200" height="200" rx="37"/>
+  <rect x="476" y="238" width="200" height="200" rx="37" fill-opacity="0.4"/>
+  <rect x="0" y="476" width="200" height="200" rx="37"/>
+  <rect x="238" y="476" width="200" height="200" rx="37"/>
+  <rect x="476" y="476" width="200" height="200" rx="37" fill-opacity="0.4"/>
+</g>
+</svg>

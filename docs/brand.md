@@ -360,7 +360,65 @@ others and keep them in sync.
 
 ---
 
-## 9. What this doc explicitly does NOT do
+## 9. The Pad mark
+
+> **Status: proposed (TASK-3514).** The master set below exists; no surface
+> uses it yet. Dave decides the rollout. Until then, the surfaces listed under
+> *Where it goes* keep what they have.
+
+The mark is a 3x3 grid of rounded tiles. It replaces both earlier marks: the
+purple "P" (the app's favicons and app icons) and the raster nine-square
+icons (mobile, video, marketing), which came from one bitmap and drifted in
+crop, glow and tile size. The SVGs in `docs/brand/mark/` are the source. Every
+PNG anywhere is an export of one of them, never a hand-edited copy.
+
+### The master set (`docs/brand/mark/`)
+
+| File | What it is | Use it for |
+|---|---|---|
+| `pad-mark.svg` | The mark, full colour, no background | Headers, the README, any lockup at about 20px and up |
+| `pad-mark-small.svg` | Pixel-aligned at 16px: 4px tiles, 2px gaps | Favicons at 16 and 32px; scale by whole multiples only |
+| `pad-favicon-tile.svg` | The small mark on a dark tile | Places that need a solid backing: PWA maskable, Windows tiles |
+| `pad-app-icon.svg` | The mark on a near-black tile with a cyan-to-magenta edge glow, full-bleed | iOS AppIcon (no transparency); `icon-192/512`, `apple-touch-icon` |
+| `pad-app-icon-shaped.svg` | The same tile, transparent outside its rounded shape | Android legacy launcher, in-app logos (iOS `PadIcon`, Android `pad_logo`), video lockups, OG and store art |
+| `pad-mark-mono.svg` | One colour (`currentColor`), with the two slate tiles at 40% | One-colour contexts: print, embossing, a single-ink badge |
+
+### Geometry and colour
+
+- Grid: tiles of 200, gaps of 38, tile corners of 37, on a 676 square,
+  measured from the mobile app icon (`icon_1024.png`). In the app icon the
+  grid sits at 174..850 on a 1024 canvas, and the tile's own corner radius
+  is 222.
+- Tile colours, row by row:
+  - `#007bfc` `#2f2ffb` `#8406fb`
+  - `#01bc81` `#fdb600` `#45496c`
+  - `#0090fd` `#004ffb` `#424668`
+- The two slate tiles are part of the mark, as in the mobile icon. Keep
+  them slate; do not recolour them to the accent.
+- App-icon tile: background `#02031a`..`#070a26`, edge glow `#22c3ff` →
+  `#4b3cf5` → `#c63af5`, plus a faint top-left sheen on each tile.
+
+### Rules
+
+- On light and dark backgrounds alike, use `pad-mark.svg` as is. No
+  outline, shadow or glow except in the app-icon variants.
+- Below 20px, use `pad-mark-small.svg`. The full mark's 38/200 gaps blur
+  into one block at 16px; the small variant's wider gaps keep the grid.
+  A 2x2 simplification was tried and dropped: it loses the identity
+  (TASK-3514 mockups).
+- The lockup is the mark followed by the lowercase wordmark `pad` (section
+  6). In the mockups the mark is about 1.2x the wordmark's font size (22px
+  beside an 18px wordmark). In a header the mark sits beside the wordmark
+  and never replaces it.
+
+### Where it goes
+
+Each surface gets an export from the master set. The rollout plan by repo
+is on TASK-3514.
+
+---
+
+## 10. What this doc explicitly does NOT do
 
 - It is not a full design system. The deep app (workspace shell, item
   views, etc.) has its own conventions and stays as-is.
@@ -374,7 +432,7 @@ others and keep them in sync.
 
 ---
 
-## 10. References
+## 11. References
 
 - [PLAN-900] — Cohesive UX between getpad.dev and Pad Cloud
 - [IDEA-888] — Original idea this plan implements
@@ -384,6 +442,7 @@ others and keep them in sync.
 - `web/src/app.css` — app-side tokens (currently divergent on
   bg / text / border / fonts; aligned on accent palette)
 - `web/src/lib/components/auth/` — auth-page chrome components
+- `docs/brand/mark/` — the mark's master SVGs (section 9)
 
 [PLAN-900]: # "tracked in Pad workspace"
 [IDEA-888]: # "tracked in Pad workspace"

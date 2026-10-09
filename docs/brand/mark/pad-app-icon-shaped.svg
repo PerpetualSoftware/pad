@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Pad">
+<!-- Pad app icon (TASK-3514): the mark on a near-black tile with a cyan-to-magenta edge glow, after the mobile app icon. Shaped variant: transparent outside the rounded tile, for Android legacy launchers, in-app logos, video and marketing. iOS uses pad-app-icon.svg (full-bleed, no transparency). -->
+<defs>
+  <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#22c3ff"/>
+    <stop offset="0.5" stop-color="#4b3cf5"/>
+    <stop offset="1" stop-color="#c63af5"/>
+  </linearGradient>
+  <radialGradient id="bg" cx="0.5" cy="0.35" r="0.75">
+    <stop offset="0" stop-color="#070a26"/>
+    <stop offset="1" stop-color="#02031a"/>
+  </radialGradient>
+  <linearGradient id="sheen" x1="0.25" y1="0" x2="0.75" y2="1">
+    <stop offset="0" stop-color="#fff" stop-opacity="0.10"/>
+    <stop offset="1" stop-color="#000" stop-opacity="0.08"/>
+  </linearGradient>
+  <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
+    <feGaussianBlur stdDeviation="10"/>
+  </filter>
+</defs>
+<rect x="6" y="6" width="1012" height="1012" rx="222" fill="url(#bg)"/>
+<rect x="8" y="8" width="1008" height="1008" rx="220" fill="none" stroke="url(#edge)" stroke-width="18" filter="url(#glow)"/>
+<rect x="7" y="7" width="1010" height="1010" rx="221" fill="none" stroke="url(#edge)" stroke-width="5"/>
+  <rect x="174" y="174" width="200" height="200" rx="37" fill="#007bfc"/>
+  <rect x="412" y="174" width="200" height="200" rx="37" fill="#2f2ffb"/>
+  <rect x="650" y="174" width="200" height="200" rx="37" fill="#8406fb"/>
+  <rect x="174" y="412" width="200" height="200" rx="37" fill="#01bc81"/>
+  <rect x="412" y="412" width="200" height="200" rx="37" fill="#fdb600"/>
+  <rect x="650" y="412" width="200" height="200" rx="37" fill="#45496c"/>
+  <rect x="174" y="650" width="200" height="200" rx="37" fill="#0090fd"/>
+  <rect x="412" y="650" width="200" height="200" rx="37" fill="#004ffb"/>
+  <rect x="650" y="650" width="200" height="200" rx="37" fill="#424668"/>
+  <rect x="174" y="174" width="200" height="200" rx="37" fill="url(#sheen)"/>
+  <rect x="412" y="174" width="200" height="200" rx="37" fill="url(#sheen)"/>
+  <rect x="650" y="174" width="200" height="200" rx="37" fill="url(#sheen)"/>
+  <rect x="174" y="412" width="200" height="200" rx="37" fill="url(#sheen)"/>
+  <rect x="412" y="412" width="200" height="200" rx="37" fill="url(#sheen)"/>
+  <rect x="650" y="412" width="200" height="200" rx="37" fill="url(#sheen)"/>
+  <rect x="174" y="650" width="200" height="200" rx="37" fill="url(#sheen)"/>
+  <rect x="412" y="650" width="200" height="200" rx="37" fill="url(#sheen)"/>
+  <rect x="650" y="650" width="200" height="200" rx="37" fill="url(#sheen)"/>
+</svg>
