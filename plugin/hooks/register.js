@@ -1031,6 +1031,7 @@ function draw($, e) {
 
 const WATCH_BURST_MS = 1500 // lines arriving together go to Claude as one message
 let watch = null // the running pad-monitor.sh, as $.process.spawn's iterator
+let watchEpoch = 0 // bumped by stopWatch: a start still asking the CLI then spawns nothing
 let pending = [] // lines not yet handed to Claude
 let submitting = false
 
@@ -1072,6 +1073,7 @@ async function flushWatch($) {
 // Silent by construction: every failure here leaves the session as it was.
 async function startWatch($) {
   if (watch) return
+  const epoch = watchEpoch
   const pid = await sessionPid($)
   const env = pid ? { CLAUDECODE: '1', PAD_SESSION_PID: pid } : { CLAUDECODE: '1' }
   // Presence is a fact about the session, kept whether or not it consents
@@ -1081,7 +1083,8 @@ async function startWatch($) {
   try {
     armed = (await $.process.run(['pad', 'session', 'should-arm'], { env, timeoutMs: 10000 })).exitCode === 0
   } catch {}
-  if (!armed || watch) return
+  // The session may have ended while the CLI answered (codex r1).
+  if (!armed || watch || epoch !== watchEpoch) return
   let it
   try {
     it = $.process.spawn({ argv: [$.plugin.root + '/scripts/pad-monitor.sh'], env })
@@ -1108,6 +1111,7 @@ async function startWatch($) {
 }
 
 function stopWatch() {
+  watchEpoch++
   const it = watch
   watch = null
   pending = []

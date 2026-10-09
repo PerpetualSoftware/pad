@@ -4,7 +4,7 @@ import { expect, mock, test } from 'claude-code/testing'
 // consented (PLAN-2613's `pad session should-arm`), and an unarmed session runs
 // nothing and shows nothing. These tests stand in for the CLI and the stream.
 
-type Opts = { armed?: boolean; noCli?: boolean; chunks?: { stream: string; text: string }[] }
+type Opts = { armed?: boolean; noCli?: boolean; chunks?: { stream: string; text: string }[]; gate?: Promise<void> }
 
 function stubs(on: any, opts: Opts = {}) {
   const runs: { argv: string[]; env: Record<string, string> }[] = []
@@ -24,7 +24,10 @@ function stubs(on: any, opts: Opts = {}) {
     runs.push({ argv: [...e.argv], env: { ...(e.init?.env || {}) } })
     if (e.argv[0] === 'sh') return { value: { exitCode: 0, stdout: '4242\n', stderr: '' } }
     if (opts.noCli) return { deny: 'spawn pad ENOENT' }
-    if (e.argv.join(' ') === 'pad session should-arm') return { value: { exitCode: opts.armed ? 0 : 1, stdout: '', stderr: '' } }
+    if (e.argv.join(' ') === 'pad session should-arm') {
+      const answer = { value: { exitCode: opts.armed ? 0 : 1, stdout: '', stderr: '' } }
+      return opts.gate ? opts.gate.then(() => answer) : answer
+    }
     return { value: { exitCode: 0, stdout: '', stderr: '' } }
   })
   on('process.spawn', async function* ($: any, e: any) {
@@ -128,4 +131,16 @@ test('any other end stops the stream: nothing after it is relayed', async ($, on
   await settle()
   expect(s.stream.closed).toBe(true)
   expect(s.submitted).toEqual([])
+})
+
+test('a session that ends while the CLI is still answering starts nothing', async ($, on) => {
+  mock.clock(on)
+  let release = () => {}
+  const gate = new Promise<void>((r) => { release = r })
+  const s = stubs(on, { armed: true, gate })
+  await $.session.start({ cwd: '/work/demo' })
+  await $.session.end({ reason: 'prompt_input_exit' })
+  release()
+  await settle()
+  expect(s.spawns).toEqual([])
 })
