@@ -510,6 +510,21 @@
 		<p class="section-hint">
 			Type sample values to preview how this playbook gets invoked across surfaces.
 		</p>
+		<!-- TASK-2256 (C64): a run of a playbook that is not active is refused
+		     (BUG-2020), so commands copied from here without this note read as a
+		     bug. Said where the commands are, with the way through. -->
+		{#if status && status !== 'active'}
+			<p class="status-note" role="note">
+				{#if hideStatus}
+					Created as a draft, it can't be run until it is active: use Create as Active, or
+				{:else}
+					This playbook is <strong>{status}</strong>, so a run is refused until it is active. Set Status
+					to active, or
+				{/if}
+				to try it as it is, pass <code>--allow-draft</code> to <code>pad playbook run</code>
+				(<code>allow_draft: true</code> over MCP).
+			</p>
+		{/if}
 
 		{#if args.length > 0}
 			<div class="sample-form">
@@ -641,6 +656,16 @@
 		color: var(--text-secondary);
 		margin: 0;
 	}
+	.status-note {
+		font-size: 0.85em;
+		color: var(--text-primary);
+		background: color-mix(in srgb, var(--accent-amber) 12%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent-amber) 40%, transparent);
+		border-radius: var(--radius);
+		padding: var(--space-2) var(--space-3);
+		margin: 0 0 var(--space-3);
+	}
+	.status-note code { font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace); }
 	.section-hint {
 		font-size: 0.85em;
 		color: var(--text-muted);

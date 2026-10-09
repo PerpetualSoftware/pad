@@ -14,26 +14,26 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			loadData: {
-				reviewed: '9c62a6c42f28',
+				reviewed: 'bf6fb95d5a80',
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378). Re-reviewed for TASK-2203: loadError is written on both arms after the same checks',
 			},
 			activateConvention: {
-				reviewed: '648517945a1b',
+				reviewed: '500f0d1fabdf',
 				why: 'pageIdentityHeld() before the write (the choice came from the loaded list), identityHeld(epochAtEntry) after it on both arms and in the finally',
 			},
 			activatePlaybook: {
-				reviewed: '5f104126623d',
+				reviewed: '1eef6f7c8b67',
 				why: 'pageIdentityHeld() before the write (the choice came from the loaded list), identityHeld(epochAtEntry) after it on both arms and in the finally',
 			},
 		},
 		nested: [],
 		markup: [],
 		continuations: [
-			{ call: /\(ws, convSlug\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: 'b95916e8d185' },
-			{ call: /\(ws, pbSlug\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: 'b95916e8d185' },
-			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing', reviewed: 'fbdd408ae355' },
-			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activateConvention', count: 2, why: `activateConvention toast timer, one per arm: ${TIMER_WHY}`, reviewed: '14cf7fba65c1' },
-			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activatePlaybook', count: 2, why: `activatePlaybook toast timer, one per arm: ${TIMER_WHY}`, reviewed: 'e66e8d41273e' },
+			{ call: /\(ws, convSlug\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: 'd12ac67a307e' },
+			{ call: /\(ws, pbSlug\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: 'd12ac67a307e' },
+			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing', reviewed: '19ec27a693c3' },
+			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activateConvention', count: 2, why: `activateConvention toast timer, one per arm: ${TIMER_WHY}`, reviewed: '8f5423f36951' },
+			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activatePlaybook', count: 2, why: `activatePlaybook toast timer, one per arm: ${TIMER_WHY}`, reviewed: '1e8470e2050a' },
 		],
 		helpers: {
 			captureIdentity: '7f6903e09e84',
@@ -46,8 +46,8 @@ identityGateSuite({
 		{
 			cls: 1,
 			what: 'a commit between the activation request and its check',
-			old: '\t\t\tawait api.library.activate(wsSlug, convention);\n',
-			new: '\t\t\tawait api.library.activate(wsSlug, convention);\n\t\t\ttoast = null;\n',
+			old: '\t\t\tconst created = await api.library.activate(wsSlug, convention);\n',
+			new: '\t\t\tconst created = await api.library.activate(wsSlug, convention);\n\t\t\ttoast = null;\n',
 			names: 'activateConvention()',
 		},
 		{
@@ -60,8 +60,8 @@ identityGateSuite({
 		{
 			cls: 3,
 			what: "activatePlaybook's success arm loses its check while its failure arm keeps one",
-			old: '\t\t\tawait api.library.activatePlaybook(wsSlug, playbook);\n\t\t\tif (!identityHeld(epochAtEntry)) return;\n',
-			new: '\t\t\tawait api.library.activatePlaybook(wsSlug, playbook);\n',
+			old: '\t\t\tconst created = await api.library.activatePlaybook(wsSlug, playbook);\n\t\t\tif (!identityHeld(epochAtEntry)) return;\n',
+			new: '\t\t\tconst created = await api.library.activatePlaybook(wsSlug, playbook);\n',
 			names: 'activatePlaybook()',
 		},
 		{

@@ -29,11 +29,13 @@
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
+	import PlaybookInvokeChips from '$lib/components/playbooks/PlaybookInvokeChips.svelte';
 	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
 	import { isBodyStale, isSetAside } from '$lib/items/staleBody';
 	import {
 		PLAYBOOK_SKELETON_BODY,
 		argumentsToJSON,
+		argumentsFromJSON,
 		type PlaybookArgument
 	} from '$lib/playbooks/arguments';
 
@@ -639,6 +641,10 @@
 					{@const trigger = fields.trigger == null ? 'manual' : safeText(fields.trigger)}
 					{@const scope = fields.scope == null ? 'all' : safeText(fields.scope)}
 					{@const steps = countSteps(item.content)}
+					<!-- TASK-2256 (C65): what makes a playbook callable, on the card,
+					     as the library shows it, rather than only in its editor. -->
+					{@const invocationSlug = typeof fields.invocation_slug === 'string' ? fields.invocation_slug.trim() : ''}
+					{@const argCount = argumentsFromJSON(fields.arguments).length}
 					{@const isExpanded = expandedId === item.id}
 					<div class="card" class:card-draft={status === 'draft'} class:card-deprecated={status === 'deprecated'}>
 						<button class="card-header" onclick={() => toggleExpand(item.id)} aria-expanded={isExpanded}>
@@ -648,6 +654,7 @@
 								{#if status}<Chip size="sm" color={statusColor(status)}>{statusLabel(status)}</Chip>{/if}
 							</div>
 							<div class="card-meta">
+								<PlaybookInvokeChips slug={invocationSlug} {argCount} />
 								<Chip size="sm" color="var(--status-blue)" title={termTitle('trigger', trigger)}><span class="sr-only">{'Trigger: '}</span>{trigger}</Chip>
 								<span class="meta-sep" aria-hidden="true">&middot;</span>
 								<Chip size="sm" color="var(--accent-purple)" title={termTitle('surface', scope)}><span class="sr-only">{'Scope: '}</span>{scope}</Chip>
@@ -661,6 +668,14 @@
 						{#if isExpanded}
 							<div class="card-body">
 								<div class="card-divider"></div>
+								{#if invocationSlug}
+									<p class="invoke-line">
+										Run it by saying <q>run the {invocationSlug} playbook</q>, or <code>/pad {invocationSlug}</code>.
+										{#if status && status !== 'active'}
+											It can't be run until it is active.
+										{/if}
+									</p>
+								{/if}
 								<div class="content-block">
 									{#if item.content}
 										{#each item.content.split('\n') as line, i (i)}
@@ -750,7 +765,9 @@
 	.card-title-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 	.card-title { font-size: 1.05em; font-weight: 600; }
 	.deprecated-title { text-decoration: line-through; color: var(--text-muted); }
-	.card-meta { display: flex; align-items: center; gap: var(--space-2); font-size: 0.85em; color: var(--text-secondary); }
+	.card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: 0.85em; color: var(--text-secondary); }
+	.invoke-line { font-size: 0.85em; color: var(--text-secondary); margin: var(--space-2) 0; }
+	.invoke-line code { font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace); }
 	.meta-sep { color: var(--text-muted); }
 	.step-count { color: var(--text-muted); font-size: 0.9em; }
 	.chevron { margin-left: auto; font-size: 0.65em; color: var(--text-muted); transition: transform 0.2s; }

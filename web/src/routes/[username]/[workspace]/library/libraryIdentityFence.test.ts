@@ -191,11 +191,10 @@ describe('the library page fences every async commit point', () => {
 			activeConventionTitles: 'page DATA — loadData replaces it on both arms',
 			activePlaybookTitles: 'page DATA — loadData replaces it on both arms',
 			builtinEntries: 'page DATA (TASK-3462 U3b) — loadData replaces it on both arms',
+			conventionItemsByTitle: 'page DATA (TASK-2256) — loadData replaces it on both arms',
+			playbookItemsByTitle: 'page DATA (TASK-2256) — loadData replaces it on both arms',
 			loading: "owned by loadData's generation-guarded finally",
 			loadError: 'owned by loadData, written on both arms behind its identity and generation checks (TASK-2203)',
-			activeTab:
-				'a view preference read from the URL, not interaction state: it belongs to the ' +
-				'viewer and carries nothing about either identity',
 		};
 
 		// Enumerated by the core, by STATEMENT (BUG-3084 M12): the regex this
