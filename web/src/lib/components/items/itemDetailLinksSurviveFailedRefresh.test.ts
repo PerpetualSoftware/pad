@@ -180,19 +180,22 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		expect(code).toContain('const linksHeldForItemId = untrack(() => item?.id ?? null);');
 		expect(code).toMatch(/if \(linksHeldForItemId !== itemData\.id\) itemLinks = \[\];/);
 
-		// And that catch block empties `itemLinks` EXACTLY ONCE, gated. Pinning
+		// And that failure block empties `itemLinks` EXACTLY ONCE, gated. Pinning
 		// only the presence of the gated line admits an unconditional clear
 		// sitting beside it, or an `else` branch that clears anyway — both of
 		// which restore the defect while passing the assertion above (codex
 		// round 2). Counting is what makes the gate the only writer, and the
-		// region is the catch block matched by BALANCED BRACES rather than a
+		// region is the failure block matched by BALANCED BRACES rather than a
 		// fixed-length window, so a clear cannot sit just past the end of it and
 		// an unrelated edit after the block cannot fail the count (round 3).
-		const loadStart = code.indexOf('const links = await api.links.list(wsSlug, itemData.slug);');
+		// The load issues links beside progress (TASK-2228) and settles it into
+		// a result, so the failure path is the `else` of `linksResult.ok`.
+		const loadStart = code.indexOf('const linksResult = await linksRead;');
 		expect(loadStart).toBeGreaterThan(-1);
-		const catchAt = code.indexOf('catch', loadStart);
+		expect(code).toContain('const linksRead = api.links.list(wsSlug, itemData.slug).then(');
+		const catchAt = code.indexOf('} else', code.indexOf('if (linksResult.ok)', loadStart));
 		expect(catchAt).toBeGreaterThan(loadStart);
-		const loadCatch = balancedBlock(code, catchAt);
+		const loadCatch = balancedBlock(code, catchAt + 1);
 		expect(loadCatch).toContain('linksHeldForItemId !== itemData.id');
 		// One gated clear, and nothing else in the block touches the list.
 		expect(count(loadCatch, 'itemLinks')).toBe(1);
@@ -206,7 +209,7 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		// The sibling test above pins the GATE; this one pins that there is
 		// still something to gate.
 		expect(code).toMatch(
-			/const links = await api\.links\.list\(wsSlug, itemData\.slug\);[\s\S]{0,600}?catch\s*\{[\s\S]{0,400}?itemLinks = \[\];/
+			/const linksResult = await linksRead;[\s\S]{0,600}?\}\s*else\s*\{[\s\S]{0,400}?itemLinks = \[\];/
 		);
 	});
 

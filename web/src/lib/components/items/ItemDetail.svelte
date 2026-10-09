@@ -253,6 +253,17 @@
 	let collection = $state<Collection | null>(null);
 	let loading = $state(true);
 	let error = $state('');
+	// The route a load was last STARTED for (TASK-2228). The route effect that
+	// calls `loadData` runs after the render that carries the new `ref`, so for
+	// one render the body was mounted for the new ref with the previous item
+	// still loaded: every panel under `{#key itemSlug}` mounted and fetched for
+	// the wrong item, then unmounted behind the skeleton when `loading` flipped,
+	// and fetched again when the load landed. A switch fetched the timelines,
+	// children and backlinks twice. `routePending` covers that render: it is
+	// true from the moment the route changes until `loadData` starts for it.
+	let startedRouteKey = $state('');
+	let routeKey = $derived(wsSlug && collSlug && itemSlug ? `${wsSlug}\u0000${collSlug}\u0000${itemSlug}` : '');
+	let routePending = $derived(routeKey !== '' && routeKey !== startedRouteKey);
 
 	// Monotonic load generation. The split pane re-drives loadData on every
 	// `ref` change (rapid j/k A→B→C paging), so overlapping loads can resolve
@@ -1892,6 +1903,7 @@
 		// load/refetch) landed a fresher item while this load was in flight —
 		// they no longer share loadGeneration.
 		const myItemGen = ++itemGen;
+		startedRouteKey = untrack(() => routeKey);
 		loading = true;
 		error = '';
 		// Clear per-item state that must NOT leak across navigation.
@@ -2246,13 +2258,25 @@
 			// Fetch child item progress for any item (generalized parent/child).
 			// Ticketed like every /progress read (BUG-3192): a child-change
 			// re-read issued after this one may already have landed.
+			//
+			// Progress and links are independent reads, so both are issued here and
+			// awaited in turn (TASK-2228): the switch pays one round trip for the
+			// pair instead of two. Each settles into a result, so the one awaited
+			// second can never surface as an unhandled rejection.
 			const progressTicket = ++progressIssued;
-			try {
-				const progress = await api.items.progress(wsSlug, itemData.slug);
-				if (myGen !== loadGeneration) return;
-				applyProgress(progressTicket, progress);
-			} catch {
-				if (myGen !== loadGeneration) return;
+			const progressRead = api.items.progress(wsSlug, itemData.slug).then(
+				(value) => ({ ok: true as const, value }),
+				() => ({ ok: false as const }),
+			);
+			const linksRead = api.links.list(wsSlug, itemData.slug).then(
+				(value) => ({ ok: true as const, value }),
+				() => ({ ok: false as const }),
+			);
+			const progressResult = await progressRead;
+			if (myGen !== loadGeneration) return;
+			if (progressResult.ok) {
+				applyProgress(progressTicket, progressResult.value);
+			} else {
 				if (progressTicket > progressApplied) {
 					hasChildren = false;
 					computedOverrides = {};
@@ -2281,13 +2305,12 @@
 			// the whole defect. So the test is `linksHeldForItemId`, not which
 			// function we are in (BUG-2871; the unconditional clear here was
 			// codex P1 on the first version of this fix).
-			try {
-				const links = await api.links.list(wsSlug, itemData.slug);
-				if (myGen !== loadGeneration) return;
-				itemLinks = links;
+			const linksResult = await linksRead;
+			if (myGen !== loadGeneration) return;
+			if (linksResult.ok) {
+				itemLinks = linksResult.value;
 				linksRetry.succeeded(itemData.id);
-			} catch {
-				if (myGen !== loadGeneration) return;
+			} else {
 				// Owed either way: kept rows are stale, cleared rows are missing.
 				linksRetry.failed({ itemId: itemData.id, ws: wsSlug });
 				// Clear only when the rows we hold belong to a DIFFERENT item (or
@@ -5921,9 +5944,9 @@
      A→B switch, where `loading` is true while `item` still holds the previous
      item (the skeleton renders, not the full header), and ESC isn't reachable
      on touch (PLAN-2105 / TASK-2113; Codex rounds 2-3). This condition is the
-     exact negation of the loaded branch's `!loading && !error && item &&
-     collection`, so it never double-renders with the full header. -->
-{#if embedded && (loading || error || !item || !collection)}
+     exact negation of the loaded branch's `!loading && !routePending && !error
+     && item && collection`, so it never double-renders with the full header. -->
+{#if embedded && (loading || routePending || error || !item || !collection)}
 	<header class="pane-header pane-header--minimal" aria-label="Item pane">
 		<div class="pane-header-actions">
 			<!-- Back chevron (PLAN-2154 Architecture C / TASK-2164, Codex review):
@@ -5950,7 +5973,7 @@
 		</div>
 	</header>
 {/if}
-{#if loading}
+{#if loading || routePending}
 	<ContentSkeleton variant="page" />
 {:else if error}
 	<ContentError
