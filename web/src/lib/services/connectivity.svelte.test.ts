@@ -9,7 +9,7 @@ vi.mock('./sse.svelte', async () => {
 	return { sseService: sse.box };
 });
 
-import { onConnectivityRecovered, signalRecovered, __resetConnectivityForTests, DEDUPE_MS } from './connectivity.svelte';
+import { onConnectivityRecovered, signalRecovered, __resetConnectivityForTests, DEDUPE_MS, JITTER_MS } from './connectivity.svelte';
 
 function setStatus(s: string) {
 	sse.box!.status = s;
@@ -23,26 +23,63 @@ beforeEach(() => {
 
 describe('onConnectivityRecovered', () => {
 	it('the first connect after load is not a recovery; a drop and reconnect is', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(5_000_000);
 		const heard = vi.fn();
 		const off = onConnectivityRecovered(heard);
 		// The stream starts `disconnected`: that is not an outage.
 		setStatus('disconnected');
 		setStatus('connected');
+		vi.advanceTimersByTime(JITTER_MS);
 		expect(heard).not.toHaveBeenCalled();
 		setStatus('reconnecting');
 		setStatus('connected');
+		vi.advanceTimersByTime(JITTER_MS);
 		expect(heard).toHaveBeenCalledTimes(1);
 		off();
 	});
 
 	it('a reconnect into polling (no stream slot) counts as recovered', () => {
-		const heard = vi.fn();
-		const off = onConnectivityRecovered(heard);
 		vi.useFakeTimers();
 		vi.setSystemTime(10_000_000);
+		const heard = vi.fn();
+		const off = onConnectivityRecovered(heard);
 		setStatus('connected');
 		setStatus('disconnected');
 		setStatus('polling');
+		vi.advanceTimersByTime(JITTER_MS);
+		expect(heard).toHaveBeenCalledTimes(1);
+		off();
+	});
+
+	it('a STREAM recovery waits a random 0..JITTER_MS (herd control); the draw sets the delay', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(30_000_000);
+		__resetConnectivityForTests(() => 0.6); // 0.6 * 5000 = 3000 ms
+		const heard = vi.fn();
+		const off = onConnectivityRecovered(heard);
+		setStatus('connected');
+		setStatus('reconnecting');
+		setStatus('connected');
+		vi.advanceTimersByTime(2999);
+		expect(heard).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1);
+		expect(heard).toHaveBeenCalledTimes(1);
+		off();
+	});
+
+	it('an `online` during the jitter wait is the same recovery: immediate, and the stream signal is cancelled', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(40_000_000);
+		__resetConnectivityForTests(() => 0.99);
+		const heard = vi.fn();
+		const off = onConnectivityRecovered(heard);
+		setStatus('connected');
+		setStatus('reconnecting');
+		setStatus('connected');
+		window.dispatchEvent(new Event('online'));
+		expect(heard).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(JITTER_MS * 2);
 		expect(heard).toHaveBeenCalledTimes(1);
 		off();
 	});

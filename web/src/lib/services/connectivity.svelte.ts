@@ -15,9 +15,20 @@
 // The two usually arrive together, so a second trigger inside DEDUPE_MS of the
 // first is the same recovery and notifies nobody again. The first connect after
 // page load is not a recovery: nothing was down yet.
+//
+// HERD CONTROL (lead review): a server deploy drops and restores EVERY
+// client's stream in the same moment, and every subscriber reloads, so a
+// stream recovery is announced after a random 0..JITTER_MS delay. `online` is
+// this client's own network coming back, nobody else's, so it stays
+// immediate, and an `online` during the wait cancels the jittered signal: it
+// is the same recovery.
 import { sseService, type SSEStatus } from './sse.svelte';
 
 export const DEDUPE_MS = 2000;
+export const JITTER_MS = 5000;
+
+let random: () => number = Math.random;
+let pendingStream: ReturnType<typeof setTimeout> | undefined;
 
 type Listener = () => void;
 
@@ -46,10 +57,24 @@ export function signalRecovered(now: number = Date.now()): void {
 	}
 }
 
+/** A stream recovery: announced after a random delay (herd control). */
+function streamRecovered(): void {
+	if (Date.now() - lastFired < DEDUPE_MS) return; // `online` already announced it
+	if (pendingStream !== undefined) return;
+	pendingStream = setTimeout(() => {
+		pendingStream = undefined;
+		signalRecovered();
+	}, Math.floor(random() * JITTER_MS));
+}
+
 function start(): void {
 	if (started || typeof window === 'undefined') return;
 	started = true;
-	window.addEventListener('online', () => signalRecovered());
+	window.addEventListener('online', () => {
+		clearTimeout(pendingStream);
+		pendingStream = undefined;
+		signalRecovered();
+	});
 	// The stream starts `disconnected` before its first connect, so a down
 	// state counts only after the stream has been up once; otherwise every
 	// page load would announce a recovery (and spend the dedupe window the
@@ -60,7 +85,7 @@ function start(): void {
 		$effect(() => {
 			const s = sseService.status as SSEStatus;
 			if (isUp(s)) {
-				if (seenUp && wasDown) signalRecovered();
+				if (seenUp && wasDown) streamRecovered();
 				seenUp = true;
 				wasDown = false;
 			} else if (isDown(s) && seenUp) {
@@ -83,7 +108,10 @@ export function onConnectivityRecovered(listener: Listener): () => void {
 }
 
 /** Test-only. */
-export function __resetConnectivityForTests(): void {
+export function __resetConnectivityForTests(rng: () => number = Math.random): void {
 	listeners.clear();
 	lastFired = -Infinity;
+	clearTimeout(pendingStream);
+	pendingStream = undefined;
+	random = rng;
 }
