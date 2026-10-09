@@ -20,8 +20,10 @@ import (
 	pad "github.com/PerpetualSoftware/pad"
 	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/materialize"
+	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // TASK-2198 U4: the op-log recovery triggers, worker and failure budget, and
@@ -1009,5 +1011,51 @@ func TestMaterializeSweepExhaustedCountIsStableAcrossPages(t *testing.T) {
 	}
 	if len(lines) != 1 || !strings.Contains(lines[0], "exhausted_total=3") {
 		t.Fatalf("sweep lines over 6 sweeps of 2-item pages = %v, want one with exhausted_total=3", lines)
+	}
+}
+
+// BUG-3523: every give-up counts once in pad_materialize_giveup_total, by the
+// last failure's kind, beside its one WARN line; a reset budget that gives up
+// again counts again, and the passes refused while exhausted do not.
+func TestMaterializeGiveUpCounter(t *testing.T) {
+	clock := time.Now()
+	fake := &fakeMaterializer{fn: func(materialize.Job) (string, error) {
+		return "", fmt.Errorf("%w: exit status 2", materialize.ErrChildDied)
+	}}
+	f := newRecoveryFixture(t, fake, time.Minute, materializeRecoveryConfig{
+		maxFailures: 3, backoffBase: time.Minute,
+		now:    func() time.Time { return clock },
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	m := metrics.New()
+	f.srv.SetMetrics(m)
+	it := f.item(t, "Stuck", "stale")
+	f.appendRows(t, it.ID, contentFrame(1))
+	drive := func(passes int) {
+		for i := 0; i < passes; i++ {
+			f.r.process(it.ID)
+			clock = clock.Add(time.Hour)
+		}
+	}
+	count := func() float64 {
+		var out dto.Metric
+		if err := m.MaterializeGiveUpsTotal.WithLabelValues("worker_died").Write(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out.GetCounter().GetValue()
+	}
+
+	drive(2)
+	if got := count(); got != 0 {
+		t.Fatalf("give-ups before the budget is used = %v, want 0", got)
+	}
+	drive(1 + 5) // the third failure gives up; five refused passes after it
+	if got := count(); got != 1 {
+		t.Fatalf("give-ups after one exhaustion = %v, want 1", got)
+	}
+	f.appendRows(t, it.ID, contentFrame(2)) // the op-log grew: a new budget
+	drive(3 + 5)
+	if got := count(); got != 2 {
+		t.Fatalf("give-ups after a second exhaustion = %v, want 2", got)
 	}
 }

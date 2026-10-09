@@ -643,6 +643,12 @@ func (r *materializeRecovery) claimExhaustionLogLocked(b *materializeBudget) boo
 // an operator should be able to find with a grep and no database column; it
 // cannot become noise, since it is written once per exhaustion.
 func (r *materializeRecovery) logExhaustion(level slog.Level, itemID string, failures int, kind, lastErr string) {
+	// Every give-up passes through here exactly once per budget
+	// (claimExhaustionLogLocked), so it is where the alerting counter counts
+	// (BUG-3523).
+	if r.s != nil && r.s.metrics != nil {
+		r.s.metrics.MaterializeGiveUpsTotal.WithLabelValues(kind).Inc()
+	}
 	r.cfg.logger.Log(r.ctx, level, "op-log recovery: item exhausted its failure budget; not retried until its op-log changes",
 		"item_id", itemID, "failures", failures, "last_error_kind", kind, "last_error", lastErr)
 }

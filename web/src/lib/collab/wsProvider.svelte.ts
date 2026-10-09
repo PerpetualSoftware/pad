@@ -70,6 +70,13 @@ const OFFLINE_THRESHOLD = 3;
 const SYNC_SAFETY_NET_MS = 10_000;
 
 /**
+ * BUG-3523: how long the tab's local sends must be quiet before it asks the
+ * server, with one barrier, whether everything it sent has been stored. One
+ * barrier per burst, not per keystroke.
+ */
+export const BARRIER_IDLE_MS = 2_000;
+
+/**
  * Handler invoked when the server delivers an `applier_request`
  * (designated-applier protocol from TASK-1257). Receives the markdown
  * the CLI / MCP / API caller is trying to apply; should call
@@ -367,6 +374,28 @@ export class CollabProvider {
 	 * rebuild rather than a stale-then-divergent session.
 	 */
 	private preAnchorUpdates: Uint8Array[] = [];
+	// BUG-3523: whether a LOCAL update went out on the current socket (a live
+	// edit, the pre-anchor flush, or the catch-up itself), and whether a socket
+	// that has since closed carried one. A frame sent on a socket that then
+	// died may never have reached the server, and nothing tells this tab which
+	// of its frames the server stored, so such a close OWES the next connection
+	// a full-state catch-up. A connection after a socket that sent nothing of
+	// ours owes none, unless an edit was made while no socket was open
+	// (`unsentLocalEdits`). That is what stops every reconnect from appending
+	// the whole document to the op-log.
+	private localSentOnSocket = false;
+	private catchUpOwed = false;
+	// The barrier that clears `localSentOnSocket` (BUG-3523): once the local
+	// sends go quiet, one `barrier` control frame goes out; the server answers
+	// it after every frame sent before it has been persisted, and an OK ack
+	// covering every local send so far means the socket carries nothing of
+	// ours the op-log could be missing. A server that never answers (one older
+	// than the barrier) leaves the tab owing the catch-up, which is the safe
+	// default.
+	private localSendSeq = 0;
+	private barrierN = 0;
+	private barrierPending: { n: number; covers: number } | null = null;
+	private barrierTimer: ReturnType<typeof setTimeout> | undefined;
 	private static readonly MAX_PRE_ANCHOR_UPDATES = 1000;
 
 	/**
@@ -515,6 +544,7 @@ export class CollabProvider {
 			// TASK-2199: a closed socket drops this frame (send() queues
 			// nothing); the reconnect's catch-up frame carries it instead.
 			if (!this.socketOpen()) this.unsentLocalEdits = true;
+			else this.markLocalSent();
 			this.send(encoding.toUint8Array(enc));
 		};
 
@@ -677,6 +707,13 @@ export class CollabProvider {
 	 * teardown path doesn't drift out of sync.
 	 */
 	private runDisconnectCleanup(opts: { demoteState: boolean }): void {
+		// BUG-3523: a socket that carried a local update owes the next one a
+		// catch-up, whatever the reason it closed.
+		if (this.localSentOnSocket) this.catchUpOwed = true;
+		this.localSentOnSocket = false;
+		clearTimeout(this.barrierTimer);
+		this.barrierTimer = undefined;
+		this.barrierPending = null;
 		this.connected = false;
 		clearTimeout(this.syncGraceTimer);
 		this.syncGraceTimer = undefined;
@@ -705,6 +742,8 @@ export class CollabProvider {
 		}
 		clearTimeout(this.syncGraceTimer);
 		this.syncGraceTimer = undefined;
+		clearTimeout(this.barrierTimer);
+		this.barrierTimer = undefined;
 
 		// Best-effort presence cleanup before tearing the socket down.
 		// If we're already disconnected the awareness send is a no-op.
@@ -817,13 +856,14 @@ export class CollabProvider {
 		// MUST go out via this catch-up path; gating on
 		// `lastOpLogID > 0` instead would leave them stranded.
 		// Per Codex round 17 [P2] of TASK-1319.
-		if (this.cursorAnchored) {
-			const enc3 = encoding.createEncoder();
-			encoding.writeVarUint(enc3, MESSAGE_SYNC);
-			syncProtocol.writeUpdate(enc3, Y.encodeStateAsUpdate(this.ydoc));
-			// TASK-2199: the whole doc, so every local edit is in it.
-			if (this.socketOpen()) this.unsentLocalEdits = false;
-			this.send(encoding.toUint8Array(enc3));
+		//
+		// **And only when something of ours can be missing** (BUG-3523): an
+		// edit made while no socket was open, or a local update sent on a
+		// socket that then closed. Sending the whole document on every
+		// reconnect appended a full copy to the op-log each time (a laptop
+		// wake, a network blip), which the materializer then had to replay.
+		if (this.cursorAnchored && (this.unsentLocalEdits || this.catchUpOwed)) {
+			this.sendCatchUp();
 		}
 
 		// Broadcast our local awareness state (if any) so peers see
@@ -978,6 +1018,8 @@ export class CollabProvider {
 			expires_at_millis?: number;
 			op_log_id?: number;
 			seed?: boolean;
+			n?: number;
+			ok?: boolean;
 		};
 		try {
 			msg = JSON.parse(raw);
@@ -987,6 +1029,27 @@ export class CollabProvider {
 		}
 
 		switch (msg.type) {
+			case 'barrier_ack': {
+				// BUG-3523. Only the current socket's latest barrier counts.
+				if (sourceWs !== this.ws) return;
+				const pending = this.barrierPending;
+				if (!pending || msg.n !== pending.n) return;
+				this.barrierPending = null;
+				if (msg.ok !== true) {
+					// An op-log append failed on this socket, so something this
+					// tab sent may be missing from the op-log. Repair it now,
+					// while the tab is alive: the catch-up carries the whole
+					// document and gets a barrier of its own.
+					console.warn(
+						`collab: the server reported a failed op-log append for item ${this.itemID}; resending the document`,
+					);
+					this.sendCatchUp();
+					return;
+				}
+				// A local send after this barrier has its own barrier coming.
+				if (this.localSendSeq === pending.covers) this.localSentOnSocket = false;
+				return;
+			}
 			case 'op_log_cursor': {
 				// TASK-1319: server announces the highest persisted
 				// op-log id we should now consider applied. Persist
@@ -1060,7 +1123,10 @@ export class CollabProvider {
 					const buffered = this.preAnchorUpdates;
 					this.preAnchorUpdates = [];
 					// TASK-2199: every buffered update goes out on this socket.
-					if (this.socketOpen()) this.unsentLocalEdits = false;
+					if (this.socketOpen()) {
+						this.unsentLocalEdits = false;
+						this.markLocalSent();
+					}
 					for (const upd of buffered) {
 						const enc = encoding.createEncoder();
 						encoding.writeVarUint(enc, MESSAGE_SYNC);
@@ -1282,6 +1348,45 @@ export class CollabProvider {
 
 	private socketOpen(): boolean {
 		return !!this.ws && this.ws.readyState === this.WebSocketImpl.OPEN;
+	}
+
+	/**
+	 * Send the whole document as one update (TASK-1319 / TASK-2199), so every
+	 * local edit is in it. On an open socket it settles what was owed; it is
+	 * ours on this socket, so if this socket dies too the next one owes it
+	 * again, until a barrier clears it (BUG-3523).
+	 */
+	private sendCatchUp(): void {
+		const enc = encoding.createEncoder();
+		encoding.writeVarUint(enc, MESSAGE_SYNC);
+		syncProtocol.writeUpdate(enc, Y.encodeStateAsUpdate(this.ydoc));
+		if (this.socketOpen()) {
+			this.unsentLocalEdits = false;
+			this.catchUpOwed = false;
+			this.markLocalSent();
+		}
+		this.send(encoding.toUint8Array(enc));
+	}
+
+	/** A local update is going out on the open socket (BUG-3523). */
+	private markLocalSent(): void {
+		this.localSentOnSocket = true;
+		this.localSendSeq++;
+		clearTimeout(this.barrierTimer);
+		this.barrierTimer = setTimeout(() => this.sendBarrier(), BARRIER_IDLE_MS);
+	}
+
+	private sendBarrier(): void {
+		this.barrierTimer = undefined;
+		const ws = this.ws;
+		if (!this.localSentOnSocket || !ws || ws.readyState !== this.WebSocketImpl.OPEN) return;
+		const n = ++this.barrierN;
+		this.barrierPending = { n, covers: this.localSendSeq };
+		try {
+			ws.send(JSON.stringify({ type: 'barrier', n }));
+		} catch {
+			// The socket is going away; its close owes the catch-up.
+		}
 	}
 
 	private send(data: Uint8Array): void {

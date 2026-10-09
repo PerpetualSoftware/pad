@@ -440,6 +440,14 @@ type Metrics struct {
 	// detail the log line carries.
 	ContentWritesSupersededTotal prometheus.Counter
 
+	// MaterializeGiveUpsTotal counts items op-log recovery gave up on: the
+	// item used its whole failure budget and is not retried until its op-log
+	// changes (BUG-3523). By the last failure's kind (deadline,
+	// schema_version, ...). Each one leaves items.content stale for the CLI,
+	// MCP, search and exports until a tab next holds the item open, so it is
+	// what an operator alerts on.
+	MaterializeGiveUpsTotal *prometheus.CounterVec
+
 	// DBDeadlockRetriesTotal counts store transactions run again after a
 	// Postgres deadlock (40P01), by site (TASK-3399). A site that climbs is a
 	// pair of writers whose lock order needs fixing, not just retrying.
@@ -581,6 +589,11 @@ func New() *Metrics {
 		Name: "pad_app_webhook_deliveries_total",
 		Help: "App webhook deliveries by result (TASK-3408).",
 	}, []string{"result"})
+
+	materializeGiveUpsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_materialize_giveup_total",
+		Help: "Items op-log recovery gave up on after using its failure budget, by the last failure's kind (BUG-3523).",
+	}, []string{"kind"})
 
 	contentWritesSupersededTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_content_writes_superseded_total",
@@ -796,6 +809,7 @@ func New() *Metrics {
 		mcpPreAuthDeniedTotal,
 		mcpActiveSessions,
 		contentWritesSupersededTotal,
+		materializeGiveUpsTotal,
 		dbDeadlockRetriesTotal,
 		appWebhookDeliveriesTotal,
 		oauthFlowsTotal,
@@ -846,6 +860,7 @@ func New() *Metrics {
 		MCPPreAuthDeniedTotal:        mcpPreAuthDeniedTotal,
 		MCPActiveSessions:            mcpActiveSessions,
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
+		MaterializeGiveUpsTotal:      materializeGiveUpsTotal,
 		DBDeadlockRetriesTotal:       dbDeadlockRetriesTotal,
 		AppWebhookDeliveriesTotal:    appWebhookDeliveriesTotal,
 		OAuthFlowsTotal:              oauthFlowsTotal,

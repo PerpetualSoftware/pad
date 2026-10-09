@@ -75,9 +75,10 @@ func TestUpdateDefersToItsStep2Twin(t *testing.T) {
 	}
 }
 
-// Control: a step2 whose payload differs from every earlier row is content, and
-// the subtype rule must not swallow it.
-func TestStep2WithNewPayloadStaysContentBearing(t *testing.T) {
+// BUG-3523: a step2 is an answer to a peer's step1 and repeats content other
+// rows carry, so it is not counted even when no earlier row holds its payload.
+// Before BUG-3523 such a step2 read pending.
+func TestStep2WithNewPayloadIsNotContentBearing(t *testing.T) {
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -89,8 +90,57 @@ func TestStep2WithNewPayloadStaysContentBearing(t *testing.T) {
 			other := append([]byte(nil), probeStep2Answer...)
 			other[len(other)-1] ^= 0x01
 			appendFrame(t, s, item.ID, other)
+			if got := contentState(t, s, item.ID); got != "" {
+				t.Fatalf("a step2 answer must not count as pending content; got %q", got)
+			}
+		})
+	}
+}
+
+// Control for the rule above: the same payload as an UPDATE is content.
+func TestUpdateWithNewPayloadStaysContentBearing(t *testing.T) {
+	for _, b := range contentBackends() {
+		t.Run(b.name, func(t *testing.T) {
+			s := b.open(t)
+			_, _, item := seedStaleItem(t, s)
+			seed := appendFrame(t, s, item.ID, probeSeedUpdate)
+			if err := s.SetItemContentFlushedOpLogIDForTesting(item.ID, seed); err != nil {
+				t.Fatal(err)
+			}
+			other := append([]byte(nil), probeStep2Answer...)
+			other[len(other)-1] ^= 0x01
+			other[1] = 0x02 // update, not step2
+			appendFrame(t, s, item.ID, other)
 			if got := contentState(t, s, item.ID); got != models.ContentOutcomeAppliedPendingFlush {
-				t.Fatalf("a step2 with a payload no earlier row carries must read pending; got %q", got)
+				t.Fatalf("an update with a payload no earlier row carries must read pending; got %q", got)
+			}
+		})
+	}
+}
+
+// The step2 rule is applied at append only. A legacy row the backfill
+// classifies keeps the pre-BUG-3523 rule: a step2 with no twin is content.
+func TestBackfillDoesNotApplyTheStep2Rule(t *testing.T) {
+	for _, b := range contentBackends() {
+		t.Run(b.name, func(t *testing.T) {
+			s := b.open(t)
+			_, _, item := seedStaleItem(t, s)
+			seed := appendFrame(t, s, item.ID, probeSeedUpdate)
+			if err := s.SetItemContentFlushedOpLogIDForTesting(item.ID, seed); err != nil {
+				t.Fatal(err)
+			}
+			other := append([]byte(nil), probeStep2Answer...)
+			other[len(other)-1] ^= 0x01
+			id := appendFrame(t, s, item.ID, other)
+			// Make it a legacy row: unclassified, bearing by the column default.
+			if _, err := s.DB().Exec(rebind(b.name, `UPDATE item_yjs_updates SET content_hash = NULL, content_bearing = `+trueLit(b.name)+` WHERE id = ?`), id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.BackfillYjsContentBearing(); err != nil {
+				t.Fatal(err)
+			}
+			if got := contentState(t, s, item.ID); got != models.ContentOutcomeAppliedPendingFlush {
+				t.Fatalf("the backfill must keep a legacy step2 with no twin as content; got %q", got)
 			}
 		})
 	}
@@ -189,4 +239,31 @@ func trueLit(backend string) string {
 		return "TRUE"
 	}
 	return "1"
+}
+
+// The relay's append path (AppendSyncFrame) applies the same rule: the step2 is
+// stored, so joining tabs still replay it, but not counted.
+func TestRelayAppendStoresAStep2AsNonContent(t *testing.T) {
+	for _, b := range contentBackends() {
+		t.Run(b.name, func(t *testing.T) {
+			s := b.open(t)
+			_, _, item := seedStaleItem(t, s)
+			seed := appendFrame(t, s, item.ID, probeSeedUpdate)
+			if err := s.SetItemContentFlushedOpLogIDForTesting(item.ID, seed); err != nil {
+				t.Fatal(err)
+			}
+			other := append([]byte(nil), probeStep2Answer...)
+			other[len(other)-1] ^= 0x01
+			got, err := s.AppendSyncFrame(item.ID, other, "1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Persisted {
+				t.Fatal("the step2 must be stored, so a joining tab replays it")
+			}
+			if cs := contentState(t, s, item.ID); cs != "" {
+				t.Fatalf("a relayed step2 answer must not count as pending content; got %q", cs)
+			}
+		})
+	}
 }

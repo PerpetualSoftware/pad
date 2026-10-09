@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { E2E_DATA_DIR } from './e2e/lib/data-dir';
 
 // Anchor all test paths to the config file's directory so runs are
 // invariant under the caller's cwd (Playwright's default resolves
@@ -26,7 +27,7 @@ const BASE_URL = `http://${E2E_HOST}:${E2E_PORT}`;
 
 // Build a private data dir for this run so the test instance never
 // touches the developer's real ~/.pad or another CI run's artifacts.
-const DATA_DIR = process.env.PAD_E2E_DATA_DIR ?? resolve(HERE, '..', '.pad-e2e');
+const DATA_DIR = E2E_DATA_DIR;
 
 // Pad binary relative to the repo root. `make build` / `make build-go`
 // writes ./pad in the repo root; CI builds it explicitly before the
