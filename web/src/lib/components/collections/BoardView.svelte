@@ -562,6 +562,13 @@
 		const data = propColumnData;
 		const structure = laneStructure;
 		if ((!isDragging && !dropCooldown) || structure !== syncedStructure) {
+			// A different grouping is a different set of lanes: a lane value
+			// that happens to repeat must not inherit another grouping's
+			// expanded or grown window (TASK-2230, codex r1).
+			if (structure !== syncedStructure) {
+				expandedLanes = {};
+				grownWindows = {};
+			}
 			syncedStructure = structure;
 			columnData = data;
 			showUncategorized = (data[laneKey(UNCATEGORIZED)]?.length ?? 0) > 0;

@@ -104,4 +104,18 @@ describe('a board lane mounts a window (TASK-2230)', () => {
 		await tick();
 		expect(cardsIn(doneLane(container))).toBe(60);
 	});
+
+	it('a regroup does not carry an expanded lane over to the new lanes (codex r1)', async () => {
+		const { container, getByText, rerender } = renderBoard();
+		await tick();
+		await fireEvent.click(getByText('Show all 60 (10 more)'));
+		expect(cardsIn(doneLane(container))).toBe(60);
+		// Regroup by another field, then back: the structure changed twice, and
+		// the Done lane starts capped again.
+		await rerender({ groupField: 'priority' });
+		await tick();
+		await rerender({ groupField: 'status' });
+		await tick();
+		expect(cardsIn(doneLane(container))).toBe(50);
+	});
 });
