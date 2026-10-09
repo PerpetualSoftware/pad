@@ -148,10 +148,11 @@ func TestCompressIsWiredIntoTheServer(t *testing.T) {
 }
 
 // A write's response is never compressed: every secret the API mints comes
-// back from one (codex r1).
+// back from one (codex r1). Nor a HEAD's: its Content-Length is the answer
+// (codex r3).
 func TestCompressLeavesWriteResponsesAlone(t *testing.T) {
 	h := CompressResponses(jsonHandler())
-	for _, m := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+	for _, m := range []string{"POST", "PUT", "PATCH", "DELETE", "HEAD"} {
 		req := httptest.NewRequest(m, "/api/v1/workspaces/w/members/invite", nil)
 		req.Header.Set("Accept-Encoding", "gzip")
 		rec := httptest.NewRecorder()
