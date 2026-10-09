@@ -836,6 +836,12 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 		query += " AND a.created_at >= ?"
 		args = append(args, params.Since.UTC().Format(time.RFC3339))
 	}
+	if params.CollectionID != "" {
+		// The item's CURRENT collection, which is also the one the feed's
+		// enrichment shows the row under (TASK-2219).
+		query += " AND a.document_id IN (SELECT id FROM items WHERE collection_id = ?)"
+		args = append(args, params.CollectionID)
+	}
 
 	query += activityKeysetClause(params.Before, params.BeforeID, &args)
 	query += " ORDER BY a.created_at DESC, a.id DESC"

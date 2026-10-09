@@ -130,9 +130,14 @@ type ActivityListParams struct {
 	// after this instant (a.created_at >= Since). Applied in the SQL query
 	// so LIMIT counts post-filter rows. Used by `pad project activity
 	// --since` and the pad_project.activity MCP action.
-	Since  time.Time
-	Limit  int
-	Offset int
+	Since time.Time
+	// CollectionID, when set, restricts results to activity on items that
+	// are in this collection now (TASK-2219), in the SQL query so LIMIT and
+	// the keyset cursor count post-filter rows. Workspace-level rows (no
+	// item) are excluded under it. Backs the web activity page's filter.
+	CollectionID string
+	Limit        int
+	Offset       int
 	// Before and BeforeID are the keyset cursor (BUG-2781): return rows
 	// strictly after (Before, BeforeID) in the feed's (created_at, id)
 	// DESCENDING order. The caller takes both from the last row it holds.
