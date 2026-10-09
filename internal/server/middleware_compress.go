@@ -55,6 +55,9 @@ func compressSkips(r *http.Request) bool {
 	// byte reaches the wire, so the client gets EOF instead of a download (CI
 	// on #1934, TestTask3401c_AStalledClientDoesNotOutliveTheDeadline). The
 	// list at `/attachments` has no trailing segment and still compresses.
+	// THE RULE, for the next route the census classifies: any GET whose body
+	// is streamed under a write deadline must skip, because the compressor's
+	// buffering spends the deadline before the headers go out.
 	case strings.Contains(p, "/attachments/"):
 		return true
 	// Reads under the credential routes as well, for the same reason: they
