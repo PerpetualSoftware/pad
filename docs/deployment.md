@@ -1387,7 +1387,7 @@ refused, counted against its 3 attempts, and not logged per item.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PAD_MATERIALIZE` | `on` | `off` (or `0`, `false`, `no`) disables op-log recovery entirely: no worker process is started and no trigger runs. Any other value leaves it on; an unrecognised one is logged. |
-| `PAD_MATERIALIZE_TIMEOUT` | `2s` | Per-job time limit, in Go duration syntax (`2s`, `1500ms`). Clamped to 250ms–60s. |
+| `PAD_MATERIALIZE_TIMEOUT` | `2s` | Base per-job time limit, in Go duration syntax (`2s`, `1500ms`). Clamped to 250ms–60s. Each job also gets 20ms per KiB of the item's op-log, up to 60s, because replaying a large document costs more (an 86 KB plan's 470 KiB op-log took 1.4–1.8s). |
 | `PAD_MATERIALIZE_IDLE_TIMEOUT` | `5m` | How long the worker may sit with no job before it is stopped (it holds about 200 MB resident while it runs), in Go duration syntax. `0` means never stop it. Clamped to 30s–24h. |
 | `PAD_MATERIALIZE_MEM_LIMIT` | `2GiB` | How much memory one job may add to the loaded worker (see below): a whole number of bytes, or a whole number followed by `KiB`, `MiB` or `GiB` with no space (`2048MiB`, `2GiB`, `2147483648`). Decimal units such as `GB` are refused. Clamped to 256MiB–16GiB. |
 

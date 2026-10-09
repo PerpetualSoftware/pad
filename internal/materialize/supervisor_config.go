@@ -13,8 +13,10 @@ import (
 // Environment knobs for the materializer worker (TASK-2198). Documented in
 // docs/deployment.md, "Op-log materializer worker".
 const (
-	// EnvTimeout is the per-job hard deadline, in Go duration syntax
-	// ("2s", "1500ms"). Past it the worker process is KILLED.
+	// EnvTimeout is the BASE of the per-job hard deadline, in Go duration
+	// syntax ("2s", "1500ms"); a job also gets PerKiBTimeout per KiB of its
+	// op-log rows, up to MaxTimeout (BUG-3521). Past it the worker process is
+	// KILLED.
 	EnvTimeout = "PAD_MATERIALIZE_TIMEOUT"
 	// EnvMemLimit is how much memory one job may add to the loaded worker
 	// (the cap is baseline + limit; what "memory" is differs per OS, see
@@ -51,6 +53,38 @@ func Enabled(getenv func(string) string, logger *slog.Logger) bool {
 	logger.Warn("materialize: unrecognised "+EnvSwitch+" value; op-log recovery stays ON (set it to off to disable)",
 		"value", getenv(EnvSwitch))
 	return true
+}
+
+// PerKiBTimeout is what each KiB of a job's op-log rows adds to its hard
+// deadline (BUG-3521). The receipt: the real op-log of an 86 KB plan body
+// after three rounds of live edits (278 content-bearing rows, 470 KiB),
+// materialized in-process with the worker's engine, 7 runs each: median
+// 1.36 s on an idle 8-core box, 1.77 s pinned to one core at GOMAXPROCS=1,
+// about 3.8 ms per KiB at the slow end. The flat 2 s deadline (1.8 s soft)
+// left that document on the edge before IPC or load, and anything larger
+// failed every attempt. 20 ms/KiB is ~5x the single-core rate, so the same
+// document gets ~11 s. What it does NOT cover: cost that grows with the
+// document's structure rather than its op-log bytes (deep nesting; see the
+// adversarial cases in measure_linux_test.go), which MaxTimeout and the
+// memory cap still bound.
+const PerKiBTimeout = 20 * time.Millisecond
+
+// jobTimeout is one job's hard deadline: the configured base plus
+// PerKiBTimeout for each KiB of its rows, never below the base and never
+// above MaxTimeout.
+func jobTimeout(base time.Duration, job Job) time.Duration {
+	n := 0
+	for _, r := range job.Rows {
+		n += len(r)
+	}
+	d := base + time.Duration(n/1024)*PerKiBTimeout
+	if d > MaxTimeout {
+		d = MaxTimeout
+	}
+	if d < base {
+		d = base
+	}
+	return d
 }
 
 const (

@@ -482,6 +482,48 @@ func TestSupervisorSoftDeadlineKeepsChild(t *testing.T) {
 	}
 }
 
+// A job's deadline scales with its op-log (BUG-3521): the base for a small
+// job, base + PerKiBTimeout per KiB for a large one, MaxTimeout at most. Read
+// through the soft deadline the worker is sent (90% of the hard one).
+func TestSupervisorDeadlineScalesWithTheJob(t *testing.T) {
+	h := newHarness(t, "script", func(c *SupervisorConfig) { c.Timeout = 2 * time.Second })
+	withRows := func(kib int) Job {
+		j := script("timeout")
+		j.Rows = [][]byte{make([]byte, kib<<10)}
+		return j
+	}
+	for _, tc := range []struct {
+		name string
+		job  Job
+		hard time.Duration
+	}{
+		{"no rows keeps the base", script("timeout"), 2 * time.Second},
+		{"under a KiB keeps the base", withRows(0), 2 * time.Second},
+		// The measured document: 470 KiB of op-log.
+		{"470 KiB adds 9.4s", withRows(470), 2*time.Second + 470*PerKiBTimeout},
+		{"10 MiB is clamped to MaxTimeout", withRows(10 << 10), MaxTimeout},
+	} {
+		md, err := h.s.Materialize(context.Background(), tc.job)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if want := strconv.FormatInt(softTimeout(tc.hard).Milliseconds(), 10); md != want {
+			t.Errorf("%s: timeout_ms %s, want %s (hard %s)", tc.name, md, want, tc.hard)
+		}
+	}
+}
+
+func TestJobTimeoutNeverBelowItsBase(t *testing.T) {
+	// A base above what the rows would add stays the base, and a base at the
+	// ceiling stays the ceiling.
+	if got := jobTimeout(MaxTimeout, Job{Rows: [][]byte{make([]byte, 4<<10)}}); got != MaxTimeout {
+		t.Errorf("base at the ceiling: %s", got)
+	}
+	if got := jobTimeout(5*time.Second, Job{}); got != 5*time.Second {
+		t.Errorf("no rows: %s", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 4. crash, and the respawn backoff
 

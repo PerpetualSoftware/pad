@@ -88,9 +88,11 @@ const WorkerCommand = "__materialize-worker"
 
 // SupervisorConfig configures a Supervisor. The zero value is usable.
 type SupervisorConfig struct {
-	// Timeout is the per-job hard deadline (0: DefaultTimeout), clamped to
-	// [MinTimeout, MaxTimeout]. The child is asked to stop itself a little
-	// earlier (softTimeout).
+	// Timeout is the BASE of the per-job hard deadline (0: DefaultTimeout),
+	// clamped to [MinTimeout, MaxTimeout]. Each job gets this plus
+	// PerKiBTimeout per KiB of its rows, up to MaxTimeout (jobTimeout,
+	// BUG-3521). The child is asked to stop itself a little earlier
+	// (softTimeout).
 	Timeout time.Duration
 	// MemLimit is the worker's memory cap in bytes (0: DefaultMemLimit),
 	// clamped to [MinMemLimit, MaxMemLimit]. What it measures is per OS; see
@@ -754,7 +756,9 @@ func (s *Supervisor) startFailed(c *child, err error) error {
 
 // run sends one job and waits for its answer.
 func (s *Supervisor) run(ctx context.Context, c *child, job Job) (string, error) {
-	hard := s.timeout
+	// Scaled to the job's op-log (BUG-3521): a large document's replay costs
+	// more than the configured base allows.
+	hard := jobTimeout(s.timeout, job)
 	soft := softTimeout(hard)
 	// When ctx ends first, have the child stop itself first too, so a job
 	// its interrupt can reach does not cost the worker.
