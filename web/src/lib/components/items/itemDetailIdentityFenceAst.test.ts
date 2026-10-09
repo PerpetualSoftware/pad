@@ -238,8 +238,8 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'connection state of this instance\'s own provider', reviewed: 'b0f9f4cc5f23',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await', reviewed: '5d207af0dc59' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it)', reviewed: '4cbc97daa0e7' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await. Re-reviewed for BUG-3526: the capture reads provider.editsMayBeMissing instead of provider.unsentLocalEdits, still synchronous and before the fetch; the continuation and its fences are unchanged', reviewed: 'ed881530cc3a' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it), and for BUG-3526 (only the input of that capture)', reviewed: '815a49a9adb8' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,

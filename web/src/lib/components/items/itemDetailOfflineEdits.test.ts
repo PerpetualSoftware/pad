@@ -30,7 +30,8 @@ describe('TASK-2199: ItemDetail protects edits that have not reached the server'
 		const handler = between('onForceRefresh: () => {', 'void api.items');
 		const capture = handler.indexOf('offlineRecoveryOnForceRefresh(');
 		expect(capture, 'onForceRefresh does not capture the discarded edits').toBeGreaterThan(-1);
-		expect(handler).toMatch(/unsentLocalEdits:\s*provider\.unsentLocalEdits/);
+		// BUG-3526: an unconfirmed send counts too, not only an offline edit.
+		expect(handler).toMatch(/unsentLocalEdits:\s*provider\.editsMayBeMissing/);
 		expect(handler).toMatch(/liveMarkdown:\s*liveEditorMarkdown\(\)/);
 		expect(capture, 'the capture runs after the teardown flags').toBeLessThan(handler.indexOf('skipFlushOnNextCleanup = true'));
 		expect(handler).toMatch(/if \(recovered\) offlineRecovery = recovered/);
