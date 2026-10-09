@@ -568,6 +568,7 @@
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
+	import { atCaret, type CaretRect } from './caretPopup';
 	import ImportFromUrlModal, { type InsertContext } from './ImportFromUrlModal.svelte';
 	import type { ImportURLResponse } from '$lib/api/client';
 	import {
@@ -731,10 +732,14 @@
 	// Slash command state
 	let slashOpen = $state(false);
 	let slashQuery = $state('');
-	let slashX = $state(0);
-	let slashY = $state(0);
+	// Where the menu opens: the caret's rect, placed by `atCaret` so the
+	// menu flips above the caret and stays inside the viewport (TASK-2218).
+	let slashCaret = $state<CaretRect>({ left: 0, top: 0, bottom: 0 });
 	let slashIdx = $state(0);
 	let slashStartPos = -1;
+	// True when the toolbar's + opened the menu: no `/` was typed, so the
+	// query is everything typed after `slashStartPos` (TASK-2218).
+	let slashFromToolbar = false;
 
 	// "Insert from URL" modal — opened by the importUrl slash command
 	// (and any future toolbar entry). The modal owns its own working
@@ -745,11 +750,9 @@
 	// [[ link picker state
 	let linkOpen = $state(false);
 	let linkQuery = $state('');
-	let linkX = $state(0);
-	let linkY = $state(0);
+	let linkCaret = $state<CaretRect>({ left: 0, top: 0, bottom: 0 });
 	let linkIdx = $state(0);
 	let linkStartPos = -1;
-	let bracketCount = $state(0); // track consecutive [ chars
 
 	function getFilteredSlash() {
 		if (!slashQuery) return SLASH_ITEMS;
@@ -805,6 +808,14 @@
 				// against the editor reference we hold in this scope.
 				importUrlModalOpen = true;
 				break;
+			case 'linkItem':
+				// TASK-2218 (C41): the [[ picker had no discovery path. The
+				// slash text is gone; type the [[ the picker reads its query
+				// after, and open it at the caret.
+				if (!editor) break;
+				c.insertContent('[[').run();
+				openLinkPicker(editor.state.selection.from - 2);
+				break;
 			case 'attachFile':
 				// The slash text was already deleted above; open the
 				// native file picker. onAttachInputChange runs
@@ -820,7 +831,33 @@
 		slashOpen = false;
 		slashQuery = '';
 		slashStartPos = -1;
+		slashFromToolbar = false;
 		slashIdx = 0;
+	}
+
+	function caretRect(pos: number): CaretRect | null {
+		if (!editor) return null;
+		try {
+			const c = editor.view.coordsAtPos(pos);
+			return { left: c.left, top: c.top, bottom: c.bottom };
+		} catch {
+			return null;
+		}
+	}
+
+	// Open the [[ picker for a `[[` that starts at `start` (TASK-2218).
+	// Deferred a tick so the caret rect is read after the keystroke lands.
+	function openLinkPicker(start: number) {
+		linkStartPos = start;
+		linkQuery = '';
+		linkIdx = 0;
+		setTimeout(() => {
+			if (!editor) return;
+			const rect = caretRect(editor.state.selection.from);
+			if (!rect) return;
+			linkCaret = rect;
+			linkOpen = true;
+		}, 0);
 	}
 
 	function getFilteredLinks() {
@@ -890,7 +927,6 @@
 		linkQuery = '';
 		linkStartPos = -1;
 		linkIdx = 0;
-		bracketCount = 0;
 	}
 
 	onMount(() => {
@@ -1145,8 +1181,9 @@
 					if (curPos <= slashStartPos) { closeSlash(); }
 					else {
 						const text = e.state.doc.textBetween(slashStartPos, curPos, '');
-						if (text.startsWith('/')) {
-							slashQuery = text.slice(1);
+						// A typed `/` starts the query; the toolbar's + types none.
+						if (slashFromToolbar || text.startsWith('/')) {
+							slashQuery = slashFromToolbar ? text : text.slice(1);
 							slashIdx = 0;
 							// Auto-close if query has content but nothing matches
 							if (slashQuery && getFilteredSlash().length === 0) { closeSlash(); }
@@ -1171,28 +1208,22 @@
 			editorProps: {
 				handleKeyDown: (_view, event) => {
 					// --- [[ link picker ---
+					// Opens on a `[` typed right after a `[` (TASK-2218, C41). It
+					// used to need both presses inside 300ms, which deliberate
+					// typing missed; the text before the caret is the only test.
 					if (event.key === '[' && !linkOpen && !slashOpen) {
-						bracketCount++;
-						if (bracketCount === 2) {
-							// Second [ detected — open link picker
-							// linkStartPos points to the first [
-							linkStartPos = _view.state.selection.from - 1;
-							linkQuery = '';
-							linkIdx = 0;
-							setTimeout(() => {
-								const coords = _view.coordsAtPos(_view.state.selection.from);
-								linkX = coords.left;
-								linkY = coords.bottom + 4;
-								linkOpen = true;
-							}, 0);
-							bracketCount = 0;
-							return false;
+						const { from, empty } = _view.state.selection;
+						const at = _view.state.selection.$from;
+						// Not in code: `[[1,2]]` in a fence or inline code is
+						// ordinary text, never a link (lead review on TASK-2218).
+						const inCode =
+							!!at.parent.type.spec.code ||
+							at.marks().some((m) => !!m.type.spec.code || m.type.name === 'code');
+						if (!inCode && empty && from > 0 && _view.state.doc.textBetween(from - 1, from, '') === '[') {
+							openLinkPicker(from - 1);
 						}
-						// Reset after a short delay if second [ doesn't come
-						setTimeout(() => { if (bracketCount === 1) bracketCount = 0; }, 300);
 						return false;
 					}
-					if (event.key !== '[') bracketCount = 0;
 
 					if (linkOpen) {
 						const items = getFilteredLinks();
@@ -1208,10 +1239,11 @@
 						slashStartPos = _view.state.selection.from;
 						slashQuery = '';
 						slashIdx = 0;
+						slashFromToolbar = false;
 						setTimeout(() => {
-							const coords = _view.coordsAtPos(_view.state.selection.from);
-							slashX = coords.left;
-							slashY = coords.bottom + 4;
+							const rect = caretRect(_view.state.selection.from);
+							if (!rect) return;
+							slashCaret = rect;
 							slashOpen = true;
 						}, 0);
 						return false;
@@ -1436,14 +1468,19 @@
 		return null;
 	}
 
+	// The mobile toolbar's +: the same menu, at the caret (TASK-2218). It
+	// used to open at a fixed (16, 60), far from the caret, with no start
+	// position, so typing could not filter it. Nothing is typed into the doc;
+	// what the user types next is the query.
 	function openSlashFromToolbar() {
 		if (!editor) return;
 		editor.chain().focus().run();
-		slashStartPos = -1;
+		const from = editor.state.selection.from;
+		slashStartPos = from;
+		slashFromToolbar = true;
 		slashQuery = '';
 		slashIdx = 0;
-		slashX = 16;
-		slashY = 60;
+		slashCaret = caretRect(from) ?? { left: 16, top: 56, bottom: 56 };
 		slashOpen = true;
 	}
 
@@ -1584,7 +1621,7 @@
 {#if slashOpen && editable}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div role="none" style="position:fixed; inset:0; z-index:49;" onclick={closeSlash}></div>
-	<div class="slash-menu" style:left="{slashX}px" style:top="{slashY}px">
+	<div class="slash-menu" use:atCaret={slashCaret}>
 		{#each getFilteredSlash() as item, i}
 			<button
 				class="slash-item"
@@ -1602,7 +1639,7 @@
 {#if linkOpen && editable}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div role="none" style="position:fixed; inset:0; z-index:49;" onclick={closeLink}></div>
-	<div class="slash-menu" style:left="{linkX}px" style:top="{linkY}px">
+	<div class="slash-menu" use:atCaret={linkCaret}>
 		{#each getFilteredLinks() as doc, i (doc.id)}
 			<button
 				class="slash-item"

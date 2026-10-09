@@ -35,6 +35,8 @@ export const BLOCK_TYPES: BlockType[] = [
 	{ id: 'horizontalRule', icon: '——', label: 'Divider', description: 'Horizontal rule', insertOnly: true, keywords: ['hr', 'rule', 'separator'] },
 	{ id: 'table', icon: '⊞', label: 'Table', description: '3×3 table', insertOnly: true, keywords: ['tbl', 'grid'] },
 	{ id: 'importUrl', icon: '🌐', label: 'Insert from URL', description: 'Fetch a page and convert to markdown', insertOnly: true, keywords: ['url', 'fetch', 'import', 'web', 'page', 'openapi'] },
+	// TASK-2218 (C41): the [[ picker's discovery path. Opens it at the caret.
+	{ id: 'linkItem', icon: '[[', label: 'Link to item', description: 'Link another item by title or ref', insertOnly: true, keywords: ['link', 'wiki', 'item', 'reference', 'ref', 'mention', '[['] },
 	{ id: 'attachFile', icon: '📎', label: 'Attach File', description: 'Upload an image or file', insertOnly: true, keywords: ['attach', 'upload', 'file', 'image', 'photo', 'attachment'] },
 ];
 
