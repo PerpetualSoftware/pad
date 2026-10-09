@@ -14,22 +14,25 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			submitNewItem: { reviewed: 'e49c281eb86e', why: `${PAGE_AND_ENTRY}; the finally clears newItemSaving only under the identity` },
-			handleLaneDrop: { reviewed: '9f12cfcf7f38', why: `${PAGE_AND_ENTRY}, including before the recovery reload` },
+			// Re-reviewed for TASK-2204: the failure toast sits after the identity
+			// check, beside the recovery reload it explains.
+			handleLaneDrop: { reviewed: '426d32233b63', why: `${PAGE_AND_ENTRY}, including before the recovery reload and its toast` },
 			handleDndFinalize: {
 				// Re-reviewed for BUG-3259: the lane renumber is planned around
 				// view-only cards (planLaneOrder), and its no-room toast and the
 				// empty-batch return both sit after the identity check that guards
 				// the optimistic commit. A refused batch reloads the board, after
 				// an identity check, as the role write's recovery does (codex r4).
-				reviewed: 'aabdad24a8ac',
+				// TASK-2204: both recovery reloads now toast, after the same checks.
+				reviewed: 'a259ba7d60ae',
 				why: `${PAGE_AND_ENTRY}; the identity check sits BEFORE the role write, because that write carries currentUserId; a lost-identity exit writes no shared interaction state`,
 			},
 			loadData: {
 				reviewed: 'beee4ab0237c',
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
-			saveRole: { reviewed: 'c27f82ace51a', why: `${PAGE_AND_ENTRY}, per branch` },
-			deleteRole: { reviewed: '6d78f8f48bd1', why: PAGE_AND_ENTRY },
+			saveRole: { reviewed: 'c45ab0a35156', why: `${PAGE_AND_ENTRY}, per branch; the failure toast (TASK-2204) after the check` },
+			deleteRole: { reviewed: '3f056278047f', why: `${PAGE_AND_ENTRY}; the failure toast (TASK-2204) after the check` },
 		},
 		nested: [],
 		markup: [],
@@ -46,6 +49,7 @@ identityGateSuite({
 			captureIdentity: '7f6903e09e84',
 			closeModal: 'e68053ba253f',
 			closeNewItem: 'e727373f20df',
+			failureText: 'f8bad1593e76', // TASK-2204: formats a message, touches no state
 			identityHeld: 'e4fd3989a707',
 			laneKey: '26c9b8e573fd',
 			pageIdentityHeld: 'd6d5caf46ddb',

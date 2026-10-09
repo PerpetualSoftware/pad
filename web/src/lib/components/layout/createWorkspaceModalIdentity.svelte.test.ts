@@ -305,6 +305,16 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		expect(toastShow).not.toHaveBeenCalled();
 	});
 
+	it('a FAILED create shows the server\'s message (TASK-2204, audit C93)', async () => {
+		api.workspaces.create.mockRejectedValue(new Error('A workspace with slug "other" already exists'));
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		const name = container.querySelector('#ws-create-name') as HTMLInputElement;
+		await fireEvent.input(name, { target: { value: 'Other' } });
+		btn(container, /Create Workspace/).click();
+		await settle();
+		expect(toastShow).toHaveBeenCalledWith('Failed to create workspace: A workspace with slug "other" already exists', 'error');
+	});
+
 	it('closes itself when the signed-in user changes, so no draft is inherited', async () => {
 		// codex round 7. The OPERATIONS were fenced; the DRAFT was not. A modal
 		// left open by one user kept their typed name, description, chosen

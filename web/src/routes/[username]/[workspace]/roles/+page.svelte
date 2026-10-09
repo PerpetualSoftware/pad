@@ -336,6 +336,8 @@
 				// whoever is signed in NOW from a failure the previous user's
 				// drag caused (BUG-3084).
 				if (!identityHeld(epochAtEntry)) return;
+				// TASK-2204 (audit C71): the reload undoes the move, so say why.
+				toastStore.show(failureText("Couldn't save the lane order", err), 'error');
 				await loadData();
 			}
 		}
@@ -489,6 +491,7 @@
 					console.error('Failed to update role:', err);
 					// See the lost-identity rule at the top of this handler.
 					if (!identityHeld(epochAtEntry)) return;
+					toastStore.show(failureText("Couldn't move the item", err), 'error');
 					await loadData();
 					// GATED, like every other continuation (codex round 5 [P2]).
 					// The check above happens BEFORE this await, so it says
@@ -549,6 +552,7 @@
 			// request only (BUG-3259 codex round 4; the role write's recovery
 			// above is the same shape).
 			if (!identityHeld(epochAtEntry)) return;
+			toastStore.show(failureText("Couldn't save the card order", err), 'error');
 			await loadData();
 		}
 	}
@@ -794,6 +798,8 @@
 		} catch (e) {
 			if (!identityHeld(epochAtEntry)) return;
 			console.error('Failed to save role:', e);
+			// The dialog stays open with what was typed, so it can be retried.
+			toastStore.show(failureText("Couldn't save the role", e), 'error');
 		}
 	}
 
@@ -825,7 +831,15 @@
 		} catch (e) {
 			if (!identityHeld(epochAtEntry)) return;
 			console.error('Failed to delete role:', e);
+			toastStore.show(failureText("Couldn't delete the role", e), 'error');
 		}
+	}
+
+	// TASK-2204 (audit C71): every write failure on the board is shown, with
+	// the server's own message when it sent one.
+	function failureText(what: string, err: unknown): string {
+		const detail = err instanceof Error && err.message ? err.message : '';
+		return detail ? `${what}: ${detail}` : what;
 	}
 
 	function collectionForItem(item: Item): Collection | undefined {

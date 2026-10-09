@@ -470,8 +470,17 @@
 		}
 	}
 
+	// TASK-2204 (audit C70): one write per convention, PACED, because N
+	// back-to-back writes is the documented way to trip the API limiter (10/s,
+	// shared with the page's own refreshes). Each failure reverts its own row
+	// and the toast reports the true count. A workspace switch mid-run stops it:
+	// the rows left belong to the page being left.
+	const BULK_WRITE_PACE_MS = 250;
+	let bulkBusy = $state(false);
+
 	async function bulkToggleGroup(group: { trigger: string; items: Item[] }, enable: boolean) {
-		if (!workspace) return;
+		if (!workspace || bulkBusy) return;
+		const ws = workspace;
 		const targetStatus = enable ? 'active' : 'disabled';
 		const toUpdate = group.items.filter(i => {
 			if (!workspaceStore.canEditItem(i)) return false;
@@ -479,19 +488,41 @@
 			return enable ? s !== 'active' : s === 'active';
 		});
 		if (toUpdate.length === 0) return;
-		for (const item of toUpdate) {
-			const fields = parseFields(item);
-			fields.status = targetStatus;
-			item.fields = JSON.stringify(fields);
-			try {
-				// BUG-3049: status-only patch, per row. Same reasoning as
-				// toggleStatus above — the local blob write is optimistic UI
-				// state, the wire write names only the key it owns.
-				await api.items.update(workspace, item.slug, { fields_patch: { status: targetStatus } });
-			} catch { /* individual failures won't block the rest */ }
+		bulkBusy = true;
+		let done = 0;
+		let failed = 0;
+		let stopped = false;
+		try {
+			for (const [i, item] of toUpdate.entries()) {
+				if (i > 0) await new Promise((r) => setTimeout(r, BULK_WRITE_PACE_MS));
+				if (workspace !== ws) { stopped = true; break; }
+				const oldFields = item.fields;
+				const fields = parseFields(item);
+				fields.status = targetStatus;
+				item.fields = JSON.stringify(fields);
+				conventions = [...conventions];
+				try {
+					// BUG-3049: status-only patch, per row. Same reasoning as
+					// toggleStatus above — the local blob write is optimistic UI
+					// state, the wire write names only the key it owns.
+					await api.items.update(ws, item.slug, { fields_patch: { status: targetStatus } });
+					done++;
+				} catch {
+					item.fields = oldFields;
+					conventions = [...conventions];
+					failed++;
+				}
+			}
+		} finally {
+			bulkBusy = false;
 		}
-		conventions = [...conventions];
-		toastStore.show(`${toUpdate.length} convention${toUpdate.length > 1 ? 's' : ''} ${enable ? 'enabled' : 'disabled'}`, 'success');
+		if (stopped) return;
+		const verb = enable ? 'enabled' : 'disabled';
+		if (failed === 0) {
+			toastStore.show(`${done} convention${done === 1 ? '' : 's'} ${verb}`, 'success');
+		} else {
+			toastStore.show(`${done} ${verb}, ${failed} failed. Try again for the rest.`, 'error');
+		}
 	}
 
 	function clearFilters() {
@@ -678,10 +709,10 @@
 							{#if !collapsed}
 								<div class="group-bulk">
 									{#if group.editableInactive > 0}
-										<button class="btn btn-tiny" title="Enable all in this group" onclick={() => bulkToggleGroup(group, true)}>Enable all</button>
+										<button class="btn btn-tiny" title="Enable all in this group" disabled={bulkBusy} onclick={() => bulkToggleGroup(group, true)}>Enable all</button>
 									{/if}
 									{#if group.editableActive > 0}
-										<button class="btn btn-tiny btn-muted" title="Disable all in this group" onclick={() => bulkToggleGroup(group, false)}>Disable all</button>
+										<button class="btn btn-tiny btn-muted" title="Disable all in this group" disabled={bulkBusy} onclick={() => bulkToggleGroup(group, false)}>Disable all</button>
 									{/if}
 								</div>
 							{/if}
