@@ -1557,26 +1557,26 @@
 	{@const listItemType = getActiveListItemType()}
 	{@const canIndent = canIndentListItem(listItemType)}
 	{@const canOutdent = canOutdentListItem(listItemType)}
-	<div class="mobile-toolbar" role="toolbar" tabindex="0" style:bottom="{toolbarBottom}px" onmousedown={(e) => e.preventDefault()}>
-		<button class="mt-btn mt-btn-add" onclick={openSlashFromToolbar} title="Insert block">+</button>
+	<div class="mobile-toolbar" role="toolbar" aria-label="Formatting" tabindex="0" style:bottom="{toolbarBottom}px" onmousedown={(e) => e.preventDefault()}>
+		<button class="mt-btn mt-btn-add" onclick={openSlashFromToolbar} title="Insert block" aria-label="Insert block">+</button>
 		<span class="mt-sep"></span>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bold')} onclick={() => editor?.chain().focus().toggleBold().run()}>B</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('italic')} onclick={() => editor?.chain().focus().toggleItalic().run()}><em>I</em></button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('strike')} onclick={() => editor?.chain().focus().toggleStrike().run()}><s>S</s></button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bold')} aria-pressed={_tick >= 0 && editor.isActive('bold')} aria-label="Bold" onclick={() => editor?.chain().focus().toggleBold().run()}>B</button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('italic')} aria-pressed={_tick >= 0 && editor.isActive('italic')} aria-label="Italic" onclick={() => editor?.chain().focus().toggleItalic().run()}><em>I</em></button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('strike')} aria-pressed={_tick >= 0 && editor.isActive('strike')} aria-label="Strikethrough" onclick={() => editor?.chain().focus().toggleStrike().run()}><s>S</s></button>
 		<span class="mt-sep"></span>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('heading', { level: 2 })} onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}>H2</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('heading', { level: 3 })} onclick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}>H3</button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('heading', { level: 2 })} aria-pressed={_tick >= 0 && editor.isActive('heading', { level: 2 })} aria-label="Heading 2" onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}>H2</button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('heading', { level: 3 })} aria-pressed={_tick >= 0 && editor.isActive('heading', { level: 3 })} aria-label="Heading 3" onclick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}>H3</button>
 		<span class="mt-sep"></span>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bulletList')} onclick={() => editor?.chain().focus().toggleBulletList().run()}>•</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('orderedList')} onclick={() => editor?.chain().focus().toggleOrderedList().run()}>1.</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('taskList')} onclick={() => editor?.chain().focus().toggleTaskList().run()}>☐</button>
-		<button class="mt-btn" disabled={!canOutdent} onclick={outdentCurrentListItem} title="Outdent list item">&lt;</button>
-		<button class="mt-btn" disabled={!canIndent} onclick={indentCurrentListItem} title="Indent list item">&gt;</button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bulletList')} aria-pressed={_tick >= 0 && editor.isActive('bulletList')} aria-label="Bulleted list" onclick={() => editor?.chain().focus().toggleBulletList().run()}>•</button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('orderedList')} aria-pressed={_tick >= 0 && editor.isActive('orderedList')} aria-label="Numbered list" onclick={() => editor?.chain().focus().toggleOrderedList().run()}>1.</button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('taskList')} aria-pressed={_tick >= 0 && editor.isActive('taskList')} aria-label="Task list" onclick={() => editor?.chain().focus().toggleTaskList().run()}>☐</button>
+		<button class="mt-btn" disabled={!canOutdent} onclick={outdentCurrentListItem} title="Outdent list item" aria-label="Outdent">&lt;</button>
+		<button class="mt-btn" disabled={!canIndent} onclick={indentCurrentListItem} title="Indent list item" aria-label="Indent">&gt;</button>
 		<span class="mt-sep"></span>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('codeBlock')} onclick={() => editor?.chain().focus().toggleCodeBlock().run()}>&lt;&gt;</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('blockquote')} onclick={() => editor?.chain().focus().toggleBlockquote().run()}>❝</button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('codeBlock')} aria-pressed={_tick >= 0 && editor.isActive('codeBlock')} aria-label="Code block" onclick={() => editor?.chain().focus().toggleCodeBlock().run()}>&lt;&gt;</button>
+		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('blockquote')} aria-pressed={_tick >= 0 && editor.isActive('blockquote')} aria-label="Quote" onclick={() => editor?.chain().focus().toggleBlockquote().run()}>❝</button>
 		<span class="mt-sep"></span>
-		<button class="mt-btn" onclick={triggerAttachPicker} title="Attach file">📎</button>
+		<button class="mt-btn" onclick={triggerAttachPicker} title="Attach file" aria-label="Attach file">📎</button>
 	</div>
 {/if}
 

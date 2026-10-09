@@ -257,20 +257,20 @@
 					onmousedown={(e) => e.stopPropagation()}
 				>{truncatedHref}</a>
 				<div class="link-actions">
-					<button class="link-btn" onclick={openUrl} title="Open link">
+					<button class="link-btn" onclick={openUrl} title="Open link" aria-label="Open link">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 							<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
 							<polyline points="15 3 21 3 21 9" />
 							<line x1="10" y1="14" x2="21" y2="3" />
 						</svg>
 					</button>
-					<button class="link-btn" onclick={startEdit} title="Edit link">
+					<button class="link-btn" onclick={startEdit} title="Edit link" aria-label="Edit link">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 							<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
 							<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
 						</svg>
 					</button>
-					<button class="link-btn link-btn-danger" onclick={removeLink} title="Remove link">
+					<button class="link-btn link-btn-danger" onclick={removeLink} title="Remove link" aria-label="Remove link">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 							<path d="M15 7h3a5 5 0 0 1 0 10h-3" />
 							<path d="M9 17H6a5 5 0 0 1 0-10h3" />
