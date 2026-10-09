@@ -345,10 +345,49 @@
 	// current list row's, which a live refresh may have replaced while editing.
 	let editBase: Pick<Item, 'content' | 'seq' | 'updated_at'> | null = null;
 
+	// TASK-2257 (C69): trigger, surface and enforcement were settable only at
+	// creation; changing on-commit to on-pr-create meant delete and recreate.
+	// The edit form carries them, and a change is sent as a plain fields_patch
+	// of the ORDINARY keys (what agents obey). The server keeps the reserved
+	// `convention` copy (what this page reads) in step in the same write.
+	let editTrigger = $state('');
+	let editSurface = $state('');
+	let editEnforcement = $state('');
+	let editMetaBase = $state({ trigger: '', surface: '', enforcement: '' });
+
 	function startEditing(item: Item) {
 		editingSlug = item.slug;
 		editContent = item.content ?? '';
 		editBase = { content: item.content, seq: item.seq, updated_at: item.updated_at };
+		const meta = getConvention(item);
+		editMetaBase = {
+			trigger: meta.trigger || 'always',
+			surface: getPrimarySurface(item),
+			enforcement: getEnforcement(item)
+		};
+		editTrigger = editMetaBase.trigger;
+		editSurface = editMetaBase.surface;
+		editEnforcement = editMetaBase.enforcement;
+	}
+
+	// The options a select offers: the schema's, plus the stored value when the
+	// schema no longer lists it, so opening the editor never changes a value.
+	function withCurrent(options: readonly string[], current: string): string[] {
+		return options.includes(current) || !current ? [...options] : [current, ...options];
+	}
+
+	function metadataPatch(): Record<string, unknown> | null {
+		const patch: Record<string, unknown> = {};
+		if (editTrigger !== editMetaBase.trigger) patch.trigger = editTrigger;
+		if (editSurface !== editMetaBase.surface) {
+			patch.scope = editSurface;
+			patch.surfaces = [editSurface];
+		}
+		if (editEnforcement !== editMetaBase.enforcement) {
+			patch.enforcement = editEnforcement;
+			patch.priority = editEnforcement;
+		}
+		return Object.keys(patch).length > 0 ? patch : null;
 	}
 
 	async function saveEditing(item: Item) {
@@ -358,11 +397,13 @@
 		// BUG-3050 U1: the body goes only when it CHANGED, and then with the
 		// token of the row the edit started from, so edits an open tab has not
 		// stored yet are refused (409 content_pending_flush) rather than replaced.
-		const write = contentWriteFor(editContent, editBase ?? item);
-		if (!('content' in write)) {
+		const contentWrite = contentWriteFor(editContent, editBase ?? item);
+		const metaPatch = metadataPatch();
+		if (!('content' in contentWrite) && !metaPatch) {
 			editingSlug = null;
 			return;
 		}
+		const write = metaPatch ? { ...contentWrite, fields_patch: metaPatch } : contentWrite;
 		saving = true;
 		try {
 			let updated: Item;
@@ -790,6 +831,33 @@
 										{#if expanded}
 											<div class="row-expanded">
 												{#if editingSlug === item.slug}
+													<div class="edit-meta">
+														<label class="form-field">
+															<span>Trigger</span>
+															<select bind:value={editTrigger}>
+																{#each withCurrent(createTriggers, editMetaBase.trigger) as t (t)}
+																	{@const meta = triggerMeta(t)}
+																	<option value={t}>{meta.icon} {meta.label}</option>
+																{/each}
+															</select>
+														</label>
+														<label class="form-field">
+															<span>Surface</span>
+															<select bind:value={editSurface}>
+																{#each withCurrent(createSurfaces, editMetaBase.surface) as sv (sv)}
+																	<option value={sv}>{sv}</option>
+																{/each}
+															</select>
+														</label>
+														<label class="form-field">
+															<span>Enforcement</span>
+															<select bind:value={editEnforcement}>
+																{#each withCurrent(ENFORCEMENT_LEVELS, editMetaBase.enforcement) as lv (lv)}
+																	<option value={lv}>{lv}</option>
+																{/each}
+															</select>
+														</label>
+													</div>
 													<textarea
 														class="edit-textarea"
 														bind:value={editContent}
@@ -839,6 +907,9 @@
 														{#if workspaceStore.canEditItem(item)}
 															<Button variant="secondary" size="sm" onclick={() => startEditing(item)}>Edit</Button>
 														{/if}
+														<!-- TASK-2257 (C69): the item's own page (history, comments,
+														     wiki-links) was unreachable from here. -->
+														<a class="btn btn-secondary open-item" href="/{username}/{workspace}/{conventionsSlug}/{itemUrlId(item)}">Open item</a>
 														<Button
 															variant="secondary"
 															size="sm"
@@ -883,6 +954,7 @@
 	.btn { padding: var(--space-1) var(--space-4); border-radius: var(--radius); font-size: 0.85em; font-weight: 600; cursor: pointer; border: none; white-space: nowrap; text-decoration: none; display: inline-flex; align-items: center; }
 	.btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); }
 	.btn-secondary:hover { background: var(--bg-hover); text-decoration: none; }
+	.open-item { padding: 2px var(--space-3); font-size: 0.8em; font-weight: 500; }
 
 	/* Create form */
 	.create-form { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-4); margin-bottom: var(--space-6); display: flex; flex-direction: column; gap: var(--space-3); }
@@ -954,6 +1026,7 @@
 	.command-list { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-3); }
 	.command-list code { display: inline-block; width: fit-content; max-width: 100%; padding: var(--space-1) var(--space-2); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.8em; overflow-wrap: anywhere; }
 	.expanded-actions { display: flex; gap: var(--space-2); align-items: center; }
+	.edit-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-2); }
 	.edit-textarea { width: 100%; padding: var(--space-2) var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-size: 0.85em; font-family: inherit; line-height: 1.6; resize: vertical; margin-bottom: var(--space-3); box-sizing: border-box; }
 	.edit-textarea:focus { border-color: var(--accent-blue); }
 	.edit-hint { font-size: 0.75em; color: var(--text-muted); margin-left: auto; }

@@ -2864,6 +2864,17 @@ func (s *Store) updateItemWithParentLinkOnce(
 		input.Fields = &base
 	}
 
+	// TASK-2257: keep a convention's reserved metadata copy in step with the
+	// ordinary keys this write changed. After the BUG-3163 carry guard (the
+	// precheck above), on the merged blob, under the same lock.
+	if input.Fields != nil {
+		mirrored, mErr := mirrorConventionMetadata(existing.Fields, *input.Fields)
+		if mErr != nil {
+			return nil, mErr
+		}
+		input.Fields = &mirrored
+	}
+
 	// BUG-3407: if the schema the caller validated against has moved since,
 	// re-check the keys this write SETS against the schema under the seq lock
 	// held above. A patch sets its own keys; a full `fields` write sets the
