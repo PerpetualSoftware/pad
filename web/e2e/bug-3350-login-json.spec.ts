@@ -13,11 +13,11 @@ test('BUG-3350: the login form signs in with an application/json request', async
 	try {
 		const page = await context.newPage();
 		await page.goto('/login');
-		await page.getByPlaceholder('Email').fill(ADMIN_EMAIL);
-		await page.getByPlaceholder('Password').fill(ADMIN_PASSWORD);
+		await page.getByLabel('Email', { exact: true }).fill(ADMIN_EMAIL);
+		await page.getByLabel('Password', { exact: true }).fill(ADMIN_PASSWORD);
 		const [request] = await Promise.all([
 			page.waitForRequest((r) => r.url().endsWith('/api/v1/auth/login') && r.method() === 'POST'),
-			page.getByPlaceholder('Password').press('Enter')
+			page.getByLabel('Password', { exact: true }).press('Enter')
 		]);
 		expect(request.headers()['content-type'] ?? '').toContain('application/json');
 		const response = await request.response();

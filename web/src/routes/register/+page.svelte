@@ -263,13 +263,13 @@
 			<AuthIntentBanner {redirectTarget} mode="signup" />
 
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-				<label class="sr-only" for="register-name">Name</label>
+				<label class="field-label" for="register-name">Name</label>
 				<input
 					id="register-name"
 					name="name"
 					use:autofocus
 					type="text"
-					placeholder="Name"
+					placeholder="Ada Lovelace"
 					bind:value={name}
 					oninput={handleNameInput}
 					disabled={loading}
@@ -277,13 +277,13 @@
 				/>
 
 				<div class="username-field">
-					<label class="sr-only" for="register-username">Username</label>
+					<label class="field-label" for="register-username">Username</label>
 					<input
 						id="register-username"
 						name="username"
 						aria-describedby="register-username-status"
 						type="text"
-						placeholder="Username"
+						placeholder="ada"
 						bind:value={username}
 						oninput={handleUsernameInput}
 						disabled={loading}
@@ -300,34 +300,32 @@
 					</span>
 				</div>
 
-				<label class="sr-only" for="register-email">Email</label>
+				<label class="field-label" for="register-email">Email</label>
 				<input
 					id="register-email"
 					name="email"
 					type="email"
-					placeholder="Email"
+					placeholder="you@example.com"
 					bind:value={email}
 					disabled={loading}
 					autocomplete="email"
 				/>
 
-				<label class="sr-only" for="register-password">Password</label>
+				<label class="field-label" for="register-password">Password</label>
 				<input
 					id="register-password"
 					name="password"
 					type="password"
-					placeholder="Password"
 					bind:value={password}
 					disabled={loading}
 					autocomplete="new-password"
 				/>
 
-				<label class="sr-only" for="register-confirm-password">Confirm password</label>
+				<label class="field-label" for="register-confirm-password">Confirm password</label>
 				<input
 					id="register-confirm-password"
 					name="confirm-password"
 					type="password"
-					placeholder="Confirm password"
 					bind:value={confirmPassword}
 					disabled={loading}
 					autocomplete="new-password"
@@ -450,7 +448,7 @@
 	button {
 		width: 100%;
 		padding: var(--space-3) var(--space-4);
-		background: var(--accent-blue);
+		background: var(--accent-primary-strong); /* white text: AA in both themes (TASK-3509) */
 		color: #fff;
 		border: none;
 		border-radius: var(--radius);

@@ -513,14 +513,14 @@
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleVerify2FA(); }}>
 				<p class="hint" id="join-totp-hint">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
 
-				<label class="sr-only" for="join-totp">Authentication code</label>
+				<label class="field-label" for="join-totp">Authentication code</label>
 				<input
 					id="join-totp"
 					name="totp"
 					aria-describedby="join-totp-hint"
 					use:autofocus
 					type="text"
-					placeholder="Authentication code"
+					placeholder="123456"
 					bind:value={totpCode}
 					disabled={submitting}
 					autocomplete="one-time-code"
@@ -552,13 +552,13 @@
 
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
 				{#if mode === 'register'}
-					<label class="sr-only" for="join-name">Name</label>
+					<label class="field-label" for="join-name">Name</label>
 					<input
 						id="join-name"
 						name="name"
 						use:autofocus
 						type="text"
-						placeholder="Name"
+						placeholder="Ada Lovelace"
 						bind:value={name}
 						oninput={handleNameInput}
 						disabled={submitting}
@@ -566,13 +566,13 @@
 					/>
 
 					<div class="username-field">
-						<label class="sr-only" for="join-username">Username</label>
+						<label class="field-label" for="join-username">Username</label>
 						<input
 							id="join-username"
 							name="username"
 							aria-describedby="join-username-status"
 							type="text"
-							placeholder="Username"
+							placeholder="ada"
 							bind:value={username}
 							oninput={handleUsernameInput}
 							disabled={submitting}
@@ -589,14 +589,14 @@
 						</span>
 					</div>
 				{/if}
-				<label class="sr-only" for="join-email">Email</label>
+				<label class="field-label" for="join-email">Email</label>
 				<input
 					id="join-email"
 					name="email"
 					aria-describedby={invitedEmail !== null ? 'join-email-hint' : undefined}
 					use:autofocus={mode === 'login' && invitedEmail === null}
 					type="email"
-					placeholder="Email"
+					placeholder="you@example.com"
 					class:locked={invitedEmail !== null}
 					bind:value={email}
 					disabled={submitting}
@@ -606,24 +606,22 @@
 				{#if invitedEmail !== null}
 					<p class="field-hint" id="join-email-hint">This invitation was sent to this address.</p>
 				{/if}
-				<label class="sr-only" for="join-password">Password</label>
+				<label class="field-label" for="join-password">Password</label>
 				<input
 					id="join-password"
 					name="password"
 					use:autofocus={mode === 'login' && invitedEmail !== null}
 					type="password"
-					placeholder="Password"
 					bind:value={password}
 					disabled={submitting}
 					autocomplete={mode === 'register' ? 'new-password' : 'current-password'}
 				/>
 				{#if mode === 'register'}
-					<label class="sr-only" for="join-confirm-password">Confirm password</label>
+					<label class="field-label" for="join-confirm-password">Confirm password</label>
 					<input
 						id="join-confirm-password"
 						name="confirm-password"
 						type="password"
-						placeholder="Confirm password"
 						bind:value={confirmPassword}
 						disabled={submitting}
 						autocomplete="new-password"
@@ -755,7 +753,7 @@
 	button {
 		width: 100%;
 		padding: var(--space-3) var(--space-4);
-		background: var(--accent-blue);
+		background: var(--accent-primary-strong); /* white text: AA in both themes (TASK-3509) */
 		color: #fff;
 		border: none;
 		border-radius: var(--radius);

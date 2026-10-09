@@ -221,13 +221,12 @@
 			</p>
 
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handlePasteSubmit(); }}>
-				<label class="sr-only" for="setup-token">Bootstrap token</label>
+				<label class="field-label" for="setup-token">Bootstrap token</label>
 				<input
 					id="setup-token"
 					name="bootstrap-token"
 					use:autofocus
 					type="text"
-					placeholder="Bootstrap token"
 					bind:value={pastedToken}
 					disabled={loading}
 					autocomplete="off"
@@ -254,46 +253,44 @@
 			{/if}
 
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-				<label class="sr-only" for="setup-email">Email</label>
+				<label class="field-label" for="setup-email">Email</label>
 				<input
 					id="setup-email"
 					name="email"
 					use:autofocus
 					type="email"
-					placeholder="Email"
+					placeholder="you@example.com"
 					bind:value={email}
 					disabled={loading}
 					autocomplete="email"
 				/>
 
-				<label class="sr-only" for="setup-name">Name</label>
+				<label class="field-label" for="setup-name">Name</label>
 				<input
 					id="setup-name"
 					name="name"
 					type="text"
-					placeholder="Name"
+					placeholder="Ada Lovelace"
 					bind:value={name}
 					disabled={loading}
 					autocomplete="name"
 				/>
 
-				<label class="sr-only" for="setup-password">Password (at least 8 characters)</label>
+				<label class="field-label" for="setup-password">Password (at least 8 characters)</label>
 				<input
 					id="setup-password"
 					name="password"
 					type="password"
-					placeholder="Password (min. 8 characters)"
 					bind:value={password}
 					disabled={loading}
 					autocomplete="new-password"
 				/>
 
-				<label class="sr-only" for="setup-confirm-password">Confirm password</label>
+				<label class="field-label" for="setup-confirm-password">Confirm password</label>
 				<input
 					id="setup-confirm-password"
 					name="confirm-password"
 					type="password"
-					placeholder="Confirm password"
 					bind:value={confirmPassword}
 					disabled={loading}
 					autocomplete="new-password"
@@ -418,7 +415,7 @@
 	button {
 		width: 100%;
 		padding: var(--space-3) var(--space-4);
-		background: var(--accent-blue);
+		background: var(--accent-primary-strong); /* white text: AA in both themes (TASK-3509) */
 		color: #fff;
 		border: none;
 		border-radius: var(--radius);

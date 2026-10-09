@@ -88,13 +88,13 @@
 			</p>
 
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-				<label class="sr-only" for="forgot-email">Email</label>
+				<label class="field-label" for="forgot-email">Email</label>
 				<input
 					id="forgot-email"
 					name="email"
 					use:autofocus
 					type="email"
-					placeholder="Email"
+					placeholder="you@example.com"
 					bind:value={email}
 					disabled={loading}
 					autocomplete="email"
@@ -222,7 +222,7 @@
 	button {
 		width: 100%;
 		padding: var(--space-3) var(--space-4);
-		background: var(--accent-blue);
+		background: var(--accent-primary-strong); /* white text: AA in both themes (TASK-3509) */
 		color: #fff;
 		border: none;
 		border-radius: var(--radius);
