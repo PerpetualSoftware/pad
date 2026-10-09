@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import { untrack } from 'svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -200,6 +201,13 @@
 		const groups = [...map.values()];
 		groups.sort((a, b) => a.collection.sort_order - b.collection.sort_order);
 		return groups;
+	});
+
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	$effect(() => {
+		page.url.pathname;
+		titleStore.setPageTitle({ section: tag ? `#${tag}` : 'Tags', item: null });
 	});
 </script>
 

@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { modKeyLabel } from '$lib/utils/platform';
 	import { page } from '$app/state';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import { api, isPlanLimitError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import type { Collection, Item, ItemConventionMetadata } from '$lib/types';
@@ -635,6 +636,12 @@
 		};
 	}
 
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	$effect(() => {
+		page.url.pathname;
+		titleStore.setPageTitle({ section: 'Conventions', item: null });
+	});
 </script>
 
 <div class="conventions-page">

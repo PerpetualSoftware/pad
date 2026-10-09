@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { api, isPlanLimitError } from '$lib/api/client';
@@ -913,6 +914,13 @@
 		if (context.deployment?.mode) summary.push({ label: 'Deployment', value: context.deployment.mode });
 		if (context.assumptions?.length) summary.push({ label: 'Assumptions', value: String(context.assumptions.length) });
 		return summary;
+	});
+
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	$effect(() => {
+		page.url.pathname;
+		titleStore.setPageTitle({ section: 'Settings', item: null });
 	});
 </script>
 

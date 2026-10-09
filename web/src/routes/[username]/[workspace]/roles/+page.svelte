@@ -2,6 +2,7 @@
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { roleIcon } from '$lib/utils/roleIcon';
 	import { page } from '$app/state';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { api, isPlanLimitError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
@@ -852,6 +853,13 @@
 	function collectionForItem(item: Item): Collection | undefined {
 		return collectionStore.collections.find(c => c.slug === item.collection_slug);
 	}
+
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	$effect(() => {
+		page.url.pathname;
+		titleStore.setPageTitle({ section: 'Roles', item: null });
+	});
 </script>
 
 <svelte:head>

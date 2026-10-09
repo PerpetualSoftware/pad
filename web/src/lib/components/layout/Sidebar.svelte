@@ -727,7 +727,7 @@
 					<button
 						class="collapse-sidebar-btn"
 						onclick={() => uiStore.closeSidebar()}
-						title="Hide sidebar ({modKeyLabel('\\')})"
+						title="Hide sidebar ({modKeyLabel('\\')} hides both bars)"
 						aria-label="Hide sidebar"
 					>
 						<svg width="16" height="16" viewBox="0 0 16 16" fill="none">

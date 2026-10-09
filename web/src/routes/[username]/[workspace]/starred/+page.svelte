@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import { onMount, untrack } from 'svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -157,6 +158,13 @@
 
 	// No explicit handleUnstar needed — items is derived from starredStore.isStarred,
 	// so unstarring via ItemCard's toggle automatically removes the item from the list.
+
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	$effect(() => {
+		page.url.pathname;
+		titleStore.setPageTitle({ section: 'Starred', item: null });
+	});
 </script>
 
 <svelte:head>

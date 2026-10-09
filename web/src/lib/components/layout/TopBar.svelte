@@ -561,6 +561,16 @@
 					<MenuItem onclick={toggleTheme}>
 						{currentTheme === 'dark' ? 'Light mode' : 'Dark mode'}
 					</MenuItem>
+					<!-- The sheet's one entry point used to be the undocumented `?`
+					     key (TASK-2261, audit C102). -->
+					<MenuItem
+						onclick={() => {
+							closeUserMenu();
+							uiStore.openShortcuts();
+						}}
+					>
+						Keyboard shortcuts
+					</MenuItem>
 
 					<!--
 						Resources block (TASK-905). Replaces the prior inline Cloud
@@ -731,7 +741,7 @@
 			<button
 				class="collapse-btn"
 				onclick={() => uiStore.closeTopbar()}
-				title="Hide workspace bar ({modKeyLabel('\\')})"
+				title="Hide workspace bar ({modKeyLabel('\\')} hides both bars)"
 				aria-label="Hide workspace bar"
 			>
 				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">

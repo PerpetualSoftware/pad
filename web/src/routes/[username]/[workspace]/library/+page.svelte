@@ -2,6 +2,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { page } from '$app/state';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -399,6 +400,13 @@
 		const lines = content.split('\n').filter((l) => l.match(/^\d+\./));
 		return lines.slice(0, 3).join('\n');
 	}
+
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	$effect(() => {
+		page.url.pathname;
+		titleStore.setPageTitle({ section: 'Library', item: null });
+	});
 </script>
 
 <div class="library">
