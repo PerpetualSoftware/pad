@@ -157,16 +157,36 @@ describe('the barrier clears what the socket carried (BUG-3523)', () => {
 		expect(catchUps(third)).toBe(0);
 	});
 
-	it('ok=false leaves the tab owed and names the item', async () => {
+	it('ok=false resends the document on the live socket at once, and names the item', async () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const first = connect();
 		doc.getText('t').insert(0, 'x');
 		await vi.advanceTimersByTimeAsync(BARRIER_IDLE_MS);
 		const [n] = barriers(first);
+		const before = catchUps(first);
 		first.control({ type: 'barrier_ack', n, ok: false });
 		expect(warn.mock.calls.some((c) => String(c[0]).includes('item-3523'))).toBe(true);
+		expect(catchUps(first), 'the catch-up went out on the same socket').toBe(before + 1);
+		// The resend gets its own barrier; until that is answered OK the tab
+		// still owes the next connection.
+		await vi.advanceTimersByTimeAsync(BARRIER_IDLE_MS);
+		const again = barriers(first);
+		expect(again).toHaveLength(2);
 		const second = await reconnect(first);
-		expect(catchUps(second)).toBe(1);
+		expect(catchUps(second), 'unanswered, the resend is still owed').toBe(1);
+		warn.mockRestore();
+	});
+
+	it('after an ok=false resend is acknowledged, nothing is owed', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const first = connect();
+		doc.getText('t').insert(0, 'x');
+		await vi.advanceTimersByTimeAsync(BARRIER_IDLE_MS);
+		first.control({ type: 'barrier_ack', n: barriers(first)[0], ok: false });
+		await vi.advanceTimersByTimeAsync(BARRIER_IDLE_MS);
+		first.control({ type: 'barrier_ack', n: barriers(first)[1], ok: true });
+		const second = await reconnect(first);
+		expect(catchUps(second)).toBe(0);
 		warn.mockRestore();
 	});
 

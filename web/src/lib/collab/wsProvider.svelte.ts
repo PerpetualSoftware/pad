@@ -863,18 +863,7 @@ export class CollabProvider {
 		// reconnect appended a full copy to the op-log each time (a laptop
 		// wake, a network blip), which the materializer then had to replay.
 		if (this.cursorAnchored && (this.unsentLocalEdits || this.catchUpOwed)) {
-			const enc3 = encoding.createEncoder();
-			encoding.writeVarUint(enc3, MESSAGE_SYNC);
-			syncProtocol.writeUpdate(enc3, Y.encodeStateAsUpdate(this.ydoc));
-			// TASK-2199: the whole doc, so every local edit is in it.
-			if (this.socketOpen()) {
-				this.unsentLocalEdits = false;
-				this.catchUpOwed = false;
-				// It is ours, on this socket: if this socket dies too, the
-				// next one owes the catch-up again, until a barrier clears it.
-				this.markLocalSent();
-			}
-			this.send(encoding.toUint8Array(enc3));
+			this.sendCatchUp();
 		}
 
 		// Broadcast our local awareness state (if any) so peers see
@@ -1047,11 +1036,14 @@ export class CollabProvider {
 				if (!pending || msg.n !== pending.n) return;
 				this.barrierPending = null;
 				if (msg.ok !== true) {
-					// An op-log append failed on this socket: the tab stays
-					// owed, so the next connection sends the catch-up.
+					// An op-log append failed on this socket, so something this
+					// tab sent may be missing from the op-log. Repair it now,
+					// while the tab is alive: the catch-up carries the whole
+					// document and gets a barrier of its own.
 					console.warn(
-						`collab: the server reported a failed op-log append for item ${this.itemID}; the next connection will resend the document`,
+						`collab: the server reported a failed op-log append for item ${this.itemID}; resending the document`,
 					);
+					this.sendCatchUp();
 					return;
 				}
 				// A local send after this barrier has its own barrier coming.
@@ -1356,6 +1348,24 @@ export class CollabProvider {
 
 	private socketOpen(): boolean {
 		return !!this.ws && this.ws.readyState === this.WebSocketImpl.OPEN;
+	}
+
+	/**
+	 * Send the whole document as one update (TASK-1319 / TASK-2199), so every
+	 * local edit is in it. On an open socket it settles what was owed; it is
+	 * ours on this socket, so if this socket dies too the next one owes it
+	 * again, until a barrier clears it (BUG-3523).
+	 */
+	private sendCatchUp(): void {
+		const enc = encoding.createEncoder();
+		encoding.writeVarUint(enc, MESSAGE_SYNC);
+		syncProtocol.writeUpdate(enc, Y.encodeStateAsUpdate(this.ydoc));
+		if (this.socketOpen()) {
+			this.unsentLocalEdits = false;
+			this.catchUpOwed = false;
+			this.markLocalSent();
+		}
+		this.send(encoding.toUint8Array(enc));
 	}
 
 	/** A local update is going out on the open socket (BUG-3523). */

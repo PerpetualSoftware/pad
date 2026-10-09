@@ -63,6 +63,9 @@ func (s *Store) AppendYjsUpdate(itemID string, data []byte, schemaVersion string
 		}
 		bearing = !dup
 	}
+	if bearing && yjsFrameIsSyncStep2(data) {
+		bearing = false // BUG-3523: an answer repeats content other rows carry
+	}
 	return s.insertYjsFrame(itemID, data, schemaVersion, now, hash, bearing)
 }
 
@@ -189,6 +192,11 @@ func (s *Store) appendSyncFrameQ(q yjsExecQueryer, itemID string, data []byte, s
 			}
 			bearing = !twin
 		}
+	}
+	if bearing && yjsFrameIsSyncStep2(data) {
+		// BUG-3523: stored, and replayed to joining tabs, but not counted:
+		// an answer repeats content other rows carry (yjsFrameIsSyncStep2).
+		bearing = false
 	}
 	id, err := s.insertYjsFrameQ(q, itemID, data, schemaVersion, now, hash, bearing)
 	if err != nil {

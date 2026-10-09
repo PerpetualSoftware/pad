@@ -98,6 +98,40 @@ func yjsFrameIsEnvelopeNonContent(data []byte) bool {
 	}
 }
 
+// yjsFrameIsSyncStep2 reports whether a sync frame is EXACTLY one well-formed
+// SyncStep2 message (BUG-3523), with the same strict parse as
+// yjsFrameIsEnvelopeNonContent.
+//
+// A SyncStep2 is an ANSWER: y-protocols' readSyncMessage writes one only in
+// reply to a peer's SyncStep1 (wsProvider.svelte.ts is the one place that sends
+// one; nothing on the server writes one), and it carries the answering tab's
+// state relative to the asker's. Every struct in it is either the answering
+// tab's own edit, which that tab sent as an update and repairs with a full
+// catch-up if it may be missing (an edit made offline, a socket that died, or a
+// barrier_ack reporting a failed append), or something it received through the
+// relay, which is in the op-log already. So it repeats content another row
+// carries, and it can be a full copy of the document: counting it kept items
+// "pending" and made the materializer replay the whole document again for
+// every tab that joined. Measured before shipping: materializing recorded
+// op-logs, across a dormancy prune, with and without their step2 rows gave
+// identical text.
+//
+// Applied at APPEND only, never by BackfillYjsContentBearing: rows written
+// before BUG-3523 came from clients with no failed-append repair, where a step2
+// could be the only other copy of an edit whose own append failed.
+func yjsFrameIsSyncStep2(data []byte) bool {
+	msgType, pos, ok := readVarUint(data, 0)
+	if !ok || msgType != yFrameSync {
+		return false
+	}
+	subtype, pos, ok := readVarUint(data, pos)
+	if !ok || subtype != ySyncStep2 {
+		return false
+	}
+	n, pos, ok := readVarUint(data, pos)
+	return ok && uint64(len(data)-pos) == n
+}
+
 // yjsFrameHash is the content_hash column value: the sha256 of the WHOLE frame,
 // envelope included. The step2/update equivalence of fact (3) is NOT folded into
 // the hash; yjsIdenticalEarlierRowQ looks the subtype twin up separately, so the
