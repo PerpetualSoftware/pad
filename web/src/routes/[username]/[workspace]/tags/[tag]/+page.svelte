@@ -6,6 +6,8 @@
 	import { browser } from '$app/environment';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
+	import { loadFailure } from '$lib/api/loadFailure';
 	import type { Item, Collection } from '$lib/types';
 
 	type ViewMode = 'list' | 'board';
@@ -17,6 +19,8 @@
 	let fetchedItems = $state<Item[]>([]);
 	let collections = $state<Collection[]>([]);
 	let loading = $state(true);
+	// TASK-2203: a failed load is an error with a retry, never "No items tagged".
+	let loadError = $state<unknown>(null);
 	let loadSeq = 0;
 
 	// View mode persists per workspace (list = grouped sections, board = one
@@ -97,9 +101,11 @@
 			if (seq !== loadSeq) return;
 			fetchedItems = items;
 			collections = colls;
-		} catch {
+			loadError = null;
+		} catch (err) {
 			if (seq !== loadSeq) return;
 			fetchedItems = [];
+			loadError = err;
 		} finally {
 			if (seq === loadSeq) loading = false;
 		}
@@ -207,6 +213,13 @@
 				{/each}
 			</div>
 		</div>
+	{:else if loadError}
+		{@const failure = loadFailure('the items with this tag', loadError)}
+		<ContentError
+			title={failure.title}
+			detail={failure.detail}
+			onRetry={failure.retryable ? () => loadTagged(wsSlug, tag, showCompleted) : undefined}
+		/>
 	{:else if fetchedItems.length === 0}
 		{#if showCompleted}
 			<EmptyState

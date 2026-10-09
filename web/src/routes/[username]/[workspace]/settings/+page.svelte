@@ -18,6 +18,8 @@
 	import AppsTab from '$lib/components/settings/apps/AppsTab.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
+	import { loadFailure } from '$lib/api/loadFailure';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -125,6 +127,9 @@
 
 	// Members
 	let members = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
+	// TASK-2203: the members list's own failure, so the tab never answers a
+	// refusal (a guest always gets 403) or a blip with "No members yet."
+	let membersError = $state<unknown>(null);
 	let invitations = $state<{ id: string; email: string; role: string; code: string; join_url?: string }[]>([]);
 	// Installed apps' bot principals (TASK-3392): listed apart from members and
 	// not seats (Dave §11 Q2); shown in their own section (SPEC-6 U9c).
@@ -445,9 +450,16 @@
 				members = memberData.members ?? [];
 				invitations = memberData.invitations ?? [];
 				workspaceApps = memberData.apps ?? [];
+				membersError = null;
 				// Note: current-user role no longer derived here. workspaceStore.setCurrent
 				// fetches /me and pins workspaceStore.isOwner / .currentRole.
-			} catch {}
+			} catch (err) {
+				if (myLoad !== loadGen) return;
+				members = [];
+				invitations = [];
+				workspaceApps = [];
+				membersError = err;
+			}
 		} catch { /* allow partial render */
 		} finally {
 			if (myLoad === loadGen) loading = false;
@@ -1030,7 +1042,14 @@
 			</section>
 		{:else if activeTab === 'members'}
 			<section class="section">
-				{#if members.length === 0}
+				{#if membersError}
+					{@const failure = loadFailure('the members list', membersError)}
+					<ContentError
+						title={failure.title}
+						detail={failure.detail}
+						onRetry={failure.retryable ? () => { if (wsSlug) load(wsSlug); } : undefined}
+					/>
+				{:else if members.length === 0}
 					<p class="empty-text">No members yet.</p>
 				{:else}
 					<div class="members-list">

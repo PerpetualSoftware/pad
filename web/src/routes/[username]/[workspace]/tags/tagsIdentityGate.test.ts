@@ -10,7 +10,7 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			loadTags: {
-				reviewed: '0f72a690750a',
+				reviewed: 'c54230d56ef4',
 				why: 'seq against loadSeq AND the entry identity fence (authStore.identityFence) on both arms; the finally clears loading only under both. Same shape as starred (BUG-3236)',
 			},
 		},
@@ -52,8 +52,8 @@ identityGateSuite({
 		{
 			cls: 5,
 			what: "the failure arm's return is made conditional on something that never holds",
-			old: '\t\t} catch {\n\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n',
-			new: '\t\t} catch {\n\t\t\tif ((seq !== loadSeq || !isSameIdentity()) && tags.length < 0) return;\n',
+			old: '\t\t} catch (err) {\n\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n',
+			new: '\t\t} catch (err) {\n\t\t\tif ((seq !== loadSeq || !isSameIdentity()) && tags.length < 0) return;\n',
 			names: 'loadTags()',
 		},
 	],

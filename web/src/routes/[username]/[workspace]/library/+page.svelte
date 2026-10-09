@@ -6,6 +6,8 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
+	import { loadFailure } from '$lib/api/loadFailure';
 	import { statusColor } from '$lib/utils/fieldColors';
 	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
 	import { canCreateIn } from '$lib/collections/canCreateIn';
@@ -69,6 +71,9 @@
 	// makes an entry "Active" by KEY, and where an update is on offer.
 	let builtinEntries = $state<BuiltinListEntry[]>([]);
 	let loading = $state(true);
+	// TASK-2203: a failed load is an error with a retry, never "No conventions
+	// available." (the library ships with entries; empty means it did not load).
+	let loadError = $state<unknown>(null);
 
 	// Scroll position restoration (BUG-1425). persistKey includes `?tab=…`
 	// so the conventions and playbooks tabs each keep their own offset.
@@ -213,9 +218,11 @@
 			// round-trip while the four collections are still the previous
 			// session's, so the guard would vouch for data it has not replaced.
 			identityEpochAtLoad = epochAtEntry;
-		} catch {
+			loadError = null;
+		} catch (err) {
 			if (!identityHeld(epochAtEntry)) return;
 			if (myLoad !== loadGen) return;
+			loadError = err;
 			categories = [];
 			playbookCategories = [];
 			// CLEARED here too, because the re-stamp below vouches for whatever
@@ -355,7 +362,14 @@
 		</div>
 
 		{#if activeTab === 'conventions'}
-			{#if categories.length === 0}
+			{#if loadError}
+				{@const failure = loadFailure('the convention library', loadError)}
+				<ContentError
+					title={failure.title}
+					detail={failure.detail}
+					onRetry={failure.retryable ? () => { if (wsSlug) void loadData(wsSlug); } : undefined}
+				/>
+			{:else if categories.length === 0}
 				<p class="empty">No conventions available.</p>
 			{/if}
 
@@ -421,7 +435,14 @@
 				</section>
 			{/each}
 		{:else}
-			{#if playbookCategories.length === 0}
+			{#if loadError}
+				{@const failure = loadFailure('the playbook library', loadError)}
+				<ContentError
+					title={failure.title}
+					detail={failure.detail}
+					onRetry={failure.retryable ? () => { if (wsSlug) void loadData(wsSlug); } : undefined}
+				/>
+			{:else if playbookCategories.length === 0}
 				<p class="empty">No playbooks available.</p>
 			{/if}
 

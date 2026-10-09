@@ -13,6 +13,8 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
+	import { loadFailure } from '$lib/api/loadFailure';
 	import EpisodeFeed from '$lib/components/activity/EpisodeFeed.svelte';
 	import type { Activity, Collection, FieldDef } from '$lib/types';
 	import { parseSchema } from '$lib/types';
@@ -155,15 +157,23 @@
 	// load-more does not bump it, because the two merge by id and commute.
 	let resetGeneration = 0;
 
+	// TASK-2203: a failed first page is an error with a retry, never "No
+	// activity found"; a failed later page keeps what is shown and says so on
+	// the load-more button.
+	let loadError = $state<unknown>(null);
+	let moreError = $state(false);
+
 	async function loadActivities(slug: string, reset = false) {
 		const thisRequest = ++activityRequest;
 		if (reset) {
+			loadError = null;
 			resetGeneration++;
 			loading = true;
 			loadingMore = false;
 			activities = [];
 		} else {
 			loadingMore = true;
+			moreError = false;
 		}
 
 		try {
@@ -187,8 +197,11 @@
 				activities = appendUnique(activities, result);
 			}
 			hasMore = result.length >= PAGE_SIZE;
-		} catch {
-			// allow partial render
+		} catch (err) {
+			if (thisRequest === activityRequest) {
+				if (reset) loadError = err;
+				else moreError = true;
+			}
 		} finally {
 			if (thisRequest === activityRequest) {
 				loading = false;
@@ -465,6 +478,13 @@
 				</div>
 			{/each}
 		</div>
+	{:else if loadError}
+		{@const failure = loadFailure('the activity feed', loadError)}
+		<ContentError
+			title={failure.title}
+			detail={failure.detail}
+			onRetry={failure.retryable ? () => loadActivities(wsSlug, true) : undefined}
+		/>
 	{:else if view === 'live'}
 		<EpisodeFeed activities={filteredActivities} {wsSlug} {username} />
 		{@render loadMoreButton()}
@@ -564,6 +584,8 @@
 			<button class="load-more-btn" onclick={loadMore} disabled={loadingMore}>
 				{#if loadingMore}
 					Loading...
+				{:else if moreError}
+					Couldn't load more. Try again
 				{:else}
 					Load more activity
 				{/if}
