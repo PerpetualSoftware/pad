@@ -23,12 +23,17 @@ func (s *Server) handleCreateCLIAuthSession(w http.ResponseWriter, r *http.Reque
 	// combined account-creation + approval window doesn't expire mid-flow.
 	// Once users exist (normal `pad auth login`), use the shorter default.
 	// A failed count falls back to the default TTL rather than blocking login.
-	create := s.store.CreateCLIAuthSession
+	setup := false
 	if count, err := s.store.UserCount(); err == nil && count == 0 {
-		create = s.store.CreateCLIAuthSessionForSetup
+		setup = true
 	}
 
-	sess, err := create()
+	// Who asked, for the approval page (TASK-2253). The User-Agent is the
+	// requester's own claim; the store caps it and the page labels it so.
+	sess, err := s.store.CreateCLIAuthSessionFrom(setup, store.CLIAuthRequester{
+		IP:        clientIP(r),
+		UserAgent: requestUserAgent(r),
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create CLI auth session")
 		return
@@ -73,9 +78,30 @@ func (s *Server) handlePollCLIAuthSession(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "not_found", "CLI auth session not found")
 		return
 	}
+	if sess.Status == "denied" {
+		// An error, not a 200 status (TASK-2253): a CLI from before Deny
+		// existed switches on status with no default and would keep polling
+		// a 200 "denied" for its full 20 minutes. A non-2xx counts as a poll
+		// error there, so it gives up after five in a row and prints this
+		// message. A current CLI recognises the code and stops at once.
+		writeError(w, http.StatusGone, "cli_auth_denied", "This sign-in was denied in the browser.")
+		return
+	}
 
 	response := map[string]interface{}{
 		"status": sess.Status,
+	}
+	if sess.Status == "pending" {
+		// Context for the person deciding (TASK-2253). Whoever holds the
+		// code is the requester (this is their own address) or the person
+		// they sent the link to, who needs it to decide.
+		response["created_at"] = sess.CreatedAt
+		if sess.RequesterIP != "" {
+			response["requester_ip"] = sess.RequesterIP
+		}
+		if sess.RequesterUserAgent != "" {
+			response["requester_user_agent"] = sess.RequesterUserAgent
+		}
 	}
 
 	// Only include the token and user info when approved
@@ -153,6 +179,10 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusConflict, "already_approved", "This CLI session has already been approved")
 		return
 	}
+	if sess.Status == "denied" {
+		writeError(w, http.StatusConflict, "cli_auth_denied", "This sign-in was denied. Run 'pad auth login' again.")
+		return
+	}
 
 	// Create a new session token for the CLI (long-lived, 30 days). It is
 	// dated by the approving session's sign-in (BUG-3336): approving from an
@@ -178,6 +208,15 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 
 	// Approve the CLI auth session with the new token
 	if err := s.store.ApproveCLIAuthSession(code, token, user.ID); err != nil {
+		// The session minted above reaches nobody now; end it rather than
+		// leave a live 30-day credential unreferenced.
+		_ = s.store.DeleteSession(token)
+		if errors.Is(err, store.ErrCLIAuthNotPending) {
+			// Denied (or approved elsewhere) between the read above and
+			// this write (TASK-2253).
+			writeError(w, http.StatusConflict, "cli_auth_denied", "This sign-in is no longer waiting for approval. Run 'pad auth login' again.")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to approve CLI auth session")
 		return
 	}
@@ -186,6 +225,44 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		"approved": true,
 		"user":     sessionUserPayload(user),
 	})
+}
+
+// handleDenyCLIAuthSession refuses a pending CLI auth session (TASK-2253).
+// POST /api/v1/auth/cli/sessions/{code}/deny
+//
+// The code is the authority, not an account: it is already a bearer secret
+// (whoever holds it can poll, and collects the token after an approval),
+// and a deny harms only the requester, who holds the same code. So the
+// handler checks no user. It is not CSRF-exempt: from a browser it is a
+// cookie-carrying POST like approve, and the approval page only offers it
+// to a signed-in visitor anyway. Denying twice answers 200; an approved or
+// expired session answers with what it is instead.
+func (s *Server) handleDenyCLIAuthSession(w http.ResponseWriter, r *http.Request) {
+	code := chi.URLParam(r, "code")
+	if code == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "Missing session code")
+		return
+	}
+	err := s.store.DenyCLIAuthSession(code)
+	if err == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"denied": true})
+		return
+	}
+	if !errors.Is(err, store.ErrCLIAuthNotPending) {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to deny CLI auth session")
+		return
+	}
+	sess, err := s.store.GetCLIAuthSession(code)
+	switch {
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check CLI auth session")
+	case sess == nil:
+		writeError(w, http.StatusNotFound, "not_found", "CLI auth session not found")
+	case sess.Status == "approved":
+		writeError(w, http.StatusConflict, "already_approved", "This CLI session has already been approved")
+	default:
+		writeError(w, http.StatusGone, "expired", "This CLI auth session has expired.")
+	}
 }
 
 // cliAuthScheme picks the URL scheme for the CLI auth link.

@@ -3021,7 +3021,17 @@ export const api = {
 		},
 		cli: {
 			getSession: (code: string) =>
-				request<{ status: string; token?: string; user?: { id: string; email: string; name: string; role: string } }>(`/auth/cli/sessions/${code}`),
+				request<{
+					status: string;
+					token?: string;
+					user?: { id: string; email: string; name: string; role: string };
+					// Pending only (TASK-2253). requester_user_agent is the requester's own claim.
+					created_at?: string;
+					requester_ip?: string;
+					requester_user_agent?: string;
+				}>(`/auth/cli/sessions/${code}`),
+			denySession: (code: string) =>
+				request<{ denied: boolean }>(`/auth/cli/sessions/${code}/deny`, { method: 'POST' }),
 			approveSession: (code: string) =>
 				request<{ approved: boolean; user: { id: string; email: string; name: string; role: string } }>(`/auth/cli/sessions/${code}/approve`, {
 					method: 'POST'

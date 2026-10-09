@@ -511,6 +511,15 @@ func pollAndSaveCLIAuth(ctx context.Context, client *cli.Client, cfg *config.Con
 			return fmt.Errorf("timed out waiting for approval after %s", cliAuthPollTimeout)
 		case <-ticker.C:
 			status, err := client.PollCLIAuthSession(sess.SessionCode)
+			// Denied in the browser (TASK-2253). The server answers it as a
+			// 410 with this code, not a 200 status, so a CLI from before
+			// Deny gives up through the poll-error bound below rather than
+			// polling a "denied" status it does not know for 20 minutes.
+			// No remedy named, for the reason the timeout above gives.
+			var apiErr *cli.APIError
+			if errors.As(err, &apiErr) && apiErr.Code == "cli_auth_denied" {
+				return fmt.Errorf("sign-in was denied in the browser")
+			}
 			if err != nil {
 				// Transient poll errors — keep polling, but only up to
 				// cliAuthMaxConsecutivePollErrs in a row. Beyond that,

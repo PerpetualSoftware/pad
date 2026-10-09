@@ -87,7 +87,12 @@ var kickCalls = map[string]bool{
 
 // kickExemptFuncs call a watched method where no live connection can be
 // affected, or where a caller kicks. file:func -> reason.
-var kickExemptFuncs = map[string]string{}
+var kickExemptFuncs = map[string]string{
+	// TASK-2253: the session deleted there is the one this request minted a
+	// moment earlier, when the approval then lost to a concurrent deny. Its
+	// token was never returned to anyone, so no connection can hold it.
+	"handlers_cli_auth.go:handleApproveCLIAuthSession": "deletes only the session it just minted, whose token was never handed out",
+}
 
 func TestTASK3365_EveryAccessDoorKicks(t *testing.T) {
 	files, err := filepath.Glob("*.go")

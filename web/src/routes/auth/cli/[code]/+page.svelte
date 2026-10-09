@@ -1,18 +1,26 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { api } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
 	import type { User } from '$lib/types';
+	import { requestedLine } from './cliAuthContext';
 
-	let status = $state<'loading' | 'pending' | 'approved' | 'expired' | 'error' | 'success' | 'already_approved'>('loading');
+	let status = $state<
+		'loading' | 'pending' | 'approved' | 'expired' | 'error' | 'success' | 'already_approved' | 'denied'
+	>('loading');
 	let error = $state('');
 	let approving = $state(false);
+	let denying = $state(false);
+	// Who asked (TASK-2253). The agent is requester-controlled text: it is
+	// rendered as text, never as markup, and labelled as their claim.
+	let requested = $state('');
+	let requesterAgent = $state('');
 	let switchingAccount = $state(false);
 	let currentUser = $state<User | null>(null);
 
 	onMount(async () => {
-		const code = $page.params.code;
+		const code = page.params.code;
 		if (!code) {
 			status = 'error';
 			error = 'Missing CLI session code.';
@@ -31,6 +39,8 @@
 				status = 'already_approved';
 				return;
 			}
+			requested = requestedLine(session.created_at, session.requester_ip);
+			requesterAgent = session.requester_user_agent ?? '';
 
 			// Session is pending — check if user is logged in
 			const authSession = await api.auth.session();
@@ -49,14 +59,18 @@
 			}
 
 			status = 'pending';
-		} catch {
+		} catch (err: unknown) {
+			if (err instanceof PadApiError && err.code === 'cli_auth_denied') {
+				status = 'denied';
+				return;
+			}
 			status = 'error';
 			error = 'This link is invalid or has expired. Run `pad auth login` again.';
 		}
 	});
 
 	async function handleApprove() {
-		const code = $page.params.code;
+		const code = page.params.code;
 		if (!code) {
 			error = 'Missing CLI session code.';
 			return;
@@ -68,7 +82,9 @@
 			await api.auth.cli.approveSession(code);
 			status = 'success';
 		} catch (err: unknown) {
-			if (err instanceof Error) {
+			if (err instanceof PadApiError && err.code === 'cli_auth_denied') {
+				status = 'denied';
+			} else if (err instanceof Error) {
 				error = err.message || 'Failed to approve session.';
 			} else {
 				error = 'Failed to approve session.';
@@ -78,8 +94,34 @@
 		}
 	}
 
+	// TASK-2253: refuse a sign-in this person did not start. The terminal
+	// that asked stops waiting on its next poll.
+	async function handleDeny() {
+		const code = page.params.code;
+		if (!code) {
+			error = 'Missing CLI session code.';
+			return;
+		}
+		denying = true;
+		error = '';
+		try {
+			await api.auth.cli.denySession(code);
+			status = 'denied';
+		} catch (err: unknown) {
+			if (err instanceof PadApiError && err.code === 'already_approved') {
+				status = 'already_approved';
+			} else if (err instanceof PadApiError && err.code === 'expired') {
+				status = 'expired';
+			} else {
+				error = err instanceof Error && err.message ? err.message : 'Failed to deny the request.';
+			}
+		} finally {
+			denying = false;
+		}
+	}
+
 	async function handleSwitchAccount() {
-		const code = $page.params.code;
+		const code = page.params.code;
 		if (!code) {
 			error = 'Missing CLI session code.';
 			return;
@@ -126,6 +168,19 @@
 			<p class="description">
 				A CLI session is requesting access to your account. Approve this request to sign in from the terminal.
 			</p>
+			{#if requested || requesterAgent}
+				<div class="request-context">
+					{#if requested}
+						<p class="requested">{requested}</p>
+					{/if}
+					{#if requesterAgent}
+						<p class="agent">
+							<span class="agent-text">{requesterAgent}</span>
+							<span class="agent-label">reported by the requester</span>
+						</p>
+					{/if}
+				</div>
+			{/if}
 
 			{#if currentUser}
 				<div class="account-chip">
@@ -147,7 +202,7 @@
 					type="button"
 					class="link-button"
 					onclick={handleSwitchAccount}
-					disabled={switchingAccount || approving}
+					disabled={switchingAccount || approving || denying}
 				>
 					{#if switchingAccount}
 						Switching...
@@ -158,20 +213,37 @@
 			{/if}
 
 			{#if error}
-				<p class="error">{error}</p>
+				<p class="error" role="alert">{error}</p>
 			{/if}
 
-			<button onclick={handleApprove} disabled={approving || switchingAccount}>
-				{#if approving}
-					Approving...
-				{:else}
-					Approve
-				{/if}
-			</button>
+			<p class="warning">Only approve if you just ran <code>pad auth login</code> yourself.</p>
+
+			<div class="actions">
+				<button
+					type="button"
+					class="deny"
+					onclick={handleDeny}
+					disabled={approving || denying || switchingAccount}
+				>
+					{denying ? 'Denying...' : 'Deny'}
+				</button>
+				<button type="button" onclick={handleApprove} disabled={approving || denying || switchingAccount}>
+					{approving ? 'Approving...' : 'Approve'}
+				</button>
+			</div>
 		{:else if status === 'success'}
 			<p class="subtitle">Authorized</p>
 			<p class="success-message">CLI session authorized. You can close this tab.</p>
+			<p class="not-you">
+				Not you? <a href="/console/settings">Change your password</a>. That signs out every other session,
+				including this one.
+			</p>
 			<a href="/console" class="primary-link">Go to your workspaces</a>
+		{:else if status === 'denied'}
+			<p class="subtitle">Request denied</p>
+			<p class="success-message">
+				Nothing was approved. The terminal that asked will stop waiting. You can close this tab.
+			</p>
 		{/if}
 	</div>
 </div>
@@ -348,6 +420,73 @@
 		color: var(--text-primary);
 		opacity: 1;
 		text-decoration: underline;
+	}
+
+	.request-context {
+		text-align: left;
+		margin-bottom: var(--space-5);
+		padding: var(--space-3);
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		font-size: 0.8rem;
+		line-height: 1.4;
+	}
+
+	.request-context p {
+		margin: 0;
+	}
+
+	.requested {
+		color: var(--text-secondary);
+	}
+
+	.request-context .agent {
+		margin-top: var(--space-1);
+		color: var(--text-muted);
+		display: flex;
+		flex-direction: column;
+	}
+
+	.agent-text {
+		overflow-wrap: anywhere;
+		font-family: var(--font-mono);
+	}
+
+	.agent-label {
+		font-style: italic;
+	}
+
+	.warning {
+		color: var(--text-primary);
+		font-size: 0.85rem;
+		font-weight: 500;
+		line-height: 1.4;
+		text-align: left;
+		margin-bottom: var(--space-4);
+	}
+
+	.actions {
+		display: flex;
+		gap: var(--space-3);
+	}
+
+	button.deny {
+		background: var(--bg-primary);
+		color: var(--text-primary);
+		border: 1px solid var(--border);
+	}
+
+	.not-you {
+		color: var(--text-secondary);
+		font-size: 0.85rem;
+		line-height: 1.5;
+		margin-top: var(--space-4);
+		text-align: left;
+	}
+
+	.not-you a {
+		color: var(--accent-primary-strong);
 	}
 
 	button.link-button:disabled {
