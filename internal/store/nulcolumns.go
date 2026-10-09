@@ -280,6 +280,12 @@ var nulColumns = []nulColumn{
 	// text). seed_fields is parsed as JSON by the state and update paths.
 	{"item_builtin_origin", "seed_content", classText},
 	{"item_builtin_origin", "seed_fields", classJSON},
+	// TASK-2253: who asked for a CLI sign-in, header-derived like
+	// sessions.ip_address. The agent is the request's User-Agent verbatim
+	// (capped); the address is clientIP, which a trusted proxy's
+	// X-Forwarded-For can set.
+	{"cli_auth_sessions", "requester_ip", classText},
+	{"cli_auth_sessions", "requester_user_agent", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -303,6 +309,7 @@ var nulTriggerMigrations = []string{
 	"094_nul_invariant_triggers_post084.sql",
 	"099_nul_invariant_triggers_post098.sql",
 	"129_nul_invariant_triggers_post128.sql",
+	"133_nul_invariant_triggers_post132.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -315,6 +322,9 @@ var nulColumnTriggerFile = map[string]string{
 	// 128 introduced the table (TASK-3462).
 	"item_builtin_origin.seed_content": "129_nul_invariant_triggers_post128.sql",
 	"item_builtin_origin.seed_fields":  "129_nul_invariant_triggers_post128.sql",
+	// 132 added the columns (TASK-2253).
+	"cli_auth_sessions.requester_ip":         "133_nul_invariant_triggers_post132.sql",
+	"cli_auth_sessions.requester_user_agent": "133_nul_invariant_triggers_post132.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered

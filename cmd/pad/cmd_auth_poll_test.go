@@ -162,3 +162,39 @@ func TestPollAndSaveCLIAuth_TransientErrorsRecover(t *testing.T) {
 		t.Fatalf("pollAndSaveCLIAuth: unexpected error: %v", err)
 	}
 }
+
+// TestPollAndSaveCLIAuth_DeniedStopsAtOnce: a sign-in denied in the browser
+// (TASK-2253) ends the loop on the first poll that reports it, with its own
+// error, instead of counting toward the consecutive-error bound. The server
+// answers it as 410 cli_auth_denied rather than a 200 status so that a CLI
+// from before Deny still stops, through that bound
+// (TestPollAndSaveCLIAuth_ConsecutiveErrorsBound covers that path).
+func TestPollAndSaveCLIAuth_DeniedStopsAtOnce(t *testing.T) {
+	withFastCLIAuthPolling(t, 5*time.Millisecond, 5*time.Second, 1000)
+
+	var reqs atomic.Int32
+	srv := cliAuthPollServer(t, func(w http.ResponseWriter, r *http.Request) {
+		reqs.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte(`{"error":{"code":"cli_auth_denied","message":"This sign-in was denied in the browser."}}`))
+	})
+	defer srv.Close()
+
+	client := cli.NewClientFromURL(srv.URL)
+	cfg := remoteHeadlessCfg(srv.URL)
+
+	err := pollAndSaveCLIAuth(t.Context(), client, cfg, testSession())
+	if err == nil {
+		t.Fatal("pollAndSaveCLIAuth returned nil for a denied sign-in, want error")
+	}
+	if !strings.Contains(err.Error(), "denied in the browser") {
+		t.Errorf("error %q should say the sign-in was denied", err.Error())
+	}
+	if strings.Contains(err.Error(), "polling for approval failed") {
+		t.Errorf("error %q reads as a poll failure; a denial is an answer", err.Error())
+	}
+	if n := reqs.Load(); n != 1 {
+		t.Errorf("polled %d times, want 1: a denial is final", n)
+	}
+}

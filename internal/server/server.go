@@ -1809,6 +1809,7 @@ func (s *Server) setupRouter() {
 				r.Post("/cli/sessions", s.handleCreateCLIAuthSession)
 				r.Get("/cli/sessions/{code}", s.handlePollCLIAuthSession)
 				r.Post("/cli/sessions/{code}/approve", s.handleApproveCLIAuthSession)
+				r.Post("/cli/sessions/{code}/deny", s.handleDenyCLIAuthSession)
 			})
 
 			// Admin endpoints (admin-only, handlers check role internally)

@@ -905,8 +905,11 @@ func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
 	// The sixth is the app-grant revoke's audit row (TASK-3399), the same
 	// audit shape as the MCP connection revoke beside it: the sanitised
 	// header into activities.user_agent.
-	if safeUAUses != 7 {
-		t.Errorf("requestUserAgent occurrences = %d, want 7 (1 declaration + 6 call sites); "+
+	// The seventh is the CLI sign-in request (TASK-2253): the sanitised
+	// header into cli_auth_sessions.requester_user_agent, which the approval
+	// page shows labelled as the requester's own claim.
+	if safeUAUses != 8 {
+		t.Errorf("requestUserAgent occurrences = %d, want 8 (1 declaration + 7 call sites); "+
 			"a site was added or removed — re-justify and re-pin", safeUAUses)
 	}
 }
