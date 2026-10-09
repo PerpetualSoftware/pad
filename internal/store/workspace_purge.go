@@ -218,6 +218,7 @@ var purgeWorkspaceChildDeletes = []struct{ what, query string }{
 	{"workspace-scoped api tokens", `DELETE FROM api_tokens WHERE workspace_id = ?`},
 	{"share link views", `DELETE FROM share_link_views WHERE share_link_id IN (SELECT id FROM share_links WHERE workspace_id = ?)`},
 	{"share links", `DELETE FROM share_links WHERE workspace_id = ?`},
+	{"workspace import status", `DELETE FROM workspace_import_status WHERE workspace_id = ?`},
 	{"oauth connection workspaces", `DELETE FROM oauth_connection_workspaces WHERE workspace_id = ?`},
 	{"user report layouts", `DELETE FROM user_report_layouts WHERE workspace_id = ?`},
 	{"user workspace tabs", `DELETE FROM user_workspace_tabs WHERE workspace_id = ?`},

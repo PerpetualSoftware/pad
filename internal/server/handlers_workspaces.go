@@ -236,6 +236,25 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		if workspaces == nil {
 			workspaces = []models.Workspace{}
 		}
+		// TASK-896: the list carries the partial-import STATUS only; the
+		// note is read through GET /workspaces/{slug}, which knows the
+		// caller's role there.
+		if len(workspaces) > 0 {
+			ids := make([]string, len(workspaces))
+			for i := range workspaces {
+				ids[i] = workspaces[i].ID
+			}
+			statuses, err := s.store.ListWorkspaceImportStatuses(ids)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			for i := range workspaces {
+				if st, ok := statuses[workspaces[i].ID]; ok {
+					workspaces[i].ImportStatus = &models.WorkspaceImportStatus{Status: st.Status}
+				}
+			}
+		}
 		writeJSON(w, http.StatusOK, workspaces)
 		return
 	}
@@ -586,7 +605,42 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 	// A client that reaches the workspace by URL resolves it through THIS endpoint,
 	// and without the flag it rendered member chrome.
 	ws.IsGuest = workspaceRole(r) == "guest"
+	if !s.attachImportStatus(w, r, ws) {
+		return
+	}
 	writeJSON(w, http.StatusOK, ws)
+}
+
+// attachImportStatus sets ws.ImportStatus from the partial-import marker
+// (TASK-896). The note is shown to owners and instance admins only; anyone
+// else who can read the workspace sees just the status. Answers 500 and
+// returns false on a store error.
+func (s *Server) attachImportStatus(w http.ResponseWriter, r *http.Request, ws *models.Workspace) bool {
+	st, err := s.store.GetWorkspaceImportStatus(ws.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if st != nil && !mayReadImportNote(r) {
+		st.Note = ""
+	}
+	ws.ImportStatus = st
+	return true
+}
+
+// mayReadImportNote: the workspace's owners, and instance admins who are
+// MEMBERS of it. An admin admitted only through a guest grant reads the
+// workspace as a guest and gets the status alone (codex r2).
+func mayReadImportNote(r *http.Request) bool {
+	role := workspaceRole(r)
+	if role == "owner" {
+		return true
+	}
+	if role == "" || role == "guest" {
+		return false
+	}
+	u := currentUser(r)
+	return u != nil && u.Role == "admin"
 }
 
 func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -615,6 +669,15 @@ func (s *Server) handleUpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	if ws == nil {
 		writeWorkspaceNotFound(w, "Workspace not found")
+		return
+	}
+	if input.ClearImportStatus {
+		if err := s.store.ClearWorkspaceImportStatus(ws.ID); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+	}
+	if !s.attachImportStatus(w, r, ws) {
 		return
 	}
 

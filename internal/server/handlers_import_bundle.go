@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -337,6 +338,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			if ws != nil {
 				if rerr := s.rollBackPartialImport("import bundle (interrupted)", ws, mint.OwnerID, err); rerr != nil {
 					state = importStateUnknown
+					s.markPartialImport(ws, err, partialImportRollbackFailed)
 					msg = fmt.Sprintf("The upload was interrupted before the bundle finished arriving, and the partial workspace %q could not be removed; check your workspace list", ws.Slug)
 				} else {
 					state = importStateRemoved
@@ -383,6 +385,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 				state = importStateRemoved
 				if rerr := s.rollBackPartialImport("import bundle", ws, mint.OwnerID, err); rerr != nil {
 					state = importStateUnknown
+					s.markPartialImport(ws, err, partialImportRollbackFailed)
 				}
 			}
 			report(state, nil)
@@ -429,6 +432,16 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			} else {
 				msg += fmt.Sprintf("; the partial workspace %q was kept and is yours to inspect or delete", ws.Slug)
 			}
+		}
+		// TASK-896: a kept partial workspace carries a durable marker, so the
+		// fact outlives this response (which a client may never read). The
+		// note is SANITIZED: a fixed category and a correlation id; the raw
+		// error, which can name paths and internal detail, goes only to the
+		// server log under that id.
+		// Unknown too: the workspace may still be live with ownership
+		// unconfirmed, and marking a row the compensation removed is inert.
+		if keptState == importStateKept || (ws != nil && keptState == importStateUnknown) {
+			s.markPartialImport(ws, err, partialImportCategory(err))
 		}
 		report(keptState, ws)
 		writeError(w, http.StatusBadRequest, "import_failed", msg)
@@ -1229,4 +1242,54 @@ func importedFilenameSource(observed attachments.FilenameSource, claimed string)
 		return attachments.FilenameSource(claimed)
 	}
 	return attachments.FilenameSourceUnknown
+}
+
+// newImportCorrelationID mints the id a partial-import note and its server
+// log line share (TASK-896).
+func newImportCorrelationID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "imp-unknown"
+	}
+	return "imp-" + hex.EncodeToString(b[:])
+}
+
+// partialImportRollbackFailed is the category for a workspace an import
+// meant to roll back but could not remove: it may still be live, partly
+// built, and the marker is what says so (codex r1 on TASK-896).
+const partialImportRollbackFailed = "the import failed and the partial workspace could not be removed"
+
+// markPartialImport records the durable partial-import marker on a workspace
+// an import left behind (TASK-896). The note is SANITIZED: the category and a
+// correlation id; the raw error, which can name paths and internal detail,
+// goes only to the server log under that id. A marker on a row the rollback
+// did remove is inert. A failed write is logged, never fatal: the response
+// already says what happened.
+func (s *Server) markPartialImport(ws *models.Workspace, err error, category string) {
+	ref := newImportCorrelationID()
+	note := "Import did not finish: " + category + ". Reference " + ref + "."
+	slog.Warn("import: partial workspace marked",
+		"workspace_id", ws.ID, "workspace_slug", ws.Slug, "import_ref", ref, "category", category, "error", err)
+	if merr := s.store.SetWorkspaceImportPartial(ws.ID, note); merr != nil {
+		slog.Error("import: could not record the partial-import marker",
+			"workspace_id", ws.ID, "import_ref", ref, "error", merr)
+	}
+}
+
+// partialImportCategory chooses a fixed category for a KEPT import from the
+// error's own leading words. The keep-path errors are all minted in
+// importBundle, so their prefixes are this file's vocabulary, not a
+// driver's. Nothing from the error text itself is stored.
+func partialImportCategory(err error) string {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	switch {
+	case strings.HasPrefix(msg, "manifest"), strings.HasPrefix(msg, "read manifest.json"):
+		return "the attachment manifest could not be read, so attachments were not restored"
+	case strings.HasPrefix(msg, "blob "), strings.HasPrefix(msg, "read blob"), strings.HasPrefix(msg, "skip unmanifested blob"):
+		return "an attachment file could not be read, so some attachments are missing"
+	}
+	return "the bundle stopped reading partway through"
 }

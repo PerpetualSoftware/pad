@@ -21,6 +21,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import PartialImportBanner from '$lib/components/PartialImportBanner.svelte';
 
 	/**
 	 * BUG-3006: the page's identity fence.
@@ -890,6 +891,14 @@
 		<header class="settings-header">
 			<h1>Settings</h1>
 		</header>
+
+		<!-- Partial-import banner (TASK-896). -->
+		<PartialImportBanner
+			slug={wsSlug}
+			status={workspaceStore.current?.slug === wsSlug ? workspaceStore.current?.import_status : undefined}
+			{isOwner}
+			ondelete={() => switchTab('danger')}
+		/>
 
 		<div class="tab-bar" role="tablist">
 			{#each tabs as tab (tab.id)}
