@@ -18,6 +18,7 @@
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import DetailCard from './DetailCard.svelte';
 	import GraphToolbar from './GraphToolbar.svelte';
+	import { GRAPH_PALETTES, resolveGraphTheme, type GraphThemeName } from './graphTheme';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -271,6 +272,34 @@
 			.replace(/'/g, '&#39;');
 	}
 
+	// ── Theme (TASK-2239) ───────────────────────────────────────────────────────
+	// WebGL needs literal colors, so the palette follows the theme the page shows:
+	// the stored choice (data-theme) or the system preference. A toggle while the
+	// graph is open recolors the existing labels and repaints in place.
+	let graphTheme = $state<GraphThemeName>(resolveGraphTheme());
+	const palette = $derived(GRAPH_PALETTES[graphTheme]);
+	function applyTheme() {
+		const next = resolveGraphTheme();
+		if (next === graphTheme) return;
+		graphTheme = next;
+		if (!graph) return;
+		for (const raw of (graph.graphData()?.nodes ?? []) as NodeObject[]) {
+			const sprite = (raw as unknown as { __labelSprite?: { color: string } }).__labelSprite;
+			if (sprite) sprite.color = GRAPH_PALETTES[next].label;
+		}
+		repaint();
+	}
+	onMount(() => {
+		const observer = new MutationObserver(applyTheme);
+		observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+		const media = window.matchMedia?.('(prefers-color-scheme: light)');
+		media?.addEventListener?.('change', applyTheme);
+		return () => {
+			observer.disconnect();
+			media?.removeEventListener?.('change', applyTheme);
+		};
+	});
+
 	// ── Title (kept separate from data-sync effects per CONVE-606) ───────────────
 	onMount(() => {
 		workspaceStore.setCurrent(wsSlug);
@@ -491,13 +520,13 @@
 		// Resting color, faded toward the backdrop for terminal nodes. mixHex keeps the
 		// collection hue recognizable while reading as "receded into the dark".
 		const base = n.is_terminal
-			? mixHex(collectionHex, '#0a0a1a', 1 - TERMINAL_ALPHA)
+			? mixHex(collectionHex, palette.backdrop, 1 - TERMINAL_ALPHA)
 			: collectionHex;
 		// Live-layer glow: a recently-touched node mixes toward white, brightest on a
 		// fresh touch and decaying back to base over PULSE_MS (the prune interval's
 		// graph.refresh ticks animate the fade). When nothing's touched, t=0 → base.
 		const t = pulseFactor(n.ref);
-		const lit = t > 0 ? mixHex(base, '#ffffff', t) : base;
+		const lit = t > 0 ? mixHex(base, palette.glow, t) : base;
 		if (selectedRef === null) return lit;
 		// Focus-mode precedence (CHAIN > pulse > dim): a blocker-chain node is "the
 		// reason you're stuck", so it wins over everything — even an out-of-
@@ -528,21 +557,21 @@
 			// Compare against the preserved raw refs — the force layout mutates
 			// source/target into node objects after ingest.
 			const adjacent = l.sourceRef === selectedRef || l.targetRef === selectedRef;
-			if (!adjacent) return 'rgba(148, 163, 184, 0.06)';
+			if (!adjacent) return `rgba(${palette.edgeRgb}, 0.06)`;
 			if (l.type === 'blocks') return 'rgba(244, 63, 94, 0.95)';
-			return 'rgba(148, 163, 184, 0.95)';
+			return `rgba(${palette.edgeRgb}, 0.95)`;
 		}
 		if (l.type === 'blocks') return 'rgba(244, 63, 94, 0.85)';
 		// Structural links share a bright slate, but supersedes/split-from read as
 		// "lineage" rather than "structure" — give them a slightly lower alpha (0.6 vs
 		// 0.85) so the hard parent/implements scaffolding stays the dominant structure.
 		if (l.type === 'supersedes' || l.type === 'split-from') {
-			return 'rgba(148, 163, 184, 0.6)';
+			return `rgba(${palette.edgeRgb}, 0.6)`;
 		}
 		if (l.type === 'parent' || l.type === 'implements') {
-			return 'rgba(148, 163, 184, 0.85)';
+			return `rgba(${palette.edgeRgb}, 0.85)`;
 		}
-		return 'rgba(148, 163, 184, 0.35)';
+		return `rgba(${palette.edgeRgb}, 0.35)`;
 	}
 
 	// True when a link is on the lit blocker chain (keyed by raw refs, since the force
@@ -601,7 +630,7 @@
 	function makeLabelSprite(n: GraphNode3D, SpriteText: any) {
 		// Soft slate so labels read against the dark backdrop without out-shouting the
 		// colored nodes. textHeight ~3 keeps them legible but small.
-		const sprite = new SpriteText(n.ref, 3, '#cbd5e1');
+		const sprite = new SpriteText(n.ref, 3, palette.label);
 		// depthWrite off so labels never z-fight with node spheres / each other.
 		sprite.material.depthWrite = false;
 		sprite.material.transparent = true;
