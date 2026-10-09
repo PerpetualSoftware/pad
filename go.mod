@@ -13,7 +13,11 @@ go 1.26.5
 // so raising the floor would break the Nix build outright; see BUG-2567
 // for the Nix-packaged binary, which stays on 1.26.5 until nixpkgs
 // catches up.
-toolchain go1.26.6
+//
+// Raised to go1.26.9 (2026-10-08) for twelve more standard-library advisories
+// in net/http and html/template (GO-2026-6603, GO-2026-6600, GO-2026-6599 and
+// others), fixed in 1.26.9, which turned govulncheck red on every PR the same way.
+toolchain go1.26.9
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -138,7 +142,7 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect

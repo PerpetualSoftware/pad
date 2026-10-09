@@ -7,7 +7,9 @@ COPY web/ ./
 RUN npm run build
 
 # Stage 2: Build Go binary
-FROM golang:1.27-alpine AS go-builder
+# Pinned to the toolchain go.mod names, so a self-built image ships the same
+# standard library as the release binaries (govulncheck, 2026-10-08).
+FROM golang:1.26.9-alpine AS go-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
