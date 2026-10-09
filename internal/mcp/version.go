@@ -1738,6 +1738,17 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.79 — TASK-2863. BEHAVIOR bump, ADDITIVE in effect: a read-only
+//     grant (`read` / `pad:read`, PAT or OAuth) may now run a playbook.
+//     `pad_playbook.action=run` used to be refused for one, because run is
+//     a POST and read scopes allowed only GET/HEAD/OPTIONS, although run
+//     stores nothing. Over remote /mcp and stdio alike (the CLI's own
+//     `pad playbook run` with a read PAT) it now returns the bound body.
+//     It is the ONE POST a read grant may make: an exact-path allowlist in
+//     tokenScopeAllows whose variable segments must be plain names.
+//     `pad_playbook.action=match` and every write stay refused. No name,
+//     enum or param moved.
+//
 //     0.78 — TASK-2308. BEHAVIOR bump on the v0.45 / v0.42 grounds: over
 //     REMOTE /mcp, an OAuth connection whose grant cannot write (pad:read)
 //     that calls a WRITE action (any catalog action not in readOnlyActions),
@@ -1955,7 +1966,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.78"
+const ToolSurfaceVersion = "0.79"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
