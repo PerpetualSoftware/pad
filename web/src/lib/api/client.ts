@@ -2568,13 +2568,15 @@ export const api = {
 		 */
 		get: (
 			ws: string,
-			opts?: { window?: ReportWindow; collections?: string[]; offset?: number; includeItems?: boolean }
+			opts?: { window?: ReportWindow; collections?: string[]; offset?: number; includeItems?: boolean; tz?: string }
 		) => {
 			const params = new URLSearchParams();
 			if (opts?.window) params.set('window', opts.window);
 			if (opts?.collections?.length) params.set('collections', opts.collections.join(','));
 			if (opts?.offset && opts.offset > 0) params.set('offset', String(opts.offset));
 			if (opts?.includeItems) params.set('include_items', 'true');
+			// The viewer's IANA zone: buckets are then local days and hours (TASK-3524).
+			if (opts?.tz) params.set('tz', opts.tz);
 			const qs = params.toString();
 			return request<ReportData>(`/workspaces/${ws}/report${qs ? `?${qs}` : ''}`);
 		},

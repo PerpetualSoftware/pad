@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -40,6 +41,24 @@ func (s *Server) handleGetReport(w http.ResponseWriter, r *http.Request) {
 	// include_items adds the "what shipped" completed-items list (opt-in).
 	if v := r.URL.Query().Get("include_items"); v == "true" || v == "1" {
 		opts.IncludeItems = true
+	}
+	// tz=<IANA zone> buckets the series in the viewer's zone (TASK-3524).
+	// Absent is UTC, the behaviour before it, so the CLI and MCP (which send
+	// none) are unchanged. An IANA name rather than an offset: a month window
+	// can cross a DST change, and one offset is wrong for every day past it.
+	// "Local" is refused: it would mean the SERVER's zone.
+	//
+	// CACHE KEY: nothing caches this response today, server or client. Any
+	// cache added later must key on (workspace, window, offset, collections,
+	// include_items, tz, the caller's visibility scope); the same request
+	// without tz is a different report.
+	if tz := strings.TrimSpace(r.URL.Query().Get("tz")); tz != "" {
+		loc, lerr := time.LoadLocation(tz)
+		if lerr != nil || tz == "Local" {
+			writeError(w, http.StatusBadRequest, "invalid_tz", "`tz` must be an IANA time zone name, such as America/Los_Angeles")
+			return
+		}
+		opts.Location = loc
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("collections")); raw != "" {
 		for _, slug := range strings.Split(raw, ",") {

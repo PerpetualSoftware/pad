@@ -7,7 +7,7 @@
 	import BarChart from '$lib/components/charts/BarChart.svelte';
 	import type { ChartDatum } from '$lib/components/charts/theme';
 	import type { Collection, ReportData, ReportWindow } from '$lib/types';
-	import { bucketLabels } from '$lib/insights/bucketLabel';
+	import { bucketLabels, viewerTimeZone } from '$lib/insights/bucketLabel';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -82,7 +82,8 @@
 				window: win,
 				collections: colls.length > 0 ? colls : undefined,
 				offset: off,
-				includeItems: true
+				includeItems: true,
+				tz: viewerTimeZone()
 			});
 			if (seq !== reqSeq) return;
 			report = data;
@@ -136,7 +137,7 @@
 	// "M/D Hh" for an hour in the reader's local time.
 	const throughputData = $derived.by<ChartDatum[]>(() => {
 		const buckets = report?.buckets ?? [];
-		const labels = bucketLabels(buckets.map((b) => b.bucket));
+		const labels = bucketLabels(buckets.map((b) => b.bucket), !!report?.tz);
 		return buckets.map((b, i) => ({ bucket: labels[i], created: b.created, completed: b.completed }));
 	});
 

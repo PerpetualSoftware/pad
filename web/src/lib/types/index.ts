@@ -2110,6 +2110,8 @@ export interface ReportData {
 	/** periods back from now (0 = current); set via the period-nav controls */
 	offset: number;
 	granularity: 'hour' | 'day';
+	/** The zone the bucket keys are in, when the request named one (TASK-3524); absent means UTC keys. */
+	tz?: string;
 	range_start: string; // RFC3339 UTC
 	range_end: string; // RFC3339 UTC
 	collections: string[]; // slugs included

@@ -9,7 +9,7 @@
 	import type { ChartDatum } from '$lib/components/charts/theme';
 	import type { Collection, ReportData, ReportLayout, ReportWindow } from '$lib/types';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
-	import { bucketLabels } from '$lib/insights/bucketLabel';
+	import { bucketLabels, viewerTimeZone } from '$lib/insights/bucketLabel';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -226,7 +226,8 @@
 				offset: off,
 				// Pull the completed items so the "What shipped" card can list them
 				// with links. Same payload the print report uses.
-				includeItems: true
+				includeItems: true,
+				tz: viewerTimeZone()
 			});
 			// Only the latest in-flight request commits — discard stale responses.
 			if (seq !== reqSeq) return;
@@ -344,7 +345,7 @@
 	// keys are sortable UTC strings ("2026-07-19T16").
 	const throughputData = $derived.by<ChartDatum[]>(() => {
 		const buckets = report?.buckets ?? [];
-		const labels = bucketLabels(buckets.map((b) => b.bucket));
+		const labels = bucketLabels(buckets.map((b) => b.bucket), !!report?.tz);
 		return buckets.map((b, i) => ({ bucket: labels[i], created: b.created, completed: b.completed }));
 	});
 

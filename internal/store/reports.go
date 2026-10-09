@@ -52,6 +52,10 @@ type ReportOptions struct {
 	// workspace report.
 	ScopeToVisible       bool
 	VisibleCollectionIDs []string
+	// Location buckets the throughput series in this zone (TASK-3524): a day
+	// bucket is a local calendar day, an hour bucket a local hour. nil is UTC,
+	// the behaviour every caller had before, byte for byte.
+	Location *time.Location
 }
 
 // completedItemsCap bounds the "what shipped" list so a pathological window
@@ -133,9 +137,12 @@ type ReportCompletedItem struct {
 // ReportData is the full report response. This is the stable contract the
 // Reports UI (TASK-1633), CLI/MCP (TASK-1635), and charts (TASK-1632) consume.
 type ReportData struct {
-	Window                string                  `json:"window"`
-	Offset                int                     `json:"offset"`      // periods back from now (0 = current)
-	Granularity           string                  `json:"granularity"` // "hour" | "day"
+	Window      string `json:"window"`
+	Offset      int    `json:"offset"`      // periods back from now (0 = current)
+	Granularity string `json:"granularity"` // "hour" | "day"
+	// TZ is the zone the buckets are in, echoed only when the request named
+	// one (TASK-3524). Absent means the bucket keys are UTC.
+	TZ                    string                  `json:"tz,omitempty"`
 	RangeStart            string                  `json:"range_start"` // RFC3339 UTC
 	RangeEnd              string                  `json:"range_end"`   // RFC3339 UTC
 	Collections           []string                `json:"collections"` // slugs included
@@ -237,22 +244,41 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 		slugByID[c.id] = c.slug
 	}
 
+	// A zoned report groups by a finer UTC unit in SQL and folds into local
+	// buckets in Go (reports_tz.go). Without a zone, nothing below changes.
+	loc := opts.Location
+	sqlGran := gran
+	if loc != nil {
+		data.TZ = loc.String()
+		sqlGran = reportFineGranularity(loc, start, end)
+	}
+	fill := func(created, completed map[string]int) []ReportBucket {
+		if loc == nil {
+			return s.zeroFilledBuckets(start, end, gran, created, completed)
+		}
+		return zeroFilledBucketsIn(start, end, gran, loc, created, completed)
+	}
+
 	// No collections in scope → empty (but well-formed) report.
 	if len(collIDs) == 0 {
-		data.Buckets = s.zeroFilledBuckets(start, end, gran, nil, nil)
+		data.Buckets = fill(nil, nil)
 		return data, nil
 	}
 
-	createdByBucket, err := s.reportCreatedBuckets(workspaceID, collIDs, startStr, endStr, gran)
+	createdByBucket, err := s.reportCreatedBuckets(workspaceID, collIDs, startStr, endStr, sqlGran)
 	if err != nil {
 		return nil, err
 	}
-	completedByBucket, completedByColl, err := s.reportCompletedBuckets(workspaceID, colls, startStr, endStr, gran)
+	completedByBucket, completedByColl, err := s.reportCompletedBuckets(workspaceID, colls, startStr, endStr, sqlGran)
 	if err != nil {
 		return nil, err
+	}
+	if loc != nil {
+		createdByBucket = foldReportBuckets(createdByBucket, sqlGran, gran, loc)
+		completedByBucket = foldReportBuckets(completedByBucket, sqlGran, gran, loc)
 	}
 
-	data.Buckets = s.zeroFilledBuckets(start, end, gran, createdByBucket, completedByBucket)
+	data.Buckets = fill(createdByBucket, completedByBucket)
 	for _, b := range data.Buckets {
 		data.Totals.Created += b.Created
 		data.Totals.Completed += b.Completed

@@ -357,6 +357,11 @@ func dateBucketSubstr(column, granularity string) string {
 	if granularity == "hour" {
 		return fmt.Sprintf("SUBSTR(%s, 1, 13)", column)
 	}
+	// "YYYY-MM-DDTHH:MM", for a zoned report in a zone whose offset is not a
+	// whole hour (TASK-3524, reports_tz.go).
+	if granularity == "minute" {
+		return fmt.Sprintf("SUBSTR(%s, 1, 16)", column)
+	}
 	return fmt.Sprintf("SUBSTR(%s, 1, 10)", column)
 }
 
