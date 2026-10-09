@@ -49,7 +49,10 @@ func compressSkips(r *http.Request) bool {
 	// Reads under the credential routes as well, for the same reason: they
 	// are small, and nothing is lost by leaving them alone.
 	case strings.HasPrefix(p, "/api/v1/auth/"), strings.HasPrefix(p, "/oauth/"), strings.HasPrefix(p, "/api/v1/oauth/"),
-		strings.HasSuffix(p, "/tokens") || strings.Contains(p, "/tokens/"):
+		strings.HasSuffix(p, "/tokens") || strings.Contains(p, "/tokens/"),
+		// The one read that returns a live secret: a workspace's claim code
+		// (codex r2). Webhook secrets are masked on reads; the rest are writes.
+		strings.HasSuffix(p, "/claim-code"):
 		return true
 	}
 	return false
