@@ -45,3 +45,14 @@ describe('bucketLabels', () => {
 		expect(bucketLabels(['2026-06-20', '2026-06-21'])).toEqual(['6/20', '6/21']);
 	});
 });
+
+describe('keys the server already bucketed locally (TASK-3524)', () => {
+	it('reformats a local hour key without converting it again', () => {
+		expect(bucketLabel('2026-07-19T16', true)).toBe('7/19 16h');
+		expect(bucketLabels(['2026-07-19T16', '2026-07-19T17'], true)).toEqual(['7/19 16h', '7/19 17h']);
+	});
+
+	it('labels a day the same either way', () => {
+		expect(bucketLabel('2026-06-20', true)).toBe('6/20');
+	});
+});
