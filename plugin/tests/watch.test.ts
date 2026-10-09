@@ -4,7 +4,7 @@ import { expect, mock, test } from 'claude-code/testing'
 // consented (PLAN-2613's `pad session should-arm`), and an unarmed session runs
 // nothing and shows nothing. These tests stand in for the CLI and the stream.
 
-type Opts = { armed?: boolean; noCli?: boolean; chunks?: { stream: string; text: string }[]; gate?: Promise<void> }
+type Opts = { armed?: boolean; noCli?: boolean; chunks?: { stream: string; text: string }[]; gate?: Promise<void>; holdSubmit?: boolean }
 
 function stubs(on: any, opts: Opts = {}) {
   const runs: { argv: string[]; env: Record<string, string> }[] = []
@@ -45,8 +45,13 @@ function stubs(on: any, opts: Opts = {}) {
       stream.closed = true
     }
   })
-  on('prompt.submit', ($: any, e: any) => { submitted.push(e.text); return { text: e.text } })
-  return { runs, spawns, submitted, shown, stream }
+  const held = { release: () => {} }
+  on('prompt.submit', ($: any, e: any) => {
+    submitted.push(e.text)
+    if (!opts.holdSubmit) return { text: e.text }
+    return new Promise((r) => { held.release = () => r({ text: e.text }) })
+  })
+  return { runs, spawns, submitted, shown, stream, held }
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 30))
@@ -143,4 +148,21 @@ test('a session that ends while the CLI is still answering starts nothing', asyn
   release()
   await settle()
   expect(s.spawns).toEqual([])
+})
+
+test('lines read after the session ended are not relayed by a flush already waiting', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, { armed: true, holdSubmit: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
+  await $.session.start({ cwd: '/work/demo' })
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual(['first'])
+  await $.session.end({ reason: 'prompt_input_exit' })
+  s.stream.release()
+  s.held.release()
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual(['first'])
 })

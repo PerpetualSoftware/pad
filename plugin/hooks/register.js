@@ -1055,9 +1055,12 @@ async function sessionPid($) {
 // message waited for the session to go idle: one message per idle window.
 async function flushWatch($) {
   if (submitting || !pending.length) return
+  const epoch = watchEpoch
   submitting = true
   try {
-    while (pending.length) {
+    // A flush the session's end overtook relays nothing more (codex r2): a
+    // submit already waiting cannot be withdrawn, but nothing follows it.
+    while (pending.length && epoch === watchEpoch) {
       const text = pending.join('\n')
       pending = []
       await $.prompt.submit({ text })
@@ -1066,7 +1069,7 @@ async function flushWatch($) {
     // a refused submit (the session is ending) drops the lines; the stream
     // goes on, and the next line tries again
   } finally {
-    submitting = false
+    if (epoch === watchEpoch) submitting = false
   }
 }
 
@@ -1083,7 +1086,9 @@ async function startWatch($) {
   try {
     armed = (await $.process.run(['pad', 'session', 'should-arm'], { env, timeoutMs: 10000 })).exitCode === 0
   } catch {}
-  // The session may have ended while the CLI answered (codex r1).
+  // The session may have ended while the CLI answered (codex r1). Consent
+  // withdrawn in that window needs no check here: pad-monitor.sh asks
+  // should-arm again before it streams, and that answer is the one that counts.
   if (!armed || watch || epoch !== watchEpoch) return
   let it
   try {
@@ -1115,6 +1120,7 @@ function stopWatch() {
   const it = watch
   watch = null
   pending = []
+  submitting = false
   if (it) {
     try { it.return() } catch {}
   }

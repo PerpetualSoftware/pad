@@ -104,7 +104,8 @@ fi
 # /bin/sh reject the EXIT name) then does the cleanup on the way out.
 # The stream runs as a child the traps can name: a caller that stops this
 # script (the mod at session end) must stop the stream too, and a signal to
-# this shell does not reach a foreground child of its own.
+# this shell does not reach a foreground child of its own. `pad watch` is
+# one process and starts none of its own, so the child is the whole tree.
 child=
 trap 'rm -rf "$lock" 2>/dev/null' 0
 trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 130' INT TERM
