@@ -26,7 +26,8 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { readPaneScrollTop } from '$lib/collections/paneController';
-	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
+	import type { Component } from 'svelte';
+	import { loadItemDetailComponent } from '$lib/components/items/itemDetailLoader';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
 	import { paneFocusables, nextTrapTarget, inExemptSurface } from '$lib/collections/paneFocus';
@@ -657,7 +658,27 @@
 	// was still in flight (PLAN-2105 / TASK-2114; the pre-extraction route did
 	// this from an `openItemRef`→null effect — the shell's unmount IS that
 	// transition now).
+	// ItemDetail is imported on demand (TASK-2226): it carries the editor
+	// stack, about 1 MB a list page used to parse before its first paint. The
+	// host pages warm it in idle time, so this usually resolves at once.
+	let ItemDetailComp = $state<Component<Record<string, unknown>> | null>(null);
+	let itemDetailFailed = $state(false);
+	let paneDestroyed = false;
+	function loadPaneDetail() {
+		itemDetailFailed = false;
+		loadItemDetailComponent().then(
+			(c) => {
+				if (!paneDestroyed) ItemDetailComp = c;
+			},
+			() => {
+				if (!paneDestroyed) itemDetailFailed = true;
+			}
+		);
+	}
+	if (browser) loadPaneDetail();
+
 	onDestroy(() => {
+		paneDestroyed = true;
 		cancelRestore?.();
 		dropPending();
 		if (browser) window.removeEventListener('popstate', onPopState);
@@ -833,7 +854,8 @@
 			`openItemRef` instead (see the host's declaration). The host owns
 			`paneMintForRoute`; this shell just renders it.
 		-->
-		<ItemDetail
+		{#if ItemDetailComp}
+		<ItemDetailComp
 			ref={paneMintForRoute}
 			embedded
 			onReady={handleItemReady}
@@ -847,10 +869,32 @@
 			onOpenTarget={onOpenTarget}
 			onBack={onBack}
 		/>
+		{:else if itemDetailFailed}
+			<div class="pane-load-state" role="alert">
+				<p>Couldn't load the item view.</p>
+				<button type="button" class="pane-load-retry" onclick={loadPaneDetail}>Try again</button>
+			</div>
+		{:else}
+			<div class="pane-load-state" role="status" aria-live="polite">Loading…</div>
+		{/if}
 	{/if}
 </aside>
 
 <style>
+	.pane-load-state {
+		padding: var(--space-6);
+		color: var(--text-muted);
+		font-size: 0.9rem;
+	}
+	.pane-load-retry {
+		margin-top: var(--space-2);
+		padding: var(--space-1) var(--space-3);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: transparent;
+		color: var(--text-primary);
+		cursor: pointer;
+	}
 	.item-pane {
 		/* Width comes from the persisted `--pane-width` CSS var (TASK-2114);
 		   the clamp() is the fallback before localStorage is read / when no
