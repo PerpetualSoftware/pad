@@ -91,7 +91,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// Re-reviewed for BUG-3473: the index await is skipped when the index is
 	// already ready; it adds no await and commits nothing, and every fence
 	// after the Promise.all is unchanged.
-	loadData: { reviewed: '629f6097c0b3', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
+	loadData: { reviewed: '6fcfddff94dd', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	// Re-reviewed for BUG-2836: saveTitle's own lines are unchanged (the diff
 	// touches only a $derived beside titleDraft and the textarea's aria
@@ -220,9 +220,16 @@ const CONTINUATIONS: SignedRow[] = [
 		may: ['renameOverride'],
 	},
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '8a8d4754017f' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '98627f3b6d3b' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'd0298209ce68' },
 	// BUG-3473: the background index catch-up on an already-populated index.
-	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: 'a6c978995afd' },
+	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: '15efa1073455' },
+	// TASK-2228: loadData issues progress and links together and settles each
+	// into a plain result object; loadData's own myGen checks after each await
+	// fence the use of those results.
+	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: '309144404056' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: '37b6f051ce88' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: '309144404056' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: '37b6f051ce88' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,

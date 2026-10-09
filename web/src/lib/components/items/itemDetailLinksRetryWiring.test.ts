@@ -42,8 +42,9 @@ describe('ItemDetail wires the links retry (BUG-2992)', () => {
 	});
 
 	it('the initial load records a failure and a success too', () => {
-		// The load's links try/catch is the one holding `linksHeldForItemId`.
-		const at = code.indexOf('await api.links.list(wsSlug, itemData.slug)');
+		// The load's links result branch is the one holding `linksHeldForItemId`
+		// (issued beside progress since TASK-2228, and awaited here).
+		const at = code.indexOf('const linksResult = await linksRead;');
 		expect(at, 'precondition: the load-site fetch').toBeGreaterThan(-1);
 		const tail = code.slice(at, code.indexOf('linksHeldForItemId !== itemData.id', at));
 		expect(tail).toContain('linksRetry.succeeded(itemData.id)');
