@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -179,4 +180,30 @@ func makeStr(n int, c byte) string {
 		b[i] = c
 	}
 	return string(b)
+}
+
+// The web forms route these refusals onto the password field by matching
+// their text (web/src/lib/auth/passwordRule.ts::isPasswordRuleError,
+// TASK-2260), because the API answers all of them with the generic
+// validation_error code. Rewording one here sends it back to the top of the
+// form without failing anything else, so the prefixes are pinned: change
+// them together with that regex.
+func TestValidatePasswordStrength_MessagesTheWebFormsRoute(t *testing.T) {
+	cases := []struct {
+		password string
+		want     string
+	}{
+		{"short", "Password must be at least 8 characters"},
+		{strings.Repeat("x", 129), "Password must be at most 128 characters"},
+		{"password123", "Password is too weak"},
+	}
+	for _, c := range cases {
+		err := validatePasswordStrength(c.password)
+		if err == nil {
+			t.Fatalf("validatePasswordStrength(%q) accepted it", c.password)
+		}
+		if !strings.HasPrefix(err.Error(), c.want) {
+			t.Errorf("validatePasswordStrength(%q) = %q, want prefix %q (see passwordRule.ts)", c.password, err.Error(), c.want)
+		}
+	}
 }

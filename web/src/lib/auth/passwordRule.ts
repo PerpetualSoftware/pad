@@ -24,7 +24,10 @@ export function localPasswordProblem(password: string): string | null {
 /**
  * Whether a server refusal is about the password itself (length or strength),
  * so the page shows it on the password field rather than at the top of the
- * form. The server's messages are fixed sentences with no reflected input.
+ * form. The server's messages are fixed sentences with no reflected input,
+ * and all of them come back with the generic validation_error code, so this
+ * matches their text. TestValidatePasswordStrength_MessagesTheWebFormsRoute
+ * (internal/server/password_strength_test.go) pins the same prefixes.
  */
 export function isPasswordRuleError(message: string | null | undefined): boolean {
 	if (!message) return false;
