@@ -71,6 +71,8 @@
 	let pendingEdits = $state(false);
 	// BUG-3244: the pending edits were set aside by an editor upgrade, not held by a tab.
 	let pendingSetAside = $state(false);
+	// TASK-2205: the server's message when a restore failed; cleared on retry or cancel.
+	let restoreError = $state<string | null>(null);
 
 	// PLAN-2348 U3: a card shows ITS OWN edit — the body before the write that
 	// made the row against the body after it — not the row against today's
@@ -142,6 +144,7 @@
 		confirming = false;
 		pendingEdits = false;
 		pendingSetAside = false;
+		restoreError = null;
 	}
 
 	async function confirmRestore(overwritePendingEdits: boolean) {
@@ -165,6 +168,7 @@
 		// already gone out, which is too late for a write.
 		const isSameIdentity = authStore.identityFence();
 		restoring = true;
+		restoreError = null;
 		try {
 			// BUG-2271: flush the initiating client's live collab editor into
 			// items.content FIRST, so the restore's undo-point (captured from
@@ -197,19 +201,25 @@
 				// user can decide to discard them. Same fences as the success path,
 				// first: the question is about this item, asked of this user.
 				if (!isSameIdentity()) return;
+				if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 				if (isContentPendingFlushError(err)) {
-					if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 					pendingEdits = true;
 					pendingSetAside = pendingEditsReason(err) === 'set_aside';
 					return;
 				}
-				throw err;
+				// TASK-2205 (audit C37): a failed restore says so, here, with the
+				// server's message, as the timeline's other actions do. It used to
+				// be rethrown from the click handler: no toast, no inline line, and
+				// the card snapped back as if nothing had been asked.
+				restoreError = err instanceof Error && err.message ? err.message : 'Restore failed';
+				return;
 			}
 			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			confirming = false;
 			pendingEdits = false;
 			pendingSetAside = false;
+			restoreError = null;
 			onRestore?.(updatedItem);
 		} finally {
 			restoring = false;
@@ -276,6 +286,9 @@
 							</span>
 						{:else}
 							<span class="confirm-text">{restoreLabel}?</span>
+						{/if}
+						{#if restoreError}
+							<span class="confirm-text confirm-warning restore-error" role="alert">Restore failed: {restoreError}</span>
 						{/if}
 						<div class="confirm-actions">
 							<button

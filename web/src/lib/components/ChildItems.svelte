@@ -230,6 +230,7 @@
 		// writes on the next user's cookie.
 		const isSameIdentity = authStore.identityFence();
 		const reqWs = wsSlug;
+		const reqItem = itemSlug;
 		const landed = await persistReorder<Item>(plan.writes, {
 			original: (id) => lane.find((c) => c.id === id),
 			// This component shows the new order from `groupData` already.
@@ -241,7 +242,14 @@
 			},
 			settle: () => isSameIdentity()
 		});
-		if (!landed && isSameIdentity()) void loadChildren();
+		if (!landed && isSameIdentity()) {
+			// TASK-2205 (audit C42): the reload puts the order back, so say why.
+			// Only while this parent is still the one shown.
+			if (wsSlug === reqWs && itemSlug === reqItem) {
+				toastStore.show("Couldn't save the new order, so it was put back.", 'error');
+			}
+			void loadChildren();
+		}
 	}
 
 	// Menu-driven reorder (IDEA-1898) — the non-drag counterpart, scoped to
