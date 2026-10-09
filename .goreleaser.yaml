@@ -30,6 +30,16 @@ builds:
       - -X main.version={{.Version}}
       - -X main.commit={{.ShortCommit}}
       - -X main.buildTime={{.Date}}
+    # THE RELEASE GATE (TASK-2035). Runs on each binary right after it is
+    # built and before anything is archived, signed, notarized, pushed or
+    # uploaded, so a failure stops the release with nothing published.
+    # Every target gets a static check; linux/amd64 and linux/arm64 (the
+    # workflow installs qemu-user-static) also boot and answer /health.
+    # No skip switch: a flake gets a re-run, not a bypass. See the script.
+    hooks:
+      post:
+        - cmd: scripts/release-smoke.sh "{{ .Path }}" "{{ .Target }}" "{{ .Version }}" "{{ .FullCommit }}"
+          output: true
 
 archives:
   - formats: ["tar.gz"]
