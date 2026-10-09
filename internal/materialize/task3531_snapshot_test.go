@@ -125,3 +125,43 @@ func TestTASK3531_SnapshotThroughTheWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The merge itself, in CI (lead, TASK-3531 PR 2: nothing may be covered only by
+// the opt-in e2e). A tab that slept past a compaction holds structs from
+// BEFORE it and sends updates built on them. Compact a corpus op-log's first k
+// rows, then replay the snapshot followed by the rows after k (exactly such
+// updates): the document must be the one all the rows give. On a log that was
+// deleted and reseeded instead, those updates would sit pending or duplicate
+// the text (BUG-3526's measurement).
+func TestTASK3531_UpdatesBuiltOnTheOldStructsMergeOntoTheSnapshot(t *testing.T) {
+	r := runner(t)
+	checked := 0
+	for _, c := range loadCorpus(t) {
+		job := c.job(t, r.SchemaVersion())
+		if len(job.Rows) < 4 {
+			continue
+		}
+		for _, k := range []int{len(job.Rows) / 3, len(job.Rows) / 2, len(job.Rows) - 1} {
+			head := Job{Rows: job.Rows[:k], SchemaVersion: job.SchemaVersion, LinkIndex: job.LinkIndex, WorkspaceSlug: job.WorkspaceSlug}
+			snap, err := r.Snapshot(context.Background(), head)
+			if err != nil {
+				// A prefix can end mid-dependency (pending): not compactable, so
+				// not a case compaction would produce.
+				continue
+			}
+			rest := append([][]byte{snap.Frame}, job.Rows[k:]...)
+			got, err := r.Materialize(context.Background(), Job{Rows: rest, SchemaVersion: job.SchemaVersion, LinkIndex: job.LinkIndex, WorkspaceSlug: job.WorkspaceSlug})
+			if err != nil {
+				t.Fatalf("%s k=%d: %v", c.Name, k, err)
+			}
+			if got != c.Expected {
+				t.Fatalf("%s k=%d: the later updates did not merge onto the snapshot\n--- got ---\n%s\n--- want ---\n%s", c.Name, k, got, c.Expected)
+			}
+			checked++
+		}
+	}
+	if checked < 30 {
+		t.Fatalf("only %d snapshot+suffix cases checked", checked)
+	}
+	t.Logf("%d snapshot+suffix cases merged to the full document", checked)
+}
