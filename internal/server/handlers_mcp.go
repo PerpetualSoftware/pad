@@ -177,7 +177,10 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	//
 	// MCPInsufficientScope (TASK-2308) sits after MCPAuditLog so its 403
 	// is audited as denied.
-	r.With(s.requireMCPAvailable, s.requireConfiguredHost, s.MCPBearerAuth, s.MCPAuditLog, s.MCPInsufficientScope).Mount("/mcp", transport)
+	//
+	// limitMCPBody (BUG-3534) runs before auth and before anything reads the
+	// body: the transport reads it whole and has no cap of its own.
+	r.With(s.requireMCPAvailable, s.requireConfiguredHost, s.limitMCPBody, s.MCPBearerAuth, s.MCPAuditLog, s.MCPInsufficientScope).Mount("/mcp", transport)
 
 	// Discovery endpoints — unauthenticated, oauthAvailable-gated. RFC 9728
 	// (protected-resource) and RFC 8414 (auth-server) metadata.
