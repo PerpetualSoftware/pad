@@ -1740,8 +1740,8 @@ const CmdhelpVersion = "0.1"
 //
 //     0.78 — TASK-2308. BEHAVIOR bump on the v0.45 / v0.42 grounds: over
 //     REMOTE /mcp, an OAuth connection whose grant cannot write (pad:read)
-//     that calls a WRITE action (any catalog action not in readOnlyActions)
-//     is answered HTTP 403 with `WWW-Authenticate: Bearer realm="pad",
+//     that calls a WRITE action (any catalog action not in readOnlyActions),
+//     in a single tools/call request of up to 1 MiB, is answered HTTP 403 with `WWW-Authenticate: Bearer realm="pad",
 //     error="insufficient_scope", error_description=..., scope="pad:read
 //     pad:write", resource_metadata=...` before dispatch, where it got a
 //     `permission_denied` tool result. That challenge is what lets a client
@@ -1750,7 +1750,8 @@ const CmdhelpVersion = "0.1"
 //     refused for a read token, and pad_item.import fails over HTTP for
 //     every token (BUG-3533) (pinned by
 //     TestScopePopulation_WriteActionsAreRefusedForReadTokens). A read-scoped
-//     PAT, which cannot re-authorize, keeps the tool error, and the ChatGPT
+//     PAT, which cannot re-authorize, keeps the tool error, as does a larger
+//     request (the server does not read past the bound), and the ChatGPT
 //     mount keeps its own tool-result challenge. The 401 challenge also
 //     gains `scope="pad:read pad:write"` ahead of resource_metadata. Stdio
 //     is unchanged. No name, enum or param moved.
