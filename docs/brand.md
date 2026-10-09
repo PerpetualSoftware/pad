@@ -362,9 +362,9 @@ others and keep them in sync.
 
 ## 9. The Pad mark
 
-> **Status: proposed (TASK-3514).** The master set below exists; no surface
-> uses it yet. Dave decides the rollout. Until then, the surfaces listed under
-> *Where it goes* keep what they have.
+> **Adopted (Dave, 2026-10-09; TASK-3514), with a FLAT app icon:** a solid
+> dark tile, no edge glow and no tile sheen. The rollout runs repo by repo
+> (plan on TASK-3514); a surface not yet switched still shows its old mark.
 
 The mark is a 3x3 grid of rounded tiles. It replaces both earlier marks: the
 purple "P" (the app's favicons and app icons) and the raster nine-square
@@ -379,9 +379,9 @@ PNG anywhere is an export of one of them, never a hand-edited copy.
 | `pad-mark.svg` | The mark, full colour, no background | Headers, the README, any lockup at about 20px and up |
 | `pad-mark-small.svg` | Pixel-aligned at 16px: 4px tiles, 2px gaps | Favicons at 16 and 32px; scale by whole multiples only |
 | `pad-favicon-tile.svg` | The small mark on a dark tile | Places that need a solid backing: PWA maskable, Windows tiles |
-| `pad-app-icon.svg` | The mark on a near-black tile with a cyan-to-magenta edge glow, full-bleed | iOS AppIcon (no transparency); `icon-192/512`, `apple-touch-icon` |
-| `pad-app-icon-shaped.svg` | The same tile, transparent outside its rounded shape | Android legacy launcher, in-app logos (iOS `PadIcon`, Android `pad_logo`), video lockups, OG and store art |
-| `pad-org-avatar.svg` (+ `-1024.png`) | The mark, smaller, on a full-bleed dark tile with no edge ring; every tile clears a circle crop | The PerpetualSoftware GitHub org avatar, which GitHub's default social card shows |
+| `pad-app-icon.svg` | The mark on a solid dark tile (`#0a0b16`), full-bleed | iOS AppIcon and `apple-touch-icon` (iOS masks it; no transparency) |
+| `pad-app-icon-shaped.svg` | The same tile, transparent outside its rounded shape | PWA `icon-192/512`, Android legacy launcher, in-app logos (iOS `PadIcon`, Android `pad_logo`), video lockups, OG and store art |
+| `pad-org-avatar.svg` | The mark, smaller, on a full-bleed dark tile with no edge ring; every tile clears a circle crop | The PerpetualSoftware GitHub org avatar, which GitHub's default social card shows |
 | `pad-mark-mono.svg` | One colour (`currentColor`), with the two slate tiles at 40% | One-colour contexts: print, embossing, a single-ink badge |
 
 ### Geometry and colour
@@ -396,13 +396,14 @@ PNG anywhere is an export of one of them, never a hand-edited copy.
   - `#0090fd` `#004ffb` `#424668`
 - The two slate tiles are part of the mark, as in the mobile icon. Keep
   them slate; do not recolour them to the accent.
-- App-icon tile: background `#02031a`..`#070a26`, edge glow `#22c3ff` →
-  `#4b3cf5` → `#c63af5`, plus a faint top-left sheen on each tile.
+- App-icon tile: solid `#0a0b16`, corner radius 222 of 1024 when shaped.
+  Flat by ruling: the mobile icon's edge glow and tile sheen were mocked and
+  declined.
 
 ### Rules
 
 - On light and dark backgrounds alike, use `pad-mark.svg` as is. No
-  outline, shadow or glow except in the app-icon variants.
+  outline, shadow or glow anywhere, the app icon included.
 - Below 20px, use `pad-mark-small.svg`. The full mark's 38/200 gaps blur
   into one block at 16px; the small variant's wider gaps keep the grid.
   A 2x2 simplification was tried and dropped: it loses the identity
@@ -429,6 +430,17 @@ GitHub has no API for the social preview: an owner uploads the PNG under
 Settings › Social preview, and it stays as uploaded. Version b's numbers are
 therefore as of the render. Run `node docs/brand/social/render.mjs b` and
 re-upload to refresh them.
+
+### Exporting
+
+`node docs/brand/mark/export.mjs <static-dir> [--og]` writes the web icon set
+from the masters: `favicon-16x16.png`, `favicon-32x32.png`, `favicon.ico`
+(16/32/48), `icon.svg` (the small mark, which a browser prefers in a tab),
+`pad-mark.svg`, `icon-192.png` and `icon-512.png` (shaped), `apple-touch-icon.png`
+(full-bleed), `padicon.png` (shaped, for links to the old name), and with
+`--og` the 1200x630 `og-card.png`. This repo runs it on `web/static --og`;
+pad-web runs it on its `static/`. Never edit an exported PNG: change the SVG
+and export again.
 
 ### Where it goes
 
