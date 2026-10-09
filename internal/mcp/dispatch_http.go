@@ -576,9 +576,12 @@ func buildRequestErrorResult(cmdKey string, err error) *CallToolResult {
 // scope. The MCP middleware (MCPBearerAuth) stashes
 // apiToken.Scopes in context via server.WithTokenScopes; we read
 // them here and call server.TokenScopeAllows. Reads
-// (GET/HEAD/OPTIONS) under a `["read"]` scope still pass; writes
+// (GET/HEAD/OPTIONS) under a `["read"]` scope still pass, as does the
+// one side-effect-free POST, playbook run (TASK-2863); writes
 // fail with a "permission_denied" error that flows up through
-// each caller's existing build-error handling.
+// each caller's existing build-error handling. urlPath is checked as
+// built, before http.NewRequest parses it, which is why that allowlist
+// accepts only plain-name segments.
 //
 // Centralizing here closes the gap Codex round 2 found in
 // dispatch_http_project.go's bulk-update path (PATCH issued
