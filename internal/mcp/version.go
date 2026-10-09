@@ -1747,7 +1747,8 @@ const CmdhelpVersion = "0.1"
 //     `permission_denied` tool result. That challenge is what lets a client
 //     (Claude Code among them) re-authorize with the wider grant. Nothing
 //     that used to succeed is refused: every write action was already
-//     refused for a read token (pinned by
+//     refused for a read token, and pad_item.import fails over HTTP for
+//     every token (BUG-3533) (pinned by
 //     TestScopePopulation_WriteActionsAreRefusedForReadTokens). A read-scoped
 //     PAT, which cannot re-authorize, keeps the tool error, and the ChatGPT
 //     mount keeps its own tool-result challenge. The 401 challenge also

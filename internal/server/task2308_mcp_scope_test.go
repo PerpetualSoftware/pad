@@ -51,8 +51,17 @@ func scopeTestServer(t *testing.T) (*Server, *recordingMCPTransport) {
 }
 
 func postMCPBody(srv *Server, path, token, body string) *httptest.ResponseRecorder {
+	return postMCPBodyAs(srv, path, token, body, "")
+}
+
+// postMCPBodyAs is postMCPBody with a Content-Type ("" means
+// application/json).
+func postMCPBodyAs(srv *Server, path, token, body, contentType string) *httptest.ResponseRecorder {
+	if contentType == "" {
+		contentType = "application/json"
+	}
 	req := httptest.NewRequest("POST", path, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -130,21 +139,32 @@ func TestTASK2308_PassThroughCases(t *testing.T) {
 		strings.Repeat("x", mcpScopePeekMaxBytes) + `"}}}`
 
 	cases := []struct {
-		name, token, body string
+		name, token, body, contentType string
 	}{
-		{"read token, read action", readTok, toolCallBody("pad_item", "get")},
-		{"read token, unknown tool", readTok, toolCallBody("pad_nope", "create")},
-		{"read token, initialize", readTok, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`},
-		{"read token, batch", readTok, `[` + toolCallBody("pad_item", "create") + `]`},
+		{"read token, read action", readTok, toolCallBody("pad_item", "get"), ""},
+		{"read token, unknown tool", readTok, toolCallBody("pad_nope", "create"), ""},
+		{"read token, initialize", readTok, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`, ""},
+		{"read token, batch", readTok, `[` + toolCallBody("pad_item", "create") + `]`, ""},
 		{"read token, action under another key's case", readTok,
-			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pad_item","arguments":{"Action":"create"}}}`},
-		{"read token, body past the peek bound", readTok, oversized},
-		{"write token, write action", writeTok, toolCallBody("pad_item", "create")},
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pad_item","arguments":{"Action":"create"}}}`, ""},
+		{"read token, body past the peek bound", readTok, oversized, ""},
+		// Messages mcp-go itself refuses or runs no tool for: answered as
+		// before, never challenged (codex round 1).
+		{"read token, no jsonrpc member", readTok,
+			`{"id":1,"method":"tools/call","params":{"name":"pad_item","arguments":{"action":"create"}}}`, ""},
+		{"read token, jsonrpc 1.0", readTok,
+			`{"jsonrpc":"1.0","id":1,"method":"tools/call","params":{"name":"pad_item","arguments":{"action":"create"}}}`, ""},
+		{"read token, notification (no id)", readTok,
+			`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"pad_item","arguments":{"action":"create"}}}`, ""},
+		{"read token, null id", readTok,
+			`{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"pad_item","arguments":{"action":"create"}}}`, ""},
+		{"read token, not application/json", readTok, toolCallBody("pad_item", "create"), "text/plain"},
+		{"write token, write action", writeTok, toolCallBody("pad_item", "create"), ""},
 		// A PAT cannot re-authorize, so it keeps the dispatcher's tool error.
-		{"read PAT, write action", pat.Token, toolCallBody("pad_item", "create")},
+		{"read PAT, write action", pat.Token, toolCallBody("pad_item", "create"), ""},
 	}
 	for _, c := range cases {
-		rr := postMCPBody(srv, "/mcp", c.token, c.body)
+		rr := postMCPBodyAs(srv, "/mcp", c.token, c.body, c.contentType)
 		if rr.Code != http.StatusOK || rr.Body.String() != "mcp" {
 			t.Errorf("%s: %d %q, want 200 from the transport", c.name, rr.Code, rr.Body.String())
 			continue

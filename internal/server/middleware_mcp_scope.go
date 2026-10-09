@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 )
 
@@ -45,9 +46,11 @@ func (s *Server) MCPCallNeedsWrite(tool, action string) bool {
 // Scope of the check, deliberately narrow:
 //   - OAuth connections only. A PAT cannot be re-authorized, so a
 //     read-scoped PAT keeps the tool error, which says what to do.
-//   - A single tools/call whose arguments name an action the classifier
-//     knows. A batch, any other method, an unknown tool or action, and
-//     a body past mcpScopePeekMaxBytes pass through unchanged.
+//   - A single tools/call REQUEST mcp-go would run (application/json,
+//     jsonrpc "2.0", a non-null id) whose arguments name an action the
+//     classifier knows. A batch, a notification, any other method, an
+//     unknown tool or action, a malformed message, and a body past
+//     mcpScopePeekMaxBytes pass through unchanged.
 //
 // Mounted after MCPAuditLog, so the refusal is audited as denied.
 func (s *Server) MCPInsufficientScope(next http.Handler) http.Handler {
@@ -74,6 +77,10 @@ func (s *Server) MCPInsufficientScope(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
+			next.ServeHTTP(w, r) // mcp-go refuses it with a 400
+			return
+		}
 		tool, action, ok := mcpToolCallTarget(head)
 		if !ok || !needsWrite(tool, action) {
 			next.ServeHTTP(w, r)
@@ -86,18 +93,27 @@ func (s *Server) MCPInsufficientScope(next http.Handler) http.Handler {
 }
 
 // mcpToolCallTarget returns the tool name and the `action` argument of a
-// single JSON-RPC tools/call request. ok is false for anything else.
-// The action is read from the arguments by its exact key, as the
-// catalog's fan-out handler reads it from mcp-go's map.
+// single JSON-RPC tools/call REQUEST that mcp-go would run: jsonrpc is
+// exactly "2.0" and the id is present and not null (without one mcp-go
+// treats the message as a notification and runs no tool). ok is false for
+// anything else, so a message mcp-go would refuse or ignore is passed on
+// to be answered as it always was, never challenged. The action is read
+// from the arguments by its exact key, as the catalog's fan-out handler
+// reads it from mcp-go's map.
 func mcpToolCallTarget(body []byte) (tool, action string, ok bool) {
 	var req struct {
-		Method string `json:"method"`
-		Params struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Params  struct {
 			Name      string                     `json:"name"`
 			Arguments map[string]json.RawMessage `json:"arguments"`
 		} `json:"params"`
 	}
-	if json.Unmarshal(body, &req) != nil || req.Method != "tools/call" || req.Params.Name == "" {
+	if json.Unmarshal(body, &req) != nil || req.JSONRPC != "2.0" || req.Method != "tools/call" || req.Params.Name == "" {
+		return "", "", false
+	}
+	if id := bytes.TrimSpace(req.ID); len(id) == 0 || bytes.Equal(id, []byte("null")) {
 		return "", "", false
 	}
 	raw, present := req.Params.Arguments["action"]

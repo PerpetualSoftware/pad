@@ -51,7 +51,12 @@ func TestScopePopulation_WriteActionsAreRefusedForReadTokens(t *testing.T) {
 			}
 			continue
 		}
-		if knownBrokenOverHTTP[label] != "" {
+		if bug := knownBrokenOverHTTP[label]; bug != "" {
+			// No control can succeed, but the read token must still get a
+			// refusal, or the 403 would replace something that worked.
+			if !r.isError || r.mutated {
+				notRefused = append(notRefused, label+" (exempt as "+bug+", but not refused for a read token)")
+			}
 			continue
 		}
 		if w.isError || !w.mutated {
@@ -77,9 +82,10 @@ func TestScopePopulation_WriteActionsAreRefusedForReadTokens(t *testing.T) {
 }
 
 // knownBrokenOverHTTP lists write actions that fail over the HTTP
-// transport for every token, so no control run can succeed. Under a
-// read token they answer an error today and a 403 with the pre-check:
-// a refusal either way. Remove the entry when its bug is fixed.
+// transport for every token, so no control run can succeed. Their
+// read-token run is still checked: it must be an error with nothing
+// mutating reaching the handler, so the 403 replaces a refusal, never a
+// success. Remove the entry when its bug is fixed.
 var knownBrokenOverHTTP = map[string]string{
 	"pad_item.import": "BUG-3533",
 }
