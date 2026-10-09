@@ -159,12 +159,7 @@ func runScopePopulation(t *testing.T, doc *cmdhelp.Document, scopes string) map[
 		case out == nil:
 			res.isError, res.text = true, "nil result"
 		case out.IsError:
-			res.isError = true
-			for _, c := range out.Content {
-				if tc, ok := c.(mcp.TextContent); ok {
-					res.text += tc.Text
-				}
-			}
+			res.isError, res.text = true, resultText(out)
 		}
 		results[label] = res
 	}
