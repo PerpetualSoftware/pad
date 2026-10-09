@@ -13,6 +13,7 @@
 		clearPersistentIdentityState,
 	} from '$lib/stores/identityReload.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { setAccessRevokedHandler, setRateLimitHandler, setIdentityProvider, setNetworkUnreachableHandler } from '$lib/api/client';
 	import { notifyServerBusy } from '$lib/api/serverBusyToast';
@@ -413,14 +414,28 @@
 			directions. .app-layout below pads top by --topbar-height on mobile so
 			content doesn't slide under the fixed bar.
 		-->
-		<TopBar mobile />
+		<div style="display: contents" inert={coveredPage.active}>
+			<TopBar mobile />
+		</div>
 	{/if}
+	<!--
+		TASK-3520: while an overlay covers the page (the palette, a docked sheet,
+		the notification panel), the regions that do not hold it are `inert`, so
+		a screen reader's browse cursor cannot walk past the overlay into them.
+		<main> is left live when the overlay keeps the bottom nav live (the nav
+		and its sheets live inside it); the workspace layout then inerts the page
+		around the nav. Sidebar inerts its own <aside>, beside which the panel
+		and quick-add render.
+	-->
 	<div class="app-layout">
 		{#if !uiStore.isMobile && uiStore.topbarOpen}
-			<TopBar />
+			<div style="display: contents" inert={coveredPage.active}>
+				<TopBar />
+			</div>
 		{/if}
 		{#if !uiStore.isMobile && !uiStore.topbarOpen}
 			<button
+				inert={coveredPage.active}
 				class="topbar-expand-btn"
 				onclick={() => uiStore.openTopbar()}
 				aria-label="Show workspace bar"
@@ -435,6 +450,7 @@
 			<Sidebar />
 			{#if !uiStore.isMobile && !uiStore.sidebarOpen}
 				<button
+					inert={coveredPage.active}
 					class="sidebar-expand-btn"
 					onclick={() => uiStore.openSidebar()}
 					aria-label="Open sidebar"
@@ -445,7 +461,7 @@
 					</svg>
 				</button>
 			{/if}
-			<main class="main-content">
+			<main class="main-content" inert={coveredPage.active && !coveredPage.keepsBottomNav}>
 				{@render children()}
 			</main>
 		</div>

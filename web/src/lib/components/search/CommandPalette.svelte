@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { untrack, tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { statusColor } from '$lib/utils/fieldColors';
@@ -29,6 +29,7 @@
 	import { isBodyStale } from '$lib/items/staleBody';
 	import { backdropDismiss } from '$lib/utils/backdropDismiss';
 	import { createFocusReturn } from '$lib/a11y/focusReturn';
+	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 	import { paneFocusables, nextTrapTarget, nextTrapTargetAcross } from '$lib/collections/paneFocus';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
@@ -187,7 +188,14 @@
 	let paletteEl = $state<HTMLElement>();
 	const dockedOverNav = $derived(uiStore.isMobile && !!workspaceStore.current?.slug);
 	const focusReturn = createFocusReturn();
-	$effect(() => () => focusReturn.restore());
+	$effect(() => () => void tick().then(() => focusReturn.restore()));
+
+	// The page behind leaves the screen-reader tree while the palette is open
+	// (TASK-3520). Docked above the bottom nav, the nav stays live.
+	$effect(() => {
+		if (!uiStore.searchOpen) return;
+		return coveredPage.enter({ keepBottomNav: dockedOverNav });
+	});
 
 	function handleWindowKeydown(e: KeyboardEvent) {
 		if (!uiStore.searchOpen || !paletteEl) return;
@@ -217,7 +225,9 @@
 			focusReturn.save();
 			requestAnimationFrame(() => inputEl?.focus());
 		} else {
-			focusReturn.restore();
+			// After a tick (TASK-3520): the trigger may be in a region the
+			// palette made inert, where focus() silently does nothing.
+			void tick().then(() => focusReturn.restore());
 			query = '';
 			results = [];
 			total = 0;
