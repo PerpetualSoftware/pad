@@ -375,6 +375,12 @@ type Metrics struct {
 	// edits, which the server cannot see.
 	CollabResumeForceRefreshesTotal *prometheus.CounterVec
 
+	// CollabOverflowClosesTotal counts collab peers closed because the op
+	// bus dropped an op for them (their subscriber buffer was full,
+	// TASK-1273). Each one reconnects and replays the gap from the op-log.
+	// EXPECT near zero: a steady count means peers that cannot keep up.
+	CollabOverflowClosesTotal prometheus.Counter
+
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
 	// directions, so a generic alert on the total leads a responder to
@@ -761,6 +767,10 @@ func New() *Metrics {
 		Name: "pad_event_sequence_counter_repairs_total",
 		Help: "Times the shared event sequence counter held something it cannot count from (shape: wrong_type, not_integer, too_large) and was deleted, starting a new id space that every subscriber resyncs across (BUG-2744). Expect zero: counting never gets there, so a non-zero count means something else wrote the key — another installation sharing the Redis keyspace, a hand edit, or a restore. The warning logged beside it names the key, its type and its length.",
 	}, []string{"shape"})
+	collabOverflowClosesTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_collab_overflow_closes_total",
+		Help: "Collab peers closed because the op bus dropped an op for them; each reconnects and replays the gap.",
+	})
 	collabResumesTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_collab_resumes_total",
 		Help: "Collab joins that announce a cursor: an editor tab that had been anchored reconnecting (TASK-3501). A PROXY for offline episodes and a biased one: inflated by laptop sleep, network blips and server restarts, and blind to a tab that went offline and was closed or crashed, and to whether the tab edited while away.",
@@ -795,6 +805,7 @@ func New() *Metrics {
 		eventSequenceCounterRepairsTotal,
 		collabResumesTotal,
 		collabResumeForceRefreshesTotal,
+		collabOverflowClosesTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -843,6 +854,7 @@ func New() *Metrics {
 		EventSequenceCounterRepairsTotal:   eventSequenceCounterRepairsTotal,
 		CollabResumesTotal:                 collabResumesTotal,
 		CollabResumeForceRefreshesTotal:    collabResumeForceRefreshesTotal,
+		CollabOverflowClosesTotal:          collabOverflowClosesTotal,
 		WatchReceiveLoopExitsTotal:         watchReceiveLoopExitsTotal,
 		WatchHeartbeatPublishFailuresTotal: watchHeartbeatPublishFailuresTotal,
 		SessionPresenceFailuresTotal:       sessionPresenceFailuresTotal,

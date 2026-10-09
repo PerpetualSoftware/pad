@@ -13,6 +13,12 @@ func NewCollabObserver(m *Metrics) *CollabObserver {
 }
 
 var _ collab.Observer = (*CollabObserver)(nil)
+var _ collab.OverflowObserver = (*CollabObserver)(nil)
+
+// OverflowClosed counts a peer closed for a dropped op (TASK-1273).
+func (o *CollabObserver) OverflowClosed() {
+	o.m.CollabOverflowClosesTotal.Inc()
+}
 
 // ResumeJoined is unlabelled: the item is the only dimension on offer, and it
 // is unbounded.
