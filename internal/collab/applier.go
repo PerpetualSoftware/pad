@@ -100,6 +100,18 @@ const (
 	// safety-net window (BUG-3240). It should never happen; the server
 	// logs it so a missing marker is visible.
 	ControlMessageSyncSafetyNet = "sync_safety_net"
+
+	// ControlMessageBarrier is sent BY a client after a burst of local
+	// updates, carrying a counter N that rises with each barrier
+	// (BUG-3523). The server handles it in readLoop order, so every sync
+	// frame the conn sent before it has been through persistSyncFrames,
+	// and answers ControlMessageBarrierAck with the same N and OK: false
+	// when an op-log append on this conn failed since the previous
+	// barrier. An OK ack tells the client nothing it sent before the
+	// barrier can be missing from the op-log, so a reconnect owes no
+	// full-state catch-up for it.
+	ControlMessageBarrier    = "barrier"
+	ControlMessageBarrierAck = "barrier_ack"
 )
 
 // applierFirstTimeoutVar / applierRetryTimeoutVar are vars (rather
@@ -158,6 +170,11 @@ type ControlMessage struct {
 	// the room elects as its seeder (BUG-3240). Omitted otherwise, so an
 	// older client sees the frame it always saw.
 	Seed bool `json:"seed,omitempty"`
+
+	// N and OK belong to barrier / barrier_ack (BUG-3523). Omitted on
+	// every other frame, so those keep the bytes they always had.
+	N  int64 `json:"n,omitempty"`
+	OK *bool `json:"ok,omitempty"`
 }
 
 // pendingApplierAck tracks one in-flight designated-applier round-trip. The applier

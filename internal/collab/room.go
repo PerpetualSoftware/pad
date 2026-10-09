@@ -143,6 +143,13 @@ type roomConn struct {
 	// AMBIGUOUS outcome (fail-safe: the external write is retried, never re-applied /
 	// clobbered). Set once at Join; read on the election + finalization paths.
 	bracketCapable atomic.Bool
+
+	// appendFailed records that an op-log append of this conn's sync
+	// frames failed since its last barrier (BUG-3523). Set in
+	// persistSyncFrames, read and cleared by the barrier handler; both run
+	// on this conn's readLoop, so a frame and the barrier behind it are
+	// ordered without a lock.
+	appendFailed bool
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -670,6 +677,7 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 		// → no cursor frame is emitted by writeLoop for this
 		// event (we'd be advertising a fictional id).
 		results = make([]store.SyncFrameAppend, len(batch))
+		rc.appendFailed = true
 	}
 	i := 0
 	for _, data := range run {
@@ -912,8 +920,35 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 			"item_id", r.itemID,
 			"client_id", rc.id,
 		)
+	case ControlMessageBarrier:
+		r.answerBarrier(rc, ctl.N)
 	default:
 		// Unknown control type — drop.
+	}
+}
+
+// barrierAckWriteTimeout bounds the barrier_ack write, which runs on the
+// conn's readLoop: a peer that stops reading must not stall its own reads.
+const barrierAckWriteTimeout = 5 * time.Second
+
+// answerBarrier acknowledges a client's barrier (BUG-3523). readLoop handles
+// frames in order, so every sync frame this conn sent before the barrier has
+// already been persisted or failed; OK says none failed since the last
+// barrier. A frame dropped on purpose (read-only, frozen, evicted) is not a
+// failure: re-sending it would be dropped the same way, and a restore
+// force-refreshes the tab anyway.
+func (r *Room) answerBarrier(rc *roomConn, n int64) {
+	if n <= 0 {
+		return
+	}
+	ok := !rc.appendFailed
+	rc.appendFailed = false
+	payload, err := json.Marshal(ControlMessage{Type: ControlMessageBarrierAck, N: n, OK: &ok})
+	if err != nil {
+		return
+	}
+	if werr := rc.writeMessageWithDeadline(websocket.TextMessage, payload, time.Now().Add(barrierAckWriteTimeout)); werr != nil {
+		_ = rc.conn.Close()
 	}
 }
 
