@@ -21,6 +21,16 @@ import (
 
 // compressSkips reports whether a request's response must go out as written.
 func compressSkips(r *http.Request) bool {
+	// Reads only. Every secret the API mints (session and API tokens, share-
+	// link tokens, invitation codes, recovery codes, OAuth grants) comes back
+	// from a write, and a compressed secret beside request-influenced text is
+	// the BREACH shape; write responses are small, so leaving them alone costs
+	// nothing, while every large response worth compressing (the items index,
+	// the bundle's JS, polls, exports) is a GET (codex r1: a path list missed
+	// invitations and share links).
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return true
+	}
 	p := r.URL.Path
 	switch {
 	// Long-lived streams: SSE (both event endpoints) and MCP's streamable
@@ -36,10 +46,8 @@ func compressSkips(r *http.Request) bool {
 	// compressed body would contradict its Content-Range.
 	case r.Header.Get("Range") != "":
 		return true
-	// Responses that carry credentials (session and API tokens, OAuth
-	// grants). Compressing a secret next to request-influenced text is the
-	// BREACH shape; these responses are small, so leaving them alone costs
-	// nothing.
+	// Reads under the credential routes as well, for the same reason: they
+	// are small, and nothing is lost by leaving them alone.
 	case strings.HasPrefix(p, "/api/v1/auth/"), strings.HasPrefix(p, "/oauth/"), strings.HasPrefix(p, "/api/v1/oauth/"),
 		strings.HasSuffix(p, "/tokens") || strings.Contains(p, "/tokens/"):
 		return true

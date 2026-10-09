@@ -145,3 +145,62 @@ func TestCompressIsWiredIntoTheServer(t *testing.T) {
 		t.Fatalf("GET /api/v1/health with Accept-Encoding: gzip answered Content-Encoding %q", rec.Header().Get("Content-Encoding"))
 	}
 }
+
+// A write's response is never compressed: every secret the API mints comes
+// back from one (codex r1).
+func TestCompressLeavesWriteResponsesAlone(t *testing.T) {
+	h := CompressResponses(jsonHandler())
+	for _, m := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+		req := httptest.NewRequest(m, "/api/v1/workspaces/w/members/invite", nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if ce := rec.Header().Get("Content-Encoding"); ce != "" {
+			t.Errorf("%s: compressed (%s)", m, ce)
+		}
+	}
+}
+
+// A compressed response that flushes (the account export flushes after each
+// workspace) still delivers each flushed part while the handler runs: chi's
+// writer flushes the gzip stream and then the connection.
+func TestCompressedStreamStillDeliversFlushes(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(CompressResponses(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"first":true}`+"\n")
+		w.(http.Flusher).Flush()
+		<-release
+	})))
+	defer srv.Close()
+	defer close(release)
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/v1/me/export", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := (&http.Client{Transport: &http.Transport{DisableCompression: true}, Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("Content-Encoding %q; want gzip", resp.Header.Get("Content-Encoding"))
+	}
+	line := make(chan string, 1)
+	go func() {
+		zr, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			line <- "error: " + err.Error()
+			return
+		}
+		l, _ := bufio.NewReader(zr).ReadString('\n')
+		line <- l
+	}()
+	select {
+	case l := <-line:
+		if l != `{"first":true}`+"\n" {
+			t.Fatalf("first line %q", l)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the flushed part never arrived while the response was open")
+	}
+}
