@@ -1976,6 +1976,19 @@ export const api = {
 				body: JSON.stringify(data)
 			}),
 
+		/**
+		 * Set sort_order for many items in ONE all-or-nothing request
+		 * (PUT /items/sort-order, TASK-3517): every entry lands or none does.
+		 * Resolves to each item's seq afterwards. A refusal (403 naming an item
+		 * the caller can't edit, 404, 409 when an item changed meanwhile) means
+		 * nothing was written.
+		 */
+		reorder: (ws: string, updates: { id: string; sort_order: number }[]) =>
+			request<{ items: { id: string; seq: number }[] }>(`/workspaces/${ws}/items/sort-order`, {
+				method: 'PUT',
+				body: JSON.stringify({ updates })
+			}).then((r) => r.items),
+
 		restore: (ws: string, slug: string) =>
 			request<Item>(`/workspaces/${ws}/items/${slug}/restore`, {
 				method: 'POST'

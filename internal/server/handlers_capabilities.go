@@ -67,6 +67,13 @@ type serverCapabilities struct {
 	// those routes with a bare 404 that reads exactly like not_builtin, so the
 	// CLI refuses instead of sending when this is absent.
 	BuiltinUpdate bool `json:"builtin_update"`
+
+	// ItemSortOrderBulk is true when PUT /workspaces/{ws}/items/sort-order
+	// sets sort_order for many items in one all-or-nothing request (TASK-3517).
+	// The web client does not probe it: its bundle is served by the same
+	// binary. It is here for any non-web caller, which against an older build
+	// falls back to one PATCH per item.
+	ItemSortOrderBulk bool `json:"item_sort_order_bulk"`
 }
 
 // WHAT A BUILD THAT CANNOT DECODE A FORMAT ACTUALLY COSTS THE READER
@@ -109,7 +116,7 @@ type serverCapabilities struct {
 // rather than 500-ing — that signals to the editor "uploads still work,
 // but disable transformation tools."
 func (s *Server) handleServerCapabilities(w http.ResponseWriter, r *http.Request) {
-	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true, BuiltinUpdate: true}
+	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true, BuiltinUpdate: true, ItemSortOrderBulk: true}
 	if s.imageProcessor != nil {
 		resp.Image = s.imageProcessor.Capabilities()
 	} else {

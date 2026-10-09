@@ -8,8 +8,8 @@
 //
 // `planLaneOrder` decides which writes to send so that the stored order sorts
 // to what the user sees, leaving view-only cards where they are.
-// `persistReorder` sends them and undoes its optimistic local writes when one
-// is refused.
+// `persistReorder` sends them in ONE all-or-nothing request (TASK-3517) and
+// undoes its optimistic local writes when it is refused.
 
 export interface OrderedCard {
 	id: string;
@@ -92,17 +92,23 @@ export interface PersistDeps<T extends OrderedCard> {
 	applyLocal: (card: T) => void;
 	/** Put the original row back locally after a refusal. */
 	restoreLocal: (card: T) => void;
-	/** Persist one write; resolves to the server's row. */
-	send: (write: OrderWrite) => Promise<T>;
-	/** Settle the server's row locally. Returns false to stop (identity changed). */
+	/**
+	 * Persist every write in one request (PUT /items/sort-order, TASK-3517).
+	 * Resolves to each item's seq after the write; rejects when the server
+	 * refused the request, in which case it wrote nothing.
+	 */
+	send: (writes: OrderWrite[]) => Promise<{ id: string; seq: number }[]>;
+	/** Settle the stored row locally. Returns false to stop (identity changed). */
 	settle: (row: T) => boolean;
 }
 
 /**
- * Apply `writes` optimistically, then persist them one at a time (SQLite takes
- * one writer). A refusal stops the loop and restores every card not yet
- * confirmed, the refused one included, to its original row, so the local order
- * never shows a move the server did not store. Returns whether all landed.
+ * Apply `writes` optimistically, then persist them in ONE request, which the
+ * server applies all or nothing (TASK-3517). On a refusal every card goes back
+ * to its original row, so the local order never shows a move the server did
+ * not store, and the server holds no partial order either: the per-row loop
+ * this replaced left the writes before a refusal in place. Returns whether
+ * the reorder landed.
  */
 export async function persistReorder<T extends OrderedCard>(
 	writes: readonly OrderWrite[],
@@ -115,14 +121,18 @@ export async function persistReorder<T extends OrderedCard>(
 		deps.applyLocal({ ...original, sort_order: write.sort_order });
 		pending.push({ write, original });
 	}
-	for (let i = 0; i < pending.length; i++) {
-		let row: T;
-		try {
-			row = await deps.send(pending[i].write);
-		} catch {
-			for (const { original } of pending.slice(i)) deps.restoreLocal(original);
-			return false;
-		}
+	if (pending.length === 0) return true;
+	let stored: { id: string; seq: number }[];
+	try {
+		stored = await deps.send(pending.map((p) => p.write));
+	} catch {
+		for (const { original } of pending) deps.restoreLocal(original);
+		return false;
+	}
+	const seqs = new Map(stored.map((r) => [r.id, r.seq]));
+	for (const { write, original } of pending) {
+		const seq = seqs.get(write.id);
+		const row = { ...original, sort_order: write.sort_order, ...(seq === undefined ? {} : { seq }) };
 		if (!deps.settle(row)) return false;
 	}
 	return true;

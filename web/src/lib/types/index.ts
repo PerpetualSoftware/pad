@@ -1897,6 +1897,8 @@ export interface DashboardResponse {
 		item_ref?: string;
 		collection_slug?: string;
 		metadata?: string;
+		/** Set on a row standing for a whole reorder batch: how many of its rows you can see (TASK-3517). */
+		reorder_count?: number;
 	}[];
 	suggested_next: DashboardSuggestion[];
 	// has_agent_activity is true when any item in the workspace was created

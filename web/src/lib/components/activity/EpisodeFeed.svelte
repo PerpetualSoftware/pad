@@ -70,6 +70,9 @@
 		<div class="ep-main">
 			<bdi class="ep-actor" title={ep.actorLabel}>{ep.actorLabel}</bdi>
 			<span class="ep-verb">{episodeVerb(ep.actions)}</span>
+			{#if ep.reorder}
+				<span class="ep-title">{ep.count} {ep.count === 1 ? 'item' : 'items'}</span>
+			{/if}
 			{#if ep.itemRef}
 				{#if ep.itemSlug && ep.collectionSlug}
 					<a class="ep-ref" href="/{username}/{wsSlug}/{ep.collectionSlug}/{ep.itemSlug}"

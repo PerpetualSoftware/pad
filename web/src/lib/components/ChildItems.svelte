@@ -219,15 +219,13 @@
 			return;
 		}
 		// IDENTITY fence (BUG-3095) + the workspace this reorder is about, both
-		// captured before the loop. `wsSlug` was read LIVE inside the loop before
-		// that change, so a workspace switch mid-loop addressed the remaining
-		// PATCHes at the new workspace.
+		// captured before the request: a workspace switch meanwhile must not
+		// address it at the new workspace.
 		//
-		// HT-2176 Option A (TASK-2172): NO per-PATCH freeze recheck. A reorder
-		// INITIATED before peeking finishes; breaking mid-loop would persist it
-		// only partially. IDENTITY is checked per write even though FREEZE is not
-		// (BUG-3095): a sign-out mid-loop would otherwise send the remaining
-		// writes on the next user's cookie.
+		// HT-2176 Option A (TASK-2172): NO freeze recheck. A reorder INITIATED
+		// before peeking finishes. IDENTITY is checked before the request
+		// (BUG-3095), so a sign-out in between never sends it on the next
+		// user's cookie. Since TASK-3517 it is one all-or-nothing request.
 		const isSameIdentity = authStore.identityFence();
 		const reqWs = wsSlug;
 		const reqItem = itemSlug;
@@ -236,9 +234,10 @@
 			// This component shows the new order from `groupData` already.
 			applyLocal: () => {},
 			restoreLocal: () => {},
-			send: async ({ id, sort_order }) => {
+			// One all-or-nothing request (TASK-3517).
+			send: async (writes) => {
 				if (!isSameIdentity()) throw new Error('identity changed');
-				return api.items.update(reqWs, id, { sort_order });
+				return api.items.reorder(reqWs, writes);
 			},
 			settle: () => isSameIdentity()
 		});
@@ -256,8 +255,8 @@
 	// the child's status group. Unlike List/Board (which persist through the
 	// page's optimistic local index), ChildItems owns its own `children`
 	// state, so it updates the displayed group optimistically here and
-	// persists the changed rows via the same per-child update loop the drag
-	// path uses. A canonical reload (SSE/sync) settles it afterward.
+	// persists the changed rows the same way the drag path does (one
+	// all-or-nothing request since TASK-3517). A canonical reload (SSE/sync) settles it afterward.
 	async function reorderChild(status: string, child: Item, dir: ReorderDirection) {
 		// Freeze guard (TASK-2172 / R14): mirror handleFinalize. The kebab is
 		// hidden while `!canEdit || frozen`; this drops a straggler invocation.

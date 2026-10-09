@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
 	import { onMount, onDestroy, untrack } from 'svelte';
+	import { collapseReorderBatches, type CollapsedActivity } from '$lib/activity/reorderBatches';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -291,14 +292,15 @@
 		});
 	});
 
-	// Group activities by date
+	// Group activities by date. A reorder writes one row per moved item;
+	// each run of one batch shows as a single line (TASK-3517).
 	let groupedActivities = $derived.by(() => {
-		const groups: { label: string; date: string; items: Activity[] }[] = [];
+		const groups: { label: string; date: string; items: CollapsedActivity[] }[] = [];
 		const now = new Date();
 		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 		const yesterday = new Date(today.getTime() - 86400000);
 
-		for (const activity of filteredActivities) {
+		for (const activity of collapseReorderBatches(filteredActivities)) {
 			const actDate = new Date(activity.created_at);
 			const actDay = new Date(actDate.getFullYear(), actDate.getMonth(), actDate.getDate());
 			const dayKey = actDay.toISOString().slice(0, 10);
@@ -338,6 +340,8 @@
 				return 'Restored';
 			case 'moved':
 				return 'Moved';
+			case 'reordered':
+				return 'Reordered';
 			case 'field_changed':
 				return 'Changed';
 			default:
@@ -351,6 +355,7 @@
 		if (action === 'archived') return '\u2212';
 		if (action === 'restored') return '\u21ba';
 		if (action === 'moved') return '\u2192';
+		if (action === 'reordered') return '\u2195';
 		return '\u2022';
 	}
 
@@ -443,6 +448,7 @@
 				<option value="archived">Archived</option>
 				<option value="restored">Restored</option>
 				<option value="moved">Moved</option>
+				<option value="reordered">Reordered</option>
 			</select>
 		</div>
 
@@ -535,10 +541,14 @@
 								<div class="entry-content">
 									<div class="entry-main">
 										<span class="entry-verb">{activityVerb(activity.action)}</span>
-										{#if itemRef}
+										{#if activity.reorder_count}
+											<span class="entry-item-name">{activity.reorder_count} items</span>
+										{:else if itemRef}
 											<span class="entry-ref">{itemRef}</span>
 										{/if}
-										{#if itemTitle && itemSlug && collSlug}
+										{#if activity.reorder_count}
+											<!-- a collapsed reorder names no single item -->
+										{:else if itemTitle && itemSlug && collSlug}
 											<a
 												href="/{username}/{wsSlug}/{collSlug}/{itemSlug}"
 												class="entry-item-link">{itemTitle}</a
