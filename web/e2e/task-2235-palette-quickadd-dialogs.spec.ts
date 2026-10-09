@@ -159,15 +159,26 @@ test.describe('TASK-2235 U2: palette and quick-add are dialogs (desktop)', () =>
 		// The picker's options are not clipped by the dialog box.
 		await pill.click();
 		await expect(picker).toBeVisible();
-		// The last option paints where it is laid out: hit-testing its corner
-		// finds it, which a clip by the dialog's box would prevent.
-		const lastOptionHit = await picker.evaluate((p) => {
-			const last = p.lastElementChild as HTMLElement;
-			const r = last.getBoundingClientRect();
+		// The picker's own box reaches past the dialog's: hit-testing its bottom
+		// edge finds the picker, which a clip by the dialog would prevent.
+		// The PICKER'S edge, not its last option (BUG-3529): the picker scrolls
+		// its list past 280px, and the suite's shared workspace gains
+		// collections as other specs run, so the last option could be scrolled
+		// out of the picker (measured: 15 extra collections failed every run).
+		// And at the fixture's own four collections the last option ends INSIDE
+		// the dialog's box (measured: 319 against 324), where no clip shows, so
+		// the old check could not fail. Both checks below go red on a dialog
+		// forced to overflow:hidden: it scrolls its own content to keep the
+		// focused picker in view, so the picker no longer reaches past it
+		// (measured: 33px past, then -0.2px).
+		const edge = await picker.evaluate((p) => {
+			const d = (p.closest('dialog') as HTMLElement).getBoundingClientRect();
+			const r = p.getBoundingClientRect();
 			const hit = document.elementFromPoint(r.left + 4, r.bottom - 4);
-			return !!hit && last.contains(hit);
+			return { pastDialog: r.bottom - d.bottom, hit: !!hit && p.contains(hit) };
 		});
-		expect(lastOptionHit).toBe(true);
+		expect(edge.pastDialog, 'the picker reaches past the dialog box (if not, the dialog clipped and scrolled its content, or the layout changed and a clip could not show)').toBeGreaterThan(8);
+		expect(edge.hit, 'the picker is clipped by the dialog box').toBe(true);
 		await page.keyboard.press('Escape');
 		await expect(picker).toHaveCount(0);
 
