@@ -285,13 +285,18 @@
 				}}
 			/>
 		{:else}
+		<!-- A toggle (TASK-2240, audit C111): one name, the state in aria-pressed,
+		     and the title so a list of cards does not read "Star, Star, Star". -->
 		<button
+			type="button"
 			class="star-btn"
 			class:starred
 			onclick={toggleStar}
 			title={starred ? 'Unstar' : 'Star'}
+			aria-label={`Star ${item.title}`}
+			aria-pressed={starred}
 		>
-			{starred ? '★' : '☆'}
+			<span aria-hidden="true">{starred ? '★' : '☆'}</span>
 		</button>
 		{#if onReorderItem}
 			<ItemActionsMenu

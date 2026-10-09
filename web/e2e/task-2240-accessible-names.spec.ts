@@ -95,4 +95,21 @@ test.describe('TASK-2240: icon-only buttons have names', () => {
 		await create.getByRole('button', { name: 'Close', exact: true }).click();
 		await expect(create).toHaveCount(0);
 	});
+
+	test("a card's star is a named toggle", async ({ page, fixture, request }, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'the star renders on desktop; phones fold it into the card menu');
+		await page.setViewportSize({ width: 1280, height: 900 });
+		await browserLogin(page);
+		const title = `T2240 star ${Date.now()}`;
+		await createDoc(fixture, request, title, '');
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?view=list`);
+		const star = page.getByRole('button', { name: `Star ${title}`, exact: true });
+		await expect(star).toHaveAttribute('aria-pressed', 'false');
+		await star.click();
+		await expect(star).toHaveAttribute('aria-pressed', 'true');
+		// The name does not flip: the state is in aria-pressed.
+		await expect(page.getByRole('button', { name: `Star ${title}`, exact: true })).toHaveCount(1);
+		await star.click();
+		await expect(star).toHaveAttribute('aria-pressed', 'false');
+	});
 });
