@@ -7,11 +7,13 @@
 // the editor holds. A reader added later that reads the field directly could,
 // and that is a lost keystroke on whatever path it feeds; this refuses one.
 //
-// AST, not text: an assignment, the declaration and the accessor's own return
+// AST, not text: an assignment, the declaration and reads inside the accessor
 // are the only allowed occurrences, which a regex cannot tell from a read
 // (`lastEditorMarkdown = x` vs `x = lastEditorMarkdown`, a read inside an
 // arrow, a read in the markup). Comments are not nodes, so the field named in
-// prose is not counted.
+// prose is not counted. "Inside the accessor" includes anything nested in it,
+// which is why the count of accessor reads is pinned at exactly one: a second
+// read added there (say, in a nested arrow) fails that count.
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

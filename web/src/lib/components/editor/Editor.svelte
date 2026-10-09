@@ -593,6 +593,7 @@
 		collabUser,
 		onUpdate,
 		onDirty,
+		onSettledUnchanged,
 		onEditor,
 		onImportInserted,
 	}: {
@@ -668,6 +669,13 @@
 		 */
 		onDirty?: () => void;
 		/**
+		 * Fired when a burst that raised `onDirty` serializes to the markdown
+		 * last delivered (a change markdown does not carry, or one undone
+		 * inside the window), so the host can drop the dirty mark that burst
+		 * raised; nothing will be saved to clear it.
+		 */
+		onSettledUnchanged?: () => void;
+		/**
 		 * The Tiptap instance, and `drain`: deliver any coalesced `onUpdate`
 		 * now (a no-op when nothing is pending or the editor is gone).
 		 */
@@ -709,7 +717,10 @@
 		if (!editor || editor.isDestroyed) return;
 		deliveredDoc = editor.state.doc;
 		const md = unescapeDocLinks((editor.storage as any).markdown.getMarkdown());
-		if (md === lastMarkdown) return;
+		if (md === lastMarkdown) {
+			onSettledUnchanged?.();
+			return;
+		}
 		lastMarkdown = md;
 		onUpdate?.(md);
 	}
@@ -1153,13 +1164,7 @@
 					}
 				}
 			},
-			onTransaction: ({ transaction }) => {
-				// Re-render the toolbars' isActive bindings only for a transaction
-				// that can change what they show: the document, the selection, or
-				// the stored marks (bold toggled with nothing selected). Pure meta
-				// transactions, such as collaborators' cursors, no longer do
-				// (TASK-2232, audit C78).
-				if (!transaction.docChanged && !transaction.selectionSet && !transaction.storedMarksSet) return;
+			onTransaction: () => {
 				editor = editor;
 				editorTick++;
 			},

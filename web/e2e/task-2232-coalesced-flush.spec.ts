@@ -112,9 +112,9 @@ test.describe('a keystroke inside the coalesce window persists (TASK-2232)', () 
 		await expect.poll(() => readContent(request, fixture, a.slug), { timeout: 15_000 }).toContain(marker);
 	});
 
-	test('the page going away (pagehide)', async ({ page, fixture, request }) => {
-		const { slug } = await seedDoc(fixture, request, 'Coalesce pagehide');
-		const marker = `coalesce-pagehide-${Date.now()}`;
+	test('the page going away', async ({ page, fixture, request }) => {
+		const { slug } = await seedDoc(fixture, request, 'Coalesce leave');
+		const marker = `coalesce-leave-${Date.now()}`;
 		await browserLogin(page);
 		const editor = await openSynced(page, `/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${slug}`);
 		const flush = watchFlush(page, marker);
@@ -122,13 +122,12 @@ test.describe('a keystroke inside the coalesce window persists (TASK-2232)', () 
 		await freezeAndType(page, editor, marker);
 		expect(flush.sent).toBe(false);
 
-		// The handler flushes with keepalive, reading the live editor: one
-		// serialization, as before this change.
-		await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false })));
-		const sentInWindow = await stepUntil(page, () => flush.sent, 10);
-		expect(sentInWindow, 'pagehide sent the typed text at once').toBe(true);
-
-		await page.clock.resume();
+		// A real departure: the dirty pane asks before unloading, and leaving
+		// is the answer. pagehide / beforeunload flush with keepalive, reading
+		// the live editor (one serialization, as before this change), so the
+		// write outlives the page.
+		page.on('dialog', (d) => void d.accept());
+		await page.goto('about:blank');
 		await expect.poll(() => readContent(request, fixture, slug), { timeout: 15_000 }).toContain(marker);
 	});
 });

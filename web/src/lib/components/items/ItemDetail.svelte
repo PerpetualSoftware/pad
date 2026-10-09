@@ -29,6 +29,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { createBurstDirty } from '$lib/items/editorBurstDirty';
 	import { createChangeContext } from '$lib/timeline/changeContext';
 	import { resolveSyncRenameTarget } from '$lib/collections/renameNav';
 	import { shouldAdoptCollection } from '$lib/items/adoptCollection';
@@ -4263,13 +4264,22 @@
 	// handleContentUpdate sets, set at the keystroke rather than when the
 	// coalesced markdown arrives, so an SSE refresh in between still sees the
 	// pane dirty. Peeking-gated on the singleton exactly as below.
+	// The dirty marks for an editor burst (TASK-2232): raised at the keystroke,
+	// and put back if the burst settles on unchanged markdown (see
+	// createBurstDirty). The singleton is touched only by the active side, as
+	// handleContentUpdate does.
+	const burstDirty = createBurstDirty({
+		localDirty: () => localDirty,
+		setLocalDirty: (v) => { localDirty = v; },
+		ownsStore: () => !collabProvider || !peeking,
+		storeDirty: () => editorStore.dirty,
+		setStoreDirty: (v) => editorStore.setDirty(v),
+	});
 	function handleEditorDirty() {
-		if (collabProvider) {
-			if (!peeking) editorStore.setDirty(true);
-		} else {
-			editorStore.setDirty(true);
-		}
-		localDirty = true;
+		burstDirty.changed();
+	}
+	function handleEditorUnchanged() {
+		burstDirty.settledUnchanged();
 	}
 
 	function handleContentUpdate(markdown: string) {
@@ -4278,6 +4288,8 @@
 		// shadow always holds the newest edit — captured while the editor is
 		// live, before any unmount tears it down (TASK-2117).
 		lastEditorMarkdown = markdown;
+		// A real change: the dirty marks this burst raised are now owed a save.
+		burstDirty.delivered();
 		// Collab-active path: 5s idle flush of items.content via the
 		// `?source=collab-snapshot` bypass (server skips the applier
 		// loop, writes items.content directly). Y.Doc op-log is
@@ -7215,6 +7227,7 @@
 								itemId={item.id}
 								hostToken={attachmentHostToken}
 								onDirty={handleEditorDirty}
+								onSettledUnchanged={handleEditorUnchanged}
 								onEditor={(e, drain) => { editorInstance = e; drainEditorUpdate = drain; primeCanonicalSeed(); }}
 								onImportInserted={handleImportInserted}
 							/>
@@ -7277,6 +7290,7 @@
 									awareness={collabProvider?.awareness}
 									collabUser={collabUserState}
 									onDirty={handleEditorDirty}
+									onSettledUnchanged={handleEditorUnchanged}
 									onEditor={(e, drain) => { editorInstance = e; drainEditorUpdate = drain; primeCanonicalSeed(); }}
 									onImportInserted={handleImportInserted}
 								/>

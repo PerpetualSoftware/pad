@@ -47,6 +47,7 @@ let tiptap: TiptapEditor | null = null;
 let drain: (() => void) | null = null;
 let updates: string[] = [];
 let dirty = 0;
+let settledUnchanged = 0;
 // Who saw what at the moment onUpdate fired: whether the editor was already
 // destroyed decides whether a teardown reader can still get the text.
 let destroyedAtUpdate: boolean[] = [];
@@ -65,6 +66,7 @@ beforeEach(() => {
 	document.body.appendChild(target);
 	updates = [];
 	dirty = 0;
+	settledUnchanged = 0;
 	destroyedAtUpdate = [];
 	instance = mount(BodyEditor, {
 		target,
@@ -78,6 +80,9 @@ beforeEach(() => {
 			},
 			onDirty: () => {
 				dirty++;
+			},
+			onSettledUnchanged: () => {
+				settledUnchanged++;
 			},
 			onEditor: (e: TiptapEditor, d: () => void) => {
 				tiptap = e;
@@ -139,6 +144,21 @@ describe('the Editor coalesces its markdown and not its dirty signal (TASK-2232)
 		// And nothing fires later into a component that is gone.
 		vi.advanceTimersByTime(500);
 		expect(updates).toHaveLength(1);
+	});
+
+	it('a burst undone inside the window reports settled-unchanged, so the host can drop its dirty mark', () => {
+		type('k');
+		const { state, view } = tiptap!;
+		view.dispatch(state.tr.delete(state.doc.content.size - 2, state.doc.content.size - 1));
+		expect(dirty).toBeGreaterThan(0);
+		vi.advanceTimersByTime(200);
+		expect(updates).toEqual([]);
+		expect(settledUnchanged).toBe(1);
+		// A real change reports no such thing.
+		type('m');
+		vi.advanceTimersByTime(200);
+		expect(updates).toHaveLength(1);
+		expect(settledUnchanged).toBe(1);
 	});
 
 	it('mounting, and a change that leaves the delivered document as it was, report nothing', () => {
