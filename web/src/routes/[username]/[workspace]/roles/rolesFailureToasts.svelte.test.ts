@@ -37,6 +37,9 @@ const ITEM = {
 	id: 'i1', slug: 'i1', title: 'Row', item_number: 1, collection_slug: 'tasks',
 	fields: '{}', tags: '[]', agent_role_id: null, assigned_user_id: null, role_sort_order: 3,
 };
+// Already in role lane A, so a drop has a card to land ahead of: a card alone
+// in a lane needs no sort-order write (TASK-2230).
+const NEIGHBOR = { ...ITEM, id: 'i2', slug: 'i2', title: 'Neighbour', item_number: 2, agent_role_id: 'r1', role_sort_order: 1 };
 
 vi.mock('$lib/api/client', () => ({
 	api: {
@@ -44,7 +47,7 @@ vi.mock('$lib/api/client', () => ({
 			board: vi.fn(async () => ({
 				lanes: [
 					{ role: null, items: [ITEM] },
-					{ role: ROLE_A, items: [] },
+					{ role: ROLE_A, items: [NEIGHBOR] },
 					{ role: ROLE_B, items: [] },
 				],
 			})),
@@ -101,7 +104,7 @@ async function mountPage() {
 
 function dropIntoRoleLane(): void {
 	document.querySelectorAll('.lane-items')[1]!.dispatchEvent(
-		new CustomEvent('finalize', { detail: { items: [{ ...ITEM }], info: { id: ITEM.id, trigger: 'droppedIntoZone' } } })
+		new CustomEvent('finalize', { detail: { items: [{ ...ITEM }, { ...NEIGHBOR }], info: { id: ITEM.id, trigger: 'droppedIntoZone' } } })
 	);
 }
 
@@ -203,5 +206,24 @@ describe('roles board: a failed write is shown (TASK-2204)', () => {
 		reject(new Error('late'));
 		await new Promise((r) => setTimeout(r, 50));
 		expect(errorToast(/Couldn't delete the role/)).toBeUndefined();
+	});
+
+	// TASK-2230, lead's check: a lone card needs no SORT write any more, but a
+	// card moved into another lane must still write that lane's field. Dropped
+	// alone into the empty Reviewer lane: one item write carrying the new role,
+	// and no order write, since a card alone in a lane already sorts.
+	it('a lone card dropped into an empty role lane writes its new role, and no order', async () => {
+		await mountPage();
+		vi.mocked(api.items.update).mockClear();
+		vi.mocked(api.agentRoles.reorder).mockClear();
+		document.querySelectorAll('.lane-items')[2]!.dispatchEvent(
+			new CustomEvent('finalize', { detail: { items: [{ ...ITEM }], info: { id: ITEM.id, trigger: 'droppedIntoZone' } } })
+		);
+		await waitFor(() => expect(vi.mocked(api.items.update)).toHaveBeenCalledTimes(1));
+		const [, id, update] = vi.mocked(api.items.update).mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+		expect(id).toBe(ITEM.id);
+		expect(update.agent_role_id).toBe(ROLE_B.id);
+		await new Promise((r) => setTimeout(r, 50));
+		expect(vi.mocked(api.agentRoles.reorder)).not.toHaveBeenCalled();
 	});
 });

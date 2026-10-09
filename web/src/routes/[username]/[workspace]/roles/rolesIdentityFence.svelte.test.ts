@@ -143,10 +143,13 @@ const ROLE = { id: 'r1', name: 'Implementer', slug: 'implementer', icon: '🔨',
 const ITEM = {
 	id: 'i1', slug: 'i1', title: 'Row', item_number: 1, collection_slug: 'tasks',
 	fields: '{}', tags: '[]', agent_role_id: null, assigned_user_id: null,
-	// The API always sends it. Not 0, so a drop to the head of a lane changes it
-	// and persists (the lane renumber writes only cards that move, BUG-3259).
+	// The API always sends it. Above NEIGHBOR's, so a drop ahead of NEIGHBOR
+	// must change it and persists (the plan writes only cards that must move:
+	// BUG-3259, and since TASK-2230 a card alone in a lane is not one of them).
 	role_sort_order: 3,
 };
+// Already in the role lane, so the drop has a card to land ahead of.
+const NEIGHBOR = { ...ITEM, id: 'i2', slug: 'i2', title: 'Neighbour', item_number: 2, agent_role_id: 'r1', role_sort_order: 1 };
 
 async function mountPage() {
 	toasts.length = 0;
@@ -164,7 +167,7 @@ async function mountPage() {
 	resolveBoard({
 		lanes: [
 			{ role: null, items: [ITEM] },
-			{ role: ROLE, items: [] },
+			{ role: ROLE, items: [NEIGHBOR] },
 		],
 	});
 	await waitFor(() => {
@@ -224,7 +227,7 @@ describe('the roles board stops a commit when the identity moves mid-flight', ()
 		// role lane it is dragged into.
 		zones[1]!.dispatchEvent(
 			new CustomEvent('finalize', {
-				detail: { items: [{ ...ITEM }], info: { id: ITEM.id, trigger: 'droppedIntoZone' } },
+				detail: { items: [{ ...ITEM }, { ...NEIGHBOR }], info: { id: ITEM.id, trigger: 'droppedIntoZone' } },
 			})
 		);
 	}
@@ -403,7 +406,7 @@ describe('the roles board stops a commit when the identity moves mid-flight', ()
 			if (boardCalls.length < 2) throw new Error('the identity change did not trigger a reload');
 			return boardCalls[1]!;
 		});
-		reload({ lanes: [{ role: null, items: [ITEM] }, { role: ROLE, items: [] }] });
+		reload({ lanes: [{ role: null, items: [ITEM] }, { role: ROLE, items: [NEIGHBOR] }] });
 
 		await waitFor(() => {
 			if (document.querySelectorAll('.lane-items').length < 2) {
@@ -463,7 +466,7 @@ describe('the roles board stops a commit when the identity moves mid-flight', ()
 			if (boardCalls.length < 2) throw new Error('the identity change did not trigger a reload');
 			return boardCalls[1]!;
 		});
-		reload({ lanes: [{ role: null, items: [ITEM] }, { role: ROLE, items: [] }] });
+		reload({ lanes: [{ role: null, items: [ITEM] }, { role: ROLE, items: [NEIGHBOR] }] });
 
 		// The board must come back AND be usable. "Rendered" alone is not
 		// enough: the lanes render from `orderedLanes`, while the drop handler
