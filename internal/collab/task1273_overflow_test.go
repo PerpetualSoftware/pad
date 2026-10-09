@@ -165,3 +165,59 @@ func TestTASK1273_TheRoomClosesAPeerTheBusOverflowed(t *testing.T) {
 		t.Fatalf("overflow closes counted %d, want 1", n)
 	}
 }
+
+// End to end through a real overflow (codex): the peer's writeLoop is held
+// on its write lock, the bus fills its buffer and drops the next op, and the
+// room closes the socket, counted once.
+func TestTASK1273_ARealOverflowClosesThePeerOnce(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	obs := &overflowCounter{}
+	mgr.SetObserver(obs)
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	const item = "item-real-overflow"
+	c := dialWS(t, srv, item)
+	defer c.Close()
+	initialCursor(t, c)
+
+	mgr.mu.Lock()
+	room := mgr.rooms[item]
+	mgr.mu.Unlock()
+	if room == nil {
+		t.Fatal("no room for the joined item")
+	}
+	room.mu.Lock()
+	var rc *roomConn
+	for _, x := range room.conns {
+		rc = x
+	}
+	room.mu.Unlock()
+	if rc == nil {
+		t.Fatal("no conn in the room")
+	}
+
+	// Stall the writeLoop: it takes one event and waits on writeMu.
+	rc.writeMu.Lock()
+	for i := 0; i < subscriberBufSize+10; i++ {
+		bus.Publish(OpEvent{ItemID: item, Type: OpTypeSync, Data: []byte{yMessageSync, 2, 1, byte(i)}, OpLogID: int64(i + 1), ClientID: 999})
+	}
+	rc.writeMu.Unlock()
+
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		_, _, err := c.ReadMessage()
+		if err == nil {
+			continue
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatal("a real overflow did not close the peer")
+		}
+		break
+	}
+	if n := obs.closes.Load(); n != 1 {
+		t.Fatalf("overflow closes counted %d, want 1", n)
+	}
+}
