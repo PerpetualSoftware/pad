@@ -2290,7 +2290,7 @@
 		}
 	}
 
-	async function handleReorder(updates: { slug: string; sort_order: number }[]) {
+	async function handleReorder(updates: { slug: string; sort_order: number }[], movedId?: string) {
 		if (!wsSlug) return;
 		const ws = wsSlug;
 		const epochAtEntry = captureIdentity();
@@ -2304,7 +2304,9 @@
 			.sort((a, b) => a.sort_order - b.sort_order)
 			.map(({ slug }) => items.find((i) => i.slug === slug || i.id === slug))
 			.filter((i): i is Item => !!i);
-		const plan = planLaneOrder(lane, (i) => workspaceStore.canEditItem(i));
+		// The moved card is written alone when that is enough, so its
+		// 'reordered' row is on the card the user moved (TASK-3525).
+		const plan = planLaneOrder(lane, (i) => workspaceStore.canEditItem(i), movedId);
 		if (!plan.ok) {
 			// No integer room between view-only cards for the card that moved.
 			// Nothing is written, so the lane re-renders from the stored order.

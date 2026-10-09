@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { SORT_GAP } from '../src/lib/collections/reorderPlan';
 import { browserLogin } from './lib/collab-helpers';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
@@ -83,7 +84,7 @@ test('TASK-3517: moving a card to the top of its lane sends one sort-order reque
 	expect(put.status).toBe(200);
 	const updates = JSON.parse(put.body).updates as { id: string; sort_order: number }[];
 	expect(updates, 'a move to the top writes the moved card alone').toHaveLength(1);
-	expect(updates[0].sort_order, 'below every card in the lane (min - 1)').toBe(-1);
+	expect(updates[0].sort_order, 'SORT_GAP below every card in the lane (TASK-3525)').toBe(-SORT_GAP);
 	expect(
 		writes.filter((w) => w.method === 'PATCH' && w.body.includes('sort_order')),
 		'no per-row sort_order PATCH'
@@ -96,9 +97,11 @@ test('TASK-3517: moving a card to the top of its lane sends one sort-order reque
 
 // A move that must renumber SEVERAL cards still goes in one request (the
 // subject of TASK-3517), end to end. In a dense lane of five (0..4), moving the
-// fourth card up gives a, b, d, c, e: pushing the left side down would write
-// three cards, pushing the right side up writes two (c -> 4, e -> 5), so the
-// plan is exactly those two, in one PUT (TASK-2230 writes the fewest).
+// fourth card up gives a, b, d, c, e. There is no integer room between d (3)
+// and c (2), so the plan shifts the shorter side (TASK-2230), writing the
+// shifted cards SORT_GAP apart (TASK-3525): pushing the left side down would
+// write three cards, pushing the right side up writes two (c -> 3 + SORT_GAP,
+// e -> 3 + 2 * SORT_GAP), so the plan is exactly those two, in one PUT.
 test('TASK-3517: a middle move that renumbers several cards sends them in one request', async ({ page, fixture, request }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'one browser is enough');
 	const { titles, collSlug } = await seedLane(request, fixture, 5);
@@ -121,7 +124,7 @@ test('TASK-3517: a middle move that renumbers several cards sends them in one re
 	expect(put.status).toBe(200);
 	const updates = JSON.parse(put.body).updates as { id: string; sort_order: number }[];
 	expect(updates.length, 'several cards renumbered, in this one request').toBe(2);
-	expect(updates.map((u) => u.sort_order).sort((x, y) => x - y)).toEqual([4, 5]);
+	expect(updates.map((u) => u.sort_order).sort((x, y) => x - y)).toEqual([3 + SORT_GAP, 3 + 2 * SORT_GAP]);
 	expect(
 		writes.filter((w) => w.method === 'PATCH' && w.body.includes('sort_order')),
 		'no per-row sort_order PATCH'

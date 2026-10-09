@@ -31,7 +31,7 @@
 		 * (manual ⇒ stored sort_order) when no column-header sort is active,
 		 * and persists moves through `onReorder`.
 		 */
-		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
+		onReorder?: (updates: { slug: string; sort_order: number }[], movedId?: string) => void;
 		canEdit?: boolean;
 		preserveOrder?: boolean;
 		sortMode?: SortMode;
@@ -188,7 +188,7 @@
 	function reorderItem(item: Item, dir: ReorderDirection) {
 		if (!onReorder) return;
 		const lane = laneOrderAfterMove(sortedItems, item.id, dir);
-		if (lane.length > 0) onReorder(lane);
+		if (lane.length > 0) onReorder(lane, item.id);
 	}
 
 	function relativeTime(dateStr: string): string {

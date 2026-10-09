@@ -59,7 +59,7 @@
 		 * `ItemCard` already does.
 		 */
 		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;
-		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
+		onReorder?: (updates: { slug: string; sort_order: number }[], movedId?: string) => void;
 		onArchiveColumn?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
 		oncreate?: () => void;
@@ -661,7 +661,7 @@
 			const reorderUpdates = lane
 				.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 				.map((item, index) => ({ slug: item.id, sort_order: index }));
-			if (reorderUpdates.length > 0) onReorder(reorderUpdates);
+			if (reorderUpdates.length > 0) onReorder(reorderUpdates, itemId);
 		}
 		setTimeout(() => { dropCooldown = false; }, 2000);
 	}
@@ -763,7 +763,7 @@
 				const reorderUpdates = order
 					.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 					.map((it, index) => ({ slug: it.id, sort_order: index }));
-				if (reorderUpdates.length > 0) onReorder(reorderUpdates);
+				if (reorderUpdates.length > 0) onReorder(reorderUpdates, item.id);
 			}
 			// Let SSE events settle before re-syncing from props.
 			setTimeout(() => { dropCooldown = false; }, 2000);
@@ -797,7 +797,7 @@
 		const at = lane.findIndex((u) => u.slug === item.id);
 		const key = laneKey(columnValue);
 		if (at >= windowSize(columnValue)) grownWindows[key] = at + 1;
-		if (lane.length > 0) onReorder(lane);
+		if (lane.length > 0) onReorder(lane, item.id);
 	}
 
 	// Menu-driven adjacent-column move (TASK-1908) — the horizontal

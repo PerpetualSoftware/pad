@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planLaneOrder, persistReorder, type OrderedCard, type OrderWrite } from './reorderPlan';
+import { planLaneOrder, persistReorder, SORT_GAP, SORT_LIMIT, type OrderedCard, type OrderWrite } from './reorderPlan';
 
 const c = (id: string, sort_order: number): OrderedCard => ({ id, sort_order });
 
@@ -17,12 +17,12 @@ function sortedAfter(lane: OrderedCard[], writes: OrderWrite[]): string[] {
 describe('planLaneOrder (BUG-3259, TASK-2230)', () => {
 	it('a drop at the top of an all-editable lane writes the moved card alone, below the rest (TASK-2230)', () => {
 		const lane = [c('c', 2), c('a', 0), c('b', 1)];
-		expect(planLaneOrder(lane, () => true)).toEqual({ ok: true, writes: [{ id: 'c', sort_order: -1 }] });
+		expect(planLaneOrder(lane, () => true)).toEqual({ ok: true, writes: [{ id: 'c', sort_order: -SORT_GAP }] });
 	});
 
 	it('a drop at the bottom writes the moved card alone, above the rest', () => {
 		const lane = [c('b', 1), c('c', 2), c('a', 0)];
-		expect(planLaneOrder(lane, () => true)).toEqual({ ok: true, writes: [{ id: 'a', sort_order: 3 }] });
+		expect(planLaneOrder(lane, () => true)).toEqual({ ok: true, writes: [{ id: 'a', sort_order: 2 + SORT_GAP }] });
 	});
 
 	it('a lane nothing moved in writes nothing', () => {
@@ -66,6 +66,133 @@ describe('planLaneOrder (BUG-3259, TASK-2230)', () => {
 		ids.splice(510, 0, moved);
 		const plan = planLaneOrder(ids.map((o) => c(`i${o}`, o)), () => true);
 		expect(plan.ok && plan.writes.length).toBeLessThanOrEqual(511);
+	});
+
+	// TASK-3525: a gapped lane moves one card with ONE write.
+	it('in a gapped lane every single move is one write (exhaustive to 9)', () => {
+		let checked = 0;
+		for (let n = 2; n <= 9; n++) {
+			for (let from = 0; from < n; from++) {
+				for (let to = 0; to < n; to++) {
+					if (from === to) continue;
+					const ids = [...Array(n).keys()];
+					const [moved] = ids.splice(from, 1);
+					ids.splice(to, 0, moved);
+					const lane = ids.map((orig) => c(`i${orig}`, orig * SORT_GAP));
+					const plan = planLaneOrder(lane, () => true);
+					if (!plan.ok) throw new Error('expected a plan');
+					// One write. Usually the moved card; in an adjacent swap either card
+					// can be the one written, which is the same cost.
+					expect(plan.writes, `n=${n} ${from}->${to}`).toHaveLength(1);
+					if (Math.abs(from - to) > 1) expect(plan.writes[0].id).toBe(`i${moved}`);
+					expect(sortedAfter(lane, plan.writes)).toEqual(lane.map((x) => x.id));
+					checked++;
+				}
+			}
+		}
+		expect(checked).toBeGreaterThan(200);
+	});
+
+	it('a middle drop in a gapped 1,020-card lane is one write', () => {
+		const n = 1020;
+		const ids = [...Array(n).keys()];
+		const [moved] = ids.splice(n - 1, 1);
+		ids.splice(510, 0, moved);
+		const plan = planLaneOrder(ids.map((o) => c(`i${o}`, o * SORT_GAP)), () => true);
+		expect(plan.ok && plan.writes).toHaveLength(1);
+	});
+
+	// Drops into one slot halve its gap; when it closes, one bounded shift
+	// re-spaces, and the drops after it are single writes again.
+	it('repeated drops into one slot stay cheap', () => {
+		let lane = [...Array(20).keys()].map((o) => c(`i${o}`, o * SORT_GAP));
+		const counts: number[] = [];
+		for (let drop = 0; drop < 30; drop++) {
+			// Take the last card and drop it right after the first.
+			const moved = lane[lane.length - 1];
+			const next = [lane[0], moved, ...lane.slice(1, -1)];
+			const plan = planLaneOrder(next, () => true);
+			if (!plan.ok) throw new Error('expected a plan');
+			expect(sortedAfter(next, plan.writes)).toEqual(next.map((x) => x.id));
+			counts.push(plan.writes.length);
+			const value = new Map(next.map((x) => [x.id, x.sort_order]));
+			for (const w of plan.writes) value.set(w.id, w.sort_order);
+			lane = next.map((x) => c(x.id, value.get(x.id)!));
+		}
+		// 30 drops into one slot of a 20-card lane: mostly single writes, and the
+		// re-spaces are bounded by the shorter side (here the one card before it).
+		expect(counts.filter((x) => x === 1).length).toBeGreaterThan(20);
+		expect(Math.max(...counts)).toBeLessThanOrEqual(10);
+	});
+
+	it('a never-dragged lane (all 0) pays once: the next move is one write', () => {
+		const lane = [...Array(8).keys()].map((o) => c(`i${o}`, 0));
+		const first = [lane[3], ...lane.slice(0, 3), ...lane.slice(4)];
+		const plan1 = planLaneOrder(first, () => true);
+		if (!plan1.ok) throw new Error('expected a plan');
+		expect(sortedAfter(first, plan1.writes)).toEqual(first.map((x) => x.id));
+		const value = new Map(first.map((x) => [x.id, x.sort_order]));
+		for (const w of plan1.writes) value.set(w.id, w.sort_order);
+		const spaced = first.map((x) => c(x.id, value.get(x.id)!));
+		const second = [spaced[0], spaced[5], ...spaced.slice(1, 5), ...spaced.slice(6)];
+		const plan2 = planLaneOrder(second, () => true);
+		expect(plan2.ok && plan2.writes).toHaveLength(1);
+	});
+
+	it('a plan that would leave the range re-spaces the whole lane around 0', () => {
+		const lane = [c('b', SORT_LIMIT - 10), c('c', SORT_LIMIT), c('a', 0)];
+		// Moving a to the bottom would write SORT_LIMIT + SORT_GAP.
+		const plan = planLaneOrder(lane, () => true);
+		if (!plan.ok) throw new Error('expected a plan');
+		for (const w of plan.writes) expect(Math.abs(w.sort_order)).toBeLessThanOrEqual(SORT_LIMIT);
+		expect(sortedAfter(lane, plan.writes)).toEqual(['b', 'c', 'a']);
+	});
+
+	it('with a view-only card present, a moved card still gets room, not prev + 1', () => {
+		// x (editable) dropped below frozen b: it gets b + SORT_GAP.
+		const lane = [c('a', 0), c('b', SORT_GAP), c('x', -5)];
+		const plan = planLaneOrder(lane, (y) => y.id === 'x');
+		expect(plan).toEqual({ ok: true, writes: [{ id: 'x', sort_order: 2 * SORT_GAP }] });
+	});
+
+	// TASK-3525: when the caller names the moved card and writing it alone is
+	// enough, the plan writes that card, so its 'reordered' activity row is on
+	// the card the user moved rather than on a neighbour.
+	it('an adjacent swap writes the card the user moved, either direction, any lane shape', () => {
+		for (const gap of [1, SORT_GAP]) {
+			for (let n = 2; n <= 7; n++) {
+				for (let k = 0; k < n - 1; k++) {
+					const ids = [...Array(n).keys()];
+					[ids[k], ids[k + 1]] = [ids[k + 1], ids[k]];
+					const lane = ids.map((o) => c(`i${o}`, o * gap));
+					for (const moved of [`i${k}`, `i${k + 1}`]) {
+						const plan = planLaneOrder(lane, () => true, moved);
+						if (!plan.ok) throw new Error('expected a plan');
+						expect(sortedAfter(lane, plan.writes)).toEqual(lane.map((x) => x.id));
+						if (gap === SORT_GAP) expect(plan.writes, `n=${n} swap ${k} moved ${moved}`).toEqual([{ id: moved, sort_order: expect.any(Number) }]);
+					}
+				}
+			}
+		}
+	});
+
+	it('names the moved card even past a view-only neighbour', () => {
+		const lane = [c('x', 2 * SORT_GAP), c('a', 0), c('b', SORT_GAP)];
+		const plan = planLaneOrder(lane, (y) => y.id !== 'a', 'x');
+		expect(plan).toEqual({ ok: true, writes: [{ id: 'x', sort_order: -SORT_GAP }] });
+	});
+
+	it('falls back to planning the lane when the moved card alone is not enough', () => {
+		// A dense lane: no room between the neighbours the card lands between.
+		const lane = [c('a', 0), c('c', 2), c('b', 1), c('d', 3)];
+		const plan = planLaneOrder(lane, () => true, 'c');
+		if (!plan.ok) throw new Error('expected a plan');
+		expect(sortedAfter(lane, plan.writes)).toEqual(['a', 'c', 'b', 'd']);
+	});
+
+	it('a moved card already in place writes nothing', () => {
+		const lane = [c('a', 0), c('b', SORT_GAP), c('c', 2 * SORT_GAP)];
+		expect(planLaneOrder(lane, () => true, 'b')).toEqual({ ok: true, writes: [] });
 	});
 
 	it('never writes a view-only card', () => {

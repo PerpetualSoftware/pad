@@ -202,6 +202,8 @@ pad item copy <ref> --to-workspace <slug> --collection <slug> [--dry-run] [--arc
                               # so a link can silently retarget to a different item or break;
                               # `[[workspace::REF]]` stays a genuine cross-workspace reference.
                               # The web dialog (item pane ⋯ → "Copy or move to workspace…") says the same.
+                              # sort_order does NOT carry: the copy is created at 0, like any new item, since
+                              # a place in the source lane means nothing in the destination's (TASK-3525).
                               # System metadata (BUG-2674): implementation_notes and decision_log CARRY —
                               # they describe the item's own history and are true wherever it lands.
                               # github_pr does NOT carry across workspaces: it names the SOURCE project's

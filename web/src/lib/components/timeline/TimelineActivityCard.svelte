@@ -26,6 +26,16 @@
 	}
 
 	const metadata = $derived(parseMetadata(activity.metadata));
+	// A reorder's direction (TASK-3525): a lower sort_order sorts earlier. Shown
+	// only when both values are numbers that differ; anything else says nothing
+	// rather than guessing.
+	const reorderDirection = $derived.by(() => {
+		const raw = (v: unknown) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN);
+		const from = raw(metadata.sort_order_from);
+		const to = raw(metadata.sort_order_to);
+		if (!Number.isFinite(from) || !Number.isFinite(to) || from === to) return '';
+		return to < from ? 'moved up' : 'moved down';
+	});
 	const changes = $derived(parseFieldChanges(metadata.changes ?? ''));
 
 	const actionLabels: Record<string, string> = {
@@ -87,11 +97,11 @@
 				{metadata.from_collection} &rarr; {metadata.to_collection}
 			</span>
 		{/if}
-		{#if activity.action === 'reordered' && metadata.sort_order_from && metadata.sort_order_to}
-			<!-- sort_order is the item's place in its list (TASK-3517) -->
-			<span class="move-detail">
-				position {metadata.sort_order_from} &rarr; {metadata.sort_order_to}
-			</span>
+		{#if activity.action === 'reordered' && reorderDirection}
+			<!-- sort_order is a gapped sort key, not a position (TASK-3525): its
+			     raw values mean nothing to a reader, but a lower one sorts
+			     earlier, so the direction does. -->
+			<span class="move-detail">{reorderDirection}</span>
 		{/if}
 		<Chip size="sm">{getSourceLabel(activity.source)}</Chip>
 		<span class="spacer"></span>

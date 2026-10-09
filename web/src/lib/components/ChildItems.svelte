@@ -201,7 +201,8 @@
 		if (!canEdit) return;
 
 		await persistChildOrder(
-			groupData[laneKey(status)].filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+			groupData[laneKey(status)].filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]),
+			e.detail.info.id
 		);
 	}
 
@@ -211,8 +212,9 @@
 	// others around it, writing only children whose value changes. On a refusal,
 	// or no room to keep the order, the canonical children are reloaded so the
 	// group never shows an order the server did not store.
-	async function persistChildOrder(lane: Item[]) {
-		const plan = planLaneOrder(lane, (c) => workspaceStore.canEditItem(c));
+	async function persistChildOrder(lane: Item[], movedId?: string) {
+		// The moved child is written alone when that is enough (TASK-3525).
+		const plan = planLaneOrder(lane, (c) => workspaceStore.canEditItem(c), movedId);
 		if (!plan.ok) {
 			toastStore.show("Couldn't keep that order: an item you can only view is in the way.", 'error');
 			void loadChildren();
@@ -269,7 +271,7 @@
 
 		// Optimistic: show the new order immediately.
 		groupData[laneKey(status)] = reordered;
-		await persistChildOrder(reordered);
+		await persistChildOrder(reordered, child.id);
 	}
 
 	// ── Data loading ─────────────────────────────────────────────────────────
