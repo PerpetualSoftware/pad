@@ -43,6 +43,10 @@ type MaterializeInput struct {
 	// Cursor is MAX(id) over ALL of the item's op-log rows, content-bearing or
 	// not, from the same statement as Rows.
 	Cursor int64
+	// IDs are the ids of ALL the rows read (content-bearing or not), oldest
+	// first. A compaction deletes exactly these (TASK-3532), so a row that
+	// committed after this read survives instead of vanishing unseen.
+	IDs []int64
 	// SchemaVersions are the distinct schema_version stamps over all rows.
 	SchemaVersions []string
 	// Pending is how many content-bearing rows sit above the watermark.
@@ -96,6 +100,7 @@ func (s *Store) LoadMaterializeInput(itemID string) (*MaterializeInput, error) {
 			return nil, fmt.Errorf("materialize input (scan): %w", err)
 		}
 		in.Cursor = id
+		in.IDs = append(in.IDs, id)
 		if !seen[version] {
 			seen[version] = true
 			in.SchemaVersions = append(in.SchemaVersions, version)

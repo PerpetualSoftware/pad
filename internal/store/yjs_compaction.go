@@ -24,11 +24,12 @@ import (
 // the item no longer met the conditions the snapshot was built under.
 var ErrCompactionRefused = errors.New("op-log compaction refused: the op-log changed or is no longer dormant and flushed")
 
-// CompactItemOpLog replaces itemID's op-log rows up to expectMaxID with the
-// single snapshot frame, in one transaction, iff the item is still exactly
-// what the snapshot was built from:
-//   - MAX(id) of its op-log is expectMaxID (no row arrived since the rows
-//     were read);
+// CompactItemOpLog replaces the op-log rows the snapshot was built from (ids,
+// every row the job read, oldest first) with the single snapshot frame, in
+// one transaction, iff the item is still exactly what the snapshot was built
+// from:
+//   - MAX(id) of its op-log is the last of ids (no row arrived since the
+//     rows were read);
 //   - no row is newer than cutoff (still dormant: the sweep's own test);
 //   - items.content_flushed_op_log_id >= expectMaxID (items.content holds
 //     every row, which is what makes the body equal to the snapshot's text).
@@ -48,10 +49,18 @@ var ErrCompactionRefused = errors.New("op-log compaction refused: the op-log cha
 // committed after this transaction would be invisible to it, and would land
 // BELOW the snapshot's id, outside it (codex, TASK-3531). The dormant DELETE
 // this replaces has the same exposure and the same contract.
-func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, expectMaxID int64, frame []byte, schemaVersion string) (int64, error) {
-	if itemID == "" || expectMaxID <= 0 || len(frame) == 0 || schemaVersion == "" {
-		return 0, errors.New("CompactItemOpLog: itemID, expectMaxID, frame and schemaVersion are required")
+//
+// It deletes EXACTLY ids, not the range up to their max (TASK-3532). On
+// Postgres a row can be allocated a lower id and commit after the job read
+// the log: MAX(id) is unchanged, so the re-check passes, and a range delete
+// would remove a row the snapshot does not contain. Deleting the set leaves
+// such a row in place, below the snapshot. (The caller's lock-and-no-room
+// contract keeps appends out in the first place; this is the backstop.)
+func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, ids []int64, frame []byte, schemaVersion string) (int64, error) {
+	if itemID == "" || len(ids) == 0 || len(frame) == 0 || schemaVersion == "" {
+		return 0, errors.New("CompactItemOpLog: itemID, ids, frame and schemaVersion are required")
 	}
+	expectMaxID := ids[len(ids)-1]
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("compact op-log (begin): %w", err)
@@ -83,8 +92,8 @@ func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, expectMaxID in
 		return 0, ErrCompactionRefused
 	}
 
-	if _, err := tx.Exec(s.dialect.Rebind(`DELETE FROM item_yjs_updates WHERE item_id = ? AND id <= ?`), itemID, expectMaxID); err != nil {
-		return 0, fmt.Errorf("compact op-log (delete): %w", err)
+	if err := s.deleteYjsRowsByIDTx(tx, itemID, ids); err != nil {
+		return 0, err
 	}
 	snapID, err := s.insertYjsFrameQ(tx, itemID, frame, schemaVersion, time.Now().UTC().Format(time.RFC3339), yjsFrameHash(frame), true)
 	if err != nil {
@@ -149,6 +158,35 @@ func (s *Store) clearOpLogCompactionQ(q interface {
 }, itemID string) error {
 	if _, err := q.Exec(s.dialect.Rebind(`UPDATE items SET yjs_compacted_through = NULL, yjs_snapshot_op_id = NULL WHERE id = ? AND yjs_snapshot_op_id IS NOT NULL`), itemID); err != nil {
 		return fmt.Errorf("clear op-log compaction: %w", err)
+	}
+	return nil
+}
+
+// compactDeleteChunk bounds one DELETE's IN list (placeholder limits differ per
+// dialect; SQLite's default is 32766).
+const compactDeleteChunk = 500
+
+// deleteYjsRowsByIDTx deletes exactly the given op-log rows of itemID.
+func (s *Store) deleteYjsRowsByIDTx(tx *sql.Tx, itemID string, ids []int64) error {
+	for start := 0; start < len(ids); start += compactDeleteChunk {
+		end := start + compactDeleteChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		args := make([]any, 0, len(chunk)+1)
+		args = append(args, itemID)
+		marks := make([]byte, 0, 2*len(chunk))
+		for i, id := range chunk {
+			if i > 0 {
+				marks = append(marks, ',')
+			}
+			marks = append(marks, '?')
+			args = append(args, id)
+		}
+		if _, err := tx.Exec(s.dialect.Rebind(`DELETE FROM item_yjs_updates WHERE item_id = ? AND id IN (`+string(marks)+`)`), args...); err != nil {
+			return fmt.Errorf("compact op-log (delete): %w", err)
+		}
 	}
 	return nil
 }
