@@ -207,4 +207,23 @@ describe('roles board: a failed write is shown (TASK-2204)', () => {
 		await new Promise((r) => setTimeout(r, 50));
 		expect(errorToast(/Couldn't delete the role/)).toBeUndefined();
 	});
+
+	// TASK-2230, lead's check: a lone card needs no SORT write any more, but a
+	// card moved into another lane must still write that lane's field. Dropped
+	// alone into the empty Reviewer lane: one item write carrying the new role,
+	// and no order write, since a card alone in a lane already sorts.
+	it('a lone card dropped into an empty role lane writes its new role, and no order', async () => {
+		await mountPage();
+		vi.mocked(api.items.update).mockClear();
+		vi.mocked(api.agentRoles.reorder).mockClear();
+		document.querySelectorAll('.lane-items')[2]!.dispatchEvent(
+			new CustomEvent('finalize', { detail: { items: [{ ...ITEM }], info: { id: ITEM.id, trigger: 'droppedIntoZone' } } })
+		);
+		await waitFor(() => expect(vi.mocked(api.items.update)).toHaveBeenCalledTimes(1));
+		const [, id, update] = vi.mocked(api.items.update).mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+		expect(id).toBe(ITEM.id);
+		expect(update.agent_role_id).toBe(ROLE_B.id);
+		await new Promise((r) => setTimeout(r, 50));
+		expect(vi.mocked(api.agentRoles.reorder)).not.toHaveBeenCalled();
+	});
 });
