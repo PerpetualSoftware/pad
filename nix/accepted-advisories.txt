@@ -7,7 +7,7 @@
 # Lines starting with '#' and blank lines are ignored. One GO-XXXX-NNNN per
 # line; anything after whitespace on the line is treated as a comment.
 #
-# ── Go stdlib: none ──────────────────────────────────────────────────────
+# ── Go stdlib, earlier backlog: cleared ───────────────────────────────────
 # The 8 stdlib advisories accepted here while nixos-26.05 shipped go 1.26.5
 # (GO-2026-5026, -5942, -5972, -6088, -6089, -6090, -6091, -6218; BUG-2567)
 # were removed when the nixpkgs input was updated to a revision shipping
