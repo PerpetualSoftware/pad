@@ -1293,7 +1293,8 @@ func tokenAllowedWorkspaceMatches(ctx context.Context, slug string) bool {
 //
 // Supported scopes (PAT vocabulary):
 //   - "*"       — full access
-//   - "read"    — GET/HEAD/OPTIONS only
+//   - "read"    — GET/HEAD/OPTIONS, plus POST on the side-effect-free
+//     paths isReadScopePOSTPath names
 //   - "write"   — all methods
 //
 // Supported scopes (OAuth 2.1 / RFC 6749 vocabulary, sub-PR E TASK-1027):
@@ -1322,8 +1323,6 @@ func tokenAllowedWorkspaceMatches(ctx context.Context, slug string) bool {
 // Switching to deny-by-default closes the hole where a future scope name
 // like "read-only" would silently grant full access.
 func tokenScopeAllows(scopesJSON, method, path string) bool {
-	_ = path // reserved for future per-resource scopes
-
 	// Empty string (legacy DB rows where the column was never populated)
 	// → full access. Same fast path for the explicit wildcard.
 	if scopesJSON == "" || strings.TrimSpace(scopesJSON) == `["*"]` {
@@ -1363,6 +1362,9 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 			if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
 				allowed = true
 			}
+			if method == http.MethodPost && isReadScopePOSTPath(path) {
+				allowed = true
+			}
 		default:
 			unknown = append(unknown, scope)
 		}
@@ -1373,4 +1375,54 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 			"method", method, "path", path, "unknown_scopes", unknown)
 	}
 	return allowed
+}
+
+// isReadScopePOSTPath reports whether path is a POST a read-scoped token
+// may make because the handler behind it changes nothing (TASK-2863, lead
+// ruling option A on HT-1394). Exactly one path qualifies:
+//
+//	/api/v1/workspaces/{ws}/playbooks/{ref}/run
+//
+// run parses the caller's args against the playbook's declared spec and
+// returns the body with the args bound; it stores nothing. NOT
+// /playbooks/match (it spends a decision-provider call) and NOT the item
+// /claim or /release routes, which write lease state.
+//
+// path is the DECODED path (r.URL.Path, or the path the MCP dispatcher
+// built). The match is by segment count, so an encoded slash inside a
+// segment decodes to an extra segment and is refused, never allowed. The
+// two variable segments must be plain names (isNamedPathSegment).
+func isReadScopePOSTPath(path string) bool {
+	// "", "api", "v1", "workspaces", {ws}, "playbooks", {ref}, "run"
+	seg := strings.Split(path, "/")
+	if len(seg) != 8 || seg[0] != "" || seg[1] != "api" || seg[2] != "v1" ||
+		seg[3] != "workspaces" || seg[5] != "playbooks" || seg[7] != "run" {
+		return false
+	}
+	return isNamedPathSegment(seg[4]) && isNamedPathSegment(seg[6])
+}
+
+// isNamedPathSegment reports whether a path segment plainly names
+// something: only RFC 3986 unreserved characters, and not empty or a dot
+// segment. The narrow set is the guard, not tidiness. The MCP dispatcher
+// passes the path string it built from caller input, before
+// http.NewRequest parses it, so a ref of "match?" made
+// ".../playbooks/match?/run": eight segments ending in run, which routed
+// as POST /playbooks/match with the query "/run". '?', '#', '%' and every
+// other reserved character are refused, so the string checked is the path
+// routed.
+func isNamedPathSegment(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case c == '-', c == '.', c == '_', c == '~':
+		default:
+			return false
+		}
+	}
+	return true
 }
