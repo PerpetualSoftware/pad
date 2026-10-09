@@ -71,7 +71,12 @@ cleanup() {
 }
 trap cleanup EXIT
 port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-clean PAD_DATA_DIR="$work/data" "$bin" server start --host 127.0.0.1 --port "$port" >"$work/server.log" 2>&1 &
+# NOT through clean(): a backgrounded shell FUNCTION runs in a subshell, so
+# $! would be that subshell's pid, and the liveness checks, the SIGTERM and
+# the stopped check below would all be aimed at it while the server it forked
+# lived on (it did: every run before this fix left the server running). env
+# execs the binary, so $! here IS the server.
+env -i PATH=/usr/bin:/bin HOME="$work" PAD_DATA_DIR="$work/data" "$bin" server start --host 127.0.0.1 --port "$port" >"$work/server.log" 2>&1 &
 pid=$!
 
 health=
@@ -103,5 +108,8 @@ PY
 kill "$pid"
 for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
 kill -0 "$pid" 2>/dev/null && fail "the server did not stop on SIGTERM within 5s"
+# And stopped means stopped SERVING, not just a pid gone: nothing answers.
+curl -fsS --max-time 2 "http://127.0.0.1:$port/api/v1/health" >/dev/null 2>&1 &&
+	fail "something still answers on 127.0.0.1:$port after the server was stopped"
 pid=
 say "boot check passed (version $version, commit $built_commit, web from the same commit)"
