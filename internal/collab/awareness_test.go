@@ -63,6 +63,8 @@ func TestAwarenessRefusesMalformedFrames(t *testing.T) {
 		"truncated update": live[:len(live)-3],
 		"overlong varuint": append([]byte{yMessageAwareness}, bytes.Repeat([]byte{0xff}, 11)...),
 		"count too large":  {yMessageAwareness, 0x02, 0x7f, 0x00},
+		"clock past 2^53":  liveFrame(100, 1<<53),
+		"client past 2^53": liveFrame(1<<53, 1),
 	} {
 		if _, err := decodeAwarenessFrame(frame); err == nil {
 			t.Errorf("%s: decoded a malformed frame", name)
@@ -94,6 +96,21 @@ func TestAwarenessTrackerFirstSenderOwns(t *testing.T) {
 	gone = tr.release(1)
 	if len(gone) != 1 || gone[0] != (awarenessEntry{clientID: 100, clock: 1, live: true}) {
 		t.Fatalf("conn 1 leaving removed %+v; want client 100 at its last clock", gone)
+	}
+}
+
+// A client that reconnects announces at a newer clock (the provider advances
+// it on every connect) on its new connection before the old one has closed:
+// ownership moves, so the old connection's close removes nobody (codex r1).
+func TestAwarenessTrackerReconnectOverlapMovesOwnership(t *testing.T) {
+	tr := newAwarenessTracker()
+	tr.observe(1, liveFrame(100, 3)) // the old connection
+	tr.observe(2, liveFrame(100, 4)) // the same client, reconnected
+	if gone := tr.release(1); len(gone) != 0 {
+		t.Fatalf("the old connection's close removed %+v; the client is live on the new one", gone)
+	}
+	if gone := tr.release(2); len(gone) != 1 || gone[0] != (awarenessEntry{clientID: 100, clock: 4, live: true}) {
+		t.Fatalf("the new connection's close removed %+v; want client 100 at clock 4", gone)
 	}
 }
 

@@ -25,6 +25,14 @@ import (
 // so the first live connection to send a client ID is the one that owns it,
 // and an echo never transfers ownership.
 //
+// A NEWER CLOCK MOVES IT. The server records each frame before relaying it,
+// so an echo can carry at most the clock already recorded, never a newer one:
+// a newer clock comes from the client itself. When it arrives on another
+// connection, the client has reconnected while its old connection is still
+// closing, and ownership moves with it. Without that, the old connection's
+// close would remove a client that is live on the new one (codex r1). The
+// provider advances its clock on every (re)connect, so this always applies.
+//
 // Accepted, not defended: a connection can claim another client's ID first
 // and, on closing, remove that caret from peers' views until its owner's next
 // heartbeat. Awareness is cosmetic and never document state, so this is not
@@ -44,6 +52,11 @@ type awarenessEntry struct {
 }
 
 var errAwarenessFrame = errors.New("malformed awareness frame")
+
+// maxSafeInteger is the largest integer y-protocols can write: client IDs and
+// clocks are JavaScript numbers. A larger value is not a real client's, and a
+// clock at the top of uint64 would wrap the removal's clock + 1 to 0 (codex r1).
+const maxSafeInteger = 1<<53 - 1
 
 // readVarUint reads a lib0 variable-length unsigned integer (7 bits per byte,
 // high bit = more). It accepts up to 64 bits, more than y-protocols writes.
@@ -100,6 +113,9 @@ func decodeAwarenessFrame(frame []byte) ([]awarenessEntry, error) {
 		if e.clock, j, err = readVarUint(update, j); err != nil {
 			return nil, err
 		}
+		if e.clientID > maxSafeInteger || e.clock > maxSafeInteger {
+			return nil, errAwarenessFrame
+		}
 		var sl uint64
 		if sl, j, err = readVarUint(update, j); err != nil || uint64(len(update)-j) < sl {
 			return nil, errAwarenessFrame
@@ -152,7 +168,13 @@ func (t *awarenessTracker) observe(connID uint64, frame []byte) {
 	defer t.mu.Unlock()
 	for _, e := range entries {
 		if o, ok := t.owner[e.clientID]; ok && o != connID {
-			continue // an echo of another connection's client
+			prev := t.owned[o][e.clientID]
+			if e.clock <= prev.clock {
+				continue // an echo of another connection's client
+			}
+			// The client itself, reconnected on this connection.
+			delete(t.owned[o], e.clientID)
+			delete(t.owner, e.clientID)
 		}
 		mine := t.owned[connID]
 		if mine == nil {
