@@ -192,6 +192,7 @@ describe('the library page fences every async commit point', () => {
 			activePlaybookTitles: 'page DATA — loadData replaces it on both arms',
 			builtinEntries: 'page DATA (TASK-3462 U3b) — loadData replaces it on both arms',
 			loading: "owned by loadData's generation-guarded finally",
+			loadError: 'owned by loadData, written on both arms behind its identity and generation checks (TASK-2203)',
 			activeTab:
 				'a view preference read from the URL, not interaction state: it belongs to the ' +
 				'viewer and carries nothing about either identity',
@@ -320,7 +321,7 @@ describe('the library page fences every async commit point', () => {
 
 	it('the error path clears the state its own re-stamp will vouch for', () => {
 		const load = src.asyncFunctions().get('loadData')!;
-		const cat = load.indexOf('} catch {');
+		const cat = load.search(/\} catch(?: \(\w+\))? \{/);
 		expect(cat, 'loadData no longer has a catch arm — re-point this guard').toBeGreaterThan(-1);
 		const arm = load.slice(cat, load.indexOf('} finally {', cat));
 		expect(arm, 'a failed load leaves the previous identity\'s convention set in place').toMatch(

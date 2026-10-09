@@ -10,6 +10,8 @@
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
+	import { loadFailure } from '$lib/api/loadFailure';
 	import type { Item, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -18,6 +20,8 @@
 	let fetchedItems = $state<Item[]>([]);
 	let collections = $state<Collection[]>([]);
 	let loading = $state(true);
+	// TASK-2203: a failed load is an error with a retry, never "No starred items".
+	let loadError = $state<unknown>(null);
 	let includeTerminal = $state(false);
 	let loadSeq = 0;
 
@@ -72,8 +76,13 @@
 			if (seq !== loadSeq || !isSameIdentity()) return;
 			fetchedItems = starredItems;
 			collections = colls;
-		} catch {
-			if (seq !== loadSeq) return;
+			loadError = null;
+		} catch (err) {
+			if (seq !== loadSeq || !isSameIdentity()) return;
+			// Not the previous list: a failed refresh (the completed filter, a
+			// retry) must not go on showing an answer to a different question.
+			fetchedItems = [];
+			loadError = err;
 		} finally {
 			if (seq === loadSeq && isSameIdentity()) loading = false;
 		}
@@ -134,6 +143,13 @@
 				{/each}
 			</div>
 		</div>
+	{:else if loadError}
+		{@const failure = loadFailure('your starred items', loadError)}
+		<ContentError
+			title={failure.title}
+			detail={failure.detail}
+			onRetry={failure.retryable ? () => loadStarred(wsSlug) : undefined}
+		/>
 	{:else if items.length === 0}
 		<EmptyState
 			icon="☆"

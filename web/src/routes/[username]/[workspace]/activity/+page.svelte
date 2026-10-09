@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -13,6 +13,8 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
+	import { loadFailure } from '$lib/api/loadFailure';
 	import EpisodeFeed from '$lib/components/activity/EpisodeFeed.svelte';
 	import type { Activity, Collection, FieldDef } from '$lib/types';
 	import { parseSchema } from '$lib/types';
@@ -111,7 +113,11 @@
 			// Access filter values to track them as dependencies
 			filterAction;
 			filterSource;
-			loadActivities(wsSlug, true);
+			// UNTRACKED past the dependencies named above: loadActivities reads
+			// the identity epoch for its fence (TASK-2203), and tracked, that
+			// read would add an identity reload the layout already owns.
+			const ws = wsSlug;
+			untrack(() => loadActivities(ws, true));
 		}
 	});
 
@@ -155,15 +161,27 @@
 	// load-more does not bump it, because the two merge by id and commute.
 	let resetGeneration = 0;
 
+	// TASK-2203: a failed first page is an error with a retry, never "No
+	// activity found"; a failed later page keeps what is shown and says so on
+	// the load-more button.
+	let loadError = $state<unknown>(null);
+	let moreError = $state<unknown>(null);
+
 	async function loadActivities(slug: string, reset = false) {
 		const thisRequest = ++activityRequest;
+		// The identity that asked (TASK-2203, codex r1): a failure that lands
+		// after an account swap is not the new account's to see.
+		const isSameIdentity = authStore.identityFence();
 		if (reset) {
+			loadError = null;
+			moreError = null;
 			resetGeneration++;
 			loading = true;
 			loadingMore = false;
 			activities = [];
 		} else {
 			loadingMore = true;
+			moreError = null;
 		}
 
 		try {
@@ -180,17 +198,24 @@
 			if (filterSource) params.source = filterSource;
 
 			const result = await api.activity.list(slug, params);
-			if (thisRequest !== activityRequest) return;
+			if (thisRequest !== activityRequest || !isSameIdentity()) return;
 			if (reset) {
 				activities = result;
 			} else {
 				activities = appendUnique(activities, result);
 			}
 			hasMore = result.length >= PAGE_SIZE;
-		} catch {
-			// allow partial render
+		} catch (err) {
+			if (thisRequest === activityRequest && isSameIdentity()) {
+				if (reset) loadError = err;
+				else moreError = err;
+			}
 		} finally {
-			if (thisRequest === activityRequest) {
+			// Under the identity that asked only: clearing `loading` for a request
+			// a swap overtook would show "No activity found" to the new account,
+			// a claim this request never made (codex r3). The layout's identity
+			// reload replaces the page.
+			if (thisRequest === activityRequest && isSameIdentity()) {
 				loading = false;
 				loadingMore = false;
 				if (headRefreshOwed) {
@@ -465,6 +490,13 @@
 				</div>
 			{/each}
 		</div>
+	{:else if loadError}
+		{@const failure = loadFailure('the activity feed', loadError)}
+		<ContentError
+			title={failure.title}
+			detail={failure.detail}
+			onRetry={failure.retryable ? () => loadActivities(wsSlug, true) : undefined}
+		/>
 	{:else if view === 'live'}
 		<EpisodeFeed activities={filteredActivities} {wsSlug} {username} />
 		{@render loadMoreButton()}
@@ -561,9 +593,11 @@
 {#snippet loadMoreButton()}
 	{#if hasMore && !filterCollection}
 		<div class="load-more-wrapper">
-			<button class="load-more-btn" onclick={loadMore} disabled={loadingMore}>
+			<button class="load-more-btn" onclick={loadMore} disabled={loadingMore || (moreError != null && !loadFailure('more activity', moreError).retryable)}>
 				{#if loadingMore}
 					Loading...
+				{:else if moreError}
+					{loadFailure('more activity', moreError).retryable ? "Couldn't load more. Try again" : "You don't have access to more activity"}
 				{:else}
 					Load more activity
 				{/if}

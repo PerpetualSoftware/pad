@@ -7,6 +7,8 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
+	import { loadFailure } from '$lib/api/loadFailure';
 	import type { TagCount } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -14,6 +16,8 @@
 
 	let tags = $state<TagCount[]>([]);
 	let loading = $state(true);
+	// TASK-2203: a failed load is an error with a retry, never "No tags yet".
+	let loadError = $state<unknown>(null);
 	let loadSeq = 0;
 
 	const scrollRestoration = createScrollRestoration({
@@ -43,9 +47,11 @@
 			const result = await api.tags.list(ws);
 			if (seq !== loadSeq || !isSameIdentity()) return;
 			tags = result;
-		} catch {
+			loadError = null;
+		} catch (err) {
 			if (seq !== loadSeq || !isSameIdentity()) return;
 			tags = [];
+			loadError = err;
 		} finally {
 			if (seq === loadSeq && isSameIdentity()) loading = false;
 		}
@@ -69,6 +75,13 @@
 				<div class="skeleton-chip"></div>
 			{/each}
 		</div>
+	{:else if loadError}
+		{@const failure = loadFailure('tags', loadError)}
+		<ContentError
+			title={failure.title}
+			detail={failure.detail}
+			onRetry={failure.retryable ? () => loadTags(wsSlug) : undefined}
+		/>
 	{:else if tags.length === 0}
 		<EmptyState
 			icon="🏷"

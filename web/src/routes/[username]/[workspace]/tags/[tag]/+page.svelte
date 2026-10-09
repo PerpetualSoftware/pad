@@ -1,11 +1,15 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
+	import { untrack } from 'svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { browser } from '$app/environment';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import ContentError from '$lib/components/common/ContentError.svelte';
+	import { loadFailure } from '$lib/api/loadFailure';
 	import type { Item, Collection } from '$lib/types';
 
 	type ViewMode = 'list' | 'board';
@@ -17,6 +21,8 @@
 	let fetchedItems = $state<Item[]>([]);
 	let collections = $state<Collection[]>([]);
 	let loading = $state(true);
+	// TASK-2203: a failed load is an error with a retry, never "No items tagged".
+	let loadError = $state<unknown>(null);
 	let loadSeq = 0;
 
 	// View mode persists per workspace (list = grouped sections, board = one
@@ -83,25 +89,33 @@
 		const ws = wsSlug;
 		const t = tag;
 		const completed = showCompleted;
-		if (ws && t) loadTagged(ws, t, completed);
+		// UNTRACKED past (ws, tag, completed): loadTagged reads the identity
+		// epoch for its fence (TASK-2203), and tracked, that read would add an
+		// identity reload the layout already owns.
+		if (ws && t) untrack(() => loadTagged(ws, t, completed));
 	});
 
 	async function loadTagged(ws: string, t: string, completed: boolean) {
 		loading = true;
 		const seq = ++loadSeq;
+		// The identity that asked (TASK-2203, codex r1). `seq` is a navigation
+		// fence and does not move on an account swap.
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const [items, colls] = await Promise.all([
 				api.items.list(ws, completed ? { tag: t } : { tag: t, non_terminal: true }),
 				api.collections.list(ws)
 			]);
-			if (seq !== loadSeq) return;
+			if (seq !== loadSeq || !isSameIdentity()) return;
 			fetchedItems = items;
 			collections = colls;
-		} catch {
-			if (seq !== loadSeq) return;
+			loadError = null;
+		} catch (err) {
+			if (seq !== loadSeq || !isSameIdentity()) return;
 			fetchedItems = [];
+			loadError = err;
 		} finally {
-			if (seq === loadSeq) loading = false;
+			if (seq === loadSeq && isSameIdentity()) loading = false;
 		}
 	}
 
@@ -207,6 +221,13 @@
 				{/each}
 			</div>
 		</div>
+	{:else if loadError}
+		{@const failure = loadFailure('the items with this tag', loadError)}
+		<ContentError
+			title={failure.title}
+			detail={failure.detail}
+			onRetry={failure.retryable ? () => loadTagged(wsSlug, tag, showCompleted) : undefined}
+		/>
 	{:else if fetchedItems.length === 0}
 		{#if showCompleted}
 			<EmptyState

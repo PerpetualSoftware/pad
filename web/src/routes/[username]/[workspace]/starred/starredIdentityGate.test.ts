@@ -10,7 +10,7 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			loadStarred: {
-				reviewed: 'f72c34c5d1c7',
+				reviewed: '8bab0c7732cf',
 				why: 'seq against loadSeq AND the entry identity fence (authStore.identityFence) before committing; the finally clears loading only under both',
 			},
 		},
@@ -24,8 +24,8 @@ identityGateSuite({
 		{
 			cls: 1,
 			what: 'a commit between the await and the check',
-			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n',
-			new: '\t\t\tcollections = [];\n\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n',
+			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n\t\t\tfetchedItems = starredItems;\n',
+			new: '\t\t\tcollections = [];\n\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n\t\t\tfetchedItems = starredItems;\n',
 			names: 'loadStarred()',
 		},
 		{
@@ -38,8 +38,8 @@ identityGateSuite({
 		{
 			cls: 3,
 			what: 'the identity half of the success check is dropped, the sequence half kept',
-			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n',
-			new: '\t\t\tif (seq !== loadSeq) return;\n',
+			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n\t\t\tfetchedItems = starredItems;\n',
+			new: '\t\t\tif (seq !== loadSeq) return;\n\t\t\tfetchedItems = starredItems;\n',
 			names: 'loadStarred()',
 		},
 		{
@@ -52,8 +52,8 @@ identityGateSuite({
 		{
 			cls: 5,
 			what: "the success check's return is made conditional on something that never holds",
-			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n',
-			new: '\t\t\tif ((seq !== loadSeq || !isSameIdentity()) && colls === null) return;\n',
+			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n\t\t\tfetchedItems = starredItems;\n',
+			new: '\t\t\tif ((seq !== loadSeq || !isSameIdentity()) && colls === null) return;\n\t\t\tfetchedItems = starredItems;\n',
 			names: 'loadStarred()',
 		},
 	],
