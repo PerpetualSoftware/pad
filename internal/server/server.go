@@ -1566,6 +1566,9 @@ func (s *Server) setupRouter() {
 		r.Use(MetricsMiddleware(s.metrics))
 	}
 	r.Use(chimiddleware.Recoverer)
+	// gzip what the client accepts, except streams, upgrades, ranges and
+	// credential responses (TASK-2225; see middleware_compress.go).
+	r.Use(CompressResponses)
 
 	// Security headers (applies to all routes)
 	r.Use(SecurityHeaders)
