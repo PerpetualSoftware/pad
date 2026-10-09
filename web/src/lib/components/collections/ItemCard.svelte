@@ -13,6 +13,7 @@
 	import Chip from '$lib/components/common/Chip.svelte';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
 	import StatusPicker from './StatusPicker.svelte';
+	import { cardPriorityWriter } from '$lib/collections/cardPriority';
 	import type { ReorderDirection } from '$lib/collections/reorder';
 	import { shouldOpenInPane } from './itemCardClick';
 
@@ -137,6 +138,17 @@
 	// one-tap cycle before). The status is shown as a static chip otherwise.
 	let statusSettable = $derived(
 		statusWritable && !!onStatusClick && !!statusOptions && statusOptions.length > 1 && !!fields.status
+	);
+
+	// TASK-2214: the priority chip is a picker too, when the host page provides
+	// the write (only the collection page does) and the field is a select with
+	// a choice to make. Same writability gate as status.
+	const writePriority = cardPriorityWriter();
+	let priorityOptions = $derived(
+		priorityField?.type === 'select' && Array.isArray(priorityField.options) ? priorityField.options : []
+	);
+	let prioritySettable = $derived(
+		statusWritable && !!writePriority && priorityOptions.length > 1 && typeof fields.priority === 'string' && !!fields.priority
 	);
 
 	let pullRequest = $derived(item.code_context?.pull_request);
@@ -319,9 +331,20 @@
 			{/if}
 		{/if}
 		{#if priorityField && typeof fields.priority === 'string' && fields.priority}
-			<Chip size="sm" color={priorityColor(fields.priority)}>
-				{formatLabel(fields.priority)}
-			</Chip>
+			{#if prioritySettable && writePriority}
+				<span class="status-hit">
+					<StatusPicker
+						kind="priority"
+						value={fields.priority}
+						options={priorityOptions}
+						onselect={(next) => writePriority(item, next)}
+					/>
+				</span>
+			{:else}
+				<Chip size="sm" color={priorityColor(fields.priority)}>
+					{formatLabel(fields.priority)}
+				</Chip>
+			{/if}
 		{/if}
 		{#if item.parent_title}
 			{@const parentLabel = item.parent_ref ? `${item.parent_ref}: ${item.parent_title}` : item.parent_title}
