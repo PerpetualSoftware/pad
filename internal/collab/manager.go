@@ -542,9 +542,20 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 		rc := &roomConn{
 			id:          nextConnID(),
 			conn:        conn,
-			bus:         m.bus.Subscribe(itemID),
 			connectedAt: time.Now(),
 		}
+		// A peer the bus had to drop an op for is closed (TASK-1273): it
+		// would otherwise stay connected with a document missing that op
+		// until it reconnected on its own. Its reconnect replays the gap
+		// from the op-log. conn.Close is safe alongside an in-flight write.
+		rc.bus = m.bus.SubscribeWithOverflow(itemID, func() {
+			slog.Warn("collab: closing a peer the bus dropped an op for",
+				"item_id", itemID,
+				"client_id", rc.id,
+			)
+			m.reportOverflowClose()
+			_ = conn.Close()
+		})
 		rc.canWrite.Store(canWrite)
 		rc.bracketCapable.Store(bracketCapable)
 

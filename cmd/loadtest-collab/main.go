@@ -42,6 +42,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -72,6 +73,7 @@ func main() {
 	dur := flag.Duration("duration", 30*time.Second, "How long to run the test")
 	opsPerSec := flag.Float64("ops-per-sec", 2.0, "Per-client op send rate (Hz)")
 	frameBytes := flag.Int("frame-bytes", 32, "Size in bytes of the synthetic update payload (excluding the 1-byte sync header)")
+	stalled := flag.Int("stalled", 0, "Extra clients that connect and then never read (TASK-1273). Once the editors' traffic fills a stalled peer's socket and its bus buffer, the server should close it; the summary reports how many were closed. Needs enough traffic to fill a socket: raise -ops-per-sec and -frame-bytes")
 	flag.Parse()
 
 	if *url == "" {
@@ -117,12 +119,18 @@ func main() {
 		}(i)
 	}
 
+	stalledConns := dialStalled(dialURL, hdr, *stalled)
+
 	// Stop after duration; clients exit on the closed `done` channel.
 	time.Sleep(*dur)
 	close(ctx.done)
 	wg.Wait()
 
 	ctx.printSummary(*clients, *dur, *opsPerSec)
+	if len(stalledConns) > 0 {
+		closed, open := stalledOutcome(stalledConns)
+		fmt.Printf("  stalled clients: %d closed by the server, %d still open (TASK-1273: a peer the bus dropped an op for is closed)\n", closed, open)
+	}
 }
 
 // runContext is the load-test's shared state: a stop signal, op
@@ -265,6 +273,44 @@ func runClient(rc *runContext, id int, dialURL string, hdr http.Header, opsPerSe
 // isClosedDone is a non-blocking check for "has rc.done been
 // closed?". Used by the writer's error path to distinguish a
 // real network error from a watchdog-induced close during shutdown.
+// dialStalled opens n connections that never read (TASK-1273).
+func dialStalled(dialURL string, hdr http.Header, n int) []*websocket.Conn {
+	var conns []*websocket.Conn
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	for i := 0; i < n; i++ {
+		c, _, err := dialer.Dial(dialURL, hdr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stalled client %d: dial: %v\n", i, err)
+			continue
+		}
+		conns = append(conns, c)
+	}
+	return conns
+}
+
+// stalledOutcome drains each stalled connection: a read error other than the
+// deadline means the server closed it; reaching the deadline with the socket
+// still open means it did not.
+func stalledOutcome(conns []*websocket.Conn) (closed, open int) {
+	for _, c := range conns {
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		for {
+			_, _, err := c.ReadMessage()
+			if err == nil {
+				continue
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				open++
+			} else {
+				closed++
+			}
+			break
+		}
+		_ = c.Close()
+	}
+	return closed, open
+}
+
 func isClosedDone(done <-chan struct{}) bool {
 	select {
 	case <-done:

@@ -3,6 +3,7 @@ package collab
 import (
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,6 +14,14 @@ import (
 type memSubscriber struct {
 	ch     chan OpEvent
 	itemID string
+	// overflowed is set by the first drop of an event this subscriber
+	// needs (anything but awareness), TASK-1273. From then on Publish skips
+	// it entirely: an event delivered AFTER the gap would carry an op-log
+	// cursor past the dropped row, and the peer's reconnect would resume
+	// from there and never replay it. So its writeLoop only drains what was
+	// queued before the gap, and onOverflow has the room close the socket.
+	overflowed atomic.Bool
+	onOverflow func()
 }
 
 // MemoryOpBus is the in-process OpBus implementation used in every
@@ -48,13 +57,22 @@ const subscriberBufSize = 256
 // Subscribe registers a subscriber for itemID and returns a buffered
 // channel of size subscriberBufSize.
 func (b *MemoryOpBus) Subscribe(itemID string) chan OpEvent {
+	return b.SubscribeWithOverflow(itemID, nil)
+}
+
+// SubscribeWithOverflow is Subscribe with the overflow signal (TASK-1273):
+// onOverflow runs once, on its own goroutine, the first time an event this
+// subscriber needs is dropped because its buffer is full. The subscriber
+// receives nothing after that drop.
+func (b *MemoryOpBus) SubscribeWithOverflow(itemID string, onOverflow func()) chan OpEvent {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	ch := make(chan OpEvent, subscriberBufSize)
 	b.subscribers[ch] = &memSubscriber{
-		ch:     ch,
-		itemID: itemID,
+		ch:         ch,
+		itemID:     itemID,
+		onOverflow: onOverflow,
 	}
 	return ch
 }
@@ -96,9 +114,11 @@ func (b *MemoryOpBus) Unsubscribe(ch chan OpEvent) {
 // matters for correctness, and they're recoverable via the
 // op-log + reconnect path.
 //
-// The bus deliberately does NOT take corrective action itself: it
-// has no concept of WHICH peer owns which channel and no way to
-// signal a force-close. That's the room manager's domain.
+// The bus does not close anything itself: it has no concept of which
+// peer owns which channel. Since TASK-1273 it signals the overflow
+// (SubscribeWithOverflow) and stops delivering to that subscriber, so no
+// event after the gap can advance the peer's cursor past it; the room
+// manager closes the peer's WebSocket from the signal.
 //
 // Mutation contract for OpEvent.Data:
 //
@@ -131,18 +151,33 @@ func (b *MemoryOpBus) Publish(event OpEvent) {
 	defer b.mu.RUnlock()
 
 	for _, sub := range b.subscribers {
-		if sub.itemID != event.ItemID {
+		if sub.itemID != event.ItemID || sub.overflowed.Load() {
 			continue
 		}
 		select {
 		case sub.ch <- event:
 		default:
-			slog.Warn(
-				"collab: dropping op for slow subscriber",
-				"type", event.Type,
-				"item_id", event.ItemID,
-				"client_id", event.ClientID,
-			)
+			if event.Type == OpTypeAwareness {
+				// Presence is ephemeral: the next awareness update replaces
+				// it, so a dropped one costs nothing worth a reconnect.
+				slog.Warn(
+					"collab: dropping awareness for slow subscriber",
+					"item_id", event.ItemID,
+					"client_id", event.ClientID,
+				)
+				continue
+			}
+			if sub.overflowed.CompareAndSwap(false, true) {
+				slog.Warn(
+					"collab: slow subscriber dropped an op; closing it so its reconnect replays from the op-log",
+					"type", event.Type,
+					"item_id", event.ItemID,
+					"client_id", event.ClientID,
+				)
+				if sub.onOverflow != nil {
+					go sub.onOverflow()
+				}
+			}
 		}
 	}
 }

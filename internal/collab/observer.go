@@ -47,6 +47,14 @@ const (
 	ResumeRefreshRestored = "restored"
 )
 
+// OverflowObserver is optional on an Observer (TASK-1273): it counts a peer
+// closed because the op bus had to drop an op for it. Separate so an
+// Observer that predates it keeps compiling. Unlike the Join callbacks above,
+// it runs on the bus's overflow goroutine.
+type OverflowObserver interface {
+	OverflowClosed()
+}
+
 // observable is the nil-safe Observer holder the RoomManager embeds.
 // Reporting before SetObserver is a no-op.
 type observable struct {
@@ -70,6 +78,12 @@ func (o *observable) observer() Observer {
 func (o *observable) reportResumeJoined() {
 	if obs := o.observer(); obs != nil {
 		obs.ResumeJoined()
+	}
+}
+
+func (o *observable) reportOverflowClose() {
+	if obs, ok := o.observer().(OverflowObserver); ok {
+		obs.OverflowClosed()
 	}
 }
 

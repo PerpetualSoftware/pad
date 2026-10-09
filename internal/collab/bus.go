@@ -107,13 +107,22 @@ type OpBus interface {
 	// the slot reclaimed.
 	Subscribe(itemID string) chan OpEvent
 
+	// SubscribeWithOverflow is Subscribe plus the overflow signal
+	// (TASK-1273): onOverflow runs once, asynchronously, when an event the
+	// subscriber needs (anything but awareness) is dropped because its
+	// channel is full, and the subscriber receives nothing after that drop.
+	// The room manager closes the peer's socket from it, so its reconnect
+	// replays the gap from the op-log. A nil onOverflow just stops delivery.
+	SubscribeWithOverflow(itemID string, onOverflow func()) chan OpEvent
+
 	// Unsubscribe removes a subscriber and closes its channel. Safe to
 	// call with an already-removed channel — no-op in that case.
 	Unsubscribe(ch chan OpEvent)
 
 	// Publish broadcasts an event to every subscriber whose itemID
-	// matches event.ItemID. Non-blocking: full subscriber channels
-	// drop the event with a warning. event.Timestamp is set to
+	// matches event.ItemID. Non-blocking: a full subscriber channel drops
+	// the event with a warning, and a dropped non-awareness event ends that
+	// subscriber's delivery (see SubscribeWithOverflow). event.Timestamp is set to
 	// time.Now().UnixMilli() if zero.
 	Publish(event OpEvent)
 
