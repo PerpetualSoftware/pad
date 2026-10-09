@@ -70,6 +70,7 @@
 	import { listKeyNav } from '$lib/collections/listNav';
 	import { fieldMatches } from '$lib/fields/fieldShape';
 	import { characterKey } from '$lib/a11y/characterShortcuts.svelte';
+	import { provideCardPriorityWriter } from '$lib/collections/cardPriority';
 	import { type ViewMode, isViewMode, loadViewMode, storeViewMode, loadSortMode, storeSortMode } from '$lib/collections/viewPersistence';
 
 	// TASK-2212: one ViewMode predicate for the URL, storage and saved views,
@@ -556,6 +557,13 @@
 	// through requireViewEditable, which is the grant-aware collection edit
 	// check. So a collection-edit grant may delete a view but not save one.
 	let canSaveView = $derived(['owner', 'editor'].includes(workspaceStore.currentRole ?? ''));
+
+	// TASK-2214: the cards' priority chip writes through the same per-key
+	// patch a lane move uses. A rejection is the toast handleStatusChange
+	// already showed; a card has no optimistic move to undo.
+	provideCardPriorityWriter((item, value) => {
+		void handleStatusChange(item, value, 'priority').catch(() => {});
+	});
 
 	// Persist view mode per workspace + collection (TASK-2212: it was per
 	// collection slug only, so it leaked across workspaces).
@@ -2185,6 +2193,11 @@
 		const fieldsPatch = { [fieldKey]: laneWrite.value };
 		const ws = wsSlug;
 		const parentRef = formatItemRef(item) ?? item.slug;
+		// A priority set from a card is not a move (TASK-2214).
+		const doneMessage =
+			fieldKey === 'priority' && fieldKey !== groupField
+				? `Priority: ${formatLabel(newValue)}`
+				: `Moved to ${formatLabel(newValue)}`;
 
 		// Record the scope epoch at each request's issue time (BUG-2098). The
 		// force-retry below can fire seconds later, after a user confirmation —
@@ -2208,7 +2221,7 @@
 			// Push the canonical post-update row into the local index;
 			// the `items` derived view re-renders automatically.
 			localIndex.upsert(ws, updated, epoch);
-			toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
+			toastStore.show(doneMessage, 'success');
 		} catch (e) {
 			// BUG-1538 / TASK-1539: the server's open-children guard
 			// (IDEA-1494) returns a structured 409 when transitioning a
@@ -2245,7 +2258,7 @@
 					// round-trip (BUG-3084).
 					if (!identityHeld(epochAtEntry)) return;
 					localIndex.upsert(ws, forced, epoch);
-					toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
+					toastStore.show(doneMessage, 'success');
 					return;
 				}
 				// User cancelled the override. Quiet info toast — this

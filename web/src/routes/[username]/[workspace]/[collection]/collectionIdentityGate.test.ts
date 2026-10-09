@@ -25,7 +25,7 @@ identityGateSuite({
 				why: 'loadSeq then identityHeld(epochAtEntry) after every await, with collection writes also gated on collectionGen; re-stamps identityEpochAtLoad at entry; the finally clears metaLoading on loadSeq alone, deliberately',
 			},
 			handleStatusChange: {
-				reviewed: 'd0b068a12c9d',
+				reviewed: 'fe91bd1f57ee',
 				why: `${ENTRY}; the open-children confirm gets identityHeld as its re-check, and the forced re-send checks again; the rethrows stay unfenced so BoardView can undo its optimistic move`,
 			},
 			handleReorder: { reviewed: '47c61228b05c', why: 'optimistic upserts before any await (persistReorder applies them before its one request); identityHeld(epochAtEntry) after the request, before each settle, and before a refusal restores the original rows (BUG-3259, TASK-3517)' },
@@ -54,6 +54,7 @@ identityGateSuite({
 			{ call: /replaceState: true \}\)\.catch\($/, body: /./, in: 'reconcileRouteCollectionSlug', why: 'rename navigation failure: clears renameNav only if it still holds this target', reviewed: '182477bb5fcc' },
 			{ call: /plansProgress\(ws\)\.catch\($/, body: /./, why: 'refreshProgress fetch: a failure reads as none; commits nothing', reviewed: '75fd2e0701db' },
 			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: 'a06a18be656f' },
+			{ call: /handleStatusChange\(item, value, 'priority'\)\.catch\($/, body: /./, why: 'card priority write (TASK-2214): the rejection was already toasted inside handleStatusChange, which fences its own commits; the catch commits nothing', reviewed: '8405d65b80af' },
 			{ call: /api\.members\.list\(ws\)\.catch\($/, body: /./, why: 'loadCollection members fetch: a failure reads as none; commits nothing', reviewed: '41e0f6ebfd00' },
 			{ call: /^setTimeout\($/, body: /resp\.results\.map/, why: 'search timer, as the deferred callback: the same unit as the nested row above', reviewed: '9d8023f3203a' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtSchedule\)\) return; bypassNavGuard/, why: 'leave-guard popstate reset: identityHeld(epochAtSchedule) before clearing bypassNavGuard', reviewed: 'b3974e1c39d9' },

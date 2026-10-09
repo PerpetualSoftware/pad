@@ -25,7 +25,7 @@
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { portal } from '$lib/utils/portalAction';
-	import { statusColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
+	import { statusColor, priorityColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 
 	interface Props {
@@ -33,9 +33,13 @@
 		value: string;
 		options: string[];
 		onselect: (status: string) => void;
+		/** Which field the chip is: the priority chip is the same picker (TASK-2214). */
+		kind?: 'status' | 'priority';
 	}
 
-	let { value, options, onselect }: Props = $props();
+	let { value, options, onselect, kind = 'status' }: Props = $props();
+	const noun = $derived(kind === 'priority' ? 'Priority' : 'Status');
+	const color = $derived(kind === 'priority' ? priorityColor(value) : statusColor(value));
 
 	let open = $state(false);
 	let triggerEl = $state<HTMLButtonElement>();
@@ -55,12 +59,12 @@
 
 <Chip
 	size="sm"
-	color={statusColor(value)}
+	color={color}
 	onclick={toggle}
 	bind:el={triggerEl}
 	haspopup={viewport.isMobile ? 'dialog' : 'menu'}
 	expanded={open}
-	title="Change status"
+	title="Change {noun.toLowerCase()}"
 >
 	{formatLabel(value)}
 </Chip>
@@ -76,8 +80,8 @@
 			width={200}
 			sheetOnMobile
 			sheetMenu
-			sheetTitle="Status"
-			ariaLabel="Status"
+			sheetTitle={noun}
+			ariaLabel={noun}
 		>
 			{#each options as option (option)}
 				<MenuItem checked={option === value} onclick={() => choose(option)}>
