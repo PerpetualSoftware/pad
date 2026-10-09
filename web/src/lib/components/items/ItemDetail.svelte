@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { viaAppTitle } from '$lib/utils/viaApp';
 	import ItemAppActions from './ItemAppActions.svelte';
+	import { LINK_DIRECTIONS, linkDirection, linkEnds, linkSentence } from '$lib/items/linkDirections';
 	import { safeString, safeText } from '$lib/fields/fieldShape';
 	import { page, navigating } from '$app/state';
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
@@ -5777,7 +5778,10 @@
 	// `{#key itemSlug}` block below (PLAN-2105 / TASK-2112), so a switch
 	// destroys it and any continuation it holds.
 	let showAddLink = $state(false);
+	// A DIRECTION, not a type (TASK-2217): `blocked_by` is a `blocks` link
+	// created from the picked item. See lib/items/linkDirections.ts.
 	let addLinkType = $state('related');
+	let addLinkDirection = $derived(linkDirection(addLinkType));
 
 	// Rows the picker must not offer: this item, and anything already linked to
 	// it in either direction. Same exclusion the inline search applied.
@@ -5797,10 +5801,12 @@
 		const targetSlug = itemSlug;
 		const targetWs = wsSlug;
 		const gen = loadGeneration;
+		const direction = addLinkDirection;
+		const ends = linkEnds(direction, { slug: sourceSlug, id: sourceItem.id }, { slug: target.slug, id: target.id });
 		try {
-			const newLink = await api.links.create(targetWs, sourceSlug, {
-				target_id: target.id,
-				link_type: addLinkType
+			const newLink = await api.links.create(targetWs, ends.fromSlug, {
+				target_id: ends.targetId,
+				link_type: direction.type
 			});
 			if (switchedAway(sourceItem, gen)) return;
 			itemLinks = [...itemLinks, newLink];
@@ -7497,13 +7503,10 @@
 							<button class="add-link-close" onclick={() => { showAddLink = false; }}>×</button>
 						</div>
 						<div class="add-link-controls">
-							<select aria-label="Link type" bind:value={addLinkType} class="add-link-type-select">
-								<option value="related">Related</option>
-								<option value="blocks">Blocks</option>
-								<option value="implements">Implements</option>
-								<option value="split_from">Split from</option>
-								<option value="supersedes">Supersedes</option>
-								<option value="parent">Parent</option>
+							<select aria-label="Link type" aria-describedby="add-link-reads" bind:value={addLinkType} class="add-link-type-select">
+								{#each LINK_DIRECTIONS as d (d.value)}
+									<option value={d.value}>{d.label}</option>
+								{/each}
 							</select>
 							<div class="add-link-picker">
 								<!-- Unscoped: a relationship can target any collection. A
@@ -7525,6 +7528,8 @@
 								/>
 							</div>
 						</div>
+						<!-- Which way the link points (TASK-2217). -->
+						<p class="add-link-reads" id="add-link-reads">{linkSentence(addLinkDirection, formatItemRef(item) ?? 'This item')}</p>
 					</div>
 				{/if}
 			</div>
@@ -8922,6 +8927,11 @@
 		align-items: flex-start;
 		gap: var(--space-2);
 		margin-bottom: var(--space-2);
+	}
+	.add-link-reads {
+		margin: 0 0 var(--space-2);
+		font-size: 0.75rem;
+		color: var(--text-muted);
 	}
 	.add-link-type-select {
 		padding: var(--space-1) var(--space-2);
