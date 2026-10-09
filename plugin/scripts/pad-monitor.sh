@@ -1,25 +1,26 @@
 #!/bin/sh
 # pad-monitor.sh — the gated push/watch stream wrapper (PLAN-2613 S3).
 #
-# Both plugin monitors (the always-on auto_arm monitor and the
-# on-skill-invoke:connect manual monitor) run THIS script. It is the
-# mechanism behind D1's rule — "no consent → no monitor process, no stream,
-# nothing listening":
+# Two callers run THIS script: the plugin mod (plugin/hooks/register.js),
+# which starts it at session start only when `pad session should-arm`
+# already said yes (TASK-3513: an unarmed session runs and shows nothing),
+# and the on-skill-invoke:connect monitor, the explicit /pad:connect path
+# and the path where mods do not load. It is the mechanism behind D1's rule
+# — "no consent → no monitor process, no stream, nothing listening":
 #
 #   1. Consent gate. `pad session should-arm` decides whether this session
 #      has consented right now (a live `pad session arm`, or auto_arm with
-#      no explicit disarm). If not, this script exits immediately and the
-#      monitor stays dead — exactly what the auto_arm monitor must do when
-#      auto_arm is off (a plugin monitor that has exited does not restart
-#      mid-session, which is why the manual path is a separate
-#      on-skill-invoke monitor).
+#      no explicit disarm). If not, this script exits immediately. The mod
+#      checks first, so for it this is the re-check; for the connect
+#      monitor it is the gate.
 #
-#   2. Dedupe. When both monitors fire for one armed session, a per-session
-#      lockfile lets only one hold the stream; the loser exits 0. The lock
-#      is keyed on CLAUDE_CODE_MESSAGING_SOCKET so the two monitors of the
-#      SAME session share it while different sessions never collide.
-#      Monitors do not run headless, so that variable is always set here; a
-#      cwd fallback covers the impossible case rather than keying globally.
+#   2. Dedupe. When both callers start it for one armed session, a
+#      per-session lockfile lets only one hold the stream; the loser exits
+#      0. The lock is keyed on CLAUDE_CODE_MESSAGING_SOCKET, which the mod's
+#      processes inherit exactly as monitors do (measured, TASK-3513), so
+#      both callers of the SAME session share it while different sessions
+#      never collide. A cwd fallback covers a caller without it rather than
+#      keying globally.
 #
 #   3. Resilience. Dead monitors never resurrect, so the reconnect loop
 #      lives HERE: it re-streams with backoff and re-checks consent each
@@ -101,13 +102,23 @@ fi
 # would keep reconnecting without a lock while a new monitor starts); the
 # exit trap (condition 0, the portable spelling of EXIT — some strict
 # /bin/sh reject the EXIT name) then does the cleanup on the way out.
+# The stream runs as a child the traps can name: a caller that stops this
+# script (the mod at session end) must stop the stream too, and a signal to
+# this shell does not reach a foreground child of its own. `pad watch` is
+# one process and starts none of its own, so the child is the whole tree.
+child=
 trap 'rm -rf "$lock" 2>/dev/null' 0
-trap 'exit 130' INT TERM
+# The child is waited for before the exit trap frees the lock, so a new
+# caller cannot take the lock while the old stream is still closing (codex r3).
+trap 'if [ -n "$child" ]; then kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; fi; exit 130' INT TERM
 
 # --- 2/3. Gate + reconnect loop. Re-check consent before every stream
 # attempt so an in-session disarm ends the loop on the next reconnect.
 while pad session should-arm >/dev/null 2>&1; do
-	pad watch --stream --for-session
+	pad watch --stream --for-session &
+	child=$!
+	wait "$child"
+	child=
 	# The stream returned (server closed it, padd restart, network blip).
 	# Brief backoff, then re-check consent and reconnect. A withdrawn
 	# consent falls out of the while-condition and the monitor exits.

@@ -1,14 +1,8 @@
 [
   {
-    "name": "pad-events-auto",
-    "when": "always",
-    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/pad-monitor.sh",
-    "description": "Pad item events for repos that opted in via .pad.toml push.auto_arm. Exits immediately (no stream, nothing listening) unless this session has consented — the security gate (PLAN-2613). Use /pad:connect to enable pushes for a session that didn't auto-arm."
-  },
-  {
     "name": "pad-events-connect",
     "when": "on-skill-invoke:connect",
     "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/pad-monitor.sh",
-    "description": "Pad item events after you run /pad:connect. Starts the push/watch stream for this session once you've consented; /pad:disconnect stops it. Explicit subscriptions (pad watch <ref>) and pushes addressed to you (pad push, or the web item view's push composer) arrive as notifications. Silent when the pad CLI isn't installed, no .pad.toml is present, padd is unreachable, or the server refuses the stream at its connection limit. All retry \u2014 hourly for a missing .pad.toml, with backoff for the rest \u2014 so silence doesn't distinguish them."
+    "description": "Pad item events after you run /pad:connect. Starts the push/watch stream for this session once you've consented; /pad:disconnect stops it. Explicit subscriptions (pad watch <ref>) and pushes addressed to you (pad push, or the web item view's push composer) arrive as notifications. Silent when the pad CLI isn't installed, no .pad.toml is present, padd is unreachable, or the server refuses the stream at its connection limit. All retry — hourly for a missing .pad.toml, with backoff for the rest — so silence doesn't distinguish them."
   }
 ]

@@ -1015,6 +1015,134 @@ function draw($, e) {
   })
 }
 
+// ---------------------------------------------------------------- live item events
+
+// Pushes and watched-item changes reach Claude only in a session that has
+// consented (PLAN-2613): .pad.toml push.auto_arm, or /pad:connect. The decision
+// is the CLI's (`pad session should-arm`); this mod only acts on it.
+//
+// This replaces an "always" monitor (TASK-3513). A monitor that exits is
+// reported at startup ("ended without producing output"), and an unarmed
+// session's monitor always exited, so every session opened with a notice.
+// Here an unarmed session runs nothing and shows nothing: no process, no line,
+// no notice. /pad:connect keeps its own on-skill-invoke monitor, which is also
+// the path where mods do not load; pad-monitor.sh's lockfile keeps the two from
+// streaming twice in one session.
+
+const WATCH_BURST_MS = 1500 // a burst ends after this much quiet, and goes to Claude as one message
+const WATCH_BURST_MAX_MS = 10000 // a stream that never goes quiet still flushes this often
+let burstTimer = null
+let burstStart = 0
+let watch = null // the running pad-monitor.sh, as $.process.spawn's iterator
+let watchEpoch = 0 // bumped by stopWatch: a start still asking the CLI then spawns nothing
+let pending = [] // lines not yet handed to Claude
+let submitting = false
+
+// The harness session's pid. Claude Code exports CLAUDE_PID and CLAUDECODE to
+// Bash and to monitors but not to a mod's processes, whose parent is that same
+// process (measured, TASK-3513). The session registry and the headless
+// arm-state owner key on the pid; the registry names the runtime from
+// CLAUDECODE. CLAUDE_CODE_MESSAGING_SOCKET, which consent is keyed on, does
+// reach a mod's processes.
+async function sessionPid($) {
+  try {
+    const r = await $.process.run(['sh', '-c', 'echo $PPID'], { timeoutMs: 5000 })
+    const pid = String(r.stdout || '').trim()
+    return /^\d+$/.test(pid) ? pid : ''
+  } catch {
+    return ''
+  }
+}
+
+// Hands the lines gathered so far to Claude, then any that arrived while that
+// message waited for the session to go idle: one message per idle window.
+async function flushWatch($) {
+  if (submitting || !pending.length) return
+  const epoch = watchEpoch
+  submitting = true
+  try {
+    // A flush the session's end overtook relays nothing more (codex r2): a
+    // submit already waiting cannot be withdrawn, but nothing follows it.
+    while (pending.length && epoch === watchEpoch) {
+      const text = pending.join('\n')
+      pending = []
+      await $.prompt.submit({ text })
+    }
+  } catch {
+    // a refused submit (the session is ending) drops the lines; the stream
+    // goes on, and the next line tries again
+  } finally {
+    if (epoch === watchEpoch) submitting = false
+  }
+}
+
+// Silent by construction: every failure here leaves the session as it was.
+async function startWatch($) {
+  if (watch) return
+  const epoch = watchEpoch
+  const pid = await sessionPid($)
+  const env = pid ? { CLAUDECODE: '1', PAD_SESSION_PID: pid } : { CLAUDECODE: '1' }
+  // Presence is a fact about the session, kept whether or not it consents
+  // (TASK-2767): `pad session list` reads it back.
+  try { await $.process.run(['pad', 'session', 'register'], { env, timeoutMs: 10000 }) } catch {}
+  let armed = false
+  try {
+    armed = (await $.process.run(['pad', 'session', 'should-arm'], { env, timeoutMs: 10000 })).exitCode === 0
+  } catch {}
+  // The session may have ended while the CLI answered (codex r1). Consent
+  // withdrawn in that window needs no check here: pad-monitor.sh asks
+  // should-arm again before it streams, and that answer is the one that counts.
+  if (!armed || watch || epoch !== watchEpoch) return
+  let it
+  try {
+    it = $.process.spawn({ argv: [$.plugin.root + '/scripts/pad-monitor.sh'], env })
+  } catch {
+    return
+  }
+  watch = it
+  ;(async () => {
+    let carry = ''
+    try {
+      for await (const chunk of it) {
+        // A stream the session ended may still deliver a chunk that was
+        // already on its way: return() takes effect after the pending read.
+        if (watch !== it) break
+        if (chunk.stream !== 'stdout') continue
+        const lines = (carry + chunk.text).split('\n')
+        carry = lines.pop()
+        for (const line of lines) if (line.trim()) pending.push(line)
+        if (!pending.length) continue
+        // Wait for the burst to go quiet (codex r4), but never longer than
+        // WATCH_BURST_MAX_MS from its first line.
+        const now = await $.clock.now()
+        if (!burstStart) burstStart = now
+        if (burstTimer) burstTimer.cancel()
+        const wait = Math.max(0, Math.min(WATCH_BURST_MS, burstStart + WATCH_BURST_MAX_MS - now))
+        burstTimer = $.clock.after(wait, () => {
+          burstTimer = null
+          burstStart = 0
+          flushWatch($)
+        })
+      }
+    } catch {}
+    if (watch === it) watch = null
+  })()
+}
+
+function stopWatch() {
+  watchEpoch++
+  const it = watch
+  watch = null
+  pending = []
+  submitting = false
+  if (burstTimer) burstTimer.cancel()
+  burstTimer = null
+  burstStart = 0
+  if (it) {
+    try { it.return() } catch {}
+  }
+}
+
 // ---------------------------------------------------------------- hooks
 
 export function register(on) {
@@ -1035,6 +1163,16 @@ export function register(on) {
       if (!open || !settings.refreshSec || busy || mode || view === 'find' || view === 'settings') return
       if (!loadedAt || Date.now() - Date.parse(loadedAt) >= settings.refreshSec * 1000) load($)
     })
+    // Not awaited: the first prompt never waits on the CLI.
+    startWatch($).catch(() => {})
+    return next(e)
+  })
+
+  // /clear and /resume keep the process and its messaging socket, which is
+  // what consent is keyed on, and session.start does not fire again after
+  // them: the stream stays. Any other end stops it.
+  on('session.end', async ($, e, next) => {
+    if (e.reason !== 'clear' && e.reason !== 'resume') stopWatch()
     return next(e)
   })
 
