@@ -88,9 +88,11 @@
 			</span>
 		{/if}
 		{#if activity.action === 'reordered' && metadata.sort_order_from && metadata.sort_order_to}
-			<!-- sort_order is the item's place in its list (TASK-3517) -->
+			<!-- sort_order is a gapped sort key, not a position (TASK-3525): its
+			     raw values mean nothing to a reader, but a lower one sorts
+			     earlier, so the direction does. -->
 			<span class="move-detail">
-				position {metadata.sort_order_from} &rarr; {metadata.sort_order_to}
+				{Number(metadata.sort_order_to) < Number(metadata.sort_order_from) ? 'moved up' : 'moved down'}
 			</span>
 		{/if}
 		<Chip size="sm">{getSourceLabel(activity.source)}</Chip>

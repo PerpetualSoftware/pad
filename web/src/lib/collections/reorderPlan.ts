@@ -1,15 +1,33 @@
 // Lane reorder planning and persistence (BUG-3259).
 //
 // A drag or a card-menu move hands over a whole lane in its new on-screen
-// order. Every card in it gets a `sort_order` (a dense INTEGER per lane, ties
-// broken by created_at), so moving one card renumbers its neighbours. A
-// neighbour the caller may only VIEW (an item grant beats a collection grant)
-// cannot be written: the server refuses it 403.
+// order. Every card has a `sort_order`, an INTEGER the lane sorts by (ties
+// broken by created_at). Values are kept GAPPED (TASK-3525): a card is written
+// SORT_GAP away from its neighbour at an end, and at the midpoint between its
+// neighbours in the middle, so a move is one write until a gap closes. Every
+// create path stores 0, so a lane nobody has dragged is all ties, and lanes
+// ordered before TASK-3525 are dense (0, 1, 2, ...): both are spaced out
+// lazily, by the first drag that needs room. A neighbour the caller may only
+// VIEW (an item grant beats a collection grant) cannot be written: the server
+// refuses it 403.
 //
 // `planLaneOrder` decides which writes to send so that the stored order sorts
 // to what the user sees, leaving view-only cards where they are.
 // `persistReorder` sends them in ONE all-or-nothing request (TASK-3517) and
 // undoes its optimistic local writes when it is refused.
+//
+// The server stores whatever integers it is sent (PUT /items/sort-order), so
+// nothing changes for an API writer: any values that sort in the intended
+// order work, dense, gapped or negative.
+
+/** The spacing a card is written at, away from its neighbour (TASK-3525). */
+export const SORT_GAP = 1024;
+
+/**
+ * Values stay within ±SORT_LIMIT (Postgres stores sort_order as int4,
+ * ±2^31). A plan that would leave it re-spaces the whole lane around 0.
+ */
+export const SORT_LIMIT = 2 ** 30;
 
 export interface OrderedCard {
 	id: string;
@@ -25,42 +43,119 @@ export type LanePlan = { ok: true; writes: OrderWrite[] } | { ok: false };
 
 /**
  * The fewest `sort_order` writes that make an all-editable lane, given in its
- * new on-screen order, sort strictly in that order (TASK-2230).
+ * new on-screen order, sort strictly in that order (TASK-2230, TASK-3525).
  *
- * Every written card also writes a 'reordered' activity row (#1933), and the
- * dense renumber this replaced rewrote everything after the moved card: a drop
- * at the top of a 1,020-card lane was 1,020 writes (measured ~1.1 ms each on
- * SQLite, plus the activity rows). So the lane keeps its stored values wherever
- * they already sort, and only the cards that must move do:
- *   - a drop at the top writes the moved card as `next - 1` (the lane's min - 1),
- *     and a drop at the bottom as `prev + 1` (max + 1): one write each;
- *   - a drop in the middle shifts the SHORTER side: the cheaper of pushing the
- *     cards before it down (`min(own, next - 1)`, walking right to left) or the
- *     cards after it up (`max(own, prev + 1)`, walking left to right).
- * Values may go negative or past the lane's length; the column is an INTEGER
- * and nothing reads it but the order. A lane already strictly increasing
- * (nothing moved) writes nothing; ties, which the created_at tie-break used to
- * settle, are written apart wherever the order now depends on them.
+ * Every written card also writes a 'reordered' activity row (#1933), so the
+ * plan writes as few cards as it can:
+ *   - it keeps the longest run of cards whose stored values already increase
+ *     along the lane, and writes every other card into the gap between its
+ *     kept neighbours: SORT_GAP below the first or above the last at an end,
+ *     spread evenly between them in the middle. Moving one card in a gapped
+ *     lane is ONE write;
+ *   - when a gap has no integer room left (a dense lane from before TASK-3525,
+ *     a lane of ties, or a gap closed by repeated drops in one spot), it shifts
+ *     the SHORTER side instead, as TASK-2230 did, but writes the shifted cards
+ *     SORT_GAP apart, so the drops after it are single writes again;
+ *   - a plan that would leave ±SORT_LIMIT re-spaces the whole lane around 0.
+ * A lane already strictly increasing writes nothing.
  */
 export function fewestWrites<T extends OrderedCard>(lane: readonly T[]): OrderWrite[] {
+	const plan = gapWrites(lane) ?? shorterSideShift(lane);
+	if (plan.some((w) => Math.abs(w.sort_order) > SORT_LIMIT)) return respaceAll(lane);
+	return plan;
+}
+
+/** Indices of a longest strictly increasing run of values (patience sort). */
+function longestIncreasing(values: readonly number[]): boolean[] {
+	const tails: number[] = []; // index of the last element of the best run of each length
+	const prevOf: number[] = new Array(values.length).fill(-1);
+	for (let i = 0; i < values.length; i++) {
+		let lo = 0;
+		let hi = tails.length;
+		while (lo < hi) {
+			const mid = (lo + hi) >> 1;
+			if (values[tails[mid]] < values[i]) lo = mid + 1;
+			else hi = mid;
+		}
+		if (lo > 0) prevOf[i] = tails[lo - 1];
+		tails[lo] = i;
+	}
+	const keep: boolean[] = new Array(values.length).fill(false);
+	for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prevOf[i]) keep[i] = true;
+	return keep;
+}
+
+/**
+ * Keep the longest increasing run and write every other card into the gap
+ * between its kept neighbours. Null when some gap has no integer room.
+ */
+function gapWrites<T extends OrderedCard>(lane: readonly T[]): OrderWrite[] | null {
 	const n = lane.length;
-	// Push the cards before each violation down, keeping the right side.
+	const keep = longestIncreasing(lane.map((c) => c.sort_order));
+	const writes: OrderWrite[] = [];
+	let k = 0;
+	while (k < n) {
+		if (keep[k]) {
+			k++;
+			continue;
+		}
+		const start = k;
+		while (k < n && !keep[k]) k++;
+		const m = k - start; // cards start..k-1 go between start-1 and k
+		const below = start > 0 ? lane[start - 1].sort_order : -Infinity;
+		const above = k < n ? lane[k].sort_order : Infinity;
+		for (let j = 0; j < m; j++) {
+			let v: number;
+			if (below === -Infinity) v = above - SORT_GAP * (m - j);
+			else if (above === Infinity) v = below + SORT_GAP * (j + 1);
+			else {
+				// m values strictly between below and above need above - below > m.
+				if (above - below <= m) return null;
+				v = below + Math.floor(((above - below) * (j + 1)) / (m + 1));
+			}
+			const card = lane[start + j];
+			if (v !== card.sort_order) writes.push({ id: card.id, sort_order: v });
+		}
+	}
+	return writes;
+}
+
+/**
+ * TASK-2230's shorter-side shift, writing the shifted cards SORT_GAP apart:
+ * the cheaper of pushing the cards before each violation down (walking right
+ * to left) or the cards after it up (walking left to right). A card whose
+ * value already sorts where it is keeps it.
+ */
+function shorterSideShift<T extends OrderedCard>(lane: readonly T[]): OrderWrite[] {
+	const n = lane.length;
 	const down: OrderWrite[] = [];
 	let next = Infinity;
 	for (let k = n - 1; k >= 0; k--) {
-		const v = Math.min(lane[k].sort_order, next - 1);
-		if (v !== lane[k].sort_order) down.push({ id: lane[k].id, sort_order: v });
+		const own = lane[k].sort_order;
+		const v = own < next ? own : next - SORT_GAP;
+		if (v !== own) down.push({ id: lane[k].id, sort_order: v });
 		next = v;
 	}
-	// Push the cards after each violation up, keeping the left side.
 	const up: OrderWrite[] = [];
 	let prev = -Infinity;
 	for (let k = 0; k < n; k++) {
-		const v = Math.max(lane[k].sort_order, prev + 1);
-		if (v !== lane[k].sort_order) up.push({ id: lane[k].id, sort_order: v });
+		const own = lane[k].sort_order;
+		const v = own > prev ? own : prev + SORT_GAP;
+		if (v !== own) up.push({ id: lane[k].id, sort_order: v });
 		prev = v;
 	}
 	return down.length <= up.length ? down.reverse() : up;
+}
+
+/** Every card SORT_GAP apart, centred on 0, in on-screen order. */
+function respaceAll<T extends OrderedCard>(lane: readonly T[]): OrderWrite[] {
+	const mid = Math.floor(lane.length / 2);
+	const writes: OrderWrite[] = [];
+	lane.forEach((card, k) => {
+		const v = (k - mid) * SORT_GAP;
+		if (v !== card.sort_order) writes.push({ id: card.id, sort_order: v });
+	});
+	return writes;
 }
 
 /**
@@ -111,10 +206,14 @@ export function planLaneOrder<T extends OrderedCard>(
 		}
 		const lower = prev + 1;
 		if (lower > upper) return { ok: false };
+		// A card that must move is written with room around it (TASK-3525):
+		// SORT_GAP past its neighbour at an open end, the middle of its window
+		// between two bounds.
 		let v: number;
 		if (card.sort_order >= lower && card.sort_order <= upper) v = card.sort_order;
-		else if (lower === -Infinity) v = Math.min(card.sort_order, upper);
-		else v = lower;
+		else if (lower === -Infinity) v = upper - SORT_GAP;
+		else if (upper === Infinity) v = prev + SORT_GAP;
+		else v = lower + Math.floor((upper - lower) / 2);
 		if (v !== card.sort_order) writes.push({ id: card.id, sort_order: v });
 		prev = v;
 		prevFrozen = false;
