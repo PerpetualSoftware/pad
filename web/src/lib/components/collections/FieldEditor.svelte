@@ -226,6 +226,15 @@
 	// not the user. We still render them, but disable the advanced controls.
 	const isComputed = $derived(!!field.computed);
 
+	// A json field (Pad's own Playbooks.arguments is one) is LOCKED to its
+	// type (TASK-2194, audit C123). The dropdown used to omit json, so such a
+	// field rendered a blank type select, and touching it could only convert
+	// a structured field to a scalar type, after which its array and object
+	// values failed validation on the next full save. It is not offered for a
+	// new field either: the editor has no way to edit a json value, so the
+	// API and CLI are where such a field is declared.
+	const isJsonType = $derived(field.type === 'json');
+
 	// `field.default` is polymorphic (string | number | boolean). We use typed
 	// handlers to keep the serialized value in the right shape.
 	function onDefaultTextInput(e: Event) {
@@ -315,11 +324,17 @@
 			oninput={onLabelInput}
 			placeholder={isNew ? 'Field name' : 'Field label'}
 		/>
-		<select aria-label="Field type" class="field-type-select" bind:value={field.type} title="Field type">
-			{#each FIELD_TYPES as ft (ft)}
-				<option value={ft}>{ft.replace('_', ' ')}</option>
-			{/each}
-		</select>
+		{#if isJsonType}
+			<select aria-label="Field type" class="field-type-select" value="json" disabled title="A json field keeps its type: its values are structured, and another type would refuse them">
+				<option value="json">json</option>
+			</select>
+		{:else}
+			<select aria-label="Field type" class="field-type-select" bind:value={field.type} title="Field type">
+				{#each FIELD_TYPES as ft (ft)}
+					<option value={ft}>{ft.replace('_', ' ')}</option>
+				{/each}
+			</select>
+		{/if}
 		<button
 			class="field-remove-btn"
 			type="button"
@@ -355,6 +370,13 @@
 		{:else if field.keyTouched}
 			<div class="field-key-hint">Keys can't be changed after save.</div>
 		{/if}
+	{/if}
+
+	{#if isJsonType}
+		<div class="field-computed-badge field-json-badge" title="Its values are structured (lists and objects), written through the API or the CLI. The type can't be changed here.">
+			<span class="computed-dot" aria-hidden="true"></span>
+			<span>structured (json), type locked</span>
+		</div>
 	{/if}
 
 	{#if isComputed}
@@ -796,6 +818,10 @@
 		flex-shrink: 0;
 	}
 
+	.field-type-select:disabled {
+		opacity: 0.75;
+		cursor: not-allowed;
+	}
 	.field-type-select:hover {
 		border-color: var(--border);
 	}
