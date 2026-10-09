@@ -242,3 +242,44 @@ func TestRoomRelaysMalformedAwarenessUntracked(t *testing.T) {
 		t.Fatalf("a's departure sent %x; it owned no client", got)
 	}
 }
+
+// The interleaving codex r2 found: the old connection has released its client,
+// and the reconnected client's first frame arrives before the old connection
+// has published the removal. Peers must see the removal FIRST: a removal at
+// the same clock arriving after the live state would be applied, hiding a
+// live client.
+func TestRoomRemovalCannotOvertakeAReconnectedClient(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	r := &Room{itemID: "item-race", bus: bus}
+	watcher := bus.Subscribe("item-race")
+	defer bus.Unsubscribe(watcher)
+
+	oldConn := &roomConn{id: 1}
+	newConn := &roomConn{id: 2}
+	r.relayAwareness(oldConn, liveFrame(100, 3))
+	<-watcher // the old connection's announcement
+
+	inWindow := make(chan struct{})
+	proceed := make(chan struct{})
+	r.afterAwarenessRelease = func() { close(inWindow); <-proceed }
+	done := make(chan struct{})
+	go func() { r.releaseAwareness(oldConn); close(done) }()
+	<-inWindow
+	// The same client, reconnected, announces while the removal is pending.
+	relayed := make(chan struct{})
+	go func() { r.relayAwareness(newConn, liveFrame(100, 4)); close(relayed) }()
+	time.Sleep(50 * time.Millisecond)
+	close(proceed)
+	<-done
+	<-relayed
+
+	first := <-watcher
+	second := <-watcher
+	if !bytes.Equal(first.Data, encodeAwarenessRemoval([]awarenessEntry{{clientID: 100, clock: 3}})) {
+		t.Fatalf("first frame %x; want the old connection's removal", first.Data)
+	}
+	if !bytes.Equal(second.Data, liveFrame(100, 4)) {
+		t.Fatalf("second frame %x; want the reconnected client's live state, last", second.Data)
+	}
+}

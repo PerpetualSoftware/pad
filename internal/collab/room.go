@@ -176,13 +176,22 @@ type Room struct {
 	itemID string
 	// Who owns which awareness client IDs (TASK-2206), created on first use
 	// so a Room built without the manager still works.
-	awOnce        sync.Once
-	aw            *awarenessTracker
-	store         opLogStore
-	bus           OpBus
-	schemaVersion string
-	graceTTL      time.Duration
-	onIdle        func(string) // RoomManager.markRoomGone
+	awOnce sync.Once
+	aw     *awarenessTracker
+	// awPubMu orders each awareness decision with its publish: a relayed
+	// frame's ownership check and its broadcast, and a closing connection's
+	// release and its removal, happen as one step each, so the bus carries
+	// them in the order ownership was decided (codex r2). Publish never
+	// blocks (a slow subscriber is dropped), so holding it there is cheap.
+	awPubMu sync.Mutex
+	// afterAwarenessRelease runs between a release and its publish; tests
+	// use it to hold that window open. Nil in production.
+	afterAwarenessRelease func()
+	store                 opLogStore
+	bus                   OpBus
+	schemaVersion         string
+	graceTTL              time.Duration
+	onIdle                func(string) // RoomManager.markRoomGone
 
 	mu    sync.Mutex
 	conns map[*websocket.Conn]*roomConn
@@ -327,9 +336,7 @@ func (r *Room) removeConn(rc *roomConn) {
 	// drop its carets now instead of at y-protocols' 30-second timeout. After
 	// Unsubscribe, and published under this conn's id, so it reaches every
 	// peer and not the closed socket.
-	if gone := r.awareness().release(rc.id); len(gone) > 0 {
-		r.bus.Publish(OpEvent{ItemID: r.itemID, ClientID: rc.id, Type: OpTypeAwareness, Data: encodeAwarenessRemoval(gone)})
-	}
+	r.releaseAwareness(rc)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -716,8 +723,28 @@ func (r *Room) awareness() *awarenessTracker {
 // client IDs this connection owns (TASK-2206; see awareness.go). Every
 // awareness frame the room relays goes through here.
 func (r *Room) relayAwareness(rc *roomConn, data []byte) {
+	r.awPubMu.Lock()
+	defer r.awPubMu.Unlock()
 	r.awareness().observe(rc.id, data)
 	r.bus.Publish(OpEvent{ItemID: r.itemID, ClientID: rc.id, Type: OpTypeAwareness, Data: data})
+}
+
+// releaseAwareness forgets a closing connection's clients and tells the room
+// they are gone. Under awPubMu with relayAwareness: a reconnected client's
+// first frame is either observed before this (it takes ownership by its newer
+// clock, so nothing is removed) or published after this removal (so peers see
+// the removal first and the live state last). Without the lock a live state
+// could be overtaken by a removal at the same clock, which y-protocols applies.
+func (r *Room) releaseAwareness(rc *roomConn) {
+	r.awPubMu.Lock()
+	defer r.awPubMu.Unlock()
+	gone := r.awareness().release(rc.id)
+	if r.afterAwarenessRelease != nil {
+		r.afterAwarenessRelease()
+	}
+	if len(gone) > 0 {
+		r.bus.Publish(OpEvent{ItemID: r.itemID, ClientID: rc.id, Type: OpTypeAwareness, Data: encodeAwarenessRemoval(gone)})
+	}
 }
 
 // writeLoop drains the bus subscription channel and writes every
