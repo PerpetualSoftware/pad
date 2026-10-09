@@ -277,10 +277,34 @@ func softTimeout(hard time.Duration) time.Duration {
 // When ctx ends while the job runs, the worker is killed (it cannot be told
 // to drop a job) and ctx's error is returned, wrapped.
 func (s *Supervisor) Materialize(ctx context.Context, job Job) (string, error) {
+	resp, err := s.do(ctx, job, "")
+	if err != nil {
+		return "", err
+	}
+	return *resp.Markdown, nil
+}
+
+// Snapshot runs a compaction job in the worker (TASK-3531): the rows' markdown
+// and ONE frame that replays to the same document. Same worker, slot, caps and
+// deadline as Materialize; a refusal from the bundle is an ErrJobFailed.
+func (s *Supervisor) Snapshot(ctx context.Context, job Job) (Snapshot, error) {
+	resp, err := s.do(ctx, job, ModeSnapshot)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	frame, err := base64.StdEncoding.DecodeString(resp.Frame)
+	if err != nil || len(frame) == 0 {
+		return Snapshot{}, fmt.Errorf("%w: snapshot response %d has no frame", ErrProtocol, resp.ID)
+	}
+	return Snapshot{Markdown: *resp.Markdown, Frame: frame}, nil
+}
+
+// do runs one job of the given mode, holding the job slot.
+func (s *Supervisor) do(ctx context.Context, job Job, mode string) (WorkerResponse, error) {
 	select {
 	case s.slot <- struct{}{}:
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return WorkerResponse{}, ctx.Err()
 	}
 	defer func() { <-s.slot }()
 
@@ -289,15 +313,15 @@ func (s *Supervisor) Materialize(ctx context.Context, job Job) (string, error) {
 			s.log.Warn("materialize: no memory cap mechanism on this OS; op-log materialization is disabled",
 				"goos", runtime.GOOS)
 		})
-		return "", fmt.Errorf("%w: no cap mechanism on %s", ErrNoMemoryCap, runtime.GOOS)
+		return WorkerResponse{}, fmt.Errorf("%w: no cap mechanism on %s", ErrNoMemoryCap, runtime.GOOS)
 	}
 	c, err := s.ensureChild(ctx)
 	if err != nil {
-		return "", err
+		return WorkerResponse{}, err
 	}
-	md, err := s.run(ctx, c, job)
+	resp, err := s.run(ctx, c, job, mode)
 	s.armIdle(c)
-	return md, err
+	return resp, err
 }
 
 // armIdle (re)starts c's idle timer after a job, if c is still the worker (a
@@ -760,7 +784,7 @@ func (s *Supervisor) startFailed(c *child, err error) error {
 }
 
 // run sends one job and waits for its answer.
-func (s *Supervisor) run(ctx context.Context, c *child, job Job) (string, error) {
+func (s *Supervisor) run(ctx context.Context, c *child, job Job, mode string) (WorkerResponse, error) {
 	// Scaled to the job's op-log (BUG-3521): a large document's replay costs
 	// more than the configured base allows.
 	hard := jobTimeout(s.timeout, job)
@@ -782,6 +806,7 @@ func (s *Supervisor) run(ctx context.Context, c *child, job Job) (string, error)
 		LinkIndex:     job.LinkIndex,
 		WorkspaceSlug: job.WorkspaceSlug,
 		TimeoutMs:     soft.Milliseconds(),
+		Mode:          mode,
 	}
 	if req.LinkIndex == nil {
 		req.LinkIndex = []LinkEntry{}
@@ -791,7 +816,7 @@ func (s *Supervisor) run(ctx context.Context, c *child, job Job) (string, error)
 	}
 	frame, err := encodeFrame(req)
 	if err != nil {
-		return "", err
+		return WorkerResponse{}, err
 	}
 	c.jobs.Add(1)
 
@@ -800,25 +825,25 @@ func (s *Supervisor) run(ctx context.Context, c *child, job Job) (string, error)
 	resp, err := s.exchange(ctx, c, frame, timer.C, "deadline",
 		fmt.Errorf("%w: %s passed; worker killed", ErrDeadline, hard))
 	if err != nil {
-		return "", err
+		return WorkerResponse{}, err
 	}
 	if resp.ID != req.ID {
-		return "", s.fail(c, "protocol", fmt.Errorf("%w: response id %d for request %d", ErrProtocol, resp.ID, req.ID))
+		return WorkerResponse{}, s.fail(c, "protocol", fmt.Errorf("%w: response id %d for request %d", ErrProtocol, resp.ID, req.ID))
 	}
 	switch {
 	case resp.Error != "":
 		switch {
 		case strings.Contains(resp.Error, ErrSchemaVersion.Error()):
-			return "", fmt.Errorf("%w (worker: %s)", ErrSchemaVersion, resp.Error)
+			return WorkerResponse{}, fmt.Errorf("%w (worker: %s)", ErrSchemaVersion, resp.Error)
 		case strings.Contains(resp.Error, ErrInterrupted.Error()):
 			// The child's own interrupt stopped it: soft deadline, child kept.
-			return "", fmt.Errorf("%w after %s (stopped by the worker's interrupt): %s", ErrDeadline, soft, resp.Error)
+			return WorkerResponse{}, fmt.Errorf("%w after %s (stopped by the worker's interrupt): %s", ErrDeadline, soft, resp.Error)
 		}
-		return "", fmt.Errorf("%w: %s", ErrJobFailed, resp.Error)
+		return WorkerResponse{}, fmt.Errorf("%w: %s", ErrJobFailed, resp.Error)
 	case resp.Markdown == nil:
-		return "", s.fail(c, "protocol", fmt.Errorf("%w: response %d has neither markdown nor error", ErrProtocol, resp.ID))
+		return WorkerResponse{}, s.fail(c, "protocol", fmt.Errorf("%w: response %d has neither markdown nor error", ErrProtocol, resp.ID))
 	}
-	return *resp.Markdown, nil
+	return resp, nil
 }
 
 // exchange writes one frame and returns the next response. On the timer it

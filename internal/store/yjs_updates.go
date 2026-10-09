@@ -604,13 +604,27 @@ func (s *Store) PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (
 		    WHERE item_id = ? AND created_at >= ?
 		  )
 	`)
-	res, err := s.db.Exec(query, itemID, itemID, cutoff)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("prune dormant op-log (begin): %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(query, itemID, itemID, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("prune dormant op-log: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("prune dormant op-log (rows affected): %w", err)
+	}
+	if n > 0 {
+		// A compaction snapshot, if there was one, went with the rows (TASK-3531).
+		if err := s.clearOpLogCompactionQ(tx, itemID); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("prune dormant op-log (commit): %w", err)
 	}
 	return n, nil
 }
@@ -709,5 +723,6 @@ func (s *Store) PruneItemOpLogTx(tx *sql.Tx, itemID string) error {
 	if _, err := tx.Exec(query, itemID); err != nil {
 		return fmt.Errorf("prune item op-log in tx: %w", err)
 	}
-	return nil
+	// The snapshot went with the rows (TASK-3531).
+	return s.clearOpLogCompactionQ(tx, itemID)
 }

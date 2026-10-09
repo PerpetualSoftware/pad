@@ -30,7 +30,13 @@ type WorkerRequest struct {
 	// TimeoutMs bounds the job; 0 means no deadline inside the worker (the
 	// supervisor still owns the process).
 	TimeoutMs int64 `json:"timeout_ms"`
+	// Mode is "snapshot" for a compaction job (TASK-3531); empty is a
+	// materialization, so a request from before it means what it meant.
+	Mode string `json:"mode,omitempty"`
 }
+
+// ModeSnapshot asks the worker to compact the rows into one frame (TASK-3531).
+const ModeSnapshot = "snapshot"
 
 // WorkerResponse answers one WorkerRequest. Exactly one of Markdown and Error
 // is set; Markdown may be the empty string (an empty document), which is why
@@ -38,7 +44,10 @@ type WorkerRequest struct {
 type WorkerResponse struct {
 	ID       uint64  `json:"id"`
 	Markdown *string `json:"markdown,omitempty"`
-	Error    string  `json:"error,omitempty"`
+	// Frame is the compacted frame, base64, on a ModeSnapshot response
+	// (TASK-3531), beside its Markdown.
+	Frame string `json:"frame,omitempty"`
+	Error string `json:"error,omitempty"`
 	// Ms is the time the worker spent on the request.
 	Ms float64 `json:"ms"`
 }
@@ -180,6 +189,17 @@ func serve(runner *Runner, payload []byte) WorkerResponse {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutMs)*time.Millisecond)
 		defer cancel()
+	}
+	switch req.Mode {
+	case "":
+	case ModeSnapshot:
+		snap, err := runner.Snapshot(ctx, job)
+		if err != nil {
+			return fail(err.Error())
+		}
+		return WorkerResponse{ID: req.ID, Markdown: &snap.Markdown, Frame: base64.StdEncoding.EncodeToString(snap.Frame), Ms: elapsedMs(start)}
+	default:
+		return fail(fmt.Sprintf("malformed request: unknown mode %q", req.Mode))
 	}
 	md, err := runner.Materialize(ctx, job)
 	if err != nil {
