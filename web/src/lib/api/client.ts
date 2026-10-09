@@ -107,6 +107,7 @@ import type {
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
 import { uploadImportBundle } from './importUpload';
+import { keepaliveFor } from './keepaliveBudget';
 
 const BASE = '/api/v1';
 
@@ -1868,16 +1869,21 @@ export const api = {
 		/**
 		 * `opts.keepalive` is passed straight to fetch so the
 		 * beforeunload / unmount flush path can outlive the page
-		 * lifecycle (browser holds the request open until it completes
-		 * or hits the ~64KB body cap). Used to land pending raw-markdown
-		 * edits on tab close/reload (BUG-2024).
+		 * lifecycle. Used to land pending raw-markdown edits on tab
+		 * close/reload (BUG-2024). The browser refuses a keepalive body
+		 * over 64 KiB, so a larger one goes as an ordinary fetch
+		 * (keepaliveBudget.ts, BUG-3522).
 		 */
-		update: (ws: string, slug: string, data: ItemUpdate, opts?: { keepalive?: boolean }) =>
-			request<Item>(`/workspaces/${ws}/items/${slug}`, {
+		update: (ws: string, slug: string, data: ItemUpdate, opts?: { keepalive?: boolean }) => {
+			const body = JSON.stringify(data);
+			return request<Item>(`/workspaces/${ws}/items/${slug}`, {
 				method: 'PATCH',
-				body: JSON.stringify(data),
-				keepalive: opts?.keepalive
-			}),
+				body,
+				// Over the keepalive budget the request goes as an ordinary
+				// fetch rather than be refused by the browser (BUG-3522).
+				keepalive: keepaliveFor(opts?.keepalive, body, `PATCH item ${slug}`)
+			});
+		},
 
 		/**
 		 * flushCollabContent PATCHes items.content with the
@@ -1890,9 +1896,9 @@ export const api = {
 		 *
 		 * `keepalive` is passed straight to fetch so the
 		 * unmount / beforeunload flush path can outlive the
-		 * page lifecycle (browser holds the request open until
-		 * it completes or hits the ~64KB body cap; markdown
-		 * bodies are well under that for typical items).
+		 * page lifecycle. The browser refuses a keepalive body over
+		 * 64 KiB, so a larger one goes as an ordinary fetch
+		 * (keepaliveBudget.ts, BUG-3522).
 		 */
 		flushCollabContent: (
 			ws: string,
@@ -1921,10 +1927,13 @@ export const api = {
 			if (opts?.opLogCursor !== undefined) {
 				body.op_log_cursor = opts.opLogCursor;
 			}
+			const encoded = JSON.stringify(body);
 			return request<Item>(`/workspaces/${ws}/items/${slug}?source=collab-snapshot`, {
 				method: 'PATCH',
-				body: JSON.stringify(body),
-				keepalive: opts?.keepalive,
+				body: encoded,
+				// Over the keepalive budget the request goes as an ordinary
+				// fetch rather than be refused by the browser (BUG-3522).
+				keepalive: keepaliveFor(opts?.keepalive, encoded, `collab flush of ${slug}`),
 			});
 		},
 
