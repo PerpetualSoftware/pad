@@ -88,4 +88,35 @@ test.describe('TASK-2218: the editor insert menus', () => {
 		await page.keyboard.press('Enter');
 		await expect(page.locator(`${EDITOR_SELECTOR} a`, { hasText: 'Insert menus' }).last()).toBeVisible();
 	});
+
+	test('[[ inside a code block or inline code is just text', async ({ page, fixture, request }) => {
+		const slug = await seedLongDoc(fixture, request);
+		const editor = await openAtEnd(page, fixture, slug);
+		const picker = page.locator('.slash-menu');
+
+		// A fenced code block, opened from the slash menu.
+		await page.keyboard.type('/code');
+		await page.keyboard.press('Enter');
+		await expect(editor.locator('pre').last()).toBeVisible();
+		await page.keyboard.type('xs = [[1,2]]');
+		await page.waitForTimeout(300);
+		await expect(picker).toHaveCount(0);
+		await expect(editor.locator('pre').last()).toContainText('xs = [[1,2]]');
+
+		// Inline code: leave the fence, toggle the code mark, type the same.
+		await page.keyboard.press('ArrowDown');
+		await page.keyboard.press('Control+End');
+		await page.keyboard.press('Enter');
+		await page.keyboard.press('Control+e');
+		await page.keyboard.type('m[[0]]');
+		await page.waitForTimeout(300);
+		await expect(picker).toHaveCount(0);
+		await expect(editor.locator('p code', { hasText: 'm[[0]]' }).last()).toBeVisible();
+
+		// And outside code the trigger still works on the same line.
+		await page.keyboard.press('Control+e');
+		await page.keyboard.type(' [[');
+		await expect(picker).toBeVisible();
+		await page.keyboard.press('Escape');
+	});
 });

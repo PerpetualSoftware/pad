@@ -1213,7 +1213,13 @@
 					// typing missed; the text before the caret is the only test.
 					if (event.key === '[' && !linkOpen && !slashOpen) {
 						const { from, empty } = _view.state.selection;
-						if (empty && from > 0 && _view.state.doc.textBetween(from - 1, from, '') === '[') {
+						const at = _view.state.selection.$from;
+						// Not in code: `[[1,2]]` in a fence or inline code is
+						// ordinary text, never a link (lead review on TASK-2218).
+						const inCode =
+							!!at.parent.type.spec.code ||
+							at.marks().some((m) => !!m.type.spec.code || m.type.name === 'code');
+						if (!inCode && empty && from > 0 && _view.state.doc.textBetween(from - 1, from, '') === '[') {
 							openLinkPicker(from - 1);
 						}
 						return false;
