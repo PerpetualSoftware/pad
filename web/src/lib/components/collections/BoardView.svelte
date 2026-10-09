@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { relationGroupingRefusal, relationGroupingRefusalMessage } from '$lib/collections/relationGroups';
 	import type { Item, Collection } from '$lib/types';
+	import { untrack } from 'svelte';
 	import { getStatusOptions, parseSchema, parseFields } from '$lib/types';
+	import { doneFieldKey, doneFieldTerminalOptions } from '$lib/types';
+	import { laneCap, laneWindow, rebuildLane } from '$lib/collections/laneWindow';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { laneOrderAfterMove, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
 	import {
@@ -452,6 +455,52 @@
 	 */
 	let columnData: Record<string, Item[]> = $state({});
 
+	// A lane mounts a WINDOW of its cards (TASK-2230, see laneWindow.ts): a
+	// terminal lane its first 50, any other its first 300, then "Show all".
+	// `columnData` keeps the FULL lane; only the drag zone and the rendered list
+	// see the window, and every drag rebuilds the full lane from it.
+	// Expanded lanes and grown windows are per lane key, for the session.
+	let expandedLanes: Record<string, boolean> = $state({});
+	// A window a drop made one card longer stays that long, so the card the
+	// user just placed at its end does not drop out of sight.
+	let grownWindows: Record<string, number> = $state({});
+	let terminalValues = $derived(
+		groupField === doneFieldKey(collection)
+			? new Set(doneFieldTerminalOptions(collection).map((v) => v.toLowerCase()))
+			: new Set<string>()
+	);
+	function windowSize(col: string): number {
+		const key = laneKey(col);
+		const cap = laneCap({
+			terminal: terminalValues.has(col.toLowerCase()),
+			// A search or filter shows everything it matched: hiding a match
+			// would read as "not found".
+			uncapped: preserveOrder || filtered || !!expandedLanes[key],
+		});
+		return Math.max(cap, grownWindows[key] ?? 0);
+	}
+	function shownCards(col: string): readonly Item[] {
+		return laneWindow(columnData[laneKey(col)] ?? [], windowSize(col));
+	}
+	function expandLane(col: string) {
+		expandedLanes[laneKey(col)] = true;
+	}
+	// A focused card (a deep link, j/k) in a lane's hidden part opens the lane,
+	// so focus never lands on a card that is not mounted.
+	$effect(() => {
+		const id = focusedItemId;
+		if (!id) return;
+		for (const [key, full] of Object.entries(columnData)) {
+			const at = full.findIndex((i) => i.id === id);
+			if (at < 0) continue;
+			const col = untrack(() => renderColumns.find((c) => laneKey(c) === key));
+			if (col !== undefined && at >= untrack(() => windowSize(col)) && !untrack(() => expandedLanes[key])) {
+				expandedLanes[key] = true;
+			}
+			return;
+		}
+	});
+
 	let propColumnData = $derived.by(() => {
 		// Bucket items into their lanes, routing empty/unknown-value items
 		// into the UNCATEGORIZED ('') lane instead of dropping them (IDEA-2275).
@@ -558,8 +607,17 @@
 		onColumnsRendered?.(navColumns);
 	});
 
+	/** The full lane after a drag event on its window (TASK-2230). */
+	function rebuiltFromDrag(columnValue: string, windowAfter: Item[]): Item[] {
+		const key = laneKey(columnValue);
+		const full = columnData[key] ?? [];
+		const before = shownCards(columnValue);
+		grownWindows[key] = Math.max(grownWindows[key] ?? 0, windowAfter.length);
+		return rebuildLane(full, before, windowAfter);
+	}
+
 	function handleConsider(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
-		columnData[laneKey(columnValue)] = e.detail.items;
+		columnData[laneKey(columnValue)] = rebuiltFromDrag(columnValue, e.detail.items);
 		if (!isDragging && e.detail.info.trigger === TRIGGERS.DRAG_STARTED) {
 			if (typeof navigator !== 'undefined' && navigator.vibrate) {
 				navigator.vibrate(50);
@@ -569,7 +627,11 @@
 	}
 
 	async function handleFinalize(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
-		columnData[laneKey(columnValue)] = e.detail.items;
+		// The FULL lane, not the window: every write below numbers the whole
+		// lane, and numbering the window alone would collide with the hidden
+		// tail (TASK-2230).
+		const lane = rebuiltFromDrag(columnValue, e.detail.items);
+		columnData[laneKey(columnValue)] = lane;
 
 		const { id: itemId, trigger } = e.detail.info;
 		isDragging = false;
@@ -580,7 +642,7 @@
 		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
 			const originalItem = items.find((i) => i.id === itemId);
 			if (originalItem) {
-				await commitColumnMove(originalItem, columnValue, e.detail.items);
+				await commitColumnMove(originalItem, columnValue, lane);
 				return;
 			}
 		}
@@ -589,7 +651,7 @@
 		// no status change — just re-densify this lane's remaining order.
 		dropCooldown = true;
 		if (onReorder) {
-			const reorderUpdates = e.detail.items
+			const reorderUpdates = lane
 				.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 				.map((item, index) => ({ slug: item.id, sort_order: index }));
 			if (reorderUpdates.length > 0) onReorder(reorderUpdates);
@@ -724,6 +786,10 @@
 			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
 		);
 		const lane = laneOrderAfterMove(grp, item.id, dir);
+		// A card moved past the window's edge stays mounted (TASK-2230).
+		const at = lane.findIndex((u) => u.slug === item.id);
+		const key = laneKey(columnValue);
+		if (at >= windowSize(columnValue)) grownWindows[key] = at + 1;
 		if (lane.length > 0) onReorder(lane);
 	}
 
@@ -850,6 +916,7 @@
 <div class="board-view">
 	{#each renderColumns as colValue (colValue)}
 		{@const colItems = columnData[laneKey(colValue)] ?? []}
+		{@const shown = shownCards(colValue)}
 		{@const isUncategorized = colValue === UNCATEGORIZED}
 		{@const relLane = relationLaneByValue.get(colValue)}
 		{@const laneName = relLane ? (relLane.title ?? relLane.label) : formatLaneLabel(colValue)}
@@ -987,7 +1054,9 @@
 			<div
 				class="column-cards"
 				use:lockableDndzone={{
-					items: colItems,
+					// The WINDOW (TASK-2230): the zone sees only mounted cards, and
+					// handleConsider/handleFinalize rebuild the full lane around it.
+					items: shown as Item[],
 					flipDurationMs,
 					type: 'board-card',
 					dropTargetClasses: ['drop-target'],
@@ -1010,7 +1079,7 @@
 				onfinalize={(e) => handleFinalize(colValue, e)}
 				oncontextmenu={(e) => e.preventDefault()}
 			>
-				{#each colItems as item, i (item.id)}
+				{#each shown as item, i (item.id)}
 					<!-- data-drag-locked: a card the caller may only view cannot be
 					     dragged, though the lane allows it (BUG-3259). -->
 					<div
@@ -1039,6 +1108,16 @@
 					<div class="column-empty">No {formatLaneLabel(colValue).toLowerCase()} items</div>
 				{/if}
 			</div>
+			<!-- OUTSIDE the dndzone (TASK-2230): svelte-dnd-action reads every child
+			     of the zone as an item, so a control inside it would shift every
+			     drop index past it. Below the scrolling list, it stays in view. -->
+			{#if shown.length < colItems.length}
+				<button
+					type="button"
+					class="lane-show-all"
+					onclick={() => expandLane(colValue)}
+				>Show all {colItems.length} ({colItems.length - shown.length} more)</button>
+			{/if}
 		</div>
 	{/each}
 </div>
@@ -1196,6 +1275,25 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		text-align: left;
+	}
+
+	/* TASK-2230: the control that mounts the rest of a capped lane. */
+	.lane-show-all {
+		display: block;
+		flex: none;
+		margin: var(--space-2) var(--space-2) var(--space-2);
+		width: calc(100% - 2 * var(--space-2));
+		padding: var(--space-2);
+		border: 1px dashed var(--border);
+		border-radius: 6px;
+		background: transparent;
+		color: var(--text-secondary);
+		font-size: 0.85em;
+		cursor: pointer;
+	}
+	.lane-show-all:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover, rgba(127, 127, 127, 0.08));
 	}
 
 	.column-count {

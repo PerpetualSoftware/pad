@@ -24,11 +24,51 @@ export interface OrderWrite {
 export type LanePlan = { ok: true; writes: OrderWrite[] } | { ok: false };
 
 /**
+ * The fewest `sort_order` writes that make an all-editable lane, given in its
+ * new on-screen order, sort strictly in that order (TASK-2230).
+ *
+ * Every written card also writes a 'reordered' activity row (#1933), and the
+ * dense renumber this replaced rewrote everything after the moved card: a drop
+ * at the top of a 1,020-card lane was 1,020 writes (measured ~1.1 ms each on
+ * SQLite, plus the activity rows). So the lane keeps its stored values wherever
+ * they already sort, and only the cards that must move do:
+ *   - a drop at the top writes the moved card as `next - 1` (the lane's min - 1),
+ *     and a drop at the bottom as `prev + 1` (max + 1): one write each;
+ *   - a drop in the middle shifts the SHORTER side: the cheaper of pushing the
+ *     cards before it down (`min(own, next - 1)`, walking right to left) or the
+ *     cards after it up (`max(own, prev + 1)`, walking left to right).
+ * Values may go negative or past the lane's length; the column is an INTEGER
+ * and nothing reads it but the order. A lane already strictly increasing
+ * (nothing moved) writes nothing; ties, which the created_at tie-break used to
+ * settle, are written apart wherever the order now depends on them.
+ */
+export function fewestWrites<T extends OrderedCard>(lane: readonly T[]): OrderWrite[] {
+	const n = lane.length;
+	// Push the cards before each violation down, keeping the right side.
+	const down: OrderWrite[] = [];
+	let next = Infinity;
+	for (let k = n - 1; k >= 0; k--) {
+		const v = Math.min(lane[k].sort_order, next - 1);
+		if (v !== lane[k].sort_order) down.push({ id: lane[k].id, sort_order: v });
+		next = v;
+	}
+	// Push the cards after each violation up, keeping the left side.
+	const up: OrderWrite[] = [];
+	let prev = -Infinity;
+	for (let k = 0; k < n; k++) {
+		const v = Math.max(lane[k].sort_order, prev + 1);
+		if (v !== lane[k].sort_order) up.push({ id: lane[k].id, sort_order: v });
+		prev = v;
+	}
+	return down.length <= up.length ? down.reverse() : up;
+}
+
+/**
  * Plan the `sort_order` writes for a lane given in its new on-screen order.
  *
- * With every card editable this is the dense renumber the views have always
- * sent (index = sort_order), minus cards already there, so nothing changes for
- * an account without a view-only neighbour.
+ * With every card editable this is `fewestWrites`: the cards that must move to
+ * make the stored order match, and no others (TASK-2230; it used to be the
+ * dense renumber, minus cards already there).
  *
  * With a frozen (view-only) card present, frozen cards keep their stored value
  * and each editable card gets a value strictly between the previous card's and
@@ -43,10 +83,7 @@ export function planLaneOrder<T extends OrderedCard>(
 	canEdit: (card: T) => boolean
 ): LanePlan {
 	const editable = lane.map((c) => canEdit(c));
-	if (editable.every(Boolean)) {
-		const writes = lane.flatMap((c, i) => (c.sort_order === i ? [] : [{ id: c.id, sort_order: i }]));
-		return { ok: true, writes };
-	}
+	if (editable.every(Boolean)) return { ok: true, writes: fewestWrites(lane) };
 
 	const writes: OrderWrite[] = [];
 	// The value assigned to the previous card, and whether it was frozen.

@@ -14,18 +14,58 @@ function sortedAfter(lane: OrderedCard[], writes: OrderWrite[]): string[] {
 		.map((x) => x.id);
 }
 
-describe('planLaneOrder (BUG-3259)', () => {
-	it('renumbers densely when every card is editable, writing only changed cards', () => {
+describe('planLaneOrder (BUG-3259, TASK-2230)', () => {
+	it('a drop at the top of an all-editable lane writes the moved card alone, below the rest (TASK-2230)', () => {
 		const lane = [c('c', 2), c('a', 0), c('b', 1)];
+		expect(planLaneOrder(lane, () => true)).toEqual({ ok: true, writes: [{ id: 'c', sort_order: -1 }] });
+	});
+
+	it('a drop at the bottom writes the moved card alone, above the rest', () => {
+		const lane = [c('b', 1), c('c', 2), c('a', 0)];
+		expect(planLaneOrder(lane, () => true)).toEqual({ ok: true, writes: [{ id: 'a', sort_order: 3 }] });
+	});
+
+	it('a lane nothing moved in writes nothing', () => {
+		expect(planLaneOrder([c('a', 0), c('b', 4), c('c', 9)], () => true)).toEqual({ ok: true, writes: [] });
+	});
+
+	it('a lane of ties (never ordered: every value 0) is written apart wherever the order needs it', () => {
+		const lane = [c('a', 0), c('b', 0), c('c', 0)];
 		const plan = planLaneOrder(lane, () => true);
-		expect(plan).toEqual({
-			ok: true,
-			writes: [
-				{ id: 'c', sort_order: 0 },
-				{ id: 'a', sort_order: 1 },
-				{ id: 'b', sort_order: 2 }
-			]
-		});
+		expect(plan.ok).toBe(true);
+		if (plan.ok) expect(sortedAfter(lane, plan.writes)).toEqual(['a', 'b', 'c']);
+	});
+
+	it('moving one card writes at most the shorter side plus the card; an end drop writes one (exhaustive to 9)', () => {
+		let checked = 0;
+		for (let n = 2; n <= 9; n++) {
+			for (let from = 0; from < n; from++) {
+				for (let to = 0; to < n; to++) {
+					if (from === to) continue;
+					const ids = [...Array(n).keys()];
+					const [moved] = ids.splice(from, 1);
+					ids.splice(to, 0, moved);
+					const lane = ids.map((orig) => c(`i${orig}`, orig));
+					const plan = planLaneOrder(lane, () => true);
+					expect(plan.ok).toBe(true);
+					if (!plan.ok) continue;
+					expect(sortedAfter(lane, plan.writes)).toEqual(lane.map((x) => x.id));
+					if (to === 0 || to === n - 1) expect(plan.writes, `n=${n} ${from}->${to}`).toHaveLength(1);
+					else expect(plan.writes.length, `n=${n} ${from}->${to}`).toBeLessThanOrEqual(Math.min(to, n - 1 - to) + 1);
+					checked++;
+				}
+			}
+		}
+		expect(checked).toBeGreaterThan(200);
+	});
+
+	it('a middle drop in a 1,020-card lane writes about half of it, not all of it', () => {
+		const n = 1020;
+		const ids = [...Array(n).keys()];
+		const [moved] = ids.splice(n - 1, 1);
+		ids.splice(510, 0, moved);
+		const plan = planLaneOrder(ids.map((o) => c(`i${o}`, o)), () => true);
+		expect(plan.ok && plan.writes.length).toBeLessThanOrEqual(511);
 	});
 
 	it('never writes a view-only card', () => {

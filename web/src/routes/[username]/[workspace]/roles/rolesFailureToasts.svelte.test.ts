@@ -37,6 +37,9 @@ const ITEM = {
 	id: 'i1', slug: 'i1', title: 'Row', item_number: 1, collection_slug: 'tasks',
 	fields: '{}', tags: '[]', agent_role_id: null, assigned_user_id: null, role_sort_order: 3,
 };
+// Already in role lane A, so a drop has a card to land ahead of: a card alone
+// in a lane needs no sort-order write (TASK-2230).
+const NEIGHBOR = { ...ITEM, id: 'i2', slug: 'i2', title: 'Neighbour', item_number: 2, agent_role_id: 'r1', role_sort_order: 1 };
 
 vi.mock('$lib/api/client', () => ({
 	api: {
@@ -44,7 +47,7 @@ vi.mock('$lib/api/client', () => ({
 			board: vi.fn(async () => ({
 				lanes: [
 					{ role: null, items: [ITEM] },
-					{ role: ROLE_A, items: [] },
+					{ role: ROLE_A, items: [NEIGHBOR] },
 					{ role: ROLE_B, items: [] },
 				],
 			})),
@@ -101,7 +104,7 @@ async function mountPage() {
 
 function dropIntoRoleLane(): void {
 	document.querySelectorAll('.lane-items')[1]!.dispatchEvent(
-		new CustomEvent('finalize', { detail: { items: [{ ...ITEM }], info: { id: ITEM.id, trigger: 'droppedIntoZone' } } })
+		new CustomEvent('finalize', { detail: { items: [{ ...ITEM }, { ...NEIGHBOR }], info: { id: ITEM.id, trigger: 'droppedIntoZone' } } })
 	);
 }
 
