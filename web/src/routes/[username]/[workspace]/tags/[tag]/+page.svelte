@@ -1,9 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api } from '$lib/api/client';
 	import { untrack } from 'svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { enterWorkspaceIndex } from '$lib/stores/workspaceIndexEntry';
+	import { hasTag, isOpen, byPinnedThenRecent } from '$lib/items/localLists';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { browser } from '$app/environment';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
@@ -18,12 +21,30 @@
 	// Route params arrive URL-decoded, so this is the human-readable tag.
 	let tag = $derived(page.params.tag ?? '');
 
-	let fetchedItems = $state<Item[]>([]);
-	let collections = $state<Collection[]>([]);
-	let loading = $state(true);
+	// Served from the workspace's local index (TASK-2231). The page used to
+	// fetch every tagged item with its full body (~500 KB for a 50-item tag)
+	// and its own copy of the collection list, to render card summaries the
+	// index already holds; now it makes no request of its own. The index is
+	// kept current by the workspace's live sync, so the list also follows
+	// edits made elsewhere, which the one-shot fetch never did.
+	let indexState = $derived(wsSlug ? localIndex.bootstrapStateFor(wsSlug) : 'cold');
+	// The collection list the workspace layout keeps, gated on being THIS
+	// workspace's: mid-switch the array still holds the previous one's.
+	let collectionsReady = $derived(!!wsSlug && collectionStore.collectionsAreFreshFor(wsSlug));
+	let collections = $derived<Collection[]>(collectionsReady ? collectionStore.collections : []);
+	// A revoked caller's index is RESET, not failed: its state goes back to
+	// 'cold' and only the store's memo says why (the collection page reads the
+	// same signal). Without it this page would show the skeleton forever.
+	let accessRevoked = $derived(!!wsSlug && localIndex.accessRevokedFor(wsSlug));
 	// TASK-2203: a failed load is an error with a retry, never "No items tagged".
-	let loadError = $state<unknown>(null);
-	let loadSeq = 0;
+	let collectionsError = $state<unknown>(null);
+	let loadError = $derived<unknown>(
+		accessRevoked ? { code: 'forbidden' } : indexState === 'error' ? new Error() : collectionsError
+	);
+	// The index AND the collection list, because the completed filter judges
+	// each item by its collection's done field: before the list lands it would
+	// judge by the defaults.
+	let loading = $derived(!loadError && (indexState !== 'ready' || !collectionsReady));
 
 	// View mode persists per workspace (list = grouped sections, board = one
 	// lane per collection). localStorage-backed; guarded for SSR.
@@ -82,42 +103,55 @@
 	});
 	export const snapshot = scrollRestoration.snapshot;
 
-	// Re-fetch when the workspace or the tag changes. Pure data-fetch effect
-	// keyed on (wsSlug, tag) — kept free of unrelated route logic per the
-	// Svelte 5 effect-splitting convention.
+	// Bring the index up and catch it up, the shared way (BUG-3181). Reads
+	// `authStore.userId` on purpose so it re-runs for a new identity, and
+	// captures the epoch synchronously for the helper's fence. The call itself
+	// is UNTRACKED: `localIndex.bootstrap` reads and writes the workspace's
+	// bootstrap state before its first await, and tracked, each write re-ran
+	// this effect (BUG-3192, the same trap on the item page).
 	$effect(() => {
 		const ws = wsSlug;
-		const t = tag;
-		const completed = showCompleted;
-		// UNTRACKED past (ws, tag, completed): loadTagged reads the identity
-		// epoch for its fence (TASK-2203), and tracked, that read would add an
-		// identity reload the layout already owns.
-		if (ws && t) untrack(() => loadTagged(ws, t, completed));
+		if (!ws) return;
+		const uid = authStore.userId || null;
+		const epochAtEntry = authStore.identityEpoch;
+		untrack(() => void enterWorkspaceIndex(ws, uid, epochAtEntry));
 	});
 
-	async function loadTagged(ws: string, t: string, completed: boolean) {
-		loading = true;
-		const seq = ++loadSeq;
-		// The identity that asked (TASK-2203, codex r1). `seq` is a navigation
-		// fence and does not move on an account swap.
+	// The layout ensures the collection list; this only notices that it failed,
+	// so the page offers a retry instead of a skeleton that never resolves.
+	// `ensureCollections` joins the layout's request rather than issuing one.
+	async function ensurePageCollections(ws: string) {
+		// The identity that asked (TASK-2203), and the workspace: a settle after
+		// either moved describes a list this page is no longer showing.
 		const isSameIdentity = authStore.identityFence();
 		try {
-			const [items, colls] = await Promise.all([
-				api.items.list(ws, completed ? { tag: t } : { tag: t, non_terminal: true }),
-				api.collections.list(ws)
-			]);
-			if (seq !== loadSeq || !isSameIdentity()) return;
-			fetchedItems = items;
-			collections = colls;
-			loadError = null;
+			await collectionStore.ensureCollections(ws);
+			if (ws !== wsSlug || !isSameIdentity()) return;
+			collectionsError = null;
 		} catch (err) {
-			if (seq !== loadSeq || !isSameIdentity()) return;
-			fetchedItems = [];
-			loadError = err;
-		} finally {
-			if (seq === loadSeq && isSameIdentity()) loading = false;
+			if (ws !== wsSlug || !isSameIdentity()) return;
+			collectionsError = err;
 		}
 	}
+	$effect(() => {
+		const ws = wsSlug;
+		if (!ws || collectionsReady) return;
+		untrack(() => void ensurePageCollections(ws));
+	});
+
+	function retry() {
+		collectionsError = null;
+		if (!wsSlug) return;
+		void ensurePageCollections(wsSlug);
+		void enterWorkspaceIndex(wsSlug, authStore.userId || null, authStore.identityEpoch);
+	}
+
+	let fetchedItems = $derived.by<Item[]>(() => {
+		if (loading || !tag) return [];
+		const tagged = localIndex.getAll(wsSlug).filter((item) => hasTag(item, tag));
+		const shown = showCompleted ? tagged : tagged.filter((item) => isOpen(item, collections));
+		return shown.sort(byPinnedThenRecent);
+	});
 
 	function getCollection(collectionId: string): Collection | undefined {
 		return collections.find((c) => c.id === collectionId);
@@ -226,7 +260,7 @@
 		<ContentError
 			title={failure.title}
 			detail={failure.detail}
-			onRetry={failure.retryable ? () => loadTagged(wsSlug, tag, showCompleted) : undefined}
+			onRetry={failure.retryable ? retry : undefined}
 		/>
 	{:else if fetchedItems.length === 0}
 		{#if showCompleted}

@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { onMount, untrack } from 'svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { enterWorkspaceIndex } from '$lib/stores/workspaceIndexEntry';
+	import { isOpen } from '$lib/items/localLists';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
@@ -17,76 +19,112 @@
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 
-	let fetchedItems = $state<Item[]>([]);
-	let collections = $state<Collection[]>([]);
-	let loading = $state(true);
-	// TASK-2203: a failed load is an error with a retry, never "No starred items".
-	let loadError = $state<unknown>(null);
+	// Built from what the workspace already holds (TASK-2231): the starred
+	// store's ids, in star order, and the local index's rows for them. The page
+	// used to fetch every starred item with its full body, plus its own copy of
+	// the collection list, on every visit and every toggle of "Show completed";
+	// it now makes no request of its own.
 	let includeTerminal = $state(false);
-	let loadSeq = 0;
+	let starsReady = $derived(!!wsSlug && starredStore.loaded && starredStore.workspace === wsSlug);
+	let indexState = $derived(wsSlug ? localIndex.bootstrapStateFor(wsSlug) : 'cold');
+	// The collection list the workspace layout keeps, gated on being THIS
+	// workspace's: mid-switch the array still holds the previous one's.
+	let collectionsReady = $derived(!!wsSlug && collectionStore.collectionsAreFreshFor(wsSlug));
+	let collections = $derived<Collection[]>(collectionsReady ? collectionStore.collections : []);
+	// A revoked caller's index is RESET, not failed (see the tag page).
+	let accessRevoked = $derived(!!wsSlug && localIndex.accessRevokedFor(wsSlug));
+	let collectionsError = $state<unknown>(null);
+	// TASK-2203: a failed load is an error with a retry, never "No starred items".
+	let loadError = $derived<unknown>(
+		accessRevoked
+			? { code: 'forbidden' }
+			: starsReady && starredStore.error
+				? starredStore.error
+				: indexState === 'error'
+					? new Error()
+					: collectionsError
+	);
+	// All three, because the completed filter judges each item by its
+	// collection's done field: before the list lands it would use the defaults.
+	let loading = $derived(!loadError && (!starsReady || indexState !== 'ready' || !collectionsReady));
 
 	// Scroll position restoration (BUG-1425).
 	const scrollRestoration = createScrollRestoration({
-		// `loading` flips true when workspace changes (loadData reset),
-		// satisfying the helper's stale-content guard. `length > 0`
-		// omitted per Codex P2 round 2 to avoid late SSE re-fire.
 		ready: () => !loading,
 		persistKey: () =>
 			wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null,
 	});
 	export const snapshot = scrollRestoration.snapshot;
 
-	// Filter fetched items by current starred state so unstars are reflected immediately.
-	// If the store hasn't loaded yet, trust the API response (it only returns starred items).
-	let items = $derived(starredStore.loaded
-		? fetchedItems.filter(i => starredStore.isStarred(i.id))
-		: fetchedItems
-	);
-
+	// Bring the index up and catch it up, the shared way (BUG-3181). Reads
+	// `authStore.userId` on purpose so it re-runs for a new identity, and
+	// captures the epoch synchronously for the helper's fence. The call itself
+	// is UNTRACKED: `localIndex.bootstrap` reads and writes the workspace's
+	// bootstrap state before its first await, and tracked, each write re-ran
+	// this effect (BUG-3192, the same trap on the item page).
 	$effect(() => {
-		if (wsSlug) {
-			// Re-fetch when wsSlug or terminal filter changes
-			const _terminal = includeTerminal;
-			loadStarred(wsSlug);
+		const ws = wsSlug;
+		if (!ws) return;
+		const uid = authStore.userId || null;
+		const epochAtEntry = authStore.identityEpoch;
+		untrack(() => void enterWorkspaceIndex(ws, uid, epochAtEntry));
+	});
+
+	// The layout ensures the collection list; this only notices that it failed,
+	// so the page offers a retry instead of a skeleton that never resolves.
+	// `ensureCollections` joins the layout's request rather than issuing one.
+	async function ensurePageCollections(ws: string) {
+		// The identity that asked (TASK-2203), and the workspace: a settle after
+		// either moved describes a list this page is no longer showing.
+		const isSameIdentity = authStore.identityFence();
+		try {
+			await collectionStore.ensureCollections(ws);
+			if (ws !== wsSlug || !isSameIdentity()) return;
+			collectionsError = null;
+		} catch (err) {
+			if (ws !== wsSlug || !isSameIdentity()) return;
+			collectionsError = err;
 		}
+	}
+	$effect(() => {
+		const ws = wsSlug;
+		if (!ws || collectionsReady) return;
+		untrack(() => void ensurePageCollections(ws));
+	});
+
+	function retry() {
+		collectionsError = null;
+		if (!wsSlug) return;
+		if (starredStore.error) void starredStore.load(wsSlug);
+		void ensurePageCollections(wsSlug);
+		void enterWorkspaceIndex(wsSlug, authStore.userId || null, authStore.identityEpoch);
+	}
+
+	// Starred ids, most recently starred first, that the index holds a live row
+	// for. An id the index does not hold is an item this caller cannot see or
+	// that was deleted, which the server's list left out too. Unstarring from a
+	// card drops the id from the store, so the card leaves this list at once.
+	let items = $derived.by<Item[]>(() => {
+		if (loading) return [];
+		const rows = new Map(localIndex.getAll(wsSlug).map((row) => [row.id, row]));
+		const out: Item[] = [];
+		for (const id of starredStore.ordered) {
+			const row = rows.get(id);
+			if (!row) continue;
+			if (!includeTerminal && !isOpen(row, collections)) continue;
+			out.push(row);
+		}
+		return out;
 	});
 
 	onMount(() => {
 		workspaceStore.setCurrent(wsSlug);
 	});
 
-	// NO IDENTITY LISTENER HERE, deliberately (BUG-3005, lead ruling). This page
-	// had one, and with the tab reloading on a real identity change it became
-	// the third path doing the same reload — the layout's listener, this one,
-	// and the page's own mount effect. One mechanism; the fence below is what
-	// this page still needs, because it covers a response settling in the
-	// window before the reload takes the page away.
-
-	async function loadStarred(slug: string) {
-		loading = true;
-		const seq = ++loadSeq;
-		// The identity that ASKED. `seq` is a navigation/refresh fence and does
-		// not move on an account swap, so it cannot tell this apart.
-		const isSameIdentity = authStore.identityFence();
-		try {
-			const [starredItems, colls] = await Promise.all([
-				api.items.starred(slug, { include_terminal: includeTerminal }),
-				api.collections.list(slug)
-			]);
-			if (seq !== loadSeq || !isSameIdentity()) return;
-			fetchedItems = starredItems;
-			collections = colls;
-			loadError = null;
-		} catch (err) {
-			if (seq !== loadSeq || !isSameIdentity()) return;
-			// Not the previous list: a failed refresh (the completed filter, a
-			// retry) must not go on showing an answer to a different question.
-			fetchedItems = [];
-			loadError = err;
-		} finally {
-			if (seq === loadSeq && isSameIdentity()) loading = false;
-		}
-	}
+	// NO IDENTITY LISTENER HERE, deliberately (BUG-3005, lead ruling). The
+	// layout's listener reloads on a real identity change, and the starred
+	// store clears itself on one; everything this page shows derives from
+	// those stores, so there is nothing of its own to reset.
 
 	function getCollection(collectionId: string): Collection | undefined {
 		return collections.find(c => c.id === collectionId);
@@ -148,7 +186,7 @@
 		<ContentError
 			title={failure.title}
 			detail={failure.detail}
-			onRetry={failure.retryable ? () => loadStarred(wsSlug) : undefined}
+			onRetry={failure.retryable ? retry : undefined}
 		/>
 	{:else if items.length === 0}
 		<EmptyState

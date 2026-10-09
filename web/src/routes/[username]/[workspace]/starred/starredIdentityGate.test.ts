@@ -9,9 +9,12 @@ identityGateSuite({
 	source: new URL('./+page.svelte', import.meta.url),
 	table: {
 		asyncFunctions: {
-			loadStarred: {
-				reviewed: '8bab0c7732cf',
-				why: 'seq against loadSeq AND the entry identity fence (authStore.identityFence) before committing; the finally clears loading only under both',
+			// TASK-2231: the page's own items fetch (loadStarred) is gone; it reads
+			// the starred store and the local index. Its one async unit now only
+			// records whether the collection list failed.
+			ensurePageCollections: {
+				reviewed: '5903a73c72d1',
+				why: 'writes collectionsError only when the workspace it asked for is still the page\'s AND the entry identity fence (authStore.identityFence) holds, on both the success and the failure arm',
 			},
 		},
 		nested: [],
@@ -24,37 +27,37 @@ identityGateSuite({
 		{
 			cls: 1,
 			what: 'a commit between the await and the check',
-			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n\t\t\tfetchedItems = starredItems;\n',
-			new: '\t\t\tcollections = [];\n\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n\t\t\tfetchedItems = starredItems;\n',
-			names: 'loadStarred()',
+			old: '\t\t\tawait collectionStore.ensureCollections(ws);\n\t\t\tif (ws !== wsSlug || !isSameIdentity()) return;\n',
+			new: '\t\t\tawait collectionStore.ensureCollections(ws);\n\t\t\tcollectionsError = null;\n\t\t\tif (ws !== wsSlug || !isSameIdentity()) return;\n',
+			names: 'ensurePageCollections()',
 		},
 		{
 			cls: 2,
 			what: 'a nested async arrow inside the load',
 			old: '\t\tconst isSameIdentity = authStore.identityFence();\n',
-			new: '\t\tconst isSameIdentity = authStore.identityFence();\n\t\tconst later = async () => { await Promise.resolve(); fetchedItems = []; };\n\t\tvoid later;\n',
+			new: '\t\tconst isSameIdentity = authStore.identityFence();\n\t\tconst later = async () => { await Promise.resolve(); collectionsError = null; };\n\t\tvoid later;\n',
 			names: 'nested async function',
 		},
 		{
 			cls: 3,
-			what: 'the identity half of the success check is dropped, the sequence half kept',
-			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n\t\t\tfetchedItems = starredItems;\n',
-			new: '\t\t\tif (seq !== loadSeq) return;\n\t\t\tfetchedItems = starredItems;\n',
-			names: 'loadStarred()',
+			what: 'the identity half of the failure check is dropped, the workspace half kept',
+			old: '\t\t} catch (err) {\n\t\t\tif (ws !== wsSlug || !isSameIdentity()) return;\n',
+			new: '\t\t} catch (err) {\n\t\t\tif (ws !== wsSlug) return;\n',
+			names: 'ensurePageCollections()',
 		},
 		{
 			cls: 4,
 			what: 'the identity fence keeps its name and stops comparing anything',
 			old: '\t\tconst isSameIdentity = authStore.identityFence();\n',
 			new: '\t\tconst isSameIdentity = () => true;\n',
-			names: 'loadStarred()',
+			names: 'ensurePageCollections()',
 		},
 		{
 			cls: 5,
 			what: "the success check's return is made conditional on something that never holds",
-			old: '\t\t\tif (seq !== loadSeq || !isSameIdentity()) return;\n\t\t\tfetchedItems = starredItems;\n',
-			new: '\t\t\tif ((seq !== loadSeq || !isSameIdentity()) && colls === null) return;\n\t\t\tfetchedItems = starredItems;\n',
-			names: 'loadStarred()',
+			old: '\t\t\tawait collectionStore.ensureCollections(ws);\n\t\t\tif (ws !== wsSlug || !isSameIdentity()) return;\n',
+			new: '\t\t\tawait collectionStore.ensureCollections(ws);\n\t\t\tif ((ws !== wsSlug || !isSameIdentity()) && ws === null) return;\n',
+			names: 'ensurePageCollections()',
 		},
 	],
 	control: { old: '<script lang="ts">\n', new: '<script lang="ts">\n\tconst controlUnused = 0;\n' },

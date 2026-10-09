@@ -3,8 +3,16 @@ import { authStore } from './auth.svelte';
 
 // Set of starred item IDs for the current user in the current workspace
 let starredIds = $state<Set<string>>(new Set());
+// The same ids, most recently starred first: the order the starred page lists
+// them in (TASK-2231). It may still hold an id that was unstarred; `ordered`
+// filters by the set, which is the authority on membership, so a failed unstar
+// reverts to its old place.
+let starOrder = $state<string[]>([]);
 let loaded = $state(false);
 let currentWs = $state('');
+// The last load's failure, so a page can say so instead of "No starred items"
+// (TASK-2203's rule; the page read its own fetch's error before TASK-2231).
+let loadError = $state<unknown>(null);
 
 // Monotonic request counter to discard stale responses on workspace switch
 let requestSeq = 0;
@@ -30,9 +38,22 @@ function applyPendingToggles(base: Set<string>): Set<string> {
 	return base;
 }
 
+/** A load's order with any star made while it was in flight put first, as the
+ *  newest. Reads `pendingToggles` before `applyPendingToggles` clears it. */
+function withPendingStarsFirst(loadedOrder: string[]): string[] {
+	const fresh = [...pendingToggles].filter(([, starred]) => starred).map(([id]) => id);
+	return [...fresh, ...loadedOrder.filter((id) => !fresh.includes(id))];
+}
+
 export const starredStore = {
 	get ids() { return starredIds; },
 	get loaded() { return loaded; },
+	/** The workspace the ids belong to. */
+	get workspace() { return currentWs; },
+	/** Why the last load failed, or null. The ids still hold optimistic toggles. */
+	get error() { return loadError; },
+	/** Starred ids, most recently starred first. */
+	get ordered(): string[] { return starOrder.filter((id) => starredIds.has(id)); },
 
 	isStarred(itemId: string): boolean {
 		return starredIds.has(itemId);
@@ -53,16 +74,23 @@ export const starredStore = {
 		pendingToggles.clear();
 		// Clear stale state immediately to avoid showing a previous user/workspace's stars
 		starredIds = new Set();
+		starOrder = [];
 		loaded = false;
+		loadError = null;
 
 		try {
-			const items = await api.items.starred(wsSlug, { include_terminal: true });
+			// summary: the ids and their order are all this needs; the bodies were
+			// most of the bytes (TASK-2231). An older server ignores it.
+			const items = await api.items.starred(wsSlug, { include_terminal: true, summary: true });
 			if (seq !== requestSeq || !isSameIdentity()) return;
+			starOrder = withPendingStarsFirst(items.map((i) => i.id));
 			starredIds = applyPendingToggles(new Set(items.map(i => i.id)));
 			loaded = true;
-		} catch {
+		} catch (err) {
 			if (seq !== requestSeq || !isSameIdentity()) return;
+			loadError = err;
 			// Preserve any optimistic toggles even if the load failed
+			starOrder = withPendingStarsFirst([]);
 			starredIds = applyPendingToggles(new Set());
 			loaded = true;
 		}
@@ -84,6 +112,7 @@ export const starredStore = {
 		const next = new Set(starredIds);
 		if (nowStarred) {
 			next.add(itemId);
+			starOrder = [itemId, ...starOrder.filter((id) => id !== itemId)];
 		} else {
 			next.delete(itemId);
 		}
@@ -117,7 +146,9 @@ export const starredStore = {
 
 	clear() {
 		starredIds = new Set();
+		starOrder = [];
 		loaded = false;
+		loadError = null;
 		currentWs = '';
 		pendingToggles.clear();
 		toggleInFlight.clear();

@@ -128,3 +128,90 @@ func TestStarUnstar_ReturnsStructuredJSON(t *testing.T) {
 	// Quiet the unused import warning in case `bytes` ever drops.
 	_ = bytes.NewReader
 }
+
+// TestListStarred_SummaryOmitsContent pins TASK-2231: `?summary=true` leaves
+// out each item's body and changes nothing else (the same items, in star
+// order), and a request without it still carries the bodies.
+func TestListStarred_SummaryOmitsContent(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil {
+		t.Fatalf("GetWorkspaceBySlug: %v", err)
+	}
+	var seeded []models.Item
+	for _, title := range []string{"First starred", "Second starred"} {
+		rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items",
+			map[string]interface{}{"title": title, "fields": `{"status":"open"}`, "content": "body of " + title})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("seed item: %d %s", rr.Code, rr.Body.String())
+		}
+		var item models.Item
+		parseJSON(t, rr, &item)
+		seeded = append(seeded, item)
+	}
+	user, err := srv.store.CreateUser(models.UserCreate{Email: "starred-summary@example.com", Name: "S", Password: "pw-test-12345"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{Name: "s", WorkspaceID: ws.ID}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+	call := func(method, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, "/api/v1/workspaces/"+slug+path, nil)
+		req.Header.Set("Authorization", "Bearer "+tok.Token)
+		req.RemoteAddr = "127.0.0.1:0"
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, it := range seeded {
+		if rr := call("POST", "/items/"+it.Slug+"/star"); rr.Code != http.StatusOK {
+			t.Fatalf("star %s: %d %s", it.Slug, rr.Code, rr.Body.String())
+		}
+	}
+	list := func(query string) []models.Item {
+		t.Helper()
+		rr := call("GET", "/starred?include_terminal=true"+query)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("list starred%s: %d %s", query, rr.Code, rr.Body.String())
+		}
+		var items []models.Item
+		parseJSON(t, rr, &items)
+		return items
+	}
+	ids := func(items []models.Item) []string {
+		out := make([]string, len(items))
+		for i, it := range items {
+			out[i] = it.ID
+		}
+		return out
+	}
+
+	full := list("")
+	summary := list("&summary=true")
+	if len(full) != 2 {
+		t.Fatalf("full list: want 2 items, got %d", len(full))
+	}
+	if strings.Join(ids(full), ",") != strings.Join(ids(summary), ",") {
+		t.Fatalf("summary changed the items or their order: full %v, summary %v", ids(full), ids(summary))
+	}
+	for _, it := range full {
+		if !strings.HasPrefix(it.Content, "body of ") {
+			t.Errorf("without summary, %s should carry its body, got %q", it.Title, it.Content)
+		}
+	}
+	for _, it := range summary {
+		if it.Content != "" {
+			t.Errorf("with summary=true, %s should carry no body, got %q", it.Title, it.Content)
+		}
+		if it.Title == "" || it.Ref == "" {
+			t.Errorf("summary dropped more than the body: %+v", it)
+		}
+	}
+}

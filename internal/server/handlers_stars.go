@@ -137,6 +137,11 @@ func (s *Server) handleUnstarItem(w http.ResponseWriter, r *http.Request) {
 // GET /api/v1/workspaces/{slug}/starred
 // Query params:
 //   - include_terminal=true — include items in terminal statuses (default: false)
+//   - summary=true — leave out each item's content (TASK-2231). The web
+//     client's starred store wants only the ids, in star order, and the page
+//     renders cards from the local index; the bodies were most of the bytes.
+//     A server that predates it ignores it and sends the bodies, which the
+//     client never reads.
 func (s *Server) handleListStarredItems(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -205,6 +210,12 @@ func (s *Server) handleListStarredItems(w http.ResponseWriter, r *http.Request) 
 
 	// Hydrate items with parent links and computed refs
 	s.enrichItemsWithParent(r, workspaceID, items, visibleIDs)
+
+	if r.URL.Query().Get("summary") == "true" {
+		for i := range items {
+			items[i].Content = ""
+		}
+	}
 
 	if len(items) == 0 {
 		items = []models.Item{}

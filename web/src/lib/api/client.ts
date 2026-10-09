@@ -2215,8 +2215,9 @@ export const api = {
 		starStatus: (ws: string, itemSlug: string) =>
 			request<{starred: boolean}>(`/workspaces/${ws}/items/${itemSlug}/star`),
 
-		/** List all starred items in a workspace for the current user */
-		starred: (ws: string, params?: {include_terminal?: boolean}) =>
+		/** List all starred items in a workspace for the current user, most
+		 *  recently starred first. `summary` leaves out each body (TASK-2231). */
+		starred: (ws: string, params?: {include_terminal?: boolean; summary?: boolean}) =>
 			request<Item[]>(`/workspaces/${ws}/starred${qs(params)}`),
 
 		/**
