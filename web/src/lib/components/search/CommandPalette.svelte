@@ -28,6 +28,9 @@
 	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
 	import { isBodyStale } from '$lib/items/staleBody';
 	import { backdropDismiss } from '$lib/utils/backdropDismiss';
+	import { createFocusReturn } from '$lib/a11y/focusReturn';
+	import { paneFocusables, nextTrapTarget, nextTrapTargetAcross } from '$lib/collections/paneFocus';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	const RECENT_SEARCHES_KEY = 'pad-recent-searches';
 	const MAX_RECENT = 10;
@@ -168,10 +171,53 @@
 		resultAnnouncement(query, loading, contentLoading, total + contentResults.length)
 	);
 
+	/*
+		TASK-2235: the palette is a dialog. It keeps its own element rather than
+		the Modal primitive's native showModal (lead ruling): on mobile inside a
+		workspace it is a sheet docked ABOVE the bottom nav, which stays live
+		(its Search slot toggles the palette), and showModal's top layer would
+		inert that nav and lay a backdrop over it. So, like DockedSheet, the
+		docked palette does not claim aria-modal and Tab cycles palette then
+		nav; everywhere else it is aria-modal and Tab stays inside it. Either
+		way focus returns to whatever opened it.
+
+		`dockedOverNav` is BottomNav's own render condition (mobile, in a
+		workspace). Plain closure focus bookkeeping, not $state (CONVE-1688).
+	*/
+	let paletteEl = $state<HTMLElement>();
+	const dockedOverNav = $derived(uiStore.isMobile && !!workspaceStore.current?.slug);
+	const focusReturn = createFocusReturn();
+	$effect(() => () => focusReturn.restore());
+
+	function handleWindowKeydown(e: KeyboardEvent) {
+		if (!uiStore.searchOpen || !paletteEl) return;
+		if (isBlockedByModal(paletteEl, e)) return;
+		// Escape from INSIDE the palette is handleKeydown's (on the palette
+		// element). This covers the one other place the trap lets focus be:
+		// the bottom nav, on the docked path.
+		if (e.key === 'Escape') {
+			if (e.repeat || paletteEl.contains(document.activeElement)) return;
+			e.preventDefault();
+			uiStore.closeSearch();
+			return;
+		}
+		if (e.key !== 'Tab') return;
+		const nav = dockedOverNav ? document.querySelector<HTMLElement>('nav.bottom-nav') : null;
+		const target = nav
+			? nextTrapTargetAcross([paletteEl, nav], document.activeElement, e.shiftKey)
+			: nextTrapTarget(paneFocusables(paletteEl), document.activeElement, e.shiftKey, paletteEl);
+		if (target) {
+			e.preventDefault();
+			target.focus({ preventScroll: true });
+		}
+	}
+
 	$effect(() => {
 		if (uiStore.searchOpen) {
+			focusReturn.save();
 			requestAnimationFrame(() => inputEl?.focus());
 		} else {
+			focusReturn.restore();
 			query = '';
 			results = [];
 			total = 0;
@@ -682,6 +728,13 @@
 
 	async function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
+			// Consumed here (TASK-2235): the route's window keydown handlers
+			// stand down for a defaultPrevented key. Without it they ran on
+			// the same press and closed the item pane under the palette, and
+			// the palette's role="dialog" could not stop that: the browser runs
+			// microtasks between listeners, so Svelte had already removed the
+			// palette before the route asked whether a dialog was open.
+			e.preventDefault();
 			uiStore.closeSearch();
 		} else if (e.key === 'ArrowDown') {
 			e.preventDefault();
@@ -873,12 +926,19 @@
 	});
 </script>
 
+<svelte:window onkeydown={handleWindowKeydown} />
+
 {#if uiStore.searchOpen}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="overlay" use:backdropDismiss={{ onDismiss: () => uiStore.closeSearch() }}>
 		<div
+			bind:this={paletteEl}
 			class="palette"
+			role="dialog"
+			aria-modal={dockedOverNav ? undefined : 'true'}
+			aria-label="Search"
+			tabindex="-1"
 			onclick={(e) => e.stopPropagation()}
 			onkeydown={handleKeydown}
 			style:transform={dragY ? `translateY(${dragY}px)` : undefined}
@@ -1317,6 +1377,9 @@
 		display: flex;
 		justify-content: center;
 		padding-top: 12vh;
+	}
+	.palette:focus {
+		outline: none;
 	}
 	.palette {
 		width: 100%;
