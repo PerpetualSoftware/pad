@@ -169,6 +169,12 @@ func (t *awarenessTracker) observe(connID uint64, frame []byte) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, e := range entries {
+		mine := t.owned[connID]
+		if _, held := mine[e.clientID]; !held && len(mine) >= maxOwnedPerConn {
+			// At the cap: take nothing, and so move nothing away from its
+			// current owner, whose close must still remove it (codex r5).
+			continue
+		}
 		if o, ok := t.owner[e.clientID]; ok && o != connID {
 			prev := t.owned[o][e.clientID]
 			if e.clock <= prev.clock {
@@ -178,13 +184,9 @@ func (t *awarenessTracker) observe(connID uint64, frame []byte) {
 			delete(t.owned[o], e.clientID)
 			delete(t.owner, e.clientID)
 		}
-		mine := t.owned[connID]
 		if mine == nil {
 			mine = map[uint64]awarenessEntry{}
 			t.owned[connID] = mine
-		}
-		if _, ok := mine[e.clientID]; !ok && len(mine) >= maxOwnedPerConn {
-			continue
 		}
 		t.owner[e.clientID] = connID
 		if prev, ok := mine[e.clientID]; ok && prev.clock > e.clock {

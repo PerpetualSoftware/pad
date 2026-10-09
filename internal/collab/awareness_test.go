@@ -116,6 +116,21 @@ func TestAwarenessTrackerReconnectOverlapMovesOwnership(t *testing.T) {
 	}
 }
 
+// A connection at its cap takes nothing, so it cannot take a client away from
+// the connection that must remove it on close (codex r5).
+func TestAwarenessTrackerCappedConnTakesNoOwnership(t *testing.T) {
+	tr := newAwarenessTracker()
+	tr.observe(1, liveFrame(100, 3))
+	for id := uint64(0); id < maxOwnedPerConn; id++ {
+		tr.observe(2, liveFrame(1000+id, 1))
+	}
+	tr.observe(2, liveFrame(100, 4)) // a newer clock, but conn 2 is full
+	gone := tr.release(1)
+	if len(gone) != 1 || gone[0].clientID != 100 {
+		t.Fatalf("conn 1 leaving removed %+v; it still owns client 100", gone)
+	}
+}
+
 func TestAwarenessTrackerKeepsLatestClockAndLiveness(t *testing.T) {
 	tr := newAwarenessTracker()
 	tr.observe(1, liveFrame(100, 5))
