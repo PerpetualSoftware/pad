@@ -305,6 +305,7 @@
 		// arrangement (BUG-3084).
 		if (!pageIdentityHeld()) return;
 		const epochAtEntry = captureIdentity();
+		const wsAtEntry = username + '/' + wsSlug; // the board a failure toast is about (TASK-2204)
 		if (!draggedLaneKey || key === '__unassigned') { draggedLaneKey = null; dragOverLaneKey = null; return; }
 
 		// Reorder the assigned lanes (skip unassigned)
@@ -336,6 +337,8 @@
 				// whoever is signed in NOW from a failure the previous user's
 				// drag caused (BUG-3084).
 				if (!identityHeld(epochAtEntry)) return;
+				// TASK-2204 (audit C71): the reload undoes the move, so say why.
+				failureToast(wsAtEntry, "Couldn't save the lane order", err);
 				await loadData();
 			}
 		}
@@ -417,6 +420,7 @@
 		// itself.
 		if (!pageIdentityHeld()) return;
 		const epochAtEntry = captureIdentity();
+		const wsAtEntry = username + '/' + wsSlug; // the board a failure toast is about (TASK-2204)
 		const finalItems = e.detail.items.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]);
 		laneData[key] = finalItems;
 
@@ -489,6 +493,7 @@
 					console.error('Failed to update role:', err);
 					// See the lost-identity rule at the top of this handler.
 					if (!identityHeld(epochAtEntry)) return;
+					failureToast(wsAtEntry, "Couldn't move the item", err);
 					await loadData();
 					// GATED, like every other continuation (codex round 5 [P2]).
 					// The check above happens BEFORE this await, so it says
@@ -549,6 +554,7 @@
 			// request only (BUG-3259 codex round 4; the role write's recovery
 			// above is the same shape).
 			if (!identityHeld(epochAtEntry)) return;
+			failureToast(wsAtEntry, "Couldn't save the card order", err);
 			await loadData();
 		}
 	}
@@ -765,6 +771,7 @@
 			return;
 		}
 		const epochAtEntry = captureIdentity();
+		const wsAtEntry = username + '/' + wsSlug; // the board a failure toast is about (TASK-2204)
 		try {
 			if (dialogMode === 'edit' && editingRoleId) {
 				await api.agentRoles.update(wsSlug, editingRoleId, {
@@ -794,6 +801,8 @@
 		} catch (e) {
 			if (!identityHeld(epochAtEntry)) return;
 			console.error('Failed to save role:', e);
+			// The dialog stays open with what was typed, so it can be retried.
+			failureToast(wsAtEntry, "Couldn't save the role", e);
 		}
 	}
 
@@ -817,6 +826,7 @@
 			return;
 		}
 		const epochAtEntry = captureIdentity();
+		const wsAtEntry = username + '/' + wsSlug; // the board a failure toast is about (TASK-2204)
 		try {
 			await api.agentRoles.delete(wsSlug, editingRoleId);
 			if (!identityHeld(epochAtEntry)) return;
@@ -825,7 +835,18 @@
 		} catch (e) {
 			if (!identityHeld(epochAtEntry)) return;
 			console.error('Failed to delete role:', e);
+			failureToast(wsAtEntry, "Couldn't delete the role", e);
 		}
+	}
+
+	// TASK-2204 (audit C71): every write failure on the board is shown, with
+	// the server's own message when it sent one.
+	// Only while the page still shows the board the write was for: a failure
+	// that lands after navigating elsewhere is not about this board.
+	function failureToast(ws: string, what: string, err: unknown): void {
+		if (username + '/' + wsSlug !== ws) return; // owner and slug: two owners may share a slug (codex r2)
+		const detail = err instanceof Error && err.message ? err.message : '';
+		toastStore.show(detail ? `${what}: ${detail}` : what, 'error');
 	}
 
 	function collectionForItem(item: Item): Collection | undefined {

@@ -8,6 +8,7 @@
 	import { conventionCreatePayload } from '$lib/conventions/createPayload';
 	import { parseFields, parseSchema, itemUrlId, formatItemRef } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
@@ -246,7 +247,9 @@
 	});
 
 	async function toggleStatus(item: Item) {
-		if (!workspace || !workspaceStore.canEditItem(item)) return;
+		// Not during a bulk run: its failure handling owns the rows' status
+		// until it ends (TASK-2204, codex r2).
+		if (!workspace || bulkBusy || !workspaceStore.canEditItem(item)) return;
 		const fields = parseFields(item);
 		const wasActive = fields.status === 'active';
 		const newStatus = wasActive ? 'disabled' : 'active';
@@ -470,8 +473,21 @@
 		}
 	}
 
+	// TASK-2204 (audit C70): one write per convention, PACED, because N
+	// back-to-back writes is the documented way to trip the API limiter (10/s,
+	// shared with the page's own refreshes). Each failure reverts its own row
+	// and the toast reports the true count. A workspace switch mid-run stops it:
+	// the rows left belong to the page being left.
+	const BULK_WRITE_PACE_MS = 250;
+	let bulkBusy = $state(false);
+
 	async function bulkToggleGroup(group: { trigger: string; items: Item[] }, enable: boolean) {
-		if (!workspace) return;
+		if (!workspace || bulkBusy) return;
+		const ws = workspace;
+		const owner = username;
+		const epoch = authStore.identityEpoch;
+		// Owner and slug (two owners may share a slug) and the signed-in identity.
+		const sameContext = () => workspace === ws && username === owner && authStore.identityEpoch === epoch;
 		const targetStatus = enable ? 'active' : 'disabled';
 		const toUpdate = group.items.filter(i => {
 			if (!workspaceStore.canEditItem(i)) return false;
@@ -479,19 +495,50 @@
 			return enable ? s !== 'active' : s === 'active';
 		});
 		if (toUpdate.length === 0) return;
-		for (const item of toUpdate) {
-			const fields = parseFields(item);
-			fields.status = targetStatus;
-			item.fields = JSON.stringify(fields);
-			try {
-				// BUG-3049: status-only patch, per row. Same reasoning as
-				// toggleStatus above — the local blob write is optimistic UI
-				// state, the wire write names only the key it owns.
-				await api.items.update(workspace, item.slug, { fields_patch: { status: targetStatus } });
-			} catch { /* individual failures won't block the rest */ }
+		bulkBusy = true;
+		let done = 0;
+		let failed = 0;
+		let stopped = false;
+		try {
+			for (const [i, item] of toUpdate.entries()) {
+				if (i > 0) await new Promise((r) => setTimeout(r, BULK_WRITE_PACE_MS));
+				if (!sameContext()) { stopped = true; break; }
+				const oldStatus = parseFields(item).status;
+				const fields = parseFields(item);
+				fields.status = targetStatus;
+				item.fields = JSON.stringify(fields);
+				conventions = [...conventions];
+				try {
+					// BUG-3049: status-only patch, per row. Same reasoning as
+					// toggleStatus above — the local blob write is optimistic UI
+					// state, the wire write names only the key it owns.
+					await api.items.update(ws, item.slug, { fields_patch: { status: targetStatus } });
+					done++;
+				} catch {
+					// Only the key this run wrote, and only if it still holds this
+					// run's value: a single toggle on the row meanwhile wins (codex r1).
+					// A row a refresh replaced already shows the server's answer;
+					// only a row still on screen carries this run's optimistic
+					// value (codex r3).
+					const now = parseFields(item);
+					if (conventions.includes(item) && now.status === targetStatus) {
+						now.status = oldStatus;
+						item.fields = JSON.stringify(now);
+						conventions = [...conventions];
+					}
+					failed++;
+				}
+			}
+		} finally {
+			bulkBusy = false;
 		}
-		conventions = [...conventions];
-		toastStore.show(`${toUpdate.length} convention${toUpdate.length > 1 ? 's' : ''} ${enable ? 'enabled' : 'disabled'}`, 'success');
+		if (stopped || !sameContext()) return;
+		const verb = enable ? 'enabled' : 'disabled';
+		if (failed === 0) {
+			toastStore.show(`${done} convention${done === 1 ? '' : 's'} ${verb}`, 'success');
+		} else {
+			toastStore.show(`${done} ${verb}, ${failed} failed. Try again for the rest.`, 'error');
+		}
 	}
 
 	function clearFilters() {
@@ -678,10 +725,10 @@
 							{#if !collapsed}
 								<div class="group-bulk">
 									{#if group.editableInactive > 0}
-										<button class="btn btn-tiny" title="Enable all in this group" onclick={() => bulkToggleGroup(group, true)}>Enable all</button>
+										<button class="btn btn-tiny" title="Enable all in this group" disabled={bulkBusy} onclick={() => bulkToggleGroup(group, true)}>Enable all</button>
 									{/if}
 									{#if group.editableActive > 0}
-										<button class="btn btn-tiny btn-muted" title="Disable all in this group" onclick={() => bulkToggleGroup(group, false)}>Disable all</button>
+										<button class="btn btn-tiny btn-muted" title="Disable all in this group" disabled={bulkBusy} onclick={() => bulkToggleGroup(group, false)}>Disable all</button>
 									{/if}
 								</div>
 							{/if}
@@ -706,6 +753,7 @@
 													class="toggle-switch"
 													type="button"
 													class:on={active}
+													disabled={bulkBusy}
 													onclick={(e) => { e.stopPropagation(); toggleStatus(item); }}
 													onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
 													aria-label={active ? 'Disable convention' : 'Enable convention'}

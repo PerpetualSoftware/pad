@@ -284,7 +284,10 @@
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err);
 			} else {
-				toastStore.show('Failed to create workspace', 'error');
+				// TASK-2204 (audit C93): the server's own message (a taken slug, a
+				// name it refused) says what to change; the bare line did not.
+				const detail = err instanceof Error && err.message ? err.message : '';
+				toastStore.show(detail ? `Failed to create workspace: ${detail}` : 'Failed to create workspace', 'error');
 			}
 		}
 	}
