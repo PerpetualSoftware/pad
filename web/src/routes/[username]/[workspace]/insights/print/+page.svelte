@@ -7,6 +7,7 @@
 	import BarChart from '$lib/components/charts/BarChart.svelte';
 	import type { ChartDatum } from '$lib/components/charts/theme';
 	import type { Collection, ReportData, ReportWindow } from '$lib/types';
+	import { bucketLabels } from '$lib/insights/bucketLabel';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -131,24 +132,13 @@
 		{ key: 'completed', label: 'Completed', color: 'var(--chart-4, #10b981)' }
 	];
 
-	// Compact X-axis label for the throughput buckets. Full ISO dates
-	// ("2026-05-23", ~70px) overlap once several buckets share a narrow chart;
-	// render "M/D" (day) or "M/D Hh" (hour) instead. Falls back to the raw
-	// bucket string for week/month or any unrecognised format.
-	function fmtBucket(b: string): string {
-		const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}))?/.exec(b);
-		if (!m) return b;
-		const label = `${Number(m[2])}/${Number(m[3])}`;
-		return m[4] !== undefined ? `${label} ${Number(m[4])}h` : label;
-	}
-
-	const throughputData = $derived<ChartDatum[]>(
-		(report?.buckets ?? []).map((b) => ({
-			bucket: fmtBucket(b.bucket),
-			created: b.created,
-			completed: b.completed
-		}))
-	);
+	// The same labels as the Insights page (TASK-2220): "M/D" for a day,
+	// "M/D Hh" for an hour in the reader's local time.
+	const throughputData = $derived.by<ChartDatum[]>(() => {
+		const buckets = report?.buckets ?? [];
+		const labels = bucketLabels(buckets.map((b) => b.bucket));
+		return buckets.map((b, i) => ({ bucket: labels[i], created: b.created, completed: b.completed }));
+	});
 
 	const completedByCollectionData = $derived<ChartDatum[]>(
 		(report?.completed_by_collection ?? []).map((c) => ({

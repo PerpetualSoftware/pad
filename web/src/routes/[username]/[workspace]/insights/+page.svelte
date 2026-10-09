@@ -9,6 +9,7 @@
 	import type { ChartDatum } from '$lib/components/charts/theme';
 	import type { Collection, ReportData, ReportLayout, ReportWindow } from '$lib/types';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
+	import { bucketLabels } from '$lib/insights/bucketLabel';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -339,13 +340,13 @@
 		{ key: 'completed', label: 'Completed', color: 'var(--chart-4, #10b981)' }
 	];
 
-	const throughputData = $derived<ChartDatum[]>(
-		(report?.buckets ?? []).map((b) => ({
-			bucket: b.bucket,
-			created: b.created,
-			completed: b.completed
-		}))
-	);
+	// Humane labels, hours in the viewer's local time (TASK-2220): the raw
+	// keys are sortable UTC strings ("2026-07-19T16").
+	const throughputData = $derived.by<ChartDatum[]>(() => {
+		const buckets = report?.buckets ?? [];
+		const labels = bucketLabels(buckets.map((b) => b.bucket));
+		return buckets.map((b, i) => ({ bucket: labels[i], created: b.created, completed: b.completed }));
+	});
 
 	const agingData = $derived<ChartDatum[]>(
 		(report?.wip.aging_buckets ?? []).map((b) => ({ label: b.label, count: b.count }))
