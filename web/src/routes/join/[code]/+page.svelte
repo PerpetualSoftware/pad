@@ -1,4 +1,6 @@
 <script lang="ts">
+	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
+	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
 	import { untrack } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
@@ -60,6 +62,8 @@
 	let password = $state('');
 	let confirmPassword = $state('');
 	let formError = $state('');
+	// A refusal for a new password itself, shown on the field (TASK-2260).
+	let passwordError = $state('');
 	let submitting = $state(false);
 	let challengeToken = $state('');
 	let totpCode = $state('');
@@ -111,6 +115,7 @@
 		username = '';
 		password = '';
 		confirmPassword = '';
+		passwordError = '';
 		totpCode = '';
 		usernameManuallyEdited = false;
 		if (checkTimeout) clearTimeout(checkTimeout);
@@ -345,6 +350,7 @@
 
 	async function handleSubmit() {
 		formError = '';
+		passwordError = '';
 		submitting = true;
 		const c = flowCode;
 		const current = flowFence();
@@ -355,7 +361,8 @@
 				if (username && username.length < 3) { formError = 'Username must be at least 3 characters'; submitting = false; return; }
 				if (usernameAvailable === false) { formError = usernameError || 'Username is not available'; submitting = false; return; }
 				if (!email.trim()) { formError = 'Email is required'; submitting = false; return; }
-				if (password.length < 8) { formError = 'Password must be at least 8 characters'; submitting = false; return; }
+				passwordError = localPasswordProblem(password) ?? '';
+				if (passwordError) { submitting = false; return; }
 				if (password !== confirmPassword) { formError = 'Passwords do not match'; submitting = false; return; }
 				// Pass the invitation code so the backend allows registration
 				// and auto-accepts the invitation in one step.
@@ -409,7 +416,11 @@
 				submitting = false;
 				return;
 			}
-			formError = err instanceof Error ? err.message : 'Authentication failed';
+			if (mode === 'register' && err instanceof Error && isPasswordRuleError(err.message)) {
+				passwordError = err.message;
+			} else {
+				formError = err instanceof Error ? err.message : 'Authentication failed';
+			}
 			submitting = false;
 		}
 	}
@@ -615,8 +626,11 @@
 					bind:value={password}
 					disabled={submitting}
 					autocomplete={mode === 'register' ? 'new-password' : 'current-password'}
+					aria-describedby={mode === 'register' ? passwordDescribedBy('join-password', passwordError) : undefined}
+					aria-invalid={mode === 'register' && passwordError ? 'true' : undefined}
 				/>
 				{#if mode === 'register'}
+					<PasswordRuleHint id="join-password" error={passwordError} />
 					<label class="field-label" for="join-confirm-password">Confirm password</label>
 					<input
 						id="join-confirm-password"

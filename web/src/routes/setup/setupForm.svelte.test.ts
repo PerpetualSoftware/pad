@@ -8,7 +8,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 
 const session = vi.hoisted(() => ({ setup_method: 'token' as string }));
-const calls = vi.hoisted(() => ({ bootstrap: 0 }));
+const calls = vi.hoisted(() => ({ bootstrap: 0, reject: '' }));
 
 vi.mock('$lib/api/client', () => {
 	class PadApiError extends Error {
@@ -20,6 +20,7 @@ vi.mock('$lib/api/client', () => {
 			auth: {
 				bootstrap: vi.fn(async () => {
 					calls.bootstrap++;
+					if (calls.reject) throw new PadApiError(calls.reject);
 					return {};
 				})
 			}
@@ -55,6 +56,7 @@ function expectLabelledInForm(container: HTMLElement) {
 
 beforeEach(() => {
 	calls.bootstrap = 0;
+	calls.reject = '';
 	history.replaceState({}, '', '/setup');
 });
 afterEach(() => {
@@ -88,7 +90,7 @@ describe('setup page forms (TASK-2259, TASK-2236)', () => {
 		const email = screen.getByLabelText('Email');
 		expect(document.activeElement).toBe(email);
 		expect(screen.getByLabelText('Name')).toBeTruthy();
-		expect(screen.getByLabelText('Password (at least 8 characters)')).toBeTruthy();
+		expect(screen.getByLabelText('Password', { exact: true })).toBeTruthy();
 		expect(screen.getByLabelText('Confirm password')).toBeTruthy();
 		expectLabelledInForm(container);
 
@@ -96,5 +98,57 @@ describe('setup page forms (TASK-2259, TASK-2236)', () => {
 		await settle();
 		expect(screen.getByRole('alert').textContent?.trim()).not.toBe('');
 		expect(calls.bootstrap).toBe(0);
+	});
+
+	// TASK-2260: the rule sits under the password, and a refusal for the
+	// password, local or from the server, shows there rather than at the top.
+	async function fillOpenSetup(password: string) {
+		session.setup_method = 'open';
+		render(SetupPage);
+		await settle();
+		await fireEvent.input(screen.getByLabelText('Email'), { target: { value: 'admin@example.com' } });
+		await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Admin' } });
+		await fireEvent.input(screen.getByLabelText('Password', { exact: true }), { target: { value: password } });
+		await fireEvent.input(screen.getByLabelText('Confirm password'), { target: { value: password } });
+		const input = screen.getByLabelText('Password', { exact: true });
+		await fireEvent.submit(input.closest('form')!);
+		await settle();
+		return input;
+	}
+
+	it('states the password rule beside the field (TASK-2260)', async () => {
+		session.setup_method = 'open';
+		render(SetupPage);
+		await settle();
+		const input = screen.getByLabelText('Password', { exact: true });
+		expect(input.getAttribute('aria-describedby')).toBe('setup-password-rule');
+		expect(document.getElementById('setup-password-rule')?.textContent).toContain('At least 8 characters');
+		expect(input.getAttribute('aria-invalid')).not.toBe('true');
+	});
+
+	it('refuses a short password on the field, without a round trip (TASK-2260)', async () => {
+		const input = await fillOpenSetup('short');
+		expect(calls.bootstrap).toBe(0);
+		expect(screen.getAllByRole('alert')).toHaveLength(1);
+		expect(document.getElementById('setup-password-error')?.textContent).toBe('Password must be at least 8 characters.');
+		expect(input.getAttribute('aria-invalid')).toBe('true');
+		expect(input.getAttribute('aria-describedby')).toBe('setup-password-rule setup-password-error');
+	});
+
+	it("shows the server's weak-password refusal on the field (TASK-2260)", async () => {
+		calls.reject = 'Password is too weak — try a longer passphrase or add unusual characters';
+		const input = await fillOpenSetup('password123');
+		expect(calls.bootstrap).toBe(1);
+		expect(screen.getAllByRole('alert')).toHaveLength(1);
+		expect(document.getElementById('setup-password-error')?.textContent).toBe(calls.reject);
+		expect(input.getAttribute('aria-invalid')).toBe('true');
+	});
+
+	it('keeps any other server refusal at the top of the form (TASK-2260)', async () => {
+		calls.reject = 'Something else went wrong';
+		const input = await fillOpenSetup('a long enough passphrase');
+		expect(document.getElementById('setup-password-error')).toBeNull();
+		expect(screen.getByRole('alert').textContent).toContain('Something else went wrong');
+		expect(input.getAttribute('aria-invalid')).not.toBe('true');
 	});
 });
