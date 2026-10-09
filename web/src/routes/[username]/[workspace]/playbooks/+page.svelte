@@ -23,6 +23,8 @@
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { statusColor } from '$lib/utils/fieldColors';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import AgentTermsLegend from '$lib/components/agent/AgentTermsLegend.svelte';
+	import { termTitle } from '$lib/agent/agentTerms';
 	import Button from '$lib/components/common/Button.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -500,6 +502,7 @@
 				{/if}
 			{/snippet}
 		</PageHeader>
+		<AgentTermsLegend scopeWord="Scope" />
 
 		{#if showNewForm && canCreatePlaybook}
 			<div class="new-form">
@@ -645,9 +648,9 @@
 								{#if status}<Chip size="sm" color={statusColor(status)}>{statusLabel(status)}</Chip>{/if}
 							</div>
 							<div class="card-meta">
-								<Chip size="sm" color="var(--status-blue)">{trigger}</Chip>
-								<span class="meta-sep">&middot;</span>
-								<Chip size="sm" color="var(--accent-purple)">{scope}</Chip>
+								<Chip size="sm" color="var(--status-blue)" title={termTitle('trigger', trigger)}><span class="sr-only">{'Trigger: '}</span>{trigger}</Chip>
+								<span class="meta-sep" aria-hidden="true">&middot;</span>
+								<Chip size="sm" color="var(--accent-purple)" title={termTitle('surface', scope)}><span class="sr-only">{'Scope: '}</span>{scope}</Chip>
 								{#if steps > 0}
 									<span class="meta-sep">&middot;</span>
 									<span class="step-count">{steps} step{steps !== 1 ? 's' : ''}</span>

@@ -17,6 +17,8 @@
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
 	import Button from '$lib/components/common/Button.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
+	import AgentTermsLegend from '$lib/components/agent/AgentTermsLegend.svelte';
+	import { termTitle, enforcementLabel } from '$lib/agent/agentTerms';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import StaleBodyDot from '$lib/components/common/StaleBodyDot.svelte';
 	import { isBodyStale } from '$lib/items/staleBody';
@@ -626,6 +628,7 @@
 				/>
 			{/snippet}
 		</PageHeader>
+		<AgentTermsLegend scopeWord="Surface" />
 
 		{#if showCreate && canCreateConvention}
 			<form class="create-form" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
@@ -774,8 +777,13 @@
 											{#if convention.category}
 												<span class="badge category-badge">{convention.category}</span>
 											{/if}
-											<span class="badge scope-badge">{getScope(item)}</span>
-											<span class="priority-dot priority-{getPriority(item)}" title={getPriority(item)}></span>
+											<span class="badge scope-badge" title={termTitle('surface', getScope(item))}><span class="sr-only">{'Surface: '}</span>{getScope(item)}</span>
+											<!-- TASK-2257 (C72): the dot alone was invisible on touch and
+											     silent to a screen reader; the value is now text beside it. -->
+											<span class="enforcement" title={termTitle('enforcement', getPriority(item))}>
+												<span class="priority-dot priority-{getPriority(item)}" aria-hidden="true"></span>
+												<span class="enforcement-label"><span class="sr-only">{'Enforcement: '}</span>{enforcementLabel(getPriority(item))}</span>
+											</span>
 											<span class="row-chevron">{expanded ? '\u25B4' : '\u25BE'}</span>
 										</div>
 
@@ -930,6 +938,8 @@
 
 	/* Priority dots */
 	.priority-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+	.enforcement { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+	.enforcement-label { font-size: 0.75rem; color: var(--text-muted); }
 	.priority-must { background: var(--accent-orange); }
 	.priority-should { background: var(--accent-amber); }
 	.priority-nice-to-have { background: var(--accent-gray); }
