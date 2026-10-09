@@ -73,6 +73,8 @@
 	let pendingSetAside = $state(false);
 	// TASK-2205: the server's message when a restore failed; cleared on retry or cancel.
 	let restoreError = $state<string | null>(null);
+	// The item the error is about: a card reused for another item shows nothing (codex r1).
+	let restoreErrorFor = $state('');
 
 	// PLAN-2348 U3: a card shows ITS OWN edit — the body before the write that
 	// made the row against the body after it — not the row against today's
@@ -212,6 +214,7 @@
 				// be rethrown from the click handler: no toast, no inline line, and
 				// the card snapped back as if nothing had been asked.
 				restoreError = err instanceof Error && err.message ? err.message : 'Restore failed';
+				restoreErrorFor = reqWs + '/' + reqSlug;
 				return;
 			}
 			if (!isSameIdentity()) return;
@@ -287,7 +290,7 @@
 						{:else}
 							<span class="confirm-text">{restoreLabel}?</span>
 						{/if}
-						{#if restoreError}
+						{#if restoreError && restoreErrorFor === wsSlug + '/' + itemSlug}
 							<span class="confirm-text confirm-warning restore-error" role="alert">Restore failed: {restoreError}</span>
 						{/if}
 						<div class="confirm-actions">

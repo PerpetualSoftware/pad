@@ -7325,7 +7325,7 @@
 					hostToken={attachmentHostToken}
 					collectionId={itemMatchesRef ? item.collection_id : undefined}
 					frozen={false}
-					restoreFrozen={peeking || !canEdit}
+					restoreFrozen={peeking || !canEdit /* TASK-2205: viewers; and archived items, whose version restore the server answers 404 (ResolveItem excludes them) */}
 					parentArchived={itemMatchesRef && isArchived}
 					visibleKinds={[...COMMENT_KINDS]}
 					fetchKinds={COMMENT_KINDS}

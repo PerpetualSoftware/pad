@@ -88,4 +88,22 @@ describe('TimelineVersionCard: a failed restore says so (TASK-2205)', () => {
 		expect(alertText()).toBeUndefined();
 		expect(onRestore).toHaveBeenCalledTimes(1);
 	});
+
+	it('an error raised for one item does not show once the card shows another (codex r1)', async () => {
+		unmount(instance);
+		const props = $state({ version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'now', onRestore });
+		instance = mount(TimelineVersionCard, { target: root, props });
+		flushSync();
+		(root.querySelector('.show-changes') as HTMLButtonElement).click();
+		flushSync();
+		(root.querySelector('.btn-restore') as HTMLButtonElement).click();
+		flushSync();
+		restore.mockRejectedValueOnce(new Error('boom'));
+		confirm().click();
+		await settle();
+		expect(alertText()).toBe('Restore failed: boom');
+		props.itemSlug = 'ITEM-2';
+		flushSync();
+		expect(alertText()).toBeUndefined();
+	});
 });
