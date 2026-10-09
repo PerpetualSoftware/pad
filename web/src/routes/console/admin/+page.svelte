@@ -403,7 +403,14 @@
 							onclick={() => openUserModal(user)}
 						>
 							<td>
-								{user.name || user.username}
+								<!-- TASK-2238 (C61): the modal is the only way to a user's
+								     detail, and the row's click is mouse-only. The name is a
+								     real button, so the keyboard reaches it too. -->
+								<button
+									type="button"
+									class="user-name-btn"
+									onclick={(e) => { e.stopPropagation(); openUserModal(user); }}
+								>{user.name || user.username}</button>
 								<!-- Status pill replaces the legacy "disabled" badge.
 								     "active" is the common case; omit the pill to avoid
 								     visual noise. Other states call out problems. -->
@@ -467,6 +474,20 @@
 />
 
 <style>
+	/* TASK-2238: the user's name, as the keyboard way into the user modal.
+	   Looks like the text it replaced. */
+	.user-name-btn {
+		border: none;
+		background: none;
+		padding: 0;
+		font: inherit;
+		color: inherit;
+		cursor: pointer;
+		text-align: left;
+	}
+	.user-name-btn:hover {
+		text-decoration: underline;
+	}
 	/* Search */
 	.search-row {
 		display: flex;

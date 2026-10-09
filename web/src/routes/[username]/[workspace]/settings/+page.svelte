@@ -280,6 +280,24 @@
 		history.replaceState(null, '', `#${tabId}`);
 	}
 
+	// Arrow keys on the tab list (TASK-2238): the next/previous tab, wrapping,
+	// or the first/last, selected and focused.
+	function handleTabKeydown(e: KeyboardEvent) {
+		const ids = tabs.map((t) => t.id);
+		const at = ids.indexOf(activeTab);
+		let next = -1;
+		if (e.key === 'ArrowRight') next = (at + 1) % ids.length;
+		else if (e.key === 'ArrowLeft') next = (at - 1 + ids.length) % ids.length;
+		else if (e.key === 'Home') next = 0;
+		else if (e.key === 'End') next = ids.length - 1;
+		if (next < 0) return;
+		e.preventDefault();
+		switchTab(ids[next]);
+		// Every tab button is always rendered, so focus moves now; its
+		// tabindex follows on the next render.
+		document.getElementById(`settings-tab-${ids[next]}`)?.focus();
+	}
+
 	// Keyed on (USER, WORKSPACE) (BUG-2991, codex round 3). This page's own data
 	// — workspace name, members, invitations, collections, the context editor —
 	// is local state that the store's identity reset does not touch, so a
@@ -914,14 +932,22 @@
 			ondelete={() => switchTab('danger')}
 		/>
 
-		<div class="tab-bar" role="tablist">
+		<!-- TASK-2238 (C108): the WAI-ARIA tabs pattern, completed. It declared
+		     tablist/tab/aria-selected with no panel, no aria-controls and no arrow
+		     keys, so a screen-reader user was promised arrow-key tabs that did
+		     nothing. Now: one tabpanel the tabs control, a roving tabindex, and
+		     Left/Right/Home/End move between tabs (automatic activation). -->
+		<div class="tab-bar" role="tablist" aria-label="Workspace settings" tabindex="-1" onkeydown={handleTabKeydown}>
 			{#each tabs as tab (tab.id)}
 				<button
 					class="tab"
 					class:active={activeTab === tab.id}
 					class:danger={tab.id === 'danger'}
 					role="tab"
+					id="settings-tab-{tab.id}"
 					aria-selected={activeTab === tab.id}
+					aria-controls="settings-tabpanel"
+					tabindex={activeTab === tab.id ? 0 : -1}
 					onclick={() => switchTab(tab.id)}
 				>
 					<span class="tab-icon">{tab.icon}</span>
@@ -930,6 +956,7 @@
 			{/each}
 		</div>
 
+		<div role="tabpanel" id="settings-tabpanel" aria-labelledby="settings-tab-{activeTab}" tabindex="0" class="settings-tabpanel">
 		{#if activeTab === 'general'}
 			<section class="section">
 				<h2>Workspace</h2>
@@ -1366,6 +1393,7 @@
 				</div>
 			</section>
 		{/if}
+		</div>
 	{/if}
 </div>
 
@@ -1373,6 +1401,9 @@
 	.settings { max-width: var(--content-max-width); margin: 0 auto; padding: var(--space-8) var(--space-6); }
 	.loading { text-align: center; padding-top: 20vh; color: var(--text-muted); }
 	.settings-header { margin-bottom: var(--space-4); }
+	/* The tabpanel takes focus from Tab after the tab list (TASK-2238); the
+	   ring is the browser's, shown only for keyboard focus. */
+	.settings-tabpanel:focus:not(:focus-visible) { outline: none; }
 	.settings-header h1 { font-size: 1.6em; }
 	/* ── Tab bar ──── */
 	/* C82 (TASK-2245): the five owner tabs are 562px intrinsic while the bar's
