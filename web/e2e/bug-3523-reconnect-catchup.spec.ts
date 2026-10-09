@@ -11,14 +11,10 @@
 import { test, expect } from './fixtures';
 import type { BrowserContext, Page, WebSocket } from '@playwright/test';
 import { DatabaseSync } from 'node:sqlite';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { E2E_DB_PATH } from './lib/data-dir';
 import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT, seedDoc } from './lib/collab-helpers';
 
-const DB_PATH = resolve(
-	process.env.PAD_E2E_DATA_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', '.pad-e2e'),
-	'pad.db',
-);
+const DB_PATH = E2E_DB_PATH;
 
 /** Every collab socket the page opens, with what it sent and received. */
 function recordSockets(page: Page) {
