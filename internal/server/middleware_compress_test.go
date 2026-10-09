@@ -75,6 +75,7 @@ func TestCompressLeavesSkippedResponsesAlone(t *testing.T) {
 		{"/api/v1/workspaces/w/tokens", nil},
 		{"/oauth/token", nil},
 		{"/api/v1/workspaces/w/claim-code", nil},
+		{"/api/v1/workspaces/w/members", nil},
 	} {
 		hdr := map[string]string{"Accept-Encoding": "gzip"}
 		for k, v := range c.hdr {

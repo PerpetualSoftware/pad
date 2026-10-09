@@ -52,9 +52,11 @@ func compressSkips(r *http.Request) bool {
 	// are small, and nothing is lost by leaving them alone.
 	case strings.HasPrefix(p, "/api/v1/auth/"), strings.HasPrefix(p, "/oauth/"), strings.HasPrefix(p, "/api/v1/oauth/"),
 		strings.HasSuffix(p, "/tokens") || strings.Contains(p, "/tokens/"),
-		// The one read that returns a live secret: a workspace's claim code
-		// (codex r2). Webhook secrets are masked on reads; the rest are writes.
-		strings.HasSuffix(p, "/claim-code"):
+		// Reads that return a live secret: a workspace's claim code (codex r2)
+		// and the members list, which still carries the plaintext code of a
+		// legacy pending invitation (codex r4). Webhook secrets are masked on
+		// reads; every other secret comes back from a write.
+		strings.HasSuffix(p, "/claim-code"), strings.HasSuffix(p, "/members") || strings.HasSuffix(p, "/members/"):
 		return true
 	}
 	return false
