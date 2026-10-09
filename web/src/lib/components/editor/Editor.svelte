@@ -592,6 +592,7 @@
 		awareness,
 		collabUser,
 		onUpdate,
+		onDirty,
 		onEditor,
 		onImportInserted,
 	}: {
@@ -651,8 +652,26 @@
 		 * are required when `awareness` is set.
 		 */
 		collabUser?: { name: string; color: string };
+		/**
+		 * The document's markdown after a change. COALESCED (TASK-2232):
+		 * serializing a large document costs tens of milliseconds (measured
+		 * 48-73 ms p95 on 86-101 KB plans, 190-260 ms on a 4x-throttled CPU),
+		 * so it runs once per burst, SERIALIZE_COALESCE_MS after the last
+		 * change, not per keystroke. Never later than the drain: the editor
+		 * drains before it is destroyed and before an external setContent,
+		 * and `onEditor`'s `drain` lets a host read current text at any time.
+		 */
 		onUpdate?: (markdown: string) => void;
-		onEditor?: (editor: Editor) => void;
+		/**
+		 * Fired SYNCHRONOUSLY on each change to the document, before the
+		 * coalesced `onUpdate`, so a host's dirty marks do not wait for it.
+		 */
+		onDirty?: () => void;
+		/**
+		 * The Tiptap instance, and `drain`: deliver any coalesced `onUpdate`
+		 * now (a no-op when nothing is pending or the editor is gone).
+		 */
+		onEditor?: (editor: Editor, drain: () => void) => void;
 		/**
 		 * Fired after the Insert-from-URL modal splices content into
 		 * the editor. The host page uses this to stamp source_url +
@@ -672,6 +691,28 @@
 	let keyboardVisible = $state(false);
 	let suppressUpdate = false;
 	let lastMarkdown = '';
+	// The coalesced serialization (TASK-2232). `pendingSerialize` is set by a
+	// document change and cleared by `drainPendingUpdate`, the only place that
+	// serializes for `onUpdate`. `deliveredDoc` is the document `lastMarkdown`
+	// was made from, so a change that restores it is not reported dirty.
+	const SERIALIZE_COALESCE_MS = 150;
+	let pendingSerialize = false;
+	let serializeTimer: ReturnType<typeof setTimeout> | undefined;
+	let deliveredDoc: ProseMirrorNode | null = null;
+
+	/** Deliver a pending `onUpdate` now. Safe to call at any time. */
+	function drainPendingUpdate() {
+		clearTimeout(serializeTimer);
+		serializeTimer = undefined;
+		if (!pendingSerialize) return;
+		pendingSerialize = false;
+		if (!editor || editor.isDestroyed) return;
+		deliveredDoc = editor.state.doc;
+		const md = unescapeDocLinks((editor.storage as any).markdown.getMarkdown());
+		if (md === lastMarkdown) return;
+		lastMarkdown = md;
+		onUpdate?.(md);
+	}
 	// visualViewport 'resize'/'scroll' handler ref, so onDestroy can remove
 	// the exact listeners registered in onMount (TASK-2109).
 	let visualViewportHandler: (() => void) | null = null;
@@ -1078,10 +1119,16 @@
 			content,
 			onUpdate: ({ editor: e }) => {
 				if (suppressUpdate) return;
-				const md = unescapeDocLinks((e.storage as any).markdown.getMarkdown());
-				if (md === lastMarkdown) return;
-				lastMarkdown = md;
-				onUpdate?.(md);
+				// The dirty mark is immediate; the serialization is coalesced
+				// (TASK-2232). A change that puts back the document last
+				// delivered marks nothing, as the markdown comparison did.
+				// (The early return keeps the slash and link pickers below on the
+				// same footing as before: they ran only for a real change.)
+				if (!pendingSerialize && deliveredDoc && e.state.doc.eq(deliveredDoc)) return;
+				pendingSerialize = true;
+				onDirty?.();
+				clearTimeout(serializeTimer);
+				serializeTimer = setTimeout(drainPendingUpdate, SERIALIZE_COALESCE_MS);
 				if (slashOpen && slashStartPos >= 0) {
 					const curPos = e.state.selection.from;
 					if (curPos <= slashStartPos) { closeSlash(); }
@@ -1106,7 +1153,13 @@
 					}
 				}
 			},
-			onTransaction: () => {
+			onTransaction: ({ transaction }) => {
+				// Re-render the toolbars' isActive bindings only for a transaction
+				// that can change what they show: the document, the selection, or
+				// the stored marks (bold toggled with nothing selected). Pure meta
+				// transactions, such as collaborators' cursors, no longer do
+				// (TASK-2232, audit C78).
+				if (!transaction.docChanged && !transaction.selectionSet && !transaction.storedMarksSet) return;
 				editor = editor;
 				editorTick++;
 			},
@@ -1175,7 +1228,8 @@
 		});
 
 		lastMarkdown = unescapeDocLinks((editor.storage as any).markdown.getMarkdown());
-		onEditor?.(editor);
+		deliveredDoc = editor.state.doc;
+		onEditor?.(editor, drainPendingUpdate);
 
 		// Fetch the server's image-processor capabilities so the rotate
 		// toolbar can gate per-format. Async / fire-and-forget — the
@@ -1253,6 +1307,10 @@
 	});
 
 	onDestroy(() => {
+		// Deliver a coalesced change BEFORE the editor goes: the host's
+		// teardown flush reads the text it was handed (TASK-2117), and
+		// Svelte destroys this child before that flush runs.
+		drainPendingUpdate();
 		editor?.destroy();
 		themeObserver?.disconnect();
 		themeObserver = null;
@@ -1331,11 +1389,15 @@
 		}
 		if (editor && content !== tracker.prev) {
 			tracker.prev = content;
+			// A coalesced change goes out before an external replacement, as it
+			// did when every change was delivered at once.
+			drainPendingUpdate();
 			const currentEditorContent = unescapeDocLinks((editor.storage as any).markdown?.getMarkdown?.() ?? '');
 			if (currentEditorContent !== content) {
 				suppressUpdate = true;
 				editor.commands.setContent(content);
 				lastMarkdown = unescapeDocLinks((editor.storage as any).markdown?.getMarkdown?.() ?? '');
+				deliveredDoc = editor.state.doc;
 				suppressUpdate = false;
 			}
 		}

@@ -46,7 +46,7 @@ describe('ItemDetail primes the canonical seed while the editor is alive (BUG-31
 		const callbacks = [...MARKUP.matchAll(/onEditor=\{([^}]*\}?)\}/g)].map((m) => m[1]);
 		expect(callbacks.length, 'the number of editor mounts changed — decide whether the new one primes').toBe(2);
 		for (const cb of callbacks) {
-			expect(cb).toMatch(/editorInstance = e;\s*primeCanonicalSeed\(\);/);
+			expect(cb).toMatch(/editorInstance = e;\s*drainEditorUpdate = drain;\s*primeCanonicalSeed\(\);/);
 		}
 	});
 

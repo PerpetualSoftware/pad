@@ -725,6 +725,17 @@
 	// a handler-only tracker; a $state written in a handler that an $effect
 	// also read would wedge the effect scheduler in prod.
 	let lastEditorMarkdown: string | null = null;
+	// The Editor delivers markdown COALESCED (TASK-2232: serializing a large
+	// document per keystroke cost 48-73 ms p95, 190-260 ms throttled). Its
+	// `drain` delivers a pending change at once. READ THE SHADOW ONLY THROUGH
+	// `currentEditorMarkdown()`, which drains first, so no reader sees text
+	// older than the editor holds; itemDetailShadowReads.test.ts refuses any
+	// other read of `lastEditorMarkdown`.
+	let drainEditorUpdate: (() => void) | null = null;
+	function currentEditorMarkdown(): string | null {
+		drainEditorUpdate?.();
+		return lastEditorMarkdown;
+	}
 
 	let editingTitle = $state(false);
 	let titleDraft = $state('');
@@ -2542,6 +2553,7 @@
 		void collabProvider;
 		hasEverSynced = false;
 		editorInstance = null;
+		drainEditorUpdate = null;
 		// Reset the markdown shadow alongside editorInstance: a new provider
 		// means a new editor session, so any prior shadow belongs to a
 		// now-gone editor (item swap, raw↔rich, force_refresh). This runs
@@ -4247,6 +4259,19 @@
 	// non-collab and raw-mode paths still use) so the two firings don't trample
 	// each other on rapid mode toggles.
 
+	// The Editor's synchronous dirty signal (TASK-2232): the same marks
+	// handleContentUpdate sets, set at the keystroke rather than when the
+	// coalesced markdown arrives, so an SSE refresh in between still sees the
+	// pane dirty. Peeking-gated on the singleton exactly as below.
+	function handleEditorDirty() {
+		if (collabProvider) {
+			if (!peeking) editorStore.setDirty(true);
+		} else {
+			editorStore.setDirty(true);
+		}
+		localDirty = true;
+	}
+
 	function handleContentUpdate(markdown: string) {
 		// Capture the latest editor markdown for the teardown-flush fallback
 		// (readEditorMarkdown). onUpdate fires on every transaction, so this
@@ -4321,7 +4346,7 @@
 				// Newer typing since this save was armed has its own debounced
 				// save, which asks again; resending this older text would
 				// replace it.
-				if (lastEditorMarkdown !== markdown) return null;
+				if (currentEditorMarkdown() !== markdown) return null;
 				return send(true);
 			}).then((sent) => {
 				if (switchedAway(reqItem, gen)) return;
@@ -4466,7 +4491,7 @@
 					// Live read failed — fall through to the shadow.
 				}
 			}
-			return lastEditorMarkdown;
+			return currentEditorMarkdown();
 		},
 		// Gate per-item lastFlushedContent seeding: only record the flush if
 		// the item we flushed is still active, else a stale flush pollutes the
@@ -5399,7 +5424,7 @@
 		} catch {
 			// Live read failed — fall through to the shadow.
 		}
-		if (md == null) md = lastEditorMarkdown;
+		if (md == null) md = currentEditorMarkdown();
 		if (md == null) return;
 		// keepalive=false — this is a foreground flush the user is waiting on (the
 		// restore blocks on it). The flusher's own dedupe short-circuits to a no-op
@@ -5520,7 +5545,7 @@
 		} catch {
 			// Live read failed — fall through to the per-edit shadow.
 		}
-		if (md == null) md = lastEditorMarkdown;
+		if (md == null) md = currentEditorMarkdown();
 		if (md == null) return true;
 		const result = await collabFlusher.flush(ctx, md, false);
 		// 'deduped' — the server already has this markdown. 'skipped' —
@@ -7189,7 +7214,8 @@
 								editable={false}
 								itemId={item.id}
 								hostToken={attachmentHostToken}
-								onEditor={(e) => { editorInstance = e; primeCanonicalSeed(); }}
+								onDirty={handleEditorDirty}
+								onEditor={(e, drain) => { editorInstance = e; drainEditorUpdate = drain; primeCanonicalSeed(); }}
 								onImportInserted={handleImportInserted}
 							/>
 						{/key}
@@ -7250,7 +7276,8 @@
 									ydoc={ydoc}
 									awareness={collabProvider?.awareness}
 									collabUser={collabUserState}
-									onEditor={(e) => { editorInstance = e; primeCanonicalSeed(); }}
+									onDirty={handleEditorDirty}
+									onEditor={(e, drain) => { editorInstance = e; drainEditorUpdate = drain; primeCanonicalSeed(); }}
 									onImportInserted={handleImportInserted}
 								/>
 							{/key}
