@@ -43,10 +43,13 @@ func (s *Server) mcpBodyLimit() int64 {
 }
 
 // limitMCPBody refuses an MCP POST body larger than mcpBodyLimit with 413
-// and a JSON-RPC error, before anything reads it (BUG-3534). Mounted on
-// both MCP mounts after the availability and host gates and BEFORE auth:
-// the refusal needs no identity, and an unauthenticated flood is the case
-// it matters most for.
+// and a JSON-RPC error, before the transport reads it (BUG-3534). Mounted
+// on both MCP mounts AFTER auth and the audit log. After auth because
+// nothing reads an unauthenticated body: it is refused 401 first, and
+// that 401 is what the pre-auth rate limit meters. Reading a chunked body
+// here, before auth, would let an anonymous caller make the server take
+// in up to the limit per request ahead of both (codex review). After the
+// audit log so a 413 is recorded.
 //
 //   - A declared Content-Length over the limit is refused without reading.
 //   - A declared Content-Length within it passes untouched: net/http ends
