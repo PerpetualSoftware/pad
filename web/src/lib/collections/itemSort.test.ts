@@ -26,17 +26,18 @@ describe('itemComparator manual mode', () => {
 	// BUG-1941: every un-dragged card in a lane shares sort_order = 0. A
 	// stray updated_at bump (e.g. a spurious collab-flush PATCH) must not
 	// reorder them — the tiebreak has to be independent of updated_at.
-	// The tie direction is created_at DESC (newest first) so a freshly
-	// created item floats to the top of its lane rather than the bottom.
-	it('breaks a sort_order tie by created_at descending, ignoring updated_at entirely', () => {
+	// The tie direction is created_at ASC (oldest first): the server's order
+	// for child lists and the dashboard, which render it as delivered
+	// (BUG-3527). A new item joins the end of an un-dragged lane.
+	it('breaks a sort_order tie by created_at ascending, ignoring updated_at entirely', () => {
 		const comparator = itemComparator('manual', collection);
 		const older = { ...item('older', 0, '2026-01-01T00:00:00Z'), updated_at: '2026-01-01T00:00:00Z' } as Item;
 		const newer = { ...item('newer', 0, '2026-02-01T00:00:00Z'), updated_at: '2026-07-04T00:00:00Z' } as Item;
 		// `newer`'s updated_at is LATER than `older`'s here, but the ordering
-		// is driven purely by created_at (newest first) — the newer item
+		// is driven purely by created_at (oldest first) — the older item
 		// sorts ahead regardless of the updated_at values.
-		expect([older, newer].sort(comparator).map((i) => i.id)).toEqual(['newer', 'older']);
-		expect([newer, older].sort(comparator).map((i) => i.id)).toEqual(['newer', 'older']);
+		expect([older, newer].sort(comparator).map((i) => i.id)).toEqual(['older', 'newer']);
+		expect([newer, older].sort(comparator).map((i) => i.id)).toEqual(['older', 'newer']);
 	});
 
 	it('falls back to id when sort_order and created_at both tie', () => {
@@ -46,13 +47,13 @@ describe('itemComparator manual mode', () => {
 		expect([b, a].sort(comparator).map((i) => i.id)).toEqual(['a-item', 'b-item']);
 	});
 
-	it('treats a missing/unparseable created_at as epoch (sorts last among ties under newest-first)', () => {
+	it('treats a missing/unparseable created_at as epoch (sorts first among ties under oldest-first)', () => {
 		const comparator = itemComparator('manual', collection);
 		const withDate = item('with-date', 0, '2026-01-01T00:00:00Z');
 		const withoutDate = { ...item('without-date', 0, ''), created_at: undefined } as unknown as Item;
-		expect([withoutDate, withDate].sort(comparator).map((i) => i.id)).toEqual([
-			'with-date',
+		expect([withDate, withoutDate].sort(comparator).map((i) => i.id)).toEqual([
 			'without-date',
+			'with-date',
 		]);
 	});
 });
