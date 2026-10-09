@@ -78,9 +78,8 @@ func TestTASK2863_ReadScopePOSTPathTable(t *testing.T) {
 }
 
 // Through the router with real PATs: the read token's run answers the
-// handler's 200; its other POSTs get TokenAuth's 403; a write token's
-// same POSTs are not refused for scope, so each 403 is the scope check
-// and not the route.
+// handler's 200; its other POSTs get TokenAuth's scope refusal, matched
+// on its message; a write token's same POSTs are not refused for scope.
 func TestTASK2863_ReadPATThroughTheRouter(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -114,9 +113,16 @@ func TestTASK2863_ReadPATThroughTheRouter(t *testing.T) {
 	as := func(tok, method, path string, body any) (int, string) {
 		rr := doRequestWithHeaders(srv, method, path, body, map[string]string{"Authorization": "Bearer " + tok})
 		var env struct {
-			Error struct{ Code string } `json:"error"`
+			Error struct{ Code, Message string } `json:"error"`
 		}
 		_ = json.Unmarshal(rr.Body.Bytes(), &env)
+		// TokenAuth's own refusal is the only 403 that names the scope, so
+		// for a path no route serves (where a write token gets 404) this
+		// is what says the read token was refused by the scope check
+		// (codex round 1).
+		if rr.Code == http.StatusForbidden && env.Error.Message == "Token scope does not permit this action" {
+			return rr.Code, "scope"
+		}
 		return rr.Code, env.Error.Code
 	}
 
@@ -136,10 +142,10 @@ func TestTASK2863_ReadPATThroughTheRouter(t *testing.T) {
 		{"dot-dot ref", base + "/playbooks/../run", map[string]any{}},
 	}
 	for _, c := range refused {
-		if code, ecode := as(readTok, "POST", c.path, c.body); code != http.StatusForbidden || ecode != "forbidden" {
-			t.Errorf("read PAT %s: %d %q, want 403 forbidden", c.name, code, ecode)
+		if code, ecode := as(readTok, "POST", c.path, c.body); code != http.StatusForbidden || ecode != "scope" {
+			t.Errorf("read PAT %s: %d %q, want TokenAuth's scope refusal", c.name, code, ecode)
 		}
-		if code, ecode := as(writeTok, "POST", c.path, c.body); code == http.StatusForbidden && ecode == "forbidden" {
+		if _, ecode := as(writeTok, "POST", c.path, c.body); ecode == "scope" {
 			t.Errorf("write PAT %s is refused for scope too, so the read leg measures the route, not the scope", c.name)
 		}
 	}
