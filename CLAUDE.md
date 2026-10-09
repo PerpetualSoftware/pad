@@ -101,6 +101,8 @@ pad auth whoami        # Show current user
 pad auth logout        # Sign out
 pad auth reset-password user@example.com  # Recover a locked-out account (run ON THE SERVER HOST)
 pad auth reset-password user@example.com --temp-password  # ...set a temp password instead of a reset link
+pad auth 2fa setup     # Turn on 2FA: shows the otpauth URI + secret once, asks for a code, prints recovery codes once
+pad auth 2fa disable   # Turn off 2FA: asks for the password, or (no-password account) a code or recovery code; keeps this CLI signed in
 
 # Credentials stored in ~/.pad/credentials.json (0600 permissions)
 # CLI auto-attaches auth token to all API requests
