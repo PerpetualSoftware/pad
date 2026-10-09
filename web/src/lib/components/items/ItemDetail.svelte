@@ -777,6 +777,9 @@
 	});
 
 	let contentDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	// The text the armed contentDebounceTimer will save, so a refusal resend of
+	// the same text can drop it rather than send it twice (TASK-2232, codex r2).
+	let contentDebounceMarkdown: string | null = null;
 	// The save indicator counts the writes OUTSTANDING (BUG-3044): every
 	// `saves.begin()` below is settled in a `finally`, so a superseded or
 	// fenced-off write still counts down. `saveStatus` stays the name the SSE
@@ -4322,6 +4325,7 @@
 		rawContentSaver.cancel();
 		editorStore.setDirty(true);
 		localDirty = true;
+		contentDebounceMarkdown = markdown;
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
 			// Capture identity at fire time. loadData cancels this timer on a
@@ -4359,6 +4363,15 @@
 				// save, which asks again; resending this older text would
 				// replace it.
 				if (currentEditorMarkdown() !== markdown) return null;
+				// Reading the current text may have delivered the editor's pending
+				// change, re-arming the debounce with this same text (typed away
+				// and back inside the window). This resend carries it; drop the
+				// second save rather than send it twice.
+				if (contentDebounceMarkdown === markdown) {
+					clearTimeout(contentDebounceTimer);
+					contentDebounceTimer = undefined;
+					contentDebounceMarkdown = null;
+				}
 				return send(true);
 			}).then((sent) => {
 				if (switchedAway(reqItem, gen)) return;
