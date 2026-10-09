@@ -63,6 +63,7 @@ test('an edit lost with its socket is handed back after a force_refresh', async 
 	await expect(page.locator(EDITOR_SELECTOR)).toContainText('Server body written while the tab was away.', { timeout: SYNC_TIMEOUT });
 	const notice = page.locator('.offline-recovery');
 	await expect(notice, 'the lost edit must be handed back').toBeVisible({ timeout: SYNC_TIMEOUT });
-	await expect(notice.locator('.offline-recovery-text')).toContainText('Sent but never stored.');
+	await notice.getByText('Show your version').click();
+	await expect(notice.getByRole('textbox', { name: 'Your offline version' })).toHaveValue(/Sent but never stored\./);
 	await ctx.close();
 });
