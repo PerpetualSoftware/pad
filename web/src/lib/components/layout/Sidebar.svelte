@@ -21,7 +21,7 @@
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
-	import { backdropDismiss } from '$lib/utils/backdropDismiss';
+	import Modal from '$lib/components/common/Modal.svelte';
 
 	let notificationPanelOpen = $state(false);
 	let showCreateCollection = $state(false);
@@ -252,6 +252,11 @@
 			e.preventDefault();
 			submitQuickAdd();
 		} else if (e.key === 'Escape') {
+			// preventDefault on both paths (TASK-2235): quick-add is a native
+			// <dialog> now, and an Escape keydown left un-prevented also fires
+			// its `cancel`, which would close the whole dialog when this press
+			// was only meant to close the picker.
+			e.preventDefault();
 			if (pickerOpen) {
 				pickerOpen = false;
 				return;
@@ -798,11 +803,21 @@
 	/>
 {/if}
 
-{#if quickAddCollection}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="quick-add-overlay" use:backdropDismiss={{ onDismiss: cancelQuickAdd }}>
-		<div class="quick-add-modal" onclick={(e) => e.stopPropagation()}>
+<!--
+	TASK-2235: quick-add is a real dialog. The Modal primitive (native
+	showModal) owns the focus trap, Escape (through `cancel`, which the picker's
+	and the title's own Escape handlers pre-empt with preventDefault), the
+	backdrop press and focus return to whatever opened it.
+-->
+<Modal
+	open={!!quickAddCollection}
+	onclose={cancelQuickAdd}
+	ariaLabel="Quick add"
+	maxWidth="560px"
+	class="quick-add-dialog"
+>
+	{#if quickAddCollection}
+		<div class="quick-add-modal">
 			<div class="quick-add-header">
 				<button
 					type="button"
@@ -874,8 +889,8 @@
 				>Create</button>
 			</div>
 		</div>
-	</div>
-{/if}
+	{/if}
+</Modal>
 
 <NotificationPanel visible={notificationPanelOpen} onclose={() => { notificationPanelOpen = false; }} />
 
@@ -1116,23 +1131,18 @@
 		color: var(--text-primary);
 		text-decoration: none;
 	}
-	.quick-add-overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		z-index: 50;
-		display: flex;
-		justify-content: center;
-		align-items: flex-start;
-		padding-top: 20vh;
+	/* The dialog surface (background, border, radius) is Modal's. Two
+	   overrides: the collection picker hangs below the header and must not be
+	   clipped by the dialog's overflow:hidden, and quick-add sits lower than
+	   the other modals, where its overlay used to put it. */
+	:global(dialog.modal.quick-add-dialog) {
+		overflow: visible;
+		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+	}
+	:global(dialog.modal.quick-add-dialog[data-placement='top']) {
+		margin-top: 20vh;
 	}
 	.quick-add-modal {
-		width: 100%;
-		max-width: 560px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 		padding: var(--space-4) var(--space-5);
 		display: flex;
 		flex-direction: column;
