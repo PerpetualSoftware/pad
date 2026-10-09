@@ -71,6 +71,7 @@
 	import { fieldMatches } from '$lib/fields/fieldShape';
 	import { characterKey } from '$lib/a11y/characterShortcuts.svelte';
 	import { provideCardPriorityWriter } from '$lib/collections/cardPriority';
+	import { parentFilterOptions } from '$lib/collections/parentFilter';
 	import { type ViewMode, isViewMode, loadViewMode, storeViewMode, loadSortMode, storeSortMode } from '$lib/collections/viewPersistence';
 
 	// TASK-2212: one ViewMode predicate for the URL, storage and saved views,
@@ -127,14 +128,7 @@
 	// in loadCollection raced the localIndex bootstrap on cold loads
 	// and could leave the badge empty until a manual refresh (Codex
 	// P3 round 1 of TASK-1357).
-	let relationLabels = $derived.by(() => {
-		if (!wsSlug || collSlug !== 'tasks') return {};
-		const labels: Record<string, string> = {};
-		for (const p of localIndex.getByCollection(wsSlug, 'plans')) {
-			labels[p.id] = p.title;
-		}
-		return labels;
-	});
+	// `relationLabels` (the parent filter options) is derived below `items`.
 
 	// Saved views state
 	let savedViews = $state<View[]>([]);
@@ -323,6 +317,13 @@
 					.map((row) => ({ ...row, content: '', content_state: undefined }) as Item)
 			: [],
 	);
+
+	// TASK-2215: the parent filter's options are the parents THIS
+	// collection's items have, for any collection, not plans for `tasks` only.
+	let parentFilter = $derived(
+		parentFilterOptions(items, (slug) => collectionStore.collections.find((c) => c.slug === slug)?.name)
+	);
+	let relationLabels = $derived(parentFilter.labels);
 
 	// `loading` is true until BOTH the collection metadata fetch AND
 	// the localIndex bootstrap have settled. Without this, the empty-
@@ -4263,6 +4264,7 @@
 						onFilterChange={handleFilterChange}
 						onSearchChange={handleSearchChange}
 						{relationLabels}
+						parentNoun={parentFilter.noun}
 						{tagCounts}
 						{selectedTags}
 						onTagFilterChange={handleTagFilterChange}

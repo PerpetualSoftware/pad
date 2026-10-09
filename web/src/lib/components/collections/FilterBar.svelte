@@ -17,6 +17,8 @@
 		onFilterChange: (filters: Record<string, string>) => void;
 		onSearchChange: (query: string) => void;
 		relationLabels?: Record<string, string>;
+		/** What the parent options are, for "All {noun}" (TASK-2215): a collection name, or "parents". */
+		parentNoun?: string;
 		/** Tags present in this collection, with counts, ordered by count desc. */
 		tagCounts?: { tag: string; count: number }[];
 		/** Currently-selected tag filters (OR semantics). */
@@ -50,6 +52,7 @@
 		onFilterChange,
 		onSearchChange,
 		relationLabels = {},
+		parentNoun = 'parents',
 		tagCounts = [],
 		selectedTags = [],
 		onTagFilterChange = () => {},
@@ -85,9 +88,10 @@
 	// U3's picker and U2's chip vocabulary rather than inventing a second way
 	// to choose and name an item.
 	//
-	// The hardcoded tasks→plans parent filter above is deliberately left alone:
-	// it filters on `parent_link_id`, not on a field, so it is a different
-	// mechanism wearing a similar hat. Generalising THAT is not this unit.
+	// The parent filter above is a different mechanism wearing a similar hat:
+	// it filters on `parent_link_id`, not on a field. Since TASK-2215 its
+	// options are the parents the collection's items have, in any collection
+	// (lib/collections/parentFilter.ts), not plans for `tasks` only.
 	let knownCollectionSlugs = $derived(new Set(collectionStore.collections.map((c) => c.slug)));
 	let relationFields = $derived(
 		// BOTH relation types (U4). Filtering a `multi_relation` is MEMBERSHIP —
@@ -121,7 +125,7 @@
 
 	let hasParentFilter = $derived(Object.keys(relationLabels).length > 0);
 	let activeParent = $derived(activeFilters.parent ?? '');
-	let activeParentLabel = $derived(activeParent ? (relationLabels[activeParent] ?? activeParent) : 'All plans');
+	let activeParentLabel = $derived(activeParent ? (relationLabels[activeParent] ?? activeParent) : `All ${parentNoun}`);
 
 	function setParentFilterValue(value: string) {
 		const next = { ...activeFilters };
@@ -209,7 +213,7 @@
 				<BottomSheet
 					open={parentSheetOpen}
 					onclose={() => (parentSheetOpen = false)}
-					title="Filter by plan"
+					title="Filter by parent"
 				>
 					<div class="parent-sheet-body">
 						<button
@@ -217,7 +221,7 @@
 							class:active={activeParent === ''}
 							type="button"
 							onclick={() => handleParentSheetSelect('')}
-						>All plans</button>
+						>All {parentNoun}</button>
 						{#each Object.entries(relationLabels) as [id, label] (id)}
 							<button
 								class="parent-sheet-option"
@@ -231,7 +235,7 @@
 			{/if}
 		{:else}
 			<select aria-label="Filter by parent" class="parent-filter" value={activeParent} onchange={setParentFilter}>
-				<option value="">All plans</option>
+				<option value="">All {parentNoun}</option>
 				{#each Object.entries(relationLabels) as [id, label] (id)}
 					<option value={id}>{label}</option>
 				{/each}
