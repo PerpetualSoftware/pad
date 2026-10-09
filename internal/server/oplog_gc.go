@@ -135,8 +135,8 @@ func (s *Server) runOpLogGCTick(minAge time.Duration) {
 	var res collab.PruneSweepResult
 	var err error
 	if s.opLogCompactor != nil {
-		s.compactDormantOpLogs(minAge)
-		res, err = s.collab.PruneSweepKeeping(minAge, s.keepCompacted)
+		deferred := s.compactDormantOpLogs(minAge)
+		res, err = s.collab.PruneSweepKeeping(minAge, s.keepCompacted(deferred))
 	} else {
 		res, err = s.collab.PruneSweep(minAge)
 	}

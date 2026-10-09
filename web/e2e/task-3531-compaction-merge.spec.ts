@@ -56,7 +56,13 @@ test('a tab that slept past the dormancy sweep merges its edit (or, without comp
 	// The room's grace runs out and the sweep reaches the item: compacted into
 	// one row (compaction on) or deleted (off).
 	await expect
-		.poll(() => opLogState(id), { timeout: 150_000, intervals: [2_000], message: 'the sweep reached the item' })
+		.poll(() => opLogState(id), {
+			timeout: 150_000,
+			intervals: [2_000],
+			// The spec cannot see the server's environment: a timeout in mode=off
+			// usually means the server runs with PAD_OPLOG_COMPACT=on (codex).
+			message: `the sweep reached the item (mode=${MODE}; check the server's PAD_OPLOG_COMPACT matches)`
+		})
 		.toEqual(MODE === 'on' ? { rows: 1, compacted: true } : { rows: 0, compacted: false });
 
 	// A fresh tab edits the item meanwhile.

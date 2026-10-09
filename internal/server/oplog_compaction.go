@@ -27,6 +27,13 @@ type OpLogCompactor interface {
 	Snapshot(ctx context.Context, job materialize.Job) (materialize.Snapshot, error)
 }
 
+// opLogCompactionPerTick caps the snapshot jobs one GC tick runs (codex, TASK-3531):
+// compaction shares the materializer's single job slot with op-log recovery,
+// which carries UNFLUSHED edits, so a large dormant backlog must not hold the
+// slot for a whole pass. Items past the cap are deferred, kept from this tick's
+// sweep, and compacted by a later tick. A var so tests can lower it.
+var opLogCompactionPerTick = 25
+
 // opLogCompactionJobTimeout bounds one snapshot job from the sweep's side; the
 // supervisor's own per-KiB deadline (BUG-3521) usually ends it first.
 const opLogCompactionJobTimeout = 2 * time.Minute
@@ -54,25 +61,40 @@ func (s *Server) SetOpLogCompactor(c OpLogCompactor) {
 // prune. It never holds an item's collab lock across a job: it reads the rows
 // and builds the snapshot unlocked, then swaps under the lock with no room
 // open, and CompactItemOpLog re-checks that the log is the one it read.
-func (s *Server) compactDormantOpLogs(minAge time.Duration) {
+//
+// It runs at most opLogCompactionPerTick snapshot jobs and returns the items
+// it DEFERRED past that cap, which this tick's sweep must keep (a deferred
+// item deleted now would lose its chance to compact).
+func (s *Server) compactDormantOpLogs(minAge time.Duration) map[string]bool {
+	deferred := map[string]bool{}
 	if s.opLogCompactor == nil || s.collab == nil {
-		return
+		return deferred
 	}
 	cutoff := time.Now().Add(-minAge)
 	ids, err := s.store.ListDormantOpLogItemsBefore(cutoff)
 	if err != nil {
 		slog.Warn("op-log compaction: listing dormant items failed", "error", err)
-		return
+		return deferred
 	}
+	jobs := 0
 	for _, itemID := range ids {
+		if jobs >= opLogCompactionPerTick {
+			deferred[itemID] = true
+			continue
+		}
 		outcome := s.compactOne(itemID, cutoff)
 		if outcome == compactAlreadyDone {
 			continue
 		}
+		jobs++
 		if s.metrics != nil {
 			s.metrics.OpLogCompactionsTotal.WithLabelValues(outcome).Inc()
 		}
 	}
+	if len(deferred) > 0 {
+		slog.Info("op-log compaction: deferred items past this tick's cap", "deferred", len(deferred), "cap", opLogCompactionPerTick)
+	}
+	return deferred
 }
 
 func (s *Server) compactOne(itemID string, cutoff time.Time) string {
@@ -139,8 +161,17 @@ func (s *Server) compactOne(itemID string, cutoff time.Time) string {
 }
 
 // keepCompacted is the sweep's keep func while compaction is on: a log that is
-// exactly its snapshot stays.
-func (s *Server) keepCompacted(itemID string) bool {
+// exactly its snapshot stays, and so does one deferred past this tick's cap.
+func (s *Server) keepCompacted(deferred map[string]bool) func(string) bool {
+	return func(itemID string) bool {
+		if deferred[itemID] {
+			return true
+		}
+		return s.isCompactedOrUnknown(itemID)
+	}
+}
+
+func (s *Server) isCompactedOrUnknown(itemID string) bool {
 	done, err := s.store.IsCompactedLog(itemID)
 	if err != nil {
 		// Unknown: keep it. A wrong keep costs one sweep; a wrong delete

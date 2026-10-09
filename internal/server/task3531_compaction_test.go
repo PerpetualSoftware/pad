@@ -213,3 +213,28 @@ func TestTASK3531_ACoveredResumeIsAdmittedNotRefreshed(t *testing.T) {
 		})
 	}
 }
+
+// The per-tick cap (codex): items past it are deferred, kept from this tick's
+// sweep (not deleted), and compacted by the next tick.
+func TestTASK3531_ItemsPastTheTickCapAreKeptForTheNextTick(t *testing.T) {
+	old := opLogCompactionPerTick
+	opLogCompactionPerTick = 1
+	t.Cleanup(func() { opLogCompactionPerTick = old })
+
+	f := newRecoveryFixture(t, nil, time.Minute, materializeRecoveryConfig{})
+	f.srv.SetOpLogCompactor(recoveryRunner(t))
+	a, _ := seedDormantCorpusLog(t, f)
+	b, _ := seedDormantCorpusLog(t, f)
+
+	f.srv.runOpLogGCTick(time.Hour)
+	na, nb := opLogRowCount(t, f, a), opLogRowCount(t, f, b)
+	if !((na == 1) != (nb == 1)) || na == 0 || nb == 0 {
+		t.Fatalf("after one capped tick: %d and %d rows; want one compacted and one deferred, NEITHER deleted", na, nb)
+	}
+	f.srv.runOpLogGCTick(time.Hour)
+	for _, id := range []string{a, b} {
+		if done, err := f.srv.store.IsCompactedLog(id); err != nil || !done {
+			t.Fatalf("after the next tick %s is not compacted: %v, %v", id, done, err)
+		}
+	}
+}
