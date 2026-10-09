@@ -517,8 +517,11 @@
 				} catch {
 					// Only the key this run wrote, and only if it still holds this
 					// run's value: a single toggle on the row meanwhile wins (codex r1).
+					// A row a refresh replaced already shows the server's answer;
+					// only a row still on screen carries this run's optimistic
+					// value (codex r3).
 					const now = parseFields(item);
-					if (now.status === targetStatus) {
+					if (conventions.includes(item) && now.status === targetStatus) {
 						now.status = oldStatus;
 						item.fields = JSON.stringify(now);
 						conventions = [...conventions];
