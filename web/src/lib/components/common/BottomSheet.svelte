@@ -21,6 +21,7 @@
 	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { backdropDismiss } from '$lib/utils/backdropDismiss';
+	import { createFocusReturn } from '$lib/a11y/focusReturn';
 
 	interface Props {
 		open: boolean;
@@ -50,22 +51,16 @@
 	// Modal.svelte's `dialogEl`).
 	let sheetEl = $state<HTMLElement>();
 
-	// Plain `let` (NOT $state, per CONVE-1688): focus bookkeeping read/written
-	// only inside the effect + teardown, never in reactive position.
-	let previouslyFocused: HTMLElement | null = null;
-
-	function restoreFocus() {
-		if (previouslyFocused && document.contains(previouslyFocused)) {
-			previouslyFocused.focus();
-		}
-		previouslyFocused = null;
-	}
+	// Focus bookkeeping (TASK-2235: shared with Modal and the other surfaces
+	// that take focus). Not $state, per CONVE-1688.
+	const focusReturn = createFocusReturn();
+	const restoreFocus = () => focusReturn.restore();
 
 	// Move focus INTO the sheet when it opens, and restore it to the trigger on
 	// close (BUG-2130). Without this the sheet is a `role="dialog"` that never
 	// takes focus: ESC reaches the trigger's layer underneath (closing THAT),
 	// and Tab escapes the sheet. Reads `open` (prop) + `sheetEl` ($state); writes
-	// only the plain `previouslyFocused`, so no $state is both read and written
+	// only the plain `focusReturn` closure, so no $state is both read and written
 	// here and the effect can't self-invalidate (mirrors Modal.svelte).
 	//
 	// `focusKey` is read purely for dependency tracking: a consumer that swaps
@@ -78,9 +73,7 @@
 		focusKey;
 		const el = sheetEl;
 		if (open && el) {
-			if (previouslyFocused === null) {
-				previouslyFocused = (document.activeElement as HTMLElement | null) ?? null;
-			}
+			focusReturn.save();
 			// Focus the panel itself (tabindex=-1) rather than a control inside —
 			// avoids implying a selection in the option-list sheets, and lets a
 			// screen reader announce the dialog. Tab then steps to the first

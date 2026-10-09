@@ -14,6 +14,8 @@
 	import { fly, fade } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
+	import { createFocusReturn } from '$lib/a11y/focusReturn';
+	import { nextTrapTargetAcross } from '$lib/collections/paneFocus';
 
 	let {
 		open,
@@ -149,7 +151,41 @@
 		if (dragging) onTouchEnd();
 	}
 
+	/*
+	 * TASK-2235: focus. The sheet is NOT modal and no longer says it is: it
+	 * leaves the bottom nav live on purpose (the slot stays lit and another
+	 * slot is one tap away), so `aria-modal` would hide that live nav from a
+	 * screen reader. What it does keep from a modal: focus moves in on open and
+	 * back to the trigger on close, and Tab cycles through the sheet and the
+	 * nav, never into the page its backdrop covers.
+	 */
+	const focusReturn = createFocusReturn();
+	$effect(() => {
+		const el = panelEl;
+		if (open && el) {
+			focusReturn.save();
+			if (!el.contains(document.activeElement)) el.focus({ preventScroll: true });
+		} else if (!open) {
+			focusReturn.restore();
+		}
+	});
+	$effect(() => () => focusReturn.restore());
+
+	function onTab(e: KeyboardEvent) {
+		if (!panelEl || blockedByFrontLayer(e)) return;
+		const nav = document.querySelector<HTMLElement>('nav.bottom-nav');
+		const target = nextTrapTargetAcross(nav ? [panelEl, nav] : [panelEl], document.activeElement, e.shiftKey);
+		if (target) {
+			e.preventDefault();
+			target.focus({ preventScroll: true });
+		}
+	}
+
 	function onKeydown(e: KeyboardEvent) {
+		if (open && e.key === 'Tab') {
+			onTab(e);
+			return;
+		}
 		if (!open || e.key !== 'Escape') return;
 		// A HELD Escape fires many auto-repeat keydowns, and each is a FRESH
 		// event object — so the viewer's per-event consumption mark (BUG-2441)
@@ -188,8 +224,8 @@
 		bind:this={panelEl}
 		class="ds-panel"
 		role="dialog"
-		aria-modal="true"
 		aria-label={label}
+		tabindex="-1"
 		style:transform={dragY ? `translateY(${dragY}px)` : undefined}
 		style:transition={dragging ? 'none' : undefined}
 		transition:fly={{ y: 360, duration: 240, easing: cubicOut }}

@@ -3,6 +3,9 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { HistoryEntry } from '$lib/stores/toast.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import { createFocusReturn } from '$lib/a11y/focusReturn';
+	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	let { visible, onclose }: { visible: boolean; onclose: () => void } = $props();
 
@@ -35,16 +38,66 @@
 			toastStore.markAllRead();
 		}
 	});
+
+	// TASK-2235: the panel is modal (its backdrop covers the page), so it takes
+	// focus on open, returns it on close, keeps Tab inside and closes on
+	// Escape, the way BottomSheet does. `panelEl` is $state so the effect
+	// re-runs once `{#if visible}` mounts it; the effect writes no $state.
+	const uid = $props.id();
+	const headingId = `notification-panel-heading-${uid}`;
+	let panelEl = $state<HTMLElement>();
+	const focusReturn = createFocusReturn();
+
+	$effect(() => {
+		const el = panelEl;
+		if (visible && el) {
+			focusReturn.save();
+			if (!el.contains(document.activeElement)) el.focus({ preventScroll: true });
+		} else if (!visible) {
+			focusReturn.restore();
+		}
+	});
+	$effect(() => () => focusReturn.restore());
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (!visible || !panelEl) return;
+		// One physical press acts; a viewer or native modal in front owns the
+		// key (the same arbitration BottomSheet and DockedSheet use).
+		if (e.key === 'Escape' && e.repeat) return;
+		if (isBlockedByModal(panelEl, e)) return;
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			onclose();
+			return;
+		}
+		if (e.key === 'Tab') {
+			const target = nextTrapTarget(paneFocusables(panelEl), document.activeElement, e.shiftKey, panelEl);
+			if (target) {
+				e.preventDefault();
+				target.focus({ preventScroll: true });
+			}
+		}
+	}
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 {#if visible}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="panel-backdrop" transition:fade={{ duration: 150 }} onclick={onclose}></div>
 
-	<div class="panel" transition:fly={{ x: 320, duration: 200 }}>
+	<div
+		bind:this={panelEl}
+		class="panel"
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby={headingId}
+		tabindex="-1"
+		transition:fly={{ x: 320, duration: 200 }}
+	>
 		<div class="panel-header">
-			<h3 class="panel-title">Notifications</h3>
+			<h3 class="panel-title" id={headingId}>Notifications</h3>
 			<button class="panel-close" onclick={onclose} aria-label="Close notifications">&times;</button>
 		</div>
 
@@ -98,6 +151,12 @@
 		z-index: 100;
 		display: flex;
 		flex-direction: column;
+	}
+
+	/* Focused programmatically on open (tabindex=-1) so a screen reader
+	   announces the dialog; Tab then moves to its controls. */
+	.panel:focus {
+		outline: none;
 	}
 
 	.panel-header {
