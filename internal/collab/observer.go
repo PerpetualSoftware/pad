@@ -47,6 +47,14 @@ const (
 	ResumeRefreshRestored = "restored"
 )
 
+// CompactedResumeObserver is optional on an Observer (TASK-3531): it counts a
+// resume admitted because a compaction snapshot covers its cursor, where
+// before compaction it would have been refused with force_refresh. Runs on
+// the Join goroutine, like the resume callbacks.
+type CompactedResumeObserver interface {
+	CompactedResumeAdmitted()
+}
+
 // OverflowObserver is optional on an Observer (TASK-1273): it counts a peer
 // closed because the op bus had to drop an op for it. Separate so an
 // Observer that predates it keeps compiling. Unlike the Join callbacks above,
@@ -78,6 +86,12 @@ func (o *observable) observer() Observer {
 func (o *observable) reportResumeJoined() {
 	if obs := o.observer(); obs != nil {
 		obs.ResumeJoined()
+	}
+}
+
+func (o *observable) reportCompactedResumeAdmitted() {
+	if obs, ok := o.observer().(CompactedResumeObserver); ok {
+		obs.CompactedResumeAdmitted()
 	}
 }
 

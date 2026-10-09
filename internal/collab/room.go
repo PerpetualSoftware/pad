@@ -299,6 +299,10 @@ type opLogStore interface {
 	// and that id is below MIN, rows it expected to replay have
 	// been pruned and the server sends ControlMessageForceRefresh.
 	MinOpLogID(itemID string) (int64, bool, error)
+	// CompactedResumeCovers reports whether a resume cursor is inside the
+	// item's compaction snapshot, which still exists (TASK-3531): such a tab
+	// is admitted instead of force_refreshed, and its edits merge.
+	CompactedResumeCovers(itemID string, since int64) (bool, error)
 	// MaxOpLogID is consulted ONLY by ForceRefreshRoom (BUG-2264), which reads
 	// it under the per-item lock WITH appendMu held (inbound persistence frozen)
 	// to set the pre-prune restore boundary = MAX+1. That fencing is why the

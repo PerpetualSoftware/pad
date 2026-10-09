@@ -14,6 +14,12 @@ func NewCollabObserver(m *Metrics) *CollabObserver {
 
 var _ collab.Observer = (*CollabObserver)(nil)
 var _ collab.OverflowObserver = (*CollabObserver)(nil)
+var _ collab.CompactedResumeObserver = (*CollabObserver)(nil)
+
+// CompactedResumeAdmitted counts a resume admitted into a snapshot (TASK-3531).
+func (o *CollabObserver) CompactedResumeAdmitted() {
+	o.m.CollabCompactedResumesTotal.Inc()
+}
 
 // OverflowClosed counts a peer closed for a dropped op (TASK-1273).
 func (o *CollabObserver) OverflowClosed() {
