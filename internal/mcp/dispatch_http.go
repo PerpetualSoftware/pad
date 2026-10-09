@@ -1128,5 +1128,8 @@ func mapPlaybookRun(input map[string]any) (method, path string, body []byte, err
 	if err != nil {
 		return "", "", nil, fmt.Errorf("encode playbook run body: %w", err)
 	}
-	return http.MethodPost, "/api/v1/workspaces/" + workspace + "/playbooks/" + ref + "/run", enc, nil
+	// Both segments are escaped, as every other mapper's are (the TASK-2863
+	// survey): unescaped, a ref of "match?" routed to POST /playbooks/match.
+	return http.MethodPost, "/api/v1/workspaces/" + url.PathEscape(workspace) +
+		"/playbooks/" + url.PathEscape(ref) + "/run", enc, nil
 }
