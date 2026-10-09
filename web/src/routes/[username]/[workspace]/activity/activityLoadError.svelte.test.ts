@@ -86,6 +86,8 @@ describe('Activity: a failed load is not an empty feed (TASK-2203)', () => {
 		render(ActivityPage);
 		await new Promise((r) => setTimeout(r, 50));
 		expect(screen.queryByText("Couldn't load the activity feed")).toBeNull();
+		// nor an empty feed it never found (codex r3)
+		expect(screen.queryByText('No activity found')).toBeNull();
 	});
 
 	it('a new feed does not inherit the previous feed\'s load-more failure (codex r1)', async () => {

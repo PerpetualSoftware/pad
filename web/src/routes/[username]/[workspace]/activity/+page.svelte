@@ -198,7 +198,7 @@
 			if (filterSource) params.source = filterSource;
 
 			const result = await api.activity.list(slug, params);
-			if (thisRequest !== activityRequest) return;
+			if (thisRequest !== activityRequest || !isSameIdentity()) return;
 			if (reset) {
 				activities = result;
 			} else {
@@ -211,7 +211,11 @@
 				else moreError = true;
 			}
 		} finally {
-			if (thisRequest === activityRequest) {
+			// Under the identity that asked only: clearing `loading` for a request
+			// a swap overtook would show "No activity found" to the new account,
+			// a claim this request never made (codex r3). The layout's identity
+			// reload replaces the page.
+			if (thisRequest === activityRequest && isSameIdentity()) {
 				loading = false;
 				loadingMore = false;
 				if (headRefreshOwed) {
