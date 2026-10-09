@@ -17,6 +17,7 @@
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import { loadFailure } from '$lib/api/loadFailure';
 	import EpisodeFeed from '$lib/components/activity/EpisodeFeed.svelte';
+	import { ACTOR_OPTIONS, activityFilterParams, hasActivityFilters, actorBadgeTitle } from '$lib/activity/activityFilters';
 	import type { Activity, Collection, FieldDef } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import ActivityChangeValue from '$lib/components/timeline/ActivityChangeValue.svelte';
@@ -65,7 +66,12 @@
 	// Filters
 	let filterAction = $state('');
 	let filterSource = $state('');
+	let filterActor = $state('');
 	let filterCollection = $state('');
+	// Every filter is applied by the server (TASK-2219), so the first load,
+	// Load more and the live head re-read all send the same query.
+	const filters = $derived({ action: filterAction, source: filterSource, actor: filterActor, collection: filterCollection });
+	const filtered = $derived(hasActivityFilters(filters));
 
 	// View mode: episode cards (Live) vs the raw audit timeline. Persisted so
 	// the choice survives navigation.
@@ -114,6 +120,8 @@
 			// Access filter values to track them as dependencies
 			filterAction;
 			filterSource;
+			filterActor;
+			filterCollection;
 			// UNTRACKED past the dependencies named above: loadActivities reads
 			// the identity epoch for its fence (TASK-2203), and tracked, that
 			// read would add an identity reload the layout already owns.
@@ -189,14 +197,12 @@
 			// Keyset, not offset (BUG-2781): the cursor names the last row held,
 			// so a row restamped to the head between pages cannot shift the
 			// next page back onto rows already shown.
-			const params: Record<string, string | number> = { limit: PAGE_SIZE };
+			const params: Record<string, string | number> = { limit: PAGE_SIZE, ...activityFilterParams(filters) };
 			const cursor = reset ? null : cursorAfter(activities);
 			if (cursor) {
 				params.before = cursor.before;
 				params.before_id = cursor.before_id;
 			}
-			if (filterAction) params.action = filterAction;
-			if (filterSource) params.source = filterSource;
 
 			const result = await api.activity.list(slug, params);
 			if (thisRequest !== activityRequest || !isSameIdentity()) return;
@@ -254,9 +260,7 @@
 			headRefreshOwed = true;
 			return;
 		}
-		const params: Record<string, string | number> = { limit: PAGE_SIZE };
-		if (filterAction) params.action = filterAction;
-		if (filterSource) params.source = filterSource;
+		const params: Record<string, string | number> = { limit: PAGE_SIZE, ...activityFilterParams(filters) };
 		try {
 			const fresh = await api.activity.list(slug, params);
 			if (gen !== resetGeneration || slug !== wsSlug) return;
@@ -278,20 +282,6 @@
 		if (browser) document.removeEventListener('visibilitychange', onVisibilityChange);
 	});
 
-	// Client-side collection filter using enriched top-level field or metadata fallback
-	let filteredActivities = $derived.by(() => {
-		if (!filterCollection) return activities;
-		return activities.filter((a) => {
-			if (a.collection_slug) return a.collection_slug === filterCollection;
-			try {
-				const meta = JSON.parse(a.metadata);
-				return meta.collection_slug === filterCollection || meta.collection === filterCollection;
-			} catch {
-				return false;
-			}
-		});
-	});
-
 	// Group activities by date. A reorder writes one row per moved item;
 	// each run of one batch shows as a single line (TASK-3517).
 	let groupedActivities = $derived.by(() => {
@@ -300,7 +290,7 @@
 		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 		const yesterday = new Date(today.getTime() - 86400000);
 
-		for (const activity of collapseReorderBatches(filteredActivities)) {
+		for (const activity of collapseReorderBatches(activities)) {
 			const actDate = new Date(activity.created_at);
 			const actDay = new Date(actDate.getFullYear(), actDate.getMonth(), actDate.getDate());
 			const dayKey = actDay.toISOString().slice(0, 10);
@@ -415,7 +405,7 @@
 </script>
 
 <div class="activity-page">
-	<PageHeader title="Activity" count={loading ? undefined : filteredActivities.length} />
+	<PageHeader title="Activity" count={loading ? undefined : activities.length} />
 
 	<!-- Filters -->
 	<div class="filters-row">
@@ -462,6 +452,15 @@
 		</div>
 
 		<div class="filter-group">
+			<label class="filter-label" for="filter-actor">Actor</label>
+			<select id="filter-actor" class="filter-select" bind:value={filterActor}>
+				{#each ACTOR_OPTIONS as opt (opt.value)}
+					<option value={opt.value}>{opt.label}</option>
+				{/each}
+			</select>
+		</div>
+
+		<div class="filter-group">
 			<label class="filter-label" for="filter-collection">Collection</label>
 			<select id="filter-collection" class="filter-select" bind:value={filterCollection}>
 				<option value="">All collections</option>
@@ -471,12 +470,13 @@
 			</select>
 		</div>
 
-		{#if filterAction || filterSource || filterCollection}
+		{#if filtered}
 			<button
 				class="clear-filters"
 				onclick={() => {
 					filterAction = '';
 					filterSource = '';
+					filterActor = '';
 					filterCollection = '';
 				}}
 			>
@@ -504,13 +504,13 @@
 			onRetry={failure.retryable ? () => loadActivities(wsSlug, true) : undefined}
 		/>
 	{:else if view === 'live'}
-		<EpisodeFeed activities={filteredActivities} {wsSlug} {username} />
+		<EpisodeFeed activities={activities} {wsSlug} {username} />
 		{@render loadMoreButton()}
-	{:else if filteredActivities.length === 0}
+	{:else if activities.length === 0}
 		<EmptyState
 			icon="~"
 			title="No activity found"
-			message={filterAction || filterSource || filterCollection
+			message={filtered
 				? 'Try changing or clearing the filters.'
 				: 'Activity will appear here as items are created, updated, and managed.'}
 		/>
@@ -581,8 +581,10 @@
 									<bdi
 										class="actor-badge {src.kind}"
 										class:named={src.named}
-										title={src.named ? src.label : undefined}>{src.label}</bdi
+										title={actorBadgeTitle(src.kind, src.label, src.named)}
+										aria-hidden="true">{src.label}</bdi
 									>
+									<span class="sr-only">{actorBadgeTitle(src.kind, src.label, src.named)}</span>
 									<span
 										class="entry-time"
 										title={new Date(activity.created_at).toLocaleString()}
@@ -601,7 +603,7 @@
 </div>
 
 {#snippet loadMoreButton()}
-	{#if hasMore && !filterCollection}
+	{#if hasMore}
 		<div class="load-more-wrapper">
 			<button class="load-more-btn" onclick={loadMore} disabled={loadingMore || (moreError != null && !loadFailure('more activity', moreError).retryable)}>
 				{#if loadingMore}

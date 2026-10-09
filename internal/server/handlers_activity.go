@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -51,6 +52,32 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 		params.Since = parsed
 	}
 
+	// Filter by collection visibility and item-level grants
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	// collection=<slug> narrows to activity on that collection's items, in
+	// the store query (TASK-2219): the web page used to filter the loaded
+	// page client-side, which showed a few rows of one page as the total and
+	// hid Load more. A slug that names no live collection, and one the caller
+	// cannot see, both answer an empty list, so the filter is not an
+	// existence oracle.
+	if collSlug := r.URL.Query().Get("collection"); collSlug != "" {
+		coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if coll == nil || (visibleIDs != nil && !slices.Contains(visibleIDs, coll.ID)) {
+			writeJSON(w, http.StatusOK, []models.Activity{})
+			return
+		}
+		params.CollectionID = coll.ID
+	}
+
 	activities, err := s.store.ListWorkspaceActivity(workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
@@ -63,12 +90,6 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 	// Enrich activities with item titles and collection info
 	s.enrichActivities(activities)
 
-	// Filter by collection visibility and item-level grants
-	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
 	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
 	if grantErr != nil {
 		writeInternalError(w, grantErr)
