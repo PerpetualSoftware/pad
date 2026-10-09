@@ -89,6 +89,17 @@ vi.mock('$lib/api/client', () => ({
 // permission gate on Activate (BUG-3264) is walked in
 // e2e/permission-walk-system.spec.ts.
 vi.mock('$lib/collections/canCreateIn', () => ({ canCreateIn: () => true }));
+// The tab is in the URL since TASK-2256: a click navigates, so the page double
+// must be reactive and goto must write the URL it is given.
+vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
+vi.mock('$app/navigation', async () => {
+	const { page } = await import('../../../../test/mocks/reactivePage.svelte');
+	return {
+		goto: async (url: string | URL) => {
+			page.url = new URL(String(url), page.url);
+		}
+	};
+});
 vi.mock('$lib/scroll/restore.svelte', () => ({
 	createScrollRestoration: () => ({ snapshot: { capture: () => null, restore: () => {} } }),
 }));

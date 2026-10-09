@@ -2,16 +2,18 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import PlaybookInvokeChips from '$lib/components/playbooks/PlaybookInvokeChips.svelte';
 	import AgentTermsLegend from '$lib/components/agent/AgentTermsLegend.svelte';
 	import { termTitle } from '$lib/agent/agentTerms';
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import { loadFailure } from '$lib/api/loadFailure';
 	import { statusColor } from '$lib/utils/fieldColors';
-	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
+	import { itemUrlId, type LibraryCategory, type LibraryConvention, type PlaybookCategory, type LibraryPlaybook, type Item } from '$lib/types';
 	import { canCreateIn } from '$lib/collections/canCreateIn';
 	import { artifactSlugFor } from '$lib/collections/artifactSlug';
 	import type { BuiltinListEntry } from '$lib/types';
@@ -69,6 +71,11 @@
 	let playbookCategories = $state<PlaybookCategory[]>([]);
 	let activeConventionTitles = $state<Set<string>>(new Set());
 	let activePlaybookTitles = $state<Set<string>>(new Set());
+	// The workspace items those titles came from, so "Active" can link to the
+	// item activation created (TASK-2256, audit C67). Keyed by title, like
+	// the sets above, for an item with no built-in origin on the listing.
+	let conventionItemsByTitle = $state<Map<string, Item>>(new Map());
+	let playbookItemsByTitle = $state<Map<string, Item>>(new Map());
 	// Every item made from a built-in, with its state (TASK-3462 U3b): what
 	// makes an entry "Active" by KEY, and where an update is on offer.
 	let builtinEntries = $state<BuiltinListEntry[]>([]);
@@ -91,9 +98,59 @@
 	export const snapshot = scrollRestoration.snapshot;
 	let activatingTitle = $state<string | null>(null);
 	let toast = $state<string | null>(null);
-	let activeTab = $state<'conventions' | 'playbooks'>(
-		(page.url.searchParams.get('tab') === 'playbooks') ? 'playbooks' : 'conventions'
+	// The tab lives in the URL (TASK-2256, audit C66). It used to be read once
+	// and never written, so a refresh landed on Conventions and both tabs
+	// shared one scroll key, which defeated the per-tab offsets above.
+	let activeTab = $derived<'conventions' | 'playbooks'>(
+		page.url.searchParams.get('tab') === 'playbooks' ? 'playbooks' : 'conventions'
 	);
+	const TABS = ['conventions', 'playbooks'] as const;
+
+	function selectTab(tab: 'conventions' | 'playbooks', focus = false) {
+		if (tab !== activeTab) {
+			const url = new URL(page.url);
+			url.searchParams.set('tab', tab);
+			// replaceState: switching tabs is not a navigation to come back
+			// through. Not noScroll: each tab restores its own offset.
+			void goto(url, { replaceState: true, keepFocus: true });
+		}
+		if (focus) document.getElementById(`library-tab-${tab}`)?.focus();
+	}
+
+	// The tabs pattern's keys: arrows move between the two tabs, Home and End
+	// jump to the ends, and selection follows focus.
+	function onTabKeydown(e: KeyboardEvent) {
+		const i = TABS.indexOf(activeTab);
+		let next: number | null = null;
+		if (e.key === 'ArrowRight') next = (i + 1) % TABS.length;
+		else if (e.key === 'ArrowLeft') next = (i - 1 + TABS.length) % TABS.length;
+		else if (e.key === 'Home') next = 0;
+		else if (e.key === 'End') next = TABS.length - 1;
+		if (next === null) return;
+		e.preventDefault();
+		selectTab(TABS[next], true);
+	}
+
+	// Which cards show their full text (TASK-2256, audit C67): activation
+	// commits to an entry, and a 100-character excerpt is not enough to
+	// decide on. The text is already here; this only shows it.
+	let expandedCards = $state<Set<string>>(new Set());
+
+	function toggleCard(key: string) {
+		const next = new Set(expandedCards);
+		if (next.has(key)) next.delete(key);
+		else next.add(key);
+		expandedCards = next;
+	}
+
+	/** Where "Active" links: the item made from this entry, by key, else by title. */
+	function activeItemHref(entry: { key?: string; title: string }, byTitle: Map<string, Item>, collSlug: string): string | null {
+		const builtin = entry.key ? builtinEntries.find((e) => e.key === entry.key) : undefined;
+		if (builtin) return `/${username}/${wsSlug}/${builtin.collection_slug}/${builtin.ref ?? builtin.slug}`;
+		const item = byTitle.get(entry.title);
+		if (item) return `/${username}/${wsSlug}/${item.collection_slug || collSlug}/${itemUrlId(item)}`;
+		return null;
+	}
 
 	const categoryIcons: Record<string, string> = {
 		git: '\u{1F500}',
@@ -130,6 +187,7 @@
 	function resetTransientState() {
 		activatingTitle = null;
 		toast = null;
+		expandedCards = new Set();
 	}
 
 	/**
@@ -211,6 +269,8 @@
 			// dead or duplicating.
 			activeConventionTitles = new Set(existingConventions.map((item) => item.title));
 			activePlaybookTitles = new Set(existingPlaybooks.map((item) => item.title));
+			conventionItemsByTitle = new Map(existingConventions.map((item) => [item.title, item]));
+			playbookItemsByTitle = new Map(existingPlaybooks.map((item) => [item.title, item]));
 			builtinEntries = builtins;
 			// RE-STAMPED HERE, AFTER the data it vouches for has landed — never
 			// before the await (BUG-3084, the roles board's checkpoint-14
@@ -231,6 +291,8 @@
 			// is left and a failed load replaces neither set.
 			activeConventionTitles = new Set();
 			activePlaybookTitles = new Set();
+			conventionItemsByTitle = new Map();
+			playbookItemsByTitle = new Map();
 			builtinEntries = [];
 			// RE-STAMPED ON THE ERROR PATH TOO: omitting it pins the page inert
 			// for ever on a transient network error, which is the outage #1374
@@ -262,9 +324,10 @@
 		const epochAtEntry = captureIdentity();
 		activatingTitle = convention.title;
 		try {
-			await api.library.activate(wsSlug, convention);
+			const created = await api.library.activate(wsSlug, convention);
 			if (!identityHeld(epochAtEntry)) return;
 			activeConventionTitles = new Set([...activeConventionTitles, convention.title]);
+			if (created?.id) conventionItemsByTitle = new Map(conventionItemsByTitle).set(convention.title, created);
 			toast = `Activated: ${convention.title}`;
 			// FENCED, and the timer is the reason this surface's population is
 			// 7 rather than 3: it commits 3 seconds after the handler returned,
@@ -305,9 +368,10 @@
 		const epochAtEntry = captureIdentity();
 		activatingTitle = playbook.title;
 		try {
-			await api.library.activatePlaybook(wsSlug, playbook);
+			const created = await api.library.activatePlaybook(wsSlug, playbook);
 			if (!identityHeld(epochAtEntry)) return;
 			activePlaybookTitles = new Set([...activePlaybookTitles, playbook.title]);
+			if (created?.id) playbookItemsByTitle = new Map(playbookItemsByTitle).set(playbook.title, created);
 			toast = `Activated: ${playbook.title}`;
 			// See the timer note in activateConvention.
 			setTimeout(() => {
@@ -347,22 +411,25 @@
 		</header>
 		<AgentTermsLegend />
 
-		<div class="tabs">
-			<button
-				class="tab"
-				class:active={activeTab === 'conventions'}
-				onclick={() => (activeTab = 'conventions')}
-			>
-				Conventions
-			</button>
-			<button
-				class="tab"
-				class:active={activeTab === 'playbooks'}
-				onclick={() => (activeTab = 'playbooks')}
-			>
-				Playbooks
-			</button>
+		<div class="tabs" role="tablist" aria-label="Library">
+			{#each TABS as tab (tab)}
+				<button
+					id="library-tab-{tab}"
+					class="tab"
+					class:active={activeTab === tab}
+					role="tab"
+					aria-selected={activeTab === tab}
+					aria-controls="library-tabpanel"
+					tabindex={activeTab === tab ? 0 : -1}
+					onclick={() => selectTab(tab)}
+					onkeydown={onTabKeydown}
+				>
+					{tab === 'conventions' ? 'Conventions' : 'Playbooks'}
+				</button>
+			{/each}
 		</div>
+
+		<div id="library-tabpanel" role="tabpanel" aria-labelledby="library-tab-{activeTab}">
 
 		{#if activeTab === 'conventions'}
 			{#if loadError}
@@ -393,6 +460,8 @@
 							{@const isActive = builtinActive(builtinEntries, convention, activeConventionTitles)}
 							{@const offer = builtinOfferLabel(builtinEntries, convention.key)}
 							{@const isActivating = activatingTitle === convention.title}
+							{@const cardKey = `c-${category.name}-${convention.key ?? convention.title}`.replace(/[^A-Za-z0-9_-]/g, '-')}
+							{@const isExpanded = expandedCards.has(cardKey)}
 							<div class="card">
 								<div class="card-body">
 									<h3 class="card-title">{convention.title}</h3>
@@ -408,11 +477,25 @@
 											<Chip size="sm" color="var(--accent-purple)">{convention.commands.length} cmd{convention.commands.length > 1 ? 's' : ''}</Chip>
 										{/if}
 									</div>
-									<p class="card-content">{truncate(convention.content, 100)}</p>
+									{#if isExpanded}
+										<p class="card-content card-full" id="card-full-{cardKey}">{convention.content}</p>
+									{:else}
+										<p class="card-content">{truncate(convention.content, 100)}</p>
+									{/if}
+									{#if convention.content.length > 100}
+										<button class="expand-btn" aria-expanded={isExpanded} aria-controls={isExpanded ? `card-full-${cardKey}` : undefined} onclick={() => toggleCard(cardKey)}>
+											{isExpanded ? 'Show less' : 'Show full text'}
+										</button>
+									{/if}
 								</div>
 								<div class="card-action">
 									{#if isActive}
-										<Chip color={statusColor('active')}>Active</Chip>
+										{@const href = activeItemHref(convention, conventionItemsByTitle, conventionsSlug)}
+										{#if href}
+											<a class="active-link" {href} title="Open the convention this created"><Chip color={statusColor('active')}>Active</Chip><span class="sr-only">{`: open ${convention.title}`}</span></a>
+										{:else}
+											<Chip color={statusColor('active')}>Active</Chip>
+										{/if}
 										{#if offer}
 											<a
 												class="builtin-offer"
@@ -468,24 +551,36 @@
 							{@const isActive = builtinActive(builtinEntries, playbook, activePlaybookTitles)}
 							{@const offer = builtinOfferLabel(builtinEntries, playbook.key)}
 							{@const isActivating = activatingTitle === playbook.title}
+							{@const cardKey = `p-${category.name}-${playbook.key ?? playbook.title}`.replace(/[^A-Za-z0-9_-]/g, '-')}
+							{@const isExpanded = expandedCards.has(cardKey)}
 							<div class="card">
 								<div class="card-body">
 									<h3 class="card-title">{playbook.title}</h3>
 									<div class="badges">
-										{#if playbook.invocation_slug}
-											<Chip size="sm" color="var(--accent-green)" title={`Run it by saying "run the ${playbook.invocation_slug} playbook" — or the shortcut for your agent: /pad ${playbook.invocation_slug} (Claude Code), $pad ${playbook.invocation_slug} (Codex), pad_playbook action=run ref=${playbook.invocation_slug} (MCP)`}><span class="slug-text">▶ {playbook.invocation_slug}</span></Chip>
-										{/if}
+										<PlaybookInvokeChips slug={playbook.invocation_slug} />
 										<Chip size="sm" color="var(--status-blue)" title={termTitle('trigger', playbook.trigger)}><span class="sr-only">{'Trigger: '}</span>{playbook.trigger}</Chip>
 										<Chip size="sm" color="var(--accent-purple)" title={termTitle('surface', playbook.scope)}><span class="sr-only">{'Scope: '}</span>{playbook.scope}</Chip>
-										{#if playbook.arguments && playbook.arguments.length > 0}
-											<Chip size="sm" color="var(--accent-amber)" title="Accepts {playbook.arguments.length} argument{playbook.arguments.length === 1 ? '' : 's'}">{playbook.arguments.length} arg{playbook.arguments.length === 1 ? '' : 's'}</Chip>
-										{/if}
+										<PlaybookInvokeChips argCount={playbook.arguments?.length ?? 0} />
 									</div>
-									<p class="card-content card-steps">{previewSteps(playbook.content)}</p>
+									{#if isExpanded}
+										<p class="card-content card-full" id="card-full-{cardKey}">{playbook.content}</p>
+									{:else}
+										<p class="card-content card-steps">{previewSteps(playbook.content)}</p>
+									{/if}
+									{#if playbook.content.trim() !== previewSteps(playbook.content).trim()}
+										<button class="expand-btn" aria-expanded={isExpanded} aria-controls={isExpanded ? `card-full-${cardKey}` : undefined} onclick={() => toggleCard(cardKey)}>
+											{isExpanded ? 'Show less' : 'Show full text'}
+										</button>
+									{/if}
 								</div>
 								<div class="card-action">
 									{#if isActive}
-										<Chip color={statusColor('active')}>Active</Chip>
+										{@const href = activeItemHref(playbook, playbookItemsByTitle, playbooksSlug)}
+										{#if href}
+											<a class="active-link" {href} title="Open the playbook this created"><Chip color={statusColor('active')}>Active</Chip><span class="sr-only">{`: open ${playbook.title}`}</span></a>
+										{:else}
+											<Chip color={statusColor('active')}>Active</Chip>
+										{/if}
 										{#if offer}
 											<a
 												class="builtin-offer"
@@ -513,6 +608,7 @@
 				</section>
 			{/each}
 		{/if}
+		</div>
 	{/if}
 
 	{#if toast}
@@ -581,10 +677,22 @@
 	.card-title { font-size: 0.95em; font-weight: 600; }
 	.card-content { font-size: 0.85em; color: var(--text-secondary); line-height: 1.5; }
 	.card-steps { white-space: pre-line; }
+	.card-full { white-space: pre-wrap; overflow-wrap: anywhere; }
+	.expand-btn {
+		align-self: flex-start;
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--accent-blue);
+		font-size: 0.8em;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.expand-btn:hover { text-decoration: underline; }
+	.active-link { text-decoration: none; border-radius: 999px; }
+	.active-link:hover :global(*) { text-decoration: underline; }
 
 	.badges { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-	/* PLAN-1377 invocation surface — slug chip signals "this playbook is callable as /pad <slug>". */
-	.slug-text { font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace); }
 
 	.card-action { display: flex; justify-content: flex-end; align-items: center; gap: var(--space-2, 8px); flex-wrap: wrap; }
 	.builtin-offer {
