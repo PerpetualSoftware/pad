@@ -404,7 +404,10 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        # The official image from AWS's public mirror of Docker Hub's library:
+        # an anonymous Docker Hub pull from shared runners hits
+        # "toomanyrequests" (day 90: three failed pulls on #1987/#1988).
+        image: public.ecr.aws/docker/library/postgres:17-alpine
         env:
           POSTGRES_USER: pad
           POSTGRES_PASSWORD: pad
