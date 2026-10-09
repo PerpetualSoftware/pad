@@ -274,7 +274,7 @@
 		</div>
 	{:else}
 		<div class="search-row">
-			<input
+			<input aria-label="Search users"
 				type="text"
 				class="search-input"
 				placeholder="Search users..."

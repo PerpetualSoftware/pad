@@ -275,7 +275,7 @@
 							onkeydown={handleShareKeydown}
 							disabled={sharing}
 						/>
-						<select class="permission-select" bind:value={permission} disabled={sharing}>
+						<select aria-label="Permission" class="permission-select" bind:value={permission} disabled={sharing}>
 							<option value="view">Can view</option>
 							<option value="edit">Can edit</option>
 						</select>

@@ -585,7 +585,7 @@
 										</p>
 									{/if}
 									<div class="edit-row add-row">
-										<select
+										<select aria-label="Add a workspace to {app.client_name ?? 'this connection'}"
 											class="edit-input"
 											bind:value={addPickerSlug[app.id]}
 											disabled={!!savingFlag[app.id]}

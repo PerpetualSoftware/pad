@@ -1049,7 +1049,7 @@
 											>
 												Manage access
 											</button>
-											<select
+											<select aria-label="Role for {member.user_name}"
 												class="role-select"
 												value={member.role}
 												onchange={(e) => handleChangeRole(member.user_id, (e.target as HTMLSelectElement).value, e.target as HTMLSelectElement)}
@@ -1189,7 +1189,7 @@
 								onkeydown={(e) => e.key === 'Enter' && handleInvite()}
 								disabled={inviting}
 							/>
-							<select class="role-select" bind:value={inviteRole}>
+							<select aria-label="Role for the invitee" class="role-select" bind:value={inviteRole}>
 								<option value="editor">Editor</option>
 								<option value="viewer">Viewer</option>
 								<option value="owner">Owner</option>

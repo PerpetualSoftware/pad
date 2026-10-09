@@ -230,7 +230,7 @@
 				</BottomSheet>
 			{/if}
 		{:else}
-			<select class="parent-filter" value={activeParent} onchange={setParentFilter}>
+			<select aria-label="Filter by parent" class="parent-filter" value={activeParent} onchange={setParentFilter}>
 				<option value="">All plans</option>
 				{#each Object.entries(relationLabels) as [id, label] (id)}
 					<option value={id}>{label}</option>
@@ -318,7 +318,7 @@
 			combined `is:archived body:` prefix is intentionally
 			deferred until /search supports it.)
 		-->
-		<input
+		<input aria-label="Search {collection.name}"
 			bind:this={searchInputEl}
 			type="text"
 			class="search-input"

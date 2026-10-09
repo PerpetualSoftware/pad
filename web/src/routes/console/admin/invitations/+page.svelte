@@ -123,7 +123,7 @@
 		</div>
 	{:else}
 		<div class="search-row">
-			<input
+			<input aria-label="Search invitations"
 				type="text"
 				class="search-input"
 				placeholder="Search by email or workspace..."

@@ -178,7 +178,7 @@
 	<!-- Search fly-to. The wrapper is relative so the type-ahead anchors to it. -->
 	<div class="row search-row">
 		<div class="search">
-			<input
+			<input aria-label="Search items"
 				type="text"
 				class="search-input"
 				placeholder="Search items…"
