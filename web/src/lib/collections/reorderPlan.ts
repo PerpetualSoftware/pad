@@ -161,6 +161,10 @@ function respaceAll<T extends OrderedCard>(lane: readonly T[]): OrderWrite[] {
 /**
  * Plan the `sort_order` writes for a lane given in its new on-screen order.
  *
+ * `movedId` names the card the user moved, when the caller knows it. If
+ * writing that card alone is enough, the plan is that one write (see
+ * `moverOnly`); otherwise the whole lane is planned as below.
+ *
  * With every card editable this is `fewestWrites`: the cards that must move to
  * make the stored order match, and no others (TASK-2230; it used to be the
  * dense renumber, minus cards already there).
@@ -175,8 +179,13 @@ function respaceAll<T extends OrderedCard>(lane: readonly T[]): OrderWrite[] {
  */
 export function planLaneOrder<T extends OrderedCard>(
 	lane: readonly T[],
-	canEdit: (card: T) => boolean
+	canEdit: (card: T) => boolean,
+	movedId?: string
 ): LanePlan {
+	if (movedId !== undefined) {
+		const only = moverOnly(lane, canEdit, movedId);
+		if (only) return { ok: true, writes: only };
+	}
 	const editable = lane.map((c) => canEdit(c));
 	if (editable.every(Boolean)) return { ok: true, writes: fewestWrites(lane) };
 
@@ -219,6 +228,46 @@ export function planLaneOrder<T extends OrderedCard>(
 		prevFrozen = false;
 	}
 	return { ok: true, writes };
+}
+
+/**
+ * The card the user moved, written alone into the gap it was dropped in, when
+ * that is enough: every other card already sorts where it stands (ties only
+ * between view-only cards, as the tie-break showed them) and the gap has
+ * integer room. Null otherwise, and the caller plans the whole lane.
+ *
+ * It exists because a one-write plan can often write EITHER card of a swap,
+ * and each written card gets the 'reordered' activity row (#1933): the row
+ * belongs on the card the user moved, not on its neighbour (TASK-3525).
+ */
+function moverOnly<T extends OrderedCard>(
+	lane: readonly T[],
+	canEdit: (card: T) => boolean,
+	movedId: string
+): OrderWrite[] | null {
+	const k = lane.findIndex((c) => c.id === movedId);
+	if (k < 0 || !canEdit(lane[k])) return null;
+	let last: T | undefined;
+	for (let i = 0; i < lane.length; i++) {
+		if (i === k) continue;
+		const card = lane[i];
+		if (last) {
+			const tieAllowed = !canEdit(last) && !canEdit(card);
+			if (card.sort_order < last.sort_order || (card.sort_order === last.sort_order && !tieAllowed)) return null;
+		}
+		last = card;
+	}
+	const below = k > 0 ? lane[k - 1].sort_order : -Infinity;
+	const above = k < lane.length - 1 ? lane[k + 1].sort_order : Infinity;
+	const own = lane[k].sort_order;
+	if (own > below && own < above) return [];
+	let v: number;
+	if (below === -Infinity) v = above - SORT_GAP;
+	else if (above === Infinity) v = below + SORT_GAP;
+	else if (above - below >= 2) v = below + Math.floor((above - below) / 2);
+	else return null;
+	if (Math.abs(v) > SORT_LIMIT) return null;
+	return [{ id: movedId, sort_order: v }];
 }
 
 export interface PersistDeps<T extends OrderedCard> {

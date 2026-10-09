@@ -521,7 +521,9 @@
 			(c) => {
 				const item = finalItems.find((i) => i.id === c.id);
 				return !!item && workspaceStore.canEditItem(item);
-			}
+			},
+			// The dragged card is written alone when that is enough (TASK-3525).
+			itemId
 		);
 		const planned = new Map(plan.ok ? plan.writes.map((w) => [w.id, w.sort_order]) : []);
 		const reorderUpdates = [...planned].map(([item_id, role_sort_order]) => ({ item_id, role_sort_order }));

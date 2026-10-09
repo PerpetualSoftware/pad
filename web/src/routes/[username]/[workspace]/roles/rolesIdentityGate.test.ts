@@ -24,7 +24,9 @@ identityGateSuite({
 				// the optimistic commit. A refused batch reloads the board, after
 				// an identity check, as the role write's recovery does (codex r4).
 				// TASK-2204: both recovery reloads now toast, after the same checks.
-				reviewed: 'ef15e19578f9',
+				// TASK-3525: the plan is also handed the dragged card's id (a
+				// synchronous planner argument); no await or check moved.
+				reviewed: '7b4ff2ada733',
 				why: `${PAGE_AND_ENTRY}; the identity check sits BEFORE the role write, because that write carries currentUserId; a lost-identity exit writes no shared interaction state`,
 			},
 			loadData: {

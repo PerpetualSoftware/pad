@@ -155,6 +155,46 @@ describe('planLaneOrder (BUG-3259, TASK-2230)', () => {
 		expect(plan).toEqual({ ok: true, writes: [{ id: 'x', sort_order: 2 * SORT_GAP }] });
 	});
 
+	// TASK-3525: when the caller names the moved card and writing it alone is
+	// enough, the plan writes that card, so its 'reordered' activity row is on
+	// the card the user moved rather than on a neighbour.
+	it('an adjacent swap writes the card the user moved, either direction, any lane shape', () => {
+		for (const gap of [1, SORT_GAP]) {
+			for (let n = 2; n <= 7; n++) {
+				for (let k = 0; k < n - 1; k++) {
+					const ids = [...Array(n).keys()];
+					[ids[k], ids[k + 1]] = [ids[k + 1], ids[k]];
+					const lane = ids.map((o) => c(`i${o}`, o * gap));
+					for (const moved of [`i${k}`, `i${k + 1}`]) {
+						const plan = planLaneOrder(lane, () => true, moved);
+						if (!plan.ok) throw new Error('expected a plan');
+						expect(sortedAfter(lane, plan.writes)).toEqual(lane.map((x) => x.id));
+						if (gap === SORT_GAP) expect(plan.writes, `n=${n} swap ${k} moved ${moved}`).toEqual([{ id: moved, sort_order: expect.any(Number) }]);
+					}
+				}
+			}
+		}
+	});
+
+	it('names the moved card even past a view-only neighbour', () => {
+		const lane = [c('x', 2 * SORT_GAP), c('a', 0), c('b', SORT_GAP)];
+		const plan = planLaneOrder(lane, (y) => y.id !== 'a', 'x');
+		expect(plan).toEqual({ ok: true, writes: [{ id: 'x', sort_order: -SORT_GAP }] });
+	});
+
+	it('falls back to planning the lane when the moved card alone is not enough', () => {
+		// A dense lane: no room between the neighbours the card lands between.
+		const lane = [c('a', 0), c('c', 2), c('b', 1), c('d', 3)];
+		const plan = planLaneOrder(lane, () => true, 'c');
+		if (!plan.ok) throw new Error('expected a plan');
+		expect(sortedAfter(lane, plan.writes)).toEqual(['a', 'c', 'b', 'd']);
+	});
+
+	it('a moved card already in place writes nothing', () => {
+		const lane = [c('a', 0), c('b', SORT_GAP), c('c', 2 * SORT_GAP)];
+		expect(planLaneOrder(lane, () => true, 'b')).toEqual({ ok: true, writes: [] });
+	});
+
 	it('never writes a view-only card', () => {
 		// The measured case: C dragged above view-only A.
 		const lane = [c('c', 2), c('a', 0), c('b', 1)];

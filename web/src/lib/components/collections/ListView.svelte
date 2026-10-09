@@ -47,7 +47,7 @@
 		 * that agreed.
 		 */
 		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;
-		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
+		onReorder?: (updates: { slug: string; sort_order: number }[], movedId?: string) => void;
 		onArchiveGroup?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
 		oncreate?: () => void;
@@ -444,7 +444,7 @@
 		}
 
 		if (onReorder && reorderUpdates.length > 0) {
-			onReorder(reorderUpdates);
+			onReorder(reorderUpdates, itemId);
 		}
 	}
 
@@ -466,7 +466,7 @@
 			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
 		);
 		const lane = laneOrderAfterMove(grp, item.id, dir);
-		if (lane.length > 0) onReorder(lane);
+		if (lane.length > 0) onReorder(lane, item.id);
 	}
 
 	function toggleGroup(groupName: string) {
