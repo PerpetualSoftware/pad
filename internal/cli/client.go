@@ -1546,6 +1546,71 @@ func (c *Client) LoginVerify2FA(challengeToken, code, recoveryCode string) (*Log
 	return &result, err
 }
 
+// AccountSecurity is the part of /auth/me that 2FA management reads.
+// PasswordSet is a pointer because a server that predates it omits the key:
+// nil then means "assume a password", the only answer such a server took.
+type AccountSecurity struct {
+	TOTPEnabled bool  `json:"totp_enabled"`
+	PasswordSet *bool `json:"password_set"`
+}
+
+// GetAccountSecurity reads whether 2FA is on and whether the account has a
+// password (TASK-403).
+func (c *Client) GetAccountSecurity() (*AccountSecurity, error) {
+	var result AccountSecurity
+	return &result, c.get("/auth/me", &result)
+}
+
+// TOTPSetupResponse is POST /auth/2fa/setup's answer: a fresh secret (not yet
+// enabled) and its otpauth:// URI.
+type TOTPSetupResponse struct {
+	Secret string `json:"secret"`
+	URL    string `json:"url"`
+}
+
+// TOTPSetup starts enabling 2FA (TASK-403).
+func (c *Client) TOTPSetup() (*TOTPSetupResponse, error) {
+	var result TOTPSetupResponse
+	return &result, c.post("/auth/2fa/setup", nil, &result)
+}
+
+// TOTPVerifyResponse carries the recovery codes, which the server returns
+// exactly once.
+type TOTPVerifyResponse struct {
+	Enabled       bool     `json:"enabled"`
+	RecoveryCodes []string `json:"recovery_codes"`
+}
+
+// TOTPVerify finishes enabling 2FA with a code from the authenticator app.
+func (c *Client) TOTPVerify(secret, code string) (*TOTPVerifyResponse, error) {
+	var result TOTPVerifyResponse
+	return &result, c.post("/auth/2fa/verify", map[string]string{"secret": secret, "code": code}, &result)
+}
+
+// TOTPDisableResponse carries the replacement session token: disabling 2FA
+// rotates the caller's sessions, so the old bearer stops working.
+type TOTPDisableResponse struct {
+	Enabled bool   `json:"enabled"`
+	Token   string `json:"token"`
+}
+
+// TOTPDisable turns 2FA off. An account with a password proves itself with
+// it; one without sends a current code or a recovery code (#1879).
+func (c *Client) TOTPDisable(password, code, recoveryCode string) (*TOTPDisableResponse, error) {
+	body := map[string]string{}
+	if password != "" {
+		body["password"] = password
+	}
+	if code != "" {
+		body["code"] = code
+	}
+	if recoveryCode != "" {
+		body["recovery_code"] = recoveryCode
+	}
+	var result TOTPDisableResponse
+	return &result, c.post("/auth/2fa/disable", body, &result)
+}
+
 // Bootstrap creates the first admin account on a fresh instance.
 func (c *Client) Bootstrap(email, name, password string) (*LoginResponse, error) {
 	return c.BootstrapWithToken(email, name, password, "")
