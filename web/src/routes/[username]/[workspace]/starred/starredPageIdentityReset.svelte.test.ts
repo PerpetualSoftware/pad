@@ -12,6 +12,12 @@
 //     `starredStore.loaded` is false — which is exactly what the store's
 //     identity reset sets it to. So the store's fix routes this page around
 //     its only filter and B sees A's starred items in full.
+//
+// TASK-2231 removed the page's copy: it lists the STARRED STORE's ids (fenced
+// and cleared on an identity change) against the local index's rows. These
+// legs now pin the same end state through those sources — B never sees A's
+// starred items — with the store's real fence and the real auth store, and
+// the counterfactual that the same harness does render them for A.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
@@ -32,6 +38,30 @@ vi.mock('$lib/api/client', () => ({
 	setRateLimitHandler: () => {},
 	isPlanLimitError: () => false,
 	planLimitMessage: () => '',
+}));
+
+const ITEM_ROW = vi.hoisted(() => ({
+	id: 'item-a',
+	slug: 'alphas-secret',
+	title: "Alpha's secret item",
+	collection_id: 'c-ideas',
+	collection_slug: 'ideas',
+	fields: '{"status":"open"}',
+	tags: '[]',
+	pinned: false,
+	updated_at: '2026-01-01T00:00:00Z',
+	created_at: '2026-01-01T00:00:00Z',
+}));
+vi.mock('$lib/stores/localIndex.svelte', () => ({
+	localIndex: { bootstrapStateFor: () => 'ready', accessRevokedFor: () => false, getAll: () => [ITEM_ROW] },
+}));
+vi.mock('$lib/stores/workspaceIndexEntry', () => ({ enterWorkspaceIndex: async () => true }));
+vi.mock('$lib/stores/collections.svelte', () => ({
+	collectionStore: {
+		collectionsAreFreshFor: () => true,
+		collections: [{ id: 'c-ideas', slug: 'ideas', name: 'Ideas', icon: '💡', sort_order: 1, schema: '{"fields":[]}', settings: '{}' }],
+		ensureCollections: async () => {},
+	},
 }));
 
 vi.mock('$app/navigation', () => ({
@@ -89,52 +119,50 @@ describe('starred page across an identity change', () => {
 	afterEach(() => {
 		cleanup();
 		authStore.clear();
+		starredStore.clear();
 	});
 
 	it('refuses a load issued as A that settles after the identity changed', async () => {
-		// The page's identity LISTENER is gone (the tab reloads instead), so
-		// what it still owns is the pre-reload window: a request issued as A can
-		// settle before the reload takes the page away, and `loadSeq` is a
-		// navigation fence that an account swap does not move.
-		//
-		// The page's FIRST load is the one left pending, because it is the only
-		// one this harness can hold open reliably — an attempt to start a second
-		// through the terminal-filter toggle left the fence undetectable by its
-		// own mutant, which is the failure this file has produced twice now.
-		// EVERY mock also carries a DEFAULT beside the pending one-shot (codex
-		// round 5): without that, a later call resolved `undefined`, `items.map`
-		// threw, and vitest reported PASSED with an unhandled error beside it.
+		// A's starred load is out when the account changes. The STORE's identity
+		// fence refuses the settle and its listener clears the ids, so the page,
+		// which derives from them, has nothing of A's to show. Every mock carries
+		// a default beside the pending one-shot (codex round 5 on the earlier
+		// version of this file).
 		let resolveA!: (v: unknown) => void;
 		api.items.starred.mockReturnValueOnce(new Promise((r) => { resolveA = r; }));
 		api.items.starred.mockResolvedValue([]);
-		api.collections.list.mockResolvedValue([]);
 
+		void starredStore.load('ws');
 		const screen = render(StarredPage);
 		const count = () => screen.container.querySelector('.count')?.textContent ?? '';
 		await settle();
-		// PRECONDITION: A's request is out and unanswered, so what follows is
-		// about the settle rather than about a page that never asked.
+		// PRECONDITION: A's request is out and unanswered.
 		expect(api.items.starred).toHaveBeenCalled();
-		expect(count()).toBe('0');
 
 		api.auth.session.mockResolvedValue(sessionFor('user-b'));
 		await authStore.load();
 		resolveA([ITEM_A]);
 		await settle();
 
-		expect(count()).toBe('0');
+		expect(count()).not.toBe('1');
 		expect(screen.queryByText("Alpha's secret item")).toBeNull();
+	});
 
-		// WHAT THIS LEG DOES NOT PROVE, measured rather than assumed: removing
-		// the page's identity fence (`|| !isSameIdentity()`) leaves it GREEN.
-		// The mutant survives because the page's own `$effect` re-runs during
-		// the identity transition and advances `loadSeq`, so the NAVIGATION
-		// fence refuses A's settle first and the identity fence never decides
-		// anything here. The leg is an end-state regression fence — A's items
-		// must not appear — and the identity fence's coverage of the pre-reload
-		// window is an argument, not a measurement. Said plainly because a
-		// surviving mutant recorded as a passing test is how this file already
-		// shipped one assertion pointed the wrong way.
+	it("drops A's items the moment the identity changes after they rendered", async () => {
+		// BUG-3005's shape: nothing is racing. A's list is on screen, then the
+		// account changes in place. The store's reset clears the ids; a page
+		// that kept its own copy would go on showing them.
+		api.items.starred.mockResolvedValue([ITEM_A]);
+		await starredStore.load('ws');
+		const screen = render(StarredPage);
+		await settle();
+		expect(screen.queryByText("Alpha's secret item")).not.toBeNull();
+
+		api.items.starred.mockResolvedValue([]);
+		api.auth.session.mockResolvedValue(sessionFor('user-b'));
+		await authStore.load();
+		await settle();
+		expect(screen.queryByText("Alpha's secret item")).toBeNull();
 	});
 
 	it("renders A's items when the identity holds still", async () => {
@@ -142,8 +170,8 @@ describe('starred page across an identity change', () => {
 		// harness, no identity change, and the data DOES render. Without it,
 		// `count === '0'` is equally consistent with a page that never works.
 		api.items.starred.mockResolvedValue([ITEM_A]);
-		api.collections.list.mockResolvedValue([]);
 
+		void starredStore.load('ws');
 		const screen = render(StarredPage);
 		const count = () => screen.container.querySelector('.count')?.textContent ?? '';
 		await settle();
