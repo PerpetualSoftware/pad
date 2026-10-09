@@ -210,19 +210,14 @@
 		selectedTemplate = name;
 	}
 
+	// TASK-2254: expanding the list selects nothing. It used to pre-select
+	// `startup` on first expand, so a user who only looked at the templates
+	// and collapsed the list again created a startup workspace while the modal
+	// showed no selection at all: the payload and the UI disagreed, and the
+	// blank + onboard default (IDEA-1516) was defeated silently. Only a click
+	// on a template chooses one.
 	function toggleTemplates() {
 		templatesExpanded = !templatesExpanded;
-		// First time the user expands the section, pre-select `startup` to
-		// match the pre-IDEA-1516 default behavior — they obviously want a
-		// template if they bothered expanding, and `blank` would still be
-		// selected from the primary card otherwise. We only do this when
-		// the current selection is still `blank` (user hasn't picked yet)
-		// AND startup is actually in the templates list.
-		if (templatesExpanded && selectedTemplate === 'blank') {
-			if (templates.some((t) => t.name === 'startup')) {
-				selectedTemplate = 'startup';
-			}
-		}
 	}
 
 	async function createWorkspace() {
@@ -555,16 +550,31 @@
 					button so keyboard users can toggle it; aria-expanded
 					mirrors visual state for AT.
 				-->
-				<button
-					type="button"
-					class="templates-toggle"
-					onclick={toggleTemplates}
-					aria-expanded={templatesExpanded}
-					aria-controls="ws-create-templates"
-				>
-					<span class="templates-toggle-label">Or pick a template</span>
-					<span class="templates-toggle-chevron" class:expanded={templatesExpanded} aria-hidden="true">▾</span>
-				</button>
+				<div class="templates-toggle-row">
+					<button
+						type="button"
+						class="templates-toggle"
+						onclick={toggleTemplates}
+						aria-expanded={templatesExpanded}
+						aria-controls="ws-create-templates"
+					>
+						<!-- A chosen template stays visible with the list collapsed
+						     (TASK-2254): what Create will send is always on screen. -->
+						<span class="templates-toggle-label">
+							{selectedTemplate !== 'blank' ? `Template: ${selectedTemplate}` : 'Or pick a template'}
+						</span>
+						<span class="templates-toggle-chevron" class:expanded={templatesExpanded} aria-hidden="true">▾</span>
+					</button>
+					{#if selectedTemplate !== 'blank'}
+						<button
+							type="button"
+							class="templates-clear"
+							onclick={selectBlank}
+							aria-label="Clear template, start blank"
+							title="Clear template, start blank">×</button
+						>
+					{/if}
+				</div>
 
 				{#if templatesExpanded}
 					<div id="ws-create-templates" class="templates-section">
@@ -826,6 +836,28 @@
 	}
 
 	/* Toggle row — flat button with chevron that rotates when expanded. */
+	.templates-toggle-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+	}
+	.templates-toggle-row .templates-toggle {
+		flex: 1;
+	}
+	.templates-clear {
+		border: none;
+		background: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 1rem;
+		line-height: 1;
+		padding: var(--space-1) var(--space-2);
+		border-radius: var(--radius-sm);
+	}
+	.templates-clear:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
 	.templates-toggle {
 		display: flex;
 		align-items: center;
