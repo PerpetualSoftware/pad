@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,6 +48,30 @@ func runApplierEcho(t *testing.T, conn *websocket.Conn) func() {
 		_ = conn.Close()
 		<-done
 	}
+}
+
+// drainCountingRequests reads conn until it closes, never acking, and counts
+// the applier_request frames it was sent (TASK-1979): what the applier was
+// ASKED is a state question, where the elapsed time these tests used to
+// assert on was a wall-clock one that -race and a loaded runner can skew.
+func drainCountingRequests(conn *websocket.Conn) func() int64 {
+	var n atomic.Int64
+	go func() {
+		for {
+			mt, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if mt != websocket.TextMessage {
+				continue
+			}
+			var ctl ControlMessage
+			if json.Unmarshal(data, &ctl) == nil && ctl.Type == ControlMessageApplierRequest {
+				n.Add(1)
+			}
+		}
+	}()
+	return n.Load
 }
 
 // TestApplyExternalContentNoActiveRoom returns ErrNoActiveRoom when
@@ -120,31 +145,27 @@ func TestApplyExternalContentTimeoutsThenFails(t *testing.T) {
 
 	conn := dialWS(t, srv, "item-a")
 	defer conn.Close()
-	// NO applier echo — frames are dropped on the floor by the
-	// drainer, so applier_request never produces an ack.
-	go func() {
-		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
-				return
-			}
-		}
-	}()
+	// NO applier echo: the drainer never acks, it only counts what it
+	// was asked.
+	asked := drainCountingRequests(conn)
 
 	waitElectable(t, mgr, "item-a", 1)
 
-	start := time.Now()
 	err := mgr.ApplyExternalContent("item-a", "# new content")
-	elapsed := time.Since(start)
 
 	if !errors.Is(err, ErrAllAppliersTimedOut) {
 		t.Fatalf("want ErrAllAppliersTimedOut, got %v", err)
 	}
-	// First attempt's timeout fires (~80ms). The retry loop then
-	// looks for another applier, finds none (only one conn was
-	// dialed), and returns immediately. Floor at firstTimeout,
-	// ceiling well below firstTimeout + retryTimeout.
-	if elapsed < applierFirstTimeoutTest {
-		t.Errorf("returned too fast: %v < %v", elapsed, applierFirstTimeoutTest)
+	// The applier was actually ASKED, and the attempt then timed out:
+	// a return without asking (the case the old elapsed-time floor
+	// existed to catch) would read 0 here. Polled, because the frame is
+	// read on the drainer's goroutine.
+	deadline := time.Now().Add(2 * time.Second)
+	for asked() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := asked(); got < 1 {
+		t.Errorf("the only applier was never sent an applier_request (%d), yet the call reported a timeout", got)
 	}
 }
 
@@ -164,23 +185,18 @@ func TestApplyExternalContentTimeoutThenSecondAcks(t *testing.T) {
 	srv := newCollabTestServer(t, mgr)
 	defer srv.Close()
 
-	// First conn: no echo, just drains.
+	// First conn: no echo, counts what it is asked.
 	first := dialWS(t, srv, "item-a")
 	defer first.Close()
-	go func() {
-		for {
-			if _, _, err := first.ReadMessage(); err != nil {
-				return
-			}
-		}
-	}()
+	firstAsked := drainCountingRequests(first)
 
-	// Wait so the second conn has a strictly later connectedAt.
-	time.Sleep(15 * time.Millisecond)
+	// `first` registers before `second` is dialled, so pickApplier
+	// (connectedAt asc, then conn id, which nextConnID hands out in
+	// order) chooses it for attempt 1 even when the clock cannot tell the
+	// two apart. This replaces a 15ms sleep that only made that LIKELY.
+	waitElectable(t, mgr, "item-a", 1)
 
-	// Second conn: echoes acks. Because pickApplier sorts by
-	// connectedAt asc, `first` is chosen for attempt 1; `second`
-	// for the retry.
+	// Second conn: echoes acks, so the retry lands on it.
 	second := dialWS(t, srv, "item-a")
 	stop := runApplierEcho(t, second)
 	defer stop()
@@ -199,6 +215,12 @@ func TestApplyExternalContentTimeoutThenSecondAcks(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("retry path did not complete within 3s")
+	}
+	// The success came through the RETRY: `first` was asked and never
+	// answered. Without this, a pick that went to `second` first would
+	// also succeed, and the test would pass without exercising a retry.
+	if got := firstAsked(); got != 1 {
+		t.Errorf("the first applier was asked %d times, want 1 (attempt 1 goes to it, the retry to the second)", got)
 	}
 }
 
