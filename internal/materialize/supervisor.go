@@ -639,8 +639,13 @@ func (s *Supervisor) spawn(ctx context.Context) (*child, error) {
 	s.log.Info("materialize worker started",
 		"pid", c.pid,
 		"ready_ms", s.cfg.now().Sub(c.started).Milliseconds(),
+		// timeout is the BASE: a job gets it plus timeout_per_kib per KiB of
+		// its op-log, up to timeout_max (BUG-3521), so the line states the
+		// rule rather than one value.
 		"timeout", s.timeout.String(),
 		"soft_timeout", softTimeout(s.timeout).String(),
+		"timeout_per_kib", PerKiBTimeout.String(),
+		"timeout_max", MaxTimeout.String(),
 		"mem_cap", s.cap.mechanism,
 		"mem_baseline", formatBytes(c.baseline),
 		"mem_limit", formatBytes(s.memLimit),
