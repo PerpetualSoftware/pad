@@ -3355,7 +3355,7 @@
 				// split (mobile focus is already trapped in the overlay), the list
 				// cursor is active, and focus is on <body> (the state right after a
 				// j/k step, which doesn't move DOM focus) OR ON A ROW ANCHOR. We
-				// match the row ANCHOR (`a.item-card` / `a.title-link`), NOT the
+				// match the row LINK (`a.card-link` / `a.title-link`), NOT the
 				// `.focused` marker — a click focuses row A, then j/k moves the
 				// marker to B without moving DOM focus, so the focused-marker check
 				// would wrongly reject the still-focused A (Codex P1). Matching the
@@ -3370,7 +3370,7 @@
 					!viewport.isMobile &&
 					focusedIndex >= 0 &&
 					paneHostEl &&
-					(target === document.body || !!target?.matches?.('a.item-card, a.title-link'))
+					(target === document.body || !!target?.matches?.('a.card-link, a.title-link'))
 				) {
 					e.preventDefault();
 					paneHostEl.focusPaneRegion();

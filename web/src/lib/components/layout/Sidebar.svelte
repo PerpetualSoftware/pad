@@ -643,6 +643,13 @@
 						onfinalize={handleCollectionFinalize}
 					>
 						{#each sidebarCollections as collection (collection.id)}
+							{@const canQuickAdd = workspaceStore.canEditCollection(collection.id)}
+							<!-- The row is a wrapper holding the link and the quick-add
+							     button as SIBLINGS (TASK-2237, audit C29). The button used
+							     to sit inside the <a>: invalid interactive nesting, and a
+							     control whose activation was also a link activation. The
+							     wrapper is the drag item. -->
+							<div class="nav-row" class:has-quick-add={canQuickAdd}>
 							<a
 								href="{wsPrefix}/{collection.slug}"
 								class="nav-item draggable"
@@ -658,14 +665,17 @@
 								{#if collection.item_count != null && collection.item_count > 0}
 									<span class="nav-count">{collection.active_item_count}</span>
 								{/if}
-								{#if workspaceStore.canEditCollection(collection.id)}
-									<button
-										class="nav-quick-add"
-										title="New {collection.name.replace(/s$/, '')}"
-										onclick={(e) => { e.stopPropagation(); e.preventDefault(); startQuickAdd(collection); }}
-									>+</button>
-								{/if}
 							</a>
+							{#if canQuickAdd}
+								<button
+									type="button"
+									class="nav-quick-add"
+									title="New {collection.name.replace(/s$/, '')}"
+									aria-label="New {collection.name.replace(/s$/, '')}"
+									onclick={(e) => { e.stopPropagation(); e.preventDefault(); startQuickAdd(collection); }}
+								>+</button>
+							{/if}
+							</div>
 						{/each}
 					</div>
 				{/if}
@@ -1026,7 +1036,33 @@
 		opacity: 0.8;
 		transition: opacity 0.15s, color 0.15s, background 0.15s;
 	}
-	.nav-item:hover .nav-quick-add {
+	/* The button sits over the link's right padding (TASK-2237): a sibling, so
+	   it is positioned against the row, and the link reserves the room. */
+	.nav-row {
+		position: relative;
+	}
+	.nav-row .nav-quick-add {
+		/* 0.8 of the link's 0.875em, the size it had inside the link. */
+		font-size: 0.7em;
+		position: absolute;
+		right: var(--space-3);
+		top: 50%;
+		transform: translateY(-50%);
+	}
+	.nav-row.has-quick-add > .nav-item {
+		padding-right: calc(var(--space-3) + 1.4em + var(--space-2));
+	}
+	/* Hovering the button is hovering the row: keep the link highlighted. */
+	.nav-row:hover > .nav-item {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+	.nav-row:hover > .nav-item.active {
+		background: color-mix(in srgb, var(--accent-blue) 20%, transparent);
+		color: var(--accent-blue);
+	}
+	.nav-row:hover .nav-quick-add,
+	.nav-quick-add:focus-visible {
 		opacity: 1;
 	}
 	.nav-quick-add:hover {
@@ -1068,6 +1104,7 @@
 		margin-left: -4px;
 		margin-right: -4px;
 	}
+	.nav-row:hover .nav-item.draggable .drag-handle,
 	.nav-item.draggable:hover .drag-handle {
 		opacity: 0.5;
 	}

@@ -75,6 +75,14 @@ async function open(page: Page, key: AccountKey, path: string, view?: 'list' | '
 	await waitForAccessSettled(page);
 }
 
+// The row wrapper: the link and its quick-add button are siblings in it
+// (TASK-2237).
+function sidebarRow(page: Page, coll: Coll) {
+	return page.locator('nav.collection-nav .nav-section .nav-row', {
+		has: page.locator('.nav-label', { hasText: new RegExp(`^${NAME[coll]}$`) })
+	});
+}
+
 function sidebarEntry(page: Page, coll: Coll) {
 	return page.locator('nav.collection-nav .nav-section a.nav-item', {
 		has: page.locator('.nav-label', { hasText: new RegExp(`^${NAME[coll]}$`) })
@@ -109,7 +117,7 @@ for (const key of ACCOUNT_KEYS) {
 			for (const coll of SEES[key]) {
 				const entry = sidebarEntry(page, coll);
 				await expect(entry).toBeVisible();
-				await expect(entry.locator('.nav-quick-add'), `${key} on ${coll}`).toHaveCount(
+				await expect(sidebarRow(page, coll).locator('.nav-quick-add'), `${key} on ${coll}`).toHaveCount(
 					EDITS[key].includes(coll) ? 1 : 0
 				);
 			}

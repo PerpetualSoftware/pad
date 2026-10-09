@@ -104,7 +104,7 @@ test.describe('a keystroke inside the coalesce window persists (TASK-2232)', () 
 		await freezeAndType(page, editor, marker);
 		expect(flush.sent).toBe(false);
 
-		await page.locator('a.item-card', { hasText: 'Coalesce switch B' }).first().click();
+		await page.locator('.item-card .card-link', { hasText: 'Coalesce switch B' }).first().click();
 		const sentInWindow = await stepUntil(page, () => flush.sent);
 		expect(sentInWindow, 'the switch flushed the outgoing typed text inside the coalesce window').toBe(true);
 

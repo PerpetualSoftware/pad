@@ -191,7 +191,7 @@ test('switching items in the pane tears down the old collab socket and flushes t
 	// ?item=, no full navigation). `?item=` re-targets to B's issue id
 	// (itemUrlId), not its slug, so we assert the param changed AWAY from A.
 	const itemParam = () => new URL(page.url()).searchParams.get('item');
-	await page.locator('a.item-card', { hasText: 'Pane switch B' }).first().click();
+	await page.locator('.item-card .card-link', { hasText: 'Pane switch B' }).first().click();
 
 	// Isolation premise: the switch must beat A's 5s idle timer, so that
 	// loadData()'s cancel leaves the cleanup flush as the SOLE path that can
@@ -270,7 +270,7 @@ test('switching items mid raw-markdown debounce flushes the outgoing raw edit (n
 
 	// Switch A->B immediately. loadData cancels the debounce and the
 	// keepalive flush must persist A's edit.
-	await page.locator('a.item-card', { hasText: 'Raw switch B' }).first().click();
+	await page.locator('.item-card .card-link', { hasText: 'Raw switch B' }).first().click();
 
 	// Isolation premise: the switch must beat the 1.2s raw debounce, so the
 	// keepalive flush is the SOLE path that can persist A. If a pathological

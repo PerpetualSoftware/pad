@@ -100,8 +100,8 @@
 		return `/${username}/${wsSlug}/tags/${encodeURIComponent(tag)}`;
 	}
 
-	// The card is an <a>; navigate to the tag page programmatically (like the
-	// star/PR/status controls) so the chip doesn't trigger the card link.
+	// Navigate to the tag page programmatically (like the star/PR/status
+	// controls), and stop the click before it reaches the card's handlers.
 	function openTag(e: MouseEvent, tag: string) {
 		e.preventDefault();
 		e.stopPropagation();
@@ -178,7 +178,7 @@
 	}
 
 	// Copy the item's issue ID (e.g. IDEA-1904) without opening the card.
-	// The card is an <a>, so we must swallow the click (IDEA-1904).
+	// Swallow the click so it does not also open the item (IDEA-1904).
 	let copied = $state(false);
 	async function copyRef(e: MouseEvent) {
 		e.preventDefault();
@@ -194,9 +194,9 @@
 		}
 	}
 
-	// Split-pane row-click interception (PLAN-2105 / TASK-2111). Only a plain
-	// left-click opens the pane; modifier/middle clicks fall through to the
-	// native <a href> (cmd/middle-click = full-page popout in a new tab,
+	// Split-pane row-click interception (PLAN-2105 / TASK-2111), on the title
+	// link that covers the card. Only a plain left-click opens the pane;
+	// modifier/middle clicks fall through to the native <a href> (cmd/middle-click = full-page popout in a new tab,
 	// right-click-copy / SSR target the full page). Sub-controls (star / PR /
 	// status / tags / reorder) already stopPropagation, so their clicks never
 	// reach this handler; `defaultPrevented` is a defensive backstop. The
@@ -209,7 +209,17 @@
 	}
 </script>
 
-<a href={itemUrl} class="item-card" data-item-key={itemUrlId(item)} data-item-slug={item.slug} class:compact class:focused class:has-pr={!!pullRequest} onclick={handleCardClick}>
+<!--
+	A DIV, with the title link stretched over it (TASK-2237, audit C29). The card
+	used to be the <a> itself, nesting real buttons (star, copy-ref, PR badge,
+	status and priority pickers, tags, the reorder menu): invalid markup whose
+	link name was the whole card's text, and whose controls assistive tech
+	flattened or could not reach. The title link's ::after now covers the card,
+	so a click anywhere that is not a control still opens the item (plain click
+	into the pane, modifier and middle clicks to the full page, as before), and
+	every control is a SIBLING raised above that overlay.
+-->
+<div class="item-card" data-item-key={itemUrlId(item)} data-item-slug={item.slug} class:compact class:focused class:has-pr={!!pullRequest}>
 	{#if pullRequest}
 		<button
 			type="button"
@@ -297,7 +307,7 @@
 	</div>
 
 	<div class="card-title">
-		{item.title}
+		<a href={itemUrl} class="card-link" onclick={handleCardClick}>{item.title}</a>
 	</div>
 
 	<div class="card-meta">
@@ -383,7 +393,7 @@
 			<span class="card-progress-text">{progress.done}/{progress.total} {progress.label ?? progressLabel}</span>
 		</div>
 	{/if}
-</a>
+</div>
 
 <style>
 	.item-card {
@@ -439,6 +449,37 @@
 	.item-card:hover {
 		border-color: var(--border-strong, var(--border));
 		text-decoration: none;
+	}
+
+	/* The stretched link (TASK-2237). Its ::after covers the whole card, so the
+	   card stays one big target; the card is the positioning context. */
+	.card-link {
+		color: inherit;
+		text-decoration: none;
+	}
+	.card-link::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		border-radius: inherit;
+	}
+	.card-link:focus-visible {
+		outline: none;
+	}
+	/* The focus ring goes on the card, which is what the link stands for. */
+	.item-card:has(.card-link:focus-visible) {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: 2px;
+	}
+	/* Every control sits ABOVE the overlay: a positioned element later in the
+	   DOM (the overlay is in the title, after the top row) would otherwise
+	   paint over and swallow the earlier ones. Popovers are portaled to <body>,
+	   so they are not affected. The PR badge is already absolutely positioned
+	   with its own z-index, and must keep its position. */
+	.item-card :global(button:not(.pr-badge)),
+	.item-card :global(a:not(.card-link)) {
+		position: relative;
+		z-index: 1;
 	}
 
 	/* Selected-in-pane ring (the mock's violet glow). E2E asserts the

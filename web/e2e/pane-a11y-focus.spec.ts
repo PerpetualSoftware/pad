@@ -104,9 +104,12 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 		await page.keyboard.press('Escape');
 		await expect.poll(() => activeInPane(page)).toBe(false);
 		expect(openItemParam(page)).not.toBeNull();
-		// Focus landed on the paned row (the `.focused` list card).
+		// Focus landed on the paned row: the `.focused` list card's own link
+		// (the card is a div with a stretched link since TASK-2237).
 		expect(
-			await page.evaluate(() => document.activeElement?.classList.contains('item-card')),
+			await page.evaluate(
+				() => !!document.activeElement?.matches('a.card-link') && !!document.activeElement.closest('.item-card.focused'),
+			),
 		).toBe(true);
 
 		// (Two-level ESC, step 2) A second ESC from the list closes the pane.
@@ -174,7 +177,8 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 		// First open PUSHES a history entry, so Back closes the pane.
 		const row = page.locator('.item-card', { hasText: 'A11y back alpha' }).first();
 		await expect(row).toBeVisible();
-		const rowHref = await row.getAttribute('href');
+		const rowHref = await row.locator('.card-link').getAttribute('href');
+		expect(rowHref).toBeTruthy();
 		await row.click();
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();

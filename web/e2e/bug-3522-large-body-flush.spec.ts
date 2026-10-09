@@ -89,7 +89,7 @@ test.describe('a large body still flushes (BUG-3522)', () => {
 		const editor = await open(page, fixture, a.slug);
 		await typeAtEnd(page, editor, marker);
 		const switchedAt = Date.now();
-		await page.locator('a.item-card', { hasText: 'Large switch B' }).first().click();
+		await page.locator('.item-card .card-link', { hasText: 'Large switch B' }).first().click();
 		await expect.poll(() => stored(request, fixture, a.slug), { timeout: 4_000 }).toContain(marker);
 		expect(Date.now() - switchedAt).toBeLessThan(5_000);
 	});
