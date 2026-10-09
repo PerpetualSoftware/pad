@@ -10,7 +10,32 @@ import type { SuiteFixture } from './fixtures';
  *  - A click on a control (star, tag) does not.
  *  - Tab lands on the card link, and the CARD shows the focus ring.
  *  - The sidebar's quick-add is a sibling of its link, and still works.
+ *  - A drag started on the card's title (now the link's own text, and its
+ *    overlay everywhere else) still moves the card, and no NATIVE link drag
+ *    starts: svelte-dnd-action cancels dragstart on the drag item, and the
+ *    link's dragstart bubbles to it (lead review, #1968).
  */
+
+/** Count dragstart events that were NOT cancelled, i.e. a native link drag. */
+async function armNativeDragProbe(page: import('@playwright/test').Page) {
+	await page.evaluate(() => {
+		const w = window as unknown as { __nativeDrags: number };
+		w.__nativeDrags = 0;
+		// CAPTURE, so a dragstart whose propagation something stops is still
+		// seen; whether it was cancelled is read after dispatch has finished.
+		window.addEventListener(
+			'dragstart',
+			(e) => {
+				setTimeout(() => {
+					if (!e.defaultPrevented) w.__nativeDrags++;
+				});
+			},
+			true,
+		);
+	});
+}
+const nativeDrags = (page: import('@playwright/test').Page) =>
+	page.evaluate(() => (window as unknown as { __nativeDrags: number }).__nativeDrags);
 
 const DESKTOP = { width: 1280, height: 900 };
 
@@ -20,6 +45,7 @@ async function createTask(fixture: SuiteFixture, request: import('@playwright/te
 		data: { title, fields: JSON.stringify({ status: 'open' }) }
 	});
 	expect(resp.ok(), await resp.text()).toBeTruthy();
+	return (await resp.json()) as { slug: string };
 }
 
 test.describe('TASK-2237: a card is a stretched link, not a link full of buttons', () => {
@@ -68,9 +94,67 @@ test.describe('TASK-2237: a card is a stretched link, not a link full of buttons
 		const add = page.locator('button.nav-quick-add[title="New Task"]');
 		await expect(add).toHaveCount(1);
 		expect(await add.evaluate((el) => !!el.closest('a'))).toBe(false);
-		await add.focus();
+		// Reached by the keyboard, from its own link: the next tab stop.
+		// (A programmatic focus() does not match :focus-visible in Firefox.)
+		await page.locator('.nav-row a.nav-item', { has: page.locator('.nav-label', { hasText: /^Tasks$/ }) }).focus();
+		await page.keyboard.press('Tab');
+		await expect(add).toBeFocused();
 		await expect.poll(() => add.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
 		await page.keyboard.press('Enter');
 		await expect(page.locator('.quick-add-modal')).toBeVisible();
+	});
+
+	test('a board drag started on the title moves the card, with no native link drag', async ({ page, fixture, request }) => {
+		const title = `T2237 drag ${Date.now()}`;
+		const { slug } = await createTask(fixture, request, title);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=board`);
+		const card = page.locator('.item-card', { hasText: title }).first();
+		await expect(card).toBeVisible();
+		await armNativeDragProbe(page);
+		const path = new URL(page.url()).pathname;
+
+		const target = page.getByRole('group', { name: 'Done column', exact: true });
+		const link = card.locator('.card-link');
+		let entered = false;
+		for (let attempt = 0; attempt < 3 && !entered; attempt++) {
+			// Start ON the title text: the link itself, not just its overlay.
+			const from = (await link.boundingBox())!;
+			const zone = (await target.locator('.column-cards').boundingBox())!;
+			await page.mouse.move(from.x + Math.min(20, from.width / 2), from.y + from.height / 2);
+			await page.mouse.down();
+			await page.mouse.move(from.x + 30, from.y + from.height / 2 + 10, { steps: 4 });
+			await page.mouse.move(zone.x + zone.width / 2, zone.y + 40, { steps: 20 });
+			entered = await expect(target.locator('.item-card', { hasText: title }))
+				.not.toHaveCount(0, { timeout: 5_000 })
+				.then(() => true)
+				.catch(() => false);
+			await page.mouse.up();
+		}
+		expect(entered, 'the card never entered the Done lane').toBe(true);
+		expect(await nativeDrags(page), 'a native link drag started').toBe(0);
+		// The gesture was a drag, not a click: nothing opened, nothing navigated.
+		expect(new URL(page.url()).pathname).toBe(path);
+		expect(new URL(page.url()).searchParams.get('item')).toBeNull();
+		await expect
+			.poll(async () => {
+				const r = await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slug}`, {
+					headers: { Authorization: `Bearer ${fixture.apiToken}` }
+				});
+				return r.ok() ? (JSON.parse((await r.json()).fields) as { status?: string }).status : r.status();
+			})
+			.toBe('done');
+	});
+
+	test('a pointer drag on a sidebar link starts no native link drag', async ({ page, fixture }) => {
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks`);
+		await armNativeDragProbe(page);
+		const link = page.locator('.nav-row a.nav-item', { has: page.locator('.nav-label', { hasText: /^Tasks$/ }) });
+		const box = (await link.boundingBox())!;
+		// A short move inside the row: enough to start any drag, too short to reorder.
+		await page.mouse.move(box.x + 30, box.y + box.height / 2);
+		await page.mouse.down();
+		await page.mouse.move(box.x + 45, box.y + box.height / 2 + 3, { steps: 6 });
+		await page.mouse.up();
+		expect(await nativeDrags(page), 'a native link drag started').toBe(0);
 	});
 });
