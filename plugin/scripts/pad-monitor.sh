@@ -108,7 +108,9 @@ fi
 # one process and starts none of its own, so the child is the whole tree.
 child=
 trap 'rm -rf "$lock" 2>/dev/null' 0
-trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 130' INT TERM
+# The child is waited for before the exit trap frees the lock, so a new
+# caller cannot take the lock while the old stream is still closing (codex r3).
+trap 'if [ -n "$child" ]; then kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; fi; exit 130' INT TERM
 
 # --- 2/3. Gate + reconnect loop. Re-check consent before every stream
 # attempt so an in-session disarm ends the loop on the next reconnect.
