@@ -173,7 +173,11 @@ func (rc *roomConn) writeMessageWithDeadline(messageType int, data []byte, deadl
 // at a time; created lazily by the RoomManager on first Join and
 // reclaimed `graceTTL` after the last subscriber leaves.
 type Room struct {
-	itemID        string
+	itemID string
+	// Who owns which awareness client IDs (TASK-2206), created on first use
+	// so a Room built without the manager still works.
+	awOnce        sync.Once
+	aw            *awarenessTracker
 	store         opLogStore
 	bus           OpBus
 	schemaVersion string
@@ -318,6 +322,14 @@ func (r *Room) addConn(rc *roomConn) error {
 // in-room bookkeeping.
 func (r *Room) removeConn(rc *roomConn) {
 	r.bus.Unsubscribe(rc.bus)
+
+	// The presence this connection carried leaves with it (TASK-2206): peers
+	// drop its carets now instead of at y-protocols' 30-second timeout. After
+	// Unsubscribe, and published under this conn's id, so it reaches every
+	// peer and not the closed socket.
+	if gone := r.awareness().release(rc.id); len(gone) > 0 {
+		r.bus.Publish(OpEvent{ItemID: r.itemID, ClientID: rc.id, Type: OpTypeAwareness, Data: encodeAwarenessRemoval(gone)})
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -541,12 +553,7 @@ func (r *Room) readLoop(rc *roomConn) error {
 
 		case yMessageAwareness:
 			// Awareness is presence — ephemeral. Never persisted.
-			r.bus.Publish(OpEvent{
-				ItemID:   r.itemID,
-				ClientID: rc.id,
-				Type:     OpTypeAwareness,
-				Data:     data,
-			})
+			r.relayAwareness(rc, data)
 
 		default:
 			// Unknown y-protocol message types (custom extensions,
@@ -657,7 +664,7 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 	i := 0
 	for _, data := range run {
 		if data[0] != yMessageSync {
-			r.bus.Publish(OpEvent{ItemID: r.itemID, ClientID: rc.id, Type: OpTypeAwareness, Data: data})
+			r.relayAwareness(rc, data)
 			continue
 		}
 		appended := results[i]
@@ -695,9 +702,22 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 func (r *Room) publishAwareness(rc *roomConn, run [][]byte) {
 	for _, data := range run {
 		if data[0] == yMessageAwareness {
-			r.bus.Publish(OpEvent{ItemID: r.itemID, ClientID: rc.id, Type: OpTypeAwareness, Data: data})
+			r.relayAwareness(rc, data)
 		}
 	}
+}
+
+func (r *Room) awareness() *awarenessTracker {
+	r.awOnce.Do(func() { r.aw = newAwarenessTracker() })
+	return r.aw
+}
+
+// relayAwareness broadcasts an awareness frame unchanged, after noting which
+// client IDs this connection owns (TASK-2206; see awareness.go). Every
+// awareness frame the room relays goes through here.
+func (r *Room) relayAwareness(rc *roomConn, data []byte) {
+	r.awareness().observe(rc.id, data)
+	r.bus.Publish(OpEvent{ItemID: r.itemID, ClientID: rc.id, Type: OpTypeAwareness, Data: data})
 }
 
 // writeLoop drains the bus subscription channel and writes every

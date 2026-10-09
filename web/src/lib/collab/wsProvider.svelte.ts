@@ -519,7 +519,14 @@ export class CollabProvider {
 		};
 
 		this.handleAwarenessUpdate = (changes, _origin) => {
-			const ids = [...changes.added, ...changes.updated, ...changes.removed];
+			// OUR client only (TASK-2206). Peers' entries arrive here too (applied
+			// from the server, or reaped locally on timeout or disconnect), and
+			// re-sending them made the server see other users' client IDs on
+			// this connection, so it could not tell whose presence a closing
+			// connection carried. It also doubled awareness traffic.
+			const ids = [...changes.added, ...changes.updated, ...changes.removed].filter(
+				(id) => id === this.ydoc.clientID
+			);
 			if (ids.length === 0) return;
 			const enc = encoding.createEncoder();
 			encoding.writeVarUint(enc, MESSAGE_AWARENESS);
@@ -821,15 +828,15 @@ export class CollabProvider {
 
 		// Broadcast our local awareness state (if any) so peers see
 		// us right away. With no local state set this is a no-op.
+		//
+		// Re-set rather than re-sent (TASK-2206): setLocalState advances our
+		// clock, and the update handler sends it. When this connection's
+		// predecessor dropped, the server told peers we left at our last clock
+		// + 1; re-announcing at the SAME clock would be ignored, leaving us
+		// invisible to them until the next heartbeat.
 		const localState = this.awareness.getLocalState();
 		if (localState !== null) {
-			const enc2 = encoding.createEncoder();
-			encoding.writeVarUint(enc2, MESSAGE_AWARENESS);
-			encoding.writeVarUint8Array(
-				enc2,
-				awarenessProtocol.encodeAwarenessUpdate(this.awareness, [this.ydoc.clientID]),
-			);
-			this.send(encoding.toUint8Array(enc2));
+			this.awareness.setLocalState(localState);
 		}
 
 		// Safety net (BUG-3240): the post-replay op_log_cursor frame, not a
