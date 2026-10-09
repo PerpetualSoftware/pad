@@ -124,6 +124,18 @@ jobs:
           echo "Changelog base: $previous..$GITHUB_REF_NAME"
           echo "tag=$previous" >> "$GITHUB_OUTPUT"
 
+      # The release gate (TASK-2035, scripts/release-smoke.sh, called from a
+      # .goreleaser.yaml build hook) BOOTS the linux/arm64 binary as well as
+      # linux/amd64, which needs qemu-user registered with binfmt_misc.
+      # Ubuntu's own package rather than a third-party action: this job holds
+      # contents:write and the GHCR token, and the qemu here only ever runs
+      # our own freshly built binary.
+      - name: Install qemu-user for the arm64 release smoke
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+          test -e /proc/sys/fs/binfmt_misc/qemu-aarch64
+
       - name: Run GoReleaser
         id: goreleaser
         # GoReleaser binary is pinned to an exact version (not "~> v2") to
