@@ -267,9 +267,16 @@ func TestRoomRemovalCannotOvertakeAReconnectedClient(t *testing.T) {
 	go func() { r.releaseAwareness(oldConn); close(done) }()
 	<-inWindow
 	// The same client, reconnected, announces while the removal is pending.
+	atLock := make(chan struct{})
+	r.beforeAwarenessRelay = func() { close(atLock) }
 	relayed := make(chan struct{})
 	go func() { r.relayAwareness(newConn, liveFrame(100, 4)); close(relayed) }()
-	time.Sleep(50 * time.Millisecond)
+	<-atLock // the racing frame has reached the lock (codex r3)
+	select {
+	case <-relayed:
+		t.Fatal("the reconnected client's frame was published while the removal was pending")
+	case <-time.After(50 * time.Millisecond):
+	}
 	close(proceed)
 	<-done
 	<-relayed

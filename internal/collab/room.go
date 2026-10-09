@@ -187,11 +187,14 @@ type Room struct {
 	// afterAwarenessRelease runs between a release and its publish; tests
 	// use it to hold that window open. Nil in production.
 	afterAwarenessRelease func()
-	store                 opLogStore
-	bus                   OpBus
-	schemaVersion         string
-	graceTTL              time.Duration
-	onIdle                func(string) // RoomManager.markRoomGone
+	// beforeAwarenessRelay runs as a relay is about to take awPubMu; tests
+	// use it to know a racing frame has reached the lock. Nil in production.
+	beforeAwarenessRelay func()
+	store                opLogStore
+	bus                  OpBus
+	schemaVersion        string
+	graceTTL             time.Duration
+	onIdle               func(string) // RoomManager.markRoomGone
 
 	mu    sync.Mutex
 	conns map[*websocket.Conn]*roomConn
@@ -723,6 +726,9 @@ func (r *Room) awareness() *awarenessTracker {
 // client IDs this connection owns (TASK-2206; see awareness.go). Every
 // awareness frame the room relays goes through here.
 func (r *Room) relayAwareness(rc *roomConn, data []byte) {
+	if r.beforeAwarenessRelay != nil {
+		r.beforeAwarenessRelay()
+	}
 	r.awPubMu.Lock()
 	defer r.awPubMu.Unlock()
 	r.awareness().observe(rc.id, data)
