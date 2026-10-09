@@ -420,7 +420,9 @@ describe('the collection page fences every async commit point', () => {
 		).toHaveLength(3);
 		// 3 → 4 (BUG-3204): the pane follow's settle check, which drops a
 		// pending target whose navigation never landed. Fenced like the rest.
-		expect(src.deferredTimers(), 'a setTimeout/setInterval was added or removed').toHaveLength(4);
+		// 4 → 5 (TASK-2232): the search box's debounced URL sync, fenced on
+		// identity and on the workspace and collection it was scheduled for.
+		expect(src.deferredTimers(), 'a setTimeout/setInterval was added or removed').toHaveLength(5);
 	});
 
 	it('captures the identity at ENTRY in every async handler, before its first await', () => {
