@@ -610,7 +610,14 @@
 	// `buildCollectionUrlParams` (TASK-2116) so it's unit-testable without
 	// mounting this route; this function just supplies the live state and
 	// URL and performs the actual navigation.
+	// The search box's debounced URL sync (TASK-2232); see scheduleSearchUrlSync.
+	const SEARCH_URL_SYNC_MS = 250;
+	let searchUrlSyncTimer: ReturnType<typeof setTimeout> | undefined;
 	function updateUrlFilters() {
+		// An immediate sync carries the current search too, so it supersedes a
+		// pending debounced one.
+		clearTimeout(searchUrlSyncTimer);
+		searchUrlSyncTimer = undefined;
 		if (!collSlug || !wsSlug) return;
 		const params = buildCollectionUrlParams(
 			{ viewMode, activeFilters, selectedTags, unparentedApplied, searchQuery },
@@ -1982,6 +1989,30 @@
 		updateUrlFilters();
 	}
 
+	// The search box writes the URL on a debounce (TASK-2232, audit C94). Each
+	// keystroke used to run a full same-page `goto` (router, replaceState,
+	// afterNavigate), and Safari rate-limits replaceState (about 100 per 30s)
+	// and then throws SecurityError, so a long query broke search there.
+	// `searchQuery` itself stays immediate, so local results still follow every
+	// key; only the address lags. The timer is dropped when the page leaves
+	// this collection, and on destroy, so it never navigates anywhere the user
+	// has already left.
+	function scheduleSearchUrlSync() {
+		clearTimeout(searchUrlSyncTimer);
+		const ws = wsSlug;
+		const coll = collSlug;
+		const epochAtSchedule = captureIdentity();
+		searchUrlSyncTimer = setTimeout(() => {
+			searchUrlSyncTimer = undefined;
+			// A new identity's page owns its own address; nor may a sync for a
+			// collection the page has left navigate back to it.
+			if (!identityHeld(epochAtSchedule)) return;
+			if (ws !== wsSlug || coll !== collSlug) return;
+			updateUrlFilters();
+		}, SEARCH_URL_SYNC_MS);
+	}
+	onDestroy(() => clearTimeout(searchUrlSyncTimer));
+
 	function handleSearchChange(query: string) {
 		// Pure setter — the reactive effect below runs the actual search.
 		// Keeping this small means non-input entry points (URL load via
@@ -1991,7 +2022,7 @@
 		// landed in the local fallback because `loadUrlFilters` set
 		// `searchQuery` directly and never invoked the dispatch).
 		searchQuery = query;
-		updateUrlFilters();
+		scheduleSearchUrlSync();
 	}
 
 	// Search dispatch. Tracks `searchQuery` (any entry point that mutates
