@@ -6,6 +6,8 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import AgentTermsLegend from '$lib/components/agent/AgentTermsLegend.svelte';
+	import { termTitle } from '$lib/agent/agentTerms';
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import { loadFailure } from '$lib/api/loadFailure';
 	import { statusColor } from '$lib/utils/fieldColors';
@@ -343,6 +345,7 @@
 			<h1>Library</h1>
 			<p class="subtitle">Pre-built conventions and playbooks to guide agent behavior. Activate the ones that fit your workflow.</p>
 		</header>
+		<AgentTermsLegend />
 
 		<div class="tabs">
 			<button
@@ -394,10 +397,12 @@
 								<div class="card-body">
 									<h3 class="card-title">{convention.title}</h3>
 									<div class="badges">
-										<Chip size="sm" color="var(--status-blue)">{convention.trigger}</Chip>
-										<Chip size="sm" color="var(--accent-purple)">{conventionSurfaceLabel(convention)}</Chip>
-										<Chip size="sm" color={ownValue(priorityColors, convention.enforcement) ?? 'var(--accent-gray)'}>
-											{convention.enforcement}
+										<!-- TASK-2257 (C72): each chip says what it is, to a pointer
+										     (title) and to a screen reader (the hidden prefix). -->
+										<Chip size="sm" color="var(--status-blue)" title={termTitle('trigger', convention.trigger)}><span class="sr-only">{'Trigger: '}</span>{convention.trigger}</Chip>
+										<Chip size="sm" color="var(--accent-purple)" title={termTitle('surface', conventionSurfaceLabel(convention))}><span class="sr-only">{'Surface: '}</span>{conventionSurfaceLabel(convention)}</Chip>
+										<Chip size="sm" color={ownValue(priorityColors, convention.enforcement) ?? 'var(--accent-gray)'} title={termTitle('enforcement', convention.enforcement)}>
+											<span class="sr-only">{'Enforcement: '}</span>{convention.enforcement}
 										</Chip>
 										{#if convention.commands?.length}
 											<Chip size="sm" color="var(--accent-purple)">{convention.commands.length} cmd{convention.commands.length > 1 ? 's' : ''}</Chip>
@@ -470,8 +475,8 @@
 										{#if playbook.invocation_slug}
 											<Chip size="sm" color="var(--accent-green)" title={`Run it by saying "run the ${playbook.invocation_slug} playbook" — or the shortcut for your agent: /pad ${playbook.invocation_slug} (Claude Code), $pad ${playbook.invocation_slug} (Codex), pad_playbook action=run ref=${playbook.invocation_slug} (MCP)`}><span class="slug-text">▶ {playbook.invocation_slug}</span></Chip>
 										{/if}
-										<Chip size="sm" color="var(--status-blue)">{playbook.trigger}</Chip>
-										<Chip size="sm" color="var(--accent-purple)">{playbook.scope}</Chip>
+										<Chip size="sm" color="var(--status-blue)" title={termTitle('trigger', playbook.trigger)}><span class="sr-only">{'Trigger: '}</span>{playbook.trigger}</Chip>
+										<Chip size="sm" color="var(--accent-purple)" title={termTitle('surface', playbook.scope)}><span class="sr-only">{'Scope: '}</span>{playbook.scope}</Chip>
 										{#if playbook.arguments && playbook.arguments.length > 0}
 											<Chip size="sm" color="var(--accent-amber)" title="Accepts {playbook.arguments.length} argument{playbook.arguments.length === 1 ? '' : 's'}">{playbook.arguments.length} arg{playbook.arguments.length === 1 ? '' : 's'}</Chip>
 										{/if}
