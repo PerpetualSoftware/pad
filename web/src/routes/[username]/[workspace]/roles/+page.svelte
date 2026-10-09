@@ -905,7 +905,7 @@
 		{#if !newItemCollectionSlug}
 			<div class="dialog-header">
 				<h2 id="new-item-dialog-title">New Item</h2>
-				<button class="dialog-close" onclick={closeNewItem}>✕</button>
+				<button type="button" class="dialog-close" onclick={closeNewItem} aria-label="Close" title="Close"><span aria-hidden="true">✕</span></button>
 			</div>
 			<div class="collection-grid">
 				{#each eligibleCollections as coll (coll.id)}
@@ -920,7 +920,7 @@
 			<div class="dialog-header">
 				<button class="back-btn" onclick={() => { newItemCollectionSlug = ''; newItemTitle = ''; }} title="Back">←</button>
 				<h2 id="new-item-dialog-title">New {selectedColl?.icon} {selectedColl?.name?.replace(/s$/, '') ?? 'Item'}</h2>
-				<button class="dialog-close" onclick={closeNewItem}>✕</button>
+				<button type="button" class="dialog-close" onclick={closeNewItem} aria-label="Close" title="Close"><span aria-hidden="true">✕</span></button>
 			</div>
 			<div class="new-item-form">
 				<input aria-label="New item title"
@@ -956,7 +956,7 @@
 	<div class="dialog-content">
 		<div class="dialog-header">
 			<h2 id="roles-dialog-title">{dialogMode === 'edit' ? 'Edit Role' : 'New Role'}</h2>
-			<button class="dialog-close" onclick={closeModal}>✕</button>
+			<button type="button" class="dialog-close" onclick={closeModal} aria-label="Close" title="Close"><span aria-hidden="true">✕</span></button>
 		</div>
 
 		<div class="dialog-body">

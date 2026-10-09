@@ -493,7 +493,7 @@
 >
 	<div class="modal-header">
 		<h2 id="create-workspace-title">New Workspace</h2>
-		<button class="modal-close" onclick={close}>✕</button>
+		<button type="button" class="modal-close" onclick={close} aria-label="Close" title="Close"><span aria-hidden="true">✕</span></button>
 	</div>
 
 		<div class="modal-tabs">
