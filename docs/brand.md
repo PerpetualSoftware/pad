@@ -381,6 +381,7 @@ PNG anywhere is an export of one of them, never a hand-edited copy.
 | `pad-favicon-tile.svg` | The small mark on a dark tile | Places that need a solid backing: PWA maskable, Windows tiles |
 | `pad-app-icon.svg` | The mark on a near-black tile with a cyan-to-magenta edge glow, full-bleed | iOS AppIcon (no transparency); `icon-192/512`, `apple-touch-icon` |
 | `pad-app-icon-shaped.svg` | The same tile, transparent outside its rounded shape | Android legacy launcher, in-app logos (iOS `PadIcon`, Android `pad_logo`), video lockups, OG and store art |
+| `pad-org-avatar.svg` (+ `-1024.png`) | The mark, smaller, on a full-bleed dark tile with no edge ring; every tile clears a circle crop | The PerpetualSoftware GitHub org avatar, which GitHub's default social card shows |
 | `pad-mark-mono.svg` | One colour (`currentColor`), with the two slate tiles at 40% | One-colour contexts: print, embossing, a single-ink badge |
 
 ### Geometry and colour
@@ -412,6 +413,11 @@ PNG anywhere is an export of one of them, never a hand-edited copy.
   and never replaces it.
 
 ### GitHub social preview
+
+**Ruled (Dave, 2026-10-09):** keep GitHub's default card, which keeps the live
+counts, and make the mark the org avatar (`pad-org-avatar-1024.png`, uploaded
+in the org settings). The custom card below is parked, kept in case it is
+wanted later.
 
 `docs/brand/social/render.mjs` renders it in GitHub's own card layout, with
 the mark where the org avatar goes:

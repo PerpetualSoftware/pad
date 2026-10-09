@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Pad">
+<!-- Pad org avatar (TASK-3514): the mark on a full-bleed dark tile, sized so every tile clears the circle GitHub crops avatars to in some places (grid span 560 of 1024; its farthest tile corner sits 383 from centre, inside the 512 radius). No edge ring: a circle crop would cut it unevenly. -->
+<defs>
+  <radialGradient id="bg" cx="0.5" cy="0.4" r="0.7">
+    <stop offset="0" stop-color="#0b1033"/>
+    <stop offset="1" stop-color="#02031a"/>
+  </radialGradient>
+  <linearGradient id="sheen" x1="0.25" y1="0" x2="0.75" y2="1">
+    <stop offset="0" stop-color="#fff" stop-opacity="0.10"/>
+    <stop offset="1" stop-color="#000" stop-opacity="0.08"/>
+  </linearGradient>
+</defs>
+<rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect x="232.0" y="232.0" width="165.7" height="165.7" rx="30.7" fill="#007bfc"/>
+  <rect x="232.0" y="232.0" width="165.7" height="165.7" rx="30.7" fill="url(#sheen)"/>
+  <rect x="429.2" y="232.0" width="165.7" height="165.7" rx="30.7" fill="#2f2ffb"/>
+  <rect x="429.2" y="232.0" width="165.7" height="165.7" rx="30.7" fill="url(#sheen)"/>
+  <rect x="626.3" y="232.0" width="165.7" height="165.7" rx="30.7" fill="#8406fb"/>
+  <rect x="626.3" y="232.0" width="165.7" height="165.7" rx="30.7" fill="url(#sheen)"/>
+  <rect x="232.0" y="429.2" width="165.7" height="165.7" rx="30.7" fill="#01bc81"/>
+  <rect x="232.0" y="429.2" width="165.7" height="165.7" rx="30.7" fill="url(#sheen)"/>
+  <rect x="429.2" y="429.2" width="165.7" height="165.7" rx="30.7" fill="#fdb600"/>
+  <rect x="429.2" y="429.2" width="165.7" height="165.7" rx="30.7" fill="url(#sheen)"/>
+  <rect x="626.3" y="429.2" width="165.7" height="165.7" rx="30.7" fill="#45496c"/>
+  <rect x="626.3" y="429.2" width="165.7" height="165.7" rx="30.7" fill="url(#sheen)"/>
+  <rect x="232.0" y="626.3" width="165.7" height="165.7" rx="30.7" fill="#0090fd"/>
+  <rect x="232.0" y="626.3" width="165.7" height="165.7" rx="30.7" fill="url(#sheen)"/>
+  <rect x="429.2" y="626.3" width="165.7" height="165.7" rx="30.7" fill="#004ffb"/>
+  <rect x="429.2" y="626.3" width="165.7" height="165.7" rx="30.7" fill="url(#sheen)"/>
+  <rect x="626.3" y="626.3" width="165.7" height="165.7" rx="30.7" fill="#424668"/>
+  <rect x="626.3" y="626.3" width="165.7" height="165.7" rx="30.7" fill="url(#sheen)"/>
+</svg>
