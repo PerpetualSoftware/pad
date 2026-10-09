@@ -390,7 +390,7 @@
 		{:else}
 			<div class="extract-form">
 				<div class="form-row">
-					<input
+					<input aria-label="New item title"
 						type="text"
 						class="title-input"
 						bind:value={title}

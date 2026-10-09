@@ -157,7 +157,7 @@
 						 concern (autofocus on page load) doesn't apply here
 						 because the user actively triggered the modal. -->
 					<!-- svelte-ignore a11y_autofocus -->
-					<input
+					<input aria-label="URL to import"
 						type="url"
 						placeholder="https://example.com/docs/page"
 						bind:value={url}

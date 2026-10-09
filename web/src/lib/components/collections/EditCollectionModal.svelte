@@ -916,7 +916,7 @@
 					<div class="tab-content">
 						<div class="name-row">
 							<EmojiPickerButton bind:value={selectedIcon} placeholder="+" size="md" />
-							<input
+							<input aria-label="Collection name"
 								class="name-input"
 								type="text"
 								placeholder="Collection name"

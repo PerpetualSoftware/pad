@@ -621,6 +621,7 @@
 					type="file"
 					accept=".md,text/markdown"
 					class="visually-hidden-input"
+					aria-label="Import a convention file"
 					onchange={onImportFileChange}
 				/>
 			{/snippet}
@@ -628,7 +629,7 @@
 
 		{#if showCreate && canCreateConvention}
 			<form class="create-form" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
-				<input type="text" bind:value={newTitle} placeholder="Convention title..." class="input-title" required />
+				<input aria-label="Convention title" type="text" bind:value={newTitle} placeholder="Convention title..." class="input-title" required />
 				<div class="form-row">
 					<label class="form-field">
 						<span>Category</span>
@@ -664,8 +665,8 @@
 						</select>
 					</label>
 				</div>
-				<textarea bind:value={newCommands} placeholder="Optional command references, one per line..." rows="2"></textarea>
-				<textarea bind:value={newContent} placeholder="Instruction the agent should follow..." rows="3"></textarea>
+				<textarea aria-label="Command references, one per line" bind:value={newCommands} placeholder="Optional command references, one per line..." rows="2"></textarea>
+				<textarea aria-label="Instruction for the agent" bind:value={newContent} placeholder="Instruction the agent should follow..." rows="3"></textarea>
 				<div class="form-actions">
 					<Button variant="secondary" onclick={resetForm}>Cancel</Button>
 					<Button variant="primary" type="submit" disabled={creating || !newTitle.trim()}>

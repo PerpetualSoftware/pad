@@ -281,7 +281,7 @@
 			</div>
 		{:else}
 			<div class="link-edit">
-				<input
+				<input aria-label="Link URL"
 					type="text"
 					class="link-input"
 					bind:this={editInputEl}

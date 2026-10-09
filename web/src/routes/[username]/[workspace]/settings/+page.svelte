@@ -1212,7 +1212,7 @@
 					<div class="invite-form card">
 						<h3>Invite Member</h3>
 						<div class="invite-row">
-							<input
+							<input aria-label="Email address to invite"
 								type="email"
 								placeholder="Email address"
 								bind:value={inviteEmail}
@@ -1347,7 +1347,7 @@
 							<p class="danger-warning">This will delete <strong>{wsName}</strong> and all its contents. It becomes inaccessible immediately and is permanently erased after 30 days. To confirm, type the workspace slug below:</p>
 							<div class="danger-input-row">
 								<code class="slug-hint">{wsSlug}</code>
-								<input
+								<input aria-label="Workspace slug, to confirm deletion"
 									type="text"
 									class="danger-input"
 									bind:value={deleteInput}

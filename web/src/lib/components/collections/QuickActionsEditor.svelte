@@ -92,7 +92,7 @@
 			<div class="qa-card">
 				<div class="qa-card-top">
 					<EmojiPickerButton bind:value={actions[index].icon} placeholder="⚡" />
-					<input
+					<input aria-label="Action label"
 						class="qa-label-input"
 						type="text"
 						placeholder="Action label"
@@ -124,7 +124,7 @@
 						>&#10005;</button>
 					</div>
 				</div>
-				<input
+				<input aria-label="Action prompt"
 					class="qa-prompt-input"
 					type="text"
 					placeholder={'/pad implement {ref} "{title}"'}
@@ -182,7 +182,7 @@
 			<div class="qa-card">
 				<div class="qa-card-top">
 					<EmojiPickerButton bind:value={actions[index].icon} placeholder="⚡" />
-					<input
+					<input aria-label="Action label"
 						class="qa-label-input"
 						type="text"
 						placeholder="Action label"
@@ -214,7 +214,7 @@
 						>&#10005;</button>
 					</div>
 				</div>
-				<input
+				<input aria-label="Action prompt"
 					class="qa-prompt-input"
 					type="text"
 					placeholder="/pad triage all new items"

@@ -132,7 +132,7 @@
 				<option value={c.slug}>{c.icon} {c.name}</option>
 			{/each}
 		</select>
-		<textarea
+		<textarea aria-label="New item title"
 			class="capture-title"
 			bind:value={title}
 			use:autofocus

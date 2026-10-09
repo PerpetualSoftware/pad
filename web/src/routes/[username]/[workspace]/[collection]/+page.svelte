@@ -4248,7 +4248,7 @@
 
 			{#if saveViewOpen}
 				<div class="save-view-form">
-					<input
+					<input aria-label="View name"
 						bind:this={saveViewInput}
 						bind:value={saveViewName}
 						class="save-view-input"
@@ -4262,7 +4262,7 @@
 
 			{#if quickCreateOpen && canEditThisCollection}
 				<div class="quick-create">
-					<input
+					<input aria-label="New item title"
 						bind:this={quickCreateInput}
 						bind:value={quickCreateTitle}
 						class="quick-create-input"

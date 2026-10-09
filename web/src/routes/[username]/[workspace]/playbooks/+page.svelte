@@ -493,6 +493,7 @@
 							type="file"
 							accept=".md,text/markdown"
 							class="visually-hidden-input"
+							aria-label="Import a playbook file"
 							onchange={onImportFileChange}
 						/>
 					</div>

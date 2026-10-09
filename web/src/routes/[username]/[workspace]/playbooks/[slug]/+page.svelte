@@ -392,7 +392,7 @@
 		<header class="edit-header">
 			<div class="header-left">
 				<a class="back-link" href="/{username}/{wsSlug}/playbooks">&larr; Back to playbooks</a>
-				<input
+				<input aria-label="Playbook title"
 					class="title-input"
 					type="text"
 					value={title}

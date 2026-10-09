@@ -805,7 +805,7 @@
 		{#if movedFrom !== null}
 			<p class="lane-draft-moved">Moved from {lostLaneLabel(movedFrom, fieldLabelFor)}, a lane that no longer exists</p>
 		{/if}
-		<textarea
+		<textarea aria-label="New item title"
 			bind:this={draftInputs[key]}
 			bind:value={draftText[key]}
 			class="lane-draft-input"

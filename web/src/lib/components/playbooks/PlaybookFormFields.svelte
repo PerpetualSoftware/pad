@@ -345,7 +345,7 @@
 					<option value="__custom__">Other (custom trigger)…</option>
 				</select>
 				{#if customTriggerMode}
-					<input
+					<input aria-label="Custom trigger name"
 						class="form-input custom-trigger"
 						type="text"
 						placeholder="custom-trigger-name"
