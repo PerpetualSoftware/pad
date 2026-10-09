@@ -1514,20 +1514,29 @@ func TestPreServerFixtureProvesEachClaimSeparately(t *testing.T) {
 	// is the shape a wildcard bind beside a held specific address takes on a
 	// stack that permits it.
 	t.Run("probed address is not the stub", func(t *testing.T) {
-		foreign, err := net.Listen("tcp", "127.0.0.2:0")
-		if err != nil {
-			t.Skipf("no 127.0.0.2 here: %v", err)
+		// BUG-3519: the port is chosen on 127.0.0.2, and the stub then
+		// binds the SAME number on 127.0.0.1, which nothing had checked
+		// was free there. When another process held it, the stub lost the
+		// bind and exited before announcing, so the case failed on the
+		// fixture ("stub exited without announcing a port") and never
+		// reached the proof it is about. The port is now one that binds on
+		// 127.0.0.1 too, and a bind lost in the moment between that check
+		// and the stub's own bind (the only way left to see that error
+		// here) re-runs the setup on a fresh port. A refusal from the
+		// proof itself is never retried.
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			port := foreignPortFreeOnLoopback(t)
+			e := stubEnv{version: "pad version dev (abc1234 x)", healthy: "1",
+				argvLog: filepath.Join(dir, "argv.log"), port: port, home: dir}
+			pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
+			pre.Env = e.env()
+			err = provePreServer(pre, "127.0.0.2", port, 8*time.Second, t.Cleanup)
+			if err == nil || !strings.Contains(err.Error(), "exited without announcing") {
+				break
+			}
+			t.Logf("attempt %d: the stub lost 127.0.0.1:%d to another process; choosing again", attempt+1, port)
 		}
-		srv := &http.Server{Handler: http.NewServeMux()}
-		go srv.Serve(foreign)
-		t.Cleanup(func() { _ = srv.Close() })
-		port := foreign.Addr().(*net.TCPAddr).Port
-
-		e := stubEnv{version: "pad version dev (abc1234 x)", healthy: "1",
-			argvLog: filepath.Join(dir, "argv.log"), port: port, home: dir}
-		pre := exec.Command(built, "server", "start", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
-		pre.Env = e.env()
-		err = provePreServer(pre, "127.0.0.2", port, 8*time.Second, t.Cleanup)
 		if err == nil || !strings.Contains(err.Error(), "not this stub") {
 			t.Fatalf("want the pid proof to refuse, got %v", err)
 		}
@@ -1554,6 +1563,33 @@ func TestPreServerFixtureProvesEachClaimSeparately(t *testing.T) {
 			t.Fatalf("want the port proof to refuse, got %v", err)
 		}
 	})
+}
+
+// foreignPortFreeOnLoopback starts a server on 127.0.0.2 (the "someone
+// else's listener" the pid proof must refuse) and returns its port, chosen so
+// that the same port number is free on 127.0.0.1, where the stub will bind it
+// (BUG-3519). Skips when 127.0.0.2 is not usable here.
+func foreignPortFreeOnLoopback(t *testing.T) int {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		foreign, err := net.Listen("tcp", "127.0.0.2:0")
+		if err != nil {
+			t.Skipf("no 127.0.0.2 here: %v", err)
+		}
+		port := foreign.Addr().(*net.TCPAddr).Port
+		probe, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			_ = foreign.Close()
+			continue
+		}
+		_ = probe.Close()
+		srv := &http.Server{Handler: http.NewServeMux()}
+		go srv.Serve(foreign)
+		t.Cleanup(func() { _ = srv.Close() })
+		return port
+	}
+	t.Fatal("no port free on both 127.0.0.2 and 127.0.0.1 in 20 tries")
+	return 0
 }
 
 // And the positive control: an unobstructed stub passes both proofs, so the
