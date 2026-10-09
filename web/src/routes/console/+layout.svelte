@@ -123,36 +123,45 @@
 					id="console-nav-links"
 					class="nav-links"
 					class:open={mobileMenuOpen}
-					role="menu"
 				>
+					<!-- TASK-2238 (C108): navigation links, not a menu. The
+					     menu/menuitem roles promised arrow keys that did nothing
+					     and hid the links' own semantics; the current page is
+					     marked with aria-current instead. -->
 					<a
 						href="/console"
 						class="nav-link"
-						role="menuitem"
 						onclick={closeMobileMenu}
 						class:active={isActive('/console') &&
 							!isActive('/console/settings') &&
 							!isActive('/console/billing') &&
 							!isActive('/console/admin') &&
+							!isActive('/console/deleted-workspaces') &&
 							!isActive('/console/connected-apps')}
+						aria-current={(isActive('/console') &&
+							!isActive('/console/settings') &&
+							!isActive('/console/billing') &&
+							!isActive('/console/admin') &&
+							!isActive('/console/deleted-workspaces') &&
+							!isActive('/console/connected-apps')) ? 'page' : undefined}
 					>
 						Workspaces
 					</a>
 					<a
 						href="/console/settings"
 						class="nav-link"
-						role="menuitem"
 						onclick={closeMobileMenu}
 						class:active={isActive('/console/settings')}
+						aria-current={(isActive('/console/settings')) ? 'page' : undefined}
 					>
 						Settings
 					</a>
 					<a
 						href="/console/deleted-workspaces"
 						class="nav-link"
-						role="menuitem"
 						onclick={closeMobileMenu}
 						class:active={isActive('/console/deleted-workspaces')}
+						aria-current={(isActive('/console/deleted-workspaces')) ? 'page' : undefined}
 					>
 						Deleted workspaces
 					</a>
@@ -162,9 +171,9 @@
 						<a
 							href="/console/connected-apps"
 							class="nav-link"
-							role="menuitem"
 							onclick={closeMobileMenu}
 							class:active={isActive('/console/connected-apps')}
+						aria-current={(isActive('/console/connected-apps')) ? 'page' : undefined}
 						>
 							Connected Apps
 						</a>
@@ -174,9 +183,9 @@
 						<a
 							href="/console/billing"
 							class="nav-link"
-							role="menuitem"
 							onclick={closeMobileMenu}
 							class:active={isActive('/console/billing')}
+						aria-current={(isActive('/console/billing')) ? 'page' : undefined}
 						>
 							Billing
 						</a>
@@ -185,9 +194,9 @@
 						<a
 							href="/console/admin"
 							class="nav-link"
-							role="menuitem"
 							onclick={closeMobileMenu}
 							class:active={isActive('/console/admin')}
+						aria-current={(isActive('/console/admin')) ? 'page' : undefined}
 						>
 							Admin
 						</a>
