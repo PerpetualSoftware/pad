@@ -55,6 +55,13 @@ var mintCounter int
 
 func mintWithResource(t *testing.T, srv *Server, sess oauthSession, resource string) (string, int) {
 	t.Helper()
+	return mintWithResourceTier(t, srv, sess, resource, "pad:read", "read")
+}
+
+// mintWithResourceTier is mintWithResource asking for scope and consenting
+// to tier (read / write / admin).
+func mintWithResourceTier(t *testing.T, srv *Server, sess oauthSession, resource, scope, tier string) (string, int) {
+	t.Helper()
 	mintCounter++
 	tag := string(rune('a' + mintCounter%26))
 	sessionToken, csrfTok, clientID := sess.sessionToken, sess.csrfTok, sess.clientID
@@ -65,11 +72,11 @@ func mintWithResource(t *testing.T, srv *Server, sess oauthSession, resource str
 		"redirect_uri":          {"https://app.test/cb"},
 		"code_challenge":        {s256Challenge(verifier)},
 		"code_challenge_method": {"S256"},
-		"scope":                 {"pad:read"},
+		"scope":                 {scope},
 		"state":                 {"state-u2a-" + tag + "-01"},
 		"decision":              {"approve"},
 		"csrf_token":            {csrfTok},
-		"capability_tier":       {"read"},
+		"capability_tier":       {tier},
 		"allowed_workspaces":    {"*"},
 	}
 	if resource != "" {

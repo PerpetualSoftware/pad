@@ -224,6 +224,10 @@ type Server struct {
 	// name as "unknown", so an unwired server cannot mint caller-chosen
 	// series. Set by SetMCPTransport.
 	mcpCallNameKnown func(string) bool
+	// mcpCallNeedsWrite says which /mcp tool calls need a write scope, for
+	// MCPInsufficientScope's 403 (TASK-2308). Nil turns that check off.
+	// Set by SetMCPWriteCallClassifier.
+	mcpCallNeedsWrite func(tool, action string) bool
 
 	// The ChatGPT catalog's mount (TASK-3321 U2b, handlers_chatgpt_mcp.go).
 	chatGPTTransport http.Handler

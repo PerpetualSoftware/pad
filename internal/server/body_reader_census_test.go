@@ -275,6 +275,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"artifact_import.go":         "raw artifact TEXT (not JSON) — checked with bindableText, the same predicate ValidatePath and ValidateQuery apply",
 		"handlers_cloud.go":          "bodyHasCloudSecret PEEKS at the body and restores the first 64 KiB of it — a larger body loses its tail, a bound that file documents and accepts; the real decode still happens through decodeJSON downstream",
 		"middleware_mcp_audit.go":    "audit capture — parses the body ITSELF and binds the decoded method / params.name to mcp_audit_log.tool_name, so it is a second READER, not a pass-through. That the MCP dispatcher decodes the body again is true and says nothing about what this middleware persists — the earlier rationale here made exactly that mistake and certified it safe (codex round 20). parseMCPRequestBody now runs both caller-derived returns through sanitiseStoredText",
+		"middleware_mcp_scope.go":    "the /mcp insufficient_scope pre-check (TASK-2308) PEEKS at up to 1 MiB of a POST body, decodes only method, params.name and the exact arguments.action, and restores every byte for mcp-go. The decoded values are compared against the catalog's action table and NOTHING is stored or echoed, so the NUL rule and the size cap have nothing to protect here; a body past the bound is passed on unread",
 		"handlers_tokens.go":         "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — so the body is read by the chokepoint, which applies the cap and the NUL rule. The earlier reason here said it never reads the body, which was simply false (codex round 29): a wrong reason in this list is the same defect as a missing entry, since both let a reader pass as reviewed",
 		"app_tokens.go":              "the install-client token rules (TASK-3394) read the same FORM-encoded OAuth body handleOAuthToken/handleOAuthIntrospect read, behind ValidateFormBody (BUG-2811), to classify the client exactly as fosite will",
 		"app_delegated_consent.go":   "the delegated app sign-in (TASK-3399) is the OAuth authorize/decide doors' form: appSignInAvailable parses it for client_id and decideAppConsent reads app_access, both on routes wrapped in ValidateFormBody (BUG-2811) like the rest of handlers_oauth.go; a form-encoded body, never JSON",
@@ -326,6 +327,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"import_read_deadline.go::Server.withImportReadDeadline::Body":  2,
 		"middleware_mcp_audit.go::Server.MCPAuditLog::Body":             5,
 		"middleware_mcp_audit.go::Server.emitMCPAuditDenied::Body":      2,
+		"middleware_mcp_scope.go::Server.MCPInsufficientScope::Body":    5,
 		"middleware_request_text.go::readBodyForDecode::Body":           4,
 	}
 

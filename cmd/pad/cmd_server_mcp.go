@@ -172,6 +172,9 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 	// argument bounds the tool metrics label by the tools this server
 	// actually registered (BUG-2817).
 	srv.SetMCPTransport(streamable, ep.ResourceURL, ep.AuthServerURL, mcpSrv.IsKnownCallName)
+	// An OAuth connection that can only read gets a 403 insufficient_scope
+	// challenge for a write action, before dispatch (TASK-2308).
+	srv.SetMCPWriteCallClassifier(mcpserver.CallNeedsWriteScope)
 	wireChatGPTMCP(srv, mcpDoc, dispatcher, ep)
 	slog.Info("MCP /mcp transport constructed; served only while MCP is available",
 		"mcp_url", ep.ResourceURL,

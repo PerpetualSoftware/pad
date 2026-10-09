@@ -1738,6 +1738,24 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.78 — TASK-2308. BEHAVIOR bump on the v0.45 / v0.42 grounds: over
+//     REMOTE /mcp, an OAuth connection whose grant cannot write (pad:read)
+//     that calls a WRITE action (any catalog action not in readOnlyActions),
+//     in a single tools/call request of up to 1 MiB, is answered HTTP 403 with `WWW-Authenticate: Bearer realm="pad",
+//     error="insufficient_scope", error_description=..., scope="pad:read
+//     pad:write", resource_metadata=...` before dispatch, where it got a
+//     `permission_denied` tool result. That challenge is what lets a client
+//     (Claude Code among them) re-authorize with the wider grant. Nothing
+//     that used to succeed is refused: every write action was already
+//     refused for a read token, and pad_item.import fails over HTTP for
+//     every token (BUG-3533) (pinned by
+//     TestScopePopulation_WriteActionsAreRefusedForReadTokens). A read-scoped
+//     PAT, which cannot re-authorize, keeps the tool error, as does a larger
+//     request (the server does not read past the bound), and the ChatGPT
+//     mount keeps its own tool-result challenge. The 401 challenge also
+//     gains `scope="pad:read pad:write"` ahead of resource_metadata. Stdio
+//     is unchanged. No name, enum or param moved.
+//
 //     0.77 — BUG-2772 (lead ruling; IDEA-2791 Tier B). BEHAVIOR bump on the
 //     v0.76 / v0.49 grounds: a write over REMOTE /mcp is now recorded as an
 //     AGENT write (created_by / actor "agent"), named by the client's declared
@@ -1937,7 +1955,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.77"
+const ToolSurfaceVersion = "0.78"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
