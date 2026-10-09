@@ -33,7 +33,8 @@
 				// ⌘N/Ctrl+N is still bound, but browsers keep it for a new window and
 				// never deliver it to the page (BUG-3465), so it is not advertised.
 				{ keys: '', single: 'C', description: 'New item' },
-				{ keys: modKeyLabel('\\'), description: 'Toggle sidebar' },
+				{ keys: modKeyLabel('\\'), description: 'Show or hide the sidebar and workspace bar' },
+				{ keys: modKeyLabel('F'), description: 'Filter the list (on a collection page)' },
 				{ keys: '', single: '?', description: 'Show keyboard shortcuts' }
 			]
 		},
@@ -44,7 +45,14 @@
 				{ keys: '↑', single: 'k', description: 'Move up' },
 				{ keys: '← / →', single: 'h / l', description: 'Move between board columns' },
 				{ keys: 'Enter', description: 'Open selected item' },
+				{ keys: 'Tab', description: 'Move into the open item pane' },
 				{ keys: 'Esc', description: 'Go back / Close' }
+			]
+		},
+		{
+			title: 'Search palette',
+			shortcuts: [
+				{ keys: '42 / TASK-42, Enter', description: 'Go to that item by number or ref' }
 			]
 		},
 		{

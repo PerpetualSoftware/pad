@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -60,6 +61,13 @@
 	function tagUrl(tag: string): string {
 		return `/${username}/${wsSlug}/tags/${encodeURIComponent(tag)}`;
 	}
+
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	$effect(() => {
+		page.url.pathname;
+		titleStore.setPageTitle({ section: 'Tags', item: null });
+	});
 </script>
 
 <svelte:head>

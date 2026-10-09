@@ -33,7 +33,6 @@
 
 	let { children } = $props();
 
-	let showShortcuts = $state(false);
 	let authReady = $state(false);
 	// An ATTEMPT has been made, not a load has SUCCEEDED (TASK-2200). The old
 	// name said the latter and the code did the former — it is set before the
@@ -308,8 +307,7 @@
 		}
 		if (isMod(e) && e.key === '\\') {
 			e.preventDefault();
-			uiStore.toggleSidebar();
-			uiStore.toggleTopbar();
+			uiStore.toggleChrome();
 			return;
 		}
 		// Nothing here binds Mod+[ or Mod+] (BUG-2666): they are Back/Forward in
@@ -349,11 +347,11 @@
 		}
 		if (ch === '?' && !isInputFocused()) {
 			e.preventDefault();
-			showShortcuts = !showShortcuts;
+			uiStore.toggleShortcuts();
 			return;
 		}
-		if (e.key === 'Escape' && showShortcuts) {
-			showShortcuts = false;
+		if (e.key === 'Escape' && uiStore.shortcutsOpen) {
+			uiStore.closeShortcuts();
 			return;
 		}
 		if (e.key === 'Escape' && uiStore.searchOpen) {
@@ -439,7 +437,7 @@
 				class="topbar-expand-btn"
 				onclick={() => uiStore.openTopbar()}
 				aria-label="Show workspace bar"
-				title="Show workspace bar ({modKeyLabel('\\')})"
+				title="Show workspace bar ({modKeyLabel('\\')} shows both bars)"
 			>
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<path d="M3 6L8 11L13 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -454,7 +452,7 @@
 					class="sidebar-expand-btn"
 					onclick={() => uiStore.openSidebar()}
 					aria-label="Open sidebar"
-					title="Open sidebar ({modKeyLabel('\\')})"
+					title="Open sidebar ({modKeyLabel('\\')} shows both bars)"
 				>
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -482,7 +480,7 @@
 	<ToastContainer />
 	<OpenChildrenDialog />
 	<PendingEditsDialog />
-	<KeyboardShortcuts visible={showShortcuts} onclose={() => showShortcuts = false} />
+	<KeyboardShortcuts visible={uiStore.shortcutsOpen} onclose={() => uiStore.closeShortcuts()} />
 {/if}
 
 <style>

@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { fieldMatches, safeText } from '$lib/fields/fieldShape';
 	import { page } from '$app/state';
+	import { titleStore } from '$lib/stores/title.svelte';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError } from '$lib/api/client';
@@ -470,6 +471,13 @@
 	}
 	function statusLabel(s: string) { return s === 'active' ? 'Active' : s === 'deprecated' ? 'Deprecated' : 'Draft'; }
 	function nextStatusLabel(s: string) { return s === 'active' ? 'Mark as Draft' : s === 'draft' ? 'Mark as Active' : 'Mark as Draft'; }
+
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	$effect(() => {
+		page.url.pathname;
+		titleStore.setPageTitle({ section: 'Playbooks', item: null });
+	});
 </script>
 
 <div class="playbooks-page">

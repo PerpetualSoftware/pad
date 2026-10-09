@@ -4,6 +4,9 @@ import { viewport, MOBILE_MEDIA_QUERY } from '$lib/stores/breakpoint.svelte';
 let sidebarOpen = $state(browser ? !viewport.isMobile : true);
 let topbarOpen = $state(browser ? localStorage.getItem('pad-topbar') !== 'closed' : true);
 let searchOpen = $state(false);
+// The keyboard shortcuts sheet (TASK-2261): here rather than in the root layout
+// so the account menu can open it, not only the `?` key.
+let shortcutsOpen = $state(false);
 let isTouch = $state(browser ? 'ontouchstart' in window : false);
 // True while the on-screen keyboard is up. Detected from the geometry of the
 // keyboard itself — visualViewport.height shrinking below the tallest height
@@ -101,6 +104,31 @@ export const uiStore = {
 		topbarOpen = false;
 		if (browser) localStorage.setItem('pad-topbar', 'closed');
 	},
+	/**
+	 * Mod+\ (TASK-2261, audit C101): ONE chrome state for both bars. It used to
+	 * toggle each independently, so with one bar hidden it showed that one and
+	 * hid the other, and the two never lined up again. Now: if either bar is
+	 * open, both close; if both are closed, both open. On mobile there is no
+	 * workspace bar to show, so only the sidebar moves (the topbar's state is
+	 * persisted, and flipping it unseen would surprise the desktop later).
+	 */
+	toggleChrome() {
+		if (viewport.isMobile) {
+			sidebarOpen = !sidebarOpen;
+			return;
+		}
+		if (sidebarOpen || topbarOpen) {
+			sidebarOpen = false;
+			this.closeTopbar();
+		} else {
+			sidebarOpen = true;
+			this.openTopbar();
+		}
+	},
+	get shortcutsOpen() { return shortcutsOpen; },
+	openShortcuts() { shortcutsOpen = true; },
+	closeShortcuts() { shortcutsOpen = false; },
+	toggleShortcuts() { shortcutsOpen = !shortcutsOpen; },
 	openSearch() { searchOpen = true; },
 	closeSearch() { searchOpen = false; },
 	toggleSearch() { searchOpen = !searchOpen; },
