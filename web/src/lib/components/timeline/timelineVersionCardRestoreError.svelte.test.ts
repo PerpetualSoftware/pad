@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import TimelineVersionCard from './TimelineVersionCard.svelte';
 import type { Version } from '$lib/types';
+import { bumpEpoch, readEpoch, resetEpoch } from '../../../test/identityEpochMock.svelte';
 
 // TASK-2205 (audit C37): a restore that fails for any reason other than
 // pending edits (BUG-3031) used to be rethrown from the click handler: no
@@ -19,6 +20,20 @@ vi.mock('$lib/api/client', async (importOriginal) => {
 			...actual.api,
 			versions: { ...actual.api.versions, restore, get: vi.fn(async () => ({ content: '' })),
 			diff: vi.fn(async () => ({ before: 'old', after: 'now' })) },
+		},
+	};
+});
+
+// A REACTIVE epoch (the family's double, BUG-3084): the account-switch leg is a
+// question about re-rendering, which a plain variable cannot answer.
+vi.mock('$lib/stores/auth.svelte', async () => {
+	const m = await import('../../../test/identityEpochMock.svelte');
+	return {
+		authStore: {
+			get identityEpoch() { return m.readEpoch(); },
+			get userId() { return 'u1'; },
+			identityFence() { const c = m.readEpoch(); return () => m.readEpoch() === c; },
+			onIdentityChange() { return () => {}; },
 		},
 	};
 });
@@ -42,6 +57,7 @@ describe('TimelineVersionCard: a failed restore says so (TASK-2205)', () => {
 
 	beforeEach(() => {
 		restore.mockReset();
+		resetEpoch();
 		unhandled.length = 0;
 		window.addEventListener('unhandledrejection', onUnhandled);
 		onRestore = vi.fn();
@@ -104,6 +120,18 @@ describe('TimelineVersionCard: a failed restore says so (TASK-2205)', () => {
 		expect(alertText()).toBe('Restore failed: boom');
 		props.itemSlug = 'ITEM-2';
 		flushSync();
+		expect(alertText()).toBeUndefined();
+	});
+
+	it('nor once another account is signed in (codex r2)', async () => {
+		restore.mockRejectedValueOnce(new Error('boom'));
+		confirm().click();
+		await settle();
+		expect(alertText()).toBe('Restore failed: boom');
+		const before = readEpoch();
+		bumpEpoch();
+		flushSync();
+		expect(readEpoch(), 'the identity epoch did not move: this leg would measure nothing').not.toBe(before);
 		expect(alertText()).toBeUndefined();
 	});
 });
