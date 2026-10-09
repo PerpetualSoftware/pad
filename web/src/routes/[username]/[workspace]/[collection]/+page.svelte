@@ -26,6 +26,7 @@
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
 	import { onDestroy, onMount, untrack } from 'svelte';
+	import { prefetchItemDetail } from '$lib/components/items/itemDetailLoader';
 	import { captureListAnchor, holdListAnchor, type ListAnchor } from '$lib/collections/listScrollHandoff';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
@@ -1339,6 +1340,10 @@
 		if (!browser) return;
 		delete (window as unknown as { __padPaneController?: PaneTestHook }).__padPaneController;
 	}
+
+	// Warm the item pane's code once the list is up, so the first open
+	// rarely waits for it (TASK-2226).
+	onMount(() => prefetchItemDetail());
 
 	onMount(() => {
 		installPaneTestHook();
