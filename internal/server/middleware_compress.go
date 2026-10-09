@@ -48,6 +48,15 @@ func compressSkips(r *http.Request) bool {
 	// compressed body would contradict its Content-Range.
 	case r.Header.Get("Range") != "":
 		return true
+	// An attachment's bytes (and its metadata, which is small): a user's file,
+	// streamed under a route write deadline. The compressor holds the headers
+	// until its first flush, and a large, very compressible file (24 MiB of
+	// repeated text compresses ~1000:1) can spend that whole deadline before a
+	// byte reaches the wire, so the client gets EOF instead of a download (CI
+	// on #1934, TestTask3401c_AStalledClientDoesNotOutliveTheDeadline). The
+	// list at `/attachments` has no trailing segment and still compresses.
+	case strings.Contains(p, "/attachments/"):
+		return true
 	// Reads under the credential routes as well, for the same reason: they
 	// are small, and nothing is lost by leaving them alone.
 	case strings.HasPrefix(p, "/api/v1/auth/"), strings.HasPrefix(p, "/oauth/"), strings.HasPrefix(p, "/api/v1/oauth/"),

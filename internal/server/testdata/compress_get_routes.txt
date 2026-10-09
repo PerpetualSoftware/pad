@@ -9,8 +9,8 @@ compress /.well-known/oauth-protected-resource/mcp/
 compress /.well-known/oauth-protected-resource/mcp/chatgpt
 compress /.well-known/openai-apps-challenge
 compress /api/app/v1/me
-compress /api/app/v1/workspaces/{ws}/attachments/{attachmentID}
-compress /api/app/v1/workspaces/{ws}/attachments/{attachmentID}/content
+skip /api/app/v1/workspaces/{ws}/attachments/{attachmentID}
+skip /api/app/v1/workspaces/{ws}/attachments/{attachmentID}/content
 compress /api/app/v1/workspaces/{ws}/collections
 compress /api/app/v1/workspaces/{ws}/collections/{collSlug}
 compress /api/app/v1/workspaces/{ws}/collections/{collSlug}/items
@@ -81,7 +81,7 @@ compress /api/v1/workspaces/{slug}/apps/install/pending/{pendingID}
 compress /api/v1/workspaces/{slug}/apps/{installID}
 compress /api/v1/workspaces/{slug}/archived-collections
 compress /api/v1/workspaces/{slug}/attachments
-compress /api/v1/workspaces/{slug}/attachments/{attachmentID}
+skip /api/v1/workspaces/{slug}/attachments/{attachmentID}
 compress /api/v1/workspaces/{slug}/builtins
 compress /api/v1/workspaces/{slug}/changelog
 compress /api/v1/workspaces/{slug}/changes

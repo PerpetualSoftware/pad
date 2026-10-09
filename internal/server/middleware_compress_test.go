@@ -70,6 +70,11 @@ func TestCompressLeavesSkippedResponsesAlone(t *testing.T) {
 		{"/api/v1/collab/item-1", map[string]string{"Upgrade": "websocket"}},
 		{"/api/v1/workspaces/w/items/x", map[string]string{"Upgrade": "websocket"}},
 		{"/api/v1/workspaces/w/attachments/a", map[string]string{"Range": "bytes=0-99"}},
+		// An attachment's bytes, without a Range too: a large compressible file
+		// spent its whole route deadline in the compressor before its headers
+		// went out (CI on #1934).
+		{"/api/v1/workspaces/w/attachments/a", nil},
+		{"/api/app/v1/workspaces/w/attachments/a/content", nil},
 		{"/api/v1/auth/login", nil},
 		{"/api/v1/auth/tokens", nil},
 		{"/api/v1/workspaces/w/tokens", nil},
@@ -86,6 +91,15 @@ func TestCompressLeavesSkippedResponsesAlone(t *testing.T) {
 		if ce := resp.Header.Get("Content-Encoding"); ce != "" {
 			t.Errorf("%s %v: compressed (%s); it must go out as written", c.path, c.hdr, ce)
 		}
+	}
+}
+
+// The attachment skip is the per-file routes, not the list beside them.
+func TestCompressStillCompressesTheAttachmentList(t *testing.T) {
+	h := CompressResponses(jsonHandler())
+	resp := get(t, h, "/api/v1/workspaces/w/attachments", map[string]string{"Accept-Encoding": "gzip"})
+	if ce := resp.Header.Get("Content-Encoding"); ce != "gzip" {
+		t.Errorf("the attachment list was not compressed (Content-Encoding %q)", ce)
 	}
 }
 
