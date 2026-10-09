@@ -1,4 +1,6 @@
 <script lang="ts">
+	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
+	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
 	import { onMount } from 'svelte';
 	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
@@ -21,6 +23,8 @@
 
 	// Password
 	let currentPassword = $state('');
+	// A refusal for the new password itself, shown on its field (TASK-2260).
+	let newPasswordError = $state('');
 	let newPassword = $state('');
 	let confirmPassword = $state('');
 	let passwordSaving = $state(false);
@@ -231,6 +235,7 @@
 
 	async function changePassword() {
 		passwordError = '';
+		newPasswordError = '';
 		passwordMsg = '';
 		if (!currentPassword || !newPassword) {
 			passwordError = 'Please fill in all password fields.';
@@ -240,10 +245,8 @@
 			passwordError = 'New passwords do not match.';
 			return;
 		}
-		if (newPassword.length < 8) {
-			passwordError = 'Password must be at least 8 characters.';
-			return;
-		}
+		newPasswordError = localPasswordProblem(newPassword) ?? '';
+		if (newPasswordError) return;
 
 		passwordSaving = true;
 		try {
@@ -256,7 +259,9 @@
 			newPassword = '';
 			confirmPassword = '';
 		} catch (err) {
-			passwordError = err instanceof Error ? err.message : 'Failed to change password';
+			// A refusal for the NEW password shows on its field (TASK-2260).
+			if (err instanceof Error && isPasswordRuleError(err.message)) newPasswordError = err.message;
+			else passwordError = err instanceof Error ? err.message : 'Failed to change password';
 		} finally {
 			passwordSaving = false;
 		}
@@ -699,7 +704,16 @@
 					</div>
 					<div class="field">
 						<label for="new-pw">New password</label>
-						<input id="new-pw" type="password" bind:value={newPassword} disabled={passwordSaving} autocomplete="new-password" />
+						<input
+							id="new-pw"
+							type="password"
+							bind:value={newPassword}
+							disabled={passwordSaving}
+							autocomplete="new-password"
+							aria-describedby={passwordDescribedBy('new-pw', newPasswordError)}
+							aria-invalid={newPasswordError ? 'true' : undefined}
+						/>
+						<PasswordRuleHint id="new-pw" error={newPasswordError} />
 					</div>
 					<div class="field">
 						<label for="confirm-pw">Confirm new password</label>

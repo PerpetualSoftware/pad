@@ -18,6 +18,8 @@
 	// used, or wrong) we clear the in-memory copy and revert to the paste
 	// prompt so the operator can grab a fresh token from the logs and recover
 	// in place (F12).
+	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
+	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api, PadApiError } from '$lib/api/client';
@@ -101,6 +103,8 @@
 	let name = $state('');
 	let password = $state('');
 	let confirmPassword = $state('');
+	// A refusal for the password itself, shown on the field (TASK-2260).
+	let passwordError = $state('');
 	let error = $state('');
 	let loading = $state(false);
 	let sessionChecked = $state(false);
@@ -150,18 +154,21 @@
 		const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 		if (!emailRegex.test(email)) return 'Please enter a valid email address.';
 		if (!name.trim()) return 'Please enter your name.';
-		if (password.length < 8) return 'Password must be at least 8 characters.';
 		if (password !== confirmPassword) return 'Passwords do not match.';
 		return null;
 	}
 
 	async function handleSubmit() {
 		error = '';
+		passwordError = '';
 		const validationError = validate();
 		if (validationError) {
 			error = validationError;
 			return;
 		}
+		// The password rule, on its field, once the fields above it are filled in.
+		passwordError = localPasswordProblem(password) ?? '';
+		if (passwordError) return;
 
 		loading = true;
 		try {
@@ -192,6 +199,8 @@
 					error =
 						'This token is invalid, expired, or already used. Get a fresh token from your container logs and paste it below.';
 				}
+			} else if (err instanceof Error && isPasswordRuleError(err.message)) {
+				passwordError = err.message;
 			} else if (err instanceof Error) {
 				error = err.message || 'Bootstrap failed.';
 			} else {
@@ -276,7 +285,7 @@
 					autocomplete="name"
 				/>
 
-				<label class="field-label" for="setup-password">Password (at least 8 characters)</label>
+				<label class="field-label" for="setup-password">Password</label>
 				<input
 					id="setup-password"
 					name="password"
@@ -284,7 +293,10 @@
 					bind:value={password}
 					disabled={loading}
 					autocomplete="new-password"
+					aria-describedby={passwordDescribedBy('setup-password', passwordError)}
+					aria-invalid={passwordError ? 'true' : undefined}
 				/>
+				<PasswordRuleHint id="setup-password" error={passwordError} />
 
 				<label class="field-label" for="setup-confirm-password">Confirm password</label>
 				<input

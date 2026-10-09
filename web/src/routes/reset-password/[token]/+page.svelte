@@ -1,4 +1,6 @@
 <script lang="ts">
+	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
+	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -22,15 +24,14 @@
 	let password = $state('');
 	let confirmPassword = $state('');
 	let error = $state('');
+	// A refusal for the password itself, shown on the field (TASK-2260).
+	let passwordError = $state('');
 	let loading = $state(false);
 
 	async function handleSubmit() {
 		error = '';
-
-		if (password.length < 8) {
-			error = 'Password must be at least 8 characters.';
-			return;
-		}
+		passwordError = localPasswordProblem(password) ?? '';
+		if (passwordError) return;
 		if (password !== confirmPassword) {
 			error = 'Passwords do not match.';
 			return;
@@ -47,7 +48,9 @@
 			}
 			await goto('/console', { replaceState: true });
 		} catch (err: unknown) {
-			if (err instanceof Error) {
+			if (err instanceof Error && isPasswordRuleError(err.message)) {
+				passwordError = err.message;
+			} else if (err instanceof Error) {
 				error = err.message || 'Failed to reset password.';
 			} else {
 				error = 'Failed to reset password.';
@@ -77,7 +80,10 @@
 				bind:value={password}
 				disabled={loading}
 				autocomplete="new-password"
+				aria-describedby={passwordDescribedBy('reset-password', passwordError)}
+				aria-invalid={passwordError ? 'true' : undefined}
 			/>
+			<PasswordRuleHint id="reset-password" error={passwordError} />
 
 			<label class="field-label" for="reset-confirm-password">Confirm new password</label>
 			<input

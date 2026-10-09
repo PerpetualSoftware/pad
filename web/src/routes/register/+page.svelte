@@ -1,4 +1,6 @@
 <script lang="ts">
+	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
+	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { api } from '$lib/api/client';
@@ -22,6 +24,8 @@
 	let password = $state('');
 	let confirmPassword = $state('');
 	let error = $state('');
+	// A refusal for the password itself, shown on the field (TASK-2260).
+	let passwordError = $state('');
 	let setupRequired = $state(false);
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
 	let loading = $state(false);
@@ -147,18 +151,21 @@
 		if (!email.trim()) return 'Please enter your email.';
 		const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 		if (!emailRegex.test(email)) return 'Please enter a valid email address.';
-		if (password.length < 8) return 'Password must be at least 8 characters.';
 		if (password !== confirmPassword) return 'Passwords do not match.';
 		return null;
 	}
 
 	async function handleSubmit() {
 		error = '';
+		passwordError = '';
 		const validationError = validate();
 		if (validationError) {
 			error = validationError;
 			return;
 		}
+		// The password rule, on its field, once the fields above it are filled in.
+		passwordError = localPasswordProblem(password) ?? '';
+		if (passwordError) return;
 
 		loading = true;
 		try {
@@ -183,7 +190,9 @@
 			}
 			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
-			if (err instanceof Error) {
+			if (err instanceof Error && isPasswordRuleError(err.message)) {
+				passwordError = err.message;
+			} else if (err instanceof Error) {
 				error = err.message || 'Registration failed.';
 			} else {
 				error = 'Registration failed.';
@@ -319,7 +328,10 @@
 					bind:value={password}
 					disabled={loading}
 					autocomplete="new-password"
+					aria-describedby={passwordDescribedBy('register-password', passwordError)}
+					aria-invalid={passwordError ? 'true' : undefined}
 				/>
+				<PasswordRuleHint id="register-password" error={passwordError} />
 
 				<label class="field-label" for="register-confirm-password">Confirm password</label>
 				<input
