@@ -1368,6 +1368,18 @@ export class CollabProvider {
 		this.send(encoding.toUint8Array(enc));
 	}
 
+	/**
+	 * Whether some of this tab's edits may be missing from the server: made
+	 * while no socket was open (`unsentLocalEdits`), or sent on a socket no
+	 * barrier confirmed, the current one or one that closed (BUG-3523). A
+	 * force_refresh discards the Y.Doc, so the page hands the tab's text back
+	 * whenever this is true (BUG-3526); `unsentLocalEdits` alone missed an
+	 * edit whose socket died before the server stored it.
+	 */
+	get editsMayBeMissing(): boolean {
+		return this.unsentLocalEdits || this.catchUpOwed || this.localSentOnSocket;
+	}
+
 	/** A local update is going out on the open socket (BUG-3523). */
 	private markLocalSent(): void {
 		this.localSentOnSocket = true;

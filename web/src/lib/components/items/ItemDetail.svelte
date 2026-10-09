@@ -2834,7 +2834,9 @@
 				// TASK-2199: local edits this rebuild discards are captured first
 				// and handed back, never written over the server's text.
 				const recovered = offlineRecoveryOnForceRefresh({
-					unsentLocalEdits: provider.unsentLocalEdits,
+					// BUG-3526: an edit sent on a socket that died unconfirmed
+					// counts too, not only one made offline.
+					unsentLocalEdits: provider.editsMayBeMissing,
 					liveMarkdown: liveEditorMarkdown(),
 					storedContent: item?.content ?? '',
 					itemId: ctx.itemId

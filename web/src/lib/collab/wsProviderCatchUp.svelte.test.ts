@@ -214,3 +214,32 @@ describe('the barrier clears what the socket carried (BUG-3523)', () => {
 		expect(catchUps(third), 'second carried the catch-up and nothing acked it').toBe(1);
 	});
 });
+
+describe('editsMayBeMissing (BUG-3526)', () => {
+	it('is false for an idle tab and true for an offline edit', async () => {
+		const first = connect();
+		expect(provider.editsMayBeMissing).toBe(false);
+		first.readyState = 3;
+		doc.getText('t').insert(0, 'offline');
+		expect(provider.editsMayBeMissing).toBe(true);
+	});
+
+	it('is true for an edit sent on a socket that died unconfirmed, and false once a barrier confirms it', async () => {
+		const first = connect();
+		doc.getText('t').insert(0, 'x');
+		expect(provider.editsMayBeMissing, 'sent, not yet confirmed').toBe(true);
+		const second = await reconnect(first);
+		// The reconnect's catch-up is itself unconfirmed until its barrier.
+		expect(provider.editsMayBeMissing).toBe(true);
+		await vi.advanceTimersByTimeAsync(BARRIER_IDLE_MS);
+		second.control({ type: 'barrier_ack', n: barriers(second)[0], ok: true });
+		expect(provider.editsMayBeMissing).toBe(false);
+	});
+
+	it('stays true after the socket that carried the edit closed', async () => {
+		const first = connect();
+		doc.getText('t').insert(0, 'x');
+		first.drop();
+		expect(provider.editsMayBeMissing).toBe(true);
+	});
+});
