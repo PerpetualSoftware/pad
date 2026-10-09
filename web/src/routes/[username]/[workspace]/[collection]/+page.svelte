@@ -2269,9 +2269,9 @@
 		// without them the rows snap back until the PATCH returns. Clearing
 		// `seq` on the optimistic copy bypasses the per-row seq guard so the real
 		// response (higher seq) wins on arrival (Codex P2 round 3 of TASK-1357).
-		// Persisted one at a time (SQLite takes one writer). A refusal restores
-		// every card not yet confirmed to its original row, which carries its
-		// original seq, so a fresher SSE row is not overwritten (BUG-3259).
+		// Persisted in one all-or-nothing request (TASK-3517). A refusal
+		// restores every card to its original row, which carries its original
+		// seq, so a fresher SSE row is not overwritten (BUG-3259).
 		let epoch = localIndex.scopeEpochFor(ws);
 		const landed = await persistReorder<Item>(plan.writes, {
 			original: (id) => lane.find((i) => i.id === id),
@@ -2280,16 +2280,16 @@
 			restoreLocal: (row) => {
 				if (identityHeld(epochAtEntry)) localIndex.upsert(ws, row, epoch);
 			},
-			send: ({ id, sort_order }) => {
-				// Per-iteration epoch: a resync mid-loop must only reject the
-				// settle-upserts for PATCHes issued before it, not later ones
-				// issued under the new scope (BUG-2098).
+			send: (writes) => {
+				// The epoch the settles are checked against: a resync after
+				// this point rejects their upserts (BUG-2098).
 				epoch = localIndex.scopeEpochFor(ws);
-				return api.items.update(ws, id, { sort_order });
+				// One all-or-nothing request (TASK-3517).
+				return api.items.reorder(ws, writes);
 			},
 			settle: (updated) => {
-				// PER-ITERATION, like the scope epoch beside it: an identity
-				// change mid-loop must stop the remaining settles (BUG-3084).
+				// An identity change after the request stops the settles
+				// (BUG-3084).
 				if (!identityHeld(epochAtEntry)) return false;
 				localIndex.upsert(ws, updated, epoch);
 				return true;

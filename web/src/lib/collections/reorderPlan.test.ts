@@ -102,27 +102,27 @@ function permutations(xs: number[]): number[][] {
 	return xs.flatMap((x, i) => permutations([...xs.slice(0, i), ...xs.slice(i + 1)]).map((p) => [x, ...p]));
 }
 
-describe('persistReorder (BUG-3259)', () => {
-	function harness(refuse: Set<string>) {
+describe('persistReorder (BUG-3259, TASK-3517)', () => {
+	function harness(refuse: boolean) {
 		const originals = new Map([
 			['a', { id: 'a', sort_order: 0, seq: 10 }],
 			['b', { id: 'b', sort_order: 1, seq: 11 }],
 			['c', { id: 'c', sort_order: 2, seq: 12 }]
 		]);
 		const local = new Map([...originals].map(([k, v]) => [k, { ...v }]));
-		const sent: string[] = [];
+		const requests: OrderWrite[][] = [];
 		return {
 			local,
-			sent,
+			requests,
 			deps: {
 				original: (id: string) => originals.get(id),
 				applyLocal: (card: { id: string; sort_order: number; seq?: number }) =>
 					local.set(card.id, { ...card, seq: undefined as unknown as number }),
 				restoreLocal: (card: { id: string; sort_order: number; seq: number }) => local.set(card.id, { ...card }),
-				send: async (w: OrderWrite) => {
-					sent.push(w.id);
-					if (refuse.has(w.id)) throw new Error('403');
-					return { ...originals.get(w.id)!, sort_order: w.sort_order, seq: originals.get(w.id)!.seq + 1 };
+				send: async (ws: OrderWrite[]) => {
+					requests.push(ws);
+					if (refuse) throw new Error('403');
+					return ws.map((w) => ({ id: w.id, seq: originals.get(w.id)!.seq + 10 }));
 				},
 				settle: (row: { id: string; sort_order: number; seq: number }) => {
 					local.set(row.id, row);
@@ -137,25 +137,29 @@ describe('persistReorder (BUG-3259)', () => {
 		{ id: 'b', sort_order: 2 }
 	];
 
-	it('persists every write in order', async () => {
-		const h = harness(new Set());
+	it('persists every write in ONE request and settles the returned seqs', async () => {
+		const h = harness(false);
 		expect(await persistReorder(writes, h.deps)).toBe(true);
-		expect(h.sent).toEqual(['c', 'a', 'b']);
-		expect([...h.local.values()].map((r) => [r.id, r.sort_order])).toEqual([
-			['a', 1],
-			['b', 2],
-			['c', 0]
+		expect(h.requests).toEqual([writes]);
+		expect([...h.local.values()].map((r) => [r.id, r.sort_order, r.seq])).toEqual([
+			['a', 1, 20],
+			['b', 2, 21],
+			['c', 0, 22]
 		]);
 	});
 
-	it('a mid-loop refusal restores the refused card and every card after it', async () => {
-		const h = harness(new Set(['a']));
+	it('a refusal restores EVERY card: the server wrote nothing', async () => {
+		const h = harness(true);
 		expect(await persistReorder(writes, h.deps)).toBe(false);
-		// Stopped at the refusal: b was never sent.
-		expect(h.sent).toEqual(['c', 'a']);
-		// c landed and keeps its server row; a and b are back to their originals.
-		expect(h.local.get('c')).toEqual({ id: 'c', sort_order: 0, seq: 13 });
+		expect(h.requests).toHaveLength(1);
+		expect(h.local.get('c')).toEqual({ id: 'c', sort_order: 2, seq: 12 });
 		expect(h.local.get('a')).toEqual({ id: 'a', sort_order: 0, seq: 10 });
 		expect(h.local.get('b')).toEqual({ id: 'b', sort_order: 1, seq: 11 });
+	});
+
+	it('sends nothing when no write names a known card', async () => {
+		const h = harness(false);
+		expect(await persistReorder([{ id: 'zz', sort_order: 3 }], h.deps)).toBe(true);
+		expect(h.requests).toHaveLength(0);
 	});
 });

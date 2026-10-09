@@ -150,6 +150,10 @@ type DashboardActivity struct {
 	ItemRef        string `json:"item_ref,omitempty"` // e.g. "BUG-1748"
 	CollectionSlug string `json:"collection_slug,omitempty"`
 	Metadata       string `json:"metadata,omitempty"`
+	// ReorderCount is set on a "reordered" row that stands for a whole
+	// reorder batch (TASK-3517): the number of its rows THIS caller can see.
+	// The row itself is the first of them.
+	ReorderCount int `json:"reorder_count,omitempty"`
 }
 
 type DashboardSummary struct {
@@ -987,6 +991,20 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				// it may contain audit metadata (member invites, role changes).
 				continue
 			}
+			// A reorder writes one row per moved item (TASK-3517). Each was
+			// filtered above like any row; a run of one batch then shows as
+			// one entry, so a long drag does not push everything else out of
+			// the ten.
+			if batch := reorderBatchOf(a.Action, a.Metadata); batch != "" && len(resp.RecentActivity) > 0 {
+				prev := &resp.RecentActivity[len(resp.RecentActivity)-1]
+				if reorderBatchOf(prev.Action, prev.Metadata) == batch {
+					if prev.ReorderCount == 0 {
+						prev.ReorderCount = 1
+					}
+					prev.ReorderCount++
+					continue
+				}
+			}
 			resp.RecentActivity = append(resp.RecentActivity, da)
 		}
 	}
@@ -1505,4 +1523,19 @@ func extractFieldValue(fieldsJSON, key string) string {
 // attentionPercent renders a Noul probability for an attention reason.
 func attentionPercent(p float64) string {
 	return strconv.Itoa(int(math.Round(p*100))) + "%"
+}
+
+// reorderBatchOf returns the reorder_batch id of a "reordered" activity row,
+// or "" for any other row (TASK-3517).
+func reorderBatchOf(action, metadata string) string {
+	if action != "reordered" || metadata == "" {
+		return ""
+	}
+	var meta struct {
+		Batch string `json:"reorder_batch"`
+	}
+	if json.Unmarshal([]byte(metadata), &meta) != nil {
+		return ""
+	}
+	return meta.Batch
 }

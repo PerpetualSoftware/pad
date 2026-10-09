@@ -87,6 +87,12 @@
 				{metadata.from_collection} &rarr; {metadata.to_collection}
 			</span>
 		{/if}
+		{#if activity.action === 'reordered' && metadata.sort_order_from && metadata.sort_order_to}
+			<!-- sort_order is the item's place in its list (TASK-3517) -->
+			<span class="move-detail">
+				position {metadata.sort_order_from} &rarr; {metadata.sort_order_to}
+			</span>
+		{/if}
 		<Chip size="sm">{getSourceLabel(activity.source)}</Chip>
 		<span class="spacer"></span>
 		<span class="timestamp" title={new Date(activity.created_at).toLocaleString()}>{relativeTime(activity.created_at)}</span>

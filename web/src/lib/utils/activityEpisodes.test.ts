@@ -173,3 +173,33 @@ describe('foldEpisodes', () => {
 		expect(eps[0].actions).toEqual(['updated', 'created']);
 	});
 });
+
+describe('foldEpisodes: a reorder is one card (TASK-3517)', () => {
+	const reorder = (minutesAgo: number, item: string, batch: string) =>
+		act(minutesAgo, {
+			action: 'reordered',
+			document_id: item,
+			item_ref: item.toUpperCase(),
+			item_title: item,
+			metadata: JSON.stringify({ agent: 'claude-code', reorder_batch: batch, sort_order_from: '1', sort_order_to: '2' })
+		});
+
+	it('folds one batch across items into one card naming no single item', () => {
+		const eps = foldEpisodes([reorder(1, 'a', 'b1'), reorder(1, 'b', 'b1'), reorder(1, 'c', 'b1')], { now });
+		expect(eps).toHaveLength(1);
+		expect(eps[0].reorder).toBe(true);
+		expect(eps[0].count).toBe(3);
+		expect(eps[0].itemRef).toBeUndefined();
+		expect(eps[0].itemTitle).toBeUndefined();
+	});
+
+	it('keeps two batches apart, and an ordinary update on a reordered item its own card', () => {
+		const eps = foldEpisodes([reorder(1, 'a', 'b1'), reorder(2, 'a', 'b2'), act(3, { document_id: 'a', item_ref: 'A' })], { now });
+		expect(eps.map((e) => [e.reorder ?? false, e.count])).toEqual([
+			[true, 1],
+			[true, 1],
+			[false, 1]
+		]);
+	});
+});
+

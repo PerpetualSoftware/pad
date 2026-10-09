@@ -10,13 +10,14 @@ const kid = (id: string, n: number) => ({
 	fields: JSON.stringify({ status: 'open' }), sort_order: n, tags: '[]',
 });
 const childrenMock = vi.fn(async () => [kid('a', 1), kid('b', 2)] as unknown[]);
-const updateMock = vi.fn(async () => ({}));
+// The reorder is one all-or-nothing request since TASK-3517.
+const reorderMock = vi.fn(async () => [] as Array<{ id: string; seq: number }>);
 
 vi.mock('$lib/api/client', () => ({
 	api: {
 		items: {
 			children: (...args: unknown[]) => childrenMock(...(args as [])),
-			update: (...args: unknown[]) => updateMock(...(args as [])),
+			reorder: (...args: unknown[]) => reorderMock(...(args as [])),
 		},
 	},
 }));
@@ -36,8 +37,8 @@ describe('ChildItems: a reorder that does not land says so (TASK-2205)', () => {
 
 	beforeEach(async () => {
 		childrenMock.mockClear();
-		updateMock.mockReset();
-		updateMock.mockResolvedValue({});
+		reorderMock.mockReset();
+		reorderMock.mockResolvedValue([]);
 		toasts.length = 0;
 		target = document.body.appendChild(document.createElement('div'));
 		instance = mount(ChildItems, { target, props: { wsSlug: 'ws-1', itemSlug: 'task-1', itemId: 'item-1' } });
@@ -56,16 +57,16 @@ describe('ChildItems: a reorder that does not land says so (TASK-2205)', () => {
 		);
 	}
 
-	it('a refused write toasts and reloads the real order', async () => {
-		updateMock.mockRejectedValue(new Error('rate limited'));
+	it('a refused reorder toasts and reloads the real order', async () => {
+		reorderMock.mockRejectedValue(new Error('rate limited'));
 		dropReversed();
 		await vi.waitFor(() => expect(childrenMock).toHaveBeenCalledTimes(2));
 		expect(toasts).toContainEqual({ message: "Couldn't save the new order, so it was put back.", kind: 'error' });
 	});
 
-	it('CONTROL: writes that land toast nothing', async () => {
+	it('CONTROL: a reorder that lands toasts nothing', async () => {
 		dropReversed();
-		await vi.waitFor(() => expect(updateMock).toHaveBeenCalled());
+		await vi.waitFor(() => expect(reorderMock).toHaveBeenCalledTimes(1));
 		await new Promise((r) => setTimeout(r, 20));
 		expect(toasts.filter((t) => t.kind === 'error')).toEqual([]);
 	});

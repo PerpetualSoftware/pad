@@ -2162,6 +2162,9 @@ func (s *Server) setupRouter() {
 					// registered before the /items/{itemSlug} param route
 					// so "bulk" isn't captured as an item slug.
 					r.Post("/items/bulk", s.handleBulkItems)
+					// All-or-nothing reorder (TASK-3517); before /items/{itemSlug} so
+					// "sort-order" is never read as a slug.
+					r.Put("/items/sort-order", s.handleItemsSortOrder)
 					r.Route("/items/{itemSlug}", func(r chi.Router) {
 						r.Get("/", s.handleGetItem)
 						r.Patch("/", s.handleUpdateItem)

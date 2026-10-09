@@ -965,8 +965,10 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 			if formatFlag == "markdown" {
 				// Columns mirror what the terminal form shows: timestamp, actor,
 				// action, the item it touched, and the field-level changes.
-				rows := make([][]string, 0, len(activities))
-				for _, a := range activities {
+				// A reorder's per-item rows show as one line (TASK-3517).
+				shown := cli.CollapseReorderBatches(activities)
+				rows := make([][]string, 0, len(shown))
+				for _, a := range shown {
 					actorName := a.ActorName
 					if actorName == "" {
 						actorName = a.Actor
@@ -981,6 +983,9 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 						if a.ItemTitle != "" {
 							target += " " + a.ItemTitle
 						}
+					}
+					if a.ReorderCount > 0 {
+						target = fmt.Sprintf("%d items", a.ReorderCount)
 					}
 
 					changes := ""
@@ -1013,7 +1018,7 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 			bold := color.New(color.Bold)
 			cyan := color.New(color.FgCyan)
 
-			for _, a := range activities {
+			for _, a := range cli.CollapseReorderBatches(activities) {
 				timeStr := dim.Sprint(a.CreatedAt.Format("2006-01-02 15:04"))
 
 				actorName := a.ActorName
@@ -1034,6 +1039,9 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 					}
 				} else if a.ItemTitle != "" {
 					target = " " + a.ItemTitle
+				}
+				if a.ReorderCount > 0 {
+					target = fmt.Sprintf(" %d items", a.ReorderCount)
 				}
 
 				fmt.Printf("%s  %s %s%s\n", timeStr, bold.Sprint(actorName), a.Action, target)

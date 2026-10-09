@@ -287,8 +287,9 @@ test('TASK-2244: the mobile card ⋯ stars, copies the ID and reorders (board)',
 	await page.getByRole('menuitem', { name: 'Move to top' }).tap();
 	const moved = [2, ...before.filter((i) => i !== 2)];
 	await expect.poll(mine, 'on screen').toEqual(moved);
-	// persistReorder PATCHes whichever rows' sort_order changes, not always the
-	// moved card, so the server's answer is read by reloading until it agrees.
+	// persistReorder writes whichever rows' sort_order changes, not always the
+	// moved card (one PUT /items/sort-order since TASK-3517), so the server's
+	// answer is read by reloading until it agrees.
 	await expect
 		.poll(
 			async () => {

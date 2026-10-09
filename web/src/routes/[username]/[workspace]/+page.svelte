@@ -550,6 +550,7 @@
 			case 'updated': return 'Updated';
 			case 'archived': return 'Archived';
 			case 'restored': return 'Restored';
+			case 'reordered': return 'Reordered';
 			case 'field_changed': return 'Changed';
 			default: return action;
 		}
@@ -573,6 +574,7 @@
 		if (action === 'updated' || action === 'field_changed') return '\u2022';
 		if (action === 'archived') return '\u2212';
 		if (action === 'restored') return '\u21ba';
+		if (action === 'reordered') return '\u2195';
 		return '\u2022';
 	}
 
@@ -962,11 +964,16 @@
 							{/if}
 							<span class="activity-dot" style="color: {activity.action === 'created' ? 'var(--accent-green)' : activity.action === 'archived' ? 'var(--text-muted)' : 'var(--status-blue)'};">{activityIcon(activity.action)}</span>
 							<span class="activity-verb">{activityVerb(activity.action)}</span>
+							{#if activity.reorder_count}
+								<!-- one entry for a whole reorder batch (TASK-3517) -->
+								<span class="activity-item">{activity.reorder_count} items</span>
+							{:else}
 							{#if activity.item_ref}
 								<span class="activity-ref">{activity.item_ref}</span>
 							{/if}
 							{#if activity.item_title}
 								<a href="/{username}/{wsSlug}/{activity.collection_slug}/{activity.item_slug}" class="activity-item">{activity.item_title}</a>
+							{/if}
 							{/if}
 							{#if changes}
 								<span class="activity-changes">{changes}</span>

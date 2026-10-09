@@ -48,6 +48,11 @@ export interface Episode {
 	spanMs: number;
 	/** Newest event is younger than liveMinutes. */
 	live: boolean;
+	/**
+	 * Set when the episode is one reorder (TASK-3517): its rows are one per
+	 * moved item, so the card names no single item and `count` is the items.
+	 */
+	reorder?: boolean;
 }
 
 export interface FoldOptions {
@@ -101,7 +106,10 @@ export function foldEpisodes(activities: Activity[], opts: FoldOptions = {}): Ep
 
 	for (const a of activities) {
 		const actor = actorKeyOf(a);
-		const itemKey = a.document_id ?? a.item_ref ?? 'workspace';
+		// A reorder writes one row per moved item under one reorder_batch
+		// (TASK-3517); keyed by the batch, the drag folds into ONE card.
+		const batch = reorderBatchOf(a);
+		const itemKey = batch ? `reorder:${batch}` : (a.document_id ?? a.item_ref ?? 'workspace');
 		const key = `${actor.key}|${itemKey}`;
 		const t = new Date(a.created_at).getTime();
 
@@ -111,6 +119,7 @@ export function foldEpisodes(activities: Activity[], opts: FoldOptions = {}): Ep
 			run.count += 1;
 			if (!run.actions.includes(a.action)) run.actions.push(a.action);
 			run.spanMs = new Date(run.latest.created_at).getTime() - t;
+			if (run.reorder) continue;
 			// Enrichment fields can be absent on some rows (e.g. the newest
 			// row lacks item_title); keep the first non-empty value seen.
 			run.itemRef ??= a.item_ref;
@@ -124,10 +133,12 @@ export function foldEpisodes(activities: Activity[], opts: FoldOptions = {}): Ep
 		// there); this event opens a fresh run under the same key.
 		const ep: Episode = {
 			key: `${key}@${a.id}`,
-			itemRef: a.item_ref,
-			itemTitle: a.item_title,
-			itemSlug: a.item_slug,
-			collectionSlug: a.collection_slug,
+			// A reorder card names no single item.
+			itemRef: batch ? undefined : a.item_ref,
+			itemTitle: batch ? undefined : a.item_title,
+			itemSlug: batch ? undefined : a.item_slug,
+			collectionSlug: batch ? undefined : a.collection_slug,
+			...(batch ? { reorder: true } : {}),
 			actorLabel: actor.label,
 			actorKind: actor.kind,
 			latest: a,
@@ -142,4 +153,14 @@ export function foldEpisodes(activities: Activity[], opts: FoldOptions = {}): Ep
 	}
 
 	return episodes;
+}
+
+function reorderBatchOf(a: Activity): string {
+	if (a.action !== 'reordered' || !a.metadata) return '';
+	try {
+		const meta = JSON.parse(a.metadata) as Record<string, unknown>;
+		return typeof meta.reorder_batch === 'string' ? meta.reorder_batch : '';
+	} catch {
+		return '';
+	}
 }

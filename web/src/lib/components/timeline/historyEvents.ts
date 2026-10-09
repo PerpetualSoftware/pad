@@ -317,6 +317,7 @@ export function eventVerb(ev: HistoryEvent, noun = 'item', fieldLabel: (key: str
 		if (a.action === 'moved') parts.push(`moved this ${noun}`);
 		else if (a.action === 'archived') parts.push(`archived this ${noun}`);
 		else if (a.action === 'restored') parts.push(`restored this ${noun}`);
+		else if (a.action === 'reordered') parts.push(`moved this ${noun} within its list`);
 		else parts.push(a.action);
 	}
 	if (!created && ev.changes.length > 0) {
