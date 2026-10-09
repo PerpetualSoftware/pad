@@ -104,23 +104,18 @@ describe('Conventions: Enable all (TASK-2204)', () => {
 		expect(screen.getAllByRole('button', { name: 'Disable convention' })).toHaveLength(3);
 	});
 
-	it('a single toggle made on a row while its bulk write is pending wins over the bulk failure (codex r1)', async () => {
-		const toast = vi.spyOn(toastStore, 'show');
+	it('a row cannot be toggled by hand while a bulk run owns it (codex r2)', async () => {
 		holdNext.add('c1');
 		await fireEvent.click(await openPage());
 		await waitFor(() => { if (!held.has('c1')) throw new Error('bulk write not held yet'); });
-		// c1 shows on (optimistic); the user switches it off by hand, which writes and lands
-		const switches = screen.getAllByRole('button', { name: 'Disable convention' });
-		expect(switches).toHaveLength(1);
-		await fireEvent.click(switches[0]!);
-		await waitFor(() => { if (writes.filter((w) => w.slug === 'c1').length < 2) throw new Error('single write not sent'); });
-		held.get('c1')!.release(false); // the bulk write for c1 now fails
+		const sw = screen.getByRole('button', { name: 'Disable convention' }) as HTMLButtonElement;
+		expect(sw.disabled).toBe(true);
+		await fireEvent.click(sw);
+		expect(writes.filter((w) => w.slug === 'c1')).toHaveLength(1);
+		held.get('c1')!.release(true);
 		await waitFor(() => {
-			if (!toast.mock.calls.some((c) => /failed/.test(String(c[0])))) throw new Error('no bulk toast yet');
+			if ((screen.getAllByRole('button', { name: 'Disable convention' })[0] as HTMLButtonElement).disabled) throw new Error('still busy');
 		}, { timeout: 3000 });
-		// c1 stays as the user left it (off), not restored to the pre-bulk snapshot by the bulk failure
-		expect(screen.getAllByRole('button', { name: 'Enable convention' })).toHaveLength(1);
-		expect(screen.getAllByRole('button', { name: 'Disable convention' })).toHaveLength(2);
 	});
 
 	it('a run whose last write lands after navigating to another workspace toasts nothing there (codex r1)', async () => {

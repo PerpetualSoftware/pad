@@ -190,4 +190,18 @@ describe('roles board: a failed write is shown (TASK-2204)', () => {
 		await new Promise((r) => setTimeout(r, 50));
 		expect(errorToast(/Couldn't save the role/)).toBeUndefined();
 	});
+
+	it('nor on another owner\'s board that has the same slug (codex r2)', async () => {
+		await mountPage();
+		let reject!: (e: unknown) => void;
+		vi.mocked(api.agentRoles.delete).mockReturnValueOnce(new Promise((_res, rej) => { reject = rej; }) as never);
+		vi.spyOn(window, 'confirm').mockReturnValue(true);
+		await openEditModal();
+		button('Delete Role').click();
+		await waitFor(() => expect(vi.mocked(api.agentRoles.delete)).toHaveBeenCalled());
+		page.params = { username: 'erin', workspace: 'ws' };
+		reject(new Error('late'));
+		await new Promise((r) => setTimeout(r, 50));
+		expect(errorToast(/Couldn't delete the role/)).toBeUndefined();
+	});
 });

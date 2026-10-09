@@ -305,7 +305,7 @@
 		// arrangement (BUG-3084).
 		if (!pageIdentityHeld()) return;
 		const epochAtEntry = captureIdentity();
-		const wsAtEntry = wsSlug; // the workspace a failure toast is about (TASK-2204)
+		const wsAtEntry = username + '/' + wsSlug; // the board a failure toast is about (TASK-2204)
 		if (!draggedLaneKey || key === '__unassigned') { draggedLaneKey = null; dragOverLaneKey = null; return; }
 
 		// Reorder the assigned lanes (skip unassigned)
@@ -420,7 +420,7 @@
 		// itself.
 		if (!pageIdentityHeld()) return;
 		const epochAtEntry = captureIdentity();
-		const wsAtEntry = wsSlug; // the workspace a failure toast is about (TASK-2204)
+		const wsAtEntry = username + '/' + wsSlug; // the board a failure toast is about (TASK-2204)
 		const finalItems = e.detail.items.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]);
 		laneData[key] = finalItems;
 
@@ -771,7 +771,7 @@
 			return;
 		}
 		const epochAtEntry = captureIdentity();
-		const wsAtEntry = wsSlug; // the workspace a failure toast is about (TASK-2204)
+		const wsAtEntry = username + '/' + wsSlug; // the board a failure toast is about (TASK-2204)
 		try {
 			if (dialogMode === 'edit' && editingRoleId) {
 				await api.agentRoles.update(wsSlug, editingRoleId, {
@@ -826,7 +826,7 @@
 			return;
 		}
 		const epochAtEntry = captureIdentity();
-		const wsAtEntry = wsSlug; // the workspace a failure toast is about (TASK-2204)
+		const wsAtEntry = username + '/' + wsSlug; // the board a failure toast is about (TASK-2204)
 		try {
 			await api.agentRoles.delete(wsSlug, editingRoleId);
 			if (!identityHeld(epochAtEntry)) return;
@@ -841,10 +841,10 @@
 
 	// TASK-2204 (audit C71): every write failure on the board is shown, with
 	// the server's own message when it sent one.
-	// Only while the page still shows the workspace the write was for: a
-	// failure that lands after navigating elsewhere is not about this board.
+	// Only while the page still shows the board the write was for: a failure
+	// that lands after navigating elsewhere is not about this board.
 	function failureToast(ws: string, what: string, err: unknown): void {
-		if (wsSlug !== ws) return;
+		if (username + '/' + wsSlug !== ws) return; // owner and slug: two owners may share a slug (codex r2)
 		const detail = err instanceof Error && err.message ? err.message : '';
 		toastStore.show(detail ? `${what}: ${detail}` : what, 'error');
 	}

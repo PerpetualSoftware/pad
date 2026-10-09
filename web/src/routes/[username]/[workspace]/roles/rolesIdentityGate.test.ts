@@ -16,7 +16,7 @@ identityGateSuite({
 			submitNewItem: { reviewed: 'e49c281eb86e', why: `${PAGE_AND_ENTRY}; the finally clears newItemSaving only under the identity` },
 			// Re-reviewed for TASK-2204: the failure toast sits after the identity
 			// check, beside the recovery reload it explains.
-			handleLaneDrop: { reviewed: '8da7ce00a5c5', why: `${PAGE_AND_ENTRY}, including before the recovery reload and its toast` },
+			handleLaneDrop: { reviewed: '9cb867491e2a', why: `${PAGE_AND_ENTRY}, including before the recovery reload and its toast` },
 			handleDndFinalize: {
 				// Re-reviewed for BUG-3259: the lane renumber is planned around
 				// view-only cards (planLaneOrder), and its no-room toast and the
@@ -24,15 +24,15 @@ identityGateSuite({
 				// the optimistic commit. A refused batch reloads the board, after
 				// an identity check, as the role write's recovery does (codex r4).
 				// TASK-2204: both recovery reloads now toast, after the same checks.
-				reviewed: '2f043f6835ba',
+				reviewed: 'ef15e19578f9',
 				why: `${PAGE_AND_ENTRY}; the identity check sits BEFORE the role write, because that write carries currentUserId; a lost-identity exit writes no shared interaction state`,
 			},
 			loadData: {
 				reviewed: 'beee4ab0237c',
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
-			saveRole: { reviewed: 'ddb5548c42b0', why: `${PAGE_AND_ENTRY}, per branch; the failure toast (TASK-2204) after the check` },
-			deleteRole: { reviewed: 'ce0c0ab7f1aa', why: `${PAGE_AND_ENTRY}; the failure toast (TASK-2204) after the check` },
+			saveRole: { reviewed: 'd5057790dac8', why: `${PAGE_AND_ENTRY}, per branch; the failure toast (TASK-2204) after the check` },
+			deleteRole: { reviewed: '22943326a704', why: `${PAGE_AND_ENTRY}; the failure toast (TASK-2204) after the check` },
 		},
 		nested: [],
 		markup: [],
@@ -49,7 +49,7 @@ identityGateSuite({
 			captureIdentity: '7f6903e09e84',
 			closeModal: 'e68053ba253f',
 			closeNewItem: 'e727373f20df',
-			failureToast: '0e1c8d1bf6cc', // TASK-2204: toasts only while the page shows the write's workspace; called after the identity checks
+			failureToast: '646c9d6e6a5d', // TASK-2204: toasts only while the page shows the write's workspace; called after the identity checks
 			identityHeld: 'e4fd3989a707',
 			laneKey: '26c9b8e573fd',
 			pageIdentityHeld: 'd6d5caf46ddb',

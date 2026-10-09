@@ -247,7 +247,9 @@
 	});
 
 	async function toggleStatus(item: Item) {
-		if (!workspace || !workspaceStore.canEditItem(item)) return;
+		// Not during a bulk run: its failure handling owns the rows' status
+		// until it ends (TASK-2204, codex r2).
+		if (!workspace || bulkBusy || !workspaceStore.canEditItem(item)) return;
 		const fields = parseFields(item);
 		const wasActive = fields.status === 'active';
 		const newStatus = wasActive ? 'disabled' : 'active';
@@ -482,8 +484,10 @@
 	async function bulkToggleGroup(group: { trigger: string; items: Item[] }, enable: boolean) {
 		if (!workspace || bulkBusy) return;
 		const ws = workspace;
+		const owner = username;
 		const epoch = authStore.identityEpoch;
-		const sameContext = () => workspace === ws && authStore.identityEpoch === epoch;
+		// Owner and slug (two owners may share a slug) and the signed-in identity.
+		const sameContext = () => workspace === ws && username === owner && authStore.identityEpoch === epoch;
 		const targetStatus = enable ? 'active' : 'disabled';
 		const toUpdate = group.items.filter(i => {
 			if (!workspaceStore.canEditItem(i)) return false;
@@ -746,6 +750,7 @@
 													class="toggle-switch"
 													type="button"
 													class:on={active}
+													disabled={bulkBusy}
 													onclick={(e) => { e.stopPropagation(); toggleStatus(item); }}
 													onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
 													aria-label={active ? 'Disable convention' : 'Enable convention'}
