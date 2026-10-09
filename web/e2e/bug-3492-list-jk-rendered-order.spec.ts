@@ -17,9 +17,9 @@ import type { SuiteFixture } from './fixtures';
  * Own collection, so no other spec's rows move this list. Timestamps are
  * one-second resolution, so writes are spaced by a second:
  *   create old (t0), b (t1), c (t2); edit old (t3); create d (t4)
- *   on screen (created DESC):  d, c, b, old
- *   updated DESC (old order):  d, old, c, b
- * From no focus j lands on d; the next j must land on c.
+ *   on screen (created ASC, BUG-3527):  old, b, c, d
+ *   updated DESC (old order):           d, old, c, b
+ * From no focus j lands on old; the next j must land on b, not c.
  */
 
 const DESKTOP = { width: 1200, height: 900 };
@@ -80,17 +80,21 @@ test.describe('list j/k follow the rows on screen (BUG-3492)', () => {
 			await page.setViewportSize(DESKTOP);
 			await browserLogin(page);
 			await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${coll}?view=list`);
-			await expect.poll(() => screenTitles(page)).toEqual(['d', 'c', 'b', 'old']);
+			// Manual order breaks the all-zero sort_order tie oldest first
+			// (BUG-3527, the server's order). The page holds updated DESC
+			// (d, old, c, b), so from `old` the edit order says `c` and the
+			// screen says `b`.
+			await expect.poll(() => screenTitles(page)).toEqual(['old', 'b', 'c', 'd']);
 
 			await page.locator('body').click({ position: { x: 5, y: 5 } });
 			await page.keyboard.press('j');
-			await expect.poll(() => focusedTitle(page)).toBe('d');
-			await page.keyboard.press('j');
-			await expect.poll(() => focusedTitle(page)).toBe('c');
+			await expect.poll(() => focusedTitle(page)).toBe('old');
 			await page.keyboard.press('j');
 			await expect.poll(() => focusedTitle(page)).toBe('b');
-			await page.keyboard.press('k');
+			await page.keyboard.press('j');
 			await expect.poll(() => focusedTitle(page)).toBe('c');
+			await page.keyboard.press('k');
+			await expect.poll(() => focusedTitle(page)).toBe('b');
 
 			// Every group collapsed: nothing is on screen, so j focuses nothing.
 			// An empty rendered order must not fall back to the unrendered list

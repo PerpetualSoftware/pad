@@ -70,23 +70,26 @@ export function itemComparator(
 				});
 		case 'manual':
 		default:
-			// Deterministic tiebreak on equal sort_order (created_at DESC —
-			// newest first — then id) so a stray updated_at bump (e.g. a
+			// Deterministic tiebreak on equal sort_order (created_at ASC —
+			// oldest first — then id) so a stray updated_at bump (e.g. a
 			// spurious collab-flush PATCH, BUG-1941) can't reorder cards that
 			// were never actually dragged. Every un-dragged card in a lane
-			// shares sort_order = 0, so without a tiebreak the comparator was
-			// a no-op there and silently inherited whatever order the input
-			// array arrived in (updated_at DESC from the API).
+			// shares sort_order = 0 (every create path writes 0), so without a
+			// tiebreak the comparator was a no-op there and silently inherited
+			// whatever order the input array arrived in (updated_at DESC from
+			// the API).
 			//
-			// The direction is DESC (newest first) so a freshly-created item —
-			// which lands with sort_order = 0, tying the top of a manually
-			// sorted lane and tying the whole of an un-dragged lane — floats to
-			// the TOP of its lane/group instead of the bottom. That is the
-			// "new items sort to the top under manual order" behaviour; the
-			// value is still independent of updated_at, so BUG-1941 holds.
+			// The direction is the SERVER's (BUG-3527, lead ruling 2026-10-09):
+			// child lists and the dashboard order `sort_order ASC, created_at
+			// ASC` (internal/store/items.go getChildItems and
+			// GetChildItemsForParents) and render that order as delivered. This
+			// used to be DESC, so the same two never-dragged children read in
+			// opposite orders on an item's page and on its collection board. A
+			// new item now joins the END of an un-dragged lane; dragging it
+			// places it anywhere.
 			return (a, b) =>
 				a.sort_order - b.sort_order ||
-				timeValue(b.created_at) - timeValue(a.created_at) ||
+				timeValue(a.created_at) - timeValue(b.created_at) ||
 				a.id.localeCompare(b.id);
 	}
 }
