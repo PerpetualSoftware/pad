@@ -4,7 +4,8 @@ import { cleanup, render, screen } from '@testing-library/svelte';
 // TASK-2203 (audit C46): a failed first page is an error with a retry, never
 // "No activity found"; a failed later page keeps what is shown and says so.
 
-const answers = vi.hoisted(() => ({ next: [] as Array<'fail' | 'forbidden' | 'empty' | 'full'> }));
+const answers = vi.hoisted(() => ({ next: [] as Array<'fail' | 'forbidden' | 'empty' | 'full' | 'fail-after-swap'> }));
+const fence = vi.hoisted(() => ({ ok: true }));
 const row = (i: number) => ({
 	id: 'a' + i, action: 'updated', actor: 'user', source: 'web', item_id: 'i1', item_title: 'Row ' + i, item_ref: 'TASK-1',
 	collection_slug: 'tasks', metadata: '{}', created_at: new Date(Date.UTC(2026, 9, 9, 0, 0, 60 - i)).toISOString(),
@@ -15,6 +16,7 @@ vi.mock('$lib/api/client', () => ({
 		activity: {
 			list: vi.fn(async () => {
 				const a = answers.next.shift() ?? 'empty';
+				if (a === 'fail-after-swap') { fence.ok = false; throw new Error('Service unavailable'); }
 				if (a === 'fail') throw new Error('Service unavailable');
 				if (a === 'forbidden') throw Object.assign(new Error('Forbidden'), { code: 'forbidden' });
 				return a === 'full' ? Array.from({ length: 50 }, (_, i) => row(i)) : [];
@@ -28,10 +30,11 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		get identityEpoch() { return 0; },
 		get userId() { return 'u1'; },
-		identityFence: () => () => true,
+		identityFence: () => () => fence.ok,
 		onIdentityChange: () => () => {},
 	},
 }));
+vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
 vi.mock('$lib/stores/workspaceIndexEntry', () => ({ enterWorkspaceIndex: vi.fn(async () => {}) }));
 vi.mock('$lib/services/sse.svelte', () => ({ sseService: { onItemEvent: () => () => {} } }));
 vi.mock('$lib/scroll/restore.svelte', () => ({
@@ -43,6 +46,7 @@ import ActivityPage from './+page.svelte';
 
 beforeEach(() => {
 	answers.next = [];
+	fence.ok = true;
 	try { localStorage.setItem('pad-activity-view', 'audit'); } catch {}
 	page.params = { username: 'dave', workspace: 'ws' };
 	page.url = new URL('http://localhost/dave/ws/activity');
@@ -75,5 +79,22 @@ describe('Activity: a failed load is not an empty feed (TASK-2203)', () => {
 		await screen.findByRole('button', { name: "Couldn't load more. Try again" });
 		expect(screen.getAllByText('Row 0').length).toBeGreaterThan(0);
 		expect(screen.queryByText("Couldn't load the activity feed")).toBeNull();
+	});
+
+	it('a failure that lands after an account swap shows nothing to the new account (codex r1)', async () => {
+		answers.next = ['fail-after-swap'];
+		render(ActivityPage);
+		await new Promise((r) => setTimeout(r, 50));
+		expect(screen.queryByText("Couldn't load the activity feed")).toBeNull();
+	});
+
+	it('a new feed does not inherit the previous feed\'s load-more failure (codex r1)', async () => {
+		answers.next = ['full', 'fail', 'full'];
+		render(ActivityPage);
+		(await screen.findByRole('button', { name: 'Load more activity' })).click();
+		await screen.findByRole('button', { name: "Couldn't load more. Try again" });
+		page.params = { username: 'dave', workspace: 'ws2' };
+		await screen.findByRole('button', { name: 'Load more activity' });
+		expect(screen.queryByRole('button', { name: "Couldn't load more. Try again" })).toBeNull();
 	});
 });

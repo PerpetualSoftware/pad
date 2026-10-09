@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -113,7 +113,11 @@
 			// Access filter values to track them as dependencies
 			filterAction;
 			filterSource;
-			loadActivities(wsSlug, true);
+			// UNTRACKED past the dependencies named above: loadActivities reads
+			// the identity epoch for its fence (TASK-2203), and tracked, that
+			// read would add an identity reload the layout already owns.
+			const ws = wsSlug;
+			untrack(() => loadActivities(ws, true));
 		}
 	});
 
@@ -165,8 +169,12 @@
 
 	async function loadActivities(slug: string, reset = false) {
 		const thisRequest = ++activityRequest;
+		// The identity that asked (TASK-2203, codex r1): a failure that lands
+		// after an account swap is not the new account's to see.
+		const isSameIdentity = authStore.identityFence();
 		if (reset) {
 			loadError = null;
+			moreError = false;
 			resetGeneration++;
 			loading = true;
 			loadingMore = false;
@@ -198,7 +206,7 @@
 			}
 			hasMore = result.length >= PAGE_SIZE;
 		} catch (err) {
-			if (thisRequest === activityRequest) {
+			if (thisRequest === activityRequest && isSameIdentity()) {
 				if (reset) loadError = err;
 				else moreError = true;
 			}
