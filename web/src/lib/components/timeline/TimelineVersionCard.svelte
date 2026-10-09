@@ -162,6 +162,9 @@
 		// button flag, always cleared.
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		// The version asked for, captured with the item: the card can be reused
+		// for another version while the flush below is awaited (codex r3).
+		const reqVersion = restoreId;
 		// IDENTITY fence (BUG-3095). This is the surface-8 member: the restore
 		// POST below is issued AFTER `flushBeforeRestore`, a parent-provided
 		// await of unbounded duration, so a sign-out or account swap during that
@@ -196,8 +199,8 @@
 			let updatedItem;
 			try {
 				updatedItem = overwritePendingEdits
-					? await api.versions.restore(reqWs, reqSlug, restoreId, { overwritePendingEdits: true })
-					: await api.versions.restore(reqWs, reqSlug, restoreId);
+					? await api.versions.restore(reqWs, reqSlug, reqVersion, { overwritePendingEdits: true })
+					: await api.versions.restore(reqWs, reqSlug, reqVersion);
 			} catch (err) {
 				// BUG-3031: nothing was written. The flush above drained THIS tab's
 				// editor, so the pending edits are another session's, and only the
@@ -215,7 +218,7 @@
 				// be rethrown from the click handler: no toast, no inline line, and
 				// the card snapped back as if nothing had been asked.
 				restoreError = err instanceof Error && err.message ? err.message : 'Restore failed';
-				restoreErrorFor = authStore.identityEpoch + ':' + reqWs + '/' + reqSlug;
+				restoreErrorFor = authStore.identityEpoch + ':' + reqWs + '/' + reqSlug + '#' + reqVersion;
 				return;
 			}
 			if (!isSameIdentity()) return;
@@ -291,7 +294,7 @@
 						{:else}
 							<span class="confirm-text">{restoreLabel}?</span>
 						{/if}
-						{#if restoreError && restoreErrorFor === authStore.identityEpoch + ':' + wsSlug + '/' + itemSlug}
+						{#if restoreError && restoreErrorFor === authStore.identityEpoch + ':' + wsSlug + '/' + itemSlug + '#' + restoreId}
 							<span class="confirm-text confirm-warning restore-error" role="alert">Restore failed: {restoreError}</span>
 						{/if}
 						<div class="confirm-actions">

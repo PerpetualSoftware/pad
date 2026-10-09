@@ -134,4 +134,23 @@ describe('TimelineVersionCard: a failed restore says so (TASK-2205)', () => {
 		expect(readEpoch(), 'the identity epoch did not move: this leg would measure nothing').not.toBe(before);
 		expect(alertText()).toBeUndefined();
 	});
+
+	it('nor once the card shows another version of the same item (codex r3)', async () => {
+		unmount(instance);
+		const props = $state({ version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'now', onRestore });
+		instance = mount(TimelineVersionCard, { target: root, props });
+		flushSync();
+		(root.querySelector('.show-changes') as HTMLButtonElement).click();
+		flushSync();
+		(root.querySelector('.btn-restore') as HTMLButtonElement).click();
+		flushSync();
+		restore.mockRejectedValueOnce(new Error('boom'));
+		confirm().click();
+		await settle();
+		expect(restore.mock.calls[0]![2]).toBe('v1');
+		expect(alertText()).toBe('Restore failed: boom');
+		props.version = { ...version, id: 'v2' } as Version;
+		flushSync();
+		expect(alertText()).toBeUndefined();
+	});
 });
