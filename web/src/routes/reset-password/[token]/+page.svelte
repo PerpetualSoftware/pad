@@ -68,24 +68,22 @@
 		<p class="subtitle">Set a new password</p>
 
 		<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-			<label class="sr-only" for="reset-password">New password</label>
+			<label class="field-label" for="reset-password">New password</label>
 			<input
 				id="reset-password"
 				name="new-password"
 				use:autofocus
 				type="password"
-				placeholder="New password"
 				bind:value={password}
 				disabled={loading}
 				autocomplete="new-password"
 			/>
 
-			<label class="sr-only" for="reset-confirm-password">Confirm new password</label>
+			<label class="field-label" for="reset-confirm-password">Confirm new password</label>
 			<input
 				id="reset-confirm-password"
 				name="confirm-password"
 				type="password"
-				placeholder="Confirm new password"
 				bind:value={confirmPassword}
 				disabled={loading}
 				autocomplete="new-password"
@@ -183,7 +181,7 @@
 	button {
 		width: 100%;
 		padding: var(--space-3) var(--space-4);
-		background: var(--accent-blue);
+		background: var(--accent-primary-strong); /* white text: AA in both themes (TASK-3509) */
 		color: #fff;
 		border: none;
 		border-radius: var(--radius);

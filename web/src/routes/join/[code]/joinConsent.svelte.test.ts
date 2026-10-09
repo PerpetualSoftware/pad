@@ -194,7 +194,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		});
 		render(JoinPage);
 		await settle();
-		await fireEvent.input(document.querySelector<HTMLInputElement>('input[placeholder="Name"]')!, { target: { value: 'New' } });
+		await fireEvent.input(document.querySelector<HTMLInputElement>('#join-name')!, { target: { value: 'New' } });
 		const pws = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
 		await fireEvent.input(pws[0], { target: { value: 'password123' } });
 		await fireEvent.input(pws[1], { target: { value: 'password123' } });
@@ -212,7 +212,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		mocks.register.mockResolvedValue({ accepted_invitation: { workspace_slug: 'acme', owner_username: 'o' } });
 		render(JoinPage);
 		await settle();
-		const name = document.querySelector<HTMLInputElement>('input[placeholder="Name"]')!;
+		const name = document.querySelector<HTMLInputElement>('#join-name')!;
 		await fireEvent.input(name, { target: { value: 'New Person' } });
 		const pws = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
 		await fireEvent.input(pws[0], { target: { value: 'password123' } });
@@ -328,16 +328,16 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		mocks.preview.mockResolvedValue({ found: true, email: 'new@example.com', has_account: false, workspace_name: 'Acme' });
 		render(JoinPage);
 		await settle();
-		const typed = (ph: string, v: string) =>
-			fireEvent.input(document.querySelector<HTMLInputElement>(`input[placeholder="${ph}"]`)!, { target: { value: v } });
-		await typed('Name', 'For A');
-		await typed('Password', 'password123');
-		await typed('Confirm password', 'password123');
+		const typed = (id: string, v: string) =>
+			fireEvent.input(document.querySelector<HTMLInputElement>(`#${id}`)!, { target: { value: v } });
+		await typed('join-name', 'For A');
+		await typed('join-password', 'password123');
+		await typed('join-confirm-password', 'password123');
 		mocks.preview.mockResolvedValue({ found: true, email: 'other@example.com', has_account: false, workspace_name: 'Beta Co' });
 		page.params = { code: 'def456' };
 		await settle();
-		for (const ph of ['Name', 'Username', 'Password', 'Confirm password']) {
-			expect(document.querySelector<HTMLInputElement>(`input[placeholder="${ph}"]`)!.value, ph).toBe('');
+		for (const id of ['join-name', 'join-username', 'join-password', 'join-confirm-password']) {
+			expect(document.querySelector<HTMLInputElement>(`#${id}`)!.value, id).toBe('');
 		}
 	});
 
@@ -373,7 +373,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		mocks.register.mockReturnValue(new Promise((r) => (registered = r)));
 		render(JoinPage);
 		await settle();
-		await fireEvent.input(document.querySelector<HTMLInputElement>('input[placeholder="Name"]')!, { target: { value: 'New' } });
+		await fireEvent.input(document.querySelector<HTMLInputElement>('#join-name')!, { target: { value: 'New' } });
 		const pws = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
 		await fireEvent.input(pws[0], { target: { value: 'password123' } });
 		await fireEvent.input(pws[1], { target: { value: 'password123' } });
@@ -418,6 +418,6 @@ describe('invalid invitation link (TASK-2251)', () => {
 		render(JoinPage);
 		await settle();
 		expect(byTestId('join-invalid')).toBeNull();
-		expect(document.querySelector('input[placeholder="Name"]')).not.toBeNull();
+		expect(document.querySelector('#join-name')).not.toBeNull();
 	});
 });

@@ -78,8 +78,8 @@ async function createThrowawayUser(
 // consistent so it isn't silently rejected on the next request.
 async function loginViaForm(page: import('@playwright/test').Page, email: string): Promise<void> {
 	await page.goto('/login');
-	await page.getByPlaceholder('Email').fill(email);
-	await page.getByPlaceholder('Password').fill(THROWAWAY_PASSWORD);
+	await page.getByLabel('Email', { exact: true }).fill(email);
+	await page.getByLabel('Password', { exact: true }).fill(THROWAWAY_PASSWORD);
 	await Promise.all([
 		page.waitForResponse(
 			(r) => r.url().includes('/api/v1/auth/login') && r.request().method() === 'POST'

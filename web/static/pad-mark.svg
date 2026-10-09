@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Pad">
+  <!-- Pad's grid mark, from the mobile app icon (pad-mobile AppIcon icon_1024.png):
+       tile colours sampled at each tile's centre; the near-black tile and edge glow are dropped. -->
+  <rect x="0" y="0" width="28" height="28" rx="6" fill="#007bfc"/>
+  <rect x="36" y="0" width="28" height="28" rx="6" fill="#2f2ffb"/>
+  <rect x="72" y="0" width="28" height="28" rx="6" fill="#8406fb"/>
+  <rect x="0" y="36" width="28" height="28" rx="6" fill="#01bc81"/>
+  <rect x="36" y="36" width="28" height="28" rx="6" fill="#fdb600"/>
+  <rect x="72" y="36" width="28" height="28" rx="6" fill="#45496c"/>
+  <rect x="0" y="72" width="28" height="28" rx="6" fill="#0090fd"/>
+  <rect x="36" y="72" width="28" height="28" rx="6" fill="#004ffb"/>
+  <rect x="72" y="72" width="28" height="28" rx="6" fill="#424668"/>
+</svg>

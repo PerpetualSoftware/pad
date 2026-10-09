@@ -61,7 +61,7 @@ test.describe('invitation funnel (TASK-2251)', () => {
 			await page.goto('/join/not-a-real-invitation-code-2251');
 			await expect(page.getByTestId('join-invalid')).toContainText('invalid or has expired');
 			await expect(page.locator('form')).toHaveCount(0);
-			await expect(page.getByPlaceholder('Password')).toHaveCount(0);
+			await expect(page.getByLabel('Password', { exact: true })).toHaveCount(0);
 		} finally {
 			await context.close();
 		}
@@ -102,8 +102,8 @@ test.describe('invitation funnel (TASK-2251)', () => {
 			// invitation's accept card.
 			const p2 = await invitee.newPage();
 			await p2.goto(href!);
-			await p2.getByPlaceholder('Email').fill(world.email);
-			await p2.getByPlaceholder('Password').fill(PASSWORD);
+			await p2.getByLabel('Email', { exact: true }).fill(world.email);
+			await p2.getByLabel('Password', { exact: true }).fill(PASSWORD);
 			await p2.getByRole('button', { name: 'Sign in' }).click();
 			await expect(p2).toHaveURL(new RegExp(`/join/${world.code}$`));
 			await expect(p2.getByTestId('join-accept')).toBeVisible();

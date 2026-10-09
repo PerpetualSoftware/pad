@@ -106,6 +106,55 @@
 	box-sizing: border-box;
 }
 
+/* The auth-page shell (TASK-3509). Keyed on the auth header being on the
+   page, so every page that renders AuthHeader (login, register, setup, join,
+   forgot/reset password, verify-email, the signed-out error page) shares one
+   layout: a soft accent glow, the card under the fixed header, the page's own
+   "Pad" heading hidden because the header carries the mark. Colours are the
+   theme tokens, so it follows light and dark. */
+body:has(.auth-header) {
+	background:
+		radial-gradient(70rem 32rem at 50% -8rem, color-mix(in srgb, var(--accent-purple) 16%, transparent), transparent 70%),
+		var(--bg-primary);
+	background-attachment: fixed;
+}
+/* The dummy compound in :is() raises this rule over each page's own
+   `.x-page.cloud-mode` padding (0,3,0). */
+body:has(.auth-header) :is(.login-page, .register-page, .setup-page, .join-page, .page, .auth-sp.auth-sp) {
+	background: transparent;
+	padding-top: 6rem;
+	justify-content: flex-start;
+}
+body:has(.auth-header) h1.logo {
+	display: none;
+}
+body:has(.auth-header) :is(.login-card, .register-card, .setup-card, .join-card, .card) {
+	max-width: 400px;
+	text-align: left;
+	box-shadow: 0 12px 40px -12px color-mix(in srgb, #000 35%, transparent);
+}
+body:has(.auth-header) :is(.login-card, .register-card, .setup-card, .join-card, .card) > p.subtitle:first-of-type {
+	font-size: 1.4rem;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+	color: var(--text-primary);
+	margin-bottom: var(--space-6);
+	text-align: left;
+}
+.field-label {
+	display: block;
+	text-align: left;
+	font-size: 0.82rem;
+	font-weight: 550;
+	color: var(--text-secondary);
+	margin-bottom: calc(-1 * var(--space-2));
+}
+/* The username field wraps its input for the availability badge, so it is not
+   a gap-spaced flex child: give its label ordinary spacing. */
+.username-field > .field-label {
+	margin-bottom: var(--space-2);
+}
+
 /* Visually hidden, still read by assistive technology: labels for the auth
    forms' inputs, whose placeholders stay the visible prompt (TASK-2236). */
 .sr-only {

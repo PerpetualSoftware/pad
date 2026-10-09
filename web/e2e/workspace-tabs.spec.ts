@@ -659,10 +659,10 @@ test.describe('landings open an ephemeral tab (TASK-3279)', () => {
 
 			// No account yet, and no session: the join page offers registration.
 			await page.goto(`/join/${inv.code}`);
-			await page.getByPlaceholder('Name', { exact: true }).fill(`Tabs ${tag}`);
-			await page.getByPlaceholder('Username', { exact: true }).fill(username);
-			await page.getByPlaceholder('Password', { exact: true }).fill(PASSWORD);
-			await page.getByPlaceholder('Confirm password').fill(PASSWORD);
+			await page.getByLabel('Name', { exact: true }).fill(`Tabs ${tag}`);
+			await page.getByLabel('Username', { exact: true }).fill(username);
+			await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
+			await page.getByLabel('Confirm password', { exact: true }).fill(PASSWORD);
 			await page.getByRole('button', { name: 'Create account & join' }).click();
 
 			await expect(page).toHaveURL(new RegExp(`/${inviter.account.username}/${shared}$`));

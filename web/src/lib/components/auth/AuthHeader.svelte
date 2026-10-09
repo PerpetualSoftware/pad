@@ -10,12 +10,21 @@
 	// truth is pad-web/src/routes/+layout.svelte. When changing tokens, header
 	// structure, or link list here, update that file (and the brand doc) too.
 	//
-	// Self-hosted (cloudMode === false) renders nothing — operators ship Pad
-	// under their own brand and must not get getpad.dev chrome imposed on them.
-	// Same pattern as the companion AuthFooter.svelte in this directory.
+	// Self-hosted (cloudMode === false) renders a slim header instead: the Pad
+	// mark, the host being signed in to, and the theme toggle. No getpad.dev
+	// links, since operators ship Pad under their own name (TASK-3509; the
+	// companion AuthFooter.svelte still renders nothing there).
+	//
+	// Both variants carry the light/dark toggle, which writes the preference
+	// the app reads, so the choice survives signing in (TASK-3509).
 
 	import { DOCS_URL, GITHUB_REPO_URL } from '$lib/brand/links';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import AuthBrand from './AuthBrand.svelte';
+	import AuthThemeToggle from './AuthThemeToggle.svelte';
+
+	// Self-hosted: say which server this is (TASK-3509).
+	const host = typeof window !== 'undefined' ? window.location.host : '';
 
 	let { cloudMode = false }: { cloudMode?: boolean } = $props();
 
@@ -55,9 +64,9 @@
 			<!-- In the mobile apps the wordmark is not a way to the marketing
 			     site (PLAN-3291 DR-1, TASK-3299). -->
 			{#if authStore.nativeShell}
-				<span class="auth-header-wordmark">pad</span>
+				<span class="auth-header-wordmark"><AuthBrand /></span>
 			{:else}
-				<a href="https://getpad.dev/" class="auth-header-wordmark">pad</a>
+				<a href="https://getpad.dev/" class="auth-header-wordmark" aria-label="pad, getpad.dev"><AuthBrand /></a>
 			{/if}
 
 			<div class="auth-header-links">
@@ -73,6 +82,8 @@
 				{/each}
 			</div>
 
+			<div class="auth-header-end">
+			<AuthThemeToggle />
 			<button
 				type="button"
 				class="auth-header-toggle"
@@ -115,6 +126,7 @@
 					</svg>
 				{/if}
 			</button>
+			</div>
 		</nav>
 
 		{#if mobileMenuOpen}
@@ -133,6 +145,16 @@
 			</div>
 		{/if}
 	</header>
+{:else}
+	<header class="auth-header">
+		<div class="auth-header-nav">
+			<span class="auth-header-wordmark"><AuthBrand /></span>
+			<div class="auth-header-end">
+				{#if host}<span class="auth-header-host" title="The Pad server you are signing in to">{host}</span>{/if}
+				<AuthThemeToggle />
+			</div>
+		</div>
+	</header>
 {/if}
 
 <style>
@@ -148,7 +170,7 @@
 		   Hex equivalent of rgba(26,26,26,0.8) — kept inline because we want
 		   to match pad-web's bg-bg/80 backdrop-blur pattern byte-for-byte and
 		   the app's CSS variable system doesn't expose alpha-modified tokens. */
-		background-color: rgba(26, 26, 26, 0.8);
+		background-color: color-mix(in srgb, var(--bg-primary) 80%, transparent);
 		backdrop-filter: blur(20px);
 		-webkit-backdrop-filter: blur(20px);
 	}
@@ -173,6 +195,26 @@
 	.auth-header-wordmark:hover,
 	.auth-header-wordmark:focus-visible {
 		text-decoration: none;
+	}
+
+	.auth-header-end {
+		display: flex;
+		align-items: center;
+		gap: var(--space-4);
+		min-width: 0;
+	}
+
+	.auth-header-host {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		font-family: var(--font-mono, ui-monospace, monospace);
+		padding: 4px 10px;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		max-width: 50vw;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.auth-header-links {
@@ -221,6 +263,8 @@
 	@media (min-width: 768px) {
 		.auth-header-links {
 			display: flex;
+			margin-left: auto;
+			margin-right: var(--space-8);
 		}
 		.auth-header-toggle,
 		.auth-header-mobile-menu {

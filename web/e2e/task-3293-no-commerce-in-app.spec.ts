@@ -72,8 +72,8 @@ async function openAsCloudUser(page: Page, email: string): Promise<void> {
 		});
 	});
 	await page.goto('/login');
-	await page.getByPlaceholder('Email').fill(email);
-	await page.getByPlaceholder('Password').fill(PASSWORD);
+	await page.getByLabel('Email', { exact: true }).fill(email);
+	await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
 	await Promise.all([
 		page.waitForResponse((r) => r.url().includes('/api/v1/auth/login') && r.request().method() === 'POST'),
 		page.getByRole('button', { name: /^sign in$/i }).click()

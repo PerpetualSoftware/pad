@@ -376,12 +376,12 @@
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleVerify2FA(); }}>
 				<p class="hint" id="login-totp-hint">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
 
-				<label class="sr-only" for="login-totp">Authentication code</label>
+				<label class="field-label" for="login-totp">Authentication code</label>
 				<input
 					id="login-totp"
 					name="totp"
 					type="text"
-					placeholder="Authentication code"
+					placeholder="123456"
 					bind:value={totpCode}
 					disabled={loading}
 					autocomplete="one-time-code"
@@ -412,24 +412,23 @@
 			<AuthIntentBanner {redirectTarget} mode="signin" />
 
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-				<label class="sr-only" for="login-email">Email</label>
+				<label class="field-label" for="login-email">Email</label>
 				<input
 					id="login-email"
 					name="email"
 					type="email"
-					placeholder="Email"
+					placeholder="you@example.com"
 					bind:value={email}
 					disabled={loading}
 					autocomplete="username"
 					use:autofocus
 				/>
 
-				<label class="sr-only" for="login-password">Password</label>
+				<label class="field-label" for="login-password">Password</label>
 				<input
 					id="login-password"
 					name="password"
 					type="password"
-					placeholder="Password"
 					bind:value={password}
 					disabled={loading}
 					autocomplete="current-password"
@@ -563,7 +562,7 @@
 	button {
 		width: 100%;
 		padding: var(--space-3) var(--space-4);
-		background: var(--accent-blue);
+		background: var(--accent-primary-strong); /* white text: AA in both themes (TASK-3509) */
 		color: #fff;
 		border: none;
 		border-radius: var(--radius);
