@@ -51,7 +51,10 @@ func (s *Server) mcpBodyLimit() int64 {
 // in up to the limit per request ahead of both (codex review). After the
 // audit log so a 413 is recorded.
 //
-//   - A declared Content-Length over the limit is refused without reading.
+//   - A declared Content-Length over the limit is refused without this
+//     middleware reading it. MCPAuditLog, which runs first, has already
+//     peeked at most mcpAuditBodyMaxBytes (64 KiB) of an authenticated body
+//     and replays it.
 //   - A declared Content-Length within it passes untouched: net/http ends
 //     the body at the declared length, so nothing can read more.
 //   - No declared length (chunked): up to limit+1 bytes are read here. Over

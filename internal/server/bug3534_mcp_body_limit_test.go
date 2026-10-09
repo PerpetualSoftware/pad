@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // BUG-3534: the MCP mounts refuse an authenticated POST body over
@@ -180,5 +182,20 @@ func TestBUG3534_LimitFollowsTheArtifactCap(t *testing.T) {
 	}
 	if rr := postMCPSized(srv, "/mcp", tok, limit+1, false); !isBodyTooLarge(t, rr, limit) {
 		t.Errorf("one byte over the raised limit: %d", rr.Code)
+	}
+}
+
+// The 413 is audited, as the response of an authenticated call
+// (codex round 2): one row, classified error / client_error_413 by
+// classifyMCPResult like any other 4xx that is not an auth or rate gate.
+func TestBUG3534_TooLargeIsAudited(t *testing.T) {
+	srv, user, bearer := auditedMCPServer(t)
+	limit := srv.mcpBodyLimit()
+	if rr := postMCPSized(srv, "/mcp", bearer, limit+1, false); !isBodyTooLarge(t, rr, limit) {
+		t.Fatalf("over the limit: %d", rr.Code)
+	}
+	rows := waitForAuditRows(t, srv, user.ID, 1)
+	if len(rows) != 1 || rows[0].ResultStatus != models.MCPAuditResultError || rows[0].ErrorKind == nil || *rows[0].ErrorKind != "client_error_413" {
+		t.Fatalf("audit rows = %+v, want one error / client_error_413", rows)
 	}
 }
