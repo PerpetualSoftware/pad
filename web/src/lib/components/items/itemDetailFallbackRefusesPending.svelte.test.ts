@@ -210,4 +210,27 @@ describe('the legacy rich save refuses over unstored edits (BUG-3230 U0)', () =>
 		await waitFor(() => expect(contentUpdates().map((c) => c.content)).toEqual(['older typing', 'newer typing']), { timeout: 4000 });
 		expect(contentUpdates()[1]!.overwrite_pending_edits).toBeUndefined();
 	});
+
+	it('typing away and back while the question is open resends once, not twice (TASK-2232, codex r2)', async () => {
+		// The typing re-arms the 1.2s save with the SAME text the resend
+		// carries. Both used to go out; main shares the defect, and the
+		// coalesced editor made it reachable from the resend's own read.
+		let onUpdate: (md: string) => void = () => {};
+		vi.mocked(api.items.update).mockImplementationOnce(async () => {
+			throw new (PadApiError as unknown as new (c: string) => Error)('content_pending_flush');
+		});
+		vi.mocked(pendingEditsDialog.request).mockImplementationOnce(async () => {
+			onUpdate('detour');
+			onUpdate('older typing');
+			return true;
+		});
+		onUpdate = await mountAndGetOnUpdate();
+		onUpdate('older typing');
+		await waitFor(() => expect(contentUpdates().length).toBe(2), { timeout: 3000 });
+		// Past the 1.2s debounce: nothing more.
+		await new Promise((r) => setTimeout(r, 1600));
+		const sent = contentUpdates();
+		expect(sent.map((c) => c.content)).toEqual(['older typing', 'older typing']);
+		expect(sent[1]!.overwrite_pending_edits).toBe(true);
+	});
 });

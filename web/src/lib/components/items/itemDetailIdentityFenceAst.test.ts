@@ -91,7 +91,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// Re-reviewed for BUG-3473: the index await is skipped when the index is
 	// already ready; it adds no await and commits nothing, and every fence
 	// after the Promise.all is unchanged.
-	loadData: { reviewed: '6fcfddff94dd', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
+	loadData: { reviewed: '881fb6035aed', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	// Re-reviewed for BUG-2836: saveTitle's own lines are unchanged (the diff
 	// touches only a $derived beside titleDraft and the textarea's aria
@@ -140,7 +140,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	updateAssignedUser: { reviewed: '537f55aa5db2', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	updateAgentRole: { reviewed: 'ede58f197154', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	flushRawIfPending: {
-		reviewed: 'ba2935acc17c',
+		reviewed: 'ca02a0fe965b',
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag' + SETTLE_NOTE,
 		may: ['saves.settle', 'rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
@@ -156,10 +156,10 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// BUG-3036: the re-read an SSE event or sync pass deferred while a save was in
 	// flight. The SSE item_updated shape: itemGen and the item id after each await.
 	runOwedRefresh: { reviewed: 'e3bd6dd40b84', why: 'destroyed, itemGen and the item id after each await, as the SSE item_updated re-read it stands in for (destroyed since BUG-3198: the load path calls it too)' },
-	flushCollabBeforeRestore: { reviewed: 'c6807ce020d0', why: 'identityHeld before its failure toast' },
+	flushCollabBeforeRestore: { reviewed: '50b77f0a8b64', why: 'identityHeld before its failure toast' },
 	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	flushContentBeforeCopy: { reviewed: '7472b2c652fe', why: 'returns a boolean to the dialog' },
+	flushContentBeforeCopy: { reviewed: 'cfd3f67ded8f', why: 'returns a boolean to the dialog' },
 	// BUG-3230 U1: the toast moved into copyResultToast, a pure function of the result; still before the await.
 	handleCopied: { reviewed: 'eecddaafa59b', why: 'switchedAway before adopting the refreshed item' },
 	handleDelete: { reviewed: 'c331e8535525', why: 'switchedAway on both arms' },
@@ -176,7 +176,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	},
 	copyRefusedDraft: { reviewed: '839b51b59798', why: 'the copied text was captured before the await; the toast after it describes that copy, whichever item is shown', may: ['toastStore.show'] },
 	restoreRefusedDraft: {
-		reviewed: '75af12f9b6dc',
+		reviewed: '18ae3c442ac8',
 		why: 'item id and gen against loadGeneration after every await; the finally clears this pane\'s own busy flag',
 		may: ['refusedDraftBusy'],
 	},
@@ -196,7 +196,7 @@ const NESTED: SignedRow[] = [
 		may: ['saves.settle'],
 	},
 	// BUG-3230 U0: the legacy content save's refusal handler.
-	{ body: /askToOverwritePendingEdits\(reqItem\.id, gen, pendingEditsReason\(e\)\)/, why: 'fallback refusal: switchedAway before the question, and again after it before the resend', reviewed: '5d3b969cb03a' },
+	{ body: /askToOverwritePendingEdits\(reqItem\.id, gen, pendingEditsReason\(e\)\)/, why: 'fallback refusal: switchedAway before the question, and again after it before the resend', reviewed: '818faff0bf38' },
 ];
 
 /** Async functions in the markup. */
@@ -205,7 +205,7 @@ const MARKUP: SignedRow[] = [
 	// Re-reviewed for BUG-3050 U1 (door A4): the raw-seed refusal adds no await;
 	// its post-loop editor read and the rawSeedDecision check run after the
 	// existing genAtToggle fence and write only locals and a toast.
-	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '2d92365c82b6' },
+	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: 'f993a655f99b' },
 ];
 
 
@@ -220,16 +220,16 @@ const CONTINUATIONS: SignedRow[] = [
 		may: ['renameOverride'],
 	},
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '8a8d4754017f' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'd0298209ce68' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '93a773162c77' },
 	// BUG-3473: the background index catch-up on an already-populated index.
-	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: '15efa1073455' },
+	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: 'd2c3ded797c2' },
 	// TASK-2228: loadData issues progress and links together and settles each
 	// into a plain result object; loadData's own myGen checks after each await
 	// fence the use of those results.
-	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: '309144404056' },
-	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: '37b6f051ce88' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: '309144404056' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: '37b6f051ce88' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: 'f2947298f396' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: 'ef8855076ad3' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: 'f2947298f396' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: 'ef8855076ad3' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -238,17 +238,17 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'connection state of this instance\'s own provider', reviewed: 'b0f9f4cc5f23',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await', reviewed: '08975801d51f' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it)', reviewed: 'cdaed297f822' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await', reviewed: '5d207af0dc59' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it)', reviewed: '4cbc97daa0e7' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved', reviewed: '92d2b34446e7',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved', reviewed: '80dba02bfbd0',
 		may: ['teardownFlushed'],
 	},
-	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: '38d145ab47d5' },
+	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: 'ac93e315dd54' },
 	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: 'acbf5de58fba' },
 	{
 		call: /^requestAnimationFrame\($/,
@@ -262,22 +262,22 @@ const CONTINUATIONS: SignedRow[] = [
 		call: /^setTimeout\($/,
 		body: /send\(false\)\.catch\(/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: 'b95eeb3d4044',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: 'cb09803a834f',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
 	// BUG-3230 U0: the fallback save is refused rather than replacing another
 	// tab's unstored edits; the refusal asks, then resends once on overwrite.
-	{ call: /^send\(false\)\.catch\($/, body: /./, why: 'content save refusal: switchedAway before the question, and again after it before the resend', reviewed: '5d3b969cb03a' },
-	{ call: /return send\(true\); \}\)\.then\($/, body: /^\(sent\) =>/, why: 'content save: switchedAway', reviewed: 'e6d66a58003b' },
-	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '0c7c4f2047ed' },
+	{ call: /^send\(false\)\.catch\($/, body: /./, why: 'content save refusal: switchedAway before the question, and again after it before the resend', reviewed: '818faff0bf38' },
+	{ call: /return send\(true\); \}\)\.then\($/, body: /^\(sent\) =>/, why: 'content save: switchedAway', reviewed: '21fb734aa340' },
+	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '6ab4e25ce3da' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: 'setTimeout(…)',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: '2e23996fd713',
+		reviewed: 'c01efb7e99e4',
 		may: ['saves.settle'],
 	},
 	// BUG-3230 U0: the unload save keeps its text in this browser before it goes
@@ -291,7 +291,7 @@ const CONTINUATIONS: SignedRow[] = [
 		in: '{save}',
 		code: "() => { clearRefusedRawDraft(draftUser, reqItemId, markdown); if (item && item.id === reqItemId && genAtSave === loadGeneration && rawContentSaver.pending === markdown) { rawContentSaver.clearPending(); editorStore.setDirty(false); localDirty = false; } }",
 		why: 'raw keepalive save: removes the kept text by the captured user and item, then genAtSave against loadGeneration',
-		reviewed: '9b1311d1d0e7',
+		reviewed: '906f2f082c63',
 		may: ['clearRefusedRawDraft'],
 	},
 	{
@@ -300,20 +300,20 @@ const CONTINUATIONS: SignedRow[] = [
 		in: '{save}',
 		code: "(e) => { if (isSupersededWriteError(e)) clearRefusedRawDraft(draftUser, reqItemId, markdown); else if (isContentPendingFlush(e)) { toastStore.show( pendingEditsReason(e) === 'set_aside' ? 'Your markdown edits were not saved: this item has edits an editor upgrade set aside. They are kept in this browser, and opening the item offers them back.' : 'Your markdown edits were not saved: another tab has edits to this item that are not stored yet. They are kept in this browser, and opening the item offers them back.', 'error', ); } }",
 		why: 'raw keepalive failure: a superseded answer removes the kept text by the captured user and item; a refusal is reported whichever item is shown',
-		reviewed: '7145960bd3a1',
+		reviewed: '6fee6e602519',
 		may: ['isSupersededWriteError', 'clearRefusedRawDraft', 'isContentPendingFlush', 'pendingEditsReason', 'toastStore.show'],
 	},
-	{ call: /overwrite_pending_edits: true \} : \{\}\), \}\)\.then\($/, body: /^\(updated\) =>/, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: '2e6015d7a318' },
+	{ call: /overwrite_pending_edits: true \} : \{\}\), \}\)\.then\($/, body: /^\(updated\) =>/, why: 'raw foreground save: genAtSave against loadGeneration', reviewed: 'b0553b20b068' },
 	// BUG-3230 U0: the answer to a refused raw save arms one resend.
-	{ call: /askToOverwritePendingEdits\(reqItemId, genAtSave, pendingEditsReason\(e\)\)\.then\($/, body: /./, why: 'raw refusal answer: genAtSave against loadGeneration before arming the resend', reviewed: '50cb4fbd2c67' },
-	{ call: /content: item\.content, content_state: item\.content_state \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '9641313ed003' },
+	{ call: /askToOverwritePendingEdits\(reqItemId, genAtSave, pendingEditsReason\(e\)\)\.then\($/, body: /./, why: 'raw refusal answer: genAtSave against loadGeneration before arming the resend', reviewed: '0cab373e17dc' },
+	{ call: /content: item\.content, content_state: item\.content_state \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '7ad12aaddaac' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: '{save}',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: '1db569f12787',
+		reviewed: '9649f5dcc0fa',
 		may: ['saves.settle'],
 	},
 ];
@@ -327,7 +327,12 @@ const CONTINUATIONS: SignedRow[] = [
 const HELPERS: Record<string, string> = {
 	// TASK-2199: read by onForceRefresh; a pure read of the live editor.
 	liveEditorMarkdown: '898dfa3cfe31',
-	primeCanonicalSeed: '59c3a38ec887',
+	// TASK-2232: the editor-markdown shadow's only reader. It drains the
+	// Editor's coalesced delivery, which runs handleContentUpdate synchronously
+	// for the editor still mounted (the teardown paths find it destroyed, so
+	// there it is a no-op), then returns the shadow.
+	currentEditorMarkdown: 'ad26da921841',
+	primeCanonicalSeed: 'f354937c6fa1',
 	adoptCollection: '56ea87102958',
 	// BUG-3050 U3: the kept local body keeps ITS content_state. Still synchronous,
 	// reads only collabProvider and item, and commits only through withInflightTags.
@@ -340,11 +345,11 @@ const HELPERS: Record<string, string> = {
 	identityHeld: '1c5505d51f73',
 	navigateToCollectionRoot: '5976f087a8ca',
 	refreshPrintMeta: '2312cc481ca5',
-	runTeardownFlush: '8f2da075ebb4',
+	runTeardownFlush: 'af1b49b99bff',
 	// BUG-3124 unit B: the cursor-advance settle. Synchronous; arms the flusher's
 	// single timer only for the current, identity-held context.
 	showSaved: '456dd972dcf5',
-	settleCollabIfCurrent: '578e51b4c9d0',
+	settleCollabIfCurrent: 'd09b2eae8d10',
 	// BUG-2367: the move's success toast, naming any not_unique drop.
 	// Synchronous; reads only its arguments and writes only the toast store.
 	showMovedToast: '6a32f06fbd9f',
