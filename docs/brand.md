@@ -360,7 +360,96 @@ others and keep them in sync.
 
 ---
 
-## 9. What this doc explicitly does NOT do
+## 9. The Pad mark
+
+> **Adopted (Dave, 2026-10-09; TASK-3514), with a FLAT app icon:** a solid
+> dark tile, no edge glow and no tile sheen. The rollout runs repo by repo
+> (plan on TASK-3514); a surface not yet switched still shows its old mark.
+
+The mark is a 3x3 grid of rounded tiles. It replaces both earlier marks: the
+purple "P" (the app's favicons and app icons) and the raster nine-square
+icons (mobile, video, marketing), which came from one bitmap and drifted in
+crop, glow and tile size. The SVGs in `docs/brand/mark/` are the source. Every
+PNG anywhere is an export of one of them, never a hand-edited copy.
+
+### The master set (`docs/brand/mark/`)
+
+| File | What it is | Use it for |
+|---|---|---|
+| `pad-mark.svg` | The mark, full colour, no background | Headers, the README, any lockup at about 20px and up |
+| `pad-mark-small.svg` | Pixel-aligned at 16px: 4px tiles, 2px gaps | Favicons at 16 and 32px; scale by whole multiples only |
+| `pad-favicon-tile.svg` | The small mark on a dark tile | Places that need a solid backing: PWA maskable, Windows tiles |
+| `pad-app-icon.svg` | The mark on a solid dark tile (`#0a0b16`), full-bleed | iOS AppIcon and `apple-touch-icon` (iOS masks it; no transparency) |
+| `pad-app-icon-shaped.svg` | The same tile, transparent outside its rounded shape | PWA `icon-192/512`, Android legacy launcher, in-app logos (iOS `PadIcon`, Android `pad_logo`), video lockups, OG and store art |
+| `pad-org-avatar.svg` | The mark, smaller, on a full-bleed dark tile with no edge ring; every tile clears a circle crop | The PerpetualSoftware GitHub org avatar, which GitHub's default social card shows |
+| `pad-mark-mono.svg` | One colour (`currentColor`), with the two slate tiles at 40% | One-colour contexts: print, embossing, a single-ink badge |
+
+### Geometry and colour
+
+- Grid: tiles of 200, gaps of 38, tile corners of 37, on a 676 square,
+  measured from the mobile app icon (`icon_1024.png`). In the app icon the
+  grid sits at 174..850 on a 1024 canvas, and the tile's own corner radius
+  is 222.
+- Tile colours, row by row:
+  - `#007bfc` `#2f2ffb` `#8406fb`
+  - `#01bc81` `#fdb600` `#45496c`
+  - `#0090fd` `#004ffb` `#424668`
+- The two slate tiles are part of the mark, as in the mobile icon. Keep
+  them slate; do not recolour them to the accent.
+- App-icon tile: solid `#0a0b16`, corner radius 222 of 1024 when shaped.
+  Flat by ruling: the mobile icon's edge glow and tile sheen were mocked and
+  declined.
+
+### Rules
+
+- On light and dark backgrounds alike, use `pad-mark.svg` as is. No
+  outline, shadow or glow anywhere, the app icon included.
+- Below 20px, use `pad-mark-small.svg`. The full mark's 38/200 gaps blur
+  into one block at 16px; the small variant's wider gaps keep the grid.
+  A 2x2 simplification was tried and dropped: it loses the identity
+  (TASK-3514 mockups).
+- The lockup is the mark followed by the lowercase wordmark `pad` (section
+  6). In the mockups the mark is about 1.2x the wordmark's font size (22px
+  beside an 18px wordmark). In a header the mark sits beside the wordmark
+  and never replaces it.
+
+### GitHub social preview
+
+**Ruled (Dave, 2026-10-09):** keep GitHub's default card, which keeps the live
+counts, and make the mark the org avatar (`pad-org-avatar-1024.png`, uploaded
+in the org settings). The custom card below is parked, kept in case it is
+wanted later.
+
+`docs/brand/social/render.mjs` renders it in GitHub's own card layout, with
+the mark where the org avatar goes:
+
+- `a`: durable facts (license, stack, hosting, agent access) in place of counts.
+- `b`: a snapshot of the counts.
+
+GitHub has no API for the social preview: an owner uploads the PNG under
+Settings › Social preview, and it stays as uploaded. Version b's numbers are
+therefore as of the render. Run `node docs/brand/social/render.mjs b` and
+re-upload to refresh them.
+
+### Exporting
+
+`node docs/brand/mark/export.mjs <static-dir> [--og]` writes the web icon set
+from the masters: `favicon-16x16.png`, `favicon-32x32.png`, `favicon.ico`
+(16/32/48), `icon.svg` (the small mark, which a browser prefers in a tab),
+`pad-mark.svg`, `icon-192.png` and `icon-512.png` (shaped), `apple-touch-icon.png`
+(full-bleed), `padicon.png` (shaped, for links to the old name), and with
+`--og` the 1200x630 `og-card.png`. This repo runs it on `web/static --og`;
+pad-web runs it on its `static/`. Never edit an exported PNG: change the SVG
+and export again.
+
+### Where it goes
+
+Each surface gets an export from the master set. The rollout plan by repo
+is on TASK-3514.
+
+---
+
+## 10. What this doc explicitly does NOT do
 
 - It is not a full design system. The deep app (workspace shell, item
   views, etc.) has its own conventions and stays as-is.
@@ -374,7 +463,7 @@ others and keep them in sync.
 
 ---
 
-## 10. References
+## 11. References
 
 - [PLAN-900] — Cohesive UX between getpad.dev and Pad Cloud
 - [IDEA-888] — Original idea this plan implements
@@ -384,6 +473,7 @@ others and keep them in sync.
 - `web/src/app.css` — app-side tokens (currently divergent on
   bg / text / border / fonts; aligned on accent palette)
 - `web/src/lib/components/auth/` — auth-page chrome components
+- `docs/brand/mark/` — the mark's master SVGs (section 9)
 
 [PLAN-900]: # "tracked in Pad workspace"
 [IDEA-888]: # "tracked in Pad workspace"

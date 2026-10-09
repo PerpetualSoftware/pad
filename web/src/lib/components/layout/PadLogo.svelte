@@ -2,8 +2,11 @@
 	let { cloud = false }: { cloud?: boolean } = $props();
 </script>
 
-<a href="/" class="pad-logo" class:has-cloud={cloud}>
-	<span class="wordmark">Pad</span>
+<!-- The mark (static/pad-mark.svg, from docs/brand/mark) beside the lowercase
+     wordmark, the lockup in docs/brand.md sections 6 and 9 (TASK-3514). -->
+<a href="/" class="pad-logo" class:has-cloud={cloud} aria-label="Pad, home">
+	<img class="mark" src="/pad-mark.svg" width="22" height="22" alt="" />
+	<span class="wordmark">pad</span>
 	{#if cloud}
 		<span class="cloud-badge">Cloud</span>
 	{/if}
@@ -12,7 +15,8 @@
 <style>
 	.pad-logo {
 		display: inline-flex;
-		align-items: baseline;
+		align-items: center;
+		gap: 8px;
 		position: relative;
 		text-decoration: none;
 		height: 44px;
@@ -31,9 +35,14 @@
 		font-size: 1.35rem;
 		font-weight: 800;
 		letter-spacing: -0.03em;
-		color: var(--accent-blue);
+		color: var(--text-primary);
 		line-height: 44px;
 		transition: opacity 0.15s;
+	}
+
+	.mark {
+		display: block;
+		flex-shrink: 0;
 	}
 
 	.pad-logo:hover .wordmark {

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Pad">
+<!-- Pad app icon, FLAT (TASK-3514; Dave, 2026-10-09: no glow): the mark on a solid dark tile, in the mobile icon's geometry (grid 174..850 on 1024). Full-bleed, no transparency: for iOS (AppIcon, apple-touch-icon), which applies its own mask. -->
+<rect width="1024" height="1024" fill="#0a0b16"/>
+  <rect x="174" y="174" width="200" height="200" rx="37" fill="#007bfc"/>
+  <rect x="412" y="174" width="200" height="200" rx="37" fill="#2f2ffb"/>
+  <rect x="650" y="174" width="200" height="200" rx="37" fill="#8406fb"/>
+  <rect x="174" y="412" width="200" height="200" rx="37" fill="#01bc81"/>
+  <rect x="412" y="412" width="200" height="200" rx="37" fill="#fdb600"/>
+  <rect x="650" y="412" width="200" height="200" rx="37" fill="#45496c"/>
+  <rect x="174" y="650" width="200" height="200" rx="37" fill="#0090fd"/>
+  <rect x="412" y="650" width="200" height="200" rx="37" fill="#004ffb"/>
+  <rect x="650" y="650" width="200" height="200" rx="37" fill="#424668"/>
+</svg>

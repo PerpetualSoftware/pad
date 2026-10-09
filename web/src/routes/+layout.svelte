@@ -366,7 +366,10 @@
 	<meta name="description" content="Project Management for the agent era" />
 	<meta property="og:title" content="Pad" />
 	<meta property="og:description" content="Project Management for the agent era" />
-	<meta property="og:image" content="/padicon.png" />
+	<!-- The link-preview card from the brand master (TASK-3514, docs/brand/mark/export.mjs --og). -->
+	<meta property="og:image" content="/og-card.png" />
+	<meta property="og:image:width" content="1200" />
+	<meta property="og:image:height" content="630" />
 	<meta property="og:type" content="website" />
 </svelte:head>
 

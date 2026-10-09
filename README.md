@@ -1,4 +1,5 @@
 <p align="center">
+  <img src="docs/brand/mark/pad-mark.svg" width="72" height="72" alt="">
   <h1 align="center">Pad</h1>
   <p align="center"><strong>Project Management for the agent era.</strong></p>
   <p align="center">
