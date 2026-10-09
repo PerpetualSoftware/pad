@@ -41,6 +41,27 @@ func mcpOAuthAudience(ep config.MCPEndpoints) string {
 	return ep.ResourceURL
 }
 
+// validateCloudMCPOAuth refuses a cloud start that could not construct the
+// OAuth server (TASK-1069). On cloud, MCP is always available, so without an
+// https origin /mcp is served with personal access tokens only and every
+// OAuth client (Claude, ChatGPT, the connected-apps consent) fails, with
+// nothing at startup saying why. That happened in production once
+// (pad-cloud#27: the variable was never forwarded into the container).
+func validateCloudMCPOAuth(ep config.MCPEndpoints) error {
+	if mcpOAuthAudience(ep) != "" {
+		return nil
+	}
+	reason := "no public origin is configured"
+	if problems := ep.Problems(); len(problems) > 0 {
+		reason = strings.Join(problems, "; ")
+	} else if ep.Usable() {
+		reason = fmt.Sprintf("the auth-server URL %q is not https", ep.AuthServerURL)
+	}
+	return fmt.Errorf("cloud mode needs MCP OAuth, which needs an https public origin (%s). "+
+		"Set PAD_URL (or PUBLIC_URL) to the https URL this server is reached at; "+
+		"PAD_MCP_PUBLIC_URL and PAD_AUTH_SERVER_URL override the derived MCP and issuer URLs", reason)
+}
+
 // appAPIAudience is the installed-app API resource (SPEC-6 U5a, TASK-3394):
 // the origin's /api/app/v1. Like the MCP audience it exists only where the
 // OAuth server does (an https auth-server URL), because every app credential

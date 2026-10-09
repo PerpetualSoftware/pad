@@ -224,6 +224,30 @@ type mcpSettingsResponse struct {
 	Readiness mcpReadiness `json:"readiness"`
 }
 
+// MCPBlockedReason says why MCP cannot be served although it is turned on
+// (TASK-1069), or "" when it is off or available. One rule for the admin
+// panel's "blocked" state, the startup error and the health flag, so they
+// cannot disagree. Read per call: the setting can change at runtime.
+func (s *Server) MCPBlockedReason() string {
+	// Cloud and usable addressing can never be blocked, so they skip the
+	// setting read: health calls this on every probe (codex r1).
+	if s.cloudMode || s.mcpEndpoints.Usable() {
+		return ""
+	}
+	on, _ := s.mcpSetting()
+	if !on || s.mcpAvailableWith(on) {
+		return ""
+	}
+	return s.mcpBlockedReasonFor(s.mcpEndpoints)
+}
+
+func (s *Server) mcpBlockedReasonFor(ep config.MCPEndpoints) string {
+	if problems := ep.Problems(); len(problems) > 0 {
+		return problems[0]
+	}
+	return "No public origin is configured. Set PAD_URL (or PUBLIC_URL) to the URL this server is reached at."
+}
+
 func (s *Server) buildMCPSettingsResponse() (mcpSettingsResponse, error) {
 	on, source := s.mcpSetting()
 	ep := s.mcpEndpoints
@@ -258,11 +282,7 @@ func (s *Server) buildMCPSettingsResponse() (mcpSettingsResponse, error) {
 		rd.State = "on"
 	default:
 		rd.State = "blocked"
-		if len(rd.Problems) > 0 {
-			rd.Blocked = rd.Problems[0]
-		} else {
-			rd.Blocked = "No public origin is configured. Set PAD_URL (or PUBLIC_URL) to the URL this server is reached at."
-		}
+		rd.Blocked = s.mcpBlockedReasonFor(ep)
 	}
 
 	var err error

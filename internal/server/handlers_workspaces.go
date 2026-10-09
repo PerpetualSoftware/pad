@@ -98,6 +98,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		resp["build_time"] = s.buildTime
 	}
 	resp["cloud_mode"] = s.cloudMode
+	// MCP is turned on but cannot be served (TASK-1069). A flag only: the
+	// reason names configuration, which is for the admin panel, not an
+	// unauthenticated endpoint. Absent when MCP is off or available.
+	if s.MCPBlockedReason() != "" {
+		resp["mcp_blocked"] = true
+	}
 	if s.webIdentity != nil {
 		resp["web"] = s.webIdentity
 	}
