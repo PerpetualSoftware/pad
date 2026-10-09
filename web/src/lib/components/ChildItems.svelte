@@ -854,7 +854,7 @@
 							<option value={coll.slug}>{coll.name}</option>
 						{/each}
 					</select>
-					<input
+					<input aria-label="Child title"
 						class="add-child-input"
 						type="text"
 						placeholder="Child title…"

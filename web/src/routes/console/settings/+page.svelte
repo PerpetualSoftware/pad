@@ -752,7 +752,7 @@
 									{:else}
 										<p class="section-desc">Enter your password to disable 2FA.</p>
 										<div class="field">
-											<input
+											<input aria-label="Current password"
 												type="password"
 												placeholder="Current password"
 												bind:value={disablePassword}
@@ -946,7 +946,7 @@
 				{/if}
 
 				<div class="token-create-row">
-					<input
+					<input aria-label="Token name"
 						type="text"
 						placeholder="Token name"
 						bind:value={newTokenName}

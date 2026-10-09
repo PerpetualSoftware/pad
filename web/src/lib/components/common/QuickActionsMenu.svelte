@@ -620,7 +620,7 @@
 	<div class="create-form">
 		<div class="qa-row">
 			<EmojiPickerButton bind:value={newIcon} placeholder="+" size="sm" />
-			<input
+			<input aria-label="Action label"
 				class="qa-label-input"
 				type="text"
 				placeholder="Action label"
@@ -628,7 +628,7 @@
 				bind:this={labelInputEl}
 			/>
 		</div>
-		<textarea
+		<textarea aria-label="Action prompt"
 			class="qa-prompt-input"
 			placeholder="/pad ..."
 			rows="3"

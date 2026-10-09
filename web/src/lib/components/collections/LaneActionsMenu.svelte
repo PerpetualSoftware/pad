@@ -252,7 +252,7 @@
 	{:else if view === 'tag'}
 		<button class="lane-menu-back" onclick={(e) => run(e, () => (view = 'root'))}>‹ Tag all{scopeNote}</button>
 		<div class="lane-menu-tag-input">
-			<input
+			<input aria-label="Tag to add"
 				type="text"
 				placeholder="Add tag…"
 				bind:value={tagInput}

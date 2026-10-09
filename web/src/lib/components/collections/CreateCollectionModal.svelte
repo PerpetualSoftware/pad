@@ -487,7 +487,7 @@
 
 					<div class="name-row">
 						<EmojiPickerButton bind:value={selectedIcon} placeholder="+" size="md" />
-						<input
+						<input aria-label="Collection name"
 							class="name-input"
 							type="text"
 							placeholder="Collection name"
@@ -495,7 +495,7 @@
 						/>
 					</div>
 
-					<input
+					<input aria-label="Collection description"
 						class="desc-input"
 						type="text"
 						placeholder="Description (optional)"

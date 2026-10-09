@@ -267,7 +267,7 @@
 				<div class="add-section">
 					<span class="section-label">Add people</span>
 					<div class="add-row">
-						<input
+						<input aria-label="Email address"
 							class="email-input"
 							type="email"
 							placeholder="Email address"

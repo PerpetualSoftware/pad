@@ -308,7 +308,7 @@
 				>&#9660;</button>
 			</div>
 		{/if}
-		<input
+		<input aria-label={isNew ? 'Field name' : 'Field label'}
 			class="field-label-input"
 			type="text"
 			bind:value={field.label}
@@ -406,7 +406,7 @@
 						class="option-row"
 						class:option-terminal={isTerminal(field.options[oi])}
 					>
-						<input
+						<input aria-label="Option name"
 							class="option-name-input"
 							type="text"
 							value={field.options[oi]}

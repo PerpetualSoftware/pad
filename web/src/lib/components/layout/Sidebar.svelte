@@ -848,7 +848,7 @@
 					</div>
 				{/if}
 			</div>
-			<textarea
+			<textarea aria-label="New item title"
 				class="quick-add-input"
 				rows="1"
 				placeholder="What's the title?"

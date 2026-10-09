@@ -915,7 +915,7 @@
 				<button class="dialog-close" onclick={closeNewItem}>✕</button>
 			</div>
 			<div class="new-item-form">
-				<input
+				<input aria-label="New item title"
 					bind:this={newItemTitleInput}
 					class="new-item-title-input"
 					type="text"
