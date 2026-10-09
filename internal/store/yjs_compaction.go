@@ -38,8 +38,16 @@ var ErrCompactionRefused = errors.New("op-log compaction refused: the op-log cha
 // body already equals its text), and the two compaction columns are set. It
 // returns the snapshot row's id.
 //
-// The caller holds the collab per-item lock with no room open, as for
-// PruneItemOpLogIfDormantBefore; the checks here are the atomic re-check.
+// CONTRACT: the caller holds the collab per-item lock and has checked, under
+// it, that no room is open, exactly as for PruneItemOpLogIfDormantBefore.
+// That is what keeps appends out: the only production appender is a room's
+// readLoop (Room.persistSyncFrames), rooms are created only by Join under
+// that lock, and a room is torn down only after its readLoops have exited.
+// The database checks below are the atomic re-check, NOT the exclusion: on
+// Postgres an append that allocated an id before the MAX(id) read and
+// committed after this transaction would be invisible to it, and would land
+// BELOW the snapshot's id, outside it (codex, TASK-3531). The dormant DELETE
+// this replaces has the same exposure and the same contract.
 func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, expectMaxID int64, frame []byte, schemaVersion string) (int64, error) {
 	if itemID == "" || expectMaxID <= 0 || len(frame) == 0 || schemaVersion == "" {
 		return 0, errors.New("CompactItemOpLog: itemID, expectMaxID, frame and schemaVersion are required")
