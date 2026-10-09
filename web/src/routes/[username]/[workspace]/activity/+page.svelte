@@ -13,6 +13,8 @@
 	import { agentNameOf } from '$lib/utils/agentActor';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
+	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
+	import { onConnectivityRecovered } from '$lib/services/connectivity.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import { loadFailure } from '$lib/api/loadFailure';
@@ -272,12 +274,20 @@
 
 	const headRefresh = createThrottledRefresh(() => void refreshHead(), { intervalMs: 10_000 });
 	const unsubscribeItemEvents = sseService.onItemEvent(() => headRefresh.trigger());
+	// TASK-2201: when the connection returns, a failed first page reloads,
+	// and a feed that was showing re-reads its head for what it missed.
+	const unsubscribeRecovered = onConnectivityRecovered(() => {
+		if (!wsSlug) return;
+		if (loadError) loadActivities(wsSlug, true);
+		else headRefresh.trigger();
+	});
 	function onVisibilityChange() {
 		if (document.visibilityState === 'visible') headRefresh.onVisible();
 	}
 	if (browser) document.addEventListener('visibilitychange', onVisibilityChange);
 	onDestroy(() => {
 		unsubscribeItemEvents();
+		unsubscribeRecovered();
 		headRefresh.dispose();
 		if (browser) document.removeEventListener('visibilitychange', onVisibilityChange);
 	});
@@ -405,7 +415,12 @@
 </script>
 
 <div class="activity-page">
-	<PageHeader title="Activity" count={loading ? undefined : activities.length} />
+	<PageHeader title="Activity" count={loading ? undefined : activities.length}>
+		{#snippet actions()}
+			<!-- TASK-2201 (C90): an outage was invisible on this page. -->
+			<SSEStatusIndicator compact />
+		{/snippet}
+	</PageHeader>
 
 	<!-- Filters -->
 	<div class="filters-row">

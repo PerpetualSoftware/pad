@@ -173,6 +173,16 @@ describe('the dashboard fences every async commit point', () => {
 				allowedWrites: [],
 			},
 			{ name: 'the Retry button', body: attributeBody('onclick', '>Retry</Button>'), call: /\bload\(wsSlug\)/, allowedWrites: [] },
+			// TASK-2201: the connection came back; reload at once rather than on the next poll.
+			{
+				name: 'the connectivity-recovered callback',
+				body: (() => {
+					const at = CODE.indexOf('onConnectivityRecovered(() => {');
+					return at < 0 ? '' : CODE.slice(at, CODE.indexOf('\n\t\t});', at));
+				})(),
+				call: /\bload\(wsSlug, true\)/,
+				allowedWrites: [],
+			},
 			{
 				name: 'CreateCollectionModal oncreated',
 				body: attributeBody('oncreated', 'onclose={() => { showCreateCollection = false; }}'),

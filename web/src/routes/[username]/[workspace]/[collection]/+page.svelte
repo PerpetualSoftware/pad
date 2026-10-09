@@ -43,6 +43,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { enterWorkspaceIndex } from '$lib/stores/workspaceIndexEntry';
+	import { onConnectivityRecovered } from '$lib/services/connectivity.svelte';
 	import { localSearch, parseSearchQuery } from '$lib/stores/localSearch.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
@@ -344,6 +345,19 @@
 	// retry CTA instead of the misleading "No items yet" empty state
 	// or a stuck-forever "Loading…" spinner.
 	let indexError = $derived(indexState === 'error');
+
+	// TASK-2201: when the connection comes back, a page showing a load error
+	// (or a saved copy it could not confirm) retries once by itself, the way
+	// the item pane already did. Each arm is the same call its Retry button
+	// makes, so it inherits that button's fencing. The listener reads state
+	// when it fires, so the effect tracks nothing and subscribes once.
+	$effect(() => {
+		return onConnectivityRecovered(() => {
+			if (!wsSlug || !collSlug) return;
+			if (metaError || metaFromCache) void loadCollection(wsSlug, collSlug, showArchived);
+			if (indexError) void enterWorkspaceIndex(wsSlug, authStore.userId || null, captureIdentity());
+		});
+	});
 	// `deltaSyncFailed` was a PAGE-LOCAL memo of "the cache was dropped because
 	// access was revoked" (TASK-2921). It existed because a 403 ends in
 	// `localIndex.reset(ws)` — fired by the API client's GLOBAL access-revoked
