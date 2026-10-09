@@ -65,6 +65,8 @@ func TestAwarenessRefusesMalformedFrames(t *testing.T) {
 		"count too large":  {yMessageAwareness, 0x02, 0x7f, 0x00},
 		"clock past 2^53":  liveFrame(100, 1<<53),
 		"client past 2^53": liveFrame(1<<53, 1),
+		// A client ID of 1 with a bit past 2^64 that a uint64 would drop.
+		"overflowing varuint": {yMessageAwareness, 0x0f, 0x01, 0x81, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02, 0x01, 0x02, '{', '}'},
 	} {
 		if _, err := decodeAwarenessFrame(frame); err == nil {
 			t.Errorf("%s: decoded a malformed frame", name)

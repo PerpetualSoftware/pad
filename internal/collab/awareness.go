@@ -59,10 +59,12 @@ var errAwarenessFrame = errors.New("malformed awareness frame")
 const maxSafeInteger = 1<<53 - 1
 
 // readVarUint reads a lib0 variable-length unsigned integer (7 bits per byte,
-// high bit = more). It accepts up to 64 bits, more than y-protocols writes.
+// high bit = more). At most 8 bytes (56 bits): y-protocols writes nothing above
+// 2^53, and a longer encoding could carry bits a uint64 would silently drop
+// (codex r4).
 func readVarUint(b []byte, i int) (uint64, int, error) {
 	var v uint64
-	for shift := uint(0); shift < 64; shift += 7 {
+	for shift := uint(0); shift < 56; shift += 7 {
 		if i >= len(b) {
 			return 0, i, errAwarenessFrame
 		}
