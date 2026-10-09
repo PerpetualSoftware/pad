@@ -2,7 +2,7 @@
 // outright, so the client asks for keepalive only when the body fits a budget
 // and otherwise sends an ordinary request.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { KEEPALIVE_BODY_BUDGET, fitsKeepaliveBudget, keepaliveFor } from './keepaliveBudget';
+import { KEEPALIVE_BODY_BUDGET, fitsKeepaliveBudget, keepaliveBytesInFlight, reserveKeepalive } from './keepaliveBudget';
 import { api } from './client';
 
 describe('the keepalive budget (BUG-3522)', () => {
@@ -23,13 +23,36 @@ describe('the keepalive budget (BUG-3522)', () => {
 
 	it('keeps what the caller asked for when it fits, and says so when it drops it', () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		expect(keepaliveFor(true, 'small', 'x')).toBe(true);
-		expect(keepaliveFor(false, 'a'.repeat(KEEPALIVE_BODY_BUDGET + 1), 'x')).toBe(false);
-		expect(keepaliveFor(undefined, 'a'.repeat(KEEPALIVE_BODY_BUDGET + 1), 'x')).toBeUndefined();
+		const small = reserveKeepalive(true, 'small', 'x');
+		expect(small.keepalive).toBe(true);
+		small.release();
+		expect(reserveKeepalive(false, 'a'.repeat(KEEPALIVE_BODY_BUDGET + 1), 'x').keepalive).toBe(false);
+		expect(reserveKeepalive(undefined, 'a'.repeat(KEEPALIVE_BODY_BUDGET + 1), 'x').keepalive).toBeUndefined();
 		expect(warn).not.toHaveBeenCalled();
-		expect(keepaliveFor(true, 'a'.repeat(KEEPALIVE_BODY_BUDGET + 1), 'collab flush of x')).toBe(false);
+		expect(reserveKeepalive(true, 'a'.repeat(KEEPALIVE_BODY_BUDGET + 1), 'collab flush of x').keepalive).toBe(false);
 		expect(warn).toHaveBeenCalledTimes(1);
 		expect(String(warn.mock.calls[0][0])).toContain('collab flush of x');
+		expect(keepaliveBytesInFlight()).toBe(0);
+		warn.mockRestore();
+	});
+
+	it('counts every keepalive body in flight: two that fit alone can overflow together (codex r1)', () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const half = 'a'.repeat(Math.floor(KEEPALIVE_BODY_BUDGET * 0.6));
+		const first = reserveKeepalive(true, half, 'collab flush');
+		expect(first.keepalive).toBe(true);
+		// The raw saver's unload write, while the first is still in flight.
+		const second = reserveKeepalive(true, half, 'raw save');
+		expect(second.keepalive).toBe(false);
+		expect(warn).toHaveBeenCalledTimes(1);
+		// Once the first settles, the budget is back.
+		first.release();
+		first.release(); // idempotent
+		expect(keepaliveBytesInFlight()).toBe(0);
+		const third = reserveKeepalive(true, half, 'raw save');
+		expect(third.keepalive).toBe(true);
+		third.release();
+		expect(keepaliveBytesInFlight()).toBe(0);
 		warn.mockRestore();
 	});
 });
@@ -61,6 +84,14 @@ describe('the client sends what the budget decides', () => {
 		// The large one is still SENT, with its whole body: an ordinary request,
 		// never nothing.
 		expect(String(calls[1].body)).toContain(big);
+	});
+
+	it('a request releases its reservation when it settles, success or failure', async () => {
+		await api.items.flushCollabContent('ws', 'i1', 'small body', { keepalive: true });
+		expect(keepaliveBytesInFlight()).toBe(0);
+		vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+		await api.items.flushCollabContent('ws', 'i1', 'small body', { keepalive: true }).catch(() => {});
+		expect(keepaliveBytesInFlight()).toBe(0);
 	});
 
 	it('the raw saver\'s unload PATCH does the same', async () => {

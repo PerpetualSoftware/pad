@@ -35,16 +35,47 @@ export function fitsKeepaliveBudget(body: string): boolean {
 	return new TextEncoder().encode(body).length <= KEEPALIVE_BODY_BUDGET;
 }
 
+// Bytes of keepalive body this page has in flight. The 64 KiB cap is the SUM
+// over in-flight keepalive requests (codex r1 on BUG-3522): at unload the
+// collab flush and the raw saver can each fit alone and still overflow
+// together, and the browser then refuses the later one.
+let inFlight = 0;
+
+/** Bytes of keepalive body currently in flight (for tests). */
+export function keepaliveBytesInFlight(): number {
+	return inFlight;
+}
+
 /**
- * The `keepalive` flag a request should actually send: what the caller asked
- * for, unless the body does not fit, in which case the request goes as an
- * ordinary fetch and says so in the console (never silently).
+ * The `keepalive` flag a request should actually send, and a release to call
+ * when it settles. Keepalive is kept only if this body fits the budget
+ * TOGETHER with every keepalive body still in flight; otherwise the request
+ * goes as an ordinary fetch and says so in the console (never silently).
  */
-export function keepaliveFor(wanted: boolean | undefined, body: string, what: string): boolean | undefined {
-	if (!wanted) return wanted;
-	if (fitsKeepaliveBudget(body)) return true;
+export function reserveKeepalive(
+	wanted: boolean | undefined,
+	body: string,
+	what: string
+): { keepalive: boolean | undefined; release: () => void } {
+	const none = { keepalive: wanted, release: () => {} };
+	if (!wanted) return none;
+	// Exact UTF-8 bytes: an upper bound would over-reserve and push a later
+	// small request off keepalive for nothing.
+	const bytes = new TextEncoder().encode(body).length;
+	if (inFlight + bytes <= KEEPALIVE_BODY_BUDGET) {
+		inFlight += bytes;
+		let released = false;
+		return {
+			keepalive: true,
+			release: () => {
+				if (released) return;
+				released = true;
+				inFlight -= bytes;
+			}
+		};
+	}
 	console.warn(
-		`[keepalive] ${what}: ${new TextEncoder().encode(body).length} bytes is over the ${KEEPALIVE_BODY_BUDGET}-byte keepalive budget; sending as an ordinary request (BUG-3522)`
+		`[keepalive] ${what}: ${bytes} bytes with ${inFlight} already in flight is over the ${KEEPALIVE_BODY_BUDGET}-byte keepalive budget; sending as an ordinary request (BUG-3522)`
 	);
-	return false;
+	return { keepalive: false, release: () => {} };
 }

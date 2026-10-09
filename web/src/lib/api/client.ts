@@ -107,7 +107,7 @@ import type {
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
 import { uploadImportBundle } from './importUpload';
-import { keepaliveFor } from './keepaliveBudget';
+import { reserveKeepalive } from './keepaliveBudget';
 
 const BASE = '/api/v1';
 
@@ -1876,13 +1876,15 @@ export const api = {
 		 */
 		update: (ws: string, slug: string, data: ItemUpdate, opts?: { keepalive?: boolean }) => {
 			const body = JSON.stringify(data);
+			// Over the keepalive budget (counting every keepalive body still in
+			// flight) the request goes as an ordinary fetch rather than be refused
+			// by the browser (BUG-3522).
+			const ka = reserveKeepalive(opts?.keepalive, body, `PATCH item ${slug}`);
 			return request<Item>(`/workspaces/${ws}/items/${slug}`, {
 				method: 'PATCH',
 				body,
-				// Over the keepalive budget the request goes as an ordinary
-				// fetch rather than be refused by the browser (BUG-3522).
-				keepalive: keepaliveFor(opts?.keepalive, body, `PATCH item ${slug}`)
-			});
+				keepalive: ka.keepalive
+			}).finally(ka.release);
 		},
 
 		/**
@@ -1928,13 +1930,15 @@ export const api = {
 				body.op_log_cursor = opts.opLogCursor;
 			}
 			const encoded = JSON.stringify(body);
+			// Over the keepalive budget (counting every keepalive body still in
+			// flight) the request goes as an ordinary fetch rather than be refused
+			// by the browser (BUG-3522).
+			const ka = reserveKeepalive(opts?.keepalive, encoded, `collab flush of ${slug}`);
 			return request<Item>(`/workspaces/${ws}/items/${slug}?source=collab-snapshot`, {
 				method: 'PATCH',
 				body: encoded,
-				// Over the keepalive budget the request goes as an ordinary
-				// fetch rather than be refused by the browser (BUG-3522).
-				keepalive: keepaliveFor(opts?.keepalive, encoded, `collab flush of ${slug}`),
-			});
+				keepalive: ka.keepalive,
+			}).finally(ka.release);
 		},
 
 		/**
