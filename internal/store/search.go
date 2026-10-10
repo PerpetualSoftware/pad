@@ -810,7 +810,9 @@ func appendSearchPermissionFilter(query string, args []interface{}, params Searc
 
 // appendLiveItemFilter leaves out soft-deleted items unless the caller asked
 // for them (TASK-2864). Called beside appendLiveCollectionFilter on every
-// query path, so the results, the total and the facets agree.
+// query path, so each one applies the same archived rule. (Facets still count
+// FTS matches only, so a direct ref or number hit is outside them whether
+// live or archived; see the note at searchFacets' call site.)
 func appendLiveItemFilter(query string, params SearchParams) string {
 	if params.IncludeArchived {
 		return query
