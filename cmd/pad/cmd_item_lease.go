@@ -96,8 +96,9 @@ func itemReleaseCmd() *cobra.Command {
 	var holderFlag string
 
 	cmd := &cobra.Command{
-		Use:   "release <ref>",
-		Short: "Release an item's execution lease (idempotent)",
+		Use:     "release <ref>",
+		Short:   "Release an item's execution lease (idempotent)",
+		Example: `  pad item release TASK-5`,
 		Long: `Release the execution lease you hold on an item. Releasing an absent or
 already-expired lease is a no-op, not an error — cleanup code never needs
 to check whether it still holds the lease first. Releasing another

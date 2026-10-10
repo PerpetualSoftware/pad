@@ -742,6 +742,7 @@ func showCmd() *cobra.Command {
 		Use:     "show <ref>",
 		Aliases: []string{"read"},
 		Short:   "Show item detail (fields + content)",
+		Example: `  pad item show TASK-5`,
 		Long: `Show item detail (fields + content).
 
 When the server marks the stored body as BEHIND the item's live collaborative
@@ -1015,9 +1016,10 @@ func itemOpenCmd() *cobra.Command {
 
 func itemOpenCmdWithOpener(opener func(string) error) *cobra.Command {
 	return &cobra.Command{
-		Use:   "open <ref>",
-		Short: "Open an item in the Pad web UI",
-		Args:  cobra.ExactArgs(1),
+		Use:     "open <ref>",
+		Short:   "Open an item in the Pad web UI",
+		Example: `  pad item open TASK-5`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, cfg := getClient()
 			ws := getWorkspace()
@@ -1716,6 +1718,7 @@ func deleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "delete <ref>",
 		Short:   "Archive (soft-delete) an item",
+		Example: `  pad item delete TASK-5`,
 		Aliases: []string{"rm"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1768,9 +1771,10 @@ func deleteCmd() *cobra.Command {
 
 func restoreCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "restore <ref>",
-		Short: "Restore (un-archive) a soft-deleted item",
-		Args:  cobra.ExactArgs(1),
+		Use:     "restore <ref>",
+		Short:   "Restore (un-archive) a soft-deleted item",
+		Example: `  pad item restore TASK-5`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -3067,9 +3071,10 @@ func commentCmd() *cobra.Command {
 	var replyTo string
 
 	cmd := &cobra.Command{
-		Use:   "comment <ref> <message>",
-		Short: "Add a comment to an item",
-		Args:  cobra.ExactArgs(2),
+		Use:     "comment <ref> <message>",
+		Short:   "Add a comment to an item",
+		Example: `  pad item comment TASK-5 "Reproduced on main; the fix is in progress"`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -3099,9 +3104,10 @@ func commentCmd() *cobra.Command {
 
 func commentsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "comments <ref>",
-		Short: "List comments on an item",
-		Args:  cobra.ExactArgs(1),
+		Use:     "comments <ref>",
+		Short:   "List comments on an item",
+		Example: `  pad item comments TASK-5`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -3136,8 +3142,9 @@ func commentEditCmd() *cobra.Command {
 	var useStdin bool
 
 	cmd := &cobra.Command{
-		Use:   "comment-edit <ref> <comment-id> [message]",
-		Short: "Replace the body of a comment on an item",
+		Use:     "comment-edit <ref> <comment-id> [message]",
+		Short:   "Replace the body of a comment on an item",
+		Example: `  pad item comment-edit TASK-5 <comment-id> "The fix landed in #1234"`,
 		Long: `Replace the body of a comment on an item.
 
 Only the comment's author may edit it; an admin may too, but only from a
@@ -3190,8 +3197,9 @@ comment is shown with "edited" in that listing.
 
 func commentDeleteCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "comment-delete <ref> <comment-id>",
-		Short: "Delete a comment from an item",
+		Use:     "comment-delete <ref> <comment-id>",
+		Short:   "Delete a comment from an item",
+		Example: `  pad item comment-delete TASK-5 <comment-id>`,
 		Long: `Delete a comment from an item.
 
 Anyone who may edit the item may delete its comments. A comment that still
@@ -3258,8 +3266,9 @@ func renderCommentsMarkdown(w io.Writer, comments []models.Comment) {
 
 func blocksCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "block <source-ref> <target-ref>",
-		Short: "Mark that one item blocks another",
+		Use:     "block <source-ref> <target-ref>",
+		Short:   "Mark that one item blocks another",
+		Example: `  pad item block TASK-5 TASK-8`,
 		Long: `Create a blocking dependency between two items.
 
 The source item blocks the target item. For example:
@@ -3313,8 +3322,9 @@ The source item blocks the target item. For example:
 
 func blockedByCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "blocked-by <source-ref> <blocker-ref>",
-		Short: "Mark that an item is blocked by another",
+		Use:     "blocked-by <source-ref> <blocker-ref>",
+		Short:   "Mark that an item is blocked by another",
+		Example: `  pad item blocked-by TASK-8 TASK-5`,
 		Long: `Create a blocking dependency (reverse direction).
 
 The source item is blocked by the blocker item. For example:
@@ -3665,9 +3675,10 @@ func searchCmd() *cobra.Command {
 	var offset int
 
 	cmd := &cobra.Command{
-		Use:   "search <query>",
-		Short: "Full-text search across all items",
-		Args:  cobra.MinimumNArgs(1),
+		Use:     "search <query>",
+		Short:   "Full-text search across all items",
+		Example: `  pad item search "oauth redirect" --collection tasks`,
+		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -3812,8 +3823,9 @@ func searchCmd() *cobra.Command {
 func editCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:   "edit <ref>",
-		Short: "Open an item's content in $EDITOR",
+		Use:     "edit <ref>",
+		Short:   "Open an item's content in $EDITOR",
+		Example: `  pad item edit DOC-3`,
 		Long: `Open an item's rich content in your default editor. After editing
 and saving, the content is updated in Pad.
 
@@ -4200,10 +4212,11 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 
 func starCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "star <ref>",
-		Short: "Star an item for quick access",
-		Long:  `Star an item to mark it as personally important. Starred items appear on your dashboard and in the Starred sidebar page.`,
-		Args:  cobra.ExactArgs(1),
+		Use:     "star <ref>",
+		Short:   "Star an item for quick access",
+		Example: `  pad item star TASK-5`,
+		Long:    `Star an item to mark it as personally important. Starred items appear on your dashboard and in the Starred sidebar page.`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -4243,9 +4256,10 @@ func starCmd() *cobra.Command {
 
 func unstarCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unstar <ref>",
-		Short: "Remove a star from an item",
-		Args:  cobra.ExactArgs(1),
+		Use:     "unstar <ref>",
+		Short:   "Remove a star from an item",
+		Example: `  pad item unstar TASK-5`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -4284,9 +4298,10 @@ func starredCmd() *cobra.Command {
 	var all bool
 
 	cmd := &cobra.Command{
-		Use:   "starred",
-		Short: "List your starred items",
-		Args:  cobra.NoArgs,
+		Use:     "starred",
+		Short:   "List your starred items",
+		Example: `  pad item starred`,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()

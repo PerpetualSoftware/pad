@@ -130,8 +130,9 @@ blocked, overdue, or otherwise falling out of the active workflow.`,
 
 func relatedCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "related <ref>",
-		Short: "Show direct relationships around an item",
+		Use:     "related <ref>",
+		Short:   "Show direct relationships around an item",
+		Example: `  pad item related TASK-5`,
 		Long: `Show the direct dependency, lineage, wiki-link, and related-item graph around a single item.
 
 This is a query-oriented view of the item's immediate context.`,
@@ -187,8 +188,9 @@ This is a query-oriented view of the item's immediate context.`,
 
 func implementedByCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "implemented-by <ref>",
-		Short: "Show items that implement the given item",
+		Use:     "implemented-by <ref>",
+		Short:   "Show items that implement the given item",
+		Example: `  pad item implemented-by SPEC-2`,
 		Long: `List the direct incoming "implements" lineage relationships for an item.
 
 This is useful for ideas or parent tasks that are realized by one or more
