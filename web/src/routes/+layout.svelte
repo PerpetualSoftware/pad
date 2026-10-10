@@ -26,6 +26,7 @@
 	import CreateWorkspaceModal from '$lib/components/layout/CreateWorkspaceModal.svelte';
 	import OpenChildrenDialog from '$lib/components/OpenChildrenDialog.svelte';
 	import PendingEditsDialog from '$lib/components/PendingEditsDialog.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import { isMod, isInputFocused } from '$lib/utils/keyboard';
 	import { characterKey } from '$lib/a11y/characterShortcuts.svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
@@ -394,6 +395,7 @@
 	<ToastContainer />
 	<OpenChildrenDialog />
 	<PendingEditsDialog />
+	<ConfirmDialog />
 {:else}
 	{#if showMobileTopbar}
 		<!--
@@ -480,6 +482,7 @@
 	<ToastContainer />
 	<OpenChildrenDialog />
 	<PendingEditsDialog />
+	<ConfirmDialog />
 	<KeyboardShortcuts visible={uiStore.shortcutsOpen} onclose={() => uiStore.closeShortcuts()} />
 {/if}
 

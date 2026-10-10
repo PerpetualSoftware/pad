@@ -8,6 +8,7 @@
 // the setup editorCapabilitiesDelivery uses (capabilities resolved, MIME probe
 // stubbed), so the button clicked is the one a user clicks.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { toastStore } from '$lib/stores/toast.svelte';
 import { mount, unmount, flushSync } from 'svelte';
 import type { Editor as TiptapEditor } from '@tiptap/core';
 
@@ -62,13 +63,13 @@ describe('an image edit finishing after the master froze (BUG-2177)', () => {
 	let target: HTMLElement;
 	let instance: Record<string, unknown> | null = null;
 	let tiptap: TiptapEditor | null = null;
-	let alertSpy: ReturnType<typeof vi.spyOn>;
+	let toastSpy: ReturnType<typeof vi.spyOn>;
 	let errSpy: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(async () => {
 		releaseTransform = null;
 		page.params.workspace = 'ws';
-		alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+		toastSpy = vi.spyOn(toastStore, 'show').mockImplementation(() => undefined as never);
 		errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 		target = document.body.appendChild(document.createElement('div'));
 		instance = mount(BodyEditor, {
@@ -90,7 +91,7 @@ describe('an image edit finishing after the master froze (BUG-2177)', () => {
 		if (instance) unmount(instance);
 		target.remove();
 		document.querySelectorAll('.attachment-image-toolbar').forEach((el) => el.remove());
-		alertSpy.mockRestore();
+		toastSpy.mockRestore();
 		errSpy.mockRestore();
 	});
 
@@ -116,7 +117,7 @@ describe('an image edit finishing after the master froze (BUG-2177)', () => {
 		releaseTransform!({ id: ROTATED });
 		await settle();
 		expect(imageUuid(tiptap!)).toBe(ROTATED);
-		expect(alertSpy).not.toHaveBeenCalled();
+		expect(toastSpy).not.toHaveBeenCalled();
 	});
 
 	it('finishing while FROZEN leaves the image as it was and tells the user', async () => {
@@ -125,8 +126,8 @@ describe('an image edit finishing after the master froze (BUG-2177)', () => {
 		releaseTransform!({ id: ROTATED });
 		await settle();
 		expect(imageUuid(tiptap!)).toBe(PNG);
-		expect(alertSpy).toHaveBeenCalledTimes(1);
-		expect(String(alertSpy.mock.calls[0][0])).toContain(IMAGE_EDIT_INTERRUPTED);
+		expect(toastSpy).toHaveBeenCalledTimes(1);
+		expect(String(toastSpy.mock.calls[0][0])).toContain(IMAGE_EDIT_INTERRUPTED);
 		// Not replayed on thaw (the ruling): the document stays as it was.
 		tiptap!.setEditable(true);
 		await settle();

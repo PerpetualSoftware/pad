@@ -273,9 +273,8 @@
 					},
 					onError: (filename, message) => {
 						console.error(`[comment attachment] ${filename}: ${message}`);
-						if (typeof window !== 'undefined' && typeof window.alert === 'function') {
-							window.alert(`Couldn't upload ${filename}: ${message}`);
-						}
+						// A toast, not a blocking window.alert (TASK-2221, audit C39).
+						toastStore.show(`Couldn't upload ${filename}: ${message}`, 'error');
 					},
 					// An upload that finished after this composer unmounted: when a
 					// pane opens over the timeline, when the user navigates away. The

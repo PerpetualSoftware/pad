@@ -148,7 +148,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	loadTagSuggestions: { reviewed: '334395ad78d5', why: 'identityHeld after the fetch; the identity listener re-runs it' },
 	stampSourceUrl: { reviewed: '2e588f7b61a6', why: 'switchedAway on both arms' },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
-	refreshFromSource: { reviewed: '9b4cf83cdd8d', why: 'switchedAway on every arm; the frozen-editor notice (BUG-2177) is after that check' },
+	refreshFromSource: { reviewed: '6f9dfe07bbf0', why: 'switchedAway on every arm, the await on the confirm dialog included (TASK-2221); the frozen-editor notice (BUG-2177) is after that check' },
 	updateAssignedUser: { reviewed: '537f55aa5db2', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	updateAgentRole: { reviewed: 'ede58f197154', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	flushRawIfPending: {

@@ -34,7 +34,7 @@ vi.mock('$lib/services/sse.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/auth.svelte', () => ({
-	authStore: { userId: 'user-1', user: { id: 'user-1', role: 'member' }, identityFence: () => () => true },
+	authStore: { userId: 'user-1', user: { id: 'user-1', role: 'member' }, identityFence: () => () => true, onIdentityChange: () => () => {} },
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { canEditItem: () => false } }));
 vi.mock('$lib/components/CommentEditor.svelte', async () => ({
