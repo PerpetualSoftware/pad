@@ -30,6 +30,26 @@ describe('pendingEditsDialog', () => {
 		expect(pendingEditsDialog.active).toBeNull();
 	});
 
+	it('a stale-body question (BUG-3540) answers reload, overwrite or dismiss; closing dismisses', async () => {
+		const a = pendingEditsDialog.requestStale('DOC-1');
+		expect(pendingEditsDialog.active?.kind).toBe('stale');
+		pendingEditsDialog.reload();
+		expect(await a).toBe('reload');
+		const b = pendingEditsDialog.requestStale('DOC-1');
+		pendingEditsDialog.overwrite();
+		expect(await b).toBe('overwrite');
+		const c = pendingEditsDialog.requestStale('DOC-1');
+		pendingEditsDialog.keep(); // Escape / the close button
+		expect(await c).toBe('dismiss');
+		expect(pendingEditsDialog.active).toBeNull();
+	});
+
+	it('an identity change dismisses a stale-body question, never overwrites', async () => {
+		const a = pendingEditsDialog.requestStale('DOC-2');
+		identity.listeners.forEach((fn) => fn());
+		expect(await a).toBe('dismiss');
+	});
+
 	it('an identity change abandons every open question as KEEP, never overwrite', async () => {
 		const a = pendingEditsDialog.request('A');
 		const b = pendingEditsDialog.request('B');

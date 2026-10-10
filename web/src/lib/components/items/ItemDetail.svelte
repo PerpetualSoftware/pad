@@ -44,6 +44,7 @@
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
 	import RawMarkdownEditor from '$lib/components/editor/RawMarkdownEditor.svelte';
+	import { createRawBase, isOwnBody } from '$lib/items/rawBase';
 	import type { Editor as EditorType } from '@tiptap/core';
 	import * as Y from 'yjs';
 	import { CollabProvider, type CollabConnectionState } from '$lib/collab/wsProvider.svelte';
@@ -1956,6 +1957,9 @@
 		// stale queued markdown from item A can't PATCH into item B.
 		rawContentSaver.cancel();
 		rawContentSaver.clearPending();
+		// BUG-3540: the base belonged to the item being left (its keepalive
+		// flush above already read it).
+		rawBase.reset();
 		// Re-stamp the identity this editor's contents belong to (BUG-3005). A
 		// load is where the contents are replaced, so it is where the claim
 		// "this markdown was typed by the current user" becomes true again.
@@ -4698,11 +4702,20 @@
 				// when a response says it landed. The next open offers it.
 				const draftUser = authStore.userId;
 				keepRefusedRawDraft(draftUser, reqItemId, markdown);
+				// BUG-3540: the base this text was seeded from; a stale one is
+				// refused (update_conflict) and the kept draft is offered back.
+				const keepaliveBase = rawBase.current;
+				rawBase.noteSent(markdown);
 				return api.items
 					.update(
 						wsSlug,
 						reqItemId,
-						{ content: markdown, client_write: nextClientWrite(), refuse_pending_edits: true },
+						{
+							content: markdown,
+							client_write: nextClientWrite(),
+							refuse_pending_edits: true,
+							...(keepaliveBase ? { expected_seq: keepaliveBase.seq } : {}),
+						},
 						{ keepalive: true },
 					)
 					.then(() => {
@@ -4717,7 +4730,12 @@
 						// Superseded: a newer write of this tab landed, so this text
 						// is not what the item should hold.
 						if (isSupersededWriteError(e)) clearRefusedRawDraft(draftUser, reqItemId, markdown);
-						else if (isContentPendingFlush(e)) {
+						else if (isUpdateConflictError(e)) {
+							toastStore.show(
+								'Your markdown edits were not saved: this item changed after you opened the raw editor. They are kept in this browser, and opening the item offers them back.',
+								'error',
+							);
+						} else if (isContentPendingFlush(e)) {
 							toastStore.show(
 								pendingEditsReason(e) === 'set_aside'
 									? 'Your markdown edits were not saved: this item has edits an editor upgrade set aside. They are kept in this browser, and opening the item offers them back.'
@@ -4737,13 +4755,21 @@
 			// the row does not; the user's overwrite answer arms one resend.
 			const overwrite = rawOverwriteArmed;
 			rawOverwriteArmed = false;
+			// BUG-3540: sent with the base this text was seeded from.
+			const sendBase = rawBase.current;
+			rawBase.noteSent(toSave);
 			return api.items.update(wsSlug, reqItemId, {
 				content: toSave,
 				client_write: nextClientWrite(),
 				refuse_pending_edits: true,
 				...(overwrite ? { overwrite_pending_edits: true } : {}),
+				...(sendBase ? { expected_seq: sendBase.seq } : {}),
 			}).then((updated) => {
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
+				// The row now holds this text at the returned seq: the base moves
+				// with it, and the one-rebase allowance is renewed.
+				rawBase.landed(updated.seq ?? 0, toSave);
+				rawStaleRebased = false;
 				// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
 				const discarded = prunedEditsNotice(updated);
 				if (discarded) toastStore.show(discarded, 'info');
@@ -4779,6 +4805,13 @@
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
 				// A newer write of this tab already landed and owns the outcome.
 				if (isSupersededWriteError(e)) return;
+				// BUG-3540: the row changed since this text's base. Resolved by
+				// reading the item: a body this tab already has rebases and
+				// resends once, anything else asks the user.
+				if (isUpdateConflictError(e)) {
+					void resolveRawStale(reqItemId, genAtSave);
+					return;
+				}
 				// BUG-3230 U0: the text stays pending (and the pane dirty) unless
 				// the user chooses to overwrite, which resends it once.
 				if (isContentPendingFlush(e)) {
@@ -4797,6 +4830,59 @@
 	// BUG-3230 U0: the next raw save sends overwrite_pending_edits, because the
 	// user answered the pending-edits dialog with overwrite. Consumed at send.
 	let rawOverwriteArmed = false;
+	// BUG-3540: the raw editor's base (see rawBase.ts). Plain, not $state: read
+	// only when a save goes out or is refused.
+	const rawBase = createRawBase();
+	// One silent rebase per conflict; renewed when a save lands.
+	let rawStaleRebased = false;
+	// One stale-body question at a time from this pane's raw saves.
+	let rawStalePromptOpen = false;
+
+	// BUG-3540: a raw save was refused because the row moved past its base.
+	// Reads the item: a body this tab already has (exactly; lead ruling) is
+	// rebased once ('rebased'); otherwise the user chooses. 'gone' means the
+	// pane moved on. The base is updated for 'rebased' and 'overwrite'; the
+	// caller resends for those two. 'reload' has already replaced the text.
+	async function decideRawStale(reqItemId: string, gen: number): Promise<'rebased' | 'overwrite' | 'reload' | 'dismiss' | 'gone'> {
+		const fresh = await api.items.get(wsSlug, reqItemId);
+		if (!item || item.id !== reqItemId || gen !== loadGeneration) return 'gone';
+		const stored = fresh.content ?? '';
+		if (!rawStaleRebased && isOwnBody(stored, rawBase.ownTexts())) {
+			rawStaleRebased = true;
+			rawBase.landed(fresh.seq ?? 0, stored);
+			return 'rebased';
+		}
+		const answer = await pendingEditsDialog.requestStale(formatItemRef(item) || item.title);
+		if (!item || item.id !== reqItemId || gen !== loadGeneration) return 'gone';
+		if (answer === 'overwrite') {
+			// An explicit, current-token overwrite against the row just shown.
+			rawBase.landed(fresh.seq ?? 0, stored);
+		} else if (answer === 'reload') {
+			rawContentSaver.cancel();
+			rawContentSaver.clearPending();
+			rawBase.reset();
+			rawSeedMarkdown = null;
+			item = withInflightTags(fresh);
+			editorStore.setDirty(false);
+			localDirty = false;
+		}
+		return answer;
+	}
+
+	async function resolveRawStale(reqItemId: string, gen: number) {
+		if (rawStalePromptOpen) return;
+		rawStalePromptOpen = true;
+		try {
+			const outcome = await decideRawStale(reqItemId, gen);
+			if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+			if (outcome === 'rebased' || outcome === 'overwrite') rawContentSaver.flushNow();
+		} catch {
+			if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+			toastStore.show('Failed to save content', 'error');
+		} finally {
+			rawStalePromptOpen = false;
+		}
+	}
 	// One pending-edits question at a time from this pane's raw saves: an
 	// overlapping refused save while it is open leaves its text pending.
 	let rawPendingPromptOpen = false;
@@ -4869,6 +4955,10 @@
 		const reqItemId = item.id;
 		const gen = loadGeneration;
 		const userId = authStore.userId;
+		// BUG-3540 (codex): the restore replaces the body the user is looking
+		// at, so it is sent against that row. A body changed since is refused,
+		// shown, and the draft kept: the user restores again, deliberately.
+		const shownSeq = item.seq ?? 0;
 		refusedDraftBusy = true;
 		try {
 			let overwrite = false;
@@ -4878,6 +4968,7 @@
 						content: d.markdown,
 						client_write: nextClientWrite(),
 						refuse_pending_edits: true,
+						expected_seq: shownSeq,
 						...(overwrite ? { overwrite_pending_edits: true } : {}),
 					});
 					if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
@@ -4899,6 +4990,14 @@
 						if (!answer || !item || item.id !== reqItemId || gen !== loadGeneration) return;
 						overwrite = true;
 						continue;
+					}
+					if (isUpdateConflictError(e)) {
+						const fresh = await api.items.get(wsSlug, reqItemId);
+						if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+						if (rawMode) rawSeedMarkdown = null;
+						item = withInflightTags(fresh);
+						toastStore.show('This item changed since it was shown. Review it, then restore the kept markdown again.', 'info');
+						return;
 					}
 					toastStore.show('Failed to restore the kept markdown', 'error');
 					return;
@@ -4928,6 +5027,14 @@
 		// non-trample the two paths had before TASK-2029 split the raw
 		// debounce into the saver.
 		clearTimeout(contentDebounceTimer);
+		// BUG-3540: the base is the row the editor's text came from. With no raw
+		// seed, a CLEAN editor mirrors item.content, so the base follows the item
+		// up to this edit; otherwise it holds (the toggle's seed, or the last
+		// save that landed, is what the editor shows).
+		if (item) {
+			if (rawSeedMarkdown === null && rawContentSaver.pending === null) rawBase.seed(item.seq ?? 0, item.content ?? '');
+			else rawBase.noteEdit(item.seq ?? 0, rawSeedMarkdown ?? item.content ?? '');
+		}
 		editorStore.setDirty(true);
 		localDirty = true;
 		rawContentSaver.queue(markdown);
@@ -4995,11 +5102,15 @@
 					localLastSaveTime = Date.now();
 					const overwrite = overwriteNext;
 					overwriteNext = false;
+					// BUG-3540: sent with the base this text was seeded from.
+					const drainBase = rawBase.current;
+					rawBase.noteSent(markdown);
 					const updated = await api.items.update(wsSlug, reqItemId, {
 						content: markdown,
 						client_write: nextClientWrite(),
 						refuse_pending_edits: true,
 						...(overwrite ? { overwrite_pending_edits: true } : {}),
+						...(drainBase ? { expected_seq: drainBase.seq } : {}),
 					});
 					if (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) {
 						// Navigation completed during the await;
@@ -5007,6 +5118,8 @@
 						// over.
 						return false;
 					}
+					rawBase.landed(updated.seq ?? 0, markdown);
+					rawStaleRebased = false;
 					// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
 					const discarded = prunedEditsNotice(updated);
 					if (discarded) toastStore.show(discarded, 'info');
@@ -5047,6 +5160,17 @@
 					if (isSupersededWriteError(e)) {
 						if (rawContentSaver.pending === markdown) rawContentSaver.clearPending();
 						continue;
+					}
+					// BUG-3540: the row moved past this text's base. Rebased or
+					// overwrite resends; reload drops the text (the switch then
+					// proceeds on the stored body); dismiss stays in raw mode.
+					if (isUpdateConflictError(e)) {
+						const outcome = await decideRawStale(reqItemId, genAtFlush);
+						if (outcome === 'gone' || genAtFlush !== loadGeneration || !item || item.id !== reqItemId) return false;
+						if (outcome === 'rebased' || outcome === 'overwrite') continue;
+						if (outcome === 'reload') break;
+						lastError = true;
+						break;
 					}
 					// BUG-3230 U0: another tab holds unstored edits. Overwrite
 					// resends; keeping them leaves this text pending and the
@@ -7019,6 +7143,7 @@
 							if (startGen !== loadGeneration || item?.id !== startItemId || peeking) return;
 							if (ok) {
 								rawSeedMarkdown = null;
+								rawBase.reset();
 								rawMode = false;
 							}
 						}}
@@ -7147,6 +7272,10 @@
 									// (PLAN-2105 / TASK-2112; Codex).
 									if (!item || item.id !== itemId || genAtToggle !== loadGeneration) return;
 									if (lastFlushed !== null) rawSeedMarkdown = lastFlushed;
+									// BUG-3540: the raw text's base is this seed at the row's seq
+									// now (older than the flush's at worst: a refusal over our own
+									// seed then rebases silently).
+									rawBase.seed(item.seq ?? 0, rawSeedMarkdown ?? item.content ?? '');
 									lastFlushedOut = lastFlushed;
 									const read = (ed.storage as any).markdown?.getMarkdown?.();
 									liveNow = typeof read === 'string' ? read : undefined;
