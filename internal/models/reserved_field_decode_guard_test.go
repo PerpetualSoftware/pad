@@ -65,6 +65,7 @@ var rawDecodeAllowed = map[string]string{
 	"internal/oauth/storage.go::session":           "fosite session hydration: decodes an OAuth session blob, never a collection schema",
 	"internal/server/server.go::v":                 "the shared request-body decoder (BUG-2803): decodes a handler's own input struct, and a handler taking a schema goes through the collection-definition doors above",
 	"scripts/decision-eval/attention/main.go::v":   "offline eval tool (TASK-3137): readJSON decodes local `pad item show|comments|history` and activity dumps into items, comments, versions and activity rows; nothing it reads is a collection definition",
+	"cmd/depages/main.go::v":                       "dependency-age check (TASK-1391): getJSON decodes registry and GitHub API answers (a module proxy .info, an npm packument, a commit) into their own structs; nothing it reads is a collection definition",
 	"scripts/decision-eval/conventions/main.go::v": "offline eval tool (TASK-3119): readJSON decodes local `pad item show|comments` dumps, the hand-labelled population and convention bodies into items, comments and labels; nothing it reads is a collection definition",
 	"internal/models/fields_json.go::v":            "DecodeJSONKeepingNumbers (BUG-3202): the number-preserving decoder for item FIELD blobs and field-value request members on the write doors. Its callers decode item fields, never a collection definition; a schema decoded through it would bypass this guard the same way one decoded through client.go::result would",
 	"internal/server/handlers_bootstrap.go::s":     "trimRedundantSchemaLabels decodes into the parallel bootstrapSchema struct and strips reserved keys in the same loop — the parallel-struct twin of UnmarshalItemFieldSchema, and it cannot call it because the whole point of that struct is a different FieldDef shape",
@@ -559,8 +560,10 @@ func TestGuardAllowListHasNoDeadEntries(t *testing.T) {
 //
 // 22 since BUG-3202 added models/fields_json.go's generic number-preserving
 // decoder, a fourth INTERFACE destination. 25 since TASK-3397 U8b2 added the
-// two app-upgrade DEFINITION decodes in store/app_upgrade.go.
-const rawDecodeSiteCount = 26
+// two app-upgrade DEFINITION decodes in store/app_upgrade.go. 27 since
+// TASK-1391's cmd/depages getJSON, another INTERFACE destination that decodes
+// registry answers, never a schema.
+const rawDecodeSiteCount = 27
 
 func TestGuardSeesEveryKnownDecodeSite(t *testing.T) {
 	sites := collectSchemaDecodes(t, repoRoot(t))
