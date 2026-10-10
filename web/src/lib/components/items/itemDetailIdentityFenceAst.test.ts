@@ -87,7 +87,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	reconcileCollectionSegment: { reviewed: '8e609eda4395', why: 'identityHeld after the list fetch; retags and navigates only under it' },
 	jumpToSection: { reviewed: '761928f83944', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
-	handleCopyRef: { reviewed: 'a5e0a0394fcc', why: 'switchedAway before the copied flag' },
+	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
+	handleCopyRef: { reviewed: 'd0af6ecd002f', why: 'switchedAway before the copied flag' },
 	// Re-reviewed for BUG-3473: the index await is skipped when the index is
 	// already ready; it adds no await and commits nothing, and every fence
 	// after the Promise.all is unchanged.
@@ -97,8 +98,9 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// touches only a $derived beside titleDraft and the textarea's aria
 	// attributes), yet its hash moved; the rule below still holds.
 	saveTitle: { reviewed: '16e6668ada3f', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' + SETTLE_NOTE, may: ['saves.settle'] },
+	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	updateField: {
-		reviewed: '0d1b460a6f59',
+		reviewed: '3d660e2493cc',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm' + SETTLE_NOTE,
 		may: ['saves.settle'],
 		callbacks: {
@@ -119,24 +121,28 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 			},
 		},
 	},
+	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	flushTagSaver: {
-		reviewed: '63a9ff1b71fd',
+		reviewed: '9ec4065b2101',
 		why: 'identityHeld(saver.epoch) before every commit and send (each batch goes through sendTagBatch, which fences its own conflict path); the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)' + SETTLE_NOTE,
 		may: ['saves.settle', 'saver', 'tagSavers.get', 'tagSavers.delete'],
 	},
 	// BUG-3143: one tag batch, re-derived and retried on a conflict. Writes
 	// only this burst's own record (confirmed, token), like flushTagSaver.
+	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	sendTagBatch: {
-		reviewed: 'e0db17122ab9',
+		reviewed: 'fc761f766c83',
 		why: 'identityHeld(saver.epoch) before the conflict refetch and after it, so the re-send follows a check with no await between; answers null on a lost identity and the drain\'s own check stops',
 		may: ['saver'],
 	},
 	refreshCollectionIfMoved: { reviewed: '9d45f94352dd', why: 'gen against loadGeneration after the fetch' },
 	// BUG-3192 Unit B: re-reads the server's progress when the children change.
 	refreshProgress: { reviewed: '88f486338d7b', why: 'gen against loadGeneration, plus the slug and workspace, after the fetch' },
-	loadTagSuggestions: { reviewed: 'b03a62bf7294', why: 'identityHeld after the fetch; the identity listener re-runs it' },
+	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
+	loadTagSuggestions: { reviewed: '334395ad78d5', why: 'identityHeld after the fetch; the identity listener re-runs it' },
 	stampSourceUrl: { reviewed: '2e588f7b61a6', why: 'switchedAway on both arms' },
-	refreshFromSource: { reviewed: '205f77aba079', why: 'switchedAway on every arm; the frozen-editor notice (BUG-2177) is after that check' },
+	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
+	refreshFromSource: { reviewed: '9b4cf83cdd8d', why: 'switchedAway on every arm; the frozen-editor notice (BUG-2177) is after that check' },
 	updateAssignedUser: { reviewed: '537f55aa5db2', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	updateAgentRole: { reviewed: 'ede58f197154', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	flushRawIfPending: {
@@ -165,12 +171,15 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	handleDelete: { reviewed: 'c331e8535525', why: 'switchedAway on both arms' },
 	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
 	handleDeleteLink: { reviewed: '64385ff65a32', why: 'switchedAway after each await' },
-	handleCreateLink: { reviewed: 'a573af375ab2', why: 'switchedAway after each await; the append is skipped when a refresh already holds the link (TASK-3539)' },
-	handleMove: { reviewed: '1422377a9e74', why: 'stillOnSource() on every arm, including inside navIfStillCurrent, and before the BUG-3200 needs-value handoff writes the dialog state' },
+	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
+	handleCreateLink: { reviewed: '136af0b2effb', why: 'switchedAway after each await; the append is skipped when a refresh already holds the link (TASK-3539)' },
+	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
+	handleMove: { reviewed: '15b8abbcb40e', why: 'stillOnSource() on every arm, including inside navIfStillCurrent, and before the BUG-3200 needs-value handoff writes the dialog state' },
 	// BUG-3230 U0: the pending-edits question for the pane's raw and fallback
 	// saves, and the recovery offer for markdown an unload save could not store.
+	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	askToOverwritePendingEdits: {
-		reviewed: 'adf3a086c70f',
+		reviewed: 'c35d6575f866',
 		why: 'item id and gen against loadGeneration after the dialog, before answering; the finally clears this pane\'s own one-question-at-a-time flag',
 		may: ['rawPendingPromptOpen'],
 	},
@@ -219,7 +228,8 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: '6c729c632af0',
 		may: ['renameOverride'],
 	},
-	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: '8a8d4754017f' },
+	// TASK-3537: re-reviewed; this continuation's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
+	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: 'ae1b50ad6010' },
 	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '93a773162c77' },
 	// BUG-3473: the background index catch-up on an already-populated index.
 	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: 'd2c3ded797c2' },
@@ -355,7 +365,8 @@ const HELPERS: Record<string, string> = {
 	showMovedToast: '6a32f06fbd9f',
 	switchedAway: '907c3cebf0fd',
 	// BUG-3036: refuses a snapshot of the shown item whose seq is strictly older.
-	withInflightTags: '05bc31738786',
+	// TASK-3537: body unchanged; re-hashed by the $lib/types import line (getTerminalOptions removed).
+	withInflightTags: '0ec89126d566',
 	// BUG-3198: records the ids a delivery named while no item was installed.
 	// Synchronous; writes only the plain `changedDuringLoad` record.
 	noteChangeDuringLoad: 'a322f3465130',

@@ -36,13 +36,6 @@
 		itemSlug: string;
 		itemId: string;
 		parentFields?: Record<string, any>;
-		/**
-		 * UNUSED since PLAN-3535: per-row done styling asks childProgress's hub
-		 * about each child's own collection. Still accepted because ItemDetail
-		 * passes it, and ItemDetail's identity gate re-flags every reviewed unit
-		 * on an import change; removing it there is a follow-up.
-		 */
-		terminalStatuses?: string[];
 		onChildrenChange?: (children: Item[]) => void;
 		/**
 		 * canEdit gates child reorder via drag (PLAN-1100 / TASK-1108).
