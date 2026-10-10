@@ -2,7 +2,7 @@
 	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
 	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
@@ -57,7 +57,7 @@
 	// to /auth/<provider> so pad-cloud's callback (TASK-998) can return
 	// the user to /oauth/authorize after SSO. Falls back to /console for
 	// missing or invalid values.
-	const redirectTarget = $derived(validateRedirect($page.url.searchParams.get('redirect')));
+	const redirectTarget = $derived(validateRedirect(page.url.searchParams.get('redirect')));
 	// Forward redirect= onto the "Sign in" cross-link so a user mid-OAuth flow
 	// can hop /register ↔ /login without dropping their original destination.
 	const loginRedirectQuery = $derived(redirectQueryFragment(redirectTarget, '?'));

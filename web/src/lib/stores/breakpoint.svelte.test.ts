@@ -1,5 +1,5 @@
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`), which
-// compiles the `.svelte.ts` rune module and aliases `$app/environment` to a
+// compiles the `.svelte.ts` rune module and aliases `$app/env` to a
 // browser=true mock (see vitest.config.ts). `breakpoint.svelte.ts` reads
 // `window.matchMedia` at import time and wires a `change` listener, so each
 // test installs a controllable matchMedia mock BEFORE importing the module and

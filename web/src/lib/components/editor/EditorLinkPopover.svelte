@@ -211,7 +211,10 @@
 	}
 
 	$effect(() => {
-		if (!editor) return;
+		// Unsubscribe from the editor this run subscribed to, never the live
+		// prop at teardown (see EditorBubbleMenu, TASK-3423).
+		const ed = editor;
+		if (!ed) return;
 
 		const onSelectionUpdate = handleUpdate;
 		const onBlur = handleBlur;
@@ -220,12 +223,12 @@
 		// transaction — the transaction event fires during initial document load
 		// and programmatic edits, causing the popover to appear without user
 		// interaction when the cursor lands inside a link.
-		editor.on('selectionUpdate', onSelectionUpdate);
-		editor.on('blur', onBlur);
+		ed.on('selectionUpdate', onSelectionUpdate);
+		ed.on('blur', onBlur);
 
 		return () => {
-			editor.off('selectionUpdate', onSelectionUpdate);
-			editor.off('blur', onBlur);
+			ed.off('selectionUpdate', onSelectionUpdate);
+			ed.off('blur', onBlur);
 		};
 	});
 </script>

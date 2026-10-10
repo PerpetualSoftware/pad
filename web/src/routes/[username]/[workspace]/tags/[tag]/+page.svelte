@@ -9,7 +9,7 @@
 	import { enterWorkspaceIndex } from '$lib/stores/workspaceIndexEntry';
 	import { hasTag, isOpen, byPinnedThenRecent } from '$lib/items/localLists';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import ContentError from '$lib/components/common/ContentError.svelte';

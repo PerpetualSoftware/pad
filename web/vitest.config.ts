@@ -20,7 +20,7 @@ import { dynamicCompileOptions } from './svelteCompileOptions.ts';
 //              Svelte plugin (fast; matches the pre-TASK-2081 behavior).
 //  - `jsdom` — `.svelte` component + `.svelte.ts` rune-module tests. Runs in a
 //              browser-like DOM with the Svelte plugin so runes/components
-//              compile, and aliases `$app/environment` to a browser=true mock.
+//              compile, and aliases `$app/env` to a browser=true mock.
 //
 // Split by filename: `*.svelte.test.ts` routes to jsdom, everything else
 // (`*.test.ts`) stays on node. Keeping the node suite out of jsdom avoids
@@ -147,12 +147,12 @@ export default defineConfig(async () => {
 			resolve: {
 				alias: {
 					$lib,
-					// No SvelteKit plugin in this project, so provide `$app/environment`
+					// No SvelteKit plugin in this project, so provide `$app/env`
 					// and `$app/state` — without a provider these don't just come back
 					// undefined, they fail to RESOLVE, which is a load-time error for
 					// any component that imports them (and one `vi.mock` can't rescue,
 					// since resolution happens first).
-					'$app/environment': appEnvironmentMock,
+					'$app/env': appEnvironmentMock,
 					'$app/state': appStateMock,
 					// `$app/navigation` for the same reason (TASK-2430) — without it
 					// Sidebar / TopBar / PaneHost can't even be IMPORTED under jsdom.

@@ -597,9 +597,10 @@
 				adoptCollection(fresh, collGen);
 			}
 			const search = typeof window !== 'undefined' ? window.location.search : '';
+			// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
 			goto(`/${username}/${ws}/${target}/${itemRef}${search}`, {
 				replaceState: true,
-				noScroll: true,
+				reset: false,
 			}).catch(() => {
 				// A failed/cancelled navigation must not leave the override
 				// bridging to a URL we never reached. Identity compare (this
@@ -948,7 +949,7 @@
 		}
 		const has = page.url.searchParams.get('graph') === '1';
 		if (has === open) return;
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		if (open) url.searchParams.set('graph', '1');
 		else url.searchParams.delete('graph');
 		// This same-page toggle can PRESERVE an open pane's `?item=` (on the
@@ -956,7 +957,7 @@
 		// keep the pane depth+ownership stamp intact — a bare replaceState would
 		// blank it and desync the close arithmetic (PLAN-2154 R13). A no-op when
 		// there's no pane state to carry.
-		goto(url, { replaceState: true, noScroll: true, keepFocus: true, state: page.state });
+		goto(url, { replaceState: true, reset: false, state: page.state });
 	}
 	function openGraph() {
 		setGraphParam(true);
@@ -1466,9 +1467,10 @@
 							to: event.new_slug,
 						};
 						const search = typeof window !== 'undefined' ? window.location.search : '';
+						// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
 						void goto(`/${username}/${wsSlug}/${event.new_slug}/${itemSlug}${search}`, {
 							replaceState: true,
-							noScroll: true,
+							reset: false,
 						});
 					}
 				}
@@ -3298,7 +3300,8 @@
 	$effect(() => {
 		if (pendingNewItemEdit && item && canEdit && !loading) {
 			pendingNewItemEdit = false;
-			goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, noScroll: true });
+			// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
+			goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, reset: false });
 			startEditTitle();
 		}
 	});

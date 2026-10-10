@@ -176,7 +176,7 @@
 		if (statusFilter) p.set('status', statusFilter);
 		const qs = p.toString();
 		const target = qs ? `?${qs}` : page.url.pathname;
-		goto(target, { replaceState: true, noScroll: true, keepFocus: true });
+		goto(target, { replaceState: true, reset: false });
 	}
 
 	// hydrateFromURL pulls filter/sort state off the URL on first load

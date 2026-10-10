@@ -40,7 +40,10 @@ export const KNOWN_COLLECTION_URL_PARAMS: readonly string[] = ['view', 'q', 'tag
  * `page.url` that `openItemRef` itself derives from, so this always
  * reflects the pane that's actually open.
  */
-export function preservePaneItemParam(params: URLSearchParams, currentUrl: URL): void {
+/** What these helpers read from a URL; `page.url` is readonly in SvelteKit 3 (TASK-3423). */
+type UrlWithParams = { readonly searchParams: { get(name: string): string | null } };
+
+export function preservePaneItemParam(params: URLSearchParams, currentUrl: UrlWithParams): void {
 	const openItem = currentUrl.searchParams.get(PANE_ITEM_PARAM);
 	if (openItem) params.set(PANE_ITEM_PARAM, openItem);
 }
@@ -67,7 +70,7 @@ export interface CollectionUrlFilterState {
  * is only consulted for the pane ref (via `preservePaneItemParam`); every
  * other value comes from `state`.
  */
-export function buildCollectionUrlParams(state: CollectionUrlFilterState, currentUrl: URL): URLSearchParams {
+export function buildCollectionUrlParams(state: CollectionUrlFilterState, currentUrl: UrlWithParams): URLSearchParams {
 	const params = new URLSearchParams();
 	// Always serialize the view — a List selection on a board-default
 	// collection must survive a copied link (no localStorage) rather than
