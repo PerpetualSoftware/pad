@@ -52,6 +52,15 @@ describe('ConfirmDialog', () => {
 		expect(await answer).toBe(false);
 	});
 
+	it('a named cancel label replaces Cancel and still answers no (TASK-3543)', async () => {
+		open();
+		const answer = confirmDialog.request({ title: 'T', message: 'M', confirmLabel: 'Cancel invitation', cancelLabel: 'Keep invitation' });
+		await settle();
+		expect(byText('Cancel')).toBeUndefined();
+		byText('Keep invitation')!.click();
+		expect(await answer).toBe(false);
+	});
+
 	it('renders nothing while no question is open', async () => {
 		open();
 		await settle();

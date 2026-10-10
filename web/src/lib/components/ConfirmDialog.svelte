@@ -20,7 +20,7 @@
 			<p class="message">{active.message}</p>
 		</div>
 		<div class="modal-footer">
-			<Button variant="secondary" autofocus onclick={() => confirmDialog.cancel()}>Cancel</Button>
+			<Button variant="secondary" autofocus onclick={() => confirmDialog.cancel()}>{active.cancelLabel ?? 'Cancel'}</Button>
 			<Button variant={active.danger ? 'danger-solid' : 'primary'} onclick={() => confirmDialog.confirm()}>
 				{active.confirmLabel}
 			</Button>

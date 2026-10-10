@@ -23,6 +23,7 @@
 	import { loadFailure } from '$lib/api/loadFailure';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import PartialImportBanner from '$lib/components/PartialImportBanner.svelte';
 
@@ -667,12 +668,21 @@
 	}
 
 	async function handleRemoveMember(userId: string, name: string) {
-		if (!confirm(`Remove ${name} from this workspace?`)) return;
-		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load (codex round 1).
+		// Captured at ENTRY, before any await (the confirmation is one): the
+		// only epoch that cannot be re-stamped by a concurrent load (codex
+		// round 1). The workspace too, so a yes given after the page moved to
+		// another workspace's settings removes nobody (TASK-3543).
 		const epochAtEntry = captureIdentity();
+		const reqWs = wsSlug;
+		const ok = await confirmDialog.request({
+			title: 'Remove member?',
+			message: `Remove ${name} from this workspace?`,
+			confirmLabel: 'Remove',
+			danger: true
+		});
+		if (!ok || !identityHeld(epochAtEntry) || reqWs !== wsSlug) return;
 		try {
-			await api.members.remove(wsSlug, userId);
+			await api.members.remove(reqWs, userId);
 			if (!identityHeld(epochAtEntry)) return;
 			members = members.filter(m => m.user_id !== userId);
 			toastStore.show(`Removed ${name}`, 'success');
@@ -687,12 +697,20 @@
 	}
 
 	async function handleCancelInvitation(invId: string, email: string) {
-		if (!confirm(`Cancel invitation for ${email}?`)) return;
-		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load (codex round 1).
+		// Captured at ENTRY, before the confirmation's await (see
+		// handleRemoveMember).
 		const epochAtEntry = captureIdentity();
+		const reqWs = wsSlug;
+		const ok = await confirmDialog.request({
+			title: 'Cancel invitation?',
+			message: `Cancel the invitation for ${email}?`,
+			confirmLabel: 'Cancel invitation',
+			cancelLabel: 'Keep invitation',
+			danger: true
+		});
+		if (!ok || !identityHeld(epochAtEntry) || reqWs !== wsSlug) return;
 		try {
-			await api.members.cancelInvitation(wsSlug, invId);
+			await api.members.cancelInvitation(reqWs, invId);
 			if (!identityHeld(epochAtEntry)) return;
 			invitations = invitations.filter(i => i.id !== invId);
 			toastStore.show(`Invitation cancelled for ${email}`, 'success');
@@ -719,17 +737,26 @@
 		};
 		// TASK-2190: demoting YOURSELF from owner takes away your own access to
 		// members, collections and settings here, so it is confirmed first.
+		// Captured at ENTRY, before any await (the confirmation below is one):
+		// the only epoch that cannot be re-stamped by a concurrent load (codex
+		// round 1).
+		const epochAtEntry = captureIdentity();
+		const reqWs = wsSlug;
 		if (userId === sessionUserId && previous === 'owner' && newRole !== 'owner') {
-			if (!confirm('Give up your owner role? You will no longer be able to manage members, collections or settings in this workspace.')) {
+			const ok = await confirmDialog.request({
+				title: 'Give up your owner role?',
+				message: 'You will no longer be able to manage members, collections or settings in this workspace.',
+				confirmLabel: 'Give up owner role',
+				danger: true
+			});
+			if (!identityHeld(epochAtEntry) || reqWs !== wsSlug) return;
+			if (!ok) {
 				revert();
 				return;
 			}
 		}
-		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load (codex round 1).
-		const epochAtEntry = captureIdentity();
 		try {
-			await api.members.updateRole(wsSlug, userId, newRole);
+			await api.members.updateRole(reqWs, userId, newRole);
 			if (!identityHeld(epochAtEntry)) return;
 			members = members.map(m => m.user_id === userId ? { ...m, role: newRole } : m);
 			toastStore.show('Role updated', 'success');

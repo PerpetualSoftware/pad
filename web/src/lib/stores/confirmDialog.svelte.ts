@@ -13,6 +13,9 @@ export interface ConfirmRequest {
 	confirmLabel: string;
 	/** A destructive confirm renders as the red button. */
 	danger?: boolean;
+	/** The dismiss button's label; "Cancel" when absent. Name it when the
+	 * confirm label is itself a cancel ("Cancel invitation"). */
+	cancelLabel?: string;
 }
 
 interface Pending extends ConfirmRequest {

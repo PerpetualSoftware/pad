@@ -10,6 +10,11 @@ import { tick } from 'svelte';
  */
 
 const toasts = vi.hoisted(() => [] as Array<{ message: string; kind: string }>);
+// The destructive handlers ask through the shared dialog (TASK-3543); this
+// suite is not about the question, so it is always answered yes.
+vi.mock('$lib/stores/confirmDialog.svelte', () => ({
+	confirmDialog: { request: () => Promise.resolve(true) }
+}));
 vi.mock('$lib/stores/toast.svelte', () => ({
 	toastStore: {
 		show: (message: string, kind: string) => { toasts.push({ message, kind }); return 'id'; },
@@ -138,7 +143,6 @@ describe('roles board: a failed write is shown (TASK-2204)', () => {
 
 	it('a role delete that fails toasts', async () => {
 		await mountPage();
-		vi.spyOn(window, 'confirm').mockReturnValue(true);
 		vi.mocked(api.agentRoles.delete).mockRejectedValueOnce(new Error('forbidden'));
 		await openEditModal();
 		button('Delete Role').click();
@@ -198,7 +202,6 @@ describe('roles board: a failed write is shown (TASK-2204)', () => {
 		await mountPage();
 		let reject!: (e: unknown) => void;
 		vi.mocked(api.agentRoles.delete).mockReturnValueOnce(new Promise((_res, rej) => { reject = rej; }) as never);
-		vi.spyOn(window, 'confirm').mockReturnValue(true);
 		await openEditModal();
 		button('Delete Role').click();
 		await waitFor(() => expect(vi.mocked(api.agentRoles.delete)).toHaveBeenCalled());

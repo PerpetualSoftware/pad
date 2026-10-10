@@ -20,6 +20,7 @@
 	import QuickActionsEditor, { type EditableQuickAction } from './QuickActionsEditor.svelte';
 	import { placeholderContext, type PreviewContext } from '$lib/utils/quick-action-preview';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 
 	interface Props {
@@ -222,8 +223,10 @@
 		});
 	}
 
-	function goBack() {
-		if (!confirmDiscard()) return;
+	async function goBack() {
+		if (!(await confirmDiscard())) return;
+		// The answer arrives after an await: only act on the draft it was about.
+		if (!open || step !== 'editor') return;
 		step = 'templates';
 		resetForm();
 	}
@@ -240,13 +243,31 @@
 	);
 	const draftDirty = $derived(step === 'editor' && seedKey !== null && draftKey !== seedKey);
 
-	function confirmDiscard(): boolean {
+	// One question at a time: a second Escape or click while the dialog is
+	// open does not queue a second one (TASK-3543).
+	let askingDiscard = false;
+
+	async function confirmDiscard(): Promise<boolean> {
 		// A create in flight owns the draft: closing then is not a discard.
-		return !draftDirty || creating || confirm('Discard this new collection? What you entered will be lost.');
+		if (!draftDirty || creating) return true;
+		if (askingDiscard) return false;
+		askingDiscard = true;
+		try {
+			// The shared dialog, not a native confirm() (TASK-3543).
+			return await confirmDialog.request({
+				title: 'Discard this new collection?',
+				message: 'What you entered will be lost.',
+				confirmLabel: 'Discard',
+				cancelLabel: 'Keep editing',
+				danger: true
+			});
+		} finally {
+			askingDiscard = false;
+		}
 	}
 
-	function requestClose() {
-		if (confirmDiscard()) onclose();
+	async function requestClose() {
+		if ((await confirmDiscard()) && open) onclose();
 	}
 
 	function addField() {

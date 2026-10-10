@@ -10,6 +10,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { itemUrlId, isAgentCollection } from '$lib/types';
@@ -811,16 +812,10 @@
 
 	async function deleteRole() {
 		if (!editingRoleId) return;
-		if (!confirm(`Delete role "${editName}"? Items assigned to this role will become unassigned.`)) return;
-		// AFTER the confirm, deliberately: `confirm` blocks the main thread, so
-		// no identity change can be observed while it is open, and capturing
-		// before it would be the same value. Capturing after keeps the rule
-		// "at entry, before the first await" literally true for every handler
-		// on the page, which is what the source guard enumerates (BUG-3084).
 		// `pageIdentityHeld()` as well as an entry capture, and for
-		// `handleDndFinalize`'s reason (codex round 2 [P1]). It DELETES `editingRoleId`, taken
-		// by `openEditModal` from the previous identity's board — the most
-		// destructive write on the page.
+		// `handleDndFinalize`'s reason (codex round 2 [P1]). It DELETES
+		// `editingRoleId`, taken by `openEditModal` from the previous identity's
+		// board — the most destructive write on the page.
 		// A click that happens AFTER an identity change is the current epoch, so
 		// every entry capture passes; the question that catches it is whether
 		// the PAGE still belongs to the signed-in user.
@@ -828,10 +823,27 @@
 			closeModal();
 			return;
 		}
+		// Captured at entry, before the confirmation's await (TASK-3543: the
+		// shared dialog, not a blocking native confirm(), so an identity change
+		// or a navigation CAN land while it is open). The role is captured too:
+		// the yes answers the question about THIS role.
 		const epochAtEntry = captureIdentity();
 		const wsAtEntry = username + '/' + wsSlug; // the board a failure toast is about (TASK-2204)
+		const roleId = editingRoleId;
+		const ok = await confirmDialog.request({
+			title: 'Delete role?',
+			message: `Delete role "${editName}"? Items assigned to this role will become unassigned.`,
+			confirmLabel: 'Delete',
+			danger: true
+		});
+		if (!ok) return;
+		if (!identityHeld(epochAtEntry) || !pageIdentityHeld()) {
+			closeModal();
+			return;
+		}
+		if (username + '/' + wsSlug !== wsAtEntry || editingRoleId !== roleId) return;
 		try {
-			await api.agentRoles.delete(wsSlug, editingRoleId);
+			await api.agentRoles.delete(wsSlug, roleId);
 			if (!identityHeld(epochAtEntry)) return;
 			closeModal();
 			await loadData();

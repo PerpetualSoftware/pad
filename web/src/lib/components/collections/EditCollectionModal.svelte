@@ -28,6 +28,7 @@
 		type PreviewContext
 	} from '$lib/utils/quick-action-preview';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import type { CollectionFieldUsage } from '$lib/types';
 	import {
@@ -413,9 +414,36 @@
 	);
 	const editDirty = $derived(editSeedKey !== null && editKey !== editSeedKey);
 
-	function requestClose() {
+	// One question at a time: a second Escape or click while the dialog is
+	// open does not queue a second one (TASK-3543).
+	let askingDiscard = false;
+
+	async function requestClose() {
 		// A save in flight owns the edits: closing then is not a discard.
-		if (editDirty && !saving && !confirm('Discard your changes to this collection?')) return;
+		if (editDirty && !saving) {
+			if (askingDiscard) return;
+			askingDiscard = true;
+			// The collection the question is about; the prop can swap to another
+			// one while the dialog is open (see the seed effect below).
+			const askedAbout = seededCollectionId;
+			// And the user it was asked of: a yes from a previous session does not
+			// close the next one's dialog (BUG-3095's fence, TASK-3543).
+			const isSameIdentity = authStore.identityFence();
+			let ok: boolean;
+			try {
+				// The shared dialog, not a native confirm() (TASK-3543).
+				ok = await confirmDialog.request({
+					title: 'Discard your changes?',
+					message: 'Your changes to this collection will be lost.',
+					confirmLabel: 'Discard',
+					cancelLabel: 'Keep editing',
+					danger: true
+				});
+			} finally {
+				askingDiscard = false;
+			}
+			if (!ok || !isSameIdentity() || !open || seededCollectionId !== askedAbout) return;
+		}
 		onclose();
 	}
 
