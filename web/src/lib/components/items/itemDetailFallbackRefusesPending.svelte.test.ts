@@ -64,9 +64,11 @@ function itemFor(slug: string, collSlug = 'tasks') {
 vi.mock('$lib/api/client', () => {
 	class PadApiError extends Error {
 		code: string;
-		constructor(code = '') {
+		details?: Record<string, unknown>;
+		constructor(code = '', details?: Record<string, unknown>) {
 			super(code);
 			this.code = code;
+			this.details = details;
 		}
 	}
 	return {
@@ -181,6 +183,19 @@ describe('the legacy rich save refuses over unstored edits (BUG-3230 U0)', () =>
 		expect(first!.overwrite_pending_edits).toBeUndefined();
 		expect(second!.content).toBe('typed in the rich editor');
 		expect(second!.overwrite_pending_edits).toBe(true);
+	});
+
+	it('an open tab refusing the apply (content_not_applied, unconfirmed_edits) asks the same question (TASK-3548)', async () => {
+		vi.mocked(api.items.update).mockImplementationOnce(async () => {
+			throw new (PadApiError as unknown as new (c: string, d?: Record<string, unknown>) => Error)('content_not_applied', {
+				apply_reason: 'unconfirmed_edits',
+			});
+		});
+		const onUpdate = await mountAndGetOnUpdate();
+		onUpdate('typed in the rich editor');
+		await waitFor(() => expect(contentUpdates().length).toBe(2), { timeout: 3000 });
+		expect(pendingEditsDialog.request).toHaveBeenCalledTimes(1);
+		expect(contentUpdates()[1]!.overwrite_pending_edits).toBe(true);
 	});
 
 	it('a refusal answered Keep sends nothing more', async () => {

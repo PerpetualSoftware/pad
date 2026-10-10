@@ -69,6 +69,30 @@ export function isContentPendingFlush(err: unknown): boolean {
 }
 
 /**
+ * An open tab refused to apply the content because it holds typing the server
+ * has not stored yet (BUG-3542): 409 content_not_applied, apply_reason
+ * unconfirmed_edits. Other fields in the write may have landed; the content
+ * did not.
+ */
+export function isContentNotAppliedUnconfirmed(err: unknown): boolean {
+	return (
+		err instanceof PadApiError &&
+		err.code === 'content_not_applied' &&
+		err.details?.apply_reason === 'unconfirmed_edits'
+	);
+}
+
+/**
+ * Either refusal above: another tab holds edits the row does not, so the text
+ * was not stored. Both have the same answer for the person saving: keep the
+ * text, and replace those edits only if they choose to (overwrite_pending_edits
+ * lifts both). TASK-3548.
+ */
+export function isEditsNotStoredRefusal(err: unknown): boolean {
+	return isContentPendingFlush(err) || isContentNotAppliedUnconfirmed(err);
+}
+
+/**
  * Why a content_pending_flush refusal happened (BUG-3244): 'set_aside' when the
  * server counted edits an editor upgrade set aside (details.set_aside_rows),
  * which no tab will ever store, else 'pending'. Copy that tells the user what to

@@ -9,7 +9,7 @@
 	// Its own statement, so units that only use `api` keep their reviewed hash.
 	import { isSupersededWriteError } from '$lib/api/client';
 	import { isMoveNeedsValueRefusal } from '$lib/api/client';
-	import { isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import {
@@ -4372,7 +4372,7 @@
 					...(overwrite ? { overwrite_pending_edits: true } : {}),
 				});
 			send(false).catch(async (e) => {
-				if (switchedAway(reqItem, gen) || !isContentPendingFlush(e)) throw e;
+				if (switchedAway(reqItem, gen) || !isEditsNotStoredRefusal(e)) throw e;
 				const overwrite = await askToOverwritePendingEdits(reqItem.id, gen, pendingEditsReason(e));
 				if (!overwrite || switchedAway(reqItem, gen)) return null;
 				// Newer typing since this save was armed has its own debounced
@@ -4744,7 +4744,7 @@
 								'Your markdown edits were not saved: this item changed after you opened the raw editor. They are kept in this browser, and opening the item offers them back.',
 								'error',
 							);
-						} else if (isContentPendingFlush(e)) {
+						} else if (isEditsNotStoredRefusal(e)) {
 							toastStore.show(
 								pendingEditsReason(e) === 'set_aside'
 									? 'Your markdown edits were not saved: this item has edits an editor upgrade set aside. They are kept in this browser, and opening the item offers them back.'
@@ -4823,7 +4823,7 @@
 				}
 				// BUG-3230 U0: the text stays pending (and the pane dirty) unless
 				// the user chooses to overwrite, which resends it once.
-				if (isContentPendingFlush(e)) {
+				if (isEditsNotStoredRefusal(e)) {
 					void askToOverwritePendingEdits(reqItemId, genAtSave, pendingEditsReason(e)).then((ok) => {
 						if (!ok || !item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
 						rawOverwriteArmed = true;
@@ -4999,7 +4999,7 @@
 					return;
 				} catch (e) {
 					if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
-					if (!overwrite && isContentPendingFlush(e)) {
+					if (!overwrite && isEditsNotStoredRefusal(e)) {
 						const answer = await askToOverwritePendingEdits(reqItemId, gen, pendingEditsReason(e));
 						if (!answer || !item || item.id !== reqItemId || gen !== loadGeneration) return;
 						overwrite = true;
@@ -5189,7 +5189,7 @@
 					// BUG-3230 U0: another tab holds unstored edits. Overwrite
 					// resends; keeping them leaves this text pending and the
 					// pane in raw mode.
-					if (isContentPendingFlush(e)) {
+					if (isEditsNotStoredRefusal(e)) {
 						const overwrite = await askToOverwritePendingEdits(reqItemId, genAtFlush, pendingEditsReason(e));
 						if (genAtFlush !== loadGeneration || !item || item.id !== reqItemId) return false;
 						if (overwrite) {

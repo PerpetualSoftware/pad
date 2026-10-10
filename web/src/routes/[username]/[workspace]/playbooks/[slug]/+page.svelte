@@ -10,7 +10,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
-	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { contentOutcomeNotice, contentWriteFor, isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
@@ -321,7 +321,7 @@
 				saved = await api.items.update(wsSlug, item.slug, payload);
 				saveNote = contentOutcomeNotice(saved);
 			} catch (err) {
-				if (!isContentPendingFlush(err)) throw err;
+				if (!isEditsNotStoredRefusal(err)) throw err;
 				if (!isSameIdentity()) return;
 				const reason = pendingEditsReason(err);
 				const overwrite = await pendingEditsDialog.request(formatItemRef(item) ?? item.title, 'save', reason);

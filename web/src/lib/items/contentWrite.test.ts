@@ -2,7 +2,15 @@
 // always with the row's token.
 import { describe, expect, it } from 'vitest';
 import { PadApiError } from '$lib/api/client';
-import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, prunedEditsNotice } from './contentWrite';
+import {
+	contentOutcomeNotice,
+	contentWriteFor,
+	isContentNotAppliedUnconfirmed,
+	isContentPendingFlush,
+	isEditsNotStoredRefusal,
+	pendingEditsReason,
+	prunedEditsNotice,
+} from './contentWrite';
 
 const row = { content: 'stored body', seq: 7, updated_at: '2026-09-26T05:00:00Z' };
 
@@ -30,6 +38,34 @@ describe('isContentPendingFlush', () => {
 		expect(isContentPendingFlush(make('content_pending_flush'))).toBe(true);
 		expect(isContentPendingFlush(make('update_conflict'))).toBe(false);
 		expect(isContentPendingFlush(new Error('content_pending_flush'))).toBe(false);
+	});
+});
+
+// TASK-3548: an open tab refusing the apply (BUG-3542) is the same situation,
+// for the person saving, as the pending-flush refusal.
+describe('isEditsNotStoredRefusal', () => {
+	const make = (code: string, details?: Record<string, unknown>) =>
+		Object.assign(Object.create(PadApiError.prototype), { code, message: code, details });
+
+	it('recognises content_not_applied only with apply_reason unconfirmed_edits', () => {
+		expect(isContentNotAppliedUnconfirmed(make('content_not_applied', { apply_reason: 'unconfirmed_edits' }))).toBe(true);
+		// Other content_not_applied arms (the apply failed or its outcome is
+		// unknown) are not "another tab has edits": they keep the generic path.
+		expect(isContentNotAppliedUnconfirmed(make('content_not_applied', { content_landed: false }))).toBe(false);
+		expect(isContentNotAppliedUnconfirmed(make('content_not_applied'))).toBe(false);
+		expect(isContentNotAppliedUnconfirmed(make('content_pending_flush'))).toBe(false);
+	});
+
+	it('is either refusal, and nothing else', () => {
+		expect(isEditsNotStoredRefusal(make('content_pending_flush'))).toBe(true);
+		expect(isEditsNotStoredRefusal(make('content_not_applied', { apply_reason: 'unconfirmed_edits' }))).toBe(true);
+		expect(isEditsNotStoredRefusal(make('content_not_applied'))).toBe(false);
+		expect(isEditsNotStoredRefusal(make('update_conflict'))).toBe(false);
+		expect(isEditsNotStoredRefusal(new Error('content_not_applied'))).toBe(false);
+	});
+
+	it('the dialog reads an unconfirmed-edits refusal as pending edits, not set-aside ones', () => {
+		expect(pendingEditsReason(make('content_not_applied', { apply_reason: 'unconfirmed_edits' }))).toBe('pending');
 	});
 });
 

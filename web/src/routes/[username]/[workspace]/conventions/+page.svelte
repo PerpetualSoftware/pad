@@ -11,7 +11,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
-	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { contentOutcomeNotice, contentWriteFor, isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
@@ -413,7 +413,7 @@
 			try {
 				updated = await api.items.update(workspace, item.slug, write);
 			} catch (err) {
-				if (!isContentPendingFlush(err)) throw err;
+				if (!isEditsNotStoredRefusal(err)) throw err;
 				const reason = pendingEditsReason(err);
 				if (!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title, 'save', reason))) {
 					toastStore.show(
