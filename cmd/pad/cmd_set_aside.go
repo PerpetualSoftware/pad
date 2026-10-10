@@ -16,8 +16,9 @@ import (
 func setAsideCmd() *cobra.Command {
 	var discard bool
 	cmd := &cobra.Command{
-		Use:   "set-aside <ref>",
-		Short: "Show or discard edits an editor upgrade set aside",
+		Use:     "set-aside <ref>",
+		Short:   "Show or discard edits an editor upgrade set aside",
+		Example: `  pad item set-aside DOC-3`,
 		Long: `Show the edits an editor upgrade set aside on an item, or discard them.
 
 When the collaborative editor's schema changes, edits that were typed under the

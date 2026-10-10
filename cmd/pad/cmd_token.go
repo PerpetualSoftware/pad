@@ -53,9 +53,10 @@ func tokenCreateCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "create --name <name>",
-		Short: "Mint a new API token (secret shown once)",
-		Args:  cobra.NoArgs,
+		Use:     "create --name <name>",
+		Short:   "Mint a new API token (secret shown once)",
+		Example: `  pad token create ci-deploy --scopes read --expires-in 90`,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			scopes, err := encodeTokenScopes(scopesFlag)
 			if err != nil {
@@ -113,6 +114,7 @@ func tokenListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Short:   "List your API tokens (metadata only, never secrets)",
+		Example: `  pad token list`,
 		Aliases: []string{"ls"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -165,8 +167,9 @@ func tokenRotateCmd() *cobra.Command {
 	var expiresInFlag int
 
 	cmd := &cobra.Command{
-		Use:   "rotate <token-id>",
-		Short: "Replace a token's secret (the old one stops working immediately)",
+		Use:     "rotate <token-id>",
+		Short:   "Replace a token's secret (the old one stops working immediately)",
+		Example: `  pad token rotate <token-id>`,
 		Long: `Rotate an API token by its exact id (from 'pad token list'): the server
 generates a new secret and the old one stops working with the same write —
 there is no grace window, so anything still using the old secret fails on
@@ -211,8 +214,9 @@ pad_ API token is refused with 403 session_required.`,
 
 func tokenRevokeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "revoke <token-id>",
-		Short: "Revoke an API token by id (immediate; cannot be undone)",
+		Use:     "revoke <token-id>",
+		Short:   "Revoke an API token by id (immediate; cannot be undone)",
+		Example: `  pad token revoke <token-id>`,
 		Long: `Revoke an API token by its exact id (from 'pad token list').
 
 Revocation is immediate: anything authenticating with the token fails on

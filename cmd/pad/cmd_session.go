@@ -109,8 +109,9 @@ var errNotArmed = fmt.Errorf("not armed")
 func sessionRegisterCmd() *cobra.Command {
 	var agent string
 	cmd := &cobra.Command{
-		Use:   "register",
-		Short: "Register this session, and the agent it runs as, in the local session registry",
+		Use:     "register",
+		Short:   "Register this session, and the agent it runs as, in the local session registry",
+		Example: `  pad session register --agent wren`,
 		Long: `Records this session — the harness session process (from $PAD_SESSION_PID,
 else $CLAUDE_PID, else this process), its working directory, the agent
 name it runs as, and its messaging socket's identity — to
@@ -174,8 +175,9 @@ func sessionListCmd() *cobra.Command {
 		all         bool
 	)
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List registered sessions on this machine with a liveness verdict each",
+		Use:     "list",
+		Short:   "List registered sessions on this machine with a liveness verdict each",
+		Example: `  pad session list`,
 		Long: `Reads ~/.pad/sessions and reports each registered session: its owner pid,
 the agent it registered as, its working directory, and whether it is
 alive right now.
@@ -331,8 +333,9 @@ func printableCell(s string) string {
 func sessionPruneCmd() *cobra.Command {
 	var olderThan time.Duration
 	cmd := &cobra.Command{
-		Use:   "prune",
-		Short: "Remove dead sessions' records from the local session registry",
+		Use:     "prune",
+		Short:   "Remove dead sessions' records from the local session registry",
+		Example: `  pad session prune --older-than 72h`,
 		Long: `Deletes registry records whose session is dead. Never deletes a record
 it can see is alive.
 
@@ -383,8 +386,9 @@ without registering.`,
 // lockfile's job, not this verb's.
 func sessionArmCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "arm",
-		Short: "Declare that this session accepts pad push notifications",
+		Use:     "arm",
+		Short:   "Declare that this session accepts pad push notifications",
+		Example: `  pad session arm`,
 		Long: `Arm this session: declare consent to receive 'pad push' notifications.
 
 Writes a local, session-scoped arm-state file. A push monitor for this
@@ -443,8 +447,9 @@ command exits non-zero.`,
 // is a .pad.toml edit. Idempotent.
 func sessionDisarmCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "disarm",
-		Short: "Withdraw this session's consent to pad push notifications",
+		Use:     "disarm",
+		Short:   "Withdraw this session's consent to pad push notifications",
+		Example: `  pad session disarm`,
 		Long: `Disarm this session: stop accepting 'pad push' notifications for the
 rest of this session.
 
@@ -506,8 +511,9 @@ Idempotent.`,
 // needs an explicit way out. Idempotent.
 func sessionResetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "reset",
-		Short: "Remove this session's local arm/disarm override so auto_arm decides",
+		Use:     "reset",
+		Short:   "Remove this session's local arm/disarm override so auto_arm decides",
+		Example: `  pad session reset`,
 		Long: `Remove this session's local arm-state file, so the repository's
 .pad.toml 'push.auto_arm' decides whether this session accepts pushes.
 
@@ -585,9 +591,10 @@ type sessionStatusJSON struct {
 // arm/config half is still worth reporting when padd is down.
 func sessionStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status",
-		Short: "Show this session's push-arming state and the server's session view",
-		Args:  cobra.NoArgs,
+		Use:     "status",
+		Short:   "Show this session's push-arming state and the server's session view",
+		Example: `  pad session status`,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			decision := cli.ResolveAutoArmFromDisk()
 			localState := cli.SessionArmState()

@@ -309,9 +309,10 @@ func githubStatusCmd() *cobra.Command {
 
 func githubUnlinkCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unlink <item-ref>",
-		Short: "Remove the GitHub PR link from an item",
-		Args:  cobra.ExactArgs(1),
+		Use:     "unlink <item-ref>",
+		Short:   "Remove the GitHub PR link from an item",
+		Example: `  pad github unlink TASK-5`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()

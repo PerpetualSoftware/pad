@@ -20,9 +20,10 @@ func noteCmd() *cobra.Command {
 	var readStdin bool
 
 	cmd := &cobra.Command{
-		Use:   "note <ref> <summary>",
-		Short: "Append an implementation note to an item",
-		Args:  cobra.ExactArgs(2),
+		Use:     "note <ref> <summary>",
+		Short:   "Append an implementation note to an item",
+		Example: `  pad item note TASK-5 "Added retry with backoff" --details "Three attempts at 1s, 2s and 4s"`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -88,9 +89,10 @@ func decideCmd() *cobra.Command {
 	var readStdin bool
 
 	cmd := &cobra.Command{
-		Use:   "decide <ref> <decision>",
-		Short: "Append a decision log entry to an item",
-		Args:  cobra.ExactArgs(2),
+		Use:     "decide <ref> <decision>",
+		Short:   "Append a decision log entry to an item",
+		Example: `  pad item decide TASK-5 "Use SQLite FTS5 for search" --rationale "No extra service to run"`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()

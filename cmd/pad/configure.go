@@ -24,8 +24,9 @@ func configureCmd() *cobra.Command {
 	var values configureValues
 
 	cmd := &cobra.Command{
-		Use:   "configure",
-		Short: "Configure how this Pad client connects to a server",
+		Use:     "configure",
+		Short:   "Configure how this Pad client connects to a server",
+		Example: `  pad auth configure --mode remote --url https://pad.example.com`,
 		Long: `Configure how this Pad client connects to a server.
 
 Modes:

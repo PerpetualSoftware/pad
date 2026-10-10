@@ -17,8 +17,9 @@ type lineageLinkSpec struct {
 
 func splitFromCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "split-from <child-ref> <parent-ref>",
-		Short: "Mark that an item was split from another item",
+		Use:     "split-from <child-ref> <parent-ref>",
+		Short:   "Mark that an item was split from another item",
+		Example: `  pad item split-from TASK-9 TASK-5`,
 		Long: `Create a lineage relationship showing that one item was split from another.
 
 The first item is the derived item, and the second item is the original source.
@@ -36,8 +37,9 @@ For example:
 
 func supersedesCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "supersedes <new-ref> <old-ref>",
-		Short: "Mark that one item supersedes another",
+		Use:     "supersedes <new-ref> <old-ref>",
+		Short:   "Mark that one item supersedes another",
+		Example: `  pad item supersedes DOC-7 DOC-3`,
 		Long: `Create a lineage relationship showing that one item supersedes another.
 
 The first item is the newer replacement, and the second item is the older item.
@@ -55,8 +57,9 @@ For example:
 
 func implementsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "implements <implementer-ref> <target-ref>",
-		Short: "Mark that one item implements another",
+		Use:     "implements <implementer-ref> <target-ref>",
+		Short:   "Mark that one item implements another",
+		Example: `  pad item implements TASK-5 SPEC-2`,
 		Long: `Create a lineage relationship showing that one item implements another.
 
 The first item is the implementation work item, and the second item is the item being implemented.
@@ -74,9 +77,10 @@ For example:
 
 func unsplitCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unsplit <child-ref> <parent-ref>",
-		Short: "Remove a split-from relationship",
-		Args:  cobra.ExactArgs(2),
+		Use:     "unsplit <child-ref> <parent-ref>",
+		Short:   "Remove a split-from relationship",
+		Example: `  pad item unsplit TASK-9 TASK-5`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return deleteLineageLink(lineageLinkSpec{
 				linkType:       models.ItemLinkTypeSplitFrom,
@@ -89,9 +93,10 @@ func unsplitCmd() *cobra.Command {
 
 func unsupersedeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unsupersede <new-ref> <old-ref>",
-		Short: "Remove a supersedes relationship",
-		Args:  cobra.ExactArgs(2),
+		Use:     "unsupersede <new-ref> <old-ref>",
+		Short:   "Remove a supersedes relationship",
+		Example: `  pad item unsupersede DOC-7 DOC-3`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return deleteLineageLink(lineageLinkSpec{
 				linkType:       models.ItemLinkTypeSupersedes,
@@ -104,9 +109,10 @@ func unsupersedeCmd() *cobra.Command {
 
 func unimplementsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unimplements <implementer-ref> <target-ref>",
-		Short: "Remove an implements relationship",
-		Args:  cobra.ExactArgs(2),
+		Use:     "unimplements <implementer-ref> <target-ref>",
+		Short:   "Remove an implements relationship",
+		Example: `  pad item unimplements TASK-5 SPEC-2`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return deleteLineageLink(lineageLinkSpec{
 				linkType:       models.ItemLinkTypeImplements,

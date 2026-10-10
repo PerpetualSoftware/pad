@@ -48,8 +48,9 @@ func serveCmd() *cobra.Command {
 	var port int
 
 	cmd := &cobra.Command{
-		Use:   "start",
-		Short: "Start the Pad API server",
+		Use:     "start",
+		Short:   "Start the Pad API server",
+		Example: `  pad server start --port 7777`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfig()
 
@@ -1201,8 +1202,9 @@ func logOpenBootstrapBanner(cfg *config.Config) {
 
 func stopCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "stop",
-		Short: "Stop the background Pad server",
+		Use:     "stop",
+		Short:   "Stop the background Pad server",
+		Example: `  pad server stop`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfig()
 			if err := cli.StopServer(cfg); err != nil {
@@ -1218,8 +1220,9 @@ func stopCmd() *cobra.Command {
 
 func openCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "open",
-		Short: "Open the Pad web UI in your browser",
+		Use:     "open",
+		Short:   "Open the Pad web UI in your browser",
+		Example: `  pad server open`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfiguredConfig()
 			if err := cli.EnsureServer(cfg); err != nil {

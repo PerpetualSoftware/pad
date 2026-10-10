@@ -23,8 +23,9 @@ var (
 
 func remindCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "remind [ref]",
-		Short: "Arm a reminder on an item",
+		Use:     "remind [ref]",
+		Short:   "Arm a reminder on an item",
+		Example: `  pad item remind TASK-5 --remind-at 2026-11-02T09:00:00Z`,
 		Long: `Arm a one-shot reminder that fires at a specific instant.
 
 The instant is RFC3339 and must carry a time of day — 2026-08-01T09:00:00Z, or
@@ -99,8 +100,9 @@ with no webhook configured delivers reminders that way and only that way.`,
 
 func remindersCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "reminders <ref>",
-		Short: "Show an item's reminders",
+		Use:     "reminders <ref>",
+		Short:   "Show an item's reminders",
+		Example: `  pad item reminders TASK-5`,
 		Long: `List every reminder on an item — armed, fired, and acknowledged.
 
 Fired reminders are kept rather than deleted: the row is the record that a
@@ -145,8 +147,9 @@ reminder existed and went out.`,
 
 func ackCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ack <reminder-id>",
-		Short: "Acknowledge a fired reminder",
+		Use:     "ack <reminder-id>",
+		Short:   "Acknowledge a fired reminder",
+		Example: `  pad item ack <reminder-id>`,
 		Long: `Acknowledge a reminder that has fired, removing it from 'pad project next'.
 
 Nothing else acknowledges a reminder. In particular, completing the item does
@@ -174,8 +177,9 @@ table, still unacknowledged, exactly as you left it.`,
 
 func unremindCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unremind <reminder-id>",
-		Short: "Disarm a reminder",
+		Use:     "unremind <reminder-id>",
+		Short:   "Disarm a reminder",
+		Example: `  pad item unremind <reminder-id>`,
 		Long: `Remove a reminder.
 
 Deletion is the only disarm — there is no cancelled state, because a cancelled

@@ -247,8 +247,9 @@ func runCreateWatch(ref, predicate string) error {
 
 func watchListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List your active watches",
+		Use:     "list",
+		Short:   "List your active watches",
+		Example: `  pad watch list`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			watches, err := client.ListWatches()
@@ -280,9 +281,10 @@ func watchListCmd() *cobra.Command {
 
 func watchRemoveCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "remove <ref>",
-		Short: "Stop watching an item",
-		Args:  cobra.ExactArgs(1),
+		Use:     "remove <ref>",
+		Short:   "Stop watching an item",
+		Example: `  pad watch remove TASK-5`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()

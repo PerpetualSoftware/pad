@@ -19,8 +19,9 @@ import (
 // so the skill can pipe it into context directly.
 func bootstrapCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "bootstrap",
-		Short: "Print the agent bootstrap blob (workspace + collections + conventions + roles + playbooks + dashboard) in one round-trip",
+		Use:     "bootstrap",
+		Short:   "Print the agent bootstrap blob (workspace + collections + conventions + roles + playbooks + dashboard) in one round-trip",
+		Example: `  pad bootstrap --format json`,
 		Long: `Print the consolidated agent bootstrap blob for the current workspace.
 
 The blob carries everything the /pad skill needs to start a session:

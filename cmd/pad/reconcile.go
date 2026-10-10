@@ -47,8 +47,9 @@ func reconcileCmd() *cobra.Command {
 	var apply bool
 
 	cmd := &cobra.Command{
-		Use:   "reconcile [item-ref]",
-		Short: "Detect stale task, branch, and pull request state",
+		Use:     "reconcile [item-ref]",
+		Short:   "Detect stale task, branch, and pull request state",
+		Example: `  pad project reconcile TASK-5`,
 		Long: `Inspect items with linked code metadata, compare their stored GitHub PR and branch state
 against live GitHub data, and report drift.
 

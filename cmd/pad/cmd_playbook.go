@@ -38,8 +38,9 @@ func playbookCmd() *cobra.Command {
 
 func playbookListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List the workspace's playbooks (metadata only)",
+		Use:     "list",
+		Short:   "List the workspace's playbooks (metadata only)",
+		Example: `  pad playbook list`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -101,10 +102,11 @@ func playbookShowCmd() *cobra.Command {
 		// (alternation like <slug|ref> synthesizes the name "value").
 		// The handler accepts invocation_slug / item slug / issue ref —
 		// the Long description spells that out.
-		Use:   "show <ref>",
-		Short: "Show a single playbook's full body and metadata",
-		Long:  "Print a playbook by invocation_slug, item slug, or issue ref. The resolver tries each in turn.",
-		Args:  cobra.ExactArgs(1),
+		Use:     "show <ref>",
+		Short:   "Show a single playbook's full body and metadata",
+		Example: `  pad playbook show ship`,
+		Long:    "Print a playbook by invocation_slug, item slug, or issue ref. The resolver tries each in turn.",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -161,8 +163,9 @@ func playbookRunCmd() *cobra.Command {
 		// (ellipsis inside) bakes the dots into the arg NAME, so the
 		// MCP dispatcher's BuildCLIArgs can't match input["args"] to
 		// the positional slot. Verified in cmdhelp/json.go::argRE.
-		Use:   "run <ref> [args]...",
-		Short: "Bind args to a playbook's declared spec and return the body + bound args",
+		Use:     "run <ref> [args]...",
+		Short:   "Bind args to a playbook's declared spec and return the body + bound args",
+		Example: `  pad playbook run ship TASK-5`,
 		Long: `Parse the supplied args against the playbook's declared argument spec
 (stored as the 'arguments' field on the item) and return the body with
 those args bound. The server does NOT execute the playbook — playbooks

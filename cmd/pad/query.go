@@ -30,8 +30,9 @@ type relatedGroup struct {
 
 func readyCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ready",
-		Short: "Show actionable next items for an agent",
+		Use:     "ready",
+		Short:   "Show actionable next items for an agent",
+		Example: `  pad project ready`,
 		Long: `List up to three items Pad suggests working on next, best first.
 
 It is the same ranked list as 'pad project next' and the dashboard's Up next:
@@ -87,8 +88,9 @@ Blocked items are never listed; 'pad project stale' shows them.`,
 
 func staleCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "stale",
-		Short: "Show stale or attention-worthy items for an agent",
+		Use:     "stale",
+		Short:   "Show stale or attention-worthy items for an agent",
+		Example: `  pad project stale`,
 		Long: `List the current workspace items that need attention because they are stalled,
 blocked, overdue, or otherwise falling out of the active workflow.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -130,8 +132,9 @@ blocked, overdue, or otherwise falling out of the active workflow.`,
 
 func relatedCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "related <ref>",
-		Short: "Show direct relationships around an item",
+		Use:     "related <ref>",
+		Short:   "Show direct relationships around an item",
+		Example: `  pad item related TASK-5`,
 		Long: `Show the direct dependency, lineage, wiki-link, and related-item graph around a single item.
 
 This is a query-oriented view of the item's immediate context.`,
@@ -187,8 +190,9 @@ This is a query-oriented view of the item's immediate context.`,
 
 func implementedByCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "implemented-by <ref>",
-		Short: "Show items that implement the given item",
+		Use:     "implemented-by <ref>",
+		Short:   "Show items that implement the given item",
+		Example: `  pad item implemented-by SPEC-2`,
 		Long: `List the direct incoming "implements" lineage relationships for an item.
 
 This is useful for ideas or parent tasks that are realized by one or more

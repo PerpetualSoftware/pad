@@ -26,8 +26,9 @@ func roleCmd() *cobra.Command {
 
 func roleListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List agent roles in the workspace",
+		Use:     "list",
+		Short:   "List agent roles in the workspace",
+		Example: `  pad role list`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -78,9 +79,10 @@ func roleCreateCmd() *cobra.Command {
 	var description, icon, tools string
 
 	cmd := &cobra.Command{
-		Use:   "create <name>",
-		Short: "Create a new agent role",
-		Args:  cobra.ExactArgs(1),
+		Use:     "create <name>",
+		Short:   "Create a new agent role",
+		Example: `  pad role create "Reviewer" --description "Reviews PRs against the conventions" --icon "🔍"`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -208,9 +210,10 @@ would collide on the local stdio MCP path (Codex review on PR #574).`,
 
 func roleDeleteCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "delete <slug>",
-		Short: "Delete an agent role",
-		Args:  cobra.ExactArgs(1),
+		Use:     "delete <slug>",
+		Short:   "Delete an agent role",
+		Example: `  pad role delete reviewer`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
