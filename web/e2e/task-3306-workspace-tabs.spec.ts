@@ -28,6 +28,8 @@ test.describe('TASK-3306 workspace tabs', () => {
 		const logo = (await page.locator('.topbar-left').boundingBox())!;
 		// Left-aligned: the first tab starts just after the logo, not centered.
 		expect(tabs[0].x - (logo.x + logo.width), 'first tab starts right after the logo').toBeLessThan(40);
+		// ...with room to breathe: about 16px, where it was about 6px (TASK-3545).
+		expect(tabs[0].x - (logo.x + logo.width), 'a visible gap between the wordmark and the first tab').toBeGreaterThanOrEqual(12);
 		expect(tabs[1].x - (tabs[0].x + tabs[0].width)).toBeLessThanOrEqual(4);
 		for (const t of tabs) expect(Math.round(t.width)).toBe(200);
 
@@ -63,7 +65,9 @@ test.describe('TASK-3306 workspace tabs', () => {
 
 	test('shrink equally to 120px, then scroll with fades and keep the active tab in view', async ({ page }) => {
 		test.setTimeout(120_000);
-		await page.setViewportSize({ width: 1440, height: 900 });
+		// 1460, not 1440: six 200px tabs had about 4px to spare at 1440, and
+		// the gap after the wordmark took 10px of the row (TASK-3545).
+		await page.setViewportSize({ width: 1460, height: 900 });
 		const { username, slugs } = await asNewUser(page);
 
 		// Six fit at 200px each.
