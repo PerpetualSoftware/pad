@@ -1085,6 +1085,13 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 
+	// One candidate per ITEM (BUG-3538). An item can be a child of two active
+	// plans (a `parent` link to one and an `implements` link to another), and
+	// this loop used to add it once per plan, so suggested_next carried the
+	// same item twice. The web keys that list by item_slug, and a duplicate key
+	// throws during render: the whole dashboard stayed on its loading
+	// skeleton. The first plan in ActivePlans order names it.
+	planSeen := make(map[string]struct{})
 	for _, dp := range resp.ActivePlans {
 		// Reuse the children batched once above (BUG-2002) instead of
 		// re-resolving the plan slug and re-querying its children per plan.
@@ -1093,6 +1100,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			continue
 		}
 		for _, task := range childrenByParent[planID] {
+			if _, dup := planSeen[task.ID]; dup {
+				continue
+			}
 			// Skip tasks from hidden collections
 			if !isCollectionVisible(task.CollectionID, visibleIDs) {
 				continue
@@ -1118,6 +1128,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			}
 			pri := extractFieldValue(task.Fields, "priority")
 			odField, odValue, isOverdue := itemOverdue(task.Fields, todayStr)
+			planSeen[task.ID] = struct{}{}
 			candidates = append(candidates, suggestion{
 				item:          task,
 				plan:          dp.Title,

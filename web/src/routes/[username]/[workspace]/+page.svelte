@@ -932,7 +932,11 @@
 							<span class="section-label">Up Next</span>
 						</div>
 						<div class="suggested-list">
-							{#each dashboard.suggested_next.slice(0, 3) as sug, i (sug.item_slug)}
+							<!-- Keyed by POSITION (BUG-3538): item_slug is not unique here. Two
+							     fired reminders on one item are two entries by design, and a
+							     duplicate key throws during render, which left the whole
+							     dashboard on its skeleton. The list is three static rows. -->
+							{#each dashboard.suggested_next.slice(0, 3) as sug, i (i)}
 								<div class="suggested-card">
 									<span class="sug-num">{i + 1}</span>
 									<div class="sug-content">
