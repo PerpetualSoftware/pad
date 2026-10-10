@@ -14,7 +14,8 @@
 	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { laneKey } from '$lib/collections/boardColumns';
-	import { fieldMatches, safeText } from '$lib/fields/fieldShape';
+	import { safeText } from '$lib/fields/fieldShape';
+	import { childRowState, splitReferenceChildren } from '$lib/collections/childProgress';
 	import { TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import { lockableDndzone } from '$lib/collections/lockableDndzone';
 	import { planLaneOrder, persistReorder } from '$lib/collections/reorderPlan';
@@ -35,6 +36,12 @@
 		itemSlug: string;
 		itemId: string;
 		parentFields?: Record<string, any>;
+		/**
+		 * UNUSED since PLAN-3535: per-row done styling asks childProgress's hub
+		 * about each child's own collection. Still accepted because ItemDetail
+		 * passes it, and ItemDetail's identity gate re-flags every reviewed unit
+		 * on an import change; removing it there is a follow-up.
+		 */
 		terminalStatuses?: string[];
 		onChildrenChange?: (children: Item[]) => void;
 		/**
@@ -89,12 +96,22 @@
 		progress?: { done: number; total: number; percentage: number };
 	}
 
-	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true, frozen = false, selfDirty = false, selfLastSaveTime = 0, onOpenTarget, progress }: Props = $props();
+	let { wsSlug, username = '', itemSlug, itemId, parentFields, onChildrenChange, canEdit = true, frozen = false, selfDirty = false, selfLastSaveTime = 0, onOpenTarget, progress }: Props = $props();
 
-	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
-	const terminal = $derived(terminalStatuses ?? defaultTerminal);
+	// The collections each child is judged by (its own done field, terminal
+	// and abandoned values, and whether it tracks work). A store stamped for
+	// another workspace is not consulted: every child then counts as work,
+	// judged by the default lists, as the server does with no context.
+	let childCollections = $derived(
+		collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug) ? (collectionStore.collections ?? []) : []
+	);
 
 	let children = $state<Item[]>([]);
+	// PLAN-3535: children of a REFERENCE collection (a doc under a plan) are
+	// not part of the work. They are listed in their own References group below
+	// the progress list, with no done styling and no reorder, and the fallback
+	// count leaves them out as the server's does.
+	let split = $derived(splitReferenceChildren(children, childCollections));
 	// Which (workspace, item) the rows in `children` belong to. Plain variables,
 	// not $state: they are read inside loadChildren to decide whether a load is
 	// a refresh or a switch, and nothing renders from them (BUG-2871).
@@ -127,7 +144,7 @@
 	// counted 0 done), so while the numbers are unknown the header shows the
 	// child count alone and no bar.
 	let doneCount = $derived(progress?.done);
-	let totalCount = $derived(progress ? progress.total : children.length);
+	let totalCount = $derived(progress ? progress.total : split.work.length);
 	let percentage = $derived(progress?.percentage);
 
 	/** Set of child item IDs — exposed for deduplication by the parent page */
@@ -137,7 +154,7 @@
 
 	let groups = $derived.by(() => {
 		const map = new SvelteMap<string, Item[]>();
-		for (const child of children) {
+		for (const child of split.work) {
 			// `safeText`, not the raw value (BUG-3052): the group key feeds a
 			// heading formatter and a `lane:` key template, both of which threw on a
 			// stored `{"toString":0}`, and an array or object keyed a group by
@@ -933,14 +950,14 @@
 		</div>
 	{/if}
 
-	{#if children.length > 0 && percentage !== undefined}
+	{#if split.work.length > 0 && percentage !== undefined}
 		<div class="progress-bar">
 			<div class="progress-fill" style:width="{percentage}%"></div>
 		</div>
 	{/if}
 
-	{#if !loading && children.length >= 2}
-		<ChildChart {children} {wsSlug} startDate={parentFields?.start_date} endDate={parentFields?.end_date} />
+	{#if !loading && split.work.length >= 2}
+		<ChildChart children={split.work} {wsSlug} startDate={parentFields?.start_date} endDate={parentFields?.end_date} />
 	{/if}
 
 	{#if loading}
@@ -981,7 +998,7 @@
 						     collection PICKER; what it lacked was asking them about the
 						     row it was drawing. -->
 						{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
-						{@const isDone = terminal.some((t) => fieldMatches(fields.status, t))}
+						{@const isDone = childRowState(child, childCollections) === 'done'}
 						{@const isExpanded = expandedIds.has(child.id)}
 						{@const canExpand = child.has_children}
 						<!-- data-drag-locked: a child the caller may only view cannot be
@@ -1022,7 +1039,7 @@
 								{/if}
 							</div>
 							{#if canExpand && isExpanded}
-								<NestedChildren {wsSlug} {username} parentSlug={child.slug} depth={1} maxDepth={3} {terminalStatuses} {onOpenTarget} />
+								<NestedChildren {wsSlug} {username} parentSlug={child.slug} depth={1} maxDepth={3} {onOpenTarget} />
 							{/if}
 						</div>
 					{/each}
@@ -1030,6 +1047,29 @@
 			</div>
 		{/each}
 
+		{#if split.reference.length > 0}
+			<!-- PLAN-3535: reference material under this item. Not part of its
+			     work: no progress, no done styling, no reorder. -->
+			<div class="child-group reference-group" data-testid="child-references">
+				<div class="group-label">References ({split.reference.length})</div>
+				<div class="child-list">
+					{#each split.reference as child (child.id)}
+						{@const refStatus = categoricalValueFor(collectionStore.collections, child, 'status', parseFields(child).status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
+						<div class="child-item-wrapper">
+							<div class="child-row-container">
+								<a href="/{username}/{wsSlug}/{child.collection_slug}/{child.slug}" class="child-row" onclick={(e) => handleChildClick(e, child)}>
+									<span class="child-ref">{formatItemRef(child) ?? ''}</span>
+									<span class="child-title">{child.title}</span>
+									{#if refStatus}
+										<span class="child-ref-status">{formatLabel(refStatus)}</span>
+									{/if}
+								</a>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
 	{/if}
 </div>
 
@@ -1042,7 +1082,7 @@
 			Children ({doneCount === undefined ? totalCount : `${doneCount}/${totalCount} done`})
 		</div>
 		<ul class="print-child-list">
-			{#each children as child (child.id)}
+			{#each split.work as child (child.id)}
 				{@const childFields = parseFields(child)}
 				<!-- THE SECOND RENDERER IN THIS FILE, and the reason the review round
 				     found it rather than I did: fixing "ChildItems" is not fixing a
@@ -1051,7 +1091,7 @@
 				     so a sweep that stopped at the first hit in each file missed it
 				     (BUG-3067 round 3). -->
 				{@const printStatus = categoricalValueFor(collectionStore.collections, child, 'status', childFields.status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
-				{@const isDone = terminal.some((t) => fieldMatches(childFields.status, t))}
+				{@const isDone = childRowState(child, childCollections) === 'done'}
 				<li class="print-child-row" class:done={isDone}>
 					<span class="print-check">{isDone ? '[x]' : '[ ]'}</span>
 					{#if formatItemRef(child)}
@@ -1064,6 +1104,19 @@
 				</li>
 			{/each}
 		</ul>
+		{#if split.reference.length > 0}
+			<div class="print-children-header">References ({split.reference.length})</div>
+			<ul class="print-child-list">
+				{#each split.reference as child (child.id)}
+					<li class="print-child-row">
+						{#if formatItemRef(child)}
+							<span class="print-child-ref">{formatItemRef(child)}</span>
+						{/if}
+						<span class="print-child-title">{child.title}</span>
+					</li>
+				{/each}
+			</ul>
+		{/if}
 	</div>
 {/if}
 {/if}
@@ -1229,6 +1282,13 @@
 	.child-title.done {
 		text-decoration: line-through;
 		color: var(--text-muted);
+	}
+
+	.child-ref-status {
+		font-size: 0.72em;
+		color: var(--text-muted);
+		white-space: nowrap;
+		flex-shrink: 0;
 	}
 
 	.child-priority {

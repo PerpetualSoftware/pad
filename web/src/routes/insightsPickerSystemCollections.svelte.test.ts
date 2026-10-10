@@ -8,8 +8,13 @@ import type { Collection } from '$lib/types';
  * keyed on `is_system`, so an ordinary collection that happens to be named
  * "Conventions" is still offered.
  */
+// PLAN-3535: the picker now keys on the server's wider rule, a REFERENCE
+// collection (`tracks_work: false`), which every system collection is (the
+// migration and workspace import mark them). So a system collection here is
+// served as it is in production, with the flag set.
 function coll(slug: string, name: string, is_system: boolean): Collection {
-	return { id: `id-${slug}`, slug, name, icon: '', is_system } as unknown as Collection;
+	const settings = JSON.stringify(is_system ? { tracks_work: false } : {});
+	return { id: `id-${slug}`, slug, name, icon: '', is_system, settings } as unknown as Collection;
 }
 
 // A REACTIVE `$app/state` page for this file (the shared mock is a plain
@@ -96,6 +101,23 @@ describe('Insights collection picker (BUG-2410)', () => {
 		expect(chips).not.toContain('Playbooks');
 		expect(chips).not.toContain('House Rules');
 		expect(chips, 'an ordinary collection NAMED Conventions is still offered').toContain('Conventions');
+	});
+
+	it('leaves out a non-system REFERENCE collection too, and offers it again as work (PLAN-3535)', async () => {
+		const docs = (tracks_work: boolean) =>
+			({ id: 'id-docs', slug: 'docs', name: 'Docs', icon: '', is_system: false, settings: JSON.stringify({ tracks_work }) }) as unknown as Collection;
+		listCollections.mockResolvedValue([coll('tasks', 'Tasks', false), docs(false)]);
+		app = mount(InsightsPage, { target: host, props: {} }) as Record<string, unknown>;
+		await settle();
+		let chips = [...host.querySelectorAll('button.chip')].map((b) => b.textContent?.trim());
+		expect(chips, 'precondition: the picker rendered').toContain('Tasks');
+		expect(chips).not.toContain('Docs');
+		unmount(app);
+		listCollections.mockResolvedValue([coll('tasks', 'Tasks', false), docs(true)]);
+		app = mount(InsightsPage, { target: host, props: {} }) as Record<string, unknown>;
+		await settle();
+		chips = [...host.querySelectorAll('button.chip')].map((b) => b.textContent?.trim());
+		expect(chips, 'the same collection as work is offered').toContain('Docs');
 	});
 
 	it('a layout saved with a system collection does not filter the report by it (codex round 1)', async () => {
