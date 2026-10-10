@@ -1,0 +1,18 @@
+# Pad — build this checkout instead of running the released image.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# For contributors testing local changes. The base docker-compose.yml runs the
+# released, signed image (TASK-2034); this override builds the Dockerfile in
+# this directory and tags the result pad:local, so it never shadows the
+# ghcr.io name a later `docker compose pull` would fetch. A source build
+# reports its version as "dev".
+
+services:
+  pad:
+    image: pad:local
+    # Build, never pull: pad:local exists only on this machine.
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile

@@ -29,9 +29,12 @@ Pad is a single Go binary with an embedded web UI. It supports SQLite (default) 
 ## Quick Start with Docker Compose
 
 ```bash
-# Clone the repo
+# Clone the repo (for the compose files and .env.example)
 git clone https://github.com/PerpetualSoftware/pad.git
 cd pad
+
+# Configure: set POSTGRES_PASSWORD and PAD_ENCRYPTION_KEY, and pin PAD_VERSION
+cp .env.example .env
 
 # Start everything (Pad + PostgreSQL + Redis)
 docker compose up -d
@@ -45,6 +48,23 @@ docker compose logs -f pad
 
 Access the web UI at **http://localhost:7777**. On first visit, you'll be prompted to create an admin account.
 
+**Which Pad runs.** `docker-compose.yml` runs the released image, `ghcr.io/perpetualsoftware/pad:${PAD_VERSION}`: multi-arch, built by the release pipeline and cosign-signed. It does not build your checkout. Set `PAD_VERSION` in `.env` to a release, as a bare version with no leading `v` (for example `0.17.2`; see [the releases](https://github.com/PerpetualSoftware/pad/releases)). Unset, it is `latest`, which moves to each new stable release (never a release candidate) on your next pull.
+
+**Upgrading.** Back up first ([docs/backup.md](backup.md)), then change `PAD_VERSION` and run:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Migrations run on start.
+
+**Building from source (contributors).** To run a build of your checkout instead of a release, add the build override. The result is tagged `pad:local`, so it never shadows the released image, and reports its version as `dev`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
 ### Production Docker Compose
 
 ```bash
@@ -52,7 +72,7 @@ Access the web UI at **http://localhost:7777**. On first visit, you'll be prompt
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-Edit `docker-compose.prod.yml` to set your domain, email credentials, and database password.
+Edit `docker-compose.prod.yml` to set your domain and email credentials, and `.env` for the database password and `PAD_VERSION`.
 
 ## Environment Variables
 
@@ -1526,6 +1546,8 @@ kubectl apply -f deploy/k8s/service.yaml
 kubectl apply -f deploy/k8s/ingress.yaml
 kubectl apply -f deploy/k8s/hpa.yaml
 ```
+
+**Pin the image.** `deploy/k8s/deployment.yaml` names a release tag (`ghcr.io/perpetualsoftware/pad:<version>`). Set it to the release you mean to run, and change it to upgrade. Do not use `latest` here: with several replicas, pods that restart after a new release would pull it while the others keep the old one, so mixed versions would run against one database.
 
 **Prerequisites:**
 - External PostgreSQL (e.g., AWS RDS, Cloud SQL, managed PG)
