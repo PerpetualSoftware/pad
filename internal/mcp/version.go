@@ -1738,6 +1738,18 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.81 — PLAN-3535 PR 1. ADDITIVE: `pad_collection` create and update
+//     take a `tracks_work` boolean. false makes the collection REFERENCE
+//     material (docs, conventions, playbooks): its items will stop counting
+//     toward parent progress, close blocking, Insights and open-work counts
+//     (PR 2 and 3 apply that; this version only adds the switch). On update
+//     it sets that one settings key server-side and leaves the rest alone.
+//     Omitted, create picks work iff the done field can finish, and update
+//     leaves it unchanged. Over stdio it reaches `pad collection create|update
+//     --tracks-work=<bool>`, a STRING flag so false survives (a bool flag is
+//     emitted only when true). An older server ignores the member; the CLI
+//     checks the response and says so.
+//
 //     0.80 — BUG-3533. ADDITIVE bump on the v0.62 grounds (a remote door
 //     starts doing what the catalog always promised; stdio unchanged):
 //     `pad_item.action=import` over REMOTE /mcp now imports the artifact.
@@ -1973,7 +1985,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.80"
+const ToolSurfaceVersion = "0.81"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

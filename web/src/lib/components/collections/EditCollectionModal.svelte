@@ -4,8 +4,9 @@
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration, QuickAction } from '$lib/types';
-	import { parseSchema, parseSettings } from '$lib/types';
+	import type { Collection, CollectionUpdate, FieldDef, FieldMigration, QuickAction } from '$lib/types';
+	import { parseSchema, parseSettings, collectionTracksWork } from '$lib/types';
+	import { buildCollectionSettings } from '$lib/collections/collectionSettingsSave';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
 	import {
@@ -319,6 +320,8 @@
 	let boardGroupBy = $state('status');
 	let listGroupBy = $state('');
 	let listSortBy = $state('');
+	// PLAN-3535: whether the collection's items count as work.
+	let tracksWork = $state(true);
 
 	// Which field drives backend done-detection for this collection.
 	// Mirrors the DoneFieldKey() resolution in internal/models/terminal.go:
@@ -483,6 +486,7 @@
 			boardGroupBy = s.board_group_by || 'status';
 			listGroupBy = s.list_group_by || '';
 			listSortBy = s.list_sort_by || '';
+			tracksWork = collectionTracksWork(collection);
 
 			// Sync quick actions
 			quickActions = (s.quick_actions ?? []).map((a) => ({
@@ -816,14 +820,17 @@
 					...(a.icon.trim() ? { icon: a.icon.trim() } : {})
 				}));
 
-			const settingsObj: CollectionSettings = {
-				default_view: defaultView,
+			// Keys this form does not edit survive the save (PLAN-3535): see
+			// buildCollectionSettings.
+			const settingsObj = buildCollectionSettings(collection, {
+				defaultView,
 				layout,
-				board_group_by: boardGroupBy || undefined,
-				list_group_by: listGroupBy || undefined,
-				list_sort_by: listSortBy || undefined,
-				...(savedActions.length > 0 ? { quick_actions: savedActions } : {})
-			};
+				boardGroupBy,
+				listGroupBy,
+				listSortBy,
+				quickActions: savedActions,
+				tracksWork
+			});
 
 			const data: CollectionUpdate = {
 				name: name.trim(),
@@ -1079,6 +1086,16 @@
 							{selectFieldKeys}
 							{sortableFieldKeys}
 						/>
+						<div class="form-group">
+							<label class="tracks-work">
+								<input type="checkbox" bind:checked={tracksWork} />
+								<span>Track as work</span>
+							</label>
+							<p class="form-hint">
+								Items count toward parent progress, block a parent from closing while open, and appear in Insights.
+								Turn off for reference material such as docs; their items still show in the sidebar and search.
+							</p>
+						</div>
 					</div>
 				{:else if activeTab === 'actions'}
 					<!-- ── Quick Actions Tab ──────────────────────────────── -->
@@ -1334,6 +1351,17 @@
 		gap: var(--space-1);
 	}
 
+	.tracks-work {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2, 0.5em);
+		font-weight: 600;
+	}
+	.form-hint {
+		margin: var(--space-1, 0.25em) 0 0;
+		font-size: 0.85em;
+		color: var(--text-muted);
+	}
 	.form-label {
 		font-size: 0.75em;
 		font-weight: 600;

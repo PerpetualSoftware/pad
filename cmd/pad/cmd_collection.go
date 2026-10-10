@@ -157,6 +157,7 @@ func collectionsCreateCmd() *cobra.Command {
 		layout      string
 		defaultView string
 		boardGroup  string
+		tracksWork  string
 	)
 
 	cmd := &cobra.Command{
@@ -227,6 +228,15 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 				Schema:      schemaJSON,
 				Settings:    string(settingsJSON),
 			}
+			// Unset, the server picks: work iff the done field can finish
+			// (PLAN-3535).
+			if cmd.Flags().Changed("tracks-work") {
+				v, err := parseTracksWorkFlag(tracksWork)
+				if err != nil {
+					return err
+				}
+				input.TracksWork = &v
+			}
 
 			coll, err := client.CreateCollection(ws, input)
 			if err != nil {
@@ -253,6 +263,7 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 	cmd.Flags().StringVar(&layout, "layout", "fields-primary", "item detail layout: fields-primary, content-primary, balanced")
 	cmd.Flags().StringVar(&defaultView, "default-view", "board", "default view type: list, board, table")
 	cmd.Flags().StringVar(&boardGroup, "board-group-by", "status", "field to group by in board view")
+	cmd.Flags().StringVar(&tracksWork, "tracks-work", "", "true: items count as work (progress, parent completion, Insights); false: reference material. Default: work when the done field can finish")
 
 	return cmd
 }
@@ -282,6 +293,7 @@ func collectionsUpdateCmd() *cobra.Command {
 		fieldsDSL   string
 		schemaInput string
 		sortOrder   int
+		tracksWork  string
 	)
 
 	cmd := &cobra.Command{
@@ -332,6 +344,18 @@ issue-ID equivalent for collections themselves.`,
 				input.SortOrder = &sortOrder
 			}
 
+			// --tracks-work (PLAN-3535): the typed member, which the server
+			// merges into the stored settings without touching other keys.
+			var wantTracksWork *bool
+			if cmd.Flags().Changed("tracks-work") {
+				v, err := parseTracksWorkFlag(tracksWork)
+				if err != nil {
+					return err
+				}
+				input.TracksWork = &v
+				wantTracksWork = &v
+			}
+
 			// Schema is only resolved when the user passed --schema or --fields.
 			// Calling the helper with both empty returns "{}" which would wipe
 			// the existing schema — guard against that footgun.
@@ -346,6 +370,10 @@ issue-ID equivalent for collections themselves.`,
 			updated, err := client.UpdateCollection(ws, collSlug, input)
 			if err != nil {
 				return err
+			}
+			// An older server ignores the member and answers 200 (PLAN-3535).
+			if wantTracksWork != nil && models.CollectionTracksWorkJSON(updated.Settings) != *wantTracksWork {
+				return fmt.Errorf("the server did not apply --tracks-work=%v; it may predate PLAN-3535 (reference collections)", *wantTracksWork)
 			}
 			warnOrphanedValues(updated)
 
@@ -369,6 +397,7 @@ issue-ID equivalent for collections themselves.`,
 	cmd.Flags().StringVar(&fieldsDSL, "fields", "", "replacement schema via DSL: \"key:type[:options]; ...\"")
 	cmd.Flags().StringVar(&schemaInput, "schema", "", "replacement CollectionSchema JSON: inline, @path, or - for stdin")
 	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "new sort order (lower = appears first)")
+	cmd.Flags().StringVar(&tracksWork, "tracks-work", "", "true: items count as work (progress, parent completion, Insights); false: the collection is reference material")
 
 	return cmd
 }
@@ -576,4 +605,17 @@ func warnOrphanedValues(coll *models.Collection) {
 			fmt.Fprintf(os.Stderr, "warning: removed option %q from %q, held by %s: they keep it, but it is no longer valid, so a write that sets it or carries it in a full fields blob is refused\n", o.Option, o.Field, items)
 		}
 	}
+}
+
+// parseTracksWorkFlag reads --tracks-work (PLAN-3535). A string flag rather
+// than a bool so that false survives the MCP stdio transport, which emits a
+// bool flag only when it is true.
+func parseTracksWorkFlag(v string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "yes", "work":
+		return true, nil
+	case "false", "no", "reference":
+		return false, nil
+	}
+	return false, fmt.Errorf("--tracks-work must be true or false, got %q", v)
 }

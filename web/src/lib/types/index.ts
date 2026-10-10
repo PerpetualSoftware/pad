@@ -484,6 +484,11 @@ export interface CollectionSettings {
 	list_group_by?: string;
 	quick_actions?: QuickAction[];
 	content_template?: string;
+	/**
+	 * false: the collection holds REFERENCE material (PLAN-3535). Absent means work.
+	 * Read it through collectionTracksWork, never directly.
+	 */
+	tracks_work?: boolean;
 }
 
 export interface Collection {
@@ -2853,6 +2858,33 @@ export function parseSchema(collection: Collection): CollectionSchema {
 }
 
 const settingsDefaults = (): CollectionSettings => ({ layout: 'balanced', default_view: 'board' });
+
+/**
+ * Whether a collection's items count as work (PLAN-3535): progress, parent
+ * completion, Insights and open-work counts. Absent or unparseable settings
+ * mean work, as the server reads them.
+ */
+export function collectionTracksWork(collection: Pick<Collection, 'settings'>): boolean {
+	try {
+		return JSON.parse(collection.settings || '{}')?.tracks_work !== false;
+	} catch {
+		return true;
+	}
+}
+
+/**
+ * The stored settings object, WITHOUT defaults merged in: what an editor must
+ * start from when it writes settings back, so keys it does not edit survive
+ * (settings are stored wholesale).
+ */
+export function storedSettings(collection: Pick<Collection, 'settings'>): Record<string, unknown> {
+	try {
+		const v = JSON.parse(collection.settings || '{}');
+		return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+	} catch {
+		return {};
+	}
+}
 
 export function parseSettings(collection: Collection): CollectionSettings {
 	try {

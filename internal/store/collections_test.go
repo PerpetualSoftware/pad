@@ -118,8 +118,15 @@ func TestUpdateCollectionCoercesEmptyStringSettings(t *testing.T) {
 	if updated == nil {
 		t.Fatalf("UpdateCollection returned nil")
 	}
-	if updated.Settings != "{}" {
-		t.Errorf("expected UpdateCollection to coerce empty-string settings to %q, got %q", "{}", updated.Settings)
+	// Coerced to an object, and the stored tracks_work carried into it
+	// (PLAN-3535: a settings write that omits the key keeps it; the create
+	// gave this schemaless collection false).
+	var got map[string]any
+	if err := json.Unmarshal([]byte(updated.Settings), &got); err != nil {
+		t.Fatalf("UpdateCollection did not coerce empty-string settings to an object: %q", updated.Settings)
+	}
+	if !reflect.DeepEqual(got, map[string]any{"tracks_work": false}) {
+		t.Errorf("expected the coerced settings to hold only the carried tracks_work, got %q", updated.Settings)
 	}
 }
 
@@ -519,6 +526,9 @@ func TestListCollectionsMinimalReturnsSettingsJSON(t *testing.T) {
 		if err := json.Unmarshal([]byte(c.Settings), &got); err != nil {
 			t.Fatalf("settings is not valid JSON: %v (raw=%q)", err, c.Settings)
 		}
+		// The create default adds tracks_work (PLAN-3535); this test pins the
+		// round-trip of the caller's own keys.
+		delete(got, "tracks_work")
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("settings round-trip mismatch:\n  got:  %#v\n  want: %#v", got, want)
 		}
@@ -915,7 +925,9 @@ func TestCollectionAccessorsShareOneHydration(t *testing.T) {
 		}
 	}
 	sameJSON(t, "Schema", get.Schema, `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"]}]}`)
-	sameJSON(t, "Settings", get.Settings, `{"board_group_by":"status"}`)
+	// tracks_work is the create default (PLAN-3535): a status with no
+	// terminal options cannot finish, so the collection is reference.
+	sameJSON(t, "Settings", get.Settings, `{"board_group_by":"status","tracks_work":false}`)
 
 	// The two timestamps are set to DIFFERENT instants above, so transposing
 	// created_at and updated_at fails here rather than passing on two equal

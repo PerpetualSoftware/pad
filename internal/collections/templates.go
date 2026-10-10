@@ -284,8 +284,18 @@ func docsCollection(sortOrder int) DefaultCollection {
 			DefaultView: "board",
 			ListSortBy:  "updated_at",
 			ListGroupBy: "category",
+			// Reference material, not work (PLAN-3535, Dave): a new Docs
+			// collection does not count toward progress or Insights.
+			TracksWork: reference(),
 		},
 	}
+}
+
+// reference is the TracksWork value of a reference collection, a fresh
+// pointer each call so no two definitions share one.
+func reference() *bool {
+	v := false
+	return &v
 }
 
 // softwareStarterConventionTitles names the library conventions that ship in

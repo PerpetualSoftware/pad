@@ -78,6 +78,17 @@ func (s *Store) createCollectionTx(tx *sql.Tx, workspaceID string, input models.
 	if settings == "" {
 		settings = "{}"
 	}
+	// A new collection says whether it tracks work (PLAN-3535): the creator's
+	// value if given, else system collections are reference and others are
+	// work iff their done field can finish.
+	if input.TracksWork != nil {
+		set, err := models.SetTracksWork(settings, *input.TracksWork)
+		if err != nil {
+			return "", err
+		}
+		settings = set
+	}
+	settings = models.WithTracksWorkDefault(settings, schema, input.IsSystem)
 	// Traits default to "{}" (declares nothing), which is correct for every
 	// ordinary collection — kernel traits are opt-in and absence is never an
 	// error. The column is NOT NULL, so the empty case must be a real object.
@@ -587,20 +598,9 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		sets = append(sets, "traits = ?")
 		args = append(args, traits)
 	}
-	if input.Settings != nil {
-		// Normalize the empty-string sentinel to a valid JSON object before
-		// writing. The NOT NULL DEFAULT '{}' constraint (IDEA-1484) only
-		// fires when the UPDATE omits the column; explicit values are
-		// written verbatim. Postgres rejects `""` at JSONB type-validation;
-		// SQLite would silently store invalid JSON. Same boundary
-		// normalization as ImportWorkspace.
-		settings := *input.Settings
-		if settings == "" {
-			settings = "{}"
-		}
-		sets = append(sets, "settings = ?")
-		args = append(args, settings)
-	}
+	// Settings are computed UNDER the row lock, from the row as it stands
+	// there (PLAN-3535, codex): the tracks_work carry-over must not restore a
+	// value a concurrent writer changed after the pre-transaction read.
 	if input.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")
 		args = append(args, *input.SortOrder)
@@ -701,14 +701,15 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	//
 	// This is the READ of the old slug; the ALLOCATION of the new one follows
 	// it, under the same locks (IDEA-2874, below).
-	reread := "SELECT updated_at, slug, schema FROM collections WHERE id = ? AND deleted_at IS NULL"
+	reread := "SELECT updated_at, slug, schema, settings FROM collections WHERE id = ? AND deleted_at IS NULL"
 	if s.dialect.Driver() == DriverPostgres {
 		reread += " FOR UPDATE"
 	}
 	var currentUpdatedAt string
 	var lockedSlug string
 	var lockedSchema string
-	rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt, &lockedSlug, &lockedSchema)
+	var lockedSettings sql.NullString
+	rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt, &lockedSlug, &lockedSchema, &lockedSettings)
 	if rerr == sql.ErrNoRows {
 		// Deleted between the pre-tx GetCollection and here — treat as not-found.
 		return nil, nil
@@ -717,6 +718,41 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		return nil, fmt.Errorf("re-read collection under lock: %w", rerr)
 	}
 	current := parseTime(currentUpdatedAt)
+
+	// Settings, against the row as it stands under the locks (PLAN-3535).
+	if input.Settings != nil {
+		// Normalize the empty-string sentinel to a valid JSON object before
+		// writing. The NOT NULL DEFAULT '{}' constraint (IDEA-1484) only
+		// fires when the UPDATE omits the column; explicit values are
+		// written verbatim. Postgres rejects `""` at JSONB type-validation;
+		// SQLite would silently store invalid JSON. Same boundary
+		// normalization as ImportWorkspace.
+		settings := *input.Settings
+		if settings == "" {
+			settings = "{}"
+		}
+		// A settings write that does not mention tracks_work keeps the stored
+		// value: clients rebuild settings wholesale, and one that predates the
+		// key would otherwise reset a reference collection to work.
+		settings = models.CarryTracksWork(settings, lockedSettings.String)
+		if input.TracksWork != nil {
+			set, err := models.SetTracksWork(settings, *input.TracksWork)
+			if err != nil {
+				return nil, err
+			}
+			settings = set
+		}
+		sets = append(sets, "settings = ?")
+		args = append(args, settings)
+	} else if input.TracksWork != nil {
+		// Only the flag: merge it into the stored settings.
+		set, err := models.SetTracksWork(lockedSettings.String, *input.TracksWork)
+		if err != nil {
+			return nil, err
+		}
+		sets = append(sets, "settings = ?")
+		args = append(args, set)
+	}
 
 	// Moved against the schema as it stands under the locks (see above).
 	schemaMoved := input.Schema != nil && *input.Schema != lockedSchema

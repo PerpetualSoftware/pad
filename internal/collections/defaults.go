@@ -110,6 +110,7 @@ func Defaults() []DefaultCollection {
 				DefaultView: "board",
 				ListSortBy:  "updated_at",
 				ListGroupBy: "category",
+				TracksWork:  reference(), // reference material (PLAN-3535)
 				QuickActions: []models.QuickAction{
 					{Label: "Review this doc", Prompt: "/pad review {ref} \"{title}\" for accuracy and completeness", Scope: "item", Icon: "👀"},
 					{Label: "Update this doc", Prompt: "/pad update {ref} \"{title}\" to reflect the current state of the codebase", Scope: "item", Icon: "✏️"},
