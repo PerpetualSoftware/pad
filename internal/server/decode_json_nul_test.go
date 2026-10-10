@@ -908,8 +908,11 @@ func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
 	// The seventh is the CLI sign-in request (TASK-2253): the sanitised
 	// header into cli_auth_sessions.requester_user_agent, which the approval
 	// page shows labelled as the requester's own claim.
-	if safeUAUses != 8 {
-		t.Errorf("requestUserAgent occurrences = %d, want 8 (1 declaration + 7 call sites); "+
+	// The eighth is the MCP request counter (TASK-2307), which only
+	// substring-matches the header into a closed client-class label and
+	// binds nothing to a column, like fromNativeShell.
+	if safeUAUses != 9 {
+		t.Errorf("requestUserAgent occurrences = %d, want 9 (1 declaration + 8 call sites); "+
 			"a site was added or removed — re-justify and re-pin", safeUAUses)
 	}
 }

@@ -175,6 +175,9 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// no-op when the writer hasn't been spawned (selfhost / test
 	// builds), so the chain is safe to mount unconditionally.
 	//
+	// countMCPRequest (TASK-2307) sits right after auth: authenticated
+	// requests only, counted on entry, by method and client class.
+	//
 	// MCPInsufficientScope (TASK-2308) sits after MCPAuditLog so its 403
 	// is audited as denied.
 	//
@@ -182,7 +185,7 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// It sits AFTER auth, so an unauthenticated body is never read (it is
 	// refused 401 first, as before), and after MCPAuditLog, so a 413 is
 	// audited.
-	r.With(s.requireMCPAvailable, s.requireConfiguredHost, s.MCPBearerAuth, s.MCPAuditLog, s.limitMCPBody, s.MCPInsufficientScope).Mount("/mcp", transport)
+	r.With(s.requireMCPAvailable, s.requireConfiguredHost, s.MCPBearerAuth, s.countMCPRequest("mcp"), s.MCPAuditLog, s.limitMCPBody, s.MCPInsufficientScope).Mount("/mcp", transport)
 
 	// Discovery endpoints — unauthenticated, oauthAvailable-gated. RFC 9728
 	// (protected-resource) and RFC 8414 (auth-server) metadata.
