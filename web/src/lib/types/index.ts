@@ -2191,6 +2191,8 @@ export interface SearchFilters {
 	offset?: number;
 	sort?: 'relevance' | 'created_at' | 'updated_at' | 'title';
 	order?: 'asc' | 'desc';
+	/** Soft-deleted items as well as live ones (TASK-2864). */
+	includeArchived?: boolean;
 }
 
 // ─── Convention Library ──────────────────────────────────────────────────────

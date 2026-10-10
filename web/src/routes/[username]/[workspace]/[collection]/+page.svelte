@@ -314,7 +314,10 @@
 	let items = $derived<Item[]>(
 		wsSlug && collSlug
 			? localIndex
-					.getByCollection(wsSlug, collSlug, { includeArchived: showArchived })
+					// Archived rows are in view when the Show archived toggle is on
+					// OR the query carries `is:archived` (TASK-2864). Search only:
+					// loading, progress and the persisted view key keep the toggle.
+					.getByCollection(wsSlug, collSlug, { includeArchived: showArchived || parsedSearch.archived })
 					.map((row) => ({ ...row, content: '', content_state: undefined }) as Item)
 			: [],
 	);
@@ -2067,6 +2070,8 @@
 		// drives this effect AND the `items` derived view's archived
 		// inclusion uniformly.
 		const parsed = parsedSearch;
+		// The toggle OR the `is:archived` token, as the items view reads it.
+		const archivedInView = showArchived || parsed.archived;
 
 		// `body:` / `content:` prefix — fall through to the server FTS
 		// endpoint, which searches the rich-text body. The local index
@@ -2083,6 +2088,7 @@
 			// renders while the network response is pending.
 			searchResultRank = null;
 			const snapshotQuery = trimmed;
+			const snapshotArchived = archivedInView;
 			// Fenced INSIDE the timer body, not at the effect: 200ms separates
 			// the two, and a check at the effect says nothing about who is
 			// signed in when this fires (BUG-3084).
@@ -2111,6 +2117,7 @@
 						workspace: snapshotWs,
 						collection: snapshotColl,
 						limit: 200,
+						includeArchived: snapshotArchived,
 					});
 					// Stale-response guard: drop the result if the user
 					// navigated away or changed the query while the
@@ -2118,7 +2125,8 @@
 					if (
 						searchQuery.trim() !== snapshotQuery ||
 						wsSlug !== snapshotWs ||
-						collSlug !== snapshotColl
+						collSlug !== snapshotColl ||
+						(showArchived || parsedSearch.archived) !== snapshotArchived
 					) {
 						return;
 					}
@@ -2131,7 +2139,8 @@
 						identityHeld(epochAtSchedule) &&
 						searchQuery.trim() === snapshotQuery &&
 						wsSlug === snapshotWs &&
-						collSlug === snapshotColl
+						collSlug === snapshotColl &&
+						(showArchived || parsedSearch.archived) === snapshotArchived
 					) {
 						searchResultRank = null;
 					}
@@ -2156,7 +2165,7 @@
 		// TASK-1367).
 		const hits = localSearch.search(snapshotWs, trimmed, {
 			collection: snapshotColl,
-			includeArchived: showArchived,
+			includeArchived: archivedInView,
 			limit: 200,
 		});
 		searchResultRank = new Map(hits.map((h, i) => [h.id, i]));

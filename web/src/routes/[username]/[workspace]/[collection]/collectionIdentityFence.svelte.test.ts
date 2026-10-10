@@ -212,11 +212,12 @@ vi.mock('$lib/stores/localSearch.svelte', () => ({
 	localSearch: { epoch: () => 0, search: () => [] },
 	// `body:` routes to the SERVER FTS path, which is the one that schedules a
 	// 200ms timer — the deferred-timer case below needs it.
+	// `is:archived` is honoured so the TASK-2864 case below can drive it.
 	parseSearchQuery: (q: string) => ({
-		text: q.replace(/^body:/, ''),
-		body: q.startsWith('body:'),
+		text: q.replace(/^is:archived /, '').replace(/^body:/, ''),
+		body: q.replace(/^is:archived /, '').startsWith('body:'),
 		collection: null,
-		archived: false,
+		archived: q.startsWith('is:archived '),
 		ref: null,
 		number: null,
 	}),
@@ -687,6 +688,29 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 		onSearchChange('body:foo');
 		await vi.advanceTimersByTimeAsync(250);
 		expect(vi.mocked(api.search).mock.calls.length).toBe(1);
+	});
+
+	// TASK-2864: the token reaches the body search as includeArchived, and
+	// its absence sends none. Observed at api.search, the page's binding.
+	it('the debounced body search sends includeArchived only for is:archived', async () => {
+		await mountPage();
+		searchOpeners[0]!();
+		await tick();
+		const onSearchChange = await waitFor(() => {
+			const fn = findProp<(q: string) => void>('onSearchChange');
+			if (!fn) throw new Error('filter bar not rendered yet');
+			return fn;
+		});
+		vi.useFakeTimers();
+		onSearchChange('is:archived body:foo');
+		await vi.advanceTimersByTimeAsync(250);
+		onSearchChange('body:bar');
+		await vi.advanceTimersByTimeAsync(250);
+		const calls = vi.mocked(api.search).mock.calls as unknown as Array<[string, { includeArchived?: boolean }]>;
+		expect(calls.map(([q, f]) => [q, f.includeArchived])).toEqual([
+			['foo', true],
+			['bar', false],
+		]);
 	});
 
 	it('the identity-change listener clears the previous session\'s search text', async () => {

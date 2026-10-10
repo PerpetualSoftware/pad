@@ -24,6 +24,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Query:      query,
 		Workspace:  r.URL.Query().Get("workspace"),
 		Collection: r.URL.Query().Get("collection"),
+		// TASK-2864: soft-deleted items too, under the same permission
+		// filter, as the item index's include_archived does.
+		IncludeArchived: r.URL.Query().Get("include_archived") == "true",
 	}
 
 	// Parse field filters: status, priority as top-level params,

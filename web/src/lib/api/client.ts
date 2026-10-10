@@ -2612,6 +2612,7 @@ export const api = {
 		if (filters?.offset) params.offset = String(filters.offset);
 		if (filters?.sort) params.sort = filters.sort;
 		if (filters?.order) params.order = filters.order;
+		if (filters?.includeArchived) params.include_archived = 'true';
 		if (filters?.fields) {
 			for (const [key, value] of Object.entries(filters.fields)) {
 				params[`field.${key}`] = value;
