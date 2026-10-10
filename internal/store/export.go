@@ -853,17 +853,42 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// Legacy archives used per-collection numbering (or had no numbers), so
 	// retain sequential allocation when the imported set is not workspace-unique.
 	// Orphans are skipped below and must not force valid items to be renumbered.
+	//
+	// The fallback is logged (TASK-2923): it silently moves every reference
+	// number, so an operator whose [[TASK-2]] now points elsewhere needs to
+	// find why. The scan runs to the end so the line can count each reason,
+	// as the coercions below do for theirs.
 	preserveItemNumbers := true
 	seenItemNumbers := make(map[int]bool, len(data.Items))
+	var missingNumbers, invalidNumbers, duplicateNumbers int
+	var firstRenumberRow string
 	for _, it := range data.Items {
 		if collMap[it.CollectionID] == "" {
 			continue
 		}
-		if it.ItemNumber <= 0 || seenItemNumbers[it.ItemNumber] {
-			preserveItemNumbers = false
-			break
+		switch {
+		case it.ItemNumber == 0:
+			missingNumbers++
+		case it.ItemNumber < 0:
+			invalidNumbers++
+		case seenItemNumbers[it.ItemNumber]:
+			duplicateNumbers++
+		default:
+			seenItemNumbers[it.ItemNumber] = true
+			continue
 		}
-		seenItemNumbers[it.ItemNumber] = true
+		if preserveItemNumbers {
+			firstRenumberRow = it.ID
+		}
+		preserveItemNumbers = false
+	}
+	if !preserveItemNumbers {
+		slog.Warn("import_workspace renumbered items sequentially: the archive's item numbers are not positive and workspace-unique, so references to them (e.g. [[TASK-2]]) may now point at different items",
+			"workspace_id", ws.ID,
+			"missing", missingNumbers,
+			"invalid", invalidNumbers,
+			"duplicate", duplicateNumbers,
+			"first_row_id", firstRenumberRow)
 	}
 
 	// items_per_workspace, resolved here and compared after the insert loop
