@@ -28,8 +28,17 @@ test.describe('TASK-3306 workspace tabs', () => {
 		const logo = (await page.locator('.topbar-left').boundingBox())!;
 		// Left-aligned: the first tab starts just after the logo, not centered.
 		expect(tabs[0].x - (logo.x + logo.width), 'first tab starts right after the logo').toBeLessThan(40);
-		// ...with room to breathe: about 16px, where it was about 6px (TASK-3545).
-		expect(tabs[0].x - (logo.x + logo.width), 'a visible gap between the wordmark and the first tab').toBeGreaterThanOrEqual(12);
+		// ...with room to breathe (TASK-3545): about 17px, and the same however
+		// wide the wordmark renders. Its width depends on the system font, so
+		// the gap must not: widen the wordmark and the gap is unchanged.
+		const gap = tabs[0].x - (logo.x + logo.width);
+		expect(gap, 'a visible gap between the wordmark and the first tab').toBeGreaterThanOrEqual(12);
+		await page.addStyleTag({ content: '.pad-logo .wordmark { font-size: 2.2rem !important; }' });
+		const wideLogo = (await page.locator('.topbar-left').boundingBox())!;
+		const wideTab = (await page.locator('.workspace-tab').first().boundingBox())!;
+		expect(wideLogo.width, 'the wider wordmark took effect').toBeGreaterThan(logo.width + 10);
+		expect(Math.abs(wideTab.x - (wideLogo.x + wideLogo.width) - gap), 'the gap does not depend on the wordmark width').toBeLessThan(1);
+		await page.evaluate(() => document.querySelectorAll('style').forEach((s) => s.textContent?.includes('2.2rem') && s.remove()));
 		expect(tabs[1].x - (tabs[0].x + tabs[0].width)).toBeLessThanOrEqual(4);
 		for (const t of tabs) expect(Math.round(t.width)).toBe(200);
 

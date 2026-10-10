@@ -863,12 +863,20 @@
 
 	/* Desktop: the tab strip starts at the left, after the logo, and stops
 	   short of the collapse button and the avatar (TASK-3306; 72px let the
-	   row run under both). The left padding leaves about 16px between the
-	   "pad" wordmark and the first tab, which sat about 6px from it
-	   (TASK-3545). */
+	   row run under both). */
 	.topbar:not(.topbar-mobile) {
 		justify-content: flex-start;
-		padding: 0 108px 0 82px;
+		padding: 0 108px 0 var(--space-3);
+	}
+
+	/* The logo sits IN the row on desktop, so the first tab starts a fixed
+	   distance after it: the bar's 8px gap plus the tab list's 9px inset
+	   (room for the active tab's flare), about 17px. It was
+	   absolutely placed with the strip at a fixed 72px, so the space was
+	   whatever the wordmark's width left over, which depends on the system
+	   font: about 7px on one machine, about 1px on CI's (TASK-3545). */
+	.topbar:not(.topbar-mobile) .topbar-left {
+		position: static;
 	}
 
 	/* Mobile: fixed at top, full viewport width, above sidebar + backdrop */
