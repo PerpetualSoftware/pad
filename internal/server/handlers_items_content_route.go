@@ -307,7 +307,16 @@ func (s *Server) applierFirstWrite(
 		return contentRouteHandled, nil
 	}
 
-	if aerr := s.collab.ApplyExternalContent(item.ID, content); aerr != nil {
+	// BUG-3542 (Dave's ruling): every external content write is GUARDED except
+	// one that asked to overwrite pending edits: an open tab holding edits the
+	// server may not have stored refuses to apply it rather than replace them.
+	guarded := !input.OverwritePendingEdits
+	if aerr := s.collab.ApplyExternalContentGuarded(item.ID, content, guarded); aerr != nil {
+		if errors.Is(aerr, collab.ErrApplierRefusedUnconfirmed) {
+			// The tab applied nothing: the content demonstrably did not land.
+			writeContentNotAppliedError(w, itemRefOrSlug(*item), landedFieldNames(input), updated.UpdatedAt, contentOutcomeNotApplied, applyReasonUnconfirmedEdits)
+			return contentRouteHandled, nil
+		}
 		if errors.Is(aerr, collab.ErrApplierAmbiguous) {
 			// Untouched by this change, deliberately. A legacy round-trip caught by
 			// a restore MIGHT have persisted; claiming "content was not applied"

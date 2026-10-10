@@ -64,6 +64,14 @@ const (
 	// not-persisted). See restore_coord.go.
 	ControlMessageApplierApplyStart = "applier_apply_start"
 
+	// ControlMessageApplierRefuse is the applier's answer, INSTEAD of
+	// applier_apply_start, to a GUARDED applier_request it will not apply
+	// (BUG-3542): its tab holds local edits the server may not have stored yet
+	// (unsent, or sent past its last barrier_ack, BUG-3523), and applying the
+	// request's setContent would replace them. Carries request_id and reason.
+	// Only a server that sends `guarded` ever receives one.
+	ControlMessageApplierRefuse = "applier_refuse"
+
 	// ControlMessageOpLogCursor advertises the highest item_yjs_updates.id
 	// the receiving peer should now consider applied. Sent by the server:
 	//   - immediately after a fresh peer's replay completes (cursor =
@@ -144,6 +152,17 @@ type ControlMessage struct {
 	// Omitted on applier_ack.
 	Markdown string `json:"markdown,omitempty"`
 
+	// Guarded marks an applier_request the tab must REFUSE (applier_refuse)
+	// rather than apply while it holds unconfirmed local edits (BUG-3542). Set
+	// for every external content write except one sent with
+	// overwrite_pending_edits (Dave's ruling: tokenless writes are guarded
+	// too). Omitted otherwise, so an older tab sees the frame it always saw and
+	// applies as before.
+	Guarded bool `json:"guarded,omitempty"`
+
+	// Reason accompanies applier_refuse ("unconfirmed_edits").
+	Reason string `json:"reason,omitempty"`
+
 	// ExpiresAtMillis is the Unix-millis timestamp after which the
 	// browser MUST drop a queued applier_request without applying.
 	// Set by the server on every applier_request to "now +
@@ -202,6 +221,11 @@ const (
 	// server can't confirm. FAIL-SAFE: the external write is NOT re-applied (that
 	// could clobber peer edits) — it is returned as retryable via ErrApplierAmbiguous.
 	applierAmbiguous
+	// applierRefused — the applier REFUSED a guarded request (applier_refuse,
+	// BUG-3542): its tab holds edits the server may not have stored, and it
+	// applied nothing. Not retried on another applier: the refusal is about the
+	// document's live state, not about this connection.
+	applierRefused
 )
 
 type pendingApplierAck struct {
@@ -267,6 +291,12 @@ var (
 	// a direct write / re-apply (either could clobber); instead it returns a RETRYABLE
 	// error to the external-write caller so the write is retried once clients converge.
 	ErrApplierAmbiguous = errors.New("collab: applier outcome ambiguous (legacy conn during restore); retry")
+
+	// ErrApplierRefusedUnconfirmed — the applier refused a guarded request
+	// because its tab holds local edits the server may not have stored yet
+	// (BUG-3542). Nothing was applied. The caller answers 409 content_not_applied
+	// with apply_reason "unconfirmed_edits": wait, re-read, retry.
+	ErrApplierRefusedUnconfirmed = errors.New("collab: an open editor has edits the server has not stored yet; content not applied")
 )
 
 // ApplyExternalContent routes an external content update through a
@@ -287,6 +317,13 @@ var (
 // on rollback against the unfrozen room, on commit against the force-closed room. The
 // outer loop caps those restarts.
 func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error {
+	return m.ApplyExternalContentGuarded(itemID, markdown, false)
+}
+
+// ApplyExternalContentGuarded is ApplyExternalContent with the request marked
+// `guarded` (BUG-3542): a tab that holds unconfirmed local edits refuses it
+// (ErrApplierRefusedUnconfirmed) instead of replacing them.
+func (m *RoomManager) ApplyExternalContentGuarded(itemID string, markdown string, guarded bool) error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -308,7 +345,7 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 	// elections that may each have put an applier_request on the wire.
 	var sentAny bool
 	for restart := 0; restart < applierMaxRestartsAfterRestore; restart++ {
-		err, superseded, sent := m.electAndApply(room, itemID, markdown)
+		err, superseded, sent := m.electAndApply(room, itemID, markdown, guarded)
 		sentAny = sentAny || sent
 		if !superseded {
 			return err
@@ -412,7 +449,7 @@ func (m *RoomManager) HasElectableApplier(itemID string) bool {
 // sentAny reports whether an applier_request actually reached a peer during THIS
 // election. The caller accumulates it across restarts so the sentinel it finally
 // returns does not claim nothing was sent when something was (PLAN-2975).
-func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error, bool, bool) {
+func (m *RoomManager) electAndApply(room *Room, itemID, markdown string, guarded bool) (error, bool, bool) {
 	// A FRESH request_id per election: a late ack from a superseded prior election
 	// (same conn, re-picked after a rollback) can't be mistaken for this one's.
 	requestID := uuid.NewString()
@@ -473,6 +510,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 			Type:            ControlMessageApplierRequest,
 			RequestID:       requestID,
 			Markdown:        markdown,
+			Guarded:         guarded,
 			ExpiresAtMillis: time.Now().Add(timeouts[attempt]).UnixMilli(),
 		}
 		payload, err := json.Marshal(msg)
@@ -514,6 +552,11 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 				// The applier's setContent durably landed (no frame in its apply
 				// bracket was frozen-dropped). All peers are on the new state.
 				return nil, false, anyWriteSucceeded
+			case applierRefused:
+				// BUG-3542: the tab holds edits the server may not have; it
+				// applied nothing. Not re-elected: another tab applying would
+				// replace the same edits in the shared document.
+				return ErrApplierRefusedUnconfirmed, false, anyWriteSucceeded
 			case applierAmbiguous:
 				// Legacy conn caught by a restore: setContent MIGHT have landed but we
 				// can't confirm. FAIL-SAFE — do NOT re-apply (that could clobber peer
@@ -757,6 +800,28 @@ func (r *Room) resolveApplierAck(requestID string, rc *roomConn) {
 	default:
 		pending.deliver(applierAmbiguous)
 	}
+}
+
+// resolveApplierRefuse resolves a guarded round-trip the applier refused
+// (BUG-3542). Only the expected conn may refuse, and only before it opened the
+// apply bracket: a refusal after apply_start would contradict a setContent the
+// tab already sent, so it is ignored and the bracket resolves as usual.
+func (r *Room) resolveApplierRefuse(requestID string, rc *roomConn) {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	pending, ok := r.pendingAcks[requestID]
+	if !ok {
+		return
+	}
+	if pending.expectedConn != rc.conn {
+		slog.Warn("collab: applier_refuse from unexpected conn; ignoring", "request_id", requestID)
+		return
+	}
+	if pending.applyStarted {
+		slog.Warn("collab: applier_refuse after apply_start; ignoring", "request_id", requestID)
+		return
+	}
+	pending.deliver(applierRefused)
 }
 
 // freezeAndFinalizePending is the atomic heart of the version-restore ↔ applier

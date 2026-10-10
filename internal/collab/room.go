@@ -917,6 +917,15 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 			return
 		}
 		r.resolveApplierAck(ctl.RequestID, rc)
+	case ControlMessageApplierRefuse:
+		if ctl.RequestID == "" {
+			return
+		}
+		// As for applier_ack: a read-only participant is never an applier.
+		if !rc.canWrite.Load() {
+			return
+		}
+		r.resolveApplierRefuse(ctl.RequestID, rc)
 	case ControlMessageSyncSafetyNet:
 		// BUG-3240: this connection never saw its post-replay cursor
 		// frame. Should be unreachable; logged so it is not silent.

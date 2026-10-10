@@ -1015,6 +1015,8 @@ export class CollabProvider {
 			type?: string;
 			request_id?: string;
 			markdown?: string;
+			/** BUG-3542: refuse rather than apply while edits are unconfirmed. */
+			guarded?: boolean;
 			expires_at_millis?: number;
 			op_log_id?: number;
 			seed?: boolean;
@@ -1251,6 +1253,24 @@ export class CollabProvider {
 					console.warn(
 						'collab: applier source socket gone, skipping apply',
 						msg.request_id,
+					);
+					return;
+				}
+
+				// BUG-3542: a GUARDED request (every external content write except
+				// an explicit overwrite) is refused, not applied, while this tab
+				// holds edits the server may not have stored: unsent, owed a
+				// catch-up, or sent past the last barrier_ack (editsMayBeMissing,
+				// BUG-3523). setContent would replace them. Sent INSTEAD of
+				// apply_start, so no bracket opens and nothing is applied. Only a
+				// server that sends `guarded` understands the refusal.
+				if (msg.guarded === true && this.editsMayBeMissing) {
+					sourceWs.send(
+						JSON.stringify({
+							type: 'applier_refuse',
+							request_id: msg.request_id,
+							reason: 'unconfirmed_edits',
+						}),
 					);
 					return;
 				}
