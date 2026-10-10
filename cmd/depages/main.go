@@ -413,7 +413,7 @@ func getJSON(src Sources, u string, github bool, v any) error {
 // report prints the findings and returns the exit status.
 func report(results []Result, allowed map[string]string, days int, now time.Time, w io.Writer) int {
 	limit := time.Duration(days) * 24 * time.Hour
-	var fresh, allowedFresh, unknown []string
+	var fresh, allowedFresh, unknown, allowLines []string
 	for _, r := range results {
 		switch {
 		case r.Err != nil:
@@ -425,6 +425,7 @@ func report(results []Result, allowed map[string]string, days int, now time.Time
 				allowedFresh = append(allowedFresh, line+"  allowed: "+reason)
 			} else {
 				fresh = append(fresh, line)
+				allowLines = append(allowLines, "  "+r.Dep.key()+"  <reason, e.g. a security fix>")
 			}
 		}
 	}
@@ -436,7 +437,10 @@ func report(results []Result, allowed map[string]string, days int, now time.Time
 		fmt.Fprintf(w, "\nWARNING: %d could not be dated (not a failure):\n%s\n", len(unknown), strings.Join(unknown, "\n"))
 	}
 	if len(fresh) > 0 {
-		fmt.Fprintf(w, "\nyounger than %d days:\n%s\n\nWait for them to age, or allow one in .github/dep-age-allow.txt with a reason (a security fix, say).\n", days, strings.Join(fresh, "\n"))
+		fmt.Fprintf(w, "\nyounger than %d days:\n%s\n", days, strings.Join(fresh, "\n"))
+		fmt.Fprintf(w, "\nThis check is advisory and does not block a merge. Wait for these to age, or,\n"+
+			"when a young version is deliberate (a security fix, say), allow it by adding its\n"+
+			"line to .github/dep-age-allow.txt with the reason in place of <...>:\n%s\n", strings.Join(allowLines, "\n"))
 		return 1
 	}
 	return 0

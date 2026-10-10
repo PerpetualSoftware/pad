@@ -188,6 +188,9 @@ func TestLookupsAndReport(t *testing.T) {
 			t.Errorf("report lacks %q:\n%s", want, s)
 		}
 	}
+	if !strings.Contains(s, "  npm @tiptap/core@3.31.4  <reason, e.g. a security fix>") {
+		t.Errorf("the paste-ready allowlist line is missing:\n%s", s)
+	}
 	if strings.Contains(strings.SplitN(s, "younger than 7 days:", 2)[1], "svelte") {
 		t.Errorf("an old package was reported young:\n%s", s)
 	}

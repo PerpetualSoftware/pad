@@ -40,7 +40,8 @@ check: a red result is a prompt, not a block.
 
 ## Allowing a young version
 
-Add a line to `.github/dep-age-allow.txt`:
+A red run prints the exact line for each flagged version. Add it to
+`.github/dep-age-allow.txt`, putting the reason in place of `<...>`:
 
 ```
 <go|npm|action> <name>@<version>  <reason>
