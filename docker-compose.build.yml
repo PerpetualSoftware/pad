@@ -11,6 +11,8 @@
 services:
   pad:
     image: pad:local
+    # Build, never pull: pad:local exists only on this machine.
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile
