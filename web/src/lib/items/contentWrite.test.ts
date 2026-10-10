@@ -10,6 +10,7 @@ import {
 	isEditsNotStoredRefusal,
 	pendingEditsReason,
 	prunedEditsNotice,
+	stillOnBase,
 } from './contentWrite';
 
 const row = { content: 'stored body', seq: 7, updated_at: '2026-09-26T05:00:00Z' };
@@ -66,6 +67,22 @@ describe('isEditsNotStoredRefusal', () => {
 
 	it('the dialog reads an unconfirmed-edits refusal as pending edits, not set-aside ones', () => {
 		expect(pendingEditsReason(make('content_not_applied', { apply_reason: 'unconfirmed_edits' }))).toBe('pending');
+	});
+});
+
+// TASK-3548: the refused write moved seq; the resend may take the fresh one
+// only while the body is still the one the token was taken against.
+describe('stillOnBase', () => {
+	it('is true only when the re-read body is exactly the base', () => {
+		expect(stillOnBase({ content: 'base body' }, 'base body')).toBe(true);
+		expect(stillOnBase({ content: 'someone else' }, 'base body')).toBe(false);
+		expect(stillOnBase({ content: 'base body ' }, 'base body')).toBe(false);
+	});
+
+	it('an absent body compares as empty, and no row is never on base', () => {
+		expect(stillOnBase({}, '')).toBe(true);
+		expect(stillOnBase({ content: null }, '')).toBe(true);
+		expect(stillOnBase(null, '')).toBe(false);
 	});
 });
 

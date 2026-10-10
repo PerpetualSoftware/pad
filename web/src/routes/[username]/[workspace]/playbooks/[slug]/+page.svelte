@@ -10,7 +10,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
-	import { contentOutcomeNotice, contentWriteFor, isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { contentOutcomeNotice, contentWriteFor, isContentNotAppliedUnconfirmed, isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice, stillOnBase } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
@@ -335,7 +335,16 @@
 					);
 					return;
 				}
-				const resent = await api.items.update(wsSlug, item.slug, { ...payload, overwrite_pending_edits: true });
+				// TASK-3548: an unconfirmed-edits refusal moved the row's seq, so
+				// the overwrite carries the fresh token while the body is still the
+				// one this editor loaded.
+				// By id: the refused write may have renamed the item (a title change moves the slug).
+				const refusedId = item.id;
+				const baseBody = item.content ?? '';
+				const fresh = isContentNotAppliedUnconfirmed(err) ? await api.items.get(wsSlug, refusedId) : null;
+				if (!isSameIdentity()) return;
+				const resendPayload = fresh && stillOnBase(fresh, baseBody) ? { ...payload, ...contentWriteFor(bodyContent, fresh) } : payload;
+				const resent = await api.items.update(wsSlug, refusedId, { ...resendPayload, overwrite_pending_edits: true });
 				saveNote = prunedEditsNotice(resent) ?? contentOutcomeNotice(resent);
 				saved = resent;
 			}

@@ -93,6 +93,20 @@ export function isEditsNotStoredRefusal(err: unknown): boolean {
 }
 
 /**
+ * An unconfirmed-edits refusal still committed its row write (it versions the
+ * old body before the open tab refuses), so the row's seq moved under the
+ * caller's token, and an overwrite resent with that token meets update_conflict
+ * (TASK-3548). The caller re-reads the item after such a refusal (only then:
+ * isContentNotAppliedUnconfirmed) and asks this: is the stored body still
+ * `baseContent`, the body the token was taken against? If so nothing the caller
+ * has not seen changed it, and the fresh row's seq is the token to resend with;
+ * if not, the caller's stale path decides.
+ */
+export function stillOnBase(fresh: { content?: string | null } | null | undefined, baseContent: string): boolean {
+	return !!fresh && (fresh.content ?? '') === baseContent;
+}
+
+/**
  * Why a content_pending_flush refusal happened (BUG-3244): 'set_aside' when the
  * server counted edits an editor upgrade set aside (details.set_aside_rows),
  * which no tab will ever store, else 'pending'. Copy that tells the user what to
