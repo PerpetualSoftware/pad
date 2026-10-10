@@ -218,3 +218,35 @@ func TestConsentClientNameCap(t *testing.T) {
 		t.Errorf("one rune over the cap is cut to the cap with an ellipsis: %q", got)
 	}
 }
+
+func TestConsentRedirectTarget(t *testing.T) {
+	t.Parallel()
+	for raw, want := range map[string]string{
+		"https://app.test/cb":             "app.test",
+		"http://127.0.0.1:33418/callback": "127.0.0.1:33418",
+		"claude://oauth/callback":         "claude://oauth",
+		"com.example.app:/oauth/callback": "com.example.app:/oauth/callback",
+	} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := consentRedirectTarget(u); got != want {
+			t.Errorf("%s: got %q, want %q", raw, got, want)
+		}
+	}
+	if consentRedirectTarget(nil) != "" {
+		t.Error("nil URL names nothing")
+	}
+}
+
+func TestConsentNamesACustomSchemeReturnWithItsScheme(t *testing.T) {
+	t.Parallel()
+	srv, _ := oauthEnabledTestServer(t)
+	_, session := loginTestUser(t, srv)
+	id := registerNamedTestClient(t, srv, "Claude", "claude://oauth/callback")
+	page := bodyOf(t, renderConsentFor(t, srv, id, "claude://oauth/callback", session))
+	if !strings.Contains(page, "you return to <strong>claude://oauth</strong>") {
+		t.Error("a custom-scheme return must be named with its scheme")
+	}
+}

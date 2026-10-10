@@ -1908,9 +1908,9 @@ type consentData struct {
 	// "your Pad workspaces on <host>" identification the RFC 8707
 	// relaxation leans on (see audienceForAuthorize).
 	ResourceHost string
-	// RedirectHost is the host of the redirect_uri fosite validated
-	// against the client's registration: where the user's browser goes
-	// after deciding. Empty when it has no host (a custom scheme).
+	// RedirectHost names the redirect_uri fosite validated against the
+	// client's registration: where the user's browser goes after deciding
+	// (see consentRedirectTarget).
 	RedirectHost string
 	// Surface names the Pad surface being connected when it is not /mcp
 	// (TASK-3321 U2b): "ChatGPT" when the request names the ChatGPT
@@ -2093,10 +2093,7 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 		summary = append(summary, row.Name)
 	}
 
-	redirectHost := ""
-	if u := ar.GetRedirectURI(); u != nil {
-		redirectHost = u.Host
-	}
+	redirectHost := consentRedirectTarget(ar.GetRedirectURI())
 
 	data := consentData{
 		ClientName:       consentClientName(clientName),
@@ -2284,6 +2281,27 @@ func consentClientName(name string) string {
 		return name
 	}
 	return string(r[:consentClientNameMax-1]) + "…"
+}
+
+// consentRedirectTarget names where the browser goes after the decision.
+// An https or http redirect is named by its host. Any other scheme hands the
+// browser to an app, so it is named with the scheme: "claude://oauth", not
+// "oauth", which reads as a website. A URI with no host (registration refuses
+// one today, but the page must not go quiet if that changes) is named by its
+// scheme and path.
+func consentRedirectTarget(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	switch {
+	case u.Scheme == "http" || u.Scheme == "https":
+		return u.Host
+	case u.Host != "":
+		return u.Scheme + "://" + u.Host
+	case u.Scheme != "":
+		return consentClientName(u.Scheme + ":" + u.Opaque + u.Path)
+	}
+	return ""
 }
 
 // consentResourceHost names the Pad instance on the consent page: the host
