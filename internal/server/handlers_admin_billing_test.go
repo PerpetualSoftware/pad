@@ -23,7 +23,7 @@ type fakeBillingSidecar struct {
 	err      error
 }
 
-func (f *fakeBillingSidecar) CancelCustomer(string) error {
+func (f *fakeBillingSidecar) CancelCustomer(string, string) error {
 	return nil // unused by these tests
 }
 

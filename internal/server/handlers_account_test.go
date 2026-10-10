@@ -25,14 +25,17 @@ import (
 type fakeSidecar struct {
 	calls          int32 // atomic counter of CancelCustomer invocations
 	lastCustomerID atomic.Pointer[string]
+	lastUserID     atomic.Pointer[string]
 	err            error
 	hook           func(customerID string) // runs under CancelCustomer; optional
 }
 
-func (f *fakeSidecar) CancelCustomer(customerID string) error {
+func (f *fakeSidecar) CancelCustomer(customerID, userID string) error {
 	atomic.AddInt32(&f.calls, 1)
 	id := customerID // copy so the atomic pointer doesn't alias the caller's stack
 	f.lastCustomerID.Store(&id)
+	uid := userID
+	f.lastUserID.Store(&uid)
 	if f.hook != nil {
 		f.hook(customerID)
 	}
@@ -151,11 +154,12 @@ func TestHandleDeleteAccount_CancelsStripeBeforeDelete(t *testing.T) {
 	}
 }
 
-// TestHandleDeleteAccount_SkipsWhenNoStripeCustomer verifies that users
-// without a Stripe customer ID (free tier, OAuth-only, never paid) don't
-// trigger a sidecar call. Otherwise we'd burn a sidecar RPC on every
-// free-user delete and log-spam 400 "customer_id must start with 'cus_'".
-func TestHandleDeleteAccount_SkipsWhenNoStripeCustomer(t *testing.T) {
+// BUG-3560: a user with no LINKED Stripe customer can still own one stamped
+// with their id (TASK-3549 keeps one link and unions the rest), so the
+// sidecar is asked with the user id even then, and cancels whatever the user
+// owns. (Before, such a user was never asked about, and that customer kept
+// charging after the account was gone.)
+func TestHandleDeleteAccount_AsksSidecarByUserWhenNoLinkedCustomer(t *testing.T) {
 	srv := testServer(t)
 	fake := &fakeSidecar{}
 	srv.SetCloudSidecar(fake)
@@ -166,26 +170,62 @@ func TestHandleDeleteAccount_SkipsWhenNoStripeCustomer(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete-account: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
-
-	if fake.callCount() != 0 {
-		t.Errorf("CancelCustomer: expected 0 calls for non-paying user, got %d", fake.callCount())
+	if fake.callCount() != 1 {
+		t.Fatalf("CancelCustomer: expected 1 call, got %d", fake.callCount())
 	}
-
+	if got := *fake.lastCustomerID.Load(); got != "" {
+		t.Errorf("customer id = %q, want empty", got)
+	}
+	if got := *fake.lastUserID.Load(); got != userID {
+		t.Errorf("user id = %q, want %q", got, userID)
+	}
 	u, err := srv.store.GetUser(userID)
 	if err != nil {
 		t.Fatalf("get user after delete: %v", err)
 	}
 	if u != nil {
-		t.Error("expected user to be deleted even without a Stripe customer")
+		t.Error("expected user to be deleted")
 	}
 }
 
-// TestHandleDeleteAccount_SkipsWhenNoSidecarConfigured verifies that a
-// self-hosted deploy (no CloudSidecar wired) lets deletes complete for
-// paying users without blowing up on nil dereference. In practice this
-// arrangement shouldn't exist (if the user has a Stripe customer ID,
-// cloud mode was configured at some point) but it's the graceful-fallback
-// contract: missing sidecar ≠ broken deletes.
+// A sidecar that predates user_id refuses an empty customer_id with 400. It
+// could not have cancelled anything, which is exactly what not asking did
+// before, so this one answer lets the deletion of a user with no linked
+// customer proceed: either deploy order is safe.
+func TestHandleDeleteAccount_OlderSidecar400WithNoLinkedCustomerProceeds(t *testing.T) {
+	srv := testServer(t)
+	fake := &fakeSidecar{err: &billing.SidecarError{Status: http.StatusBadRequest, Body: `{"error":"customer_id must start with 'cus_'"}`}}
+	srv.SetCloudSidecar(fake)
+
+	userID, token := bootstrapAccountDeleteUser(t, srv, "")
+
+	rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if u, _ := srv.store.GetUser(userID); u != nil {
+		t.Error("expected user to be deleted")
+	}
+}
+
+// Any other failure with no linked customer still aborts: a stamped customer
+// may exist, and deleting the account would leave it charging.
+func TestHandleDeleteAccount_NoLinkedCustomerSidecar5xxAborts(t *testing.T) {
+	srv := testServer(t)
+	fake := &fakeSidecar{err: &billing.SidecarError{Status: http.StatusInternalServerError, Body: `{"error":"boom"}`}}
+	srv.SetCloudSidecar(fake)
+
+	userID, token := bootstrapAccountDeleteUser(t, srv, "")
+
+	rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if u, _ := srv.store.GetUser(userID); u == nil {
+		t.Error("user must still exist after an aborted delete")
+	}
+}
+
 func TestHandleDeleteAccount_SkipsWhenNoSidecarConfigured(t *testing.T) {
 	srv := testServer(t)
 	// No SetCloudSidecar — the reverse hook is nil.

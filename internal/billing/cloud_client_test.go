@@ -186,7 +186,7 @@ func TestCancelCustomer_HappyPath_SendsCorrectRequest(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true,"subscriptions_cancelled":2}`))
 	})
 
-	if err := client.CancelCustomer("cus_abc"); err != nil {
+	if err := client.CancelCustomer("cus_abc", ""); err != nil {
 		t.Fatalf("expected nil error on 200, got %v", err)
 	}
 
@@ -235,7 +235,7 @@ func TestCancelCustomer_NonOK_ReturnsSidecarError(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			})
 
-			err := client.CancelCustomer("cus_abc")
+			err := client.CancelCustomer("cus_abc", "")
 			if err == nil {
 				t.Fatalf("expected error on %d, got nil", tc.status)
 			}
@@ -260,7 +260,7 @@ func TestCancelCustomer_TransportFailure_NotSidecarError(t *testing.T) {
 	client := NewCloudClient("http://127.0.0.1:1", "test-secret")
 	client.http.Timeout = 500 * time.Millisecond
 
-	err := client.CancelCustomer("cus_abc")
+	err := client.CancelCustomer("cus_abc", "")
 	if err == nil {
 		t.Fatal("expected transport error, got nil")
 	}
@@ -280,7 +280,7 @@ func TestCancelCustomer_EmptyCustomerID_ReturnsError(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	err := client.CancelCustomer("")
+	err := client.CancelCustomer("", "")
 	if err == nil {
 		t.Fatal("expected error for empty customer_id, got nil")
 	}
@@ -291,14 +291,14 @@ func TestCancelCustomer_EmptyCustomerID_ReturnsError(t *testing.T) {
 
 func TestCancelCustomer_NilClient_ReturnsError(t *testing.T) {
 	var c *CloudClient
-	if err := c.CancelCustomer("cus_abc"); err == nil {
+	if err := c.CancelCustomer("cus_abc", ""); err == nil {
 		t.Fatal("expected error from nil receiver, got nil")
 	}
 }
 
 func TestCancelCustomer_UnconfiguredClient_ReturnsError(t *testing.T) {
 	c := NewCloudClient("", "")
-	err := c.CancelCustomer("cus_abc")
+	err := c.CancelCustomer("cus_abc", "")
 	if err == nil {
 		t.Fatal("expected error for unconfigured client, got nil")
 	}
@@ -398,12 +398,30 @@ func TestCancelCustomer_LargeResponseBody_DoesNotReadPastCap(t *testing.T) {
 		_, _ = w.Write([]byte(big))
 	})
 
-	err := client.CancelCustomer("cus_abc")
+	err := client.CancelCustomer("cus_abc", "")
 	var se *SidecarError
 	if !errors.As(err, &se) {
 		t.Fatalf("expected SidecarError, got %T", err)
 	}
 	if len(se.Body) > maxResponseBody {
 		t.Errorf("body was %d bytes, expected <= %d (cap)", len(se.Body), maxResponseBody)
+	}
+}
+
+// BUG-3560: the user id travels, and with it an empty customer id is a valid
+// call (a stamped customer can exist with nothing linked).
+func TestCancelCustomer_SendsUserIDAndAllowsEmptyCustomer(t *testing.T) {
+	var gotBody map[string]string
+	client, _ := newStub(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	if err := client.CancelCustomer("", "user-1"); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if gotBody["user_id"] != "user-1" || gotBody["customer_id"] != "" {
+		t.Fatalf("body = %v, want user_id=user-1 and an empty customer_id", gotBody)
 	}
 }

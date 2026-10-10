@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
@@ -198,9 +199,8 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// would keep getting charged with no way for us to find and cancel
 	// it. TASK-690 / PLAN-645.
 	//
-	// Skipped when:
-	//   - the user has no Stripe customer (free plan, OAuth-only, never paid)
-	//   - the sidecar isn't configured (self-hosted deploys with no billing)
+	// Skipped when the sidecar isn't configured (self-hosted deploys with no
+	// billing).
 	//
 	// Failure strategy: any non-nil error aborts the delete with a 500.
 	// pad-cloud normalizes Stripe 404/resource_missing to a 200 success on
@@ -211,9 +211,27 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// continue": doing so would wipe the user's StripeCustomerID while
 	// leaving the Stripe subscription billing, which is the exact
 	// regression this task exists to prevent.
+	//
+	// BUG-3560: the sidecar is asked even when no customer is linked, with
+	// the user id, because a user can own a Stripe customer stamped with
+	// their id and not linked here (TASK-3549 keeps one link and unions the
+	// rest); it cancels every customer the user owns. A sidecar that predates
+	// user_id refuses an empty customer_id with 400: it could not have
+	// cancelled anything, which is what not asking did before, so that one
+	// answer lets the deletion proceed.
 	stripeWasCancelled := false
-	if fullUser.StripeCustomerID != "" && s.cloudSidecar != nil {
-		if err := s.cloudSidecar.CancelCustomer(fullUser.StripeCustomerID); err != nil {
+	if s.cloudSidecar != nil {
+		err := s.cloudSidecar.CancelCustomer(fullUser.StripeCustomerID, fullUser.ID)
+		var sidecarErr *billing.SidecarError
+		switch {
+		case err == nil:
+			// Possibly only a stamped, unlinked customer: still billing that
+			// was cancelled, which the partial-delete alert below must know.
+			stripeWasCancelled = true
+		case fullUser.StripeCustomerID == "" && errors.As(err, &sidecarErr) && sidecarErr.Status == http.StatusBadRequest:
+			slog.Warn("delete account: sidecar predates user_id; no linked customer to cancel, continuing",
+				"user_id", user.ID)
+		default:
 			slog.Error("delete account: sidecar cancel-customer failed, aborting delete",
 				"user_id", user.ID,
 				"customer_id", fullUser.StripeCustomerID,
@@ -222,7 +240,6 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 				"We couldn't cancel your subscription. Your account was NOT deleted and you have NOT been charged anything new. Please try again in a few minutes or contact support.")
 			return
 		}
-		stripeWasCancelled = true
 	}
 
 	// TASK-3272: the deletion soft-deletes every live workspace this user

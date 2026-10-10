@@ -186,31 +186,37 @@ func (c *CloudClient) GetBillingMetrics() (*BillingMetricsResponse, error) {
 // success), so retries after a partial failure complete cleanly.
 //
 // Request: POST {baseURL}/billing/cancel-customer
-// Body:    {"customer_id": "cus_xxx", "cloud_secret": "..."}
+// Body:    {"customer_id": "cus_xxx", "user_id": "...", "cloud_secret": "..."}
+//
+// userID (BUG-3560) lets the sidecar also cancel every other customer the
+// user owns (stamped pad_user_id), and makes an empty customerID valid: a
+// user can own a stamped customer with nothing linked. A sidecar that
+// predates it ignores user_id and refuses an empty customer_id with 400.
 // 200 OK:  {"ok": true, "subscriptions_cancelled": N}
 //
 // Returns nil on 200. On any non-200, returns a *SidecarError so the caller
 // can branch on Status. On transport failure (DNS, connect, timeout) returns
 // a bare error — treated by callers as "retryable, abort the delete".
-func (c *CloudClient) CancelCustomer(customerID string) error {
+func (c *CloudClient) CancelCustomer(customerID, userID string) error {
 	if c == nil {
 		return errors.New("billing: CancelCustomer called on nil CloudClient")
 	}
-	if customerID == "" {
-		// Defensive — handleDeleteAccount is expected to skip the call when
-		// StripeCustomerID is empty, but if somebody wires it differently
-		// we refuse to POST an empty cus_ that would burn a sidecar call
-		// and log-spam the 400 it would return.
-		return errors.New("billing: customerID is empty")
+	if customerID == "" && userID == "" {
+		// Nothing to name: the sidecar would refuse it with 400.
+		return errors.New("billing: customerID and userID are both empty")
 	}
 	if c.baseURL == "" || c.cloudSecret == "" {
 		return errors.New("billing: CloudClient is not configured (missing baseURL or cloudSecret)")
 	}
 
-	payload, err := json.Marshal(map[string]string{
+	body := map[string]string{
 		"customer_id":  customerID,
 		"cloud_secret": c.cloudSecret,
-	})
+	}
+	if userID != "" {
+		body["user_id"] = userID
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("billing: marshal cancel-customer request: %w", err)
 	}
