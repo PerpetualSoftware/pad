@@ -78,7 +78,7 @@ func (s *Server) registerChatGPTMCPRoutes(r chi.Router) {
 	// limitMCPBody: the same transport, the same uncapped read (BUG-3534),
 	// placed as on /mcp: after auth and the audit log.
 	r.With(s.requireChatGPTAvailable, s.requireConfiguredHost, WithMCPResource(s.chatGPTResource),
-		s.refusePATs, s.MCPBearerAuth, s.MCPAuditLog, s.limitMCPBody).Mount("/mcp/chatgpt", transport)
+		s.refusePATs, s.MCPBearerAuth, s.countMCPRequest("chatgpt"), s.MCPAuditLog, s.limitMCPBody).Mount("/mcp/chatgpt", transport)
 	// Path-aware RFC 9728 document for this resource (the /mcp ones are
 	// unchanged).
 	r.With(s.requireChatGPTAvailable, s.requireConfiguredHost).

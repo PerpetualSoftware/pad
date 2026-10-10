@@ -1268,6 +1268,16 @@ limit, are counted in the Prometheus counter
 happens earlier and is not counted there. An address that exhausts the limit
 is logged once at `WARN`.
 
+Every authenticated request that reaches an MCP mount is counted in
+`pad_mcp_http_requests_total{mount, method, client}`: `mount` is `mcp` or
+`chatgpt`, and `client` is a fixed class read from the `User-Agent`
+(`claude-code`, `claude`, `codex`, `openai`, `cursor`, `windsurf`, `vscode`,
+`mcp-remote`, `mcp-inspector`, `python`, `node`, `go`, `curl`, `okhttp`,
+`other`, or `none` when the header is absent). It counts on arrival, so a
+`GET` that holds a server-sent-event stream open is counted while it is open.
+`method="GET"` by client is the measurement that decides whether moving to a
+transport that refuses `GET` would break a real client (TASK-2307).
+
 Behind a proxy, set `PAD_TRUSTED_PROXIES` to the proxy's addresses so the
 limits key on the real client address. Otherwise every request shares the
 proxy's address and one bucket. If a proxied request still resolves to an

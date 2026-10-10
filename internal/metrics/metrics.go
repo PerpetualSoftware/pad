@@ -452,6 +452,15 @@ type Metrics struct {
 	// label is a closed set: "missing_token", "invalid_token",
 	// "rate_limited".
 	MCPPreAuthDeniedTotal *prometheus.CounterVec
+	// MCPHTTPRequestsTotal counts authenticated requests reaching an MCP
+	// mount, by mount ("mcp", "chatgpt"), HTTP method and client class
+	// (TASK-2307). Counted on ENTRY, so a GET that opens a long-lived SSE
+	// stream is counted while it is open; pad_http_requests_total records
+	// one only when the stream ends. It answers whether real clients use
+	// the GET stream that a stateless go-sdk transport would refuse with
+	// 405, and which ones. The client label is a closed set derived from
+	// the User-Agent (mcpClientClass), never the raw header.
+	MCPHTTPRequestsTotal *prometheus.CounterVec
 
 	// ContentWritesSupersededTotal counts item content writes the server
 	// REFUSED because the same tab had already applied a newer one
@@ -584,6 +593,11 @@ func New() *Metrics {
 		Name: "pad_mcp_authz_denials_total",
 		Help: "Total number of /mcp authorization denials by reason.",
 	}, []string{"reason"})
+
+	mcpHTTPRequestsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_mcp_http_requests_total",
+		Help: "Total number of authenticated MCP requests by mount, HTTP method and client class, counted on entry.",
+	}, []string{"mount", "method", "client"})
 
 	mcpPreAuthDeniedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_mcp_preauth_denied_total",
@@ -853,6 +867,7 @@ func New() *Metrics {
 		mcpToolCallDuration,
 		mcpAuthzDenialsTotal,
 		mcpPreAuthDeniedTotal,
+		mcpHTTPRequestsTotal,
 		mcpActiveSessions,
 		contentWritesSupersededTotal,
 		materializeGiveUpsTotal,
@@ -909,6 +924,7 @@ func New() *Metrics {
 		MCPToolCallDuration:          mcpToolCallDuration,
 		MCPAuthzDenialsTotal:         mcpAuthzDenialsTotal,
 		MCPPreAuthDeniedTotal:        mcpPreAuthDeniedTotal,
+		MCPHTTPRequestsTotal:         mcpHTTPRequestsTotal,
 		MCPActiveSessions:            mcpActiveSessions,
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
 		MaterializeGiveUpsTotal:      materializeGiveUpsTotal,
