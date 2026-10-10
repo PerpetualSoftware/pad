@@ -160,11 +160,10 @@
 	// reference (created_at/updated_at/quarter/date) — so a faithful sort would
 	// need either a backend ordering change or timestamps in the payload (a
 	// PLAN-1677 backend decision, not frontend polish). The payload arrives in
-	// `ListItems`' DEFAULT order, pinned first and then most recently updated
-	// (handlers_share_links.go passes no sort), NOT the owner's `sort_order`, so
-	// the "manual" order is not reproduced here either (TASK-3525 corrected an
-	// earlier version of this note that said it was). Explicit field sorts are
-	// skipped; deferred deliberately.
+	// the owner's MANUAL order, `sort_order` then oldest first then id (the
+	// server orders it, handlers_share_links.go, BUG-3530), and this page keeps
+	// that order, so the default "manual" order IS honored. Explicit field
+	// sorts are skipped; deferred deliberately.
 	let effectiveItems = $derived.by<PublicItem[]>(() => {
 		const items = baseParsedItems;
 		const view = activeSavedView;

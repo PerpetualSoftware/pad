@@ -5780,6 +5780,12 @@ func buildItemSort(sort string, dialect Dialect) string {
 			parts = append(parts, fmt.Sprintf("i.updated_at %s", dir))
 		case "sort_order":
 			parts = append(parts, fmt.Sprintf("i.sort_order %s", dir))
+		case "_id":
+			// The item's id: the last tie-break of the manual order (BUG-3530),
+			// as the web comparator's a.id.localeCompare(b.id). Spelled `_id`
+			// because a field may be keyed `id`, and validSortField (a leading
+			// letter) means no field can be keyed `_id`.
+			parts = append(parts, fmt.Sprintf("i.id %s", dir))
 		default:
 			// For field-based sorting, use dialect JSON extract — validate the field name
 			// to prevent SQL injection via crafted sort parameters.

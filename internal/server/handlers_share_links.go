@@ -653,8 +653,15 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		// Scoped by the link's collection ID, never its slug: a slug freed
 		// and re-taken by another collection would otherwise serve that
 		// collection's items through a public link (BUG-2631).
+		// The owner's arranged order (BUG-3530): the manual order every
+		// collection page opens in, sort_order then oldest first then id, the
+		// web comparator's and the server's child-list order (BUG-3527). The
+		// share page renders items in the order they arrive, because the public
+		// payload carries no sort columns. ListItems' default (pinned, then
+		// updated_at DESC) reshuffled a shared collection on every edit.
 		items, err := s.store.ListItems(link.WorkspaceID, models.ItemListParams{
 			ScopeCollectionID: coll.ID,
+			Sort:              "sort_order:asc,created_at:asc,_id:asc",
 		})
 		if err != nil {
 			writeInternalError(w, err)
