@@ -23,6 +23,7 @@ var task3399ReaderCensus = map[string]string{
 	"connected_apps.go::ListUserOAuthConnections":                       censusFilters,
 	"connected_apps.go::RevokeUserOAuthConnection":                      censusPerGrant,
 	"install_clients.go::DeleteInstallClientTx":                         censusAppPath,
+	"mcp_audit.go::MCPAuditNames":                                       censusPerGrant,
 	"mcp_resume.go::CountLiveOAuthConnections":                          censusFilters,
 	"oauth.go::CountActiveOAuthAccessTokens":                            censusByDesign,
 	"oauth.go::DeleteAccessToken":                                       censusPerGrant,

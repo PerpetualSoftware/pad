@@ -55,6 +55,11 @@ type mcpAuditEntryDTO struct {
 	ErrorKind      string `json:"error_kind,omitempty"`
 	LatencyMs      int    `json:"latency_ms"`
 	RequestID      string `json:"request_id"`
+	// Display names, on the admin listing only (TASK-2255 C110): the user's
+	// name (or email), and the connection's OAuth client name, PAT name or
+	// connection label. Empty when the id no longer resolves.
+	UserName       string `json:"user_name,omitempty"`
+	ConnectionName string `json:"connection_name,omitempty"`
 }
 
 func mcpAuditEntryToDTO(e models.MCPAuditEntry) mcpAuditEntryDTO {
@@ -165,9 +170,36 @@ func (s *Server) handleAdminMCPAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var userIDs, patRefs, oauthRefs []string
+	seen := map[string]bool{}
+	for _, e := range rows {
+		if !seen["u:"+e.UserID] {
+			seen["u:"+e.UserID] = true
+			userIDs = append(userIDs, e.UserID)
+		}
+		key := string(e.TokenKind) + ":" + e.TokenRef
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if e.TokenKind == models.TokenKindOAuth {
+			oauthRefs = append(oauthRefs, e.TokenRef)
+		} else {
+			patRefs = append(patRefs, e.TokenRef)
+		}
+	}
+	userNames, connNames, err := s.store.MCPAuditNames(userIDs, patRefs, oauthRefs)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	out := make([]mcpAuditEntryDTO, 0, len(rows))
 	for _, e := range rows {
-		out = append(out, mcpAuditEntryToDTO(e))
+		dto := mcpAuditEntryToDTO(e)
+		dto.UserName = userNames[e.UserID]
+		dto.ConnectionName = connNames[e.TokenRef]
+		out = append(out, dto)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":   out,
