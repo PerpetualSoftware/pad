@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, relative } from 'node:path';
+import { parse } from 'svelte/compiler';
 import { EACH_KEY_CENSUS, EACH_KEY_REASONS } from './eachKeyCensus';
 
 /**
@@ -38,103 +39,89 @@ function svelteFiles(dir: string): string[] {
 
 const collapse = (s: string) => s.split(/\s+/).filter(Boolean).join(' ');
 
-/**
- * Blanks HTML comments and <script> / <style> blocks (keeping newlines, so line
- * numbers hold): an {#each} written there is not markup.
- */
-export function markupOnly(src: string): string {
-	return src.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/g, (m) =>
-		m.replace(/[^\n]/g, ' '),
-	);
-}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Node = any;
 
-/**
- * The index of the `}` closing the tag that opens at `start`, skipping braces
- * inside '…', "…" and `…` strings (a template literal's ${…} counts as code).
- */
-function closingBrace(src: string, start: number): number {
-	let depth = 0;
-	const templates: number[] = []; // brace depth at each open ${ inside a template
-	let quote = '';
-	for (let i = start; i < src.length; i++) {
-		const c = src[i];
-		if (quote) {
-			if (c === '\\') i++;
-			else if (quote === '`' && c === '$' && src[i + 1] === '{') {
-				templates.push(depth);
-				depth++;
-				i++;
-				quote = '';
-			} else if (c === quote) quote = '';
-			continue;
-		}
-		if (c === "'" || c === '"' || c === '`') quote = c;
-		else if (c === '{') depth++;
-		else if (c === '}') {
-			depth--;
-			if (templates.length && templates[templates.length - 1] === depth) {
-				templates.pop();
-				quote = '`';
-				continue;
-			}
-			if (depth === 0) return i;
-		}
+function walk(node: Node, visit: (n: Node) => void): void {
+	if (!node || typeof node !== 'object') return;
+	if (Array.isArray(node)) {
+		for (const child of node) walk(child, visit);
+		return;
 	}
-	return src.length;
+	if (typeof node.type === 'string') visit(node);
+	for (const [k, v] of Object.entries(node)) if (k !== 'parent') walk(v, visit);
 }
 
-/** The keyed each blocks of one file's source. */
-export function keyedEaches(file: string, raw: string): Site[] {
-	const src = markupOnly(raw);
-	const out: Site[] = [];
+/**
+ * The keyed each blocks of one file, read by Svelte's own parser (codex
+ * rounds 1-2: a hand scanner misread braces in strings, comments and regex
+ * literals, and comment or script text). The id keeps the census format:
+ * `file :: each <expr> as <item>[, <index>] (<key>)`, whitespace collapsed,
+ * with `#n` on the nth repeat of an identical head in one file.
+ */
+export function keyedEaches(file: string, src: string): (Site & { keyNode: Node; index?: string })[] {
+	const out: (Site & { keyNode: Node; index?: string })[] = [];
 	const seen = new Map<string, number>();
-	let from = 0;
-	for (;;) {
-		const start = src.indexOf('{#each', from);
-		if (start < 0) return out;
-		const end = closingBrace(src, start);
-		from = end;
-		const head = src.slice(start + 6, end).trim();
-		if (!head.endsWith(')')) continue;
-		let d = 0;
-		let open = head.length - 1;
-		for (; open >= 0; open--) {
-			if (head[open] === ')') d++;
-			else if (head[open] === '(' && --d === 0) break;
-		}
-		const before = head.slice(0, open).trimEnd();
-		const as = before.match(/^([\s\S]*)\s+as\s+([\s\S]*)$/);
-		if (!as) continue;
-		const expr = collapse(as[1]);
-		const item = collapse(as[2]);
-		const key = collapse(head.slice(open + 1, -1));
-		const head1 = `${file} :: each ${expr} as ${item} (${key})`;
-		// A repeated identical head in one file gets an ordinal, so a new copy
-		// needs its own entry rather than riding on the first one's.
-		const n = (seen.get(head1) ?? 0) + 1;
-		seen.set(head1, n);
-		out.push({ file, line: raw.slice(0, start).split('\n').length, id: n === 1 ? head1 : `${head1} #${n}`, item, key });
-	}
+	walk(parse(src, { modern: true }).fragment, (n) => {
+		if (n.type !== 'EachBlock' || !n.key) return;
+		const text = (x: Node) => collapse(src.slice(x.start, x.end));
+		const item = n.context ? text(n.context) + (n.index ? `, ${n.index}` : '') : n.index ?? '';
+		const head = `${file} :: each ${text(n.expression)} as ${item} (${text(n.key)})`;
+		const count = (seen.get(head) ?? 0) + 1;
+		seen.set(head, count);
+		out.push({
+			file,
+			line: src.slice(0, n.start).split('\n').length,
+			id: count === 1 ? head : `${head} #${count}`,
+			item,
+			key: text(n.key),
+			keyNode: n.key,
+			index: n.index ?? undefined,
+		});
+	});
+	return out.sort((x, y) => x.line - y.line);
 }
 
+const endsWithNonDigit = (s: unknown) => typeof s === 'string' && s.length > 0 && !/[0-9]$/.test(s);
+
 /**
- * The key is position-safe: exactly the index, the index interpolated into a
- * template literal (`${x}:${i}`), a trailing `+ i`, or the index as an array
- * element (JSON.stringify([..., i])). Arithmetic on it (`i % 2`), a property
- * named like it (`row.i`) or a conditional is NOT, and needs an entry.
+ * The key is position-safe, read from its AST: exactly the index; a template
+ * literal ending in `<non-digit>${index}`; `… + '<non-digit>' + index`; or
+ * JSON.stringify([…, index]). With the index LAST and after a non-digit
+ * separator, the trailing digits recover it, so two positions cannot share a
+ * key. `${i}${x}`, `x.id + i`, `i % 2`, `row.i`, a conditional or a function
+ * of the index are not, and need an entry (codex round 2).
  */
-export function keysOnPosition(site: Pick<Site, 'item' | 'key'>): boolean {
-	const parts = site.item.split(/,(?![^[{]*[\]}])/).map((s) => s.trim());
-	const index = parts[1];
-	if (!index || !/^[A-Za-z_$][\w$]*$/.test(index)) return false;
-	const k = site.key;
-	const i = index.replace(/\$/g, '\\$');
-	return (
-		k === index ||
-		(k.startsWith('`') && new RegExp(`\\$\\{${i}\\}`).test(k)) ||
-		new RegExp(`[^.\\w$]\\+\\s*${i}$`).test(k) ||
-		new RegExp(`JSON\\.stringify\\(\\[[\\s\\S]*,\\s*${i}\\s*\\]\\)$`).test(k)
-	);
+export function keysOnPosition(keyNode: Node, index: string | undefined): boolean {
+	if (!index) return false;
+	const isIndex = (x: Node) => x?.type === 'Identifier' && x.name === index;
+	if (isIndex(keyNode)) return true;
+	if (keyNode.type === 'TemplateLiteral') {
+		const exprs = keyNode.expressions;
+		const quasis = keyNode.quasis;
+		return (
+			exprs.length > 0 &&
+			isIndex(exprs[exprs.length - 1]) &&
+			quasis[quasis.length - 1].value.cooked === '' &&
+			endsWithNonDigit(quasis[quasis.length - 2].value.cooked)
+		);
+	}
+	if (keyNode.type === 'BinaryExpression' && keyNode.operator === '+' && isIndex(keyNode.right)) {
+		const left = keyNode.left;
+		const sep = left.type === 'BinaryExpression' && left.operator === '+' ? left.right : left;
+		return sep?.type === 'Literal' && endsWithNonDigit(sep.value);
+	}
+	if (
+		keyNode.type === 'CallExpression' &&
+		keyNode.callee?.type === 'MemberExpression' &&
+		keyNode.callee.object?.name === 'JSON' &&
+		keyNode.callee.property?.name === 'stringify' &&
+		keyNode.arguments[0]?.type === 'ArrayExpression'
+	) {
+		const els = keyNode.arguments[0].elements;
+		return isIndex(els[els.length - 1]);
+	}
+	return false;
 }
 
 const sites = svelteFiles(SRC).flatMap((p) => keyedEaches(relative(SRC, p), readFileSync(p, 'utf8')));
@@ -147,7 +134,7 @@ describe('keyed {#each} census (TASK-3539)', () => {
 
 	it('every keyed each that does not key on its position names why its keys cannot repeat', () => {
 		const missing = sites
-			.filter((s) => !keysOnPosition(s) && !(s.id in EACH_KEY_CENSUS))
+			.filter((s) => !keysOnPosition(s.keyNode, s.index) && !(s.id in EACH_KEY_CENSUS))
 			.map(
 				(s) =>
 					`${s.file}:${s.line} has a keyed each with no census entry. Add to web/src/lib/eachKeyCensus.ts:\n` +
@@ -170,43 +157,42 @@ describe('keyed {#each} census (TASK-3539)', () => {
 		expect(bad).toEqual([]);
 	});
 
-	it('the scan reads a multi-line head, a destructured item and a position key (control)', () => {
-		const src = `{#each rows.filter((r) =>\n  r.ok) as { a, b }, i (a.id)}x{/each}\n{#each xs as x, n (\`\${x}:\${n}\`)}y{/each}\n{#each ys as y}z{/each}`;
-		const got = keyedEaches('f.svelte', src);
-		expect(got.map((s) => s.id)).toEqual([
-			'f.svelte :: each rows.filter((r) => r.ok) as { a, b }, i (a.id)',
-			'f.svelte :: each xs as x, n (`${x}:${n}`)',
-		]);
-		expect(got.map(keysOnPosition)).toEqual([false, true]);
-	});
-
-	it('braces in strings, comments, scripts and repeated heads do not fool the scan (codex round 1)', () => {
+	it('the scan reads multi-line heads, strings, comments and repeats right (control)', () => {
 		const src = [
-			'{#each xs.filter((x) => x.name !== "}") as x (x.id)}a{/each}',
-			'{#each ys.map((y) => `${y.a}{`) as y (y)}b{/each}',
-			'<!-- {#each hidden as h (h)} -->',
 			'<script>const s = "{#each fake as f (f)}";</script>',
+			'<!-- {#each hidden as h (h)} -->',
+			'{#each rows.filter((r) =>\n  r.ok) as { a, b }, i (a.id)}x{/each}',
+			'{#each xs.filter((x) => x.name !== "}") as x (x.id /* } */)}a{/each}',
+			'{#each ys.filter((y) => /}/.test(y)) as y (y)}b{/each}',
 			'{#each zs as z (z.id)}c{/each}',
 			'{#each zs as z (z.id)}d{/each}',
+			'{#each ns as n}e{/each}',
 		].join('\n');
 		expect(keyedEaches('f.svelte', src).map((s) => s.id)).toEqual([
+			'f.svelte :: each rows.filter((r) => r.ok) as { a, b }, i (a.id)',
 			'f.svelte :: each xs.filter((x) => x.name !== "}") as x (x.id)',
-			'f.svelte :: each ys.map((y) => `${y.a}{`) as y (y)',
+			'f.svelte :: each ys.filter((y) => /}/.test(y)) as y (y)',
 			'f.svelte :: each zs as z (z.id)',
 			'f.svelte :: each zs as z (z.id) #2',
 		]);
 	});
 
-	it('only a position-safe key is exempt (codex round 1)', () => {
-		const exempt = (item: string, key: string) => keysOnPosition({ item, key });
-		expect(exempt('x, i', 'i')).toBe(true);
-		expect(exempt('x, i', '`${x.id}:${i}`')).toBe(true);
-		expect(exempt('x, i', "x.id + ':' + i")).toBe(true);
-		expect(exempt('x, i', 'JSON.stringify([x.kind, i])')).toBe(true);
-		expect(exempt('x, i', 'i % 2')).toBe(false);
-		expect(exempt('x, i', 'x.i')).toBe(false);
-		expect(exempt('x, i', "i > 0 ? 'rest' : 'first'")).toBe(false);
-		expect(exempt('x, i', 'rowKey(x, i)')).toBe(false);
-		expect(exempt('x', 'x.id')).toBe(false);
+	it('only a position-safe key is exempt (codex rounds 1-2)', () => {
+		const exempt = (key: string) => {
+			const [site] = keyedEaches('f.svelte', `{#each xs as x, i (${key})}a{/each}`);
+			return keysOnPosition(site.keyNode, site.index);
+		};
+		expect(exempt('i')).toBe(true);
+		expect(exempt('`${x.id}:${i}`')).toBe(true);
+		expect(exempt("x.id + ':' + i")).toBe(true);
+		expect(exempt('JSON.stringify([x.kind, i])')).toBe(true);
+		expect(exempt('`${i}${x.suffix}`')).toBe(false);
+		expect(exempt('`${x.id}${i}`')).toBe(false);
+		expect(exempt('`v1${i}`')).toBe(false);
+		expect(exempt('x.id + i')).toBe(false);
+		expect(exempt('i % 2')).toBe(false);
+		expect(exempt('x.i')).toBe(false);
+		expect(exempt("i > 0 ? 'rest' : 'first'")).toBe(false);
+		expect(exempt('rowKey(x, i)')).toBe(false);
 	});
 });
