@@ -126,6 +126,7 @@ var cloudAdminPaths = map[string]struct{}{
 	"/api/v1/admin/plan":                   {},
 	"/api/v1/admin/stripe-customer-id":     {},
 	"/api/v1/admin/user-by-customer":       {},
+	"/api/v1/admin/user-by-id":             {},
 	"/api/v1/admin/stripe-event-processed": {},
 	"/api/v1/admin/stripe-event-unmark":    {},
 	"/api/v1/admin/payment-failed":         {},
@@ -873,6 +874,10 @@ func (s *Server) handleSetStripeCustomerID(w http.ResponseWriter, r *http.Reques
 		UserID      string `json:"user_id"`
 		CustomerID  string `json:"customer_id"`
 		CloudSecret string `json:"cloud_secret"`
+		// Replace lets an ADMIN USER overwrite a different stored id (a
+		// support fix). The sidecar never sends it, and the cloud secret
+		// alone cannot use it (TASK-3549).
+		Replace bool `json:"replace"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -913,10 +918,29 @@ func (s *Server) handleSetStripeCustomerID(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// 4. Store the Stripe customer ID
-	if err := s.store.SetUserStripeCustomerID(input.UserID, input.CustomerID); err != nil {
-		writeInternalError(w, err)
-		return
+	// 4. Store the Stripe customer ID, compare-and-set (TASK-3549): a user who
+	// already holds a DIFFERENT customer keeps it, and the caller is told which,
+	// with 409. Overwriting the link orphaned the first customer's subscription:
+	// still charging, its events finding no user. Only an admin user may replace.
+	if input.Replace && isAdmin {
+		if err := s.store.SetUserStripeCustomerID(input.UserID, input.CustomerID); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+	} else {
+		stored, err := s.store.SetUserStripeCustomerIDIfUnset(input.UserID, input.CustomerID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if stored != input.CustomerID {
+			slog.Warn("stripe customer ID not replaced: the user already has a different one",
+				"user_id", input.UserID, "stored_customer_id", stored, "refused_customer_id", input.CustomerID)
+			writeError2(w, http.StatusConflict, "stripe_customer_conflict",
+				"This user already has a different Stripe customer; it was not replaced.",
+				map[string]any{"stored_customer_id": stored})
+			return
+		}
 	}
 
 	// 5. Audit log
@@ -987,6 +1011,43 @@ func (s *Server) handleGetUserByCustomerID(w http.ResponseWriter, r *http.Reques
 		"user_id": targetUser.ID,
 		"email":   targetUser.Email,
 		"plan":    targetUser.Plan,
+	})
+}
+
+// handleGetUserByID handles GET /api/v1/admin/user-by-id?user_id=… (TASK-3549).
+// The sidecar reads a user's stored Stripe customer BEFORE writing one, so an
+// older pad that still overwrites on POST /admin/stripe-customer-id is never
+// asked to, and so a webhook that found the user some other way (customer or
+// subscription metadata, the checkout session's client_reference_id) can
+// compare the stored customer with the event's. Same credential rule and
+// response shape as user-by-customer, plus stripe_customer_id.
+func (s *Server) handleGetUserByID(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		if !s.validateCloudSecret(r.Header.Get("X-Cloud-Secret"), w) {
+			return
+		}
+	}
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "user_id query parameter is required")
+		return
+	}
+	targetUser, err := s.store.GetUser(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if targetUser == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"user_id":            targetUser.ID,
+		"email":              targetUser.Email,
+		"plan":               targetUser.Plan,
+		"stripe_customer_id": targetUser.StripeCustomerID,
 	})
 }
 

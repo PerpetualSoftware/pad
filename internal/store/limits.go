@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -705,6 +706,29 @@ func (s *Store) SetUserStripeCustomerID(userID, customerID string) error {
 		return fmt.Errorf("set stripe customer id: %w", err)
 	}
 	return nil
+}
+
+// SetUserStripeCustomerIDIfUnset stores customerID only when the user has no
+// Stripe customer yet, or already has this one (TASK-3549). It never replaces a
+// different id: a second customer for one user is a duplicate to be resolved,
+// and overwriting the link is what orphaned the first subscription. Returns the
+// id the user holds afterwards, so the caller can tell a refusal from a write;
+// "" with a nil error means no such user.
+func (s *Store) SetUserStripeCustomerIDIfUnset(userID, customerID string) (string, error) {
+	if _, err := s.db.Exec(s.q(`UPDATE users SET stripe_customer_id = ?, updated_at = ?
+		WHERE id = ? AND (stripe_customer_id IS NULL OR stripe_customer_id = '' OR stripe_customer_id = ?)`),
+		customerID, now(), userID, customerID); err != nil {
+		return "", fmt.Errorf("set stripe customer id if unset: %w", err)
+	}
+	var stored sql.NullString
+	err := s.db.QueryRow(s.q(`SELECT stripe_customer_id FROM users WHERE id = ?`), userID).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read stripe customer id: %w", err)
+	}
+	return stored.String, nil
 }
 
 // GetUserByStripeCustomerID retrieves a user by their Stripe customer ID.
