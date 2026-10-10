@@ -67,6 +67,10 @@ func (s *Server) widenLibraryOptions(r *http.Request, workspaceID string, coll *
 			// Another writer added them first.
 			return fresh, freshSchema, nil, nil
 		}
+		// Not held to ValidateSchemaKeysAndOptions (TASK-3539): this only
+		// APPENDS words not already listed, so it never creates a repeat, and
+		// refusing here would fail an ordinary item create over a legacy
+		// schema stored with one, which the write-only rule forbids.
 		widened, err := appendSelectOptionsJSON(fresh.Schema, missing)
 		if err != nil {
 			return coll, schema, nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to extend collection schema"}
