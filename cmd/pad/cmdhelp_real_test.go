@@ -207,3 +207,29 @@ func TestRealPadTree_ExamplesLiveInTheExampleField(t *testing.T) {
 		t.Errorf("move these commands' examples from Long to the Example field:\n  %s", strings.Join(offenders, "\n  "))
 	}
 }
+
+// TASK-2865: every leaf command shows at least one example, so an agent
+// reading `pad help --format json` (or --help) sees a real invocation for
+// anything it can run. A group node (one with subcommands) is exempt: it
+// only routes. The drift validator above checks each example is real.
+func TestRealPadTree_EveryLeafHasAnExample(t *testing.T) {
+	var missing []string
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		subs := 0
+		for _, sub := range c.Commands() {
+			if sub.Hidden || sub.Name() == "help" || sub.Name() == "completion" {
+				continue
+			}
+			subs++
+			walk(sub)
+		}
+		if subs == 0 && c.HasParent() && !c.Hidden && c.Runnable() && strings.TrimSpace(c.Example) == "" {
+			missing = append(missing, c.CommandPath())
+		}
+	}
+	walk(newRootCmd())
+	if len(missing) > 0 {
+		t.Errorf("give these leaf commands an Example (one common, real invocation):\n  %s", strings.Join(missing, "\n  "))
+	}
+}
