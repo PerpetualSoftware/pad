@@ -45,6 +45,7 @@
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
 	import RawMarkdownEditor from '$lib/components/editor/RawMarkdownEditor.svelte';
 	import { createRawBase, isOwnBody } from '$lib/items/rawBase';
+	import { openTabForms } from '$lib/items/rawCanonical';
 	import type { Editor as EditorType } from '@tiptap/core';
 	import * as Y from 'yjs';
 	import { CollabProvider, type CollabConnectionState } from '$lib/collab/wsProvider.svelte';
@@ -4847,7 +4848,12 @@
 		const fresh = await api.items.get(wsSlug, reqItemId);
 		if (!item || item.id !== reqItemId || gen !== loadGeneration) return 'gone';
 		const stored = fresh.content ?? '';
-		if (!rawStaleRebased && isOwnBody(stored, rawBase.ownTexts())) {
+		// Our own texts, and the form an open rich tab stores for each (the
+		// BUG-2995 round trip; rawCanonical.ts). Both compared EXACTLY.
+		const own = rawBase.ownTexts();
+		const forms = stored === '' || own.includes(stored) ? [] : await openTabForms(own, localIndex.getAll(wsSlug));
+		if (!item || item.id !== reqItemId || gen !== loadGeneration) return 'gone';
+		if (!rawStaleRebased && isOwnBody(stored, [...own, ...forms])) {
 			rawStaleRebased = true;
 			rawBase.landed(fresh.seq ?? 0, stored);
 			return 'rebased';

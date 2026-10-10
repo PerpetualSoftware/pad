@@ -190,8 +190,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// reload writes. resolveRawStale resends only on a decided rebase/overwrite
 	// (decideRawStale fenced it); its finally clears this pane's own flag.
 	decideRawStale: {
-		reviewed: 'e39d4dd2d369',
-		why: 'item id and gen against loadGeneration after the read and after the dialog, before the base moves or the reload writes',
+		reviewed: 'f53391b2f5b5',
+		why: 'item id and gen against loadGeneration after the read, after the open-tab canonical forms are computed, and after the dialog, before the base moves or the reload writes',
 	},
 	resolveRawStale: {
 		reviewed: 'c3d126d2c885',

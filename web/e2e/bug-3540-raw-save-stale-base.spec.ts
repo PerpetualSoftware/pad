@@ -147,4 +147,42 @@ test.describe('a stale raw save meets a stored edit (BUG-3540)', () => {
 		await expect(b.getByRole('dialog', { name: 'This item changed since you opened the raw editor' })).toHaveCount(0);
 		await b.close();
 	});
+
+	// With a RICH tab open, every raw save goes through the applier and that tab
+	// re-flushes OUR text in its own form (BUG-2995: '* ' becomes '- '). That is
+	// not someone else's change, so it must not ask. Measured before the
+	// open-tab canonical forms (rawCanonical.ts): bullets asked on 2 of 3 saves.
+	for (const [label, lines] of [
+		['plain', [' one', ' two', ' three']],
+		['bullets', ['\n* one', '\n* two', '\n* three']],
+	] as const) {
+		test(`three raw saves beside a rich tab ask nothing (${label})`, async ({ page, browser, fixture, request }) => {
+			const stamp = Date.now();
+			const doc = await createDoc(fixture, request, `Raw beside rich ${label} ${stamp}`, 'Original body.');
+			await tabOpen(page, fixture, doc.ref);
+			const b = await rawPage(browser, fixture, doc.ref);
+			const dialog = b.getByRole('dialog', { name: 'This item changed since you opened the raw editor' });
+			let dialogs = 0;
+			for (const line of lines) {
+				await b.locator('.raw-textarea').click();
+				await b.keyboard.press('Control+End');
+				await b.keyboard.type(line);
+				const word = line.trim().replace(/^\* /, '');
+				// Either the save lands, or the dialog asks.
+				await expect
+					.poll(async () => (await dialog.isVisible()) || (await storedBody(request, fixture, doc.id)).includes(word), { timeout: 20_000 })
+					.toBe(true);
+				if (await dialog.isVisible()) {
+					dialogs++;
+					await dialog.getByRole('button', { name: 'Overwrite with my text' }).click();
+					await expect(dialog).toBeHidden();
+					await expect.poll(() => storedBody(request, fixture, doc.id), { timeout: 20_000 }).toContain(word);
+				}
+				// Let the rich tab's 5s idle flush of our text land before the next save.
+				await b.waitForTimeout(6_500);
+			}
+			expect(dialogs, 'the raw tab was asked about its own text, as the rich tab stored it').toBe(0);
+			await b.close();
+		});
+	}
 });
