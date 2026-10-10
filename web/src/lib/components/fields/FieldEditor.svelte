@@ -20,6 +20,7 @@ handlers — onchange is never called.
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { rawText, readAs } from '$lib/fields/fieldShape';
 	import { narrowRelationRow, UNRESOLVED_LABEL, UNRESOLVED_TITLE } from '$lib/collections/relationGroups';
+	import { uniqueStrings } from '$lib/utils/unique';
 	import {
 		isMultiRelationType,
 		isRelationType,
@@ -827,7 +828,7 @@ handlers — onchange is never called.
 	function toggleDropdown() {
 		dropdownOpen = !dropdownOpen;
 		if (dropdownOpen) {
-			focusedIndex = field.options?.indexOf(value) ?? -1;
+			focusedIndex = field.options ? optionList.indexOf(value) : -1;
 		}
 	}
 
@@ -839,7 +840,7 @@ handlers — onchange is never called.
 
 	function handleDropdownKeydown(e: KeyboardEvent) {
 		if (!dropdownOpen || !field.options) return;
-		const opts = field.options;
+		const opts = optionList;
 
 		if (e.key === 'ArrowDown') {
 			e.preventDefault();
@@ -885,13 +886,22 @@ handlers — onchange is never called.
 	});
 
 	/**
+	 * The field's options, each once (TASK-3539): the select list and the
+	 * keyboard focus index both read this, and a keyed each throws on a repeat.
+	 * A multi_select can also STORE a value twice, so multiChoices dedupes too.
+	 */
+	let optionList = $derived(uniqueStrings(field.options ?? []));
+
+	/**
 	 * The options, then any stored value that is not one (a renamed or removed
 	 * option), so it can still be seen and removed rather than silently kept.
 	 */
-	let multiChoices = $derived([
-		...(field.options ?? []),
-		...shownSelection.filter((v) => !(field.options ?? []).includes(v)),
-	]);
+	let multiChoices = $derived(
+		uniqueStrings([
+			...optionList,
+			...shownSelection.filter((v) => !optionList.includes(v)),
+		]),
+	);
 
 	function toggleMultiOption(opt: string) {
 		// Toggle what the user last SAW, not the prop (the BUG-3047 rule the
@@ -1559,7 +1569,7 @@ handlers — onchange is never called.
 {:else if field.type === 'select'}
 	{#snippet selectOptions()}
 		{#if field.options}
-			{#each field.options as option, i (option)}
+			{#each optionList as option, i (option)}
 				<button
 					id="{fieldId}-option-{i}"
 					class="select-option"

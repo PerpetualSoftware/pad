@@ -5811,7 +5811,8 @@
 				link_type: direction.type
 			});
 			if (switchedAway(sourceItem, gen)) return;
-			itemLinks = [...itemLinks, newLink];
+			// A refresh that read after the create may already hold it (TASK-3539).
+			if (!itemLinks.some((l) => l.id === newLink.id)) itemLinks = [...itemLinks, newLink];
 			// Closing the form unmounts the picker, which cancels its own
 			// pending/in-flight search in onDestroy — nothing to clear here.
 			showAddLink = false;

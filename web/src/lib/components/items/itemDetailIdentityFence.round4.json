@@ -61,7 +61,7 @@
 			"id": "G24",
 			"finding": "P1-1",
 			"what": "in-place array mutation before the fence",
-			"old": "\t\t\tif (switchedAway(sourceItem, gen)) return;\n\t\t\titemLinks = [...itemLinks, newLink];",
+			"old": "\t\t\tif (switchedAway(sourceItem, gen)) return;\n\t\t\t// A refresh that read after the create may already hold it (TASK-3539).\n\t\t\tif (!itemLinks.some((l) => l.id === newLink.id)) itemLinks = [...itemLinks, newLink];",
 			"new": "\t\t\titemLinks.push(newLink);\n\t\t\tif (switchedAway(sourceItem, gen)) return;"
 		},
 		{

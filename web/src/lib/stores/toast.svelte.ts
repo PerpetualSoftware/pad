@@ -80,8 +80,11 @@ function startClock(id: string, clock: ToastClock): void {
 	clock.timer = setTimeout(() => dismiss(id), clock.remaining);
 }
 
+// A counter makes the id unique by construction; the toast lists are keyed by
+// it, and two random suffixes in one millisecond could collide (TASK-3539).
+let toastSeq = 0;
 function generateId(): string {
-	return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+	return Date.now().toString(36) + '-' + (++toastSeq).toString(36);
 }
 
 function show(message: string, type: Toast['type'] = 'info', duration?: number, link?: string, action?: ToastAction): string {

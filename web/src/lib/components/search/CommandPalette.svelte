@@ -2,6 +2,7 @@
 	import { untrack, tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
+	import { uniqueBy } from '$lib/utils/unique';
 	import { statusColor } from '$lib/utils/fieldColors';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -709,7 +710,9 @@
 				if (liveCurrentReady) return;
 			}
 			const before = flatResults;
-			results = [...results, ...(resp.results ?? [])];
+			// A row can come back on the next offset page when something was
+			// written in between; a keyed group throws on the repeat (TASK-3539).
+			results = uniqueBy([...results, ...(resp.results ?? [])], (r) => r.item.id || r.item.slug);
 			selectedIdx = reselectAfterAppend(before, flatResults, selectedIdx);
 		} catch {
 			// ignore

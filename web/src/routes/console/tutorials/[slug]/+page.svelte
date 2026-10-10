@@ -48,7 +48,7 @@
 				<aside class="chapters" aria-labelledby="chapters">
 					<h2 id="chapters">Chapters</h2>
 					<ol>
-						{#each t.chapters as c (c.t)}
+						{#each t.chapters as c, i (i)}
 							<li>
 								{#if t.youtube_id}
 									<button type="button" onclick={() => player?.seek(c.t)}>

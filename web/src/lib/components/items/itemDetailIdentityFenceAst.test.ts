@@ -165,7 +165,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	handleDelete: { reviewed: 'c331e8535525', why: 'switchedAway on both arms' },
 	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
 	handleDeleteLink: { reviewed: '64385ff65a32', why: 'switchedAway after each await' },
-	handleCreateLink: { reviewed: '038b351cf781', why: 'switchedAway after each await' },
+	handleCreateLink: { reviewed: 'a573af375ab2', why: 'switchedAway after each await; the append is skipped when a refresh already holds the link (TASK-3539)' },
 	handleMove: { reviewed: '1422377a9e74', why: 'stillOnSource() on every arm, including inside navIfStillCurrent, and before the BUG-3200 needs-value handoff writes the dialog state' },
 	// BUG-3230 U0: the pending-edits question for the pane's raw and fallback
 	// saves, and the recovery offer for markdown an unload save could not store.

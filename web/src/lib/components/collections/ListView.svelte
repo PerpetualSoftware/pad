@@ -22,6 +22,7 @@
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
+	import { uniqueStrings } from '$lib/utils/unique';
 
 
 	interface Props {
@@ -227,7 +228,9 @@
 		if (isRelationGroup) return relationLaneValueFor(item, groupField, resolveRelation);
 		return laneValue(parseFields(item)[groupField]);
 	}
-	let groupOptions = $derived(field?.options ?? []);
+	// Each once, never '' (the ungrouped lane's id): a keyed each throws on a
+	// repeat (TASK-3539).
+	let groupOptions = $derived(uniqueStrings((field?.options ?? []).filter((o) => o !== '')));
 
 	/**
 	 * Display groups: predefined options first, then any additional

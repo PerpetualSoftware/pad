@@ -1,3 +1,5 @@
+import { uniqueBy, uniqueStrings } from '$lib/utils/unique';
+
 // ─── User & Auth ──────────────────────────────────────────────────────────────
 
 export interface User {
@@ -2852,11 +2854,34 @@ export function parseTags(item: Pick<Item, 'tags'> | null | undefined): string[]
 const schemaDefaults = (): CollectionSchema => ({ fields: [] });
 
 export function parseSchema(collection: Collection): CollectionSchema {
+	let parsed: CollectionSchema;
 	try {
-		return { ...schemaDefaults(), ...JSON.parse(collection.schema) };
+		parsed = { ...schemaDefaults(), ...JSON.parse(collection.schema) };
 	} catch {
 		return schemaDefaults();
 	}
+	return normalizeSchemaForRender(parsed);
+}
+
+/**
+ * Makes a stored schema safe for the keyed lists that render it (TASK-3539):
+ * a field key appears once (the first definition wins, the server's rule in
+ * library_option_widen), and a select field's options are distinct and
+ * non-empty. A stored schema can hold either repeat (nothing refused them
+ * before), and every field list and option list on the page is keyed by
+ * them, so one repeat used to throw each_key_duplicate and blank the view.
+ */
+export function normalizeSchemaForRender(schema: CollectionSchema): CollectionSchema {
+	if (!Array.isArray(schema.fields)) return { ...schema, fields: [] };
+	const fields = uniqueBy(
+		schema.fields.filter((f): f is FieldDef => !!f && typeof f === 'object'),
+		(f) => f.key,
+	).map((f) =>
+		Array.isArray(f.options)
+			? { ...f, options: uniqueStrings(f.options.filter((o) => o !== '')) }
+			: f,
+	);
+	return { ...schema, fields };
 }
 
 const settingsDefaults = (): CollectionSettings => ({ layout: 'balanced', default_view: 'board' });

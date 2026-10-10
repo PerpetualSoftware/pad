@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { parseFields, type Item } from '$lib/types';
+	import { uniqueStrings } from '$lib/utils/unique';
 	import {
 		PLAYBOOK_ARGUMENT_TYPES,
 		isValidInvocationSlug,
@@ -339,7 +340,7 @@
 					value={customTriggerMode ? '__custom__' : trigger}
 					onchange={onTriggerSelect}
 				>
-					{#each triggers as t (t)}
+					{#each uniqueStrings(triggers) as t (t)}
 						<option value={t}>{t}</option>
 					{/each}
 					<option value="__custom__">Other (custom trigger)…</option>
@@ -362,7 +363,7 @@
 					value={scope}
 					onchange={(e) => onScopeChange((e.currentTarget as HTMLSelectElement).value)}
 				>
-					{#each scopes as s (s)}
+					{#each uniqueStrings(scopes) as s (s)}
 						<option value={s}>{s}</option>
 					{/each}
 				</select>
@@ -378,7 +379,7 @@
 					value={status}
 					onchange={(e) => onStatusChange((e.currentTarget as HTMLSelectElement).value)}
 				>
-					{#each statuses as st (st)}
+					{#each uniqueStrings(statuses) as st (st)}
 						<option value={st}>{st}</option>
 					{/each}
 				</select>
@@ -542,7 +543,7 @@
 									setSampleValue(arg.name, (e.currentTarget as HTMLSelectElement).value)}
 							>
 								<option value="">(unset)</option>
-								{#each arg.enum as opt (opt)}
+								{#each uniqueStrings(arg.enum) as opt (opt)}
 									<option value={opt}>{opt}</option>
 								{/each}
 							</select>

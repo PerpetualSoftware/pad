@@ -7,6 +7,7 @@
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { tutorialsStore, learnUrl, formatDuration } from '$lib/tutorials/tutorials.svelte';
+	import { uniqueBy } from '$lib/utils/unique';
 
 	let loading = $state(true);
 	onMount(async () => {
@@ -31,14 +32,14 @@
 	{:else if loading}
 		<p class="muted">Loading…</p>
 	{:else if catalog}
-		{#each catalog.paths as path (path.id)}
+		{#each uniqueBy(catalog.paths, (p) => p.id) as path (path.id)}
 			{@const tutorials = byPath(path.id)}
 			{#if tutorials.length > 0}
 				<section class="path" aria-labelledby={`path-${path.id}`}>
 					<h2 id={`path-${path.id}`}>{path.title}</h2>
 					<p class="muted">{path.blurb}</p>
 					<ol class="grid">
-						{#each tutorials as t (t.slug)}
+						{#each uniqueBy(tutorials, (x) => x.slug) as t (t.slug)}
 							<li>
 								{#if t.seconds != null}
 									<a class="card" href={`/console/tutorials/${encodeURIComponent(t.slug)}`}>

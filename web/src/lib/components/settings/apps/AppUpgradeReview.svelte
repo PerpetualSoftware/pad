@@ -180,7 +180,7 @@
 			{#if toReview.length > 0}
 				<h4>Needs your review</h4>
 				<ul data-testid="app-upgrade-review">
-					{#each toReview as e (e.kind + e.key + e.change)}
+					{#each toReview as e, i (`${e.kind}|${e.key}|${e.change}|${i}`)}
 						<li>{entryText(e)}{#if e.detail}<span class="hint"> — {e.detail}</span>{/if}</li>
 					{/each}
 				</ul>

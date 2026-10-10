@@ -3841,7 +3841,8 @@
 				config: JSON.stringify(config)
 			});
 			if (!identityHeld(epochAtEntry)) return;
-			savedViews = [...savedViews, view];
+			// A reload that read after the create may already hold it (TASK-3539).
+			if (!savedViews.some((v) => v.id === view.id)) savedViews = [...savedViews, view];
 			activeViewId = view.id;
 			saveViewOpen = false;
 			saveViewName = '';

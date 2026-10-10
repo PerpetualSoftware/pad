@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { appendUnique } from '$lib/utils/activityPaging';
 	import { adminFetch, formatDate, adminStore, type AdminUser } from '$lib/stores/admin.svelte';
 	import UserModal from '$lib/components/admin/UserModal.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
@@ -102,7 +103,9 @@
 			const params = buildQueryParams({ offset: reset ? 0 : offset, includeSearch: true });
 			const result = await adminFetch('/admin/users?' + params.toString());
 			const rows: AdminUser[] = applyClientStatusFilter(result.users ?? result);
-			users = reset ? rows : [...users, ...rows];
+			// Offset paging over a mutable sort can repeat a user across pages;
+			// the list is keyed by id (TASK-3539).
+			users = reset ? rows : appendUnique(users, rows);
 			total = typeof result.total === 'number' ? result.total : users.length;
 			// Sync filter/sort state back to URL (skip on reset=false to
 			// avoid spamming history during paginated "load more").

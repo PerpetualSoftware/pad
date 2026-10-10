@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { uniqueStrings } from '$lib/utils/unique';
 	/**
 	 * Free-form tag chip editor. Tags live on `item.tags` (a JSON-array
 	 * string), NOT in the collection schema — so this is a sibling of
@@ -68,7 +69,9 @@
 	// Suggestions not already applied, matched case-insensitively to the input.
 	let filteredSuggestions = $derived.by(() => {
 		const q = inputValue.trim().toLowerCase();
-		return suggestions
+		// Each once: the list is keyed by the tag, and the suggestions can repeat
+		// one (TASK-3539).
+		return uniqueStrings(suggestions)
 			.filter((s) => !hasTag(s))
 			.filter((s) => q === '' || s.toLowerCase().includes(q))
 			.slice(0, 8);

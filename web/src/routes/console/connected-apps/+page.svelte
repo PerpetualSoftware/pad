@@ -6,6 +6,7 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import type { AppGrant, ConnectedApp, Workspace } from '$lib/types';
+	import { uniqueStrings } from '$lib/utils/unique';
 
 	// Connected Apps page (TASK-954). Lists every active OAuth grant
 	// chain the user has authorized via the MCP API and lets them
@@ -424,7 +425,7 @@
 											<span class="detail-label">Redirect URIs</span>
 											<div class="detail-value">
 												{#if app.redirect_uris && app.redirect_uris.length > 0}
-													{#each app.redirect_uris as uri (uri)}
+													{#each uniqueStrings(app.redirect_uris ?? []) as uri (uri)}
 														<code class="uri">{uri}</code>
 													{/each}
 												{:else}

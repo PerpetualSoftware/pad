@@ -26,6 +26,7 @@
 	import { canCreateIn } from '$lib/collections/canCreateIn';
 	import { artifactSlugFor } from '$lib/collections/artifactSlug';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { uniqueStrings } from '$lib/utils/unique';
 
 	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
 	type Trigger = typeof TRIGGERS[number];
@@ -304,7 +305,8 @@
 				buildConventionMetadata()
 			);
 			const created = await api.items.create(workspace, conventionsSlug, data);
-			conventions = [...conventions, created];
+			// A reload that read after the create may already hold it (TASK-3539).
+			if (!conventions.some((c) => c.id === created.id)) conventions = [...conventions, created];
 			toastStore.show('Convention created', 'success');
 			resetForm();
 		} catch (err: unknown) {
@@ -905,7 +907,7 @@
 													{#if convention.commands?.length}
 														<div class="command-list">
 															<div class="metadata-label">Command References</div>
-															{#each convention.commands as command (command)}
+															{#each uniqueStrings(convention.commands) as command (command)}
 																<code>{command}</code>
 															{/each}
 														</div>

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { adminFetch } from '$lib/stores/admin.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import { appendUnique } from '$lib/utils/activityPaging';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
 	// Admin MCP audit log page (PLAN-943 TASK-960).
@@ -96,7 +97,9 @@
 			const items: MCPAuditEntry[] = Array.isArray(result?.items) ? result.items : [];
 			dropped = typeof result?.dropped === 'number' ? result.dropped : 0;
 			if (append) {
-				entries = [...entries, ...items];
+				// Newest-first offset paging repeats a row when a call is logged
+				// between pages; the list is keyed by id (TASK-3539).
+				entries = appendUnique(entries, items);
 			} else {
 				entries = items;
 			}

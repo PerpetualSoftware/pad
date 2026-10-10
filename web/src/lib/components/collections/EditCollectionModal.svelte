@@ -1029,7 +1029,7 @@
 								<div class="impact-notices" role="status" aria-live="polite">
 									<p class="impact-notices-title">These changes touch items that already have values:</p>
 									<ul>
-										{#each schemaImpacts as impact (impact.kind + impact.field + (impact.kind === 'option' ? impact.option : impact.kind === 'rename' ? impact.from : ''))}
+										{#each schemaImpacts as impact, i (JSON.stringify([impact.kind, impact.field, impact.kind === 'option' ? impact.option : impact.kind === 'rename' ? impact.from : '', i]))}
 											<li class="impact-notice">
 												<span>{describeSchemaEditImpact(impact)}</span>
 												{#if impact.kind === 'field'}
@@ -1109,7 +1109,7 @@
 				<div class="impact-confirm" role="alertdialog" aria-labelledby="impact-confirm-msg">
 					<p id="impact-confirm-msg" class="impact-confirm-msg">Save these changes? They affect items that already have values:</p>
 					<ul>
-						{#each schemaImpacts as impact (impact.kind + impact.field + (impact.kind === 'option' ? impact.option : impact.kind === 'rename' ? impact.from : ''))}
+						{#each schemaImpacts as impact, i (JSON.stringify([impact.kind, impact.field, impact.kind === 'option' ? impact.option : impact.kind === 'rename' ? impact.from : '', i]))}
 							<li>{describeSchemaEditImpact(impact)}</li>
 						{/each}
 					</ul>
