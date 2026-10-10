@@ -178,6 +178,22 @@ func TestTASK2864_SearchIncludeArchived(t *testing.T) {
 		}
 	})
 
+	// The item-grant guest still holds its live grant on alpha here, so its
+	// permission filter is non-empty and genuinely applied: the archived,
+	// ungranted bravo must stay out of it with include_archived on (codex
+	// round 2: the all-archived cases below short-circuit to empty access).
+	t.Run("item-grant guest with a live grant sees no archived ungranted item", func(t *testing.T) {
+		for _, ws := range []string{e.wsSlug, ""} {
+			a := task2864Search(t, e.asCookie("guestitem"), "zebra", ws, true)
+			if got := task2864Titles(a); !equalRefs(got, sortedRefs("Zebra alpha")) {
+				t.Errorf("ws=%q: got %v, want [Zebra alpha]", ws, got)
+			}
+			if task2864Has(task2864Search(t, e.asCookie("guestitem"), e.refBravo, ws, true), e.refBravo) {
+				t.Errorf("ws=%q: ref lookup reached the archived ungranted item", ws)
+			}
+		}
+	})
+
 	// Archive the two granted items as well, then check that no caller sees
 	// an archived item it could not see live.
 	task2864Archive(t, e, e.refAlpha)
