@@ -22,8 +22,13 @@ var task3539BadSchemas = []struct {
 	{"repeated field key", `{"fields":[{"key":"status","label":"Status","type":"text"},{"key":"status","label":"Again","type":"text"}]}`, `field key "status" is defined more than once`},
 	{"field with no key", `{"fields":[{"key":"","label":"Nameless","type":"text"}]}`, `field 1 (label "Nameless") has no key`},
 	{"repeated option", `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done","open"]}]}`, `field "status" lists the option "open" more than once`},
+	{"repeated multi_select option", `{"fields":[{"key":"labels","label":"Labels","type":"multi_select","options":["a","a"]}]}`, `field "labels" lists the option "a" more than once`},
 	{"empty option", `{"fields":[{"key":"status","label":"Status","type":"select","options":["open",""]}]}`, `field "status" has an empty option`},
 }
+
+// A non-select field's options are not a rendered list; a legacy one that
+// repeats is not refused (codex round 4).
+const task3539LegacyTextOptions = `{"fields":[{"key":"owner","label":"Owner","type":"text","options":["x","x",""]}]}`
 
 const task3539CleanSchema = `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"]}]}`
 
@@ -73,6 +78,9 @@ func TestTASK3539_CleanSchemaIsAccepted(t *testing.T) {
 	}
 	if rr := rawJSONRequest(srv, "PATCH", base+"/things", `{"schema":`+strconv.Quote(task3539CleanSchema)+`}`); rr.Code != http.StatusOK {
 		t.Fatalf("update: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := rawJSONRequest(srv, "PATCH", base+"/things", `{"schema":`+strconv.Quote(task3539LegacyTextOptions)+`}`); rr.Code != http.StatusOK {
+		t.Fatalf("a text field's legacy options: %d %s, want 200", rr.Code, rr.Body.String())
 	}
 }
 

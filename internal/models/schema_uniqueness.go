@@ -3,8 +3,8 @@ package models
 import "fmt"
 
 // ValidateSchemaKeysAndOptions refuses a collection schema in which a field
-// has no key, two fields share a key, or a select field's options include an
-// empty value or the same value twice (TASK-3539). Every client renders a
+// has no key, two fields share a key, or a select or multi_select field's
+// options include an empty value or the same value twice (TASK-3539). Every client renders a
 // collection's fields and options as lists keyed by those values, and a
 // repeated key throws during render and blanks the view (BUG-3538); a field
 // key named twice is also ambiguous for every reader that looks one up.
@@ -24,6 +24,13 @@ func ValidateSchemaKeysAndOptions(schema CollectionSchema) error {
 			return fmt.Errorf("field key %q is defined more than once", f.Key)
 		}
 		seen[f.Key] = true
+		// Options are a list the clients render only for a select or a
+		// multi_select. Another type can carry a legacy `options` list (the old
+		// field DSL put a third part there for every type), and refusing that
+		// would block an unrelated schema save.
+		if f.Type != "select" && f.Type != "multi_select" {
+			continue
+		}
 		options := make(map[string]bool, len(f.Options))
 		for _, o := range f.Options {
 			if o == "" {
