@@ -25,8 +25,9 @@ import (
 
 func statusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "dashboard",
-		Short: "Show project dashboard — progress, attention items, suggested next",
+		Use:     "dashboard",
+		Short:   "Show project dashboard — progress, attention items, suggested next",
+		Example: `  pad project dashboard`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -206,8 +207,9 @@ func colorProgressBar(pct, width int, filledColor *color.Color) string {
 
 func nextCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "next",
-		Short: "Recommend the next task to work on",
+		Use:     "next",
+		Short:   "Recommend the next task to work on",
+		Example: `  pad project next`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -368,8 +370,9 @@ func standupCmd() *cobra.Command {
 	var days int
 
 	cmd := &cobra.Command{
-		Use:   "standup",
-		Short: "Auto-generate a daily standup report from recent activity",
+		Use:     "standup",
+		Short:   "Auto-generate a daily standup report from recent activity",
+		Example: `  pad project standup --days 1`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -591,8 +594,9 @@ func reportCmd() *cobra.Command {
 	var collections string
 
 	cmd := &cobra.Command{
-		Use:   "report",
-		Short: "Windowed project report — throughput, net flow, completions, status mix",
+		Use:     "report",
+		Short:   "Windowed project report — throughput, net flow, completions, status mix",
+		Example: `  pad project report --window month`,
 		Long: `Show a time-windowed project report: items created vs completed per bucket,
 net flow, completed-by-collection, and a current status-distribution snapshot.
 
@@ -751,8 +755,9 @@ func changelogCmd() *cobra.Command {
 	var parentRef string
 
 	cmd := &cobra.Command{
-		Use:   "changelog",
-		Short: "Generate release notes from completed items",
+		Use:     "changelog",
+		Short:   "Generate release notes from completed items",
+		Example: `  pad project changelog --days 7`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -953,8 +958,9 @@ func activityCmd() *cobra.Command {
 	var since string
 
 	cmd := &cobra.Command{
-		Use:   "activity",
-		Short: "Show recent workspace activity — what agents and users changed (non-streaming)",
+		Use:     "activity",
+		Short:   "Show recent workspace activity — what agents and users changed (non-streaming)",
+		Example: `  pad project activity --since 2026-10-09 --actor agent`,
 		Long: `Show a bounded, non-streaming snapshot of workspace activity.
 
 Answers "what did other agents/users do since I last worked?" — the query
@@ -1109,8 +1115,9 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 
 func watchCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "watch",
-		Short: "Stream real-time workspace activity (like kubectl get events --watch)",
+		Use:     "watch",
+		Short:   "Stream real-time workspace activity (like kubectl get events --watch)",
+		Example: `  pad project watch`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, cfg := getClient()
 			ws := getWorkspace()

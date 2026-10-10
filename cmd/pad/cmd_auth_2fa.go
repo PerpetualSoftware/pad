@@ -36,8 +36,9 @@ func twoFactorCmd() *cobra.Command {
 
 func twoFactorSetupCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "setup",
-		Short: "Turn on two-factor authentication (authenticator app)",
+		Use:     "setup",
+		Short:   "Turn on two-factor authentication (authenticator app)",
+		Example: `  pad auth 2fa setup`,
 		Long: `Turn on two-factor authentication.
 
 Pad shows an otpauth:// URI and its secret for your authenticator app, asks
@@ -53,8 +54,9 @@ codes are shown once: store them somewhere safe.`,
 
 func twoFactorDisableCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "disable",
-		Short: "Turn off two-factor authentication",
+		Use:     "disable",
+		Short:   "Turn off two-factor authentication",
+		Example: `  pad auth 2fa disable`,
 		Long: `Turn off two-factor authentication.
 
 An account with a password confirms with the password. An account without

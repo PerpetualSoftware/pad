@@ -25,8 +25,9 @@ import (
 
 func setupCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "setup",
-		Short: "Initialize a fresh Pad instance with the first admin account",
+		Use:     "setup",
+		Short:   "Initialize a fresh Pad instance with the first admin account",
+		Example: `  pad auth setup`,
 		Long: `Initialize a fresh Pad instance with the first admin account.
 
 By default the CLI hands the operator a deep link into the browser-based
@@ -328,8 +329,9 @@ func printPostSetupNextStepsHint() {
 
 func loginCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "login",
-		Short: "Log in to Pad",
+		Use:     "login",
+		Short:   "Log in to Pad",
+		Example: `  pad auth login`,
 		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 			// doBrowserLogin returns errCancelled when its inner SIGINT
 			// listener fires. Outside of pad init this command is the
@@ -835,8 +837,9 @@ func envTokenNotice() string {
 
 func logoutCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "logout",
-		Short: "Log out of Pad",
+		Use:     "logout",
+		Short:   "Log out of Pad",
+		Example: `  pad auth logout`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfiguredConfig()
 			if n := envTokenNotice(); n != "" {
@@ -912,8 +915,9 @@ func whoamiFailure(err error, envToken bool, baseURL string) error {
 
 func whoamiCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "whoami",
-		Short: "Show current user info",
+		Use:     "whoami",
+		Short:   "Show current user info",
+		Example: `  pad auth whoami`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfiguredConfig()
 
@@ -974,8 +978,9 @@ func whoamiCmd() *cobra.Command {
 func resetPasswordCmd() *cobra.Command {
 	var tempPassword bool
 	cmd := &cobra.Command{
-		Use:   "reset-password <email>",
-		Short: "Recover a locked-out account from the server host",
+		Use:     "reset-password <email>",
+		Short:   "Recover a locked-out account from the server host",
+		Example: `  pad auth reset-password alex@example.com`,
 		Long: `Recover an account when you're locked out and email isn't configured.
 
 Run this ON THE SERVER HOST. It talks to the local Pad instance over
