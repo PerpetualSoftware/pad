@@ -23,6 +23,7 @@ vi.mock('$lib/api/client', () => ({
 }));
 
 const { default: EditCollectionModal } = await import('./EditCollectionModal.svelte');
+const { confirmDialog } = await import('$lib/stores/confirmDialog.svelte');
 
 let host: HTMLElement;
 let app: Record<string, unknown> | null = null;
@@ -60,14 +61,16 @@ afterEach(() => {
 	if (app) unmount(app as never);
 	app = null;
 	host.remove();
+	confirmDialog.abandonAll();
 	vi.restoreAllMocks();
 });
 
+let props: { open: boolean } & Record<string, unknown>;
+
 async function open() {
-	app = mount(EditCollectionModal, {
-		target: host,
-		props: { open: true, collection, wsSlug: 'ws', onupdated: vi.fn(), onclose }
-	}) as Record<string, unknown>;
+	const p = $state({ open: true, collection, wsSlug: 'ws', onupdated: vi.fn(), onclose });
+	props = p;
+	app = mount(EditCollectionModal, { target: host, props: p as never }) as Record<string, unknown>;
 	await settle();
 }
 
@@ -84,9 +87,8 @@ const escape = () => document.querySelector('dialog')!.dispatchEvent(new Event('
 describe('TASK-2191: the Edit Collection dialog keeps edits', () => {
 	it('an untouched form closes without asking', async () => {
 		await open();
-		const ask = vi.spyOn(window, 'confirm');
 		cancel();
-		expect(ask).not.toHaveBeenCalled();
+		expect(confirmDialog.active).toBeNull();
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 
@@ -94,10 +96,34 @@ describe('TASK-2191: the Edit Collection dialog keeps edits', () => {
 		await open();
 		rename('Pipeline');
 		await settle();
-		const ask = vi.spyOn(window, 'confirm').mockReturnValue(false);
 		cancel();
+		await settle();
+		expect(confirmDialog.active?.title).toBe('Discard your changes?');
+		confirmDialog.cancel();
+		await settle();
 		escape();
-		expect(ask).toHaveBeenCalledTimes(2);
+		await settle();
+		expect(confirmDialog.active).not.toBeNull();
+		confirmDialog.cancel();
+		await settle();
+		expect(onclose).not.toHaveBeenCalled();
+		cancel();
+		await settle();
+		confirmDialog.confirm();
+		await settle();
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('a yes given after the dialog closed does not close it again (TASK-3543)', async () => {
+		await open();
+		rename('Pipeline');
+		await settle();
+		cancel();
+		await settle();
+		props.open = false; // the host closed it while the question was open
+		await settle();
+		confirmDialog.confirm();
+		await settle();
 		expect(onclose).not.toHaveBeenCalled();
 	});
 
@@ -109,9 +135,8 @@ describe('TASK-2191: the Edit Collection dialog keeps edits', () => {
 		await settle();
 		[...document.querySelectorAll<HTMLButtonElement>('button')].find((b) => /^\s*save changes/i.test(b.textContent ?? ''))!.click();
 		await settle();
-		const ask = vi.spyOn(window, 'confirm');
 		cancel();
-		expect(ask).not.toHaveBeenCalled();
+		expect(confirmDialog.active).toBeNull();
 		expect(onclose).toHaveBeenCalledTimes(1);
 		finish({ ...collection });
 		await settle();
@@ -124,9 +149,8 @@ describe('TASK-2191: the Edit Collection dialog keeps edits', () => {
 		[...document.querySelectorAll<HTMLButtonElement>('button')].find((b) => /^\s*save changes/i.test(b.textContent ?? ''))!.click();
 		await settle();
 		expect(updateMock).toHaveBeenCalledTimes(1);
-		const ask = vi.spyOn(window, 'confirm');
 		cancel();
-		expect(ask).not.toHaveBeenCalled();
+		expect(confirmDialog.active).toBeNull();
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 });

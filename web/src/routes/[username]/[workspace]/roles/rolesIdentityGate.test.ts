@@ -34,7 +34,7 @@ identityGateSuite({
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
 			saveRole: { reviewed: 'd5057790dac8', why: `${PAGE_AND_ENTRY}, per branch; the failure toast (TASK-2204) after the check` },
-			deleteRole: { reviewed: '22943326a704', why: `${PAGE_AND_ENTRY}; the failure toast (TASK-2204) after the check` },
+			deleteRole: { reviewed: '3c79a726945d', why: `${PAGE_AND_ENTRY}; the failure toast (TASK-2204) after the check. Re-reviewed for TASK-3543: entry, board and role captured before the confirm dialog's await, and all re-checked after it` },
 		},
 		nested: [],
 		markup: [],
@@ -76,8 +76,8 @@ identityGateSuite({
 		{
 			cls: 3,
 			what: "deleteRole's success arm loses its check while its failure arm keeps one",
-			old: '\t\t\tawait api.agentRoles.delete(wsSlug, editingRoleId);\n\t\t\tif (!identityHeld(epochAtEntry)) return;\n',
-			new: '\t\t\tawait api.agentRoles.delete(wsSlug, editingRoleId);\n',
+			old: '\t\t\tawait api.agentRoles.delete(wsSlug, roleId);\n\t\t\tif (!identityHeld(epochAtEntry)) return;\n',
+			new: '\t\t\tawait api.agentRoles.delete(wsSlug, roleId);\n',
 			names: 'deleteRole()',
 		},
 		{

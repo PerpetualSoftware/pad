@@ -60,6 +60,11 @@ function membersFor(who: string) {
 	};
 }
 
+// The destructive handlers ask through the shared dialog (TASK-3543); this
+// suite is not about the question, so it is always answered yes.
+vi.mock('$lib/stores/confirmDialog.svelte', () => ({
+	confirmDialog: { request: () => Promise.resolve(true) }
+}));
 vi.mock('$lib/utils/clipboard', () => ({
 	copyToClipboard: async (s: string) => {
 		copies.push(s);
@@ -190,7 +195,6 @@ describe('BUG-3237: the settings load never vouches for the previous identity\'s
 		auth.reset();
 		page.params = { username: 'dave', workspace: 'ws' };
 		window.location.hash = '';
-		vi.stubGlobal('confirm', () => true);
 	});
 
 	afterEach(() => {

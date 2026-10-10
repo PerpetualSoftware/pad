@@ -25,15 +25,15 @@ async function exerciseNewField(page: Page, dialog: ReturnType<Page['getByRole']
 	await expect(dialog.getByPlaceholder('Field name')).toHaveCount(before + 1);
 
 	// And the dialog still closes. The form now holds an edit, so Escape asks
-	// first (TASK-2191); accepting the discard closes it.
-	const asked: string[] = [];
-	page.once('dialog', (d) => {
-		asked.push(d.message());
-		void d.accept();
-	});
+	// first (TASK-2191), through the app's confirm dialog (TASK-3543);
+	// choosing Discard closes it.
 	await page.keyboard.press('Escape');
+	const ask = page.getByRole('dialog', { name: /^Discard / });
+	await expect(ask, 'Escape on an edited form asks before discarding').toBeVisible();
+	await expect(dialog, 'the form stays open while the question is asked').toBeVisible();
+	await ask.getByRole('button', { name: 'Discard', exact: true }).click();
+	await expect(ask).toBeHidden();
 	await expect(dialog).toBeHidden();
-	expect(asked, 'Escape on an edited form asks before discarding').toHaveLength(1);
 	expect(errors, 'page errors').toEqual([]);
 }
 
@@ -46,7 +46,7 @@ test.describe('TASK-2186: a new field label keeps the collection modals alive', 
 		await browserLogin(page);
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
 		await page.getByTitle('New collection').click();
-		const dialog = page.getByRole('dialog', { name: 'New Collection' });
+		const dialog = page.getByRole('dialog', { name: 'New Collection', exact: true });
 		await expect(dialog).toBeVisible();
 		await dialog.getByRole('button', { name: /Blank/ }).click();
 		await exerciseNewField(page, dialog);
@@ -57,7 +57,7 @@ test.describe('TASK-2186: a new field label keeps the collection modals alive', 
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks`);
 		await page.getByRole('button', { name: 'Collection menu' }).click();
 		await page.getByRole('menuitem', { name: /Edit collection/ }).click();
-		const dialog = page.getByRole('dialog', { name: 'Edit Collection' });
+		const dialog = page.getByRole('dialog', { name: 'Edit Collection', exact: true });
 		await expect(dialog).toBeVisible();
 		await dialog.getByRole('button', { name: 'Fields', exact: true }).click();
 		await exerciseNewField(page, dialog);

@@ -69,6 +69,11 @@ let restoreCalls = 0;
 
 const toasts = vi.hoisted(() => [] as Array<{ message: string; action?: { label: string; onAction: () => void } }>);
 
+// The destructive handlers ask through the shared dialog (TASK-3543); this
+// suite is not about the question, so it is always answered yes.
+vi.mock('$lib/stores/confirmDialog.svelte', () => ({
+	confirmDialog: { request: () => Promise.resolve(true) }
+}));
 vi.mock('$lib/stores/toast.svelte', () => ({
 	toastStore: {
 		show: (message: string, _t?: string, _d?: number, _l?: string, action?: { label: string; onAction: () => void }) => {
@@ -226,9 +231,6 @@ describe('BUG-3006: settings commits are fenced on the signed-in identity', () =
 		// exist: the failure reads as "the page did not render the control" and
 		// has nothing to do with what is being tested.
 		window.location.hash = '';
-		// `confirm` gates the destructive handlers; the page is not what this
-		// suite is testing, so it always says yes.
-		vi.stubGlobal('confirm', () => true);
 	});
 
 	afterEach(() => {

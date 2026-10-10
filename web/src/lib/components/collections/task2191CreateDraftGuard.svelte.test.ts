@@ -12,6 +12,9 @@ vi.mock('$lib/api/client', () => ({
 }));
 
 const { default: CreateCollectionModal } = await import('./CreateCollectionModal.svelte');
+// The question is asked through the shared dialog (TASK-3543); the test
+// answers it through the store.
+const { confirmDialog } = await import('$lib/stores/confirmDialog.svelte');
 
 let host: HTMLElement;
 let app: Record<string, unknown> | null = null;
@@ -35,6 +38,7 @@ afterEach(() => {
 	if (app) unmount(app as never);
 	app = null;
 	host.remove();
+	confirmDialog.abandonAll();
 	vi.restoreAllMocks();
 });
 
@@ -62,9 +66,9 @@ const cancel = () =>
 describe('TASK-2191: the Create Collection dialog keeps a draft', () => {
 	it('an untouched draft closes without asking', async () => {
 		await openOnBlank();
-		const ask = vi.spyOn(window, 'confirm');
 		cancel();
-		expect(ask).not.toHaveBeenCalled();
+		await settle();
+		expect(confirmDialog.active).toBeNull();
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 
@@ -72,12 +76,31 @@ describe('TASK-2191: the Create Collection dialog keeps a draft', () => {
 		await openOnBlank();
 		typeName('Deals');
 		await settle();
-		const ask = vi.spyOn(window, 'confirm').mockReturnValue(false);
 		cancel();
-		expect(ask).toHaveBeenCalledTimes(1);
+		await settle();
+		expect(confirmDialog.active?.confirmLabel).toBe('Discard');
+		confirmDialog.cancel();
+		await settle();
 		expect(onclose).not.toHaveBeenCalled();
-		ask.mockReturnValue(true);
 		cancel();
+		await settle();
+		confirmDialog.confirm();
+		await settle();
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('a second Cancel while the question is open asks nothing more (TASK-3543)', async () => {
+		await openOnBlank();
+		typeName('Deals');
+		await settle();
+		cancel();
+		await settle();
+		cancel();
+		escape();
+		await settle();
+		confirmDialog.confirm();
+		await settle();
+		expect(confirmDialog.active).toBeNull();
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 
@@ -85,8 +108,11 @@ describe('TASK-2191: the Create Collection dialog keeps a draft', () => {
 		await openOnBlank();
 		typeName('Deals');
 		await settle();
-		vi.spyOn(window, 'confirm').mockReturnValue(false);
 		escape();
+		await settle();
+		expect(confirmDialog.active).not.toBeNull();
+		confirmDialog.cancel();
+		await settle();
 		expect(onclose).not.toHaveBeenCalled();
 	});
 
@@ -94,8 +120,10 @@ describe('TASK-2191: the Create Collection dialog keeps a draft', () => {
 		await openOnBlank();
 		typeName('Deals');
 		await settle();
-		vi.spyOn(window, 'confirm').mockReturnValue(false);
 		document.querySelector<HTMLButtonElement>('button[aria-label="Back to templates"]')!.click();
+		await settle();
+		expect(confirmDialog.active).not.toBeNull();
+		confirmDialog.cancel();
 		await settle();
 		expect(document.querySelector<HTMLInputElement>('input[placeholder="Collection name"]')?.value).toBe('Deals');
 	});

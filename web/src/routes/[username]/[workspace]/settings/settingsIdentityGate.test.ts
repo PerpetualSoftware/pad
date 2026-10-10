@@ -27,9 +27,9 @@ identityGateSuite({
 				reviewed: '21d6ac84d817',
 				why: `${ENTRY}, before the clipboard write as well as the page commits; the finally clears its own busy flag. Re-reviewed for TASK-3413 U9c: the members apps list is written beside members, after the second await's check`,
 			},
-			handleRemoveMember: { reviewed: '3dc39d4d09be', why: `${ENTRY}. Re-reviewed for TASK-2190: the failure toast reads the server's reason through memberChangeFailure, after the check` },
-			handleCancelInvitation: { reviewed: 'fba3090b1e99', why: ENTRY },
-			handleChangeRole: { reviewed: '13b16ee68d27', why: `${ENTRY}. Re-reviewed for TASK-2190: the self-demotion confirm and its revert run before any await; the failure arm reverts the select and toasts the server's reason only after the check` },
+			handleRemoveMember: { reviewed: '75d40e43ff80', why: `${ENTRY}. Re-reviewed for TASK-2190: the failure toast reads the server's reason through memberChangeFailure, after the check. Re-reviewed for TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
+			handleCancelInvitation: { reviewed: '5667d068dfb0', why: `${ENTRY}. Re-reviewed for TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
+			handleChangeRole: { reviewed: '19dd4423e43b', why: `${ENTRY}. Re-reviewed for TASK-2190: the failure arm reverts the select and toasts the server's reason only after the check. Re-reviewed for TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it; a No reverts the select only while the page is still the one asked about` },
 			toggleAccessPanel: { reviewed: '5608048fa64f', why: `${ENTRY}; the finally clears the panel's loading flag` },
 			saveCollectionAccess: { reviewed: 'f81531fe3ad4', why: `${ENTRY}, the revert included; the finally clears its own busy flag` },
 			handleDeleteWorkspace: {
@@ -60,8 +60,8 @@ identityGateSuite({
 		{
 			cls: 1,
 			what: 'a commit between the role update and its check',
-			old: '\t\t\tawait api.members.updateRole(wsSlug, userId, newRole);\n',
-			new: '\t\t\tawait api.members.updateRole(wsSlug, userId, newRole);\n\t\t\tmembers = [];\n',
+			old: '\t\t\tawait api.members.updateRole(reqWs, userId, newRole);\n',
+			new: '\t\t\tawait api.members.updateRole(reqWs, userId, newRole);\n\t\t\tmembers = [];\n',
 			names: 'handleChangeRole()',
 		},
 		{
