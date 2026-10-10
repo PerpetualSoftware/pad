@@ -95,6 +95,18 @@ func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, ids []int64, f
 	if err := s.deleteYjsRowsByIDTx(tx, itemID, ids); err != nil {
 		return 0, err
 	}
+	// A row the job did not read survived the exact delete: it committed
+	// after the read, with an id below the max (codex, TASK-3532). The
+	// snapshot does not hold it, and moving the watermark past it would mark
+	// it flushed, so refuse the whole swap (the transaction rolls back) and
+	// let a later pass read it too.
+	var leftover bool
+	if err := tx.QueryRow(s.dialect.Rebind(`SELECT EXISTS (SELECT 1 FROM item_yjs_updates WHERE item_id = ?)`), itemID).Scan(&leftover); err != nil {
+		return 0, fmt.Errorf("compact op-log (leftover check): %w", err)
+	}
+	if leftover {
+		return 0, ErrCompactionRefused
+	}
 	snapID, err := s.insertYjsFrameQ(tx, itemID, frame, schemaVersion, time.Now().UTC().Format(time.RFC3339), yjsFrameHash(frame), true)
 	if err != nil {
 		return 0, fmt.Errorf("compact op-log (insert snapshot): %w", err)

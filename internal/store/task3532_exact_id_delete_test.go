@@ -1,9 +1,11 @@
 package store_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
@@ -11,11 +13,12 @@ import (
 // compaction job read the op-log. MAX(id) is unchanged, so the swap's
 // re-check passes; a range delete (id <= MAX) would then remove a row the
 // snapshot never contained, and its content would be gone. Compaction deletes
-// exactly the ids it read, so the late row survives, below the snapshot.
+// exactly the ids it read and REFUSES the swap when a row it did not read is
+// left (rolling back, so nothing changes); the next pass reads it too.
 //
 // SQLite cannot produce the interleaving (_txlock=immediate serializes
 // writers, so ids commit in allocation order); this is a Postgres test.
-func TestTASK3532_ALateLowerIDRowSurvivesCompaction(t *testing.T) {
+func TestTASK3532_ALateLowerIDRowStopsTheSwapAndIsKept(t *testing.T) {
 	s := storetest.NewPostgres(t)
 	itemID, _ := seedDormantLog(t, s, "Postgres", 2)
 
@@ -60,12 +63,15 @@ func TestTASK3532_ALateLowerIDRowSurvivesCompaction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// MAX(id) is still `higher`, so the swap's re-check passes...
-	if _, err := s.CompactItemOpLog(itemID, time.Now().Add(-time.Hour), read, compactFrame, "1"); err != nil {
-		t.Fatalf("compact: %v", err)
+	// MAX(id) is still `higher`, so the swap's MAX re-check passes; the row the
+	// job did not read must stop the swap, and nothing may change.
+	if _, err := s.CompactItemOpLog(itemID, time.Now().Add(-time.Hour), read, compactFrame, "1"); !errors.Is(err, store.ErrCompactionRefused) {
+		t.Fatalf("compact with a late row: %v, want ErrCompactionRefused", err)
 	}
-	// ...and the late row, which the snapshot does not contain, is still there.
 	after := opLogIDs(t, s, itemID)
+	if len(after) != len(read)+1 {
+		t.Fatalf("a refused swap changed the op-log: read %v, now %v", read, after)
+	}
 	found := false
 	for _, id := range after {
 		if id == lateID {
@@ -73,9 +79,14 @@ func TestTASK3532_ALateLowerIDRowSurvivesCompaction(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("the late row %d was deleted by the compaction (op-log now %v): its content is gone", lateID, after)
+		t.Fatalf("the late row %d is gone: %v", lateID, after)
 	}
-	if len(after) != 2 {
-		t.Fatalf("op-log %v; want the late row and the snapshot", after)
+
+	// The next pass reads it too, and compacts everything.
+	if _, err := s.CompactItemOpLog(itemID, time.Now().Add(-time.Hour), after, compactFrame, "1"); err != nil {
+		t.Fatalf("compact after re-reading: %v", err)
+	}
+	if final := opLogIDs(t, s, itemID); len(final) != 1 {
+		t.Fatalf("after the re-read compaction the op-log is %v, want the one snapshot", final)
 	}
 }
