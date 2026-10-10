@@ -28,6 +28,9 @@ import (
 //
 // Values are replaced by placeholders of their JSON type ("<string>", 0,
 // booleans as they are), so the files hold the SHAPE, not one test run's ids.
+// The exception is a "code" value: an error code is vocabulary the sidecar
+// branches on (stripe_customer_conflict, TASK-3549), so it is the contract
+// and is kept verbatim.
 
 const cloudContractSecret = "cloud-contract-secret"
 
@@ -36,6 +39,10 @@ func contractShape(v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
+			if code, isString := vv.(string); k == "code" && isString {
+				out[k] = code
+				continue
+			}
 			out[k] = contractShape(vv)
 		}
 		return out
@@ -69,12 +76,12 @@ func TestCloudContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	hdr := map[string]string{"X-Cloud-Secret": cloudContractSecret}
-	call := func(method, path string, body any) map[string]any {
+	callCode := func(code int, method, path string, body any) map[string]any {
 		t.Helper()
 		req := cloudAdminReq(t, method, path, body, hdr)
 		rr := httptest.NewRecorder()
 		srv.ServeHTTP(rr, req)
-		if rr.Code != http.StatusOK {
+		if rr.Code != code {
 			t.Fatalf("%s %s: %d %s", method, path, rr.Code, rr.Body.String())
 		}
 		var out map[string]any
@@ -83,8 +90,22 @@ func TestCloudContract(t *testing.T) {
 		}
 		return out
 	}
+	call := func(method, path string, body any) map[string]any {
+		t.Helper()
+		return callCode(http.StatusOK, method, path, body)
+	}
 
 	shapes := map[string]map[string]any{
+		// Checkout reads the stored customer by user before it writes one, and
+		// the write is compare-and-set: the same id answers 200, a different
+		// one 409 naming the stored id, which pad-cloud then uses (TASK-3549).
+		"admin_user_by_id": call("GET", "/api/v1/admin/user-by-id?user_id="+u.ID, nil),
+		"admin_stripe_customer_id": call("POST", "/api/v1/admin/stripe-customer-id", map[string]any{
+			"user_id": u.ID, "customer_id": "cus_contract", "cloud_secret": cloudContractSecret,
+		}),
+		"admin_stripe_customer_id_conflict": callCode(http.StatusConflict, "POST", "/api/v1/admin/stripe-customer-id", map[string]any{
+			"user_id": u.ID, "customer_id": "cus_contract_other", "cloud_secret": cloudContractSecret,
+		}),
 		"admin_user_by_customer": call("GET", "/api/v1/admin/user-by-customer?customer_id=cus_contract", nil),
 		"admin_plan": call("POST", "/api/v1/admin/plan", map[string]any{
 			"user_id": u.ID, "plan": "pro", "expires_at": "2099-01-01T00:00:00Z", "source": "stripe",

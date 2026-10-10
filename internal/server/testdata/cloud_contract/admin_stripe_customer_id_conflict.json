@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "stripe_customer_conflict",
+    "details": {
+      "stored_customer_id": "<string>"
+    },
+    "message": "<string>"
+  }
+}
