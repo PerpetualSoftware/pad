@@ -94,6 +94,16 @@ test('TASK-3311: on touch the group archive button is visible and tappable acros
 	const area = { x: b.x + b.width / 2 - MIN / 2, y: b.y + b.height / 2 - MIN / 2, w: MIN, h: MIN };
 	expect(await probe(btn, area, 'hits'), 'points in the 44x44 area that miss the archive button').toEqual([]);
 
+	// The ⋯ group menu beside it (TASK-2222) is a 44x44 target of its own that
+	// must not overlap the archive button's area.
+	const menu = page.locator('.group-menu-btn').first();
+	if ((await menu.count()) > 0) {
+		const m = (await menu.boundingBox())!;
+		expect(m.width, 'the group menu button is 44 wide on touch').toBeGreaterThanOrEqual(MIN);
+		expect(m.height, 'the group menu button is 44 tall on touch').toBeGreaterThanOrEqual(MIN);
+		expect(await probe(menu, area, 'avoids'), 'points of the archive area taken by the group menu').toEqual([]);
+	}
+
 	// The first row under the header: none of its controls may lose area to it.
 	const row = page.locator('.list-row, .item-row, .list-item').filter({ hasText: titles[1] }).first();
 	if ((await row.count()) > 0) {

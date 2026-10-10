@@ -23,6 +23,8 @@
 	import ItemCard from './ItemCard.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
 	import { uniqueStrings } from '$lib/utils/unique';
+	import LaneActionsMenu from './LaneActionsMenu.svelte';
+	import { clickOutside } from '$lib/utils/clickOutside';
 
 
 	interface Props {
@@ -50,6 +52,22 @@
 		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;
 		onReorder?: (updates: { slug: string; sort_order: number }[], movedId?: string) => void;
 		onArchiveGroup?: (items: Item[]) => void;
+		/**
+		 * The board's other bulk lane actions on a group (TASK-2222), each on the
+		 * group's CURRENTLY-FILTERED items via the bulk endpoint, in the same ⋯
+		 * LaneActionsMenu. Archive keeps its own header button. Gated by the
+		 * caller, as onArchiveGroup is.
+		 */
+		onMoveGroup?: (items: Item[], status: string) => void;
+		onTagGroup?: (items: Item[], tag: string) => void;
+		onUntagGroup?: (items: Item[], tag: string) => void;
+		onSetPriorityGroup?: (items: Item[], priority: string) => void;
+		onAssignGroup?: (items: Item[], userId: string) => void;
+		/** Workspace members (for "Assign all") and tag suggestions (for "Tag all"). */
+		members?: { user_id: string; user_name?: string }[];
+		tagSuggestions?: string[];
+		/** True when a search/filter is narrowing the groups: shown in menu labels. */
+		filtered?: boolean;
 		onGroupReorder?: (newOrder: string[]) => void;
 		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
@@ -120,6 +138,14 @@
 		onStatusChange,
 		onReorder,
 		onArchiveGroup,
+		onMoveGroup,
+		onTagGroup,
+		onUntagGroup,
+		onSetPriorityGroup,
+		onAssignGroup,
+		members = [],
+		tagSuggestions = [],
+		filtered = false,
 		onGroupReorder,
 		oncreate,
 		itemProgress,
@@ -270,6 +296,19 @@
 	});
 
 	let collapsedGroups = new SvelteSet<string>();
+
+	// The group ⋯ menu (TASK-2222): which group's is open, at most one.
+	let openGroupMenu = $state<string | null>(null);
+	function closeGroupMenu() {
+		openGroupMenu = null;
+	}
+	let hasGroupVerbs = $derived(
+		!!(onMoveGroup || onTagGroup || onUntagGroup || onSetPriorityGroup || onAssignGroup),
+	);
+	/** A click in the header's actions (count, archive, ⋯ menu) is theirs, not the toggle's. */
+	function inGroupActions(e: Event): boolean {
+		return e.target instanceof Element && !!e.target.closest('.group-actions');
+	}
 
 	// Group reordering state
 	interface GroupItem { id: string }
@@ -516,8 +555,11 @@
 			   ordinary taps/scrolls pass through unmolested. */
 			delayTouchStart: touchDragDelayMs,
 			// Off by input, not width, like every drag zone (BUG-3158): a group
-			// reorder persists the lane order for the whole collection.
-			dragDisabled: viewport.dragDisabled || !canEdit
+			// reorder persists the lane order for the whole collection. Off while
+			// a group's ⋯ menu is open, too (TASK-2222, codex round 2): the menu
+			// lives inside a draggable group, so a press-and-drag on it would
+			// otherwise reorder the groups mid-action.
+			dragDisabled: viewport.dragDisabled || !canEdit || openGroupMenu !== null
 		}}
 		onconsider={handleGroupConsider}
 		onfinalize={handleGroupFinalize}
@@ -525,18 +567,25 @@
 		{#each groupItems as group (group.id)}
 			{@const groupName = group.id}
 			{@const grpItems = groupData[laneKey(groupName)] ?? []}
-			<div class="item-group">
+			<div class="item-group" class:menu-open={openGroupMenu === groupName}>
+				<!-- The header's empty space toggles on a click, as it always has; the
+				     KEYBOARD and assistive-tech control is the .group-toggle button,
+				     whose Enter/Space click bubbles here. The action buttons are its
+				     siblings, not its children (TASK-2222, codex round 1: a role=button
+				     header made every action a nested interactive control). -->
+				<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 				<div
 					class="group-header"
-					role="button"
-					tabindex="0"
-					onclick={() => toggleGroup(groupName)}
-					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(groupName); } }}
-					aria-expanded={!collapsedGroups.has(groupName)}
+					onclick={(e) => { if (inGroupActions(e)) return; toggleGroup(groupName); }}
 				>
 					{#if canEdit}
 						<span class="group-drag-handle" title="Drag to reorder">⠿</span>
 					{/if}
+					<button
+						type="button"
+						class="group-toggle"
+						aria-expanded={!collapsedGroups.has(groupName)}
+					>
 					<span class="collapse-icon" class:collapsed={collapsedGroups.has(groupName)}
 						>&#9662;</span
 					>
@@ -552,6 +601,7 @@
 								title="This item has been deleted.">(deleted)</span
 							>{/if}
 					</span>
+					</button>
 					<span class="group-actions">
 						<span class="group-count">{itemCount(grpItems)}</span>
 						<!-- Gate on onArchiveGroup alone (not canEdit): archive-all
@@ -573,6 +623,42 @@
 									onclick={(e) => { e.stopPropagation(); confirmArchiveGroup = groupName; }}
 								>&#128451;</button>
 							{/if}
+						{/if}
+						{#if hasGroupVerbs && itemCount(grpItems) > 0}
+							<!-- clickOutside dismisses only on a press that STARTS outside (BUG-3231). -->
+							<span
+								class="group-menu-wrap"
+								use:clickOutside={{ enabled: openGroupMenu === groupName, onOutside: closeGroupMenu }}
+							>
+								<button
+									class="group-menu-btn"
+									title="Group actions"
+									aria-label="{formatLaneLabel(groupName)} group actions"
+									aria-haspopup="menu"
+									aria-expanded={openGroupMenu === groupName}
+									onclick={(e) => { e.stopPropagation(); openGroupMenu = openGroupMenu === groupName ? null : groupName; }}
+								>&#8943;</button>
+								{#if openGroupMenu === groupName}
+									<LaneActionsMenu
+										items={grpItems}
+										groupValue={groupName}
+										{groupField}
+										{collection}
+										{filtered}
+										{members}
+										{tagSuggestions}
+										{sortMode}
+										onClose={closeGroupMenu}
+										onMove={onMoveGroup && !isRelationGroup && !relationWithoutTarget
+											? (status) => onMoveGroup?.(grpItems, status)
+											: undefined}
+										onTag={onTagGroup ? (tag) => onTagGroup?.(grpItems, tag) : undefined}
+										onUntag={onUntagGroup ? (tag) => onUntagGroup?.(grpItems, tag) : undefined}
+										onSetPriority={onSetPriorityGroup ? (p) => onSetPriorityGroup?.(grpItems, p) : undefined}
+										onAssign={onAssignGroup ? (userId) => onAssignGroup?.(grpItems, userId) : undefined}
+									/>
+								{/if}
+							</span>
 						{/if}
 					</span>
 				</div>
@@ -664,6 +750,55 @@
 		overflow: hidden;
 	}
 
+	/* The group menu is absolutely positioned; an open one must not be clipped
+	   by a short group (TASK-2222). */
+	.item-group.menu-open {
+		overflow: visible;
+	}
+
+	.group-menu-wrap {
+		position: relative;
+		display: inline-flex;
+	}
+
+	/* Always visible, unlike the hover-revealed archive button: the board's ⋯
+	   rule (TASK-1671), 28px, and 44px on touch widths (TASK-3311). */
+	.group-menu-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 28px;
+		height: 28px;
+		padding: 0 4px;
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 1em;
+		line-height: 1;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+	}
+
+	.group-menu-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	@media (max-width: 768px) {
+		.group-menu-btn {
+			min-width: 44px;
+			height: 44px;
+		}
+		/* The archive button's 44px extender overhangs its ~20px glyph by about
+		   12px a side; the ⋯ starts past that overhang, so neither target takes
+		   a tap meant for the other (TASK-3311 measures it). On the WRAPPER:
+		   a margin there sits outside every box, where a margin on the button
+		   widened the wrapper over the overhang and the wrapper took the tap. */
+		.group-menu-wrap {
+			margin-left: 14px;
+		}
+	}
+
 	.group-drag-handle {
 		color: var(--text-muted);
 		font-size: 0.75em;
@@ -695,6 +830,27 @@
 		color: var(--text-primary);
 		font-weight: 600;
 		font-size: 0.9em;
+	}
+
+	.group-toggle {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex: 1;
+		min-width: 0;
+		padding: 0;
+		background: none;
+		border: none;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.group-toggle:focus-visible {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: 2px;
+		border-radius: var(--radius-sm);
 	}
 
 	.group-header:hover {
@@ -737,8 +893,9 @@
 		}
 	}
 	/* Phone width: a 44x44 touch target through an invisible extender, so the
-	   group header keeps its height (TASK-3311). The header's other contents
-	   are the label and the count, which are not controls. */
+	   group header keeps its height (TASK-3311). The label and the count are
+	   not controls; the ⋯ group menu (TASK-2222) is, and keeps clear of the
+	   extender's overhang with its own margin below. */
 	@media (max-width: 768px) {
 		.archive-group-btn {
 			position: relative;
