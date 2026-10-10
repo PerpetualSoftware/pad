@@ -1229,11 +1229,14 @@ describe('Lightbox — a native modal opened OVER the viewer', () => {
 		// the Keyboard Shortcuts modal while a viewer is up (TASK-2430 stops the
 		// shortcut; this stops the viewer fighting the result either way).
 		// The emulation goes in BEFORE the mount: the manager probes `:modal` on
-		// its first reconcile, and jsdom's throw makes it cache "unsupported" for
-		// the rest of the module's life. Mocking afterwards would be ignored — and
+		// its first reconcile and caches the answer for the rest of the module's
+		// life (jsdom before 29 threw on `:modal`, so it cached "unsupported"). Mocking afterwards would be ignored — and
 		// the test would then pass for the wrong reason.
 		const dialog = document.body.appendChild(document.createElement('dialog'));
 		const inDialog = dialog.appendChild(document.createElement('button'));
+		// Open, as a shown modal is: jsdom 30 (like a browser) will not focus
+		// into a closed dialog. Its modality comes from mockOpenModals.
+		dialog.setAttribute('open', '');
 		mockOpenModals([dialog]);
 		mountViewer({
 			images: [

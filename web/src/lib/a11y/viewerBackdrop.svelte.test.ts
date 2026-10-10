@@ -43,7 +43,9 @@ function openModal(html = ''): HTMLDialogElement {
 
 /**
  * jsdom implements no `showModal()` top-layer state, and as of jsdom 29 it
- * PARSES `:modal` without ever matching it (before 29 it threw). Neither is a
+ * PARSES `:modal` without ever matching it (before 29 it threw). As of jsdom
+ * 30 it also will not move focus into a dialog that is not open (it is not
+ * rendered), so a fixture that focuses inside one opens it first. Neither is a
  * real engine: the bare environment now looks "supporting" to the module's
  * probe while never matching a modal, so BOTH directions are emulated
  * explicitly — this helper for a supporting engine, `mockModalUnsupported`
@@ -447,6 +449,9 @@ describe('focus handoff', () => {
 		// containment would read "focus is ours" and yank it out of the dialog.
 		const dialog = document.createElement('dialog');
 		dialog.innerHTML = '<button id="d">d</button>';
+		// Open, as a shown modal is: jsdom 30 (like a browser) will not focus
+		// into a closed dialog. Its modality comes from mockOpenModals.
+		dialog.setAttribute('open', '');
 		second.appendChild(dialog);
 		mockOpenModals([dialog]);
 
@@ -466,12 +471,17 @@ describe('focus handoff', () => {
 		const second = bodyChild('second', '<button id="c">c</button>');
 		const dialog = document.createElement('dialog');
 		dialog.innerHTML = '<button id="d">d</button>';
+		// Open, as a shown modal is: jsdom 30 (like a browser) will not focus
+		// into a closed dialog. Its modality comes from mockOpenModals.
+		dialog.setAttribute('open', '');
 		second.appendChild(dialog);
 		mockOpenModals([dialog]);
 
 		const a = acquire(first);
 		const b = acquire(second);
 		(document.getElementById('d') as HTMLElement).focus();
+		// Focus did land in the dialog first, or "adrift" below is vacuous.
+		expect(document.activeElement).toBe(document.getElementById('d'));
 		(document.getElementById('d') as HTMLElement).blur();
 		expect(document.activeElement).toBe(document.body);
 
