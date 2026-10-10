@@ -470,6 +470,17 @@ type Metrics struct {
 	// detail the log line carries.
 	ContentWritesSupersededTotal prometheus.Counter
 
+	// CollabWatermarkStampsTotal counts browser-tab watermark stamps that
+	// ADVANCED the flush watermark (BUG-3124 unit B), by what the advance
+	// covered (TASK-3541 step 0): "content" when it covered at least one
+	// content-bearing op-log row, which is the server taking the tab's word
+	// that rows it cannot read are already in items.content; "view_only"
+	// when it covered none. Measures how often honest traffic reaches the
+	// case a server-side check would have to verify, before that check is
+	// built. Recovery's own stamps are not counted: it rendered the op-log
+	// itself.
+	CollabWatermarkStampsTotal *prometheus.CounterVec
+
 	// MaterializeGiveUpsTotal counts items op-log recovery gave up on: the
 	// item used its whole failure budget and is not retried until its op-log
 	// changes (BUG-3523). By the last failure's kind (deadline,
@@ -634,6 +645,11 @@ func New() *Metrics {
 		Name: "pad_content_writes_superseded_total",
 		Help: "Item content writes refused because the same browser tab had already applied a newer one (BUG-3080).",
 	})
+
+	collabWatermarkStampsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_collab_watermark_stamps_total",
+		Help: "Browser-tab watermark stamps that advanced the flush watermark, by whether the advance covered content-bearing op-log rows (content) or none (view_only) (TASK-3541).",
+	}, []string{"covers"})
 
 	// =====================================================================
 	// OAuth flow metrics (PLAN-943 TASK-961)
@@ -870,6 +886,7 @@ func New() *Metrics {
 		mcpHTTPRequestsTotal,
 		mcpActiveSessions,
 		contentWritesSupersededTotal,
+		collabWatermarkStampsTotal,
 		materializeGiveUpsTotal,
 		dbDeadlockRetriesTotal,
 		appWebhookDeliveriesTotal,
@@ -927,6 +944,7 @@ func New() *Metrics {
 		MCPHTTPRequestsTotal:         mcpHTTPRequestsTotal,
 		MCPActiveSessions:            mcpActiveSessions,
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
+		CollabWatermarkStampsTotal:   collabWatermarkStampsTotal,
 		MaterializeGiveUpsTotal:      materializeGiveUpsTotal,
 		DBDeadlockRetriesTotal:       dbDeadlockRetriesTotal,
 		AppWebhookDeliveriesTotal:    appWebhookDeliveriesTotal,
