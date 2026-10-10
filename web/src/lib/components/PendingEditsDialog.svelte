@@ -12,11 +12,19 @@
 <Modal open={!!active} onclose={() => pendingEditsDialog.keep()} labelledby="pending-edits-title" maxWidth="500px">
 	{#if active}
 		<div class="modal-header">
-			<h2 id="pending-edits-title">{active.reason === 'set_aside' ? 'Edits from an earlier editor version' : 'Unsaved edits in an open tab'}</h2>
-			<button class="close-btn" type="button" onclick={() => pendingEditsDialog.keep()} aria-label="Close, keeping the tab's edits">&#10005;</button>
+			<h2 id="pending-edits-title">{active.kind === 'stale' ? 'This item changed since you opened the raw editor' : active.reason === 'set_aside' ? 'Edits from an earlier editor version' : 'Unsaved edits in an open tab'}</h2>
+			<button class="close-btn" type="button" onclick={() => pendingEditsDialog.keep()} aria-label={active.kind === 'stale' ? 'Close, keeping your text unsaved' : "Close, keeping the tab's edits"}>&#10005;</button>
 		</div>
 		<div class="modal-body">
-			{#if active.reason === 'set_aside'}
+			{#if active.kind === 'stale'}
+				<!-- BUG-3540: the stored body changed under this raw editor. No
+				     default: closing keeps editing and sends nothing. -->
+				<p>
+					<strong>{active.itemRef}</strong> was changed by someone else after your markdown was loaded.
+					Saving your text would replace their changes. Reload to see the stored text (your unsaved
+					text is discarded), or overwrite it with yours.
+				</p>
+			{:else if active.reason === 'set_aside'}
 				<!-- BUG-3244: these edits are in no body and opening the item will
 				     not store them, so no branch here offers that. -->
 				{#if active.kind === 'excerpt'}
@@ -56,12 +64,17 @@
 			{/if}
 		</div>
 		<div class="modal-footer">
+			{#if active.kind === 'stale'}
+				<Button variant="secondary" onclick={() => pendingEditsDialog.reload()}>Reload the stored text</Button>
+				<Button variant="danger" onclick={() => pendingEditsDialog.overwrite()}>Overwrite with my text</Button>
+			{:else}
 			<Button variant="secondary" onclick={() => pendingEditsDialog.keep()}>
 				{active.kind === 'save' ? (active.reason === 'set_aside' ? 'Keep those edits' : "Keep the tab's edits") : 'Cancel'}
 			</Button>
 			<Button variant="primary" onclick={() => pendingEditsDialog.overwrite()}>
 				{active.kind === 'duplicate' ? 'Copy the stored body' : active.kind === 'excerpt' ? 'Use it anyway' : active.reason === 'set_aside' ? 'Discard them' : 'Overwrite them'}
 			</Button>
+			{/if}
 		</div>
 	{/if}
 </Modal>
