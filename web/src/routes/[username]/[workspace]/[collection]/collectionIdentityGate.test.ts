@@ -34,7 +34,8 @@ identityGateSuite({
 				why: 'collGen, the route, then identityHeld(epochAtEntry) before the collection write; the conflict path checks identity BEFORE its re-read request (BUG-3238) and after it, before the reseed and navigation; both toasts fenced. TASK-3539: the schema it writes back is parseStoredSchema (the stored form), not the render-normalised one; no await or check moved',
 			},
 			createNewItem: { reviewed: '92058792cfa1', why: `${ENTRY}, the navigation into the new item included; the finally clears creatingNew only under the identity` },
-			quickCreateInColumn: { reviewed: '5205a6163a7b', why: `${ENTRY}; answers null on a lost identity; the rethrow is unfenced, deliberately` },
+			// TASK-3423 rebase: re-reviewed; only kit 3 API swaps reach it (page.url.href, goto reset:false), no await or fence moved.
+			quickCreateInColumn: { reviewed: 'd109d468dd22', why: `${ENTRY}; answers null on a lost identity; the rethrow is unfenced, deliberately` },
 			leaveSaveAll: {
 				reviewed: '9dadc120df0f',
 				why: 'saveAllDrafts re-checks identityHeld after each create and answers identity_moved; runPendingNav is gated on its own identityHeld(epochAtEntry) return as well, so a no-draft Save all cannot run a pending navigation the NEW user set up (BUG-3238)',
@@ -68,8 +69,8 @@ identityGateSuite({
 			{ call: /^requestAnimationFrame\($/, body: /searchInputEl/, in: 'uiStore.registerCollectionSearch(…)', why: FOCUS, reviewed: '60d471361647' },
 			// TASK-2232: the search box's debounced URL sync.
 			{ call: /^setTimeout\($/, body: /searchUrlSyncTimer = undefined/, in: 'scheduleSearchUrlSync', why: 'search URL sync: identityHeld(epochAtSchedule), then the workspace and collection it was scheduled for, before updateUrlFilters', reviewed: '51262d7455ca' },
-			{ call: /^setTimeout\($/, body: /\bfollow\(\)/, in: 'schedulePaneFollow', why: 'pane follow: identityHeld(epochAtSchedule) after clearing its own timer handle, then the ref and depth, before opening the pane; a follow that opens nothing (or that the controller would drop, paneNavInFlight) clears pendingFollow behind the fence; one that navigates arms a settle timer on the same handle (so cancelPaneFollow clears it), itself fenced by identityHeld, that drops a target still pending after PANE_FOLLOW_SETTLE_MS (BUG-3204)', reviewed: '04f7c8f36b8a' },
-			{ call: /^setTimeout\($/, body: /pendingFollow === issued/, in: 'setTimeout(…)', why: 'pane follow settle check (BUG-3204): identityHeld(epochAtSchedule) first, then clears pendingFollow only if it is still the target this follow issued', reviewed: '38f7ead5cfba' },
+			{ call: /^setTimeout\($/, body: /\bfollow\(\)/, in: 'schedulePaneFollow', why: 'pane follow: identityHeld(epochAtSchedule) after clearing its own timer handle, then the ref and depth, before opening the pane; a follow that opens nothing (or that the controller would drop, paneNavInFlight) clears pendingFollow behind the fence; one that navigates arms a settle timer on the same handle (so cancelPaneFollow clears it), itself fenced by identityHeld, that drops a target still pending after PANE_FOLLOW_SETTLE_MS (BUG-3204)', reviewed: '936aa8d4fdb2' },
+			{ call: /^setTimeout\($/, body: /pendingFollow === issued/, in: 'setTimeout(…)', why: 'pane follow settle check (BUG-3204): identityHeld(epochAtSchedule) first, then clears pendingFollow only if it is still the target this follow issued', reviewed: '7c8165f549c6' },
 			{ call: /^requestAnimationFrame\($/, body: /./, in: 'scrollFocusedIntoView', why: 'scrolls the focused row into view; writes no state', reviewed: '0cb35a902c5e' },
 			{ call: /^requestAnimationFrame\($/, body: /saveViewInput/, in: 'openSaveView', why: FOCUS, reviewed: '05df866d1a2e' },
 		],
@@ -83,11 +84,12 @@ identityGateSuite({
 			fieldLabelFor: '97d4689b8359',
 			formatLabel: 'a65fe92ea9fc',
 			identityHeld: 'e4fd3989a707',
-			installPaneTestHook: '0d8cbc6811cc',
-			loadUrlFilters: '3747b8e73fa6',
+			// TASK-3423 rebase: re-reviewed; only kit 3 API swaps reach it (page.url.href, goto reset:false), no await or fence moved.
+			installPaneTestHook: 'd5097f0db3e6',
+			loadUrlFilters: '83ef5adfb7ab',
 			pageIdentityHeld: 'a7bbe5de91a4',
 			runPendingNav: 'dfb7329e4a5e',
-			updateUrlFilters: '39d00857c2a1',
+			updateUrlFilters: '7a89333a8621',
 			writeDefaultViewId: '79d9180fa119',
 		},
 		// TASK-3423: the restore-skip release used to be handed to

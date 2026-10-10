@@ -32,6 +32,10 @@ identityGateSuite({
 			{ call: /\(ws, convSlug\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: 'd12ac67a307e' },
 			{ call: /\(ws, pbSlug\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: 'd12ac67a307e' },
 			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing', reviewed: '19ec27a693c3' },
+			// TASK-3423: kit 3 folded keepFocus into goto's reset, so a tab that held
+			// focus gets it back once the replaceState navigation lands. Writes no
+			// state; a tab gone by then (an identity or route change) is a no-op.
+			{ call: /^goto\(url, \{ replaceState: true \}\)\.then\($/, body: /library-tab-/, in: 'selectTab', why: 'tab focus restore after the tab-switch navigation: writes no state', reviewed: '7185aef21b19' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activateConvention', count: 2, why: `activateConvention toast timer, one per arm: ${TIMER_WHY}`, reviewed: '8f5423f36951' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activatePlaybook', count: 2, why: `activatePlaybook toast timer, one per arm: ${TIMER_WHY}`, reviewed: '1e8470e2050a' },
 		],
