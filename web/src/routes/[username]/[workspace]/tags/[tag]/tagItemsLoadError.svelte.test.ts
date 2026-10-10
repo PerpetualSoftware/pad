@@ -10,7 +10,7 @@ import { cleanup, render, screen } from '@testing-library/svelte';
 const fence = vi.hoisted(() => ({ ok: true }));
 
 vi.mock('$app/state', async () => ({ page: (await import('../../../../../test/mocks/reactivePage.svelte')).page }));
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 // The page makes no request of its own; a call here is the regression.
 vi.mock('$lib/api/client', () => ({ api: new Proxy({}, { get: () => { throw new Error('the tag page must not call the API'); } }) }));
 vi.mock('$lib/stores/localIndex.svelte', async () => ({
