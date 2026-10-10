@@ -67,10 +67,14 @@
 </span>
 
 <style>
+	/* It may shrink and truncate, never the controls beside it: in a narrow
+	   pane header the expand / pop-out / close buttons keep their size (codex
+	   review). */
 	.save-sync {
 		display: inline-flex;
 		align-items: center;
-		flex-shrink: 0;
+		min-width: 0;
+		flex-shrink: 1;
 		margin-left: auto;
 	}
 	.save-sync-chip {
@@ -78,6 +82,9 @@
 		padding: 1px 8px;
 		border-radius: 999px;
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		min-width: 0;
 		color: var(--text-muted);
 		background: var(--bg-tertiary);
 	}
