@@ -234,7 +234,7 @@ func TestRunAgainstABase(t *testing.T) {
 	git("commit", "-qm", "base")
 	write("go.sum", "example.com/old v1.0.0 h1:x=\nexample.com/new v2.0.0 h1:y=\n")
 	write("web/package-lock.json", lock("1.1.0"))
-	write(".github/actions/local/action.yml", "- uses: acme/act@"+shaNew+"\n")
+	write("tools/release/action.yml", "- uses: acme/act@"+shaNew+"\n")
 
 	now := time.Now()
 	src := fakeSources(t, map[string]time.Time{
@@ -251,8 +251,8 @@ func TestRunAgainstABase(t *testing.T) {
 	if code := run([]string{"--root", dir, "--base", "HEAD"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s %s", code, stdout.String(), stderr.String())
 	}
-	// The new module, the bumped npm package and the composite action's new
-	// pin: three, none of them young.
+	// The new module, the bumped npm package and the new pin in a composite
+	// action outside .github: three, none of them young.
 	if !strings.Contains(stdout.String(), "checked 3 dependencies") {
 		t.Errorf("want the three new dependencies checked:\n%s", stdout.String())
 	}

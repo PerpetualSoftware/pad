@@ -138,21 +138,32 @@ func envOr(k, def string) string {
 	return def
 }
 
-// workflowFiles lists every YAML file under .github, relative to root:
-// workflows, and the action.yml of a local composite action, whose `uses:`
-// pins a change can add too (codex round 1). A `docker://` image is not
-// covered: it is not pinned by a commit SHA, and has no source of publish
-// time here.
+// workflowFiles lists the files whose `uses:` pins a change can add: every
+// YAML file under .github (workflows, local actions), and any action.yml or
+// action.yaml elsewhere in the repository (a composite action can live
+// anywhere; codex rounds 1-2). node_modules and .git are skipped. A
+// `docker://` image is not covered: it is not pinned by a commit SHA, and has
+// no source of publish time here.
 func workflowFiles(root string) []string {
 	var out []string
-	_ = filepath.WalkDir(filepath.Join(root, ".github"), func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
 			return nil
 		}
-		if strings.HasSuffix(p, ".yml") || strings.HasSuffix(p, ".yaml") {
-			if rel, err := filepath.Rel(root, p); err == nil {
-				out = append(out, rel)
+		if d.IsDir() {
+			if n := d.Name(); n == "node_modules" || n == ".git" {
+				return filepath.SkipDir
 			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return nil
+		}
+		yaml := strings.HasSuffix(p, ".yml") || strings.HasSuffix(p, ".yaml")
+		underGithub := strings.HasPrefix(rel, ".github"+string(filepath.Separator))
+		if (yaml && underGithub) || d.Name() == "action.yml" || d.Name() == "action.yaml" {
+			out = append(out, rel)
 		}
 		return nil
 	})

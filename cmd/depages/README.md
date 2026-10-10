@@ -15,6 +15,21 @@ GitHub Actions pins (`uses: owner/repo@<sha>` in `.github/workflows`), dating
 each from the Go module proxy, the npm registry packument and the GitHub
 commits API (set `GH_TOKEN` to avoid the unauthenticated rate limit).
 
+## What it covers
+
+| Source | Covered | Dated by |
+|---|---|---|
+| Go modules (`go.sum`, content lines; pseudo-versions included) | yes | the module proxy's `.info` time |
+| npm packages from the registry (`web/package-lock.json`, lockfile v2/v3; an alias as the package it installs) | yes | the packument's per-version `time` |
+| npm git or tarball dependencies | no | they have no registry publish time |
+| A v1 lockfile | refused, exit 2 | |
+| Action pins `owner/repo[/path]@<sha>` in any YAML under `.github`, and in any `action.yml` / `action.yaml` in the repo | yes | the commit's committer date |
+| `docker://` action images | no | not pinned by a commit SHA; no publish time here |
+
+An action is dated by its COMMIT, deliberately: the threat is freshly
+published code, and a pin to an old commit is old code whatever tag points at
+it.
+
 Exit status: `0` when nothing is too young (a dependency that cannot be dated
 is printed as a warning, not a failure); `1` when one is younger than `--days`
 and not allowed; `2` on a usage or local error.
