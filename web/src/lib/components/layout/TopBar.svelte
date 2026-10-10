@@ -539,8 +539,9 @@
 					<a href="/console" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 						Workspaces
 					</a>
+					<!-- TASK-2255 (C59): not the workspace's ⚙ Settings. -->
 					<a href="/console/settings" class="menu-link" role="menuitem" onclick={closeUserMenu}>
-						Settings
+						Account settings
 					</a>
 					<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
 					{#if authStore.commerceAllowed}

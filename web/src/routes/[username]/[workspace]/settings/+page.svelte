@@ -955,8 +955,15 @@
 	{#if loading}
 		<div class="loading">Loading settings...</div>
 	{:else}
+		<!-- TASK-2255 (C59): two controls both said "Settings" and went to
+		     different places. This page is the workspace's; the account's own
+		     settings are linked from here, and link back. -->
 		<header class="settings-header">
-			<h1>Settings</h1>
+			<h1>Workspace settings</h1>
+			<p class="section-note">
+				For this workspace and everyone in it. Your own profile, password and sign-in are in
+				<a href="/console/settings">Account settings</a>.
+			</p>
 		</header>
 
 		<!-- Partial-import banner (TASK-896). -->
@@ -1046,6 +1053,7 @@
 			</section>
 			<section class="section">
 				<h2>Theme</h2>
+				<p class="section-note">Saved in this browser only, for every workspace.</p>
 				<div class="card">
 					<div class="theme-row">
 						<span>Appearance</span>
@@ -1290,6 +1298,13 @@
 								{inviting ? 'Inviting...' : 'Invite'}
 							</Button>
 						</div>
+						<!-- TASK-2255 (C60): the roles were never explained, and a wrong
+						     guess is an access-control mistake. -->
+						<ul class="role-legend">
+							<li><strong>Owner</strong>: everything, including members, settings and deleting the workspace.</li>
+							<li><strong>Editor</strong>: creates and edits items.</li>
+							<li><strong>Viewer</strong>: reads only.</li>
+						</ul>
 						{#if inviteResult}
 							<p class="invite-result" class:invite-success={inviteResult.type === 'success'} class:invite-error={inviteResult.type === 'error'}>
 								{inviteResult.message}
@@ -1388,6 +1403,15 @@
 					<AppsTab {wsSlug} />
 				{/key}
 			</section>
+			<!-- TASK-2255 (C109): plans sell a webhook quota, and the web UI has no
+			     webhook screen; say where they are managed. -->
+			<section class="section">
+				<h2>Webhooks</h2>
+				<p class="section-note">
+					Webhooks are managed from the command line (<code>pad webhook list</code>,
+					<code>create</code>, <code>delete</code>, <code>test</code>) or the REST API, not from this page.
+				</p>
+			</section>
 		{:else if activeTab === 'danger'}
 			<section class="section">
 				<div class="danger-banner">
@@ -1440,6 +1464,11 @@
 	   ring is the browser's, shown only for keyboard focus. */
 	.settings-tabpanel:focus:not(:focus-visible) { outline: none; }
 	.settings-header h1 { font-size: 1.6em; }
+	.section-note { font-size: 0.85em; color: var(--text-secondary); margin: var(--space-1) 0 var(--space-2); }
+	/* A link inside running text must not rely on colour alone (axe link-in-text-block). */
+	.section-note a { text-decoration: underline; }
+	.role-legend { list-style: none; padding: 0; margin: var(--space-2) 0 0; font-size: 0.82em; color: var(--text-secondary); }
+	.role-legend li + li { margin-top: 2px; }
 	/* ── Tab bar ──── */
 	/* C82 (TASK-2245): the five owner tabs are 562px intrinsic while the bar's
 	   box is viewport minus the page's 48px of padding, so below ~610px the row

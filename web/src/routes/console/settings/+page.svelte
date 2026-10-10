@@ -624,7 +624,12 @@
 </svelte:head>
 
 <div class="settings-page">
-	<h1 class="page-title">Account Settings</h1>
+	<h1 class="page-title">Account settings</h1>
+	<!-- TASK-2255 (C59): the workspace's own settings are a different page. -->
+	<p class="page-note">
+		Your profile, password and sign-in, in every workspace. A workspace's name, members and
+		collections are in its own Workspace settings (⚙ in that workspace's sidebar).
+	</p>
 
 	{#if loading}
 		<div class="loading">Loading...</div>
@@ -1195,6 +1200,12 @@
 		flex-direction: column;
 		gap: var(--space-6);
 		max-width: 600px;
+	}
+
+	.page-note {
+		font-size: 0.88em;
+		color: var(--text-secondary);
+		margin: 0 0 var(--space-4);
 	}
 
 	.page-title {
