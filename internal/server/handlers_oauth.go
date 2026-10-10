@@ -1602,7 +1602,17 @@ body {
     background: #2a2a2a; color: #e8e8e8; border-color: #555;
   }
 }
-h1 { font-size: 1.5em; margin: 0 0 .25em; }
+h1 { font-size: 1.5em; margin: 0 0 .25em; overflow-wrap: anywhere; }
+.resource-brand {
+  margin: 0 0 .75em; font-size: 1.05em; color: #444;
+  overflow-wrap: anywhere;
+}
+.resource-brand strong { font-size: 1.15em; color: #1a1a1a; }
+@media (prefers-color-scheme: dark) {
+  .resource-brand { color: #bbb; }
+  .resource-brand strong { color: #fff; }
+}
+.client-card .meta { min-width: 0; overflow-wrap: anywhere; }
 .client-card {
   display: flex; align-items: center; gap: 1em; margin: 1.5em 0;
   padding: 1em; border: 1px solid #ddd; border-radius: 10px; background: #fafafa;
@@ -1656,6 +1666,11 @@ input[type=text], input[type=search] {
   .picker { background: #1c1c1c; }
 }
 .hint { color: #555; font-size: .9em; margin: .75em 0; }
+.ws-summary {
+  margin: .1em 0 .5em 1.9em; color: #555; font-size: .9em;
+  overflow-wrap: anywhere;
+}
+@media (prefers-color-scheme: dark) { .ws-summary { color: #aaa; } }
 .footer-disclosure {
   margin: 1.5em 0; padding: .85em 1em;
   background: #f5f5f5; border-radius: 8px; color: #555; font-size: .9em;
@@ -1690,6 +1705,7 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
 </style>
 </head>
 <body>
+<p class="resource-brand"><strong>Pad</strong> · {{.ResourceHost}}</p>
 <h1>Authorize {{.ClientName}}</h1>
 {{if .Surface}}<p class="surface">Connecting Pad's <strong>{{.Surface}}</strong> tools.</p>{{end}}
 <p>Signed in as <strong>{{.Username}}</strong>{{if .UserEmail}} ({{.UserEmail}}){{end}}.</p>
@@ -1698,7 +1714,8 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
   {{if .ClientLogoURL}}<img class="logo" src="{{.ClientLogoURL}}" alt="">{{end}}
   <div class="meta">
     <strong>{{.ClientName}}</strong>
-    <small>wants to access your Pad on your behalf.</small>
+    <small>is requesting access to your Pad workspaces on {{.ResourceHost}}.</small>
+    <small class="unverified">The app chose this name; Pad has not verified it.{{if .RedirectHost}} After you decide, you return to <strong>{{.RedirectHost}}</strong>.{{end}}</small>
   </div>
 </div>
 
@@ -1748,6 +1765,9 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
       <input type="radio" name="workspace_access" value="all" id="access-all"{{if or .DefaultWildcard (not .Workspaces)}} checked{{end}}>
       <span><strong>All my workspaces</strong><span class="desc">— includes workspaces you join or create later.</span></span>
     </label>
+    {{if .WorkspaceSummary}}
+    <p class="ws-summary">Your Pad workspaces now: {{range $i, $n := .WorkspaceSummary}}{{if $i}}, {{end}}<strong>{{$n}}</strong>{{end}}{{if .WorkspaceMore}} and {{.WorkspaceMore}} more{{end}}.</p>
+    {{end}}
     {{if .Workspaces}}
       <label class="access-row">
         <input type="radio" name="workspace_access" value="specific" id="access-specific"{{if not .DefaultWildcard}} checked{{end}}>
@@ -1878,18 +1898,38 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
 // consentData is the template's data shape. Field names match the
 // template's references; adding a new field requires updating both.
 type consentData struct {
+	// ClientName is the name the app registered for itself (or its
+	// client_id), capped by consentClientName. It is the app's CLAIM, so
+	// the page labels it unverified and names Pad and the redirect host,
+	// which the app cannot choose (TASK-1071).
 	ClientName string
+	// ResourceHost names the Pad instance being authorized: the host of
+	// the configured public URL, else the request's Host. This is the
+	// "your Pad workspaces on <host>" identification the RFC 8707
+	// relaxation leans on (see audienceForAuthorize).
+	ResourceHost string
+	// RedirectHost names the redirect_uri fosite validated against the
+	// client's registration: where the user's browser goes after deciding
+	// (see consentRedirectTarget).
+	RedirectHost string
 	// Surface names the Pad surface being connected when it is not /mcp
 	// (TASK-3321 U2b): "ChatGPT" when the request names the ChatGPT
 	// catalog's resource. Set by the server from the requested audience,
 	// never from the client's own name, so a user is not approving an
 	// unlabelled second door.
-	Surface          string
-	ClientLogoURL    string
-	Username         string
-	UserEmail        string
-	Workspaces       []consentWorkspaceRow // user's workspace memberships
-	CanRead          bool                  // tier radios — true iff client requested the corresponding pad:* scope
+	Surface       string
+	ClientLogoURL string
+	Username      string
+	UserEmail     string
+	Workspaces    []consentWorkspaceRow // user's workspace memberships
+	// WorkspaceSummary is the first consentWorkspaceSummaryMax workspace
+	// names, shown under "All my workspaces" so the default choice still
+	// names the user's actual Pad workspaces (the picker that lists them
+	// is hidden until "Only specific" is picked); WorkspaceMore counts the
+	// rest (TASK-1071).
+	WorkspaceSummary []string
+	WorkspaceMore    int
+	CanRead          bool // tier radios — true iff client requested the corresponding pad:* scope
 	CanWrite         bool
 	CanAdmin         bool
 	DefaultTier      string // "read" / "write" / "admin" — initially-checked radio
@@ -2045,8 +2085,22 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 		suggested = truncateBindableText(suggested, 120)
 	}
 
+	summary := make([]string, 0, consentWorkspaceSummaryMax)
+	for i, row := range rows {
+		if i == consentWorkspaceSummaryMax {
+			break
+		}
+		summary = append(summary, row.Name)
+	}
+
+	redirectHost := consentRedirectTarget(ar.GetRedirectURI())
+
 	data := consentData{
-		ClientName:       clientName,
+		ClientName:       consentClientName(clientName),
+		ResourceHost:     s.consentResourceHost(r),
+		RedirectHost:     redirectHost,
+		WorkspaceSummary: summary,
+		WorkspaceMore:    len(rows) - len(summary),
 		Surface:          s.consentSurface(ar),
 		ClientLogoURL:    logo,
 		Username:         user.Name,
@@ -2205,6 +2259,66 @@ func (s *Server) consentSurface(ar fosite.AuthorizeRequester) string {
 		}
 	}
 	return ""
+}
+
+// consentClientNameMax caps the client's self-chosen name on the consent
+// page, in runes. Registration does not limit it (RFC 7591 sets no bound),
+// and an unbounded name could push the Pad identification and the
+// workspace list below the fold (TASK-1071).
+const consentClientNameMax = 80
+
+// consentWorkspaceSummaryMax is how many workspace names the "All my
+// workspaces" line names before "and N more".
+const consentWorkspaceSummaryMax = 5
+
+// consentClientName returns name cut to consentClientNameMax runes, with an
+// ellipsis when it was cut, and whitespace runs collapsed so a name cannot
+// pad itself out with blank lines.
+func consentClientName(name string) string {
+	name = strings.Join(strings.Fields(name), " ")
+	r := []rune(name)
+	if len(r) <= consentClientNameMax {
+		return name
+	}
+	return string(r[:consentClientNameMax-1]) + "…"
+}
+
+// consentRedirectTarget names where the browser goes after the decision.
+// An https or http redirect is named by its host. Any other scheme hands the
+// browser to an app, so it is named with the scheme: "claude://oauth", not
+// "oauth", which reads as a website. A URI with no host (registration refuses
+// one today, but the page must not go quiet if that changes) is named by its
+// scheme and path.
+func consentRedirectTarget(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	switch {
+	case u.Scheme == "http" || u.Scheme == "https":
+		return u.Host
+	case u.Host != "":
+		return u.Scheme + "://" + u.Host
+	case u.Scheme != "":
+		return consentClientName(u.Scheme + ":" + u.Opaque + u.Path)
+	}
+	return ""
+}
+
+// consentResourceHost names the Pad instance on the consent page: the host
+// of the configured public URL, else the host the request came in on (also
+// when the configured URL names an unspecified address like 0.0.0.0, which
+// is a bind address and not a name the user would recognize).
+func (s *Server) consentResourceHost(r *http.Request) string {
+	if s.baseURL != "" {
+		if u, err := url.Parse(s.baseURL); err == nil {
+			switch u.Hostname() {
+			case "", "0.0.0.0", "::":
+			default:
+				return u.Host
+			}
+		}
+	}
+	return r.Host
 }
 
 // dedupeStrings returns values with each string once, in first-seen order.
