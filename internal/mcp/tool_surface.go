@@ -281,7 +281,7 @@ func buildToolSurfaceTools(catalog []ToolDef) []toolSurfaceToolSummary {
 		}
 		tools = append(tools, toolSurfaceToolSummary{
 			Name:        def.Name,
-			Description: def.Description,
+			Description: compactToolDescription(def.Description),
 			Workspace:   def.Schema.Workspace,
 			Actions:     actions,
 			Params:      params,

@@ -1,0 +1,43 @@
+package mcp
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// TASK-3536: tool descriptions are reflowed for the wire. Whitespace only:
+// every word survives in order, every action keeps its own header line, and
+// Required:/Optional: keep their own lines.
+func TestCompactToolDescriptionKeepsEveryWord(t *testing.T) {
+	if len(Catalog) == 0 {
+		t.Fatal("premise: empty catalog")
+	}
+	for _, def := range Catalog {
+		got := compactToolDescription(def.Description)
+		if !reflect.DeepEqual(strings.Fields(got), strings.Fields(def.Description)) {
+			t.Errorf("%s: the reflow changed the words", def.Name)
+		}
+		for action := range def.Actions {
+			if !strings.Contains("\n"+got, "\n  "+action+" ") {
+				t.Errorf("%s: action %q lost its header line", def.Name, action)
+			}
+		}
+		for _, line := range strings.Split(got, "\n") {
+			if strings.HasPrefix(line, "     ") {
+				t.Errorf("%s: a line keeps a deep indent: %q", def.Name, line)
+			}
+		}
+		if len(got) > len(def.Description) {
+			t.Errorf("%s: the reflow grew the description", def.Name)
+		}
+	}
+}
+
+func TestCompactToolDescriptionShape(t *testing.T) {
+	in := "Things.\n\nActions:\n  make   — Make one.\n             Required: name.\n             Optional: size, which\n             may be large.\n  drop   — Drop one,\n    carefully.\n\nUse it well."
+	want := "Things.\n\nActions:\n  make   — Make one.\n    Required: name.\n    Optional: size, which may be large.\n  drop   — Drop one, carefully.\n\nUse it well."
+	if got := compactToolDescription(in); got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
