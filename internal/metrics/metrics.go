@@ -452,8 +452,8 @@ type Metrics struct {
 	// label is a closed set: "missing_token", "invalid_token",
 	// "rate_limited".
 	MCPPreAuthDeniedTotal *prometheus.CounterVec
-	// MCPHTTPRequestsTotal counts authenticated requests reaching an MCP
-	// mount, by mount ("mcp", "chatgpt"), HTTP method and client class
+	// MCPHTTPRequestsTotal counts the requests MCPBearerAuth admits to an MCP
+	// mount (authenticated and within the per-token rate limit), by mount ("mcp", "chatgpt"), HTTP method and client class
 	// (TASK-2307). Counted on ENTRY, so a GET that opens a long-lived SSE
 	// stream is counted while it is open; pad_http_requests_total records
 	// one only when the stream ends. It answers whether real clients use
@@ -596,7 +596,7 @@ func New() *Metrics {
 
 	mcpHTTPRequestsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_mcp_http_requests_total",
-		Help: "Total number of authenticated MCP requests by mount, HTTP method and client class, counted on entry.",
+		Help: "Total number of MCP requests admitted by authentication and the per-token rate limit, by mount, HTTP method and client class, counted on entry.",
 	}, []string{"mount", "method", "client"})
 
 	mcpPreAuthDeniedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{

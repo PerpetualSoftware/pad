@@ -5,10 +5,13 @@ import (
 	"strings"
 )
 
-// countMCPRequest counts each authenticated request reaching an MCP mount in
-// pad_mcp_http_requests_total{mount, method, client} (TASK-2307). It sits
-// right after MCPBearerAuth, so a request refused before a caller is known is
-// left to pad_mcp_preauth_denied_total, and it counts on ENTRY: a GET that
+// countMCPRequest counts each request MCPBearerAuth admits to an MCP mount in
+// pad_mcp_http_requests_total{mount, method, client} (TASK-2307): the caller is
+// authenticated and within its per-token rate limit. It sits right after that
+// middleware, so its refusals stay where they are already counted: before a
+// caller is known in pad_mcp_preauth_denied_total, a rate-limited caller in
+// pad_mcp_authz_denials_total{reason="rate_limited"}. A refused GET opens no
+// stream, so it is not what this measures. It counts on ENTRY: a GET that
 // opens a server-sent-event stream is counted while the stream is open.
 //
 // The question it answers: a stateless go-sdk transport refuses GET with 405,

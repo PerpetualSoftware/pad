@@ -1268,7 +1268,9 @@ limit, are counted in the Prometheus counter
 happens earlier and is not counted there. An address that exhausts the limit
 is logged once at `WARN`.
 
-Every authenticated request that reaches an MCP mount is counted in
+Every request admitted to an MCP mount (authenticated, and within the
+per-token rate limit, whose refusals are counted in
+`pad_mcp_authz_denials_total{reason="rate_limited"}`) is counted in
 `pad_mcp_http_requests_total{mount, method, client}`: `mount` is `mcp` or
 `chatgpt`, and `client` is a fixed class read from the `User-Agent`
 (`claude-code`, `claude`, `codex`, `openai`, `cursor`, `windsurf`, `vscode`,
