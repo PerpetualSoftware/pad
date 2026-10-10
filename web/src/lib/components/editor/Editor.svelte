@@ -853,11 +853,34 @@
 		linkIdx = 0;
 		setTimeout(() => {
 			if (!editor) return;
-			const rect = caretRect(editor.state.selection.from);
+			// Keys typed before this deferred open are part of the query
+			// (BUG-3547, the slash menu's twin), and the open is checked the
+			// way the update handler checks it: the caret is still after the
+			// `[[`, which is still there (codex).
+			const from = editor.state.selection.from;
+			if (from <= linkStartPos) { closeLink(); return; }
+			const text = editor.state.doc.textBetween(linkStartPos, from, '');
+			if (!text.startsWith('[[')) { closeLink(); return; }
+			const rect = caretRect(from);
 			if (!rect) return;
+			linkQuery = text.slice(2);
 			linkCaret = rect;
 			linkOpen = true;
 		}, 0);
+	}
+
+	// The slash query from the document: what is typed between the `/` and the
+	// caret (TASK-2218's rule, shared with the update handler below). Closes the
+	// menu when the caret has left the command or nothing matches.
+	function syncSlashQuery(state: { selection: { from: number }; doc: { textBetween: (a: number, b: number, sep: string) => string } }) {
+		if (!slashOpen || slashStartPos < 0 || slashFromToolbar) return;
+		const curPos = state.selection.from;
+		if (curPos <= slashStartPos) { closeSlash(); return; }
+		const text = state.doc.textBetween(slashStartPos, curPos, '');
+		if (!text.startsWith('/')) { closeSlash(); return; }
+		slashQuery = text.slice(1);
+		slashIdx = 0;
+		if (slashQuery && getFilteredSlash().length === 0) closeSlash();
 	}
 
 	function getFilteredLinks() {
@@ -1241,6 +1264,12 @@
 							if (!rect) return;
 							slashCaret = rect;
 							slashOpen = true;
+							// The query is tracked only while the menu is open, and
+							// keys typed before this deferred open landed were missed:
+							// under load `/link` opened the UNFILTERED list and Enter
+							// ran its first entry (BUG-3547). Read what is already
+							// typed after the `/`, with the same no-match close.
+							syncSlashQuery(_view.state);
 						}, 0);
 						return false;
 					}

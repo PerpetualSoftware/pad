@@ -89,6 +89,30 @@ test.describe('TASK-2218: the editor insert menus', () => {
 		await expect(page.locator(`${EDITOR_SELECTOR} a`, { hasText: 'Insert menus' }).last()).toBeVisible();
 	});
 
+	// BUG-3547: the menus open in a deferred tick, and the query was tracked only
+	// once open, so keys typed before that tick were lost: under load `/link`
+	// opened the UNFILTERED list and Enter ran its first entry. The page clock is
+	// frozen so the keys land before the open, every time.
+	test('keys typed before the slash menu opens are its query (BUG-3547)', async ({ page, fixture, request }) => {
+		const slug = await seedLongDoc(fixture, request);
+		await openAtEnd(page, fixture, slug);
+		await page.clock.install();
+		await page.clock.pauseAt(Date.now() + 60_000);
+		await page.keyboard.type('/link');
+		// Premise: the deferred open has not run, so the keys beat it.
+		await expect(page.locator('.slash-menu')).toHaveCount(0);
+		await page.clock.runFor(10);
+		const menu = page.locator('.slash-menu').first();
+		await expect(menu).toBeVisible();
+		await expect(menu.locator('.slash-item'), 'only the entries "link" matches').toHaveCount(1);
+		await expect(menu.locator('.slash-item').first()).toContainText('Link to item');
+		await page.keyboard.press('Enter');
+		await page.clock.runFor(10);
+		await expect(page.locator('.slash-menu .slash-ref').first()).toBeVisible();
+		await page.clock.resume();
+		await page.keyboard.press('Escape');
+	});
+
 	test('[[ inside a code block or inline code is just text', async ({ page, fixture, request }) => {
 		const slug = await seedLongDoc(fixture, request);
 		const editor = await openAtEnd(page, fixture, slug);
