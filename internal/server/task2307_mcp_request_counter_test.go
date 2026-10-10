@@ -117,3 +117,30 @@ func TestTASK2307_ClientClassVocabularyIsClosed(t *testing.T) {
 		}
 	}
 }
+
+// A caller refused by the per-token rate limit inside MCPBearerAuth is not
+// counted (codex round 2): the counter's total equals the requests the
+// transport actually received, with the 429 left to
+// pad_mcp_authz_denials_total.
+func TestTASK2307_RateLimitedRequestsAreNotCounted(t *testing.T) {
+	srv := mcpEnabledTestServer(t)
+	srv.metrics = metrics.New()
+	pat := mustCreatePATForTest(t, srv, "task2307-rate-limit")
+
+	admitted, refused := 0, 0
+	for i := 0; i < 80 && refused == 0; i++ {
+		rr := mcpRequestUA(srv, "POST", "/mcp", pat, "claude-code/2.1.0")
+		if rr.Code == http.StatusTooManyRequests {
+			refused++
+		} else {
+			admitted++
+		}
+	}
+	if refused == 0 {
+		t.Fatalf("premise: no 429 within 80 requests on one token")
+	}
+	got := counterValue(t, srv.metrics.MCPHTTPRequestsTotal.WithLabelValues("mcp", "POST", "claude-code"))
+	if got != float64(admitted) {
+		t.Errorf("counted %v, want the %d admitted requests (the 429 must not count)", got, admitted)
+	}
+}
