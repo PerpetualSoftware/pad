@@ -435,3 +435,130 @@ func TestSettleContentRouteStopsWhenTheCallerGoesAway(t *testing.T) {
 		t.Error("the loop never ran, so this proved nothing about cancelling it")
 	}
 }
+
+// refusingApplier answers every GUARDED applier_request with applier_refuse, as a
+// tab holding unconfirmed edits does (BUG-3542), and stays silent on an unguarded
+// one. It reports the guarded flag of each request it saw.
+func refusingApplier(t *testing.T, conn *websocket.Conn) (seen <-chan bool, stop func()) {
+	t.Helper()
+	ch := make(chan bool, 8)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			mt, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if mt != websocket.TextMessage {
+				continue
+			}
+			var msg struct {
+				Type      string `json:"type"`
+				RequestID string `json:"request_id"`
+				Guarded   bool   `json:"guarded"`
+			}
+			if json.Unmarshal(data, &msg) != nil || msg.Type != "applier_request" {
+				continue
+			}
+			ch <- msg.Guarded
+			if msg.Guarded {
+				_ = conn.WriteMessage(websocket.TextMessage, []byte(
+					`{"type":"applier_refuse","request_id":"`+msg.RequestID+`","reason":"unconfirmed_edits"}`))
+			}
+		}
+	}()
+	return ch, func() { _ = conn.Close(); <-done }
+}
+
+// TestBUG3542_UnconfirmedEditsRefusalShape: a tokenless content write whose
+// applier refuses (its tab holds edits the server has not stored) answers 409
+// content_not_applied with apply_reason unconfirmed_edits and content_landed
+// false, leaves items.content alone, and still lands the other fields. With
+// overwrite_pending_edits the request goes out unguarded.
+func TestBUG3542_UnconfirmedEditsRefusalShape(t *testing.T) {
+	restore := collab.SetApplierTimeoutsForTesting(150*time.Millisecond, 150*time.Millisecond)
+	t.Cleanup(restore)
+
+	srv := testServerWithCollab(t)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
+
+	conn, resp, err := dialCollab(t, ts.URL, item.ID, nil, "")
+	if err != nil {
+		status := ""
+		if resp != nil {
+			status = resp.Status
+		}
+		t.Fatalf("dialCollab: %v (%s)", err, status)
+	}
+	seen, stop := refusingApplier(t, conn)
+	t.Cleanup(stop)
+	deadline := time.Now().Add(3 * time.Second)
+	for !srv.collab.HasElectableApplier(item.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("the conn never became electable; this test would have measured the direct path")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	before, err := srv.store.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+
+	// Tokenless, by ruling: refused too.
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.ID,
+		map[string]interface{}{"title": "Renamed alongside", "content": "would replace the typing"})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409. Body: %s", rr.Code, rr.Body.String())
+	}
+	if !nextGuarded(t, seen) {
+		t.Fatal("the request was not guarded; a tokenless write must be")
+	}
+	code, details := decodeErrorEnvelope(t, rr.Body.Bytes())
+	if code != "content_not_applied" {
+		t.Fatalf("code %q, want content_not_applied", code)
+	}
+	if got, _ := details["apply_reason"].(string); got != "unconfirmed_edits" {
+		t.Errorf("apply_reason %q, want unconfirmed_edits", got)
+	}
+	// The tab refused BEFORE applying, so the server knows the content did not land.
+	if landed, ok := details["content_landed"].(bool); !ok || landed {
+		t.Errorf("content_landed = %v (present %v), want false", details["content_landed"], ok)
+	}
+	after, err := srv.store.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if after.Title == before.Title {
+		t.Error("the title did not land; the refusal covers the content only")
+	}
+	if after.Content != before.Content {
+		t.Errorf("items.content moved (%q -> %q) on a refused apply", before.Content, after.Content)
+	}
+
+	// overwrite_pending_edits is the escape: the request goes out unguarded.
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.ID,
+		map[string]interface{}{"content": "replaces on purpose", "overwrite_pending_edits": true})
+	if nextGuarded(t, seen) {
+		t.Errorf("an overwrite_pending_edits write went out guarded (status %d)", rr.Code)
+	}
+	if code, details := decodeErrorEnvelope(t, rr.Body.Bytes()); code == "content_not_applied" && details["apply_reason"] == "unconfirmed_edits" {
+		t.Error("an overwrite_pending_edits write was refused for unconfirmed edits")
+	}
+}
+
+// nextGuarded reads the guarded flag of the next applier_request, failing the
+// test rather than hanging when none arrives (the write took the direct path).
+func nextGuarded(t *testing.T, seen <-chan bool) bool {
+	t.Helper()
+	select {
+	case g := <-seen:
+		return g
+	case <-time.After(5 * time.Second):
+		t.Fatal("no applier_request reached the conn; the write took the direct path")
+		return false
+	}
+}

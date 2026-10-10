@@ -450,6 +450,15 @@ func writeContentNotAppliedError(w http.ResponseWriter, ref string, landedFields
 	switch contentOutcome {
 	case contentOutcomeNotApplied:
 		details["content_landed"] = false
+		if reason == applyReasonUnconfirmedEdits {
+			// BUG-3542: an open editor refused, holding edits the server may not
+			// have stored. Waiting lets them arrive; the re-read then shows them
+			// (content_state), and a resend meets the ordinary pending-edits
+			// ladder, so this advice converges.
+			msg = fmt.Sprintf(
+				"%s: an open editor has edits the server has not stored yet, so the content was not applied (other fields were). Wait a few seconds, re-read the item, and send the content again.",
+				ref)
+		}
 	default: // contentOutcomeUnknown
 		// content_landed is DELIBERATELY ABSENT rather than false: the request went
 		// out and may have been applied. A caller that retries converges either way
@@ -552,7 +561,8 @@ func writePendingFlushConflict(w http.ResponseWriter, ref, msg string, e *store.
 
 // contentOutcome values for writeContentNotAppliedError's details.
 const (
-	// contentOutcomeNotApplied — no applier_request ever reached a peer, so the
+	// contentOutcomeNotApplied — no applier_request ever reached a peer, or the
+	// applier REFUSED a guarded request and applied nothing (BUG-3542), so the
 	// content demonstrably did not land.
 	contentOutcomeNotApplied = "not_applied"
 	// contentOutcomeUnknown — a request went out and was not acked in time. The
@@ -580,6 +590,11 @@ const (
 	// state has a NAME in the same vocabulary as the other two: applied to the
 	// document, not applied, or in the document and not yet in the row (BUG-2995).
 	contentOutcomeAppliedPendingFlush = models.ContentOutcomeAppliedPendingFlush
+
+	// applyReasonUnconfirmedEdits is content_not_applied's details.apply_reason
+	// when an open editor refused a guarded apply (BUG-3542). A stable token,
+	// unlike the free-text reasons the other arms carry.
+	applyReasonUnconfirmedEdits = "unconfirmed_edits"
 )
 
 // writeRoomSettlingError emits the pad-structured-error/v1 envelope for a room that

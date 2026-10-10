@@ -1738,6 +1738,19 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.84 — BUG-3542. BEHAVIOR bump on the v0.39 / v0.43 grounds (a
+//     write door refuses a call it used to accept; no name, enum or param
+//     moved): a `pad_item` update that sets content on an item open in a
+//     browser tab is answered 409 `content_not_applied` with
+//     `details.apply_reason: "unconfirmed_edits"` when that tab still holds
+//     typing the server has not stored. The v0.39 check reads the op-log
+//     when the PATCH arrives and cannot see typing still on the wire; the
+//     tab can, and refuses the apply instead of replacing it. Tokenless
+//     writes are refused too, by ruling. Other fields in the call still
+//     land, and the content is not applied. Wait a few seconds, re-read, and
+//     resend the content; `overwrite_pending_edits: true` is the only way
+//     to replace the typing.
+//
 //     0.83 — TASK-3539. BEHAVIOR bump on the v0.43 / v0.48 grounds (a
 //     write door refuses a call it used to accept; no name, enum or param
 //     moved): `pad_collection` create and update REFUSE a `schema` in which
@@ -2010,7 +2023,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.83"
+const ToolSurfaceVersion = "0.84"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
