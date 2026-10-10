@@ -207,6 +207,39 @@ jobs:
       - name: Verify binary runs
         run: ./pad --help
 
+  dep-age:
+    # Advisory, NOT a required check (TASK-1391, lead ruling). Dependabot's
+    # cooldown (TASK-1390) holds a release for 7 days before PROPOSING it, but
+    # cannot see a version added by hand (`go get`, `npm install`, an edited
+    # workflow pin). This flags any Go module, npm package or action pin the
+    # PR ADDS that was published fewer than 7 days ago. A red result is a
+    # prompt to wait or to allow the version with a reason in
+    # .github/dep-age-allow.txt, not a merge block. See cmd/depages/README.md.
+    timeout-minutes: 15
+    name: Dependency age (advisory)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # The PR's merge commit, one parent back: HEAD^1 is the base branch tip,
+      # so the diff against it is exactly what this PR adds.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Allow Go to fetch the toolchain go.mod pins
+        # The same reason as the Go job above: setup-go exports
+        # GOTOOLCHAIN=local, and go.mod asks for a newer patch.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      - name: Flag dependencies this PR adds that are younger than 7 days
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: go run ./cmd/depages --days 7 --base HEAD^1
+
   native-smoke:
     name: Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

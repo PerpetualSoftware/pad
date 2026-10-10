@@ -1,0 +1,4 @@
+# Dependencies allowed to be younger than cmd/depages' threshold (TASK-1391).
+# One per line: <go|npm|action> <name>@<version>  <reason>
+# The reason is required. Remove a line once its version has aged past the
+# threshold. See cmd/depages/README.md.
