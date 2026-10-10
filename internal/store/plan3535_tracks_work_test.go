@@ -148,7 +148,18 @@ func TestPLAN3535_MigrationMarksExistingSystemCollections(t *testing.T) {
 			play := collBySlug(t, s, ws.ID, "playbooks")
 			// Rewind to before the migration: no key anywhere, except playbooks,
 			// which an owner had already set to work.
-			for id, settings := range map[string]string{conv.ID: `{"layout":"balanced"}`, tasks.ID: `{}`, play.ID: `{"tracks_work":true}`} {
+			rewind := map[string]string{conv.ID: `{"layout":"balanced"}`, tasks.ID: `{}`, play.ID: `{"tracks_work":true}`}
+			var broken *models.Collection
+			if b.name != "Postgres" {
+				// SQLite only (JSONB cannot hold it): a system collection with
+				// MALFORMED settings must not abort the migration (codex).
+				broken, err = s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Broken", IsSystem: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				rewind[broken.ID] = `{not json`
+			}
+			for id, settings := range rewind {
 				if _, err := s.DB().Exec(rebind(b.name, `UPDATE collections SET settings = ? WHERE id = `+placeholder2(b.name)), settings, id); err != nil {
 					t.Fatal(err)
 				}
@@ -168,6 +179,15 @@ func TestPLAN3535_MigrationMarksExistingSystemCollections(t *testing.T) {
 				c := collBySlug(t, s, ws.ID, slug)
 				if got := models.CollectionTracksWorkJSON(c.Settings); got != want {
 					t.Errorf("%s after the migration: tracks_work %v, want %v (settings %s)", slug, got, want, c.Settings)
+				}
+			}
+			if broken != nil {
+				var got string
+				if err := s.DB().QueryRow(`SELECT settings FROM collections WHERE id = ?`, broken.ID).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+				if got != `{not json` {
+					t.Fatalf("the migration touched malformed settings: %q", got)
 				}
 			}
 			var s2 models.CollectionSettings

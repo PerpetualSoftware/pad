@@ -8,10 +8,15 @@
 -- NEW template Docs collection is created as reference.
 --
 -- Only rows whose settings parse as a JSON object are touched; anything else
--- keeps reading as work.
+-- keeps reading as work. The CASE fixes the evaluation order: json_type and
+-- json_extract error on malformed input, and a WHERE clause does not promise
+-- to test json_valid first.
 UPDATE collections
 SET settings = json_set(COALESCE(NULLIF(TRIM(settings), ''), '{}'), '$.tracks_work', json('false'))
 WHERE is_system = 1
-  AND json_valid(COALESCE(NULLIF(TRIM(settings), ''), '{}'))
-  AND json_type(COALESCE(NULLIF(TRIM(settings), ''), '{}')) = 'object'
-  AND json_extract(COALESCE(NULLIF(TRIM(settings), ''), '{}'), '$.tracks_work') IS NULL;
+  AND CASE
+        WHEN json_valid(COALESCE(NULLIF(TRIM(settings), ''), '{}')) THEN
+          json_type(COALESCE(NULLIF(TRIM(settings), ''), '{}')) = 'object'
+          AND json_extract(COALESCE(NULLIF(TRIM(settings), ''), '{}'), '$.tracks_work') IS NULL
+        ELSE 0
+      END;
