@@ -9,6 +9,7 @@ Pad provides built-in tooling for database backup, restore, and migration betwee
 | `pad db backup` | Database backup — SQLite (`VACUUM INTO`, default) or PostgreSQL (`pg_dump`) |
 | `pad db restore <file>` | Database restore — SQLite (staged atomic replacement) or PostgreSQL (`psql`) |
 | `pad db migrate-to-pg` | One-time SQLite → PostgreSQL migration |
+| `pad db release-cloud` | Let a self-hosted boot take over a database a Pad Cloud server has booted |
 | `pad workspace export` | Application-level JSON export (portable) |
 | `pad workspace import` | Application-level JSON import |
 
@@ -452,6 +453,22 @@ This format is database-agnostic and can be used to:
 - Transfer workspaces between Pad instances
 - Create workspace templates
 - Back up individual workspaces
+
+## Booting a Pad Cloud database without cloud mode
+
+A self-hosted boot gives every free and empty plan the `self-hosted` plan, which has no limits. Pad Cloud databases are protected from that conversion (TASK-3551):
+
+- Every cloud-mode boot marks its database cloud-owned (`platform_settings.instance_mode = cloud`). A Cloud database from before the marker is recognised by its billing state instead: any user with a Stripe plan source or a Stripe customer id.
+- A non-cloud boot of such a database converts NOTHING and logs an error (`this database belongs to a Pad Cloud instance; free plans were NOT converted`). The server still starts, so restoring a Cloud backup locally to test it, or a boot with `PAD_MODE` missing, is safe: free users keep free-plan limits.
+
+If you are deliberately moving a Cloud database to a self-hosted instance, run this on the server host, against the database the server uses:
+
+```bash
+pad db release-cloud           # refuses while users carry Stripe billing state
+pad db release-cloud --force   # release anyway; the next non-cloud boot converts free users
+```
+
+A later cloud-mode boot marks the database cloud-owned again.
 
 ## Backup Strategy Recommendations
 

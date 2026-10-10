@@ -684,9 +684,10 @@ func (s *Store) SetUserPlanOverrides(userID, overridesJSON string) error {
 func (s *Store) BackfillUserPlans(targetPlan string) error {
 	var err error
 	if targetPlan == "self-hosted" {
-		// Self-hosted: override free and empty plans to self-hosted
-		_, err = s.db.Exec(s.q(`UPDATE users SET plan = ?, plan_source = ?, updated_at = ? WHERE plan IN ('', 'free')`),
-			targetPlan, PlanSourceManual, now())
+		// Self-hosted: override free and empty plans to self-hosted. UNGUARDED:
+		// the server boot calls BackfillSelfHostedPlans, which refuses a
+		// cloud-owned database first (TASK-3551).
+		_, err = s.backfillSelfHostedQ(s.db)
 	} else {
 		// Cloud: only fill in empty plans, don't override existing values
 		_, err = s.db.Exec(s.q(`UPDATE users SET plan = ?, plan_source = ?, updated_at = ? WHERE plan = ''`),

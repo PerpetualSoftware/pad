@@ -219,6 +219,7 @@ func dbCmd() *cobra.Command {
 		dbMigrateToPgCmd(),
 		dbScanNULCmd(),
 		dbRepairNULCmd(),
+		dbReleaseCloudCmd(),
 	)
 	return cmd
 }

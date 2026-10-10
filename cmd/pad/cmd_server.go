@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -431,15 +432,12 @@ func serveCmd() *cobra.Command {
 					return fmt.Errorf("seed plan limits: %w", err)
 				}
 
-				// Backfill: set existing users with empty plan to 'free'
-				// (first cloud-mode boot after upgrade from self-hosted)
-				if err := s.BackfillUserPlans("free"); err != nil {
-					slog.Warn("failed to backfill user plans", "error", err)
+				if err := bootPlanBackfill(s, true); err != nil {
+					return err
 				}
 			} else {
-				// Self-hosted mode: ensure all users have 'self-hosted' plan (no limits)
-				if err := s.BackfillUserPlans("self-hosted"); err != nil {
-					slog.Warn("failed to set self-hosted plans", "error", err)
+				if err := bootPlanBackfill(s, false); err != nil {
+					return err
 				}
 			}
 
@@ -1438,5 +1436,36 @@ func registerRemoteMCP(mcpSrv *mcpserver.Server, mcpDoc *cmdhelp.Document, dispa
 		resourceFetcher,
 		nil, // no root flags on the remote transport (no --url)
 	)
+	return nil
+}
+
+// bootPlanBackfill is the plan step of `pad server start` (TASK-3551).
+//
+// Cloud: mark the database cloud-owned (sticky, before anything else), then
+// give empty plans 'free' (the first cloud boot after an upgrade from
+// self-hosted).
+//
+// Self-hosted: convert free and empty plans to 'self-hosted' (no limits),
+// unless the database belongs to a Pad Cloud instance. Then nothing is
+// converted and the boot goes on: a debug or restore boot must not be an
+// outage, and free users keep free-plan limits instead of becoming unlimited
+// for good. Only a failure to write the cloud marker stops the boot.
+func bootPlanBackfill(s *store.Store, cloud bool) error {
+	if cloud {
+		if err := s.MarkCloudOwned(); err != nil {
+			return fmt.Errorf("mark database cloud-owned: %w", err)
+		}
+		if err := s.BackfillUserPlans("free"); err != nil {
+			slog.Warn("failed to backfill user plans", "error", err)
+		}
+		return nil
+	}
+	if _, own, err := s.BackfillSelfHostedPlans(); errors.Is(err, store.ErrCloudOwnedDatabase) {
+		slog.Error("this database belongs to a Pad Cloud instance; free plans were NOT converted to self-hosted. "+
+			"Start it with PAD_MODE=cloud, or, if you are deliberately moving it off Pad Cloud, run `pad db release-cloud` on this host",
+			"reason", own.Reason())
+	} else if err != nil {
+		slog.Warn("failed to set self-hosted plans", "error", err)
+	}
 	return nil
 }
