@@ -188,9 +188,12 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 	// configured done field (board_group_by, defaulting to status). The
 	// expression becomes an OR of per-collection clauses; negating
 	// filters to items that are NOT in a terminal state.
+	// Items of a reference collection (PLAN-3535) are not open work and
+	// stay out of the counts too.
 	filters := s.doneFiltersForWorkspace(workspaceID)
 	doneExpr, doneArgs := s.buildChildrenDoneExpr(filters, "i")
-	roleCountArgs := append([]any{workspaceID}, doneArgs...)
+	refExpr, refArgs := buildReferenceExpr(filters, "i")
+	roleCountArgs := append(append([]any{workspaceID}, doneArgs...), refArgs...)
 	groupConcatUsers := s.dialect.GroupConcat("u.name", true)
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT i.agent_role_id, COUNT(*) as cnt, %s as users
@@ -199,8 +202,9 @@ func (s *Store) GetRoleBreakdown(workspaceID string) ([]RoleBreakdown, error) {
 		LEFT JOIN users u ON u.id = i.assigned_user_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
 		  AND NOT %s
+		  AND NOT %s
 		GROUP BY i.agent_role_id
-	`, groupConcatUsers, doneExpr)), roleCountArgs...)
+	`, groupConcatUsers, doneExpr, refExpr)), roleCountArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("role breakdown: %w", err)
 	}

@@ -1738,6 +1738,19 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.82 — PLAN-3535 PR 2. BEHAVIOR bump on the v0.49 grounds (a
+//     default call's content changes; no name, enum or param moved): the
+//     items of a REFERENCE collection (`tracks_work: false`; system
+//     Conventions and Playbooks, and new template Docs) stop counting as
+//     open work on every agent surface. `pad_project` next / ready / stale /
+//     standup / changelog / dashboard and the bootstrap dashboard leave them
+//     out (active items, attention, suggestions, by_role, active-plan
+//     progress); report with no `collections` leaves the collection out, as
+//     it already did a system one; item progress and the open-children close
+//     guard (`open_children`) skip them; the attention decision set is not
+//     asked about them. Sidebar counts, item lists, search and links are
+//     unchanged. A collection without the key still counts as work.
+//
 //     0.81 — PLAN-3535 PR 1. ADDITIVE: `pad_collection` create and update
 //     take a `tracks_work` boolean. false makes the collection REFERENCE
 //     material (docs, conventions, playbooks): its items will stop counting
@@ -1985,7 +1998,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.81"
+const ToolSurfaceVersion = "0.82"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

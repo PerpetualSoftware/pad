@@ -674,6 +674,14 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// boundary rather than at the schema level. IDEA-1488 extends
 		// this to log-and-coerce on non-empty malformed JSON.
 		settings := coerceJSONForImport(c.Settings, "{}", "collections.settings", c.ID, ws.ID, true)
+		// A bundle written before PLAN-3535 has no tracks_work. The migration
+		// marked every existing SYSTEM collection reference, so an imported
+		// one gets the same; any other collection keeps the absent key, which
+		// means work, as the migration left it. A value the bundle carries is
+		// kept.
+		if c.IsSystem {
+			settings = models.WithTracksWorkDefault(settings, c.Schema, true)
+		}
 		// Same coercion for traits, and for the same reason: this INSERT
 		// supplies the column explicitly, so the NOT NULL DEFAULT '{}' never
 		// fires. Archives written before TASK-2657 carry no traits key at
