@@ -305,9 +305,9 @@
 	let hasGroupVerbs = $derived(
 		!!(onMoveGroup || onTagGroup || onUntagGroup || onSetPriorityGroup || onAssignGroup),
 	);
-	/** A click or key inside the group menu is the menu's, not the header's toggle. */
-	function fromGroupMenu(e: Event): boolean {
-		return e.target instanceof Element && !!e.target.closest('.group-menu-wrap');
+	/** A click in the header's actions (count, archive, ⋯ menu) is theirs, not the toggle's. */
+	function inGroupActions(e: Event): boolean {
+		return e.target instanceof Element && !!e.target.closest('.group-actions');
 	}
 
 	// Group reordering state
@@ -565,17 +565,24 @@
 			{@const groupName = group.id}
 			{@const grpItems = groupData[laneKey(groupName)] ?? []}
 			<div class="item-group" class:menu-open={openGroupMenu === groupName}>
+				<!-- The header's empty space toggles on a click, as it always has; the
+				     KEYBOARD and assistive-tech control is the .group-toggle button,
+				     whose Enter/Space click bubbles here. The action buttons are its
+				     siblings, not its children (TASK-2222, codex round 1: a role=button
+				     header made every action a nested interactive control). -->
+				<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 				<div
 					class="group-header"
-					role="button"
-					tabindex="0"
-					onclick={(e) => { if (fromGroupMenu(e)) return; toggleGroup(groupName); }}
-					onkeydown={(e) => { if (fromGroupMenu(e)) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(groupName); } }}
-					aria-expanded={!collapsedGroups.has(groupName)}
+					onclick={(e) => { if (inGroupActions(e)) return; toggleGroup(groupName); }}
 				>
 					{#if canEdit}
 						<span class="group-drag-handle" title="Drag to reorder">⠿</span>
 					{/if}
+					<button
+						type="button"
+						class="group-toggle"
+						aria-expanded={!collapsedGroups.has(groupName)}
+					>
 					<span class="collapse-icon" class:collapsed={collapsedGroups.has(groupName)}
 						>&#9662;</span
 					>
@@ -591,6 +598,7 @@
 								title="This item has been deleted.">(deleted)</span
 							>{/if}
 					</span>
+					</button>
 					<span class="group-actions">
 						<span class="group-count">{itemCount(grpItems)}</span>
 						<!-- Gate on onArchiveGroup alone (not canEdit): archive-all
@@ -811,6 +819,27 @@
 		color: var(--text-primary);
 		font-weight: 600;
 		font-size: 0.9em;
+	}
+
+	.group-toggle {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex: 1;
+		min-width: 0;
+		padding: 0;
+		background: none;
+		border: none;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.group-toggle:focus-visible {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: 2px;
+		border-radius: var(--radius-sm);
 	}
 
 	.group-header:hover {

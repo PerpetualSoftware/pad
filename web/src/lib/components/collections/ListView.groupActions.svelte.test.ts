@@ -98,8 +98,10 @@ describe('list group bulk actions (TASK-2222)', () => {
 		const [openBtn] = menuButtons(container);
 		await fireEvent.click(openBtn);
 		await tick();
-		const header = openBtn.closest('.group-header')!;
+		const header = openBtn.closest('.group-header')!.querySelector('.group-toggle')!;
 		expect(header.getAttribute('aria-expanded'), 'the ⋯ click toggled the group').toBe('true');
+		// The ⋯ is a sibling of the toggle, not inside it (codex round 1).
+		expect(header.contains(openBtn)).toBe(false);
 		await fireEvent.click(menuItem(container, 'Move all to')!);
 		await tick();
 		expect(header.getAttribute('aria-expanded'), 'a click inside the menu toggled the group').toBe('true');
@@ -118,7 +120,7 @@ describe('list group bulk actions (TASK-2222)', () => {
 		const [openBtn] = menuButtons(container);
 		await fireEvent.click(openBtn);
 		await tick();
-		const header = openBtn.closest('.group-header')!;
+		const header = openBtn.closest('.group-header')!.querySelector('.group-toggle')!;
 		await fireEvent.click(container.querySelector('.lane-menu')!);
 		await tick();
 		expect(header.getAttribute('aria-expanded')).toBe('true');
@@ -129,9 +131,26 @@ describe('list group bulk actions (TASK-2222)', () => {
 		const [openBtn] = menuButtons(container);
 		await fireEvent.click(openBtn);
 		await tick();
-		const header = openBtn.closest('.group-header')!;
+		const header = openBtn.closest('.group-header')!.querySelector('.group-toggle')!;
 		await fireEvent.keyDown(menuItem(container, 'Tag all')!, { key: 'Enter' });
 		await tick();
 		expect(header.getAttribute('aria-expanded')).toBe('true');
+	});
+});
+
+describe('the group header is one toggle button, with the actions beside it (TASK-2222)', () => {
+	it('no role=button wrapper; the toggle button carries aria-expanded and toggles', async () => {
+		const { container } = renderList({ onMoveGroup: vi.fn(), onArchiveGroup: vi.fn() });
+		const header = container.querySelector('.group-header')!;
+		expect(header.getAttribute('role')).toBeNull();
+		const toggle = header.querySelector<HTMLButtonElement>('button.group-toggle')!;
+		expect(toggle.querySelector('button')).toBeNull();
+		expect(toggle.getAttribute('aria-expanded')).toBe('true');
+		await fireEvent.click(toggle);
+		await tick();
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+		await fireEvent.click(header);
+		await tick();
+		expect(toggle.getAttribute('aria-expanded'), 'a click on the header space still toggles').toBe('true');
 	});
 });
