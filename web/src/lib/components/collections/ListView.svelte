@@ -555,8 +555,11 @@
 			   ordinary taps/scrolls pass through unmolested. */
 			delayTouchStart: touchDragDelayMs,
 			// Off by input, not width, like every drag zone (BUG-3158): a group
-			// reorder persists the lane order for the whole collection.
-			dragDisabled: viewport.dragDisabled || !canEdit
+			// reorder persists the lane order for the whole collection. Off while
+			// a group's ⋯ menu is open, too (TASK-2222, codex round 2): the menu
+			// lives inside a draggable group, so a press-and-drag on it would
+			// otherwise reorder the groups mid-action.
+			dragDisabled: viewport.dragDisabled || !canEdit || openGroupMenu !== null
 		}}
 		onconsider={handleGroupConsider}
 		onfinalize={handleGroupFinalize}
