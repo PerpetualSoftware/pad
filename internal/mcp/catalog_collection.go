@@ -85,6 +85,11 @@ var padCollectionTool = ToolDef{
 				Type:        "number",
 				Description: "Display sort order (lower = appears first). Optional for action=update.",
 			},
+			{
+				Name:        "tracks_work",
+				Type:        "boolean",
+				Description: "false: reference, not work.",
+			},
 		},
 	},
 	Actions: map[string]ActionFn{

@@ -262,6 +262,10 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", "Name is required")
 		return
 	}
+	if err := models.ValidateTracksWorkSetting(input.Settings); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 
 	if input.Schema != "" {
 		var schema models.CollectionSchema
@@ -412,6 +416,13 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
+	}
+
+	if input.Settings != nil {
+		if err := models.ValidateTracksWorkSetting(*input.Settings); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
 	}
 
 	var updateCollapsed []string

@@ -147,6 +147,10 @@
             "description": "Display sort order (lower = appears first). Optional for action=update.",
             "type": "number"
           },
+          "tracks_work": {
+            "description": "false: reference, not work.",
+            "type": "string"
+          },
           "workspace": {
             "description": "Workspace slug to target for this call. An explicit value here ALWAYS wins. Otherwise resolution depends on the server: a single-user local server falls back to the session default set via pad_set_workspace, then the CWD-linked workspace from .pad.toml. A multi-user/remote server does NOT persist a session default, so you must pass workspace explicitly on every call.",
             "type": "string"

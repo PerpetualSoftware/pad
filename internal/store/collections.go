@@ -78,6 +78,17 @@ func (s *Store) createCollectionTx(tx *sql.Tx, workspaceID string, input models.
 	if settings == "" {
 		settings = "{}"
 	}
+	// A new collection says whether it tracks work (PLAN-3535): the creator's
+	// value if given, else system collections are reference and others are
+	// work iff their done field can finish.
+	if input.TracksWork != nil {
+		set, err := models.SetTracksWork(settings, *input.TracksWork)
+		if err != nil {
+			return "", err
+		}
+		settings = set
+	}
+	settings = models.WithTracksWorkDefault(settings, schema, input.IsSystem)
 	// Traits default to "{}" (declares nothing), which is correct for every
 	// ordinary collection — kernel traits are opt-in and absence is never an
 	// error. The column is NOT NULL, so the empty case must be a real object.
@@ -598,8 +609,27 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		if settings == "" {
 			settings = "{}"
 		}
+		// A settings write that does not mention tracks_work keeps the stored
+		// value (PLAN-3535): clients rebuild settings wholesale, and one that
+		// predates the key would otherwise reset a reference collection to work.
+		settings = models.CarryTracksWork(settings, existing.Settings)
+		if input.TracksWork != nil {
+			set, err := models.SetTracksWork(settings, *input.TracksWork)
+			if err != nil {
+				return nil, err
+			}
+			settings = set
+		}
 		sets = append(sets, "settings = ?")
 		args = append(args, settings)
+	} else if input.TracksWork != nil {
+		// Only the flag (PLAN-3535): merge it into the stored settings.
+		set, err := models.SetTracksWork(existing.Settings, *input.TracksWork)
+		if err != nil {
+			return nil, err
+		}
+		sets = append(sets, "settings = ?")
+		args = append(args, set)
 	}
 	if input.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")

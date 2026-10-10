@@ -628,6 +628,9 @@ func mapCollectionCreate(input map[string]any) (string, string, []byte, error) {
 	if v, _ := input["description"].(string); v != "" {
 		payload["description"] = v
 	}
+	if v, ok := input["tracks_work"].(bool); ok { // PLAN-3535
+		payload["tracks_work"] = v
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("encode body: %w", err)
@@ -906,6 +909,11 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 			return "", "", nil, fmt.Errorf("parse fields DSL: %w", err)
 		}
 		payload["schema"] = schemaJSON
+	}
+	// PLAN-3535: the typed member, merged into the stored settings
+	// server-side, so the rest of settings is untouched.
+	if v, ok := input["tracks_work"].(bool); ok {
+		payload["tracks_work"] = v
 	}
 
 	body, err := json.Marshal(payload)

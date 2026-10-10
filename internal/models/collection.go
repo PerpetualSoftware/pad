@@ -83,6 +83,10 @@ type CollectionSettings struct {
 	ListGroupBy     string        `json:"list_group_by,omitempty"`
 	QuickActions    []QuickAction `json:"quick_actions,omitempty"`
 	ContentTemplate string        `json:"content_template,omitempty"` // markdown template for new items
+	// TracksWork: false makes the collection REFERENCE material (PLAN-3535):
+	// its items leave progress, close blocking, Insights and open-work
+	// counts. nil (absent) means work. Read it through CollectionTracksWork.
+	TracksWork *bool `json:"tracks_work,omitempty"`
 }
 
 type Collection struct {
@@ -175,6 +179,10 @@ type CollectionCreate struct {
 	Traits      string `json:"traits,omitempty"`
 	IsDefault   bool   `json:"is_default,omitempty"`
 	IsSystem    bool   `json:"is_system,omitempty"`
+	// TracksWork, when non-nil, sets settings.tracks_work (PLAN-3535),
+	// overriding the same key inside Settings. Nil: the settings' own value,
+	// else the default (DefaultTracksWork).
+	TracksWork *bool `json:"tracks_work,omitempty"`
 	// Source is how the collection was created ('web' | 'cli' | 'mcp'), set by
 	// the server from the request's auth shape, never from the body (BUG-3447).
 	// Empty leaves the column's '' (provenance unknown, never agent).
@@ -210,8 +218,14 @@ type CollectionUpdate struct {
 	// declarations. Nil leaves them untouched — which is the case for every
 	// client that rebuilds a collection's schema/settings blobs without
 	// knowing traits exist, and is why traits survive an ordinary edit.
-	Traits     *string          `json:"traits,omitempty"`
-	SortOrder  *int             `json:"sort_order,omitempty"`
+	Traits    *string `json:"traits,omitempty"`
+	SortOrder *int    `json:"sort_order,omitempty"`
+	// TracksWork, when non-nil, sets settings.tracks_work and nothing else in
+	// settings (PLAN-3535): the store merges it into the stored (or the
+	// supplied) settings under its own read, so a client can flip it without
+	// a read-modify-write of the whole blob. An older server ignores the
+	// member, so a caller that must know it landed checks the response.
+	TracksWork *bool            `json:"tracks_work,omitempty"`
 	Migrations []FieldMigration `json:"migrations,omitempty"`
 	// ExpectedUpdatedAt, when non-empty, opts into optimistic-concurrency
 	// control (BUG-2265, mirroring the item pattern from IDEA-1480): the
