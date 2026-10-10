@@ -29,8 +29,9 @@ import (
 
 func storageCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "storage",
-		Short: "Show workspace storage usage and effective limit",
+		Use:     "storage",
+		Short:   "Show workspace storage usage and effective limit",
+		Example: `  pad workspace storage`,
 		Long: `Print the workspace's current attachment storage usage versus the
 effective limit for the workspace owner's plan.
 
@@ -93,8 +94,9 @@ workspaces with no owner).`,
 
 func membersCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "members",
-		Short: "List workspace members",
+		Use:     "members",
+		Short:   "List workspace members",
+		Example: `  pad workspace members`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -183,9 +185,10 @@ func inviteCmd() *cobra.Command {
 	var roleFlag string
 
 	cmd := &cobra.Command{
-		Use:   "invite <email>",
-		Short: "Invite a user to the workspace",
-		Args:  cobra.ExactArgs(1),
+		Use:     "invite <email>",
+		Short:   "Invite a user to the workspace",
+		Example: `  pad workspace invite alex@example.com --role editor`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -240,9 +243,10 @@ func inviteCmd() *cobra.Command {
 
 func joinCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "join <code>",
-		Short: "Accept a workspace invitation",
-		Args:  cobra.ExactArgs(1),
+		Use:     "join <code>",
+		Short:   "Accept a workspace invitation",
+		Example: `  pad workspace join <code>`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			code := args[0]
@@ -264,9 +268,10 @@ func joinCmd() *cobra.Command {
 // account (BUG-2136): what an invitee answers with accept or decline.
 func myInvitationsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "invitations",
-		Short: "List workspace invitations waiting for your answer",
-		Args:  cobra.NoArgs,
+		Use:     "invitations",
+		Short:   "List workspace invitations waiting for your answer",
+		Example: `  pad workspace invitations`,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			invs, verified, err := client.ListMyInvitations()
@@ -298,9 +303,10 @@ func myInvitationsCmd() *cobra.Command {
 
 func acceptInvitationCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "accept <invitation-id>",
-		Short: "Accept a workspace invitation from pad workspace invitations",
-		Args:  cobra.ExactArgs(1),
+		Use:     "accept <invitation-id>",
+		Short:   "Accept a workspace invitation from pad workspace invitations",
+		Example: `  pad workspace accept <invitation-id>`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			role, slug, err := client.AcceptMyInvitation(args[0])
@@ -316,9 +322,10 @@ func acceptInvitationCmd() *cobra.Command {
 
 func declineInvitationCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "decline <invitation-id>",
-		Short: "Decline a workspace invitation from pad workspace invitations",
-		Args:  cobra.ExactArgs(1),
+		Use:     "decline <invitation-id>",
+		Short:   "Decline a workspace invitation from pad workspace invitations",
+		Example: `  pad workspace decline <invitation-id>`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			if err := client.DeclineMyInvitation(args[0]); err != nil {
@@ -334,9 +341,10 @@ func declineInvitationCmd() *cobra.Command {
 // still inside the 30-day restore window (owner-only server-side).
 func workspaceRestoreCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "restore <slug>",
-		Short: "Restore a soft-deleted workspace within the restore window",
-		Args:  cobra.ExactArgs(1),
+		Use:     "restore <slug>",
+		Short:   "Restore a soft-deleted workspace within the restore window",
+		Example: `  pad workspace restore mobile-app`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			slug := args[0]
@@ -362,9 +370,10 @@ func workspaceRestoreCmd() *cobra.Command {
 // days remaining before each is permanently purged.
 func workspaceDeletedCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "deleted",
-		Short: "List soft-deleted workspaces still within the restore window",
-		Args:  cobra.NoArgs,
+		Use:     "deleted",
+		Short:   "List soft-deleted workspaces still within the restore window",
+		Example: `  pad workspace deleted`,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			deleted, err := client.ListDeletedWorkspaces()
@@ -419,8 +428,9 @@ func workspaceCreateCmd() *cobra.Command {
 		templateFlag string
 	)
 	cmd := &cobra.Command{
-		Use:   "create <name>",
-		Short: "Create a workspace non-interactively (use 'pad workspace init' for the guided flow)",
+		Use:     "create <name>",
+		Short:   "Create a workspace non-interactively (use 'pad workspace init' for the guided flow)",
+		Example: `  pad workspace create "Mobile App" --template startup`,
 		Long: `Create a new workspace by name. Non-interactive — no prompts, no
 CWD link side effect. Hits POST /api/v1/workspaces directly with the
 supplied name + optional slug + template.
@@ -489,8 +499,9 @@ re-authorizing or by enabling the flag on the existing connection at
 func workspaceClaimCmd() *cobra.Command {
 	var workspaceSlug string
 	cmd := &cobra.Command{
-		Use:   "claim <code>",
-		Short: "Redeem a 6-digit claim code to add a workspace to this OAuth connection's allow-list",
+		Use:     "claim <code>",
+		Short:   "Redeem a 6-digit claim code to add a workspace to this OAuth connection's allow-list",
+		Example: `  pad workspace claim 482913`,
 		Long: `Redeem a 6-digit claim code at POST /api/v1/oauth/claim, granting the
 calling OAuth connection access to one specific workspace.
 
@@ -543,8 +554,9 @@ func initCmd() *cobra.Command {
 	var listTemplates bool
 
 	cmd := &cobra.Command{
-		Use:   "init [name]",
-		Short: "Create a workspace and link it to the current directory",
+		Use:     "init [name]",
+		Short:   "Create a workspace and link it to the current directory",
+		Example: `  pad workspace init --template startup`,
 		Long: `Create a workspace and link it to the current directory.
 
 Use --template to choose a workspace template:
@@ -718,8 +730,9 @@ a workspace in one step.`,
 
 func linkCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "link <workspace>",
-		Short: "Link the current directory to an existing workspace",
+		Use:     "link <workspace>",
+		Short:   "Link the current directory to an existing workspace",
+		Example: `  pad workspace link mobile-app`,
 		Long: `Link the current directory to an existing workspace by creating a .pad.toml file.
 
 Unlike 'pad workspace init', this does NOT create a new workspace — it only links to one that already exists.
@@ -993,8 +1006,9 @@ func printOnboardingHints(cfg *config.Config, templateName string) {
 
 func workspacesCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List all workspaces",
+		Use:     "list",
+		Short:   "List all workspaces",
+		Example: `  pad workspace list`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			workspaces, err := client.ListWorkspaces()
@@ -1057,9 +1071,10 @@ func workspacesCmd() *cobra.Command {
 
 func switchCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "switch <workspace>",
-		Short: "Link current directory to a different workspace",
-		Args:  cobra.ExactArgs(1),
+		Use:     "switch <workspace>",
+		Short:   "Link current directory to a different workspace",
+		Example: `  pad workspace switch mobile-app`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, cfg := getClient()
 			ws, err := client.GetWorkspace(args[0])
@@ -1086,8 +1101,9 @@ func exportCmd() *cobra.Command {
 	var outputFile string
 	var jsonOnly bool
 	cmd := &cobra.Command{
-		Use:   "export",
-		Short: "Export workspace as a self-contained tar.gz bundle",
+		Use:     "export",
+		Short:   "Export workspace as a self-contained tar.gz bundle",
+		Example: `  pad workspace export --output backup.tar.gz`,
 		Long: `Export the current workspace (collections, items, comments, versions,
 and attachments) to a portable tar.gz bundle:
 
@@ -1181,8 +1197,9 @@ func importCmd() *cobra.Command {
 	var nameFlag string
 	var repairNUL bool
 	cmd := &cobra.Command{
-		Use:   "import <file>",
-		Short: "Import workspace from JSON export or tar.gz bundle",
+		Use:     "import <file>",
+		Short:   "Import workspace from JSON export or tar.gz bundle",
+		Example: `  pad workspace import backup.tar.gz --name "Mobile App (restored)"`,
 		Long: `Import a workspace from a previously exported file. Creates a new
 workspace with regenerated IDs.
 
@@ -1341,8 +1358,9 @@ func auditLogCmd() *cobra.Command {
 	var limit int
 
 	cmd := &cobra.Command{
-		Use:   "audit-log",
-		Short: "View the compliance audit log (admin-only)",
+		Use:     "audit-log",
+		Short:   "View the compliance audit log (admin-only)",
+		Example: `  pad workspace audit-log --days 7`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 

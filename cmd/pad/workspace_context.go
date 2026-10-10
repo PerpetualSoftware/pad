@@ -58,8 +58,9 @@ func workspaceContextSetCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "set",
-		Short: "Replace the structured workspace context from JSON input",
+		Use:     "set",
+		Short:   "Replace the structured workspace context from JSON input",
+		Example: `  pad workspace context set --file context.json`,
 		Long: `Replace the structured workspace context using a JSON object.
 
 The JSON must match the workspace context schema, including optional sections like
