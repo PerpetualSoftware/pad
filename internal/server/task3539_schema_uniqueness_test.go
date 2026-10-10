@@ -90,6 +90,15 @@ func TestTASK3539_StoredRepeatStillReadsAndIsNamedOnRewrite(t *testing.T) {
 	if rr := doRequest(srv, "GET", base+"/old", nil); rr.Code != http.StatusOK {
 		t.Fatalf("read: %d %s", rr.Code, rr.Body.String())
 	}
+	if _, err := srv.store.CreateItem(ws.ID, mustCollectionID(t, srv, ws.ID, "old"), models.ItemCreate{Title: "Legacy item", Fields: `{}`}); err != nil {
+		t.Fatalf("store create item: %v", err)
+	}
+	if rr := doRequest(srv, "GET", base+"/old/items", nil); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "Legacy item") {
+		t.Fatalf("item list read: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := rawJSONRequest(srv, "POST", base+"/old/items", `{"title":"Written today"}`); rr.Code != http.StatusCreated {
+		t.Fatalf("item create in the legacy collection: %d %s", rr.Code, rr.Body.String())
+	}
 	if rr := rawJSONRequest(srv, "PATCH", base+"/old", `{"description":"still works"}`); rr.Code != http.StatusOK {
 		t.Fatalf("update without a schema: %d %s", rr.Code, rr.Body.String())
 	}

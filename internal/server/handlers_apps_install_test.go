@@ -245,6 +245,24 @@ func TestAppInstallPreview_Refusals(t *testing.T) {
 			pack["artifacts"] = []any{}
 			e.publish(t, m)
 		}, 422, "invalid_manifest"},
+		// TASK-3539: a companion schema is a collection write, held to the
+		// same rule as the collection handlers.
+		"companion schema repeats an option": {func(t *testing.T, e *appsEnv) {
+			m := e.manifest(t)
+			pack := m["companion_pack"].(map[string]any)
+			pack["collections"] = []any{map[string]any{"key": "tickets", "slug": "portal-tickets", "name": "Portal tickets",
+				"schema": map[string]any{"fields": []any{map[string]any{"key": "status", "label": "Status", "type": "select", "options": []any{"open", "open"}}}}}}
+			e.publish(t, m)
+		}, 422, "invalid_manifest"},
+		"companion schema repeats a field key": {func(t *testing.T, e *appsEnv) {
+			m := e.manifest(t)
+			pack := m["companion_pack"].(map[string]any)
+			pack["collections"] = []any{map[string]any{"key": "tickets", "slug": "portal-tickets", "name": "Portal tickets",
+				"schema": map[string]any{"fields": []any{
+					map[string]any{"key": "status", "label": "Status", "type": "text"},
+					map[string]any{"key": "status", "label": "Again", "type": "text"}}}}}
+			e.publish(t, m)
+		}, 422, "invalid_manifest"},
 		"manifest redirects": {func(t *testing.T, e *appsEnv) { e.status["/.well-known/pad-app.json"] = http.StatusFound }, 502, "manifest_fetch_failed"},
 		"artifact missing":   {func(t *testing.T, e *appsEnv) { delete(e.files, "/pack/ship.md") }, 502, "artifact_fetch_failed"},
 		"slug taken by a human collection": {func(t *testing.T, e *appsEnv) {
