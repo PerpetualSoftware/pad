@@ -68,6 +68,8 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		// ItemTimeline fences every load and handler on identity (BUG-3105);
 		// identity never changes in this suite.
 		identityFence: () => () => true,
+		// The shared confirm dialog (TASK-2221) registers for identity changes on import.
+		onIdentityChange: () => () => {},
 	},
 }));
 

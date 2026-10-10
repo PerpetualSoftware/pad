@@ -180,6 +180,9 @@ const POPULATION: string[] = [
 	// TASK-2199: no requests; its one await is the clipboard write, and the
 	// callbacks it fires after it are fenced on the parent side (class C).
 	'lib/components/items/OfflineRecoveryNotice.svelte',
+	// TASK-2221: no requests and no awaits; it renders the save/sync props it
+	// is given and a polite status region.
+	'lib/components/items/SaveSyncStatus.svelte',
 	// SPEC-6 U9d (TASK-3413): installed apps' item actions; its list load and
 	// its mint each fence with authStore.identityFence() after the await.
 	'lib/components/items/ItemAppActions.svelte',

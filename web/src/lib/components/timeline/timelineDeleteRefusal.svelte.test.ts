@@ -54,6 +54,7 @@ vi.mock('$lib/components/CommentEditor.svelte', async () => ({
 }));
 
 const { default: ItemTimeline } = await import('./ItemTimeline.svelte');
+const { confirmDialog } = await import('$lib/stores/confirmDialog.svelte');
 
 function timeline(): TimelineResponse {
 	const c = {
@@ -89,15 +90,32 @@ beforeEach(() => {
 	document.body.appendChild(host);
 	listMock.mockReset().mockImplementation(async () => timeline());
 	deleteMock.mockReset();
-	vi.spyOn(window, 'confirm').mockReturnValue(true);
 });
 
 afterEach(() => {
 	if (app) unmount(app);
 	app = null;
 	host.remove();
+	confirmDialog.abandonAll();
 	vi.restoreAllMocks();
 });
+
+let props: { itemSlug: string } & Record<string, unknown>;
+
+function mountTimeline() {
+	const p = $state({
+		wsSlug: 'ws',
+		username: 'alice',
+		itemSlug: 'TASK-1',
+		currentContent: '',
+		itemId: 'item-a',
+		collectionId: 'coll-1',
+		hostToken: 'host-1',
+		mutationsEnabled: true,
+	});
+	props = p;
+	app = mount(ItemTimeline, { target: host, props: p as never }) as Record<string, unknown>;
+}
 
 describe('comment delete refused because of replies (BUG-3252)', () => {
 	it("shows the server's refusal and keeps the comment", async () => {
@@ -107,19 +125,7 @@ describe('comment delete refused because of replies (BUG-3252)', () => {
 				details: { comment_id: 'c-parent', reply_count: 1 },
 			})
 		);
-		app = mount(ItemTimeline, {
-			target: host,
-			props: {
-				wsSlug: 'ws',
-				username: 'alice',
-				itemSlug: 'TASK-1',
-				currentContent: '',
-				itemId: 'item-a',
-				collectionId: 'coll-1',
-				hostToken: 'host-1',
-				mutationsEnabled: true,
-			},
-		}) as Record<string, unknown>;
+		mountTimeline();
 		await settle();
 
 		const btn = host.querySelector<HTMLButtonElement>('.delete-btn');
@@ -127,11 +133,40 @@ describe('comment delete refused because of replies (BUG-3252)', () => {
 		const listsBefore = listMock.mock.calls.length;
 		btn!.click();
 		await settle();
+		expect(confirmDialog.active?.confirmLabel).toBe('Delete');
+		confirmDialog.confirm();
+		await settle();
 
 		expect(deleteMock).toHaveBeenCalledWith('ws', 'c-parent');
 		expect(host.querySelector('.error')?.textContent).toContain(REFUSAL);
 		expect(host.textContent).toContain('the parent comment');
 		// A refused delete must not reload as if the comment were gone.
 		expect(listMock.mock.calls.length).toBe(listsBefore);
+	});
+});
+
+describe('comment delete asks through the shared dialog (TASK-2221)', () => {
+	it('cancel deletes nothing', async () => {
+		mountTimeline();
+		await settle();
+		host.querySelector<HTMLButtonElement>('.delete-btn')!.click();
+		await settle();
+		expect(confirmDialog.active?.danger).toBe(true);
+		confirmDialog.cancel();
+		await settle();
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(confirmDialog.active).toBeNull();
+	});
+
+	it('a yes given after the timeline moved to another item deletes nothing', async () => {
+		mountTimeline();
+		await settle();
+		host.querySelector<HTMLButtonElement>('.delete-btn')!.click();
+		await settle();
+		props.itemSlug = 'TASK-2'; // the pane moved on while the dialog was open
+		await settle();
+		confirmDialog.confirm();
+		await settle();
+		expect(deleteMock).not.toHaveBeenCalled();
 	});
 });

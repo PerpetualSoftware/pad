@@ -9,6 +9,7 @@
 // `AttachmentUpload.configure` installed — not a copy of that config — so the
 // binding is what is under test (team CONVE-19).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { toastStore } from '$lib/stores/toast.svelte';
 import { mount, unmount, flushSync } from 'svelte';
 import type { Editor as TiptapEditor } from '@tiptap/core';
 
@@ -137,18 +138,18 @@ describe('Editor upload callback — identity fence (BUG-3105)', () => {
 		expect(notifySpy).not.toHaveBeenCalled();
 	});
 
-	it('onError stays silent for the refusal, and still alerts a genuine failure', () => {
-		const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+	it('onError stays silent for the refusal, and still reports a genuine failure as a toast (TASK-2221)', () => {
+		const toastSpy = vi.spyOn(toastStore, 'show').mockImplementation(() => undefined as never);
 		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 		try {
 			configured().onError('a.png', 'upload refused: the signed-in user changed');
-			expect(alertSpy).not.toHaveBeenCalled();
-			// CONTROL: the same callback does alert, so the silence above is the
-			// sentinel's doing and not an alert path that never fires.
+			expect(toastSpy).not.toHaveBeenCalled();
+			// CONTROL: the same callback does report, so the silence above is the
+			// sentinel's doing and not a report path that never fires.
 			configured().onError('a.png', 'network down');
-			expect(alertSpy).toHaveBeenCalledTimes(1);
+			expect(toastSpy).toHaveBeenCalledTimes(1);
 		} finally {
-			alertSpy.mockRestore();
+			toastSpy.mockRestore();
 			errSpy.mockRestore();
 		}
 	});

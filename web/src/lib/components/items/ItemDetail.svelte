@@ -72,6 +72,8 @@
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { canonicalEditorMarkdown } from '$lib/collab/canonicalMarkdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
+	import SaveSyncStatus from './SaveSyncStatus.svelte';
 	import { titleEditError, titleLengthState } from '$lib/items/titleLimit';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity, ItemCopyResult } from '$lib/types';
@@ -4147,12 +4149,18 @@
 		// Generation fence (Codex) alongside the item/editor identity checks —
 		// closes the A→B→A gap and keeps A's spinner/toast off B.
 		const gen = loadGeneration;
-		const ok = typeof window !== 'undefined' &&
-			window.confirm(
+		// The shared dialog, not a native confirm() (TASK-2221, audit C39).
+		const ok = await confirmDialog.request({
+			title: 'Refresh from source?',
+			message:
 				`Replace the current content with a fresh fetch from:\n${url}\n\n` +
-				'Your existing content will be replaced. Undo is available via the editor history.'
-			);
+				'Your existing content will be replaced. Undo is available via the editor history.',
+			confirmLabel: 'Replace content',
+			danger: true
+		});
 		if (!ok) return;
+		// The dialog is an await: the same fence the fetch below takes.
+		if (switchedAway(targetItem, gen) || editorInstance !== targetEditor) return;
 		refreshing = true;
 		try {
 			const resp = await api.importURL(url);
@@ -6202,6 +6210,7 @@
 							{/if}
 						</button>
 					{/if}
+					<SaveSyncStatus {saveStatus} collabState={collabProvider?.state ?? null} />
 				</nav>
 			</div>
 		{:else}
@@ -6241,6 +6250,7 @@
 						</button>
 					{/if}
 				</div>
+				<SaveSyncStatus {saveStatus} collabState={collabProvider?.state ?? null} />
 				<div class="pane-header-actions">
 					<button
 						type="button"

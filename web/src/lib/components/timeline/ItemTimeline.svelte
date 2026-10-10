@@ -4,6 +4,7 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { createThrottledRefresh } from '$lib/utils/throttledRefresh';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
@@ -1323,11 +1324,21 @@
 	}
 
 	async function handleDelete(commentId: string) {
-		if (!confirm('Delete this comment?')) return;
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
 		// IDENTITY fence (BUG-3105) — see submitComment.
 		const isSameIdentity = authStore.identityFence();
+		// The shared dialog, not a native confirm() (TASK-2221, audit C39). It is
+		// an await, so the request is captured before it and checked after it:
+		// the answer belongs to the item and the user it was asked about.
+		const ok = await confirmDialog.request({
+			title: 'Delete this comment?',
+			message: 'This cannot be undone. A comment with replies leaves a placeholder they stay under.',
+			confirmLabel: 'Delete',
+			danger: true
+		});
+		if (!ok) return;
+		if (reqSlug !== itemSlug || reqWs !== wsSlug || !isSameIdentity()) return;
 		try {
 			await api.comments.delete(reqWs, commentId);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;

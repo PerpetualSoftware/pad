@@ -179,17 +179,17 @@ describe('upload in flight across a master freeze (BUG-2177)', () => {
 	});
 
 	it('a FAILURE while frozen is still reported, since the user started that upload', async () => {
-		const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+		const toastSpy = vi.spyOn(toastStore, 'show').mockImplementation(() => undefined as never);
 		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 		try {
 			startUploadAtEnd();
 			editor().setEditable(false);
 			pendingUploads[0].reject(new Error('network down'));
 			await settle();
-			expect(alertSpy).toHaveBeenCalledTimes(1);
-			expect(String(alertSpy.mock.calls[0][0])).toContain(RESULT.filename);
+			expect(toastSpy).toHaveBeenCalledTimes(1);
+			expect(String(toastSpy.mock.calls[0][0])).toContain(RESULT.filename);
 		} finally {
-			alertSpy.mockRestore();
+			toastSpy.mockRestore();
 			errSpy.mockRestore();
 		}
 	});

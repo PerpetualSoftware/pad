@@ -1067,9 +1067,9 @@
 				},
 				onError: (message) => {
 					console.error('[attachment image]', message);
-					if (typeof window !== 'undefined' && typeof window.alert === 'function') {
-						window.alert(`Couldn't transform image: ${message}`);
-					}
+					// A toast, not a blocking window.alert that steals focus mid-edit
+					// (TASK-2221, audit C39).
+					toastStore.show(`Couldn't transform image: ${message}`, 'error');
 				},
 			}),
 			AttachmentChip.configure({
@@ -1140,15 +1140,11 @@
 					// Not the next user's failure to hear about, and the filename is
 					// the previous user's (BUG-3105).
 					if (message === UPLOAD_IDENTITY_CHANGED) return;
-					// Surface upload failures to the user. The editor's
-					// host route doesn't yet have a centralized toast
-					// system, so we log to console + window.alert as a
-					// minimal fallback. Replace with a real notification
-					// channel once the workspace ships one.
+					// A toast, not a blocking window.alert: a failed paste or drop is
+					// the main mobile upload path, and an alert steals focus and the
+					// keyboard mid-edit (TASK-2221, audit C39).
 					console.error(`[attachment upload] ${filename}: ${message}`);
-					if (typeof window !== 'undefined' && typeof window.alert === 'function') {
-						window.alert(`Couldn't upload ${filename}: ${message}`);
-					}
+					toastStore.show(`Couldn't upload ${filename}: ${message}`, 'error');
 				},
 				// A stored upload whose reference could not be inserted (BUG-2177).
 				// The identity fence above rejects a previous user's upload before
