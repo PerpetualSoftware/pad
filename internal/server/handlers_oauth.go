@@ -266,6 +266,11 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A repeated URI is registered once (TASK-3539): the connected-apps page
+	// lists them keyed by the URI, and a repeat blanked it for every user of
+	// the client. RFC 7591 §3.2.1 lets the server answer with the metadata it
+	// registered, which then lists each once.
+	input.RedirectURIs = dedupeStrings(input.RedirectURIs)
 
 	grants := input.GrantTypes
 	if len(grants) == 0 {
@@ -2200,4 +2205,18 @@ func (s *Server) consentSurface(ar fosite.AuthorizeRequester) string {
 		}
 	}
 	return ""
+}
+
+// dedupeStrings returns values with each string once, in first-seen order.
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }

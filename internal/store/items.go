@@ -1439,6 +1439,11 @@ func (s *Store) ListWorkspaceTags(workspaceID string, collectionIDs, itemIDs []s
 	}
 
 	fromExpr, valueExpr := s.dialect.JSONArrayElements("i.tags", "je")
+	// Grouped as TEXT (TASK-3539): SQLite's json_each keeps a number's type,
+	// so tags [1] and ["1"] were two groups that both scan to the string "1",
+	// and the web's tag lists are keyed by it. Postgres's elements are text
+	// already, so the cast changes nothing there.
+	valueExpr = "CAST(" + valueExpr + " AS TEXT)"
 	// COUNT(DISTINCT i.id), not COUNT(*): the contract is "items carrying the
 	// tag". The unnest produces one row per array element, so an item with
 	// duplicate tags (e.g. ["ux","ux"] — the write path doesn't enforce
