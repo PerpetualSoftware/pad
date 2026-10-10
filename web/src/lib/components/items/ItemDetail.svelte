@@ -9,7 +9,7 @@
 	// Its own statement, so units that only use `api` keep their reviewed hash.
 	import { isSupersededWriteError } from '$lib/api/client';
 	import { isMoveNeedsValueRefusal } from '$lib/api/client';
-	import { isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { isContentNotAppliedUnconfirmed, isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice, stillOnBase } from '$lib/items/contentWrite';
 	import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import {
@@ -4372,7 +4372,7 @@
 					...(overwrite ? { overwrite_pending_edits: true } : {}),
 				});
 			send(false).catch(async (e) => {
-				if (switchedAway(reqItem, gen) || !isContentPendingFlush(e)) throw e;
+				if (switchedAway(reqItem, gen) || !isEditsNotStoredRefusal(e)) throw e;
 				const overwrite = await askToOverwritePendingEdits(reqItem.id, gen, pendingEditsReason(e));
 				if (!overwrite || switchedAway(reqItem, gen)) return null;
 				// Newer typing since this save was armed has its own debounced
@@ -4744,7 +4744,7 @@
 								'Your markdown edits were not saved: this item changed after you opened the raw editor. They are kept in this browser, and opening the item offers them back.',
 								'error',
 							);
-						} else if (isContentPendingFlush(e)) {
+						} else if (isEditsNotStoredRefusal(e)) {
 							toastStore.show(
 								pendingEditsReason(e) === 'set_aside'
 									? 'Your markdown edits were not saved: this item has edits an editor upgrade set aside. They are kept in this browser, and opening the item offers them back.'
@@ -4818,14 +4818,23 @@
 				// reading the item: a body this tab already has rebases and
 				// resends once, anything else asks the user.
 				if (isUpdateConflictError(e)) {
-					void resolveRawStale(reqItemId, genAtSave);
+					// An Overwrite answer stays armed across a silent rebase (TASK-3548).
+					void resolveRawStale(reqItemId, genAtSave, overwrite);
 					return;
 				}
 				// BUG-3230 U0: the text stays pending (and the pane dirty) unless
 				// the user chooses to overwrite, which resends it once.
-				if (isContentPendingFlush(e)) {
-					void askToOverwritePendingEdits(reqItemId, genAtSave, pendingEditsReason(e)).then((ok) => {
+				if (isEditsNotStoredRefusal(e)) {
+					void askToOverwritePendingEdits(reqItemId, genAtSave, pendingEditsReason(e)).then(async (ok) => {
 						if (!ok || !item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
+						// TASK-3548: an unconfirmed-edits refusal moved the row's seq;
+						// while the body is still this save's base, the resend carries
+						// the fresh seq (a newer landed save already moved the base).
+						const fresh = sendBase && isContentNotAppliedUnconfirmed(e) ? await api.items.get(wsSlug, reqItemId) : null;
+						if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
+						if (fresh && sendBase && stillOnBase(fresh, sendBase.content) && rawBase.current?.seq === sendBase.seq) {
+							rawBase.landed(fresh.seq ?? 0, sendBase.content);
+						}
 						rawOverwriteArmed = true;
 						if (!rawContentSaver.flushNow()) rawOverwriteArmed = false;
 					});
@@ -4883,13 +4892,18 @@
 		return answer;
 	}
 
-	async function resolveRawStale(reqItemId: string, gen: number) {
+	async function resolveRawStale(reqItemId: string, gen: number, rearmOverwrite = false) {
 		if (rawStalePromptOpen) return;
 		rawStalePromptOpen = true;
 		try {
 			const outcome = await decideRawStale(reqItemId, gen);
 			if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
-			if (outcome === 'rebased' || outcome === 'overwrite') rawContentSaver.flushNow();
+			// A refused save that carried the user's Overwrite answer resends with
+			// it after a silent rebase, or the answer is lost (TASK-3548).
+			if (outcome === 'rebased' && rearmOverwrite) rawOverwriteArmed = true;
+			if (outcome === 'rebased' || outcome === 'overwrite') {
+				if (!rawContentSaver.flushNow()) rawOverwriteArmed = false;
+			}
 		} catch {
 			if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
 			toastStore.show('Failed to save content', 'error');
@@ -4972,7 +4986,8 @@
 		// BUG-3540 (codex): the restore replaces the body the user is looking
 		// at, so it is sent against that row. A body changed since is refused,
 		// shown, and the draft kept: the user restores again, deliberately.
-		const shownSeq = item.seq ?? 0;
+		let shownSeq = item.seq ?? 0;
+		const shownContent = item.content ?? '';
 		refusedDraftBusy = true;
 		try {
 			let overwrite = false;
@@ -4999,9 +5014,14 @@
 					return;
 				} catch (e) {
 					if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
-					if (!overwrite && isContentPendingFlush(e)) {
+					if (!overwrite && isEditsNotStoredRefusal(e)) {
 						const answer = await askToOverwritePendingEdits(reqItemId, gen, pendingEditsReason(e));
 						if (!answer || !item || item.id !== reqItemId || gen !== loadGeneration) return;
+						// TASK-3548: an unconfirmed-edits refusal moved the row's seq;
+						// resend with the fresh one while the body is still the one shown.
+						const fresh = isContentNotAppliedUnconfirmed(e) ? await api.items.get(wsSlug, reqItemId) : null;
+						if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+						if (fresh && stillOnBase(fresh, shownContent)) shownSeq = fresh.seq ?? shownSeq;
 						overwrite = true;
 						continue;
 					}
@@ -5106,6 +5126,9 @@
 		const saveTok = saves.begin();
 		// BUG-3230 U0: set when the user answers a refusal with overwrite.
 		let overwriteNext = false;
+		// What the last PATCH carried, for the refusal handling below (TASK-3548).
+		let lastOverwrite = false;
+		let lastBase: { seq: number; content: string } | null = null;
 		try {
 			for (let i = 0; i < RAW_FLUSH_DRAIN_CAP; i++) {
 				const markdown: string | null = rawContentSaver.pending;
@@ -5118,6 +5141,8 @@
 					overwriteNext = false;
 					// BUG-3540: sent with the base this text was seeded from.
 					const drainBase = rawBase.current;
+					lastOverwrite = overwrite;
+					lastBase = drainBase;
 					rawBase.noteSent(markdown);
 					const updated = await api.items.update(wsSlug, reqItemId, {
 						content: markdown,
@@ -5181,6 +5206,8 @@
 					if (isUpdateConflictError(e)) {
 						const outcome = await decideRawStale(reqItemId, genAtFlush);
 						if (outcome === 'gone' || genAtFlush !== loadGeneration || !item || item.id !== reqItemId) return false;
+						// An Overwrite answer stays armed across a silent rebase (TASK-3548).
+						if (outcome === 'rebased' && lastOverwrite) overwriteNext = true;
 						if (outcome === 'rebased' || outcome === 'overwrite') continue;
 						if (outcome === 'reload') break;
 						lastError = true;
@@ -5189,10 +5216,18 @@
 					// BUG-3230 U0: another tab holds unstored edits. Overwrite
 					// resends; keeping them leaves this text pending and the
 					// pane in raw mode.
-					if (isContentPendingFlush(e)) {
+					if (isEditsNotStoredRefusal(e)) {
 						const overwrite = await askToOverwritePendingEdits(reqItemId, genAtFlush, pendingEditsReason(e));
 						if (genAtFlush !== loadGeneration || !item || item.id !== reqItemId) return false;
 						if (overwrite) {
+							// TASK-3548: an unconfirmed-edits refusal moved the row's seq;
+							// while the body is still this drain's base, resend with the fresh one.
+							const base = lastBase;
+							const fresh = base && isContentNotAppliedUnconfirmed(e) ? await api.items.get(wsSlug, reqItemId) : null;
+							if (genAtFlush !== loadGeneration || !item || item.id !== reqItemId) return false;
+							if (fresh && base && stillOnBase(fresh, base.content) && rawBase.current?.seq === base.seq) {
+								rawBase.landed(fresh.seq ?? 0, base.content);
+							}
 							overwriteNext = true;
 							continue;
 						}

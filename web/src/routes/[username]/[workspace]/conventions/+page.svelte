@@ -11,7 +11,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
-	import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, pendingEditsReason, prunedEditsNotice } from '$lib/items/contentWrite';
+	import { contentOutcomeNotice, contentWriteFor, holdsWhatWasSent, isContentNotAppliedUnconfirmed, isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice, stillOnBase } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
@@ -407,13 +407,16 @@
 			return;
 		}
 		const write = metaPatch ? { ...contentWrite, fields_patch: metaPatch } : contentWrite;
+		// The context this save belongs to, for the re-read after a refusal (TASK-3548).
+		const savedWs = workspace;
+		const savedEpoch = authStore.identityEpoch;
 		saving = true;
 		try {
 			let updated: Item;
 			try {
 				updated = await api.items.update(workspace, item.slug, write);
 			} catch (err) {
-				if (!isContentPendingFlush(err)) throw err;
+				if (!isEditsNotStoredRefusal(err)) throw err;
 				const reason = pendingEditsReason(err);
 				if (!(await pendingEditsDialog.request(formatItemRef(item) ?? item.title, 'save', reason))) {
 					toastStore.show(
@@ -424,7 +427,20 @@
 					);
 					return;
 				}
-				updated = await api.items.update(workspace, item.slug, { ...write, overwrite_pending_edits: true });
+				// TASK-3548: an unconfirmed-edits refusal moved the row's seq, so
+				// the overwrite carries the fresh token while the body is still the
+				// one this edit started from.
+				const base = editBase ?? item;
+				// By id: the refused write may have renamed the item (a title change moves the slug).
+				const refusedId = item.id;
+				const fresh = isContentNotAppliedUnconfirmed(err) ? await api.items.get(workspace, refusedId) : null;
+				if (workspace !== savedWs || authStore.identityEpoch !== savedEpoch) return;
+				// Only while the row holds what this save sent besides the body (codex).
+				const resend =
+					fresh && stillOnBase(fresh, base.content ?? '') && holdsWhatWasSent(fresh, { fields_patch: metaPatch ?? undefined })
+						? { ...write, ...contentWriteFor(editContent, fresh) }
+						: write;
+				updated = await api.items.update(workspace, refusedId, { ...resend, overwrite_pending_edits: true });
 			}
 			const idx = conventions.findIndex(c => c.id === item.id);
 			if (idx !== -1) conventions[idx] = updated;

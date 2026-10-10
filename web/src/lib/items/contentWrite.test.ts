@@ -2,7 +2,17 @@
 // always with the row's token.
 import { describe, expect, it } from 'vitest';
 import { PadApiError } from '$lib/api/client';
-import { contentOutcomeNotice, contentWriteFor, isContentPendingFlush, prunedEditsNotice } from './contentWrite';
+import {
+	contentOutcomeNotice,
+	contentWriteFor,
+	isContentNotAppliedUnconfirmed,
+	isContentPendingFlush,
+	isEditsNotStoredRefusal,
+	pendingEditsReason,
+	prunedEditsNotice,
+	stillOnBase,
+	holdsWhatWasSent,
+} from './contentWrite';
 
 const row = { content: 'stored body', seq: 7, updated_at: '2026-09-26T05:00:00Z' };
 
@@ -30,6 +40,70 @@ describe('isContentPendingFlush', () => {
 		expect(isContentPendingFlush(make('content_pending_flush'))).toBe(true);
 		expect(isContentPendingFlush(make('update_conflict'))).toBe(false);
 		expect(isContentPendingFlush(new Error('content_pending_flush'))).toBe(false);
+	});
+});
+
+// TASK-3548: an open tab refusing the apply (BUG-3542) is the same situation,
+// for the person saving, as the pending-flush refusal.
+describe('isEditsNotStoredRefusal', () => {
+	const make = (code: string, details?: Record<string, unknown>) =>
+		Object.assign(Object.create(PadApiError.prototype), { code, message: code, details });
+
+	it('recognises content_not_applied only with apply_reason unconfirmed_edits', () => {
+		expect(isContentNotAppliedUnconfirmed(make('content_not_applied', { apply_reason: 'unconfirmed_edits' }))).toBe(true);
+		// Other content_not_applied arms (the apply failed or its outcome is
+		// unknown) are not "another tab has edits": they keep the generic path.
+		expect(isContentNotAppliedUnconfirmed(make('content_not_applied', { content_landed: false }))).toBe(false);
+		expect(isContentNotAppliedUnconfirmed(make('content_not_applied'))).toBe(false);
+		expect(isContentNotAppliedUnconfirmed(make('content_pending_flush'))).toBe(false);
+	});
+
+	it('is either refusal, and nothing else', () => {
+		expect(isEditsNotStoredRefusal(make('content_pending_flush'))).toBe(true);
+		expect(isEditsNotStoredRefusal(make('content_not_applied', { apply_reason: 'unconfirmed_edits' }))).toBe(true);
+		expect(isEditsNotStoredRefusal(make('content_not_applied'))).toBe(false);
+		expect(isEditsNotStoredRefusal(make('update_conflict'))).toBe(false);
+		expect(isEditsNotStoredRefusal(new Error('content_not_applied'))).toBe(false);
+	});
+
+	it('the dialog reads an unconfirmed-edits refusal as pending edits, not set-aside ones', () => {
+		expect(pendingEditsReason(make('content_not_applied', { apply_reason: 'unconfirmed_edits' }))).toBe('pending');
+	});
+});
+
+// TASK-3548: the refused write moved seq; the resend may take the fresh one
+// only while the body is still the one the token was taken against.
+describe('holdsWhatWasSent', () => {
+	it('is true when the row holds the sent title and every patched field', () => {
+		const fresh = { title: 'T2', fields: JSON.stringify({ status: 'active', trigger: 'on-commit', other: 1 }) };
+		expect(holdsWhatWasSent(fresh, { title: 'T2', fields_patch: { status: 'active' } })).toBe(true);
+		expect(holdsWhatWasSent(fresh, {})).toBe(true);
+	});
+
+	it('is false when someone else changed the title or a patched field since', () => {
+		const fresh = { title: 'Their title', fields: JSON.stringify({ status: 'draft' }) };
+		expect(holdsWhatWasSent(fresh, { title: 'T2' })).toBe(false);
+		expect(holdsWhatWasSent(fresh, { fields_patch: { status: 'active' } })).toBe(false);
+	});
+
+	it('reads fields as an object too, and an unreadable blob never passes', () => {
+		expect(holdsWhatWasSent({ fields: { status: 'active' } }, { fields_patch: { status: 'active' } })).toBe(true);
+		expect(holdsWhatWasSent({ fields: '{not json' }, { fields_patch: { status: 'active' } })).toBe(false);
+		expect(holdsWhatWasSent(null, {})).toBe(false);
+	});
+});
+
+describe('stillOnBase', () => {
+	it('is true only when the re-read body is exactly the base', () => {
+		expect(stillOnBase({ content: 'base body' }, 'base body')).toBe(true);
+		expect(stillOnBase({ content: 'someone else' }, 'base body')).toBe(false);
+		expect(stillOnBase({ content: 'base body ' }, 'base body')).toBe(false);
+	});
+
+	it('an absent body compares as empty, and no row is never on base', () => {
+		expect(stillOnBase({}, '')).toBe(true);
+		expect(stillOnBase({ content: null }, '')).toBe(true);
+		expect(stillOnBase(null, '')).toBe(false);
 	});
 });
 
