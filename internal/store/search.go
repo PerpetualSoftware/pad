@@ -62,6 +62,12 @@ type SearchParams struct {
 	// Non-nil and empty matches nothing.
 	CollectionFilterIDs []string
 	FieldFilters        map[string]string // field key → value filters (e.g. {"status": "open", "priority": "high"})
+	// IncludeArchived widens every query path (ref, number, FTS, count,
+	// facets) to soft-deleted items as well as live ones (TASK-2864). An
+	// archived result carries its deleted_at. It widens nothing else: the
+	// permission filter, the soft-deleted-collection filter and the
+	// workspace scope apply as before.
+	IncludeArchived bool
 
 	// Pagination
 	Limit  int // max results per page (default 50, max 200)
@@ -127,12 +133,12 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
-			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
 			LEFT JOIN users au ON au.id = i.assigned_user_id
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-			WHERE c.prefix = ? AND i.item_number = ? AND i.deleted_at IS NULL
+			WHERE c.prefix = ? AND i.item_number = ?
 		`
 		refArgs := []interface{}{prefix, number}
 
@@ -147,6 +153,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 
 		refQuery, refArgs = appendSearchPermissionFilter(refQuery, refArgs, params)
+		refQuery = appendLiveItemFilter(refQuery, params)
 		refQuery = appendLiveCollectionFilter(refQuery)
 
 		// Apply content filters to ref lookup too
@@ -171,6 +178,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			for refRows.Next() {
 				var r SearchResult
 				var createdAt, updatedAt string
+				var deletedAt *string
 				var pinned bool
 				if err := refRows.Scan(
 					&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
@@ -180,13 +188,14 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 					&r.Item.Source, &r.Item.ItemNumber, &r.Item.Seq, &createdAt, &updatedAt,
 					&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
 					&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
-					&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
+					&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon, &deletedAt,
 				); err != nil {
 					continue
 				}
 				r.Item.Pinned = pinned
 				r.Item.CreatedAt = parseTime(createdAt)
 				r.Item.UpdatedAt = parseTime(updatedAt)
+				r.Item.DeletedAt = parseTimePtr(deletedAt)
 				hydrateItemComputedMetadata(&r.Item)
 				r.Item.Content = ""
 				// ...and with it the staleness marker (BUG-3033). This result
@@ -221,12 +230,12 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
-			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
 			LEFT JOIN users au ON au.id = i.assigned_user_id
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-			WHERE i.item_number = ? AND i.deleted_at IS NULL
+			WHERE i.item_number = ?
 		`
 		numArgs := []interface{}{number}
 
@@ -241,6 +250,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 
 		numQuery, numArgs = appendSearchPermissionFilter(numQuery, numArgs, params)
+		numQuery = appendLiveItemFilter(numQuery, params)
 		numQuery = appendLiveCollectionFilter(numQuery)
 
 		// Apply content filters to numeric lookup too
@@ -271,6 +281,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			for numRows.Next() {
 				var r SearchResult
 				var createdAt, updatedAt string
+				var deletedAt *string
 				var pinned bool
 				if err := numRows.Scan(
 					&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
@@ -280,7 +291,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 					&r.Item.Source, &r.Item.ItemNumber, &r.Item.Seq, &createdAt, &updatedAt,
 					&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
 					&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
-					&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
+					&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon, &deletedAt,
 				); err != nil {
 					continue
 				}
@@ -290,6 +301,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				r.Item.Pinned = pinned
 				r.Item.CreatedAt = parseTime(createdAt)
 				r.Item.UpdatedAt = parseTime(updatedAt)
+				r.Item.DeletedAt = parseTimePtr(deletedAt)
 				hydrateItemComputedMetadata(&r.Item)
 				r.Item.Content = ""
 				// ...and with it the staleness marker (BUG-3033). This result
@@ -349,7 +361,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
-			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at,
 			       %s as snippet,
 			       %s as rank_score
 			FROM items i
@@ -357,7 +369,6 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			LEFT JOIN users au ON au.id = i.assigned_user_id
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 			WHERE %s
-			AND i.deleted_at IS NULL
 		`, ftsSnippet, ftsRank, ftsMatch)
 		searchQuery := params.Query
 		sanitized := sanitizePGFTSQuery(searchQuery)
@@ -379,7 +390,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
-			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''),
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at,
 			       %s as snippet,
 			       %s as rank_score
 			FROM items_fts fts
@@ -388,7 +399,6 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			LEFT JOIN users au ON au.id = i.assigned_user_id
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 			WHERE %s
-			AND i.deleted_at IS NULL
 		`, ftsSnippet, ftsRank, ftsMatch)
 		args = []interface{}{sanitizeFTSQuery(params.Query)}
 	}
@@ -408,6 +418,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	}
 
 	query, args = appendSearchPermissionFilter(query, args, params)
+	query = appendLiveItemFilter(query, params)
 	query = appendLiveCollectionFilter(query)
 
 	// Collection filter — the resolved per-workspace set, or a literal slug.
@@ -445,7 +456,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			SELECT COUNT(*)
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
-			WHERE %s AND i.deleted_at IS NULL
+			WHERE %s
 		`, ftsMatch)
 		// PG FTSMatch consumes TWO args (raw + sanitized) — BUG-842.
 		countArgs = []interface{}{params.Query, sanitizePGFTSQuery(params.Query)}
@@ -456,7 +467,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			FROM items_fts fts
 			JOIN items i ON i.rowid = fts.rowid
 			JOIN collections c ON c.id = i.collection_id
-			WHERE %s AND i.deleted_at IS NULL
+			WHERE %s
 		`, ftsMatch)
 		countArgs = []interface{}{sanitizeFTSQuery(params.Query)}
 	}
@@ -547,6 +558,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	for rows.Next() {
 		var r SearchResult
 		var createdAt, updatedAt string
+		var deletedAt *string
 		var pinned bool
 
 		if err := rows.Scan(
@@ -557,7 +569,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			&r.Item.Source, &r.Item.ItemNumber, &r.Item.Seq, &createdAt, &updatedAt,
 			&r.Item.CollectionSlug, &r.Item.CollectionName, &r.Item.CollectionIcon, &r.Item.CollectionPrefix,
 			&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
-			&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon,
+			&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon, &deletedAt,
 			&r.Snippet, &r.Rank,
 		); err != nil {
 			return nil, err
@@ -569,6 +581,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		r.Item.Pinned = pinned
 		r.Item.CreatedAt = parseTime(createdAt)
 		r.Item.UpdatedAt = parseTime(updatedAt)
+		r.Item.DeletedAt = parseTimePtr(deletedAt)
 		hydrateItemComputedMetadata(&r.Item)
 		r.Item.Content = ""
 		// ContentState deliberately SURVIVES here, unlike on the two direct-ref
@@ -621,6 +634,7 @@ func (s *Store) appendSearchFilters(query string, args []interface{}, params Sea
 	}
 
 	query, args = appendSearchPermissionFilter(query, args, params)
+	query = appendLiveItemFilter(query, params)
 	query = appendLiveCollectionFilter(query)
 
 	query, args = appendSearchCollectionFilter(query, args, params)
@@ -671,7 +685,7 @@ func (s *Store) searchFacets(params SearchParams) *SearchFacets {
 		baseQuery = fmt.Sprintf(`
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
-			WHERE %s AND i.deleted_at IS NULL
+			WHERE %s
 		`, ftsMatch)
 		// PG FTSMatch consumes TWO args (raw + sanitized) — BUG-842.
 		baseArgs = []interface{}{params.Query, sanitizePGFTSQuery(params.Query)}
@@ -681,7 +695,7 @@ func (s *Store) searchFacets(params SearchParams) *SearchFacets {
 			FROM items_fts fts
 			JOIN items i ON i.rowid = fts.rowid
 			JOIN collections c ON c.id = i.collection_id
-			WHERE %s AND i.deleted_at IS NULL
+			WHERE %s
 		`, ftsMatch)
 		baseArgs = []interface{}{sanitizeFTSQuery(params.Query)}
 	}
@@ -792,6 +806,16 @@ func appendSearchPermissionFilter(query string, args []interface{}, params Searc
 		args = append(args, id)
 	}
 	return query, args
+}
+
+// appendLiveItemFilter leaves out soft-deleted items unless the caller asked
+// for them (TASK-2864). Called beside appendLiveCollectionFilter on every
+// query path, so the results, the total and the facets agree.
+func appendLiveItemFilter(query string, params SearchParams) string {
+	if params.IncludeArchived {
+		return query
+	}
+	return query + ` AND i.deleted_at IS NULL`
 }
 
 // appendLiveCollectionFilter leaves out the items of a soft-deleted collection

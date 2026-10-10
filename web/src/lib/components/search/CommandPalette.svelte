@@ -7,7 +7,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { localSearch, parseSearchQuery, parseGoToTarget } from '$lib/stores/localSearch.svelte';
+	import { localSearch, parseSearchQuery, parseGoToTarget, withoutArchivedToken } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import {
 		groupResultsByCollection,
@@ -279,6 +279,9 @@
 		};
 		if (filterCollection) filters.collection = filterCollection;
 		if (filterStatus) filters.status = filterStatus;
+		// `is:archived` in the query travels as include_archived, and the
+		// callers strip it from the text they send (TASK-2864).
+		if (parseSearchQuery(query.trim()).archived) filters.includeArchived = true;
 		return filters;
 	}
 
@@ -433,7 +436,7 @@
 						}
 						return;
 					}
-					const serverQuery = parsed.body ? parsed.text : trimmed;
+					const serverQuery = parsed.body ? parsed.text : withoutArchivedToken(trimmed);
 					if (!serverQuery.trim()) {
 						if (isSameDispatch()) {
 							results = [];
@@ -533,8 +536,9 @@
 	function maybeRunContentSearch(trimmed: string, wsSlug: string | undefined) {
 		clearTimeout(contentSearchTimeout);
 		const sparse = results.length < CONTENT_SEARCH_THRESHOLD;
-		const bareDigit = /^\d+$/.test(trimmed);
-		if (!wsSlug || !sparse || bareDigit || trimmed.length < 2) {
+		const text = withoutArchivedToken(trimmed);
+		const bareDigit = /^\d+$/.test(text);
+		if (!wsSlug || !sparse || bareDigit || text.length < 2) {
 			// Nothing to supplement — invalidate any in-flight fetch and
 			// drop stale content matches.
 			contentReqId++;
@@ -546,7 +550,7 @@
 		contentLoading = true;
 		contentSearchTimeout = setTimeout(async () => {
 			try {
-				const resp = await api.search(trimmed, buildFilters(0, wsSlug));
+				const resp = await api.search(text, buildFilters(0, wsSlug));
 				// Superseded by a newer dispatch, or the query moved on
 				// while the request was in flight — discard.
 				if (myReqId !== contentReqId || query.trim() !== trimmed) return;
@@ -681,7 +685,7 @@
 			loadingMore = false;
 			return;
 		}
-		const serverQuery = parsed.body ? parsed.text : query;
+		const serverQuery = parsed.body ? parsed.text : withoutArchivedToken(query);
 		try {
 			const resp = await api.search(serverQuery, buildFilters(results.length));
 			if (
