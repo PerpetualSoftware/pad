@@ -788,9 +788,13 @@
 		.group-menu-btn {
 			min-width: 44px;
 			height: 44px;
-			/* The archive button's 44px extender overhangs its ~20px glyph by
-			   about 12px a side; the ⋯ starts past that overhang, so neither
-			   target takes a tap meant for the other (TASK-3311 measures it). */
+		}
+		/* The archive button's 44px extender overhangs its ~20px glyph by about
+		   12px a side; the ⋯ starts past that overhang, so neither target takes
+		   a tap meant for the other (TASK-3311 measures it). On the WRAPPER:
+		   a margin there sits outside every box, where a margin on the button
+		   widened the wrapper over the overhang and the wrapper took the tap. */
+		.group-menu-wrap {
 			margin-left: 14px;
 		}
 	}
