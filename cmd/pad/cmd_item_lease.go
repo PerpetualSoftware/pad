@@ -40,10 +40,8 @@ name; two unregistered sessions of the same runtime share one name.
 
 "pad project next" / "ready" leave out items another holder has leased.
 They compare against this same default, so an item you claimed with a
-custom --holder is left out of your own next / ready too.
-
-Examples:
-  pad item claim TASK-5
+custom --holder is left out of your own next / ready too.`,
+		Example: `  pad item claim TASK-5
   pad item claim TASK-5 --holder sweep-runner --ttl 30m`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

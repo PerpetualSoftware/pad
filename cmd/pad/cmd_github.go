@@ -39,10 +39,8 @@ func githubCmd() *cobra.Command {
 		RunE:    unknownSubcommandRun,
 		Long: `Link GitHub pull requests to Pad items and view their status.
 
-Requires the GitHub CLI (gh) to be installed: https://cli.github.com/
-
-Examples:
-  pad github link TASK-5          # Link current branch's PR to TASK-5
+Requires the GitHub CLI (gh) to be installed: https://cli.github.com/`,
+		Example: `  pad github link TASK-5          # Link current branch's PR to TASK-5
   pad github link                 # Auto-detect item ref from branch name
   pad github status               # Show PR status for all linked items
   pad github status TASK-5        # Show PR status for a specific item
@@ -134,10 +132,8 @@ func githubLinkCmd() *cobra.Command {
 		Long: `Link the current branch's GitHub pull request to a Pad item.
 
 If no item ref is provided, attempts to auto-detect from the branch name.
-For example, branch "fix/TASK-5-oauth-bug" would auto-link to TASK-5.
-
-Examples:
-  pad github link TASK-5
+For example, branch "fix/TASK-5-oauth-bug" would auto-link to TASK-5.`,
+		Example: `  pad github link TASK-5
   pad github link fix-oauth-bug
   pad github link                 # auto-detect from branch name`,
 		Args: cobra.MaximumNArgs(1),
@@ -212,10 +208,8 @@ func githubStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status [item-ref]",
 		Short: "Show GitHub PR status for linked items",
-		Long: `Show the GitHub PR status for one or all items that have linked PRs.
-
-Examples:
-  pad github status               # Show all items with linked PRs
+		Long:  `Show the GitHub PR status for one or all items that have linked PRs.`,
+		Example: `  pad github status               # Show all items with linked PRs
   pad github status TASK-5        # Show PR status for a specific item`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

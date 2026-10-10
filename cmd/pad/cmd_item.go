@@ -206,13 +206,11 @@ func createCmd() *cobra.Command {
 		Short:   "Create a new item in a collection",
 		Long: `Create a new item in the specified collection.
 
-Examples:
-  pad item create task "Fix OAuth redirect" --priority high
+Run with --help-collections to see available collections and their status values.`,
+		Example: `  pad item create task "Fix OAuth redirect" --priority high
   pad item create idea "Real-time collaboration" --category infrastructure
   pad item create plan "API Redesign" --status active
-  pad item create doc "Payment Architecture" --category architecture --stdin
-
-Run with --help-collections to see available collections and their status values.`,
+  pad item create doc "Payment Architecture" --category architecture --stdin`,
 		ValidArgsFunction: completeCollectionNames,
 		Args:              cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -452,10 +450,8 @@ func listCmd() *cobra.Command {
 		Use:   "list [collection]",
 		Short: "List items, optionally filtered by collection",
 		Long: `List items in the workspace. If a collection is specified, only items
-in that collection are shown. Items with status "done" are hidden by default.
-
-Examples:
-  pad item list                          # all items, all collections
+in that collection are shown. Items with status "done" are hidden by default.`,
+		Example: `  pad item list                          # all items, all collections
   pad item list tasks                    # tasks (open + in_progress by default)
   pad item list tasks --status done      # only done tasks
   pad item list ideas --status exploring # ideas being explored
@@ -1113,10 +1109,8 @@ duration.
 
 --stdin REPLACES the body with what it reads, and a blank read (empty or
 whitespace-only) is refused before anything is sent, because it is what a lost
-heredoc looks like. To empty a body on purpose, use --clear-content.
-
-Examples:
-  pad item update TASK-5 --status done
+heredoc looks like. To empty a body on purpose, use --clear-content.`,
+		Example: `  pad item update TASK-5 --status done
   pad item update TASK-5 --status done --comment "Fixed the login bug"
   pad item update PLAN-2 --status active --priority high
   pad item update DOC-3 --stdin < updated-doc.md
@@ -1613,10 +1607,8 @@ A single request is capped server-side, so a very large --limit returns the
 cap rather than everything, and the "showing the newest N" notice cannot detect
 that case. Use --limit 0 when you genuinely want the complete history.
 
-Items can be referenced by issue ID (e.g. TASK-5) or slug.
-
-Examples:
-  pad item history TASK-5
+Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
+		Example: `  pad item history TASK-5
   pad item versions TASK-5 --format json
   pad item history TASK-5 --limit 10             # newest 10 only
   pad item history TASK-5 --limit 0              # all versions
@@ -1824,10 +1816,8 @@ func moveCmd() *cobra.Command {
 Fields with matching names and compatible types transfer automatically.
 Incompatible fields are dropped. Use --field to set values for target-specific fields.
 
-Items can be referenced by issue ID (e.g. TASK-5) or slug.
-
-Examples:
-  pad item move BUG-3 tasks                         # Move to tasks collection
+Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
+		Example: `  pad item move BUG-3 tasks                         # Move to tasks collection
   pad item move IDEA-7 tasks --field priority=high   # Move idea to tasks with priority`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1992,10 +1982,8 @@ automatically. There is no idempotency key, so a blind re-run after an
 ambiguous failure would create a duplicate item — on such a failure the
 command tells you to check the destination workspace instead.
 
-Items can be referenced by issue ID (e.g. TASK-5) or slug.
-
-Examples:
-  pad item copy IDEA-12 --to-workspace pad-web --collection tasks --dry-run
+Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
+		Example: `  pad item copy IDEA-12 --to-workspace pad-web --collection tasks --dry-run
   pad item copy IDEA-12 --to-workspace pad-web --collection tasks
   pad item copy TASK-5 --to-workspace pad-web --collection tasks --archive-source
   pad item copy TASK-5 --to-workspace pad-web --collection tasks --field priority=high`,
@@ -2924,10 +2912,8 @@ type is workspace-local and has no portable-artifact form, so the server
 rejects it. To pull data out of a task, idea, doc, or any other item, use
 "pad item show <ref> --format json" instead.
 
-Items can be referenced by issue ID (e.g. PLAYB-3) or slug.
-
-Examples:
-  pad item export PLAYB-3                  # Write PLAYB-3 to <slug>.pad.md
+Items can be referenced by issue ID (e.g. PLAYB-3) or slug.`,
+		Example: `  pad item export PLAYB-3                  # Write PLAYB-3 to <slug>.pad.md
   pad item export ship -o ship.pad.md      # Write to a specific path
   pad item export CONVE-7 -o -             # Write the artifact to stdout`,
 		Args: cobra.ExactArgs(1),
@@ -3039,10 +3025,8 @@ The item is always imported as a draft — review and activate it afterward.
 The server may emit warnings (e.g. a foreign select value cleared, or an
 invocation_slug de-collided); each is printed on its own line.
 
-Use - to read the artifact from stdin.
-
-Examples:
-  pad item import ship.pad.md     # Import from a file
+Use - to read the artifact from stdin.`,
+		Example: `  pad item import ship.pad.md     # Import from a file
   cat ship.pad.md | pad item import -   # Import from stdin`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -3405,10 +3389,8 @@ Backlinks are the reverse of [[]] wiki-links: if BUG-5's body contains
 
 Code blocks (fenced and inline) are excluded — example refs in docs
 don't count as real links. Self-links (an item referencing its own
-ref in its own body) are hidden.
-
-Examples:
-  pad item backlinks TASK-5
+ref in its own body) are hidden.`,
+		Example: `  pad item backlinks TASK-5
   pad item backlinks PLAN-42 --limit 10
   pad item backlinks IDEA-3 --format json`,
 		Args: cobra.ExactArgs(1),
@@ -3486,11 +3468,9 @@ func depsCmd() *cobra.Command {
 
 Shows two sections:
   Blocks:      items that this item is blocking
-  Blocked by:  items that are blocking this item
-
-Example:
-  pad item deps TASK-5`,
-		Args: cobra.ExactArgs(1),
+  Blocked by:  items that are blocking this item`,
+		Example: `  pad item deps TASK-5`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -3603,13 +3583,11 @@ func renderDepsMarkdown(w io.Writer, label string, blocks, blockedBy []models.It
 
 func unblockCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unblock <source-ref> <target-ref>",
-		Short: "Remove a blocking dependency between items",
-		Long: `Remove a "blocks" relationship where source blocks target.
-
-Example:
-  pad item unblock TASK-5 TASK-8    # TASK-5 no longer blocks TASK-8`,
-		Args: cobra.ExactArgs(2),
+		Use:     "unblock <source-ref> <target-ref>",
+		Short:   "Remove a blocking dependency between items",
+		Long:    `Remove a "blocks" relationship where source blocks target.`,
+		Example: `  pad item unblock TASK-5 TASK-8    # TASK-5 no longer blocks TASK-8`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -4062,10 +4040,8 @@ func bulkUpdateCmd() *cobra.Command {
 		Short: "Update multiple items at once",
 		Long: `Update the status or priority of multiple items in a single command.
 
-Items can be referenced by issue ID (e.g. TASK-5) or slug.
-
-Examples:
-  pad item bulk-update --status done TASK-5 TASK-8 TASK-12
+Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
+		Example: `  pad item bulk-update --status done TASK-5 TASK-8 TASK-12
   pad item bulk-update --priority high IDEA-3 IDEA-7
   pad item bulk-update --status in_progress --priority urgent TASK-1 TASK-2`,
 		Args: cobra.MinimumNArgs(1),

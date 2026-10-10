@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
+	"github.com/spf13/cobra"
 )
 
 // emitRealPadJSON builds the real pad cobra tree and emits its JSON
@@ -182,4 +184,26 @@ func captureHelpCmdCapabilities(t *testing.T) string {
 	// the comparison so the capability bit (which uses Fprintln) is the
 	// only meaningful differentiator.
 	return strings.TrimRight(out, "\n") + "\n"
+}
+
+// TASK-2865: examples live in cobra's Example field, which cobra renders
+// under its own "Examples:" heading in --help and cmdhelp reads directly.
+// A Long that grows its own examples block again would print the heading
+// twice in --help once the command also has an Example.
+func TestRealPadTree_ExamplesLiveInTheExampleField(t *testing.T) {
+	header := regexp.MustCompile(`(?m)^\s*Examples?:\s*$`)
+	var offenders []string
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		if header.MatchString(c.Long) {
+			offenders = append(offenders, c.CommandPath())
+		}
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(newRootCmd())
+	if len(offenders) > 0 {
+		t.Errorf("move these commands' examples from Long to the Example field:\n  %s", strings.Join(offenders, "\n  "))
+	}
 }

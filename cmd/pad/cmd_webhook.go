@@ -18,10 +18,8 @@ func webhooksCmd() *cobra.Command {
 		Use:   "webhook",
 		Short: "Manage workspace webhooks",
 		RunE:  unknownSubcommandRun,
-		Long: `Manage webhooks that receive POST notifications when events occur.
-
-Examples:
-  pad webhook list
+		Long:  `Manage webhooks that receive POST notifications when events occur.`,
+		Example: `  pad webhook list
   pad webhook create https://httpbin.org/post --events "item.created,item.updated"
   pad webhook delete 7fde5e41
   pad webhook test 7fde5e41`,
@@ -130,10 +128,8 @@ func webhooksCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <url>",
 		Short: "Register a new webhook",
-		Long: `Register a new webhook URL to receive event notifications.
-
-Examples:
-  pad webhook create https://httpbin.org/post
+		Long:  `Register a new webhook URL to receive event notifications.`,
+		Example: `  pad webhook create https://httpbin.org/post
   pad webhook create https://slack.com/webhook/... --events "item.created,item.updated"
   pad webhook create https://example.com/hook --secret "mysecret"`,
 		Args: cobra.ExactArgs(1),
