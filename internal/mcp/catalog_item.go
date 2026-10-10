@@ -329,35 +329,22 @@ Actions:
     — NOT a comma-separated string.
   update        — Update an item by ref.
     Required: ref. At least one mutable field.
-    Writing 'content' while a browser tab has the item open sends the
-    markdown to that live document first; the stored copy is updated
-    only by a later collab-snapshot flush — usually from the tab that
-    applied it, though any such write updates the row — and nothing
-    guarantees one happens. The
-    response echoes the content you SENT and carries
-    warnings.content_outcome="applied_pending_flush", which describes
-    this WRITE — the content went to the document, not the row — and is
-    not a live reading of the row, which a concurrent flush may already
-    have updated. A 'get' (or
-    'list' with full=true — a default list carries no content at all)
-    before such a flush lands reads the stored copy and answers with the PREVIOUS
-    content: the lag, not a failed write, so do not re-send on the
-    strength of it. The stored form may also not be byte-identical to what
-    you sent, since the markdown round-trips through the editor, so compare
-    on meaning rather than bytes.
     Optional: title, status, priority, content, role, assign, parent, comment, tags,
     field, fields, expected_seq, expected_updated_at, overwrite_pending_edits.
-    Same placement rules as create. Field updates are applied as a
-    field-level MERGE server-side (only the keys you set change; the
-    rest are preserved), so concurrent single-field updates no longer
-    clobber each other. Pass expected_seq (the seq you last read — it is
-    on every item AND every list summary) to make the update fail with
-    code=update_conflict if the item changed since; the error details
-    carry actual_seq to retry with. PREFER IT over expected_updated_at,
-    which is stored at one-second resolution: two writes inside one
-    second both match that token, so neither conflicts and the loser
-    silently overwrites the winner (BUG-3037). Optimistic concurrency
-    for coordinating agents.
+    Same placement rules as create. Field updates MERGE server-side: only
+    the keys you set change. Pass expected_seq (the seq you last read, on
+    every item and every list summary) to fail with code=update_conflict
+    if the item changed since; the details carry actual_seq to retry with.
+    PREFER IT over expected_updated_at, which cannot tell two writes inside
+    one second apart.
+    Writing 'content' while a browser tab has the item open goes to that
+    live document: the response echoes what you SENT with
+    warnings.content_outcome="applied_pending_flush" (it describes the
+    write, not the row), and a read before a tab saves still returns the
+    PREVIOUS content. That is lag, not a failed write: re-read later (with
+    get, or list with full=true; a default list carries no content), never
+    re-send. Nothing guarantees that save, so do not wait on it in a loop. The editor may normalise
+    the stored markdown, so compare on meaning, not bytes.
   delete        — Archive an item.
     Required: ref.
   restore       — Un-archive (restore) a soft-deleted item by ref.

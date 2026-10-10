@@ -333,7 +333,7 @@ func annotationForDef(def ToolDef) mcp.ToolAnnotation {
 // the description carries the action × params matrix anyway.
 func buildToolFromDef(def ToolDef) mcp.Tool {
 	opts := []mcp.ToolOption{
-		mcp.WithDescription(def.Description),
+		mcp.WithDescription(compactToolDescription(def.Description)),
 		mcp.WithToolAnnotation(annotationForDef(def)),
 	}
 
@@ -352,12 +352,12 @@ func buildToolFromDef(def ToolDef) mcp.Tool {
 		opts = append(opts,
 			mcp.WithString("workspace",
 				mcp.Description(
-					"Workspace slug to target for this call. An explicit value here "+
-						"ALWAYS wins. Otherwise resolution depends on the server: a "+
-						"single-user local server falls back to the session default set "+
-						"via pad_set_workspace, then the CWD-linked workspace from "+
-						".pad.toml. A multi-user/remote server does NOT persist a session "+
-						"default, so you must pass workspace explicitly on every call.",
+					// TASK-3536: the operative rule stays here, not only in the
+					// server instructions, because a client may never show those
+					// to the model.
+					"Workspace slug; an explicit value always wins. A remote server "+
+						"keeps no session default, so pass it on every call there; a "+
+						"local server falls back to pad_set_workspace, then .pad.toml.",
 				),
 			),
 		)
@@ -368,6 +368,68 @@ func buildToolFromDef(def ToolDef) mcp.Tool {
 	}
 
 	return mcp.NewTool(def.Name, opts...)
+}
+
+// compactToolDescription reflows a catalog description for the wire
+// (TASK-3536). The source keeps its hand-wrapped layout, which reads well in
+// Go; on the wire every indented continuation line joins the line above it,
+// and a Required:/Optional: line or a one-word label ("Constraints:") keeps
+// its own line at a 4-space indent, a list item at a 6-space indent. It
+// changes whitespace only: the description's words, in order, are untouched
+// (pinned by TestCompactToolDescriptionKeepsEveryWord). Lines at column 0,
+// blank lines and the two-space action headers ("  create   — ...") are kept
+// as they are.
+func compactToolDescription(desc string) string {
+	lines := strings.Split(desc, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(out) == 0 || trimmed == "" || !strings.HasPrefix(line, " ") ||
+			strings.TrimSpace(out[len(out)-1]) == "" || isActionHeaderLine(line) {
+			out = append(out, line)
+			continue
+		}
+		if strings.HasPrefix(trimmed, "Required") || strings.HasPrefix(trimmed, "Optional") || isLabelLine(trimmed) {
+			out = append(out, "    "+trimmed)
+			continue
+		}
+		if isListItemLine(trimmed) {
+			out = append(out, "      "+trimmed)
+			continue
+		}
+		out[len(out)-1] = strings.TrimRight(out[len(out)-1], " ") + " " + trimmed
+	}
+	return strings.Join(out, "\n")
+}
+
+// isListItemLine reports a bullet ("- ", "* ", "• ") or a numbered item
+// ("1. ", "2) "), which keeps its own line so a list stays a list.
+func isListItemLine(trimmed string) bool {
+	for _, m := range []string{"- ", "* ", "• "} {
+		if strings.HasPrefix(trimmed, m) {
+			return true
+		}
+	}
+	i := 0
+	for i < len(trimmed) && trimmed[i] >= '0' && trimmed[i] <= '9' {
+		i++
+	}
+	return i > 0 && i+1 < len(trimmed) && (trimmed[i] == '.' || trimmed[i] == ')') && trimmed[i+1] == ' '
+}
+
+// isLabelLine reports a one-word label that opens a block ("Constraints:").
+func isLabelLine(trimmed string) bool {
+	return strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, " ")
+}
+
+// isActionHeaderLine reports a line of the "Actions:" list: two spaces, the
+// action name, then padding and an em dash.
+func isActionHeaderLine(line string) bool {
+	if !strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "   ") {
+		return false
+	}
+	name, rest, ok := strings.Cut(line[2:], " ")
+	return ok && name != "" && strings.HasPrefix(strings.TrimLeft(rest, " "), "—")
 }
 
 // paramDefToToolOption maps a ParamDef to the matching mcp-go helper.

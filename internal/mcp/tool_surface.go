@@ -281,7 +281,7 @@ func buildToolSurfaceTools(catalog []ToolDef) []toolSurfaceToolSummary {
 		}
 		tools = append(tools, toolSurfaceToolSummary{
 			Name:        def.Name,
-			Description: def.Description,
+			Description: def.Description, // the source text, structure intact: docs are generated from it (TASK-3536)
 			Workspace:   def.Schema.Workspace,
 			Actions:     actions,
 			Params:      params,
