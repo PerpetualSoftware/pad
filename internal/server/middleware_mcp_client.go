@@ -19,7 +19,7 @@ func (s *Server) countMCPRequest(mount string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if s.metrics != nil {
 				s.metrics.MCPHTTPRequestsTotal.WithLabelValues(
-					mount, metricsMethodLabel(r.Method), mcpClientClass(r.UserAgent()),
+					mount, metricsMethodLabel(r.Method), mcpClientClass(requestUserAgent(r)),
 				).Inc()
 			}
 			next.ServeHTTP(w, r)
