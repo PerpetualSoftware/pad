@@ -40,6 +40,10 @@ type fakeOpLog struct {
 	// it. Missing key = NULL watermark = "never flushed".
 	contentFlushedIDs map[string]int64
 
+	// compactedThrough simulates a compaction snapshot per item (TASK-3531):
+	// CompactedResumeCovers admits a cursor at or below it.
+	compactedThrough map[string]int64
+
 	// setAside receives the rows SetAsideAndClearOpLog moves (BUG-3244).
 	setAside []models.YjsUpdate
 
@@ -291,6 +295,15 @@ func (f *fakeOpLog) PruneItemOpLogIfDormantBefore(itemID string, before time.Tim
 	}
 	f.rows = kept
 	return deleted, nil
+}
+
+// CompactedResumeCovers answers from compactedThrough (TASK-3531): an item
+// listed there is covered for any cursor at or below its value.
+func (f *fakeOpLog) CompactedResumeCovers(itemID string, since int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	through, ok := f.compactedThrough[itemID]
+	return ok && since > 0 && since <= through, nil
 }
 
 // MinOpLogID + MaxOpLogID power TASK-1319's resume-cursor protocol.

@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/collab"
 )
 
 // Default knobs for the periodic Yjs op-log prune sweeper (TASK-1309).
@@ -128,7 +130,16 @@ func (s *Server) runOpLogGCTick(minAge time.Duration) {
 	if s.collab == nil {
 		return
 	}
-	res, err := s.collab.PruneSweep(minAge)
+	// Compaction first (TASK-3531), then the sweep, which keeps what was
+	// compacted and deletes the rest as it always did.
+	var res collab.PruneSweepResult
+	var err error
+	if s.opLogCompactor != nil {
+		deferred := s.compactDormantOpLogs(minAge)
+		res, err = s.collab.PruneSweepKeeping(minAge, s.keepCompacted(deferred))
+	} else {
+		res, err = s.collab.PruneSweep(minAge)
+	}
 	if err != nil {
 		slog.Warn("op-log GC sweep failed", "error", err)
 		return

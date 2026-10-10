@@ -739,6 +739,11 @@ func serveCmd() *cobra.Command {
 			if oplogGCInterval != 0 || oplogGCMinAge != 0 {
 				srv.SetOpLogGCConfig(oplogGCInterval, oplogGCMinAge)
 			}
+			// Built before the GC starts, because dormancy compaction
+			// (TASK-3531) runs on the same worker as op-log recovery.
+			mat := newMaterializerFromEnv(os.Getenv, slog.Default(), newSupervisorMaterializer)
+			srv.SetMaterializer(mat)
+			srv.SetOpLogCompactor(opLogCompactorFromEnv(os.Getenv, slog.Default(), mat))
 			srv.StartOpLogGC()
 
 			// Op-log recovery (TASK-2198 U4). Rebuilds items.content from the
@@ -747,7 +752,7 @@ func serveCmd() *cobra.Command {
 			// on the first job, not here. PAD_MATERIALIZE=off disables it
 			// entirely; PAD_MATERIALIZE_TIMEOUT / PAD_MATERIALIZE_MEM_LIMIT
 			// tune the worker. docs/deployment.md, "Op-log materializer worker".
-			srv.SetMaterializer(newMaterializerFromEnv(os.Getenv, slog.Default(), newSupervisorMaterializer))
+			// (Its worker was built above, before the op-log GC.)
 			srv.StartMaterializeRecovery()
 
 			// Token reaper (PLAN-1933 DR-5 / TASK-1936). Periodic sweep

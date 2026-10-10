@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"os"
+	"strings"
 
 	pad "github.com/PerpetualSoftware/pad"
 	"github.com/PerpetualSoftware/pad/internal/materialize"
@@ -51,4 +52,24 @@ func newMaterializerFromEnv(getenv func(string) string, logger *slog.Logger, bui
 
 func newSupervisorMaterializer(cfg materialize.SupervisorConfig) server.Materializer {
 	return materialize.NewSupervisor(cfg)
+}
+
+// opLogCompactEnv turns dormancy compaction on (TASK-3531): "on" enables it,
+// anything else (the default) keeps the op-log GC deleting dormant logs.
+const opLogCompactEnv = "PAD_OPLOG_COMPACT"
+
+// opLogCompactorFromEnv returns the compactor when PAD_OPLOG_COMPACT=on and the
+// materializer is enabled (the snapshot runs on its worker), else nil.
+func opLogCompactorFromEnv(getenv func(string) string, logger *slog.Logger, m server.Materializer) server.OpLogCompactor {
+	if strings.TrimSpace(strings.ToLower(getenv(opLogCompactEnv))) != "on" {
+		return nil
+	}
+	c, ok := m.(server.OpLogCompactor)
+	if !ok || m == nil {
+		logger.Warn("op-log compaction requested but the materializer is off; dormant op-logs are deleted as before",
+			"env", opLogCompactEnv)
+		return nil
+	}
+	logger.Info("op-log compaction on: dormant op-logs are compacted into one snapshot instead of deleted", "env", opLogCompactEnv)
+	return c
 }

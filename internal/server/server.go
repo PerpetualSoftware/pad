@@ -359,6 +359,9 @@ type Server struct {
 	// pattern. Configured via SetOpLogGCConfig + started via
 	// StartOpLogGC; Stop() signals the loop via stopOpLogGC.
 	opLogGC opLogGCConfig
+	// opLogCompactor turns dormancy compaction on (TASK-3531,
+	// PAD_OPLOG_COMPACT=on); nil keeps the sweep deleting as before.
+	opLogCompactor OpLogCompactor
 
 	// materializeRecovery is the op-log recovery worker (TASK-2198 U4): it
 	// rebuilds items.content from an item's collaborative op-log after the tab

@@ -451,6 +451,25 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 				return merr
 			}
 			needsRefresh := !hasMin || since < minID
+			if needsRefresh && hasMin {
+				// A compaction snapshot that covers the cursor holds every
+				// struct the tab built on (TASK-3531): replay it (rows above
+				// `since`, which include the snapshot) and let the tab's own
+				// edits merge, instead of refreshing it. Only while the
+				// snapshot row exists, which CompactedResumeCovers checks. A
+				// failed check refreshes, the safe answer.
+				covers, cerr := m.store.CompactedResumeCovers(itemID, since)
+				if cerr != nil {
+					slog.Warn("collab: compacted-resume check failed; refreshing",
+						"item_id", itemID,
+						"since", since,
+						"error", cerr,
+					)
+				} else if covers {
+					needsRefresh = false
+					m.reportCompactedResumeAdmitted()
+				}
+			}
 			if needsRefresh {
 				slog.Info("collab: client cursor incompatible with op-log; sending force_refresh",
 					"item_id", itemID,
@@ -659,6 +678,9 @@ const DefaultPruneMinAge = 24 * time.Hour
 // to the server-level periodic ticker so it can log a one-line
 // summary per sweep.
 type PruneSweepResult struct {
+	// ItemsKept: items PruneSweepKeeping's keep func held back (TASK-3531:
+	// compacted op-logs).
+	ItemsKept int
 	// ItemsScanned: items returned by the dormancy query at sweep
 	// start. Some of these may turn out to be non-dormant by the
 	// time we acquire their per-item lock and run the conditional
@@ -710,6 +732,14 @@ type PruneSweepResult struct {
 //
 // Per TASK-1309 (PLAN-1248).
 func (m *RoomManager) PruneSweep(minAge time.Duration) (PruneSweepResult, error) {
+	return m.PruneSweepKeeping(minAge, nil)
+}
+
+// PruneSweepKeeping is PruneSweep that leaves alone any item `keep` returns
+// true for, asked under the item's lock (TASK-3531: a compacted op-log is one
+// old, flushed row, so it looks dormant, and deleting it would throw away the
+// snapshot that lets a stale tab merge). A nil keep keeps nothing.
+func (m *RoomManager) PruneSweepKeeping(minAge time.Duration, keep func(itemID string) bool) (PruneSweepResult, error) {
 	var res PruneSweepResult
 
 	if minAge <= 0 {
@@ -760,6 +790,11 @@ func (m *RoomManager) PruneSweep(minAge time.Duration) (PruneSweepResult, error)
 		if hasRoom {
 			lock.Unlock()
 			res.ItemsSkipped++
+			continue
+		}
+		if keep != nil && keep(itemID) {
+			lock.Unlock()
+			res.ItemsKept++
 			continue
 		}
 

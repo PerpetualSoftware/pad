@@ -381,6 +381,21 @@ type Metrics struct {
 	// EXPECT near zero: a steady count means peers that cannot keep up.
 	CollabOverflowClosesTotal prometheus.Counter
 
+	// OpLogCompactionsTotal counts dormancy-compaction attempts by outcome
+	// (TASK-3531, PAD_OPLOG_COMPACT=on): compacted, refused, failed,
+	// room_open, set_aside, schema, not_dormant, read_failed. Every outcome
+	// but compacted leaves the item to the sweep, which deletes it as before.
+	OpLogCompactionsTotal *prometheus.CounterVec
+	// OpLogCompactionSnapshotBytesTotal and OpLogCompactionMarkdownBytesTotal
+	// sum the snapshot frames written and the markdown they render, so their
+	// ratio is what compaction costs in storage over the bodies it keeps
+	// mergeable (the measurement the default flip waits on).
+	OpLogCompactionSnapshotBytesTotal prometheus.Counter
+	OpLogCompactionMarkdownBytesTotal prometheus.Counter
+	// CollabCompactedResumesTotal counts resumes admitted into a compaction
+	// snapshot that would otherwise have been refused with force_refresh.
+	CollabCompactedResumesTotal prometheus.Counter
+
 	// SessionPresenceFailuresTotal counts failed presence operations by
 	// op. READ THE LABEL — the consequences differ, and in opposite
 	// directions, so a generic alert on the total leads a responder to
@@ -767,6 +782,22 @@ func New() *Metrics {
 		Name: "pad_event_sequence_counter_repairs_total",
 		Help: "Times the shared event sequence counter held something it cannot count from (shape: wrong_type, not_integer, too_large) and was deleted, starting a new id space that every subscriber resyncs across (BUG-2744). Expect zero: counting never gets there, so a non-zero count means something else wrote the key — another installation sharing the Redis keyspace, a hand edit, or a restore. The warning logged beside it names the key, its type and its length.",
 	}, []string{"shape"})
+	opLogCompactionsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_oplog_compactions_total",
+		Help: "Dormancy compaction attempts by outcome (TASK-3531): compacted, or the reason the item was left to the sweep, which deletes it as before.",
+	}, []string{"outcome"})
+	opLogCompactionSnapshotBytesTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_oplog_compaction_snapshot_bytes_total",
+		Help: "Bytes of compaction snapshot frames written (TASK-3531).",
+	})
+	opLogCompactionMarkdownBytesTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_oplog_compaction_markdown_bytes_total",
+		Help: "Bytes of markdown the compacted documents render (TASK-3531); against pad_oplog_compaction_snapshot_bytes_total, the storage cost of keeping them mergeable.",
+	})
+	collabCompactedResumesTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_collab_compacted_resumes_total",
+		Help: "Resumes admitted into a compaction snapshot that would otherwise have been refused with force_refresh (TASK-3531).",
+	})
 	collabOverflowClosesTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_collab_overflow_closes_total",
 		Help: "Collab peers closed because the op bus dropped an op for them; each reconnects and replays the gap.",
@@ -806,6 +837,10 @@ func New() *Metrics {
 		collabResumesTotal,
 		collabResumeForceRefreshesTotal,
 		collabOverflowClosesTotal,
+		opLogCompactionsTotal,
+		opLogCompactionSnapshotBytesTotal,
+		opLogCompactionMarkdownBytesTotal,
+		collabCompactedResumesTotal,
 		sessionPresenceFailuresTotal,
 		httpRequestsTotal,
 		httpRequestDuration,
@@ -855,6 +890,10 @@ func New() *Metrics {
 		CollabResumesTotal:                 collabResumesTotal,
 		CollabResumeForceRefreshesTotal:    collabResumeForceRefreshesTotal,
 		CollabOverflowClosesTotal:          collabOverflowClosesTotal,
+		OpLogCompactionsTotal:              opLogCompactionsTotal,
+		OpLogCompactionSnapshotBytesTotal:  opLogCompactionSnapshotBytesTotal,
+		OpLogCompactionMarkdownBytesTotal:  opLogCompactionMarkdownBytesTotal,
+		CollabCompactedResumesTotal:        collabCompactedResumesTotal,
 		WatchReceiveLoopExitsTotal:         watchReceiveLoopExitsTotal,
 		WatchHeartbeatPublishFailuresTotal: watchHeartbeatPublishFailuresTotal,
 		SessionPresenceFailuresTotal:       sessionPresenceFailuresTotal,
