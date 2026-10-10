@@ -6,6 +6,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Collection, CollectionUpdate, FieldDef, FieldMigration, QuickAction } from '$lib/types';
 	import { parseSchema, parseSettings, collectionTracksWork } from '$lib/types';
+	import { schemaRenderRepairs } from '$lib/types';
 	import { buildCollectionSettings } from '$lib/collections/collectionSettingsSave';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 	import FieldEditor, { type CollectionOption } from './FieldEditor.svelte';
@@ -219,6 +220,10 @@
 	// and this modal share one type.
 
 	let existingFields = $state<EditableField[]>([]);
+	// What seeding from the render-safe schema removed (TASK-3539): a stored
+	// schema can repeat a field key or an option, and the form below shows each
+	// once, so a save writes the repaired form. Said here, never done silently.
+	let schemaRepairs = $state<string[]>([]);
 	let newFields = $state<EditableField[]>([]);
 
 	// ── What the edit does to items (TASK-2188 / TASK-2187) ─────────────────
@@ -438,6 +443,7 @@
 			selectedIcon = collection.icon || '';
 			description = collection.description || '';
 			const schema = parseSchema(collection);
+			schemaRepairs = schemaRenderRepairs(collection);
 			existingFields = schema.fields.map((f) => ({
 				key: f.key,
 				label: f.label || f.key,
@@ -1025,6 +1031,16 @@
 								</p>
 							</div>
 						{:else}
+							{#if schemaRepairs.length > 0}
+								<div class="impact-notices" role="status" data-testid="schema-repairs">
+									<p class="impact-notices-title">This collection's schema repeats itself, so it is shown with each field and option once. Saving keeps it that way:</p>
+									<ul>
+										{#each schemaRepairs as repair, i (i)}
+											<li class="impact-notice">{repair}</li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
 							{#if schemaImpacts.length > 0}
 								<div class="impact-notices" role="status" aria-live="polite">
 									<p class="impact-notices-title">These changes touch items that already have values:</p>

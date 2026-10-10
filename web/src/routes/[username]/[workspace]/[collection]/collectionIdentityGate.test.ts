@@ -30,8 +30,8 @@ identityGateSuite({
 			},
 			handleReorder: { reviewed: '25418ad2603b', why: 'optimistic upserts before any await (persistReorder applies them before its one request); identityHeld(epochAtEntry) after the request, before each settle, and before a refusal restores the original rows (BUG-3259, TASK-3517). TASK-3525: the moved card id is passed to the synchronous planner; no await or check moved' },
 			handleGroupReorder: {
-				reviewed: 'a833ef2e8d1c',
-				why: 'collGen, the route, then identityHeld(epochAtEntry) before the collection write; the conflict path checks identity BEFORE its re-read request (BUG-3238) and after it, before the reseed and navigation; both toasts fenced',
+				reviewed: '1b7180edc2a7',
+				why: 'collGen, the route, then identityHeld(epochAtEntry) before the collection write; the conflict path checks identity BEFORE its re-read request (BUG-3238) and after it, before the reseed and navigation; both toasts fenced. TASK-3539: the schema it writes back is parseStoredSchema (the stored form), not the render-normalised one; no await or check moved',
 			},
 			createNewItem: { reviewed: '92058792cfa1', why: `${ENTRY}, the navigation into the new item included; the finally clears creatingNew only under the identity` },
 			quickCreateInColumn: { reviewed: '5205a6163a7b', why: `${ENTRY}; answers null on a lost identity; the rethrow is unfenced, deliberately` },
