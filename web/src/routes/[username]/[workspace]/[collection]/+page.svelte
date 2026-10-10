@@ -4469,6 +4469,14 @@
 				onStatusChange={(it, newStatus) => handleStatusChange(it, newStatus, 'status')}
 				onReorder={handleReorder}
 				onArchiveGroup={canBulkEdit ? handleBulkArchive : undefined}
+				onMoveGroup={canBulkEdit ? handleBulkMove : undefined}
+				onTagGroup={canBulkEdit ? handleBulkTag : undefined}
+				onUntagGroup={canBulkEdit ? handleBulkUntag : undefined}
+				onSetPriorityGroup={canBulkEdit ? handleBulkSetPriority : undefined}
+				onAssignGroup={canBulkEdit ? handleBulkAssign : undefined}
+				members={workspaceMembers}
+				{tagSuggestions}
+				filtered={hasActiveFilters}
 				onGroupReorder={handleGroupReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}

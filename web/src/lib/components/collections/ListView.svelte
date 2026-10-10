@@ -23,6 +23,8 @@
 	import ItemCard from './ItemCard.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
 	import { uniqueStrings } from '$lib/utils/unique';
+	import LaneActionsMenu from './LaneActionsMenu.svelte';
+	import { clickOutside } from '$lib/utils/clickOutside';
 
 
 	interface Props {
@@ -50,6 +52,22 @@
 		onStatusChange?: (item: Item, newStatus: string) => void | Promise<void>;
 		onReorder?: (updates: { slug: string; sort_order: number }[], movedId?: string) => void;
 		onArchiveGroup?: (items: Item[]) => void;
+		/**
+		 * The board's other bulk lane actions on a group (TASK-2222), each on the
+		 * group's CURRENTLY-FILTERED items via the bulk endpoint, in the same ⋯
+		 * LaneActionsMenu. Archive keeps its own header button. Gated by the
+		 * caller, as onArchiveGroup is.
+		 */
+		onMoveGroup?: (items: Item[], status: string) => void;
+		onTagGroup?: (items: Item[], tag: string) => void;
+		onUntagGroup?: (items: Item[], tag: string) => void;
+		onSetPriorityGroup?: (items: Item[], priority: string) => void;
+		onAssignGroup?: (items: Item[], userId: string) => void;
+		/** Workspace members (for "Assign all") and tag suggestions (for "Tag all"). */
+		members?: { user_id: string; user_name?: string }[];
+		tagSuggestions?: string[];
+		/** True when a search/filter is narrowing the groups: shown in menu labels. */
+		filtered?: boolean;
 		onGroupReorder?: (newOrder: string[]) => void;
 		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
@@ -120,6 +138,14 @@
 		onStatusChange,
 		onReorder,
 		onArchiveGroup,
+		onMoveGroup,
+		onTagGroup,
+		onUntagGroup,
+		onSetPriorityGroup,
+		onAssignGroup,
+		members = [],
+		tagSuggestions = [],
+		filtered = false,
 		onGroupReorder,
 		oncreate,
 		itemProgress,
@@ -270,6 +296,19 @@
 	});
 
 	let collapsedGroups = new SvelteSet<string>();
+
+	// The group ⋯ menu (TASK-2222): which group's is open, at most one.
+	let openGroupMenu = $state<string | null>(null);
+	function closeGroupMenu() {
+		openGroupMenu = null;
+	}
+	let hasGroupVerbs = $derived(
+		!!(onMoveGroup || onTagGroup || onUntagGroup || onSetPriorityGroup || onAssignGroup),
+	);
+	/** A click or key inside the group menu is the menu's, not the header's toggle. */
+	function fromGroupMenu(e: Event): boolean {
+		return e.target instanceof Element && !!e.target.closest('.group-menu-wrap');
+	}
 
 	// Group reordering state
 	interface GroupItem { id: string }
@@ -525,13 +564,13 @@
 		{#each groupItems as group (group.id)}
 			{@const groupName = group.id}
 			{@const grpItems = groupData[laneKey(groupName)] ?? []}
-			<div class="item-group">
+			<div class="item-group" class:menu-open={openGroupMenu === groupName}>
 				<div
 					class="group-header"
 					role="button"
 					tabindex="0"
-					onclick={() => toggleGroup(groupName)}
-					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(groupName); } }}
+					onclick={(e) => { if (fromGroupMenu(e)) return; toggleGroup(groupName); }}
+					onkeydown={(e) => { if (fromGroupMenu(e)) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(groupName); } }}
 					aria-expanded={!collapsedGroups.has(groupName)}
 				>
 					{#if canEdit}
@@ -573,6 +612,42 @@
 									onclick={(e) => { e.stopPropagation(); confirmArchiveGroup = groupName; }}
 								>&#128451;</button>
 							{/if}
+						{/if}
+						{#if hasGroupVerbs && itemCount(grpItems) > 0}
+							<!-- clickOutside dismisses only on a press that STARTS outside (BUG-3231). -->
+							<span
+								class="group-menu-wrap"
+								use:clickOutside={{ enabled: openGroupMenu === groupName, onOutside: closeGroupMenu }}
+							>
+								<button
+									class="group-menu-btn"
+									title="Group actions"
+									aria-label="{formatLaneLabel(groupName)} group actions"
+									aria-haspopup="menu"
+									aria-expanded={openGroupMenu === groupName}
+									onclick={(e) => { e.stopPropagation(); openGroupMenu = openGroupMenu === groupName ? null : groupName; }}
+								>&#8943;</button>
+								{#if openGroupMenu === groupName}
+									<LaneActionsMenu
+										items={grpItems}
+										groupValue={groupName}
+										{groupField}
+										{collection}
+										{filtered}
+										{members}
+										{tagSuggestions}
+										{sortMode}
+										onClose={closeGroupMenu}
+										onMove={onMoveGroup && !isRelationGroup && !relationWithoutTarget
+											? (status) => onMoveGroup?.(grpItems, status)
+											: undefined}
+										onTag={onTagGroup ? (tag) => onTagGroup?.(grpItems, tag) : undefined}
+										onUntag={onUntagGroup ? (tag) => onUntagGroup?.(grpItems, tag) : undefined}
+										onSetPriority={onSetPriorityGroup ? (p) => onSetPriorityGroup?.(grpItems, p) : undefined}
+										onAssign={onAssignGroup ? (userId) => onAssignGroup?.(grpItems, userId) : undefined}
+									/>
+								{/if}
+							</span>
 						{/if}
 					</span>
 				</div>
@@ -662,6 +737,47 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		overflow: hidden;
+	}
+
+	/* The group menu is absolutely positioned; an open one must not be clipped
+	   by a short group (TASK-2222). */
+	.item-group.menu-open {
+		overflow: visible;
+	}
+
+	.group-menu-wrap {
+		position: relative;
+		display: inline-flex;
+	}
+
+	/* Always visible, unlike the hover-revealed archive button: the board's ⋯
+	   rule (TASK-1671), 28px, and 44px on touch widths (TASK-3311). */
+	.group-menu-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 28px;
+		height: 28px;
+		padding: 0 4px;
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 1em;
+		line-height: 1;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+	}
+
+	.group-menu-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	@media (max-width: 768px) {
+		.group-menu-btn {
+			min-width: 44px;
+			height: 44px;
+		}
 	}
 
 	.group-drag-handle {
