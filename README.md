@@ -220,6 +220,8 @@ docker run -p 127.0.0.1:7777:7777 -v pad-data:/data ghcr.io/perpetualsoftware/pa
 
 This publishes Pad to `localhost:7777` on the host machine, which is the recommended default for local use.
 
+**Pin a version for anything you keep.** The untagged name is `latest`, which moves to each new stable release (never a release candidate) the next time the image is pulled. Name the release instead, as a bare version with no leading `v`, for example `ghcr.io/perpetualsoftware/pad:0.17.2`, and change the tag when you choose to upgrade. Every published image is multi-arch and cosign-signed.
+
 **First run — create the first admin.** Open `http://localhost:7777` and you'll hit a setup page asking for a bootstrap token. On first start with no users, Pad logs a one-time setup URL to stderr (captured by `docker logs`) — grep it and open the printed link:
 
 ```bash
@@ -237,7 +239,7 @@ docker run -p 7777:7777 -v pad-data:/data ghcr.io/perpetualsoftware/pad
 
 Set `PUID` / `PGID` to match your host's file ownership: the entrypoint runs Pad as that user. The defaults, 99/100, are Unraid's `nobody:users`.
 
-For multi-instance deployments, Pad supports Postgres + Redis via `docker-compose.yml` — see [docs/deployment.md](docs/deployment.md) for the full setup.
+For multi-instance deployments, Pad supports Postgres + Redis via `docker-compose.yml` — see [docs/deployment.md](docs/deployment.md) for the full setup. The compose file runs the released image; set `PAD_VERSION` in `.env` to pin it.
 
 ### Nix
 
@@ -299,7 +301,7 @@ pad db backup -o pad-backup-$(date +%Y%m%d).db
 
 # 2. Stop the server, install the new binary, restart
 #    (migrations + the pre-migration snapshot run automatically on start)
-brew upgrade pad        # or: docker pull, binary download, make install
+brew upgrade pad        # or: a new image tag (see Docker above), binary download, make install
 
 # 3. Confirm it's healthy
 pad --version

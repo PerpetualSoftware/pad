@@ -3,6 +3,14 @@
 #   1. cp .env.example .env            # generates a POSTGRES_PASSWORD if missing
 #   2. docker compose up -d
 #
+# Runs the RELEASED image, ghcr.io/perpetualsoftware/pad (multi-arch, built by
+# the release pipeline and cosign-signed), not a build of this checkout
+# (TASK-2034). Set PAD_VERSION in .env to pin a release (e.g. 0.17.2); unset,
+# it is `latest`, which only ever moves to a STABLE release, never an RC.
+# Upgrade: change PAD_VERSION, then `docker compose pull && docker compose up -d`.
+# Contributors building this checkout instead:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
 # Starts Pad with PostgreSQL for storage and Redis for real-time events,
 # notifications, and the shared session-presence registry.
 # The web UI binds to 127.0.0.1:7777 on the host by default — LAN/internet
@@ -11,9 +19,7 @@
 
 services:
   pad:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/perpetualsoftware/pad:${PAD_VERSION:-latest}
     ports:
       # Bind to loopback only by default. A fresh install exposes the bootstrap
       # endpoint until the first admin is created, so defaulting to 0.0.0.0
