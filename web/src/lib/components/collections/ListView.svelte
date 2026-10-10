@@ -788,6 +788,10 @@
 		.group-menu-btn {
 			min-width: 44px;
 			height: 44px;
+			/* The archive button's 44px extender overhangs its ~20px glyph by
+			   about 12px a side; the ⋯ starts past that overhang, so neither
+			   target takes a tap meant for the other (TASK-3311 measures it). */
+			margin-left: 14px;
 		}
 	}
 
@@ -885,8 +889,9 @@
 		}
 	}
 	/* Phone width: a 44x44 touch target through an invisible extender, so the
-	   group header keeps its height (TASK-3311). The header's other contents
-	   are the label and the count, which are not controls. */
+	   group header keeps its height (TASK-3311). The label and the count are
+	   not controls; the ⋯ group menu (TASK-2222) is, and keeps clear of the
+	   extender's overhang with its own margin below. */
 	@media (max-width: 768px) {
 		.archive-group-btn {
 			position: relative;
