@@ -385,6 +385,10 @@ export class CollabProvider {
 	// the whole document to the op-log.
 	private localSentOnSocket = false;
 	private catchUpOwed = false;
+	// The server reported a failed op-log append (barrier_ack ok:false) and the
+	// whole-document resend is not confirmed yet (BUG-3556). Unlike an ordinary
+	// unconfirmed send, this one is known to be at risk.
+	private repairPending = false;
 	// The barrier that clears `localSentOnSocket` (BUG-3523): once the local
 	// sends go quiet, one `barrier` control frame goes out; the server answers
 	// it after every frame sent before it has been persisted, and an OK ack
@@ -1045,11 +1049,15 @@ export class CollabProvider {
 					console.warn(
 						`collab: the server reported a failed op-log append for item ${this.itemID}; resending the document`,
 					);
+					this.repairPending = true;
 					this.sendCatchUp();
 					return;
 				}
 				// A local send after this barrier has its own barrier coming.
-				if (this.localSendSeq === pending.covers) this.localSentOnSocket = false;
+				if (this.localSendSeq === pending.covers) {
+					this.localSentOnSocket = false;
+					this.repairPending = false;
+				}
 				return;
 			}
 			case 'op_log_cursor': {
@@ -1398,6 +1406,18 @@ export class CollabProvider {
 	 */
 	get editsMayBeMissing(): boolean {
 		return this.unsentLocalEdits || this.catchUpOwed || this.localSentOnSocket;
+	}
+
+	/**
+	 * Whether closing or leaving the page now would lose edits (BUG-3556): made
+	 * while no socket was open, sent on a socket that closed before the
+	 * server confirmed them (`catchUpOwed`), or resent after the server
+	 * reported a failed op-log append and not yet confirmed. An ordinary send
+	 * still awaiting its barrier is left out: that is every keystroke for a
+	 * moment, and asking then would be noise.
+	 */
+	get editsAtRiskOnClose(): boolean {
+		return this.unsentLocalEdits || this.catchUpOwed || this.repairPending;
 	}
 
 	/** A local update is going out on the open socket (BUG-3523). */

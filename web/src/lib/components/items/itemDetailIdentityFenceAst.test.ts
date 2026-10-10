@@ -278,7 +278,7 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved', reviewed: '8c65e52ed46c',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved. Re-reviewed for BUG-3556: the prompt reads the provider getter editsAtRiskOnClose instead of unsentLocalEdits (a read, no await, no write); nothing else moved', reviewed: '8ff551518ba3',
 		may: ['teardownFlushed'],
 	},
 	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: 'ac93e315dd54' },
