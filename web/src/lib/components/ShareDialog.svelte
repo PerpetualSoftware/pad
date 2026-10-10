@@ -266,6 +266,10 @@
 				<!-- Add people section -->
 				<div class="add-section">
 					<span class="section-label">Add people</span>
+					<!-- TASK-2255 (C60): a grant is not a membership. -->
+					<p class="grant-note">
+						Shares only this {type}: they can open it without joining the workspace. To give someone the whole workspace, invite them from Workspace settings.
+					</p>
 					<div class="add-row">
 						<input aria-label="Email address"
 							class="email-input"
@@ -499,6 +503,12 @@
 		flex-direction: column;
 		gap: var(--space-5);
 		overflow-y: auto;
+	}
+
+	.grant-note {
+		font-size: 0.8em;
+		color: var(--text-secondary);
+		margin: 2px 0 var(--space-2);
 	}
 
 	.section-label {
