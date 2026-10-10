@@ -26,13 +26,14 @@ func TestParseGoSumSkipsGoModOnlyLines(t *testing.T) {
 }
 
 func TestParsePackageLockTakesRegistryPackagesOnly(t *testing.T) {
-	lock := `{"packages":{
+	lock := `{"lockfileVersion":3,"packages":{
 		"":{"name":"web"},
 		"node_modules/svelte":{"version":"5.1.0","resolved":"https://registry.npmjs.org/svelte/-/svelte-5.1.0.tgz"},
 		"node_modules/@tiptap/core":{"version":"3.31.4","resolved":"https://registry.npmjs.org/@tiptap/core/-/core-3.31.4.tgz"},
 		"node_modules/a/node_modules/b":{"version":"1.0.0","resolved":"https://registry.npmjs.org/b/-/b-1.0.0.tgz"},
 		"node_modules/gitdep":{"version":"1.0.0","resolved":"git+https://github.com/x/y.git#abc"},
-		"node_modules/linked":{"link":true,"resolved":"../linked"}
+		"node_modules/linked":{"link":true,"resolved":"../linked"},
+		"node_modules/aliased":{"name":"real-pkg","version":"2.0.0","resolved":"https://registry.npmjs.org/real-pkg/-/real-pkg-2.0.0.tgz"}
 	}}`
 	got, err := parsePackageLock([]byte(lock))
 	if err != nil {
@@ -42,13 +43,31 @@ func TestParsePackageLockTakesRegistryPackagesOnly(t *testing.T) {
 	for _, d := range uniq(got) {
 		keys[d.key()] = true
 	}
-	for _, want := range []string{"npm svelte@5.1.0", "npm @tiptap/core@3.31.4", "npm b@1.0.0"} {
+	for _, want := range []string{"npm svelte@5.1.0", "npm @tiptap/core@3.31.4", "npm b@1.0.0", "npm real-pkg@2.0.0"} {
 		if !keys[want] {
 			t.Errorf("missing %s in %v", want, keys)
 		}
 	}
-	if len(keys) != 3 {
-		t.Errorf("got %v, want exactly the three registry packages", keys)
+	if len(keys) != 4 {
+		t.Errorf("got %v, want exactly the four registry packages", keys)
+	}
+	if _, err := parsePackageLock([]byte(`{"lockfileVersion":1,"dependencies":{}}`)); err == nil {
+		t.Error("a v1 lockfile was read as empty instead of refused")
+	}
+}
+
+func TestTokenGoesOnlyToTheTokenHost(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	src := Sources{GitHubAPI: srv.URL, Token: "tok", TokenHost: "api.github.com", Client: srv.Client()}
+	var v map[string]any
+	_ = getJSON(src, srv.URL+"/x", true, &v)
+	if got != "" {
+		t.Fatalf("the token was sent to %s: %q", srv.URL, got)
 	}
 }
 
@@ -132,7 +151,8 @@ func fakeSources(t *testing.T, times map[string]time.Time, sawToken *string) Sou
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return Sources{GoProxy: srv.URL + "/proxy", NPM: srv.URL + "/npm", GitHubAPI: srv.URL + "/gh", Token: "tok", Client: srv.Client()}
+	host := strings.TrimPrefix(srv.URL, "http://")
+	return Sources{GoProxy: srv.URL + "/proxy", NPM: srv.URL + "/npm", GitHubAPI: srv.URL + "/gh", Token: "tok", TokenHost: host, Client: srv.Client()}
 }
 
 func TestLookupsAndReport(t *testing.T) {
@@ -202,24 +222,39 @@ func TestRunAgainstABase(t *testing.T) {
 		os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755)
 		os.WriteFile(filepath.Join(dir, p), []byte(s), 0o644)
 	}
+	shaOld, shaNew := strings.Repeat("a", 40), strings.Repeat("c", 40)
+	lock := func(v string) string {
+		return `{"lockfileVersion":3,"packages":{"node_modules/pkg":{"version":"` + v + `","resolved":"https://registry.npmjs.org/pkg/-/pkg.tgz"}}}`
+	}
 	git("init", "-q")
 	write("go.sum", "example.com/old v1.0.0 h1:x=\n")
+	write("web/package-lock.json", lock("1.0.0"))
+	write(".github/workflows/ci.yml", "- uses: acme/act@"+shaOld+"\n")
 	git("add", ".")
 	git("commit", "-qm", "base")
 	write("go.sum", "example.com/old v1.0.0 h1:x=\nexample.com/new v2.0.0 h1:y=\n")
+	write("web/package-lock.json", lock("1.1.0"))
+	write(".github/actions/local/action.yml", "- uses: acme/act@"+shaNew+"\n")
 
 	now := time.Now()
 	src := fakeSources(t, map[string]time.Time{
 		"go example.com/old@v1.0.0": now.AddDate(0, 0, -1), // young, but not new: not checked
 		"go example.com/new@v2.0.0": now.AddDate(0, 0, -100),
+		"npm pkg@1.1.0":             now.AddDate(0, 0, -100),
+		"action acme/act@" + shaOld: now.AddDate(0, 0, -1),
+		"action acme/act@" + shaNew: now.AddDate(0, 0, -100),
 	}, nil)
 	t.Setenv("DEPAGES_GOPROXY", src.GoProxy)
+	t.Setenv("DEPAGES_NPM", src.NPM)
+	t.Setenv("DEPAGES_GITHUB_API", src.GitHubAPI)
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--root", dir, "--base", "HEAD"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s %s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "checked 1 dependencies") {
-		t.Errorf("want only the new module checked:\n%s", stdout.String())
+	// The new module, the bumped npm package and the composite action's new
+	// pin: three, none of them young.
+	if !strings.Contains(stdout.String(), "checked 3 dependencies") {
+		t.Errorf("want the three new dependencies checked:\n%s", stdout.String())
 	}
 	// Without --base the young old module is checked and fails the run.
 	stdout.Reset()

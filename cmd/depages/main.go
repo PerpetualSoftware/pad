@@ -64,6 +64,7 @@ type Sources struct {
 	NPM       string // e.g. https://registry.npmjs.org
 	GitHubAPI string // e.g. https://api.github.com
 	Token     string // optional GitHub token
+	TokenHost string // the only host the token is sent to (api.github.com)
 	Client    *http.Client
 }
 
@@ -123,6 +124,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		NPM:       envOr("DEPAGES_NPM", "https://registry.npmjs.org"),
 		GitHubAPI: envOr("DEPAGES_GITHUB_API", "https://api.github.com"),
 		Token:     os.Getenv("GH_TOKEN"),
+		TokenHost: "api.github.com",
 		Client:    &http.Client{Timeout: 30 * time.Second},
 	}
 	results := lookupAll(src, deps, *concurrency)
@@ -136,16 +138,24 @@ func envOr(k, def string) string {
 	return def
 }
 
-// workflowFiles lists the workflow files under root, relative to it.
+// workflowFiles lists every YAML file under .github, relative to root:
+// workflows, and the action.yml of a local composite action, whose `uses:`
+// pins a change can add too (codex round 1). A `docker://` image is not
+// covered: it is not pinned by a commit SHA, and has no source of publish
+// time here.
 func workflowFiles(root string) []string {
-	matches, _ := filepath.Glob(filepath.Join(root, ".github", "workflows", "*.y*ml"))
-	out := make([]string, 0, len(matches))
-	for _, m := range matches {
-		rel, err := filepath.Rel(root, m)
-		if err == nil {
-			out = append(out, rel)
+	var out []string
+	_ = filepath.WalkDir(filepath.Join(root, ".github"), func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
 		}
-	}
+		if strings.HasSuffix(p, ".yml") || strings.HasSuffix(p, ".yaml") {
+			if rel, err := filepath.Rel(root, p); err == nil {
+				out = append(out, rel)
+			}
+		}
+		return nil
+	})
 	sort.Strings(out)
 	return out
 }
@@ -195,7 +205,9 @@ func parseGoSum(b []byte) []Dep {
 // parsePackageLock returns the registry packages a lockfile v2/v3 installs.
 func parsePackageLock(b []byte) ([]Dep, error) {
 	var lock struct {
-		Packages map[string]struct {
+		LockfileVersion int `json:"lockfileVersion"`
+		Packages        map[string]struct {
+			Name     string `json:"name"` // set for an alias (`"x": "npm:real@1"`)
 			Version  string `json:"version"`
 			Resolved string `json:"resolved"`
 			Link     bool   `json:"link"`
@@ -203,6 +215,11 @@ func parsePackageLock(b []byte) ([]Dep, error) {
 	}
 	if err := json.Unmarshal(b, &lock); err != nil {
 		return nil, err
+	}
+	// A v1 lockfile keeps its tree under `dependencies`, which this does not
+	// read; refusing beats checking nothing (codex round 1).
+	if lock.LockfileVersion < 2 {
+		return nil, fmt.Errorf("lockfileVersion %d is not supported (want 2 or 3)", lock.LockfileVersion)
 	}
 	var out []Dep
 	for path, p := range lock.Packages {
@@ -213,7 +230,11 @@ func parsePackageLock(b []byte) ([]Dep, error) {
 		if p.Resolved != "" && !strings.Contains(p.Resolved, "registry.npmjs.org") {
 			continue // a git or tarball dependency has no registry publish time
 		}
-		out = append(out, Dep{Kind: "npm", Name: path[i+len("node_modules/"):], Version: p.Version})
+		name := path[i+len("node_modules/"):]
+		if p.Name != "" {
+			name = p.Name // an alias installs another package under its own name
+		}
+		out = append(out, Dep{Kind: "npm", Name: name, Version: p.Version})
 	}
 	return out, nil
 }
@@ -362,7 +383,9 @@ func getJSON(src Sources, u string, github bool, v any) error {
 	if err != nil {
 		return err
 	}
-	if github && src.Token != "" {
+	// The token goes to GitHub's API host and nowhere else, whatever
+	// DEPAGES_GITHUB_API says (codex round 1).
+	if github && src.Token != "" && req.URL.Host == src.TokenHost {
 		req.Header.Set("Authorization", "Bearer "+src.Token)
 	}
 	resp, err := src.Client.Do(req)
