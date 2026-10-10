@@ -866,7 +866,17 @@
 	   row run under both). */
 	.topbar:not(.topbar-mobile) {
 		justify-content: flex-start;
-		padding: 0 108px 0 72px;
+		padding: 0 108px 0 var(--space-3);
+	}
+
+	/* The logo sits IN the row on desktop, so the first tab starts a fixed
+	   distance after it: the bar's 8px gap plus the tab list's 9px inset
+	   (room for the active tab's flare), about 17px. It was
+	   absolutely placed with the strip at a fixed 72px, so the space was
+	   whatever the wordmark's width left over, which depends on the system
+	   font: about 7px on one machine, about 1px on CI's (TASK-3545). */
+	.topbar:not(.topbar-mobile) .topbar-left {
+		position: static;
 	}
 
 	/* Mobile: fixed at top, full viewport width, above sidebar + backdrop */
