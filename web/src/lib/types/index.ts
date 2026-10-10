@@ -2965,10 +2965,13 @@ export function getStatusOptions(collection: Collection): string[] {
 }
 
 /** Default terminal statuses used as a fallback when a collection's schema
- * doesn't declare terminal_options. */
+ * doesn't declare terminal_options. Mirrors models.DefaultTerminalStatuses
+ * (internal/models/terminal.go); TestTerminalListsMatchWeb keeps them equal.
+ * "Won't fix" is listed in each spelling (BUG-3546). */
 const DEFAULT_TERMINAL_STATUSES = [
 	'done', 'completed', 'resolved', 'cancelled', 'rejected',
-	'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'
+	'wontfix', 'wont-fix', "won't fix", "won't-fix",
+	'fixed', 'implemented', 'archived', 'disabled', 'deprecated'
 ];
 
 /** Get the terminal status options for a collection. Uses the schema's
@@ -2981,9 +2984,9 @@ export function getTerminalOptions(collection: Collection): string[] {
 
 /** Terminal values that close WITHOUT delivering, used when a field declares no
  * abandoned_options. Mirrors models.NegativeTerminals (internal/models/terminal.go);
- * keep the two lists identical. */
+ * TestTerminalListsMatchWeb keeps the two lists identical. */
 const NEGATIVE_TERMINALS = [
-	'rejected', 'cancelled', 'canceled', 'wontfix', "won't fix",
+	'rejected', 'cancelled', 'canceled', 'wontfix', 'wont-fix', "won't fix", "won't-fix",
 	'duplicate', 'declined', 'abandoned', 'disabled'
 ];
 

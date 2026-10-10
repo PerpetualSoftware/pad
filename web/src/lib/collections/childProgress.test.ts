@@ -85,7 +85,8 @@ describe('getAbandonedOptions (BUG-3195)', () => {
 
 	it('with no terminal options, applies the fallback to the default terminal list', () => {
 		expect(getAbandonedOptions(coll('x', [{ key: 'status', type: 'select' }]))).toEqual(DEFAULT_ABANDONED_STATUSES);
-		expect(DEFAULT_ABANDONED_STATUSES).toEqual(['cancelled', 'rejected', 'wontfix', 'disabled']);
+		// BUG-3546: every "won't fix" spelling is abandoned, the hyphenated ones included.
+		expect(DEFAULT_ABANDONED_STATUSES).toEqual(['cancelled', 'rejected', 'wontfix', 'wont-fix', "won't fix", "won't-fix", 'disabled']);
 	});
 });
 

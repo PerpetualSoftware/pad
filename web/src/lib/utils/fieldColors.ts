@@ -57,6 +57,7 @@ const STATUS_COLORS: Record<string, string> = {
 	cancelled: GRAY,
 	rejected: GRAY,
 	wontfix: GRAY,
+	wont_fix: GRAY, // `wont-fix` after norm (BUG-3546)
 	// dormant
 	draft: MUTED,
 	closed: MUTED,
