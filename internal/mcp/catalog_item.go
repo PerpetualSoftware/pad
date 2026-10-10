@@ -339,10 +339,11 @@ Actions:
     one second apart.
     Writing 'content' while a browser tab has the item open goes to that
     live document: the response echoes what you SENT with
-    warnings.content_outcome="applied_pending_flush", and a read before
-    the tab saves still returns the PREVIOUS content. That is lag, not a
-    failed write: re-read later (with get, or list with full=true; a
-    default list carries no content), never re-send. The editor may normalise
+    warnings.content_outcome="applied_pending_flush" (it describes the
+    write, not the row), and a read before a tab saves still returns the
+    PREVIOUS content. That is lag, not a failed write: re-read later (with
+    get, or list with full=true; a default list carries no content), never
+    re-send. Nothing guarantees that save, so do not wait on it in a loop. The editor may normalise
     the stored markdown, so compare on meaning, not bytes.
   delete        — Archive an item.
     Required: ref.
