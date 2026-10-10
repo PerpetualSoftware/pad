@@ -341,7 +341,8 @@ Actions:
     live document: the response echoes what you SENT with
     warnings.content_outcome="applied_pending_flush", and a read before
     the tab saves still returns the PREVIOUS content. That is lag, not a
-    failed write: re-read later, never re-send. The editor may normalise
+    failed write: re-read later (with get, or list with full=true; a
+    default list carries no content), never re-send. The editor may normalise
     the stored markdown, so compare on meaning, not bytes.
   delete        — Archive an item.
     Required: ref.

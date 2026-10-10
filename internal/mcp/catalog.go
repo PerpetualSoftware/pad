@@ -373,7 +373,8 @@ func buildToolFromDef(def ToolDef) mcp.Tool {
 // compactToolDescription reflows a catalog description for the wire
 // (TASK-3536). The source keeps its hand-wrapped layout, which reads well in
 // Go; on the wire every indented continuation line joins the line above it,
-// and a Required:/Optional: line keeps its own line at a 4-space indent. It
+// and a Required:/Optional: line or a one-word label ("Constraints:") keeps
+// its own line at a 4-space indent, a list item at a 6-space indent. It
 // changes whitespace only: the description's words, in order, are untouched
 // (pinned by TestCompactToolDescriptionKeepsEveryWord). Lines at column 0,
 // blank lines and the two-space action headers ("  create   — ...") are kept
@@ -388,13 +389,37 @@ func compactToolDescription(desc string) string {
 			out = append(out, line)
 			continue
 		}
-		if strings.HasPrefix(trimmed, "Required") || strings.HasPrefix(trimmed, "Optional") {
+		if strings.HasPrefix(trimmed, "Required") || strings.HasPrefix(trimmed, "Optional") || isLabelLine(trimmed) {
 			out = append(out, "    "+trimmed)
+			continue
+		}
+		if isListItemLine(trimmed) {
+			out = append(out, "      "+trimmed)
 			continue
 		}
 		out[len(out)-1] = strings.TrimRight(out[len(out)-1], " ") + " " + trimmed
 	}
 	return strings.Join(out, "\n")
+}
+
+// isListItemLine reports a bullet ("- ", "* ", "• ") or a numbered item
+// ("1. ", "2) "), which keeps its own line so a list stays a list.
+func isListItemLine(trimmed string) bool {
+	for _, m := range []string{"- ", "* ", "• "} {
+		if strings.HasPrefix(trimmed, m) {
+			return true
+		}
+	}
+	i := 0
+	for i < len(trimmed) && trimmed[i] >= '0' && trimmed[i] <= '9' {
+		i++
+	}
+	return i > 0 && i+1 < len(trimmed) && (trimmed[i] == '.' || trimmed[i] == ')') && trimmed[i+1] == ' '
+}
+
+// isLabelLine reports a one-word label that opens a block ("Constraints:").
+func isLabelLine(trimmed string) bool {
+	return strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, " ")
 }
 
 // isActionHeaderLine reports a line of the "Actions:" list: two spaces, the

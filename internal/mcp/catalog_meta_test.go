@@ -147,8 +147,7 @@ func TestActionMetaToolSurface_DumpsCatalog(t *testing.T) {
 			t.Errorf("tool %q absent from tool-surface dump", def.Name)
 			continue
 		}
-		// The dump serves the wire form tools/list does (TASK-3536).
-		if entry["description"] != compactToolDescription(def.Description) {
+		if entry["description"] != def.Description {
 			t.Errorf("%s.description mismatch", def.Name)
 		}
 		if entry["workspace"] != def.Schema.Workspace {
