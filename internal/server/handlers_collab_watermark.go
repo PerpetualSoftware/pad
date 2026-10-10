@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -53,10 +54,10 @@ func (s *Server) handleStampCollabWatermark(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var advanced bool
+	var res store.WatermarkStampResult
 	stamp := func() error {
 		var serr error
-		advanced, serr = s.store.StampContentWatermarkIfCaughtUp(item.ID, input.OpLogCursor, input.ContentSHA256)
+		res, serr = s.store.StampContentWatermarkIfCaughtUpCounted(item.ID, input.OpLogCursor, input.ContentSHA256)
 		return serr
 	}
 	// Under the per-item collab lock when collab is on, for the same reason the
@@ -76,5 +77,36 @@ func (s *Server) handleStampCollabWatermark(w http.ResponseWriter, r *http.Reque
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"advanced": advanced})
+	if res.Advanced {
+		s.recordWatermarkStamp(r, item.ID, input.OpLogCursor, res)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"advanced": res.Advanced})
+}
+
+// recordWatermarkStamp measures what an advancing stamp covered (TASK-3541
+// step 0): nothing about the answer changes. A stamp over content-bearing rows
+// is the server accepting, unverified, a tab's claim that rows it cannot read
+// already render to items.content; a buggy, outdated or hostile tab can make
+// unstored edits read as flushed that way. It is logged at WARN with enough to
+// find the tab, so the rate can be judged before the materializer check
+// (TASK-3541 steps 1+) is built.
+func (s *Server) recordWatermarkStamp(r *http.Request, itemID string, cursor int64, res store.WatermarkStampResult) {
+	covers := "view_only"
+	if res.CoveredContentRows > 0 {
+		covers = "content"
+	}
+	if s.metrics != nil {
+		s.metrics.CollabWatermarkStampsTotal.WithLabelValues(covers).Inc()
+	}
+	if res.CoveredContentRows == 0 {
+		return
+	}
+	slog.Warn("collab watermark stamp covered content-bearing rows the server did not verify",
+		"item_id", itemID,
+		"from", res.PrevWatermark,
+		"to", cursor,
+		"content_rows", res.CoveredContentRows,
+		"user_id", currentUserID(r),
+		"user_agent", r.UserAgent(),
+	)
 }

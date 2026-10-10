@@ -51,26 +51,61 @@ var ErrWatermarkStampBadInput = errors.New("watermark stamp: bad input")
 // Returns whether the watermark moved. Nothing else on the row is touched: no
 // content, no seq, no updated_at, no version.
 func (s *Store) StampContentWatermarkIfCaughtUp(itemID string, cursor int64, contentSHA256 string) (bool, error) {
+	res, err := s.StampContentWatermarkIfCaughtUpCounted(itemID, cursor, contentSHA256)
+	return res.Advanced, err
+}
+
+// WatermarkStampResult is what StampContentWatermarkIfCaughtUpCounted reports.
+type WatermarkStampResult struct {
+	// Advanced is whether the watermark moved.
+	Advanced bool
+	// PrevWatermark is the watermark the stamp moved FROM (0 for none). Set
+	// only when Advanced.
+	PrevWatermark int64
+	// CoveredContentRows counts the CONTENT-BEARING op-log rows the advance
+	// newly covered: id in (PrevWatermark, cursor]. Set only when Advanced.
+	//
+	// TASK-3541 step 0: a stamp covering such rows is the one case where the
+	// server takes a tab's word that rows it cannot read are already in
+	// items.content. An honest tab gets there only when its document holds
+	// content-bearing rows yet renders to the stored body (typed then undone,
+	// editor normalisation ops). This count measures how often that happens
+	// before any server-side check is built on it. Zero is the view-only stamp
+	// (BUG-3124's SyncStep and resend rows), which claims nothing about content.
+	CoveredContentRows int64
+}
+
+// StampContentWatermarkIfCaughtUpCounted is StampContentWatermarkIfCaughtUp
+// that also reports what the advance covered (TASK-3541 step 0). The count is
+// read in the same transaction as the conditional UPDATE. It is exact when the
+// caller holds the collab item lock, as the HTTP door does, because every other
+// watermark writer (the snapshot flush, recovery) holds it too. Without the
+// lock, a flush landing between the read and the UPDATE could make the count
+// include rows that flush covered: an over-count, which is the safe direction
+// for a measurement. Behaviour is otherwise identical.
+func (s *Store) StampContentWatermarkIfCaughtUpCounted(itemID string, cursor int64, contentSHA256 string) (WatermarkStampResult, error) {
+	var none WatermarkStampResult
 	if cursor < 1 {
-		return false, fmt.Errorf("%w: op_log_cursor must be a positive op-log id", ErrWatermarkStampBadInput)
+		return none, fmt.Errorf("%w: op_log_cursor must be a positive op-log id", ErrWatermarkStampBadInput)
 	}
 	if b, err := hex.DecodeString(contentSHA256); err != nil || len(b) != sha256.Size {
-		return false, fmt.Errorf("%w: content_sha256 must be 64 hex characters", ErrWatermarkStampBadInput)
+		return none, fmt.Errorf("%w: content_sha256 must be 64 hex characters", ErrWatermarkStampBadInput)
 	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return false, err
+		return none, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	var content string
-	if err := tx.QueryRow(s.q(`SELECT content FROM items WHERE id = ? AND deleted_at IS NULL`), itemID).Scan(&content); err != nil {
-		return false, fmt.Errorf("watermark stamp: read item: %w", err)
+	var prev int64
+	if err := tx.QueryRow(s.q(`SELECT content, COALESCE(content_flushed_op_log_id, 0) FROM items WHERE id = ? AND deleted_at IS NULL`), itemID).Scan(&content, &prev); err != nil {
+		return none, fmt.Errorf("watermark stamp: read item: %w", err)
 	}
 	sum := sha256.Sum256([]byte(content))
 	if hex.EncodeToString(sum[:]) != contentSHA256 {
-		return false, nil
+		return none, nil
 	}
 
 	res, err := tx.Exec(s.q(`
@@ -81,14 +116,26 @@ func (s *Store) StampContentWatermarkIfCaughtUp(itemID string, cursor int64, con
 		  AND ? = (SELECT COALESCE(MAX(id), 0) FROM item_yjs_updates WHERE item_id = ?)`),
 		cursor, itemID, content, cursor, cursor, itemID)
 	if err != nil {
-		return false, fmt.Errorf("watermark stamp: update: %w", err)
+		return none, fmt.Errorf("watermark stamp: update: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, err
+		return none, err
+	}
+	if n != 1 {
+		return none, tx.Commit()
+	}
+	// The UPDATE matched, so the watermark is now cursor; it was prev, read
+	// above with the content compared (see the lock note on this function).
+	out := WatermarkStampResult{Advanced: true, PrevWatermark: prev}
+	if err := tx.QueryRow(s.q(`
+		SELECT COUNT(*) FROM item_yjs_updates
+		WHERE item_id = ? AND id > ? AND id <= ? AND content_bearing = TRUE`),
+		itemID, prev, cursor).Scan(&out.CoveredContentRows); err != nil {
+		return none, fmt.Errorf("watermark stamp: count covered rows: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return none, err
 	}
-	return n == 1, nil
+	return out, nil
 }
