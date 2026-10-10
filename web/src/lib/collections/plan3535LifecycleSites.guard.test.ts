@@ -58,7 +58,6 @@ const SITES: Record<string, [number, string]> = {
 	'src/routes/[username]/[workspace]/+page.svelte::statusState': [1, 'exclude: collProgress draws no bar for a reference collection; the count keeps every item'],
 
 	// Keep.
-	'src/lib/components/items/ItemDetail.svelte::getTerminalOptions': [1, "keep: feeds ChildItems' terminalStatuses, which nothing reads since PLAN-3535 (removal is a follow-up: ItemDetail's identity gate re-flags every reviewed unit on an import change)"],
 	'src/lib/components/collections/BoardView.svelte::doneFieldTerminalOptions': [1, "keep: the board's terminal-lane display cap, a collection's own view"],
 	'src/lib/items/localLists.ts::childState': [1, "keep: tags and starred pages filter an item's own open state; a reference doc can be open"]
 };
@@ -68,8 +67,7 @@ const SITES: Record<string, [number, string]> = {
 // components carried their own). Only the canonical default may hold one.
 const DONE_LIST = /\[\s*(['"])done\1\s*,\s*(['"])(completed|cancelled|resolved|fixed)\2/g;
 const DONE_LISTS: Record<string, number> = {
-	'src/lib/types/index.ts': 1, // DEFAULT_TERMINAL_STATUSES, the canonical default
-	'src/lib/components/items/ItemDetail.svelte': 1 // the dead terminalStatuses fallback above
+	'src/lib/types/index.ts': 1 // DEFAULT_TERMINAL_STATUSES, the canonical default
 };
 
 const webRoot = resolve(__dirname, '../../..');

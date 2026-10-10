@@ -73,7 +73,7 @@
 	import { titleEditError, titleLengthState } from '$lib/items/titleLimit';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity, ItemCopyResult } from '$lib/types';
-	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions, type ItemIndexRow } from '$lib/types';
+	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, type ItemIndexRow } from '$lib/types';
 	import ItemPicker from './ItemPicker.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -5080,7 +5080,6 @@
 	}
 
 	let computedOverrides = $state<Record<string, any>>({});
-	let childTerminalStatuses = $state<string[] | undefined>(undefined);
 
 	// IDEA-2133: child completion count surfaced as a "🌳 done/total" jump
 	// badge in the action bar (mirrors the "📎 N" backlinks badge). Derived
@@ -5172,19 +5171,9 @@
 		childrenSigGen = loadGeneration;
 		if (owed) progressFailedGen = -1;
 		if (changed || owed) void refreshProgress();
-
-		// Terminal statuses still feed the per-row rendering (ChildChart,
-		// NestedChildren), which classifies one child at a time.
-		const allCollections = collectionStore.collections ?? [];
-		// Gather terminal statuses from all collections the children belong to
-		const termSet = new Set<string>();
-		for (const child of items) {
-			const col = allCollections.find(c => c.slug === child.collection_slug);
-			if (col) {
-				for (const ts of getTerminalOptions(col)) termSet.add(ts);
-			}
-		}
-		childTerminalStatuses = termSet.size > 0 ? [...termSet] : ['done', 'cancelled'];
+		// Per-row done styling (ChildItems, NestedChildren, ChildChart) asks
+		// childProgress's hub about each child's own collection; a union of
+		// terminal statuses gathered here used to feed it (TASK-3537).
 	}
 
 	function fieldValue(key: string): any {
@@ -7552,7 +7541,7 @@
 				     a source of drill-click swallowing. -->
 				{#key identityKey}
 				{@const handedDown = identityKey}
-				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} progress={computedOverrides._progressTotal !== undefined ? { done: computedOverrides._progressDone, total: computedOverrides._progressTotal, percentage: computedOverrides.progress } : undefined} />
+				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} onChildrenChange={(children) => { if (keyedSlug !== itemSlug || handedDown !== identityKey) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} progress={computedOverrides._progressTotal !== undefined ? { done: computedOverrides._progressDone, total: computedOverrides._progressTotal, percentage: computedOverrides.progress } : undefined} />
 				{/key}
 			</div>
 		{/if}
