@@ -79,7 +79,7 @@ func TestTASK3531_CompactReplacesTheLogWithOneSnapshot(t *testing.T) {
 			itemID, maxID := seedDormantLog(t, s, b.name, 3)
 			cutoff := time.Now().Add(-time.Hour)
 
-			snapID, err := s.CompactItemOpLog(itemID, cutoff, maxID, compactFrame, "1")
+			snapID, err := s.CompactItemOpLog(itemID, cutoff, opLogIDs(t, s, itemID), compactFrame, "1")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,27 +108,27 @@ func TestTASK3531_CompactReplacesTheLogWithOneSnapshot(t *testing.T) {
 func TestTASK3531_CompactRefusesAChangedOrUnflushedLog(t *testing.T) {
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
-			cases := map[string]func(s *store.Store, itemID string, maxID int64) (cutoff time.Time, expect int64){
-				"a row arrived since the read": func(s *store.Store, itemID string, maxID int64) (time.Time, int64) {
-					return time.Now().Add(-time.Hour), maxID - 1
+			cases := map[string]func(s *store.Store, itemID string, ids []int64) (cutoff time.Time, read []int64){
+				"a row arrived since the read": func(s *store.Store, itemID string, ids []int64) (time.Time, []int64) {
+					return time.Now().Add(-time.Hour), ids[:len(ids)-1]
 				},
-				"not flushed": func(s *store.Store, itemID string, maxID int64) (time.Time, int64) {
-					if err := s.SetItemContentFlushedOpLogIDForTesting(itemID, maxID-1); err != nil {
+				"not flushed": func(s *store.Store, itemID string, ids []int64) (time.Time, []int64) {
+					if err := s.SetItemContentFlushedOpLogIDForTesting(itemID, ids[len(ids)-1]-1); err != nil {
 						t.Fatal(err)
 					}
-					return time.Now().Add(-time.Hour), maxID
+					return time.Now().Add(-time.Hour), ids
 				},
-				"no longer dormant": func(s *store.Store, itemID string, maxID int64) (time.Time, int64) {
-					return time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), maxID
+				"no longer dormant": func(s *store.Store, itemID string, ids []int64) (time.Time, []int64) {
+					return time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), ids
 				},
 			}
 			for name, setup := range cases {
 				t.Run(name, func(t *testing.T) {
 					s := b.open(t)
-					itemID, maxID := seedDormantLog(t, s, b.name, 3)
-					cutoff, expect := setup(s, itemID, maxID)
+					itemID, _ := seedDormantLog(t, s, b.name, 3)
 					before := opLogIDs(t, s, itemID)
-					if _, err := s.CompactItemOpLog(itemID, cutoff, expect, compactFrame, "1"); !errors.Is(err, store.ErrCompactionRefused) {
+					cutoff, read := setup(s, itemID, before)
+					if _, err := s.CompactItemOpLog(itemID, cutoff, read, compactFrame, "1"); !errors.Is(err, store.ErrCompactionRefused) {
 						t.Fatalf("got %v, want ErrCompactionRefused", err)
 					}
 					after := opLogIDs(t, s, itemID)
@@ -176,8 +176,8 @@ func TestTASK3531_DeletingTheLogEndsTheCoverage(t *testing.T) {
 			for name, del := range deleters {
 				t.Run(name, func(t *testing.T) {
 					s := b.open(t)
-					itemID, maxID := seedDormantLog(t, s, b.name, 2)
-					if _, err := s.CompactItemOpLog(itemID, time.Now().Add(-time.Hour), maxID, compactFrame, "1"); err != nil {
+					itemID, _ := seedDormantLog(t, s, b.name, 2)
+					if _, err := s.CompactItemOpLog(itemID, time.Now().Add(-time.Hour), opLogIDs(t, s, itemID), compactFrame, "1"); err != nil {
 						t.Fatal(err)
 					}
 					del(s, itemID)
@@ -193,8 +193,8 @@ func TestTASK3531_DeletingTheLogEndsTheCoverage(t *testing.T) {
 			// The backstop: a path that deleted the log WITHOUT clearing the
 			// columns still admits nobody, because the snapshot row is gone.
 			s := b.open(t)
-			itemID, maxID := seedDormantLog(t, s, b.name, 2)
-			if _, err := s.CompactItemOpLog(itemID, time.Now().Add(-time.Hour), maxID, compactFrame, "1"); err != nil {
+			itemID, _ := seedDormantLog(t, s, b.name, 2)
+			if _, err := s.CompactItemOpLog(itemID, time.Now().Add(-time.Hour), opLogIDs(t, s, itemID), compactFrame, "1"); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := s.DB().Exec(rebind2(b.name, `DELETE FROM item_yjs_updates WHERE item_id = ?`), itemID); err != nil {
