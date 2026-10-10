@@ -219,6 +219,11 @@ func (s *Server) runOpenChildrenGuard(tx *sql.Tx, ctx openChildrenGuardContext) 
 			}
 			ctxCache[child.CollectionID] = dc
 		}
+		// A child of a REFERENCE collection (PLAN-3535) never blocks: a doc
+		// under a plan is not part of its work, whatever its status.
+		if !models.CollectionTracksWork(dc.settings) {
+			continue
+		}
 		// INVARIANT check uses ALL children. A restricted caller still
 		// gets blocked by a non-terminal child they can't see — the
 		// guard's purpose is data integrity, not visibility filtering.

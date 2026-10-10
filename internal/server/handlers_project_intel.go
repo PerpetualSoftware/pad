@@ -177,6 +177,11 @@ func (s *Server) listTerminalItemsSince(
 	for _, c := range colls {
 		field, values := models.CollectionCompletedWorkValues(c.Schema, c.Settings)
 		doneField[c.ID] = field
+		// A published doc is not shipped work (PLAN-3535): a reference
+		// collection contributes nothing to completed work.
+		if !models.CollectionTracksWorkJSON(c.Settings) {
+			continue
+		}
 		for _, value := range values {
 			k := queryKey{field: field, value: value}
 			if _, exists := groups[k]; !exists {
@@ -354,6 +359,19 @@ func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request)
 	})
 	if err != nil {
 		inProgress = nil
+	}
+	// In progress means open WORK: a reference item (PLAN-3535) stays out.
+	if len(inProgress) > 0 {
+		if colls, cerr := s.store.ListCollectionsMinimal(workspaceID); cerr == nil {
+			ctxMap := buildDoneContextMap(colls)
+			kept := inProgress[:0:0]
+			for _, it := range inProgress {
+				if !isReferenceCollection(it.CollectionID, ctxMap) {
+					kept = append(kept, it)
+				}
+			}
+			inProgress = kept
+		}
 	}
 
 	resp := StandupResponse{

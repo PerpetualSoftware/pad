@@ -287,6 +287,15 @@ func buildDoneContextMap(collections []models.Collection) map[string]doneContext
 	return m
 }
 
+// isReferenceCollection reports whether the collection holds reference
+// material rather than work (PLAN-3535), so its items stay out of progress,
+// open-work counts and attention. A collection missing from the map counts as
+// work, today's behaviour.
+func isReferenceCollection(collectionID string, ctxMap map[string]doneContext) bool {
+	ctx, ok := ctxMap[collectionID]
+	return ok && !models.CollectionTracksWork(ctx.settings)
+}
+
 // isItemDone reports whether an item is in a terminal state for its
 // collection's configured done field. Falls back to the default-terminal
 // list against `status` when the collection isn't in the map (e.g.
@@ -309,10 +318,14 @@ func isItemDone(fieldsJSON, collectionID string, ctxMap map[string]doneContext) 
 // childProgressState says how one child counts toward its parent's progress:
 // whether it is in the total, and whether it is done. An ABANDONED child
 // (a terminal value that closes without delivering) is in neither (BUG-3195,
-// lead ruling), so progress never reads 100% with nothing delivered. Every
+// lead ruling), so progress never reads 100% with nothing delivered. Nor is
+// a child of a REFERENCE collection (PLAN-3535), whatever its status. Every
 // Go-side progress loop calls this; the SQL side is
-// store.buildChildrenAbandonedExpr, from the same resolver.
+// store.buildChildrenUncountedExpr, from the same resolver.
 func childProgressState(fieldsJSON, collectionID string, ctxMap map[string]doneContext) (counted, done bool) {
+	if isReferenceCollection(collectionID, ctxMap) {
+		return false, false
+	}
 	if fieldsJSON == "" || fieldsJSON == "{}" {
 		return true, false
 	}
@@ -525,8 +538,20 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 
-	// Active items: items currently being worked on (not initial state, not terminal state)
+	// workItems is allItems without the items of REFERENCE collections
+	// (PLAN-3535): a doc or a convention is not open work. The summary above
+	// counts every item (its totals stay); every open-work section below
+	// (active items, overdue, blocked, content attention, the suggestion scan,
+	// the role recount) reads workItems.
+	workItems := make([]models.Item, 0, len(allItems))
 	for _, item := range allItems {
+		if !isReferenceCollection(item.CollectionID, ctxMap) {
+			workItems = append(workItems, item)
+		}
+	}
+
+	// Active items: items currently being worked on (not initial state, not terminal state)
+	for _, item := range workItems {
 		status := extractFieldValue(item.Fields, "status")
 		if !isActiveStatus(status) {
 			continue
@@ -663,6 +688,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			continue
 		}
 		for _, item := range items {
+			if isReferenceCollection(item.CollectionID, ctxMap) {
+				continue
+			}
 			if item.UpdatedAt.Before(staleCutoff) {
 				daysSince := int(time.Since(item.UpdatedAt).Hours() / 24)
 				resp.Attention = append(resp.Attention, DashboardAttention{
@@ -685,7 +713,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// Before IDEA-2641 the rule WAS this loop, so the recommendation surface
 	// had no deadline awareness at all.
 	todayStr := overdueToday(now)
-	for _, item := range allItems {
+	for _, item := range workItems {
 		if isItemDone(item.Fields, item.CollectionID, ctxMap) {
 			continue
 		}
@@ -782,7 +810,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			markDegraded("attention.orphaned_tasks", tErr)
 		} else {
 			for _, task := range allTasks {
-				if isItemDone(task.Fields, task.CollectionID, ctxMap) {
+				if isReferenceCollection(task.CollectionID, ctxMap) || isItemDone(task.Fields, task.CollectionID, ctxMap) {
 					continue
 				}
 				if _, hasParent := parentMap[task.ID]; !hasParent {
@@ -836,7 +864,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			status: extractFieldValue(e.SourceFields, "status"),
 		}
 	}
-	for _, item := range allItems {
+	for _, item := range workItems {
 		if isItemDone(item.Fields, item.CollectionID, ctxMap) {
 			continue
 		}
@@ -870,7 +898,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			markDegraded("attention.decisions", errors.New("decision provider is failing; attention answers may be out of date"))
 		}
 		if len(nouls) > 0 {
-			for _, item := range allItems {
+			for _, item := range workItems {
 				answers, ok := nouls[item.ID]
 				// No done check here: WorkspaceFlags returns an answer only
 				// for an item the set still applies to, which excludes a
@@ -1072,6 +1100,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			if !s.isItemVisibleToGuest(r, workspaceID, &task, dashFullCollIDs, dashGrantedItemIDs) {
 				continue
 			}
+			if isReferenceCollection(task.CollectionID, ctxMap) {
+				continue
+			}
 			taskStatus := extractFieldValue(task.Fields, "status")
 			isInProgress := isActiveStatus(taskStatus)
 			isOpen := taskStatus == "open"
@@ -1122,7 +1153,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	for _, c := range candidates {
 		seen[c.item.ID] = struct{}{}
 	}
-	for _, item := range allItems {
+	for _, item := range workItems {
 		if _, dup := seen[item.ID]; dup {
 			continue
 		}
@@ -1411,7 +1442,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			// Recount from visible items
 			roleCounts := make(map[string]int)
 			roleUsers := make(map[string]map[string]bool)
-			for _, item := range allItems {
+			for _, item := range workItems {
 				roleID := ""
 				if item.AgentRoleID != nil {
 					roleID = *item.AgentRoleID

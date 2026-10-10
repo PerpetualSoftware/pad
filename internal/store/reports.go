@@ -692,7 +692,12 @@ func (s *Store) resolveReportCollections(workspaceID string, opts ReportOptions)
 		// system collection follows the rule without anyone remembering it. A
 		// caller that NAMES one (?collections=conventions) still gets it: an
 		// explicit request is a decision, not a default.
-		if len(want) == 0 && c.IsSystem {
+		//
+		// PLAN-3535 generalises the rule from IsSystem to the collection's
+		// tracks_work setting: a REFERENCE collection (docs, and the system
+		// collections, which the migration and import mark reference) is
+		// left out of a default report the same way.
+		if len(want) == 0 && !models.CollectionTracksWorkJSON(c.Settings) {
 			continue
 		}
 		if visible != nil && !visible[c.ID] {

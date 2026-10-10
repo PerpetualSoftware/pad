@@ -295,6 +295,11 @@ func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, lim
 	for _, c := range colls {
 		field, values := models.CollectionCompletedWorkValues(c.Schema, c.Settings)
 		doneField[c.ID] = field
+		// A published doc is not shipped work (PLAN-3535): a reference
+		// collection contributes nothing. KEEP IN SYNC with the server.
+		if !models.CollectionTracksWorkJSON(c.Settings) {
+			continue
+		}
 		for _, status := range values {
 			params := url.Values{
 				field:   {status},
@@ -314,6 +319,36 @@ func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, lim
 		}
 	}
 	return out, doneField
+}
+
+// withoutReferenceItems drops the items of REFERENCE collections (PLAN-3535)
+// from an open-work list. If the collections cannot be read the list is
+// returned unchanged, today's behaviour. KEEP IN SYNC with the server's
+// standup.
+func withoutReferenceItems(client *cli.Client, ws string, items []models.Item) []models.Item {
+	if len(items) == 0 {
+		return items
+	}
+	colls, err := client.ListCollections(ws)
+	if err != nil {
+		return items
+	}
+	ref := map[string]bool{}
+	for _, c := range colls {
+		if !models.CollectionTracksWorkJSON(c.Settings) {
+			ref[c.ID] = true
+		}
+	}
+	if len(ref) == 0 {
+		return items
+	}
+	kept := items[:0:0]
+	for _, it := range items {
+		if !ref[it.CollectionID] {
+			kept = append(kept, it)
+		}
+	}
+	return kept
 }
 
 // completedWorkValue is the value that closed a completed-work item: its own
@@ -388,6 +423,7 @@ func standupCmd() *cobra.Command {
 			if err != nil {
 				inProgressItems = nil
 			}
+			inProgressItems = withoutReferenceItems(client, ws, inProgressItems)
 
 			// Build JSON output if requested
 			if formatFlag == "json" {

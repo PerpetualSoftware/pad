@@ -1450,7 +1450,8 @@ type AdminUserWorkspaceDetail struct {
 	// ItemsOpen counts non-deleted items whose status is NOT in the
 	// terminal set. The terminal set is currently hardcoded (see
 	// adminOpenItemsCountClause); a schema-aware terminal_options check
-	// is a separate follow-up.
+	// is a separate follow-up. Items of a reference collection (PLAN-3535)
+	// are not open work and are left out.
 	ItemsOpen int `json:"items_open"`
 	// ItemsTotal counts all non-deleted items in the workspace.
 	ItemsTotal int `json:"items_total"`
@@ -1496,6 +1497,14 @@ func (s *Store) adminOpenItemsCountClause() (clause string, args []interface{}) 
 // PLAN-1542 / TASK-1545.
 func (s *Store) GetUserWorkspacesDetailed(userID string) ([]AdminUserWorkspaceDetail, error) {
 	openClause, openArgs := s.adminOpenItemsCountClause()
+	refIDs, err := s.referenceCollectionIDsForMember(userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(refIDs) > 0 {
+		openClause += " AND i.collection_id NOT IN (" + strings.TrimSuffix(strings.Repeat("?,", len(refIDs)), ",") + ")"
+		openArgs = append(openArgs, refIDs...)
+	}
 
 	// Aggregations live in correlated subqueries rather than a wide JOIN +
 	// GROUP BY because the workspaces a single user belongs to are at most
@@ -1562,6 +1571,34 @@ func (s *Store) GetUserWorkspacesDetailed(userID string) ([]AdminUserWorkspaceDe
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// referenceCollectionIDsForMember lists the REFERENCE collections (PLAN-3535)
+// of every workspace the user is a member of. Settings are JSON, so the
+// predicate is read in Go, through models.CollectionTracksWorkJSON, rather
+// than restated in each dialect's SQL.
+func (s *Store) referenceCollectionIDsForMember(userID string) ([]interface{}, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT c.id, c.settings
+		FROM collections c
+		JOIN workspace_members wm ON wm.workspace_id = c.workspace_id
+		WHERE wm.user_id = ?`), userID)
+	if err != nil {
+		return nil, fmt.Errorf("reference collections for member: %w", err)
+	}
+	defer rows.Close()
+	var ids []interface{}
+	for rows.Next() {
+		var id string
+		var settings sql.NullString
+		if err := rows.Scan(&id, &settings); err != nil {
+			return nil, fmt.Errorf("scan reference collection: %w", err)
+		}
+		if !models.CollectionTracksWorkJSON(settings.String) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
 }
 
 // GetUserWorkspaceMemberships returns workspace memberships for admin user detail.

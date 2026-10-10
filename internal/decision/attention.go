@@ -62,12 +62,13 @@ func AttentionSet() QuestionSet {
 	}
 }
 
-// attentionEligible admits open items in user collections. System
+// attentionEligible admits open items in collections that track work. System
 // collections (conventions, playbooks) hold rules and procedures, not work,
-// so "is this waiting on a human" has no meaning there; a terminal item has
-// no next step to wait on.
+// and a REFERENCE collection (PLAN-3535, e.g. docs) holds material that just
+// exists, so "is this waiting on a human" has no meaning there; a terminal
+// item has no next step to wait on.
 func attentionEligible(item *models.Item, coll *models.Collection) bool {
-	if coll.IsSystem {
+	if coll.IsSystem || !models.CollectionTracksWorkJSON(coll.Settings) {
 		return false
 	}
 	var schema models.CollectionSchema

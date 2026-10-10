@@ -4669,11 +4669,12 @@ func (s *Store) GetItemLineageByIDs(ids []string) (map[string]LineageRef, error)
 // cancelled) is left out of BOTH counts (BUG-3195, lead ruling): it is not
 // part of the work any more. Counting it as done read 100% with nothing
 // delivered. So total can be 0 while children exist, and callers render 0/0
-// as no progress.
+// as no progress. A child in a REFERENCE collection (PLAN-3535) is left out
+// the same way: a doc under a plan is not part of its work.
 func (s *Store) GetItemProgress(parentItemID string) (total int, done int, err error) {
 	filters := s.childrenDoneFiltersForParent(parentItemID)
 	doneExpr, doneArgs := s.buildChildrenDoneExpr(filters, "i")
-	abandonedExpr, abandonedArgs := s.buildChildrenAbandonedExpr(filters, "i")
+	abandonedExpr, abandonedArgs := s.buildChildrenUncountedExpr(filters, "i")
 	args := append(append(append(append([]any{}, abandonedArgs...), doneArgs...), abandonedArgs...), parentItemID)
 	err = s.db.QueryRow(s.q(fmt.Sprintf(`
 		SELECT COUNT(CASE WHEN NOT %s THEN 1 END),
@@ -4698,6 +4699,10 @@ type collectionDoneFilter struct {
 	// abandoned is the subset of values that closes without delivering
 	// (models.AbandonedValuesForDoneField). Only progress reads it.
 	abandoned []string
+	// reference is true when the collection holds reference material, not
+	// work (PLAN-3535, models.CollectionTracksWorkJSON). Only progress reads
+	// it: its items leave both counts, as an abandoned item does.
+	reference bool
 }
 
 // childrenDoneFiltersForParent returns a filter per distinct child-item
@@ -4814,6 +4819,7 @@ func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 				doneKey:      "status",
 				values:       models.DefaultTerminalStatuses,
 				abandoned:    models.DefaultAbandonedStatuses(),
+				reference:    !models.CollectionTracksWorkJSON(settingsJSON),
 			})
 			continue
 		}
@@ -4828,6 +4834,7 @@ func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 			doneKey:      key,
 			values:       values,
 			abandoned:    abandoned,
+			reference:    !models.CollectionTracksWork(settings),
 		})
 	}
 	return filters
@@ -4877,12 +4884,13 @@ func (s *Store) buildChildrenDoneExpr(filters []collectionDoneFilter, itemAlias 
 	return "(" + strings.Join(clauses, " OR ") + ")", args
 }
 
-// buildChildrenAbandonedExpr is buildChildrenDoneExpr over each filter's
-// abandoned values: TRUE when an item's done-field value closes it without
-// delivering (BUG-3195). A collection with no abandoned values contributes no
-// clause, and with none at all the expression is constant FALSE, so it never
-// yields NULL and NOT of it is safe inside COUNT(CASE ...).
-func (s *Store) buildChildrenAbandonedExpr(filters []collectionDoneFilter, itemAlias string) (string, []any) {
+// buildChildrenUncountedExpr is TRUE for a child that progress leaves out of
+// BOTH counts: one whose done-field value closes it without delivering
+// (abandoned, BUG-3195), or any item of a reference collection (PLAN-3535),
+// whatever its status. A collection with neither contributes no clause, and
+// with none at all the expression is constant FALSE, so it never yields NULL
+// and NOT of it is safe inside COUNT(CASE ...).
+func (s *Store) buildChildrenUncountedExpr(filters []collectionDoneFilter, itemAlias string) (string, []any) {
 	if len(filters) == 0 {
 		statusExpr := s.dialect.JSONFieldText(itemAlias+".fields", "status")
 		values := models.DefaultAbandonedStatuses()
@@ -4900,6 +4908,11 @@ func (s *Store) buildChildrenAbandonedExpr(filters []collectionDoneFilter, itemA
 	var clauses []string
 	var args []any
 	for _, f := range filters {
+		if f.reference {
+			clauses = append(clauses, fmt.Sprintf("(%s.collection_id = ?)", itemAlias))
+			args = append(args, f.collectionID)
+			continue
+		}
 		if len(f.abandoned) == 0 {
 			continue
 		}
@@ -4919,6 +4932,22 @@ func (s *Store) buildChildrenAbandonedExpr(filters []collectionDoneFilter, itemA
 		return "(1=0)", nil
 	}
 	return "(" + strings.Join(clauses, " OR ") + ")", args
+}
+
+// buildReferenceExpr is TRUE for an item of a REFERENCE collection
+// (PLAN-3535): constant FALSE when no filter is one, so NOT of it is safe.
+// Open-work counts (role breakdown, admin items_open) AND NOT it in.
+func buildReferenceExpr(filters []collectionDoneFilter, itemAlias string) (string, []any) {
+	var ids []any
+	for _, f := range filters {
+		if f.reference {
+			ids = append(ids, f.collectionID)
+		}
+	}
+	if len(ids) == 0 {
+		return "(1=0)", nil
+	}
+	return fmt.Sprintf("(%s.collection_id IN (%s))", itemAlias, strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")), ids
 }
 
 // nonTerminalFilter builds a WHERE fragment (plus ordered args) that keeps
@@ -4959,12 +4988,12 @@ type ItemProgress struct {
 // parents also appear — matching the archived-toggle semantics on the
 // collection page (mirrors CollectionCheckboxProgress's includeArchived param).
 //
-// Abandoned children are left out of both counts, as in GetItemProgress
-// (BUG-3195).
+// Abandoned and reference children are left out of both counts, as in
+// GetItemProgress (BUG-3195, PLAN-3535).
 func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string, includeArchived bool) ([]ItemProgress, error) {
 	filters := s.childrenDoneFiltersForCollection(workspaceID, collectionSlug, includeArchived)
 	doneExpr, doneArgs := s.buildChildrenDoneExpr(filters, "t")
-	abandonedExpr, abandonedArgs := s.buildChildrenAbandonedExpr(filters, "t")
+	abandonedExpr, abandonedArgs := s.buildChildrenUncountedExpr(filters, "t")
 	args := append(append(append(append([]any{}, abandonedArgs...), doneArgs...), abandonedArgs...), workspaceID, collectionSlug)
 	parentDeletedFilter := "AND p.deleted_at IS NULL"
 	if includeArchived {
