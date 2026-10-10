@@ -853,17 +853,19 @@
 		linkIdx = 0;
 		setTimeout(() => {
 			if (!editor) return;
-			const rect = caretRect(editor.state.selection.from);
+			// Keys typed before this deferred open are part of the query
+			// (BUG-3547, the slash menu's twin), and the open is checked the
+			// way the update handler checks it: the caret is still after the
+			// `[[`, which is still there (codex).
+			const from = editor.state.selection.from;
+			if (from <= linkStartPos) { closeLink(); return; }
+			const text = editor.state.doc.textBetween(linkStartPos, from, '');
+			if (!text.startsWith('[[')) { closeLink(); return; }
+			const rect = caretRect(from);
 			if (!rect) return;
+			linkQuery = text.slice(2);
 			linkCaret = rect;
 			linkOpen = true;
-			// Keys typed before this deferred open are part of the query
-			// (BUG-3547, the slash menu's twin).
-			const from = editor.state.selection.from;
-			if (from > linkStartPos) {
-				const text = editor.state.doc.textBetween(linkStartPos, from, '');
-				if (text.startsWith('[[')) linkQuery = text.slice(2);
-			}
 		}, 0);
 	}
 
