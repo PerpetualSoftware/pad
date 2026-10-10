@@ -20,9 +20,16 @@ var safeDoneFieldKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
 // done field has no `terminal_options` declared on its schema. This is the
 // union of all historically hardcoded terminal status values across the
 // codebase.
+//
+// "Won't fix" is listed in each spelling a collection uses (BUG-3546): these
+// values reach SQL `IN (…)` filters, which match exactly, so a normalizing
+// comparison in Go alone would leave the SQL paths disagreeing with it. The
+// web mirrors this list (DEFAULT_TERMINAL_STATUSES in
+// web/src/lib/types/index.ts); TestTerminalListsMatchWeb keeps them equal.
 var DefaultTerminalStatuses = []string{
 	"done", "completed", "resolved", "cancelled", "rejected",
-	"wontfix", "fixed", "implemented", "archived", "disabled", "deprecated",
+	"wontfix", "wont-fix", "won't fix", "won't-fix",
+	"fixed", "implemented", "archived", "disabled", "deprecated",
 }
 
 // DoneFieldKey resolves which field on a collection's schema represents
@@ -107,7 +114,9 @@ var NegativeTerminals = map[string]bool{
 	"cancelled": true,
 	"canceled":  true,
 	"wontfix":   true,
+	"wont-fix":  true, // BUG-3546
 	"won't fix": true,
+	"won't-fix": true, // BUG-3546
 	"duplicate": true,
 	"declined":  true,
 	"abandoned": true,

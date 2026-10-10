@@ -21,6 +21,10 @@ export const COLLECTION_TEMPLATES: CollectionTemplate[] = [
 				label: 'Status',
 				type: 'select',
 				options: ['open', 'confirmed', 'in-progress', 'fixed', 'wont-fix'],
+				// Declared, so closing does not rest on the global fallback lists
+				// (BUG-3546: they once missed this spelling).
+				terminal_options: ['fixed', 'wont-fix'],
+				abandoned_options: ['wont-fix'],
 				default: 'open',
 				required: true
 			},

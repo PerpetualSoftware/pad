@@ -35,7 +35,7 @@ func StatusColor(status string) *color.Color {
 		return color.New(color.FgYellow)
 	case "open", "new", "draft", "todo", "planned", "proposed", "raw", "ready":
 		return color.New(color.FgBlue)
-	case "cancelled", "rejected", "wontfix":
+	case "cancelled", "rejected", "wontfix", "wont-fix", "won't fix", "won't-fix":
 		return color.New(color.FgRed)
 	case "active", "published":
 		return color.New(color.FgCyan)
@@ -84,7 +84,7 @@ func statusIconChar(status string) string {
 	case "in-progress", "exploring", "fixing", "building", "researching",
 		"planning", "triaged", "in-sprint", "paused":
 		return "◐"
-	case "cancelled", "rejected", "wontfix":
+	case "cancelled", "rejected", "wontfix", "wont-fix", "won't fix", "won't-fix":
 		return "✗"
 	default:
 		return "·"
