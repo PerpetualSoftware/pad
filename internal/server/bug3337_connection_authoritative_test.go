@@ -25,7 +25,9 @@ import (
 // chain's request id.
 func legacyGrant(t *testing.T, srv *Server, sess oauthSession, extra []string) (string, string) {
 	t.Helper()
-	tok, code := mintWithResource(t, srv, sess, "")
+	// The canonical resource: a grant without one is refused since TASK-3363
+	// phase 2. A legacy chain was minted with the default, which is this.
+	tok, code := mintWithResource(t, srv, sess, testCanonicalAudience)
 	if code != http.StatusOK {
 		t.Fatalf("mint: %d", code)
 	}

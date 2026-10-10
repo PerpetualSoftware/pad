@@ -15,10 +15,10 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 )
 
-// TASK-3363 phase 1: a request that omits the RFC 8707 resource parameter is
-// still defaulted to the canonical audience (phase 2 refuses it), and each
-// one is now counted per endpoint, so the refusal can be measured first.
-func TestTASK3363_MissingResourceIsCountedPerEndpoint(t *testing.T) {
+// TASK-3363 phase 2: a consent decision that omits the RFC 8707 resource
+// parameter is REFUSED with invalid_target, and counted. With resource it is
+// served and nothing is counted.
+func TestTASK3363_MissingResourceIsRefusedAndCounted(t *testing.T) {
 	srv := twoResourceOAuthServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)
@@ -31,7 +31,6 @@ func TestTASK3363_MissingResourceIsCountedPerEndpoint(t *testing.T) {
 	}
 	sess := newOAuthSession(t, srv)
 
-	// With resource on both legs: nothing is counted.
 	if _, code := mintWithResource(t, srv, sess, testCanonicalAudience); code != 200 {
 		t.Fatalf("mint with resource: %d", code)
 	}
@@ -39,18 +38,17 @@ func TestTASK3363_MissingResourceIsCountedPerEndpoint(t *testing.T) {
 		t.Fatalf("a request WITH resource was counted: decide=%v token=%v", count("decide"), count("token"))
 	}
 
-	// Without: still served (phase 1 changes no behaviour), and counted at
-	// both the consent decision and the token exchange.
-	if _, code := mintWithResource(t, srv, sess, ""); code != 200 {
-		t.Fatalf("mint without resource: %d (phase 1 must not refuse)", code)
+	// Without: refused at the decision, so no code and no token exchange.
+	if _, code := mintWithResource(t, srv, sess, ""); code == 200 {
+		t.Fatal("mint without resource was served; phase 2 refuses it")
 	}
-	if count("decide") != 1 || count("token") != 1 {
-		t.Fatalf("a request WITHOUT resource: decide=%v token=%v, want 1 and 1", count("decide"), count("token"))
+	if count("decide") != 1 || count("token") != 0 {
+		t.Fatalf("a decision WITHOUT resource: decide=%v token=%v, want 1 and 0", count("decide"), count("token"))
 	}
 }
 
-// The authorize step (the consent page) counts too.
-func TestTASK3363_AuthorizeWithoutResourceIsCounted(t *testing.T) {
+// The authorize step refuses too, at the client's redirect_uri, and counts.
+func TestTASK3363_AuthorizeWithoutResourceIsRefusedAndCounted(t *testing.T) {
 	srv := twoResourceOAuthServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)
@@ -60,8 +58,10 @@ func TestTASK3363_AuthorizeWithoutResourceIsCounted(t *testing.T) {
 		"scope": {"pad:read"}, "code_challenge": {s256Challenge("verifier-3363-abcdefghijklmnopqrstuvwxyz0123456789")},
 		"code_challenge_method": {"S256"}, "state": {"state-3363-01"},
 	}
-	if rr := doRequestWithCookie(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sess.sessionToken); rr.Code != 200 {
-		t.Fatalf("consent page without resource: %d (phase 1 must not refuse)", rr.Code)
+	rr := doRequestWithCookie(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sess.sessionToken)
+	loc, _ := url.Parse(rr.Header().Get("Location"))
+	if (rr.Code != http.StatusSeeOther && rr.Code != http.StatusFound) || loc == nil || loc.Query().Get("error") != "invalid_target" {
+		t.Fatalf("authorize without resource: %d %s, want a redirect with error=invalid_target", rr.Code, rr.Header().Get("Location"))
 	}
 	var pb io_prometheus_client.Metric
 	if err := m.OAuthResourceMissingTotal.WithLabelValues("authorize").Write(&pb); err != nil {
@@ -69,6 +69,56 @@ func TestTASK3363_AuthorizeWithoutResourceIsCounted(t *testing.T) {
 	}
 	if got := pb.GetCounter().GetValue(); got != 1 {
 		t.Fatalf("authorize without resource counted %v, want 1", got)
+	}
+}
+
+// The token endpoint is NOT refused (RFC 8707 makes resource optional there),
+// and that is safe only because the grant binds the audience: a code granted
+// for the ChatGPT resource, exchanged WITHOUT resource (so the request is
+// defaulted to /mcp's canonical), still yields a token bound to the ChatGPT
+// resource, refused at /mcp. The exchange is counted.
+func TestTASK3363_TokenExchangeWithoutResourceKeepsTheGrantedAudience(t *testing.T) {
+	srv := twoResourceOAuthServer(t)
+	m := metrics.New()
+	srv.SetMetrics(m)
+	sess := newOAuthSession(t, srv)
+
+	verifier := "verifier-3363-tok-abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"
+	form := url.Values{
+		"client_id": {sess.clientID}, "response_type": {"code"}, "redirect_uri": {"https://app.test/cb"},
+		"code_challenge": {s256Challenge(verifier)}, "code_challenge_method": {"S256"},
+		"scope": {"pad:read"}, "state": {"state-3363-tok-01"}, "decision": {"approve"},
+		"csrf_token": {sess.csrfTok}, "capability_tier": {"read"}, "allowed_workspaces": {"*"},
+		"resource": {testChatGPTResource},
+	}
+	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sess.sessionToken, sess.csrfTok)
+	cb, _ := url.Parse(rr.Header().Get("Location"))
+	code := cb.Query().Get("code")
+	if code == "" {
+		t.Fatalf("decide with resource: %d %s", rr.Code, rr.Header().Get("Location"))
+	}
+	trr := postOAuthForm(srv, "/oauth/token", url.Values{
+		"grant_type": {"authorization_code"}, "code": {code}, "client_id": {sess.clientID},
+		"redirect_uri": {"https://app.test/cb"}, "code_verifier": {verifier},
+	})
+	if trr.Code != http.StatusOK {
+		t.Fatalf("token exchange without resource: %d %s (RFC 8707: optional here)", trr.Code, trr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, trr, &resp)
+	tok, _ := resp["access_token"].(string)
+	if got := atMount(srv, testChatGPTResource, tok); got != http.StatusOK {
+		t.Fatalf("the token is not served at its granted (ChatGPT) mount: %d", got)
+	}
+	if got := atMount(srv, "", tok); got != http.StatusUnauthorized {
+		t.Fatalf("the default widened the grant: the ChatGPT-granted token is served at /mcp (%d)", got)
+	}
+	var pb io_prometheus_client.Metric
+	if err := m.OAuthResourceMissingTotal.WithLabelValues("token").Write(&pb); err != nil {
+		t.Fatal(err)
+	}
+	if got := pb.GetCounter().GetValue(); got != 1 {
+		t.Fatalf("the token exchange without resource counted %v, want 1", got)
 	}
 }
 

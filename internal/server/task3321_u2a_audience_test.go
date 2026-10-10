@@ -184,9 +184,10 @@ func TestU2a_TokensAreBoundToOneResourceAndRefusedAtTheOther(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("minting a ChatGPT token: %d", code)
 	}
-	noResTok, code := mintWithResource(t, srv, sess, "")
-	if code != http.StatusOK {
-		t.Fatalf("minting a no-resource token: %d", code)
+	// No resource on the request: refused since TASK-3363 phase 2, so no
+	// token exists to be bound to a default.
+	if _, code := mintWithResource(t, srv, sess, ""); code == http.StatusOK {
+		t.Fatalf("minting a no-resource token succeeded; TASK-3363 phase 2 refuses it")
 	}
 
 	cases := []struct {
@@ -199,11 +200,6 @@ func TestU2a_TokensAreBoundToOneResourceAndRefusedAtTheOther(t *testing.T) {
 		{"/mcp token at the ChatGPT mount: refused", mcpTok, testChatGPTResource, http.StatusUnauthorized},
 		{"ChatGPT token at the ChatGPT mount", gptTok, testChatGPTResource, http.StatusOK},
 		{"ChatGPT token at /mcp: refused", gptTok, "", http.StatusUnauthorized},
-		// No resource on the request: bound to /mcp's canonical (the
-		// documented default for clients that omit it), so it works at
-		// /mcp and is refused at the ChatGPT mount. ChatGPT always sends one.
-		{"no-resource token at /mcp", noResTok, "", http.StatusOK},
-		{"no-resource token at the ChatGPT mount: refused", noResTok, testChatGPTResource, http.StatusUnauthorized},
 	}
 	for _, c := range cases {
 		if got := atMount(srv, c.resource, c.token); got != c.want {
