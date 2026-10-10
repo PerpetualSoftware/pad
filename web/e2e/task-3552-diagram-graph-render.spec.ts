@@ -23,6 +23,25 @@ function apiHeaders(fixture: import('./fixtures').SuiteFixture) {
 	return { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' };
 }
 
+/**
+ * A workspace of this spec's own. Every leg writes only here, never into the
+ * suite's shared workspace: docs created there reflow the shared docs board
+ * under other specs' clicks (BUG-3553).
+ */
+async function ownWorkspace(
+	request: APIRequestContext,
+	fixture: import('./fixtures').SuiteFixture,
+	label: string,
+	template: 'startup' | 'blank',
+): Promise<string> {
+	const resp = await request.post('/api/v1/workspaces', {
+		headers: apiHeaders(fixture),
+		data: { name: `TASK-3552 ${label} ${Date.now()}`, template },
+	});
+	expect(resp.ok(), await resp.text()).toBe(true);
+	return ((await resp.json()) as { slug: string }).slug;
+}
+
 async function createDoc(
 	request: APIRequestContext,
 	fixture: import('./fixtures').SuiteFixture,
@@ -48,7 +67,7 @@ async function mermaidDrawn(
 	fixture: import('./fixtures').SuiteFixture,
 	source: string,
 ): Promise<{ nodes: number; failed: boolean; text: string }> {
-	const ws = fixture.workspaceSlug;
+	const ws = await ownWorkspace(request, fixture, 'mermaid', 'startup');
 	const { slug } = await createDoc(
 		request,
 		fixture,
@@ -145,7 +164,7 @@ test.describe('TASK-3552: mermaid diagrams draw', () => {
 
 test.describe('TASK-3552: the graph view draws', () => {
 	test('two linked items paint the canvas', async ({ page, fixture, request }) => {
-		const ws = fixture.workspaceSlug;
+		const ws = await ownWorkspace(request, fixture, 'graph', 'startup');
 		const a = await createDoc(request, fixture, ws, `TASK-3552 graph a ${Date.now()}`);
 		const b = await createDoc(request, fixture, ws, `TASK-3552 graph b ${Date.now()}`);
 		const link = await request.post(`/api/v1/workspaces/${ws}/items/${a.slug}/links`, {
@@ -159,19 +178,15 @@ test.describe('TASK-3552: the graph view draws', () => {
 		expect(drawn.pageErrors).toEqual([]);
 		expect(drawn.width).toBeGreaterThan(100);
 		expect(drawn.emptyState).toBe(false);
-		// Receipt (desktop, 3 runs each, day 90): a drawn graph 237-264 colours,
-		// an empty one exactly 1. The bound sits far from both.
+		// Receipt (own workspaces, 3 runs each per project, day 90): drawn
+		// 198-225 colours on desktop and 1134-1146 on mobile; empty 1 on desktop
+		// and 2 on mobile. The bound sits above both empty readings and far
+		// below every drawn one.
 		expect(drawn.colours, 'distinct colours painted on the graph canvas').toBeGreaterThan(3);
 	});
 
-	// A workspace of its own: the suite's shared workspace always has items.
 	test('counterfactual: an empty workspace leaves the canvas flat', async ({ page, fixture, request }) => {
-		const resp = await request.post('/api/v1/workspaces', {
-			headers: apiHeaders(fixture),
-			data: { name: `TASK-3552 empty ${Date.now()}`, template: 'blank' },
-		});
-		expect(resp.ok(), await resp.text()).toBe(true);
-		const { slug } = (await resp.json()) as { slug: string };
+		const slug = await ownWorkspace(request, fixture, 'empty', 'blank');
 		// Even the blank template seeds the onboard playbook, which the graph
 		// maps as a node: delete what was seeded so the workspace is empty.
 		const list = await request.get(`/api/v1/workspaces/${slug}/items`, { headers: apiHeaders(fixture) });
