@@ -21,6 +21,7 @@ export type NavKey =
 	| 'activity'
 	| 'starred'
 	| 'tags'
+	| 'library'
 	| 'settings';
 
 export interface NavDestination {
@@ -66,6 +67,12 @@ export function getPrimaryDestinations(wsPrefix: string): NavDestination[] {
 		{ key: 'activity', href: `${wsPrefix}/activity`, icon: '📋', label: 'Activity' },
 		{ key: 'starred', href: `${wsPrefix}/starred`, icon: '⭐', label: 'Starred' },
 		{ key: 'tags', href: `${wsPrefix}/tags`, icon: '🏷', label: 'Tags' },
+		// The convention and playbook library: the discovery surface for what
+		// agents can run (TASK-2258, audit C43). Every member may browse it; the
+		// page itself gates activation on edit rights (canCreateIn). Hidden on a
+		// guest's shared workspace, like Settings: a guest sees what was shared,
+		// not the workspace's agent setup.
+		{ key: 'library', href: `${wsPrefix}/library`, icon: '📚', label: 'Library', guestHidden: true },
 		{ key: 'settings', href: `${wsPrefix}/settings`, icon: '⚙', label: 'Settings', guestHidden: true }
 	];
 }
@@ -84,6 +91,7 @@ export function getActiveKey(pathname: string, wsPrefix: string): string | null 
 	if (pathname === `${wsPrefix}/activity`) return 'activity';
 	if (pathname === `${wsPrefix}/starred`) return 'starred';
 	if (pathname === `${wsPrefix}/tags` || pathname.startsWith(`${wsPrefix}/tags/`)) return 'tags';
+	if (pathname === `${wsPrefix}/library` || pathname.startsWith(`${wsPrefix}/library/`)) return 'library';
 
 	const prefix = `${wsPrefix}/`;
 	if (pathname.startsWith(prefix)) {

@@ -680,7 +680,7 @@
 					</div>
 				{/if}
 
-				{#if agentCollections.length > 0}
+				{#if agentCollections.length > 0 || !isGuest}
 					<div class="section-header agent-section">
 						<span class="section-label">Agent</span>
 					</div>
@@ -698,6 +698,21 @@
 							{/if}
 						</a>
 					{/each}
+					<!-- The library is where invokable playbooks and conventions are
+					     found and activated (TASK-2258, audit C43). Every member may
+					     browse it (the page gates activation on edit rights); a guest,
+					     who sees only what was shared, does not get the link. -->
+					{#if !isGuest}
+						<a
+							href="{wsPrefix}/library"
+							class="nav-item"
+							class:active={activeKey === 'library'}
+							onclick={() => uiStore.onNavigate()}
+						>
+							<span class="nav-icon">📚</span>
+							<span class="nav-label">Library</span>
+						</a>
+					{/if}
 				{/if}
 			</nav>
 
@@ -973,6 +988,20 @@
 		overflow-y: auto;
 		flex: 1;
 		min-height: 0;
+	}
+	/* When the nav overflows (audit C116: at 1440x900 it overflowed right
+	   after the Agent header, which then read as an empty section), a fade
+	   sticks to its bottom edge to say there is more below. When it does not
+	   overflow, the fade sits after the last row and covers nothing. */
+	.collection-nav::after {
+		content: '';
+		position: sticky;
+		bottom: 0;
+		flex-shrink: 0;
+		height: 20px;
+		margin-top: -8px;
+		background: linear-gradient(to bottom, transparent, var(--bg-secondary));
+		pointer-events: none;
 	}
 	.section-header {
 		display: flex;
