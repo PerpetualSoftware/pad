@@ -1,0 +1,14 @@
+{
+  "new_user": true,
+  "token": "<string>",
+  "user": {
+    "email": "<string>",
+    "email_verified": true,
+    "id": "<string>",
+    "name": "<string>",
+    "plan": "<string>",
+    "role": "<string>",
+    "totp_enabled": false,
+    "username": "<string>"
+  }
+}

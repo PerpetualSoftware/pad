@@ -1,0 +1,16 @@
+{
+  "avatar_url": "",
+  "created_at": "<string>",
+  "email": "<string>",
+  "id": "<string>",
+  "name": "<string>",
+  "oauth_providers": [
+    "<string>"
+  ],
+  "password_set": false,
+  "role": "<string>",
+  "stripe_customer_id": "<string>",
+  "totp_enabled": false,
+  "updated_at": "<string>",
+  "username": "<string>"
+}
