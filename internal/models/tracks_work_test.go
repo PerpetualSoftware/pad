@@ -26,6 +26,7 @@ func TestCollectionTracksWork(t *testing.T) {
 func TestDefaultTracksWork(t *testing.T) {
 	withTerminal := `{"fields":[{"key":"status","type":"select","options":["open","done"],"terminal_options":["done"]}]}`
 	noTerminal := `{"fields":[{"key":"status","type":"select","options":["draft","published"]}]}`
+	defaultTerminal := `{"fields":[{"key":"status","type":"select","options":["open","done"]}]}`
 	noStatus := `{"fields":[{"key":"title2","type":"text"}]}`
 	groupedElsewhere := `{"fields":[{"key":"stage","type":"select","options":["a","z"],"terminal_options":["z"]},{"key":"status","type":"select","options":["x"]}]}`
 	cases := []struct {
@@ -35,6 +36,7 @@ func TestDefaultTracksWork(t *testing.T) {
 	}{
 		{"a status that can finish is work", withTerminal, `{}`, false, true},
 		{"a status that cannot finish is reference", noTerminal, `{}`, false, false},
+		{"no terminal_options, but an option the default list closes, is work", defaultTerminal, `{}`, false, true},
 		{"no done field is reference", noStatus, `{}`, false, false},
 		{"system is reference whatever its schema", withTerminal, `{}`, true, false},
 		{"the done field is board_group_by when it names a select", groupedElsewhere, `{"board_group_by":"stage"}`, false, true},

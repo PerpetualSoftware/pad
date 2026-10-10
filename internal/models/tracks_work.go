@@ -39,8 +39,12 @@ func CollectionTracksWorkJSON(settingsJSON string) bool {
 
 // DefaultTracksWork is the value a NEW collection gets when its creator did
 // not say: a system collection (Conventions, Playbooks) is reference; any
-// other collection is work when its done field is a select that declares
-// terminal options (its items can finish), and reference otherwise.
+// other collection is work when its items can FINISH, that is, when its done
+// field is a select and one of its options is terminal. Terminal means what
+// every lifecycle reader means (TerminalValuesForDoneField): the declared
+// terminal_options, or DefaultTerminalStatuses when the field declares none,
+// so `status: open, done` with no terminal_options is work. Otherwise
+// reference.
 func DefaultTracksWork(schemaJSON, settingsJSON string, isSystem bool) bool {
 	if isSystem {
 		return false
@@ -51,11 +55,19 @@ func DefaultTracksWork(schemaJSON, settingsJSON string, isSystem bool) bool {
 	}
 	var settings CollectionSettings
 	_ = json.Unmarshal([]byte(settingsJSON), &settings)
-	key := DoneFieldKey(schema, settings)
+	key, terminals := TerminalValuesForDoneField(schema, settings)
 	for _, f := range schema.Fields {
-		if f.Key == key && f.Type == "select" && len(f.TerminalOptions) > 0 {
-			return true
+		if f.Key != key || f.Type != "select" {
+			continue
 		}
+		for _, opt := range f.Options {
+			for _, t := range terminals {
+				if strings.EqualFold(opt, t) {
+					return true
+				}
+			}
+		}
+		return false
 	}
 	return false
 }
