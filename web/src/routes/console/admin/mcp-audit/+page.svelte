@@ -26,6 +26,9 @@
 		workspace_id?: string;
 		token_kind: 'oauth' | 'pat';
 		connection_id: string;
+		// TASK-2255 (C110): resolved server-side; absent when the id no longer resolves.
+		user_name?: string;
+		connection_name?: string;
 		tool_name: string;
 		args_hash?: string;
 		result_status: 'ok' | 'error' | 'denied';
@@ -173,8 +176,8 @@
 							<td class="time-cell" title={new Date(entry.timestamp).toISOString()}>
 								{relativeTime(entry.timestamp)}
 							</td>
-							<td title={entry.user_id}>{shortRef(entry.user_id)}</td>
-							<td title={entry.connection_id}>{shortRef(entry.connection_id)}</td>
+							<td title={entry.user_id}>{entry.user_name || shortRef(entry.user_id)}</td>
+							<td title={entry.connection_id}>{entry.connection_name || shortRef(entry.connection_id)}</td>
 							<td>
 								<Chip size="sm" color={entry.token_kind === 'oauth' ? 'var(--accent-green)' : 'var(--accent-gray)'}>
 									{entry.token_kind}

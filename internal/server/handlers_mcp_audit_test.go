@@ -202,3 +202,54 @@ func TestParseMCPAuditPaging_CapsAt200(t *testing.T) {
 		t.Errorf("default offset = %d, want 0", offset2)
 	}
 }
+
+// TASK-2255 (C110): the admin listing names the user and the connection
+// instead of leaving the page to show truncated UUIDs. The store test pins
+// every resolution path; this pins that the handler sends them, and leaves
+// an unresolvable connection empty rather than inventing a name.
+func TestHandleAdminMCPAudit_NamesUsersAndConnections(t *testing.T) {
+	srv := testServer(t)
+	admin, adminTok := loginTestUser(t, srv)
+	if err := srv.store.SetUserRole(admin.ID, "admin"); err != nil {
+		t.Fatalf("SetUserRole: %v", err)
+	}
+	carol, err := srv.store.CreateUser(models.UserCreate{
+		Email: "carol-audit-names@example.com", Name: "Carol", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	pat, err := srv.store.CreateAPIToken(carol.ID, models.APITokenCreate{Name: "build box"}, 30, 365)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+	seedAuditRow(t, srv, carol.ID, models.TokenKindPAT, pat.ID, "pad_item")
+	seedAuditRow(t, srv, carol.ID, models.TokenKindOAuth, "req-unknown", "pad_project")
+
+	rr := doAuthedRequest(srv, "GET", "/api/v1/admin/mcp-audit?limit=10", nil, adminTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d (body=%s)", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byTool := map[string]map[string]any{}
+	for _, it := range resp.Items {
+		byTool[it["tool_name"].(string)] = it
+	}
+	if got := byTool["pad_item"]["user_name"]; got != "Carol" {
+		t.Errorf("user_name = %v, want Carol", got)
+	}
+	if got := byTool["pad_item"]["connection_name"]; got != "build box" {
+		t.Errorf("PAT connection_name = %v, want build box", got)
+	}
+	if _, present := byTool["pad_project"]["connection_name"]; present {
+		t.Errorf("an unresolvable connection must carry no name: %v", byTool["pad_project"])
+	}
+	if got := byTool["pad_project"]["connection_id"]; got != "req-unknown" {
+		t.Errorf("connection_id = %v, want the raw ref kept", got)
+	}
+}

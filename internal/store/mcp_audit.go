@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -336,4 +337,65 @@ func scanMCPAuditRows(rows *sql.Rows) ([]models.MCPAuditEntry, error) {
 		return nil, fmt.Errorf("iterate mcp audit rows: %w", err)
 	}
 	return out, nil
+}
+
+// MCPAuditNames resolves the people and connections one page of the admin MCP
+// audit names, for display (TASK-2255 C110: the page showed truncated raw
+// UUIDs while the sibling audit log names its actors). One query per kind, each
+// an IN list no longer than the page.
+//
+// users maps a user id to its name, or its email when the name is empty.
+// connections maps a token ref to a label: for a PAT, the token's name; for an
+// OAuth connection (ref = the grant's request id), the OAuth client's name,
+// else the label the user gave the connection. An id that no longer resolves
+// (a deleted user, a revoked token) is absent, and the caller shows the id.
+func (s *Store) MCPAuditNames(userIDs, patRefs, oauthRefs []string) (users, connections map[string]string, err error) {
+	users = map[string]string{}
+	connections = map[string]string{}
+	marks := func(n int) string { return strings.TrimSuffix(strings.Repeat("?,", n), ",") }
+	args := func(ids []string) []any {
+		out := make([]any, len(ids))
+		for i, id := range ids {
+			out[i] = id
+		}
+		return out
+	}
+	collect := func(query string, ids []string, into map[string]string) error {
+		if len(ids) == 0 {
+			return nil
+		}
+		rows, err := s.db.Query(s.q(fmt.Sprintf(query, marks(len(ids)))), args(ids)...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, label string
+			if err := rows.Scan(&id, &label); err != nil {
+				return err
+			}
+			if label != "" {
+				if _, seen := into[id]; !seen {
+					into[id] = label
+				}
+			}
+		}
+		return rows.Err()
+	}
+	if err := collect(`SELECT id, CASE WHEN name <> '' THEN name ELSE email END FROM users WHERE id IN (%s)`, userIDs, users); err != nil {
+		return nil, nil, fmt.Errorf("mcp audit names (users): %w", err)
+	}
+	if err := collect(`SELECT id, name FROM api_tokens WHERE id IN (%s)`, patRefs, connections); err != nil {
+		return nil, nil, fmt.Errorf("mcp audit names (tokens): %w", err)
+	}
+	// The client name first; the connection label only where no refresh
+	// token of the grant survives (collect keeps the first label per id).
+	if err := collect(`SELECT DISTINCT rt.request_id, c.name FROM oauth_refresh_tokens rt
+		JOIN oauth_clients c ON c.id = rt.client_id WHERE rt.request_id IN (%s)`, oauthRefs, connections); err != nil {
+		return nil, nil, fmt.Errorf("mcp audit names (oauth clients): %w", err)
+	}
+	if err := collect(`SELECT request_id, name FROM oauth_connections WHERE request_id IN (%s)`, oauthRefs, connections); err != nil {
+		return nil, nil, fmt.Errorf("mcp audit names (oauth connections): %w", err)
+	}
+	return users, connections, nil
 }
