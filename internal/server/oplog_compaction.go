@@ -140,7 +140,7 @@ func (s *Server) compactOne(itemID string, cutoff time.Time) string {
 	}
 
 	err = s.collab.UnderItemLockIfNoRoom(itemID, func() error {
-		_, cerr := s.store.CompactItemOpLog(itemID, cutoff, in.Cursor, snap.Frame, collab.DefaultSchemaVersion)
+		_, cerr := s.store.CompactItemOpLog(itemID, cutoff, in.IDs, snap.Frame, collab.DefaultSchemaVersion)
 		return cerr
 	})
 	switch {
