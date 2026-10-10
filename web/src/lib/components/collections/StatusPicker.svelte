@@ -27,6 +27,7 @@
 	import { portal } from '$lib/utils/portalAction';
 	import { statusColor, priorityColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { uniqueStrings } from '$lib/utils/unique';
 
 	interface Props {
 		/** The stored status; '' when the item has none. */
@@ -38,6 +39,8 @@
 	}
 
 	let { value, options, onselect, kind = 'status' }: Props = $props();
+	// Each once: the menu is keyed by the option, and a repeat throws (TASK-3539).
+	let optionList = $derived(uniqueStrings(options));
 	const noun = $derived(kind === 'priority' ? 'Priority' : 'Status');
 	const color = $derived(kind === 'priority' ? priorityColor(value) : statusColor(value));
 
@@ -83,7 +86,7 @@
 			sheetTitle={noun}
 			ariaLabel={noun}
 		>
-			{#each options as option (option)}
+			{#each optionList as option (option)}
 				<MenuItem checked={option === value} onclick={() => choose(option)}>
 					{formatLabel(option)}
 				</MenuItem>

@@ -8,6 +8,7 @@
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import type { BulkItemFailure, BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
+	import { parseStoredSchema } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
 	import { resolveRenameNavTarget, resolveSyncRenameTarget } from '$lib/collections/renameNav';
 	import { laneWriteValue, laneWriteRefusalMessage } from '$lib/collections/laneWriteValue';
@@ -2375,7 +2376,7 @@
 		// stale one can't revert our result (and vice-versa).
 		const collGen = ++collectionGen;
 
-		const s = parseSchema(base);
+		const s = parseStoredSchema(base);
 		const idx = s.fields.findIndex((f) => f.key === groupField);
 		if (idx === -1) return;
 		// NEVER WRITE LANE ORDER BACK FOR A RELATION FIELD (TASK-2998).
@@ -3841,7 +3842,8 @@
 				config: JSON.stringify(config)
 			});
 			if (!identityHeld(epochAtEntry)) return;
-			savedViews = [...savedViews, view];
+			// A reload that read after the create may already hold it (TASK-3539).
+			if (!savedViews.some((v) => v.id === view.id)) savedViews = [...savedViews, view];
 			activeViewId = view.id;
 			saveViewOpen = false;
 			saveViewName = '';

@@ -616,7 +616,8 @@ export const workspaceStore = {
 		// flight cannot contain this workspace, and its commit replaces the
 		// array — so the append alone survives only until that response lands.
 		pendingCreates = [...pendingCreates, { seq: ++createSeq, ws }];
-		workspaces = [...workspaces, ws];
+		// A list read after the create may already hold it (TASK-3539).
+		if (!workspaces.some((w) => w.id === ws.id)) workspaces = [...workspaces, ws];
 		if (membershipSeq !== entrySeq) return ws;
 		const seq = ++membershipSeq;
 		currentMembership = null;

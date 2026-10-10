@@ -11,6 +11,7 @@
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import { loadFailure } from '$lib/api/loadFailure';
 	import type { TagCount } from '$lib/types';
+	import { uniqueBy } from '$lib/utils/unique';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -98,7 +99,7 @@
 		/>
 	{:else}
 		<div class="tag-cloud">
-			{#each tags as t (t.tag)}
+			{#each uniqueBy(tags, (x) => x.tag) as t (t.tag)}
 				<a class="tag-card" href={tagUrl(t.tag)}>
 					<span class="tag-name">{t.tag}</span>
 					<span class="tag-count">{t.count}</span>

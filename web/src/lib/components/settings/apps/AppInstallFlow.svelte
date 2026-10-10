@@ -181,7 +181,7 @@
 				{#if preview.webhook_url}
 					<li>Sends events to <span class="mono">{preview.webhook_url}</span></li>
 				{/if}
-				{#each preview.events as ev (ev.name)}
+				{#each preview.events as ev, i (`${ev.name}:${i}`)}
 					<li>Event <span class="mono">{ev.name}</span> on {ev.collections.join(', ')}</li>
 				{/each}
 				{#each preview.item_actions as act (act.key)}

@@ -15,6 +15,7 @@
 // mirror the in-app helpers so a shared kanban looks like the owner's kanban.
 
 import type { FieldDef } from '$lib/types';
+import { normalizeSchemaForRender } from '$lib/types';
 import { isRelationType, relationValuesOf } from '$lib/items/relationFieldTypes';
 import { UNPARENTED_FILTER_FIELD } from '$lib/collections/unparentedFilter';
 import { fieldMatches, safeString, safeText } from '$lib/fields/fieldShape';
@@ -283,7 +284,10 @@ export function findField(fields: FieldDef[], key: string): FieldDef | undefined
 /** Fields a table/list should show: drop computed fields (they aren't part of
  *  the shared snapshot's meaningful columns). */
 export function visibleFields(fields: FieldDef[]): FieldDef[] {
-	return fields.filter((f) => !f.computed);
+	// Normalised like the authenticated views' parseSchema (TASK-3539): the
+	// share payload carries the stored schema's fields, which can repeat a key,
+	// and the table columns and field chips are keyed by it.
+	return normalizeSchemaForRender({ fields }).fields.filter((f) => !f.computed);
 }
 
 /** Resolve the field key to group a board by: explicit `board_group_by`,

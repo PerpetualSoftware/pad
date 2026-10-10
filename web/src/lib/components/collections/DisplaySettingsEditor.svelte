@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { uniqueBy } from '$lib/utils/unique';
 	/**
 	 * Display settings block shared by CreateCollectionModal (inside its
 	 * "Advanced" reveal) and EditCollectionModal (as its Display tab
@@ -64,7 +65,7 @@
 		<div class="setting-item">
 			<label class="setting-label" for="ds-board-group">Board group by</label>
 			<select id="ds-board-group" class="setting-select" bind:value={boardGroupBy}>
-				{#each selectFieldKeys as f (f.key)}
+				{#each uniqueBy(selectFieldKeys, (x) => x.key) as f (f.key)}
 					<option value={f.key}>{f.label}</option>
 				{/each}
 			</select>
@@ -78,7 +79,7 @@
 			<label class="setting-label" for="ds-list-group">List group by</label>
 			<select id="ds-list-group" class="setting-select" bind:value={listGroupBy}>
 				<option value="">None</option>
-				{#each selectFieldKeys as f (f.key)}
+				{#each uniqueBy(selectFieldKeys, (x) => x.key) as f (f.key)}
 					<option value={f.key}>{f.label}</option>
 				{/each}
 			</select>
@@ -89,7 +90,7 @@
 		<label class="setting-label" for="ds-list-sort">List sort by</label>
 		<select id="ds-list-sort" class="setting-select" bind:value={listSortBy}>
 			<option value="">Default</option>
-			{#each sortableFieldKeys as f (f.key)}
+			{#each uniqueBy(sortableFieldKeys, (x) => x.key) as f (f.key)}
 				<option value={f.key}>{f.label}</option>
 			{/each}
 		</select>

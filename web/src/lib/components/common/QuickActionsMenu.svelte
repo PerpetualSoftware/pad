@@ -662,7 +662,7 @@
 	{#if showCreateForm && canEdit}
 		{@render createForm()}
 	{:else}
-		{#each filtered as action (action.label)}
+		{#each filtered as action, i (`${action.label}:${i}`)}
 			<MenuItem icon={action.icon} onclick={() => handleAction(action)}>
 				{action.label}
 			</MenuItem>

@@ -1207,7 +1207,7 @@ user hunting for an item that provably does not exist.
 								<p class="muted">Nothing carries over from this item’s fields.</p>
 							{:else}
 								<ul class="bucket-list">
-									{#each preflight.fields.carried as f (f.key)}
+									{#each preflight.fields.carried as f, i (`${f.key}:${i}`)}
 										<li>
 											<span class="k">{f.label || f.key}</span>
 											<span class="v">{displayValue(f.value)}</span>
@@ -1243,7 +1243,7 @@ user hunting for an item that provably does not exist.
 								<h4 class="bucket-title">Needs a value</h4>
 								{#if blockedFields.length > 0}
 									<p class="notice notice-error" role="alert">
-										{#each blockedFields as f (f.key)}
+										{#each blockedFields as f, i (`${f.key}:${i}`)}
 											<span class="blocked-line">
 												{#if uncollectableReason(f) === 'unavailable_target'}
 													<strong>{f.label || f.key}</strong> points at

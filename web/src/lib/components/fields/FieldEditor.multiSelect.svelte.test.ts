@@ -197,3 +197,26 @@ describe('multi_select editor, review round 1 (IDEA-3223)', () => {
 		expect(trigger(container).textContent).toContain('A');
 	});
 });
+
+// TASK-3539: the option list is keyed by the option, and a keyed each throws
+// each_key_duplicate on a repeat. A schema option and a stored value can each
+// repeat (nothing refused either), and the list must still open, once per value.
+describe('multi_select editor with repeated options and values (TASK-3539)', () => {
+	it('opens, listing each option and each stored stray value once', async () => {
+		const field = { key: 'labels', label: 'Labels', type: 'multi_select', options: ['a', 'a', 'b'] } as never;
+		const { container } = render(FieldEditor, { props: { field, value: ['c', 'c'], onchange: vi.fn(), itemId: 'i1' } });
+		trigger(container).click();
+		await tick();
+		const names = [...container.querySelectorAll('[role="option"]')].map((o) => o.textContent?.replace('✓', '').trim());
+		expect(names).toEqual(['A', 'B', 'C']);
+	});
+
+	it('a select with a repeated option opens with each option once', async () => {
+		const field = { key: 'size', label: 'Size', type: 'select', options: ['s', 'm', 's'] } as never;
+		const { container } = render(FieldEditor, { props: { field, value: 's', onchange: vi.fn(), itemId: 'i1' } });
+		trigger(container).click();
+		await tick();
+		const names = [...container.querySelectorAll('[role="option"]')].map((o) => o.textContent?.replace('✓', '').trim());
+		expect(names).toEqual(['S', 'M']);
+	});
+});

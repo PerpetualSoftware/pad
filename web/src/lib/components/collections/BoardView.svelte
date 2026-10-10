@@ -35,6 +35,7 @@
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { clickOutside } from '$lib/utils/clickOutside';
 	import { draftKey, lostLaneLabel, type DraftSaveTarget } from '$lib/collections/laneDrafts';
+	import { uniqueStrings } from '$lib/utils/unique';
 
 
 	interface Props {
@@ -335,7 +336,9 @@
 			? []
 			: isRelationGroup
 				? relationLaneList.map((lane) => lane.value)
-				: (field?.options ?? []),
+				: // Each once, never '' (UNCATEGORIZED's id): a keyed each throws
+					// on a repeat (TASK-3539).
+					uniqueStrings((field?.options ?? []).filter((o) => o !== '')),
 	);
 
 	// Column order state — tracks the displayed order, syncs from schema when not dragging

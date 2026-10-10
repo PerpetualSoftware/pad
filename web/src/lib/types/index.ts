@@ -1,3 +1,5 @@
+import { uniqueBy, uniqueStrings } from '$lib/utils/unique';
+
 // ─── User & Auth ──────────────────────────────────────────────────────────────
 
 export interface User {
@@ -2852,11 +2854,66 @@ export function parseTags(item: Pick<Item, 'tags'> | null | undefined): string[]
 const schemaDefaults = (): CollectionSchema => ({ fields: [] });
 
 export function parseSchema(collection: Collection): CollectionSchema {
+	return normalizeSchemaForRender(parseStoredSchema(collection));
+}
+
+/**
+ * The schema exactly as stored, for a WRITE that sends the schema back
+ * (TASK-3539): parseSchema's render normalisation must not rewrite fields or
+ * options the user never touched. Render from parseSchema, never from this.
+ */
+export function parseStoredSchema(collection: Collection): CollectionSchema {
 	try {
 		return { ...schemaDefaults(), ...JSON.parse(collection.schema) };
 	} catch {
 		return schemaDefaults();
 	}
+}
+
+/**
+ * What parseSchema's normalisation removes from a stored schema, one sentence
+ * each (TASK-3539), so an editor that seeds from the normalised schema can say
+ * so before a save writes the repaired form back. Empty for a clean schema.
+ */
+export function schemaRenderRepairs(collection: Collection): string[] {
+	const stored = parseStoredSchema(collection);
+	if (!Array.isArray(stored.fields)) return [];
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const f of stored.fields) {
+		if (!f || typeof f !== 'object') continue;
+		if (seen.has(f.key)) {
+			out.push(`Field "${f.key}" is defined more than once; only the first definition is kept.`);
+			continue;
+		}
+		seen.add(f.key);
+		if (!Array.isArray(f.options)) continue;
+		if (f.options.includes('')) out.push(`Field "${f.key}" has an empty option, which is removed.`);
+		const repeated = uniqueStrings(f.options.filter((o, i) => o !== '' && f.options!.indexOf(o) !== i));
+		for (const o of repeated) out.push(`Field "${f.key}" lists the option "${o}" more than once; it is kept once.`);
+	}
+	return out;
+}
+
+/**
+ * Makes a stored schema safe for the keyed lists that render it (TASK-3539):
+ * a field key appears once (the first definition wins, the server's rule in
+ * library_option_widen), and a select field's options are distinct and
+ * non-empty. A stored schema can hold either repeat (nothing refused them
+ * before), and every field list and option list on the page is keyed by
+ * them, so one repeat used to throw each_key_duplicate and blank the view.
+ */
+export function normalizeSchemaForRender(schema: CollectionSchema): CollectionSchema {
+	if (!Array.isArray(schema.fields)) return { ...schema, fields: [] };
+	const fields = uniqueBy(
+		schema.fields.filter((f): f is FieldDef => !!f && typeof f === 'object'),
+		(f) => f.key,
+	).map((f) =>
+		Array.isArray(f.options)
+			? { ...f, options: uniqueStrings(f.options.filter((o) => o !== '')) }
+			: f,
+	);
+	return { ...schema, fields };
 }
 
 const settingsDefaults = (): CollectionSettings => ({ layout: 'balanced', default_view: 'board' });

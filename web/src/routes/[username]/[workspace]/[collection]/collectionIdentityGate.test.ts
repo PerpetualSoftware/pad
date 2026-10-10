@@ -30,8 +30,8 @@ identityGateSuite({
 			},
 			handleReorder: { reviewed: '25418ad2603b', why: 'optimistic upserts before any await (persistReorder applies them before its one request); identityHeld(epochAtEntry) after the request, before each settle, and before a refusal restores the original rows (BUG-3259, TASK-3517). TASK-3525: the moved card id is passed to the synchronous planner; no await or check moved' },
 			handleGroupReorder: {
-				reviewed: 'a833ef2e8d1c',
-				why: 'collGen, the route, then identityHeld(epochAtEntry) before the collection write; the conflict path checks identity BEFORE its re-read request (BUG-3238) and after it, before the reseed and navigation; both toasts fenced',
+				reviewed: '1b7180edc2a7',
+				why: 'collGen, the route, then identityHeld(epochAtEntry) before the collection write; the conflict path checks identity BEFORE its re-read request (BUG-3238) and after it, before the reseed and navigation; both toasts fenced. TASK-3539: the schema it writes back is parseStoredSchema (the stored form), not the render-normalised one; no await or check moved',
 			},
 			createNewItem: { reviewed: '92058792cfa1', why: `${ENTRY}, the navigation into the new item included; the finally clears creatingNew only under the identity` },
 			quickCreateInColumn: { reviewed: '5205a6163a7b', why: `${ENTRY}; answers null on a lost identity; the rethrow is unfenced, deliberately` },
@@ -41,7 +41,7 @@ identityGateSuite({
 			},
 			quickCreate: { reviewed: '565b76c2891d', why: `${ENTRY}; the finally clears creatingNew only under the identity` },
 			runBulkOn: { reviewed: '611c8b055f23', why: `${ENTRY}, per chunk and after the delta sync; the Undo action re-checks at click time` },
-			saveCurrentView: { reviewed: '119deb439808', why: `${ENTRY}; the finally clears savingView only under the identity` },
+			saveCurrentView: { reviewed: '13a6f5001771', why: `${ENTRY}; the finally clears savingView only under the identity; the append is skipped when a reload already holds the view (TASK-3539)` },
 			deleteView: { reviewed: '7eb2057eabec', why: ENTRY },
 		},
 		nested: [
@@ -98,8 +98,8 @@ identityGateSuite({
 		{
 			cls: 1,
 			what: 'a commit between the view create and its check',
-			old: '\t\t\tif (!identityHeld(epochAtEntry)) return;\n\t\t\tsavedViews = [...savedViews, view];\n',
-			new: '\t\t\tsaveViewOpen = false;\n\t\t\tif (!identityHeld(epochAtEntry)) return;\n\t\t\tsavedViews = [...savedViews, view];\n',
+			old: '\t\t\tif (!identityHeld(epochAtEntry)) return;\n\t\t\t// A reload that read after the create may already hold it (TASK-3539).\n\t\t\tif (!savedViews.some((v) => v.id === view.id)) savedViews = [...savedViews, view];\n',
+			new: '\t\t\tsaveViewOpen = false;\n\t\t\tif (!identityHeld(epochAtEntry)) return;\n\t\t\t// A reload that read after the create may already hold it (TASK-3539).\n\t\t\tif (!savedViews.some((v) => v.id === view.id)) savedViews = [...savedViews, view];\n',
 			names: 'saveCurrentView()',
 		},
 		{
