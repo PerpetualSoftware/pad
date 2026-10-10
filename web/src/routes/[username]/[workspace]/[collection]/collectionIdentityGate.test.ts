@@ -41,7 +41,7 @@ identityGateSuite({
 			},
 			quickCreate: { reviewed: '565b76c2891d', why: `${ENTRY}; the finally clears creatingNew only under the identity` },
 			runBulkOn: { reviewed: '611c8b055f23', why: `${ENTRY}, per chunk and after the delta sync; the Undo action re-checks at click time` },
-			saveCurrentView: { reviewed: '119deb439808', why: `${ENTRY}; the finally clears savingView only under the identity` },
+			saveCurrentView: { reviewed: '13a6f5001771', why: `${ENTRY}; the finally clears savingView only under the identity; the append is skipped when a reload already holds the view (TASK-3539)` },
 			deleteView: { reviewed: '7eb2057eabec', why: ENTRY },
 		},
 		nested: [
@@ -98,8 +98,8 @@ identityGateSuite({
 		{
 			cls: 1,
 			what: 'a commit between the view create and its check',
-			old: '\t\t\tif (!identityHeld(epochAtEntry)) return;\n\t\t\tsavedViews = [...savedViews, view];\n',
-			new: '\t\t\tsaveViewOpen = false;\n\t\t\tif (!identityHeld(epochAtEntry)) return;\n\t\t\tsavedViews = [...savedViews, view];\n',
+			old: '\t\t\tif (!identityHeld(epochAtEntry)) return;\n\t\t\t// A reload that read after the create may already hold it (TASK-3539).\n\t\t\tif (!savedViews.some((v) => v.id === view.id)) savedViews = [...savedViews, view];\n',
+			new: '\t\t\tsaveViewOpen = false;\n\t\t\tif (!identityHeld(epochAtEntry)) return;\n\t\t\t// A reload that read after the create may already hold it (TASK-3539).\n\t\t\tif (!savedViews.some((v) => v.id === view.id)) savedViews = [...savedViews, view];\n',
 			names: 'saveCurrentView()',
 		},
 		{
