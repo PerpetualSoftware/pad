@@ -1738,6 +1738,18 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.83 — TASK-3539. BEHAVIOR bump on the v0.43 / v0.48 grounds (a
+//     write door refuses a call it used to accept; no name, enum or param
+//     moved): `pad_collection` create and update REFUSE a `schema` in which
+//     a field has no key, two fields share a key, or a select field lists
+//     an empty option or the same option twice, with 400 `validation_error`
+//     naming it (`field key "status" is defined more than once`, `field
+//     "status" lists the option "open" more than once`). Every client
+//     renders a collection's fields and options as lists keyed by those
+//     values, and one repeat blanked the view (BUG-3538). A WRITE check
+//     only: a schema already stored with a repeat still reads, and an
+//     update that sends no schema still applies.
+//
 //     0.82 — PLAN-3535 PR 2. BEHAVIOR bump on the v0.49 grounds (a
 //     default call's content changes; no name, enum or param moved): the
 //     items of a REFERENCE collection (`tracks_work: false`; system
@@ -1998,7 +2010,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.82"
+const ToolSurfaceVersion = "0.83"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

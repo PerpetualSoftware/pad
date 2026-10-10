@@ -728,3 +728,19 @@ func TestItemCreateUnmarshalFlexFields(t *testing.T) {
 		}
 	})
 }
+
+// TASK-3539: a workspace import stores a convention blob verbatim, so its
+// commands and surfaces can repeat. normalizeItemConventionMetadata already
+// dedupes them on read; the web keys both lists by the value, so this pins it.
+func TestExtractItemConventionMetadataDedupesOnRead(t *testing.T) {
+	metadata := ExtractItemConventionMetadata(`{"convention":{"trigger":"on-commit","surfaces":["backend","backend"],"commands":["make test","make test","go vet ./..."]}}`)
+	if metadata == nil {
+		t.Fatal("no metadata")
+	}
+	if got := metadata.Commands; len(got) != 2 || got[0] != "make test" || got[1] != "go vet ./..." {
+		t.Errorf("commands = %q", got)
+	}
+	if got := metadata.Surfaces; len(got) != 1 || got[0] != "backend" {
+		t.Errorf("surfaces = %q", got)
+	}
+}

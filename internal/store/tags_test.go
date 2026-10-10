@@ -115,3 +115,22 @@ func TestListWorkspaceTags(t *testing.T) {
 		}
 	})
 }
+
+// TASK-3539: on SQLite json_each keeps a tag's JSON type, so [1] and ["1"]
+// grouped apart and both scanned to "1", a repeated key in the web's keyed
+// tag lists. Grouped as text, they are one tag carried by both items.
+func TestListWorkspaceTagsGroupsNumberAndStringAsOneTag(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Tag types WS")
+	coll := createTestCollection(t, s, ws.ID, "Things")
+	createTaggedItem(t, s, ws.ID, coll.ID, "Numeric", `[1]`)
+	createTaggedItem(t, s, ws.ID, coll.ID, "Text", `["1"]`)
+	tags, err := s.ListWorkspaceTags(ws.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("ListWorkspaceTags: %v", err)
+	}
+	if len(tags) != 1 || tags[0].Tag != "1" || tags[0].Count != 2 {
+		t.Fatalf("tags = %+v, want one tag \"1\" carried by 2 items", tags)
+	}
+}
