@@ -8,6 +8,7 @@
 	import BarChart from '$lib/components/charts/BarChart.svelte';
 	import type { ChartDatum } from '$lib/components/charts/theme';
 	import type { Collection, ReportData, ReportLayout, ReportWindow } from '$lib/types';
+	import { collectionTracksWork } from '$lib/types';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { bucketLabels, viewerTimeZone } from '$lib/insights/bucketLabel';
 
@@ -37,18 +38,20 @@
 	// Empty set === no filter (show all collections).
 	let selectedCollections = $state<string[]>([]);
 	// BUG-2410: the picker offers the collections the default report covers,
-	// which leaves out SYSTEM collections (Conventions, Playbooks). The API still
-	// honours an explicit ?collections= naming one, including from a layout
-	// saved before this change.
-	let pickableCollections = $derived(collections.filter((c) => !c.is_system));
-	// The selection that COUNTS: the saved/selected slugs minus system ones. A
+	// which leaves out SYSTEM collections (Conventions, Playbooks). PLAN-3535
+	// widened the server's rule to every REFERENCE collection (tracks_work:
+	// false), which the system ones are, so the picker asks the same question.
+	// The API still honours an explicit ?collections= naming one, including
+	// from a layout saved before this change.
+	let pickableCollections = $derived(collections.filter((c) => collectionTracksWork(c)));
+	// The selection that COUNTS: the saved/selected slugs minus reference ones. A
 	// layout saved before BUG-2410 can still name a system collection, and the
 	// picker cannot show one, so sending it would filter the report by a
 	// selection the page does not display (codex round 1). Derived rather than
 	// filtered once at hydration, because the collections and the layout load
 	// independently; the next save persists this cleaned list.
-	let systemSlugs = $derived(new Set(collections.filter((c) => c.is_system).map((c) => c.slug)));
-	let activeCollections = $derived(selectedCollections.filter((s) => !systemSlugs.has(s)));
+	let referenceSlugs = $derived(new Set(collections.filter((c) => !collectionTracksWork(c)).map((c) => c.slug)));
+	let activeCollections = $derived(selectedCollections.filter((s) => !referenceSlugs.has(s)));
 	// When the collection list could not be loaded, nothing is known to be a
 	// system collection and the picker shows no chips, so no selection can be
 	// shown either: the REPORT goes unfiltered (the server's default already

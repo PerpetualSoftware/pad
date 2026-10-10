@@ -2,11 +2,10 @@
 	import { api } from '$lib/api/client';
 	import type { Item, PaneTarget } from '$lib/types';
 	import { parseFields, formatItemRef } from '$lib/types';
-	import { countChildProgress } from '$lib/collections/childProgress';
+	import { childRowState, countChildProgress, isReferenceChild } from '$lib/collections/childProgress';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { shouldOpenInPane } from './collections/itemCardClick';
-	import { fieldMatches } from '$lib/fields/fieldShape';
 
 	interface Props {
 		wsSlug: string;
@@ -14,7 +13,6 @@
 		parentSlug: string;
 		depth?: number;
 		maxDepth?: number;
-		terminalStatuses?: string[];
 		/**
 		 * In-pane drill interceptor (PLAN-2154 Architecture B.2 / TASK-2159).
 		 * Threaded from `ChildItems`/`ItemDetail`'s `fireOpenTarget`; forwarded
@@ -24,10 +22,8 @@
 		onOpenTarget?: (target: PaneTarget) => void;
 	}
 
-	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, terminalStatuses, onOpenTarget }: Props = $props();
+	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, onOpenTarget }: Props = $props();
 
-	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
-	const terminal = $derived(terminalStatuses ?? defaultTerminal);
 
 	let children = $state<Item[]>([]);
 	let loading = $state(true);
@@ -60,16 +56,15 @@
 	}
 
 	// The COUNTS judge each child by its own collection's done field, terminal
-	// and abandoned values; an abandoned child leaves both numbers (BUG-3195).
-	// A store stamped for another workspace is not consulted (the child then
-	// falls back to the default lists, as the server does with no context).
-	// Per-row done styling below still uses the inherited terminal list.
-	let counts = $derived(
-		countChildProgress(
-			children,
-			collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug) ? (collectionStore.collections ?? []) : []
-		)
+	// and abandoned values; an abandoned child, and a child of a REFERENCE
+	// collection (PLAN-3535), leaves both numbers (BUG-3195). A store stamped
+	// for another workspace is not consulted (the child then falls back to the
+	// default lists, as the server does with no context). The per-row done
+	// styling below asks the same hub, so a row and the count agree.
+	let childCollections = $derived(
+		collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug) ? (collectionStore.collections ?? []) : []
 	);
+	let counts = $derived(countChildProgress(children, childCollections));
 
 	// In-pane drill interception for a `.nested-link` anchor (TASK-2159 /
 	// PLAN-2154 Architecture B.2) — same predicate/contract as
@@ -101,7 +96,7 @@
 			     is a singleton and the row already carries its `collection_slug`,
 			     which is why this site turned out to be the cheap half after all. -->
 			{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
-			{@const isDone = terminal.some((t) => fieldMatches(fields.status, t))}
+			{@const isDone = !isReferenceChild(child, childCollections) && childRowState(child, childCollections) === 'done'}
 			{@const isExpanded = expandedIds.has(child.id)}
 			{@const canExpand = child.has_children && depth < maxDepth}
 			<div class="nested-item">
@@ -128,7 +123,7 @@
 					{/if}
 				</div>
 				{#if canExpand && isExpanded}
-					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {terminalStatuses} {onOpenTarget} />
+					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {onOpenTarget} />
 				{/if}
 			</div>
 		{/each}

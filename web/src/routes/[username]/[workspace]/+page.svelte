@@ -24,6 +24,8 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import type { DashboardResponse, Collection } from '$lib/types';
+	import { collectionTracksWork } from '$lib/types';
+	import { statusState } from '$lib/collections/childProgress';
 	import PartialImportBanner from '$lib/components/PartialImportBanner.svelte';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -543,15 +545,23 @@
 
 	// priorityColor imported from $lib/utils/fieldColors (canonical palette).
 
-	function collProgress(coll: Collection): { total: number; done: number; pct: number } {
+	// A collection card's item count and completion bar. The count is every
+	// item (the summary's totals). The bar judges each status by the
+	// collection's own done rule (childProgress.statusState; it used a
+	// hardcoded done list), with abandoned items out of both numbers, and a
+	// REFERENCE collection (PLAN-3535) has no bar at all: its items do not
+	// finish as work.
+	function collProgress(coll: Collection): { total: number; done: number; pct: number; counted: number; work: boolean } {
 		const breakdown = dashboard?.summary.by_collection[coll.name] ?? dashboard?.summary.by_collection[coll.slug] ?? {};
-		let total = 0, done = 0;
+		let total = 0, done = 0, counted = 0;
 		for (const [status, count] of Object.entries(breakdown)) {
 			total += count;
-			const s = status.toLowerCase().replace(/-/g, '_');
-			if (['done', 'completed', 'fixed', 'implemented', 'resolved'].includes(s)) done += count;
+			const state = statusState(coll, status);
+			if (state === 'out') continue;
+			counted += count;
+			if (state === 'done') done += count;
 		}
-		return { total, done, pct: total > 0 ? Math.round((done / total) * 100) : 0 };
+		return { total, done, counted, pct: counted > 0 ? Math.round((done / counted) * 100) : 0, work: collectionTracksWork(coll) };
 	}
 
 	function activityVerb(action: string): string {
@@ -874,9 +884,11 @@
 								<span class="coll-status-empty">No items yet</span>
 							{/if}
 						</div>
-						<div class="coll-progress-bar">
-							<div class="coll-progress-fill" style="width: {prog.pct}%"></div>
-						</div>
+						{#if prog.work}
+							<div class="coll-progress-bar">
+								<div class="coll-progress-fill" style="width: {prog.pct}%"></div>
+							</div>
+						{/if}
 					</a>
 				{/each}
 				{#if isOwner}
