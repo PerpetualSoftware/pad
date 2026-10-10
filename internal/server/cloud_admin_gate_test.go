@@ -50,6 +50,7 @@ func TestCloudAdminGate_SelfHost_Returns404(t *testing.T) {
 		{"POST /admin/plan with cloud secret header", "POST", "/api/v1/admin/plan", map[string]string{"cloud_secret": "x"}},
 		{"POST /admin/stripe-customer-id with header", "POST", "/api/v1/admin/stripe-customer-id", map[string]string{"cloud_secret": "x"}},
 		{"GET /admin/user-by-customer with header", "GET", "/api/v1/admin/user-by-customer?customer_id=cus_x", nil},
+		{"GET /admin/user-by-id with header", "GET", "/api/v1/admin/user-by-id?user_id=u", nil},
 		{"POST /admin/stripe-event-processed with header", "POST", "/api/v1/admin/stripe-event-processed", map[string]string{"cloud_secret": "x", "event_id": "evt_x"}},
 		{"POST /admin/stripe-event-unmark with header", "POST", "/api/v1/admin/stripe-event-unmark", map[string]string{"cloud_secret": "x", "event_id": "evt_x", "processed_at": "2025-01-01T00:00:00Z"}},
 		{"POST /admin/payment-failed with header", "POST", "/api/v1/admin/payment-failed", map[string]string{"cloud_secret": "x", "stripe_customer_id": "cus_x"}},

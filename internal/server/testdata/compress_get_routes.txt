@@ -27,6 +27,7 @@ compress /api/v1/admin/mcp-audit
 compress /api/v1/admin/settings
 compress /api/v1/admin/stats
 compress /api/v1/admin/user-by-customer
+compress /api/v1/admin/user-by-id
 compress /api/v1/admin/users
 compress /api/v1/admin/users/{userID}/
 compress /api/v1/admin/users/{userID}/activity
