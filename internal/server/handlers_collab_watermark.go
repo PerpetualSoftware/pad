@@ -107,6 +107,5 @@ func (s *Server) recordWatermarkStamp(r *http.Request, itemID string, cursor int
 		"to", cursor,
 		"content_rows", res.CoveredContentRows,
 		"user_id", currentUserID(r),
-		"user_agent", r.UserAgent(),
 	)
 }
