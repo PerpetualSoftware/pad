@@ -86,11 +86,12 @@ const endsWithNonDigit = (s: unknown) => typeof s === 'string' && s.length > 0 &
 
 /**
  * The key is position-safe, read from its AST: exactly the index; a template
- * literal ending in `<non-digit>${index}`; `… + '<non-digit>' + index`; or
- * JSON.stringify([…, index]). With the index LAST and after a non-digit
+ * literal ending in `<non-digit>${index}`; or `… + '<non-digit>' + index`. With the index LAST and after a non-digit
  * separator, the trailing digits recover it, so two positions cannot share a
  * key. `${i}${x}`, `x.id + i`, `i % 2`, `row.i`, a conditional or a function
- * of the index are not, and need an entry (codex round 2).
+ * of the index are not, and need an entry (codex round 2). No call is exempt,
+ * JSON.stringify included: what a call returns depends on what its name is
+ * bound to (codex round 3).
  */
 export function keysOnPosition(keyNode: Node, index: string | undefined): boolean {
 	if (!index) return false;
@@ -110,16 +111,6 @@ export function keysOnPosition(keyNode: Node, index: string | undefined): boolea
 		const left = keyNode.left;
 		const sep = left.type === 'BinaryExpression' && left.operator === '+' ? left.right : left;
 		return sep?.type === 'Literal' && endsWithNonDigit(sep.value);
-	}
-	if (
-		keyNode.type === 'CallExpression' &&
-		keyNode.callee?.type === 'MemberExpression' &&
-		keyNode.callee.object?.name === 'JSON' &&
-		keyNode.callee.property?.name === 'stringify' &&
-		keyNode.arguments[0]?.type === 'ArrayExpression'
-	) {
-		const els = keyNode.arguments[0].elements;
-		return isIndex(els[els.length - 1]);
 	}
 	return false;
 }
@@ -185,7 +176,7 @@ describe('keyed {#each} census (TASK-3539)', () => {
 		expect(exempt('i')).toBe(true);
 		expect(exempt('`${x.id}:${i}`')).toBe(true);
 		expect(exempt("x.id + ':' + i")).toBe(true);
-		expect(exempt('JSON.stringify([x.kind, i])')).toBe(true);
+		expect(exempt('JSON.stringify([x.kind, i])')).toBe(false);
 		expect(exempt('`${i}${x.suffix}`')).toBe(false);
 		expect(exempt('`${x.id}${i}`')).toBe(false);
 		expect(exempt('`v1${i}`')).toBe(false);
