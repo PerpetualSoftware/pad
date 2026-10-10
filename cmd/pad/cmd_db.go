@@ -97,8 +97,9 @@ func dbBackupCmd() *cobra.Command {
 	var cronMode bool
 
 	cmd := &cobra.Command{
-		Use:   "backup",
-		Short: "Back up the database",
+		Use:     "backup",
+		Short:   "Back up the database",
+		Example: `  pad db backup --output pad-backup.db`,
 		Long: `Creates a backup of the Pad database.
 
 For PostgreSQL (PAD_DB_DRIVER=postgres): creates a SQL dump using pg_dump.
@@ -204,8 +205,9 @@ func dbRestoreCmd() *cobra.Command {
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:   "restore <file>",
-		Short: "Restore a database from a backup",
+		Use:     "restore <file>",
+		Short:   "Restore a database from a backup",
+		Example: `  pad db restore pad-backup.db`,
 		Long: `Restores a Pad database from a backup created by 'pad db backup'.
 
 For PostgreSQL: restores in one transaction using psql, stopping on SQL errors
@@ -335,8 +337,9 @@ func dbMigrateToPgCmd() *cobra.Command {
 	var forceLiveServer bool
 
 	cmd := &cobra.Command{
-		Use:   "migrate-to-pg",
-		Short: "Migrate data from SQLite to PostgreSQL",
+		Use:     "migrate-to-pg",
+		Short:   "Migrate data from SQLite to PostgreSQL",
+		Example: `  pad db migrate-to-pg --to postgres://pad@localhost:5432/pad`,
 		Long: `One-time migration from a SQLite database to PostgreSQL.
 Uses application-level export/import to transfer all workspace data.
 

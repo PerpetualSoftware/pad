@@ -106,8 +106,9 @@ type serverInfoLocal struct {
 
 func infoCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "info",
-		Short: "Show local Pad client, connection, and server status",
+		Use:     "info",
+		Short:   "Show local Pad client, connection, and server status",
+		Example: `  pad server info`,
 		Long: `Show a client-oriented snapshot of this Pad installation and connection state.
 
 This command reports local configuration, reachability, auth/session state, and

@@ -39,6 +39,7 @@ func webhooksListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Short:   "List all webhooks in the workspace",
+		Example: `  pad webhook list`,
 		Aliases: []string{"ls"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -183,6 +184,7 @@ func webhooksDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "delete <id>",
 		Short:   "Delete a webhook",
+		Example: `  pad webhook delete <id>`,
 		Aliases: []string{"rm"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -203,9 +205,10 @@ func webhooksDeleteCmd() *cobra.Command {
 
 func webhooksTestCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "test <id>",
-		Short: "Send a test payload to a webhook",
-		Args:  cobra.ExactArgs(1),
+		Use:     "test <id>",
+		Short:   "Send a test payload to a webhook",
+		Example: `  pad webhook test <id>`,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()

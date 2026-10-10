@@ -33,8 +33,9 @@ func pushCmd() *cobra.Command {
 	var message string
 
 	cmd := &cobra.Command{
-		Use:   "push <ref>",
-		Short: "Push an item + instruction to your own connected agent session(s)",
+		Use:     "push <ref>",
+		Short:   "Push an item + instruction to your own connected agent session(s)",
+		Example: `  pad push TASK-5 --message "Pick this up next"`,
 		Long: fmt.Sprintf(`pad push <ref> -m "message"
     Publish a self-addressed push notification on an item. It reaches
     your OWN plugin-monitor sessions (pad watch --stream --for-session)

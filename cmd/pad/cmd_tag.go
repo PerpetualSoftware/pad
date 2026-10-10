@@ -23,8 +23,9 @@ func tagCmd() *cobra.Command {
 
 func tagListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List distinct tags in the workspace with item counts",
+		Use:     "list",
+		Short:   "List distinct tags in the workspace with item counts",
+		Example: `  pad tag list`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()

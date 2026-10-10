@@ -41,8 +41,9 @@ func dbScanNULCmd() *cobra.Command {
 	var fromPath string
 
 	cmd := &cobra.Command{
-		Use:   "scan-nul",
-		Short: "Report stored values PostgreSQL refuses: a NUL, or invalid UTF-8 (read-only)",
+		Use:     "scan-nul",
+		Short:   "Report stored values PostgreSQL refuses: a NUL, or invalid UTF-8 (read-only)",
+		Example: `  pad db scan-nul`,
 		Long: `Counts and locates every stored value that violates Pad's NUL invariant:
 a real NUL byte in any protected column, or a JSON escape in a JSON column
 that a JSON parser would decode to one. It also reports every value that is
@@ -97,8 +98,9 @@ func dbRepairNULCmd() *cobra.Command {
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:   "repair-nul",
-		Short: "Replace stored NULs and invalid UTF-8 with U+FFFD (rewrites user content)",
+		Use:     "repair-nul",
+		Short:   "Replace stored NULs and invalid UTF-8 with U+FFFD (rewrites user content)",
+		Example: `  pad db repair-nul`,
 		Long: `Rewrites every stored value 'pad db scan-nul' reports, replacing each NUL,
 and each invalid UTF-8 byte sequence, with U+FFFD (the Unicode replacement
 character) and leaving the rest of the value byte for byte as it was. In a valid

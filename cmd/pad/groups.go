@@ -225,8 +225,9 @@ func dbCmd() *cobra.Command {
 
 func agentUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "update",
-		Short: "Update installed Pad skills across all supported tools",
+		Use:     "update",
+		Short:   "Update installed Pad skills across all supported tools",
+		Example: `  pad agent update`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
 			return installUpdate(force)
@@ -238,8 +239,9 @@ func agentUpdateCmd() *cobra.Command {
 
 func agentStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status",
-		Short: "Show installed Pad skill status across supported tools",
+		Use:     "status",
+		Short:   "Show installed Pad skill status across supported tools",
+		Example: `  pad agent status`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return installList()
 		},

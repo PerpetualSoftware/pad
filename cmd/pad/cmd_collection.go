@@ -40,8 +40,9 @@ func collectionDefaultIcon(slug string) string {
 
 func collectionsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List collections with item counts",
+		Use:     "list",
+		Short:   "List collections with item counts",
+		Example: `  pad collection list`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -414,8 +415,9 @@ issue-ID equivalent for collections themselves.`,
 // is_default restriction" discussion (IDEA-1513).
 func collectionsDeleteCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "delete <slug>",
-		Short: "Archive a non-default collection and hide its items (owner-only; restore with 'pad collection restore')",
+		Use:     "delete <slug>",
+		Short:   "Archive a non-default collection and hide its items (owner-only; restore with 'pad collection restore')",
+		Example: `  pad collection delete experiments`,
 		Long: `Soft-delete a collection by slug.
 
 Constraints:
@@ -447,9 +449,10 @@ Constraints:
 
 func collectionsArchivedCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "archived",
-		Short: "List archived collections and their item counts (owner-only)",
-		Args:  cobra.NoArgs,
+		Use:     "archived",
+		Short:   "List archived collections and their item counts (owner-only)",
+		Example: `  pad collection archived`,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -474,8 +477,9 @@ func collectionsArchivedCmd() *cobra.Command {
 
 func collectionsRestoreCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "restore <slug>",
-		Short: "Restore an archived collection, with its items (owner-only)",
+		Use:     "restore <slug>",
+		Short:   "Restore an archived collection, with its items (owner-only)",
+		Example: `  pad collection restore experiments`,
 		Long: `Restore an archived collection by its slug (or id). Its items come back
 with it: archiving never deleted them. See 'pad collection archived'.`,
 		Args: cobra.ExactArgs(1),

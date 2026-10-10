@@ -49,8 +49,9 @@ func mcpInstallCmd() *cobra.Command {
 	var allFlag bool
 	var compactResults bool
 	cmd := &cobra.Command{
-		Use:   "install [agent]",
-		Short: "Install pad as an MCP server for a client app",
+		Use:     "install [agent]",
+		Short:   "Install pad as an MCP server for a client app",
+		Example: `  pad mcp install claude-desktop`,
 		Long: `Write a "pad" entry into the named agent's MCP server config.
 
 Supported agents:
@@ -129,8 +130,9 @@ are preserved — only the "pad" entry is touched.`,
 // mcpUninstallCmd implements `pad mcp uninstall <agent>`.
 func mcpUninstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "uninstall <agent>",
-		Short: "Remove the pad MCP entry from a client's config",
+		Use:     "uninstall <agent>",
+		Short:   "Remove the pad MCP entry from a client's config",
+		Example: `  pad mcp uninstall claude-desktop`,
 		Long: `Remove the "pad" entry from the named agent's MCP server
 config. Other server entries are preserved. Idempotent: removing a
 non-existent entry is not an error.`,
@@ -159,8 +161,9 @@ non-existent entry is not an error.`,
 // for shell scripts.
 func mcpStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status",
-		Short: "Show pad MCP install status across supported clients",
+		Use:     "status",
+		Short:   "Show pad MCP install status across supported clients",
+		Example: `  pad mcp status`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			binary, err := os.Executable()
 			if err != nil || binary == "" {
@@ -257,8 +260,9 @@ func mcpServeCmd() *cobra.Command {
 	var structuredOnly bool
 	var textOnly bool
 	cmd := &cobra.Command{
-		Use:   "serve",
-		Short: "Run the MCP server over stdio",
+		Use:     "serve",
+		Short:   "Run the MCP server over stdio",
+		Example: `  pad mcp serve`,
 		Long: `Starts the MCP server speaking JSON-RPC on stdin/stdout.
 Logs go to stderr — stdout is reserved for protocol traffic.
 

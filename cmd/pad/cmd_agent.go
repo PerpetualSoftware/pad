@@ -14,9 +14,10 @@ import (
 
 func agentGuideCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "guide [topic]",
-		Short: "Print Pad agent guidance on demand",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "guide [topic]",
+		Short:   "Print Pad agent guidance on demand",
+		Example: `  pad agent guide playbooks`,
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body := string(cli.StripFrontmatter(pad.PadSkill))
 			if len(args) == 0 {
