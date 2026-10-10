@@ -176,6 +176,10 @@ describe('keyed {#each} census (TASK-3539)', () => {
 		expect(exempt('i')).toBe(true);
 		expect(exempt('`${x.id}:${i}`')).toBe(true);
 		expect(exempt("x.id + ':' + i")).toBe(true);
+		// The literal before the index ends in a non-digit, so the key's
+		// trailing digit run is exactly the index: x.id cannot make two
+		// positions collide (codex round 4 raised this; it holds).
+		expect(exempt("x.id + 'a' + i")).toBe(true);
 		expect(exempt('JSON.stringify([x.kind, i])')).toBe(false);
 		expect(exempt('`${i}${x.suffix}`')).toBe(false);
 		expect(exempt('`${x.id}${i}`')).toBe(false);
