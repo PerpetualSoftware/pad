@@ -33,17 +33,6 @@ func attachmentCmd() *cobra.Command {
 		RunE:  unknownSubcommandRun,
 		Long: `Upload, download, view, and list attachments (images, files) on items.
 
-Examples:
-  pad attachment list                                # all workspace attachments
-  pad attachment list --item TASK-5                  # attachments on a specific item
-  pad attachment list --category image --limit 20    # filter + paginate
-  pad attachment show <attachment-id>                # metadata only (HEAD)
-  pad attachment view <attachment-id>                # save to temp file, print path
-  pad attachment view <attachment-id> -o ./pic.png   # save to a chosen path
-  pad attachment upload TASK-5 ./screenshot.png      # upload + attach to item
-  pad attachment attach <attachment-id> TASK-5       # attach an unattached upload
-  pad attachment download <attachment-id> ./pic.png  # download to explicit path
-
 Attachments belong to a workspace and may optionally reference an item.
 Pass "-" as the item argument to upload without associating with any item.
 An unattached image does not render on share pages even when an item embeds
@@ -54,6 +43,15 @@ For agents: ALWAYS use these CLI commands to read attachments — never read
 directly from ~/.pad/attachments/. The CLI goes through the authenticated
 REST API, which works on local SQLite, Pad Cloud, and remote/Postgres
 deployments and respects workspace ACLs.`,
+		Example: `  pad attachment list                                # all workspace attachments
+  pad attachment list --item TASK-5                  # attachments on a specific item
+  pad attachment list --category image --limit 20    # filter + paginate
+  pad attachment show <attachment-id>                # metadata only (HEAD)
+  pad attachment view <attachment-id>                # save to temp file, print path
+  pad attachment view <attachment-id> -o ./pic.png   # save to a chosen path
+  pad attachment upload TASK-5 ./screenshot.png      # upload + attach to item
+  pad attachment attach <attachment-id> TASK-5       # attach an unattached upload
+  pad attachment download <attachment-id> ./pic.png  # download to explicit path`,
 	}
 
 	cmd.AddCommand(
@@ -77,10 +75,8 @@ func attachmentUploadCmd() *cobra.Command {
 Use "-" to upload without associating with any item. Prefer the item: an
 unattached image does not render on share pages even when an item embeds it,
 because a share serves only attachments its items own. To fix one afterwards,
-run "pad attachment attach <attachment-id> <item-ref>".
-
-Examples:
-  pad attachment upload TASK-5 ./screenshot.png
+run "pad attachment attach <attachment-id> <item-ref>".`,
+		Example: `  pad attachment upload TASK-5 ./screenshot.png
   pad attachment upload - ./standalone.pdf
   pad attachment upload TASK-5 ./design.pdf --filename "Design v2.pdf"`,
 		Args: cobra.ExactArgs(2),
@@ -155,11 +151,9 @@ an item embeds renders as a placeholder there until it is attached to that item.
 
 Only an unattached attachment can be attached; one that already belongs to an
 item is refused, never moved. You must be able to edit the item, and you must
-have uploaded the attachment or be a workspace owner.
-
-Examples:
-  pad attachment attach 3f2a9c1e-... TASK-5`,
-		Args: cobra.ExactArgs(2),
+have uploaded the attachment or be a workspace owner.`,
+		Example: `  pad attachment attach 3f2a9c1e-... TASK-5`,
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -186,10 +180,8 @@ func attachmentDownloadCmd() *cobra.Command {
 		Use:   "download <attachment-id> <out-path>",
 		Short: "Download an attachment by ID",
 		Long: `Download the bytes of an attachment by its UUID. Pass "-" as the out
-path to stream to stdout (useful for piping into image viewers etc.).
-
-Examples:
-  pad attachment download <id> ./screenshot.png
+path to stream to stdout (useful for piping into image viewers etc.).`,
+		Example: `  pad attachment download <id> ./screenshot.png
   pad attachment download <id> --variant thumb-sm ./thumb.png
   pad attachment download <id> -  | open -f -a Preview`,
 		Args: cobra.ExactArgs(2),
@@ -400,10 +392,8 @@ to view attachments referenced in item content as
 ![alt](pad-attachment:<uuid>). It works for every Pad install
 (local SQLite, Pad Cloud, remote/Postgres) and respects workspace
 ACLs. Reading directly from ~/.pad/attachments/ does NOT — never
-do that.
-
-Examples:
-  pad attachment view <id>                         # tmp file, print path
+do that.`,
+		Example: `  pad attachment view <id>                         # tmp file, print path
   pad attachment view <id> -o ./screenshot.png     # save to chosen path
   pad attachment view <id> --variant thumb-md      # serve a derived variant
   pad attachment view <id> --format json           # {path,mime,size}`,
@@ -498,10 +488,8 @@ func attachmentShowCmd() *cobra.Command {
 		Long: `Issue a HEAD request and print the attachment's MIME type,
 size, filename, ETag, and Last-Modified — without transferring the
 bytes. Useful to confirm an attachment exists, or to size a
-download before committing to it.
-
-Examples:
-  pad attachment show <id>
+download before committing to it.`,
+		Example: `  pad attachment show <id>
   pad attachment show <id> --format json
   pad attachment show <id> --variant thumb-sm`,
 		Args: cobra.ExactArgs(1),
@@ -572,15 +560,13 @@ func attachmentListCmd() *cobra.Command {
 filters. Returns the same fields the web UI uses (id, mime, size,
 filename, parent item, collection, created_at).
 
-Examples:
-  pad attachment list                              # all originals
+The --item flag accepts an item ref (TASK-5) or slug; the CLI
+resolves it to a UUID before calling the API.`,
+		Example: `  pad attachment list                              # all originals
   pad attachment list --item TASK-5                # one item's attachments
   pad attachment list --category image --limit 20  # images only
   pad attachment list --unattached                 # orphan uploads
-  pad attachment list --format json                # parseable output
-
-The --item flag accepts an item ref (TASK-5) or slug; the CLI
-resolves it to a UUID before calling the API.`,
+  pad attachment list --format json                # parseable output`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if attachedFlag && unattachedFlag {

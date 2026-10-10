@@ -40,10 +40,8 @@ walks you through each step:
   6. Install/update the /pad skill for detected AI tools
 
 Safe to re-run anytime — it skips steps that are already done and shows
-your current status.
-
-Examples:
-  pad init                    # Auto-detect everything, use directory name
+your current status.`,
+		Example: `  pad init                    # Auto-detect everything, use directory name
   pad init myproject          # Specify workspace name
   pad init --template scrum   # Use scrum template for new workspace`,
 		Args: cobra.MaximumNArgs(1),

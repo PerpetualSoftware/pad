@@ -18,10 +18,8 @@ func workspaceContextCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "context",
 		Short: "Show or update machine-readable workspace context",
-		Long: `Show or update the structured workspace context stored in the current workspace.
-
-Examples:
-  pad workspace context --format json
+		Long:  `Show or update the structured workspace context stored in the current workspace.`,
+		Example: `  pad workspace context --format json
   pad workspace context
   pad workspace context set --file workspace-context.json
   cat workspace-context.json | pad workspace context set --stdin`,

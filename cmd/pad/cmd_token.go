@@ -29,10 +29,8 @@ func tokenCmd() *cobra.Command {
 		Long: `Manage user-scoped API tokens (the pad_ tokens PAD_TOKEN carries).
 
 Tokens act as the user who minted them. The secret is shown exactly once,
-at mint time — the server stores only a hash and cannot show it again.
-
-Examples:
-  pad token create --name ci-agent
+at mint time — the server stores only a hash and cannot show it again.`,
+		Example: `  pad token create --name ci-agent
   pad token create --name cursor --expires-in 30
   pad token list
   pad token rotate 7fde5e41-...

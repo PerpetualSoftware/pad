@@ -1,6 +1,7 @@
 package cmdhelp
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -301,6 +302,28 @@ func TestParseExamplesFromLong_StripsSameLineComments(t *testing.T) {
 	}
 	if got[0].Cmd != "pad attachment list --item TASK-5" {
 		t.Errorf("example[0] = %q, want stripped form", got[0].Cmd)
+	}
+}
+
+// TASK-2865: the Example field reads a block the way Long does, so a block
+// moved from Long to Example emits the same examples. A `#` inside quotes is
+// a literal, not a comment.
+func TestParseExamples_MatchesLongForTheSameBlock(t *testing.T) {
+	block := `  pad attachment list --item TASK-5    # one item's attachments
+  pad item search "#hashtag"           # quoted hash stays
+  # a whole-line comment
+  pad item list`
+
+	fromExample := parseExamples(block)
+	fromLong := parseExamplesFromLong("Examples:\n" + block)
+	if len(fromExample) != 3 {
+		t.Fatalf("expected 3 examples, got %d: %+v", len(fromExample), fromExample)
+	}
+	if fmt.Sprint(fromExample) != fmt.Sprint(fromLong) {
+		t.Errorf("Example and Long disagree on the same block:\nExample: %+v\nLong:    %+v", fromExample, fromLong)
+	}
+	if fromExample[1].Cmd != `pad item search "#hashtag"` {
+		t.Errorf("a quoted # must survive: %q", fromExample[1].Cmd)
 	}
 }
 

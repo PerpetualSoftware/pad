@@ -491,6 +491,15 @@ func parseExamples(example string) []Example {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		// A trailing same-line comment is dropped, exactly as
+		// parseExamplesFromLong drops it, so moving a block from Long to
+		// the Example field does not change what cmdhelp emits (TASK-2865).
+		if hashIdx := stripCommentIndex(line); hashIdx >= 0 {
+			line = strings.TrimRight(line[:hashIdx], " \t")
+		}
+		if line == "" {
+			continue
+		}
 		examples = append(examples, Example{Cmd: line})
 	}
 	if len(examples) == 0 {

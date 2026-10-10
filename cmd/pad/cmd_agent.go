@@ -121,10 +121,8 @@ Supported tools:
   opencode     OpenCode (.agents/skills/)
   copilot      GitHub Copilot (.github/instructions/)
   amazon-q     Amazon Q Developer (.amazonq/rules/)
-  junie        JetBrains Junie (.junie/guidelines/)
-
-Examples:
-  pad agent install              # Auto-detect and install
+  junie        JetBrains Junie (.junie/guidelines/)`,
+		Example: `  pad agent install              # Auto-detect and install
   pad agent install claude       # Install for Claude Code
   pad agent install cursor       # Install for Cursor/Codex/Windsurf/OpenCode
   pad agent install opencode     # Install for OpenCode

@@ -184,17 +184,15 @@ Two ways to define the schema:
 
   --fields and --schema are mutually exclusive.
 
-Examples:
-  pad collection create "Bugs" --fields "status:select:new,triaged,fixing,resolved;severity:select:low,medium,high,critical;component:text"
+Tip: if you omit "label" on a --schema field, the CLI auto-fills it from
+the key using Title Case (e.g. "due_date" → "Due Date") — matching what
+the --fields DSL does. Set "label" explicitly when you want a custom display name.`,
+		Example: `  pad collection create "Bugs" --fields "status:select:new,triaged,fixing,resolved;severity:select:low,medium,high,critical;component:text"
   pad collection create "Decisions" --icon "⚖️" --fields "status:select:proposed,accepted,rejected;impact:select:low,medium,high"
   pad collection create "Reviews" --fields "status:select:open,done;reviewer:relation:people"
   pad collection create "Marketing" --schema '{"fields":[{"key":"status","label":"Status","type":"select","options":["idea","drafting","review","published","archived"],"terminal_options":["published","archived"],"default":"idea","required":true}]}'
   pad collection create "Marketing" --schema @./marketing-schema.json
-  cat schema.json | pad collection create "Marketing" --schema -
-
-Tip: if you omit "label" on a --schema field, the CLI auto-fills it from
-the key using Title Case (e.g. "due_date" → "Due Date") — matching what
-the --fields DSL does. Set "label" explicitly when you want a custom display name.`,
+  cat schema.json | pad collection create "Marketing" --schema -`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -312,14 +310,12 @@ The --schema and --fields flags accept the same input modes as
   --fields  Compact DSL for the simple case: key:type[:option1,option2,...]
   --schema  Full CollectionSchema JSON: inline, @path, or - for stdin
 
-Examples:
-  pad collection update tasks --name Issues --icon 🎯
-  pad collection update conventions --description "Updated rules"
-  pad collection update bugs --schema @./new-bug-schema.json
-  pad collection update tasks --fields "status:select:open,doing,done;priority:select:high,medium,low"
-
 Collections can be referenced by slug (e.g. 'tasks') only — there is no
 issue-ID equivalent for collections themselves.`,
+		Example: `  pad collection update tasks --name Issues --icon 🎯
+  pad collection update conventions --description "Updated rules"
+  pad collection update bugs --schema @./new-bug-schema.json
+  pad collection update tasks --fields "status:select:open,doing,done;priority:select:high,medium,low"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()

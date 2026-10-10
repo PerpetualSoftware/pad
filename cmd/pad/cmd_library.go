@@ -55,10 +55,8 @@ func libraryCmd() *cobra.Command {
 JSON output: conventions always carry their full content (bodies are short).
 Playbooks carry a short ` + "`summary`" + ` instead of full ` + "`content`" + ` by default — use
 ` + "`--full`" + ` to opt into full playbook bodies (e.g. when piping into a tool that
-needs the entire text). For one entry's full body use ` + "`pad library get <title>`" + `.
-
-Examples:
-  pad library list                     # List both conventions and playbooks
+needs the entire text). For one entry's full body use ` + "`pad library get <title>`" + `.`,
+		Example: `  pad library list                     # List both conventions and playbooks
   pad library list --type conventions  # List conventions only
   pad library list --type playbooks    # List playbooks only
   pad library list --category git      # Server-side category filter
@@ -249,13 +247,10 @@ resolves to the same kind in both surfaces.
 
 Pair with ` + "`pad library list`" + ` (which returns summaries for playbooks by default)
 to browse, then ` + "`pad library get`" + ` for the full body of any entry you want to
-read end-to-end before activating.
-
-Examples:
-  pad library get "Commit after task completion"   # Convention
+read end-to-end before activating.`,
+		Example: `  pad library get "Commit after task completion"   # Convention
   pad library get "Ship tasks"                     # Playbook
-  pad library get "Ship tasks" --format json       # Full envelope
-`,
+  pad library get "Ship tasks" --format json       # Full envelope`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -330,10 +325,8 @@ func libraryActivateCmd() *cobra.Command {
 		Use:   "activate <title>",
 		Short: "Activate a library convention or playbook in the current workspace",
 		Long: `Look up a convention or playbook in the library by title and create it as an item
-in the appropriate collection (conventions or playbooks) with all fields set.
-
-Examples:
-  pad library activate "Commit after task completion"    # Activates a convention
+in the appropriate collection (conventions or playbooks) with all fields set.`,
+		Example: `  pad library activate "Commit after task completion"    # Activates a convention
   pad library activate "Ship tasks"                      # Activates a playbook`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -557,10 +550,8 @@ func libraryDiffCmd() *cobra.Command {
 		Long: `Show how an item made from one of the conventions or playbooks Pad ships
 differs from the library's current text: what the library changed since the
 item was made, what you changed, and which settings an update would replace.
-Read-only. Take the update with "pad library update <ref>".
-
-Examples:
-  pad library diff PLAYB-12
+Read-only. Take the update with "pad library update <ref>".`,
+		Example: `  pad library diff PLAYB-12
   pad library diff PLAYB-12 --format json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -654,10 +645,8 @@ title are never changed, and the item's previous text stays in its version
 history. Review first with "pad library diff <ref>"; nothing updates on its own.
 
 The update is guarded by the version read just before it: if the item changes
-in between, it is refused rather than applied over the change.
-
-Examples:
-  pad library update PLAYB-12
+in between, it is refused rather than applied over the change.`,
+		Example: `  pad library update PLAYB-12
   pad library update PLAYB-12 --overwrite-pending-edits`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
