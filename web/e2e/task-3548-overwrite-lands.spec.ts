@@ -33,7 +33,14 @@ async function stored(fixture: SuiteFixture, request: APIRequestContext, doc: Do
 }
 
 /** Refuse the first content PATCH as an unconfirmed-edits refusal does, moving seq first. */
-async function refuseFirstContentSave(page: Page, fixture: SuiteFixture, request: APIRequestContext, doc: Doc) {
+type Bump = 'title' | 'neutral';
+
+/**
+ * The refused write's row half. 'title' renames the item (so the slug moves too,
+ * which the by-id re-read must survive); 'neutral' writes a field no save here
+ * sends, for a page whose save sends the title itself.
+ */
+async function refuseFirstContentSave(page: Page, fixture: SuiteFixture, request: APIRequestContext, doc: Doc, bump: Bump = 'title') {
 	const sent: Record<string, unknown>[] = [];
 	let refused = false;
 	const mine = (url: string) => url.endsWith(`/items/${doc.id}`) || url.endsWith(`/items/${doc.slug}`);
@@ -46,11 +53,11 @@ async function refuseFirstContentSave(page: Page, fixture: SuiteFixture, request
 		if (refused) return route.continue();
 		refused = true;
 		// The refused write's row half: seq moves, the body does not.
-		const bump = await request.patch(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${doc.id}`, {
+		const moved = await request.patch(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${doc.id}`, {
 			headers: authJson(fixture),
-			data: { title: `${doc.title} (row moved)` },
+			data: bump === 'title' ? { title: `${doc.title} (row moved)` } : { fields_patch: { e2e_row_moved: Date.now() } },
 		});
-		expect(bump.ok(), await bump.text()).toBeTruthy();
+		expect(moved.ok(), await moved.text()).toBeTruthy();
 		return route.fulfill({
 			status: 409,
 			contentType: 'application/json',
@@ -116,7 +123,7 @@ test.describe('TASK-3548: Overwrite after an unconfirmed-edits refusal lands', (
 
 	test('playbook editor', async ({ page, fixture, request }) => {
 		const doc = await create(fixture, request, 'playbooks', `PB lands ${Date.now()}`, 'Original playbook body.', { status: 'draft' });
-		const sent = await refuseFirstContentSave(page, fixture, request, doc);
+		const sent = await refuseFirstContentSave(page, fixture, request, doc, 'neutral');
 		await browserLogin(page);
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/playbooks/${doc.slug}`);
 		await expect(page.locator('.title-input')).toHaveValue(doc.title);
@@ -171,6 +178,23 @@ test.describe('TASK-3548: Overwrite after an unconfirmed-edits refusal lands', (
 		expect(saves).toHaveLength(2);
 		expect(saves[1]!.overwrite_pending_edits).toBe(true);
 		expect(Number(saves[1]!.expected_seq)).toBeGreaterThan(Number(saves[0]!.expected_seq));
+	});
+
+	// codex P1: the playbook save sends its title. A title someone else set after
+	// the refusal must not be put back by the overwrite: no fresh token then, and
+	// the save meets the conflict instead.
+	test('playbook editor: an overwrite does not restore a title someone else changed', async ({ page, fixture, request }) => {
+		const doc = await create(fixture, request, 'playbooks', `PB theirs ${Date.now()}`, 'Original playbook body.', { status: 'draft' });
+		await refuseFirstContentSave(page, fixture, request, doc, 'title');
+		await browserLogin(page);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/playbooks/${doc.slug}`);
+		await expect(page.locator('.title-input')).toHaveValue(doc.title);
+		await page.locator('textarea').first().fill('A playbook body.');
+		await page.getByRole('button', { name: /^Save$/ }).click();
+		await overwrite(page);
+		await page.waitForTimeout(1500);
+		const after = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${doc.id}`, { headers: authJson(fixture) })).json()) as { title: string };
+		expect(after.title, 'their title stands').toBe(`${doc.title} (row moved)`);
 	});
 });
 

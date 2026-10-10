@@ -10,7 +10,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleEditError } from '$lib/items/titleLimit';
-	import { contentOutcomeNotice, contentWriteFor, isContentNotAppliedUnconfirmed, isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice, stillOnBase } from '$lib/items/contentWrite';
+	import { contentOutcomeNotice, contentWriteFor, holdsWhatWasSent, isContentNotAppliedUnconfirmed, isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice, stillOnBase } from '$lib/items/contentWrite';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
@@ -343,7 +343,9 @@
 				const baseBody = item.content ?? '';
 				const fresh = isContentNotAppliedUnconfirmed(err) ? await api.items.get(wsSlug, refusedId) : null;
 				if (!isSameIdentity()) return;
-				const resendPayload = fresh && stillOnBase(fresh, baseBody) ? { ...payload, ...contentWriteFor(bodyContent, fresh) } : payload;
+				// Only while the row holds what this save sent besides the body (codex: a
+				// title changed by someone else must not be put back).
+				const resendPayload = fresh && stillOnBase(fresh, baseBody) && holdsWhatWasSent(fresh, payload) ? { ...payload, ...contentWriteFor(bodyContent, fresh) } : payload;
 				const resent = await api.items.update(wsSlug, refusedId, { ...resendPayload, overwrite_pending_edits: true });
 				saveNote = prunedEditsNotice(resent) ?? contentOutcomeNotice(resent);
 				saved = resent;

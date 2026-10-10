@@ -11,6 +11,7 @@ import {
 	pendingEditsReason,
 	prunedEditsNotice,
 	stillOnBase,
+	holdsWhatWasSent,
 } from './contentWrite';
 
 const row = { content: 'stored body', seq: 7, updated_at: '2026-09-26T05:00:00Z' };
@@ -72,6 +73,26 @@ describe('isEditsNotStoredRefusal', () => {
 
 // TASK-3548: the refused write moved seq; the resend may take the fresh one
 // only while the body is still the one the token was taken against.
+describe('holdsWhatWasSent', () => {
+	it('is true when the row holds the sent title and every patched field', () => {
+		const fresh = { title: 'T2', fields: JSON.stringify({ status: 'active', trigger: 'on-commit', other: 1 }) };
+		expect(holdsWhatWasSent(fresh, { title: 'T2', fields_patch: { status: 'active' } })).toBe(true);
+		expect(holdsWhatWasSent(fresh, {})).toBe(true);
+	});
+
+	it('is false when someone else changed the title or a patched field since', () => {
+		const fresh = { title: 'Their title', fields: JSON.stringify({ status: 'draft' }) };
+		expect(holdsWhatWasSent(fresh, { title: 'T2' })).toBe(false);
+		expect(holdsWhatWasSent(fresh, { fields_patch: { status: 'active' } })).toBe(false);
+	});
+
+	it('reads fields as an object too, and an unreadable blob never passes', () => {
+		expect(holdsWhatWasSent({ fields: { status: 'active' } }, { fields_patch: { status: 'active' } })).toBe(true);
+		expect(holdsWhatWasSent({ fields: '{not json' }, { fields_patch: { status: 'active' } })).toBe(false);
+		expect(holdsWhatWasSent(null, {})).toBe(false);
+	});
+});
+
 describe('stillOnBase', () => {
 	it('is true only when the re-read body is exactly the base', () => {
 		expect(stillOnBase({ content: 'base body' }, 'base body')).toBe(true);

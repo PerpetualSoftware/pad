@@ -107,6 +107,31 @@ export function stillOnBase(fresh: { content?: string | null } | null | undefine
 }
 
 /**
+ * The other half of that question for a write that sent more than the body
+ * (codex, TASK-3548): does the re-read row hold exactly the title and every
+ * fields_patch value this write sent? The refused write landed them, so it
+ * should; if not, someone else changed them since, and resending this write
+ * with the fresh token would put the old values back over a change the user
+ * has not seen. Fields compare as JSON.
+ */
+export function holdsWhatWasSent(
+	fresh: { title?: string; fields?: string | Record<string, unknown> | null } | null | undefined,
+	sent: { title?: string; fields_patch?: Record<string, unknown> },
+): boolean {
+	if (!fresh) return false;
+	if (sent.title !== undefined && fresh.title !== sent.title) return false;
+	const patch = sent.fields_patch;
+	if (!patch || Object.keys(patch).length === 0) return true;
+	let stored: Record<string, unknown>;
+	try {
+		stored = typeof fresh.fields === 'string' ? (JSON.parse(fresh.fields || '{}') as Record<string, unknown>) : (fresh.fields ?? {});
+	} catch {
+		return false;
+	}
+	return Object.entries(patch).every(([k, v]) => JSON.stringify(stored[k]) === JSON.stringify(v));
+}
+
+/**
  * Why a content_pending_flush refusal happened (BUG-3244): 'set_aside' when the
  * server counted edits an editor upgrade set aside (details.set_aside_rows),
  * which no tab will ever store, else 'pending'. Copy that tells the user what to
