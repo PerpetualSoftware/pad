@@ -171,4 +171,22 @@ describe('TASK-3543: a removal asked through the shared dialog', () => {
 		await new Promise((r) => setTimeout(r, 20));
 		expect(api.members.remove).not.toHaveBeenCalled();
 	});
+
+	// codex asked whether the changed select keeps showing the unsent role
+	// when the page moves on. It cannot: a workspace change clears the member
+	// list, so the rows (and their selects) are rebuilt from the stored roles.
+	it('a self-demotion answered after the page moved sends nothing, and the rebuilt row shows the stored role', async () => {
+		calls.updateRole.length = 0;
+		await openMembers();
+		const answer = holdTheQuestion();
+		const select = row('Me').querySelector<HTMLSelectElement>('.role-select')!;
+		choose(select, 'editor');
+		await waitFor(() => expect(ask.request).toHaveBeenCalledTimes(1));
+		page.params = { username: 'dave', workspace: 'other-ws' };
+		await waitFor(() => expect(select.isConnected).toBe(false));
+		answer(true);
+		await waitFor(() => expect(row('Me').querySelector<HTMLSelectElement>('.role-select')!.value).toBe('owner'));
+		await new Promise((r) => setTimeout(r, 20));
+		expect(calls.updateRole).toEqual([]);
+	});
 });
