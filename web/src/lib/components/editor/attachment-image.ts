@@ -511,6 +511,10 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				}
 				if (currentUuid) missing.setAttribute('data-attachment-id', currentUuid);
 				missing.style.display = '';
+				// Blur BEFORE hiding: an element that is no longer rendered is not
+				// focusable, and blur() on it is a no-op (jsdom 30 implements this;
+				// a browser's focus fixup happens to cover it, but only later).
+				if (document.activeElement === img) img.blur();
 				img.style.display = 'none';
 				// The <img> the placeholder replaces stops being a control too —
 				// see applyImageSemantics for why a hidden/dead image must not
