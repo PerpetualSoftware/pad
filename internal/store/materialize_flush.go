@@ -37,8 +37,10 @@ type MaterializeInput struct {
 	// Rows are the item's CONTENT-BEARING op-log rows, oldest first, over the
 	// WHOLE op-log, not only those above the watermark: replay rebuilds the
 	// document from nothing, as a tab's replay (since=0) does. Rows marked
-	// non-content-bearing provably cannot change the document (BUG-3124), so
-	// leaving them out gives the same document (U2's parity set).
+	// non-content-bearing are left out because they cannot change the document
+	// (BUG-3124), EXCEPT SyncStep2 rows, which are included (TASK-3574 (2)): a
+	// step2 usually repeats content other rows carry, but it can be the only
+	// persisted copy of an edit, and replaying a repeat is harmless.
 	Rows [][]byte
 	// Cursor is MAX(id) over ALL of the item's op-log rows, content-bearing or
 	// not, from the same statement as Rows.
@@ -71,11 +73,10 @@ func (s *Store) LoadMaterializeInput(itemID string) (*MaterializeInput, error) {
 
 	// ONE statement: the rows, their stamps and the watermark come from the
 	// same snapshot on both dialects, so Cursor can never name a row whose
-	// bytes are not in Rows. Non-content-bearing rows contribute their id and
-	// stamp but not their bytes.
+	// bytes are not in Rows. Every row's bytes are read; Rows keeps the
+	// content-bearing ones and every SyncStep2 (below).
 	rows, err := s.db.Query(s.q(`
-		SELECT u.id, u.content_bearing, u.schema_version,
-		       CASE WHEN u.content_bearing = TRUE THEN u.update_data END,
+		SELECT u.id, u.content_bearing, u.schema_version, u.update_data,
 		       COALESCE(i.content_flushed_op_log_id, 0)
 		FROM item_yjs_updates u
 		JOIN items i ON i.id = u.item_id
@@ -110,6 +111,15 @@ func (s *Store) LoadMaterializeInput(itemID string) (*MaterializeInput, error) {
 			if id > watermark {
 				in.Pending++
 			}
+		} else if yjsFrameIsSyncStep2(data) {
+			// TASK-3574 (2): a SyncStep2 is stored non-content-bearing (BUG-3523)
+			// because it usually repeats content other rows carry, but it can be
+			// the ONLY persisted copy of an edit (the edit's own append failed
+			// and was still broadcast, and its tab closed before its catch-up).
+			// Replaying it is harmless when it repeats (Yjs deduplicates) and
+			// recovers the edit when it does not. It still does not count toward
+			// Pending; whether a step2 should count is a separate design note.
+			in.Rows = append(in.Rows, data)
 		}
 	}
 	if err := rows.Err(); err != nil {
