@@ -91,15 +91,27 @@ describe('grouped creation toasts (TASK-3593)', () => {
 });
 
 describe('unread counts only other actors (TASK-3593)', () => {
-	it("the user's own confirmation does not bump unread", () => {
+	it("a success or info confirmation does not bump unread", () => {
 		toastStore.show('Saved', 'success');
-		toastStore.show('Could not save', 'error');
+		toastStore.show('Copied link', 'info');
 		expect(toastStore.history).toHaveLength(2);
 		expect(toastStore.unreadCount).toBe(0);
 	});
 
+	it('an error counts without the flag, whoever caused it', () => {
+		// e.g. a debounced autosave failing in the background, or the user's
+		// own save refused: neither is a confirmation.
+		toastStore.show('Failed to save content', 'error');
+		expect(toastStore.unreadCount).toBe(1);
+	});
+
 	it('an event marked unread does', () => {
 		toastStore.show('Dana commented', 'info', undefined, undefined, undefined, { unread: true });
+		expect(toastStore.unreadCount).toBe(1);
+	});
+
+	it('a non-error background notice counts with showUnread', () => {
+		toastStore.showUnread('Server busy — please try again shortly', 'info');
 		expect(toastStore.unreadCount).toBe(1);
 	});
 });

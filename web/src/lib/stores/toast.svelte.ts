@@ -88,10 +88,15 @@ function generateId(): string {
 }
 
 /**
- * `unread`: the toast announces ANOTHER actor's work, so it counts toward the
- * bell's unread badge (TASK-3593). Off by default: a confirmation of the
+ * What counts toward the bell's unread badge (TASK-3593): every ERROR, and
+ * anything else only when the caller sets `unread`. A confirmation of the
  * user's own action is not news to them, and counting every one of them made
- * the badge meaningless.
+ * the badge meaningless; an error is never a confirmation, whoever caused it,
+ * and an error from something running in the background (an autosave, a
+ * page-load fetch) may auto-dismiss unseen. The rule lives here rather than
+ * at each call site so a new error toast counts without anyone choosing.
+ * `unread` is for a non-error toast about something the user did not do:
+ * another actor's work, or a background notice they may have missed.
  */
 export interface ShowOptions {
 	unread?: boolean;
@@ -116,7 +121,7 @@ function show(
 	while (history.length > MAX_HISTORY) {
 		history.pop();
 	}
-	if (opts.unread) unreadCount++;
+	if (opts.unread || type === 'error') unreadCount++;
 
 	// Drop oldest if exceeded max
 	while (toasts.length > MAX_TOASTS) {
@@ -132,6 +137,21 @@ function show(
 	startClock(id, clock);
 
 	return id;
+}
+
+/**
+ * `show` with `unread` set (TASK-3593): for a NON-error toast about something
+ * the user may not have caused or seen, e.g. the server-busy notice, which a
+ * background request can raise. An error counts without this.
+ */
+function showUnread(
+	message: string,
+	type: Toast['type'] = 'info',
+	duration?: number,
+	link?: string,
+	action?: ToastAction,
+): string {
+	return show(message, type, duration, link, action, { unread: true });
 }
 
 /**
@@ -271,6 +291,7 @@ export const toastStore = {
 		return unreadCount;
 	},
 	show,
+	showUnread,
 	showGrouped,
 	dismiss,
 	pause,
