@@ -164,6 +164,18 @@
 	 * tie-breaker that guarantees uniqueness across any rendering of
 	 * the same backlinks array. Codex round 1 P1.
 	 */
+	// The snippet is a raw slice of the source body. Since BUG-3583 a body can
+	// hold inline <strong>/<em>/<s> (a run markdown delimiters cannot express),
+	// so tags are dropped for this plain-text line, as the search palette does.
+	// The slice can cut a tag in two at either truncated end (`…g>Hello.`,
+	// `World</str…`); those fragments go too.
+	function snippetText(snippet: string): string {
+		return snippet
+			.replace(/<[^>]*>/g, '')
+			.replace(/^…\/?[a-z]*>/i, '…')
+			.replace(/<\/?[a-z]*…$/i, '…');
+	}
+
 	function rowKey(bl: Backlink, index: number): string {
 		return `${bl.source_item_id}|${bl.snippet}|${index}`;
 	}
@@ -222,7 +234,7 @@
 									</span>
 								</div>
 								{#if bl.snippet}
-									<div class="snippet">{#if isBodyStale(bl)}<StaleBodyDot />{/if}{bl.snippet}</div>
+									<div class="snippet">{#if isBodyStale(bl)}<StaleBodyDot />{/if}{snippetText(bl.snippet)}</div>
 								{/if}
 							</li>
 						{/each}

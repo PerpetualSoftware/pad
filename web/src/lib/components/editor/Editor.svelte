@@ -1036,6 +1036,12 @@
 				codeBlock: false,
 				link: false, // We use our own SafeLink extension below
 				text: false, // PadText (htmlProse.ts, BUG-3557) replaces it
+				// htmlProseExtensions() re-adds these five in this order (BUG-3583)
+				bold: false,
+				code: false,
+				italic: false,
+				strike: false,
+				underline: false,
 				...(ydoc ? { undoRedo: false } : {}),
 			}),
 			...htmlProseExtensions(),

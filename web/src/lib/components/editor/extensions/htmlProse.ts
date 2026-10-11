@@ -33,6 +33,7 @@
 
 import { Extension, type Editor } from '@tiptap/core';
 import Text from '@tiptap/extension-text';
+import { flankingMarkExtensions } from './flankingMarks';
 import type MarkdownIt from 'markdown-it';
 import type { Schema } from '@tiptap/pm/model';
 import blockNames from 'markdown-it/lib/common/html_blocks.mjs';
@@ -247,9 +248,12 @@ export const HtmlProseGuard = Extension.create({
 });
 
 /**
- * Both, for the editor's and the materializer's extension lists. StarterKit
- * must be configured with `text: false` beside them.
+ * For the editor's and the materializer's extension lists alike. StarterKit
+ * must be configured with `text: false, bold: false, code: false,
+ * italic: false, strike: false, underline: false` beside them: PadText
+ * replaces Text, and flankingMarkExtensions() replaces the five marks
+ * (BUG-3583, flankingMarks.ts).
  */
 export function htmlProseExtensions() {
-	return [PadText, HtmlProseGuard];
+	return [PadText, HtmlProseGuard, ...flankingMarkExtensions()];
 }

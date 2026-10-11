@@ -73,7 +73,7 @@ const headless = async (): Promise<never> => {
  */
 export function headlessExtensions(markdownOverrides: Record<string, unknown> = {}) {
 	return [
-		StarterKit.configure({ codeBlock: false, link: false, undoRedo: false, text: false }),
+		StarterKit.configure({ codeBlock: false, link: false, undoRedo: false, text: false, bold: false, code: false, italic: false, strike: false, underline: false }),
 		...htmlProseExtensions(),
 		PadCodeBlock.configure(PAD_CODE_BLOCK_OPTIONS),
 		HtmlBlock,
