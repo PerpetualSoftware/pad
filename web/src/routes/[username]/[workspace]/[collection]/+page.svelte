@@ -4061,6 +4061,39 @@
 										<span class="view-sheet-icon">&#9783;</span>
 										<span>Table</span>
 									</button>
+									<!--
+										Saved views (TASK-3589): selecting one works on a phone as
+										on the desktop menu. Managing them (save, delete, make
+										default) stays on the desktop for now.
+									-->
+									{#if savedViews.length > 0}
+										<div class="view-sheet-label" id="view-sheet-saved">Saved views</div>
+										<button
+											class="view-sheet-option"
+											class:active={activeViewId === null}
+											type="button"
+											aria-describedby="view-sheet-saved"
+											onclick={() => { clearActiveView(); viewSheetOpen = false; }}
+										>
+											<span class="view-sheet-icon" aria-hidden="true">&#9733;</span>
+											<span>All</span>
+										</button>
+										{#each savedViews as view (view.id)}
+											<button
+												class="view-sheet-option"
+												class:active={activeViewId === view.id}
+												type="button"
+												aria-describedby="view-sheet-saved"
+												onclick={() => { applyViewConfig(view); viewSheetOpen = false; }}
+											>
+												<span class="view-sheet-icon" aria-hidden="true">&#9733;</span>
+												<span>{view.name}</span>
+												{#if defaultViewId === view.id}
+													<span class="saved-view-default" title="Default view — applied on entry" aria-label="Default view">📌</span>
+												{/if}
+											</button>
+										{/each}
+									{/if}
 								</div>
 							</BottomSheet>
 						{/if}
@@ -5086,6 +5119,15 @@
 	.view-sheet-option.active {
 		background: var(--bg-tertiary);
 		font-weight: 600;
+	}
+
+	/* TASK-3589: the saved-views group in the mobile view sheet. */
+	.view-sheet-label {
+		padding: var(--space-3) var(--space-3) var(--space-1);
+		font-size: 0.8em;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 
 	.view-sheet-icon {
