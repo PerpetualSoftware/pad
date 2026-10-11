@@ -1771,6 +1771,20 @@ func planLimitDetails(r *http.Request, result *store.LimitResult) map[string]int
 	if !fromNativeShell(r) {
 		d["upgrade_url"] = "/console/billing"
 	}
+	// Who can lift this limit (TASK-3601): the client offers checkout only to
+	// the payer, and names the payer to anyone else ("Ask Dana to upgrade").
+	// The name is the workspace owner's display name, which every member
+	// already sees. Absent when the check did not resolve a payer.
+	if result.PayerID != "" {
+		you := false
+		if u := currentUser(r); u != nil && u.ID == result.PayerID {
+			you = true
+		}
+		d["payer_is_you"] = you
+		if !you && result.PayerName != "" {
+			d["payer_name"] = result.PayerName
+		}
+	}
 	// `requested` appears only where an operation adds more than one at once
 	// (BUG-3103: ImportWorkspace). Every other door leaves Requested zero and
 	// this map is byte-identical to what it was before the field existed, which
