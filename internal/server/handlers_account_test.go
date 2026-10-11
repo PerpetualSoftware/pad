@@ -194,7 +194,8 @@ func TestHandleDeleteAccount_AsksSidecarByUserWhenNoLinkedCustomer(t *testing.T)
 // customer proceed: either deploy order is safe.
 func TestHandleDeleteAccount_OlderSidecar400WithNoLinkedCustomerProceeds(t *testing.T) {
 	srv := testServer(t)
-	fake := &fakeSidecar{err: &billing.SidecarError{Status: http.StatusBadRequest, Body: `{"error":"customer_id must start with 'cus_'"}`}}
+	// The body exactly as the old sidecar's json.Encoder writes it, newline included.
+	fake := &fakeSidecar{err: &billing.SidecarError{Status: http.StatusBadRequest, Body: "{\"error\":\"customer_id must start with 'cus_'\"}\n"}}
 	srv.SetCloudSidecar(fake)
 
 	userID, token := bootstrapAccountDeleteUser(t, srv, "")
@@ -205,6 +206,35 @@ func TestHandleDeleteAccount_OlderSidecar400WithNoLinkedCustomerProceeds(t *test
 	}
 	if u, _ := srv.store.GetUser(userID); u != nil {
 		t.Error("expected user to be deleted")
+	}
+}
+
+// Any OTHER 400 with no linked customer aborts (retro Codex review of #2036):
+// only the old sidecar's exact refusal means nothing could have been
+// cancelled. A current sidecar's 400 may come while stamped customers bill.
+func TestHandleDeleteAccount_NoLinkedCustomerOther400Aborts(t *testing.T) {
+	for _, body := range []string{
+		`{"error":"customer_id or user_id is required"}`,
+		`{"error":"Invalid request body"}`,
+		`{"error":"customer_id must start with 'cus_' "}`,
+		`customer_id must start with 'cus_'`,
+		``,
+		// The message alongside anything else is not the old sidecar's answer.
+		`{"error":"customer_id must start with 'cus_'","detail":"cancellation failed"}`,
+		`{"error":"boom","error":"customer_id must start with 'cus_'"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			srv := testServer(t)
+			srv.SetCloudSidecar(&fakeSidecar{err: &billing.SidecarError{Status: http.StatusBadRequest, Body: body}})
+			userID, token := bootstrapAccountDeleteUser(t, srv, "")
+			rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
+			if rr.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500 on 400 %q, got %d: %s", body, rr.Code, rr.Body.String())
+			}
+			if u, _ := srv.store.GetUser(userID); u == nil {
+				t.Error("user must still exist after an aborted delete")
+			}
+		})
 	}
 }
 

@@ -218,7 +218,10 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// rest); it cancels every customer the user owns. A sidecar that predates
 	// user_id refuses an empty customer_id with 400: it could not have
 	// cancelled anything, which is what not asking did before, so that one
-	// answer lets the deletion proceed.
+	// answer lets the deletion proceed. Only that answer: the old sidecar's
+	// exact refusal (olderSidecarRefusedEmptyCustomer). Any other 400 from a
+	// current sidecar may come with stamped customers still billing, so it
+	// aborts like every other failure (retro Codex review of #2036).
 	stripeWasCancelled := false
 	if s.cloudSidecar != nil {
 		err := s.cloudSidecar.CancelCustomer(fullUser.StripeCustomerID, fullUser.ID)
@@ -228,7 +231,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 			// Possibly only a stamped, unlinked customer: still billing that
 			// was cancelled, which the partial-delete alert below must know.
 			stripeWasCancelled = true
-		case fullUser.StripeCustomerID == "" && errors.As(err, &sidecarErr) && sidecarErr.Status == http.StatusBadRequest:
+		case fullUser.StripeCustomerID == "" && errors.As(err, &sidecarErr) && olderSidecarRefusedEmptyCustomer(sidecarErr):
 			slog.Warn("delete account: sidecar predates user_id; no linked customer to cancel, continuing",
 				"user_id", user.ID)
 		default:
@@ -446,4 +449,24 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// oldSidecarEmptyCustomerRefusal is the exact body a sidecar that predates
+// user_id sends for an empty customer_id: pad-cloud's writeJSON (a
+// json.Encoder, so a trailing newline) of {"error": "customer_id must start
+// with 'cus_'"} before BUG-3560.
+const oldSidecarEmptyCustomerRefusal = `{"error":"customer_id must start with 'cus_'"}`
+
+// olderSidecarRefusedEmptyCustomer reports whether a cancel-customer refusal
+// is the one a sidecar that predates user_id gives an empty customer_id: a
+// 400 whose body is exactly oldSidecarEmptyCustomerRefusal, surrounding
+// whitespace aside. A current sidecar sends that message only for a
+// non-empty customer_id without the prefix, and this door sends an empty
+// one, so on this path it can only mean the old sidecar. The body is compared
+// whole, not decoded: a decode would accept extra fields or a duplicated
+// "error" key alongside the message (retro Codex review, round 1). Anything
+// else, including another 400 or an unreadable body, is not it.
+func olderSidecarRefusedEmptyCustomer(e *billing.SidecarError) bool {
+	return e != nil && e.Status == http.StatusBadRequest &&
+		strings.TrimSpace(e.Body) == oldSidecarEmptyCustomerRefusal
 }
