@@ -15,6 +15,17 @@ type SearchResult struct {
 	Item    models.Item `json:"item"`
 	Snippet string      `json:"snippet"`
 	Rank    float64     `json:"rank"`
+	// Workspace says which workspace the item is in, so a search across
+	// workspaces can be navigated (TASK-3604). The handler fills it from the
+	// same access check that admitted the workspace into the search; it is
+	// never derived from the row alone.
+	Workspace *SearchResultWorkspace `json:"workspace,omitempty"`
+}
+
+// SearchResultWorkspace is the route a result lives under: /{owner}/{slug}.
+type SearchResultWorkspace struct {
+	Slug          string `json:"slug"`
+	OwnerUsername string `json:"owner_username"`
 }
 
 type SearchFacets struct {
