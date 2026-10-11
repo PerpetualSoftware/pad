@@ -210,6 +210,7 @@ export function escapeTagOpeners(text: string, schema: Schema, atLineStart: bool
 interface SerializerState {
 	text: (s: string, escape?: boolean) => void;
 	out?: string;
+	atBlockStart?: boolean;
 }
 
 /**
@@ -223,7 +224,18 @@ export const PadText = Text.extend({
 				serialize(state: SerializerState, node: { text?: string; type: { schema: Schema } }) {
 					const out = state.out ?? '';
 					const atLineStart = out === '' || out.endsWith('\n');
-					state.text(escapeTagOpeners(node.text ?? '', node.type.schema, atLineStart));
+					// prosemirror-markdown escapes a leading list, quote, heading or
+					// ordered-list marker only at a BLOCK start (`atBlockStart`), but
+					// a hard break starts a new line too, and there `- text` reads
+					// back as a bullet list (BUG-3584). A line start is a block start
+					// for that escape; the flag is restored for everything after.
+					const blockStart = state.atBlockStart;
+					if (atLineStart) state.atBlockStart = true;
+					try {
+						state.text(escapeTagOpeners(node.text ?? '', node.type.schema, atLineStart));
+					} finally {
+						state.atBlockStart = blockStart;
+					}
 				},
 				parse: {},
 			},
