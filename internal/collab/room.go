@@ -202,6 +202,9 @@ type Room struct {
 	schemaVersion        string
 	graceTTL             time.Duration
 	onIdle               func(string) // RoomManager.markRoomGone
+	// onAppendFail counts an op-log append that failed (TASK-3574). Nil for a
+	// Room built without the manager.
+	onAppendFail func()
 
 	mu    sync.Mutex
 	conns map[*websocket.Conn]*roomConn
@@ -682,6 +685,9 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 		// event (we'd be advertising a fictional id).
 		results = make([]store.SyncFrameAppend, len(batch))
 		rc.appendFailed = true
+		if r.onAppendFail != nil {
+			r.onAppendFail()
+		}
 	}
 	i := 0
 	for _, data := range run {

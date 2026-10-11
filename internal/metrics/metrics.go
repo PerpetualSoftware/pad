@@ -381,6 +381,13 @@ type Metrics struct {
 	// EXPECT near zero: a steady count means peers that cannot keep up.
 	CollabOverflowClosesTotal prometheus.Counter
 
+	// CollabAppendFailuresTotal counts batches of collab sync frames whose
+	// op-log append failed (TASK-3574). The frames are still broadcast, so
+	// the edit lives only in peers until one of them persists it. EXPECT
+	// zero: any nonzero week is the ruled trigger for building the step2
+	// coverage check.
+	CollabAppendFailuresTotal prometheus.Counter
+
 	// OpLogCompactionsTotal counts dormancy-compaction attempts by outcome
 	// (TASK-3531, PAD_OPLOG_COMPACT=on): compacted, refused, failed,
 	// room_open, set_aside, schema, not_dormant, read_failed. Every outcome
@@ -832,6 +839,10 @@ func New() *Metrics {
 		Name: "pad_collab_overflow_closes_total",
 		Help: "Collab peers closed because the op bus dropped an op for them; each reconnects and replays the gap.",
 	})
+	collabAppendFailuresTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_collab_append_failures_total",
+		Help: "Batches of collab sync frames whose op-log append failed; the frames were still broadcast (TASK-3574).",
+	})
 	collabResumesTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_collab_resumes_total",
 		Help: "Collab joins that announce a cursor: an editor tab that had been anchored reconnecting (TASK-3501). A PROXY for offline episodes and a biased one: inflated by laptop sleep, network blips and server restarts, and blind to a tab that went offline and was closed or crashed, and to whether the tab edited while away.",
@@ -867,6 +878,7 @@ func New() *Metrics {
 		collabResumesTotal,
 		collabResumeForceRefreshesTotal,
 		collabOverflowClosesTotal,
+		collabAppendFailuresTotal,
 		opLogCompactionsTotal,
 		opLogCompactionSnapshotBytesTotal,
 		opLogCompactionMarkdownBytesTotal,
@@ -922,6 +934,7 @@ func New() *Metrics {
 		CollabResumesTotal:                 collabResumesTotal,
 		CollabResumeForceRefreshesTotal:    collabResumeForceRefreshesTotal,
 		CollabOverflowClosesTotal:          collabOverflowClosesTotal,
+		CollabAppendFailuresTotal:          collabAppendFailuresTotal,
 		OpLogCompactionsTotal:              opLogCompactionsTotal,
 		OpLogCompactionSnapshotBytesTotal:  opLogCompactionSnapshotBytesTotal,
 		OpLogCompactionMarkdownBytesTotal:  opLogCompactionMarkdownBytesTotal,

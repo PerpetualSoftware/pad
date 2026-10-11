@@ -63,6 +63,18 @@ type OverflowObserver interface {
 	OverflowClosed()
 }
 
+// AppendFailureObserver is optional on an Observer (TASK-3574): it counts a
+// batch of sync frames whose op-log append failed. The frames are still
+// broadcast, so a peer can end up holding the only copy of an edit, which a
+// later SyncStep2 may then be the only persisted carrier of; recovery replays
+// step2 bytes, but such an item reads clean. A nonzero count in any week where
+// that case could have occurred is the ruled trigger for building the
+// step2 coverage check (TASK-3574 trail). Runs on the connection's read
+// goroutine, under the room's append lock.
+type AppendFailureObserver interface {
+	AppendFailed()
+}
+
 // observable is the nil-safe Observer holder the RoomManager embeds.
 // Reporting before SetObserver is a no-op.
 type observable struct {
@@ -98,6 +110,12 @@ func (o *observable) reportCompactedResumeAdmitted() {
 func (o *observable) reportOverflowClose() {
 	if obs, ok := o.observer().(OverflowObserver); ok {
 		obs.OverflowClosed()
+	}
+}
+
+func (o *observable) reportAppendFailure() {
+	if obs, ok := o.observer().(AppendFailureObserver); ok {
+		obs.AppendFailed()
 	}
 }
 

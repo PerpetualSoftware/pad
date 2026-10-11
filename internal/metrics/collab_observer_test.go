@@ -27,3 +27,14 @@ func TestCollabObserverMapsEachReport(t *testing.T) {
 	assertCounter(t, m, "pad_collab_resume_force_refreshes_total", map[string]string{"reason": collab.ResumeRefreshBehindMin}, 2)
 	assertCounter(t, m, "pad_collab_resume_force_refreshes_total", map[string]string{"reason": collab.ResumeRefreshRestored}, 3)
 }
+
+// TASK-3574: AppendFailed lands on its own series.
+func TestCollabObserverCountsAppendFailures(t *testing.T) {
+	m := New()
+	obs := NewCollabObserver(m)
+	for i := 0; i < 4; i++ {
+		obs.AppendFailed()
+	}
+	assertCounter(t, m, "pad_collab_append_failures_total", nil, 4)
+	assertCounter(t, m, "pad_collab_overflow_closes_total", nil, 0)
+}
