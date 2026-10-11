@@ -207,6 +207,35 @@ export function escapeTagOpeners(text: string, schema: Schema, atLineStart: bool
 	});
 }
 
+/**
+ * The block marker a line starting with `text` would open, if any, as the raw
+ * escaped form to write and the length of `text` it stands for (BUG-3584).
+ * After up to three spaces: a bullet (`-`, `+`, `*`) or ordered marker
+ * (`1.`, `1)`) followed by a space, tab or nothing; `>`; one to six `#`
+ * followed by a space, tab or nothing; or a line of only `-`, `=`, `_` or `*`
+ * (a thematic break or a setext underline). `$` is the end of the text node,
+ * which is the end of the line unless marked text follows, and then the
+ * marker is not followed by a space and opens nothing.
+ */
+export function lineStartMarker(text: string): { raw: string; length: number; beyondBlockStartEscape: boolean } | null {
+	const ordered = /^( {0,3})(\d{1,9})([.)])(?=[ \t]|$)/.exec(text);
+	if (ordered) {
+		return { raw: `${ordered[1]}${ordered[2]}\\${ordered[3]}`, length: ordered[0].length, beyondBlockStartEscape: ordered[3] === ')' };
+	}
+	const m = /^( {0,3})([-+*>#=_])/.exec(text);
+	if (!m) return null;
+	const [whole, spaces, ch] = m;
+	const rest = text.slice(whole.length);
+	const lineOfOnly = /^ {0,3}(?:(?:-[ \t]*)+|(?:=[ \t]*)+|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})$/.test(text);
+	const opens =
+		lineOfOnly ||
+		ch === '>' ||
+		(ch === '#' && /^#{0,5}(?:[ \t]|$)/.test(rest)) ||
+		('-+*'.includes(ch) && /^(?:[ \t]|$)/.test(rest));
+	if (!opens) return null;
+	return { raw: `${spaces}\\${ch}`, length: whole.length, beyondBlockStartEscape: spaces.length > 0 && '-+*>'.includes(ch) };
+}
+
 interface SerializerState {
 	text: (s: string, escape?: boolean) => void;
 	out?: string;
@@ -224,18 +253,40 @@ export const PadText = Text.extend({
 				serialize(state: SerializerState, node: { text?: string; type: { schema: Schema } }) {
 					const out = state.out ?? '';
 					const atLineStart = out === '' || out.endsWith('\n');
-					// prosemirror-markdown escapes a leading list, quote, heading or
-					// ordered-list marker only at a BLOCK start (`atBlockStart`), but
-					// a hard break starts a new line too, and there `- text` reads
-					// back as a bullet list (BUG-3584). A line start is a block start
-					// for that escape; the flag is restored for everything after.
-					const blockStart = state.atBlockStart;
-					if (atLineStart) state.atBlockStart = true;
-					try {
-						state.text(escapeTagOpeners(node.text ?? '', node.type.schema, atLineStart));
-					} finally {
-						state.atBlockStart = blockStart;
+					// A hard break starts a new line, and CommonMark reads a block
+					// marker there: `- x`, `1) x` and `   * x` start a list, `> x` a
+					// quote, `# x` a heading, `---` / `___` a break, `===` a setext
+					// underline (BUG-3584). prosemirror-markdown escapes only some of
+					// those, and only at a BLOCK start. At any line start the marker
+					// (after up to three spaces) is written escaped here, raw so the
+					// backslash is not itself escaped, and the rest as ordinary text.
+					// Only what would parse as a block is escaped, so text such as
+					// `#tag` or `-5` keeps its form; at a true block start everything
+					// else stays with prosemirror-markdown's own escape, unchanged.
+					let text = escapeTagOpeners(node.text ?? '', node.type.schema, atLineStart);
+					if (atLineStart) {
+						const m = lineStartMarker(text);
+						// At a true block start prosemirror-markdown's own escape already
+						// covers most markers, and changing its output would rewrite
+						// stored bodies for nothing: take over there only for what it
+						// misses (`1)` and an indented bullet or quote).
+						if (m && (!state.atBlockStart || m.beyondBlockStartEscape)) {
+							state.text(m.raw, false);
+							text = text.slice(m.length);
+							// The marker is written; the rest no longer starts the
+							// line, so prosemirror-markdown must not escape it as if
+							// it did (`---` stays `\---`, not `\-\--`).
+							const blockStart = state.atBlockStart;
+							state.atBlockStart = false;
+							try {
+								if (text) state.text(text);
+							} finally {
+								state.atBlockStart = blockStart;
+							}
+							return;
+						}
 					}
+					if (text) state.text(text);
 				},
 				parse: {},
 			},
