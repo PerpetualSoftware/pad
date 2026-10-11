@@ -35,9 +35,11 @@
 		 * workspace itself was created via a cli/mcp agent surface (`pad init`,
 		 * MCP), which reports has_agent_activity=true before any item exists.
 		 * Because of (b) the launchpad can legitimately render with
-		 * agentActive=true, so it is a live signal — step ① adapts to it — not
-		 * just the orientation device the pre-BUG-1557 code assumed (the
-		 * deferred "connected but hasn't acted yet" signal of IDEA-1854).
+		 * agentActive=true, so step ① must adapt to it rather than treat it as
+		 * the orientation device the pre-BUG-1557 code assumed. It is still
+		 * evidence of past activity, never of a session that is there now; a
+		 * live "is an agent attached right now" signal (IDEA-1854) does not
+		 * exist here.
 		 */
 		agentActive?: boolean;
 		/** Opens the workspace's ConnectWorkspaceModal (mounted by the parent). */
