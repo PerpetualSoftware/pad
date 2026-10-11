@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { confirmSignOut } from '$lib/stores/signOutGuard.svelte';
+	import { confirmSignOut, signOutLogout } from '$lib/stores/signOutGuard.svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -83,7 +83,7 @@
 		switching = true;
 		switchError = '';
 		try {
-			await api.auth.logout();
+			await signOutLogout(() => api.auth.logout());
 		} catch (err: unknown) {
 			switching = false;
 			switchError =

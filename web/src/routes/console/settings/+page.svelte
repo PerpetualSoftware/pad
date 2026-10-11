@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { confirmSignOut } from '$lib/stores/signOutGuard.svelte';
+	import { confirmSignOut, signOutLogout } from '$lib/stores/signOutGuard.svelte';
 	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
 	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
 	import { onMount } from 'svelte';
@@ -609,7 +609,7 @@
 		// BUG-3571: unsaved edits in an open item are asked about first.
 		if (!(await confirmSignOut())) return;
 		try {
-			await api.auth.logout();
+			await signOutLogout(() => api.auth.logout());
 		} catch {}
 		authStore.clear();
 		window.location.href = '/login?redirect=' + encodeURIComponent('/console/settings');
