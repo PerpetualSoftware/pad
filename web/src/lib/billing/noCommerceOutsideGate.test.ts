@@ -26,7 +26,8 @@ const SRC = fileURLToPath(new URL('../..', import.meta.url));
 
 // Each of these reads commerceAllowed; the test below checks that it does.
 const GATED = new Set([
-	'lib/billing/planLimitToast.ts',
+	// TASK-3601: the plan-limit prompt's copy; the model takes commerceAllowed.
+	'lib/billing/planLimitPrompt.ts',
 	'lib/components/layout/TopBar.svelte',
 	'lib/components/layout/YouSheet.svelte',
 	'routes/console/+layout.svelte',

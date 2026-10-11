@@ -1,21 +1,17 @@
-// The one place a plan-limit refusal becomes a toast (PLAN-3291 DR-3,
-// TASK-3293). Every create/restore/import door used to append its own
-// " Upgrade to Pro" and link /console/billing, which put a purchase call to
-// action inside the mobile apps (BUG-3290). A refusal still says what
-// happened everywhere; only where commerce is allowed does it add the upgrade
-// copy and link.
-import { planLimitMessage, type PadApiError } from '$lib/api/client';
-import { authStore } from '$lib/stores/auth.svelte';
-import { toastStore } from '$lib/stores/toast.svelte';
+// The one entry every create/restore/import door calls on a plan-limit
+// refusal (PLAN-3291 DR-3, TASK-3293). It used to be a 6-second toast with a
+// generic billing link; it now raises the persistent plan-limit prompt
+// (TASK-3601), which names the limit and offers the payer Upgrade, anyone else
+// "ask <owner>", and nothing where billing is off or commerce is not allowed.
+// The name is kept so the 46 call sites stay as they were.
+import type { PadApiError } from '$lib/api/client';
+import { planLimitPrompt } from './planLimitPrompt.svelte';
 
-export const PLAN_LIMIT_UPGRADE_SUFFIX = ' Upgrade to Pro';
-export const BILLING_PATH = '/console/billing';
-
-export function showPlanLimitToast(err: PadApiError): void {
-	const message = planLimitMessage(err);
-	if (authStore.commerceAllowed) {
-		toastStore.show(message + PLAN_LIMIT_UPGRADE_SUFFIX, 'error', 6000, BILLING_PATH);
-	} else {
-		toastStore.show(message, 'error', 6000);
-	}
+/**
+ * `scope` puts the prompt in that flow's inline host when one is mounted
+ * (invite, import, create-workspace, new-item); `blocked` names what was
+ * stopped, for "Continue: <blocked>" after an upgrade.
+ */
+export function showPlanLimitToast(err: PadApiError, opts: { scope?: string; blocked?: string } = {}): void {
+	planLimitPrompt.raise(err, opts);
 }

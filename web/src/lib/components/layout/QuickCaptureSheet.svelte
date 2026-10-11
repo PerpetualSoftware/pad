@@ -24,6 +24,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import { announceCaptured } from '$lib/items/quickCapture';
+	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
 	import { parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
@@ -109,7 +110,7 @@
 			goto(url);
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
-				showPlanLimitToast(err);
+				showPlanLimitToast(err, { scope: 'new-item-sheet', blocked: 'add an item' });
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
@@ -153,6 +154,7 @@
 			placeholder="What needs doing?"
 			rows="3"
 		></textarea>
+		<PlanLimitPrompt scope="new-item-sheet" />
 		<div class="capture-actions">
 			<button class="capture-cancel" type="button" onclick={close}>Cancel</button>
 			<button

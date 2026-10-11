@@ -6,6 +6,7 @@
 	import { api, isPlanLimitError } from '$lib/api/client';
 	import { PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
+	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -658,7 +659,7 @@
 		} catch (err: unknown) {
 			if (!identityHeld(epochAtEntry)) return;
 			if (isPlanLimitError(err)) {
-				showPlanLimitToast(err);
+				showPlanLimitToast(err, { scope: 'invite', blocked: 'invite a member' });
 			} else {
 				inviteResult = { message: err instanceof Error ? err.message : 'Failed to invite', type: 'error' };
 			}
@@ -1298,6 +1299,8 @@
 								{inviting ? 'Inviting...' : 'Invite'}
 							</Button>
 						</div>
+						<!-- TASK-3601: a member-limit refusal shows here, where the invite was blocked. -->
+						<PlanLimitPrompt scope="invite" />
 						<!-- TASK-2255 (C60): the roles were never explained, and a wrong
 						     guess is an access-control mistake. -->
 						<ul class="role-legend">

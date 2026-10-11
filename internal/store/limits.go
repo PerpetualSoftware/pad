@@ -57,6 +57,13 @@ type LimitResult struct {
 	Current int    `json:"current"`
 	Plan    string `json:"plan"`
 
+	// PayerID and PayerName name the account whose plan set this limit
+	// (TASK-3601): the workspace's owner for a workspace limit, the user for
+	// a user limit. Set only on a full check; never serialized here, the
+	// refusal decides what of it to show the caller.
+	PayerID   string `json:"-"`
+	PayerName string `json:"-"`
+
 	// Requested is how many of the feature a single operation would add at
 	// once, set only where that is more than one — today, ImportWorkspace
 	// (BUG-3103). Zero and omitted everywhere else, so every other door's
@@ -151,11 +158,13 @@ func (s *Store) checkLimitOn(q Queryer, workspaceID, feature string) (*LimitResu
 	}
 
 	return &LimitResult{
-		Allowed: current < limit,
-		Feature: feature,
-		Limit:   limit,
-		Current: current,
-		Plan:    plan,
+		Allowed:   current < limit,
+		Feature:   feature,
+		Limit:     limit,
+		Current:   current,
+		Plan:      plan,
+		PayerID:   user.ID,
+		PayerName: user.Name,
 	}, nil
 }
 
@@ -199,11 +208,13 @@ func (s *Store) checkUserLimitOn(q Queryer, userID, feature string) (*LimitResul
 	}
 
 	return &LimitResult{
-		Allowed: current < limit,
-		Feature: feature,
-		Limit:   limit,
-		Current: current,
-		Plan:    plan,
+		Allowed:   current < limit,
+		Feature:   feature,
+		Limit:     limit,
+		Current:   current,
+		Plan:      plan,
+		PayerID:   user.ID,
+		PayerName: user.Name,
 	}, nil
 }
 

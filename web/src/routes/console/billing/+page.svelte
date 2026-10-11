@@ -8,6 +8,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, onDestroy } from 'svelte';
+	import { readUpgradeResume, clearUpgradeResume, type UpgradeResume } from '$lib/billing/upgradeResume';
 
 	interface PlanLimits {
 		workspaces: number;
@@ -264,6 +265,9 @@
 		if (!authStore.commerceAllowed) {
 			if (checkoutParam) clearCheckoutQuery();
 		} else if (checkoutParam === 'success') {
+			// Where the upgrade was asked for (TASK-3601): offered once it is
+			// confirmed, never followed on the user's behalf.
+			resume = readUpgradeResume();
 			startUpgradeConfirmation();
 		} else if (checkoutParam === 'cancelled') {
 			// User abandoned the Stripe Checkout page. Show a brief notice
@@ -273,6 +277,9 @@
 		}
 		loadPlanLimits();
 	});
+
+	// The blocked flow to return to after checkout (TASK-3601).
+	let resume = $state<UpgradeResume | null>(null);
 
 	onDestroy(() => {
 		destroyed = true;
@@ -298,6 +305,19 @@
 		<div class="upgrade-banner success" role="status" aria-live="polite">
 			<span class="check-icon" aria-hidden="true">✓</span>
 			<span>Upgrade confirmed — welcome to Pro!</span>
+			{#if resume}
+				<a
+					class="resume-link"
+					href={resume.path}
+					onclick={(e) => {
+						e.preventDefault();
+						const to = resume!.path;
+						clearUpgradeResume();
+						resume = null;
+						goto(to);
+					}}>Continue{resume.action ? `: ${resume.action}` : ''} &rarr;</a
+				>
+			{/if}
 		</div>
 	{:else if upgradeStatus === 'timeout'}
 		<div class="upgrade-banner warning" role="status" aria-live="polite">
@@ -757,5 +777,10 @@
 			animation: none;
 			border-top-color: transparent;
 		}
+	}
+	.resume-link {
+		margin-left: auto;
+		font-weight: 600;
+		color: inherit;
 	}
 </style>

@@ -15,6 +15,7 @@
 	import { summarizeBulkFailures, bulkToastMessage } from '$lib/collections/bulkFailureReason';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import { filterSummaryParts, filteredCountLabel } from '$lib/collections/filterSummary';
+	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
 	import { blockedDraftMessage, draftCreateFields, draftTargets, lostLaneLabel, saveAllDrafts } from '$lib/collections/laneDrafts';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
@@ -2606,7 +2607,7 @@
 			// user's unsaved text (BUG-3084).
 			if (identityHeld(epochAtEntry)) {
 				if (isPlanLimitError(err)) {
-					showPlanLimitToast(err);
+					showPlanLimitToast(err, { scope: 'new-item-list', blocked: 'add an item' });
 				} else {
 					toastStore.show(err?.message || 'Failed to create item', 'error');
 				}
@@ -2819,7 +2820,7 @@
 		} catch (err: any) {
 			if (!identityHeld(epochAtEntry)) return;
 			if (isPlanLimitError(err)) {
-				showPlanLimitToast(err);
+				showPlanLimitToast(err, { scope: 'new-item-list', blocked: 'add an item' });
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
@@ -4415,6 +4416,8 @@
 					/>
 				</div>
 			{/if}
+			<!-- TASK-3601: an item-limit refusal from this list shows here. -->
+			<PlanLimitPrompt scope="new-item-list" />
 
 			<div class="header-separator"></div>
 		</div>

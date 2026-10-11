@@ -24,6 +24,7 @@
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
+	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
 	import CreateWorkspaceModal from '$lib/components/layout/CreateWorkspaceModal.svelte';
 	import OpenChildrenDialog from '$lib/components/OpenChildrenDialog.svelte';
 	import PendingEditsDialog from '$lib/components/PendingEditsDialog.svelte';
@@ -397,6 +398,7 @@
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>
 	<ToastContainer />
+	<PlanLimitPrompt />
 	<OpenChildrenDialog />
 	<PendingEditsDialog />
 	<ConfirmDialog />
@@ -484,6 +486,7 @@
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>
 	<ToastContainer />
+	<PlanLimitPrompt />
 	<OpenChildrenDialog />
 	<PendingEditsDialog />
 	<ConfirmDialog />

@@ -13,6 +13,7 @@
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
+	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
 	import { parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import { getActiveKey } from '$lib/nav/destinations';
@@ -253,7 +254,7 @@
 			goto(url);
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
-				showPlanLimitToast(err);
+				showPlanLimitToast(err, { scope: 'new-item-quick-add', blocked: 'add an item' });
 			} else if (quickAddSession === session) {
 				// Still open on the text that was refused: say why, in place.
 				quickAddError = err?.message || 'Failed to create item';
@@ -927,6 +928,7 @@
 			{#if quickAddError}
 				<p id="quick-add-error" class="quick-add-error" role="alert">{quickAddError}</p>
 			{/if}
+			<PlanLimitPrompt scope="new-item-quick-add" />
 			<div class="quick-add-actions">
 				<span class="quick-add-hint">Enter to add · {modKeyLabel('Enter')} to add and open · Esc to close</span>
 				<button
