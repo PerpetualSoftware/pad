@@ -73,7 +73,7 @@
 	import { beforeNavigate } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toEditorMarkdown } from '$lib/utils/markdown';
-	import { planPatch } from '$lib/collab/patchApply';
+	import { planPatch, patchTransaction } from '$lib/collab/patchApply';
 	import { canonicalEditorMarkdown } from '$lib/collab/canonicalMarkdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
@@ -2834,9 +2834,8 @@
 					const plan = planPatch(editorInstance, edits, ctx);
 					if (!plan.ok) return plan;
 					openBracket();
-					if (plan.from !== plan.to || plan.slice.length > 0) {
-						editorInstance.view.dispatch(editorInstance.state.tr.replaceWith(plan.from, plan.to, plan.slice));
-					}
+					const tr = patchTransaction(editorInstance.state, plan.hunks);
+					if (tr) editorInstance.view.dispatch(tr);
 					toastStore.show('External edit applied', 'info');
 					return { ok: true, before: plan.before, after: plan.after };
 				} catch (err) {
