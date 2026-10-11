@@ -1021,22 +1021,9 @@
 		if (!item) return;
 		goto(fullPageUrl);
 	}
-	// Pane-close — the middle ESC layer, between the graph drawer (higher) and
-	// the collection list-focus marker (lower). Registered into the shared
-	// escape stack while embedded (the pane is mounted only when ?item= is set).
-	// Priority — not a per-handler `showGraph` guard — decides graph-vs-pane
-	// precedence now: while the drawer is open its higher-priority handler wins,
-	// so one ESC closes the drawer and a second closes the pane. The
-	// text-editing-control bail (ESC cancels a title edit / editor selection,
-	// not the pane) lives in the single top-level listener on the collection
-	// page, so it isn't repeated here (PLAN-2105 / TASK-2118).
-	$effect(() => {
-		if (!embedded) return;
-		return pushEscapeHandler(() => {
-			onClose?.();
-			return true;
-		}, ESCAPE_PRIORITY.pane);
-	});
+	// Pane-close ESC is registered by the PaneHost shell that mounts this
+	// component embedded (BUG-3148): ItemDetail loads on demand, so a handler
+	// registered here did not exist yet for the first moments of a cold open.
 	let editCollectionSection = $state<'general' | 'fields' | 'display' | 'actions' | undefined>(undefined);
 	let agentRoles = $state<AgentRole[]>([]);
 	let childItemIds = $state<Set<string>>(new Set());
