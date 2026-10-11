@@ -15,6 +15,12 @@ func NewCollabObserver(m *Metrics) *CollabObserver {
 var _ collab.Observer = (*CollabObserver)(nil)
 var _ collab.OverflowObserver = (*CollabObserver)(nil)
 var _ collab.CompactedResumeObserver = (*CollabObserver)(nil)
+var _ collab.AppendFailureObserver = (*CollabObserver)(nil)
+
+// AppendFailed counts a failed op-log append (TASK-3574).
+func (o *CollabObserver) AppendFailed() {
+	o.m.CollabAppendFailuresTotal.Inc()
+}
 
 // CompactedResumeAdmitted counts a resume admitted into a snapshot (TASK-3531).
 func (o *CollabObserver) CompactedResumeAdmitted() {

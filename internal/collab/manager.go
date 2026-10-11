@@ -954,6 +954,7 @@ func (m *RoomManager) getOrCreate(itemID string) *Room {
 		conns:         make(map[*websocket.Conn]*roomConn),
 		pendingAcks:   make(map[string]*pendingApplierAck),
 		onIdle:        m.markRoomGone,
+		onAppendFail:  m.reportAppendFailure,
 	}
 	// restoreCond guards the admission drain in beginRestore (BUG-2276 residual 2).
 	r.restoreCond = sync.NewCond(&r.restoreMu)
