@@ -10,7 +10,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { planLimitPrompt } from '$lib/billing/planLimitPrompt.svelte';
+	import { planLimitPrompt, currentPlace } from '$lib/billing/planLimitPrompt.svelte';
 	import { BILLING_PATH } from '$lib/billing/planLimitPrompt';
 	import { saveUpgradeResume } from '$lib/billing/upgradeResume';
 
@@ -18,7 +18,17 @@
 
 	onMount(() => (scope ? planLimitPrompt.registerInlineHost(scope) : undefined));
 
-	let p = $derived(planLimitPrompt.current && planLimitPrompt.current.scope === scope ? planLimitPrompt.current : null);
+	let p = $derived(
+		planLimitPrompt.current && planLimitPrompt.current.scope === scope && planLimitPrompt.current.place === currentPlace()
+			? planLimitPrompt.current
+			: null,
+	);
+	// Left the workspace it was raised in: it names that workspace's owner and
+	// action, so it goes rather than waiting to reappear on the way back.
+	$effect(() => {
+		const c = planLimitPrompt.current;
+		if (c && c.scope === scope && c.place !== currentPlace()) planLimitPrompt.dismiss();
+	});
 	let copied = $state(false);
 
 	function upgrade() {

@@ -5,6 +5,8 @@ import { tick } from 'svelte';
 
 const mocks = vi.hoisted(() => ({ goto: vi.fn(), commerce: true, billing: true }));
 vi.mock('$app/navigation', () => ({ goto: mocks.goto }));
+// Reactive, so a workspace switch under a mounted host re-runs it (codex r2).
+vi.mock('$app/state', async () => ({ page: (await import('../../../test/mocks/reactivePage.svelte')).page }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		get commerceAllowed() {
@@ -21,6 +23,7 @@ import PlanLimitPrompt from './PlanLimitPrompt.svelte';
 import { planLimitPrompt } from '$lib/billing/planLimitPrompt.svelte';
 import { readUpgradeResume, clearUpgradeResume } from '$lib/billing/upgradeResume';
 import { PadApiError } from '$lib/api/client';
+import { page } from '$app/state';
 
 const MSG = 'This workspace has reached its 3-member limit on Free.';
 const err = (details: Record<string, unknown>) => new PadApiError({ code: 'plan_limit_exceeded', message: MSG, details });
@@ -33,6 +36,7 @@ beforeEach(() => {
 	planLimitPrompt.dismiss();
 	clearUpgradeResume();
 	window.history.replaceState({}, '', '/ada/ws/settings?tab=members');
+	(page as { params: Record<string, string> }).params = {};
 });
 
 describe('PlanLimitPrompt (TASK-3601)', () => {
@@ -65,6 +69,21 @@ describe('PlanLimitPrompt (TASK-3601)', () => {
 		expect(screen.queryByRole('button', { name: 'Copy note' })).toBeNull();
 		await fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
 		expect(screen.queryByRole('alert')).toBeNull();
+	});
+
+	it("a workspace switch under a mounted host drops the prompt: it names the other workspace's owner", async () => {
+		(page as { params: Record<string, string> }).params = { username: 'ada', workspace: 'one' };
+		render(PlanLimitPrompt, { scope: 'invite' });
+		planLimitPrompt.raise(err({ payer_is_you: false, payer_name: 'Dana' }), { scope: 'invite' });
+		await tick();
+		expect(screen.getByRole('alert').textContent).toContain('Dana');
+		(page as { params: Record<string, string> }).params = { username: 'ada', workspace: 'two' };
+		await tick();
+		await tick();
+		expect(screen.queryByRole('alert')).toBeNull();
+		(page as { params: Record<string, string> }).params = { username: 'ada', workspace: 'one' };
+		await tick();
+		expect(screen.queryByRole('alert'), 'gone, not waiting for the way back').toBeNull();
 	});
 
 	it('the global host does not show a refusal that belongs to a mounted inline host', async () => {

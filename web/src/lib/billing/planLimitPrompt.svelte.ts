@@ -3,6 +3,7 @@
 // A flow with a natural place for it (invite, import, create workspace, new
 // item) mounts an inline host for its scope; every other refusal shows in
 // the global host.
+import { page } from '$app/state';
 import type { PadApiError } from '$lib/api/client';
 import { authStore } from '$lib/stores/auth.svelte';
 import { planLimitPromptModel, type PlanLimitDetails, type PlanLimitPromptModel } from './planLimitPrompt';
@@ -13,6 +14,19 @@ export interface PlanLimitPromptState extends PlanLimitPromptModel {
 	scope: string | null;
 	/** What was blocked, for "Continue: <action>" after an upgrade. */
 	blocked: string;
+	/**
+	 * The workspace route it was raised on ("owner/slug", or "" off any
+	 * workspace). A route component can stay mounted across a workspace
+	 * switch, so a host shows the prompt only while the page is still there:
+	 * it names that workspace's owner and blocked action (codex r2).
+	 */
+	place: string;
+}
+
+/** The workspace route the page is on now: "owner/slug", or "". */
+export function currentPlace(): string {
+	const p = page.params ?? {};
+	return p.username && p.workspace ? `${p.username}/${p.workspace}` : '';
 }
 
 let current = $state<PlanLimitPromptState | null>(null);
@@ -30,7 +44,7 @@ export const planLimitPrompt = {
 			billingAvailable: authStore.billingAvailable,
 		});
 		const scope = opts.scope && (inlineHosts.get(opts.scope) ?? 0) > 0 ? opts.scope : null;
-		current = { ...model, id: ++seq, scope, blocked: opts.blocked ?? '' };
+		current = { ...model, id: ++seq, scope, blocked: opts.blocked ?? '', place: currentPlace() };
 	},
 	dismiss(): void {
 		current = null;
