@@ -12,6 +12,7 @@ import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table
 import Placeholder from '@tiptap/extension-placeholder';
 import { Markdown } from 'tiptap-markdown';
 import { SafeLink, SAFE_LINK_OPTIONS } from '$lib/components/editor/extensions/safeLink';
+import { InlineAtomNoMarks } from '$lib/components/editor/extensions/inlineAtomNoMarks';
 import { PadCodeBlock, PAD_CODE_BLOCK_OPTIONS } from '$lib/components/editor/extensions/padCodeBlock';
 import { PAD_TABLE_OPTIONS } from '$lib/components/editor/extensions/padTable';
 import { HtmlBlock } from '$lib/components/editor/extensions/htmlBlock';
@@ -83,6 +84,7 @@ export function headlessExtensions(markdownOverrides: Record<string, unknown> = 
 		TableCell,
 		TableHeader,
 		SafeLink.configure(SAFE_LINK_OPTIONS),
+		InlineAtomNoMarks, // BUG-3568: keeps the extension list equal to Editor.svelte's
 		Placeholder.configure({ placeholder: 'Type / for commands...' }),
 		// linkify stays off (tiptap-markdown's default) unless markdown-it is
 		// >= 14.3.1: below that, linkify: true parses in quadratic time

@@ -35,6 +35,7 @@
 		columnResizingPluginKey,
 	} from '@tiptap/pm/tables';
 	import { SafeLink, SAFE_LINK_OPTIONS } from './extensions/safeLink';
+	import { InlineAtomNoMarks } from './extensions/inlineAtomNoMarks';
 	import { PadCodeBlock, PAD_CODE_BLOCK_OPTIONS } from './extensions/padCodeBlock';
 	import { PAD_TABLE_OPTIONS } from './extensions/padTable';
 	import Placeholder from '@tiptap/extension-placeholder';
@@ -1051,6 +1052,7 @@
 			TableCell,
 			TableHeader,
 			SafeLink.configure(SAFE_LINK_OPTIONS),
+			InlineAtomNoMarks, // BUG-3568
 			Placeholder.configure({
 				placeholder: viewport.isMobile ? 'Start writing...' : 'Type / for commands...',
 			}),
