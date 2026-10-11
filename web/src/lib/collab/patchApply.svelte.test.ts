@@ -57,17 +57,21 @@ describe('PLAN-3578 step 2: narrowed apply', () => {
 	it('refuses an edit to a block that does not round-trip, and allows one elsewhere', () => {
 		const ed = createHeadlessEditor();
 		const s = ed.schema;
-		// BUG-3583: bold "Hello." + "World" serializes to markdown that
-		// re-parses as literal asterisks.
+		// A block whose canonical form does not parse back to it. This used to
+		// be BUG-3583's case (bold "Hello." + "World"), until that fix made it
+		// round-trip; a real serializer defect is a moving fixture. Here the
+		// canonical step itself drops the bold run's delimiters, so the parse of
+		// the first block can never match the live one.
+		const lossy: PatchContext = { toCanonical: (md) => md.replace('**Hello**', 'Hello'), toEditor: (md) => md };
 		const doc = s.node('doc', null, [
-			s.node('paragraph', null, [s.text('Hello.', [s.marks.bold.create()]), s.text('World')]),
+			s.node('paragraph', null, [s.text('Hello', [s.marks.bold.create()]), s.text(' World')]),
 			s.node('paragraph', null, [s.text('plain')]),
 		]);
 		ed.view.dispatch(ed.state.tr.replaceWith(0, ed.state.doc.content.size, doc.content));
-		const refused = planPatch(ed, [{ old: 'World', new: 'Earth' }], ctx);
+		const refused = planPatch(ed, [{ old: 'World', new: 'Earth' }], lossy);
 		expect(refused).toMatchObject({ ok: false, reason: 'unstable_roundtrip' });
 		const kept = ed.state.doc;
-		const res = applyPatch(ed, [{ old: 'plain', new: 'PLAIN' }], ctx);
+		const res = applyPatch(ed, [{ old: 'plain', new: 'PLAIN' }], lossy);
 		expect(res.ok).toBe(true);
 		expect(ed.state.doc.child(0)).toBe(kept.child(0));
 		expect(ed.state.doc.child(1).textContent).toBe('PLAIN');
