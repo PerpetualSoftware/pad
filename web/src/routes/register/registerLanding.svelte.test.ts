@@ -8,13 +8,14 @@ import { tick } from 'svelte';
 const mocks = vi.hoisted(() => ({
 	goto: vi.fn(async () => {}),
 	register: vi.fn(),
+	checkUsername: vi.fn(async () => ({ available: true })),
 	url: 'http://localhost/register',
 }));
 
 vi.mock('$app/state', () => ({ page: { get url() { return new URL(mocks.url); } } }));
 vi.mock('$app/navigation', () => ({ goto: mocks.goto }));
 vi.mock('$lib/api/client', () => ({
-	api: { auth: { register: mocks.register, checkUsername: vi.fn(async () => ({ available: true })) } },
+	api: { auth: { register: mocks.register, checkUsername: mocks.checkUsername } },
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
@@ -50,6 +51,8 @@ beforeEach(() => {
 	cleanup();
 	mocks.goto.mockClear();
 	mocks.register.mockReset();
+	mocks.checkUsername.mockReset();
+	mocks.checkUsername.mockResolvedValue({ available: true });
 	mocks.url = 'http://localhost/register';
 });
 
@@ -76,6 +79,23 @@ describe('register landing (TASK-3595)', () => {
 		await fireEvent.click(cont);
 		await settle();
 		expect(mocks.goto).toHaveBeenCalledWith('/ada/adas-workspace', { replaceState: true });
+	});
+
+	it('a taken generated name opens the field, and it stays open while typing (codex r1)', async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		mocks.checkUsername.mockResolvedValue({ available: false, error: 'taken' });
+		render(RegisterPage);
+		await settle();
+		await fireEvent.input(document.getElementById('register-name') as HTMLInputElement, { target: { value: 'Ada Lovelace' } });
+		await vi.advanceTimersByTimeAsync(1000);
+		await settle();
+		const field = document.getElementById('register-username') as HTMLInputElement;
+		expect(field, 'PREMISE: the taken name opened the field').not.toBeNull();
+		mocks.checkUsername.mockResolvedValue({ available: true });
+		await fireEvent.input(field, { target: { value: 'ada-l' } });
+		await settle();
+		expect(document.getElementById('register-username'), 'the field vanished under the typing').not.toBeNull();
+		vi.useRealTimers();
 	});
 
 	it('the username is a line with Change until asked for', async () => {

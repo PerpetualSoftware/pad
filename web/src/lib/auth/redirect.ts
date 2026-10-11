@@ -156,7 +156,9 @@ export function redirectQueryFragment(
  * any preserved deep link) or an invitation the signup accepted. Otherwise a
  * first signup lands in the workspace the server just created for it
  * (`workspace_path`), not on the console's workspace list. A path that fails
- * validation is ignored, as any redirect would be.
+ * validation is ignored, as any redirect would be. An explicit `/console` is
+ * no destination either: this app never forwards the default (see
+ * redirectQueryFragment), and the new workspace is where it would lead.
  */
 export function postSignupTarget(
 	redirectTarget: string,

@@ -43,6 +43,13 @@
 	// The username field is a customization, closed until asked for (TASK-3595).
 	let usernameOpen = $state(false);
 
+	// A taken generated name opens the field for good: editing it resets the
+	// availability check, and the field must not vanish under the typing
+	// (codex r1). Writes only usernameOpen, which it does not read.
+	$effect(() => {
+		if (usernameAvailable === false) usernameOpen = true;
+	});
+
 	// Opened by a click: focus follows into the field. Opened because the
 	// generated name is taken: focus stays where the user is typing.
 	async function openUsername() {
@@ -313,7 +320,7 @@
 				<!-- TASK-3595: the username is generated from the name; changing it is
 				     an option, not a decision every signup has to make. The field
 				     opens when asked for, or by itself when the generated one is taken. -->
-				{#if !usernameOpen && usernameAvailable !== false}
+				{#if !usernameOpen}
 					<p class="username-summary">
 						Username: <span class="username-value">{username || '…'}</span>
 						<button type="button" class="username-change" onclick={openUsername} disabled={loading}>
