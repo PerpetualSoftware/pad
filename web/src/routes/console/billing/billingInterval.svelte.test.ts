@@ -185,6 +185,16 @@ describe('billing copy (TASK-3603)', () => {
 		expect(text).not.toContain('Run every project');
 	});
 
+	it("the compare table: Pro storage reads '1 GB included', Free's comes from the limits API, no backups row (Dave)", async () => {
+		render(BillingPage);
+		await settle();
+		const text = document.body.textContent ?? '';
+		expect(text).toContain('1 GB included');
+		expect(text).toContain('500 MB');
+		expect(text).not.toContain('Automated backups');
+		expect(text).not.toContain('10 GB');
+	});
+
 	it('Pro in the app: the plan, and nothing about plans for others (codex r1)', async () => {
 		m.commerce = false;
 		m.plan = 'pro';

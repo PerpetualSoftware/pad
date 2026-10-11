@@ -32,8 +32,9 @@
 		{ label: 'Members per workspace', key: 'members_per_workspace', kind: 'count' },
 		{ label: 'API tokens', key: 'api_tokens', kind: 'count' },
 		{ label: 'Storage', key: 'storage_bytes', kind: 'storage' },
-		{ label: 'Webhooks', key: 'webhooks', kind: 'count' },
-		{ label: 'Automated backups', key: 'automated_backups', kind: 'count' }
+		{ label: 'Webhooks', key: 'webhooks', kind: 'count' }
+		// No "Automated backups" row (Dave, TASK-3603): backups are a platform
+		// service for every Cloud account, not a plan feature.
 	];
 
 	let plan = $derived(authStore.user?.plan ?? 'free');
@@ -135,6 +136,15 @@
 		if (value < 0) return 'Unlimited';
 		if (kind === 'storage') return formatBytes(value);
 		return value.toLocaleString();
+	}
+
+	// One cell of the plan tables. Pro storage is stated, not served: Pro is
+	// to include about 1 GB with metered overage (PLAN-3605, open), and the
+	// served value is a placeholder. Until that interim is decided the cell
+	// says what is meant (Dave, TASK-3603). Every other cell is the live limit.
+	function planCell(plan: 'free' | 'pro', row: { key: LimitKey; kind: 'count' | 'storage' }): string {
+		if (plan === 'pro' && row.key === 'storage_bytes') return '1 GB included';
+		return formatCompareCell(limits?.[plan]?.[row.key], row.kind);
 	}
 
 	function stopPolling() {
@@ -409,7 +419,7 @@
 						{#each COMPARE_ROWS as row (row.key)}
 							<tr>
 								<th scope="row" class="feature-col">{row.label}</th>
-								<td class="plan-col current">{formatCompareCell((isPro ? limits?.pro : limits?.free)?.[row.key], row.kind)}</td>
+								<td class="plan-col current">{planCell(isPro ? 'pro' : 'free', row)}</td>
 							</tr>
 						{/each}
 					</tbody>
@@ -442,8 +452,8 @@
 					{#each COMPARE_ROWS as row (row.key)}
 						<tr>
 							<th scope="row" class="feature-col">{row.label}</th>
-							<td class="plan-col" class:current={!isPro}>{formatCompareCell(limits?.free?.[row.key], row.kind)}</td>
-							<td class="plan-col" class:current={isPro}>{formatCompareCell(limits?.pro?.[row.key], row.kind)}</td>
+							<td class="plan-col" class:current={!isPro}>{planCell('free', row)}</td>
+							<td class="plan-col" class:current={isPro}>{planCell('pro', row)}</td>
 						</tr>
 					{/each}
 				</tbody>
