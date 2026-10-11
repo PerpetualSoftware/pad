@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"golang.org/x/time/rate"
 )
 
 // The responses the pad-cloud sidecar DECODES, captured from the real handlers
@@ -68,6 +69,12 @@ func TestCloudContract(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 	srv.SetCloudMode(cloudContractSecret)
+	// This test pins response SHAPES and calls every sidecar route once, from
+	// one address. The real cloud-admin limiter (burst 10) is not what it
+	// tests, and the route list outgrew it (BUG-3561), so it gets a roomy one.
+	srv.rateLimiters.CloudAdmin.Stop()
+	srv.rateLimiters.CloudAdmin = newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(100), Burst: 100})
+	t.Cleanup(srv.rateLimiters.CloudAdmin.Stop)
 	u, err := srv.store.CreateUser(models.UserCreate{Email: "buyer@example.com", Name: "Buyer", Password: "pw-contract-x"})
 	if err != nil {
 		t.Fatal(err)
