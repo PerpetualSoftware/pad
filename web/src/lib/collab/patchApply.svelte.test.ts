@@ -89,6 +89,25 @@ describe('PLAN-3578 step 2: narrowed apply', () => {
 		expect(ed.state.doc.child(3)).toBe(kept[1]);
 	});
 
+	it('handles runs at the document edges and a deletion between them', () => {
+		const ed = editorWith('one\n\ntwo\n\nthree\n\nfour');
+		const kept = [ed.state.doc.child(0), ed.state.doc.child(2), ed.state.doc.child(3)];
+		const res = applyPatch(
+			ed,
+			[
+				{ old: 'one', new: 'start\n\none' },
+				{ old: '\n\ntwo', new: '' },
+				{ old: 'four', new: 'four\n\nend' },
+			],
+			ctx,
+		);
+		expect(res.ok).toBe(true);
+		expect(blocks(ed.state.doc).map((b) => b.textContent)).toEqual(['start', 'one', 'three', 'four', 'end']);
+		expect(ed.state.doc.child(1)).toBe(kept[0]);
+		expect(ed.state.doc.child(2)).toBe(kept[1]);
+		expect(ed.state.doc.child(3)).toBe(kept[2]);
+	});
+
 	it('inserts a new block between unchanged neighbours', () => {
 		const ed = editorWith('first\n\nlast');
 		const first = ed.state.doc.child(0);
