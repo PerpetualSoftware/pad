@@ -14,21 +14,27 @@ import (
 // BUG-3244: edits a collab schema-version rebuild takes out of the op-log.
 //
 // A join at a new editor schema version cannot replay rows written under the
-// old one, so the rebuild empties the item's op-log. The content-bearing rows
-// above the flush watermark are edits items.content never received; they are
-// MOVED to item_yjs_updates_set_aside first (migration 097 / pg 072), where no
-// op-log reader sees them, and they hold content_state at
-// models.ContentStateSetAside until they are recovered or explicitly
-// discarded. Rows at or below the watermark are already in items.content, and
-// non-content-bearing rows cannot change the document (BUG-3124), so neither
-// is kept.
+// old one, so the rebuild empties the item's op-log. When content-bearing rows
+// above the flush watermark exist (edits items.content never received), the
+// WHOLE op-log is MOVED to item_yjs_updates_set_aside first (migration 097 /
+// pg 072), where no op-log reader sees it, and the item holds content_state at
+// models.ContentStateSetAside until it is recovered or explicitly discarded.
+//
+// The whole log, not only that suffix (TASK-3574 (4), lead ruling): the
+// unflushed rows build on structs in the rows below the watermark, so replayed
+// alone they leave every edit pending and render nothing (measured), and no
+// decoder could recover them. The base exists elsewhere only as markdown in
+// items.content, not as Yjs structs. Non-content-bearing rows go too: a
+// SyncStep2 can be the only copy of an edit (TASK-3574 (2)), and the others
+// replay as no-ops. An item with nothing unflushed sets aside nothing.
 
 // setAsideBeforeClearHook, when set by a test, runs inside the transaction
 // before the DELETE: the gap a concurrent append would land in.
 var setAsideBeforeClearHook func()
 
-// SetAsideAndClearOpLog moves the item's unflushed content-bearing op-log rows
-// to the set-aside table and deletes its whole op-log, in one transaction, so
+// SetAsideAndClearOpLog moves the item's WHOLE op-log to the set-aside table
+// when it holds unflushed content-bearing rows (and nothing otherwise), and
+// deletes its whole op-log, in one transaction, so
 // a failure leaves the op-log untouched rather than half moved. It returns how
 // many rows were set aside and how many op-log rows were deleted.
 //
@@ -96,11 +102,16 @@ func (s *Store) SetAsideAndClearOpLog(itemID string) (setAside, cleared int64, e
 		return 0, 0, fmt.Errorf("set aside op-log (watermark): %w", err)
 	}
 	err = nil
-	var keep []deletedRow
+	unflushed := false
 	for _, r := range deleted {
 		if r.contentBearing && r.id > watermark {
-			keep = append(keep, r)
+			unflushed = true
+			break
 		}
+	}
+	var keep []deletedRow
+	if unflushed {
+		keep = deleted // the whole log: replayable on its own (TASK-3574 (4))
 	}
 	sort.Slice(keep, func(i, j int) bool { return keep[i].id < keep[j].id })
 

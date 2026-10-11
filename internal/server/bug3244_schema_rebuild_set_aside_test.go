@@ -137,17 +137,22 @@ func TestBUG3244SchemaRebuildKeepsUnflushedEditsMarked(t *testing.T) {
 		}
 	})
 
-	// Only edits the row never received are kept: a row at or below the flush
-	// watermark is already in items.content, and a SyncStep1 frame cannot
-	// change the document. What is kept is the frame byte for byte, with its
-	// era and original op-log id, because those are what recovery needs.
-	t.Run("bumped: only unflushed content-bearing rows are set aside, verbatim", func(t *testing.T) {
+	// TASK-3574 (4), lead ruling: when anything is unflushed, the WHOLE op-log
+	// is set aside, the flushed base and the SyncStep1 included, because the
+	// unflushed rows build on structs in the rows below the watermark and alone
+	// replay to nothing. (This subtest used to assert only the unflushed frame
+	// was kept.) What is kept is every frame byte for byte, in op-log order,
+	// with its era and original op-log id, because those are what recovery
+	// needs.
+	t.Run("bumped: the whole op-log is set aside, verbatim and in order", func(t *testing.T) {
 		f := newBUG3244Fixture(t)
-		flushed := f.append(t, []byte{0x00, 0x02, 0x03, 0x09, 0x08, 0x07}, "1")
+		base := []byte{0x00, 0x02, 0x03, 0x09, 0x08, 0x07}
+		step1 := []byte{0x00, 0x00, 0x01, 0x00}
+		flushed := f.append(t, base, "1")
 		if err := f.srv.store.SetItemContentFlushedOpLogIDForTesting(f.itemID, flushed); err != nil {
 			t.Fatalf("set watermark: %v", err)
 		}
-		f.append(t, []byte{0x00, 0x00, 0x01, 0x00}, "1") // SyncStep1: never content
+		mid := f.append(t, step1, "1")
 		kept := f.append(t, bug3244Frame, "1")
 		f.joinAt(t, "2")
 
@@ -155,13 +160,18 @@ func TestBUG3244SchemaRebuildKeepsUnflushedEditsMarked(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListYjsSetAside: %v", err)
 		}
-		if len(rows) != 1 {
-			t.Fatalf("set-aside rows = %d, want 1 (only the unflushed content-bearing frame): %+v", len(rows), rows)
+		want := []struct {
+			id   int64
+			data []byte
+		}{{flushed, base}, {mid, step1}, {kept, bug3244Frame}}
+		if len(rows) != len(want) {
+			t.Fatalf("set-aside rows = %d, want the whole log of %d: %+v", len(rows), len(want), rows)
 		}
-		r := rows[0]
-		if r.OpLogID != kept || string(r.UpdateData) != string(bug3244Frame) || r.SchemaVersion != "1" {
-			t.Fatalf("set-aside row = {op_log_id %d, data %v, era %q}, want {%d, %v, %q}",
-				r.OpLogID, r.UpdateData, r.SchemaVersion, kept, bug3244Frame, "1")
+		for i, r := range rows {
+			if r.OpLogID != want[i].id || string(r.UpdateData) != string(want[i].data) || r.SchemaVersion != "1" {
+				t.Fatalf("set-aside row %d = {op_log_id %d, data %v, era %q}, want {%d, %v, %q}",
+					i, r.OpLogID, r.UpdateData, r.SchemaVersion, want[i].id, want[i].data, "1")
+			}
 		}
 		if n := f.opLogRows(t); n != 0 {
 			t.Fatalf("op-log rows = %d, want 0", n)
