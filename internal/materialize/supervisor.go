@@ -833,6 +833,8 @@ func (s *Supervisor) run(ctx context.Context, c *child, job Job, mode string) (W
 	switch {
 	case resp.Error != "":
 		switch {
+		case strings.Contains(resp.Error, incompleteLogMarker):
+			return WorkerResponse{}, fmt.Errorf("%w: %w: %s", ErrJobFailed, ErrIncompleteLog, resp.Error)
 		case strings.Contains(resp.Error, ErrSchemaVersion.Error()):
 			return WorkerResponse{}, fmt.Errorf("%w (worker: %s)", ErrSchemaVersion, resp.Error)
 		case strings.Contains(resp.Error, ErrInterrupted.Error()):

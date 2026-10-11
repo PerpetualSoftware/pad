@@ -481,6 +481,16 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 		if r.ctx.Err() != nil {
 			return mrStopped
 		}
+		if errors.Is(err, materialize.ErrIncompleteLog) {
+			// TASK-3574 (1): the op-log replays with structs pending, so a body
+			// built from it would be truncated. Refused, deterministically: no
+			// retry until the op-log changes, and the watermark never moves.
+			// The exhaustion line (WARN) and pad_materialize_giveup_total
+			// {kind="incomplete_log"} are the refusal's log and metric. The GC
+			// sweep leaves the rows alone: it prunes only fully flushed logs.
+			r.exhaust(itemID, in.Cursor, "incomplete_log", err.Error())
+			return mrFailed
+		}
 		r.recordFailure(itemID, in.Cursor, err)
 		return mrFailed
 	}
@@ -681,6 +691,7 @@ func materializeErrorKind(err error) string {
 		{materialize.ErrChildDied, "worker_died"},
 		{materialize.ErrProtocol, "protocol"},
 		{materialize.ErrStart, "start"},
+		{materialize.ErrIncompleteLog, "incomplete_log"},
 		{materialize.ErrJobFailed, "job_failed"},
 		{materialize.ErrJobTooLarge, "too_large"},
 		{materialize.ErrSchemaVersion, "schema_version"},

@@ -362,6 +362,10 @@ type Server struct {
 	// opLogCompactor turns dormancy compaction on (TASK-3531,
 	// PAD_OPLOG_COMPACT=on); nil keeps the sweep deleting as before.
 	opLogCompactor OpLogCompactor
+	// compactBackoff holds the retry state of items whose compaction snapshot
+	// failed (TASK-3574 (3)), guarded by compactBackoffMu.
+	compactBackoffMu sync.Mutex
+	compactBackoff   map[string]compactBackoffState
 
 	// materializeRecovery is the op-log recovery worker (TASK-2198 U4): it
 	// rebuilds items.content from an item's collaborative op-log after the tab
