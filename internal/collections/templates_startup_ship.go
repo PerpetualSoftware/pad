@@ -77,9 +77,12 @@ need to cite in step 8. Load linked items if wiki-links are present.
 Pull all relevant conventions from the workspace so you follow them:
 
 ` + "```" + `bash
-pad item list conventions --field trigger=always --field status=active --format json
-pad item list conventions --field trigger=on-implement --field status=active --format json
+pad item list conventions --field trigger=always --field status=active --format json --full
+pad item list conventions --field trigger=on-implement --field status=active --format json --full
 ` + "```" + `
+
+` + "`--full`" + ` matters: without it the list is the summary shape, titles with no
+` + "`content`" + `, and a convention's rule IS its content.
 
 Pay attention to branching, commit format, testing, and build conventions —
 they almost always apply.
@@ -87,8 +90,13 @@ they almost always apply.
 ### 3. Mark in-progress
 
 ` + "```" + `bash
-pad item update <TASK-REF> --status in-progress --comment "Starting — <one-line intent>"
+pad item update <TASK-REF> --status in-progress --expected-seq <seq from step 1> --comment "Starting — <one-line intent>"
 ` + "```" + `
+
+` + "`--expected-seq`" + ` is the ` + "`seq`" + ` you read in step 1. A conflict means someone changed the
+task since you read it: re-read it and decide before going on, rather than
+writing over their change. Later updates below re-read first, since every
+write moves ` + "`seq`" + ` (` + "`pad item show <REF> --format json`" + ` carries it).
 
 ### 4. Create a feature branch
 
@@ -232,13 +240,13 @@ git pull --ff-only
 ### 11. Mark task done
 
 ` + "```" + `bash
-pad item update <TASK-REF> --status done --comment "Merged PR #<N> after <R> review round(s). <Summary>."
+pad item update <TASK-REF> --status done --expected-seq <seq from a fresh read> --comment "Merged PR #<N> after <R> review round(s). <Summary>."
 ` + "```" + `
 
 If this was the last task under a plan, consider closing the plan too:
 
 ` + "```" + `bash
-pad item update PLAN-XXX --status completed --comment "All child tasks shipped."
+pad item update PLAN-XXX --status completed --expected-seq <seq from a fresh read> --comment "All child tasks shipped."
 ` + "```" + `
 
 If the parent is a spec, don't flip its status directly — a spec's
