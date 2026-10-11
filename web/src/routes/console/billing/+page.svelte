@@ -341,11 +341,18 @@
 						{isPro ? 'Active' : 'Current'}
 					</span>
 				</div>
+				<!-- TASK-3603: what the plan covers, in the limits the server enforces
+				     (store/limits.go: workspace limits follow the OWNER's plan; the
+				     workspaces quota counts only workspaces you own). Numbers come
+				     from /api/v1/plan-limits, since they are configurable. -->
 				<p class="plan-desc">
 					{#if isPro}
-						You have full access to all Pad features.
+						No caps on your workspaces, items or members. People you invite don't need a plan.
+					{:else if limits?.free}
+						Up to {limits.free.workspaces} workspaces with {limits.free.members_per_workspace} members each.{#if commerceAllowed}
+							Upgrade when a project outgrows it.{/if}
 					{:else}
-						The free plan includes basic workspace management with limited features.
+						The free plan has limits on workspaces, items and members.
 					{/if}
 				</p>
 			</div>
@@ -355,6 +362,13 @@
 			{:else if isPro}
 				<a href="/billing/portal" class="secondary-btn">Manage Billing</a>
 			{:else if stripeAvailable}
+				<!-- TASK-3603: the outcome first, then who it covers. Copy shown to Dave. -->
+				<p class="pro-pitch">
+					Run every project in one place, with your team and your agents: no caps on workspaces, items or members.
+				</p>
+				<p class="pro-covers">
+					Pro covers the workspaces you own. People you invite to them don't need a plan of their own.
+				</p>
 				<div class="cta-line">
 					<BillingIntervalPicker name="interval-plan" bind:value={interval} {unavailable} disabled={checkoutInProgress} />
 					{#if intervalNotice}
@@ -782,5 +796,16 @@
 		margin-left: auto;
 		font-weight: 600;
 		color: inherit;
+	}
+	/* TASK-3603 */
+	.pro-pitch {
+		margin: var(--space-3) 0 var(--space-1);
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.pro-covers {
+		margin: 0 0 var(--space-3);
+		color: var(--text-secondary);
+		font-size: 0.9em;
 	}
 </style>
