@@ -216,6 +216,9 @@ const (
 	ErrPatchAnchorMissing   ErrorCode = "patch_anchor_missing"
 	ErrPatchAnchorAmbiguous ErrorCode = "patch_anchor_ambiguous"
 	ErrPatchRoomOpen        ErrorCode = "patch_room_open"
+	// ErrPatchUnstableRoundtrip: the open editor would change content
+	// outside the edit to apply it (PLAN-3578 step 2).
+	ErrPatchUnstableRoundtrip ErrorCode = "patch_unstable_roundtrip"
 
 	// ErrStoredStateUnreadable fires when an operation is refused because
 	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
@@ -493,9 +496,10 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// details.expires_at say who and until when.
 	"lease_held": {},
 	// PLAN-3578: patch refusals.
-	"patch_anchor_missing":   {},
-	"patch_anchor_ambiguous": {},
-	"patch_room_open":        {},
+	"patch_anchor_missing":     {},
+	"patch_anchor_ambiguous":   {},
+	"patch_room_open":          {},
+	"patch_unstable_roundtrip": {},
 	// BUG-2675. The only entry whose marker is written for a LOCALLY
 	// generated refusal rather than an upstream APIError — the CLI's
 	// append helpers refuse before any request is made (see
@@ -1046,6 +1050,9 @@ func classifyHTTPStatusKind(
 			if upstream.Code == string(ErrPatchRoomOpen) {
 				hint = PatchRoomOpenHint
 			}
+			if upstream.Code == string(ErrPatchUnstableRoundtrip) {
+				hint = PatchUnstableHint
+			}
 			if upstream.Code == string(ErrStoredStateUnreadable) {
 				// Same reason: the stored value stays undecodable, so every
 				// retry refuses identically. Since BUG-3056 the note/decide
@@ -1415,8 +1422,14 @@ const PatchAnchorHint = "Nothing was written. Re-read the item and quote, as old
 
 // PatchRoomOpenHint is the recovery guidance for patch_room_open (PLAN-3578).
 // Duplicated in internal/cli; a test asserts the two match.
-const PatchRoomOpenHint = "Nothing was written. The item is open in an editor, and patching an open item is not supported yet. " +
-	"Retry after the editor closes, or send a whole-body update with expected_seq."
+const PatchRoomOpenHint = "Nothing was written. The item is open in an editor that cannot apply patches (an older tab). " +
+	"Retry after that tab reloads or closes, or send a whole-body update with expected_seq."
+
+// PatchUnstableHint is the recovery guidance for patch_unstable_roundtrip
+// (PLAN-3578 step 2). Duplicated in internal/cli; a test asserts the two
+// match.
+const PatchUnstableHint = "Nothing was written. Applying this patch in the open editor would also change content you did not edit. " +
+	"Re-read the item and send a whole-body update with expected_seq instead."
 
 // UpdateConflictContentHint replaces the generic re-read-and-retry hint on an
 // update_conflict whose details carry content_write (PLAN-3555): a resent body

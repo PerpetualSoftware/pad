@@ -66,9 +66,10 @@ func TestPLAN3578_MCPPatchLinesAndRefusals(t *testing.T) {
 // Stdio: the CLI's marker carries the code, details and hint.
 func TestPLAN3578_StdioPatchRefusal(t *testing.T) {
 	for code, hint := range map[string]string{
-		"patch_anchor_missing":   PatchAnchorHint,
-		"patch_anchor_ambiguous": PatchAnchorHint,
-		"patch_room_open":        PatchRoomOpenHint,
+		"patch_anchor_missing":     PatchAnchorHint,
+		"patch_anchor_ambiguous":   PatchAnchorHint,
+		"patch_room_open":          PatchRoomOpenHint,
+		"patch_unstable_roundtrip": PatchUnstableHint,
 	} {
 		var stderr bytes.Buffer
 		cli.WritePatchRefusalError(&stderr, &cli.APIError{Code: code, Message: "m", Details: json.RawMessage(`{"ref":"TASK-1","edit":0}`)})
@@ -84,10 +85,10 @@ func TestPLAN3578_StdioPatchRefusal(t *testing.T) {
 }
 
 func TestPLAN3578_CLIAndMCPAgreeOnPatchHints(t *testing.T) {
-	if cli.PatchAnchorHint != PatchAnchorHint || cli.PatchRoomOpenHint != PatchRoomOpenHint {
+	if cli.PatchAnchorHint != PatchAnchorHint || cli.PatchRoomOpenHint != PatchRoomOpenHint || cli.PatchUnstableHint != PatchUnstableHint {
 		t.Fatal("patch hints differ between internal/cli and internal/mcp")
 	}
-	for _, c := range []string{cli.PatchAnchorMissingCode, cli.PatchAnchorAmbiguousCode, cli.PatchRoomOpenCode} {
+	for _, c := range []string{cli.PatchAnchorMissingCode, cli.PatchAnchorAmbiguousCode, cli.PatchRoomOpenCode, cli.PatchUnstableCode} {
 		if _, ok := allowedStructuredErrorCodes[c]; !ok {
 			t.Fatalf("%s is not in allowedStructuredErrorCodes", c)
 		}

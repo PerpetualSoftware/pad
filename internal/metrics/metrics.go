@@ -484,6 +484,13 @@ type Metrics struct {
 	// this is the traffic it would refuse.
 	ContentWritesUnguardedTotal *prometheus.CounterVec
 
+	// PatchRefusalsTotal counts refused patch writes by reason (PLAN-3578):
+	// anchor_missing, anchor_ambiguous, unstable_roundtrip (an open editor's
+	// document would change outside the edit), parse_refused, room_open (no
+	// patch-capable editor), other. unstable_roundtrip is the share of real
+	// documents the narrowed apply does not cover.
+	PatchRefusalsTotal *prometheus.CounterVec
+
 	// CollabWatermarkStampsTotal counts browser-tab watermark stamps that
 	// ADVANCED the flush watermark (BUG-3124 unit B), by what the advance
 	// covered (TASK-3541 step 0): "content" when it covered at least one
@@ -664,6 +671,11 @@ func New() *Metrics {
 		Name: "pad_content_writes_unguarded_total",
 		Help: "Item updates with neither a version token nor replace, by door and kind (PLAN-3555).",
 	}, []string{"door", "kind"})
+
+	patchRefusalsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_patch_refusals_total",
+		Help: "Patch writes refused, by reason (PLAN-3578).",
+	}, []string{"reason"})
 
 	collabWatermarkStampsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_collab_watermark_stamps_total",
@@ -911,6 +923,7 @@ func New() *Metrics {
 		mcpActiveSessions,
 		contentWritesSupersededTotal,
 		contentWritesUnguardedTotal,
+		patchRefusalsTotal,
 		collabWatermarkStampsTotal,
 		materializeGiveUpsTotal,
 		dbDeadlockRetriesTotal,
@@ -972,6 +985,7 @@ func New() *Metrics {
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
 		CollabWatermarkStampsTotal:   collabWatermarkStampsTotal,
 		ContentWritesUnguardedTotal:  contentWritesUnguardedTotal,
+		PatchRefusalsTotal:           patchRefusalsTotal,
 		MaterializeGiveUpsTotal:      materializeGiveUpsTotal,
 		DBDeadlockRetriesTotal:       dbDeadlockRetriesTotal,
 		AppWebhookDeliveriesTotal:    appWebhookDeliveriesTotal,

@@ -73,6 +73,7 @@
 	import { beforeNavigate } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toEditorMarkdown } from '$lib/utils/markdown';
+	import { planPatch } from '$lib/collab/patchApply';
 	import { canonicalEditorMarkdown } from '$lib/collab/canonicalMarkdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
@@ -2806,6 +2807,41 @@
 				} catch (err) {
 					console.warn('collab: setContent failed', err);
 					return false;
+				}
+			},
+			// PLAN-3578 step 2: a content-anchored patch, applied as a narrowed
+			// replace of exactly the blocks it changes, so it merges with typing
+			// here and elsewhere and leaves cursors where they are. Planned first:
+			// a refusal touches nothing. The canonical form is the flush pipeline's,
+			// so anchors are matched against what an agent reads; parsing goes
+			// through toEditorMarkdown, as setContent's does.
+			onApplierPatch: (edits, _requestID, expiresAtMillis, openBracket) => {
+				if (!editorInstance || editorInstance.isDestroyed) return null;
+				if (collabProvider !== provider) return null;
+				if (!item || item.id !== itemId) return null;
+				if (expiresAtMillis > 0 && Date.now() > expiresAtMillis) return null;
+				const ws = wsSlug;
+				const ctx = {
+					toCanonical: (raw: string) => {
+						const all = localIndex.getAll(ws);
+						let md = unescapeDocLinks(raw);
+						if (all.length > 0) md = markdownToWikiLinks(md, all);
+						return cleanBrokenLinks(md);
+					},
+					toEditor: (stored: string) => toEditorMarkdown(stored, localIndex.getAll(ws), ws, username),
+				};
+				try {
+					const plan = planPatch(editorInstance, edits, ctx);
+					if (!plan.ok) return plan;
+					openBracket();
+					if (plan.from !== plan.to || plan.slice.length > 0) {
+						editorInstance.view.dispatch(editorInstance.state.tr.replaceWith(plan.from, plan.to, plan.slice));
+					}
+					toastStore.show('External edit applied', 'info');
+					return { ok: true, before: plan.before, after: plan.after };
+				} catch (err) {
+					console.warn('collab: patch apply failed', err);
+					return null;
 				}
 			},
 			// Force-refresh handler (TASK-1319). Fires when the

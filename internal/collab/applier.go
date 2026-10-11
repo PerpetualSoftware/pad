@@ -160,8 +160,25 @@ type ControlMessage struct {
 	// applies as before.
 	Guarded bool `json:"guarded,omitempty"`
 
-	// Reason accompanies applier_refuse ("unconfirmed_edits").
+	// Reason accompanies applier_refuse ("unconfirmed_edits"; for a patch,
+	// "anchor_missing", "anchor_ambiguous", "unstable_roundtrip" or
+	// "parse_refused").
 	Reason string `json:"reason,omitempty"`
+
+	// PLAN-3578 step 2. Edits carries a content-anchored patch on an
+	// applier_request ([{old, new, line_hint?}]) INSTEAD of Markdown, with
+	// its PatchID; only a patch-capable conn is ever sent one. On the
+	// applier_ack of a patch, Before and After are the canonical bodies the
+	// tab applied it to and produced, so the server can answer with the diff.
+	// On a patch's applier_refuse, Edit, Lines and Line locate the refusal.
+	// All omitted on every other frame.
+	Edits   json.RawMessage `json:"edits,omitempty"`
+	PatchID string          `json:"patch_id,omitempty"`
+	Before  *string         `json:"before,omitempty"`
+	After   *string         `json:"after,omitempty"`
+	Edit    *int            `json:"edit,omitempty"`
+	Lines   []int           `json:"lines,omitempty"`
+	Line    int             `json:"line,omitempty"`
 
 	// ExpiresAtMillis is the Unix-millis timestamp after which the
 	// browser MUST drop a queued applier_request without applying.
@@ -242,7 +259,81 @@ type pendingApplierAck struct {
 	applyStarted bool
 	// delivered guards resultCh against a double send (ack vs finalization race).
 	delivered bool
+
+	// patch is the round-trip's patch result, recorded from the applier's ack
+	// or refusal before the outcome is delivered (PLAN-3578 step 2). Nil for
+	// a markdown round-trip.
+	patchAck     *PatchAck
+	patchRefusal *PatchRefusedError
 }
+
+// PatchAck is what a tab reports after applying a patch: the canonical body
+// it applied the edits to, and the one they produced.
+type PatchAck struct {
+	Before string
+	After  string
+}
+
+// PatchRefusedError is a patch the applier tab refused (PLAN-3578 step 2):
+// nothing was applied. Reason is the tab's ("anchor_missing",
+// "anchor_ambiguous", "unstable_roundtrip", "parse_refused"); Edit, Lines and
+// Line locate it.
+type PatchRefusedError struct {
+	Reason string
+	Edit   *int
+	Lines  []int
+	Line   int
+}
+
+func (e *PatchRefusedError) Error() string {
+	return "collab: the open editor refused the patch: " + e.Reason
+}
+
+// ErrPatchAckMissing: a patch round-trip resolved as applied but the tab sent
+// no before/after. A tab that claims patch support always sends both, so this
+// is a client defect, reported rather than answered with an empty diff.
+var ErrPatchAckMissing = errors.New("collab: the applier acknowledged a patch without its before/after bodies")
+
+// recordPatchAck stores a patch ack's bodies on its pending entry, from the
+// expected conn only, before resolveApplierAck delivers the outcome.
+func (r *Room) recordPatchAck(ctl ControlMessage, rc *roomConn) {
+	if ctl.Before == nil || ctl.After == nil {
+		return
+	}
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	if p, ok := r.pendingAcks[ctl.RequestID]; ok && p.expectedConn == rc.conn && !p.delivered {
+		p.patchAck = &PatchAck{Before: *ctl.Before, After: *ctl.After}
+	}
+}
+
+// recordPatchRefusal stores a patch refusal's reason on its pending entry.
+func (r *Room) recordPatchRefusal(ctl ControlMessage, rc *roomConn) {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	if p, ok := r.pendingAcks[ctl.RequestID]; ok && p.expectedConn == rc.conn && !p.delivered && !p.applyStarted {
+		p.patchRefusal = &PatchRefusedError{Reason: ctl.Reason, Edit: ctl.Edit, Lines: ctl.Lines, Line: ctl.Line}
+	}
+}
+
+// takePatchResult reads a round-trip's recorded patch result.
+func (r *Room) takePatchResult(requestID string) (*PatchAck, *PatchRefusedError) {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	if p, ok := r.pendingAcks[requestID]; ok {
+		return p.patchAck, p.patchRefusal
+	}
+	return nil, nil
+}
+
+// applierPayload is what one election sends: markdown, or a patch.
+type applierPayload struct {
+	markdown string
+	edits    json.RawMessage
+	patchID  string
+}
+
+func (p applierPayload) isPatch() bool { return p.patchID != "" }
 
 // deliver sends the round-trip's durable outcome exactly once. MUST be called with
 // r.pendingMu held.
@@ -343,12 +434,38 @@ func (m *RoomManager) ApplyExternalContentGuarded(itemID string, markdown string
 	// it, so without this the restore-storm return below would answer "no applier was
 	// available" — i.e. nothing was sent — after up to applierMaxRestartsAfterRestore
 	// elections that may each have put an applier_request on the wire.
+	_, err := m.applyExternal(room, itemID, applierPayload{markdown: markdown}, guarded)
+	return err
+}
+
+// ApplyExternalPatch routes a content-anchored patch (PLAN-3578 step 2)
+// through a designated applier, which applies it to its live document as a
+// narrowed replace. Only patch-capable conns are elected; with none it
+// returns ErrNoApplierAvailable. A refusal comes back as *PatchRefusedError;
+// a success carries the tab's before/after bodies. Never guarded: a patch
+// merges with the tab's own unsent typing instead of replacing it.
+func (m *RoomManager) ApplyExternalPatch(itemID, patchID string, edits json.RawMessage) (*PatchAck, error) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, ErrManagerClosed()
+	}
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+	if room == nil {
+		return nil, ErrNoActiveRoom
+	}
+	return m.applyExternal(room, itemID, applierPayload{edits: edits, patchID: patchID}, false)
+}
+
+// applyExternal is the restart loop shared by the markdown and patch forms.
+func (m *RoomManager) applyExternal(room *Room, itemID string, payload applierPayload, guarded bool) (*PatchAck, error) {
 	var sentAny bool
 	for restart := 0; restart < applierMaxRestartsAfterRestore; restart++ {
-		err, superseded, sent := m.electAndApply(room, itemID, markdown, guarded)
+		ack, err, superseded, sent := m.electAndApply(room, itemID, payload, guarded)
 		sentAny = sentAny || sent
 		if !superseded {
-			return err
+			return ack, err
 		}
 		// A version restore superseded this election and has now resolved
 		// (electAndApply already waited it out). Re-elect from scratch: a fresh
@@ -358,9 +475,9 @@ func (m *RoomManager) ApplyExternalContentGuarded(itemID string, markdown string
 	// not cosmetic — ErrNoApplierAvailable asserts nothing reached a peer, and after
 	// a storm in which a request DID go out that assertion is false.
 	if sentAny {
-		return ErrAllAppliersTimedOut
+		return nil, ErrAllAppliersTimedOut
 	}
-	return ErrNoApplierAvailable
+	return nil, ErrNoApplierAvailable
 }
 
 // HasElectableApplier reports whether an external content update for itemID would,
@@ -439,6 +556,23 @@ func (m *RoomManager) HasElectableApplier(itemID string) bool {
 	return room.pickApplier(nil) != nil
 }
 
+// HasElectablePatchApplier is HasElectableApplier for a patch (PLAN-3578
+// step 2): is a patch-capable conn electable right now. A point-in-time
+// hint, like its sibling; it mutates nothing.
+func (m *RoomManager) HasElectablePatchApplier(itemID string) bool {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return false
+	}
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+	if room == nil {
+		return false
+	}
+	return room.pickApplierFor(nil, true) != nil
+}
+
 // electAndApply runs one designated-applier election (first attempt + one retry)
 // against the room, gated on the restore coordinator. It returns
 // (err, superseded, sentAny): superseded==true means a version restore interrupted
@@ -449,7 +583,7 @@ func (m *RoomManager) HasElectableApplier(itemID string) bool {
 // sentAny reports whether an applier_request actually reached a peer during THIS
 // election. The caller accumulates it across restarts so the sentinel it finally
 // returns does not claim nothing was sent when something was (PLAN-2975).
-func (m *RoomManager) electAndApply(room *Room, itemID, markdown string, guarded bool) (error, bool, bool) {
+func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPayload, guarded bool) (*PatchAck, error, bool, bool) {
 	// A FRESH request_id per election: a late ack from a superseded prior election
 	// (same conn, re-picked after a rollback) can't be mistaken for this one's.
 	requestID := uuid.NewString()
@@ -473,17 +607,17 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string, guarded
 		// !waited return ADMITS us; finishAdmission MUST run before we wait on the
 		// outcome so a concurrent beginRestore drains us (P1).
 		if room.enterApplierGate() {
-			return nil, true, anyWriteSucceeded
+			return nil, nil, true, anyWriteSucceeded
 		}
 
-		applier := room.pickApplier(tried)
+		applier := room.pickApplierFor(tried, payload.isPatch())
 		if applier == nil {
 			// No more candidates left.
 			room.finishAdmission()
 			if !anyWriteSucceeded {
-				return ErrNoApplierAvailable, false, anyWriteSucceeded
+				return nil, ErrNoApplierAvailable, false, anyWriteSucceeded
 			}
-			return ErrAllAppliersTimedOut, false, anyWriteSucceeded
+			return nil, ErrAllAppliersTimedOut, false, anyWriteSucceeded
 		}
 		tried[applier.conn] = struct{}{}
 
@@ -493,7 +627,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string, guarded
 		room.finishAdmission()
 		if registerErr != nil {
 			// Race: room closed between pickApplier and registration.
-			return registerErr, false, anyWriteSucceeded
+			return nil, registerErr, false, anyWriteSucceeded
 		}
 
 		// Send the applier_request as a TextMessage. y-protocol
@@ -509,21 +643,23 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string, guarded
 		msg := ControlMessage{
 			Type:            ControlMessageApplierRequest,
 			RequestID:       requestID,
-			Markdown:        markdown,
+			Markdown:        payload.markdown,
+			Edits:           payload.edits,
+			PatchID:         payload.patchID,
 			Guarded:         guarded,
 			ExpiresAtMillis: time.Now().Add(timeouts[attempt]).UnixMilli(),
 		}
-		payload, err := json.Marshal(msg)
+		frame, err := json.Marshal(msg)
 		if err != nil {
 			room.cancelPendingAck(requestID)
-			return fmt.Errorf("marshal applier_request: %w", err), false, anyWriteSucceeded
+			return nil, fmt.Errorf("marshal applier_request: %w", err), false, anyWriteSucceeded
 		}
 		// Bounded write (BUG-2276 residual 2, P1a): a dead/slow peer wedged in a
 		// deadline-free writeLoop write holds writeMu, which would otherwise block
 		// this send indefinitely with a pending-ack entry outstanding. An independent
 		// close-timer closes the conn if the write can't complete, forcing the wedged
 		// write to error and releasing writeMu — mirroring forceRefreshAll.
-		if werr := writeApplierRequest(applier, payload); werr != nil {
+		if werr := writeApplierRequest(applier, frame); werr != nil {
 			// Conn write failed (slow / dead). Drop the pending
 			// ack, evict the broken conn from the room (otherwise
 			// it would still count as a "live peer" against
@@ -546,17 +682,27 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string, guarded
 		// Wait for the DURABLE outcome OR timeout.
 		select {
 		case outcome := <-resultCh:
+			patchAck, patchRefusal := room.takePatchResult(requestID)
 			room.cancelPendingAck(requestID)
 			switch outcome {
 			case applierPersisted:
 				// The applier's setContent durably landed (no frame in its apply
 				// bracket was frozen-dropped). All peers are on the new state.
-				return nil, false, anyWriteSucceeded
+				if payload.isPatch() && patchAck == nil {
+					return nil, ErrPatchAckMissing, false, anyWriteSucceeded
+				}
+				return patchAck, nil, false, anyWriteSucceeded
 			case applierRefused:
 				// BUG-3542: the tab holds edits the server may not have; it
 				// applied nothing. Not re-elected: another tab applying would
 				// replace the same edits in the shared document.
-				return ErrApplierRefusedUnconfirmed, false, anyWriteSucceeded
+				if payload.isPatch() && patchRefusal != nil {
+					// PLAN-3578: the tab refused the patch on its document's
+					// content (an anchor, an unstable block); another tab would
+					// refuse the same document.
+					return nil, patchRefusal, false, anyWriteSucceeded
+				}
+				return nil, ErrApplierRefusedUnconfirmed, false, anyWriteSucceeded
 			case applierAmbiguous:
 				// Legacy conn caught by a restore: setContent MIGHT have landed but we
 				// can't confirm. FAIL-SAFE — do NOT re-apply (that could clobber peer
@@ -569,7 +715,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string, guarded
 					"item_id", itemID,
 					"client_id", applier.id,
 				)
-				return ErrApplierAmbiguous, false, anyWriteSucceeded
+				return nil, ErrApplierAmbiguous, false, anyWriteSucceeded
 			default: // applierNotPersisted
 				// A version restore froze this apply, so setContent did NOT land. This
 				// is a DURABLE determination (see restore_coord.go), not a timing guess
@@ -581,7 +727,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string, guarded
 					"item_id", itemID,
 					"client_id", applier.id,
 				)
-				return nil, true, anyWriteSucceeded
+				return nil, nil, true, anyWriteSucceeded
 			}
 		case <-time.After(timeouts[attempt]):
 			room.cancelPendingAck(requestID)
@@ -601,9 +747,9 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string, guarded
 	if !anyWriteSucceeded {
 		// applierMaxAttempts exhausted without ever putting bytes on
 		// the wire. Same recovery profile as no-applier-found.
-		return ErrNoApplierAvailable, false, anyWriteSucceeded
+		return nil, ErrNoApplierAvailable, false, anyWriteSucceeded
 	}
-	return ErrAllAppliersTimedOut, false, anyWriteSucceeded
+	return nil, ErrAllAppliersTimedOut, false, anyWriteSucceeded
 }
 
 // applierMaxRestartsAfterRestore caps how many times ApplyExternalContent re-elects
@@ -652,6 +798,12 @@ func ErrManagerClosed() error { return errManagerClosed }
 // stable ordering (sort by connectedAt asc) ensures successive
 // attempts hit increasingly-younger clients without skipping any.
 func (r *Room) pickApplier(tried map[*websocket.Conn]struct{}) *roomConn {
+	return r.pickApplierFor(tried, false)
+}
+
+// pickApplierFor is pickApplier, restricted to patch-capable conns when the
+// request is a patch (PLAN-3578 step 2).
+func (r *Room) pickApplierFor(tried map[*websocket.Conn]struct{}, patch bool) *roomConn {
 	r.mu.Lock()
 	candidates := make([]*roomConn, 0, len(r.conns))
 	for _, rc := range r.conns {
@@ -685,6 +837,9 @@ func (r *Room) pickApplier(tried map[*websocket.Conn]struct{}) *roomConn {
 		// anchored before it applies.
 		// An evicted conn (BUG-2103) holds a Y.Doc the op-log no longer backs.
 		if !rc.canWrite.Load() || rc.frozen.Load() || rc.evicted.Load() || !rc.replayDone.Load() {
+			continue
+		}
+		if patch && !rc.patchCapable.Load() {
 			continue
 		}
 		candidates = append(candidates, rc)

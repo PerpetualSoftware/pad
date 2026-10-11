@@ -388,10 +388,14 @@ Actions:
     read it. Anchors guarantee position, not meaning: if the text around
     your anchor was rewritten, the edit still lands. A moved expected_seq
     does not refuse: the patch applies and returns rebased=true with the
-    intervening writes (complete=false when some left no record). Refusals
-    write nothing: patch_anchor_missing / patch_anchor_ambiguous (re-read,
-    quote current text) and patch_room_open (the item is open in an
-    editor; not supported yet).
+    intervening writes (complete=false when some left no record). On an
+    item open in an editor, the editor applies it to its live document,
+    merging with the typing there, and the answer carries
+    content_state="applied_pending_flush". Refusals write nothing:
+    patch_anchor_missing / patch_anchor_ambiguous (re-read, quote current
+    text), patch_unstable_roundtrip (the open editor would also change
+    content you did not edit: send a whole-body update instead) and
+    patch_room_open (an older editor that cannot apply patches holds it).
   list          — List items, optionally filtered.
     Optional: collection, status, priority, parent, unparented, role, assign, all, limit, full.
     parent and unparented are mutually exclusive. Results are

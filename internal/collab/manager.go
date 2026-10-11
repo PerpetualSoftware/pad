@@ -1445,6 +1445,29 @@ func (m *RoomManager) CloseConn(itemID string, conn *websocket.Conn, code int, r
 // value and drops the frame. Room lookup (m.mu) and conn lookup
 // (room.mu) are released before appendMu is taken, so no lock nesting
 // is introduced. Per TASK-265.
+// SetConnPatchCapable marks a registered connection as one that applies
+// content-anchored patches (PLAN-3578 step 2). The collab handler calls it
+// from Join's onRegistered callback when the client connected with
+// `?patch_capable=1`; until then the conn is not offered patches, which is
+// the safe direction.
+func (m *RoomManager) SetConnPatchCapable(itemID string, conn *websocket.Conn) {
+	if conn == nil {
+		return
+	}
+	m.mu.Lock()
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+	if room == nil {
+		return
+	}
+	room.mu.Lock()
+	rc := room.conns[conn]
+	room.mu.Unlock()
+	if rc != nil {
+		rc.patchCapable.Store(true)
+	}
+}
+
 func (m *RoomManager) SetConnWritable(itemID string, conn *websocket.Conn, canWrite bool) {
 	if conn == nil {
 		return

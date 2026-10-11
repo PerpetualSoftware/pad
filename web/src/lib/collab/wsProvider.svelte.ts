@@ -109,6 +109,25 @@ export type ApplierRequestHandler = (
 ) => boolean;
 
 /**
+ * A content-anchored patch the server asks this tab to apply (PLAN-3578
+ * step 2). The handler PLANS first and returns a refusal without touching
+ * the editor, or calls `openBracket()` (which sends applier_apply_start)
+ * and then applies SYNCHRONOUSLY, returning the canonical before/after.
+ * Synchronous for the bracket's reason (see ApplierRequestHandler). `null`
+ * means the tab could not apply at all (no live editor): nothing is sent,
+ * and the server's timeout owns the outcome.
+ */
+export type ApplierPatchHandler = (
+	edits: { old: string; new: string; line_hint?: number }[],
+	requestID: string,
+	expiresAtMillis: number,
+	openBracket: () => void,
+) =>
+	| { ok: true; before: string; after: string }
+	| { ok: false; reason: string; edit?: number; lines?: number[]; line?: number }
+	| null;
+
+/**
  * Callback fired when the server sends a `force_refresh` control
  * frame (TASK-1319). The reconnecting client's `?since=<id>` was
  * below the server's MIN(item_yjs_updates.id) — rows it expected
@@ -226,6 +245,12 @@ export interface CollabProviderOptions {
 	 * after timeout). Production callers always set this.
 	 */
 	onApplierRequest?: ApplierRequestHandler;
+	/**
+	 * Patch handler (PLAN-3578 step 2). When set, the provider announces
+	 * `?patch_capable=1`, and the server may send this tab a patch instead
+	 * of markdown. See `ApplierPatchHandler`.
+	 */
+	onApplierPatch?: ApplierPatchHandler;
 	/**
 	 * Force-refresh handler (TASK-1319). See `ForceRefreshHandler`.
 	 * Required for production: without it, a force_refresh frame
@@ -418,6 +443,7 @@ export class CollabProvider {
 	private readonly WebSocketImpl: typeof WebSocket;
 	private readonly random: () => number;
 	private readonly onApplierRequest?: ApplierRequestHandler;
+	private readonly onApplierPatch?: ApplierPatchHandler;
 	private readonly onForceRefresh?: ForceRefreshHandler;
 	private readonly onOpLogCursor?: (opLogID: number) => void;
 	/**
@@ -445,6 +471,7 @@ export class CollabProvider {
 		this.WebSocketImpl = options.WebSocketImpl ?? globalThis.WebSocket;
 		this.random = options.random ?? Math.random;
 		this.onApplierRequest = options.onApplierRequest;
+		this.onApplierPatch = options.onApplierPatch;
 		this.onForceRefresh = options.onForceRefresh;
 		this.onOpLogCursor = options.onOpLogCursor;
 		this.contentSeq = options.contentSeq ?? 0;
@@ -1019,6 +1046,9 @@ export class CollabProvider {
 			type?: string;
 			request_id?: string;
 			markdown?: string;
+			/** PLAN-3578: a patch, sent only to a patch-capable tab, instead of markdown. */
+			patch_id?: string;
+			edits?: { old: string; new: string; line_hint?: number }[];
 			/** BUG-3542: refuse rather than apply while edits are unconfirmed. */
 			guarded?: boolean;
 			expires_at_millis?: number;
@@ -1215,6 +1245,10 @@ export class CollabProvider {
 				return;
 			}
 			case 'applier_request': {
+				if (msg.request_id && msg.patch_id && Array.isArray(msg.edits)) {
+					this.handleApplierPatch(msg.request_id, msg.edits, msg.expires_at_millis ?? 0, sourceWs);
+					return;
+				}
 				if (!msg.request_id || typeof msg.markdown !== 'string') {
 					console.warn('collab: applier_request missing required fields');
 					return;
@@ -1319,6 +1353,66 @@ export class CollabProvider {
 				// older clients survive a server that grows new ones.
 				return;
 		}
+	}
+
+	/**
+	 * PLAN-3578 step 2: apply a patch the server sent this tab. The same
+	 * discipline as the markdown applier: the reply rides the socket that
+	 * delivered the request; an expired request is dropped; and
+	 * apply_start, the synchronous apply and applier_ack go out back to back.
+	 * A refusal is sent INSTEAD of apply_start, so nothing is bracketed.
+	 * Never refused for unsent typing: the patch applies to the document
+	 * that holds it.
+	 */
+	private handleApplierPatch(
+		requestID: string,
+		edits: { old: string; new: string; line_hint?: number }[],
+		expiresAt: number,
+		sourceWs: WebSocket | null,
+	): void {
+		if (!this.onApplierPatch) return;
+		if (expiresAt > 0 && Date.now() > expiresAt) {
+			console.warn('collab: dropping expired patch request', requestID);
+			return;
+		}
+		const ws = sourceWs;
+		if (!ws || ws !== this.ws || ws.readyState !== this.WebSocketImpl.OPEN) {
+			console.warn('collab: patch source socket gone, skipping', requestID);
+			return;
+		}
+		let bracketOpened = false;
+		let result: ReturnType<ApplierPatchHandler> = null;
+		try {
+			result = this.onApplierPatch(edits, requestID, expiresAt, () => {
+				bracketOpened = true;
+				ws.send(JSON.stringify({ type: 'applier_apply_start', request_id: requestID }));
+			});
+		} catch (err) {
+			console.warn('collab: patch handler threw, treating as not-applied', err);
+			return;
+		}
+		if (!result) return;
+		if (!result.ok) {
+			// A refusal after the bracket opened would contradict a frame already
+			// sent; the server ignores it, so don't send it.
+			if (bracketOpened) return;
+			ws.send(
+				JSON.stringify({
+					type: 'applier_refuse',
+					request_id: requestID,
+					reason: result.reason,
+					...(result.edit !== undefined ? { edit: result.edit } : {}),
+					...(result.lines ? { lines: result.lines } : {}),
+					...(result.line ? { line: result.line } : {}),
+				}),
+			);
+			return;
+		}
+		if (expiresAt > 0 && Date.now() > expiresAt) {
+			console.warn('collab: patch acked too late, suppressing', requestID);
+			return;
+		}
+		ws.send(JSON.stringify({ type: 'applier_ack', request_id: requestID, before: result.before, after: result.after }));
 	}
 
 	private readonly onClose = (): void => {
@@ -1482,6 +1576,8 @@ export class CollabProvider {
 		// (non-announcing) conn is fail-safed instead of risking a clobber. Gating on
 		// the handler keeps non-applier/read-only tabs on the bare base URL.
 		if (this.onApplierRequest) params.push('applier_bracket=1');
+		// PLAN-3578 step 2: only a tab that can apply a patch is ever sent one.
+		if (this.onApplierPatch) params.push('patch_capable=1');
 		if (params.length === 0) return this.url;
 		const sep = this.url.includes('?') ? '&' : '?';
 		return `${this.url}${sep}${params.join('&')}`;

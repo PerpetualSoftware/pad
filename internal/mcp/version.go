@@ -1738,6 +1738,17 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.88 — PLAN-3578 step 2. BEHAVIOR bump on the v0.84 grounds (a
+//     call's outcome changes; no name, enum or param moved):
+//     `pad_item.action=patch` on an item open in a browser editor used to be
+//     refused `patch_room_open`; now a patch-capable editor applies it to its
+//     live document as a narrowed replace and the answer adds
+//     `content_state: "applied_pending_flush"`. New structured code on both
+//     transports: `patch_unstable_roundtrip` (`details.line`, `details.reason`):
+//     applying it there would change content outside the edit.
+//     `patch_room_open` now means only an editor that cannot apply patches
+//     (an older tab) holds the item.
+//
 //     0.87 — PLAN-3578 step 1. ADDITIVE bump on the v0.38 grounds (a new
 //     action is the contract change): `pad_item.action=patch {ref, edits:
 //     [{old, new, line_hint?}], expected_seq?}` replaces exact text in an
@@ -2064,7 +2075,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.87"
+const ToolSurfaceVersion = "0.88"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -272,7 +272,15 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	// own frames are dropped (TASK-265). The onRegistered callback
 	// (closes `registered`) fires once the conn is in the room, so
 	// revalidation only starts after SetConnWritable can find it.
-	onRegistered := func() { close(registered) }
+	// PLAN-3578 step 2: a client that applies content-anchored patches says
+	// so; only such a conn is ever sent one.
+	patchCapable := r.URL.Query().Get("patch_capable") == "1"
+	onRegistered := func() {
+		if patchCapable {
+			s.collab.SetConnPatchCapable(itemID, conn)
+		}
+		close(registered)
+	}
 	if err := s.collab.Join(itemID, conn, sinceID, contentSeq, access.canWrite, bracketCapable, onRegistered); err != nil {
 		// ErrForceRefreshSent is the protocol's normal close-after-
 		// notify path — the JSON frame is already on the wire and
