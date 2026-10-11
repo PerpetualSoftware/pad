@@ -7,6 +7,13 @@
 // answer, so its text is kept HERE before the request goes out, removed only
 // when a response says it landed, and offered on the next open of the item.
 //
+// BUG-3571 part 2 adds a second producer: text an open item could no longer
+// save under its author's session (an identity change the tab did not start,
+// or a session-expiry redirect) is kept here under that author's id, rich text
+// as its serialized markdown, and offered back the same way. Kept drafts
+// expire after REFUSED_RAW_DRAFT_TTL_MS, and an explicit sign-out purges all
+// of the user's.
+//
 // Keyed by user and item: a different account signing in on this browser must
 // never be offered another account's text. Every storage access is guarded,
 // because storage can be blocked (a private window) or full, and a failure
@@ -19,6 +26,14 @@ export interface RefusedRawDraft {
 }
 
 const PREFIX = 'pad:refused-raw-draft:';
+
+/**
+ * How long kept text is offered (BUG-3571 part 2). Before part 2 a kept draft
+ * lived until it was restored or dismissed; it now also holds text kept for a
+ * user who was signed out under it, which must not sit on a shared machine
+ * indefinitely. An expired entry reads as none and is removed on that read.
+ */
+export const REFUSED_RAW_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function keyFor(userId: string, itemId: string): string {
 	return `${PREFIX}${userId}:${itemId}`;
@@ -42,14 +57,22 @@ export function keepRefusedRawDraft(userId: string, itemId: string, markdown: st
 	}
 }
 
-/** The kept text for this user and item, or null. A malformed entry reads as none. */
-export function readRefusedRawDraft(userId: string, itemId: string): RefusedRawDraft | null {
+/**
+ * The kept text for this user and item, or null. A malformed entry reads as
+ * none; an expired one (older than the TTL) reads as none and is removed.
+ */
+export function readRefusedRawDraft(userId: string, itemId: string, now = Date.now()): RefusedRawDraft | null {
 	if (!userId || !itemId) return null;
 	try {
-		const raw = storage()?.getItem(keyFor(userId, itemId));
+		const s = storage();
+		const raw = s?.getItem(keyFor(userId, itemId));
 		if (!raw) return null;
 		const parsed = JSON.parse(raw) as Partial<RefusedRawDraft>;
 		if (typeof parsed.markdown !== 'string' || typeof parsed.savedAt !== 'number') return null;
+		if (now - parsed.savedAt > REFUSED_RAW_DRAFT_TTL_MS) {
+			s?.removeItem(keyFor(userId, itemId));
+			return null;
+		}
 		return { markdown: parsed.markdown, savedAt: parsed.savedAt };
 	} catch {
 		return null;
@@ -71,6 +94,28 @@ export function clearRefusedRawDraft(userId: string, itemId: string, onlyIf?: st
 			if (!current || current.markdown !== onlyIf) return;
 		}
 		s.removeItem(keyFor(userId, itemId));
+	} catch {
+		// Nothing to recover from.
+	}
+}
+
+/**
+ * Remove every kept draft of this user, on every item (BUG-3571 part 2): an
+ * explicit sign-out leaves nothing of theirs on this device. Keys are
+ * collected before removal, since removing while indexing shifts the indices.
+ */
+export function purgeRefusedRawDraftsForUser(userId: string): void {
+	if (!userId) return;
+	try {
+		const s = storage();
+		if (!s) return;
+		const prefix = `${PREFIX}${userId}:`;
+		const keys: string[] = [];
+		for (let i = 0; i < s.length; i++) {
+			const k = s.key(i);
+			if (k !== null && k.startsWith(prefix)) keys.push(k);
+		}
+		for (const k of keys) s.removeItem(k);
 	} catch {
 		// Nothing to recover from.
 	}

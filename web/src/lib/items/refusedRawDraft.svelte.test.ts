@@ -4,6 +4,8 @@ import {
 	readRefusedRawDraft,
 	clearRefusedRawDraft,
 	refusedRawDraftOffer,
+	purgeRefusedRawDraftsForUser,
+	REFUSED_RAW_DRAFT_TTL_MS,
 } from './refusedRawDraft';
 
 // BUG-3230 U0: the kept text an unload raw save could not store.
@@ -14,21 +16,25 @@ describe('refusedRawDraft', () => {
 	});
 
 	it('keeps, reads back with its time, and clears', () => {
-		keepRefusedRawDraft('u1', 'i1', 'kept text', 1234);
-		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'kept text', savedAt: 1234 });
+		// Times are near now: an entry older than the TTL (BUG-3571 part 2)
+		// reads as none.
+		const t = Date.now();
+		keepRefusedRawDraft('u1', 'i1', 'kept text', t);
+		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'kept text', savedAt: t });
 		clearRefusedRawDraft('u1', 'i1');
 		expect(readRefusedRawDraft('u1', 'i1')).toBeNull();
 	});
 
 	it('is per user: another account on this browser is never offered it', () => {
-		keepRefusedRawDraft('u1', 'i1', 'mine', 1);
+		keepRefusedRawDraft('u1', 'i1', 'mine');
+		expect(readRefusedRawDraft('u1', 'i1')?.markdown).toBe('mine');
 		expect(readRefusedRawDraft('u2', 'i1')).toBeNull();
 		expect(readRefusedRawDraft('u1', 'i2')).toBeNull();
 	});
 
 	it('clear with onlyIf leaves newer text a later unload kept', () => {
-		keepRefusedRawDraft('u1', 'i1', 'older', 1);
-		keepRefusedRawDraft('u1', 'i1', 'newer', 2);
+		keepRefusedRawDraft('u1', 'i1', 'older');
+		keepRefusedRawDraft('u1', 'i1', 'newer');
 		clearRefusedRawDraft('u1', 'i1', 'older');
 		expect(readRefusedRawDraft('u1', 'i1')?.markdown).toBe('newer');
 		clearRefusedRawDraft('u1', 'i1', 'newer');
@@ -71,5 +77,43 @@ describe('refusedRawDraft', () => {
 		expect(refusedRawDraftOffer(null, 'body')).toBe('none');
 		expect(refusedRawDraftOffer({ markdown: 'body', savedAt: 1 }, 'body')).toBe('clear');
 		expect(refusedRawDraftOffer({ markdown: 'other', savedAt: 1 }, 'body')).toBe('offer');
+	});
+
+	// BUG-3571 part 2: kept drafts now include text kept for a user signed out
+	// under it, so they expire, and an explicit sign-out purges the user's.
+	it('an entry older than the TTL reads as none and is removed', () => {
+		const t = 1_000_000_000_000;
+		keepRefusedRawDraft('u1', 'i1', 'old', t);
+		expect(readRefusedRawDraft('u1', 'i1', t + REFUSED_RAW_DRAFT_TTL_MS)?.markdown).toBe('old');
+		expect(localStorage.length).toBe(1);
+		expect(readRefusedRawDraft('u1', 'i1', t + REFUSED_RAW_DRAFT_TTL_MS + 1)).toBeNull();
+		expect(localStorage.length).toBe(0);
+	});
+
+	it('the TTL is seven days', () => {
+		expect(REFUSED_RAW_DRAFT_TTL_MS).toBe(7 * 24 * 60 * 60 * 1000);
+	});
+
+	it("purging a user removes every one of their drafts and nobody else's", () => {
+		keepRefusedRawDraft('u1', 'i1', 'a');
+		keepRefusedRawDraft('u1', 'i2', 'b');
+		keepRefusedRawDraft('u1', 'i3', 'c');
+		// A user id that the purged one prefixes is a different user.
+		keepRefusedRawDraft('u10', 'i1', 'd');
+		keepRefusedRawDraft('u2', 'i1', 'e');
+		localStorage.setItem('pad-theme', 'dark');
+		purgeRefusedRawDraftsForUser('u1');
+		expect(readRefusedRawDraft('u1', 'i1')).toBeNull();
+		expect(readRefusedRawDraft('u1', 'i2')).toBeNull();
+		expect(readRefusedRawDraft('u1', 'i3')).toBeNull();
+		expect(readRefusedRawDraft('u10', 'i1')?.markdown).toBe('d');
+		expect(readRefusedRawDraft('u2', 'i1')?.markdown).toBe('e');
+		expect(localStorage.getItem('pad-theme')).toBe('dark');
+	});
+
+	it('purging with no user removes nothing', () => {
+		keepRefusedRawDraft('u1', 'i1', 'a');
+		purgeRefusedRawDraftsForUser('');
+		expect(readRefusedRawDraft('u1', 'i1')?.markdown).toBe('a');
 	});
 });

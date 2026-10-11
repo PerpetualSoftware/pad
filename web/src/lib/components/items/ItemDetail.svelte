@@ -13,6 +13,7 @@
 	import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { registerSignOutGuard, signOutDiscarding } from '$lib/stores/signOutGuard.svelte';
+	import { registerSessionExpiryKeeper } from '$lib/stores/sessionExpiryKeep';
 	import {
 		keepRefusedRawDraft,
 		readRefusedRawDraft,
@@ -1263,7 +1264,14 @@
 	// `loadData` used to make the effect above depend on it, which reloaded by
 	// accident and would reload TWICE beside this listener. It is untracked
 	// there now, and the guard holds both halves.
-	const stopIdentityLoad = authStore.onIdentityChange(() => {
+	const stopIdentityLoad = authStore.onIdentityChange((previousUserId) => {
+		// BUG-3571 part 2: FIRST, before anything below drops or reloads state:
+		// text the previous user had not saved is kept in this browser under
+		// THEIR id. Nothing else can save it now (every write path refuses a
+		// changed epoch, rightly), and the kept-draft offer gives it back to
+		// them alone on their next open. A sign-in from anonymous has no
+		// previous user and keeps nothing.
+		if (previousUserId) keepAtRiskText(previousUserId);
 		if (!(wsSlug && collSlug && itemSlug)) return;
 		// The member and role lists are cached per workspace, and the load below
 		// would otherwise reuse the previous identity's (BUG-3084 codex round 1).
@@ -6166,6 +6174,32 @@
 			case 'offline': return "Can't reach the server. Your edits are kept in this tab and will sync when the connection returns. Closing the tab before then loses them.";
 		}
 	}
+
+	// BUG-3571 part 2: keep the text this item would lose, as a kept raw draft
+	// for `userId` (ruling R1: rich text is kept as its serialized markdown, so
+	// the existing offer and its version-checked restore give it back; a
+	// stored Y update is refused, since prune, set-aside and compaction break
+	// it). Called where the text can no longer be saved under its author's
+	// session: an identity change this tab did not start, and a session-expiry
+	// redirect. Never on a confirmed sign-out, which is the user choosing to
+	// discard.
+	function keepAtRiskText(userId: string): void {
+		if (!userId || signOutDiscarding()) return;
+		if (rawContentSaver.dirty && item && rawContentSaver.pending !== null) {
+			keepRefusedRawDraft(userId, item.id, rawContentSaver.pending);
+			return;
+		}
+		const ctx = activeCollabContext;
+		if (!ctx || ctx.retired || !(collabProvider?.editsAtRiskOnClose ?? false)) return;
+		const md = collabFlusher.snapshot(ctx);
+		if (md !== null) keepRefusedRawDraft(userId, ctx.itemId, md);
+	}
+
+	// The session-expiry redirect does not move the identity, so the user the
+	// text belongs to is still the signed-in one (BUG-3571 part 2).
+	$effect(() => {
+		return registerSessionExpiryKeeper(() => keepAtRiskText(authStore.userId));
+	});
 
 	// BUG-3571: signing out asks first while this item holds edits the server
 	// may not have; a confirm discards them and keeps nothing (the guard's
