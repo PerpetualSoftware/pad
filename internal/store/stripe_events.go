@@ -2,7 +2,9 @@ package store
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -85,13 +87,25 @@ func (s *Store) ClaimStripeEvent(eventID string, lease time.Duration) (state, pr
 	}
 
 	var st, existing string
-	if err := s.db.QueryRow(
+	err = s.db.QueryRow(
 		s.q(`SELECT state, processed_at FROM stripe_processed_events WHERE event_id = ?`), eventID,
-	).Scan(&st, &existing); err != nil {
+	).Scan(&st, &existing)
+	if s.failStripeEventRead != nil {
+		if herr := s.failStripeEventRead(eventID); herr != nil {
+			err = herr
+		}
+	}
+	if errors.Is(err, sql.ErrNoRows) {
 		// The row vanished between the statements (a concurrent unmark or
 		// prune). Claim it as new: every handler re-syncs from current Stripe
 		// state, so a rerun is safe.
 		return StripeEventClaimed, ts, nil
+	}
+	if err != nil {
+		// Any other failure says nothing about the row: another handler may
+		// hold a live lease, or the event may be done. Claiming here could
+		// run the handler twice, so fail and let the delivery be retried.
+		return "", "", fmt.Errorf("read stripe event %s: %w", eventID, err)
 	}
 	if st == "done" {
 		return StripeEventDone, existing, nil

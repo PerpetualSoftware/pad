@@ -260,3 +260,15 @@ func afterCommitReadback(kind, id string) {
 		h(kind, id)
 	}
 }
+
+// SetStripeEventReadFailureHookForTesting makes ClaimStripeEvent's read of an
+// existing event row fail with hook's error, for the lifetime of the returned
+// restore function. A hook returning nil is a no-op.
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep
+// signal. Set it only while no other request is in flight against this Store.
+func (s *Store) SetStripeEventReadFailureHookForTesting(hook func(eventID string) error) (restore func()) {
+	prev := s.failStripeEventRead
+	s.failStripeEventRead = hook
+	return func() { s.failStripeEventRead = prev }
+}

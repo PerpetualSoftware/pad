@@ -206,6 +206,13 @@ type Store struct {
 	// the store around it.
 	failCommentInsert func(input models.CommentCreate) error
 
+	// failStripeEventRead is a TEST-ONLY seam, nil in production: when it
+	// returns an error, ClaimStripeEvent's read of the existing row fails with
+	// it (retro CONVE-735 finding on BUG-3561). A transient read failure after
+	// the insert conflict cannot be produced otherwise without breaking the
+	// INSERT and UPDATE that run just before it.
+	failStripeEventRead func(eventID string) error
+
 	// afterDocumentPreLockRead is a TEST-ONLY seam, nil in production. When
 	// set, UpdateDocument calls it after its pre-transaction read and before
 	// it opens the transaction that takes the rename lock (BUG-2778) — the
