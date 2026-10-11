@@ -3131,7 +3131,7 @@ Use - to read the artifact from stdin.`,
 // --- comments ---
 
 func commentCmd() *cobra.Command {
-	var replyTo string
+	var replyTo, commentOpKey string
 
 	cmd := &cobra.Command{
 		Use:     "comment <ref> <message>",
@@ -3142,9 +3142,15 @@ func commentCmd() *cobra.Command {
 			client, _ := getClient()
 			ws := getWorkspace()
 
+			// TASK-3585: one idempotency key per invocation, so a retry of a
+			// comment whose answer was lost returns it instead of a twin.
+			if commentOpKey == "" {
+				commentOpKey = uuid.NewString()
+			}
 			input := models.CommentCreate{
 				Body:     args[1],
 				ParentID: replyTo,
+				OpKey:    commentOpKey,
 			}
 
 			comment, err := client.CreateComment(ws, args[0], input)
@@ -3162,6 +3168,7 @@ func commentCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&replyTo, "reply-to", "", "reply to a specific comment ID")
+	cmd.Flags().StringVar(&commentOpKey, "op-key", "", "idempotency key: retrying the SAME comment with the same key returns the comment it made instead of a second one (default: a new key per invocation)")
 	return cmd
 }
 

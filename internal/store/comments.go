@@ -85,6 +85,12 @@ func (s *Store) CreateCommentWithActivity(workspaceID, itemID, userID string, ac
 	if err != nil {
 		return nil, err
 	}
+	// TASK-3585: the caller's last word inside this transaction.
+	if input.AfterWriteTx != nil {
+		if err := input.AfterWriteTx(tx, out); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment: %w", err)
 	}

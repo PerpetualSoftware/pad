@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"os"
 	"strings"
@@ -16,7 +17,7 @@ import (
 )
 
 func noteCmd() *cobra.Command {
-	var details string
+	var details, noteOpKey string
 	var readStdin bool
 
 	cmd := &cobra.Command{
@@ -47,9 +48,15 @@ func noteCmd() *cobra.Command {
 				// BUG-3056: the server appends under its write lock, so a
 				// concurrent write to another key cannot be reverted by this
 				// one. It mints the id, timestamp and attribution.
+				// TASK-3585: one idempotency key per invocation, so a retry
+				// of a note whose answer was lost does not append it twice.
+				if noteOpKey == "" {
+					noteOpKey = uuid.NewString()
+				}
 				updated, err = client.UpdateItem(ws, args[0], models.ItemUpdate{
 					AppendImplementationNote: &models.ItemImplementationNoteAppend{Summary: summary, Details: body},
 					Source:                   "cli",
+					OpKey:                    noteOpKey,
 				})
 				if err != nil {
 					return structuredAppendRefusal(err, "note", models.ItemFieldImplementationNotes)
@@ -81,11 +88,12 @@ func noteCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&details, "details", "", "implementation details")
 	cmd.Flags().BoolVar(&readStdin, "stdin", false, "read note details from stdin")
+	cmd.Flags().StringVar(&noteOpKey, "op-key", "", "idempotency key: retrying the SAME note with the same key returns the note it appended instead of a second one (default: a new key per invocation)")
 	return cmd
 }
 
 func decideCmd() *cobra.Command {
-	var rationale string
+	var rationale, decideOpKey string
 	var readStdin bool
 
 	cmd := &cobra.Command{
@@ -114,9 +122,13 @@ func decideCmd() *cobra.Command {
 			)
 			if client.ServerSupportsItemFieldAppend() {
 				// BUG-3056 — see `pad item note`.
+				if decideOpKey == "" {
+					decideOpKey = uuid.NewString()
+				}
 				updated, err = client.UpdateItem(ws, args[0], models.ItemUpdate{
 					AppendDecision: &models.ItemDecisionLogAppend{Decision: decision, Rationale: body},
 					Source:         "cli",
+					OpKey:          decideOpKey,
 				})
 				if err != nil {
 					return structuredAppendRefusal(err, "decision", models.ItemFieldDecisionLog)
@@ -148,6 +160,7 @@ func decideCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&rationale, "rationale", "", "decision rationale")
 	cmd.Flags().BoolVar(&readStdin, "stdin", false, "read decision rationale from stdin")
+	cmd.Flags().StringVar(&decideOpKey, "op-key", "", "idempotency key: retrying the SAME decision with the same key returns the decision it appended instead of a second one (default: a new key per invocation)")
 	return cmd
 }
 

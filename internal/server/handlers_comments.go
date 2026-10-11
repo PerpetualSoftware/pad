@@ -2,7 +2,9 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -98,6 +100,38 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	if input.Body == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "body is required")
 		return
+	}
+
+	// TASK-3585: an idempotency key, claimed before the write. A replay
+	// answers with the comment the first request made, as it stands now.
+	key, kerr := idempotencyKey(r, input.OpKey)
+	if kerr != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", kerr.Error())
+		return
+	}
+	canon := input
+	canon.OpKey = ""
+	hold, ok := s.claimKey(w, r, workspaceID, idempotencyRouteComment, item.ID, canon, key, func(status int, stored string) {
+		var a commentedAnswer
+		if json.Unmarshal([]byte(stored), &a) != nil {
+			writeInternalError(w, fmt.Errorf("stored idempotent answer does not decode"))
+			return
+		}
+		c, gerr := s.store.GetComment(a.CommentID)
+		if gerr != nil || c == nil || c.Deleted {
+			writeError2(w, http.StatusGone, "idempotency_target_gone", "the comment this key created no longer exists", map[string]interface{}{"comment_id": a.CommentID})
+			return
+		}
+		writeJSON(w, status, c)
+	})
+	if !ok {
+		return
+	}
+	defer s.release(hold)
+	if hold != nil {
+		input.AfterWriteTx = func(tx *sql.Tx, created *models.Comment) error {
+			return s.completeTx(hold, http.StatusCreated, commentedAnswer{CommentID: created.ID})(tx)
+		}
 	}
 
 	stampCommentAttribution(r, &input)

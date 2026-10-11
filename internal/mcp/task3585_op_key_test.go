@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
@@ -44,12 +45,13 @@ func TestTASK3585_CLIAndMCPAgreeOnHints(t *testing.T) {
 		{cli.PatchOutcomeUnknownHint, PatchOutcomeUnknownHint},
 		{cli.IdempotencyInFlightHint, IdempotencyInFlightHint},
 		{cli.IdempotencyKeyReusedHint, IdempotencyKeyReusedHint},
+		{cli.IdempotencyTargetGoneHint, IdempotencyTargetGoneHint},
 	} {
 		if p[0] != p[1] {
 			t.Errorf("hints differ:\n cli %q\n mcp %q", p[0], p[1])
 		}
 	}
-	for _, c := range []string{cli.PatchOutcomeUnknownCode, cli.IdempotencyInFlightCode, cli.IdempotencyKeyReusedCode} {
+	for _, c := range []string{cli.PatchOutcomeUnknownCode, cli.IdempotencyInFlightCode, cli.IdempotencyKeyReusedCode, cli.IdempotencyTargetGoneCode} {
 		if _, ok := allowedStructuredErrorCodes[c]; !ok {
 			t.Errorf("%s is not allow-listed", c)
 		}
@@ -80,5 +82,92 @@ func TestTASK3585_MCPCreateOpKey(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("%d items; the retried create made a twin", n)
+	}
+}
+
+// A replayed create whose item has since been deleted is its own structured
+// code on both transports, not a generic error.
+func TestTASK3585_MCPCreateReplayOfADeletedItem(t *testing.T) {
+	f := newParentFixture(t)
+	in := map[string]any{"workspace": f.workspace.Slug, "collection": "tasks", "title": "Then deleted", "op_key": "mcp-gone"}
+	first := f.dispatchResult2(t, []string{"item", "create"}, in)
+	m, _ := first.StructuredContent.(map[string]any)
+	id, _ := m["id"].(string)
+	if first.IsError || id == "" {
+		t.Fatalf("create: %s", textOf(first))
+	}
+	if err := f.store.DeleteItem(id); err != nil {
+		t.Fatal(err)
+	}
+	res := f.dispatchResult2(t, []string{"item", "create"}, in)
+	env, ok := res.StructuredContent.(ErrorEnvelope)
+	if !res.IsError || !ok || env.Error.Code != ErrIdempotencyTargetGone || env.Error.Hint != IdempotencyTargetGoneHint {
+		t.Fatalf("remote replay of a deleted item: %s", textOf(res))
+	}
+
+	// stdio: main.go writes the marker only for codes IsPatchRefusal admits.
+	apiErr := &cli.APIError{Code: cli.IdempotencyTargetGoneCode, Message: "m"}
+	if _, ok := cli.IsPatchRefusal(apiErr); !ok {
+		t.Fatal("the CLI would not write a marker for idempotency_target_gone")
+	}
+	var stderr bytes.Buffer
+	cli.WritePatchRefusalError(&stderr, apiErr)
+	r := extractStructuredCLIError(stderr.String())
+	if r == nil {
+		t.Fatalf("stdio marker not lifted: %s", stderr.String())
+	}
+	if e := r.StructuredContent.(ErrorEnvelope).Error; e.Code != ErrIdempotencyTargetGone || e.Hint != IdempotencyTargetGoneHint {
+		t.Fatalf("stdio: %+v", e)
+	}
+}
+
+// TASK-3585: op_key on comment rides to the server, so a retried comment
+// answers the comment it made instead of a twin.
+func TestTASK3585_MCPCommentOpKey(t *testing.T) {
+	f := newParentFixture(t)
+	in := map[string]any{"workspace": f.workspace.Slug, "ref": f.child.Slug, "message": "Keyed via MCP", "op_key": "mcp-cm"}
+	first := f.dispatchResult2(t, []string{"item", "comment"}, in)
+	second := f.dispatchResult2(t, []string{"item", "comment"}, in)
+	m1, _ := first.StructuredContent.(map[string]any)
+	m2, _ := second.StructuredContent.(map[string]any)
+	if first.IsError || second.IsError || m1["id"] == nil || m1["id"] != m2["id"] {
+		t.Fatalf("replay: %s / %s", textOf(first), textOf(second))
+	}
+	cs, err := f.store.ListComments(f.child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range cs {
+		if c.Body == "Keyed via MCP" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d comments; the retried comment made a twin", n)
+	}
+}
+
+// TASK-3585: op_key on note and decide rides to the server, so a retried
+// append answers the entry it made instead of appending twice.
+func TestTASK3585_MCPAppendOpKey(t *testing.T) {
+	f := newParentFixture(t)
+	ws, ref := f.workspace.Slug, f.child.Slug
+	for _, c := range []struct {
+		action string
+		in     map[string]any
+	}{
+		{"note", map[string]any{"workspace": ws, "ref": ref, "summary": "Keyed note", "op_key": "mcp-n"}},
+		{"decide", map[string]any{"workspace": ws, "ref": ref, "decision": "Keyed decision", "op_key": "mcp-d"}},
+	} {
+		first := f.dispatchResult2(t, []string{"item", c.action}, c.in)
+		second := f.dispatchResult2(t, []string{"item", c.action}, c.in)
+		if first.IsError || second.IsError {
+			t.Fatalf("%s: %s / %s", c.action, textOf(first), textOf(second))
+		}
+	}
+	got, _ := f.store.GetItem(f.child.ID)
+	if n, d := len(models.ExtractItemImplementationNotes(got.Fields)), len(models.ExtractItemDecisionLog(got.Fields)); n != 1 || d != 1 {
+		t.Fatalf("notes=%d decisions=%d; a retried append made a twin", n, d)
 	}
 }

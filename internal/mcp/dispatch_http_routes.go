@@ -1846,6 +1846,10 @@ func mapItemComment(input map[string]any) (string, string, []byte, error) {
 			payload["parent_id"] = s
 		}
 	}
+	// TASK-3585: op_key is the comment's idempotency key.
+	if v, ok := input["op_key"].(string); ok && v != "" {
+		payload["op_key"] = v
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("encode body: %w", err)

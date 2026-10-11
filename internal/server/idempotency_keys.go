@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -83,4 +85,62 @@ const idempotencyRouteCreate = "item.create"
 // answers with that item as it stands now.
 type createdAnswer struct {
 	ItemID string `json:"item_id"`
+}
+
+// idempotencyRouteComment names the comment-create route in a key's request
+// hash.
+const idempotencyRouteComment = "comment.create"
+
+// commentedAnswer is what a comment create's key stores: the comment it made.
+type commentedAnswer struct {
+	CommentID string `json:"comment_id"`
+}
+
+// idempotencyRouteAppend names the append-only item update in a key's
+// request hash.
+const idempotencyRouteAppend = "item.append"
+
+// appendedAnswer is what an append's key stores: the item and the entries
+// the write minted. A replay answers with the item as it stands now, echoing
+// those entries.
+type appendedAnswer struct {
+	ItemID   string                         `json:"item_id"`
+	Note     *models.ItemImplementationNote `json:"note,omitempty"`
+	Decision *models.ItemDecisionLogEntry   `json:"decision,omitempty"`
+}
+
+// isAppendOnlyUpdate reports whether in carries nothing but appends (and
+// source, which every CLI write stamps). It compares against the zero
+// update so a member added to ItemUpdate later is covered without a list.
+func isAppendOnlyUpdate(in models.ItemUpdate) bool {
+	if in.AppendImplementationNote == nil && in.AppendDecision == nil {
+		return false
+	}
+	in.AppendImplementationNote, in.AppendDecision, in.OpKey, in.Source = nil, nil, "", ""
+	got, err1 := json.Marshal(in)
+	zero, err2 := json.Marshal(models.ItemUpdate{})
+	return err1 == nil && err2 == nil && string(got) == string(zero)
+}
+
+// replayAppend answers a replayed append: the item as it stands now, with
+// the entries the first request appended. 410 when the item is gone.
+// visIDs is the caller's visible collections, as the update's own response
+// uses, so a restricted caller's replay names no item it cannot see.
+func (s *Server) replayAppend(w http.ResponseWriter, r *http.Request, visIDs []string, status int, stored string) {
+	var a appendedAnswer
+	if json.Unmarshal([]byte(stored), &a) != nil {
+		writeInternalError(w, fmt.Errorf("stored idempotent answer does not decode"))
+		return
+	}
+	it, err := s.store.GetItem(a.ItemID)
+	if err != nil || it == nil {
+		writeError2(w, http.StatusGone, "idempotency_target_gone", "the item this key appended to no longer exists", map[string]interface{}{"item_id": a.ItemID})
+		return
+	}
+	if err := s.enrichItemForResponse(r, it, visIDs); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	it.Appended = &models.ItemAppendedEntries{ImplementationNote: a.Note, Decision: a.Decision}
+	writeJSON(w, status, it)
 }
