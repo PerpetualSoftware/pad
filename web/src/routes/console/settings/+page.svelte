@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { confirmSignOut } from '$lib/stores/signOutGuard.svelte';
 	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
 	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
 	import { onMount } from 'svelte';
@@ -605,6 +606,8 @@
 	// /login sends a signed-in visitor straight on, so a fresh sign-in starts
 	// with a sign-out. It lands back here to finish the delete.
 	async function signInAgainToDelete() {
+		// BUG-3571: unsaved edits in an open item are asked about first.
+		if (!(await confirmSignOut())) return;
 		try {
 			await api.auth.logout();
 		} catch {}

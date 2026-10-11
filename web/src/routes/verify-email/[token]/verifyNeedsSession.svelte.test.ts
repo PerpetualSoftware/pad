@@ -48,6 +48,9 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		},
 		ensureLoaded: async () => {},
 		load: async () => {},
+		// The page's sign-out asks through confirmDialog (BUG-3571), which
+		// listens for identity changes when it loads.
+		onIdentityChange: () => () => {},
 	},
 }));
 

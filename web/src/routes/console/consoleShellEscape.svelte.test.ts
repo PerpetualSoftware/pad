@@ -32,6 +32,9 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		user: { name: 'E2E', email: 'e2e@example.com', role: 'admin' },
 		cloudMode: false,
 		authenticated: true,
+		// The page's sign-out asks through confirmDialog (BUG-3571), which
+		// listens for identity changes when it loads.
+		onIdentityChange: () => () => {},
 	},
 }));
 
