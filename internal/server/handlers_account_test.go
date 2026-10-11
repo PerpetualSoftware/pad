@@ -208,6 +208,32 @@ func TestHandleDeleteAccount_OlderSidecar400WithNoLinkedCustomerProceeds(t *test
 	}
 }
 
+// Any OTHER 400 with no linked customer aborts (retro Codex review of #2036):
+// only the old sidecar's exact refusal means nothing could have been
+// cancelled. A current sidecar's 400 may come while stamped customers bill.
+func TestHandleDeleteAccount_NoLinkedCustomerOther400Aborts(t *testing.T) {
+	for _, body := range []string{
+		`{"error":"customer_id or user_id is required"}`,
+		`{"error":"Invalid request body"}`,
+		`{"error":"customer_id must start with 'cus_' "}`,
+		`customer_id must start with 'cus_'`,
+		``,
+	} {
+		t.Run(body, func(t *testing.T) {
+			srv := testServer(t)
+			srv.SetCloudSidecar(&fakeSidecar{err: &billing.SidecarError{Status: http.StatusBadRequest, Body: body}})
+			userID, token := bootstrapAccountDeleteUser(t, srv, "")
+			rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
+			if rr.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500 on 400 %q, got %d: %s", body, rr.Code, rr.Body.String())
+			}
+			if u, _ := srv.store.GetUser(userID); u == nil {
+				t.Error("user must still exist after an aborted delete")
+			}
+		})
+	}
+}
+
 // Any other failure with no linked customer still aborts: a stamped customer
 // may exist, and deleting the account would leave it charging.
 func TestHandleDeleteAccount_NoLinkedCustomerSidecar5xxAborts(t *testing.T) {
