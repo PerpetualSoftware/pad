@@ -347,7 +347,8 @@
 				     from /api/v1/plan-limits, since they are configurable. -->
 				<p class="plan-desc">
 					{#if isPro}
-						No caps on your workspaces, items or members. People you invite don't need a plan.
+						No caps on your workspaces, items or members.{#if commerceAllowed}
+							People you invite don't need a plan.{/if}
 					{:else if limits?.free}
 						Up to {limits.free.workspaces} workspaces with {limits.free.members_per_workspace} members each.{#if commerceAllowed}
 							Upgrade when a project outgrows it.{/if}

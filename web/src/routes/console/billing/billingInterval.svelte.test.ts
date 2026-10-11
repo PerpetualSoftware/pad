@@ -11,6 +11,7 @@ const m = vi.hoisted(() => ({
 	create: vi.fn(),
 	toast: vi.fn(),
 	commerce: true,
+	plan: 'free',
 	BillingCheckoutError: class extends Error {
 		status: number;
 		constructor(msg: string, status: number) {
@@ -27,7 +28,9 @@ vi.mock('$lib/api/client', () => ({
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
-		user: { plan: 'free' },
+		get user() {
+			return { plan: m.plan };
+		},
 		cloudMode: true,
 		billingAvailable: true,
 		// TASK-3577: billingAvailable comes with the offer it advertises.
@@ -55,6 +58,7 @@ beforeEach(() => {
 	m.create.mockReset();
 	m.toast.mockReset();
 	m.commerce = true;
+	m.plan = 'free';
 	href = '';
 	vi.stubGlobal(
 		'fetch',
@@ -178,5 +182,15 @@ describe('billing copy (TASK-3603)', () => {
 		expect(text).toContain('Up to 3 workspaces with 3 members each.');
 		expect(text).not.toContain('Upgrade when');
 		expect(text).not.toContain('Pro covers');
+	});
+
+	it('Pro in the app: the plan, and nothing about plans for others (codex r1)', async () => {
+		m.commerce = false;
+		m.plan = 'pro';
+		render(BillingPage);
+		await settle();
+		const text = document.body.textContent ?? '';
+		expect(text).toContain('No caps on your workspaces, items or members.');
+		expect(text).not.toContain("don't need a plan");
 	});
 });
