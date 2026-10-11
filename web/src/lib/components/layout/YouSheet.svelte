@@ -10,6 +10,7 @@
 	UserMenuResources link list (pure content) restyled to match.
 -->
 <script lang="ts">
+	import { confirmSignOut } from '$lib/stores/signOutGuard.svelte';
 	import { onMount } from 'svelte';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -61,6 +62,8 @@
 	}
 
 	async function handleLogout() {
+		// BUG-3571: unsaved edits in an open item are asked about first.
+		if (!(await confirmSignOut())) return;
 		try {
 			await api.auth.logout();
 		} finally {

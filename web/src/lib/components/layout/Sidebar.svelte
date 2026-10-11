@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { confirmSignOut, signOutFailed } from '$lib/stores/signOutGuard.svelte';
 	import { modKeyLabel } from '$lib/utils/platform';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
@@ -336,10 +337,14 @@
 	let versionLabel = $state('');
 
 	async function handleLogout() {
+		// BUG-3571: unsaved edits in an open item are asked about first.
+		if (!(await confirmSignOut())) return;
 		try {
 			await api.auth.logout();
 			window.location.href = '/login';
-		} catch {}
+		} catch {
+			signOutFailed();
+		}
 	}
 
 	let currentTheme = $state<'dark' | 'light'>('dark');

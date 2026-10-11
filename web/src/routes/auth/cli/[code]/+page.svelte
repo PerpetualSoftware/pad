@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { confirmSignOut } from '$lib/stores/signOutGuard.svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -126,6 +127,8 @@
 			error = 'Missing CLI session code.';
 			return;
 		}
+		// BUG-3571: unsaved edits in an open item are asked about first.
+		if (!(await confirmSignOut())) return;
 		switchingAccount = true;
 		error = '';
 		try {

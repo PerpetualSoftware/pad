@@ -278,7 +278,7 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved. Re-reviewed for BUG-3556: the prompt reads the provider getter editsAtRiskOnClose instead of unsentLocalEdits (a read, no await, no write); nothing else moved', reviewed: '8ff551518ba3',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved. Re-reviewed for BUG-3556: the prompt reads the provider getter editsAtRiskOnClose instead of unsentLocalEdits (a read, no await, no write); nothing else moved. Re-reviewed for BUG-3571: one early return when a confirmed sign-out discard is under way (signOutDiscarding(), a module read; no await, no write); nothing else moved', reviewed: '4404c3f437e7',
 		may: ['teardownFlushed'],
 	},
 	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: 'ac93e315dd54' },
@@ -382,7 +382,9 @@ const HELPERS: Record<string, string> = {
 	navigateToCollectionRoot: '5976f087a8ca',
 	refreshPrintMeta: '2312cc481ca5',
 	// BUG-3540: re-reviewed; body unchanged, re-hashed by a name it reaches (rawContentSaver's save or rawBase); no await or fence moved.
-	runTeardownFlush: '0338a02f2488',
+	// Re-reviewed for BUG-3571: one early return when a confirmed sign-out
+	// discard is under way (signOutDiscarding(), a module read); no await.
+	runTeardownFlush: '393163400e11',
 	// BUG-3124 unit B: the cursor-advance settle. Synchronous; arms the flusher's
 	// single timer only for the current, identity-held context.
 	showSaved: '456dd972dcf5',

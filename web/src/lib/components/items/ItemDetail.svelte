@@ -12,6 +12,7 @@
 	import { isContentNotAppliedUnconfirmed, isEditsNotStoredRefusal, pendingEditsReason, prunedEditsNotice, stillOnBase } from '$lib/items/contentWrite';
 	import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
+	import { registerSignOutGuard, signOutDiscarding } from '$lib/stores/signOutGuard.svelte';
 	import {
 		keepRefusedRawDraft,
 		readRefusedRawDraft,
@@ -3058,6 +3059,8 @@
 	// up missing it, and a source guard cannot see the copy that was never
 	// written.
 	function runTeardownFlush(): void {
+		// BUG-3571: the user chose to sign out and discard: write nothing.
+		if (signOutDiscarding()) return;
 		// ONCE PER TEARDOWN, and this latch is load-bearing rather than tidy.
 		// MEASURED (BUG-3030): three lifecycle events produce THREE identical
 		// PATCHes when the save is still in flight, and only one when it
@@ -3106,6 +3109,9 @@
 			// protects the author's unsaved work, and after an identity change
 			// the author is not the one sitting here.
 			if (authStore.identityEpoch !== identityEpochAtLoad) return;
+			// BUG-3571: signing out was confirmed as a discard, so neither ask
+			// again on the navigation to /login nor keep anything.
+			if (signOutDiscarding()) return;
 
 			runTeardownFlush();
 
@@ -6160,6 +6166,19 @@
 			case 'offline': return "Can't reach the server. Your edits are kept in this tab and will sync when the connection returns. Closing the tab before then loses them.";
 		}
 	}
+
+	// BUG-3571: signing out asks first while this item holds edits the server
+	// may not have; a confirm discards them and keeps nothing (the guard's
+	// signOutDiscarding() then stands down this item's saves and prompts).
+	$effect(() => {
+		return registerSignOutGuard({
+			atRisk: () => (collabProvider?.editsAtRiskOnClose ?? false) || (rawContentSaver.dirty && !!item),
+			discard: () => {
+				rawContentSaver.cancel();
+				if (item) clearRefusedRawDraft(authStore.userId, item.id);
+			},
+		});
+	});
 </script>
 
 <!-- Embedded pane, whenever the full header can't render: a minimal header so

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { confirmSignOut } from '$lib/stores/signOutGuard.svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -77,6 +78,8 @@
 	let switchError = $state('');
 	async function switchAccount() {
 		if (switching) return;
+		// BUG-3571: unsaved edits in an open item are asked about first.
+		if (!(await confirmSignOut())) return;
 		switching = true;
 		switchError = '';
 		try {
