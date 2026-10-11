@@ -40,11 +40,14 @@ import (
 // package (which CAN import server) and walks both shapes, so a server-side
 // rename is a red build rather than a field that silently stops rendering.
 //
-// ── DR-13: THE MUTATING COPY IS NEVER RETRIED ────────────────────────────
+// ── DR-13: THE MUTATING COPY IS NEVER RETRIED BLIND ──────────────────────
 //
-// v1 has no idempotency key. A retry after a request that already committed
+// v1 had no idempotency key. A retry after a request that already committed
 // creates a DUPLICATE item, and a caller who lost the response cannot tell
-// which happened. CopyItem therefore:
+// which happened. Since TASK-3585 a copy may carry a key; CopyItem's ONE
+// deliberate retry is keyed, made only after an unknown outcome, and only
+// against a server that advertises idempotency_keys, where the retry replays
+// the first copy instead of making another. Nothing else retries it:
 //
 //  1. runs on a DEDICATED *http.Client AND a dedicated transport
 //     (copyHTTPClient / copyTransport), so a retrying http.Client OR a
@@ -100,6 +103,9 @@ type ItemCopyRequest struct {
 	FieldOverrides map[string]any `json:"field_overrides,omitempty"`
 	// ArchiveSource is the MOVE path: copy, then archive the source.
 	ArchiveSource bool `json:"archive_source"`
+	// OpKey is the copy's idempotency key (TASK-3585). Set on the mutating
+	// call only; the preflight writes nothing and the server ignores it there.
+	OpKey string `json:"op_key,omitempty"`
 }
 
 // ItemCopyPreflightSource identifies the item being copied.
@@ -300,8 +306,8 @@ func (c *Client) CopyItemPreflight(wsSlug, itemRef string, req ItemCopyRequest) 
 
 // CopyItem performs the MUTATING cross-workspace copy.
 //
-// NEVER RETRY THIS CALL (DR-13). See the file header for the four
-// mechanisms that enforce it. On failure, check CopyOutcomeUnknown(err)
+// NEVER RETRY THIS CALL (DR-13) outside the one keyed retry it makes itself.
+// See the file header for the mechanisms that enforce it. On failure, check CopyOutcomeUnknown(err)
 // before saying anything to the user about what happened.
 func (c *Client) CopyItem(wsSlug, itemRef string, req ItemCopyRequest) (*ItemCopyResult, json.RawMessage, error) {
 	hc := c.copyHTTPClient()
@@ -310,6 +316,11 @@ func (c *Client) CopyItem(wsSlug, itemRef string, req ItemCopyRequest) (*ItemCop
 	defer hc.CloseIdleConnections()
 
 	raw, err := c.postCopyJSON(hc, itemCopyPath(wsSlug, itemRef), req, true)
+	// TASK-3585: an unknown outcome with a key is resolved by asking again
+	// with that key, ONCE: a server that honors keys answers the first copy.
+	if err != nil && req.OpKey != "" && CopyOutcomeUnknown(err) && c.serverHonorsKeys() {
+		raw, err = c.postCopyJSON(hc, itemCopyPath(wsSlug, itemRef), req, true)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

@@ -1990,6 +1990,9 @@ type itemCopyOptions struct {
 	DryRun           bool
 	ArchiveSource    bool
 	Fields           []string
+	// OpKey is the copy's idempotency key (TASK-3585); empty means a fresh
+	// one per invocation.
+	OpKey string
 	// Format is the effective --format value ("table" or "json").
 	Format string
 }
@@ -2085,6 +2088,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "report what the copy would do, without doing any of it")
 	cmd.Flags().BoolVar(&opts.ArchiveSource, "archive-source", false, "archive the source after a successful copy (the move path)")
 	cmd.Flags().StringArrayVarP(&opts.Fields, "field", "f", nil, "set a destination field value (repeatable): --field key=value")
+	cmd.Flags().StringVar(&opts.OpKey, "op-key", "", "idempotency key: retrying the SAME copy with the same key returns the first copy instead of making another (default: a new key per invocation)")
 	_ = cmd.MarkFlagRequired("to-workspace")
 	_ = cmd.MarkFlagRequired("collection")
 	return cmd
@@ -2202,6 +2206,13 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 		return fmt.Errorf("copy refused: the destination reported the field mapping as incomplete without naming a field; re-run with --dry-run --format json and report this")
 	}
 
+	// TASK-3585: the key rides on the mutating call only, one per invocation,
+	// so the client's single retry after an unknown outcome replays the
+	// first copy instead of making a second.
+	req.OpKey = opts.OpKey
+	if req.OpKey == "" {
+		req.OpKey = uuid.NewString()
+	}
 	res, rawRes, err := deps.Copy(req)
 	if err != nil {
 		if cli.CopyCommitted(err) {
