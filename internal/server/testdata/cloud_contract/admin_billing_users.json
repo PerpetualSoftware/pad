@@ -1,0 +1,12 @@
+{
+  "next": "",
+  "users": [
+    {
+      "plan": "<string>",
+      "plan_expires_at": "",
+      "plan_source": "<string>",
+      "stripe_customer_id": "<string>",
+      "user_id": "<string>"
+    }
+  ]
+}

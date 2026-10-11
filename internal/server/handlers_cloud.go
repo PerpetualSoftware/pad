@@ -127,6 +127,7 @@ var cloudAdminPaths = map[string]struct{}{
 	"/api/v1/admin/stripe-customer-id":     {},
 	"/api/v1/admin/user-by-customer":       {},
 	"/api/v1/admin/user-by-id":             {},
+	"/api/v1/admin/billing-users":          {},
 	"/api/v1/admin/stripe-event-processed": {},
 	"/api/v1/admin/stripe-event-unmark":    {},
 	"/api/v1/admin/payment-failed":         {},
@@ -1049,6 +1050,45 @@ func (s *Server) handleGetUserByID(w http.ResponseWriter, r *http.Request) {
 		"plan":               targetUser.Plan,
 		"stripe_customer_id": targetUser.StripeCustomerID,
 	})
+}
+
+// billingUsersMaxLimit bounds one page of GET /admin/billing-users.
+const billingUsersMaxLimit = 1000
+
+// handleListBillingUsers handles GET /api/v1/admin/billing-users?after=<user_id>&limit=N
+// (TASK-3564). The Pad Cloud sidecar's reconcile sweep pages through every
+// user with a stored Stripe customer or a stripe-sourced plan and re-syncs
+// each from Stripe, the backstop for a webhook whose effect was lost. Its
+// startup key check reads a small page to probe that its Stripe key can see
+// these customers. Same credential rule as user-by-id. limit defaults to 200;
+// `next` is the cursor for the following page, "" on the last one.
+func (s *Server) handleListBillingUsers(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		if !s.validateCloudSecret(r.Header.Get("X-Cloud-Secret"), w) {
+			return
+		}
+	}
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "bad_request", "limit must be a positive integer")
+			return
+		}
+		limit = min(n, billingUsersMaxLimit)
+	}
+	users, err := s.store.ListBillingUsers(r.URL.Query().Get("after"), limit)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	next := ""
+	if len(users) == limit {
+		next = users[len(users)-1].UserID
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": users, "next": next})
 }
 
 // --- Stripe Webhook Idempotency (TASK-696) ---

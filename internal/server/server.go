@@ -1841,6 +1841,7 @@ func (s *Server) setupRouter() {
 					r.Post("/stripe-customer-id", s.handleSetStripeCustomerID)      // Cloud: sidecar stores Stripe customer ID after checkout
 					r.Get("/user-by-customer", s.handleGetUserByCustomerID)         // Cloud: sidecar looks up user by Stripe customer ID
 					r.Get("/user-by-id", s.handleGetUserByID)                       // Cloud: sidecar reads a user's stored Stripe customer (TASK-3549)
+					r.Get("/billing-users", s.handleListBillingUsers)               // Cloud: sidecar reconcile sweep pages billing users (TASK-3564)
 					r.Post("/stripe-event-processed", s.handleStripeEventProcessed) // Cloud: sidecar webhook idempotency (TASK-696)
 					r.Post("/stripe-event-unmark", s.handleStripeEventUnmark)       // Cloud: sidecar handler-failure rollback (TASK-736)
 					r.Post("/payment-failed", s.handlePaymentFailed)                // Cloud: sidecar forwards invoice.payment_failed to trigger email (TASK-712)
