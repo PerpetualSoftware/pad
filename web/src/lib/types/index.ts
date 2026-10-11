@@ -2168,6 +2168,8 @@ export interface SearchResult {
 	item: Item;
 	snippet: string;
 	rank: number;
+	/** The workspace the item is in, from the server's access check (TASK-3604). */
+	workspace?: { slug: string; owner_username: string };
 }
 
 export interface SearchFacets {

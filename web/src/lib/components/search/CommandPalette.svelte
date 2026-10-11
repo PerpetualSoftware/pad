@@ -62,6 +62,10 @@
 	let query = $state('');
 	let results = $state<AugmentedSearchResult[]>([]);
 	let total = $state(0);
+	// The local list was capped: `total` is then what is shown, not how many
+	// matched (TASK-3604). Set only by the local path; cleared on every
+	// other dispatch.
+	let localCapped = $state(false);
 	let facets = $state<SearchFacets | undefined>(undefined);
 	// `searchAllWorkspaces` toggle: when on, search every workspace
 	// whose `localIndex` is `'ready'` in addition to the current one.
@@ -282,7 +286,10 @@
 
 	function buildFilters(offset = 0, wsSlug?: string): SearchFilters {
 		const filters: SearchFilters = {
-			workspace: wsSlug ?? workspaceStore.current?.slug,
+			// "All workspaces" names none: the server then searches every
+			// workspace the caller may see, loaded here or not (TASK-3604).
+			// An explicit wsSlug (the content search) still scopes to it.
+			workspace: wsSlug ?? (searchAllWorkspaces ? undefined : workspaceStore.current?.slug),
 			limit: PAGE_SIZE,
 			offset
 		};
@@ -357,6 +364,7 @@
 		searchFailed = false;
 		contentFailed = false;
 		loadMoreFailed = false;
+		localCapped = false;
 		const trimmed = query.trim();
 		if (!trimmed) {
 			results = [];
@@ -394,7 +402,10 @@
 		//   - No ready workspaces at all (cold session) — fall through
 		//     to the server so the palette still works pre-bootstrap.
 		// All three use a 200ms debounce on the network call.
-		if (parsed.body || !currentReady || ready.length === 0) {
+		// "All workspaces" always asks the server: local search reaches only
+		// the workspaces already loaded this session, which made what you
+		// found depend on what you had opened (TASK-3604).
+		if (parsed.body || !currentReady || ready.length === 0 || searchAllWorkspaces) {
 			// The server FTS result set already greps content, so there's
 			// no separate "Matches in content" section to render on this
 			// path — drop any stale one. TASK-2008.
@@ -423,6 +434,9 @@
 				// hydration state — only the dimensions checked above
 				// can invalidate them.
 				if (snapshotBody) return true;
+				// "All" stays on the server however the current workspace's
+				// index fares; the local path never takes it over (TASK-3604).
+				if (snapshotAllWs) return true;
 				// Non-body server fetches were triggered because the
 				// current workspace wasn't ready. If it's NOW ready,
 				// the local path is the authoritative source and the
@@ -496,11 +510,13 @@
 			? LOCAL_PER_WS_LIMIT * 5
 			: LOCAL_PER_WS_LIMIT;
 		const merged: AugmentedSearchResult[] = [];
+		let perWsCapped = false;
 		for (const ws of ready) {
 			const hits = localSearch.search(ws.slug, trimmed, {
 				collection: filterCollection ?? undefined,
 				limit: perWsLimit,
 			});
+			if (hits.length >= perWsLimit) perWsCapped = true;
 			merged.push(...materializeLocalHits(ws.slug, ws.owner_username, hits));
 		}
 		merged.sort((a, b) => {
@@ -528,6 +544,10 @@
 		// more specific query, not a paginated fetch.
 		results = filtered.slice(0, PAGE_SIZE * 2);
 		total = results.length;
+		// The local list is cut twice: per workspace and overall. Either cut
+		// means more matches exist than are shown, and the count is not a
+		// total (TASK-3604): say so rather than show the cut length as one.
+		localCapped = filtered.length > results.length || perWsCapped;
 		// Facets are server-only; clear them on the local path so the
 		// chip row hides cleanly.
 		facets = undefined;
@@ -732,7 +752,7 @@
 				const liveCurrentReady =
 					!!snapshotWsSlug &&
 					localIndex.bootstrapStateFor(snapshotWsSlug) === 'ready';
-				if (liveCurrentReady) return;
+				if (liveCurrentReady && !snapshotAllWs) return;
 			}
 			const before = flatResults;
 			// A row can come back on the next offset page when something was
@@ -956,18 +976,6 @@
 		};
 	}
 
-	// Derived: ready workspaces other than the current one. Used to gate
-	// the "search all workspaces" toggle visibility — no point showing
-	// it when the user only has the current workspace hydrated.
-	let otherReadyWorkspaceCount = $derived.by(() => {
-		const current = workspaceStore.current?.slug;
-		let n = 0;
-		for (const ws of workspaceStore.workspaces) {
-			if (ws.slug === current) continue;
-			if (localIndex.bootstrapStateFor(ws.slug) === 'ready') n += 1;
-		}
-		return n;
-	});
 </script>
 
 <svelte:window onkeydown={handleWindowKeydown} />
@@ -1054,21 +1062,28 @@
 			</div>
 
 			<!--
-				"All workspaces" toggle (TASK-1365). Only surfaced when the
-				user has more than one ready workspace — if you only have
-				the current workspace hydrated, the toggle would be a no-op
-				and just adds chrome.
+				Search scope (TASK-3604; TASK-1365 before it). A persistent
+				choice whenever there is more than one workspace, not only when
+				another happens to be loaded: "All workspaces" asks the server,
+				which searches every workspace you can see, loaded or not.
 			-->
-			{#if otherReadyWorkspaceCount > 0}
-				<div class="scope-row">
+			{#if workspaceStore.workspaces.length > 1}
+				<div class="scope-row" role="group" aria-label="Search scope">
+					<button
+						class="scope-toggle"
+						class:active={!searchAllWorkspaces}
+						aria-pressed={!searchAllWorkspaces}
+						onclick={() => { if (searchAllWorkspaces) toggleAllWorkspaces(); }}
+					>
+						This workspace
+					</button>
 					<button
 						class="scope-toggle"
 						class:active={searchAllWorkspaces}
-						onclick={toggleAllWorkspaces}
-						title="When on, search every workspace that's already loaded this session"
+						aria-pressed={searchAllWorkspaces}
+						onclick={() => { if (!searchAllWorkspaces) toggleAllWorkspaces(); }}
 					>
-						<span class="scope-dot" class:on={searchAllWorkspaces}></span>
-						<span>All workspaces ({otherReadyWorkspaceCount + 1} ready)</span>
+						All workspaces ({workspaceStore.workspaces.length})
 					</button>
 				</div>
 			{/if}
@@ -1277,6 +1292,16 @@
 					</div>
 					{/if}
 
+					<!-- What the list covers (TASK-3604): a capped local list is not a
+					     total, and a server page is part of one. -->
+					{#if localCapped}
+						<div class="coverage-line" role="status">
+							Showing the first {results.length} matches. Refine the search to narrow it.
+						</div>
+					{:else if results.length > 0 && results.length < total}
+						<div class="coverage-line" role="status">Showing {results.length} of {total}</div>
+					{/if}
+
 					<!-- Load more -->
 					{#if results.length < total}
 						<div class="load-more-row">
@@ -1310,7 +1335,7 @@
 							<div class="group-header" aria-hidden="true">
 								<span class="group-icon">🔎</span>
 								<span class="group-name">Matches in content</span>
-								{#if searchAllWorkspaces && otherReadyWorkspaceCount > 0}
+								{#if searchAllWorkspaces}
 									<!--
 										The local list above can span every ready workspace,
 										but the content search is a single request scoped to
@@ -1771,6 +1796,13 @@
 		color: var(--accent-primary);
 		cursor: pointer;
 		text-decoration: underline;
+	}
+
+	/* TASK-3604: what the result list covers */
+	.coverage-line {
+		padding: var(--space-2) var(--space-4);
+		font-size: 0.8em;
+		color: var(--text-muted);
 	}
 
 	/* Load more */

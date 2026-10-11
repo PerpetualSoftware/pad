@@ -70,6 +70,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Normalize defaults early so early-return paths have correct values.
 	params.Normalize()
 
+	// The workspaces this search admitted, by ID, each through
+	// searchAccessFor below. A result names its workspace from here and
+	// nowhere else (TASK-3604): a row in a workspace not admitted is
+	// dropped, not labelled.
+	admitted := map[string]*models.Workspace{}
 	empty := func() {
 		writeJSON(w, http.StatusOK, &store.SearchResponse{
 			Results: []store.SearchResult{},
@@ -111,6 +116,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		params.Unrestricted = access.unrestricted
 		params.CollectionIDs = access.collectionIDs
 		params.ItemIDs = access.itemIDs
+		admitted[ws.ID] = ws
 	} else {
 		workspaces, err := s.searchFanOutWorkspaces(r)
 		if err != nil {
@@ -128,6 +134,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			params.WorkspaceIDs = append(params.WorkspaceIDs, ws.ID)
+			admitted[ws.ID] = ws
 			if access.unrestricted {
 				// Collection IDs are unique across workspaces, so a full-access
 				// workspace joins the union as all of its collections.
@@ -186,6 +193,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	if resp != nil && len(resp.Results) > 0 {
+		resp.Results = s.labelSearchResults(resp.Results, admitted)
 	}
 	if resp != nil && len(resp.Results) > 0 {
 		// SPEC-6 U9c: a result row is the item as a GET serves it.
@@ -380,4 +390,33 @@ func (s *Server) searchFanOutWorkspaces(r *http.Request) ([]*models.Workspace, e
 		out = append(out, &memberships[i])
 	}
 	return out, nil
+}
+
+// labelSearchResults gives each result the workspace it lives in, from the
+// set the access check admitted (TASK-3604), and drops any row whose
+// workspace that set does not hold. The owner's username completes the
+// /{owner}/{slug} route; a workspace loaded without it gets it from its
+// owner's record, once per workspace.
+func (s *Server) labelSearchResults(results []store.SearchResult, admitted map[string]*models.Workspace) []store.SearchResult {
+	owners := map[string]string{}
+	out := results[:0]
+	for _, r := range results {
+		ws := admitted[r.Item.WorkspaceID]
+		if ws == nil {
+			continue
+		}
+		owner, ok := owners[ws.ID]
+		if !ok {
+			owner = ws.OwnerUsername
+			if owner == "" && ws.OwnerID != "" {
+				if u, err := s.store.GetUser(ws.OwnerID); err == nil && u != nil {
+					owner = u.Username
+				}
+			}
+			owners[ws.ID] = owner
+		}
+		r.Workspace = &store.SearchResultWorkspace{Slug: ws.Slug, OwnerUsername: owner}
+		out = append(out, r)
+	}
+	return out
 }
