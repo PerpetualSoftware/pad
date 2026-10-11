@@ -286,6 +286,8 @@ var nulColumns = []nulColumn{
 	// X-Forwarded-For can set.
 	{"cli_auth_sessions", "requester_ip", classText},
 	{"cli_auth_sessions", "requester_user_agent", classText},
+	// PLAN-3578 step 3: a patch's edits, caller text plus body context.
+	{"item_patches", "edits", classJSON},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -310,6 +312,7 @@ var nulTriggerMigrations = []string{
 	"099_nul_invariant_triggers_post098.sql",
 	"129_nul_invariant_triggers_post128.sql",
 	"133_nul_invariant_triggers_post132.sql",
+	"138_nul_invariant_triggers_post137.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -325,6 +328,8 @@ var nulColumnTriggerFile = map[string]string{
 	// 132 added the columns (TASK-2253).
 	"cli_auth_sessions.requester_ip":         "133_nul_invariant_triggers_post132.sql",
 	"cli_auth_sessions.requester_user_agent": "133_nul_invariant_triggers_post132.sql",
+	// 137 introduced the table (PLAN-3578 step 3).
+	"item_patches.edits": "138_nul_invariant_triggers_post137.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -400,6 +405,11 @@ var nulExcluded = map[string]string{
 	"workspace_import_status.created_at":     "server timestamp from now() (TASK-896)",
 	"item_builtin_origin.item_id":            "server-minted item UUID, a foreign key to items(id) (TASK-3462, migration 128)",
 	"item_builtin_origin.created_at":         "server timestamp from now() (TASK-3462)",
+	"item_patches.id":                        "server-minted patch UUID (PLAN-3578 step 3, migration 137)",
+	"item_patches.item_id":                   "server-minted item UUID, a foreign key to items(id) (PLAN-3578 step 3)",
+	"item_patches.workspace_id":              "server-minted workspace UUID from the resolved item (PLAN-3578 step 3)",
+	"item_patches.version_id":                "server-minted version UUID from the same transaction (PLAN-3578 step 3)",
+	"item_patches.created_at":                "server timestamp from now() (PLAN-3578 step 3)",
 	"item_builtin_origin.builtin_key":        "refused by models.BuiltinOrigin.Validate unless it matches a lowercase [a-z0-9-/] path, so no NUL can be stored, on every write including import (TASK-3462)",
 	"item_builtin_origin.seed_hash":          "refused by models.BuiltinOrigin.Validate unless it is 64 lowercase hex digits, on every write including import (TASK-3462)",
 	"stripe_processed_events.state":          "fixed server constant 'processing' | 'done', written only by ClaimStripeEvent and CompleteStripeEvent (BUG-3561, migration 136); never request-derived",

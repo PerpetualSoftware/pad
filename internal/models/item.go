@@ -1515,6 +1515,10 @@ type ItemUpdate struct {
 	// ignores the member, which is the old replace-and-prune.
 	RefusePendingEdits bool `json:"refuse_pending_edits,omitempty"`
 
+	// PatchRecord, when set, is written to item_patches in the update's own
+	// transaction (PLAN-3578 step 3), so the patch can be undone. Internal.
+	PatchRecord *ItemPatchRecord `json:"-"`
+
 	// ContentTransform, when set, computes the new body from the row as it
 	// stands inside the update's transaction (PLAN-3578 patch writes) and
 	// replaces Content with it. An error aborts the write. Internal: no
@@ -2051,4 +2055,12 @@ func ValidateItemTitle(title string) string {
 		return fmt.Sprintf("Title is too long: %d characters, maximum %d", n, MaxItemTitleRunes)
 	}
 	return ""
+}
+
+// ItemPatchRecord is a stored patch (PLAN-3578 step 3): its id and its
+// applied edits as JSON ([{old, new, ctx_before, ctx_after}]).
+type ItemPatchRecord struct {
+	ID     string
+	ItemID string
+	Edits  string
 }

@@ -910,6 +910,7 @@ type PatchResult struct {
 	Ref         string                   `json:"ref"`
 	Seq         int64                    `json:"seq"`
 	PatchID     string                   `json:"patch_id"`
+	UndoOf      string                   `json:"undo_of,omitempty"`
 	VersionID   string                   `json:"version_id,omitempty"`
 	Rebased     bool                     `json:"rebased"`
 	Intervening *models.PatchIntervening `json:"intervening,omitempty"`
@@ -929,6 +930,16 @@ func (c *Client) PatchItem(wsSlug, itemSlug string, edits []bodypatch.Edit, expe
 	return &result, nil
 }
 
+// UndoPatch inverts a stored patch on the item (PLAN-3578 step 3). The undo
+// is itself a patch, answered the same way.
+func (c *Client) UndoPatch(wsSlug, itemSlug, patchID string) (*PatchResult, error) {
+	var result PatchResult
+	if err := c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/patch", map[string]any{"undo": patchID}, &result); err != nil {
+		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
+	}
+	return &result, nil
+}
+
 // Patch refusal codes (PLAN-3578). Keep in lockstep with internal/mcp's
 // allowedStructuredErrorCodes and its Patch*Hint constants.
 const (
@@ -936,7 +947,12 @@ const (
 	PatchAnchorAmbiguousCode = "patch_anchor_ambiguous"
 	PatchRoomOpenCode        = "patch_room_open"
 	PatchUnstableCode        = "patch_unstable_roundtrip"
+	PatchNotFoundCode        = "patch_not_found"
 )
+
+// PatchNotFoundHint is the recovery guidance for patch_not_found (PLAN-3578
+// step 3). Duplicated in internal/mcp; a test asserts the two match.
+const PatchNotFoundHint = "Nothing was written. That patch id is not a patch on this item: use the patch_id a patch answer returned, on the item it was made on."
 
 // PatchUnstableHint is the recovery guidance for patch_unstable_roundtrip
 // (PLAN-3578 step 2). Duplicated in internal/mcp; a test asserts the two
@@ -960,7 +976,7 @@ func IsPatchRefusal(err error) (*APIError, bool) {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.Code {
-		case PatchAnchorMissingCode, PatchAnchorAmbiguousCode, PatchRoomOpenCode, PatchUnstableCode:
+		case PatchAnchorMissingCode, PatchAnchorAmbiguousCode, PatchRoomOpenCode, PatchUnstableCode, PatchNotFoundCode:
 			return apiErr, true
 		}
 	}
@@ -977,6 +993,9 @@ func WritePatchRefusalError(w io.Writer, apiErr *APIError) {
 	}
 	if apiErr.Code == PatchUnstableCode {
 		hint = PatchUnstableHint
+	}
+	if apiErr.Code == PatchNotFoundCode {
+		hint = PatchNotFoundHint
 	}
 	body := map[string]any{"code": apiErr.Code, "message": apiErr.Message, "hint": hint}
 	if len(apiErr.Details) > 0 {

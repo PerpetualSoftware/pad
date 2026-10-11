@@ -9,6 +9,7 @@ package bodypatch
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Edit is one replacement: Old must occur exactly once (or exactly once on
@@ -117,4 +118,90 @@ func matches(s, sub string) []int {
 // lineOf is the 1-based line on which byte offset p lies.
 func lineOf(s string, p int) int {
 	return strings.Count(s[:p], "\n") + 1
+}
+
+// ContextChars bounds the body context kept on each side of an applied edit
+// (PLAN-3578 step 3, lead ruling: about 40, clipped at line ends).
+const ContextChars = 40
+
+// AppliedEdit is an edit as it landed: what was sent, plus the body text on
+// either side of the replacement right after it applied, so an undo can
+// anchor on text even when the edit deleted its Old.
+type AppliedEdit struct {
+	Old       string `json:"old"`
+	New       string `json:"new"`
+	CtxBefore string `json:"ctx_before"`
+	CtxAfter  string `json:"ctx_after"`
+}
+
+// ApplyWithContext is Apply, also returning each edit with its context. The
+// context of edit i is read from the body as it stood right after edit i,
+// which is exactly the body an undo of edit i meets when the edits after it
+// have been undone first, so Invert's reverse order lines up.
+func ApplyWithContext(body string, edits []Edit) (string, []AppliedEdit, error) {
+	if _, err := Apply(body, edits); err != nil {
+		return "", nil, err
+	}
+	out := make([]AppliedEdit, 0, len(edits))
+	for _, e := range edits {
+		at := matches(body, e.Old)
+		if len(at) > 1 {
+			for _, p := range at {
+				if lineOf(body, p) == e.LineHint {
+					at = []int{p}
+					break
+				}
+			}
+		}
+		p := at[0]
+		body = body[:p] + e.New + body[p+len(e.Old):]
+		end := p + len(e.New)
+		out = append(out, AppliedEdit{Old: e.Old, New: e.New, CtxBefore: ctxBefore(body, p), CtxAfter: ctxAfter(body, end)})
+	}
+	return body, out, nil
+}
+
+// ctxBefore is up to ContextChars bytes before p, not crossing a newline, and
+// never splitting a UTF-8 sequence.
+func ctxBefore(s string, p int) string {
+	from := p - ContextChars
+	if from < 0 {
+		from = 0
+	}
+	if nl := strings.LastIndexByte(s[from:p], '\n'); nl >= 0 {
+		from += nl + 1
+	}
+	for from < p && !utf8.RuneStart(s[from]) {
+		from++
+	}
+	return s[from:p]
+}
+
+// ctxAfter is up to ContextChars bytes from p, stopping before a newline.
+func ctxAfter(s string, p int) string {
+	to := p + ContextChars
+	if to > len(s) {
+		to = len(s)
+	}
+	if nl := strings.IndexByte(s[p:to], '\n'); nl >= 0 {
+		to = p + nl
+	}
+	for to > p && to < len(s) && !utf8.RuneStart(s[to]) {
+		to--
+	}
+	return s[p:to]
+}
+
+// Invert turns applied edits into the patch that undoes them: each anchored
+// on its context around what it wrote, replaced by its context around what it
+// removed, in reverse order. The ordinary rules then apply: an anchor that no
+// longer occurs exactly once (the text was edited since) refuses the undo and
+// writes nothing, so an undo never reverts someone else's later change.
+func Invert(applied []AppliedEdit) []Edit {
+	out := make([]Edit, 0, len(applied))
+	for i := len(applied) - 1; i >= 0; i-- {
+		a := applied[i]
+		out = append(out, Edit{Old: a.CtxBefore + a.New + a.CtxAfter, New: a.CtxBefore + a.Old + a.CtxAfter})
+	}
+	return out
 }

@@ -1738,6 +1738,15 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.89 — PLAN-3578 step 3. ADDITIVE bump on the v0.53 grounds:
+//     `pad_item.action=patch` gains `undo` (a patch_id from an earlier patch
+//     answer), which inverts that patch, anchored on the text around each
+//     edit as it landed, and answers like any patch plus `undo_of`. It is
+//     refused, writing nothing, when that text has changed since
+//     (patch_anchor_missing / patch_anchor_ambiguous). New structured code on
+//     both transports: `patch_not_found` (404): the id is not a patch on this
+//     item.
+//
 //     0.88 — PLAN-3578 step 2. BEHAVIOR bump on the v0.84 grounds (a
 //     call's outcome changes; no name, enum or param moved):
 //     `pad_item.action=patch` on an item open in a browser editor used to be
@@ -2075,7 +2084,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.88"
+const ToolSurfaceVersion = "0.89"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

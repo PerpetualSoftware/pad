@@ -36,6 +36,8 @@ import (
 type patchRequest struct {
 	Edits       []bodypatch.Edit `json:"edits"`
 	ExpectedSeq *int64           `json:"expected_seq,omitempty"`
+	// Undo names a patch to invert (PLAN-3578 step 3) instead of edits.
+	Undo string `json:"undo,omitempty"`
 }
 
 // itemPatch carries one patch through updateItem. The transform fills the
@@ -48,6 +50,27 @@ type itemPatch struct {
 	baseSeq int64  // the row's seq inside the transaction, before the write
 	before  string // the body the edits applied to
 	after   string // the body they produced
+
+	// undoOf is the patch this one inverts, and undoItemID its item: an undo
+	// applies only to the item the patch was made on.
+	undoOf     string
+	undoItemID string
+	// record is this patch's item_patches row; the transform (or the room
+	// path's post-ack write) fills its edits with context.
+	record *models.ItemPatchRecord
+}
+
+// errPatchNotFound: an undo named a patch this item does not have.
+var errPatchNotFound = errors.New("patch not found on this item")
+
+// recordEdits stores the applied edits on the patch record.
+func (p *itemPatch) recordEdits(applied []bodypatch.AppliedEdit) error {
+	b, err := json.Marshal(applied)
+	if err != nil {
+		return err
+	}
+	p.record.Edits = string(b)
+	return nil
 }
 
 // maxPatchIntervening caps the intervening writes a rebased patch lists
@@ -60,8 +83,31 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	p := &itemPatch{id: uuid.NewString(), expectedSeq: req.ExpectedSeq}
+	if req.Undo != "" {
+		if len(req.Edits) > 0 {
+			writeError(w, http.StatusBadRequest, "bad_request", "undo conflicts with edits: send one")
+			return
+		}
+		workspaceID, ok := s.getWorkspaceID(w, r)
+		if !ok {
+			return
+		}
+		rec, err := s.store.GetItemPatch(workspaceID, req.Undo)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		var applied []bodypatch.AppliedEdit
+		if rec == nil || json.Unmarshal([]byte(rec.Edits), &applied) != nil || len(applied) == 0 {
+			writeError2(w, http.StatusNotFound, "patch_not_found", "no such patch on this item", map[string]interface{}{"undo": req.Undo})
+			return
+		}
+		req.Edits = bodypatch.Invert(applied)
+		p.undoOf, p.undoItemID = rec.ID, rec.ItemID
+	}
 	if len(req.Edits) == 0 {
-		writeError(w, http.StatusBadRequest, "bad_request", "edits is required: at least one {old, new}")
+		writeError(w, http.StatusBadRequest, "bad_request", "edits is required: at least one {old, new}, or undo")
 		return
 	}
 	if len(req.Edits) > bodypatch.MaxEdits {
@@ -76,22 +122,34 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p := &itemPatch{id: uuid.NewString(), edits: req.Edits, expectedSeq: req.ExpectedSeq}
+	p.edits = req.Edits
+	p.record = &models.ItemPatchRecord{ID: p.id}
+	summary := fmt.Sprintf("patch: %d edit(s)", len(req.Edits))
+	if p.undoOf != "" {
+		summary = "undo patch " + p.undoOf
+	}
 	input := models.ItemUpdate{
 		ContentTransform: func(existing *models.Item) (string, error) {
-			after, err := bodypatch.Apply(existing.Content, p.edits)
+			if p.undoItemID != "" && p.undoItemID != existing.ID {
+				return "", errPatchNotFound
+			}
+			after, applied, err := bodypatch.ApplyWithContext(existing.Content, p.edits)
 			if err != nil {
+				return "", err
+			}
+			if err := p.recordEdits(applied); err != nil {
 				return "", err
 			}
 			p.baseSeq, p.before, p.after = existing.Seq, existing.Content, after
 			return after, nil
 		},
+		PatchRecord: p.record,
 		// Every patch is a version, past the throttle, so it can be undone
 		// from History (as the ChatGPT door's content writes are).
 		ForceVersion: true,
 		// Refuse over unflushed editor edits whether or not a token came.
 		RefusePendingEdits: true,
-		ChangeSummary:      fmt.Sprintf("patch: %d edit(s)", len(req.Edits)),
+		ChangeSummary:      summary,
 	}
 	s.updateItem(w, r, &builtinItemUpdate{input: input, patch: p})
 }
@@ -113,6 +171,10 @@ func (s *Server) writePatchRefusal(w http.ResponseWriter, ref string, err error)
 		writeError2(w, http.StatusConflict, "patch_anchor_ambiguous",
 			fmt.Sprintf("%s: edit %d's old text occurs %d times; quote more surrounding text, or pass line_hint", ref, amb.Index, len(amb.Lines)),
 			map[string]interface{}{"ref": ref, "edit": amb.Index, "lines": amb.Lines})
+		return true
+	}
+	if errors.Is(err, errPatchNotFound) {
+		writeError2(w, http.StatusNotFound, "patch_not_found", ref+": no such patch on this item", map[string]interface{}{"ref": ref})
 		return true
 	}
 	var empty *bodypatch.EmptyAnchorError
@@ -181,6 +243,9 @@ func (s *Server) patchRoute(
 func (p *itemPatch) activityMeta(meta string) string {
 	meta = withActivityMetaKey(meta, "patch_id", p.id)
 	meta = withActivityMetaKey(meta, "patch_edits", strconv.Itoa(len(p.edits)))
+	if p.undoOf != "" {
+		meta = withActivityMetaKey(meta, "patch_undo_of", p.undoOf)
+	}
 	if p.rebased() {
 		meta = withActivityMetaKey(meta, "patch_rebased_from_seq", strconv.FormatInt(*p.expectedSeq, 10))
 	}
@@ -196,6 +261,7 @@ type patchResponse struct {
 	Ref       string `json:"ref"`
 	Seq       int64  `json:"seq"`
 	PatchID   string `json:"patch_id"`
+	UndoOf    string `json:"undo_of,omitempty"`
 	VersionID string `json:"version_id,omitempty"`
 	Rebased   bool   `json:"rebased"`
 	// ContentState is "applied_pending_flush" when an open editor applied
@@ -210,6 +276,7 @@ func (s *Server) writePatchResponse(w http.ResponseWriter, updated *models.Item,
 		Ref:       itemRefOrSlug(*updated),
 		Seq:       updated.Seq,
 		PatchID:   p.id,
+		UndoOf:    p.undoOf,
 		VersionID: updated.CreatedVersionID,
 		Rebased:   p.rebased(),
 		Diff:      diff.Unified(p.before, p.after, 3),
@@ -251,6 +318,10 @@ func stampSeqChain(meta string, prev, seq int64, versionID string) string {
 // no field changes, so nothing can refuse that write after the apply.
 func (s *Server) patchViaApplier(w http.ResponseWriter, item *models.Item, input *models.ItemUpdate, parentLink *store.ParentLinkUpdate, p *itemPatch) (contentRoute, *models.Item) {
 	ref := itemRefOrSlug(*item)
+	if p.undoItemID != "" && p.undoItemID != item.ID {
+		s.writePatchRefusal(w, ref, errPatchNotFound)
+		return contentRouteHandled, nil
+	}
 	edits, err := json.Marshal(p.edits)
 	if err != nil {
 		writeInternalError(w, err)
@@ -281,11 +352,23 @@ func (s *Server) patchViaApplier(w http.ResponseWriter, item *models.Item, input
 		return contentRouteHandled, nil
 	}
 	p.baseSeq, p.before, p.after = item.Seq, ack.Before, ack.After
+	// The tab applied the edits to its canonical before under the same rules;
+	// the server re-derives each edit's context from that text so the record
+	// can be undone. A mismatch would be a client defect: recorded, logged.
+	if again, applied, rerr := bodypatch.ApplyWithContext(ack.Before, p.edits); rerr == nil {
+		if again != ack.After {
+			slog.Warn("collab: tab's patched body differs from the server's re-derivation", "item_id", item.ID, "patch_id", p.id)
+		}
+		_ = p.recordEdits(applied)
+	}
 	row := *input
 	row.ContentTransform = nil
 	row.Content = nil
 	row.RefusePendingEdits = false
 	row.ExternalContent = &ack.After
+	if p.record.Edits == "" {
+		row.PatchRecord = nil // nothing to undo from; the patch still stands
+	}
 	updated, uerr := s.store.UpdateItemWithParentLink(item.ID, row, nil, parentLink)
 	if uerr != nil {
 		// The document has the patch; only its version row is missing.
