@@ -45,6 +45,50 @@ describe('PLAN-3578 step 2: narrowed apply', () => {
 		expect(ed.state.doc.textBetween(sel - 2, sel + 3)).toBe('gamma');
 	});
 
+	// Retro CONVE-735 finding on #2056: edits in separate blocks replaced the
+	// whole span between them, re-copying the unchanged middle blocks from the
+	// reparse and losing what alignment treats as equivalent (a link title).
+	it('leaves an unchanged block between two edited blocks untouched', () => {
+		const ed = createHeadlessEditor();
+		const s = ed.schema;
+		const titled = s.marks.link.create({ href: 'https://example.com', title: 'Keep me' });
+		const doc = s.node('doc', null, [
+			s.node('paragraph', null, [s.text('alpha')]),
+			s.node('paragraph', null, [s.text('see '), s.text('the site', [titled])]),
+			s.node('paragraph', null, [s.text('gamma')]),
+		]);
+		ed.view.dispatch(ed.state.tr.replaceWith(0, ed.state.doc.content.size, doc.content));
+		// The canonical form drops the title, as a flush may: the middle block
+		// differs from its reparse only by it, which alignment allows.
+		const dropTitle: PatchContext = { toCanonical: (md) => md.replace(/ "Keep me"/, ''), toEditor: (md) => md };
+		const middle = ed.state.doc.child(1);
+		const res = applyPatch(ed, [{ old: 'alpha', new: 'ALPHA' }, { old: 'gamma', new: 'GAMMA' }], dropTitle);
+		expect(res.ok).toBe(true);
+		expect(blocks(ed.state.doc).map((b) => b.textContent)).toEqual(['ALPHA', 'see the site', 'GAMMA']);
+		expect(ed.state.doc.child(1)).toBe(middle);
+		let title: unknown;
+		ed.state.doc.child(1).descendants((n) => {
+			const m = n.marks.find((mk) => mk.type.name === 'link');
+			if (m) title = m.attrs.title;
+		});
+		expect(title).toBe('Keep me');
+	});
+
+	it('applies an insertion and a later edit as separate runs, in one transaction', () => {
+		const ed = editorWith('one\n\ntwo\n\nthree\n\nfour');
+		const kept = [ed.state.doc.child(1), ed.state.doc.child(2)];
+		let dispatches = 0;
+		ed.on('transaction', ({ transaction }) => {
+			if (transaction.docChanged) dispatches++;
+		});
+		const res = applyPatch(ed, [{ old: 'one', new: 'zero\n\none' }, { old: 'four', new: 'FOUR' }], ctx);
+		expect(res.ok).toBe(true);
+		expect(dispatches).toBe(1);
+		expect(blocks(ed.state.doc).map((b) => b.textContent)).toEqual(['zero', 'one', 'two', 'three', 'FOUR']);
+		expect(ed.state.doc.child(2)).toBe(kept[0]);
+		expect(ed.state.doc.child(3)).toBe(kept[1]);
+	});
+
 	it('inserts a new block between unchanged neighbours', () => {
 		const ed = editorWith('first\n\nlast');
 		const first = ed.state.doc.child(0);

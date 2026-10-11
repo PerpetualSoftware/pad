@@ -16,11 +16,13 @@
 //    whitespace (invisible); a trailing empty live paragraph is ignored. A
 //    changed A block that aligns to no live block refuses unstable_roundtrip:
 //    replacing it would change something the agent never saw.
-// 4. The changed top-level blocks (A vs B) replace exactly their aligned live
-//    blocks in one transaction. Never a whole-document replace.
+// 4. Each changed run of top-level blocks (A vs B, gaps in an LCS of equal
+//    blocks) replaces exactly its aligned live blocks; all runs land in one
+//    transaction. Unchanged blocks between runs are never touched, and it is
+//    never a whole-document replace.
 import type { Editor } from '@tiptap/core';
 import { createDocument } from '@tiptap/core';
-import { EditorState, type Plugin } from '@tiptap/pm/state';
+import { EditorState, type Plugin, type Transaction } from '@tiptap/pm/state';
 import type { Node as PMNode } from '@tiptap/pm/model';
 
 export interface PatchEdit {
@@ -179,12 +181,57 @@ export interface PatchContext {
 	toEditor(stored: string): string;
 }
 
+/** One changed run of top-level blocks: live [from, to) becomes slice. */
+export interface PatchHunk {
+	from: number;
+	to: number;
+	slice: PMNode[];
+}
+
+/**
+ * The changed runs of top-level blocks, A vs B: the gaps between an LCS of
+ * equal blocks. Each run is replaced on its own, so an unchanged block between
+ * two edits is never touched (retro CONVE-735 finding on #2056: one span from
+ * the first to the last change re-copied the blocks in between from the
+ * reparse, losing what alignment treats as equivalent, such as a link title).
+ * Block granularity on purpose; a character-level diff misplaces a block
+ * insertion that repeats its neighbour's text.
+ */
+function changedRuns(A: PMNode, B: PMNode): { aFrom: number; aTo: number; bFrom: number; bTo: number }[] {
+	const M = A.childCount;
+	const N = B.childCount;
+	const dp: number[][] = Array.from({ length: M + 1 }, () => new Array(N + 1).fill(0));
+	for (let i = M - 1; i >= 0; i--)
+		for (let j = N - 1; j >= 0; j--) dp[i][j] = A.child(i).eq(B.child(j)) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+	const runs: { aFrom: number; aTo: number; bFrom: number; bTo: number }[] = [];
+	let i = 0;
+	let j = 0;
+	let open: { aFrom: number; bFrom: number } | null = null;
+	const close = () => {
+		if (open) runs.push({ aFrom: open.aFrom, aTo: i, bFrom: open.bFrom, bTo: j });
+		open = null;
+	};
+	while (i < M || j < N) {
+		if (i < M && j < N && A.child(i).eq(B.child(j)) && dp[i][j] === dp[i + 1][j + 1] + 1) {
+			close();
+			i++;
+			j++;
+			continue;
+		}
+		if (!open) open = { aFrom: i, bFrom: j };
+		if (j >= N || (i < M && dp[i + 1][j] >= dp[i][j + 1])) i++;
+		else j++;
+	}
+	close();
+	return runs;
+}
+
 /** Plans the narrowed replace without touching the editor. */
 export function planPatch(
 	editor: Editor,
 	edits: PatchEdit[],
 	ctx: PatchContext,
-): { ok: true; before: string; after: string; from: number; to: number; slice: PMNode[] } | PatchRefusal {
+): { ok: true; before: string; after: string; hunks: PatchHunk[] } | PatchRefusal {
 	const storage = (editor.storage as unknown as { markdown: { serializer: { serialize(d: PMNode): string } } }).markdown;
 	const live = editor.state.doc;
 	const before = ctx.toCanonical(storage.serializer.serialize(live));
@@ -195,58 +242,57 @@ export function planPatch(
 	const B = parseDetached(editor, ctx.toEditor(after));
 	if (!A || !B) return { ok: false, reason: 'parse_refused' };
 
-	// The changed block range, A vs B: the blocks between their longest
-	// common prefix and suffix of equal top-level blocks. Block granularity on
-	// purpose; a character-level diff (findDiffStart/End) misplaces a block
-	// insertion that repeats its neighbour's text.
-	const M = A.childCount;
-	const N = B.childCount;
-	let pre = 0;
-	while (pre < M && pre < N && A.child(pre).eq(B.child(pre))) pre++;
-	let suf = 0;
-	while (suf < M - pre && suf < N - pre && A.child(M - 1 - suf).eq(B.child(N - 1 - suf))) suf++;
-	const aFrom = pre;
-	const aTo = M - suf;
-	const bFrom = pre;
-	const bTo = N - suf;
-	if (aFrom === aTo && bFrom === bTo) return { ok: true, before, after, from: 0, to: 0, slice: [] }; // no visible change
+	const runs = changedRuns(A, B);
+	if (runs.length === 0) return { ok: true, before, after, hunks: [] }; // no visible change
 
 	const map = align(live, A);
-	let lFrom: number;
-	let lTo: number;
-	if (aTo > aFrom) {
-		const ls: number[] = [];
-		for (let j = aFrom; j < aTo; j++) {
-			const l = map.get(j);
-			if (l === undefined) return { ok: false, reason: 'unstable_roundtrip', line: lineOfBlock(A, j, before) };
-			ls.push(l);
-		}
-		for (let k = 1; k < ls.length; k++)
-			if (ls[k] !== ls[k - 1] + 1) return { ok: false, reason: 'unstable_roundtrip', line: lineOfBlock(A, aFrom + k, before) };
-		lFrom = ls[0];
-		lTo = ls[ls.length - 1] + 1;
-	} else {
-		// Pure insertion before A[aFrom]: anchor on its neighbours.
-		if (aFrom > 0) {
+	const hunks: PatchHunk[] = [];
+	for (const { aFrom, aTo, bFrom, bTo } of runs) {
+		let lFrom: number;
+		let lTo: number;
+		if (aTo > aFrom) {
+			const ls: number[] = [];
+			for (let j = aFrom; j < aTo; j++) {
+				const l = map.get(j);
+				if (l === undefined) return { ok: false, reason: 'unstable_roundtrip', line: lineOfBlock(A, j, before) };
+				ls.push(l);
+			}
+			for (let k = 1; k < ls.length; k++)
+				if (ls[k] !== ls[k - 1] + 1) return { ok: false, reason: 'unstable_roundtrip', line: lineOfBlock(A, aFrom + k, before) };
+			lFrom = ls[0];
+			lTo = ls[ls.length - 1] + 1;
+		} else if (aFrom > 0) {
+			// Pure insertion before A[aFrom]: anchor on the block before it.
 			const prev = map.get(aFrom - 1);
 			if (prev === undefined) return { ok: false, reason: 'unstable_roundtrip', line: lineOfBlock(A, aFrom - 1, before) };
 			lFrom = lTo = prev + 1;
 		} else {
 			lFrom = lTo = 0;
 		}
+		const slice: PMNode[] = [];
+		for (let j = bFrom; j < bTo; j++) slice.push(B.child(j));
+		hunks.push({ from: blockStart(live, lFrom), to: blockStart(live, lTo), slice });
 	}
-	const slice: PMNode[] = [];
-	for (let j = bFrom; j < bTo; j++) slice.push(B.child(j));
-	return { ok: true, before, after, from: blockStart(live, lFrom), to: blockStart(live, lTo), slice };
+	return { ok: true, before, after, hunks };
+}
+
+/**
+ * The plan's hunks as ONE transaction on state, or null when nothing changes.
+ * Applied last to first, so each hunk's positions (computed on the live doc
+ * the plan read) are still valid when it lands.
+ */
+export function patchTransaction(state: EditorState, hunks: PatchHunk[]): Transaction | null {
+	if (hunks.length === 0) return null;
+	const tr = state.tr;
+	for (let k = hunks.length - 1; k >= 0; k--) tr.replaceWith(hunks[k].from, hunks[k].to, hunks[k].slice);
+	return tr;
 }
 
 /** Plans and applies the patch to the live editor in ONE transaction. */
 export function applyPatch(editor: Editor, edits: PatchEdit[], ctx: PatchContext): PatchApplied | PatchRefusal {
 	const plan = planPatch(editor, edits, ctx);
 	if (!plan.ok) return plan;
-	if (plan.from !== plan.to || plan.slice.length > 0) {
-		const tr = editor.state.tr.replaceWith(plan.from, plan.to, plan.slice);
-		editor.view.dispatch(tr);
-	}
+	const tr = patchTransaction(editor.state, plan.hunks);
+	if (tr) editor.view.dispatch(tr);
 	return { ok: true, before: plan.before, after: plan.after };
 }
