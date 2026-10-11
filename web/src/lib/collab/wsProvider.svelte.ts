@@ -511,6 +511,10 @@ export class CollabProvider {
 		this.url = options.url ?? defaultCollabBaseUrl(itemID);
 
 		this.handleDocUpdate = (update, origin) => {
+			// Every change to the doc, local or applied from the server, moves
+			// the version the crash-draft keeper checks before serializing
+			// (TASK-3606). Counted before the echo skip below on purpose.
+			this.docVersion++;
 			// Skip ops that came from us applying a server message —
 			// otherwise we'd echo every remote keystroke back to the
 			// server (which would persist + rebroadcast it again).
@@ -1535,6 +1539,13 @@ export class CollabProvider {
 	 * still awaiting its barrier is left out: that is every keystroke for a
 	 * moment, and asking then would be noise.
 	 */
+	/**
+	 * Bumped by every update to the doc (TASK-3606): a cheap "has anything
+	 * changed" signal, so a periodic reader can skip serializing an
+	 * unchanged document. Not reactive; only compared by the reader.
+	 */
+	docVersion = 0;
+
 	get editsAtRiskOnClose(): boolean {
 		return this.unsentLocalEdits || this.catchUpOwed || this.repairPending;
 	}

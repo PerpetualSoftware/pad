@@ -72,6 +72,26 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')).toBeNull();
 	});
 
+	it('an unchanged version skips serializing (codex r1)', () => {
+		let snaps = 0;
+		let v = 1;
+		const h = harness({
+			version: () => v,
+			snapshot: () => {
+				snaps++;
+				return { markdown: `draft ${v}`, baseSeq: 1, baseBody: 'b' };
+			},
+		});
+		h.tick();
+		h.tick();
+		h.tick();
+		expect(snaps, 'serialized once while nothing changed').toBe(1);
+		v = 2;
+		h.tick();
+		expect(snaps).toBe(2);
+		expect(readRefusedRawDraft('u1', 'i1')?.markdown).toBe('draft 2');
+	});
+
 	it('a body over the cap is not kept', () => {
 		const h = harness();
 		h.s.markdown = 'x'.repeat(CRASH_DRAFT_MAX_CHARS + 1);

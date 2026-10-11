@@ -28,6 +28,12 @@ export interface CrashDraftSource {
 	snapshot: () => { markdown: string; baseSeq: number; baseBody: string } | null;
 	/** True while a confirmed sign-out is discarding: keep nothing then. */
 	discarding?: () => boolean;
+	/**
+	 * A cheap value that changes whenever the text may have (codex r1): the
+	 * keeper serializes only when it differs from the last write's, so an
+	 * unchanged large document is not re-serialized every tick.
+	 */
+	version?: () => unknown;
 }
 
 /**
@@ -41,18 +47,20 @@ export function registerCrashDraftKeeper(
 		return () => clearInterval(t);
 	},
 ): () => void {
-	let last: { userId: string; itemId: string; markdown: string } | null = null;
+	let last: { userId: string; itemId: string; markdown: string; version: unknown } | null = null;
 
 	const tick = () => {
 		const userId = source.userId();
 		const itemId = source.itemId();
 		if (!userId || !itemId || source.discarding?.()) return;
 		if (source.atRisk()) {
+			const version = source.version?.();
+			if (version !== undefined && last && last.userId === userId && last.itemId === itemId && last.version === version) return;
 			const snap = source.snapshot();
 			if (!snap || snap.markdown.length > CRASH_DRAFT_MAX_CHARS) return;
 			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown) return;
 			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody })) {
-				last = { userId, itemId, markdown: snap.markdown };
+				last = { userId, itemId, markdown: snap.markdown, version };
 			}
 			return;
 		}

@@ -6232,6 +6232,8 @@
 			atRisk: () => (collabProvider?.editsAtRiskOnClose ?? false) || (rawContentSaver.dirty && !!item),
 			snapshot: crashDraftSnapshot,
 			discarding: signOutDiscarding,
+			// Raw mode: its pending string; rich: the doc's update counter.
+			version: () => (rawContentSaver.dirty ? rawContentSaver.pending : `doc:${collabProvider?.docVersion ?? 0}`),
 		});
 	});
 
