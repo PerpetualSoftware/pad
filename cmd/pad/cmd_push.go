@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"os"
 	"strings"
 
@@ -30,7 +31,7 @@ const maxPushMessageLenForHelp = 4096
 // notification-etiquette section for the receiving-agent behavior
 // contract.
 func pushCmd() *cobra.Command {
-	var message string
+	var message, pushOpKey string
 
 	cmd := &cobra.Command{
 		Use:     "push <ref>",
@@ -75,7 +76,13 @@ func pushCmd() *cobra.Command {
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			result, err := client.PushItem(ws, args[0], trimmed)
+			// TASK-3585: one idempotency key per invocation, so the
+			// client's single retry, or a re-run with --op-key, does not
+			// deliver the instruction twice.
+			if pushOpKey == "" {
+				pushOpKey = uuid.NewString()
+			}
+			result, err := client.PushItemKeyed(ws, args[0], trimmed, pushOpKey)
 			if err != nil {
 				// AMBIGUOUS FAILURES GET SAID OUT LOUD (codex round 9 on
 				// BUG-2699). The handler publishes BEFORE it writes its
@@ -83,9 +90,10 @@ func pushCmd() *cobra.Command {
 				// nowhere: a response lost in transit, a truncated body, a
 				// gateway envelope, or the server's own push_unconfirmed all
 				// reach here identically to a clean refusal. A user who reads
-				// "error" and re-runs the command delivers the push twice —
-				// there is no idempotency key, and the receiving agent acts
-				// on each copy.
+				// "error" and re-runs the command delivers the push twice:
+				// the re-run gets a NEW key (TASK-3585 keys one invocation,
+				// and the client already made its one keyed retry), and the
+				// receiving agent acts on each copy.
 				//
 				// The web dialog has drawn this distinction since TASK-2588;
 				// the CLI had not, so the same outcome produced a safe
@@ -106,6 +114,7 @@ func pushCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&pushOpKey, "op-key", "", "idempotency key: re-running the SAME push with the same key answers the first push instead of delivering it again (default: a new key per invocation)")
 	cmd.Flags().StringVarP(&message, "message", "m", "",
 		fmt.Sprintf("instruction text to push (required, max %d characters after whitespace collapse)", maxPushMessageLenForHelp))
 	return cmd

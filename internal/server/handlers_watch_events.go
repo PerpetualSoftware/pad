@@ -56,6 +56,9 @@ type watchEventPayload struct {
 	// may no longer resolve (purged), where Workspace falls back to the ID.
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	Change      string `json:"change,omitempty"`
+	// PushID is set only on a push (TASK-3585) and omitted otherwise: a
+	// monitor that has already printed this push_id drops the event.
+	PushID string `json:"push_id,omitempty"`
 }
 
 // handleWatchEventsStream streams the caller's watch/nudge notifications.
@@ -862,6 +865,7 @@ func watchEventPayloadFor(s *Server, n watchevents.Notification) watchEventPaylo
 		Kind:      n.Kind,
 		Actor:     actor,
 		Summary:   n.Summary,
+		PushID:    n.PushID,
 	}
 	if n.Kind == watchevents.KindWorkspaceAccessChanged {
 		p.WorkspaceID = n.WorkspaceID
