@@ -134,7 +134,7 @@ for (const leg of [
 				await expect(page.getByRole('heading', { name: 'Compare plans' })).toBeVisible();
 				await expect(page.getByRole('button', { name: 'Upgrade to Pro' }).first()).toBeVisible();
 				// TASK-3577: the price is the served one.
-				await expect(page.getByText('$8 / month').first()).toBeVisible();
+				await expect(page.getByText('$8 per account / month').first()).toBeVisible();
 			}
 
 			// The checkout return deep links: web-checkout states, dropped in the app.

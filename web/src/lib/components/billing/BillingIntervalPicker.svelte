@@ -35,7 +35,9 @@
 		(authStore.billingOffer?.intervals ?? []).map((iv) => ({
 			interval: iv.interval,
 			label: LABELS[iv.interval] ?? iv.interval,
-			price: `${formatPrice(iv.unit_amount, iv.currency)} ${perInterval(iv.interval)}`,
+			// Per what (TASK-3603): Pro is bought by one account and covers the
+			// workspaces it owns, so the unit is the account.
+			price: `${formatPrice(iv.unit_amount, iv.currency)} per account ${perInterval(iv.interval)}`,
 		})),
 	);
 	let currencies = $derived([...new Set((authStore.billingOffer?.intervals ?? []).map((iv) => iv.currency.toUpperCase()))]);

@@ -10,6 +10,8 @@ import { tick } from 'svelte';
 const m = vi.hoisted(() => ({
 	create: vi.fn(),
 	toast: vi.fn(),
+	commerce: true,
+	plan: 'free',
 	BillingCheckoutError: class extends Error {
 		status: number;
 		constructor(msg: string, status: number) {
@@ -26,7 +28,9 @@ vi.mock('$lib/api/client', () => ({
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
-		user: { plan: 'free' },
+		get user() {
+			return { plan: m.plan };
+		},
 		cloudMode: true,
 		billingAvailable: true,
 		// TASK-3577: billingAvailable comes with the offer it advertises.
@@ -37,7 +41,9 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 			],
 			trial_days: 14
 		},
-		commerceAllowed: true,
+		get commerceAllowed() {
+			return m.commerce;
+		},
 		load: async () => {}
 	}
 }));
@@ -51,6 +57,8 @@ let href = '';
 beforeEach(() => {
 	m.create.mockReset();
 	m.toast.mockReset();
+	m.commerce = true;
+	m.plan = 'free';
 	href = '';
 	vi.stubGlobal(
 		'fetch',
@@ -140,5 +148,60 @@ describe('billing page interval (TASK-3468)', () => {
 		await pickAnnualAndUpgrade();
 		expect(m.toast).toHaveBeenCalledWith('Billing is temporarily unavailable', 'error');
 		expect(annualRadios().every((r) => !r.disabled)).toBe(true);
+	});
+});
+
+// TASK-3603: the page says what Pro covers and who pays, in the limits the
+// server enforces (numbers from /api/v1/plan-limits, never hard-coded).
+describe('billing copy (TASK-3603)', () => {
+	const freeLimits = { workspaces: 3, items_per_workspace: 1000, members_per_workspace: 3, api_tokens: 10, storage_bytes: 524288000, webhooks: 0, automated_backups: 0 };
+	beforeEach(() => {
+		vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ free: freeLimits, pro: {} }), { status: 200 })));
+	});
+
+	it('the price says per what, and the pitch says who Pro covers', async () => {
+		render(BillingPage);
+		await settle();
+		expect(screen.getAllByText('$8 per account / month').length).toBeGreaterThan(0);
+		expect(document.body.textContent).toContain('Pro covers the workspaces you own. People you invite to them don\'t need a plan of their own.');
+		expect(document.body.textContent).toContain('Run every project in one place, with your team and your agents');
+	});
+
+	it('the Free line names the limits the server serves', async () => {
+		render(BillingPage);
+		await settle();
+		expect(document.body.textContent).toContain('Up to 3 workspaces with 3 members each.');
+		expect(document.body.textContent).toContain('Upgrade when a project outgrows it.');
+	});
+
+	it('no commerce in the app: the limits stay, the upgrade nudge and pitch go', async () => {
+		m.commerce = false;
+		render(BillingPage);
+		await settle();
+		const text = document.body.textContent ?? '';
+		expect(text).toContain('Up to 3 workspaces with 3 members each.');
+		expect(text).not.toContain('Upgrade when');
+		expect(text).not.toContain('Pro covers');
+		expect(text).not.toContain('Run every project');
+	});
+
+	it("the compare table: Pro storage reads '1 GB included', Free's comes from the limits API, no backups row (Dave)", async () => {
+		render(BillingPage);
+		await settle();
+		const text = document.body.textContent ?? '';
+		expect(text).toContain('1 GB included');
+		expect(text).toContain('500 MB');
+		expect(text).not.toContain('Automated backups');
+		expect(text).not.toContain('10 GB');
+	});
+
+	it('Pro in the app: the plan, and nothing about plans for others (codex r1)', async () => {
+		m.commerce = false;
+		m.plan = 'pro';
+		render(BillingPage);
+		await settle();
+		const text = document.body.textContent ?? '';
+		expect(text).toContain('No caps on your workspaces, items or members.');
+		expect(text).not.toContain("don't need a plan");
 	});
 });

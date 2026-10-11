@@ -30,8 +30,8 @@ describe('BillingIntervalPicker (TASK-3468)', () => {
 		const annual = screen.getByRole('radio', { name: /Annual/ }) as HTMLInputElement;
 		expect(monthly.checked).toBe(true);
 		expect(annual.checked).toBe(false);
-		expect(screen.getByText('$8 / month')).toBeTruthy();
-		expect(screen.getByText('$80 / year')).toBeTruthy();
+		expect(screen.getByText('$8 per account / month')).toBeTruthy();
+		expect(screen.getByText('$80 per account / year')).toBeTruthy();
 		expect(screen.getByRole('group', { name: 'Billing interval' })).toBeTruthy();
 	});
 
@@ -55,7 +55,7 @@ describe('BillingIntervalPicker (TASK-3468)', () => {
 			trial_days: 0,
 		};
 		const { container } = render(BillingIntervalPicker, { props: { name: 'i' } });
-		expect(screen.getByText('€12.50 / month')).toBeTruthy();
+		expect(screen.getByText('€12.50 per account / month')).toBeTruthy();
 		expect(container.textContent).not.toContain('$8');
 		expect(container.textContent).toContain('Prices in EUR.');
 	});
@@ -67,7 +67,7 @@ describe('BillingIntervalPicker (TASK-3468)', () => {
 		};
 		render(BillingIntervalPicker, { props: { name: 'i', value: 'annual' } });
 		expect(screen.queryByRole('radio', { name: /Monthly/ })).toBeNull();
-		expect(screen.getByText('$96 / year')).toBeTruthy();
+		expect(screen.getByText('$96 per account / year')).toBeTruthy();
 	});
 
 	it('renders nothing without an offer', () => {
