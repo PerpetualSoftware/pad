@@ -41,7 +41,11 @@ For several or multi-line edits use --edits with a JSON array of
 {"old","new","line_hint"} (line_hint, 1-based, only chooses among several
 exact matches): --edits @edits.json, or --edits - to read stdin.
 
-An item open in an editor is refused for now (patch_room_open).`,
+On an item open in a browser editor, that editor applies the patch to its live
+document, merging with the typing there; the row catches up on its next flush.
+It refuses with patch_unstable_roundtrip when applying would also change
+content you did not edit, and patch_room_open when only an older editor that
+cannot apply patches holds the item.`,
 		Example: `  pad item patch TASK-5 --old "Status: draft" --new "Status: ready"
   pad item patch DOC-3 --old "old line" --new "new line" --expected-seq 41
   pad item patch DOC-3 --edits @edits.json`,

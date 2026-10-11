@@ -2484,12 +2484,15 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 
 	// PLAN-3578: a patch takes the direct path only; an open editor refuses it.
 	if input.ContentTransform != nil && s.collab != nil && !collabSnapshot {
-		route, updated := s.patchRoute(w, r, item, &input, openChildrenPrecheck, parentLink, &prunedPendingEdits)
+		route, updated := s.patchRoute(w, r, item, &input, openChildrenPrecheck, parentLink, &prunedPendingEdits, b.patch)
 		if route == contentRouteHandled {
 			return
 		}
 		fullWriteHandled = true
 		fullWriteUpdated = updated
+		// The room path's body is in the live document; the row catches up on
+		// the tab's next flush, as for any applier write.
+		contentAppliedPendingFlush = route == contentRouteApplierWrote
 	}
 
 	if input.Content != nil && s.collab != nil && !collabSnapshot {
@@ -2540,7 +2543,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	}
 	if err != nil {
 		// PLAN-3578: an anchor that no longer matches, when collab is off.
-		if writePatchRefusal(w, itemRefOrSlug(*item), err) {
+		if s.writePatchRefusal(w, itemRefOrSlug(*item), err) {
 			return
 		}
 		// IDEA-1494 R2: surface the open-children guard rejection as
@@ -2694,7 +2697,9 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// PLAN-3578: the seq chain a rebased patch reports its intervening
 	// writes from. Without a pre-image the link is unknown, so the entry
 	// carries no stamp and the chain reads broken there.
-	if before != nil {
+	// Only a write that moved the seq joins the chain: an entry stamped
+	// prev == seq would shadow the real write at that seq.
+	if before != nil && updated.Seq != before.Seq {
 		meta = stampSeqChain(meta, before.Seq, updated.Seq, updated.CreatedVersionID)
 	}
 	if b != nil && b.patch != nil {
@@ -2847,7 +2852,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	}
 
 	if b != nil && b.patch != nil {
-		s.writePatchResponse(w, updated, b.patch)
+		s.writePatchResponse(w, updated, b.patch, contentAppliedPendingFlush)
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)

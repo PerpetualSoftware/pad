@@ -51,6 +51,7 @@ var bug3407Exempt = map[string]bug3407Exemption{
 	"handlers_items_content_route.go::routeContentUpdate": {1, "passes the update handler's own input, which carries ValidatedSchema"},
 	"handlers_items_content_route.go::applierFirstWrite":  {1, "passes the update handler's own input (rowInput := *input)"},
 	"handlers_items_patch.go::patchRoute":                 {1, "passes the update handler's own input, which carries ValidatedSchema (PLAN-3578 patch)"},
+	"handlers_items_patch.go::patchViaApplier":            {1, "copies the update handler's own input (row := *input), which carries ValidatedSchema; the write sets no field, only ExternalContent (PLAN-3578 step 2)"},
 	"handlers_item_versions.go::handleRestoreItemVersion": {2, "version restore: content only, no fields"},
 }
 

@@ -935,7 +935,14 @@ const (
 	PatchAnchorMissingCode   = "patch_anchor_missing"
 	PatchAnchorAmbiguousCode = "patch_anchor_ambiguous"
 	PatchRoomOpenCode        = "patch_room_open"
+	PatchUnstableCode        = "patch_unstable_roundtrip"
 )
+
+// PatchUnstableHint is the recovery guidance for patch_unstable_roundtrip
+// (PLAN-3578 step 2). Duplicated in internal/mcp; a test asserts the two
+// match.
+const PatchUnstableHint = "Nothing was written. Applying this patch in the open editor would also change content you did not edit. " +
+	"Re-read the item and send a whole-body update with expected_seq instead."
 
 // PatchAnchorHint is the recovery guidance for a patch whose anchor no
 // longer matches exactly once. Duplicated in internal/mcp; a test asserts
@@ -945,15 +952,15 @@ const PatchAnchorHint = "Nothing was written. Re-read the item and quote, as old
 
 // PatchRoomOpenHint is the recovery guidance for patch_room_open. Duplicated
 // in internal/mcp; a test asserts the two match.
-const PatchRoomOpenHint = "Nothing was written. The item is open in an editor, and patching an open item is not supported yet. " +
-	"Retry after the editor closes, or send a whole-body update with expected_seq."
+const PatchRoomOpenHint = "Nothing was written. The item is open in an editor that cannot apply patches (an older tab). " +
+	"Retry after that tab reloads or closes, or send a whole-body update with expected_seq."
 
 // IsPatchRefusal reports a patch refusal the server answered.
 func IsPatchRefusal(err error) (*APIError, bool) {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.Code {
-		case PatchAnchorMissingCode, PatchAnchorAmbiguousCode, PatchRoomOpenCode:
+		case PatchAnchorMissingCode, PatchAnchorAmbiguousCode, PatchRoomOpenCode, PatchUnstableCode:
 			return apiErr, true
 		}
 	}
@@ -967,6 +974,9 @@ func WritePatchRefusalError(w io.Writer, apiErr *APIError) {
 	hint := PatchAnchorHint
 	if apiErr.Code == PatchRoomOpenCode {
 		hint = PatchRoomOpenHint
+	}
+	if apiErr.Code == PatchUnstableCode {
+		hint = PatchUnstableHint
 	}
 	body := map[string]any{"code": apiErr.Code, "message": apiErr.Message, "hint": hint}
 	if len(apiErr.Details) > 0 {

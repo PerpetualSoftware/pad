@@ -144,6 +144,14 @@ type roomConn struct {
 	// clobbered). Set once at Join; read on the election + finalization paths.
 	bracketCapable atomic.Bool
 
+	// patchCapable reports that this connection's client applies a
+	// content-anchored patch (applier_request with edits, PLAN-3578 step 2),
+	// announced at connect with `?patch_capable=1` and set once registered.
+	// Only such a conn is ever sent a patch: an older client reads an
+	// edits-only request as markdown "" and would replace the document with
+	// nothing.
+	patchCapable atomic.Bool
+
 	// appendFailed records that an op-log append of this conn's sync
 	// frames failed since its last barrier (BUG-3523). Set in
 	// persistSyncFrames, read and cleared by the barrier handler; both run
@@ -922,6 +930,7 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 			)
 			return
 		}
+		r.recordPatchAck(ctl, rc)
 		r.resolveApplierAck(ctl.RequestID, rc)
 	case ControlMessageApplierRefuse:
 		if ctl.RequestID == "" {
@@ -931,6 +940,7 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 		if !rc.canWrite.Load() {
 			return
 		}
+		r.recordPatchRefusal(ctl, rc)
 		r.resolveApplierRefuse(ctl.RequestID, rc)
 	case ControlMessageSyncSafetyNet:
 		// BUG-3240: this connection never saw its post-replay cursor

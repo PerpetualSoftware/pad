@@ -2,8 +2,11 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/PerpetualSoftware/pad/internal/collab"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -95,9 +98,10 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 
 // writePatchRefusal answers a bodypatch refusal with its typed 409; false
 // when err is not one.
-func writePatchRefusal(w http.ResponseWriter, ref string, err error) bool {
+func (s *Server) writePatchRefusal(w http.ResponseWriter, ref string, err error) bool {
 	var missing *bodypatch.AnchorMissingError
 	if errors.As(err, &missing) {
+		s.countPatchRefusal("anchor_missing")
 		writeError2(w, http.StatusConflict, "patch_anchor_missing",
 			fmt.Sprintf("%s: edit %d's old text is not in the current body; re-read it and quote text that is there", ref, missing.Index),
 			map[string]interface{}{"ref": ref, "edit": missing.Index})
@@ -105,6 +109,7 @@ func writePatchRefusal(w http.ResponseWriter, ref string, err error) bool {
 	}
 	var amb *bodypatch.AnchorAmbiguousError
 	if errors.As(err, &amb) {
+		s.countPatchRefusal("anchor_ambiguous")
 		writeError2(w, http.StatusConflict, "patch_anchor_ambiguous",
 			fmt.Sprintf("%s: edit %d's old text occurs %d times; quote more surrounding text, or pass line_hint", ref, amb.Index, len(amb.Lines)),
 			map[string]interface{}{"ref": ref, "edit": amb.Index, "lines": amb.Lines})
@@ -124,8 +129,9 @@ func writePatchRoomOpen(w http.ResponseWriter, ref string) {
 		map[string]interface{}{"ref": ref})
 }
 
-// patchRoute is routeContentUpdate for a patch: the same settle, but a room
-// with an electable applier is refused rather than handed the content.
+// patchRoute is routeContentUpdate for a patch: the same settle. A room with
+// a live writer gets the patch through a patch-capable applier tab (step 2);
+// with no live writer the patch is computed in the store transaction (step 1).
 func (s *Server) patchRoute(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -134,6 +140,7 @@ func (s *Server) patchRoute(
 	precheck func(*sql.Tx, *models.Item) error,
 	parentLink *store.ParentLinkUpdate,
 	pruned *int,
+	p *itemPatch,
 ) (contentRoute, *models.Item) {
 	var updated *models.Item
 	outcome, paErr := settleContentRoute(
@@ -154,8 +161,7 @@ func (s *Server) patchRoute(
 	)
 	switch outcome {
 	case settleElectApplier:
-		writePatchRoomOpen(w, itemRefOrSlug(*item))
-		return contentRouteHandled, nil
+		return s.patchViaApplier(w, item, input, parentLink, p)
 	case settleDirectWrote:
 		return contentRouteDirectWrote, updated
 	case settleUnsettled:
@@ -187,16 +193,19 @@ func (p *itemPatch) rebased() bool {
 
 // patchResponse is the answer to a patch.
 type patchResponse struct {
-	Ref         string                   `json:"ref"`
-	Seq         int64                    `json:"seq"`
-	PatchID     string                   `json:"patch_id"`
-	VersionID   string                   `json:"version_id,omitempty"`
-	Rebased     bool                     `json:"rebased"`
-	Intervening *models.PatchIntervening `json:"intervening,omitempty"`
-	Diff        string                   `json:"diff"`
+	Ref       string `json:"ref"`
+	Seq       int64  `json:"seq"`
+	PatchID   string `json:"patch_id"`
+	VersionID string `json:"version_id,omitempty"`
+	Rebased   bool   `json:"rebased"`
+	// ContentState is "applied_pending_flush" when an open editor applied
+	// the patch: the row catches up on that tab\'s next flush.
+	ContentState string                   `json:"content_state,omitempty"`
+	Intervening  *models.PatchIntervening `json:"intervening,omitempty"`
+	Diff         string                   `json:"diff"`
 }
 
-func (s *Server) writePatchResponse(w http.ResponseWriter, updated *models.Item, p *itemPatch) {
+func (s *Server) writePatchResponse(w http.ResponseWriter, updated *models.Item, p *itemPatch, pendingFlush bool) {
 	resp := patchResponse{
 		Ref:       itemRefOrSlug(*updated),
 		Seq:       updated.Seq,
@@ -204,6 +213,9 @@ func (s *Server) writePatchResponse(w http.ResponseWriter, updated *models.Item,
 		VersionID: updated.CreatedVersionID,
 		Rebased:   p.rebased(),
 		Diff:      diff.Unified(p.before, p.after, 3),
+	}
+	if pendingFlush {
+		resp.ContentState = contentOutcomeAppliedPendingFlush
 	}
 	if resp.Rebased {
 		iv, err := s.store.ItemSeqChain(updated.ID, *p.expectedSeq, p.baseSeq, maxPatchIntervening)
@@ -227,4 +239,102 @@ func stampSeqChain(meta string, prev, seq int64, versionID string) string {
 		meta = withActivityMetaKey(meta, store.ActivityMetaVersionID, versionID)
 	}
 	return meta
+}
+
+// patchViaApplier sends the patch to an open editor (PLAN-3578 step 2), which
+// applies it to the LIVE document as a narrowed replace and reports the
+// canonical before/after. Unflushed editor edits do not refuse it: the tab
+// applies to the document that holds them. Once the tab confirms, a row write
+// records the patched body as a version attributed to this request
+// (ExternalContent, as the markdown applier path does since BUG-3327) and
+// moves the seq, so the activity entry joins the seq chain. A patch carries
+// no field changes, so nothing can refuse that write after the apply.
+func (s *Server) patchViaApplier(w http.ResponseWriter, item *models.Item, input *models.ItemUpdate, parentLink *store.ParentLinkUpdate, p *itemPatch) (contentRoute, *models.Item) {
+	ref := itemRefOrSlug(*item)
+	edits, err := json.Marshal(p.edits)
+	if err != nil {
+		writeInternalError(w, err)
+		return contentRouteHandled, nil
+	}
+	ack, aerr := s.collab.ApplyExternalPatch(item.ID, p.id, edits)
+	if aerr != nil {
+		var refused *collab.PatchRefusedError
+		switch {
+		case errors.As(aerr, &refused):
+			s.writeTabPatchRefusal(w, ref, refused)
+		case errors.Is(aerr, collab.ErrNoActiveRoom), errors.Is(aerr, collab.ErrNoApplierAvailable):
+			// No patch-capable editor (an older tab, or the room emptied):
+			// nothing was sent.
+			s.countPatchRefusal("room_open")
+			writePatchRoomOpen(w, ref)
+		case errors.Is(aerr, collab.ErrApplierAmbiguous):
+			writeError(w, http.StatusConflict, "applier_ambiguous",
+				"A concurrent version restore made this patch's outcome ambiguous; re-read the item before retrying.")
+		default:
+			// Timed out, or the tab acknowledged without bodies: the patch may
+			// have landed. Say so rather than claim either way.
+			slog.Warn("collab: patch apply did not confirm", "item_id", item.ID, "error", aerr)
+			writeError2(w, http.StatusConflict, "content_not_applied",
+				ref+": the open editor did not confirm the patch; it may or may not have applied. Re-read the item before retrying.",
+				map[string]interface{}{"ref": ref, "content_outcome": contentOutcomeUnknown})
+		}
+		return contentRouteHandled, nil
+	}
+	p.baseSeq, p.before, p.after = item.Seq, ack.Before, ack.After
+	row := *input
+	row.ContentTransform = nil
+	row.Content = nil
+	row.RefusePendingEdits = false
+	row.ExternalContent = &ack.After
+	updated, uerr := s.store.UpdateItemWithParentLink(item.ID, row, nil, parentLink)
+	if uerr != nil {
+		// The document has the patch; only its version row is missing.
+		slog.Error("collab: patch applied but its version row failed", "item_id", item.ID, "error", uerr)
+		writeInternalError(w, uerr)
+		return contentRouteHandled, nil
+	}
+	return contentRouteApplierWrote, updated
+}
+
+// writeTabPatchRefusal answers a refusal the applier tab made.
+func (s *Server) writeTabPatchRefusal(w http.ResponseWriter, ref string, e *collab.PatchRefusedError) {
+	s.countPatchRefusal(e.Reason)
+	details := map[string]interface{}{"ref": ref}
+	if e.Edit != nil {
+		details["edit"] = *e.Edit
+	}
+	if len(e.Lines) > 0 {
+		details["lines"] = e.Lines
+	}
+	if e.Line > 0 {
+		details["line"] = e.Line
+	}
+	switch e.Reason {
+	case "anchor_missing":
+		writeError2(w, http.StatusConflict, "patch_anchor_missing", ref+": an edit's old text is not in the open editor's current body; re-read it and quote text that is there", details)
+	case "anchor_ambiguous":
+		writeError2(w, http.StatusConflict, "patch_anchor_ambiguous", ref+": an edit's old text occurs more than once in the open editor's body; quote more surrounding text, or pass line_hint", details)
+	default:
+		// unstable_roundtrip, parse_refused, or a reason this server does not
+		// know: the tab could not apply the patch without changing text the
+		// agent never saw.
+		details["reason"] = e.Reason
+		writeError2(w, http.StatusConflict, "patch_unstable_roundtrip",
+			ref+": the open editor cannot apply this patch without changing content you did not edit; send a whole-body update with expected_seq instead",
+			details)
+	}
+}
+
+// countPatchRefusal counts a refused patch by reason (lead ruling: the
+// uncovered share must be visible).
+func (s *Server) countPatchRefusal(reason string) {
+	if s.metrics == nil {
+		return
+	}
+	switch reason {
+	case "anchor_missing", "anchor_ambiguous", "unstable_roundtrip", "parse_refused", "room_open", "empty_anchor":
+	default:
+		reason = "other"
+	}
+	s.metrics.PatchRefusalsTotal.WithLabelValues(reason).Inc()
 }
