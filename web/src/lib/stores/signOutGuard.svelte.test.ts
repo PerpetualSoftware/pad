@@ -5,7 +5,7 @@ vi.mock('./auth.svelte', () => ({
 }));
 
 const { confirmDialog } = await import('./confirmDialog.svelte');
-const { registerSignOutGuard, confirmSignOut, signOutDiscarding, signOutFailed } = await import('./signOutGuard.svelte');
+const { registerSignOutGuard, confirmSignOut, signOutDiscarding, signOutFailed, signOutLogout } = await import('./signOutGuard.svelte');
 const { keepRefusedRawDraft, readRefusedRawDraft } = await import('$lib/items/refusedRawDraft');
 
 // BUG-3571: signing out asks first while an open item holds at-risk edits;
@@ -60,6 +60,61 @@ describe('BUG-3571: confirmSignOut', () => {
 		await answer;
 		signOutFailed();
 		expect(signOutDiscarding()).toBe(false);
+		off();
+	});
+
+	// Retro Codex review of #2041, (a): a logout that rejects must not leave
+	// items stood down. Every control logs out through signOutLogout.
+	it('a rejected logout through signOutLogout resets the discard and rethrows', async () => {
+		const off = registerSignOutGuard({ atRisk: () => true, discard: () => {} });
+		const answer = confirmSignOut();
+		confirmDialog.confirm();
+		await answer;
+		expect(signOutDiscarding(), 'PREMISE: the confirm stood items down').toBe(true);
+		await expect(signOutLogout(() => Promise.reject(new Error('offline')))).rejects.toThrow('offline');
+		// The open item's teardown flush and unload prompt read this: false
+		// means a later edit flushes and prompts as usual.
+		expect(signOutDiscarding()).toBe(false);
+		off();
+	});
+
+	it('a logout that succeeds keeps the discard for the navigation away', async () => {
+		const off = registerSignOutGuard({ atRisk: () => true, discard: () => {} });
+		const answer = confirmSignOut();
+		confirmDialog.confirm();
+		await answer;
+		await expect(signOutLogout(async () => 'ok')).resolves.toBe('ok');
+		expect(signOutDiscarding()).toBe(true);
+		off();
+	});
+
+	// Retro Codex review of #2041, (b): suppressed must equal discarded.
+	it('a source that becomes at risk while the dialog is open is discarded too', async () => {
+		let lateRisk = false;
+		const early = vi.fn();
+		const late = vi.fn();
+		const offA = registerSignOutGuard({ atRisk: () => true, discard: early });
+		const offB = registerSignOutGuard({ atRisk: () => lateRisk, discard: late });
+		const answer = confirmSignOut();
+		lateRisk = true; // in-flight work changed its state under the modal
+		confirmDialog.confirm();
+		await expect(answer).resolves.toBe(true);
+		expect(early).toHaveBeenCalledOnce();
+		expect(late, 'stood down by the discard flag, so it must be discarded').toHaveBeenCalledOnce();
+		expect(signOutDiscarding()).toBe(true);
+		offA();
+		offB();
+	});
+
+	it('a source at risk when the dialog opened is discarded even if it settled meanwhile', async () => {
+		let risk = true;
+		const discard = vi.fn();
+		const off = registerSignOutGuard({ atRisk: () => risk, discard });
+		const answer = confirmSignOut();
+		risk = false;
+		confirmDialog.confirm();
+		await answer;
+		expect(discard).toHaveBeenCalledOnce();
 		off();
 	});
 

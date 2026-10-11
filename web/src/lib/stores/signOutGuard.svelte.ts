@@ -41,6 +41,21 @@ export function signOutFailed(): void {
 	discarding = false;
 }
 
+/**
+ * Run a sign-out's logout. One that rejects resets the discard before the
+ * error goes on to the caller, so an aborted sign-out never leaves an open
+ * item unable to save or prompt (retro Codex review of #2041). Every sign-out
+ * control logs out through this; the wiring test holds them to it.
+ */
+export async function signOutLogout<T>(logout: () => Promise<T>): Promise<T> {
+	try {
+		return await logout();
+	} catch (err) {
+		signOutFailed();
+		throw err;
+	}
+}
+
 /** Register an open item; the returned function unregisters it. */
 export function registerSignOutGuard(source: SignOutGuardSource): () => void {
 	sources.add(source);
@@ -70,8 +85,14 @@ export async function confirmSignOut(): Promise<boolean> {
 		cancelLabel: 'Stay signed in',
 	});
 	if (ok) {
+		// Discard what is at risk NOW as well as what was when the dialog
+		// opened (retro Codex review of #2041). The dialog is modal, so a
+		// source can only have changed through work already in flight; one
+		// that became at risk meanwhile would otherwise have its saves stood
+		// down below without being discarded. Suppressed equals discarded.
+		const confirmed = new Set([...atRisk, ...[...sources].filter((s) => s.atRisk())]);
 		discarding = true;
-		for (const s of atRisk) s.discard();
+		for (const s of confirmed) s.discard();
 		purgeRefusedRawDraftsForUser(authStore.userId);
 	}
 	return ok;

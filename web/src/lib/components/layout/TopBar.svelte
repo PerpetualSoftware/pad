@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { confirmSignOut, signOutFailed } from '$lib/stores/signOutGuard.svelte';
+	import { confirmSignOut, signOutLogout } from '$lib/stores/signOutGuard.svelte';
 	import { modKeyLabel } from '$lib/utils/platform';
 	import { dndzone, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
@@ -439,10 +439,10 @@
 		// BUG-3571: unsaved edits in an open item are asked about first.
 		if (!(await confirmSignOut())) return;
 		try {
-			await api.auth.logout();
+			await signOutLogout(() => api.auth.logout());
 			window.location.href = '/login';
 		} catch {
-			signOutFailed();
+			// The helper has reset the discard; staying put is the whole answer.
 		}
 	}
 

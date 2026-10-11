@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { confirmSignOut } from '$lib/stores/signOutGuard.svelte';
+	import { confirmSignOut, signOutLogout } from '$lib/stores/signOutGuard.svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -132,7 +132,7 @@
 		switchingAccount = true;
 		error = '';
 		try {
-			await api.auth.logout();
+			await signOutLogout(() => api.auth.logout());
 		} catch (err: unknown) {
 			// Surface the failure rather than swallowing it: if the server
 			// did not invalidate the session cookie, navigating to /login
