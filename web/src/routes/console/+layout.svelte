@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { confirmSignOut } from '$lib/stores/signOutGuard.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -41,6 +42,8 @@
 	}
 
 	async function logout() {
+		// BUG-3571: unsaved edits in an open item are asked about first.
+		if (!(await confirmSignOut())) return;
 		await api.auth.logout();
 		authStore.clear();
 		// HARD navigation, not `goto` (BUG-3005). An SPA navigation to /login
