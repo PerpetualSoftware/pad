@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
+import { clickBoardCard } from './lib/boardClickProbe';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 
@@ -26,10 +27,6 @@ const DESKTOP = { width: 1200, height: 900 };
 
 function authHeaders(fixture: SuiteFixture) {
 	return { Authorization: `Bearer ${fixture.apiToken}` };
-}
-
-function itemCard(page: Page, title: string) {
-	return page.locator('.item-card').filter({ has: page.locator('.card-title', { hasText: title }) });
 }
 
 test('BUG-2871: a same-data refresh keeps the child row node', async ({
@@ -68,7 +65,10 @@ test('BUG-2871: a same-data refresh keeps the child row node', async ({
 	});
 
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs`);
-	await itemCard(page, 'B2871 refresh parent').first().click();
+	// By the seeded slug, not the title prefix: on a retry the previous
+	// attempt's parent is still on this shared board under the same prefix,
+	// and .first() opened it (BUG-3553, seen on #2049's run 38111320569).
+	await clickBoardCard(page.locator(`.item-card[data-item-slug="${parent.slug}"]`));
 	const pane = page.locator('.item-pane');
 	await expect(pane).toBeVisible();
 	await pane.getByRole('tab', { name: 'Relationships' }).click();
