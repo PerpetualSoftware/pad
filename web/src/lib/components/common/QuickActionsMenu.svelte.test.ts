@@ -371,7 +371,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		expect(pushMock).not.toHaveBeenCalled();
 		expect(copyMock).toHaveBeenCalledWith('Ship TASK-14');
 		expect(toastShow.mock.calls[0][0]).toBe(
-			'No agent session accepting pushes — copied to clipboard instead'
+			'No agent session ready to receive — copied to clipboard instead'
 		);
 
 		unmount(component);
@@ -398,7 +398,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		expect(pushMock).not.toHaveBeenCalled();
 		expect(copyMock).toHaveBeenCalledWith('Ship TASK-14');
 		expect(toastShow.mock.calls[0][0]).toBe(
-			'No agent session accepting pushes — copied to clipboard instead'
+			'No agent session ready to receive — copied to clipboard instead'
 		);
 
 		unmount(component);
@@ -602,7 +602,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		const live = mountMenu();
 		await openMenu(live.host);
 		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-			'Pushes to 2 accepting sessions'
+			'Pushes to 2 sessions ready to receive'
 		);
 		unmount(live.component);
 		live.host.remove();
@@ -621,7 +621,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		const { host, component } = mountMenu();
 		await openMenu(host);
 		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-			'Pushes to 1 accepting session (of 3 connected)'
+			'Pushes to 1 session ready to receive (of 3 connected)'
 		);
 		unmount(component);
 		host.remove();
@@ -638,7 +638,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		const none = mountMenu();
 		await openMenu(none.host);
 		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-			'2 connected, 0 accepting pushes — actions copy; run /pad:connect to enable'
+			'2 connected, 0 ready to receive — actions copy; run /pad:connect to enable'
 		);
 		unmount(none.component);
 		none.host.remove();
@@ -673,7 +673,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 
 			// The first read landed: the menu is armed to push.
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to 1 accepting session'
+				'Pushes to 1 session ready to receive'
 			);
 
 			// Four poll intervals later — nothing has refreshed it. (The TAGLINE
@@ -720,7 +720,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			vi.setSystemTime(Date.now() + 5 * 60_000);
 			flushSync();
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to 1 accepting session'
+				'Pushes to 1 session ready to receive'
 			);
 
 			// The decision must not inherit that staleness.
@@ -755,7 +755,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			await vi.advanceTimersByTimeAsync(29_000);
 			flushSync();
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to 1 accepting session'
+				'Pushes to 1 session ready to receive'
 			);
 
 			// Just past it — and well before the next 10s poll tick at t=40s.
@@ -787,7 +787,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			flushSync();
 
 			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
-				'Pushes to 1 accepting session'
+				'Pushes to 1 session ready to receive'
 			);
 			actionRow(host, 'Ship it').click();
 			await vi.advanceTimersByTimeAsync(0);

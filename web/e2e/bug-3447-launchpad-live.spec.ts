@@ -10,7 +10,7 @@ import { quietCrossActorToasts } from './fixtures';
  * records as source=cli, the agent sources). Each outcome is asserted within
  * a bound well under the dashboard's 30 s poll:
  *   1. a collection the agent creates appears in the sidebar, and, being
- *      agent activity, ticks the launchpad's "Agent connected" step and
+ *      agent activity, ticks the launchpad's "Agent activity detected" step and
  *      removes the "Connect an AI agent" banner, before any item exists;
  *   2. the agent's first item swaps the launchpad for the dashboard.
  *
@@ -136,7 +136,7 @@ test.describe('BUG-3447: the launchpad follows an onboarding agent live', () => 
 			// Preconditions: a brand-new workspace shows the launchpad, not yet
 			// agent-connected, and the banner.
 			await expect(page.locator('.launchpad')).toBeVisible();
-			const agentStep = page.locator('.lp-progress-item', { hasText: 'Agent connected' });
+			const agentStep = page.locator('.lp-progress-item', { hasText: 'Agent activity detected' });
 			await expect(agentStep).not.toHaveClass(/\bdone\b/);
 			const banner = page.locator('.banner').filter({ hasText: /connect/i });
 			await expect(banner).toBeVisible();
@@ -153,7 +153,7 @@ test.describe('BUG-3447: the launchpad follows an onboarding agent live', () => 
 			await expect.soft(sidebarCollection, 'the new collection did not reach the sidebar live').toBeVisible({ timeout: LIVE });
 			// An agent's collection is agent activity (lead ruling): the step
 			// ticks and the banner goes, before any item exists.
-			await expect.soft(agentStep, 'the Agent connected step did not tick on the agent\'s collection').toHaveClass(/\bdone\b/, {
+			await expect.soft(agentStep, 'the Agent activity detected step did not tick on the agent\'s collection').toHaveClass(/\bdone\b/, {
 				timeout: LIVE
 			});
 			await expect.soft(banner, 'the connect banner did not see the agent\'s collection').toHaveCount(0, { timeout: LIVE });

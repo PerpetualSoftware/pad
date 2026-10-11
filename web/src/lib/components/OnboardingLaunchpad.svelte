@@ -24,8 +24,11 @@
 	interface Props {
 		workspaceName: string;
 		/**
-		 * Whether an agent is connected to this workspace
-		 * (dashboard.has_agent_activity). Ticks the "Agent connected" checklist
+		 * Whether an agent has worked in this workspace
+		 * (dashboard.has_agent_activity). HISTORICAL evidence, not a live
+		 * connection, so it reads "Agent activity detected" (TASK-3596):
+		 * "Connected" and "Ready to receive" are reserved for the live session
+		 * signals the push dialog shows. Ticks the "Agent activity detected" checklist
 		 * step and collapses step ① to a confirmation. This now flips true in
 		 * two cases (BUG-1557): (a) the first agent-CREATED item — which also
 		 * clears needs_onboarding and removes the launchpad; and (b) the
@@ -48,7 +51,7 @@
 	// Compact setup-progress checklist (TASK-1857). Existing signals only.
 	let progress = $derived([
 		{ label: 'Workspace created', done: true },
-		{ label: 'Agent connected', done: agentActive },
+		{ label: 'Agent activity detected', done: agentActive },
 		{ label: 'Setup complete', done: false }
 	]);
 
@@ -88,9 +91,9 @@
 			>
 			<div class="lp-step-body">
 				{#if agentActive}
-					<h2 class="lp-step-title">Agent connected</h2>
+					<h2 class="lp-step-title">Agent activity detected</h2>
 					<p class="lp-step-text">
-						Your agent is already connected to this workspace.
+						An agent has already worked in this workspace.
 					</p>
 				{:else}
 					<h2 class="lp-step-title">Connect your agent</h2>

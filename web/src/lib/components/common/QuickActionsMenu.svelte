@@ -459,13 +459,13 @@
 		const connected = presence.connected ?? accepting;
 		if (accepting === 0) {
 			return connected > 0
-				? `${connected} connected, 0 accepting pushes — actions copy; run /pad:connect to enable`
+				? `${connected} connected, 0 ready to receive — actions copy; run /pad:connect to enable`
 				: 'No agent session connected — actions copy to your clipboard';
 		}
 		const ofConnected = connected > accepting ? ` (of ${connected} connected)` : '';
 		return accepting === 1
-			? `Pushes to 1 accepting session${ofConnected}`
-			: `Pushes to ${accepting} accepting sessions${ofConnected}`;
+			? `Pushes to 1 session ready to receive${ofConnected}`
+			: `Pushes to ${accepting} sessions ready to receive${ofConnected}`;
 	});
 
 	function resetCreateForm() {
@@ -638,7 +638,7 @@
 			Template variables: {'{ref}'} {'{title}'} {'{status}'} {'{priority}'} {'{collection}'} {'{content}'} {'{fields}'}
 			{#if scope === 'item'}
 				<br />
-				Pushes to your agent session as a single line when one is accepting pushes;
+				Pushes to your agent session as a single line when one is ready to receive;
 				copies to your clipboard otherwise.
 			{/if}
 		</div>

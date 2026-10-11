@@ -147,7 +147,7 @@ describe('PushToAgentDialog — presence honesty', () => {
 		await mountSettled();
 
 		const body = bodyText();
-		expect(body).toContain('1 session accepting pushes');
+		expect(body).toContain('1 session ready to receive');
 		// The whole point. If this ever starts asserting delivery, the surface
 		// has begun claiming something the server has no way to know.
 		expect(body).toMatch(/can’t confirm delivery|cannot confirm delivery/i);
@@ -442,7 +442,7 @@ describe('PushToAgentDialog — message handling', () => {
 		render(PushToAgentDialog, { props: baseProps() });
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();
-		expect(bodyText()).toContain('1 session accepting pushes');
+		expect(bodyText()).toContain('1 session ready to receive');
 		expect(button('Push').disabled).toBe(false);
 
 		// Three poll intervals with no answer takes us past the server's own
@@ -451,7 +451,7 @@ describe('PushToAgentDialog — message handling', () => {
 		await vi.advanceTimersByTimeAsync(40_000);
 		flushSync();
 
-		expect(bodyText()).not.toContain('1 session accepting pushes');
+		expect(bodyText()).not.toContain('1 session ready to receive');
 		expect(bodyText()).toContain('Can’t tell whether any agent session is connected');
 		// Still sendable — "can't tell" never blocks, only "known zero" does.
 		expect(button('Push').disabled).toBe(false);
@@ -487,7 +487,7 @@ describe('PushToAgentDialog — message handling', () => {
 		render(PushToAgentDialog, { props: baseProps() });
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();
-		expect(bodyText()).toContain('1 session accepting pushes');
+		expect(bodyText()).toContain('1 session ready to receive');
 
 		await vi.advanceTimersByTimeAsync(40_000);
 		flushSync();
@@ -500,7 +500,7 @@ describe('PushToAgentDialog — message handling', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();
 
-		expect(bodyText()).not.toContain('1 session accepting pushes');
+		expect(bodyText()).not.toContain('1 session ready to receive');
 		expect(bodyText()).toContain('Can’t tell whether any agent session is connected');
 	});
 
@@ -531,7 +531,7 @@ describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', ()
 		const picker = targetPicker();
 		if (!picker) throw new Error('expected a target picker with 2 live sessions');
 		const options = Array.from(picker.options).map((o) => ({ value: o.value, text: o.textContent }));
-		expect(options[0]).toEqual({ value: '', text: expect.stringContaining('All accepting sessions (2)') });
+		expect(options[0]).toEqual({ value: '', text: expect.stringContaining('All sessions ready to receive (2)') });
 		expect(options[1]).toEqual({ value: 'session-id-0', text: 'docapp-0 (pid 1000)' });
 		expect(options[2]).toEqual({ value: 'session-id-1', text: 'docapp-1 (pid 1001)' });
 	});
@@ -758,7 +758,7 @@ describe('PushToAgentDialog — connected vs accepting (PLAN-2613 S4)', () => {
 		const body = bodyText();
 		// The honest-counts state D3 exists for — the two connected sessions
 		// are surfaced, not hidden behind a bare "0".
-		expect(body).toContain('2 sessions connected, 0 accepting pushes');
+		expect(body).toContain('2 sessions connected, 0 ready to receive');
 		expect(body).toContain('/pad:connect');
 		// NOT the "nobody connected" copy — that would be a different lie.
 		expect(body).not.toContain('No agent session is connected');
@@ -783,7 +783,7 @@ describe('PushToAgentDialog — connected vs accepting (PLAN-2613 S4)', () => {
 		await mountSettled();
 
 		const body = bodyText();
-		expect(body).toContain('1 session accepting pushes');
+		expect(body).toContain('1 session ready to receive');
 		expect(body).toContain('(of 3 connected)');
 		expect(button('Push').disabled).toBe(false);
 
@@ -793,7 +793,7 @@ describe('PushToAgentDialog — connected vs accepting (PLAN-2613 S4)', () => {
 		if (!picker) throw new Error('expected a target picker');
 		const optionValues = Array.from(picker.querySelectorAll('option')).map((o) => o.value);
 		expect(optionValues).toEqual(['', 'session-id-0']); // broadcast + the one armed
-		expect(bodyText()).toContain('All accepting sessions (1)');
+		expect(bodyText()).toContain('All sessions ready to receive (1)');
 	});
 
 	it('broadcast to a mixed set carries no target (server filters to accepting)', async () => {
