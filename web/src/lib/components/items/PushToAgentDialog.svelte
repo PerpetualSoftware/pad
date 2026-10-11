@@ -203,12 +203,22 @@ always a broadcast that went out.
 	/**
 	 * Set when a send failed in a way that leaves the OUTCOME UNKNOWN — the
 	 * request was dispatched but the server never told us what happened to it.
-	 * Push is not re-armed in that state: the endpoint has no idempotency key,
-	 * so a second click can publish the same instruction twice. Same rule
+	 * Push is not re-armed in that state: the outcome is unknown, so the user
+	 * checks their agent session rather than trusting a resend. Same rule
 	 * CopyItemDialog applies for the same reason (DR-13), and drawn at the same
 	 * line — "was the mutation dispatched?", not "did the server say it failed?".
 	 */
 	let outcomeUnknown = $state(false);
+
+	/**
+	 * The push's idempotency key (TASK-3597): one per opening, so a second send
+	 * of the same push replays the first one's answer instead of publishing
+	 * twice. A pre-publish refusal releases it on the server, so a corrected
+	 * resend reuses it. A targeted miss is a COMPLETED answer the server stores
+	 * under the key, so that path mints a new one before the dialog re-arms.
+	 * Plain `let`: only handlers read it.
+	 */
+	let opKey = '';
 
 	/**
 	 * Fences for async writes. Plain `let`s, never $state: read and written only
@@ -388,6 +398,7 @@ always a broadcast that went out.
 			sending = false;
 			sendError = '';
 			outcomeUnknown = false;
+			opKey = crypto.randomUUID();
 			sessions = [];
 			presenceState = 'checking';
 			presenceReason = '';
@@ -452,9 +463,10 @@ always a broadcast that went out.
 		// while `sending` disables the picker, but the pattern is load-bearing
 		// elsewhere in this file and cheap to keep consistent here too.
 		const target = selectedSessionId;
+		const key = opKey;
 		// IDENTITY fence (BUG-3105). Neither `gen` nor `destroyed` moves on a
-		// sign-out. The push has no idempotency key, so this fence refuses to
-		// REPORT under the next identity and never re-sends. That includes the
+		// sign-out. This fence refuses to REPORT under the next identity and
+		// never re-sends. That includes the
 		// toasts, which otherwise fire even for a destroyed instance (see
 		// below): the push was real, but it was the PREVIOUS user's, and naming
 		// its item to whoever is signed in now is the leak. The busy flag is
@@ -464,12 +476,9 @@ always a broadcast that went out.
 		sending = true;
 		sendError = '';
 		try {
-			// NEVER retried automatically, at this call site or any other: the
-			// endpoint carries no idempotency key. Broadcast keeps the exact
-			// pre-S5 3-argument call — only a non-empty target adds the 4th.
-			const result = target
-				? await api.items.push(wsSlug, itemSlug, collapsed, target)
-				: await api.items.push(wsSlug, itemSlug, collapsed);
+			// NEVER retried automatically. An empty target sends no
+			// target_session_id at all, the pre-S5 broadcast body.
+			const result = await api.items.push(wsSlug, itemSlug, collapsed, target || undefined, key);
 			if (!isSameIdentity()) {
 				sending = false;
 				return;
@@ -519,6 +528,9 @@ always a broadcast that went out.
 				// live target.
 				toastStore.show('that session is gone — refresh the list', 'error');
 				if (!stillMine()) return;
+				// The server stored this miss under `key`; a resend under it
+				// would replay the miss (or 422 for another target).
+				opKey = crypto.randomUUID();
 				selectedSessionId = '';
 				void refreshPresence(gen);
 				return;

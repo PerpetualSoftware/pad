@@ -220,8 +220,8 @@ export function describeDispatch(outcome: DispatchOutcome): DispatchMessage {
 			// Not an error and not a success: the server gave no clear answer, so
 			// the only true thing to say is that we don't know. Copying for the
 			// user here would be worse than useless — if the push DID land, a
-			// paste delivers the same instruction twice, and the endpoint has no
-			// idempotency key to absorb it. So the copy is offered, not taken.
+			// paste delivers the same instruction twice, and a paste goes around
+			// the endpoint's idempotency key, so nothing absorbs it. So the copy is offered, not taken.
 			return {
 				message:
 					'The server didn’t say whether the push went through. Check your agent session before sending it again.',

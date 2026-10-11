@@ -248,7 +248,13 @@ describe('PushToAgentDialog — message handling', () => {
 
 		// Whitespace-collapsed exactly as the server would collapse it — so what
 		// the user sees in the counter is what actually goes on the wire.
-		expect(pushMock).toHaveBeenCalledWith('docapp', 'fix-the-thing', 'line one line two');
+		expect(pushMock).toHaveBeenCalledWith(
+			'docapp',
+			'fix-the-thing',
+			'line one line two',
+			undefined,
+			expect.any(String)
+		);
 	});
 
 	it('blocks an over-length message client-side rather than letting it 400', async () => {
@@ -549,13 +555,14 @@ describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', ()
 		await fireEvent.click(button('Push'));
 		await tick();
 
-		// No 4th argument at all — not even an explicit `undefined` — so this
-		// stays byte-identical to every pre-S5 broadcast call site
-		// (QuickActionsMenu's S4 dispatch included).
+		// No target: the client then sends no target_session_id at all, the
+		// pre-S5 broadcast body (pinned in pushCopyOpKey.test.ts).
 		expect(pushMock).toHaveBeenCalledWith(
 			'docapp',
 			'fix-the-thing',
-			'Take a look at TASK-5 — Fix the thing'
+			'Take a look at TASK-5 — Fix the thing',
+			undefined,
+			expect.any(String)
 		);
 	});
 
@@ -573,7 +580,8 @@ describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', ()
 			'docapp',
 			'fix-the-thing',
 			'Take a look at TASK-5 — Fix the thing',
-			'session-id-1'
+			'session-id-1',
+			expect.any(String)
 		);
 	});
 
@@ -674,12 +682,13 @@ describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', ()
 		await fireEvent.click(button('Push'));
 		await tick();
 
-		// The pre-S5 3-argument shape — no target_session_id at all, not
-		// even the now-dead 'session-id-0'.
+		// No target at all, not even the now-dead 'session-id-0'.
 		expect(pushMock).toHaveBeenCalledWith(
 			'docapp',
 			'fix-the-thing',
-			'Take a look at TASK-5 — Fix the thing'
+			'Take a look at TASK-5 — Fix the thing',
+			undefined,
+			expect.any(String)
 		);
 	});
 
@@ -708,7 +717,8 @@ describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', ()
 			'docapp',
 			'fix-the-thing',
 			'Take a look at TASK-5 — Fix the thing',
-			'session-id-0'
+			'session-id-0',
+			expect.any(String)
 		);
 	});
 
@@ -800,13 +810,85 @@ describe('PushToAgentDialog — connected vs accepting (PLAN-2613 S4)', () => {
 		sessionsListMock.mockResolvedValue(armedSessions(2, 1));
 		await mountSettled();
 
-		// Default is broadcast; send carries the pre-S5 3-arg shape.
+		// Default is broadcast; send carries no target.
 		await fireEvent.click(button('Push'));
 		await tick();
 		expect(pushMock).toHaveBeenCalledWith(
 			'docapp',
 			'fix-the-thing',
-			'Take a look at TASK-5 — Fix the thing'
+			'Take a look at TASK-5 — Fix the thing',
+			undefined,
+			expect.any(String)
 		);
+	});
+});
+
+describe('PushToAgentDialog — idempotency key (TASK-3597)', () => {
+	const keyOf = (call: number) => pushMock.mock.calls[call]?.[4] as string | undefined;
+
+	it('a resend after a pre-publish refusal reuses the key: the server released it, and a double send replays rather than publishes twice', async () => {
+		pushMock.mockRejectedValueOnce(
+			new PadApiError({ code: 'bad_request', message: 'message must not be empty' })
+		);
+		await mountSettled();
+
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(pushMock).toHaveBeenCalledTimes(2);
+		expect(keyOf(0)).toMatch(/^[0-9a-f-]{36}$/);
+		expect(keyOf(1)).toBe(keyOf(0));
+	});
+
+	it('a resend after a targeted miss mints a NEW key, because the server stored the miss under the old one', async () => {
+		sessionsListMock.mockResolvedValue(sessions(2));
+		pushMock.mockResolvedValueOnce({
+			ref: 'TASK-5',
+			workspace: 'docapp',
+			pushed: true,
+			message: 'ok',
+			delivered_sessions: 0
+		});
+		await mountSettled();
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-0' } });
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(pushMock).toHaveBeenCalledTimes(2);
+		expect(keyOf(0)).toBeTruthy();
+		expect(keyOf(1)).toBeTruthy();
+		expect(keyOf(1)).not.toBe(keyOf(0));
+	});
+
+	it('each opening gets its own key', async () => {
+		const { rerender } = await mountSettled();
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		await rerender(baseProps({ open: false }));
+		await tick();
+		await rerender(baseProps({ open: true }));
+		await tick();
+		await tick();
+		flushSync();
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(pushMock).toHaveBeenCalledTimes(2);
+		expect(keyOf(1)).toBeTruthy();
+		expect(keyOf(1)).not.toBe(keyOf(0));
 	});
 });
