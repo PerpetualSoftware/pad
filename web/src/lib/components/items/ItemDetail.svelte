@@ -6218,6 +6218,11 @@
 	// unload prompt, no teardown flush) still offers them on the next open.
 	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string } | null {
 		if (!item) return null;
+		// Whose typing is in the editor (the teardown flush's fence): after an
+		// identity change and before the reload re-stamps it, the text is the
+		// previous user's, and the keeper would file it under the new user's
+		// key (codex r2). The identity listener already kept it for its author.
+		if (authStore.identityEpoch !== identityEpochAtLoad) return null;
 		const base = { baseSeq: item.seq ?? 0, baseBody: item.content ?? '' };
 		if (rawContentSaver.dirty && rawContentSaver.pending !== null) return { markdown: rawContentSaver.pending, ...base };
 		const ctx = activeCollabContext;
