@@ -10,6 +10,7 @@
 	import { syncService } from '$lib/services/sync.svelte';
 	import { api } from '$lib/api/client';
 	import { toastStore, quietExternalToasts } from '$lib/stores/toast.svelte';
+	import { createdToast } from '$lib/items/createdToast';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
@@ -379,7 +380,16 @@
 					if (isExternal && !quietExternalToasts()) {
 						const who = event.actor === 'agent' ? 'Agent' : (event.actor_name || 'CLI');
 						const link = event.collection ? `/${username}/${eventWs}/${event.collection}/${event.item_id}` : undefined;
-						toastStore.show(`${who} created: ${event.title}`, 'info', 4000, link);
+						// One toast per burst from one actor (TASK-3593), and it counts
+						// toward unread: it is another actor's work, not a confirmation.
+						toastStore.showGrouped(
+							`created:${eventWs}:${event.actor ?? ''}:${event.actor_name ?? ''}`,
+							{ title: event.title, collection: event.collection, link },
+							(entries) => createdToast(who, entries, `/${username}/${eventWs}`),
+							'info',
+							4000,
+							{ unread: true },
+						);
 					}
 					break;
 				}

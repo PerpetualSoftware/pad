@@ -87,7 +87,24 @@ function generateId(): string {
 	return Date.now().toString(36) + '-' + (++toastSeq).toString(36);
 }
 
-function show(message: string, type: Toast['type'] = 'info', duration?: number, link?: string, action?: ToastAction): string {
+/**
+ * `unread`: the toast announces ANOTHER actor's work, so it counts toward the
+ * bell's unread badge (TASK-3593). Off by default: a confirmation of the
+ * user's own action is not news to them, and counting every one of them made
+ * the badge meaningless.
+ */
+export interface ShowOptions {
+	unread?: boolean;
+}
+
+function show(
+	message: string,
+	type: Toast['type'] = 'info',
+	duration?: number,
+	link?: string,
+	action?: ToastAction,
+	opts: ShowOptions = {},
+): string {
 	duration ??= type === 'error' ? ERROR_DURATION : DEFAULT_DURATION;
 	const id = generateId();
 	const toast: Toast = { id, message, type, duration, link, action };
@@ -99,7 +116,7 @@ function show(message: string, type: Toast['type'] = 'info', duration?: number, 
 	while (history.length > MAX_HISTORY) {
 		history.pop();
 	}
-	unreadCount++;
+	if (opts.unread) unreadCount++;
 
 	// Drop oldest if exceeded max
 	while (toasts.length > MAX_TOASTS) {
@@ -114,6 +131,70 @@ function show(message: string, type: Toast['type'] = 'info', duration?: number, 
 	timers.set(id, clock);
 	startClock(id, clock);
 
+	return id;
+}
+
+/**
+ * How long after the last event of a burst the next one still joins it
+ * (TASK-3593). A burst also ends when its toast leaves the screen, whichever
+ * comes first: an event after that starts a new toast.
+ */
+export const GROUP_WINDOW_MS = 10_000;
+
+interface ToastGroup<T> {
+	id: string;
+	entries: T[];
+	lastAt: number;
+}
+const groups = new Map<string, ToastGroup<unknown>>();
+
+/**
+ * Fold a burst of events from one source into ONE toast (TASK-3593): a busy
+ * agent creating eighteen items raises "Agent created 18 items", not
+ * eighteen toasts. `key` names the source; `render` turns the burst's entries
+ * into the toast's text and link. A later event in the burst updates the live
+ * toast and its history entry in place and restarts its clock; the burst
+ * counts once toward unread.
+ */
+function showGrouped<T>(
+	key: string,
+	entry: T,
+	render: (entries: T[]) => { message: string; link?: string },
+	type: Toast['type'] = 'info',
+	duration?: number,
+	opts: ShowOptions = {},
+): string {
+	const now = Date.now();
+	const group = groups.get(key) as ToastGroup<T> | undefined;
+	const live = group ? toasts.find((t) => t.id === group.id) : undefined;
+	if (group && live && now - group.lastAt <= GROUP_WINDOW_MS) {
+		group.entries.push(entry);
+		group.lastAt = now;
+		const { message, link } = render(group.entries);
+		live.message = message;
+		live.link = link;
+		const past = history.find((h) => h.id === group.id);
+		if (past) {
+			past.message = message;
+			past.link = link;
+			past.timestamp = now;
+		}
+		// The burst is still going: give the toast its full time again. A held
+		// clock (hover, focus) takes it up when the hold is released.
+		const clock = timers.get(group.id);
+		if (clock) {
+			clock.remaining = live.duration;
+			if (clock.timer !== null) {
+				clearTimeout(clock.timer);
+				startClock(group.id, clock);
+			}
+		}
+		return group.id;
+	}
+	const entries = [entry];
+	const { message, link } = render(entries);
+	const id = show(message, type, duration, link, undefined, opts);
+	groups.set(key, { id, entries, lastAt: now } as ToastGroup<unknown>);
 	return id;
 }
 
@@ -174,6 +255,7 @@ function clearHistory(): void {
  */
 function clearAll(): void {
 	for (const id of [...timers.keys()]) clearTimerFor(id);
+	groups.clear();
 	toasts = [];
 	clearHistory();
 }
@@ -189,6 +271,7 @@ export const toastStore = {
 		return unreadCount;
 	},
 	show,
+	showGrouped,
 	dismiss,
 	pause,
 	resume,
