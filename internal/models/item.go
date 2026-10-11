@@ -2,6 +2,7 @@ package models
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1514,6 +1515,13 @@ type ItemUpdate struct {
 	// Transport-only, like RefuseUndeclaredFields: a server that predates it
 	// ignores the member, which is the old replace-and-prune.
 	RefusePendingEdits bool `json:"refuse_pending_edits,omitempty"`
+
+	// AfterWriteTx, when set, runs inside the update's transaction after the
+	// row and its version are written and re-read, just before COMMIT
+	// (TASK-3585: the idempotency key's answer is written there, so it
+	// commits exactly when the write does). An error rolls everything back.
+	// Internal.
+	AfterWriteTx func(tx *sql.Tx, updated *Item) error `json:"-"`
 
 	// PatchRecord, when set, is written to item_patches in the update's own
 	// transaction (PLAN-3578 step 3), so the patch can be undone. Internal.

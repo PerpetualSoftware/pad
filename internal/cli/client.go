@@ -918,26 +918,48 @@ type PatchResult struct {
 }
 
 // PatchItem applies content-anchored edits to the item's body.
-func (c *Client) PatchItem(wsSlug, itemSlug string, edits []bodypatch.Edit, expectedSeq *int64) (*PatchResult, error) {
+func (c *Client) PatchItem(wsSlug, itemSlug string, edits []bodypatch.Edit, expectedSeq *int64, opKey string) (*PatchResult, error) {
 	body := map[string]any{"edits": edits}
 	if expectedSeq != nil {
 		body["expected_seq"] = *expectedSeq
 	}
+	return c.postPatch(wsSlug, itemSlug, body, opKey)
+}
+
+// postPatch sends a patch with its idempotency key (TASK-3585) and retries
+// it ONCE, with the same key, when the outcome is unknown at the transport
+// (no answer, or a 5xx): the key makes the retry replay a write that
+// committed rather than apply it again. A 4xx answer is never retried.
+func (c *Client) postPatch(wsSlug, itemSlug string, body map[string]any, opKey string) (*PatchResult, error) {
+	if opKey != "" {
+		body["op_key"] = opKey
+	}
+	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/patch"
 	var result PatchResult
-	if err := c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/patch", body, &result); err != nil {
+	err := c.post(path, body, &result)
+	if err != nil && opKey != "" && retryableWithKey(err) {
+		result = PatchResult{}
+		err = c.post(path, body, &result)
+	}
+	if err != nil {
 		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
 	}
 	return &result, nil
 }
 
+// retryableWithKey: no API answer at all (a transport error) or a 5xx.
+func retryableWithKey(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Status >= 500
+	}
+	return true
+}
+
 // UndoPatch inverts a stored patch on the item (PLAN-3578 step 3). The undo
 // is itself a patch, answered the same way.
-func (c *Client) UndoPatch(wsSlug, itemSlug, patchID string) (*PatchResult, error) {
-	var result PatchResult
-	if err := c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/patch", map[string]any{"undo": patchID}, &result); err != nil {
-		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
-	}
-	return &result, nil
+func (c *Client) UndoPatch(wsSlug, itemSlug, patchID, opKey string) (*PatchResult, error) {
+	return c.postPatch(wsSlug, itemSlug, map[string]any{"undo": patchID}, opKey)
 }
 
 // Patch refusal codes (PLAN-3578). Keep in lockstep with internal/mcp's
@@ -948,6 +970,19 @@ const (
 	PatchRoomOpenCode        = "patch_room_open"
 	PatchUnstableCode        = "patch_unstable_roundtrip"
 	PatchNotFoundCode        = "patch_not_found"
+	// TASK-3585.
+	PatchOutcomeUnknownCode  = "patch_outcome_unknown"
+	IdempotencyInFlightCode  = "idempotency_in_flight"
+	IdempotencyKeyReusedCode = "idempotency_key_reused"
+)
+
+// PatchOutcomeUnknownHint, IdempotencyInFlightHint and
+// IdempotencyKeyReusedHint are the recovery guidance for TASK-3585's codes.
+// Duplicated in internal/mcp; a test asserts they match.
+const (
+	PatchOutcomeUnknownHint  = "Nothing new was written. An earlier attempt reached an editor that never confirmed it and is gone, so it is not re-applied: read details.diff (the change since the patch was sent); if your edit is there, it landed. Otherwise send it again with a NEW key."
+	IdempotencyInFlightHint  = "A request with this key is still running. Wait a moment and retry with the SAME key: you will get its answer, not a second write."
+	IdempotencyKeyReusedHint = "This key was already used for a different request. Use a new key for a new request; reuse a key only to retry the identical request."
 )
 
 // PatchNotFoundHint is the recovery guidance for patch_not_found (PLAN-3578
@@ -976,7 +1011,8 @@ func IsPatchRefusal(err error) (*APIError, bool) {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.Code {
-		case PatchAnchorMissingCode, PatchAnchorAmbiguousCode, PatchRoomOpenCode, PatchUnstableCode, PatchNotFoundCode:
+		case PatchAnchorMissingCode, PatchAnchorAmbiguousCode, PatchRoomOpenCode, PatchUnstableCode, PatchNotFoundCode,
+			PatchOutcomeUnknownCode, IdempotencyInFlightCode, IdempotencyKeyReusedCode:
 			return apiErr, true
 		}
 	}
@@ -994,8 +1030,15 @@ func WritePatchRefusalError(w io.Writer, apiErr *APIError) {
 	if apiErr.Code == PatchUnstableCode {
 		hint = PatchUnstableHint
 	}
-	if apiErr.Code == PatchNotFoundCode {
+	switch apiErr.Code {
+	case PatchNotFoundCode:
 		hint = PatchNotFoundHint
+	case PatchOutcomeUnknownCode:
+		hint = PatchOutcomeUnknownHint
+	case IdempotencyInFlightCode:
+		hint = IdempotencyInFlightHint
+	case IdempotencyKeyReusedCode:
+		hint = IdempotencyKeyReusedHint
 	}
 	body := map[string]any{"code": apiErr.Code, "message": apiErr.Message, "hint": hint}
 	if len(apiErr.Details) > 0 {

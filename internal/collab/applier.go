@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -326,11 +327,47 @@ func (r *Room) takePatchResult(requestID string) (*PatchAck, *PatchRefusedError)
 	return nil, nil
 }
 
+// PatchOutcomeUnknownError: a patch reached an applier connection that never
+// confirmed it (BUG-3586: it is not re-sent elsewhere). It IS
+// ErrAllAppliersTimedOut for callers that only branch on that; ConnID names
+// the connection, the only one that may resolve it (TASK-3585: its tab
+// remembers the patches it applied and re-acks one it is sent again).
+type PatchOutcomeUnknownError struct {
+	ConnID string
+}
+
+func (e *PatchOutcomeUnknownError) Error() string {
+	return ErrAllAppliersTimedOut.Error() + " (patch outcome unknown on connection " + e.ConnID + ")"
+}
+
+func (e *PatchOutcomeUnknownError) Unwrap() error { return ErrAllAppliersTimedOut }
+
+// ApplyExternalPatchOn re-sends a patch, with the SAME patch id, to exactly
+// the connection that received it before (TASK-3585). No other tab is ever
+// elected for it: a tab that never saw it would re-plan the edits, and an
+// insert-shaped edit keeps its anchor. With that connection gone it returns
+// ErrNoApplierAvailable.
+func (m *RoomManager) ApplyExternalPatchOn(itemID, patchID string, edits json.RawMessage, connID string) (*PatchAck, error) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, ErrManagerClosed()
+	}
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+	if room == nil {
+		return nil, ErrNoApplierAvailable
+	}
+	return m.applyExternal(room, itemID, applierPayload{edits: edits, patchID: patchID, onlyConn: connID}, false)
+}
+
 // applierPayload is what one election sends: markdown, or a patch.
 type applierPayload struct {
 	markdown string
 	edits    json.RawMessage
 	patchID  string
+	// onlyConn restricts the election to one connection (TASK-3585's retry).
+	onlyConn string
 }
 
 func (p applierPayload) isPatch() bool { return p.patchID != "" }
@@ -611,6 +648,9 @@ func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPa
 		}
 
 		applier := room.pickApplierFor(tried, payload.isPatch())
+		if applier != nil && payload.onlyConn != "" && connRef(applier) != payload.onlyConn {
+			applier = room.pickConn(tried, payload.onlyConn)
+		}
 		if applier == nil {
 			// No more candidates left.
 			room.finishAdmission()
@@ -744,7 +784,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPa
 					"client_id", applier.id,
 					"patch_id", payload.patchID,
 				)
-				return nil, ErrAllAppliersTimedOut, false, anyWriteSucceeded
+				return nil, &PatchOutcomeUnknownError{ConnID: connRef(applier)}, false, anyWriteSucceeded
 			}
 			slog.Warn("collab: applier_request timed out; will retry next applier",
 				"item_id", itemID,
@@ -814,6 +854,37 @@ func ErrManagerClosed() error { return errManagerClosed }
 // attempts hit increasingly-younger clients without skipping any.
 func (r *Room) pickApplier(tried map[*websocket.Conn]struct{}) *roomConn {
 	return r.pickApplierFor(tried, false)
+}
+
+// bootID makes a connection reference unique across server restarts:
+// connection ids restart at 1 with the process, so a bare id stored before a
+// restart could name a different tab after it (TASK-3585).
+var bootID = uuid.NewString()
+
+// connRef is a connection's identity for a stored retry: this process's boot
+// id and the connection's id.
+func connRef(rc *roomConn) string {
+	return bootID + ":" + strconv.FormatUint(rc.id, 10)
+}
+
+// pickConn is the one electable, patch-capable connection with this id, or
+// nil (TASK-3585).
+func (r *Room) pickConn(tried map[*websocket.Conn]struct{}, id string) *roomConn {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rc := range r.conns {
+		if connRef(rc) != id {
+			continue
+		}
+		if _, skip := tried[rc.conn]; skip {
+			return nil
+		}
+		if !rc.canWrite.Load() || rc.frozen.Load() || rc.evicted.Load() || !rc.replayDone.Load() || !rc.patchCapable.Load() {
+			return nil
+		}
+		return rc
+	}
+	return nil
 }
 
 // pickApplierFor is pickApplier, restricted to patch-capable conns when the

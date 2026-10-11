@@ -416,7 +416,7 @@ func init() {
 		"item patch": routeSpec{
 			method:       http.MethodPost,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/patch",
-			bodyKeys:     []string{"edits", "expected_seq", "undo"},
+			bodyKeys:     []string{"edits", "expected_seq", "undo", "op_key"},
 		}.toRouteMapper(),
 		"item release": routeSpec{
 			method:       http.MethodPost,

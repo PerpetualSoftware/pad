@@ -3457,6 +3457,14 @@ func (s *Store) updateItemWithParentLinkOnce(
 	if err := s.enqueueDecisionJobsTx(tx, updated.WorkspaceID, updated.ID, updated.CollectionID); err != nil {
 		return nil, err
 	}
+	// TASK-3585: the caller's last word inside this transaction (the
+	// idempotency key's answer, guarded by its claim token). Its error rolls
+	// the whole write back.
+	if input.AfterWriteTx != nil {
+		if err := input.AfterWriteTx(tx, updated); err != nil {
+			return nil, err
+		}
+	}
 
 	// Routed through the seam so a test can reproduce the ONE commit outcome
 	// this path must survive and cannot otherwise be shown: a transaction that

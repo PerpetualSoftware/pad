@@ -705,7 +705,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item patch": {
 				Summary: "replace exact text in an item's body",
 				Args:    mkArgs("ref"),
-				Flags:   mkFlags("workspace", "edits", "expected-seq", "undo"),
+				Flags:   mkFlags("workspace", "edits", "expected-seq", "undo", "op-key"),
 			},
 			"item star": {
 				Summary: "star item",

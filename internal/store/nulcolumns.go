@@ -288,6 +288,11 @@ var nulColumns = []nulColumn{
 	{"cli_auth_sessions", "requester_user_agent", classText},
 	// PLAN-3578 step 3: a patch's edits, caller text plus body context.
 	{"item_patches", "edits", classJSON},
+	// TASK-3585: the caller's key, the route label, the stored answer and the
+	// body a patch was sent against.
+	{"idempotency_keys", "key", classText},
+	{"idempotency_keys", "response", classJSON},
+	{"idempotency_keys", "base_body", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -313,6 +318,7 @@ var nulTriggerMigrations = []string{
 	"129_nul_invariant_triggers_post128.sql",
 	"133_nul_invariant_triggers_post132.sql",
 	"138_nul_invariant_triggers_post137.sql",
+	"140_nul_invariant_triggers_post139.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -330,6 +336,10 @@ var nulColumnTriggerFile = map[string]string{
 	"cli_auth_sessions.requester_user_agent": "133_nul_invariant_triggers_post132.sql",
 	// 137 introduced the table (PLAN-3578 step 3).
 	"item_patches.edits": "138_nul_invariant_triggers_post137.sql",
+	// 139 introduced the table (TASK-3585).
+	"idempotency_keys.key":       "140_nul_invariant_triggers_post139.sql",
+	"idempotency_keys.response":  "140_nul_invariant_triggers_post139.sql",
+	"idempotency_keys.base_body": "140_nul_invariant_triggers_post139.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -410,6 +420,16 @@ var nulExcluded = map[string]string{
 	"item_patches.workspace_id":              "server-minted workspace UUID from the resolved item (PLAN-3578 step 3)",
 	"item_patches.version_id":                "server-minted version UUID from the same transaction (PLAN-3578 step 3)",
 	"item_patches.created_at":                "server timestamp from now() (PLAN-3578 step 3)",
+	"idempotency_keys.workspace_id":          "server-minted workspace UUID from the resolved request (TASK-3585, migration 139)",
+	"idempotency_keys.user_id":               "the authenticated user's server-minted UUID, or empty before setup (TASK-3585)",
+	"idempotency_keys.route":                 "fixed server constant naming the handler (TASK-3585); never from a request",
+	"idempotency_keys.request_hash":          "server-computed sha256 hex of the canonical request (TASK-3585)",
+	"idempotency_keys.state":                 "fixed server constant 'pending' | 'done' | 'unknown' (TASK-3585)",
+	"idempotency_keys.claim_token":           "server-minted UUID (TASK-3585)",
+	"idempotency_keys.lease_until":           "server timestamp, now() + lease in RFC3339 (TASK-3585)",
+	"idempotency_keys.patch_id":              "server-minted patch UUID (TASK-3585)",
+	"idempotency_keys.conn_id":               "server-minted collab connection id (TASK-3585)",
+	"idempotency_keys.created_at":            "server timestamp from now() (TASK-3585)",
 	"item_builtin_origin.builtin_key":        "refused by models.BuiltinOrigin.Validate unless it matches a lowercase [a-z0-9-/] path, so no NUL can be stored, on every write including import (TASK-3462)",
 	"item_builtin_origin.seed_hash":          "refused by models.BuiltinOrigin.Validate unless it is 64 lowercase hex digits, on every write including import (TASK-3462)",
 	"stripe_processed_events.state":          "fixed server constant 'processing' | 'done', written only by ClaimStripeEvent and CompleteStripeEvent (BUG-3561, migration 136); never request-derived",
