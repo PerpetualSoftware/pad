@@ -5,6 +5,7 @@ import type { APIRequestContext, Locator, Page } from '@playwright/test';
 /** The slice of CDP's `Target.TargetInfo` this spec reads. */
 type TargetInfo = { targetId: string; type?: string; url?: string };
 import type { SuiteFixture } from './fixtures';
+import { clickBoardCard } from './lib/boardClickProbe';
 
 /**
  * Anchor-based content-link interception (PLAN-2154 Architecture B.1/B.2/B.4
@@ -287,7 +288,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await seedRelatedLink(fixture, request, a.slug, b.id);
 		await page.goto(docsUrl(fixture));
 
-		await itemCard(page, 'Anchors rel alpha').first().click();
+		await clickBoardCard(itemCard(page, 'Anchors rel alpha').first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		const paneUrlAtA = page.url();
