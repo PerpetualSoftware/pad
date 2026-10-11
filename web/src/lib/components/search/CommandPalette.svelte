@@ -712,17 +712,17 @@
 			return;
 		}
 		const serverQuery = parsed.body ? parsed.text : withoutArchivedToken(query);
+		// One check for both outcomes: a page for a scope that has moved on
+		// neither appends nor reports a failure (TASK-3599, retro of #2063).
+		const scopeMoved = () =>
+			query !== snapshotQuery ||
+			searchAllWorkspaces !== snapshotAllWs ||
+			filterCollection !== snapshotCollection ||
+			filterStatus !== snapshotStatus ||
+			workspaceStore.current?.slug !== snapshotWsSlug;
 		try {
 			const resp = await api.search(serverQuery, buildFilters(results.length));
-			if (
-				query !== snapshotQuery ||
-				searchAllWorkspaces !== snapshotAllWs ||
-				filterCollection !== snapshotCollection ||
-				filterStatus !== snapshotStatus ||
-				workspaceStore.current?.slug !== snapshotWsSlug
-			) {
-				return;
-			}
+			if (scopeMoved()) return;
 			if (!parsed.body) {
 				// Non-body server paging: if the current workspace
 				// hydrated while the request was in flight, the main
@@ -741,8 +741,9 @@
 			selectedIdx = reselectAfterAppend(before, flatResults, selectedIdx);
 			loadMoreFailed = false;
 		} catch {
-			// The results already shown stay (TASK-3587).
-			loadMoreFailed = true;
+			// The results already shown stay (TASK-3587). A failure for a query
+			// or workspace the palette has since left is not this list's.
+			if (!scopeMoved()) loadMoreFailed = true;
 		} finally {
 			loadingMore = false;
 		}

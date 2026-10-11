@@ -112,4 +112,21 @@ describe('CommandPalette: a failed search is not "No results" (TASK-3587)', () =
 		expect(view.getByText('Pelican notes')).toBeTruthy();
 		expect(view.getByText(/Couldn't load more results/)).toBeTruthy();
 	});
+
+	// TASK-3599 (retro of #2063): a page that fails after the query moved on
+	// belongs to the old query; the new one must not say more could not load.
+	it('load more fails after the query changed: the new query shows no stale failure', async () => {
+		state.ready = false;
+		vi.mocked(api.search).mockResolvedValueOnce({ results: [hit], total: 40, limit: 20, offset: 0 } as never);
+		const view = await typeAndSettle('pelican');
+		let reject!: (e: Error) => void;
+		vi.mocked(api.search).mockImplementationOnce(() => new Promise((_, r) => (reject = r)) as never);
+		await fireEvent.click(view.getByRole('button', { name: /Load more/ }));
+		vi.mocked(api.search).mockResolvedValueOnce({ results: [hit], total: 40, limit: 20, offset: 0 } as never);
+		await fireEvent.input(view.getByRole('combobox'), { target: { value: 'heron' } });
+		await vi.advanceTimersByTimeAsync(500);
+		reject(new Error('network'));
+		await vi.advanceTimersByTimeAsync(50);
+		expect(view.queryByText(/Couldn't load more results/)).toBeNull();
+	});
 });

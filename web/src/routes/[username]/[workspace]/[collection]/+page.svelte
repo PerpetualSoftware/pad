@@ -14,7 +14,7 @@
 	import { laneWriteValue, laneWriteRefusalMessage } from '$lib/collections/laneWriteValue';
 	import { summarizeBulkFailures, bulkToastMessage } from '$lib/collections/bulkFailureReason';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
-	import { filterSummaryParts, filteredCountLabel } from '$lib/collections/filterSummary';
+	import { filterSummaryParts, filteredCountLabel, relationSummaryLabel } from '$lib/collections/filterSummary';
 	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
 	import { blockedDraftMessage, draftCreateFields, draftTargets, lostLaneLabel, saveAllDrafts } from '$lib/collections/laneDrafts';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
@@ -1982,7 +1982,12 @@
 			valueLabel: (key, value) => {
 				if (key === 'parent' || key === 'phase') return relationLabels[value] ?? value;
 				if (relationFilterKeys.has(key) && wsSlug) {
-					return localIndex.findByIdOrSlug(wsSlug, value)?.title ?? value;
+					return relationSummaryLabel(
+						value,
+						(id) => localIndex.findByIdOrSlug(wsSlug, id),
+						schema?.fields.find((f) => f.key === key)?.collection,
+						new Set(collectionStore.collections.map((c) => c.slug)),
+					);
 				}
 				return value;
 			},

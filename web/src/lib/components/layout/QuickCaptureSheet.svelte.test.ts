@@ -106,4 +106,37 @@ describe('QuickCaptureSheet keeps your place (TASK-3590)', () => {
 		await settle();
 		expect(title().value).toBe('next thought');
 	});
+
+	// TASK-3599 (retro of #2067): the same text typed again while the create
+	// was in flight is the next capture, not this one.
+	it('identical text retyped while the create was in flight is kept', async () => {
+		let resolve!: (v: unknown) => void;
+		vi.mocked(api.items.create).mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+		mount();
+		await tick();
+		await fireEvent.input(title(), { target: { value: 'call Dana' } });
+		await fireEvent.keyDown(title(), { key: 'Enter' });
+		await fireEvent.input(title(), { target: { value: '' } });
+		await fireEvent.input(title(), { target: { value: 'call Dana' } });
+		resolve({ id: 'i1', slug: 's1', title: 'call Dana', collection_prefix: 'TASK', item_number: 1 });
+		await settle();
+		expect(title().value).toBe('call Dana');
+	});
+
+	// TASK-3599: the item is created in the workspace the submit was sent for,
+	// so its link points there even if the user switched while it was in flight.
+	it("the toast links into the workspace the item was created in, not the one switched to", async () => {
+		let resolve!: (v: unknown) => void;
+		vi.mocked(api.items.create).mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+		const onclose = vi.fn();
+		const view = render(QuickCaptureSheet, { open: true, onclose, wsSlug: 'ws', wsPrefix: '/u/ws' });
+		await tick();
+		await fireEvent.input(title(), { target: { value: 'jot' } });
+		await fireEvent.keyDown(title(), { key: 'Enter' });
+		await view.rerender({ open: true, onclose, wsSlug: 'other', wsPrefix: '/v/other' });
+		resolve({ id: 'i1', slug: 's1', title: 'jot', collection_prefix: 'TASK', item_number: 1 });
+		await settle();
+		expect(vi.mocked(api.items.create).mock.calls[0][0]).toBe('ws');
+		expect(toastStore.toasts.at(-1)?.link).toBe('/u/ws/tasks/TASK-1?new=1');
+	});
 });
