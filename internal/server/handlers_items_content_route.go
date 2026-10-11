@@ -498,6 +498,9 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 		return true
 	}
 	if conflict, ok := asUpdateConflictError(err); ok {
+		// The applier path's row write carries no content (it travels to the
+		// tab instead), but the request is a body write all the same.
+		conflict.ContentWrite = true
 		writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 		return true
 	}

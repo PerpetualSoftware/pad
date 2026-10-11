@@ -329,7 +329,7 @@ func writeUpdateConflictError(w http.ResponseWriter, ref string, conflict *store
 	// `actual_updated_at` would re-send the weak token that cannot see the race
 	// it just lost.
 	if conflict.ExpectedSeq != nil {
-		writeUpdateConflictSeqEnvelope(w, ref, *conflict.ExpectedSeq, conflict.ActualSeq)
+		writeUpdateConflictSeqEnvelope(w, ref, conflict)
 		return
 	}
 	writeUpdateConflictEnvelope(w, ref, conflict.ExpectedUpdatedAt, conflict.ActualUpdatedAt)
@@ -340,7 +340,13 @@ func writeUpdateConflictError(w http.ResponseWriter, ref string, conflict *store
 // same code, same message — only the two details keys differ, so a client that
 // branches on `code` needs no change and one that reads the details learns
 // which token to retry with.
-func writeUpdateConflictSeqEnvelope(w http.ResponseWriter, ref string, expectedSeq int64, actualSeq *int64) {
+//
+// PLAN-3555: a refused CONTENT write gets a message that leads to re-read and
+// merge, not to a blind resend (the resend would undo the change the caller
+// missed), plus additive details: content_write, changed_at and
+// changed_by_kind.
+func writeUpdateConflictSeqEnvelope(w http.ResponseWriter, ref string, conflict *store.UpdateConflictError) {
+	expectedSeq, actualSeq := *conflict.ExpectedSeq, conflict.ActualSeq
 	details := map[string]any{
 		"ref":           ref,
 		"expected_seq":  expectedSeq,
@@ -351,12 +357,21 @@ func writeUpdateConflictSeqEnvelope(w http.ResponseWriter, ref string, expectedS
 	if actualSeq != nil {
 		details["actual_seq"] = *actualSeq
 	}
+	message := fmt.Sprintf("%s was modified by another writer since you last read it; re-read and retry.", ref)
+	if conflict.ContentWrite {
+		details["content_write"] = true
+		if !conflict.ActualUpdatedAt.IsZero() {
+			details["changed_at"] = conflict.ActualUpdatedAt.UTC().Format(time.RFC3339)
+		}
+		if conflict.LastModifiedBy != "" {
+			details["changed_by_kind"] = conflict.LastModifiedBy
+		}
+		message = contentConflictMessage(ref, expectedSeq, actualSeq)
+	}
 	writeJSON(w, http.StatusConflict, map[string]any{
 		"error": map[string]any{
-			"code": "update_conflict",
-			"message": fmt.Sprintf(
-				"%s was modified by another writer since you last read it; re-read and retry.",
-				ref),
+			"code":    "update_conflict",
+			"message": message,
 			"details": details,
 		},
 	})
@@ -677,4 +692,16 @@ func extractFieldString(fieldsJSON, key string) string {
 	}
 	s, _ := m[key].(string)
 	return s
+}
+
+// contentConflictMessage is the update_conflict message for a refused body
+// write (PLAN-3555). It names both seqs, says why resending is wrong, and
+// gives the merge loop.
+func contentConflictMessage(ref string, expectedSeq int64, actualSeq *int64) string {
+	if actualSeq == nil {
+		return fmt.Sprintf("%s changed since you read it (seq %d). Do not resend your body: it would undo that change. "+
+			"Re-read the item, apply your change to the CURRENT body, and send that with the seq you just read.", ref, expectedSeq)
+	}
+	return fmt.Sprintf("%s changed since you read it (seq %d → %d). Do not resend your body: it would undo that change. "+
+		"Re-read the item, apply your change to the CURRENT body, and send that with expected_seq %d.", ref, expectedSeq, *actualSeq, *actualSeq)
 }

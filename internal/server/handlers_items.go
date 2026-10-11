@@ -2210,6 +2210,21 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		}
 	}
 
+	// PLAN-3555 phase 1: count the unguarded update by door and kind, and mark
+	// an agent door's unguarded content write for the response. A built-in
+	// update is the server's own write and a collab-snapshot flush is the tab
+	// writing its document; neither is a caller's read-then-write.
+	var unguardedContentWrite bool
+	if b == nil && !collabSnapshot && updateIsUnguarded(&input) {
+		if kind := updateWriteKind(&input); kind != "" {
+			door := writeDoor(r)
+			if s.metrics != nil {
+				s.metrics.ContentWritesUnguardedTotal.WithLabelValues(door, kind).Inc()
+			}
+			unguardedContentWrite = kind == writeKindContent && door != writeDoorWeb
+		}
+	}
+
 	// BUG-2542: stamp the writer on single-item updates. Bulk ops already do
 	// this (handlers_items_bulk.go), but this path did not, so an agent's
 	// PATCH left last_modified_by at store.UpdateItem's "user" default and an
@@ -2792,11 +2807,12 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	prunedPendingEdits += discardedSetAside
 
 	// Advisory, post-write, same as create (BUG-2850).
-	if len(undeclaredFields) > 0 || len(droppedDefaults) > 0 || contentAppliedPendingFlush || prunedPendingEdits > 0 {
+	if len(undeclaredFields) > 0 || len(droppedDefaults) > 0 || contentAppliedPendingFlush || prunedPendingEdits > 0 || unguardedContentWrite {
 		warnings := &models.ItemWriteWarnings{
-			UndeclaredFields:   undeclaredFields,
-			DroppedFields:      droppedDefaults,
-			PrunedPendingEdits: prunedPendingEdits,
+			UndeclaredFields:      undeclaredFields,
+			DroppedFields:         droppedDefaults,
+			PrunedPendingEdits:    prunedPendingEdits,
+			UnguardedContentWrite: unguardedContentWrite,
 		}
 		if contentAppliedPendingFlush {
 			warnings.ContentOutcome = contentOutcomeAppliedPendingFlush

@@ -2239,6 +2239,13 @@ type UpdateConflictError struct {
 	// caller sent a token they did not.
 	ExpectedSeq *int64
 	ActualSeq   *int64
+
+	// ContentWrite is set when the refused update carried a body (PLAN-3555),
+	// and LastModifiedBy is the kind of writer (user/agent) whose change the
+	// caller missed. The conflict answer uses them to say "do not resend your
+	// body", which would undo that change, instead of a bare "retry".
+	ContentWrite   bool
+	LastModifiedBy string
 }
 
 func (e *UpdateConflictError) Error() string {
@@ -2788,6 +2795,8 @@ func (s *Store) updateItemWithParentLinkOnce(
 				ActualUpdatedAt:   existing.UpdatedAt,
 				ExpectedSeq:       input.ExpectedSeq,
 				ActualSeq:         &actual,
+				ContentWrite:      input.Content != nil,
+				LastModifiedBy:    existing.LastModifiedBy,
 			}
 		}
 	}
@@ -2810,6 +2819,8 @@ func (s *Store) updateItemWithParentLinkOnce(
 				ItemID:            id,
 				ExpectedUpdatedAt: input.ExpectedUpdatedAt,
 				ActualUpdatedAt:   existing.UpdatedAt,
+				ContentWrite:      input.Content != nil,
+				LastModifiedBy:    existing.LastModifiedBy,
 			}
 		}
 	}

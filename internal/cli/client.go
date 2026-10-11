@@ -1867,7 +1867,20 @@ type UpdateConflictDetails struct {
 	ExpectedSeq  *int64 `json:"expected_seq,omitempty"`
 	ActualSeq    *int64 `json:"actual_seq,omitempty"`
 	ConflictType string `json:"conflict_type,omitempty"`
+
+	// PLAN-3555: set on a refused BODY write. They must be declared here to
+	// survive: the stdio marker re-marshals this struct, not the server's
+	// details.
+	ContentWrite  bool   `json:"content_write,omitempty"`
+	ChangedAt     string `json:"changed_at,omitempty"`
+	ChangedByKind string `json:"changed_by_kind,omitempty"`
 }
+
+// UpdateConflictContentHint is the recovery guidance for an update_conflict on
+// a body write (PLAN-3555): re-read and merge, never resend. Duplicated in
+// internal/mcp (UpdateConflictContentHint); a test asserts the two match.
+const UpdateConflictContentHint = "Do not resend your body: it would undo the change you missed. " +
+	"Re-read the item, apply your edit to the CURRENT content, and send that with expected_seq set to the seq you just read."
 
 // AsUpdateConflict returns the parsed conflict details when this APIError
 // carries them, or nil otherwise. Returns nil for any error other than
@@ -1892,13 +1905,15 @@ func (e *APIError) AsUpdateConflict() *UpdateConflictDetails {
 //     falling through to a generic server_error.
 //  2. Human-readable lines: the message plus the expected/actual timestamps.
 func WriteUpdateConflictError(w io.Writer, apiErr *APIError, uc *UpdateConflictDetails) {
-	envelope := map[string]any{
-		"error": map[string]any{
-			"code":    apiErr.Code,
-			"message": apiErr.Message,
-			"details": uc,
-		},
+	errBody := map[string]any{
+		"code":    apiErr.Code,
+		"message": apiErr.Message,
+		"details": uc,
 	}
+	if uc.ContentWrite {
+		errBody["hint"] = UpdateConflictContentHint
+	}
+	envelope := map[string]any{"error": errBody}
 	if data, err := json.Marshal(envelope); err == nil {
 		fmt.Fprintln(w, StructuredErrorMarker+string(data))
 	}
@@ -1913,6 +1928,11 @@ func WriteUpdateConflictError(w io.Writer, apiErr *APIError, uc *UpdateConflictD
 		}
 		if uc.ActualSeq != nil {
 			fmt.Fprintf(w, "  actual seq:   %d\n", *uc.ActualSeq)
+			if uc.ContentWrite {
+				// PLAN-3555: the server's message already says not to resend.
+				fmt.Fprintf(w, "Re-read the item (pad item show), apply your edit to the current body, and update with --expected-seq %d.\n", *uc.ActualSeq)
+				return
+			}
 			fmt.Fprintf(w, "Re-read the item (pad item show) and retry with --expected-seq %d.\n", *uc.ActualSeq)
 			return
 		}

@@ -1738,6 +1738,22 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.86 — PLAN-3555 phase 1. ADDITIVE bump on the v0.53 grounds: a new
+//     param and new response members, and no call that was accepted is
+//     refused. `pad_item.action=update` gains `replace` (bool), the
+//     deliberate-overwrite opt-out for a content write that carries no
+//     version token. It is refused with `expected_seq` or
+//     `expected_updated_at`, and without `content`, on both transports. A
+//     content write with neither `replace` nor a token now carries
+//     `warnings.unguarded_content_write: true` (omitempty) on both
+//     transports; a later release refuses it (phase 2, a BEHAVIOR bump). A
+//     seq `update_conflict` on a content write gains additive details
+//     (`content_write`, `changed_at`, `changed_by_kind`), a message naming
+//     both seqs that says not to resend the body, and the hint
+//     UpdateConflictContentHint on BOTH transports: stdio carried no hint
+//     for this code before, and the remote one said "retry". The code and
+//     every other conflict are unchanged.
+//
 //     0.85 — BUG-3544. BEHAVIOR bump on the v0.58 / v0.45 grounds (an
 //     error that read as transient now says what it is; no name, enum or
 //     param moved): `pad_workspace.action=invite` on an instance with no
@@ -2033,7 +2049,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.85"
+const ToolSurfaceVersion = "0.86"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

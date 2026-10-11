@@ -477,6 +477,13 @@ type Metrics struct {
 	// detail the log line carries.
 	ContentWritesSupersededTotal prometheus.Counter
 
+	// ContentWritesUnguardedTotal counts item updates that carried neither a
+	// version token nor replace, by door (web, cli, api, mcp_remote, chatgpt)
+	// and kind (content, fields) (PLAN-3555 phase 1). Append-only updates are
+	// not counted. Phase 2 refuses the agent doors' unguarded content writes;
+	// this is the traffic it would refuse.
+	ContentWritesUnguardedTotal *prometheus.CounterVec
+
 	// CollabWatermarkStampsTotal counts browser-tab watermark stamps that
 	// ADVANCED the flush watermark (BUG-3124 unit B), by what the advance
 	// covered (TASK-3541 step 0): "content" when it covered at least one
@@ -652,6 +659,11 @@ func New() *Metrics {
 		Name: "pad_content_writes_superseded_total",
 		Help: "Item content writes refused because the same browser tab had already applied a newer one (BUG-3080).",
 	})
+
+	contentWritesUnguardedTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_content_writes_unguarded_total",
+		Help: "Item updates with neither a version token nor replace, by door and kind (PLAN-3555).",
+	}, []string{"door", "kind"})
 
 	collabWatermarkStampsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_collab_watermark_stamps_total",
@@ -898,6 +910,7 @@ func New() *Metrics {
 		mcpHTTPRequestsTotal,
 		mcpActiveSessions,
 		contentWritesSupersededTotal,
+		contentWritesUnguardedTotal,
 		collabWatermarkStampsTotal,
 		materializeGiveUpsTotal,
 		dbDeadlockRetriesTotal,
@@ -958,6 +971,7 @@ func New() *Metrics {
 		MCPActiveSessions:            mcpActiveSessions,
 		ContentWritesSupersededTotal: contentWritesSupersededTotal,
 		CollabWatermarkStampsTotal:   collabWatermarkStampsTotal,
+		ContentWritesUnguardedTotal:  contentWritesUnguardedTotal,
 		MaterializeGiveUpsTotal:      materializeGiveUpsTotal,
 		DBDeadlockRetriesTotal:       dbDeadlockRetriesTotal,
 		AppWebhookDeliveriesTotal:    appWebhookDeliveriesTotal,

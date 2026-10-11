@@ -133,6 +133,12 @@ type ItemWriteWarnings struct {
 	// nowhere else. A write without a version token, or with
 	// overwrite_pending_edits, still does that; this names how many it destroyed.
 	PrunedPendingEdits int `json:"pruned_pending_edits,omitempty"`
+	// UnguardedContentWrite marks a content write from an agent door (anything
+	// but a browser session) that carried neither a version token nor replace
+	// (PLAN-3555 phase 1). It replaced whatever was stored since the caller
+	// read the item. Phase 2 refuses such a write; send expected_seq (the seq
+	// you read) or replace: true.
+	UnguardedContentWrite bool `json:"unguarded_content_write,omitempty"`
 
 	// NotUnique describes each value a move or copy DROPPED because the
 	// destination collection declares that field unique and another item
@@ -1503,6 +1509,16 @@ type ItemUpdate struct {
 	// Transport-only, like RefuseUndeclaredFields: a server that predates it
 	// ignores the member, which is the old replace-and-prune.
 	RefusePendingEdits bool `json:"refuse_pending_edits,omitempty"`
+
+	// Replace is the deliberate-overwrite opt-out (PLAN-3555): the caller means
+	// to replace the body whatever was written since it read it, so the write
+	// carries no version token on purpose. It changes no outcome in phase 1; it
+	// keeps the write out of the unguarded count and its warning, and in phase 2
+	// it is what an agent door sends instead of expected_seq. Distinct from
+	// OverwritePendingEdits, which lifts the unflushed-edits refusal: a
+	// deliberate replace over a tab's pending edits needs both. A version token
+	// makes it moot.
+	Replace bool `json:"replace,omitempty"`
 
 	// ClientWrite orders ONE browser tab's content writes to an item
 	// (BUG-3080). The pane stamps every content PATCH with a random id minted

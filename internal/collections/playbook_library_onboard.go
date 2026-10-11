@@ -173,7 +173,7 @@ Browse it the same way as conventions — ` + "`pad library list --type playbook
 
 - Read the library body.
 - Activate via ` + "`pad library activate \"<title>\"`" + ` (CLI) or ` + "`pad_library`" + ` with ` + "`action: activate, title: \"<title>\"`" + ` (MCP).
-- If it needs project-specific tweaks (the seeded ` + "`ship`" + ` references ` + "`make install`" + ` — change it if the project uses ` + "`npm run build`" + ` instead), activate AND THEN immediately edit the playbook body via ` + "`pad item update <PLAYB-ref> --stdin`" + ` with the rewritten content.
+- If it needs project-specific tweaks (the seeded ` + "`ship`" + ` references ` + "`make install`" + ` — change it if the project uses ` + "`npm run build`" + ` instead), activate AND THEN immediately edit the playbook body via ` + "`pad item update <PLAYB-ref> --stdin --expected-seq <seq from your read>`" + ` with the rewritten content.
 - If it doesn't fit at all, skip.
 
 ### B6. Bring in existing open work, or seed a first item
@@ -216,7 +216,7 @@ For each seeded convention, READ ITS BODY. Ask:
 - Does the rule make sense for this project? (Some seeded conventions assume specific tooling.)
 - Are the commands in the body the real ones for this project? (The library version says "run the test suite"; the seeded version might say "run ` + "`make test`" + `"; the user's project might actually use ` + "`go test -race ./...`" + ` or ` + "`npm test`" + `.)
 
-Rewrite the body via ` + "`pad item update <CONVE-ref> --stdin`" + ` (or MCP). Delete conventions that don't apply via ` + "`pad item delete`" + `.
+Rewrite the body via ` + "`pad item update <CONVE-ref> --stdin --expected-seq <seq from your read>`" + ` (or MCP ` + "`pad_item`" + ` update with ` + "`expected_seq`" + `). Delete conventions that don't apply via ` + "`pad item delete`" + `.
 
 For software workspaces, also consider proposing the **"Independent AI code review"**
 library convention if a different-model review tool is available — same check as build

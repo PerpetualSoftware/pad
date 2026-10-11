@@ -116,6 +116,8 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Updating:** `pad item update <ref> --status X --comment "..."` — **always** include `--comment` on status changes to explain *why*. The audit trail is the whole point. Same pattern for priority/role/assign changes.
 
+**Editing a body:** `--stdin` / `--content` REPLACE the whole body, so guard the write with the version you read. Read with `pad item show <ref> --agent` (it carries `seq` and `content`), edit that text, then write it back with `pad item update <ref> --stdin --expected-seq <that seq>`. A conflict means someone changed the item after your read. Re-read it and re-apply your edit to the CURRENT body; never resend yours, because that would undo their change. `--replace` overwrites on purpose. An unguarded body write prints a warning now, and a future release refuses it.
+
 **Working with attachments:** items reference attachments as `![alt](pad-attachment:<uuid>)` (images) or `[label](pad-attachment:<uuid>)` (files). To inspect or read bytes, always use `pad attachment {list|show|view|upload|download}`. `view <uuid>` writes the bytes to a temp file and prints the path — compose with `IMG=$(pad attachment view <uuid>)`, then open it with whatever's available on the platform (`open "$IMG"` on macOS, `xdg-open "$IMG"` on Linux) or just read/describe the file directly.
 
 **Hard rule for agents:** NEVER read directly from `~/.pad/attachments/<storage_key>`. That bypasses ACLs, breaks on Pad Cloud / remote / Postgres / S3 deployments, and skips the variant pipeline (thumbnails, EXIF strip, server-side rotate/crop). Always go through the CLI.
@@ -186,7 +188,7 @@ All commands accepting an item reference take issue IDs (e.g. `TASK-5`, `BUG-8`)
 pad item create <collection> "title" [--status X] [--priority X] [--parent REF] [--role X] [--assign X] [--field key=value] [--content "..." | --stdin]
 pad item list [collection] [--status X] [--role X] [--assign X] [--parent REF] [--all] [--field key=value]
 pad item show TASK-5 [--agent]   # --agent: title, ref, status, fields AND body in one read. (--format markdown is the body only, for an edit round-trip with update --stdin; empty for a title-only item)
-pad item update TASK-5 [--status X] [--role X] [--assign X] [--comment "..."] [--stdin | --clear-content]
+pad item update TASK-5 [--status X] [--role X] [--assign X] [--comment "..."] [--stdin | --clear-content] [--expected-seq N | --replace]
 pad item delete TASK-5
 pad item search "query"
 pad item comment TASK-5 "..." [--reply-to <comment-id>]

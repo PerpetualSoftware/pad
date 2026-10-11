@@ -301,6 +301,9 @@ var padItemSchemaParams = []ParamDef{
 	// to catch. `seq` is bumped on every mutation of the row, is returned on
 	// every item AND every item summary, and is an integer.
 	{Name: "overwrite_pending_edits", Type: "bool", Description: "update: true replaces a tab's unsaved edits instead of refusing token-guarded content (content_pending_flush)."},
+	// PLAN-3555: the deliberate-overwrite opt-out. Phase 1 changes no outcome;
+	// phase 2 refuses a body write that carries neither this nor a token.
+	{Name: "replace", Type: "bool", Description: "update: true overwrites the content on purpose, whatever changed since you read it (no version token). A content write with neither this nor expected_seq is flagged warnings.unguarded_content_write now and will be refused later. Conflicts with expected_seq."},
 	{Name: "expected_seq", Type: "number", Description: "Optimistic-concurrency guard for action=update, PREFERRED over expected_updated_at. The `seq` you last read; the update is rejected with code=update_conflict if the item changed since. Unlike expected_updated_at it distinguishes two writes inside the same second. Optional."},
 
 	// ── Notes / decisions ──
@@ -330,13 +333,22 @@ Actions:
   update        — Update an item by ref.
     Required: ref. At least one mutable field.
     Optional: title, status, priority, content, role, assign, parent, comment, tags,
-    field, fields, expected_seq, expected_updated_at, overwrite_pending_edits.
+    field, fields, expected_seq, expected_updated_at, overwrite_pending_edits,
+    replace.
     Same placement rules as create. Field updates MERGE server-side: only
     the keys you set change. Pass expected_seq (the seq you last read, on
     every item and every list summary) to fail with code=update_conflict
-    if the item changed since; the details carry actual_seq to retry with.
-    PREFER IT over expected_updated_at, which cannot tell two writes inside
-    one second apart.
+    if the item changed since; the details carry actual_seq. PREFER IT over
+    expected_updated_at, which cannot tell two writes inside one second
+    apart.
+    A 'content' write REPLACES the whole body, so send expected_seq with
+    it: read (get), edit that body, write it back with the seq you read.
+    On update_conflict with details.content_write, do NOT resend your
+    body (it would undo the change you missed): re-read, apply your edit
+    to the CURRENT content, and send that with the new seq. To overwrite
+    on purpose, send replace=true instead of a seq. A content write with
+    neither is flagged warnings.unguarded_content_write, and a later
+    release refuses it.
     Writing 'content' while a browser tab has the item open goes to that
     live document: the response echoes what you SENT with
     warnings.content_outcome="applied_pending_flush" (it describes the

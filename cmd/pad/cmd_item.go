@@ -1086,6 +1086,7 @@ func updateCmd() *cobra.Command {
 		expectedUpdatedAt     string
 		expectedSeq           int64
 		overwritePendingEdits bool
+		replaceBody           bool
 		clearAssignedUser     bool
 		clearAgentRole        bool
 		clearParent           bool
@@ -1111,11 +1112,19 @@ duration.
 
 --stdin REPLACES the body with what it reads, and a blank read (empty or
 whitespace-only) is refused before anything is sent, because it is what a lost
-heredoc looks like. To empty a body on purpose, use --clear-content.`,
+heredoc looks like. To empty a body on purpose, use --clear-content.
+
+A body write replaces whatever is stored, so guard it with the version you
+read: --expected-seq <seq from pad item show --agent>. A conflict means the item
+changed after your read. Re-read it and apply your edit to the CURRENT body;
+resending yours would undo the other change. --replace overwrites on purpose.
+A body write with neither prints a warning, and a future release refuses it
+(PLAN-3555).`,
 		Example: `  pad item update TASK-5 --status done
   pad item update TASK-5 --status done --comment "Fixed the login bug"
   pad item update PLAN-2 --status active --priority high
-  pad item update DOC-3 --stdin < updated-doc.md
+  pad item update DOC-3 --stdin --expected-seq 41 < updated-doc.md
+  pad item update DOC-3 --stdin --replace < replacement.md
   pad item update DOC-3 --clear-content`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1159,6 +1168,17 @@ heredoc looks like. To empty a body on purpose, use --clear-content.`,
 			// turn an unset shell variable into a wipe.
 			if clearContent && (useStdin || cmd.Flags().Changed("content")) {
 				return fmt.Errorf("--clear-content conflicts with --content and --stdin; drop one")
+			}
+			// PLAN-3555: --replace says "no version token, on purpose". With a
+			// token it contradicts itself, and without a body it has nothing to
+			// replace; both are refused before anything is sent.
+			if replaceBody {
+				if cmd.Flags().Changed("expected-seq") || expectedUpdatedAt != "" {
+					return fmt.Errorf("--replace conflicts with --expected-seq and --expected-updated-at: a token guards the write, --replace says it is deliberately unguarded; drop one")
+				}
+				if !useStdin && !clearContent && content == "" {
+					return fmt.Errorf("--replace applies to a body write: pass it with --content, --stdin or --clear-content")
+				}
 			}
 			var stdinBody string
 			if useStdin {
@@ -1238,6 +1258,7 @@ heredoc looks like. To empty a body on purpose, use --clear-content.`,
 			if overwritePendingEdits {
 				input.OverwritePendingEdits = true
 			}
+			input.Replace = replaceBody
 
 			// Build a FIELD-LEVEL patch carrying ONLY the keys this command
 			// changes (TASK-2022 / IDEA-1480). The server shallow-merges it
@@ -1472,6 +1493,7 @@ heredoc looks like. To empty a body on purpose, use --clear-content.`,
 			// create path (codex round 2).
 			warnUndeclaredFields(updated)
 			warnContentPendingFlush(updated)
+			warnUnguardedContentWrite(&input)
 
 			if formatFlag == "json" {
 				return cli.PrintJSON(updated)
@@ -1518,6 +1540,7 @@ heredoc looks like. To empty a body on purpose, use --clear-content.`,
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
 	cmd.Flags().StringVar(&expectedUpdatedAt, "expected-updated-at", "", "optimistic concurrency: RFC3339 updated_at you last read; the update is rejected with a conflict (exit non-zero) if the item changed since")
 	cmd.Flags().BoolVar(&overwritePendingEdits, "overwrite-pending-edits", false, "with a version token and new content: replace unflushed edits a browser tab holds for this item instead of being refused with content_pending_flush (BUG-3133)")
+	cmd.Flags().BoolVar(&replaceBody, "replace", false, "with --content, --stdin or --clear-content: overwrite the body on purpose, whatever changed since you read it (no version token). A body write with neither this nor --expected-seq is warned about now and will be refused in a future release (PLAN-3555)")
 	cmd.Flags().Int64Var(&expectedSeq, "expected-seq", 0, "optimistic concurrency (preferred): the `seq` you last read; rejected with a conflict if the item changed since. Unlike --expected-updated-at this distinguishes two writes inside the same second (BUG-3037)")
 	// UPDATE ONLY, and deliberately asymmetric with `item create` — do NOT
 	// "complete" the pair by adding these there (IDEA-2584 ruling). Clearing
@@ -4511,6 +4534,22 @@ func warnContentPendingFlush(item *models.Item) {
 		"collab-snapshot flush does that, and one may already have run. The response's content is "+
 		"what you sent; a read before such a flush lands shows the previous content, and the "+
 		"stored form may end up differing slightly from what you sent.")
+}
+
+// warnUnguardedContentWrite tells the caller, on stderr, that its body write
+// carried no version token and no --replace (PLAN-3555 phase 1). Decided from
+// what this command SENT, not from the server's warning, so it also prints
+// against a server that predates the warning. It names no seq: the one this
+// command fetched just before the write would guard only the milliseconds
+// between them, which is the false safety the plan rules out.
+func warnUnguardedContentWrite(input *models.ItemUpdate) {
+	if input.Content == nil || input.ExpectedSeq != nil || input.ExpectedUpdatedAt != "" || input.Replace {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "warning: unguarded content write: this replaced the body without checking that "+
+		"it is still the one you read, so anything written since then is gone (version history keeps it). "+
+		"Pass --expected-seq <the seq from your pad item show>, or --replace to overwrite deliberately. "+
+		"A future release refuses an unguarded body write.")
 }
 
 // warnPrunedPendingEdits tells the caller, on stderr, that a direct content
