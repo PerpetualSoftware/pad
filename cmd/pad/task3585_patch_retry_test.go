@@ -13,10 +13,17 @@ import (
 // answer is not retried.
 func patchServer(t *testing.T, statuses ...int) *[]map[string]any {
 	t.Helper()
+	return patchServerCaps(t, true, statuses...)
+}
+
+// patchServerCaps is patchServer with the idempotency_keys capability set to
+// honorsKeys, so a test can stand in for a server that ignores op_key.
+func patchServerCaps(t *testing.T, honorsKeys bool, statuses ...int) *[]map[string]any {
+	t.Helper()
 	var bodies []map[string]any
 	setupFormatRoutingTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/capabilities") {
-			_ = json.NewEncoder(w).Encode(map[string]any{"item_patch": true, "idempotency_keys": true})
+			_ = json.NewEncoder(w).Encode(map[string]any{"item_patch": true, "idempotency_keys": honorsKeys})
 			return
 		}
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/patch") {
@@ -89,5 +96,17 @@ func TestTASK3585_CLIKeysDifferPerInvocationUnlessGiven(t *testing.T) {
 	k1, _ := (*bodies)[1]["op_key"].(string)
 	if k0 == k1 || (*bodies)[2]["op_key"] != "mine" {
 		t.Fatalf("keys = %q %q %v", k0, k1, (*bodies)[2]["op_key"])
+	}
+}
+
+// A server that does not advertise idempotency_keys ignores op_key, so a
+// retry there could apply the patch twice: the CLI must not retry.
+func TestTASK3585_CLINoRetryWithoutTheCapability(t *testing.T) {
+	bodies := patchServerCaps(t, false, http.StatusServiceUnavailable)
+	if err := runPatch(t, "--old", "a", "--new", "b"); err == nil {
+		t.Fatal("a 503 with no retry must fail")
+	}
+	if len(*bodies) != 1 {
+		t.Fatalf("retried against a server that ignores keys: %d attempts (a retry there could apply twice)", len(*bodies))
 	}
 }

@@ -58,6 +58,7 @@ type serverCapabilityFlags struct {
 	LibraryActivate            bool `json:"library_activate"`
 	BuiltinUpdate              bool `json:"builtin_update"`
 	ItemPatch                  bool `json:"item_patch"`
+	IdempotencyKeys            bool `json:"idempotency_keys"`
 }
 
 func NewClient(host string, port int) *Client {
@@ -937,7 +938,7 @@ func (c *Client) postPatch(wsSlug, itemSlug string, body map[string]any, opKey s
 	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/patch"
 	var result PatchResult
 	err := c.post(path, body, &result)
-	if err != nil && opKey != "" && retryableWithKey(err) {
+	if err != nil && opKey != "" && retryableWithKey(err) && c.serverHonorsKeys() {
 		result = PatchResult{}
 		err = c.post(path, body, &result)
 	}
@@ -945,6 +946,14 @@ func (c *Client) postPatch(wsSlug, itemSlug string, body map[string]any, opKey s
 		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
 	}
 	return &result, nil
+}
+
+// serverHonorsKeys reports whether this server replays a keyed retry
+// (TASK-3585). An older server ignores op_key, so retrying there could apply
+// a write twice: no capability, no retry.
+func (c *Client) serverHonorsKeys() bool {
+	caps, _ := c.serverCapabilities()
+	return caps.IdempotencyKeys
 }
 
 // retryableWithKey: no API answer at all (a transport error) or a 5xx.
