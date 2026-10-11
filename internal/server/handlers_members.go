@@ -136,6 +136,24 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inviterID := currentUserID(r)
+	if inviterID == "" {
+		// An invitation records who sent it, so a request with no resolved
+		// user cannot make one: the insert failed its inviter foreign key and
+		// answered 500 (BUG-3544). Before the first account exists that is the
+		// setup window, refused the way sign-in refuses it; otherwise the
+		// caller holds no user credential (a legacy workspace token).
+		count, cerr := s.store.UserCount()
+		if cerr != nil {
+			writeInternalError(w, cerr)
+			return
+		}
+		if count == 0 {
+			writeError(w, http.StatusConflict, "setup_required", "This Pad instance must be initialized with pad auth setup")
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
+		return
+	}
 
 	// Check if user with this email already exists
 	existingUser, err := s.store.GetUserByEmail(input.Email)

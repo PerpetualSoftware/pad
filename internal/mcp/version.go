@@ -1738,6 +1738,16 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.85 — BUG-3544. BEHAVIOR bump on the v0.58 / v0.45 grounds (an
+//     error that read as transient now says what it is; no name, enum or
+//     param moved): `pad_workspace.action=invite` on an instance with no
+//     account yet (the setup window, reachable over local stdio, where
+//     requests run without auth) answers 409 `setup_required`, "This Pad
+//     instance must be initialized with pad auth setup", and writes
+//     nothing. It answered 500 (`server_error`): the invitation insert
+//     failed its inviter foreign key. Retrying cannot help; `pad auth
+//     setup` does. The remote transport cannot reach the setup window.
+//
 //     0.84 — BUG-3542. BEHAVIOR bump on the v0.39 / v0.43 grounds (a
 //     write door refuses a call it used to accept; no name, enum or param
 //     moved): a `pad_item` update that sets content on an item open in a
@@ -2023,7 +2033,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.84"
+const ToolSurfaceVersion = "0.85"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
