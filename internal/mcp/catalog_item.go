@@ -316,6 +316,7 @@ var padItemSchemaParams = []ParamDef{
 		},
 		"required": []any{"old", "new"},
 	}, Description: "patch: the edits, applied in order, all or nothing. Required for: patch."},
+	{Name: "undo", Type: "string", Description: "patch: invert an earlier patch on this item by its patch_id (instead of edits). Refused, writing nothing (patch_anchor_missing), when the text it changed has changed since; never reverts someone else's later edit. The undo is itself a patch."},
 	{Name: "lines", Type: "string", Description: "get: return only these body lines, numbered (\"A-B\", \"A-\" or \"A\"; 1-based), with seq and content_state, for targeting a patch. Line numbers are for reading; a patch anchors on text."},
 	// PLAN-3555: the deliberate-overwrite opt-out. Phase 1 changes no outcome;
 	// phase 2 refuses a body write that carries neither this nor a token.
@@ -381,7 +382,8 @@ Actions:
     Required: ref. Optional: lines ("40-80": numbered body lines plus
     seq, for quoting a patch's anchors).
   patch         — Replace exact text in an item's body without sending all of it.
-    Required: ref, edits ([{old, new, line_hint?}]). Optional: expected_seq.
+    Required: ref, and edits ([{old, new, line_hint?}]) or undo (a patch_id
+    from an earlier patch answer, to invert it). Optional: expected_seq.
     Each old must occur EXACTLY ONCE in the current body (quote more
     context, or pass line_hint to pick among exact matches); edits apply
     in order, all or nothing. The answer is a unified diff of what changed:

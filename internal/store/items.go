@@ -3033,6 +3033,22 @@ func (s *Store) updateItemWithParentLinkOnce(
 		}
 	}
 
+	// PLAN-3578 step 3: a patch's edits, in the same transaction as its
+	// version row, so an undo can find them; with the version's id when one
+	// was written.
+	if input.PatchRecord != nil {
+		var vid interface{}
+		if createdVersionID != "" {
+			vid = createdVersionID
+		}
+		if _, err := tx.Exec(s.q(`
+			INSERT INTO item_patches (id, item_id, workspace_id, edits, version_id, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`), input.PatchRecord.ID, id, existing.WorkspaceID, input.PatchRecord.Edits, vid, ts); err != nil {
+			return nil, fmt.Errorf("record patch: %w", err)
+		}
+	}
+
 	// Build update query. Every mutation bumps seq to MAX(seq)+1 per
 	// workspace; the local-first read model uses that as a cursor (see
 	// nextWorkspaceSeqSubquery / PLAN-1343).

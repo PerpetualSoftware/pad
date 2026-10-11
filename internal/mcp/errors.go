@@ -219,6 +219,9 @@ const (
 	// ErrPatchUnstableRoundtrip: the open editor would change content
 	// outside the edit to apply it (PLAN-3578 step 2).
 	ErrPatchUnstableRoundtrip ErrorCode = "patch_unstable_roundtrip"
+	// ErrPatchNotFound: an undo named a patch this item does not have
+	// (PLAN-3578 step 3).
+	ErrPatchNotFound ErrorCode = "patch_not_found"
 
 	// ErrStoredStateUnreadable fires when an operation is refused because
 	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
@@ -500,6 +503,7 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	"patch_anchor_ambiguous":   {},
 	"patch_room_open":          {},
 	"patch_unstable_roundtrip": {},
+	"patch_not_found":          {},
 	// BUG-2675. The only entry whose marker is written for a LOCALLY
 	// generated refusal rather than an upstream APIError — the CLI's
 	// append helpers refuse before any request is made (see
@@ -1001,6 +1005,12 @@ func classifyHTTPStatusKind(
 			Hint:    permissionHintFor(bodyMessage, route),
 		})
 	case http.StatusNotFound:
+		// PLAN-3578 step 3: an undo naming a patch this item does not have is
+		// a 404 about the PATCH, not the item; the generic classifier would
+		// tell the agent the item is missing.
+		if upstream := extractUpstreamErrorEnvelope(bodyText); upstream.Code == string(ErrPatchNotFound) {
+			return NewErrorResult(ErrorPayload{Code: ErrPatchNotFound, Message: bodyMessage, Hint: PatchNotFoundHint, Details: upstream.Details})
+		}
 		return classify404(ctx, cmdKey, route, bodyText, bodyMessage, lookup, kind, refOrSlug)
 	case http.StatusConflict:
 		// IDEA-1494 R2/R4 P2: preserve the upstream `code` + `details`
@@ -1052,6 +1062,9 @@ func classifyHTTPStatusKind(
 			}
 			if upstream.Code == string(ErrPatchUnstableRoundtrip) {
 				hint = PatchUnstableHint
+			}
+			if upstream.Code == string(ErrPatchNotFound) {
+				hint = PatchNotFoundHint
 			}
 			if upstream.Code == string(ErrStoredStateUnreadable) {
 				// Same reason: the stored value stays undecodable, so every
@@ -1430,6 +1443,10 @@ const PatchRoomOpenHint = "Nothing was written. The item is open in an editor th
 // match.
 const PatchUnstableHint = "Nothing was written. Applying this patch in the open editor would also change content you did not edit. " +
 	"Re-read the item and send a whole-body update with expected_seq instead."
+
+// PatchNotFoundHint is the recovery guidance for patch_not_found (PLAN-3578
+// step 3). Duplicated in internal/cli; a test asserts the two match.
+const PatchNotFoundHint = "Nothing was written. That patch id is not a patch on this item: use the patch_id a patch answer returned, on the item it was made on."
 
 // UpdateConflictContentHint replaces the generic re-read-and-retry hint on an
 // update_conflict whose details carry content_write (PLAN-3555): a resent body

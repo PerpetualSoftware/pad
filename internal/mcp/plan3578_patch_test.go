@@ -115,3 +115,40 @@ func (f *parentFixture) dispatchResult2(t *testing.T, cmd []string, input map[st
 	}
 	return res
 }
+
+// PLAN-3578 step 3 at the MCP doors: undo round-trips over HTTP, and a
+// patch_not_found carries its own code and hint on both transports.
+func TestPLAN3578_MCPUndo(t *testing.T) {
+	f := newParentFixture(t)
+	ws, ref := f.workspace.Slug, f.child.Slug
+	f.dispatch(t, []string{"item", "update"}, map[string]any{"workspace": ws, "ref": ref, "content": "alpha beta\n", "replace": true})
+	res := f.dispatchResult2(t, []string{"item", "patch"}, map[string]any{"workspace": ws, "ref": ref,
+		"edits": []any{map[string]any{"old": "beta", "new": "BETA"}}})
+	m, _ := res.StructuredContent.(map[string]any)
+	pid, _ := m["patch_id"].(string)
+	if res.IsError || pid == "" {
+		t.Fatalf("patch: %s", textOf(res))
+	}
+	res = f.dispatchResult2(t, []string{"item", "patch"}, map[string]any{"workspace": ws, "ref": ref, "undo": pid})
+	if m, _ := res.StructuredContent.(map[string]any); res.IsError || m["undo_of"] != pid {
+		t.Fatalf("undo: %s", textOf(res))
+	}
+	got, err := f.store.GetItem(f.child.ID)
+	if err != nil || got.Content != "alpha beta\n" {
+		t.Fatalf("after undo: %q %v", got.Content, err)
+	}
+	res = f.dispatchResult2(t, []string{"item", "patch"}, map[string]any{"workspace": ws, "ref": ref, "undo": "no-such-patch"})
+	env, ok := res.StructuredContent.(ErrorEnvelope)
+	if !res.IsError || !ok || env.Error.Code != ErrPatchNotFound || env.Error.Hint != PatchNotFoundHint {
+		t.Fatalf("unknown patch id: %s", textOf(res))
+	}
+
+	var stderr bytes.Buffer
+	cli.WritePatchRefusalError(&stderr, &cli.APIError{Code: cli.PatchNotFoundCode, Message: "m"})
+	if r := extractStructuredCLIError(stderr.String()); r == nil || r.StructuredContent.(ErrorEnvelope).Error.Hint != PatchNotFoundHint {
+		t.Fatalf("stdio patch_not_found: %s", stderr.String())
+	}
+	if cli.PatchNotFoundHint != PatchNotFoundHint {
+		t.Fatal("patch_not_found hints differ between internal/cli and internal/mcp")
+	}
+}

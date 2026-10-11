@@ -111,6 +111,10 @@ func TestPLAN3578_PatchThroughAnOpenEditor(t *testing.T) {
 	if after := f.current(t); after.Seq == before.Seq {
 		t.Fatal("the patch's row write did not move the seq, so it cannot join the chain")
 	}
+	// PLAN-3578 step 3: the room path records the patch for undo too.
+	if rec, err := f.srv.store.GetItemPatch(f.item.WorkspaceID, out["patch_id"].(string)); err != nil || rec == nil || rec.Edits == "" {
+		t.Fatalf("no undo record for an applier-path patch: %+v %v", rec, err)
+	}
 }
 
 func TestPLAN3578_TabRefusalIsTypedAndCounted(t *testing.T) {

@@ -877,6 +877,7 @@ var activityBookkeepingKeys = map[string]bool{
 	"patch_id":                   true,
 	"patch_edits":                true,
 	"patch_rebased_from_seq":     true,
+	"patch_undo_of":              true,
 }
 
 // activityChangesText returns the "changes" string an activity's metadata

@@ -80,3 +80,25 @@ func TestPLAN3555_ItemUpdateReplace(t *testing.T) {
 		})
 	}
 }
+
+// PLAN-3578 step 3: --undo carries its own anchors, so it refuses edit flags
+// and a token before any request.
+func TestPLAN3578_PatchUndoFlagConflicts(t *testing.T) {
+	for _, args := range [][]string{
+		{"--undo", "p1", "--old", "a", "--new", "b"},
+		{"--undo", "p1", "--edits", `[{"old":"a","new":"b"}]`},
+		{"--undo", "p1", "--expected-seq", "3"},
+	} {
+		reqs := recordingServer(t)
+		cmd := itemPatchCmd()
+		cmd.SetArgs(append([]string{"TASK-5"}, args...))
+		var err error
+		_ = captureStdout(t, func() { err = cmd.Execute() })
+		if err == nil || !strings.Contains(err.Error(), "--undo conflicts") {
+			t.Fatalf("%v: want an --undo conflict, got %v", args, err)
+		}
+		if len(*reqs) != 0 {
+			t.Fatalf("%v: a refused flag set reached the server", args)
+		}
+	}
+}

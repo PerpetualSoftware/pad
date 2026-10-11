@@ -19,9 +19,10 @@ func itemPatchCmd() *cobra.Command {
 		olds, news  []string
 		editsFlag   string
 		expectedSeq int64
+		undo        string
 	)
 	cmd := &cobra.Command{
-		Use:   "patch <ref> (--old TEXT --new TEXT)... | --edits @FILE",
+		Use:   "patch <ref> (--old TEXT --new TEXT)... | --edits @FILE | --undo PATCH-ID",
 		Short: "Replace exact text in an item's body, and print the diff",
 		Long: `Edit part of an item's body without sending the whole of it. Each edit
 names text (--old) that must occur EXACTLY ONCE in the current body and the
@@ -41,6 +42,11 @@ For several or multi-line edits use --edits with a JSON array of
 {"old","new","line_hint"} (line_hint, 1-based, only chooses among several
 exact matches): --edits @edits.json, or --edits - to read stdin.
 
+--undo PATCH-ID inverts an earlier patch on this item (the patch_id a patch
+printed). It anchors on the text around each edit as it landed, so it refuses,
+writing nothing, when that text has changed since: it never reverts someone
+else's later edit. The undo is itself a patch, with its own patch id.
+
 On an item open in a browser editor, that editor applies the patch to its live
 document, merging with the typing there; the row catches up on its next flush.
 It refuses with patch_unstable_roundtrip when applying would also change
@@ -48,29 +54,47 @@ content you did not edit, and patch_room_open when only an older editor that
 cannot apply patches holds the item.`,
 		Example: `  pad item patch TASK-5 --old "Status: draft" --new "Status: ready"
   pad item patch DOC-3 --old "old line" --new "new line" --expected-seq 41
-  pad item patch DOC-3 --edits @edits.json`,
+  pad item patch DOC-3 --edits @edits.json
+  pad item patch DOC-3 --undo 3f2c9a1e-…`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			edits, err := patchEditsFromFlags(olds, news, editsFlag, os.Stdin)
-			if err != nil {
-				return err
+			var edits []bodypatch.Edit
+			if undo != "" {
+				if len(olds) > 0 || len(news) > 0 || editsFlag != "" || cmd.Flags().Changed("expected-seq") {
+					return fmt.Errorf("--undo conflicts with --old/--new, --edits and --expected-seq; an undo carries its own anchors")
+				}
+			} else {
+				var err error
+				if edits, err = patchEditsFromFlags(olds, news, editsFlag, os.Stdin); err != nil {
+					return err
+				}
 			}
 			client, _ := getClient()
 			if !client.ServerSupportsItemPatch() {
 				return fmt.Errorf("this Pad server does not support patch writes; upgrade it, or use pad item update with --expected-seq")
 			}
-			var seq *int64
-			if cmd.Flags().Changed("expected-seq") {
-				seq = &expectedSeq
+			var res *cli.PatchResult
+			var err error
+			if undo != "" {
+				res, err = client.UndoPatch(getWorkspace(), args[0], undo)
+			} else {
+				var seq *int64
+				if cmd.Flags().Changed("expected-seq") {
+					seq = &expectedSeq
+				}
+				res, err = client.PatchItem(getWorkspace(), args[0], edits, seq)
 			}
-			res, err := client.PatchItem(getWorkspace(), args[0], edits, seq)
 			if err != nil {
 				return err
 			}
 			if formatFlag == "json" {
 				return cli.PrintJSON(res)
 			}
-			fmt.Printf("Patched %s (%d edit(s), seq %d)\n", res.Ref, len(edits), res.Seq)
+			if res.UndoOf != "" {
+				fmt.Printf("Undid patch %s on %s (seq %d); this undo is patch %s\n", res.UndoOf, res.Ref, res.Seq, res.PatchID)
+			} else {
+				fmt.Printf("Patched %s (%d edit(s), seq %d); patch id %s\n", res.Ref, len(edits), res.Seq, res.PatchID)
+			}
 			if res.Rebased && res.Intervening != nil {
 				iv := res.Intervening
 				fmt.Printf("Rebased: applied over %d write(s) since seq %d", len(iv.Changes), iv.FromSeq)
@@ -86,6 +110,7 @@ cannot apply patches holds the item.`,
 	cmd.Flags().StringArrayVar(&olds, "old", nil, "text to replace; must occur exactly once in the current body (repeatable, paired in order with --new)")
 	cmd.Flags().StringArrayVar(&news, "new", nil, "replacement text (repeatable, paired in order with --old; may be empty to delete)")
 	cmd.Flags().StringVar(&editsFlag, "edits", "", `edits as a JSON array of {"old","new","line_hint"}: @FILE, - for stdin, or the JSON itself`)
+	cmd.Flags().StringVar(&undo, "undo", "", "invert an earlier patch on this item by its patch id; refused, writing nothing, if the text it changed has changed since")
 	cmd.Flags().Int64Var(&expectedSeq, "expected-seq", 0, "the seq you read; a moved item is still patched when every anchor matches, and reported as rebased")
 	return cmd
 }
