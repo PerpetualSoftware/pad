@@ -33,7 +33,7 @@
 
 	// Stripe-derived cards must be greyed out when either the cloud sidecar is
 	// unreachable or Stripe simply isn't configured yet (the expected pre-launch
-	// state). Local cards (customers_by_plan, new_signups_30d) are always real.
+	// state). Local cards (customers_by_plan, upgrades_30d, new_signups_30d) are always real.
 	let stripeUnavailable = $derived(
 		!stats || stats.cloud_unreachable || !stats.stripe_configured
 	);
@@ -168,11 +168,20 @@
 				<span class="stat-sub">All registered users</span>
 			</div>
 
-			<!-- 5. New Signups 30d (LOCAL, always real) -->
+			<!-- 5. Upgrades 30d (LOCAL, always real): by when the account became
+			     Pro, so an older account that upgraded counts (BUG-3591). -->
 			<div class="stat">
-				<span class="stat-label">New Signups (30d)</span>
+				<span class="stat-label">Upgrades (30d)</span>
+				<span class="stat-value">{stats.upgrades_30d}</span>
+				<span class="stat-sub">Accounts that bought Pro in the last 30 days</span>
+			</div>
+
+			<!-- 5b. Pro accounts created 30d (LOCAL, always real): by account
+			     creation date, so it does not count an older account's upgrade. -->
+			<div class="stat">
+				<span class="stat-label">New Pro accounts (30d)</span>
 				<span class="stat-value">{stats.new_signups_30d}</span>
-				<span class="stat-sub">Pro signups in last 30 days</span>
+				<span class="stat-sub">Accounts created in the last 30 days that are Pro now</span>
 			</div>
 
 			<!-- 6. Churn 30d (Stripe-derived) -->

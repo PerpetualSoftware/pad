@@ -2332,6 +2332,8 @@ export interface AdminBillingStats {
 	cloud_unreachable: boolean;
 	customers_by_plan: Record<string, number>;
 	new_signups_30d: number;
+	// Accounts that became Pro in the window, by upgrade time (BUG-3591).
+	upgrades_30d: number;
 	active_subscriptions: number;
 	mrr_cents: number;
 	arr_cents: number;

@@ -629,8 +629,16 @@ type BillingAggregates struct {
 	// so the result matches handleAdminStats' presentation.
 	CustomersByPlan map[string]int
 	// NewProSignups is the count of users with plan='pro' whose
-	// created_at is strictly after the supplied cutoff.
+	// created_at is strictly after the supplied cutoff: Pro accounts
+	// CREATED in the window. It misses an older account that upgraded in
+	// the window; UpgradesInWindow counts those (BUG-3591).
 	NewProSignups int
+	// UpgradesInWindow is the count of users whose plan_upgraded_at (the
+	// last time a Stripe write in SetUserPlan made them pro from a not-pro
+	// effective plan; an operator's grant does not stamp it) is
+	// strictly after the cutoff, whatever their plan is now: an upgrade
+	// that churned before the end of the window still happened in it.
+	UpgradesInWindow int
 }
 
 // CountBillingAggregates returns the per-plan customer counts and the
@@ -701,6 +709,15 @@ func (s *Store) CountBillingAggregates(since time.Time) (*BillingAggregates, err
 	}
 	if err := proRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate new pro signups: %w", err)
+	}
+
+	// plan_upgraded_at is written by store.now (RFC3339 UTC, no offset), so
+	// unlike plan_expires_at it compares lexically against the cutoff.
+	if err := s.db.QueryRow(
+		s.q(`SELECT COUNT(*) FROM users WHERE kind = 'human' AND plan_upgraded_at > ?`),
+		cutoff,
+	).Scan(&out.UpgradesInWindow); err != nil {
+		return nil, fmt.Errorf("count upgrades in window: %w", err)
 	}
 
 	return out, nil
