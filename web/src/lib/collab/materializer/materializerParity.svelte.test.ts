@@ -138,6 +138,8 @@ const BLOCKS = [
 	'<div class="note">raw <b>html</b> block</div>',
 	'Autolink https://example.com/path here',
 	'Typed literal [[not a link]] stays text',
+	// BUG-3583: marks that cannot flank (punctuation at the edge, a letter outside).
+	'<p><strong>Hello.</strong>World, Hello<em>.World</em>, a<s>(x)</s>b and <strong>plain</strong> bold</p>',
 	'See [[TASK-3]] and [[Roadmap]]',
 	...LINKS.map((l) => `Paragraph linking ${l} inline.`),
 ];
@@ -418,7 +420,7 @@ describe('materializer parity with the live editor flush (TASK-2198)', () => {
 		console.info(`materializer parity: ${CASES} cases, ${cases.reduce((n, c) => n + c.rows.length, 0)} frames, ${relayThrows} relay throws`);
 		const all = cases.map((c) => c.expected).join('\n');
 		// The generator reaches the constructs it claims to (vantage point).
-		for (const probe of ['<table', '| --- |', '- [ ]', '```mermaid', '```go', '[[TASK-3]]', 'pad-attachment:', '/api/v1/workspaces/ws/attachments/', '# ', '> ']) {
+		for (const probe of ['<table', '| --- |', '- [ ]', '```mermaid', '```go', '[[TASK-3]]', 'pad-attachment:', '/api/v1/workspaces/ws/attachments/', '# ', '> ', '<strong>Hello.</strong>World']) {
 			expect(all, probe).toContain(probe);
 		}
 		expect(cases.some((c) => c.expected.startsWith('---\n'))).toBe(true);

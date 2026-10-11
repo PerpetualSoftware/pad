@@ -21,6 +21,7 @@
 	import Link from '@tiptap/extension-link';
 	import Placeholder from '@tiptap/extension-placeholder';
 	import { Markdown } from 'tiptap-markdown';
+	import { flankingMarkExtensions } from '$lib/components/editor/extensions/flankingMarks';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -226,7 +227,11 @@
 			content,
 			autofocus: autofocus ? 'end' : false,
 			extensions: [
-				StarterKit.configure({ link: false }),
+				// The five marks come from flankingMarkExtensions(), in StarterKit's
+				// order, so bold, italic and strike always serialize to markdown that
+				// parses back to them (BUG-3583).
+				StarterKit.configure({ link: false, bold: false, code: false, italic: false, strike: false, underline: false }),
+				...flankingMarkExtensions(),
 				Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
 				Placeholder.configure({ placeholder }),
 				Markdown.configure({ html: true, transformPastedText: true, transformCopiedText: true }),
