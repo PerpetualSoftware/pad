@@ -488,9 +488,11 @@
 						<div class="info-panel">
 							<p class="info-panel-title">
 								{#if claimState.grantName}
-									Your agent <strong>{claimState.grantName}</strong> is already connected to this workspace.
+									<!-- A standing grant, not a live session: "connected" is kept for
+									     live session signals (TASK-3596). -->
+									Your agent <strong>{claimState.grantName}</strong> already has access to this workspace.
 								{:else}
-									Your agent is already connected to this workspace.
+									Your agent already has access to this workspace.
 								{/if}
 							</p>
 							<p class="info-panel-body">Manage it from your Connected apps page.</p>

@@ -232,7 +232,7 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 	}
-	/* When step ① is already done (agent connected), step ② becomes the
+	/* When step ① is already done (agent activity detected), step ② becomes the
 	   primary next action — accent its border. */
 	.lp-step.next {
 		border-color: var(--accent-blue);
