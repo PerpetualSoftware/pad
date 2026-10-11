@@ -989,18 +989,20 @@ const (
 	PatchUnstableCode        = "patch_unstable_roundtrip"
 	PatchNotFoundCode        = "patch_not_found"
 	// TASK-3585.
-	PatchOutcomeUnknownCode  = "patch_outcome_unknown"
-	IdempotencyInFlightCode  = "idempotency_in_flight"
-	IdempotencyKeyReusedCode = "idempotency_key_reused"
+	PatchOutcomeUnknownCode   = "patch_outcome_unknown"
+	IdempotencyInFlightCode   = "idempotency_in_flight"
+	IdempotencyKeyReusedCode  = "idempotency_key_reused"
+	IdempotencyTargetGoneCode = "idempotency_target_gone"
 )
 
 // PatchOutcomeUnknownHint, IdempotencyInFlightHint and
 // IdempotencyKeyReusedHint are the recovery guidance for TASK-3585's codes.
 // Duplicated in internal/mcp; a test asserts they match.
 const (
-	PatchOutcomeUnknownHint  = "Nothing new was written. An earlier attempt reached an editor that never confirmed it and is gone, so it is not re-applied: read details.diff (the change since the patch was sent); if your edit is there, it landed. Otherwise send it again with a NEW key."
-	IdempotencyInFlightHint  = "A request with this key is still running. Wait a moment and retry with the SAME key: you will get its answer, not a second write."
-	IdempotencyKeyReusedHint = "This key was already used for a different request. Use a new key for a new request; reuse a key only to retry the identical request."
+	PatchOutcomeUnknownHint   = "Nothing new was written. An earlier attempt reached an editor that never confirmed it and is gone, so it is not re-applied: read details.diff (the change since the patch was sent); if your edit is there, it landed. Otherwise send it again with a NEW key."
+	IdempotencyInFlightHint   = "A request with this key is still running. Wait a moment and retry with the SAME key: you will get its answer, not a second write."
+	IdempotencyKeyReusedHint  = "This key was already used for a different request. Use a new key for a new request; reuse a key only to retry the identical request."
+	IdempotencyTargetGoneHint = "The request this key belongs to already ran and created an item that has since been deleted. Nothing was written now. To create it again, send the request with a NEW key."
 )
 
 // PatchNotFoundHint is the recovery guidance for patch_not_found (PLAN-3578
@@ -1030,7 +1032,7 @@ func IsPatchRefusal(err error) (*APIError, bool) {
 	if errors.As(err, &apiErr) {
 		switch apiErr.Code {
 		case PatchAnchorMissingCode, PatchAnchorAmbiguousCode, PatchRoomOpenCode, PatchUnstableCode, PatchNotFoundCode,
-			PatchOutcomeUnknownCode, IdempotencyInFlightCode, IdempotencyKeyReusedCode:
+			PatchOutcomeUnknownCode, IdempotencyInFlightCode, IdempotencyKeyReusedCode, IdempotencyTargetGoneCode:
 			return apiErr, true
 		}
 	}
@@ -1057,6 +1059,8 @@ func WritePatchRefusalError(w io.Writer, apiErr *APIError) {
 		hint = IdempotencyInFlightHint
 	case IdempotencyKeyReusedCode:
 		hint = IdempotencyKeyReusedHint
+	case IdempotencyTargetGoneCode:
+		hint = IdempotencyTargetGoneHint
 	}
 	body := map[string]any{"code": apiErr.Code, "message": apiErr.Message, "hint": hint}
 	if len(apiErr.Details) > 0 {

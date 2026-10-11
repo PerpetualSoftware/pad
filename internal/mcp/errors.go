@@ -226,6 +226,9 @@ const (
 	ErrPatchOutcomeUnknown  ErrorCode = "patch_outcome_unknown"
 	ErrIdempotencyInFlight  ErrorCode = "idempotency_in_flight"
 	ErrIdempotencyKeyReused ErrorCode = "idempotency_key_reused"
+	// ErrIdempotencyTargetGone: a replayed create whose item has since been
+	// deleted (410).
+	ErrIdempotencyTargetGone ErrorCode = "idempotency_target_gone"
 
 	// ErrStoredStateUnreadable fires when an operation is refused because
 	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
@@ -511,6 +514,7 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	"patch_outcome_unknown":    {},
 	"idempotency_in_flight":    {},
 	"idempotency_key_reused":   {},
+	"idempotency_target_gone":  {},
 	// BUG-2675. The only entry whose marker is written for a LOCALLY
 	// generated refusal rather than an upstream APIError — the CLI's
 	// append helpers refuse before any request is made (see
@@ -1112,6 +1116,12 @@ func classifyHTTPStatusKind(
 			Message: "Validation failed.",
 			Hint:    hint,
 		})
+	case http.StatusGone:
+		// TASK-3585: a replayed create whose item was deleted since. Without
+		// this arm a 410 fell through to the generic other-4xx bucket.
+		if upstream := extractUpstreamErrorEnvelope(bodyText); upstream.Code == string(ErrIdempotencyTargetGone) {
+			return NewErrorResult(ErrorPayload{Code: ErrIdempotencyTargetGone, Message: bodyMessage, Hint: IdempotencyTargetGoneHint, Details: upstream.Details})
+		}
 	case http.StatusTooManyRequests:
 		// BUG-1430: pre-existing behavior collapsed 429 into the
 		// generic ErrServerError "other 4xx" bucket, which led
@@ -1468,9 +1478,10 @@ const PatchNotFoundHint = "Nothing was written. That patch id is not a patch on 
 
 // TASK-3585's hints. Duplicated in internal/cli; a test asserts they match.
 const (
-	PatchOutcomeUnknownHint  = "Nothing new was written. An earlier attempt reached an editor that never confirmed it and is gone, so it is not re-applied: read details.diff (the change since the patch was sent); if your edit is there, it landed. Otherwise send it again with a NEW key."
-	IdempotencyInFlightHint  = "A request with this key is still running. Wait a moment and retry with the SAME key: you will get its answer, not a second write."
-	IdempotencyKeyReusedHint = "This key was already used for a different request. Use a new key for a new request; reuse a key only to retry the identical request."
+	PatchOutcomeUnknownHint   = "Nothing new was written. An earlier attempt reached an editor that never confirmed it and is gone, so it is not re-applied: read details.diff (the change since the patch was sent); if your edit is there, it landed. Otherwise send it again with a NEW key."
+	IdempotencyInFlightHint   = "A request with this key is still running. Wait a moment and retry with the SAME key: you will get its answer, not a second write."
+	IdempotencyKeyReusedHint  = "This key was already used for a different request. Use a new key for a new request; reuse a key only to retry the identical request."
+	IdempotencyTargetGoneHint = "The request this key belongs to already ran and created an item that has since been deleted. Nothing was written now. To create it again, send the request with a NEW key."
 )
 
 // UpdateConflictContentHint replaces the generic re-read-and-retry hint on an
