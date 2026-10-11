@@ -131,14 +131,14 @@ func (s *Server) handleCheckUsername(w http.ResponseWriter, r *http.Request) {
 func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 	mcp := s.sessionMCP()
 	payload := map[string]interface{}{
-		"authenticated":     false,
-		"setup_required":    true,
-		"setup_method":      setupMethod,
-		"auth_method":       authMethodPassword,
-		"cloud_mode":        s.cloudMode,
-		"email_configured":  s.email != nil,
-		"mcp_public_url":    mcp.URL,
-		"mcp_auth":          mcp.Auth,
+		"authenticated":    false,
+		"setup_required":   true,
+		"setup_method":     setupMethod,
+		"auth_method":      authMethodPassword,
+		"cloud_mode":       s.cloudMode,
+		"email_configured": s.email != nil,
+		"mcp_public_url":   mcp.URL,
+		"mcp_auth":         mcp.Auth,
 		// PLAN-2310 DR-7: the web UI keys Connected Apps on oauth_available
 		// rather than cloud_mode. Both are evaluated per request.
 		"mcp_available":   mcp.Available,
@@ -197,9 +197,9 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		// you a link" copy for host-recovery guidance when false (self-host
 		// with no Maileroo key). Low-sensitivity deployment config, same
 		// class as cloud_mode/mcp_public_url.
-		"email_configured":  s.email != nil,
-		"mcp_public_url":    mcp.URL,
-		"mcp_auth":          mcp.Auth,
+		"email_configured": s.email != nil,
+		"mcp_public_url":   mcp.URL,
+		"mcp_auth":         mcp.Auth,
 		// PLAN-2310 DR-7: whether MCP and its OAuth path are available now
 		// (the setting, the configured origin and its scheme; always on
 		// cloud). The console keys Connected Apps on oauth_available.

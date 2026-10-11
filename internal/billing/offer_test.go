@@ -14,13 +14,13 @@ import (
 
 func TestResolveMode(t *testing.T) {
 	cases := []struct {
-		name                 string
-		pad                  string
-		padSet               bool
-		legacy               string
-		legacySet            bool
-		want                 string
-		wantWarning          bool
+		name        string
+		pad         string
+		padSet      bool
+		legacy      string
+		legacySet   bool
+		want        string
+		wantWarning bool
 	}{
 		{"both unset: auto (lead ruling)", "", false, "", false, ModeAuto, false},
 		{"PAD_BILLING=auto", "auto", true, "", false, ModeAuto, false},
@@ -107,12 +107,12 @@ func TestOfferCache_ServesTheSidecarsPrice(t *testing.T) {
 
 func TestOfferCache_UnusableAnswersReadAsUnavailable(t *testing.T) {
 	cases := map[string]*BillingConfig{
-		"unavailable":          {Available: false, Intervals: served.Intervals},
+		"unavailable":            {Available: false, Intervals: served.Intervals},
 		"available, no interval": {Available: true},
-		"unknown interval":     {Available: true, Intervals: []OfferInterval{{Interval: "weekly", UnitAmount: 100, Currency: "usd"}}},
-		"zero amount":          {Available: true, Intervals: []OfferInterval{{Interval: "monthly", UnitAmount: 0, Currency: "usd"}}},
-		"no currency":          {Available: true, Intervals: []OfferInterval{{Interval: "monthly", UnitAmount: 800}}},
-		"nil":                  nil,
+		"unknown interval":       {Available: true, Intervals: []OfferInterval{{Interval: "weekly", UnitAmount: 100, Currency: "usd"}}},
+		"zero amount":            {Available: true, Intervals: []OfferInterval{{Interval: "monthly", UnitAmount: 0, Currency: "usd"}}},
+		"no currency":            {Available: true, Intervals: []OfferInterval{{Interval: "monthly", UnitAmount: 800}}},
+		"nil":                    nil,
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
