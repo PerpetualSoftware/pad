@@ -139,6 +139,9 @@ type itemCopyPreflightRequest struct {
 	TargetCollection string             `json:"target_collection"`
 	FieldOverrides   models.FieldValues `json:"field_overrides"`
 	ArchiveSource    bool               `json:"archive_source"`
+	// OpKey is the copy's idempotency key in the body (TASK-3585). The
+	// preflight writes nothing and ignores it. Not part of the request hash.
+	OpKey string `json:"op_key,omitempty"`
 }
 
 // UnmarshalJSON refuses a repeated field_overrides (BUG-3219): FieldValues

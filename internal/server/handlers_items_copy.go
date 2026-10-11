@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"runtime/debug"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -333,6 +335,13 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 	// store, which answers a bare "actor is required" that would be mapped to
 	// the ambiguous 500 and send the user hunting for an item nothing ever
 	// tried to create.
+	// TASK-3585: a retried MOVE finds its source already archived, which the
+	// ladder below refuses before it reads the body. A keyed retry of a copy
+	// that committed must replay instead; see replayArchivedSourceCopy.
+	if s.replayArchivedSourceCopy(w, r) {
+		return
+	}
+
 	ac, ok := s.resolveAuthorizedCopy(w, r)
 	if !ok {
 		return
@@ -390,8 +399,35 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ---- The copy. ONE call, no retry (DR-13). ---------------------------
+	// TASK-3585: an idempotency key, claimed after every pre-write refusal
+	// above and before the copy. A replay answers the first copy's stored
+	// result byte for byte; nothing is copied again.
+	key, kerr := idempotencyKey(r, input.OpKey)
+	if kerr != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", kerr.Error())
+		return
+	}
+	canon := input
+	canon.OpKey = ""
+	hold, ok := s.claimKey(w, r, sourceWorkspaceID, idempotencyRouteCopy, item.ID, canon, key, func(status int, stored string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(stored))
+	})
+	if !ok {
+		return
+	}
+	defer s.release(hold)
+	var afterWrite func(tx *sql.Tx, res *store.CrossWorkspaceCopyResult) error
+	if hold != nil {
+		afterWrite = func(tx *sql.Tx, res *store.CrossWorkspaceCopyResult) error {
+			return s.completeTx(hold, http.StatusCreated, copyResult(res, src, dst, input))(tx)
+		}
+	}
+
+	// ---- The copy. ONE call, no automatic server-side retry (DR-13). -----
 	res, err := s.copyItemAcrossWorkspaces(store.CrossWorkspaceCopyRequest{
+		AfterWriteTx:       afterWrite,
 		SourceItemID:       item.ID,
 		TargetWorkspaceID:  dst.WorkspaceID(),
 		TargetCollectionID: targetColl.ID,
@@ -464,6 +500,13 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 	// (Codex round 1 P2).
 	s.afterCopyCommit(r, res)
 
+	writeJSON(w, http.StatusCreated, copyResult(res, src, dst, input))
+}
+
+// copyResult is the copy's 201 answer, built from the store's result. It is
+// a pure function of its inputs so the idempotency key can store it inside
+// the copy's transaction (TASK-3585) and the response can be the same bytes.
+func copyResult(res *store.CrossWorkspaceCopyResult, src, dst CrossWorkspaceAccess, input itemCopyPreflightRequest) ItemCopyResult {
 	resp := ItemCopyResult{
 		Source: ItemCopyResultSource{
 			// The CANONICAL slug, never the URL parameter — /workspaces/{slug}
@@ -508,7 +551,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		resp.Source.Seq = *res.SourceSeq
 	}
 
-	writeJSON(w, http.StatusCreated, resp)
+	return resp
 }
 
 // copyItemAcrossWorkspaces calls the store op exactly once.
@@ -931,4 +974,61 @@ func nonNilStrings(in []string) []string {
 		return []string{}
 	}
 	return in
+}
+
+// replayArchivedSourceCopy answers a keyed retry of a move whose source the
+// first attempt archived (TASK-3585). It acts only when the source resolves
+// as archived AND the caller can see it, which is exactly when the ladder
+// would answer 409 archived; it returns false otherwise, leaving the request
+// to the ladder untouched. Once it has read the body it answers the request
+// itself: the stored first answer for this key and request, a mismatch
+// (422) or in-flight (409) refusal, or, when the key holds no answer, the
+// ladder's own 409 archived. It replays only the caller's own answer under
+// its own key; it authorizes nothing new.
+func (s *Server) replayArchivedSourceCopy(w http.ResponseWriter, r *http.Request) bool {
+	// Only the middleware-resolved workspace: the ladder's own slow path
+	// writes its errors, and this function must not answer a request it
+	// does not take.
+	workspaceID, _ := r.Context().Value(ctxResolvedWorkspaceID).(string)
+	if workspaceID == "" {
+		return false
+	}
+	itemSlug := chi.URLParam(r, "itemSlug")
+	if live, err := s.store.ResolveItem(workspaceID, itemSlug); err != nil || live != nil {
+		return false
+	}
+	archived, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
+	if err != nil || archived == nil || archived.DeletedAt == nil {
+		return false
+	}
+	if visible, verr := s.checkItemVisible(workspaceID, archived, currentUser(r), workspaceRole(r), isBearerAuth(r)); verr != nil || !visible {
+		return false
+	}
+	var input itemCopyPreflightRequest
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
+		return true
+	}
+	key, kerr := idempotencyKey(r, input.OpKey)
+	if kerr != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", kerr.Error())
+		return true
+	}
+	if key != "" {
+		canon := input
+		canon.OpKey = ""
+		hold, ok := s.claimKey(w, r, workspaceID, idempotencyRouteCopy, archived.ID, canon, key, func(status int, stored string) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(stored))
+		})
+		if !ok {
+			return true
+		}
+		// A fresh claim: this key never copied this item, so the source is
+		// simply archived. Give the claim back and refuse as the ladder does.
+		s.release(hold)
+	}
+	s.writeItemResolveError(w, r, workspaceID, itemSlug)
+	return true
 }

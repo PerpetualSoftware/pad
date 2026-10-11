@@ -144,3 +144,8 @@ func (s *Server) replayAppend(w http.ResponseWriter, r *http.Request, visIDs []s
 	it.Appended = &models.ItemAppendedEntries{ImplementationNote: a.Note, Decision: a.Decision}
 	writeJSON(w, status, it)
 }
+
+// idempotencyRouteCopy names the cross-workspace copy route in a key's
+// request hash. Its answer is the whole first ItemCopyResult: the warnings
+// it carries (dropped fields, attachments cloned) cannot be recomputed later.
+const idempotencyRouteCopy = "item.copy"

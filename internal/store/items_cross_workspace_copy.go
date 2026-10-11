@@ -184,6 +184,12 @@ func (e *CopyPreCheckError) Unwrap() error { return e.Err }
 type RelationVisibilityFunc func(q Queryer, workspaceID string, item *models.Item) (bool, error)
 
 type CrossWorkspaceCopyRequest struct {
+	// AfterWriteTx, when set, runs inside the copy's transaction with the
+	// finished result, just before COMMIT (TASK-3585: the idempotency key's
+	// answer is written there, so it commits exactly when the copy does). An
+	// error rolls the copy back.
+	AfterWriteTx func(tx *sql.Tx, res *CrossWorkspaceCopyResult) error
+
 	// SourceItemID is the item in workspace A. The source workspace is
 	// DERIVED from it rather than supplied — an item's workspace is not the
 	// caller's to assert.
@@ -863,11 +869,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		return nil, err
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("copy item across workspaces: commit: %w", err)
-	}
-
-	return &CrossWorkspaceCopyResult{
+	res := &CrossWorkspaceCopyResult{
 		Item:              item,
 		Source:            source,
 		SourceCollection:  sourceColl,
@@ -882,7 +884,16 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		NotUnique:         notUnique,
 		DroppedAssignee:   droppedAssignee,
 		DroppedAgentRole:  droppedAgentRole,
-	}, nil
+	}
+	if req.AfterWriteTx != nil {
+		if err := req.AfterWriteTx(tx, res); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("copy item across workspaces: commit: %w", err)
+	}
+	return res, nil
 }
 
 // detachedSnapshot returns a deep copy of v that a PreCheck hook can neither
