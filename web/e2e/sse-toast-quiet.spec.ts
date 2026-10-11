@@ -135,7 +135,9 @@ test('CONTROL: an unflagged context still shows the creation toast — the produ
 		await expect(creationToast(page, title)).toBeVisible({ timeout: 5_000 });
 
 		// TASK-3593: a burst from the same actor folds into that ONE toast.
-		// Each event restarts its 4s clock, and these land in well under that.
+		// Hover holds it (TASK-2202), so a slow create or SSE delivery cannot
+		// let its 4s clock expire mid-burst and start a second toast (codex r2).
+		await creationToast(page, title).hover();
 		await createTask(request, fixture.apiToken, fixture.workspaceSlug, `${title} b`, 'e2e-toast-control');
 		await createTask(request, fixture.apiToken, fixture.workspaceSlug, `${title} c`, 'e2e-toast-control');
 		const burst = page.locator('.toast-container .toast-message', { hasText: 'Agent created 3 items' });
