@@ -1246,7 +1246,7 @@ export class CollabProvider {
 			}
 			case 'applier_request': {
 				if (msg.request_id && msg.patch_id && Array.isArray(msg.edits)) {
-					this.handleApplierPatch(msg.request_id, msg.edits, msg.expires_at_millis ?? 0, sourceWs);
+					this.handleApplierPatch(msg.request_id, msg.patch_id, msg.edits, msg.expires_at_millis ?? 0, sourceWs);
 					return;
 				}
 				if (!msg.request_id || typeof msg.markdown !== 'string') {
@@ -1364,8 +1364,19 @@ export class CollabProvider {
 	 * Never refused for unsent typing: the patch applies to the document
 	 * that holds it.
 	 */
+	/**
+	 * TASK-3585: the patches this provider applied, by patch id, with the
+	 * canonical before/after it reported. A patch the server sends AGAIN
+	 * (its first ack was late, and the caller retried with its idempotency
+	 * key) is re-acked from here and never applied twice: an insert-shaped
+	 * edit would keep its anchor. Bounded; oldest first out.
+	 */
+	private readonly appliedPatches = new Map<string, { before: string; after: string }>();
+	private static readonly APPLIED_PATCHES_MAX = 32;
+
 	private handleApplierPatch(
 		requestID: string,
+		patchID: string,
 		edits: { old: string; new: string; line_hint?: number }[],
 		expiresAt: number,
 		sourceWs: WebSocket | null,
@@ -1378,6 +1389,14 @@ export class CollabProvider {
 		const ws = sourceWs;
 		if (!ws || ws !== this.ws || ws.readyState !== this.WebSocketImpl.OPEN) {
 			console.warn('collab: patch source socket gone, skipping', requestID);
+			return;
+		}
+		const seen = this.appliedPatches.get(patchID);
+		if (seen) {
+			// Already applied on this document: an empty bracket (no frame) and
+			// the original before/after.
+			ws.send(JSON.stringify({ type: 'applier_apply_start', request_id: requestID }));
+			ws.send(JSON.stringify({ type: 'applier_ack', request_id: requestID, before: seen.before, after: seen.after }));
 			return;
 		}
 		let bracketOpened = false;
@@ -1407,6 +1426,12 @@ export class CollabProvider {
 				}),
 			);
 			return;
+		}
+		// Remembered BEFORE the expiry check: a late apply still happened, and
+		// a retry of it must be re-acked, not applied again.
+		this.appliedPatches.set(patchID, { before: result.before, after: result.after });
+		if (this.appliedPatches.size > CollabProvider.APPLIED_PATCHES_MAX) {
+			this.appliedPatches.delete(this.appliedPatches.keys().next().value!);
 		}
 		if (expiresAt > 0 && Date.now() > expiresAt) {
 			console.warn('collab: patch acked too late, suppressing', requestID);

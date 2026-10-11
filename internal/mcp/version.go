@@ -1738,6 +1738,17 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.90 — TASK-3585. ADDITIVE bump on the v0.53 grounds:
+//     `pad_item.action=patch` gains `op_key`, an idempotency key: retrying
+//     the SAME request with the same key returns the first answer (marked by
+//     the Idempotent-Replayed header on the remote transport) instead of
+//     applying again. New structured codes on both transports:
+//     `idempotency_key_reused` (422: the key was used for a different
+//     request), `idempotency_in_flight` (409: retry with the same key),
+//     `patch_outcome_unknown` (409: an earlier attempt reached an editor
+//     that never confirmed it and is gone; details carry seq and the diff
+//     since; nothing is re-applied).
+//
 //     0.89 — PLAN-3578 step 3. ADDITIVE bump on the v0.53 grounds:
 //     `pad_item.action=patch` gains `undo` (a patch_id from an earlier patch
 //     answer), which inverts that patch, anchored on the text around each
@@ -2084,7 +2095,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.89"
+const ToolSurfaceVersion = "0.90"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

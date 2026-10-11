@@ -222,6 +222,10 @@ const (
 	// ErrPatchNotFound: an undo named a patch this item does not have
 	// (PLAN-3578 step 3).
 	ErrPatchNotFound ErrorCode = "patch_not_found"
+	// TASK-3585: idempotency keys.
+	ErrPatchOutcomeUnknown  ErrorCode = "patch_outcome_unknown"
+	ErrIdempotencyInFlight  ErrorCode = "idempotency_in_flight"
+	ErrIdempotencyKeyReused ErrorCode = "idempotency_key_reused"
 
 	// ErrStoredStateUnreadable fires when an operation is refused because
 	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
@@ -504,6 +508,9 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	"patch_room_open":          {},
 	"patch_unstable_roundtrip": {},
 	"patch_not_found":          {},
+	"patch_outcome_unknown":    {},
+	"idempotency_in_flight":    {},
+	"idempotency_key_reused":   {},
 	// BUG-2675. The only entry whose marker is written for a LOCALLY
 	// generated refusal rather than an upstream APIError — the CLI's
 	// append helpers refuse before any request is made (see
@@ -1066,6 +1073,12 @@ func classifyHTTPStatusKind(
 			if upstream.Code == string(ErrPatchNotFound) {
 				hint = PatchNotFoundHint
 			}
+			switch upstream.Code {
+			case string(ErrPatchOutcomeUnknown):
+				hint = PatchOutcomeUnknownHint
+			case string(ErrIdempotencyInFlight):
+				hint = IdempotencyInFlightHint
+			}
 			if upstream.Code == string(ErrStoredStateUnreadable) {
 				// Same reason: the stored value stays undecodable, so every
 				// retry refuses identically. Since BUG-3056 the note/decide
@@ -1085,6 +1098,11 @@ func classifyHTTPStatusKind(
 			Hint:    conflictHintFor(bodyMessage, route),
 		})
 	case http.StatusUnprocessableEntity, http.StatusBadRequest:
+		// TASK-3585: a reused idempotency key is not a validation failure of
+		// the request; it has its own code and remedy.
+		if upstream := extractUpstreamErrorEnvelope(bodyText); upstream.Code == string(ErrIdempotencyKeyReused) {
+			return NewErrorResult(ErrorPayload{Code: ErrIdempotencyKeyReused, Message: bodyMessage, Hint: IdempotencyKeyReusedHint, Details: upstream.Details})
+		}
 		hint := validationHintFor(bodyMessage, route)
 		if h := moveNeedsValueHintFor(extractUpstreamErrorEnvelope(bodyText), bodyMessage); h != "" {
 			hint = h
@@ -1447,6 +1465,13 @@ const PatchUnstableHint = "Nothing was written. Applying this patch in the open 
 // PatchNotFoundHint is the recovery guidance for patch_not_found (PLAN-3578
 // step 3). Duplicated in internal/cli; a test asserts the two match.
 const PatchNotFoundHint = "Nothing was written. That patch id is not a patch on this item: use the patch_id a patch answer returned, on the item it was made on."
+
+// TASK-3585's hints. Duplicated in internal/cli; a test asserts they match.
+const (
+	PatchOutcomeUnknownHint  = "Nothing new was written. An earlier attempt reached an editor that never confirmed it and is gone, so it is not re-applied: read details.diff (the change since the patch was sent); if your edit is there, it landed. Otherwise send it again with a NEW key."
+	IdempotencyInFlightHint  = "A request with this key is still running. Wait a moment and retry with the SAME key: you will get its answer, not a second write."
+	IdempotencyKeyReusedHint = "This key was already used for a different request. Use a new key for a new request; reuse a key only to retry the identical request."
+)
 
 // UpdateConflictContentHint replaces the generic re-read-and-retry hint on an
 // update_conflict whose details carry content_write (PLAN-3555): a resent body

@@ -80,6 +80,12 @@ type serverCapabilities struct {
 	// reads exactly like a missing item, so the CLI refuses instead of sending
 	// when this is absent.
 	ItemPatch bool `json:"item_patch"`
+
+	// IdempotencyKeys is true when a patch honors an Idempotency-Key header
+	// or op_key (TASK-3585): a retry with the same key replays the first
+	// answer. An older build ignores op_key, so a client that relies on
+	// replay checks this first.
+	IdempotencyKeys bool `json:"idempotency_keys"`
 }
 
 // WHAT A BUILD THAT CANNOT DECODE A FORMAT ACTUALLY COSTS THE READER
@@ -122,7 +128,7 @@ type serverCapabilities struct {
 // rather than 500-ing — that signals to the editor "uploads still work,
 // but disable transformation tools."
 func (s *Server) handleServerCapabilities(w http.ResponseWriter, r *http.Request) {
-	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true, BuiltinUpdate: true, ItemSortOrderBulk: true, ItemPatch: true}
+	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true, BuiltinUpdate: true, ItemSortOrderBulk: true, ItemPatch: true, IdempotencyKeys: true}
 	if s.imageProcessor != nil {
 		resp.Image = s.imageProcessor.Capabilities()
 	} else {

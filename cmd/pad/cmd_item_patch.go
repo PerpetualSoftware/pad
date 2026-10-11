@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"os"
 	"strings"
@@ -20,6 +21,7 @@ func itemPatchCmd() *cobra.Command {
 		editsFlag   string
 		expectedSeq int64
 		undo        string
+		opKey       string
 	)
 	cmd := &cobra.Command{
 		Use:   "patch <ref> (--old TEXT --new TEXT)... | --edits @FILE | --undo PATCH-ID",
@@ -73,16 +75,21 @@ cannot apply patches holds the item.`,
 			if !client.ServerSupportsItemPatch() {
 				return fmt.Errorf("this Pad server does not support patch writes; upgrade it, or use pad item update with --expected-seq")
 			}
+			// TASK-3585: one key per invocation, so this command's own retry
+			// (and a caller's, with --op-key) replays instead of re-applying.
+			if opKey == "" {
+				opKey = uuid.NewString()
+			}
 			var res *cli.PatchResult
 			var err error
 			if undo != "" {
-				res, err = client.UndoPatch(getWorkspace(), args[0], undo)
+				res, err = client.UndoPatch(getWorkspace(), args[0], undo, opKey)
 			} else {
 				var seq *int64
 				if cmd.Flags().Changed("expected-seq") {
 					seq = &expectedSeq
 				}
-				res, err = client.PatchItem(getWorkspace(), args[0], edits, seq)
+				res, err = client.PatchItem(getWorkspace(), args[0], edits, seq, opKey)
 			}
 			if err != nil {
 				return err
@@ -110,6 +117,7 @@ cannot apply patches holds the item.`,
 	cmd.Flags().StringArrayVar(&olds, "old", nil, "text to replace; must occur exactly once in the current body (repeatable, paired in order with --new)")
 	cmd.Flags().StringArrayVar(&news, "new", nil, "replacement text (repeatable, paired in order with --old; may be empty to delete)")
 	cmd.Flags().StringVar(&editsFlag, "edits", "", `edits as a JSON array of {"old","new","line_hint"}: @FILE, - for stdin, or the JSON itself`)
+	cmd.Flags().StringVar(&opKey, "op-key", "", "idempotency key: retrying the SAME request with the same key returns the first answer instead of applying it again (default: a new key per invocation)")
 	cmd.Flags().StringVar(&undo, "undo", "", "invert an earlier patch on this item by its patch id; refused, writing nothing, if the text it changed has changed since")
 	cmd.Flags().Int64Var(&expectedSeq, "expected-seq", 0, "the seq you read; a moved item is still patched when every anchor matches, and reported as rebased")
 	return cmd

@@ -80,4 +80,12 @@ func (s *Server) runAppPendingSweep() {
 	if _, err := s.store.PruneContextCodes(); err != nil {
 		slog.Warn("apps: context code prune failed", "error", err)
 	}
+	// Idempotency keys older than their 24h window (TASK-3585). Rides this
+	// pass, the server's one periodic maintenance tick, rather than a loop of
+	// its own: one cheap indexed DELETE.
+	if n, err := s.store.SweepIdempotencyKeys(time.Now()); err != nil {
+		slog.Warn("idempotency: key sweep failed", "error", err)
+	} else if n > 0 {
+		slog.Info("idempotency: swept expired keys", "count", n)
+	}
 }

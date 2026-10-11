@@ -106,3 +106,42 @@ describe('patch applier (PLAN-3578 step 2)', () => {
 		provider.destroy();
 	});
 });
+
+describe('patch re-send (TASK-3585)', () => {
+	it('re-acks a patch it already applied, without applying it again', () => {
+		let applies = 0;
+		const { provider, sock } = setup((_e, _i, _x, openBracket) => {
+			openBracket();
+			applies++;
+			return { ok: true, before: 'a', after: 'b' };
+		});
+		sock.control(patchRequest());
+		sock.control({ ...patchRequest(), request_id: 'p2' }); // same patch_id, a retry
+		expect(applies).toBe(1);
+		const second = controls(sock).filter((c) => c.request_id === 'p2');
+		expect(second.map((c) => c.type)).toEqual(['applier_apply_start', 'applier_ack']);
+		expect(second[1]).toMatchObject({ before: 'a', after: 'b' });
+		provider.destroy();
+	});
+
+	it('remembers a patch it applied too late to ack, so the retry is re-acked', () => {
+		let applies = 0;
+		const now = Date.now();
+		let late = false;
+		const spy = vi.spyOn(Date, 'now').mockImplementation(() => (late ? now + 120_000 : now));
+		const { provider, sock } = setup((_e, _i, _x, openBracket) => {
+			openBracket();
+			applies++;
+			late = true; // the deadline passes during the apply
+			return { ok: true, before: 'a', after: 'b' };
+		});
+		sock.control({ ...patchRequest(), expires_at_millis: now + 60_000 });
+		expect(controls(sock).filter((c) => c.request_id === 'p1').map((c) => c.type)).toEqual(['applier_apply_start']);
+		late = false;
+		sock.control({ ...patchRequest(), request_id: 'p2', expires_at_millis: now + 60_000 });
+		spy.mockRestore();
+		expect(applies).toBe(1);
+		expect(controls(sock).filter((c) => c.request_id === 'p2').map((c) => c.type)).toEqual(['applier_apply_start', 'applier_ack']);
+		provider.destroy();
+	});
+});
