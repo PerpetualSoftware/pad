@@ -55,6 +55,14 @@ async function openAsCloudUser(page: Page, email: string): Promise<void> {
 		const body = await resp.json();
 		body.cloud_mode = true;
 		body.billing_available = true;
+		// TASK-3577: the offer the sidecar serves; prices render from it.
+		body.billing_offer = {
+			intervals: [
+				{ interval: 'monthly', lookup_key: 'pad_pro_monthly', unit_amount: 800, currency: 'usd' },
+				{ interval: 'annual', lookup_key: 'pad_pro_annual', unit_amount: 8000, currency: 'usd' },
+			],
+			trial_days: 14,
+		};
 		await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
 	});
 	await page.route('**/api/v1/workspaces', async (route) => {
@@ -119,9 +127,13 @@ for (const leg of [
 				await expect(page.getByTestId('plan-limits-card')).toBeVisible();
 				expect(seen).toEqual({ links: 0, copy: false });
 				await expect(page.getByRole('button', { name: /upgrade/i })).toHaveCount(0);
+				// TASK-3577: no served price either.
+				await expect(page.getByText('/ month')).toHaveCount(0);
 			} else {
 				await expect(page.getByRole('heading', { name: 'Compare plans' })).toBeVisible();
 				await expect(page.getByRole('button', { name: 'Upgrade to Pro' }).first()).toBeVisible();
+				// TASK-3577: the price is the served one.
+				await expect(page.getByText('$8 / month').first()).toBeVisible();
 			}
 
 			// The checkout return deep links: web-checkout states, dropped in the app.

@@ -29,6 +29,14 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		user: { plan: 'free' },
 		cloudMode: true,
 		billingAvailable: true,
+		// TASK-3577: billingAvailable comes with the offer it advertises.
+		billingOffer: {
+			intervals: [
+				{ interval: 'monthly', lookup_key: 'pad_pro_monthly', unit_amount: 800, currency: 'usd' },
+				{ interval: 'annual', lookup_key: 'pad_pro_annual', unit_amount: 8000, currency: 'usd' }
+			],
+			trial_days: 14
+		},
 		commerceAllowed: true,
 		load: async () => {}
 	}

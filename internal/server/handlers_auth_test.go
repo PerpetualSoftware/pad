@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -245,9 +246,15 @@ func TestAuthSessionBillingAvailable(t *testing.T) {
 				return
 			}
 			b, _ := json.Marshal(got["billing_offer"])
-			want := `{"intervals":[{"interval":"monthly","lookup_key":"pad_pro_monthly","unit_amount":800,"currency":"usd"},{"interval":"annual","lookup_key":"pad_pro_annual","unit_amount":8000,"currency":"usd"}],"trial_days":14}`
-			if string(b) != want {
-				t.Fatalf("billing_offer = %s\nwant %s", b, want)
+			var offer struct {
+				Intervals []billing.OfferInterval `json:"intervals"`
+				TrialDays int                     `json:"trial_days"`
+			}
+			if err := json.Unmarshal(b, &offer); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(offer.Intervals, servedOffer.Intervals) || offer.TrialDays != 14 {
+				t.Fatalf("billing_offer = %s, want the served offer", b)
 			}
 		})
 	}
