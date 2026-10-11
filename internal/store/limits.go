@@ -597,13 +597,13 @@ func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error)
 	// Read the row under its lock first (Postgres FOR UPDATE; SQLite's
 	// transaction already holds the write lock), so a refusal's reason is
 	// decided from the same row version the UPDATE below is judged against.
-	lockSQL := `SELECT plan, plan_source, plan_revision FROM users WHERE id = ?`
+	lockSQL := `SELECT plan, plan_source, plan_revision, COALESCE(plan_expires_at, '') FROM users WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		lockSQL += ` FOR UPDATE`
 	}
-	var heldPlan, heldSource string
+	var heldPlan, heldSource, heldExpires string
 	var heldRevision int64
-	err = tx.QueryRow(s.q(lockSQL), userID).Scan(&heldPlan, &heldSource, &heldRevision)
+	err = tx.QueryRow(s.q(lockSQL), userID).Scan(&heldPlan, &heldSource, &heldRevision, &heldExpires)
 	if err == sql.ErrNoRows {
 		return PlanWriteResult{}, fmt.Errorf("set user plan: user %s not found", userID)
 	}
@@ -623,6 +623,19 @@ func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error)
 		fence = time.Now().UnixMilli()
 	}
 
+	// An upgrade (BUG-3591): this write makes the plan pro and the held row
+	// was not pro in effect (an expired pro counts as free, as everywhere).
+	// Decided from the row read under the lock above, and stamped in the
+	// same UPDATE, so it lands only if the write applies. A pro-to-pro
+	// renewal keeps the earlier stamp.
+	upgradedAt := ""
+	if w.Plan == "pro" {
+		held := models.User{Plan: heldPlan, PlanExpiresAt: heldExpires}
+		if held.EffectivePlan(time.Now()) != "pro" {
+			upgradedAt = now()
+		}
+	}
+
 	// Revisions are unix milliseconds, beyond int4: every placeholder they
 	// bind to is cast, or Postgres infers int4 from the literal it is
 	// compared with and refuses the value.
@@ -632,12 +645,14 @@ func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error)
 		           WHEN CAST(? AS BIGINT) > 0 THEN CAST(? AS BIGINT)
 		           WHEN CAST(? AS BIGINT) > plan_revision THEN CAST(? AS BIGINT)
 		           ELSE plan_revision END,
-		       plan_subscription_id = CASE WHEN CAST(? AS BIGINT) > 0 THEN ? ELSE plan_subscription_id END
+		       plan_subscription_id = CASE WHEN CAST(? AS BIGINT) > 0 THEN ? ELSE plan_subscription_id END,
+		       plan_upgraded_at = CASE WHEN ? <> '' THEN ? ELSE plan_upgraded_at END
 		WHERE id = ? AND (? = 1 OR ? <> 'free' OR plan IN ('', 'free') OR plan_source = ?)
 		  AND (CAST(? AS BIGINT) = 0 OR CAST(? AS BIGINT) > plan_revision)`),
 		w.Plan, w.ExpiresAt, w.Source, now(),
 		w.Revision, w.Revision, fence, fence,
 		w.Revision, w.SubscriptionID,
+		upgradedAt, upgradedAt,
 		userID, force, w.Plan, w.Source,
 		w.Revision, w.Revision)
 	if err != nil {

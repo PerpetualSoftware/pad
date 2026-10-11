@@ -157,6 +157,13 @@ func TestAdminBillingStats_AdminWithSidecarReachable_MergesLocalAndRemote(t *tes
 	seedUser(t, srv, "pro2@test.com", "pro", recent) // counts as new_signup_30d
 	seedUser(t, srv, "pro_old@test.com", "pro", old) // pro but outside 30d window
 	seedUser(t, srv, "self@test.com", "self-hosted", old)
+	// pro_old became Pro inside the window (BUG-3591): an upgrade, though not
+	// a new account. The stamp itself is SetUserPlan's (store tests); this
+	// pins that the handler reports it.
+	if _, err := srv.store.DB().Exec(`UPDATE users SET plan_upgraded_at = ? WHERE id = ?`,
+		recent.UTC().Format(time.RFC3339), newSeedID("pro_old@test.com")); err != nil {
+		t.Fatal(err)
+	}
 
 	srv.SetCloudSidecar(&fakeBillingSidecar{
 		response: &billing.BillingMetricsResponse{
@@ -198,6 +205,9 @@ func TestAdminBillingStats_AdminWithSidecarReachable_MergesLocalAndRemote(t *tes
 	// Only pro1 + pro2 are inside the 30-day window (pro_old is too old).
 	if got, want := resp.NewSignups30d, 2; got != want {
 		t.Errorf("new_signups_30d: want %d (pro1+pro2), got %d", want, got)
+	}
+	if got, want := resp.Upgrades30d, 1; got != want {
+		t.Errorf("upgrades_30d: want %d (pro_old upgraded in the window), got %d", want, got)
 	}
 
 	// Remote fields verbatim from the fake sidecar.

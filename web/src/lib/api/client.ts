@@ -3508,7 +3508,7 @@ export const api = {
 		// Billing stats for the admin Billing dashboard (TASK-828 / PLAN-825).
 		// Returns merged Stripe-derived metrics (active subs, MRR, ARR, churn,
 		// cancellations) plus local users-table aggregates (customers_by_plan,
-		// new_signups_30d). Always 200 — degraded states surface as the
+		// new_signups_30d, upgrades_30d). Always 200 — degraded states surface as the
 		// stripe_configured + cloud_unreachable booleans on the body.
 		// Cloud-mode only (returns 404 in self-host).
 		getBillingStats: () =>

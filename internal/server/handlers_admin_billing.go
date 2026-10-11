@@ -13,7 +13,11 @@ import (
 // GET /api/v1/admin/billing-stats. It merges Stripe-derived metrics from
 // pad-cloud (active_subscriptions, MRR, ARR, churn, cancellations) with
 // metrics computed from pad's local users table (customers_by_plan,
-// new_signups_30d).
+// new_signups_30d, upgrades_30d).
+//
+// new_signups_30d is Pro accounts CREATED in the last 30 days (by
+// created_at); upgrades_30d is accounts that BECAME Pro in them, by when the
+// plan changed (BUG-3591). The first misses an old account that upgraded.
 //
 // CloudUnreachable is true when the pad-cloud sidecar errored out (transport
 // failure, 5xx) — in that case the Stripe-derived fields are zero and the
@@ -25,6 +29,7 @@ type AdminBillingStatsResponse struct {
 	CloudUnreachable    bool           `json:"cloud_unreachable"`
 	CustomersByPlan     map[string]int `json:"customers_by_plan"`
 	NewSignups30d       int            `json:"new_signups_30d"`
+	Upgrades30d         int            `json:"upgrades_30d"`
 	ActiveSubscriptions int            `json:"active_subscriptions"`
 	MRRCents            int64          `json:"mrr_cents"`
 	ARRCents            int64          `json:"arr_cents"`
@@ -71,6 +76,7 @@ func (s *Server) handleAdminBillingStats(w http.ResponseWriter, r *http.Request)
 	}
 	resp.CustomersByPlan = agg.CustomersByPlan
 	resp.NewSignups30d = agg.NewProSignups
+	resp.Upgrades30d = agg.UpgradesInWindow
 
 	// Remote fields. cloudSidecar is nil when the operator is in cloud mode
 	// but hasn't wired PAD_CLOUD_SIDECAR_URL — treat that as unreachable.

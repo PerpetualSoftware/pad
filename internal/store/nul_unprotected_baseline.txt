@@ -350,6 +350,7 @@ users.password_hash
 users.plan
 users.plan_expires_at
 users.plan_subscription_id
+users.plan_upgraded_at
 users.role
 users.stripe_customer_id
 users.totp_secret
