@@ -852,7 +852,8 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 	}
 
 	payload := map[string]any{}
-	for _, key := range []string{"title", "content", "slug"} {
+	// TASK-3585: op_key is the create's idempotency key.
+	for _, key := range []string{"title", "content", "slug", "op_key"} {
 		if v, ok := input[key]; ok {
 			payload[key] = v
 		}

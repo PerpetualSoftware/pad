@@ -1738,6 +1738,18 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.91 — TASK-3585, create. ADDITIVE bump on the v0.53 grounds:
+//     `pad_item.action=create` accepts `op_key` too. Retrying the SAME
+//     create with the same key answers the item the first attempt created
+//     (as it stands now) instead of creating a second one; the answer is
+//     recorded in the create's own transaction. A key reused for a
+//     different create is refused `idempotency_key_reused`; one still in
+//     flight answers `idempotency_in_flight` (both codes already exist, and
+//     are structured on both transports for any route). A replay whose item
+//     has since been deleted answers HTTP 410 `idempotency_target_gone`,
+//     which is NOT on the structured allow-list and reaches MCP as a generic
+//     error. No name, enum or param moved.
+//
 //     0.90 — TASK-3585. ADDITIVE bump on the v0.53 grounds:
 //     `pad_item.action=patch` gains `op_key`, an idempotency key: retrying
 //     the SAME request with the same key returns the first answer (marked by
@@ -2095,7 +2107,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.90"
+const ToolSurfaceVersion = "0.91"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

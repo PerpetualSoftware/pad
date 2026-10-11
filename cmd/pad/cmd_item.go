@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/PerpetualSoftware/pad/internal/bodypatch"
+	"github.com/google/uuid"
 	"io"
 	"math"
 	"net/url"
@@ -189,16 +190,17 @@ func parseFieldFlag(schema models.CollectionSchema, key, raw string) any {
 
 func createCmd() *cobra.Command {
 	var (
-		content    string
-		useStdin   bool
-		priority   string
-		status     string
-		assignee   string
-		roleFlag   string
-		category   string
-		parentSlug string
-		tags       string
-		fieldFlags []string
+		createOpKey string
+		content     string
+		useStdin    bool
+		priority    string
+		status      string
+		assignee    string
+		roleFlag    string
+		category    string
+		parentSlug  string
+		tags        string
+		fieldFlags  []string
 	)
 
 	cmd := &cobra.Command{
@@ -344,6 +346,12 @@ Run with --help-collections to see available collections and their status values
 				input.AgentRoleID = &role.ID
 			}
 
+			// TASK-3585: one idempotency key per invocation, so a retry of a
+			// create whose answer was lost returns the item instead of a twin.
+			if createOpKey == "" {
+				createOpKey = uuid.NewString()
+			}
+			input.OpKey = createOpKey
 			item, err := cli.WithCollectionAliasFallback(rawSlug, client.CollectionNotFoundIsAuthoritative, func(slug string) (*models.Item, error) {
 				return client.CreateItem(ws, slug, input)
 			})
@@ -414,6 +422,7 @@ Run with --help-collections to see available collections and their status values
 		printAvailableCollections()
 	})
 
+	cmd.Flags().StringVar(&createOpKey, "op-key", "", "idempotency key: retrying the SAME create with the same key returns the item it created instead of a second one (default: a new key per invocation)")
 	return cmd
 }
 

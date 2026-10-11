@@ -1263,17 +1263,25 @@ func uniqueStrings(values []string) []string {
 type ItemCreate struct {
 	// ActorUserID is the request's user, stamped on the create's version row
 	// (PLAN-2348 U2). Internal-only.
-	ActorUserID    string  `json:"-"`
-	Title          string  `json:"title"`
-	Content        string  `json:"content,omitempty"`
-	Fields         string  `json:"fields,omitempty"`
-	Tags           string  `json:"tags,omitempty"`
-	Pinned         bool    `json:"pinned,omitempty"`
-	ParentID       *string `json:"parent_id,omitempty"`
-	AssignedUserID *string `json:"assigned_user_id,omitempty"`
-	AgentRoleID    *string `json:"agent_role_id,omitempty"`
-	CreatedBy      string  `json:"created_by,omitempty"`
-	Source         string  `json:"source,omitempty"`
+	ActorUserID string `json:"-"`
+	// OpKey is the idempotency key in the body (TASK-3585), for callers that
+	// cannot set the Idempotency-Key header. Not part of the request hash;
+	// the store ignores it.
+	OpKey string `json:"op_key,omitempty"`
+	// AfterWriteTx, when set, runs inside the create's transaction after the
+	// row is inserted and re-read, before COMMIT (TASK-3585: the idempotency
+	// key's answer). An error rolls the create back. Internal.
+	AfterWriteTx   func(tx *sql.Tx, created *Item) error `json:"-"`
+	Title          string                                `json:"title"`
+	Content        string                                `json:"content,omitempty"`
+	Fields         string                                `json:"fields,omitempty"`
+	Tags           string                                `json:"tags,omitempty"`
+	Pinned         bool                                  `json:"pinned,omitempty"`
+	ParentID       *string                               `json:"parent_id,omitempty"`
+	AssignedUserID *string                               `json:"assigned_user_id,omitempty"`
+	AgentRoleID    *string                               `json:"agent_role_id,omitempty"`
+	CreatedBy      string                                `json:"created_by,omitempty"`
+	Source         string                                `json:"source,omitempty"`
 	// Convention is the typed door for the `convention` system metadata key
 	// (BUG-3163). Create's `fields` refuses every reserved key, so this is how
 	// convention activation writes it: the handler validates the object and
