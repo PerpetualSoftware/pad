@@ -209,11 +209,15 @@ function showGrouped<T, A>(
 		const { message, link } = render(group.acc);
 		live.message = message;
 		live.link = link;
-		const past = history.find((h) => h.id === group.id);
-		if (past) {
+		// The history entry moves to the front with its new timestamp, so the
+		// tray stays newest-first when another toast landed mid-burst (codex r3).
+		const at = history.findIndex((h) => h.id === group.id);
+		if (at !== -1) {
+			const [past] = history.splice(at, 1);
 			past.message = message;
 			past.link = link;
 			past.timestamp = now;
+			history.unshift(past);
 		}
 		// The burst is still going: give the toast its full time again. A held
 		// clock (hover, focus) takes it up when the hold is released.

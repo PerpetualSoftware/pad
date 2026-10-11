@@ -138,6 +138,16 @@ describe('grouped toasts hold bounded state (TASK-3593 codex round 1)', () => {
 		expect(__groupCountForTests(), 'evicted').toBe(0);
 	});
 
+	it('an updated burst moves to the front of the history (codex r3)', () => {
+		created('Agent', 1);
+		vi.advanceTimersByTime(100);
+		toastStore.show('Saved', 'success');
+		vi.advanceTimersByTime(100);
+		created('Agent', 2);
+		expect(toastStore.history.map((h) => h.message)).toEqual(['Agent created 2 items', 'Saved']);
+		expect(toastStore.history[0].timestamp).toBeGreaterThanOrEqual(toastStore.history[1].timestamp);
+	});
+
 	it('the folded summary tracks one collection, then mixed', () => {
 		let b = foldCreated(undefined, { title: 'a', collection: 'tasks' });
 		b = foldCreated(b, { title: 'b', collection: 'tasks' });
