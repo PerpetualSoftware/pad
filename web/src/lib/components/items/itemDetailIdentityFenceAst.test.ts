@@ -189,8 +189,12 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// moving the base or asking; after the dialog it checks again before the
 	// reload writes. resolveRawStale resends only on a decided rebase/overwrite
 	// (decideRawStale fenced it); its finally clears this pane's own flag.
+	// BUG-3582: re-reviewed. Before the openTabForms await it now converts its
+	// own texts with toEditorMarkdown (synchronous, pure, against this read's
+	// workspace and index); nothing after the await reads live state anew, and
+	// the fences after it are unchanged.
 	decideRawStale: {
-		reviewed: '119711a202f3',
+		reviewed: '929baf56a305',
 		why: 'item id and gen against loadGeneration after the read, after the open-tab canonical forms are computed, and after the dialog, before the base moves or the reload writes',
 	},
 	resolveRawStale: {
@@ -271,8 +275,8 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'connection state of this instance\'s own provider', reviewed: 'b0f9f4cc5f23',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await. Re-reviewed for BUG-3526: the capture reads provider.editsMayBeMissing instead of provider.unsentLocalEdits, still synchronous and before the fetch; the continuation and its fences are unchanged', reviewed: 'ed881530cc3a' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it), and for BUG-3526 (only the input of that capture)', reviewed: '815a49a9adb8' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await. Re-reviewed for BUG-3526: the capture reads provider.editsMayBeMissing instead of provider.unsentLocalEdits, still synchronous and before the fetch; the continuation and its fences are unchanged. Re-reviewed for BUG-3582: only the enclosing collab effect moved (onApplierRequest converts wiki-links before its setContent, synchronously, no await, no new write); this continuation is unchanged', reviewed: '5f2d4a91f1cf' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it), and for BUG-3526 (only the input of that capture). Re-reviewed for BUG-3582: only the enclosing collab effect moved (the synchronous wiki-link conversion in the applier); this continuation is unchanged', reviewed: 'de9c91d7f8df' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
@@ -281,7 +285,7 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved. Re-reviewed for BUG-3556: the prompt reads the provider getter editsAtRiskOnClose instead of unsentLocalEdits (a read, no await, no write); nothing else moved. Re-reviewed for BUG-3571: one early return when a confirmed sign-out discard is under way (signOutDiscarding(), a module read; no await, no write); nothing else moved', reviewed: '4404c3f437e7',
 		may: ['teardownFlushed'],
 	},
-	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first', reviewed: 'ac93e315dd54' },
+	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first. Re-reviewed for BUG-3582: seedMd above it is now computed by toEditorMarkdown, the same value as the inline conversion it replaced; the microtask is unchanged', reviewed: '76af97b065fd' },
 	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: 'acbf5de58fba' },
 	{
 		call: /^requestAnimationFrame\($/,

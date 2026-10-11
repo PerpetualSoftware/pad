@@ -72,6 +72,7 @@
 	import { goto } from '$app/navigation';
 	import { beforeNavigate } from '$app/navigation';
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
+	import { toEditorMarkdown } from '$lib/utils/markdown';
 	import { canonicalEditorMarkdown } from '$lib/collab/canonicalMarkdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
@@ -775,12 +776,7 @@
 	// Convert wiki-links to markdown links for the editor
 	let editorContent = $derived.by(() => {
 		if (!item) return '';
-		const raw = item.content ?? '';
-		const allItems = localIndex.getAll(wsSlug);
-		if (allItems.length > 0 && raw.includes('[[')) {
-			return wikiLinksToMarkdown(raw, allItems, wsSlug, username);
-		}
-		return raw;
+		return toEditorMarkdown(item.content ?? '', localIndex.getAll(wsSlug), wsSlug, username);
 	});
 
 	let contentDebounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2721,12 +2717,7 @@
 		// regression than the bug this fixes. Mirrors the untracked
 		// `baseline` read directly above for the same reason.
 		const seedMd = untrack(() => {
-			const allItemsAtLoad = localIndex.getAll(wsSlug);
-			const raw =
-				allItemsAtLoad.length > 0 && baseline.includes('[[')
-					? wikiLinksToMarkdown(baseline, allItemsAtLoad, wsSlug, username)
-					: baseline;
-			return unescapeDocLinks(raw);
+			return unescapeDocLinks(toEditorMarkdown(baseline, localIndex.getAll(wsSlug), wsSlug, username));
 		});
 		// The lazy-seed effect below OVERWRITES this with its own value
 		// when (and only when) it actually calls setContent — its capture
@@ -2815,7 +2806,9 @@
 					return false;
 				}
 				try {
-					editorInstance.commands.setContent(markdown);
+					// BUG-3582: the same conversion the load and the seed apply, or
+					// an agent's [[REF]] lands as literal bracket text.
+					editorInstance.commands.setContent(toEditorMarkdown(markdown, localIndex.getAll(wsSlug), wsSlug, username));
 					// Brief notification so users see WHY their editor
 					// just changed under them. The applier path is
 					// triggered by external (CLI / MCP / API) writes
@@ -3262,11 +3255,7 @@
 		// wiki-links resolve to clickable refs. The 5s flush will
 		// later round-trip back to canonical [[wiki-link]] form via
 		// markdownToWikiLinks.
-		const allItems = localIndex.getAll(wsSlug);
-		const seedMd =
-			allItems.length > 0 && seedRaw.includes('[[')
-				? wikiLinksToMarkdown(seedRaw, allItems, wsSlug, username)
-				: seedRaw;
+		const seedMd = toEditorMarkdown(seedRaw, localIndex.getAll(wsSlug), wsSlug, username);
 
 		// Snapshot activeCollabContext now so the microtask below can
 		// record the seed onto the SAME ctx object the flush path reads
@@ -4884,7 +4873,12 @@
 		// Our own texts, and the form an open rich tab stores for each (the
 		// BUG-2995 round trip; rawCanonical.ts). Both compared EXACTLY.
 		const own = rawBase.ownTexts();
-		const forms = stored === '' || own.includes(stored) ? [] : await openTabForms(own, localIndex.getAll(wsSlug));
+		// BUG-3582: an open tab's applier converts wiki-links before its
+		// setContent, so the texts are converted the same way, here, before
+		// the await, against this read's workspace and index.
+		const linkIndex = localIndex.getAll(wsSlug);
+		const ownForEditor = own.map((t) => toEditorMarkdown(t, linkIndex, wsSlug, username));
+		const forms = stored === '' || own.includes(stored) ? [] : await openTabForms(ownForEditor, linkIndex);
 		if (!item || item.id !== reqItemId || gen !== loadGeneration) return 'gone';
 		if (!rawStaleRebased && isOwnBody(stored, [...own, ...forms])) {
 			rawStaleRebased = true;

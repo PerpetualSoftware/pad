@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createHeadlessEditor, flushPipeline } from '$lib/collab/materializer/entry';
-import { wikiLinksToMarkdown } from './markdown';
+import { wikiLinksToMarkdown, toEditorMarkdown } from './markdown';
 import type { Item } from '$lib/types';
 
 // BUG-3315 U1: a wiki link whose text contains a character the markdown pipeline
@@ -106,5 +106,19 @@ describe('BUG-3315 U1: link text with markdown/HTML-significant characters survi
 	it('an edited display text still becomes an override', () => {
 		const { flushed } = loadAndSave('see [[TASK-1|a > c]] here', 'a > b');
 		expect(flushed).toBe('see [[TASK-1|a > c]] here');
+	});
+});
+
+// BUG-3582: one conversion for every path that hands the editor a body.
+describe('toEditorMarkdown (BUG-3582)', () => {
+	const items = [{ slug: 'fix-it', title: 'Fix it', item_number: 5, collection_prefix: 'TASK', collection_slug: 'tasks' }] as unknown as Parameters<typeof toEditorMarkdown>[1];
+	it('turns [[REF]] into a link, as the seed always did', () => {
+		const out = toEditorMarkdown('See [[TASK-5]] now.', items, 'docapp', 'dave');
+		expect(out).not.toContain('[[');
+		expect(out).toContain('](/dave/docapp/');
+	});
+	it('leaves a body with no wiki-link, or no index, untouched', () => {
+		expect(toEditorMarkdown('plain', items, 'docapp', 'dave')).toBe('plain');
+		expect(toEditorMarkdown('See [[TASK-5]]', [], 'docapp', 'dave')).toBe('See [[TASK-5]]');
 	});
 });

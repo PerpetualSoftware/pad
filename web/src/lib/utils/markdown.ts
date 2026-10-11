@@ -845,6 +845,19 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 }
 
 /**
+ * Stored markdown to the markdown the editor is given (BUG-3582): every
+ * `[[REF]]` / `[[Title]]` becomes a link against the workspace's local item
+ * index, exactly as `wikiLinksToMarkdown` does. ONE function for every path
+ * that hands the editor a body, the load, the collab seed and the designated
+ * applier, because the applier skipping it is how an agent's `[[TASK-5]]`
+ * reached open tabs as literal bracket text. The flush's `markdownToWikiLinks`
+ * turns the links back into wiki-links on the way out.
+ */
+export function toEditorMarkdown(stored: string, items: Item[], workspaceSlug: string, username?: string): string {
+	return items.length > 0 && stored.includes('[[') ? wikiLinksToMarkdown(stored, items, workspaceSlug, username) : stored;
+}
+
+/**
  * Convert markdown links back to wiki-link storage syntax.
  * When the link's URL resolves to an item with a ref, emit [[REF]] (or
  * [[REF|Display]] if the visible text differs from the item's current
