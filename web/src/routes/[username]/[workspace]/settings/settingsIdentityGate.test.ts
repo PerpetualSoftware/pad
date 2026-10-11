@@ -24,8 +24,8 @@ identityGateSuite({
 			handleCollectionCreated: { reviewed: 'd79a036401d8', why: 'identityHeld(epochAtEntry) after refreshCollections, which fences its own commit' },
 			handleCollectionUpdated: { reviewed: '2f678b54cc5f', why: 'identityHeld(epochAtEntry) after refreshCollections, which fences its own commit' },
 			handleInvite: {
-				reviewed: '21d6ac84d817',
-				why: `${ENTRY}, before the clipboard write as well as the page commits; the finally clears its own busy flag. Re-reviewed for TASK-3413 U9c: the members apps list is written beside members, after the second await's check`,
+				reviewed: '1cd48a111f6c',
+				why: `${ENTRY}, before the clipboard write as well as the page commits; the finally clears its own busy flag. Re-reviewed for TASK-3413 U9c: the members apps list is written beside members, after the second await's check. Re-reviewed for TASK-3601: the plan-limit refusal now names its inline scope and the blocked action, a change to the call's arguments only, still after the catch arm's check`,
 			},
 			handleRemoveMember: { reviewed: '75d40e43ff80', why: `${ENTRY}. Re-reviewed for TASK-2190: the failure toast reads the server's reason through memberChangeFailure, after the check. Re-reviewed for TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
 			handleCancelInvitation: { reviewed: '5667d068dfb0', why: `${ENTRY}. Re-reviewed for TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },

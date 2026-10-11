@@ -1,0 +1,67 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// TASK-3601: every plan-limit refusal raises the persistent prompt (it was a
+// 6-second toast). The upgrade is offered only to the payer, and only where
+// commerce is allowed and billing is available (PLAN-3291 DR-3 still holds).
+
+const state = vi.hoisted(() => ({ commerce: true, billing: true }));
+vi.mock('$lib/stores/auth.svelte', () => ({
+	authStore: {
+		get commerceAllowed() {
+			return state.commerce;
+		},
+		get billingAvailable() {
+			return state.billing;
+		},
+		onIdentityChange: () => () => {},
+	},
+}));
+
+import { showPlanLimitToast } from './planLimitToast';
+import { planLimitPrompt } from './planLimitPrompt.svelte';
+import { PadApiError } from '$lib/api/client';
+
+const MSG = 'This workspace has reached its 3-member limit on Free.';
+const err = (details: Record<string, unknown> = { payer_is_you: true }) =>
+	new PadApiError({ code: 'plan_limit_exceeded', message: MSG, details });
+
+describe('showPlanLimitToast raises the plan-limit prompt (TASK-3601)', () => {
+	beforeEach(() => {
+		state.commerce = true;
+		state.billing = true;
+		planLimitPrompt.dismiss();
+	});
+
+	it('the payer, where commerce is allowed: Upgrade', () => {
+		showPlanLimitToast(err());
+		expect(planLimitPrompt.current).toMatchObject({ message: MSG, action: 'upgrade', scope: null });
+	});
+
+	it('no commerce in the app: the statement alone, no upgrade anywhere', () => {
+		state.commerce = false;
+		showPlanLimitToast(err());
+		const p = planLimitPrompt.current!;
+		expect(p.action).toBe('none');
+		expect([p.message, p.hint, p.note].join(' ')).not.toMatch(/upgrade|billing|pro\b/i);
+	});
+
+	it('stays until dismissed: no timer takes it away', () => {
+		vi.useFakeTimers();
+		showPlanLimitToast(err());
+		vi.advanceTimersByTime(60_000);
+		expect(planLimitPrompt.current).not.toBeNull();
+		planLimitPrompt.dismiss();
+		expect(planLimitPrompt.current).toBeNull();
+		vi.useRealTimers();
+	});
+
+	it('a scoped refusal goes to its inline host when one is mounted, else to the global one', () => {
+		showPlanLimitToast(err(), { scope: 'invite', blocked: 'invite a member' });
+		expect(planLimitPrompt.current?.scope).toBeNull();
+		const off = planLimitPrompt.registerInlineHost('invite');
+		showPlanLimitToast(err(), { scope: 'invite', blocked: 'invite a member' });
+		expect(planLimitPrompt.current).toMatchObject({ scope: 'invite', blocked: 'invite a member' });
+		off();
+		expect(planLimitPrompt.current, 'the host closing takes its prompt with it').toBeNull();
+	});
+});

@@ -149,7 +149,8 @@ for (const leg of [
 				}
 			}
 
-			// A plan-limit refusal: the toast states the limit; only the browser adds the upgrade.
+			// A plan-limit refusal: the prompt states the limit; only the browser
+			// adds the upgrade. It is the create dialog's inline prompt (TASK-3601).
 			await page.goto('/console');
 			await page.getByRole('button', { name: 'Create Workspace', exact: true }).click();
 			await page.getByPlaceholder('Workspace name').fill('Over the limit');
@@ -157,14 +158,14 @@ for (const leg of [
 				page.waitForResponse((r) => r.url().endsWith('/api/v1/workspaces') && r.request().method() === 'POST'),
 				page.getByRole('button', { name: 'Create Workspace', exact: true }).last().click()
 			]);
-			const toast = page.locator('.toast-error').filter({ hasText: '1-workspace limit' });
-			await expect(toast).toBeVisible();
+			const prompt = page.locator('.plan-limit-prompt').filter({ hasText: '1-workspace limit' });
+			await expect(prompt).toBeVisible();
 			if (leg.shell) {
-				await expect(toast).not.toContainText(/upgrade/i);
-				await expect(toast).not.toHaveAttribute('role', 'button');
+				await expect(prompt).not.toContainText(/upgrade/i);
+				await expect(prompt.getByRole('button', { name: 'Upgrade' })).toHaveCount(0);
 			} else {
-				await expect(toast).toContainText('Upgrade to Pro');
-				await expect(toast).toHaveAttribute('role', 'button');
+				await expect(prompt).toContainText('Upgrade to Pro');
+				await expect(prompt.getByRole('button', { name: 'Upgrade' })).toBeVisible();
 			}
 		} finally {
 			await context.close();

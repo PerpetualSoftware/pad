@@ -29,6 +29,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { api, isPlanLimitError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
+	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { Workspace, WorkspaceTemplate } from '$lib/types';
 	import { groupTemplatesByCategory } from '$lib/utils/templates';
@@ -277,7 +278,7 @@
 			if (!alive || myOp !== opSeq) return;
 			if (authStore.userId !== createUser) return;
 			if (isPlanLimitError(err)) {
-				showPlanLimitToast(err);
+				showPlanLimitToast(err, { scope: 'create-workspace', blocked: 'create a workspace' });
 			} else {
 				// TASK-2204 (audit C93): the server's own message (a taken slug, a
 				// name it refused) says what to change; the bare line did not.
@@ -404,6 +405,11 @@
 				return;
 			}
 			importPhase = 'idle';
+			// A plan-limit refusal names the limit and who can lift it (TASK-3601).
+			if (isPlanLimitError(err)) {
+				showPlanLimitToast(err, { scope: 'create-workspace', blocked: 'import a workspace' });
+				return;
+			}
 			toastStore.show(`Import failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 'error');
 		} finally {
 			if (alive && myOp === opSeq) {
@@ -675,6 +681,9 @@
 				{/if}
 			{/if}
 		</div>
+
+		<!-- TASK-3601: a workspace or import limit shows here, in the dialog. -->
+		<PlanLimitPrompt scope="create-workspace" />
 
 		<div class="modal-footer">
 			<Button variant="secondary" onclick={close}>Cancel</Button>
