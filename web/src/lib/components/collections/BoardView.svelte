@@ -1432,6 +1432,18 @@
 		content-visibility: auto;
 		contain-intrinsic-size: auto 80px;
 		overflow-clip-margin: 12px;
+		/*
+		 * BUG-3553: never shrink. `.column-cards` is a height-constrained
+		 * flex column that scrolls, and with the default `flex-shrink: 1`
+		 * flex layout shrank every SKIPPED card to 0px (size containment
+		 * leaves it no content height to defend), so the 80px placeholder
+		 * above never applied. A 200-card lane measured 178 cards at 0px,
+		 * and scrolling to a far card aimed at that false geometry: the
+		 * column stopped at scrollTop ~2900 instead of ~24500, and a click
+		 * there landed on another card. A rendered card was never affected,
+		 * since its content sets its minimum height.
+		 */
+		flex-shrink: 0;
 	}
 
 	.card-wrapper:active {
