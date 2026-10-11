@@ -2,8 +2,8 @@
 // actors' events count toward the bell's unread badge. Fake timers, so the
 // window and durations are exact.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { toastStore, GROUP_WINDOW_MS } from './toast.svelte';
-import { createdToast, type CreatedEntry } from '$lib/items/createdToast';
+import { toastStore, GROUP_WINDOW_MS, __groupCountForTests } from './toast.svelte';
+import { createdToast, foldCreated, type CreatedEntry } from '$lib/items/createdToast';
 
 const WS = '/u/ws';
 
@@ -12,7 +12,8 @@ function created(actor: string, n: number, collection = 'tasks'): string {
 	return toastStore.showGrouped(
 		`created:ws:${actor}`,
 		entry,
-		(entries) => createdToast(actor, entries, WS),
+		foldCreated,
+		(burst) => createdToast(actor, burst, WS),
 		'info',
 		4000,
 		{ unread: true },
@@ -87,6 +88,63 @@ describe('grouped creation toasts (TASK-3593)', () => {
 		vi.advanceTimersByTime(GROUP_WINDOW_MS + 1);
 		created('Agent', 2);
 		expect(toastStore.toasts).toHaveLength(2);
+	});
+});
+
+describe('grouped toasts hold bounded state (TASK-3593 codex round 1)', () => {
+	it('a long burst folds into a summary, not a list of every event', () => {
+		let calls = 0;
+		const seen: number[] = [];
+		for (let i = 1; i <= 50; i++) {
+			toastStore.showGrouped(
+				'burst',
+				i,
+				(acc: number | undefined, n: number) => {
+					calls++;
+					return (acc ?? 0) + n;
+				},
+				(sum) => {
+					seen.push(sum);
+					return { message: `sum ${sum}` };
+				},
+			);
+		}
+		// One fold and one render per event: no event is re-read later.
+		expect(calls).toBe(50);
+		expect(seen).toHaveLength(50);
+		expect(toastStore.toasts[0].message).toBe('sum 1275');
+	});
+
+	it('a dismissed toast ends its burst: the next event starts a new toast', () => {
+		const id = created('Agent', 1);
+		created('Agent', 2);
+		toastStore.dismiss(id);
+		created('Agent', 3);
+		expect(toastStore.toasts).toHaveLength(1);
+		expect(toastStore.toasts[0].message).toBe('Agent created: Item 3');
+	});
+
+	it('a toast that leaves (dismissed, expired or evicted) leaves no group behind', () => {
+		const a = created('Agent', 1);
+		created('Dana', 2);
+		expect(__groupCountForTests()).toBe(2);
+		toastStore.dismiss(a);
+		expect(__groupCountForTests(), 'dismissed').toBe(1);
+		vi.advanceTimersByTime(4000);
+		expect(__groupCountForTests(), 'expired').toBe(0);
+		created('Eve', 3);
+		for (let i = 0; i < 5; i++) toastStore.show(`other ${i}`, 'success');
+		expect(toastStore.toasts.some((t) => t.message.startsWith('Eve')), 'PREMISE: evicted').toBe(false);
+		expect(__groupCountForTests(), 'evicted').toBe(0);
+	});
+
+	it('the folded summary tracks one collection, then mixed', () => {
+		let b = foldCreated(undefined, { title: 'a', collection: 'tasks' });
+		b = foldCreated(b, { title: 'b', collection: 'tasks' });
+		expect(b).toMatchObject({ count: 2, collection: 'tasks' });
+		b = foldCreated(b, { title: 'c', collection: 'bugs' });
+		b = foldCreated(b, { title: 'd', collection: 'tasks' });
+		expect(b).toMatchObject({ count: 4, collection: null });
 	});
 });
 

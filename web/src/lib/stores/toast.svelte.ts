@@ -128,6 +128,7 @@ function show(
 		const oldest = toasts.shift();
 		if (oldest) {
 			clearTimerFor(oldest.id);
+			forgetGroupOf(oldest.id);
 		}
 	}
 
@@ -161,36 +162,51 @@ function showUnread(
  */
 export const GROUP_WINDOW_MS = 10_000;
 
-interface ToastGroup<T> {
+interface ToastGroup<A> {
 	id: string;
-	entries: T[];
+	acc: A;
 	lastAt: number;
 }
 const groups = new Map<string, ToastGroup<unknown>>();
 
+/** Live burst groups; for tests that a gone toast leaves none behind. */
+export function __groupCountForTests(): number {
+	return groups.size;
+}
+
+/** Forget the burst a toast belonged to once the toast is gone. */
+function forgetGroupOf(id: string): void {
+	for (const [key, group] of groups) {
+		if (group.id === id) groups.delete(key);
+	}
+}
+
 /**
  * Fold a burst of events from one source into ONE toast (TASK-3593): a busy
  * agent creating eighteen items raises "Agent created 18 items", not
- * eighteen toasts. `key` names the source; `render` turns the burst's entries
- * into the toast's text and link. A later event in the burst updates the live
+ * eighteen toasts. `key` names the source. `fold` folds each event into a
+ * running summary (undefined for the first), and `render` turns the summary
+ * into the toast's text and link, so a long burst holds one bounded value,
+ * not every event it has seen. A later event in the burst updates the live
  * toast and its history entry in place and restarts its clock; the burst
- * counts once toward unread.
+ * counts once toward unread. A burst is forgotten when its toast goes.
  */
-function showGrouped<T>(
+function showGrouped<T, A>(
 	key: string,
 	entry: T,
-	render: (entries: T[]) => { message: string; link?: string },
+	fold: (acc: A | undefined, entry: T) => A,
+	render: (acc: A) => { message: string; link?: string },
 	type: Toast['type'] = 'info',
 	duration?: number,
 	opts: ShowOptions = {},
 ): string {
 	const now = Date.now();
-	const group = groups.get(key) as ToastGroup<T> | undefined;
+	const group = groups.get(key) as ToastGroup<A> | undefined;
 	const live = group ? toasts.find((t) => t.id === group.id) : undefined;
 	if (group && live && now - group.lastAt <= GROUP_WINDOW_MS) {
-		group.entries.push(entry);
+		group.acc = fold(group.acc, entry);
 		group.lastAt = now;
-		const { message, link } = render(group.entries);
+		const { message, link } = render(group.acc);
 		live.message = message;
 		live.link = link;
 		const past = history.find((h) => h.id === group.id);
@@ -211,10 +227,11 @@ function showGrouped<T>(
 		}
 		return group.id;
 	}
-	const entries = [entry];
-	const { message, link } = render(entries);
+	if (group) groups.delete(key);
+	const acc = fold(undefined, entry);
+	const { message, link } = render(acc);
 	const id = show(message, type, duration, link, undefined, opts);
-	groups.set(key, { id, entries, lastAt: now } as ToastGroup<unknown>);
+	groups.set(key, { id, acc, lastAt: now } as ToastGroup<unknown>);
 	return id;
 }
 
@@ -243,6 +260,7 @@ function resume(id: string): void {
 
 function dismiss(id: string): void {
 	clearTimerFor(id);
+	forgetGroupOf(id);
 	const idx = toasts.findIndex((t) => t.id === id);
 	if (idx !== -1) {
 		toasts.splice(idx, 1);

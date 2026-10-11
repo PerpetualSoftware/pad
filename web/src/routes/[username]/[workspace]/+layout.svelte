@@ -10,7 +10,7 @@
 	import { syncService } from '$lib/services/sync.svelte';
 	import { api } from '$lib/api/client';
 	import { toastStore, quietExternalToasts } from '$lib/stores/toast.svelte';
-	import { createdToast } from '$lib/items/createdToast';
+	import { createdToast, foldCreated } from '$lib/items/createdToast';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
@@ -385,7 +385,8 @@
 						toastStore.showGrouped(
 							`created:${eventWs}:${event.actor ?? ''}:${event.actor_name ?? ''}`,
 							{ title: event.title, collection: event.collection, link },
-							(entries) => createdToast(who, entries, `/${username}/${eventWs}`),
+							foldCreated,
+							(burst) => createdToast(who, burst, `/${username}/${eventWs}`),
 							'info',
 							4000,
 							{ unread: true },
