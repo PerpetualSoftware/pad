@@ -1239,10 +1239,12 @@ export interface AuthSession {
 	// [] while MCP is not available (PLAN-2310 DR-8). Absent on servers that
 	// predate it, which set mcp_public_url only where OAuth was served.
 	mcp_auth?: string[];
-	// billing_available is true when PAD_BILLING_AVAILABLE=true on the server
-	// AND the deployment is in cloud mode. Use authStore.billingAvailable rather
-	// than reading this field directly. TASK-800.
+	// billing_available is true when Pad Pro can be bought now: cloud mode,
+	// PAD_BILLING=auto, and the pad-cloud sidecar serving an offer (TASK-3577;
+	// TASK-800 before it). billing_offer is that offer, null otherwise. Use
+	// authStore.billingAvailable / billingOffer rather than these fields.
 	billing_available?: boolean;
+	billing_offer?: BillingOffer | null;
 	// mcp_available / oauth_available (PLAN-2310 DR-7): whether MCP, and its
 	// OAuth path, are available right now. Always true on Pad Cloud; on a
 	// self-hosted install they follow the admin toggle, the configured origin
@@ -3589,6 +3591,20 @@ export const api = {
 
 /** Billing intervals Pad Pro is sold at (TASK-3468). */
 export type BillingInterval = 'monthly' | 'annual';
+
+/** One interval as checkout sells it; unit_amount is in the currency's minor unit (TASK-3577). */
+export interface BillingOfferInterval {
+	interval: BillingInterval;
+	lookup_key: string;
+	unit_amount: number;
+	currency: string;
+}
+
+/** What Pad Pro costs right now, as the sidecar serves it (TASK-3577). */
+export interface BillingOffer {
+	intervals: BillingOfferInterval[];
+	trial_days: number;
+}
 
 /** A refused checkout, carrying the sidecar's HTTP status (TASK-3468). */
 export class BillingCheckoutError extends Error {

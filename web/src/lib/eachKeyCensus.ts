@@ -55,7 +55,7 @@ export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: stri
 	"lib/components/auth/AuthFooter.svelte :: each cloudLinks as link (link.label)": { reason: 'static-literal', note: "static `allCloudLinks` (l.37) | ten distinct literal labels." },
 	"lib/components/auth/AuthHeader.svelte :: each navLinks as link (link.label)": { reason: 'static-literal', note: "`navLinks` | same static literal" },
 	"lib/components/auth/AuthHeader.svelte :: each navLinks as link (link.label) #2": { reason: 'static-literal', note: "`navLinks` | same static literal" },
-	"lib/components/billing/BillingIntervalPicker.svelte :: each OPTIONS as opt (opt.interval)": { reason: 'static-literal', note: "monthly, annual" },
+	"lib/components/billing/BillingIntervalPicker.svelte :: each options as opt (opt.interval)": { reason: 'db-primary-key', note: "`authStore.billingOffer.intervals`, one server answer | server dedupe: internal/billing/offer.go sanitize keeps each interval once (TASK-3577)" },
 	"lib/components/charts/BarChart.svelte :: each resolvedSeries as s (s.key)": { reason: 'static-literal', note: "every caller passes a literal series" },
 	"lib/components/charts/BarChart.svelte :: each resolvedSeries as s (s.key) #2": { reason: 'static-literal', note: "every caller passes a literal series" },
 	"lib/components/charts/layers/AxisY.svelte :: each ticks as tick (tick)": { reason: 'strictly-increasing', note: "d3 `scaleLinear().ticks(4)` (BarChart.svelte:80) | d3 linear ticks are strictly increasing." },

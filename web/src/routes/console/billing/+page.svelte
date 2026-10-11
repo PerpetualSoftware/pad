@@ -39,10 +39,8 @@
 	let isPro = $derived(plan === 'pro');
 	let limits = $state<{ free: PlanLimits; pro: PlanLimits } | null>(null);
 
-	// Gate for Stripe-backed upgrade affordances. Driven by the server-side
-	// PAD_BILLING_AVAILABLE flag so the CTA appears only when the pad-cloud
-	// sidecar has Stripe keys loaded — no code change needed at deploy time.
-	// TASK-800.
+	// Gate for Stripe-backed upgrade affordances: true only while the pad-cloud
+	// sidecar serves an offer and PAD_BILLING=auto (TASK-3577; TASK-800).
 	let stripeAvailable = $derived(authStore.billingAvailable);
 	// In the mobile apps this page shows the plan and its limits only: no
 	// plans table, prices, checkout, portal or interest prompt (PLAN-3291
@@ -59,7 +57,10 @@
 	// the intervals the sidecar has said it cannot sell this visit (a 503, or
 	// an echo that refused). An unsellable interval gets a plain inline
 	// message and its option is disabled, rather than a button that fails.
-	let interval = $state<BillingInterval>('monthly');
+	// Only the intervals the sidecar's offer lists are sold (TASK-3577); the
+	// selection starts on the first of them.
+	let offered = $derived((authStore.billingOffer?.intervals ?? []).map((iv) => iv.interval));
+	let interval = $state<BillingInterval>(authStore.billingOffer?.intervals[0]?.interval ?? 'monthly');
 	let unavailable = $state<BillingInterval[]>([]);
 	let intervalNotice = $state<string | null>(null);
 
@@ -68,7 +69,7 @@
 		intervalNotice = unavailableMessage(i);
 		if (interval === i) {
 			const other: BillingInterval = i === 'annual' ? 'monthly' : 'annual';
-			if (!unavailable.includes(other)) interval = other;
+			if (offered.includes(other) && !unavailable.includes(other)) interval = other;
 		}
 	}
 

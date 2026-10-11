@@ -184,7 +184,8 @@ type Server struct {
 	cloudMode                    bool             // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
 	cloudSecrets                 []string         // shared secrets for sidecar ↔ pad communication (supports rotation)
 	cloudSidecar                 CloudSidecar     // reverse pad → pad-cloud client (e.g. Stripe cancel on account delete); nil = not configured
-	billingAvailable             bool             // true when PAD_BILLING_AVAILABLE=true — gates Stripe Checkout CTAs in the web UI (TASK-800)
+	billingMode                  string           // PAD_BILLING: billing.ModeAuto or billing.ModeOff; "" reads as off (TASK-3577)
+	billingOffer                 BillingOffer     // the sidecar's billing config, cached; nil = never offered (TASK-3577)
 	version                      string           // release version (e.g. "dev", "1.2.3")
 	commit                       string           // git commit hash
 	buildTime                    string           // build timestamp
@@ -913,12 +914,33 @@ func (s *Server) SetCloudSidecar(c CloudSidecar) {
 	s.cloudSidecar = c
 }
 
-// SetBillingAvailable marks this deployment as having Stripe Checkout wired
-// up. Called from cmd/pad/main.go when PAD_BILLING_AVAILABLE=true is set.
-// When false (the default), the session payload advertises billing_available=false
-// so the web UI hides Stripe CTAs rather than dead-ending at a 503. TASK-800.
-func (s *Server) SetBillingAvailable(v bool) {
-	s.billingAvailable = v
+// BillingOffer is the cached billing config the sidecar serves (TASK-3577);
+// *billing.OfferCache satisfies it. Current must fail closed: unavailable
+// until the sidecar has answered, and whenever it cannot.
+type BillingOffer interface {
+	Current() billing.BillingConfig
+}
+
+// SetBilling installs the billing mode (PAD_BILLING) and the offer source.
+// Called from cmd/pad when the server starts. Billing is offered only in
+// cloud mode, with mode auto, and while the offer says available; anything
+// else shows "Pro — coming soon" rather than dead-ending at checkout.
+func (s *Server) SetBilling(mode string, offer BillingOffer) {
+	s.billingMode = mode
+	s.billingOffer = offer
+}
+
+// billingNow is what the session advertises: whether Pad Pro can be bought,
+// and the offer when it can (nil otherwise).
+func (s *Server) billingNow() (bool, *billing.BillingConfig) {
+	if !s.cloudMode || s.billingMode != billing.ModeAuto || s.billingOffer == nil {
+		return false, nil
+	}
+	cur := s.billingOffer.Current()
+	if !cur.Available || len(cur.Intervals) == 0 {
+		return false, nil
+	}
+	return true, &cur
 }
 
 // IsCloud reports whether the server is running in cloud mode.

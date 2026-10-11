@@ -130,7 +130,7 @@ func (s *Server) handleCheckUsername(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 	mcp := s.sessionMCP()
-	return map[string]interface{}{
+	payload := map[string]interface{}{
 		"authenticated":     false,
 		"setup_required":    true,
 		"setup_method":      setupMethod,
@@ -139,12 +139,30 @@ func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 		"email_configured":  s.email != nil,
 		"mcp_public_url":    mcp.URL,
 		"mcp_auth":          mcp.Auth,
-		"billing_available": s.cloudMode && s.billingAvailable,
 		// PLAN-2310 DR-7: the web UI keys Connected Apps on oauth_available
 		// rather than cloud_mode. Both are evaluated per request.
 		"mcp_available":   mcp.Available,
 		"oauth_available": mcp.OAuth,
 		"version":         s.version,
+	}
+	s.addBillingFields(payload)
+	return payload
+}
+
+// addBillingFields sets billing_available and billing_offer (TASK-3577):
+// whether Pad Pro can be bought now, and its intervals, prices and trial as
+// the sidecar serves them. billing_offer is null whenever billing_available
+// is false. Both are always emitted.
+func (s *Server) addBillingFields(payload map[string]interface{}) {
+	available, offer := s.billingNow()
+	payload["billing_available"] = available
+	if offer == nil {
+		payload["billing_offer"] = nil
+		return
+	}
+	payload["billing_offer"] = map[string]interface{}{
+		"intervals":  offer.Intervals,
+		"trial_days": offer.TrialDays,
 	}
 }
 
@@ -167,9 +185,7 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 	// sessionMCP). The web UI's connect modal keys on both. Always emitted,
 	// never omitted, so the frontend can rely on a string and an array.
 	//
-	// billing_available is true when PAD_BILLING_AVAILABLE=true and the
-	// deployment is in cloud mode. Used by the web UI to show/hide Stripe
-	// Checkout CTAs. TASK-800.
+	// billing_available and billing_offer: see addBillingFields (TASK-3577).
 	mcp := s.sessionMCP()
 	payload := map[string]interface{}{
 		"authenticated":  authenticated,
@@ -184,7 +200,6 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		"email_configured":  s.email != nil,
 		"mcp_public_url":    mcp.URL,
 		"mcp_auth":          mcp.Auth,
-		"billing_available": s.cloudMode && s.billingAvailable,
 		// PLAN-2310 DR-7: whether MCP and its OAuth path are available now
 		// (the setting, the configured origin and its scheme; always on
 		// cloud). The console keys Connected Apps on oauth_available.
@@ -203,6 +218,7 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		// builds carry a semver, dev builds carry "dev".
 		"version": s.version,
 	}
+	s.addBillingFields(payload)
 	if authenticated {
 		payload["user"] = sessionUserPayload(user)
 	}

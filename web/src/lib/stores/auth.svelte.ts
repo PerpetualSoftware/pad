@@ -185,11 +185,15 @@ export const authStore = {
 	// mcpAuth is the session's mcp_auth: the methods agents authenticate
 	// to mcpPublicUrl with. undefined on a server that predates it.
 	get mcpAuth() { return session?.mcp_auth; },
-	// billingAvailable is true when the server has PAD_BILLING_AVAILABLE=true
-	// AND is in cloud mode. Components gate "Upgrade to Pro" Stripe CTAs on
-	// this value — false means the CTA is hidden entirely, not just disabled.
-	// TASK-800.
+	// billingAvailable is true when Pad Pro can be bought now: cloud mode,
+	// PAD_BILLING=auto and an offer from the pad-cloud sidecar (TASK-3577).
+	// Components gate "Upgrade to Pro" Stripe CTAs on this value — false means
+	// the CTA is hidden entirely, not just disabled. TASK-800.
 	get billingAvailable() { return session?.billing_available ?? false; },
+	// billingOffer is the intervals, prices and trial the sidecar serves, or
+	// null while billing is not available. Prices are rendered from this, never
+	// hard-coded (TASK-3577).
+	get billingOffer() { return session?.billing_available ? (session?.billing_offer ?? null) : null; },
 	// oauthAvailable: MCP's OAuth path is available (PLAN-2310 DR-7), which is
 	// what Connected Apps exists for. Always on Pad Cloud; on a self-hosted
 	// install, the admin toggle on with an https origin. An older server that

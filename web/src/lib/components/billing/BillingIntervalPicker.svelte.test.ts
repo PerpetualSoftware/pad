@@ -2,14 +2,25 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup, screen } from '@testing-library/svelte';
 
-const auth = vi.hoisted(() => ({ commerceAllowed: true }));
+type Offer = { intervals: { interval: 'monthly' | 'annual'; lookup_key: string; unit_amount: number; currency: string }[]; trial_days: number } | null;
+const served = (): Offer => ({
+	intervals: [
+		{ interval: 'monthly', lookup_key: 'pad_pro_monthly', unit_amount: 800, currency: 'usd' },
+		{ interval: 'annual', lookup_key: 'pad_pro_annual', unit_amount: 8000, currency: 'usd' },
+	],
+	trial_days: 14,
+});
+const auth = vi.hoisted(() => ({ commerceAllowed: true, billingOffer: null as unknown }));
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: auth }));
 
 import BillingIntervalPicker from './BillingIntervalPicker.svelte';
 
+auth.billingOffer = served();
+
 afterEach(() => {
 	cleanup();
 	auth.commerceAllowed = true;
+	auth.billingOffer = served();
 });
 
 describe('BillingIntervalPicker (TASK-3468)', () => {
@@ -35,5 +46,33 @@ describe('BillingIntervalPicker (TASK-3468)', () => {
 		const { container } = render(BillingIntervalPicker, { props: { name: 'i' } });
 		expect(container.querySelector('fieldset')).toBeNull();
 		expect(container.textContent).not.toContain('$8');
+	});
+
+	// TASK-3577: the prices are the sidecar's, not constants.
+	it('renders the served price: a different price in the offer renders differently (counterfactual)', () => {
+		auth.billingOffer = {
+			intervals: [{ interval: 'monthly', lookup_key: 'pad_pro_monthly', unit_amount: 1250, currency: 'eur' }],
+			trial_days: 0,
+		};
+		const { container } = render(BillingIntervalPicker, { props: { name: 'i' } });
+		expect(screen.getByText('€12.50 / month')).toBeTruthy();
+		expect(container.textContent).not.toContain('$8');
+		expect(container.textContent).toContain('Prices in EUR.');
+	});
+
+	it('does not show an interval the offer does not sell', () => {
+		auth.billingOffer = {
+			intervals: [{ interval: 'annual', lookup_key: 'pad_pro_annual', unit_amount: 9600, currency: 'usd' }],
+			trial_days: 0,
+		};
+		render(BillingIntervalPicker, { props: { name: 'i', value: 'annual' } });
+		expect(screen.queryByRole('radio', { name: /Monthly/ })).toBeNull();
+		expect(screen.getByText('$96 / year')).toBeTruthy();
+	});
+
+	it('renders nothing without an offer', () => {
+		auth.billingOffer = null;
+		const { container } = render(BillingIntervalPicker, { props: { name: 'i' } });
+		expect(container.querySelector('fieldset')).toBeNull();
 	});
 });

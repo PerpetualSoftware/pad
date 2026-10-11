@@ -43,7 +43,11 @@ const PATTERNS: [string, RegExp][] = [
 	['view plans copy', /View Plans/],
 	['manage billing copy', /Manage Billing/],
 	// TASK-3468: a price is commerce too ("$8 / month").
-	['price copy', /\$\d+(\.\d+)?\s*\/\s*(month|year|mo|yr)\b/]
+	['price copy', /\$\d+(\.\d+)?\s*\/\s*(month|year|mo|yr)\b/],
+	// TASK-3577: prices are now the sidecar's, formatted at render, so the
+	// literal pattern above no longer sees them. A call that renders one is
+	// commerce; the definition in lib/billing/price.ts is not.
+	['price rendering', /(?<!function )\bformatPrice\(/]
 ];
 
 function sources(dir: string): string[] {
