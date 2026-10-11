@@ -139,7 +139,9 @@ const BLOCKS = [
 	'Autolink https://example.com/path here',
 	'Typed literal [[not a link]] stays text',
 	// BUG-3583: marks that cannot flank (punctuation at the edge, a letter outside).
-	'<p><strong>Hello.</strong>World, Hello<em>.World</em>, a<s>(x)</s>b and <strong>plain</strong> bold</p>',
+	// BUG-3584: block markers that start a line after a hard break stay text.
+	// One block for both, so adding the second did not reshuffle every seeded case.
+	'<p><strong>Hello.</strong>World, Hello<em>.World</em>, a<s>(x)</s>b and <strong>plain</strong> bold<br>- not a list item<br># not a heading<br>&gt; not a quote</p>',
 	'See [[TASK-3]] and [[Roadmap]]',
 	...LINKS.map((l) => `Paragraph linking ${l} inline.`),
 ];
@@ -420,7 +422,7 @@ describe('materializer parity with the live editor flush (TASK-2198)', () => {
 		console.info(`materializer parity: ${CASES} cases, ${cases.reduce((n, c) => n + c.rows.length, 0)} frames, ${relayThrows} relay throws`);
 		const all = cases.map((c) => c.expected).join('\n');
 		// The generator reaches the constructs it claims to (vantage point).
-		for (const probe of ['<table', '| --- |', '- [ ]', '```mermaid', '```go', '[[TASK-3]]', 'pad-attachment:', '/api/v1/workspaces/ws/attachments/', '# ', '> ', '<strong>Hello.</strong>World']) {
+		for (const probe of ['<table', '| --- |', '- [ ]', '```mermaid', '```go', '[[TASK-3]]', 'pad-attachment:', '/api/v1/workspaces/ws/attachments/', '# ', '> ', '<strong>Hello.</strong>World', '\\\n\\- not a list item']) {
 			expect(all, probe).toContain(probe);
 		}
 		expect(cases.some((c) => c.expected.startsWith('---\n'))).toBe(true);
