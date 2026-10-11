@@ -383,7 +383,8 @@
 						// One toast per burst from one actor (TASK-3593), and it counts
 						// toward unread: it is another actor's work, not a confirmation.
 						toastStore.showGrouped(
-							`created:${eventWs}:${event.actor ?? ''}:${event.actor_name ?? ''}`,
+							// Owner AND slug: two owners can each have a workspace of one slug (codex r4).
+							`created:${username}/${eventWs}:${event.actor ?? ''}:${event.actor_name ?? ''}`,
 							{ title: event.title, collection: event.collection, link },
 							foldCreated,
 							(burst) => createdToast(who, burst, `/${username}/${eventWs}`),
