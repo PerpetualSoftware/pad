@@ -742,6 +742,36 @@
 			{/if}
 		{/if}
 
+		<!-- 2b. Needs Attention, first when it has anything (TASK-3588): the
+		     daily question is "what needs me?", and it matters more as agents
+		     produce work faster than people inspect it. Compact (capped, with
+		     the same Show all toggle); absent when empty, which leaves the
+		     rest of the layout exactly as before. -->
+		{#if dashboard.attention.length > 0}
+			<section class="section attention-first" data-testid="needs-attention">
+				<div class="section-header">
+					<span class="section-label">Needs Attention</span>
+					<span class="section-badge">{dashboard.attention.length}</span>
+				</div>
+				<div class="attention-list">
+					{#each visibleRows(attentionOrdered, ATTENTION_CAP, attentionExpanded) as alert (`${alert.type}:${alert.item_slug}`)}
+						<div class="attention-card">
+							<span class="attention-icon">{attentionIcon(alert.type)}</span>
+							<div class="attention-content">
+								<a href="/{username}/{wsSlug}/{alert.collection}/{alert.item_slug}" class="attention-title">{alert.item_title}</a>
+								<span class="attention-reason">{alert.reason}</span>
+							</div>
+						</div>
+					{/each}
+				</div>
+				{#if dashboard.attention.length > ATTENTION_CAP}
+					<button type="button" class="show-all-btn" aria-expanded={attentionExpanded} onclick={toggleAttention}>
+						{attentionExpanded ? 'Show fewer' : `Show all (${dashboard.attention.length})`}
+					</button>
+				{/if}
+			</section>
+		{/if}
+
 		<!-- 3. Active Work -->
 		{#if dashboard.active_items.length > 0}
 			<section class="section">
@@ -911,33 +941,10 @@
 			</div>
 		</section>
 
-		<!-- 6. Attention + Up Next (side by side) -->
-		{#if dashboard.attention.length > 0 || dashboard.suggested_next.length > 0}
+		<!-- 6. Up Next. Needs Attention, when it has anything, renders first
+		     (TASK-3588); with it empty this row is what it always was. -->
+		{#if dashboard.suggested_next.length > 0}
 			<section class="section dual-section">
-				{#if dashboard.attention.length > 0}
-					<div class="dual-col">
-						<div class="section-header">
-							<span class="section-label">Needs Attention</span>
-							<span class="section-badge">{dashboard.attention.length}</span>
-						</div>
-						<div class="attention-list">
-							{#each visibleRows(attentionOrdered, ATTENTION_CAP, attentionExpanded) as alert (`${alert.type}:${alert.item_slug}`)}
-								<div class="attention-card">
-									<span class="attention-icon">{attentionIcon(alert.type)}</span>
-									<div class="attention-content">
-										<a href="/{username}/{wsSlug}/{alert.collection}/{alert.item_slug}" class="attention-title">{alert.item_title}</a>
-										<span class="attention-reason">{alert.reason}</span>
-									</div>
-								</div>
-							{/each}
-						</div>
-						{#if dashboard.attention.length > ATTENTION_CAP}
-							<button type="button" class="show-all-btn" aria-expanded={attentionExpanded} onclick={toggleAttention}>
-								{attentionExpanded ? 'Show fewer' : `Show all (${dashboard.attention.length})`}
-							</button>
-						{/if}
-					</div>
-				{/if}
 				{#if dashboard.suggested_next.length > 0}
 					<div class="dual-col">
 						<div class="section-header">
