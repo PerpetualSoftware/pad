@@ -161,6 +161,7 @@ func TestBUG3361_EscapeHatchIsSelfHostOnly(t *testing.T) {
 // alternative) and the billing dashboard.
 var cloudOnlyAdminRoutes = []string{
 	"GET /api/v1/admin/billing-stats",
+	"GET /api/v1/admin/billing-users",
 	"GET /api/v1/admin/user-by-customer",
 	"GET /api/v1/admin/user-by-id",
 	"POST /api/v1/admin/payment-failed",

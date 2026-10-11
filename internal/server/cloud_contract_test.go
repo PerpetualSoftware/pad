@@ -107,6 +107,8 @@ func TestCloudContract(t *testing.T) {
 			"user_id": u.ID, "customer_id": "cus_contract_other", "cloud_secret": cloudContractSecret,
 		}),
 		"admin_user_by_customer": call("GET", "/api/v1/admin/user-by-customer?customer_id=cus_contract", nil),
+		// The reconcile sweep pages billing users (TASK-3564).
+		"admin_billing_users": call("GET", "/api/v1/admin/billing-users?limit=10", nil),
 		"admin_plan": call("POST", "/api/v1/admin/plan", map[string]any{
 			"user_id": u.ID, "plan": "pro", "expires_at": "2099-01-01T00:00:00Z", "source": "stripe",
 			"revision": 1, "subscription_id": "sub_contract", "cloud_secret": cloudContractSecret,

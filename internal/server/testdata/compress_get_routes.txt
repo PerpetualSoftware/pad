@@ -19,6 +19,7 @@ compress /api/app/v1/workspaces/{ws}/items/{itemID}/comments
 compress /api/app/v1/workspaces/{ws}/me
 compress /api/v1/admin/apps
 compress /api/v1/admin/billing-stats
+compress /api/v1/admin/billing-users
 compress /api/v1/admin/decision-provider
 compress /api/v1/admin/invitations
 compress /api/v1/admin/limits
