@@ -437,10 +437,15 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        # The official image from AWS's public mirror of Docker Hub's library:
-        # an anonymous Docker Hub pull from shared runners hits
-        # "toomanyrequests" (day 90: three failed pulls on #1987/#1988).
-        image: public.ecr.aws/docker/library/postgres:17-alpine
+        # The official image through Google's Docker Hub mirror, pinned by
+        # digest. Anonymous pulls from shared runners hit limits on both
+        # earlier sources: Docker Hub ("toomanyrequests", day 90, #1987 and
+        # #1988), then AWS's public mirror ("toomanyrequests: Data limit
+        # exceeded", day 91, #2078, BUG-3602). The digest is postgres:17-alpine's
+        # multi-arch index, the same on mirror.gcr.io and public.ecr.aws when
+        # pinned (2026-10-11), so this is the image CI already ran, and a
+        # moved tag cannot change it under a run. Bump it deliberately.
+        image: mirror.gcr.io/library/postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         env:
           POSTGRES_USER: pad
           POSTGRES_PASSWORD: pad
