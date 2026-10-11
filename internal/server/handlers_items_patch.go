@@ -166,6 +166,17 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.Edits = bodypatch.Invert(applied)
+		for _, e := range req.Edits {
+			if e.Old == "" {
+				// The patch emptied the whole body: no text is left for an
+				// anchored undo to name (retro CONVE-735 finding on #2058).
+				// Every patch writes a version, so History can restore it.
+				writeError2(w, http.StatusBadRequest, "bad_request",
+					"that patch emptied the whole body, so there is no text left to anchor an undo on; nothing was written. Restore the version before it from the item's history instead",
+					map[string]interface{}{"undo": req.Undo})
+				return
+			}
+		}
 		p.undoOf, p.undoItemID = rec.ID, rec.ItemID
 	}
 	if len(req.Edits) == 0 {
@@ -180,6 +191,15 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 		if e.Old == "" {
 			writeError2(w, http.StatusBadRequest, "bad_request",
 				fmt.Sprintf("edit %d: old is empty; every edit must quote the text it replaces", i),
+				map[string]interface{}{"edit": i})
+			return
+		}
+		// A no-op edit would advance seq and write no version, against the
+		// contract that every patch is a version (retro CONVE-735 finding on
+		// #2055). It is refused, writing nothing.
+		if e.Old == e.New {
+			writeError2(w, http.StatusBadRequest, "bad_request",
+				fmt.Sprintf("edit %d changes nothing (old and new are the same); nothing was written", i),
 				map[string]interface{}{"edit": i})
 			return
 		}
@@ -264,6 +284,10 @@ func (s *Server) writePatchRefusal(w http.ResponseWriter, ref string, err error)
 	var empty *bodypatch.EmptyAnchorError
 	if errors.As(err, &empty) {
 		writeError2(w, http.StatusBadRequest, "bad_request", empty.Error(), map[string]interface{}{"edit": empty.Index})
+		return true
+	}
+	if errors.Is(err, bodypatch.ErrNoChange) {
+		writeError2(w, http.StatusBadRequest, "bad_request", ref+": the edits change nothing (together they leave the body as it was); nothing was written", map[string]interface{}{"ref": ref})
 		return true
 	}
 	return false
