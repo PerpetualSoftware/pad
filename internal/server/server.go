@@ -891,7 +891,7 @@ type CloudSidecar interface {
 	// misconfig), or 5xx (upstream breakage). Continuing after an error
 	// would wipe the user's StripeCustomerID while leaving the subscription
 	// billing, which is exactly the regression TASK-690 exists to prevent.
-	CancelCustomer(customerID string) error
+	CancelCustomer(customerID, userID string) error
 
 	// GetBillingMetrics fetches an aggregated Stripe-derived snapshot from
 	// pad-cloud's /admin/metrics/billing endpoint (active subs, MRR, ARR,
