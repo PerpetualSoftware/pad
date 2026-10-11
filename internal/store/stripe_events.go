@@ -7,63 +7,118 @@ import (
 	"time"
 )
 
-// MarkStripeEventProcessed records a Stripe webhook event ID in
-// stripe_processed_events if it hasn't been seen before. Returns
-// alreadyProcessed=true when the event was ALREADY recorded (i.e. the caller
-// is seeing a duplicate Stripe retry and should skip re-processing). Returns
-// false for first-time events (caller should run its handler logic).
-//
-// Always returns processedAt — either the timestamp we just inserted (on a
-// fresh mark) or the existing row's timestamp (on a duplicate). Sidecars
-// MUST persist this string and pass it back to UnmarkStripeEventProcessed if
-// a best-effort rollback is later needed (TASK-736): the unmark uses
-// (event_id, processed_at) as a composite key, so a stale unmark from an
-// earlier attempt can't delete the fresh marker left by a successful retry.
-//
-// Implementation uses INSERT ... ON CONFLICT DO NOTHING. On fresh insert we
-// return the wall-clock we just wrote; on conflict we SELECT the existing
-// row to recover its timestamp. Both cases are success — only real DB
-// errors propagate.
+// MarkStripeEventProcessed is ClaimStripeEvent with the pre-BUG-3561 answer:
+// alreadyProcessed is false only for a claim, and true for a done event and for
+// one in progress under another lease, which is what a sidecar that predates
+// the lease must keep seeing. processedAt is the claim's token (or the stored
+// one); pass it to CompleteStripeEvent, or to UnmarkStripeEventProcessed on a
+// handler failure (TASK-736).
 func (s *Store) MarkStripeEventProcessed(eventID string) (alreadyProcessed bool, processedAt string, err error) {
-	if eventID == "" {
-		return false, "", fmt.Errorf("mark stripe event: event_id is required")
-	}
+	state, processedAt, err := s.ClaimStripeEvent(eventID, StripeEventLease)
+	return state != StripeEventClaimed, processedAt, err
+}
 
-	ts := now()
+// StripeEventLease is how long a claimed event belongs to the sidecar that
+// claimed it (BUG-3561). Well above a handler's worst case (the sidecar bounds
+// each handler with a shorter deadline) and well below Stripe's retry spacing.
+const StripeEventLease = 5 * time.Minute
+
+// Outcomes of ClaimStripeEvent.
+const (
+	// StripeEventClaimed: run the handler, then CompleteStripeEvent with the token.
+	StripeEventClaimed = "claimed"
+	// StripeEventDone: a handler already succeeded; acknowledge the duplicate.
+	StripeEventDone = "done"
+	// StripeEventInProgress: another handler holds a live lease. Do not run;
+	// fail the delivery so Stripe retries after the lease.
+	StripeEventInProgress = "in_progress"
+)
+
+// ClaimStripeEvent takes a Stripe event for handling (BUG-3561). The marker
+// used to be final the moment it was written, BEFORE the handler ran, so a
+// sidecar that died mid-handler (or whose unmark failed) left the event
+// "processed" forever and every retry was acknowledged as a duplicate. Now:
+//
+//   - a new event is inserted 'processing' with a lease, and is claimed;
+//   - a 'done' event is a duplicate;
+//   - a 'processing' event whose lease has EXPIRED is taken over by one
+//     conditional UPDATE (a new token and a new lease), so of two concurrent
+//     retries exactly one wins, and the earlier handler's late complete or
+//     unmark, holding the old token, changes nothing;
+//   - a 'processing' event with a live lease is in progress elsewhere.
+//
+// processedAt is the token: CompleteStripeEvent and UnmarkStripeEventProcessed
+// act only on the row still carrying it. Timestamps are UTC RFC3339 at second
+// resolution, a fixed width, so the lease compares lexically on both dialects.
+func (s *Store) ClaimStripeEvent(eventID string, lease time.Duration) (state, processedAt string, err error) {
+	if eventID == "" {
+		return "", "", fmt.Errorf("claim stripe event: event_id is required")
+	}
+	t := time.Now().UTC()
+	ts := t.Format(time.RFC3339)
+	until := t.Add(lease).Format(time.RFC3339)
+
 	res, err := s.db.Exec(
-		s.q(`INSERT INTO stripe_processed_events (event_id, processed_at) VALUES (?, ?) ON CONFLICT (event_id) DO NOTHING`),
-		eventID, ts,
+		s.q(`INSERT INTO stripe_processed_events (event_id, processed_at, state, lease_until) VALUES (?, ?, 'processing', ?) ON CONFLICT (event_id) DO NOTHING`),
+		eventID, ts, until,
 	)
 	if err != nil {
-		return false, "", fmt.Errorf("mark stripe event %s: %w", eventID, err)
+		return "", "", fmt.Errorf("claim stripe event %s: %w", eventID, err)
+	}
+	if n, rerr := res.RowsAffected(); rerr == nil && n == 1 {
+		return StripeEventClaimed, ts, nil
 	}
 
-	n, rowsErr := res.RowsAffected()
-	if rowsErr == nil && n == 1 {
-		// Fresh insert — ts is authoritative and the unmark token.
-		return false, ts, nil
+	// Take over an expired lease. The token must change, or the earlier
+	// handler could still complete or unmark the row it no longer owns; a
+	// takeover inside the same second as the stored token is impossible,
+	// since the lease is minutes long.
+	res, err = s.db.Exec(
+		s.q(`UPDATE stripe_processed_events SET processed_at = ?, lease_until = ? WHERE event_id = ? AND state = 'processing' AND (lease_until IS NULL OR lease_until < ?)`),
+		ts, until, eventID, ts,
+	)
+	if err != nil {
+		return "", "", fmt.Errorf("take over stripe event %s: %w", eventID, err)
+	}
+	if n, rerr := res.RowsAffected(); rerr == nil && n == 1 {
+		return StripeEventClaimed, ts, nil
 	}
 
-	// Conflict (or driver couldn't report RowsAffected). Recover the
-	// existing row's processed_at so the caller has a token matching the
-	// row currently in the table — without this a retried-and-successful
-	// handler has no way for its future unmark call to target the right
-	// marker.
-	var existing string
-	selErr := s.db.QueryRow(
-		s.q(`SELECT processed_at FROM stripe_processed_events WHERE event_id = ?`),
-		eventID,
-	).Scan(&existing)
-	if selErr != nil {
-		// The row really isn't there (possible under a driver that didn't
-		// report RowsAffected AND a concurrent delete) — treat as fresh
-		// so the handler can still run. processedAt=ts may not match the
-		// actual DB row in this unusual case; that's acceptable because
-		// the sidecar handler is idempotent at the application level (set
-		// plan is an UPSERT, webhook handlers are defensively safe).
-		return false, ts, nil
+	var st, existing string
+	if err := s.db.QueryRow(
+		s.q(`SELECT state, processed_at FROM stripe_processed_events WHERE event_id = ?`), eventID,
+	).Scan(&st, &existing); err != nil {
+		// The row vanished between the statements (a concurrent unmark or
+		// prune). Claim it as new: every handler re-syncs from current Stripe
+		// state, so a rerun is safe.
+		return StripeEventClaimed, ts, nil
 	}
-	return true, existing, nil
+	if st == "done" {
+		return StripeEventDone, existing, nil
+	}
+	return StripeEventInProgress, existing, nil
+}
+
+// CompleteStripeEvent marks a claimed event done after its handler succeeded
+// (BUG-3561). It acts only on the row still carrying the claim's token, so a
+// handler whose lease was taken over cannot complete the event for the one
+// that took it. Returns whether the row changed.
+func (s *Store) CompleteStripeEvent(eventID, processedAt string) (bool, error) {
+	if eventID == "" || processedAt == "" {
+		return false, fmt.Errorf("complete stripe event: event_id and processed_at are required")
+	}
+	res, err := s.db.Exec(
+		s.q(`UPDATE stripe_processed_events SET state = 'done', lease_until = NULL WHERE event_id = ? AND processed_at = ? AND state = 'processing'`),
+		eventID, processedAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("complete stripe event %s: %w", eventID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, nil
+	}
+	return n == 1, nil
 }
 
 // UnmarkStripeEventProcessed deletes a row from stripe_processed_events,

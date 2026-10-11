@@ -167,6 +167,7 @@ var cloudOnlyAdminRoutes = []string{
 	"POST /api/v1/admin/payment-failed",
 	"POST /api/v1/admin/plan",
 	"POST /api/v1/admin/stripe-customer-id",
+	"POST /api/v1/admin/stripe-event-complete",
 	"POST /api/v1/admin/stripe-event-processed",
 	"POST /api/v1/admin/stripe-event-unmark",
 }

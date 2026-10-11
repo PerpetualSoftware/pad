@@ -1,5 +1,6 @@
 {
   "already_processed": false,
   "event_id": "<string>",
-  "processed_at": "<string>"
+  "processed_at": "<string>",
+  "state": "<string>"
 }

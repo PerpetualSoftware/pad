@@ -1844,6 +1844,7 @@ func (s *Server) setupRouter() {
 					r.Get("/billing-users", s.handleListBillingUsers)               // Cloud: sidecar reconcile sweep pages billing users (TASK-3564)
 					r.Post("/stripe-event-processed", s.handleStripeEventProcessed) // Cloud: sidecar webhook idempotency (TASK-696)
 					r.Post("/stripe-event-unmark", s.handleStripeEventUnmark)       // Cloud: sidecar handler-failure rollback (TASK-736)
+					r.Post("/stripe-event-complete", s.handleStripeEventComplete)   // Cloud: sidecar reports a claimed event handled (BUG-3561)
 					r.Post("/payment-failed", s.handlePaymentFailed)                // Cloud: sidecar forwards invoice.payment_failed to trigger email (TASK-712)
 
 					// Admin Billing dashboard data (TASK-827 / PLAN-825). Proxies

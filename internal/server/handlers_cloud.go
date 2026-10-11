@@ -130,6 +130,7 @@ var cloudAdminPaths = map[string]struct{}{
 	"/api/v1/admin/billing-users":          {},
 	"/api/v1/admin/stripe-event-processed": {},
 	"/api/v1/admin/stripe-event-unmark":    {},
+	"/api/v1/admin/stripe-event-complete":  {},
 	"/api/v1/admin/payment-failed":         {},
 }
 
@@ -1151,7 +1152,13 @@ func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Reque
 	}
 
 	// 3. Atomically record-or-detect-duplicate
-	alreadyProcessed, processedAt, err := s.store.MarkStripeEventProcessed(input.EventID)
+	// BUG-3561: a claim with a lease. already_processed keeps its meaning for a
+	// sidecar that predates the lease (anything but a fresh claim); `state`
+	// tells a newer one apart: claimed (run, then complete), done (a
+	// duplicate), in_progress (another handler holds the lease; fail the
+	// delivery so Stripe retries after it).
+	state, processedAt, err := s.store.ClaimStripeEvent(input.EventID, store.StripeEventLease)
+	alreadyProcessed := state != store.StripeEventClaimed
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -1179,7 +1186,45 @@ func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Reque
 		"event_id":          input.EventID,
 		"already_processed": alreadyProcessed,
 		"processed_at":      processedAt,
+		"state":             state,
 	})
+}
+
+// handleStripeEventComplete handles POST /api/v1/admin/stripe-event-complete
+// (BUG-3561): the sidecar reports that the handler for a claimed event
+// succeeded, so later deliveries are duplicates. Token-scoped like unmark: a
+// handler whose lease was taken over cannot complete the event for the one
+// that took it (completed: false). A sidecar that predates the lease never
+// calls this; its rows stay 'processing' and a redelivery after the lease
+// re-runs the handler, which is harmless because every handler re-syncs from
+// current Stripe state.
+func (s *Server) handleStripeEventComplete(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		EventID     string `json:"event_id"`
+		ProcessedAt string `json:"processed_at"`
+		CloudSecret string `json:"cloud_secret"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+	user := currentUser(r)
+	isAdmin := user != nil && user.Role == "admin"
+	if !isAdmin {
+		if !s.validateCloudSecret(input.CloudSecret, w) {
+			return
+		}
+	}
+	if input.EventID == "" || input.ProcessedAt == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "event_id and processed_at are required")
+		return
+	}
+	completed, err := s.store.CompleteStripeEvent(input.EventID, input.ProcessedAt)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"event_id": input.EventID, "completed": completed})
 }
 
 // handleStripeEventUnmark handles POST /api/v1/admin/stripe-event-unmark.
