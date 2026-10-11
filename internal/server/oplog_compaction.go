@@ -18,8 +18,10 @@ import (
 // the sweep resumes into the snapshot (collab Join, CompactedResumeCovers) and
 // its unsent edits merge, where a deleted log forces it to refresh and hands
 // its text back. The sweep then keeps compacted logs (PruneSweepKeeping). An
-// item that cannot be compacted (the job failed, the store refused) is left to
-// the sweep, which deletes it as it always did.
+// item the store refuses (its log changed, or is no longer dormant and
+// flushed) is left to the sweep's own checks. An item whose SNAPSHOT failed is
+// KEPT and retried with backoff (TASK-3574, lead ruling): deleting its log on
+// a failed job threw away the Yjs identity compaction exists to keep.
 
 // OpLogCompactor builds a compaction snapshot. *materialize.Supervisor
 // implements it (and *materialize.Runner in tests).
@@ -76,8 +78,14 @@ func (s *Server) compactDormantOpLogs(minAge time.Duration) map[string]bool {
 		slog.Warn("op-log compaction: listing dormant items failed", "error", err)
 		return deferred
 	}
+	now := compactBackoffNow()
+	s.compactBackoffForgetUnlisted(ids)
 	jobs := 0
 	for _, itemID := range ids {
+		if s.compactBackingOff(itemID, now) {
+			deferred[itemID] = true // kept; retried when its backoff ends
+			continue
+		}
 		if jobs >= opLogCompactionPerTick {
 			deferred[itemID] = true
 			continue
@@ -85,6 +93,13 @@ func (s *Server) compactDormantOpLogs(minAge time.Duration) map[string]bool {
 		outcome := s.compactOne(itemID, cutoff)
 		if outcome == compactAlreadyDone {
 			continue
+		}
+		switch outcome {
+		case compactFailed, compactReadFailed:
+			deferred[itemID] = true // TASK-3574 (3): keep the log, retry later
+			s.compactBackoffFailed(itemID, now)
+		case compactCompacted:
+			s.compactBackoffClear(itemID)
 		}
 		jobs++
 		if s.metrics != nil {
@@ -179,4 +194,68 @@ func (s *Server) isCompactedOrUnknown(itemID string) bool {
 		return true
 	}
 	return done
+}
+
+// TASK-3574 (3): a failed compaction snapshot keeps the log and retries with
+// backoff, instead of leaving the item to the sweep's delete. The state is
+// in memory: a restart retries every kept item once, which is harmless.
+var (
+	compactBackoffBase = 10 * time.Minute
+	compactBackoffMax  = 24 * time.Hour
+	compactBackoffNow  = time.Now
+)
+
+type compactBackoffState struct {
+	failures int
+	next     time.Time
+}
+
+func (s *Server) compactBackingOff(itemID string, now time.Time) bool {
+	s.compactBackoffMu.Lock()
+	defer s.compactBackoffMu.Unlock()
+	b, ok := s.compactBackoff[itemID]
+	return ok && now.Before(b.next)
+}
+
+func (s *Server) compactBackoffFailed(itemID string, now time.Time) {
+	s.compactBackoffMu.Lock()
+	defer s.compactBackoffMu.Unlock()
+	if s.compactBackoff == nil {
+		s.compactBackoff = map[string]compactBackoffState{}
+	}
+	b := s.compactBackoff[itemID]
+	b.failures++
+	d := compactBackoffBase << min(b.failures-1, 20)
+	if d <= 0 || d > compactBackoffMax {
+		d = compactBackoffMax
+	}
+	b.next = now.Add(d)
+	s.compactBackoff[itemID] = b
+	slog.Warn("op-log compaction: snapshot failed; the log is kept and retried later",
+		"item_id", itemID, "failures", b.failures, "retry_in", d.String())
+}
+
+func (s *Server) compactBackoffClear(itemID string) {
+	s.compactBackoffMu.Lock()
+	defer s.compactBackoffMu.Unlock()
+	delete(s.compactBackoff, itemID)
+}
+
+// compactBackoffForgetUnlisted drops state for items the dormancy listing no
+// longer returns (edited, deleted, or compacted another way).
+func (s *Server) compactBackoffForgetUnlisted(ids []string) {
+	s.compactBackoffMu.Lock()
+	defer s.compactBackoffMu.Unlock()
+	if len(s.compactBackoff) == 0 {
+		return
+	}
+	listed := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		listed[id] = true
+	}
+	for id := range s.compactBackoff {
+		if !listed[id] {
+			delete(s.compactBackoff, id)
+		}
+	}
 }

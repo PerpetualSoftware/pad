@@ -87,6 +87,14 @@ export function materializeWith(ed: Editor, job: MaterializeJob): string {
 	const doc = new Y.Doc();
 	try {
 		replayFrames(doc, job.rows.map(base64ToBytes));
+		// TASK-3574 (1): structs left pending reference a row the op-log does
+		// not hold. Serializing anyway returned a truncated but nonblank body
+		// that recovery stored and moved the watermark over. Refused here as
+		// snapshotWith (compaction) always refused it; the Go side reads the
+		// marker as ErrIncompleteLog and leaves the item alone.
+		if (doc.store.pendingStructs || doc.store.pendingDs) {
+			throw new Error('materialize: the op-log leaves pending structs; refusing an incomplete replay');
+		}
 		setJobWorkspace(typeof job.workspace_slug === 'string' ? job.workspace_slug : '');
 		const pm = yXmlFragmentToProseMirrorRootNode(doc.getXmlFragment('default'), ed.schema);
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any

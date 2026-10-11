@@ -91,20 +91,47 @@ func TestTASK3531_WithoutACompactorTheSweepDeletes(t *testing.T) {
 	}
 }
 
-type failingCompactor struct{}
+type failingCompactor struct{ calls *int }
 
-func (failingCompactor) Snapshot(context.Context, materialize.Job) (materialize.Snapshot, error) {
+func (c failingCompactor) Snapshot(context.Context, materialize.Job) (materialize.Snapshot, error) {
+	if c.calls != nil {
+		*c.calls++
+	}
 	return materialize.Snapshot{}, errors.New("snapshot refused")
 }
 
-// A failed snapshot leaves the item to the sweep, which deletes it as before.
-func TestTASK3531_AFailedSnapshotFallsBackToTheDelete(t *testing.T) {
+// TASK-3574 (3), lead ruling (this test used to assert the delete): a failed
+// snapshot KEEPS the log, backs off rather than retrying every tick, and is
+// compacted once the backoff ends and the job works.
+func TestTASK3531_AFailedSnapshotKeepsTheLogAndRetriesAfterBackoff(t *testing.T) {
 	f := newRecoveryFixture(t, nil, time.Minute, materializeRecoveryConfig{})
-	f.srv.SetOpLogCompactor(failingCompactor{})
+	calls := 0
+	f.srv.SetOpLogCompactor(failingCompactor{calls: &calls})
 	itemID, _ := seedDormantCorpusLog(t, f)
+	rows := opLogRowCount(t, f, itemID)
+
+	clock := time.Now()
+	compactBackoffNow = func() time.Time { return clock }
+	t.Cleanup(func() { compactBackoffNow = time.Now })
+
 	f.srv.runOpLogGCTick(time.Hour)
-	if n := opLogRowCount(t, f, itemID); n != 0 {
-		t.Fatalf("after a failed snapshot the sweep left %d rows", n)
+	if n := opLogRowCount(t, f, itemID); n != rows {
+		t.Fatalf("after a failed snapshot the op-log has %d rows, want all %d kept", n, rows)
+	}
+	// Inside the backoff: kept, and the job is not run again.
+	f.srv.runOpLogGCTick(time.Hour)
+	if calls != 1 {
+		t.Fatalf("snapshot jobs = %d, want 1 (the second tick is inside the backoff)", calls)
+	}
+	if n := opLogRowCount(t, f, itemID); n != rows {
+		t.Fatalf("a tick inside the backoff left %d rows, want %d", n, rows)
+	}
+	// After the backoff, with a job that works, the log is compacted.
+	clock = clock.Add(compactBackoffBase + time.Second)
+	f.srv.SetOpLogCompactor(recoveryRunner(t))
+	f.srv.runOpLogGCTick(time.Hour)
+	if n := opLogRowCount(t, f, itemID); n != 1 {
+		t.Fatalf("after the backoff the op-log has %d rows, want the one snapshot", n)
 	}
 }
 

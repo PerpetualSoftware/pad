@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,6 +77,12 @@ type Job struct {
 var (
 	// ErrSchemaVersion refuses a job whose SchemaVersion is not the bundle's.
 	ErrSchemaVersion = errors.New("materialize: schema version mismatch")
+	// ErrIncompleteLog: the bundle refused an op-log whose replay leaves
+	// structs pending, because they reference a row the log does not hold
+	// (TASK-3574). It is deterministic: the same rows refuse again, so a
+	// caller stops until the op-log changes. Wrapped together with
+	// ErrJobFailed when the answer comes through the supervisor.
+	ErrIncompleteLog = errors.New("materialize: incomplete op-log")
 	// ErrInterrupted reports that the context ended while the job ran. It
 	// wraps the context's error (context.DeadlineExceeded or
 	// context.Canceled). The Runner stays usable.
@@ -261,10 +268,17 @@ func (r *Runner) runJob(ctx context.Context, fn goja.Callable, what string, job 
 			}
 			return "", fmt.Errorf("%w: %w", ErrInterrupted, cause)
 		}
+		if strings.Contains(err.Error(), incompleteLogMarker) {
+			return "", fmt.Errorf("%s: %w: %w", what, ErrIncompleteLog, err)
+		}
 		return "", fmt.Errorf("%s: %w", what, err)
 	}
 	return v.String(), nil
 }
+
+// incompleteLogMarker is in the bundle's refusal of a replay that leaves
+// structs pending (entry.ts materializeWith and snapshotWith).
+const incompleteLogMarker = "pending structs"
 
 func (r *Runner) fn(name string) (goja.Callable, error) {
 	f, ok := goja.AssertFunction(r.obj.Get(name))
