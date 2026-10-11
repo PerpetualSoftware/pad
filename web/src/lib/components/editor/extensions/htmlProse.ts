@@ -213,11 +213,24 @@ export function escapeTagOpeners(text: string, schema: Schema, atLineStart: bool
  * After up to three spaces: a bullet (`-`, `+`, `*`) or ordered marker
  * (`1.`, `1)`) followed by a space, tab or nothing; `>`; one to six `#`
  * followed by a space, tab or nothing; or a line of only `-`, `=`, `_` or `*`
- * (a thematic break or a setext underline). `$` is the end of the text node,
- * which is the end of the line unless marked text follows, and then the
- * marker is not followed by a space and opens nothing.
+ * (a thematic break or a setext underline).
+ *
+ * `next` is the first character of what follows `text` on the same line: ''
+ * when the line ends with it (a hard break or the end of the block), a space
+ * when the following marked text starts with one (prosemirror-markdown moves
+ * it outside the mark), or that text's first character (BUG-3600). A marker
+ * followed directly by marked text, as `-**item**`, opens nothing and keeps
+ * its form.
  */
-export function lineStartMarker(text: string): { raw: string; length: number; beyondBlockStartEscape: boolean } | null {
+export function lineStartMarker(text: string, next = ''): { raw: string; length: number; beyondBlockStartEscape: boolean } | null {
+	const m = markerOf(text + next);
+	// The lookahead character only decides whether the marker opens a block;
+	// a marker that would need it as part of itself (`1` then `2. x`) is not
+	// one this node starts.
+	return m && m.length <= text.length ? m : null;
+}
+
+function markerOf(text: string): { raw: string; length: number; beyondBlockStartEscape: boolean } | null {
 	const ordered = /^( {0,3})(\d{1,9})([.)])(?=[ \t]|$)/.exec(text);
 	if (ordered) {
 		return { raw: `${ordered[1]}${ordered[2]}\\${ordered[3]}`, length: ordered[0].length, beyondBlockStartEscape: ordered[3] === ')' };
@@ -236,6 +249,25 @@ export function lineStartMarker(text: string): { raw: string; length: number; be
 	return { raw: `${spaces}\\${ch}`, length: whole.length, beyondBlockStartEscape: spaces.length > 0 && '-+*>'.includes(ch) };
 }
 
+/**
+ * The first character of what follows the inline node at `index` on the same
+ * line, for lineStartMarker's lookahead (BUG-3600): '' when nothing does (the
+ * block ends, or a hard break starts the next line); the next text node's
+ * first character, whitespace included, since prosemirror-markdown writes a
+ * mark's leading space outside it; and a stand-in non-space for any other
+ * inline node (an image, a mention), which is never whitespace.
+ */
+function followingChar(
+	parent: { childCount: number; child(i: number): { isText?: boolean; text?: string; type: { name: string } } } | undefined,
+	index: number | undefined,
+): string {
+	if (!parent || index === undefined || index + 1 >= parent.childCount) return '';
+	const next = parent.child(index + 1);
+	if (next.type.name === 'hardBreak') return '';
+	if (next.isText) return (next.text ?? '').charAt(0);
+	return 'x';
+}
+
 interface SerializerState {
 	text: (s: string, escape?: boolean) => void;
 	out?: string;
@@ -250,7 +282,12 @@ export const PadText = Text.extend({
 	addStorage() {
 		return {
 			markdown: {
-				serialize(state: SerializerState, node: { text?: string; type: { schema: Schema } }) {
+				serialize(
+					state: SerializerState,
+					node: { text?: string; type: { schema: Schema } },
+					parent?: { childCount: number; child(i: number): { isText?: boolean; text?: string; type: { name: string } } },
+					index?: number,
+				) {
 					const out = state.out ?? '';
 					const atLineStart = out === '' || out.endsWith('\n');
 					// A hard break starts a new line, and CommonMark reads a block
@@ -265,7 +302,7 @@ export const PadText = Text.extend({
 					// else stays with prosemirror-markdown's own escape, unchanged.
 					let text = escapeTagOpeners(node.text ?? '', node.type.schema, atLineStart);
 					if (atLineStart) {
-						const m = lineStartMarker(text);
+						const m = lineStartMarker(text, followingChar(parent, index));
 						// At a true block start prosemirror-markdown's own escape already
 						// covers most markers, and changing its output would rewrite
 						// stored bodies for nothing: take over there only for what it
