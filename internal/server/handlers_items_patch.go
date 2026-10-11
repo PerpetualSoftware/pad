@@ -498,6 +498,13 @@ func (s *Server) patchViaApplier(w http.ResponseWriter, item *models.Item, input
 		p.baseSeq = item.Seq
 	}
 	p.before, p.after = ack.Before, ack.After
+	// Edits that cancel out change nothing in the tab either: refuse, writing
+	// nothing, as the no-room path does (retro Codex round on the #2055 fix:
+	// this path used to write a version and advance seq for a no-op).
+	if ack.Before == ack.After {
+		s.writePatchRefusal(w, ref, bodypatch.ErrNoChange)
+		return contentRouteHandled, nil
+	}
 	// The tab applied the edits to its canonical before under the same rules;
 	// the server re-derives each edit's context from that text so the record
 	// can be undone. A mismatch would be a client defect: recorded, logged.

@@ -54,3 +54,17 @@ func TestPLAN3578_UndoOfAnEmptiedLine(t *testing.T) {
 		t.Fatalf("undo of a whole-body clear: %d %v", code, out)
 	}
 }
+
+// The same no-op through an open editor: the tab applies it as nothing, and
+// the server must still refuse rather than write a version for it.
+func TestPLAN3578_NoOpPatchThroughAnOpenEditorIsRefused(t *testing.T) {
+	f, _ := patchRoomFixture(t, "")
+	before := f.current(t)
+	code, out := f.patch(t, map[string]any{"edits": edits("beta", "BETA", "BETA", "beta")})
+	if code != http.StatusBadRequest {
+		t.Fatalf("a cancel-out patch through an open editor: %d %v", code, out)
+	}
+	if after := f.current(t); after.Seq != before.Seq {
+		t.Fatalf("a refused no-op advanced seq %d → %d", before.Seq, after.Seq)
+	}
+}
