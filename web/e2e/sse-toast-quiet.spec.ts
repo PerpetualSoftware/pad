@@ -35,9 +35,10 @@ async function createTask(
 	token: string,
 	ws: string,
 	title: string,
+	agent?: string,
 ): Promise<{ id: string }> {
 	const resp = await request.post(`/api/v1/workspaces/${ws}/collections/tasks/items`, {
-		headers: authHeaders(token),
+		headers: agent ? { ...authHeaders(token), 'X-Pad-Agent': agent } : authHeaders(token),
 		data: { title, fields: { status: 'open' } },
 	});
 	if (!resp.ok()) throw new Error(`task create failed (${resp.status()}): ${await resp.text()}`);
@@ -122,11 +123,29 @@ test('CONTROL: an unflagged context still shows the creation toast — the produ
 			.poll(() => responseLog.some((u) => u.startsWith('/api/v1/events')), { timeout: 15_000 })
 			.toBe(true);
 
+		// Created AS AN AGENT (TASK-3593): creation toasts group per actor, and
+		// the rest of the suite seeds as the admin USER, so a user-actor probe
+		// could join another spec's burst and read "… created 3 items". No
+		// other spec in the normal run sends X-Pad-Agent (lib/readme-seed.ts is
+		// PAD_SCREENSHOTS-gated), so this actor's group is the control's own.
 		const title = `Loud toast control ${Date.now()}`;
-		await createTask(request, fixture.apiToken, fixture.workspaceSlug, title);
+		await createTask(request, fixture.apiToken, fixture.workspaceSlug, title, 'e2e-toast-control');
 
+		// The toast first, held the moment it shows: its 4s clock starts then,
+		// and waiting on the row before it could outlast that clock (codex r5).
+		// Hover holds it (TASK-2202), so a slow create or SSE delivery cannot
+		// let it expire mid-burst and start a second toast either (codex r2).
+		await expect(creationToast(page, title)).toBeVisible({ timeout: 15_000 });
+		await creationToast(page, title).hover();
 		await expect(rowFor(page, title)).toBeVisible({ timeout: 15_000 });
-		await expect(creationToast(page, title)).toBeVisible({ timeout: 5_000 });
+
+		// TASK-3593: a burst from the same actor folds into that ONE toast.
+		await createTask(request, fixture.apiToken, fixture.workspaceSlug, `${title} b`, 'e2e-toast-control');
+		await createTask(request, fixture.apiToken, fixture.workspaceSlug, `${title} c`, 'e2e-toast-control');
+		const burst = page.locator('.toast-container .toast-message', { hasText: 'Agent created 3 items' });
+		await expect(burst).toBeVisible({ timeout: 5_000 });
+		await expect(burst).toHaveCount(1);
+		await expect(creationToast(page, title)).toHaveCount(0);
 	} finally {
 		await context.close();
 	}

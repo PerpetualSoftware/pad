@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the rune-based toast store so this stays a pure node test (no Svelte
-// compile). We only assert on how `notifyServerBusy` calls `show`.
+// compile). We only assert on how `notifyServerBusy` calls `showUnread`.
 vi.mock('$lib/stores/toast.svelte', () => ({
-	toastStore: { show: vi.fn() },
+	toastStore: { showUnread: vi.fn() },
 }));
 
 import { toastStore } from '$lib/stores/toast.svelte';
@@ -13,7 +13,8 @@ import {
 	__resetServerBusyToastForTest,
 } from './serverBusyToast';
 
-const showMock = toastStore.show as ReturnType<typeof vi.fn>;
+// It fires on background requests too, so it counts toward unread (TASK-3593).
+const showMock = toastStore.showUnread as ReturnType<typeof vi.fn>;
 
 describe('serverBusyMessage (TASK-2080)', () => {
 	it('names the wait when a usable Retry-After is present', () => {

@@ -54,7 +54,7 @@ export function notifyServerBusy(retryAfterMs?: number, now: number = Date.now()
 	lastShownAt = now;
 	// 'info' is the least-alarming severity the toast store offers — a busy
 	// server is transient, not an error the user did anything wrong to cause.
-	toastStore.show(serverBusyMessage(retryAfterMs), 'info', BUSY_TOAST_DURATION_MS);
+	toastStore.showUnread(serverBusyMessage(retryAfterMs), 'info', BUSY_TOAST_DURATION_MS);
 	return true;
 }
 

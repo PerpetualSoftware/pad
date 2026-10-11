@@ -123,11 +123,14 @@ describe('adminStore.loadStats', () => {
 describe('toastStore across an identity change', () => {
 	it('drops live toasts AND the history, which names items', async () => {
 		const { toastStore } = await import('./toast.svelte');
-		toastStore.show({ message: 'Archived TASK-12', type: 'success' });
-		// PRECONDITION: both surfaces hold it, or the assertion below is about
-		// arrays that were always empty.
+		// Unread, as another actor's event is (TASK-3593): only those count, and
+		// the reset must be what zeroes the badge, not a toast that never raised it.
+		toastStore.show('Agent created: TASK-12', 'info', undefined, undefined, undefined, { unread: true });
+		// PRECONDITION: every surface holds it, or the assertion below is about
+		// state that was always empty.
 		expect(toastStore.toasts.length).toBeGreaterThan(0);
 		expect(toastStore.history.length).toBeGreaterThan(0);
+		expect(toastStore.unreadCount).toBeGreaterThan(0);
 
 		auth.fireIdentityChange();
 
