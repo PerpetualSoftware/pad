@@ -2,6 +2,7 @@ import { test, expect } from './fixtures';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
+import { clickBoardCard } from './lib/boardClickProbe';
 
 /**
  * Pane-navigation controller — depth/ownership state machine
@@ -222,7 +223,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await page.goto(docsUrl(fixture));
 
 		const prePaneUrl = page.url();
-		await page.locator('.item-card', { hasText: 'Ctrl dblclose alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl dblclose alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
@@ -259,7 +260,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const b = await seedDoc(fixture, request, 'Ctrl drill bravo');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl drill alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl drill alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		const refA = openItemParam(page);
@@ -302,7 +303,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await seedDoc(fixture, request, 'Ctrl detach charlie');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl detach alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl detach alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 
@@ -370,7 +371,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await page.goto(docsUrl(fixture));
 
 		const prePaneUrl = page.url();
-		await page.locator('.item-card', { hasText: 'Ctrl reset alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl reset alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 
@@ -381,7 +382,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		// Now a DIRECT list-row click on a THIRD item (charlie) while detached:
 		// resets the stack (go(-depth) to base, then a latched re-target),
 		// landing at depth 0 (the base ownership preserved → owned).
-		await page.locator('.item-card', { hasText: 'Ctrl reset charlie' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl reset charlie' }).first());
 		await expect(pane.locator('.title', { hasText: /Ctrl reset charlie/ })).toBeVisible();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
 
@@ -404,7 +405,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await seedItemIn(fixture, request, coll.slug, 'Rename target item');
 
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${coll.slug}`);
-		await page.locator('.item-card', { hasText: 'Rename target item' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Rename target item' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		// Owned first-open at depth 0.
@@ -483,7 +484,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const focusedRows = page.locator('.list-column .item-card.focused');
 
 		// Open A at depth 0 → the pane-snap effect highlights A's row.
-		await page.locator('.item-card', { hasText: 'Ctrl hl alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl hl alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
@@ -528,7 +529,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await page.goto(docsUrl(fixture));
 
 		// Open A at depth 0.
-		await page.locator('.item-card', { hasText: 'Ctrl late alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl late alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
@@ -580,7 +581,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await page.goto(docsUrl(fixture));
 
 		const prePaneUrl = page.url();
-		await page.locator('.item-card', { hasText: 'Ctrl esc alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl esc alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
@@ -651,7 +652,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await seedDoc(fixture, request, 'Ctrl esc0 bravo');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl esc0 alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl esc0 alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
@@ -690,7 +691,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const c = await seedDoc(fixture, request, 'Ctrl esc-repeat charlie');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl esc-repeat alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl esc-repeat alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await drillTo(page, b.slug);
@@ -739,7 +740,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const b = await seedDoc(fixture, request, 'Ctrl esc-boundary bravo');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl esc-boundary alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl esc-boundary alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await drillTo(page, b.slug);
@@ -792,7 +793,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const b = await seedDoc(fixture, request, 'Ctrl esc-sheet bravo');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl esc-sheet alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl esc-sheet alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await drillTo(page, b.slug);
@@ -844,7 +845,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const b = await seedDoc(fixture, request, 'Ctrl back bravo');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl back alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl back alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
@@ -883,7 +884,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const d = await seedDoc(fixture, request, 'Ctrl back-multi delta');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl back-multi alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl back-multi alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 
@@ -948,7 +949,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const d = await seedDoc(fixture, request, 'Ctrl back-race delta');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl back-race alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl back-race alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 
@@ -1028,7 +1029,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const c = await seedDoc(fixture, request, 'Ctrl back-supersede charlie');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl back-supersede alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl back-supersede alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		// A real row click puts the item's REF (e.g. `DOC-16`), not its slug,
@@ -1070,7 +1071,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		// settled at the history level), so this is a normal depth-0
 		// re-target (`openItemPane` replace) — a completely different, later
 		// navigation than the stalled Back pop, landing on C.
-		await page.locator('.item-card', { hasText: 'Ctrl back-supersede charlie' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl back-supersede charlie' }).first());
 		await expect(pane.locator('.title', { hasText: /Ctrl back-supersede charlie/ })).toBeVisible();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
 		// A row click lands the item's ref (not necessarily its slug — same
@@ -1111,7 +1112,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const b = await seedDoc(fixture, request, 'Ctrl back-slow bravo');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl back-slow alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl back-slow alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		// A real row click puts the item's REF (e.g. `DOC-16`), not its slug,
@@ -1208,7 +1209,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const b = await seedDoc(fixture, request, 'Ctrl back-mobile bravo');
 		await page.goto(docsUrl(fixture));
 
-		await page.locator('.item-card', { hasText: 'Ctrl back-mobile alpha' }).first().click();
+		await clickBoardCard(page.locator('.item-card', { hasText: 'Ctrl back-mobile alpha' }).first());
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		const backBtn = pane.locator('button[aria-label="Back"]');
