@@ -31,7 +31,8 @@ describe('planLimitPromptModel (TASK-3601)', () => {
 		expect(planLimitPromptModel(MSG, { payer_is_you: true }, { commerceAllowed: false, billingAvailable: true }).action).toBe('none');
 	});
 
-	it('an older server without payer_is_you is treated as the caller own, as before', () => {
-		expect(planLimitPromptModel(MSG, {}, on).action).toBe('upgrade');
+	it('an unknown payer gets the statement alone: checkout would sell the wrong account Pro', () => {
+		expect(planLimitPromptModel(MSG, {}, on).action).toBe('none');
+		expect(planLimitPromptModel(MSG, undefined, on).action).toBe('none');
 	});
 });

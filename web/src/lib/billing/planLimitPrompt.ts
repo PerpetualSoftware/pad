@@ -40,10 +40,14 @@ export function planLimitPromptModel(
 	if (!ctx.commerceAllowed || !ctx.billingAvailable) {
 		return { message: statement, action: 'none', hint: '', note: '' };
 	}
-	// A refusal from a server that predates payer_is_you is treated as the
-	// caller's own: that is what the old toast assumed, and checkout itself
-	// refuses anyone it should not sell to.
-	if (details?.payer_is_you !== false) {
+	// Unknown payer: say what happened and offer nothing (codex r1). Checkout
+	// sells Pro to the CURRENT user, so offering it to someone who is not the
+	// payer would sell them a plan that does not lift this limit. The server
+	// that serves this bundle always says (TASK-3601), so this is a fallback.
+	if (details?.payer_is_you === undefined) {
+		return { message: statement, action: 'none', hint: '', note: '' };
+	}
+	if (details.payer_is_you) {
 		return { message: statement, action: 'upgrade', hint: 'Upgrade to Pro to add more.', note: '' };
 	}
 	const who = details.payer_name?.trim();

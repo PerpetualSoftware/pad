@@ -74,7 +74,8 @@ async function openAsCloudUser(page: Page, email: string): Promise<void> {
 				error: {
 					code: 'plan_limit_exceeded',
 					message: "You've reached the 1-workspace limit on the free plan.",
-					details: { feature: 'workspaces', limit: 1, current: 1, plan: 'free' }
+					// The caller is the payer for a user limit (TASK-3601).
+					details: { feature: 'workspaces', limit: 1, current: 1, plan: 'free', payer_is_you: true }
 				}
 			})
 		});

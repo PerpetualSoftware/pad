@@ -55,6 +55,17 @@ describe('showPlanLimitToast raises the plan-limit prompt (TASK-3601)', () => {
 		vi.useRealTimers();
 	});
 
+	it('a newer refusal from another flow replaces the prompt and shows in its own host (codex r1)', () => {
+		const offInvite = planLimitPrompt.registerInlineHost('invite');
+		showPlanLimitToast(err(), { scope: 'invite' });
+		expect(planLimitPrompt.current?.scope).toBe('invite');
+		// No inline host for this one: it goes to the global host, not nowhere.
+		showPlanLimitToast(err(), { scope: 'new-item-sheet' });
+		expect(planLimitPrompt.current?.scope).toBeNull();
+		offInvite();
+		expect(planLimitPrompt.current, 'the invite host closing leaves the global prompt').not.toBeNull();
+	});
+
 	it('a scoped refusal goes to its inline host when one is mounted, else to the global one', () => {
 		showPlanLimitToast(err(), { scope: 'invite', blocked: 'invite a member' });
 		expect(planLimitPrompt.current?.scope).toBeNull();
