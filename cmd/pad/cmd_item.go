@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/PerpetualSoftware/pad/internal/bodypatch"
 	"io"
 	"math"
 	"net/url"
@@ -738,6 +739,7 @@ func printItemsGroupedByCollection(items []models.Item) {
 
 func showCmd() *cobra.Command {
 	var agentOutput bool
+	var linesFlag string
 	cmd := &cobra.Command{
 		Use:     "show <ref>",
 		Aliases: []string{"read"},
@@ -756,12 +758,40 @@ on stderr instead. --format json carries it as the content_state field.`,
 			client, _ := getClient()
 			ws := getWorkspace()
 
+			// PLAN-3578: numbered lines, for targeting a patch. Parsed before the
+			// read so a bad range costs no request.
+			var lineStart, lineEnd int
+			if linesFlag != "" {
+				if agentOutput {
+					return fmt.Errorf("--lines conflicts with --agent; use one")
+				}
+				var perr error
+				if lineStart, lineEnd, perr = bodypatch.ParseLineRange(linesFlag); perr != nil {
+					return perr
+				}
+			}
 			item, err := client.GetItem(ws, args[0])
 			if err != nil {
 				return err
 			}
 			if agentOutput {
 				return cli.PrintJSONCompact(cli.ToItemAgentView(*item))
+			}
+			if linesFlag != "" {
+				lines, from, to, total := bodypatch.SliceBodyLines(item.Content, lineStart, lineEnd)
+				out := bodypatch.BodyLines{Ref: cli.ItemRef(*item), Seq: item.Seq, ContentState: item.ContentState,
+					Start: from, End: to, TotalLines: total, Lines: lines}
+				if formatFlag == "json" {
+					return cli.PrintJSON(out)
+				}
+				fmt.Printf("%s · seq %d · lines %d-%d of %d\n", out.Ref, out.Seq, from, to, total)
+				if item.ContentState != "" {
+					fmt.Printf("content_state: %s (the stored body is behind the live document)\n", item.ContentState)
+				}
+				for _, l := range lines {
+					fmt.Printf("%5d  %s\n", l.N, l.Text)
+				}
+				return nil
 			}
 
 			// PLAN-1593 / TASK-1596: fetch the top 5 backlinks
@@ -1005,6 +1035,7 @@ on stderr instead. --format json carries it as the content_state field.`,
 		},
 	}
 	cmd.Flags().BoolVar(&agentOutput, "agent", false, "return compact agent-oriented JSON")
+	cmd.Flags().StringVar(&linesFlag, "lines", "", "show only these body lines, numbered (A-B, A- or A; 1-based), with the seq: for targeting pad item patch. Line numbers are for reading; a patch anchors on text")
 	return cmd
 }
 

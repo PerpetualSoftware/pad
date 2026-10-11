@@ -116,6 +116,7 @@ func itemCmd() *cobra.Command {
 		showCmd(),
 		itemOpenCmd(),
 		updateCmd(),
+		itemPatchCmd(),
 		historyCmd(),
 		deleteCmd(),
 		restoreCmd(),

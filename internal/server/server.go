@@ -2208,6 +2208,8 @@ func (s *Server) setupRouter() {
 					r.Route("/items/{itemSlug}", func(r chi.Router) {
 						r.Get("/", s.handleGetItem)
 						r.Patch("/", s.handleUpdateItem)
+						// PLAN-3578: content-anchored patch writes.
+						r.Post("/patch", s.handlePatchItem)
 						r.Delete("/", s.handleDeleteItem)
 						r.Post("/restore", s.handleRestoreItem)
 						r.Post("/move", s.handleMoveItem)

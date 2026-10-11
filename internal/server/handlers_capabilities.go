@@ -74,6 +74,12 @@ type serverCapabilities struct {
 	// binary. It is here for any non-web caller, which against an older build
 	// falls back to one PATCH per item.
 	ItemSortOrderBulk bool `json:"item_sort_order_bulk"`
+
+	// ItemPatch is true when POST /workspaces/{ws}/items/{ref}/patch is served
+	// (PLAN-3578). An older build answers that route with a bare 404 that
+	// reads exactly like a missing item, so the CLI refuses instead of sending
+	// when this is absent.
+	ItemPatch bool `json:"item_patch"`
 }
 
 // WHAT A BUILD THAT CANNOT DECODE A FORMAT ACTUALLY COSTS THE READER
@@ -116,7 +122,7 @@ type serverCapabilities struct {
 // rather than 500-ing — that signals to the editor "uploads still work,
 // but disable transformation tools."
 func (s *Server) handleServerCapabilities(w http.ResponseWriter, r *http.Request) {
-	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true, BuiltinUpdate: true, ItemSortOrderBulk: true}
+	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true, BuiltinUpdate: true, ItemSortOrderBulk: true, ItemPatch: true}
 	if s.imageProcessor != nil {
 		resp.Image = s.imageProcessor.Capabilities()
 	} else {

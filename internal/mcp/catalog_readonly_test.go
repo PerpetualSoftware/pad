@@ -130,6 +130,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "ack-reminder"}:   {"item", "ack"},
 		{"pad_item", "claim"}:          {"item", "claim"},
 		{"pad_item", "release"}:        {"item", "release"},
+		{"pad_item", "patch"}:          {"item", "patch"},
 		{"pad_item", "star"}:           {"item", "star"},
 		{"pad_item", "unstar"}:         {"item", "unstar"},
 		{"pad_item", "starred"}:        {"item", "starred"},
@@ -295,6 +296,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "ack-reminder"}:   {"item", "ack"},
 		{"pad_item", "claim"}:          {"item", "claim"},
 		{"pad_item", "release"}:        {"item", "release"},
+		{"pad_item", "patch"}:          {"item", "patch"},
 		{"pad_item", "star"}:           {"item", "star"},
 		{"pad_item", "unstar"}:         {"item", "unstar"},
 		{"pad_item", "starred"}:        {"item", "starred"},
@@ -699,6 +701,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Summary: "release an execution lease",
 				Args:    mkArgs("ref"),
 				Flags:   mkFlags("workspace", "holder"),
+			},
+			"item patch": {
+				Summary: "replace exact text in an item's body",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace", "edits", "expected-seq"),
 			},
 			"item star": {
 				Summary: "star item",

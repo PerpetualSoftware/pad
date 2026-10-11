@@ -1738,6 +1738,21 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.87 — PLAN-3578 step 1. ADDITIVE bump on the v0.38 grounds (a new
+//     action is the contract change): `pad_item.action=patch {ref, edits:
+//     [{old, new, line_hint?}], expected_seq?}` replaces exact text in an
+//     item's body. Each old must occur exactly once; edits apply in order,
+//     all or nothing; the answer is {ref, seq, patch_id, version_id,
+//     rebased, intervening?, diff}. A moved expected_seq does not refuse:
+//     the patch applies and reports rebased with the intervening writes
+//     ({from_seq, to_seq, changes, complete, truncated}). New structured
+//     codes on both transports: patch_anchor_missing,
+//     patch_anchor_ambiguous (details.lines), patch_room_open (the item is
+//     open in an editor; not supported yet). `pad_item.action=get` gains
+//     `lines` ("A-B"), which answers numbered body lines with seq and
+//     content_state instead of the item. The catalog gains the
+//     `array<object>` param type for `edits`.
+//
 //     0.86 — PLAN-3555 phase 1. ADDITIVE bump on the v0.53 grounds: a new
 //     param and new response members, and no call that was accepted is
 //     refused. `pad_item.action=update` gains `replace` (bool), the
@@ -2049,7 +2064,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.86"
+const ToolSurfaceVersion = "0.87"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -2825,6 +2825,18 @@ func (s *Store) updateItemWithParentLinkOnce(
 		}
 	}
 
+	// PLAN-3578: a content-anchored patch computes the new body from the row
+	// as it stands INSIDE this transaction, after the lock, so its anchors are
+	// matched against the body it replaces and not against an earlier read.
+	// Its refusal (an anchor that no longer matches) aborts the write.
+	if input.ContentTransform != nil {
+		body, terr := input.ContentTransform(existing)
+		if terr != nil {
+			return nil, terr
+		}
+		input.Content = &body
+	}
+
 	// IDEA-1494 round 2: run the caller's invariant check (open-children
 	// guard) against the same in-tx snapshot the UPDATE will write. Closing
 	// the guard-vs-write TOCTOU window relies on this ordering — every
@@ -2919,6 +2931,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// rather than the row (BUG-3327): either way the body before the edit
 	// is what a version must keep.
 	bodyEditedWithoutVersion := false
+	createdVersionID := ""
 	newBody := input.Content
 	if newBody == nil {
 		newBody = input.ExternalContent
@@ -2983,6 +2996,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 
 		if shouldVersion {
 			vid := newID()
+			createdVersionID = vid
 			versionContent := existing.Content
 			isDiff := false
 			patch := diff.CreateReversePatch(existing.Content, *newBody)
@@ -3409,6 +3423,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// to set it" at exactly the call site that must not guess (BUG-2776).
 	updated.PreUpdate = &preUpdate
 	updated.BodyEditedWithoutVersion = bodyEditedWithoutVersion
+	updated.CreatedVersionID = createdVersionID
 
 	// The choke point (SPEC-3 / TASK-2658). Emitted here — after the in-tx
 	// read-back and after the status/assignment deltas are computed, before

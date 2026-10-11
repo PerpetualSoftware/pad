@@ -1059,9 +1059,9 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 			"options_added":            formatOptionsAdded(optionsAdded),
 			"options_added_collection": coll.Name,
 		})
-		s.logActivityWithMeta(workspaceID, item.ID, "created", r, string(meta))
+		s.logActivityWithMeta(workspaceID, item.ID, "created", r, stampSeqChain(string(meta), 0, item.Seq, ""))
 	} else {
-		s.logActivity(workspaceID, item.ID, "created", r)
+		s.logActivityWithMeta(workspaceID, item.ID, "created", r, stampSeqChain("", 0, item.Seq, ""))
 	}
 	s.publishItemEventWithName(sseItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
 
@@ -1381,6 +1381,9 @@ type builtinItemUpdate struct {
 	// clearConvention removes the convention metadata (the library dropped
 	// it), through the same lowering.
 	clearConvention bool
+	// patch is set only by handlePatchItem (PLAN-3578): a content-anchored
+	// patch, whose body input.ContentTransform computes in the transaction.
+	patch *itemPatch
 }
 
 // updateItem is handleUpdateItem, or a built-in update when b is set.
@@ -2468,7 +2471,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// the direct one: no tab holds them, so the applier replacing the live
 	// document does not touch them.
 	var discardedSetAside int
-	if input.Content != nil && !collabSnapshot {
+	if (input.Content != nil || input.ContentTransform != nil) && !collabSnapshot {
 		if input.OverwritePendingEdits {
 			openChildrenPrecheck = composeSetAsideDiscard(s, item.ID, openChildrenPrecheck, &discardedSetAside)
 		} else {
@@ -2478,6 +2481,16 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	}
 	// BUG-3133 D: how many unflushed edit rows the direct path's prune deleted.
 	var prunedPendingEdits int
+
+	// PLAN-3578: a patch takes the direct path only; an open editor refuses it.
+	if input.ContentTransform != nil && s.collab != nil && !collabSnapshot {
+		route, updated := s.patchRoute(w, r, item, &input, openChildrenPrecheck, parentLink, &prunedPendingEdits)
+		if route == contentRouteHandled {
+			return
+		}
+		fullWriteHandled = true
+		fullWriteUpdated = updated
+	}
 
 	if input.Content != nil && s.collab != nil && !collabSnapshot {
 		// PLAN-2975: WRITE FIRST, APPLY SECOND on the applier path.
@@ -2526,6 +2539,10 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		updated, err = s.store.UpdateItemWithParentLink(item.ID, input, openChildrenPrecheck, parentLink)
 	}
 	if err != nil {
+		// PLAN-3578: an anchor that no longer matches, when collab is off.
+		if writePatchRefusal(w, itemRefOrSlug(*item), err) {
+			return
+		}
 		// IDEA-1494 R2: surface the open-children guard rejection as
 		// the structured 409 BEFORE the UNIQUE-constraint / generic
 		// internal-error paths can swallow it. Same shape the
@@ -2674,6 +2691,15 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	if updated.BodyEditedWithoutVersion {
 		meta = withActivityMetaKey(meta, "body_edited", "true")
 	}
+	// PLAN-3578: the seq chain a rebased patch reports its intervening
+	// writes from. Without a pre-image the link is unknown, so the entry
+	// carries no stamp and the chain reads broken there.
+	if before != nil {
+		meta = stampSeqChain(meta, before.Seq, updated.Seq, updated.CreatedVersionID)
+	}
+	if b != nil && b.patch != nil {
+		meta = b.patch.activityMeta(meta)
+	}
 	actor, source := actorFromRequest(r)
 	// The error is CHECKED here (BUG-2779). The activity write is
 	// best-effort — a failed audit entry must not fail the user's update,
@@ -2820,6 +2846,10 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		updated.Warnings = warnings
 	}
 
+	if b != nil && b.patch != nil {
+		s.writePatchResponse(w, updated, b.patch)
+		return
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 

@@ -534,12 +534,32 @@ func mergeActivityMeta(existing, incoming string) string {
 	existChanges, _ := existMap["changes"].(string)
 	newChanges, _ := newMap["changes"].(string)
 
+	// PLAN-3578: decide the seq chain from both sides BEFORE the overlay.
+	chainExist := map[string]interface{}{}
+	for _, k := range []string{ActivityMetaSeq, ActivityMetaPrevSeq} {
+		if v, ok := existMap[k]; ok {
+			chainExist[k] = v
+		}
+	}
+
 	// Start with existing map as base, overlay new fields
 	for k, v := range newMap {
 		if k == "changes" {
 			continue // handled separately
 		}
 		existMap[k] = v
+	}
+	if _, stamped := chainExist[ActivityMetaSeq]; stamped || newMap[ActivityMetaSeq] != nil {
+		broken := existMap[ActivitySeqChainBroken]
+		mergeSeqChain(chainExist, newMap)
+		if v, ok := chainExist[ActivitySeqChainBroken]; ok {
+			existMap[ActivitySeqChainBroken] = v
+		} else if broken != nil {
+			existMap[ActivitySeqChainBroken] = broken
+		}
+		if v, ok := chainExist[ActivityMetaPrevSeq]; ok && chainExist[ActivitySeqChainBroken] == nil {
+			existMap[ActivityMetaPrevSeq] = v
+		}
 	}
 
 	if newChanges != "" {

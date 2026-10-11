@@ -412,6 +412,12 @@ func init() {
 		// duration (the CLI flag's vocabulary) while the handler's body
 		// takes ttl_seconds. `item release` fits the declarative shape.
 		"item claim": mapItemClaim,
+		// PLAN-3578: content-anchored patch writes.
+		"item patch": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/patch",
+			bodyKeys:     []string{"edits", "expected_seq"},
+		}.toRouteMapper(),
 		"item release": routeSpec{
 			method:       http.MethodPost,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/release",

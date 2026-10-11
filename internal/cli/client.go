@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/PerpetualSoftware/pad/internal/bodypatch"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -56,6 +57,7 @@ type serverCapabilityFlags struct {
 	AttachmentAttach           bool `json:"attachment_attach"`
 	LibraryActivate            bool `json:"library_activate"`
 	BuiltinUpdate              bool `json:"builtin_update"`
+	ItemPatch                  bool `json:"item_patch"`
 }
 
 func NewClient(host string, port int) *Client {
@@ -892,6 +894,87 @@ func (c *Client) ServerSupportsBuiltinUpdate() bool {
 func (c *Client) BuiltinUpdateSupport() (supported, definitive bool) {
 	caps, definitive := c.serverCapabilities()
 	return caps.BuiltinUpdate, definitive
+}
+
+// ServerSupportsItemPatch reports whether this server serves POST
+// /workspaces/{ws}/items/{ref}/patch (PLAN-3578). An older build answers that
+// route with a bare 404 that reads exactly like a missing item, so the CLI
+// refuses instead of sending when this is absent.
+func (c *Client) ServerSupportsItemPatch() bool {
+	caps, _ := c.serverCapabilities()
+	return caps.ItemPatch
+}
+
+// PatchResult is the answer to a patch write (PLAN-3578).
+type PatchResult struct {
+	Ref         string                   `json:"ref"`
+	Seq         int64                    `json:"seq"`
+	PatchID     string                   `json:"patch_id"`
+	VersionID   string                   `json:"version_id,omitempty"`
+	Rebased     bool                     `json:"rebased"`
+	Intervening *models.PatchIntervening `json:"intervening,omitempty"`
+	Diff        string                   `json:"diff"`
+}
+
+// PatchItem applies content-anchored edits to the item's body.
+func (c *Client) PatchItem(wsSlug, itemSlug string, edits []bodypatch.Edit, expectedSeq *int64) (*PatchResult, error) {
+	body := map[string]any{"edits": edits}
+	if expectedSeq != nil {
+		body["expected_seq"] = *expectedSeq
+	}
+	var result PatchResult
+	if err := c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/patch", body, &result); err != nil {
+		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
+	}
+	return &result, nil
+}
+
+// Patch refusal codes (PLAN-3578). Keep in lockstep with internal/mcp's
+// allowedStructuredErrorCodes and its Patch*Hint constants.
+const (
+	PatchAnchorMissingCode   = "patch_anchor_missing"
+	PatchAnchorAmbiguousCode = "patch_anchor_ambiguous"
+	PatchRoomOpenCode        = "patch_room_open"
+)
+
+// PatchAnchorHint is the recovery guidance for a patch whose anchor no
+// longer matches exactly once. Duplicated in internal/mcp; a test asserts
+// the two match.
+const PatchAnchorHint = "Nothing was written. Re-read the item and quote, as old, text that occurs exactly once in the CURRENT body " +
+	"(add surrounding lines to make it unique, or pass line_hint to choose among exact matches)."
+
+// PatchRoomOpenHint is the recovery guidance for patch_room_open. Duplicated
+// in internal/mcp; a test asserts the two match.
+const PatchRoomOpenHint = "Nothing was written. The item is open in an editor, and patching an open item is not supported yet. " +
+	"Retry after the editor closes, or send a whole-body update with expected_seq."
+
+// IsPatchRefusal reports a patch refusal the server answered.
+func IsPatchRefusal(err error) (*APIError, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.Code {
+		case PatchAnchorMissingCode, PatchAnchorAmbiguousCode, PatchRoomOpenCode:
+			return apiErr, true
+		}
+	}
+	return nil, false
+}
+
+// WritePatchRefusalError writes the structured marker line for a patch
+// refusal, so the stdio MCP transport reports its code and details instead
+// of inferring one from the prose.
+func WritePatchRefusalError(w io.Writer, apiErr *APIError) {
+	hint := PatchAnchorHint
+	if apiErr.Code == PatchRoomOpenCode {
+		hint = PatchRoomOpenHint
+	}
+	body := map[string]any{"code": apiErr.Code, "message": apiErr.Message, "hint": hint}
+	if len(apiErr.Details) > 0 {
+		body["details"] = apiErr.Details
+	}
+	if data, err := json.Marshal(map[string]any{"error": body}); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
 }
 
 // BuiltinText is a built-in's text: the body and the fields an update writes.

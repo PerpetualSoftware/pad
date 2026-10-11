@@ -88,9 +88,12 @@ type ToolSchema struct {
 // WithArray, WithObject). Enum, when non-empty, constrains string parameters.
 type ParamDef struct {
 	Name        string
-	Type        string // "string" | "number" | "bool" | "array<string>" | "object"
+	Type        string // "string" | "number" | "bool" | "array<string>" | "array<object>" | "object"
 	Description string
 	Enum        []string
+	// ItemSchema is the JSON schema of one element of an "array<object>"
+	// param (PLAN-3578's patch edits), so the host sees its shape.
+	ItemSchema map[string]any
 }
 
 // ActionFn handles one tool action. Receives the call context, the raw
@@ -450,6 +453,11 @@ func paramDefToToolOption(p ParamDef) mcp.ToolOption {
 		return mcp.WithBoolean(p.Name, propOpts...)
 	case "array<string>":
 		return mcp.WithArray(p.Name, append(propOpts, mcp.WithStringItems())...)
+	case "array<object>":
+		if p.ItemSchema != nil {
+			propOpts = append(propOpts, mcp.Items(p.ItemSchema))
+		}
+		return mcp.WithArray(p.Name, propOpts...)
 	case "object":
 		// Structured JSON parameter. The MCP host sees a generic object;
 		// per-tool semantics are encoded in the Description. Callers
