@@ -634,7 +634,8 @@ type BillingAggregates struct {
 	// the window; UpgradesInWindow counts those (BUG-3591).
 	NewProSignups int
 	// UpgradesInWindow is the count of users whose plan_upgraded_at (the
-	// last time SetUserPlan made them pro from a not-pro effective plan) is
+	// last time a Stripe write in SetUserPlan made them pro from a not-pro
+	// effective plan; an operator's grant does not stamp it) is
 	// strictly after the cutoff, whatever their plan is now: an upgrade
 	// that churned before the end of the window still happened in it.
 	UpgradesInWindow int

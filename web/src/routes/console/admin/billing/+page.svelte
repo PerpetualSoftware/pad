@@ -173,7 +173,7 @@
 			<div class="stat">
 				<span class="stat-label">Upgrades (30d)</span>
 				<span class="stat-value">{stats.upgrades_30d}</span>
-				<span class="stat-sub">Accounts that became Pro in the last 30 days</span>
+				<span class="stat-sub">Accounts that bought Pro in the last 30 days</span>
 			</div>
 
 			<!-- 5b. Pro accounts created 30d (LOCAL, always real): by account

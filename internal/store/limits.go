@@ -623,13 +623,15 @@ func (s *Store) SetUserPlan(userID string, w PlanWrite) (PlanWriteResult, error)
 		fence = time.Now().UnixMilli()
 	}
 
-	// An upgrade (BUG-3591): this write makes the plan pro and the held row
-	// was not pro in effect (an expired pro counts as free, as everywhere).
-	// Decided from the row read under the lock above, and stamped in the
-	// same UPDATE, so it lands only if the write applies. A pro-to-pro
-	// renewal keeps the earlier stamp.
+	// An upgrade (BUG-3591): a Stripe write makes the plan pro and the held
+	// row was not pro in effect (an expired pro counts as free, as
+	// everywhere). Decided from the row read under the lock above, and
+	// stamped in the same UPDATE, so it lands only if the write applies. A
+	// pro-to-pro renewal keeps the earlier stamp. A manual write is an
+	// operator's grant (a comp), not a purchase, so it never stamps: the
+	// stamp feeds the admin upgrades figure, which counts paying upgrades.
 	upgradedAt := ""
-	if w.Plan == "pro" {
+	if w.Plan == "pro" && w.Source == PlanSourceStripe {
 		held := models.User{Plan: heldPlan, PlanExpiresAt: heldExpires}
 		if held.EffectivePlan(time.Now()) != "pro" {
 			upgradedAt = now()

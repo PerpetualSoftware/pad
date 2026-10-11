@@ -8,7 +8,8 @@ import (
 // BUG-3591: the admin billing dashboard counted "new Pro signups" by
 // created_at, so a long-time free account that upgraded inside the window
 // was missed. SetUserPlan now stamps plan_upgraded_at when a write makes the
-// plan pro from a not-pro effective plan, and CountBillingAggregates counts
+// plan pro from a not-pro effective plan (Stripe writes only: an operator's
+// grant is not a purchase), and CountBillingAggregates counts
 // UpgradesInWindow by that stamp.
 
 func bug3591User(t *testing.T, s *Store, email string, createdAgo time.Duration) string {
@@ -75,14 +76,29 @@ func TestBug3591_OldAccountUpgradingTodayCountsAsAnUpgrade(t *testing.T) {
 	}
 }
 
-// Every write path that makes a plan pro stamps it: the manual one too.
-func TestBug3591_ManualUpgradeStamps(t *testing.T) {
+// An operator's grant (a manual write) is a comp, not a purchase: it does
+// not count as an upgrade, and a later Stripe pro write over it is not one
+// either, because the account was already pro in effect.
+func TestBug3591_OperatorGrantIsNotAnUpgrade(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	id := bug3591User(t, s, "manual3591@example.com", 60*24*time.Hour)
 	bug3591Set(t, s, id, PlanWrite{Plan: "pro", Source: PlanSourceManual, Force: true})
-	if upgrades, _ := bug3591Counts(t, s); upgrades != 1 {
-		t.Errorf("upgrades in window = %d, want 1", upgrades)
+	if got := bug3591Stamp(t, s, id); got != "" {
+		t.Errorf("an operator grant stamped plan_upgraded_at = %q", got)
+	}
+	if upgrades, _ := bug3591Counts(t, s); upgrades != 0 {
+		t.Errorf("upgrades in window = %d, want 0 (an operator grant)", upgrades)
+	}
+	// The source rule refuses a Stripe write over a manual pro only when it
+	// LOWERS the plan; a Stripe pro write applies, and is not an upgrade. Its
+	// revision is after the manual write's fence (unix ms, BUG-3356).
+	rev := time.Now().Add(time.Second).UnixMilli()
+	if res := bug3591Set(t, s, id, PlanWrite{Plan: "pro", Source: PlanSourceStripe, Revision: rev}); !res.Applied {
+		t.Fatalf("PREMISE: the stripe pro write over the grant was refused: %+v", res)
+	}
+	if got := bug3591Stamp(t, s, id); got != "" {
+		t.Errorf("a stripe pro write over a granted pro stamped plan_upgraded_at = %q", got)
 	}
 }
 

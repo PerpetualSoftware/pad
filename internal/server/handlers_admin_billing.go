@@ -16,8 +16,9 @@ import (
 // new_signups_30d, upgrades_30d).
 //
 // new_signups_30d is Pro accounts CREATED in the last 30 days (by
-// created_at); upgrades_30d is accounts that BECAME Pro in them, by when the
-// plan changed (BUG-3591). The first misses an old account that upgraded.
+// created_at); upgrades_30d is accounts that BOUGHT Pro in them (a Stripe
+// write; an operator's grant does not count), by when the plan changed
+// (BUG-3591). The first misses an old account that upgraded.
 //
 // CloudUnreachable is true when the pad-cloud sidecar errored out (transport
 // failure, 5xx) — in that case the Stripe-derived fields are zero and the
