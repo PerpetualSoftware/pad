@@ -14,6 +14,7 @@
 	import { laneWriteValue, laneWriteRefusalMessage } from '$lib/collections/laneWriteValue';
 	import { summarizeBulkFailures, bulkToastMessage } from '$lib/collections/bulkFailureReason';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
+	import { filterSummaryParts, filteredCountLabel } from '$lib/collections/filterSummary';
 	import { blockedDraftMessage, draftCreateFields, draftTargets, lostLaneLabel, saveAllDrafts } from '$lib/collections/laneDrafts';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
@@ -1958,6 +1959,35 @@
 	let viewModeLabel = $derived(
 		viewMode === 'list' ? 'List' : viewMode === 'board' ? 'Board' : 'Table'
 	);
+	// The view trigger names the active saved view when there is one
+	// (TASK-3592); a view deleted while active falls back to the mode.
+	let activeViewName = $derived(
+		activeViewId ? (savedViews.find((v) => v.id === activeViewId)?.name ?? null) : null
+	);
+	let viewTriggerLabel = $derived(activeViewName ?? viewModeLabel);
+
+	// With the panel closed, a filtered view says so (TASK-3592): what is
+	// filtered, "N of M", and a Clear. Clear is the View menu's "All".
+	let filterSummary = $derived(
+		filterSummaryParts({
+			filters: activeFilters,
+			tags: selectedTags,
+			search: searchQuery,
+			unparented: unparentedApplied,
+			fieldLabel: (key) =>
+				key === 'parent' || key === 'phase'
+					? 'parent'
+					: (schema?.fields.find((f) => f.key === key)?.label ?? key),
+			valueLabel: (key, value) => {
+				if (key === 'parent' || key === 'phase') return relationLabels[value] ?? value;
+				if (relationFilterKeys.has(key) && wsSlug) {
+					return localIndex.findByIdOrSlug(wsSlug, value)?.title ?? value;
+				}
+				return value;
+			},
+		})
+	);
+	let itemCountLabel = $derived(filteredCountLabel(filteredItems.length, items.length, hasActiveFilters));
 
 	function selectViewMode(mode: ViewMode) {
 		saveViewMode(mode);
@@ -3989,7 +4019,7 @@
 					<h1>
 						{#if collection.icon}<span class="collection-icon">{collection.icon}</span>{/if}
 						{collection.name}
-						<span class="item-count">{items.length}</span>
+						<span class="item-count">{itemCountLabel}</span>
 					</h1>
 
 					<!-- Realtime stream status (PLAN-1984 / TASK-2027): surfaces the
@@ -4019,7 +4049,7 @@
 							<!-- No visible "View:" prefix (TASK-2244): at 44px per control the
 							     strip only fits one row at 360 without it. The accessible name is
 							     the aria-label above, so nothing is lost to assistive tech. -->
-							<span class="view-chip-label">{viewModeLabel}</span>
+							<span class="view-chip-label">{viewTriggerLabel}</span>
 							<span class="view-chip-caret" aria-hidden="true">▾</span>
 						</button>
 						{#if viewSheetOpen}
@@ -4109,7 +4139,7 @@
 								title="View, saved views"
 							>
 								<span class="view-dd-icon" aria-hidden="true">{viewModeIcon}</span>
-								{viewModeLabel}
+								<span class="view-dd-label">{viewTriggerLabel}</span>
 								<span class="view-dd-caret" aria-hidden="true">▾</span>
 							</button>
 							<Menu
@@ -4314,6 +4344,23 @@
 
 				</div>
 			</div>
+
+			{#if hasActiveFilters && !filtersOpen}
+				<div class="filter-summary">
+					<button
+						type="button"
+						class="filter-summary-text"
+						onclick={() => (filtersOpen = true)}
+						title="Show filters"
+					>
+						<span class="filter-summary-count">{itemCountLabel}</span>
+						{#if filterSummary.length > 0}
+							<span class="filter-summary-parts">· {filterSummary.join(' · ')}</span>
+						{/if}
+					</button>
+					<button type="button" class="filter-summary-clear" onclick={clearActiveView}>Clear</button>
+				</div>
+			{/if}
 
 			{#if filtersOpen}
 				<div class="filters-panel">
@@ -5160,6 +5207,60 @@
 
 	.filters-panel {
 		padding: var(--space-3) 0;
+	}
+
+	/* TASK-3592: the closed-panel summary of a filtered view. */
+	.filter-summary {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) 0 0;
+		font-size: 0.85em;
+		min-width: 0;
+	}
+	.filter-summary-text {
+		display: inline-flex;
+		gap: var(--space-1);
+		min-width: 0;
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--text-secondary);
+		font: inherit;
+		cursor: pointer;
+		text-align: left;
+	}
+	.filter-summary-count {
+		flex: none;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.filter-summary-parts {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.filter-summary-clear {
+		flex: none;
+		background: none;
+		border: none;
+		padding: 0 var(--space-1);
+		color: var(--accent-blue);
+		font: inherit;
+		cursor: pointer;
+	}
+	.filter-summary-clear:hover,
+	.filter-summary-text:hover .filter-summary-parts {
+		text-decoration: underline;
+	}
+
+	/* A saved view's name can be long (TASK-3592): the trigger truncates. */
+	.view-dd-label,
+	.view-chip-label {
+		max-width: 14em;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	/* Page-wide sort control (TASK-1670) — sits next to the view toggle. */
