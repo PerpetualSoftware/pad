@@ -202,6 +202,9 @@ func TestEveryCLIMarkerCodeIsInTheStdioVocabulary(t *testing.T) {
 		"WriteLeaseHeldError": func(w *bytes.Buffer) {
 			cli.WriteLeaseHeldError(w, api("lease_held"))
 		},
+		"WritePatchRefusalError": func(w *bytes.Buffer) {
+			cli.WritePatchRefusalError(w, api("patch_anchor_missing"))
+		},
 	}
 
 	for name, write := range writers {

@@ -488,6 +488,9 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 	if err == nil {
 		return false
 	}
+	if writePatchRefusal(w, itemRefOrSlug(*item), err) {
+		return true
+	}
 	if details, ok := asOpenChildrenGuardError(err); ok {
 		writeOpenChildrenError(w, itemRefOrSlug(*item), details)
 		return true

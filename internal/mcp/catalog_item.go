@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/PerpetualSoftware/pad/internal/bodypatch"
 	"os"
 	"sort"
 	"strings"
@@ -55,7 +57,10 @@ var padItemTool = ToolDef{
 		"create": actionItemCreate,
 		"update": actionItemUpdate,
 		"delete": passThrough([]string{"item", "delete"}),
-		"get":    passThrough([]string{"item", "show"}),
+		"get":    actionItemGet,
+
+		// PLAN-3578: content-anchored body edits, answered with the diff.
+		"patch": passThrough([]string{"item", "patch"}),
 		// list is CUSTOM (not passThrough) so a bare agent list stays
 		// bounded: it injects a default limit and clamps an oversized one
 		// before dispatch, mirroring the backlinks default/max. See
@@ -301,6 +306,17 @@ var padItemSchemaParams = []ParamDef{
 	// to catch. `seq` is bumped on every mutation of the row, is returned on
 	// every item AND every item summary, and is an integer.
 	{Name: "overwrite_pending_edits", Type: "bool", Description: "update: true replaces a tab's unsaved edits instead of refusing token-guarded content (content_pending_flush)."},
+	// ── Patch (PLAN-3578) ──
+	{Name: "edits", Type: "array<object>", ItemSchema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"old":       map[string]any{"type": "string", "description": "Exact text that must occur EXACTLY ONCE in the current body. Never empty."},
+			"new":       map[string]any{"type": "string", "description": "Replacement text; empty deletes."},
+			"line_hint": map[string]any{"type": "number", "description": "1-based line on which `old` starts; only chooses among several exact matches."},
+		},
+		"required": []any{"old", "new"},
+	}, Description: "patch: the edits, applied in order, all or nothing. Required for: patch."},
+	{Name: "lines", Type: "string", Description: "get: return only these body lines, numbered (\"A-B\", \"A-\" or \"A\"; 1-based), with seq and content_state, for targeting a patch. Line numbers are for reading; a patch anchors on text."},
 	// PLAN-3555: the deliberate-overwrite opt-out. Phase 1 changes no outcome;
 	// phase 2 refuses a body write that carries neither this nor a token.
 	{Name: "replace", Type: "bool", Description: "update: true overwrites the content on purpose, whatever changed since you read it (no version token). A content write with neither this nor expected_seq is flagged warnings.unguarded_content_write now and will be refused later. Conflicts with expected_seq."},
@@ -362,7 +378,20 @@ Actions:
   restore       — Un-archive (restore) a soft-deleted item by ref.
     Required: ref.
   get           — Read an item.
-    Required: ref.
+    Required: ref. Optional: lines ("40-80": numbered body lines plus
+    seq, for quoting a patch's anchors).
+  patch         — Replace exact text in an item's body without sending all of it.
+    Required: ref, edits ([{old, new, line_hint?}]). Optional: expected_seq.
+    Each old must occur EXACTLY ONCE in the current body (quote more
+    context, or pass line_hint to pick among exact matches); edits apply
+    in order, all or nothing. The answer is a unified diff of what changed:
+    read it. Anchors guarantee position, not meaning: if the text around
+    your anchor was rewritten, the edit still lands. A moved expected_seq
+    does not refuse: the patch applies and returns rebased=true with the
+    intervening writes (complete=false when some left no record). Refusals
+    write nothing: patch_anchor_missing / patch_anchor_ambiguous (re-read,
+    quote current text) and patch_room_open (the item is open in an
+    editor; not supported yet).
   list          — List items, optionally filtered.
     Optional: collection, status, priority, parent, unparented, role, assign, all, limit, full.
     parent and unparented are mutually exclusive. Results are
@@ -940,4 +969,43 @@ func actionItemImport(ctx context.Context, input map[string]any, env ActionEnv) 
 	}
 	out["file"] = tmpPath
 	return env.Dispatch(ctx, []string{"item", "import"}, out)
+}
+
+// actionItemGet handles pad_item.action=get. With `lines` it slices the body
+// into numbered lines HERE, the one place both transports pass through, so
+// the two answer identically (PLAN-3578).
+func actionItemGet(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	spec, has := input["lines"]
+	if !has {
+		return env.Dispatch(ctx, []string{"item", "show"}, input)
+	}
+	s, _ := spec.(string)
+	start, end, err := bodypatch.ParseLineRange(s)
+	if err != nil {
+		return errStructured("pad_item.get", err), nil
+	}
+	out := make(map[string]any, len(input))
+	for k, v := range input {
+		if k != "lines" {
+			out[k] = v
+		}
+	}
+	res, err := env.Dispatch(ctx, []string{"item", "show"}, out)
+	if err != nil || res == nil || res.IsError {
+		return res, err
+	}
+	m, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		return errStructured("pad_item.get", fmt.Errorf("lines: the item read returned no structured body")), nil
+	}
+	content, _ := m["content"].(string)
+	lines, from, to, total := bodypatch.SliceBodyLines(content, start, end)
+	view := bodypatch.BodyLines{Start: from, End: to, TotalLines: total, Lines: lines}
+	view.Ref, _ = m["ref"].(string)
+	if n, ok := numericInput(m["seq"]); ok {
+		view.Seq = int64(n)
+	}
+	view.ContentState, _ = m["content_state"].(string)
+	text, _ := json.Marshal(view)
+	return structuredResult(view, string(text)), nil
 }

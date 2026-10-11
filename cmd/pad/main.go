@@ -90,6 +90,11 @@ func writeRootStructuredError(w io.Writer, err error) {
 	// BUG-3496: a claim on an item another holder leases.
 	if apiErr, ok := cli.IsLeaseHeld(err); ok {
 		cli.WriteLeaseHeldError(w, apiErr)
+		return
+	}
+	// PLAN-3578: a patch whose anchor no longer matches, or an open item.
+	if apiErr, ok := cli.IsPatchRefusal(err); ok {
+		cli.WritePatchRefusalError(w, apiErr)
 	}
 }
 

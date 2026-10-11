@@ -317,6 +317,7 @@ var ChatGPTExclusions = map[ChatGPTSource]string{
 	{"pad_item", "unlink"}:              "deferred to v2",
 	{"pad_item", "claim"}:               "agent lease semantics, not a chat concept",
 	{"pad_item", "release"}:             "agent lease semantics, not a chat concept",
+	{"pad_item", "patch"}:               "update_item already versions every content write so a chat edit can be undone; anchored patching is an agent workflow (PLAN-3578)",
 	{"pad_item", "remind"}:              "deferred to v2",
 	{"pad_item", "ack-reminder"}:        "deferred to v2",
 	{"pad_item", "star"}:                "personal UI state",

@@ -566,6 +566,11 @@ type Item struct {
 	// NOT silently fall back to its own stale snapshot — that fallback IS the
 	// defect this field exists to remove.
 	PreUpdate *Item `json:"-"`
+
+	// CreatedVersionID is the id of the version row this update wrote, empty
+	// when the throttle wrote none (PLAN-3578: the activity entry names it).
+	// Internal, like PreUpdate.
+	CreatedVersionID string `json:"-"`
 	// BodyEditedWithoutVersion is set by UpdateItem when the update changed
 	// the body and the per-actor throttle wrote no version row, so the edit
 	// has no version to show it (PLAN-2348 U2, for U3's "edited the body").
@@ -1509,6 +1514,12 @@ type ItemUpdate struct {
 	// Transport-only, like RefuseUndeclaredFields: a server that predates it
 	// ignores the member, which is the old replace-and-prune.
 	RefusePendingEdits bool `json:"refuse_pending_edits,omitempty"`
+
+	// ContentTransform, when set, computes the new body from the row as it
+	// stands inside the update's transaction (PLAN-3578 patch writes) and
+	// replaces Content with it. An error aborts the write. Internal: no
+	// request body can set it.
+	ContentTransform func(existing *Item) (string, error) `json:"-"`
 
 	// Replace is the deliberate-overwrite opt-out (PLAN-3555): the caller means
 	// to replace the body whatever was written since it read it, so the write

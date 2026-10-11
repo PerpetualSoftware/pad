@@ -267,3 +267,30 @@ func AgentNameFromMetadata(metadata string) string {
 	name, _ := m["agent"].(string)
 	return name
 }
+
+// PatchIntervening is what a rebased patch reports about the writes that
+// landed between the seq its caller read and the seq it applied over
+// (PLAN-3578). Changes are walked newest first along the activity seq chain
+// (metadata seq / prev_seq). Complete is true only when that chain is
+// unbroken from ToSeq back to FromSeq: a write that recorded no stamped entry
+// (a path that writes none, an entry that failed, a write from before the
+// stamps existed) breaks it, and then Complete is false.
+type PatchIntervening struct {
+	FromSeq   int64                    `json:"from_seq"`
+	ToSeq     int64                    `json:"to_seq"`
+	Changes   []PatchInterveningChange `json:"changes"`
+	Complete  bool                     `json:"complete"`
+	Truncated bool                     `json:"truncated,omitempty"`
+}
+
+// PatchInterveningChange is one stamped write in that range.
+type PatchInterveningChange struct {
+	ActivityID string    `json:"activity_id"`
+	Seq        int64     `json:"seq"`
+	PrevSeq    int64     `json:"prev_seq"`
+	Action     string    `json:"action"`
+	Actor      string    `json:"actor"`
+	Source     string    `json:"source"`
+	At         time.Time `json:"at"`
+	VersionID  string    `json:"version_id,omitempty"`
+}

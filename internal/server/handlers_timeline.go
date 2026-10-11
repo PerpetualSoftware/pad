@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"net/http"
 	"sort"
 	"strconv"
@@ -854,7 +855,7 @@ func activityRecordsMore(metadata string) bool {
 		// wrote no row for. It counts: the History tab (U3) renders it as
 		// "edited the body", grouped into the nearest version's event, so a
 		// row carrying only the marker is the record of that edit.
-		if k == "agent" {
+		if k == "agent" || activityBookkeepingKeys[k] {
 			continue
 		}
 		if s := strings.TrimSpace(string(v)); s != `""` && s != "null" {
@@ -862,6 +863,20 @@ func activityRecordsMore(metadata string) bool {
 		}
 	}
 	return false
+}
+
+// activityBookkeepingKeys are metadata keys that record WHERE a write sits,
+// not WHAT it changed (PLAN-3578): the seq chain a rebased patch reports
+// from, and a patch's id. A row carrying only these has nothing to show; the
+// version card is the body edit's record.
+var activityBookkeepingKeys = map[string]bool{
+	store.ActivityMetaSeq:        true,
+	store.ActivityMetaPrevSeq:    true,
+	store.ActivityMetaVersionID:  true,
+	store.ActivitySeqChainBroken: true,
+	"patch_id":                   true,
+	"patch_edits":                true,
+	"patch_rebased_from_seq":     true,
 }
 
 // activityChangesText returns the "changes" string an activity's metadata

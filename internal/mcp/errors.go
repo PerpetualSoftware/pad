@@ -210,6 +210,13 @@ const (
 	// refuses identically.
 	ErrLeaseHeld ErrorCode = "lease_held"
 
+	// Patch refusals (PLAN-3578): nothing was written. Anchor codes mean the
+	// quoted text no longer occurs exactly once; room_open means the item is
+	// open in an editor, which a patch does not support yet.
+	ErrPatchAnchorMissing   ErrorCode = "patch_anchor_missing"
+	ErrPatchAnchorAmbiguous ErrorCode = "patch_anchor_ambiguous"
+	ErrPatchRoomOpen        ErrorCode = "patch_room_open"
+
 	// ErrStoredStateUnreadable fires when an operation is refused because
 	// the ITEM'S STORED STATE cannot be decoded — today, an append to an
 	// implementation_notes / decision_log field whose value is not a list
@@ -485,6 +492,10 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// BUG-3496: a claim on an item someone else leases. details.holder and
 	// details.expires_at say who and until when.
 	"lease_held": {},
+	// PLAN-3578: patch refusals.
+	"patch_anchor_missing":   {},
+	"patch_anchor_ambiguous": {},
+	"patch_room_open":        {},
 	// BUG-2675. The only entry whose marker is written for a LOCALLY
 	// generated refusal rather than an upstream APIError — the CLI's
 	// append helpers refuse before any request is made (see
@@ -1029,6 +1040,12 @@ func classifyHTTPStatusKind(
 				// The lease stands until it expires or its holder releases it.
 				hint = LeaseHeldHint
 			}
+			if upstream.Code == string(ErrPatchAnchorMissing) || upstream.Code == string(ErrPatchAnchorAmbiguous) {
+				hint = PatchAnchorHint
+			}
+			if upstream.Code == string(ErrPatchRoomOpen) {
+				hint = PatchRoomOpenHint
+			}
 			if upstream.Code == string(ErrStoredStateUnreadable) {
 				// Same reason: the stored value stays undecodable, so every
 				// retry refuses identically. Since BUG-3056 the note/decide
@@ -1390,6 +1407,16 @@ const LeaseHeldHint = "Another holder (details.holder) has claimed this item unt
 // the gap the shared allow-list exists to close.
 const ContentPendingFlushHint = "Re-reading will not clear this: the stored item is unchanged until the open editor saves its edits. " +
 	"Wait for that and re-read, or resend with overwrite_pending_edits=true to replace them."
+
+// PatchAnchorHint is the recovery guidance for a patch anchor refusal
+// (PLAN-3578). Duplicated in internal/cli; a test asserts the two match.
+const PatchAnchorHint = "Nothing was written. Re-read the item and quote, as old, text that occurs exactly once in the CURRENT body " +
+	"(add surrounding lines to make it unique, or pass line_hint to choose among exact matches)."
+
+// PatchRoomOpenHint is the recovery guidance for patch_room_open (PLAN-3578).
+// Duplicated in internal/cli; a test asserts the two match.
+const PatchRoomOpenHint = "Nothing was written. The item is open in an editor, and patching an open item is not supported yet. " +
+	"Retry after the editor closes, or send a whole-body update with expected_seq."
 
 // UpdateConflictContentHint replaces the generic re-read-and-retry hint on an
 // update_conflict whose details carry content_write (PLAN-3555): a resent body
