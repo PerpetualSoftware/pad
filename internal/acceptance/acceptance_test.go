@@ -70,6 +70,75 @@ func TestParse(t *testing.T) {
 			placeholders: []string{},
 		},
 		{
+			name:  "a fence closes only on its own marker, at least as long, with nothing after",
+			body:  "## Acceptance criteria\n````\n```\n- AC-8: still fenced\n```info\n- AC-9: still fenced\n````\n- AC-1: after\n",
+			found: true,
+			criteria: []Criterion{
+				{ID: "AC-1", Text: "after"},
+			},
+			placeholders: []string{},
+		},
+		{
+			name:  "a fenced heading cannot end the section once a short closer fails to close the fence",
+			body:  "## Acceptance criteria\n- AC-1: a\n````\n```\n## Fenced\n````\n- AC-2: b\n",
+			found: true,
+			criteria: []Criterion{
+				{ID: "AC-1", Text: "a"},
+				{ID: "AC-2", Text: "b"},
+			},
+			placeholders: []string{},
+		},
+		{
+			name:  "a backtick run with a backtick in its info string is not a fence",
+			body:  "## Acceptance criteria\n``` a`b\n- AC-1: not fenced\n",
+			found: true,
+			criteria: []Criterion{
+				{ID: "AC-1", Text: "not fenced"},
+			},
+			placeholders: []string{},
+		},
+		{
+			name:  "an indented AC-shaped bullet is nested, not a criterion",
+			body:  "## Acceptance criteria\n- AC-1: outer\n  - AC-2: example\n- AC-3: next\n",
+			found: true,
+			criteria: []Criterion{
+				{ID: "AC-1", Text: "outer - AC-2: example"},
+				{ID: "AC-3", Text: "next"},
+			},
+			placeholders: []string{},
+		},
+		{
+			name:  "setext headings open and close the section",
+			body:  "Acceptance criteria\n===================\n- AC-1: a\n\nOpen questions\n==============\n- AC-2: b\n",
+			found: true,
+			criteria: []Criterion{
+				{ID: "AC-1", Text: "a"},
+			},
+			placeholders: []string{},
+			raw:          "- AC-1: a",
+		},
+		{
+			name:  "a dash underline under a list item or an indented line is a thematic break, not a heading",
+			body:  "Acceptance criteria\n---\n- AC-1: a\n---\n- AC-2: b\n  more\n---\n- AC-3: c\n# Next\n",
+			found: true,
+			criteria: []Criterion{
+				{ID: "AC-1", Text: "a"},
+				{ID: "AC-2", Text: "b more"},
+				{ID: "AC-3", Text: "c"},
+			},
+			placeholders: []string{},
+		},
+		{
+			name:  "a hash with no space after it is not a heading",
+			body:  "## Acceptance criteria\n- AC-1: a\n#hashtag\n- AC-2: b\n",
+			found: true,
+			criteria: []Criterion{
+				{ID: "AC-1", Text: "a"},
+				{ID: "AC-2", Text: "b"},
+			},
+			placeholders: []string{},
+		},
+		{
 			name:         "heading with nothing under it",
 			body:         "## Acceptance criteria\n\n## Next\n",
 			found:        true,

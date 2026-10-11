@@ -31,44 +31,78 @@ type Section struct {
 }
 
 var (
-	headingRe   = regexp.MustCompile(`^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$`)
-	criterionRe = regexp.MustCompile(`^[ \t]{0,3}[-*+][ \t]+(AC-[0-9]+)[ \t]*:[ \t]*(.*)$`)
-	fenceRe     = regexp.MustCompile("^[ \t]{0,3}(```|~~~)")
+	atxRe       = regexp.MustCompile(`^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$`)
+	setextRe    = regexp.MustCompile(`^ {0,3}(=+|-+)[ \t]*$`)
+	bulletRe    = regexp.MustCompile(`^ {0,3}[-*+](?:[ \t]|$)`)
+	criterionRe = regexp.MustCompile(`^ ?[-*+][ \t]+(AC-[0-9]+)[ \t]*:[ \t]*(.*)$`)
+	fenceOpenRe = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
+	closeHashRe = regexp.MustCompile(`(?:^|[ \t]+)#+$`)
 )
 
-// Parse returns the first acceptance-criteria section in body.
-func Parse(body string) Section {
-	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
-	var out Section
-	level := 0
-	start := -1
-	end := len(lines)
+// heading is one ATX or setext heading: it starts at line `at` and its body
+// starts at line `body`.
+type heading struct {
+	at, body, level int
+	text            string
+}
+
+// scan marks the lines inside fenced code blocks (fence lines included) and
+// lists the headings outside them, following CommonMark's rules for both: a
+// fence closes only on a run of its own character at least as long as the
+// opener with nothing after it, and a setext underline makes a heading only
+// of a paragraph line, never of a list item, a blank line, or an indented
+// line (which continues a list item, so the underline is a thematic break).
+func scan(lines []string) (fenced []bool, heads []heading) {
+	fenced = make([]bool, len(lines))
 	fence := ""
 	for i, line := range lines {
-		if m := fenceRe.FindStringSubmatch(line); m != nil {
-			if fence == "" {
-				fence = m[1]
-			} else if m[1] == fence {
+		if fence != "" {
+			fenced[i] = true
+			t := strings.TrimRight(strings.TrimLeft(line, " "), " \t")
+			if len(line)-len(strings.TrimLeft(line, " ")) <= 3 && len(t) >= len(fence) && strings.Trim(t, fence[:1]) == "" {
 				fence = ""
 			}
 			continue
 		}
-		if fence != "" {
+		if m := fenceOpenRe.FindStringSubmatch(line); m != nil && !(m[1][0] == '`' && strings.Contains(m[2], "`")) {
+			fence = m[1]
+			fenced[i] = true
 			continue
 		}
-		m := headingRe.FindStringSubmatch(line)
-		if m == nil {
+		if m := atxRe.FindStringSubmatch(line); m != nil {
+			text := closeHashRe.ReplaceAllString(m[2], "")
+			heads = append(heads, heading{at: i, body: i + 1, level: len(m[1]), text: strings.TrimSpace(text)})
 			continue
 		}
+		if m := setextRe.FindStringSubmatch(line); m != nil && i > 0 && !fenced[i-1] {
+			prev := lines[i-1]
+			if strings.TrimSpace(prev) != "" && !atxRe.MatchString(prev) && !bulletRe.MatchString(prev) && !setextRe.MatchString(prev) && !strings.HasPrefix(prev, "  ") && !strings.HasPrefix(prev, "\t") {
+				level := 2
+				if m[1][0] == '=' {
+					level = 1
+				}
+				heads = append(heads, heading{at: i - 1, body: i + 1, level: level, text: strings.TrimSpace(prev)})
+			}
+		}
+	}
+	return fenced, heads
+}
+
+// Parse returns the first acceptance-criteria section in body.
+func Parse(body string) Section {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	fenced, heads := scan(lines)
+	var out Section
+	start, end, level := -1, len(lines), 0
+	for _, h := range heads {
 		if start < 0 {
-			if strings.EqualFold(strings.TrimSpace(m[2]), "acceptance criteria") {
-				level = len(m[1])
-				start = i + 1
+			if strings.EqualFold(h.text, "acceptance criteria") {
+				start, level = h.body, h.level
 			}
 			continue
 		}
-		if len(m[1]) <= level {
-			end = i
+		if h.level <= level {
+			end = h.at
 			break
 		}
 	}
@@ -76,8 +110,7 @@ func Parse(body string) Section {
 		return out
 	}
 	out.Found = true
-	section := lines[start:end]
-	out.Raw = strings.TrimSpace(strings.Join(section, "\n"))
+	out.Raw = strings.TrimSpace(strings.Join(lines[start:end], "\n"))
 	out.Criteria = []Criterion{}
 	out.Placeholders = []string{}
 
@@ -94,20 +127,15 @@ func Parse(body string) Section {
 		}
 		cur = nil
 	}
-	fence = ""
-	for _, line := range section {
-		if m := fenceRe.FindStringSubmatch(line); m != nil {
-			if fence == "" {
-				fence = m[1]
-			} else if m[1] == fence {
-				fence = ""
-			}
+	for i := start; i < end; i++ {
+		line := lines[i]
+		if fenced[i] {
 			flush()
 			continue
 		}
-		if fence != "" {
-			continue
-		}
+		// A criterion is a top-level bullet (at most one space of indent);
+		// an indented AC-shaped bullet is nested under the one above it and
+		// joins its text rather than counting as a criterion of its own.
 		if m := criterionRe.FindStringSubmatch(line); m != nil {
 			flush()
 			cur = &Criterion{ID: m[1], Text: m[2]}
