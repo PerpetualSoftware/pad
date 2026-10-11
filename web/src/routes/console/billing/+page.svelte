@@ -344,7 +344,10 @@
 				<!-- TASK-3603: what the plan covers, in the limits the server enforces
 				     (store/limits.go: workspace limits follow the OWNER's plan; the
 				     workspaces quota counts only workspaces you own). Numbers come
-				     from /api/v1/plan-limits, since they are configurable. -->
+				     from /api/v1/plan-limits, since they are configurable. "No caps"
+				     for Pro is what the code does, not a default: checkLimitOn and
+				     checkUserLimitOn return allowed/unlimited for plan "pro" before
+				     any configured limit is read. -->
 				<p class="plan-desc">
 					{#if isPro}
 						No caps on your workspaces, items or members.{#if commerceAllowed}
