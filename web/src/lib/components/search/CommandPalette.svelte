@@ -85,6 +85,12 @@
 	// only — a single network round-trip, not one-per-ready-workspace.
 	let contentResults = $state<AugmentedSearchResult[]>([]);
 	let contentLoading = $state(false);
+	// TASK-3587: a search that could not finish is not "No results". Each
+	// flag is set by its request's failure and cleared by the next dispatch,
+	// so a network blip reads as an error with Retry, never as lost data.
+	let searchFailed = $state(false);
+	let contentFailed = $state(false);
+	let loadMoreFailed = $state(false);
 	let contentSearchTimeout: ReturnType<typeof setTimeout>;
 	// Monotonic token: every dispatch (or clear) bumps it so an in-flight
 	// supplementary fetch that lands after the query moved on is dropped.
@@ -170,7 +176,9 @@
 	// Content matches are results too (codex r1): a body-only match has a
 	// local total of 0, so nothing is said until the content search answers.
 	let announcement = $derived(
-		resultAnnouncement(query, loading, contentLoading, total + contentResults.length)
+		searchFailed && !loading
+			? "Search couldn't finish."
+			: resultAnnouncement(query, loading, contentLoading, total + contentResults.length)
 	);
 
 	/*
@@ -346,6 +354,9 @@
 
 	function doSearch() {
 		clearTimeout(searchTimeout);
+		searchFailed = false;
+		contentFailed = false;
+		loadMoreFailed = false;
 		const trimmed = query.trim();
 		if (!trimmed) {
 			results = [];
@@ -454,9 +465,13 @@
 					selectedIdx = -1;
 				} catch {
 					if (isSameDispatch()) {
+						// The rows on screen belong to an earlier query; clearing
+						// them is right, but the empty list must not read as "No
+						// results" (TASK-3587).
 						results = [];
 						total = 0;
 						facets = undefined;
+						searchFailed = true;
 					}
 				} finally {
 					if (isSameDispatch()) loading = false;
@@ -562,11 +577,21 @@
 					(r) => !seen.has(r.item.id || r.item.slug),
 				);
 			} catch {
-				if (myReqId === contentReqId) contentResults = [];
+				// The local results above stay; the missing section says it
+				// could not load rather than vanishing (TASK-3587).
+				if (myReqId === contentReqId) {
+					contentResults = [];
+					contentFailed = true;
+				}
 			} finally {
 				if (myReqId === contentReqId) contentLoading = false;
 			}
 		}, 250);
+	}
+
+	/** Run the current query again after a failed search (TASK-3587). */
+	function retrySearch() {
+		doSearch();
 	}
 
 	/** Cancel any pending supplementary content fetch and clear its state. */
@@ -714,8 +739,10 @@
 			// written in between; a keyed group throws on the repeat (TASK-3539).
 			results = uniqueBy([...results, ...(resp.results ?? [])], (r) => r.item.id || r.item.slug);
 			selectedIdx = reselectAfterAppend(before, flatResults, selectedIdx);
+			loadMoreFailed = false;
 		} catch {
-			// ignore
+			// The results already shown stay (TASK-3587).
+			loadMoreFailed = true;
 		} finally {
 			loadingMore = false;
 		}
@@ -1257,6 +1284,16 @@
 								{loadingMore ? 'Loading...' : `Load more (${total - results.length} remaining)`}
 							</button>
 						</div>
+						{#if loadMoreFailed && !loadingMore}
+							<div class="search-failed-line" role="status">Couldn't load more results.</div>
+						{/if}
+					{/if}
+
+					{#if contentFailed && !contentLoading}
+						<div class="search-failed-line" role="status">
+							Couldn't search item content.
+							<button class="search-retry-link" onclick={retrySearch}>Retry</button>
+						</div>
 					{/if}
 
 					<!--
@@ -1331,6 +1368,16 @@
 							{/each}
 						</div>
 					{/if}
+				</div>
+			{:else if searchFailed && !loading}
+				<div class="no-results search-failed" role="alert">
+					<p>Search couldn't finish. Check your connection and try again.</p>
+					<button class="search-retry-btn" onclick={retrySearch}>Retry</button>
+				</div>
+			{:else if query.trim() && !loading && contentFailed}
+				<div class="no-results search-failed" role="alert">
+					<p>No title matches for "{query}", and item content couldn't be searched.</p>
+					<button class="search-retry-btn" onclick={retrySearch}>Retry</button>
 				</div>
 			{:else if query.trim() && !loading}
 				<div class="no-results">No results for "{query}"</div>
@@ -1698,6 +1745,32 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* TASK-3587: a search that could not finish. */
+	.search-failed p {
+		margin: 0 0 var(--space-2);
+	}
+	.search-retry-btn {
+		padding: var(--space-1) var(--space-3);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+		cursor: pointer;
+	}
+	.search-failed-line {
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.85em;
+		color: var(--text-muted);
+	}
+	.search-retry-link {
+		border: 0;
+		background: none;
+		padding: 0;
+		color: var(--accent-primary);
+		cursor: pointer;
+		text-decoration: underline;
 	}
 
 	/* Load more */
