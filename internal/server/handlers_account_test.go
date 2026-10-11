@@ -194,7 +194,8 @@ func TestHandleDeleteAccount_AsksSidecarByUserWhenNoLinkedCustomer(t *testing.T)
 // customer proceed: either deploy order is safe.
 func TestHandleDeleteAccount_OlderSidecar400WithNoLinkedCustomerProceeds(t *testing.T) {
 	srv := testServer(t)
-	fake := &fakeSidecar{err: &billing.SidecarError{Status: http.StatusBadRequest, Body: `{"error":"customer_id must start with 'cus_'"}`}}
+	// The body exactly as the old sidecar's json.Encoder writes it, newline included.
+	fake := &fakeSidecar{err: &billing.SidecarError{Status: http.StatusBadRequest, Body: "{\"error\":\"customer_id must start with 'cus_'\"}\n"}}
 	srv.SetCloudSidecar(fake)
 
 	userID, token := bootstrapAccountDeleteUser(t, srv, "")
@@ -218,6 +219,9 @@ func TestHandleDeleteAccount_NoLinkedCustomerOther400Aborts(t *testing.T) {
 		`{"error":"customer_id must start with 'cus_' "}`,
 		`customer_id must start with 'cus_'`,
 		``,
+		// The message alongside anything else is not the old sidecar's answer.
+		`{"error":"customer_id must start with 'cus_'","detail":"cancellation failed"}`,
+		`{"error":"boom","error":"customer_id must start with 'cus_'"}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			srv := testServer(t)

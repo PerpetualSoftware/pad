@@ -451,22 +451,22 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// oldSidecarEmptyCustomerRefusal is the exact body a sidecar that predates
+// user_id sends for an empty customer_id: pad-cloud's writeJSON (a
+// json.Encoder, so a trailing newline) of {"error": "customer_id must start
+// with 'cus_'"} before BUG-3560.
+const oldSidecarEmptyCustomerRefusal = `{"error":"customer_id must start with 'cus_'"}`
+
 // olderSidecarRefusedEmptyCustomer reports whether a cancel-customer refusal
 // is the one a sidecar that predates user_id gives an empty customer_id: a
-// 400 whose error is exactly "customer_id must start with 'cus_'" (pad-cloud
-// HandleCancelCustomer before BUG-3560). A current sidecar sends that message
-// only for a non-empty customer_id without the prefix, and this door sends an
-// empty one, so on this path it can only mean the old sidecar. Anything else,
-// including another 400 or an unreadable body, is not it.
+// 400 whose body is exactly oldSidecarEmptyCustomerRefusal, surrounding
+// whitespace aside. A current sidecar sends that message only for a
+// non-empty customer_id without the prefix, and this door sends an empty
+// one, so on this path it can only mean the old sidecar. The body is compared
+// whole, not decoded: a decode would accept extra fields or a duplicated
+// "error" key alongside the message (retro Codex review, round 1). Anything
+// else, including another 400 or an unreadable body, is not it.
 func olderSidecarRefusedEmptyCustomer(e *billing.SidecarError) bool {
-	if e == nil || e.Status != http.StatusBadRequest {
-		return false
-	}
-	var body struct {
-		Error string `json:"error"`
-	}
-	if json.Unmarshal([]byte(e.Body), &body) != nil {
-		return false
-	}
-	return body.Error == "customer_id must start with 'cus_'"
+	return e != nil && e.Status == http.StatusBadRequest &&
+		strings.TrimSpace(e.Body) == oldSidecarEmptyCustomerRefusal
 }
