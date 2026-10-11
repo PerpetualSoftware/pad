@@ -1191,7 +1191,9 @@
 	beforeNavigate((nav) => {
 		if (nav.type === 'leave') return;
 		const question = leaveQuestion({
-			unsentLocalEdits: collabProvider?.unsentLocalEdits ?? false,
+			// BUG-3556: also typing on a socket that closed unconfirmed, or
+			// resent after a failed op-log append.
+			unsentLocalEdits: collabProvider?.editsAtRiskOnClose ?? false,
 			recovery: offlineRecovery
 		});
 		if (!question) return;
@@ -3119,7 +3121,7 @@
 			if (
 				unloadLosesEdits({
 					rawDirty: rawContentSaver.dirty && !!item,
-					unsentLocalEdits: collabProvider?.unsentLocalEdits ?? false,
+					unsentLocalEdits: collabProvider?.editsAtRiskOnClose ?? false, // BUG-3556
 					recovery: offlineRecovery
 				})
 			) {

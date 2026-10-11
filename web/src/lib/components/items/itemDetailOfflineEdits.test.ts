@@ -22,7 +22,7 @@ function between(startMarker: string, endMarker: string): string {
 describe('TASK-2199: ItemDetail protects edits that have not reached the server', () => {
 	it('the beforeunload prompt asks unloadLosesEdits with the unsent flag and the recovery', () => {
 		const handler = between('const onBeforeUnload', "window.addEventListener('beforeunload'");
-		expect(handler).toMatch(/unloadLosesEdits\(\{[\s\S]*unsentLocalEdits:\s*collabProvider\?\.unsentLocalEdits[\s\S]*recovery:\s*offlineRecovery[\s\S]*\}\)/);
+		expect(handler).toMatch(/unloadLosesEdits\(\{[\s\S]*unsentLocalEdits:\s*collabProvider\?\.editsAtRiskOnClose[\s\S]*recovery:\s*offlineRecovery[\s\S]*\}\)/); // BUG-3556
 		expect(handler).toMatch(/unloadLosesEdits\([\s\S]*\)\s*\)\s*\{\s*event\.preventDefault\(\)/);
 	});
 
@@ -40,7 +40,7 @@ describe('TASK-2199: ItemDetail protects edits that have not reached the server'
 	it('in-app navigation asks leaveQuestion and cancels on a No, leaving tab close to beforeunload', () => {
 		const guard = between('beforeNavigate((nav) => {', '\n\t});');
 		expect(guard).toMatch(/if \(nav\.type === 'leave'\) return;/);
-		expect(guard).toMatch(/leaveQuestion\(\{[\s\S]*unsentLocalEdits:\s*collabProvider\?\.unsentLocalEdits[\s\S]*recovery:\s*offlineRecovery/);
+		expect(guard).toMatch(/leaveQuestion\(\{[\s\S]*unsentLocalEdits:\s*collabProvider\?\.editsAtRiskOnClose[\s\S]*recovery:\s*offlineRecovery/); // BUG-3556
 		expect(guard).toMatch(/if \(!confirm\(question\)\) \{\s*nav\.cancel\(\);/);
 	});
 
