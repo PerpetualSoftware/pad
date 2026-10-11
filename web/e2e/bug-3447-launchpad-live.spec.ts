@@ -87,7 +87,7 @@ async function accountFor(fixture: SuiteFixture, username: string, email: string
 /**
  * Creates the workspace over a COOKIE session, as the web UI does: a
  * workspace created by a bearer client (`pad init`) records source=cli and is
- * agent-connected from the start (BUG-1557), which is not the first run this
+ * already showing agent activity (BUG-1557), which is not the first run this
  * spec is about.
  */
 async function createWebWorkspace(fixture: SuiteFixture, email: string, name: string): Promise<string> {
@@ -133,8 +133,8 @@ test.describe('BUG-3447: the launchpad follows an onboarding agent live', () => 
 			await page.setViewportSize(DESKTOP);
 			await page.goto(`/${account.username}/${ws}`);
 
-			// Preconditions: a brand-new workspace shows the launchpad, not yet
-			// agent-connected, and the banner.
+			// Preconditions: a brand-new workspace shows the launchpad, with no
+			// agent activity detected yet, and the banner.
 			await expect(page.locator('.launchpad')).toBeVisible();
 			const agentStep = page.locator('.lp-progress-item', { hasText: 'Agent activity detected' });
 			await expect(agentStep).not.toHaveClass(/\bdone\b/);

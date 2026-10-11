@@ -154,7 +154,7 @@
 	//
 	// Suppression case: when an existing OAuth grant has already claimed this
 	// workspace, the server replies with `suppressed: true` and no `code`.
-	// We render a calm "already connected" panel instead of a code, because
+	// We render a calm "already has access" panel instead of a code, because
 	// generating a new code in that state would be misleading — the grant the
 	// user is currently looking at would be the one being augmented, and that
 	// is precisely what they already have. Surfacing the existing grant by
