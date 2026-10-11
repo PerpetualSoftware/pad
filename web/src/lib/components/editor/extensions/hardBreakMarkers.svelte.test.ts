@@ -50,6 +50,30 @@ describe('BUG-3584: block markers after a hard break', () => {
 		expect(roundTrip(old, para('- not a list item')).same).toBe(false);
 	});
 
+	// BUG-3600: a text node's end is the end of the LINE only when nothing
+	// follows it there. A marker followed directly by marked text opens no
+	// block, so it keeps its form; one followed by a space still opens one.
+	const split = (marker: string, marked: string): J => ({
+		type: 'doc',
+		content: [{ type: 'paragraph', content: [{ type: 'text', text: 'First line' }, { type: 'hardBreak' }, { type: 'text', text: marker }, { type: 'text', text: marked, marks: [{ type: 'bold' }] }] }],
+	});
+	it('a marker followed directly by marked text keeps its form', () => {
+		for (const marker of ['-', '#', '*', '>', '1.']) {
+			const r = roundTrip(ed, split(marker, 'item'));
+			expect(r.same, `${marker}: ${r.md}`).toBe(true);
+			// `*` beside `**` keeps prosemirror-markdown's ordinary emphasis
+			// escape, which applies anywhere in a line; `>` there is not the
+			// line-start marker. Neither is this escape's to decide.
+			if (marker !== '>' && marker !== '*') expect(r.md, marker).not.toContain('\\' + marker.slice(-1) + '**');
+		}
+	});
+	it('control: a marker followed by marked text after a space still stays text', () => {
+		for (const marker of ['-', '#', '1.']) {
+			const r = roundTrip(ed, split(marker, ' item'));
+			expect(r.same, `${marker}: ${r.md}`).toBe(true);
+		}
+	});
+
 	it('mid-line markers are not escaped', () => {
 		const r = roundTrip(ed, para('see a - b and #1'));
 		expect(r.md).toBe('First line\\\nsee a - b and #1');
