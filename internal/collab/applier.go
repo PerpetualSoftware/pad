@@ -731,6 +731,21 @@ func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPa
 			}
 		case <-time.After(timeouts[attempt]):
 			room.cancelPendingAck(requestID)
+			// BUG-3586: a PATCH that reached a peer and timed out is NOT
+			// re-sent to another tab. The peer may have applied it with its
+			// ack late; the next tab's document would then already hold the
+			// change, and an insert-shaped edit (new contains old) keeps its
+			// anchor there and would apply twice. A markdown request may fall
+			// through: re-applying a whole body converges. The outcome is
+			// unknown, and that is the honest answer.
+			if payload.isPatch() {
+				slog.Warn("collab: patch applier_request timed out; not re-sending to another tab",
+					"item_id", itemID,
+					"client_id", applier.id,
+					"patch_id", payload.patchID,
+				)
+				return nil, ErrAllAppliersTimedOut, false, anyWriteSucceeded
+			}
 			slog.Warn("collab: applier_request timed out; will retry next applier",
 				"item_id", itemID,
 				"client_id", applier.id,
