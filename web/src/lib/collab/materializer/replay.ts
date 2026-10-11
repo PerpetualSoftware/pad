@@ -10,9 +10,10 @@
 //     while SyncStep2 and Update are applied;
 //   - a frame that throws is skipped and replay continues, because a throw in
 //     one onmessage call does not stop the next message from being handled.
-// The server hands over CONTENT-BEARING rows only
-// (item_yjs_updates.content_bearing); the spike measured content-bearing-only
-// replay equal to full replay on 423 of 423 real items.
+// The server hands over the CONTENT-BEARING rows (item_yjs_updates.
+// content_bearing) plus every SyncStep2 (TASK-3574 (2): a step2 can be the only
+// persisted copy of an edit); the spike measured content-bearing-only replay
+// equal to full replay on 423 of 423 real items.
 import * as Y from 'yjs';
 import * as syncProtocol from 'y-protocols/sync';
 import * as decoding from 'lib0/decoding';
