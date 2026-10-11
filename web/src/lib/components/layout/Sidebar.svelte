@@ -18,6 +18,7 @@
 	import { getActiveKey } from '$lib/nav/destinations';
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { announceCaptured } from '$lib/items/quickCapture';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
@@ -196,7 +197,10 @@
 		pickerOpen = false;
 	}
 
-	async function submitQuickAdd() {
+	// `open`: Cmd/Ctrl+Enter, "add and open" (today's behaviour). Plain Enter
+	// adds and stays: the dialog clears and keeps focus for the next capture,
+	// and a toast says what was added, with an Open action (TASK-3590).
+	async function submitQuickAdd(open = false) {
 		if (!wsSlug || !quickAddCollection || !quickAddTitle.trim() || quickAddSubmitting) return;
 		const coll = quickAddCollection;
 		const title = quickAddTitle.trim();
@@ -229,11 +233,24 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
+			const url = `${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`;
+			if (!open) {
+				announceCaptured(item, url);
+				// Only the dialog this submission came from is readied for the
+				// next capture: one dismissed or reopened since is the user's.
+				if (quickAddSession === session) {
+					quickAddTitle = '';
+					quickAddError = null;
+					if (quickAddInputEl) quickAddInputEl.style.height = 'auto';
+					requestAnimationFrame(() => quickAddInputEl?.focus());
+				}
+				return;
+			}
 			// Only close the dialog this submission came from: one the user has
 			// since dismissed or reopened is theirs, not ours.
 			if (quickAddSession === session) cancelQuickAdd();
 			uiStore.onNavigate();
-			goto(`${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`);
+			goto(url);
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err);
@@ -252,7 +269,7 @@
 	function handleQuickAddKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') {
 			e.preventDefault();
-			submitQuickAdd();
+			submitQuickAdd(e.metaKey || e.ctrlKey);
 		} else if (e.key === 'Escape') {
 			// preventDefault on both paths (TASK-2235): quick-add is a native
 			// <dialog> now, and an Escape keydown left un-prevented also fires
@@ -911,13 +928,13 @@
 				<p id="quick-add-error" class="quick-add-error" role="alert">{quickAddError}</p>
 			{/if}
 			<div class="quick-add-actions">
-				<span class="quick-add-hint">Enter to create · Esc to cancel</span>
+				<span class="quick-add-hint">Enter to add · {modKeyLabel('Enter')} to add and open · Esc to close</span>
 				<button
 					class="quick-add-btn"
 					type="button"
 					disabled={!quickAddTitle.trim() || quickAddSubmitting}
-					onclick={submitQuickAdd}
-				>Create</button>
+					onclick={() => submitQuickAdd()}
+				>Add</button>
 			</div>
 		</div>
 	{/if}

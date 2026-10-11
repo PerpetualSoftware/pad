@@ -53,10 +53,11 @@ test.describe('write, then open at once (BUG-3473)', () => {
 		const created = page.waitForResponse(
 			(r) => r.request().method() === 'POST' && /\/collections\/docs\/items$/.test(r.url()) && r.ok(),
 		);
-		await dialog.locator('textarea.quick-add-input').press('Enter');
+		// Add and open (TASK-3590: plain Enter adds and stays on the list).
+		await dialog.locator('textarea.quick-add-input').press('ControlOrMeta+Enter');
 		await created;
 		await expect(dialog).toBeHidden();
-		// The quick-add opens the new item's page; go straight back to the list.
+		// Add and open lands on the new item's page; go straight back to the list.
 		await expect(page).toHaveURL(/\/docs\/[^/?]+$/);
 		await page.goBack();
 

@@ -1,11 +1,12 @@
 <!--
 	QuickCaptureSheet — the mobile BottomNav's center "＋" action (PLAN-1694,
 	TASK-1698). A self-contained capture flow: pick a collection, type a title,
-	create. Deliberately does NOT reuse the Sidebar's quickAdd overlay
+	create. "Add" stays on the current screen and readies the sheet for the
+	next capture; "Add and open" goes to the new item (TASK-3590). Deliberately does NOT reuse the Sidebar's quickAdd overlay
 	(uiStore.requestQuickAdd) — that path only works while the Sidebar is
 	mounted and renders a desktop-ish overlay (Codex review of PLAN-1694). The
 	create logic mirrors Sidebar.svelte's submitQuickAdd so behaviour (default
-	status, content template, navigate to the new item) stays consistent.
+	status, content template, add vs add-and-open) stays consistent.
 
 	Presents as a DockedSheet (anchored above the bottom nav) like the
 	Workspace/You sheets, so the nav stays visible/tappable, the ＋ slot stays
@@ -22,6 +23,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
+	import { announceCaptured } from '$lib/items/quickCapture';
 	import { parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
@@ -52,6 +54,7 @@
 	let selectedSlug = $state('');
 	let title = $state('');
 	let submitting = $state(false);
+	let titleEl: HTMLTextAreaElement | undefined = $state();
 
 	// Default to tasks (or the first collection) when the sheet opens. Also
 	// re-default if the remembered slug is no longer a valid collection (e.g.
@@ -69,7 +72,7 @@
 		onclose();
 	}
 
-	async function submit() {
+	async function submit(openAfter = false) {
 		if (!wsSlug || !selectedSlug || !title.trim() || submitting) return;
 		const coll = collections.find((c) => c.slug === selectedSlug);
 		if (!coll) return;
@@ -91,10 +94,19 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
+			const url = `${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`;
+			if (!openAfter) {
+				announceCaptured(item, url);
+				// Clear only what was sent: text typed while the request was
+				// in flight is the next capture, not this one.
+				if (title.trim() === t) title = '';
+				if (open) requestAnimationFrame(() => titleEl?.focus());
+				return;
+			}
 			title = '';
 			onclose();
 			uiStore.onNavigate();
-			goto(`${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`);
+			goto(url);
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err);
@@ -113,7 +125,7 @@
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
-			submit();
+			submit(e.metaKey || e.ctrlKey);
 		}
 	}
 </script>
@@ -135,6 +147,7 @@
 		<textarea aria-label="New item title"
 			class="capture-title"
 			bind:value={title}
+			bind:this={titleEl}
 			use:autofocus
 			{onkeydown}
 			placeholder="What needs doing?"
@@ -143,9 +156,15 @@
 		<div class="capture-actions">
 			<button class="capture-cancel" type="button" onclick={close}>Cancel</button>
 			<button
+				class="capture-open"
+				type="button"
+				onclick={() => submit(true)}
+				disabled={!title.trim() || submitting}
+			>Add and open</button>
+			<button
 				class="capture-submit"
 				type="button"
-				onclick={submit}
+				onclick={() => submit()}
 				disabled={!title.trim() || submitting}
 			>
 				{submitting ? 'Adding…' : 'Add'}
@@ -203,6 +222,7 @@
 		gap: var(--space-2);
 	}
 	.capture-cancel,
+	.capture-open,
 	.capture-submit {
 		padding: var(--space-2) var(--space-4);
 		border-radius: var(--radius-sm);
@@ -220,6 +240,12 @@
 		color: #fff;
 		border-color: var(--accent-blue);
 	}
+	/* TASK-3590: the secondary "Add and open". */
+	.capture-open {
+		background: var(--bg-primary);
+		color: var(--text-primary);
+	}
+	.capture-open:disabled,
 	.capture-submit:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
