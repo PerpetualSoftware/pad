@@ -402,6 +402,8 @@ var nulExcluded = map[string]string{
 	"item_builtin_origin.created_at":         "server timestamp from now() (TASK-3462)",
 	"item_builtin_origin.builtin_key":        "refused by models.BuiltinOrigin.Validate unless it matches a lowercase [a-z0-9-/] path, so no NUL can be stored, on every write including import (TASK-3462)",
 	"item_builtin_origin.seed_hash":          "refused by models.BuiltinOrigin.Validate unless it is 64 lowercase hex digits, on every write including import (TASK-3462)",
+	"stripe_processed_events.state":          "fixed server constant 'processing' | 'done', written only by ClaimStripeEvent and CompleteStripeEvent (BUG-3561, migration 136); never request-derived",
+	"stripe_processed_events.lease_until":    "server timestamp, time.Now().UTC().Add(lease) in RFC3339, written only by ClaimStripeEvent (BUG-3561, migration 136); never request-derived",
 	"activities.action":                      "fixed enum, models.ValidActions",
 	"collections.source":                     "server enum 'web' | 'cli' | 'mcp' from actorFromRequest's auth shape, never the body (BUG-3447, migration 126); a bundle import carries the bundle's value only after models.ValidCollectionSource accepts it, else ''",
 	"event_outbox.last_error":                "Go error string, server-composed",

@@ -127,6 +127,15 @@ func TestCloudContract(t *testing.T) {
 	}
 	processed := shapes["admin_stripe_event_processed"]
 	unmarkAt, _ := processed["processed_at"].(string)
+	// BUG-3561: the claim is completed after the handler succeeds. A second
+	// event is claimed for that, since unmark below removes the first.
+	claimed := call("POST", "/api/v1/admin/stripe-event-processed", map[string]any{
+		"event_id": "evt_contract_complete", "cloud_secret": cloudContractSecret,
+	})
+	claimedAt, _ := claimed["processed_at"].(string)
+	shapes["admin_stripe_event_complete"] = call("POST", "/api/v1/admin/stripe-event-complete", map[string]any{
+		"event_id": "evt_contract_complete", "processed_at": claimedAt, "cloud_secret": cloudContractSecret,
+	})
 	shapes["admin_stripe_event_unmark"] = call("POST", "/api/v1/admin/stripe-event-unmark", map[string]any{
 		"event_id": "evt_contract", "processed_at": unmarkAt, "cloud_secret": cloudContractSecret,
 	})
