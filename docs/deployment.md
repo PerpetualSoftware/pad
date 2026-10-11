@@ -1544,10 +1544,11 @@ kubectl apply -f deploy/k8s/configmap.yaml
 kubectl apply -f deploy/k8s/deployment.yaml
 kubectl apply -f deploy/k8s/service.yaml
 kubectl apply -f deploy/k8s/ingress.yaml
-kubectl apply -f deploy/k8s/hpa.yaml
 ```
 
-**Pin the image.** `deploy/k8s/deployment.yaml` names a release tag (`ghcr.io/perpetualsoftware/pad:<version>`). Set it to the release you mean to run, and change it to upgrade. Do not use `latest` here: with several replicas, pods that restart after a new release would pull it while the others keep the old one, so mixed versions would run against one database.
+**Run exactly one replica (BUG-3573).** Real-time collaboration keeps each item's editing room in the process that serves it: an in-process bus, and op-log appends serialized per item. Two pods would each hold their own room for the same item, miss each other's edits, and leave gaps in the op-log. So the manifest runs `replicas: 1` with `strategy: Recreate` (a rolling update would overlap the old and new pod as two writers; Recreate stops the old one first, a brief outage per upgrade), and there is no autoscaler. Scaling out needs a shared collab bus, which is not built. If you applied the `hpa.yaml` an earlier version of these manifests shipped, remove it: `kubectl delete hpa pad -n pad`.
+
+**Pin the image.** `deploy/k8s/deployment.yaml` names a release tag (`ghcr.io/perpetualsoftware/pad:<version>`). Set it to the release you mean to run, and change it to upgrade. Do not use `latest` here: a pod that restarts after a new release would pull it unannounced and run migrations you did not plan.
 
 **Prerequisites:**
 - External PostgreSQL (e.g., AWS RDS, Cloud SQL, managed PG)

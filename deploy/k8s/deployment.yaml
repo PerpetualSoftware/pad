@@ -6,7 +6,18 @@ metadata:
   labels:
     app: pad
 spec:
-  replicas: 2
+  # ONE replica (BUG-3573). Real-time collaboration keeps each item's editing
+  # room in the process that serves it, with an in-process bus and serialized
+  # per-item op-log appends; two pods would each hold their own room for the
+  # same item, miss each other's edits, and leave gaps in the op-log. Running
+  # more than one needs a shared collab bus, which Pad does not have yet, so
+  # there is no HPA either.
+  replicas: 1
+  # Recreate, not RollingUpdate: a rolling update starts the new pod while the
+  # old one still serves, which is two writers for the length of the rollout.
+  # Recreate stops the old pod first (a brief outage per upgrade).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: pad
@@ -25,10 +36,10 @@ spec:
       containers:
         - name: pad
           # PIN the release you run, and change it to upgrade (TASK-2034).
-          # Never `latest` here: with several replicas (hpa.yaml), pods that
-          # restart after a new release would pull it while the rest keep the
-          # old one, running mixed versions against one database. Tags are the
-          # bare version (no leading v): https://github.com/PerpetualSoftware/pad/releases
+          # Never `latest` here: a pod that restarts after a new release would
+          # pull it unannounced, running database migrations you did not plan.
+          # Tags are the bare version (no leading v):
+          # https://github.com/PerpetualSoftware/pad/releases
           image: ghcr.io/perpetualsoftware/pad:0.17.2
           ports:
             - containerPort: 7777
