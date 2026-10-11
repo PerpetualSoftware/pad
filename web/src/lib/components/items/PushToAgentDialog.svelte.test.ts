@@ -446,7 +446,7 @@ describe('PushToAgentDialog — message handling', () => {
 		expect(button('Push').disabled).toBe(false);
 
 		// Three poll intervals with no answer takes us past the server's own
-		// ~30s presence staleness bound. Past that, "1 session accepting pushes" is a
+		// ~30s presence staleness bound. Past that, "1 session ready to receive" is a
 		// claim nothing supports.
 		await vi.advanceTimersByTimeAsync(40_000);
 		flushSync();
@@ -495,7 +495,7 @@ describe('PushToAgentDialog — message handling', () => {
 
 		// The stalled pre-expiry poll finally lands. Its data is older than the
 		// expiry we just applied, so it must be dropped rather than reinstating
-		// "1 session accepting pushes".
+		// "1 session ready to receive".
 		releaseStalled(sessions(1));
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();

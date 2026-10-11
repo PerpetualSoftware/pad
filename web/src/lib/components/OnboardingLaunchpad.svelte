@@ -10,9 +10,9 @@
 	 *   ① connect an agent  ② tell it (in natural language) to set up
 	 *   ③ watch the result appear here live (via the page's SSE feed).
 	 *
-	 * Step ① adapts to `agentActive`: when an agent is already connected (e.g.
+	 * Step ① adapts to `agentActive`: when an agent has already worked here (e.g.
 	 * the workspace was created via a cli/mcp surface — BUG-1557), step ①
-	 * collapses to a "connected" confirmation and the emphasis shifts to
+	 * collapses to an "Agent activity detected" confirmation and the emphasis shifts to
 	 * step ② as the primary next action.
 	 *
 	 * The flag flips to false the moment any real item exists, at which point
@@ -252,7 +252,7 @@
 		font-weight: 700;
 		font-size: 0.85em;
 	}
-	/* Completed step marker (agent already connected) — filled accent-blue
+	/* Completed step marker (agent activity detected) — filled accent-blue
 	   check, matching the .lp-progress-item.done accent language. */
 	.lp-step-num.done {
 		background: var(--accent-blue);
