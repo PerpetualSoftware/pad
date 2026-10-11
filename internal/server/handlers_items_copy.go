@@ -1018,6 +1018,15 @@ func (s *Server) replayArchivedSourceCopy(w http.ResponseWriter, r *http.Request
 		canon := input
 		canon.OpKey = ""
 		hold, ok := s.claimKey(w, r, workspaceID, idempotencyRouteCopy, archived.ID, canon, key, func(status int, stored string) {
+			// The stored answer names the destination item, so it is handed
+			// only to a caller who may still copy THERE (retro CONVE-735
+			// finding on #2070): one who has lost the destination gets the
+			// same refusal the ladder would give, not the stored result.
+			w.Header().Del("Idempotent-Replayed")
+			if _, _, ok := s.authorizeCopyDestination(w, r, input); !ok {
+				return
+			}
+			w.Header().Set("Idempotent-Replayed", "true")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(stored))
