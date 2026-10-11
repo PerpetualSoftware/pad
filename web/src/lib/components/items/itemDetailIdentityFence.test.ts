@@ -12,7 +12,7 @@
  *
  * THE PAGE-LOAD EPOCH IS ALLOWED HERE, which it is not on the route surfaces.
  * `identityEpochAtLoad` answers "whose typing is in the editor", and the
- * BUG-3005 teardown writes compare against it. It is held to its five known
+ * BUG-3005 teardown writes compare against it. It is held to its six known
  * sites below.
  */
 import { describe, it, expect } from 'vitest';
@@ -252,12 +252,14 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 		expect(SCRIPT.match(/\bfunction (?:captureIdentity|identityHeld)\b/g)).toHaveLength(2);
 	});
 
-	it('the page-load epoch is mentioned at exactly its five known sites', () => {
+	it('the page-load epoch is mentioned at exactly its six known sites', () => {
 		// Declaration, the loadData re-stamp, runTeardownFlush's guard, the
-		// beforeunload handler, the raw saver's discard. The collab cleanup and
+		// beforeunload handler, the raw saver's discard, and the crash-draft
+		// snapshot (TASK-3606: whose typing is in the editor, so a draft is never
+		// filed under the next user's key). The collab cleanup and
 		// the rich teardown flush compare against the CONTEXT's mint-time epoch
 		// instead (codex round 1 on #1387), because a load re-stamps this one.
-		expect(SCRIPT.match(/identityEpochAtLoad/g)?.length).toBe(5);
+		expect(SCRIPT.match(/identityEpochAtLoad/g)?.length).toBe(6);
 	});
 
 	it('the collab context carries its mint-time identity, and both rich teardown flushes compare against it', () => {
