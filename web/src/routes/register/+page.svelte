@@ -1,8 +1,8 @@
 <script lang="ts">
 	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
 	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
-	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
+	import { onMount, tick } from 'svelte';
+	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
@@ -15,7 +15,7 @@
 		getLastAuthMethod,
 		type AuthMethod
 	} from '$lib/auth/lastMethod';
-	import { navigateToRedirectTarget, redirectQueryFragment, validateRedirect } from '$lib/auth/redirect';
+	import { navigateToRedirectTarget, postSignupTarget, redirectQueryFragment, validateRedirect } from '$lib/auth/redirect';
 	import { autofocus } from '$lib/a11y/autofocus';
 
 	let name = $state('');
@@ -38,6 +38,25 @@
 	// returns a verified user and navigates straight in.
 	let registered = $state(false);
 	let registeredEmail = $state('');
+	// Where this signup goes once it is done (TASK-3595); set from the register response.
+	let signupTarget = $state<string | null>(null);
+	// The username field is a customization, closed until asked for (TASK-3595).
+	let usernameOpen = $state(false);
+
+	// A taken generated name opens the field for good: editing it resets the
+	// availability check, and the field must not vanish under the typing
+	// (codex r1). Writes only usernameOpen, which it does not read.
+	$effect(() => {
+		if (usernameAvailable === false) usernameOpen = true;
+	});
+
+	// Opened by a click: focus follows into the field. Opened because the
+	// generated name is taken: focus stays where the user is typing.
+	async function openUsername() {
+		usernameOpen = true;
+		await tick();
+		document.getElementById('register-username')?.focus();
+	}
 	let resendState = $state<'idle' | 'sending' | 'sent' | 'error'>('idle');
 
 	let usernameManuallyEdited = $state(false);
@@ -57,7 +76,7 @@
 	// to /auth/<provider> so pad-cloud's callback (TASK-998) can return
 	// the user to /oauth/authorize after SSO. Falls back to /console for
 	// missing or invalid values.
-	const redirectTarget = $derived(validateRedirect($page.url.searchParams.get('redirect')));
+	const redirectTarget = $derived(validateRedirect(page.url.searchParams.get('redirect')));
 	// Forward redirect= onto the "Sign in" cross-link so a user mid-OAuth flow
 	// can hop /register ↔ /login without dropping their original destination.
 	const loginRedirectQuery = $derived(redirectQueryFragment(redirectTarget, '?'));
@@ -171,6 +190,9 @@
 		try {
 			const res = await api.auth.register(email, name, password, username || undefined);
 			recordAuthMethod('password');
+			// TASK-3595: a first signup lands in its new workspace unless
+			// something asked to go elsewhere. Kept for continueToPad too.
+			signupTarget = postSignupTarget(redirectTarget, res);
 			// Refresh the store from the freshly-set session cookie (same as
 			// /login) BEFORE navigating. navigateToRedirectTarget uses SPA
 			// goto() for workspace routes, and the root layout's one-shot auth
@@ -188,7 +210,7 @@
 				registered = true;
 				return;
 			}
-			await navigateToRedirectTarget(redirectTarget);
+			await navigateToRedirectTarget(signupTarget);
 		} catch (err: unknown) {
 			if (err instanceof Error && isPasswordRuleError(err.message)) {
 				passwordError = err.message;
@@ -218,7 +240,7 @@
 		// The account is already signed in (register set a session cookie), so
 		// this drops the user into the app to read/look around — they just
 		// can't create or share until they verify.
-		await navigateToRedirectTarget(redirectTarget);
+		await navigateToRedirectTarget(signupTarget ?? redirectTarget);
 	}
 </script>
 
@@ -271,6 +293,16 @@
 
 			<AuthIntentBanner {redirectTarget} mode="signup" />
 
+			<!-- TASK-3595: the one-click options come first; email signup is the
+			     alternative below them. Renders nothing off cloud. -->
+			<AuthOAuthButtons
+				cloudMode={authStore.cloudMode}
+				{redirectTarget}
+				{lastMethod}
+				onProviderClick={handleOAuthClick}
+				divider="below"
+			/>
+
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
 				<label class="field-label" for="register-name">Name</label>
 				<input
@@ -285,6 +317,17 @@
 					autocomplete="name"
 				/>
 
+				<!-- TASK-3595: the username is generated from the name; changing it is
+				     an option, not a decision every signup has to make. The field
+				     opens when asked for, or by itself when the generated one is taken. -->
+				{#if !usernameOpen}
+					<p class="username-summary">
+						Username: <span class="username-value">{username || '…'}</span>
+						<button type="button" class="username-change" onclick={openUsername} disabled={loading}>
+							Change
+						</button>
+					</p>
+				{:else}
 				<div class="username-field">
 					<label class="field-label" for="register-username">Username</label>
 					<input
@@ -308,6 +351,7 @@
 						{/if}
 					</span>
 				</div>
+				{/if}
 
 				<label class="field-label" for="register-email">Email</label>
 				<input
@@ -364,13 +408,6 @@
 					</p>
 				{/if}
 			</form>
-
-			<AuthOAuthButtons
-				cloudMode={authStore.cloudMode}
-				{redirectTarget}
-				{lastMethod}
-				onProviderClick={handleOAuthClick}
-			/>
 
 			<p class="login-link">
 				Already have an account? <a href="/login{loginRedirectQuery}">Sign in</a>
@@ -574,5 +611,27 @@
 		background: var(--bg-tertiary);
 		color: var(--text-primary);
 		border: 1px solid var(--border);
+	}
+
+	/* TASK-3595: the generated username, shown as a line with a Change link. */
+	.username-summary {
+		margin: 0 0 var(--space-3);
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+	}
+	.username-value {
+		font-family: var(--font-mono);
+		color: var(--text-primary);
+	}
+	.username-change {
+		background: none;
+		border: none;
+		padding: 0 0 0 var(--space-1);
+		color: var(--accent-blue);
+		font: inherit;
+		cursor: pointer;
+	}
+	.username-change:hover {
+		text-decoration: underline;
 	}
 </style>

@@ -10,7 +10,8 @@
 	//
 	// Layout-wise this component owns the "or" divider above its buttons,
 	// so callers can drop it directly under their primary submit button
-	// without needing an extra spacer wrapper.
+	// without needing an extra spacer wrapper. `divider="below"` is for a
+	// page that puts the buttons FIRST (/register, TASK-3595).
 
 	import type { AuthMethod } from '$lib/auth/lastMethod';
 	import { redirectQueryFragment } from '$lib/auth/redirect';
@@ -19,22 +20,26 @@
 		cloudMode = false,
 		redirectTarget,
 		lastMethod = null,
-		onProviderClick
+		onProviderClick,
+		divider = 'above'
 	}: {
 		cloudMode?: boolean;
 		/** Already-validated redirect target (use validateRedirect from $lib/auth/redirect). */
 		redirectTarget: string;
 		lastMethod?: AuthMethod | null;
 		onProviderClick: (provider: AuthMethod) => void;
+		divider?: 'above' | 'below';
 	} = $props();
 
 	const oauthRedirectQuery = $derived(redirectQueryFragment(redirectTarget, '?'));
 </script>
 
 {#if cloudMode}
-	<div class="oauth-divider">
-		<span>or</span>
-	</div>
+	{#if divider === 'above'}
+		<div class="oauth-divider">
+			<span>or</span>
+		</div>
+	{/if}
 
 	<div class="oauth-buttons">
 		<a
@@ -82,6 +87,11 @@
 			{/if}
 		</a>
 	</div>
+	{#if divider === 'below'}
+		<div class="oauth-divider">
+			<span>or</span>
+		</div>
+	{/if}
 {/if}
 
 <style>
