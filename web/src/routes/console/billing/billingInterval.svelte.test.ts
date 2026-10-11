@@ -182,6 +182,7 @@ describe('billing copy (TASK-3603)', () => {
 		expect(text).toContain('Up to 3 workspaces with 3 members each.');
 		expect(text).not.toContain('Upgrade when');
 		expect(text).not.toContain('Pro covers');
+		expect(text).not.toContain('Run every project');
 	});
 
 	it('Pro in the app: the plan, and nothing about plans for others (codex r1)', async () => {
