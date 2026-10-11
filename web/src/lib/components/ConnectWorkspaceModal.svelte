@@ -154,7 +154,7 @@
 	//
 	// Suppression case: when an existing OAuth grant has already claimed this
 	// workspace, the server replies with `suppressed: true` and no `code`.
-	// We render a calm "already connected" panel instead of a code, because
+	// We render a calm "already has access" panel instead of a code, because
 	// generating a new code in that state would be misleading — the grant the
 	// user is currently looking at would be the one being augmented, and that
 	// is precisely what they already have. Surfacing the existing grant by
@@ -488,9 +488,11 @@
 						<div class="info-panel">
 							<p class="info-panel-title">
 								{#if claimState.grantName}
-									Your agent <strong>{claimState.grantName}</strong> is already connected to this workspace.
+									<!-- A standing grant, not a live session: "connected" is kept for
+									     live session signals (TASK-3596). -->
+									Your agent <strong>{claimState.grantName}</strong> already has access to this workspace.
 								{:else}
-									Your agent is already connected to this workspace.
+									Your agent already has access to this workspace.
 								{/if}
 							</p>
 							<p class="info-panel-body">Manage it from your Connected apps page.</p>

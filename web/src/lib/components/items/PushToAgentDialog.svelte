@@ -33,7 +33,7 @@ push — the server filters delivery to armed sessions — so every count and ga
 below keys on the ACCEPTING (armed) subset, not the raw connected list, and the
 line shows the split honestly rather than hiding the difference:
 
-  - accepting > 0 → "M sessions accepting pushes" (and "of N connected" when
+  - accepting > 0 → "M sessions ready to receive" (and "of N connected" when
                    some are connected-but-unarmed). NOT "this will be
                    delivered": the registry can name a session that is already
                    gone (two bounds — see this file's DEPLOYMENT CONSTRAINT
@@ -621,14 +621,14 @@ always a broadcast that went out.
 						<strong>No agent session is connected.</strong>
 						A push isn’t stored anywhere — with nothing listening it would be lost, not
 						queued. Start a session (<code>pad watch --stream</code>) and connect it
-						(<code>/pad:connect</code>) so it accepts pushes, or copy the message and
+						(<code>/pad:connect</code>) so it is ready to receive, or copy the message and
 						paste it yourself.
 					</p>
 				{:else}
 					<p class="notice notice-warn">
 						<strong
 							>{connectedCount}
-							{connectedCount === 1 ? 'session' : 'sessions'} connected, 0 accepting pushes.</strong
+							{connectedCount === 1 ? 'session' : 'sessions'} connected, 0 ready to receive.</strong
 						>
 						A push only reaches a session that has opted in. Run
 						<code>/pad:connect</code> (or <code>pad session arm</code>) in a connected
@@ -639,7 +639,7 @@ always a broadcast that went out.
 				<p class="presence-ok">
 					<strong
 						>{acceptingCount}
-						{acceptingCount === 1 ? 'session' : 'sessions'} accepting pushes</strong
+						{acceptingCount === 1 ? 'session' : 'sessions'} ready to receive</strong
 					>{#if connectedCount > acceptingCount}
 						<span class="muted"> (of {connectedCount} connected)</span>{/if}
 					<!-- Two separate hedges, both load-bearing. The registry can name
@@ -686,7 +686,7 @@ always a broadcast that went out.
 				     count is the accepting count, not the connected one. -->
 				<select id={targetId} class="target-picker" bind:value={selectedSessionId} disabled={sending}>
 					<option value=""
-						>All accepting sessions ({acceptingCount})</option
+						>All sessions ready to receive ({acceptingCount})</option
 					>
 					{#each acceptingSessions as session (session.id)}
 						<option value={session.id}>{sessionName(session)}</option>

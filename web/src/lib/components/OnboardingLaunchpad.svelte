@@ -10,9 +10,9 @@
 	 *   ① connect an agent  ② tell it (in natural language) to set up
 	 *   ③ watch the result appear here live (via the page's SSE feed).
 	 *
-	 * Step ① adapts to `agentActive`: when an agent is already connected (e.g.
+	 * Step ① adapts to `agentActive`: when an agent has already worked here (e.g.
 	 * the workspace was created via a cli/mcp surface — BUG-1557), step ①
-	 * collapses to a "connected" confirmation and the emphasis shifts to
+	 * collapses to an "Agent activity detected" confirmation and the emphasis shifts to
 	 * step ② as the primary next action.
 	 *
 	 * The flag flips to false the moment any real item exists, at which point
@@ -24,17 +24,22 @@
 	interface Props {
 		workspaceName: string;
 		/**
-		 * Whether an agent is connected to this workspace
-		 * (dashboard.has_agent_activity). Ticks the "Agent connected" checklist
+		 * Whether an agent has worked in this workspace
+		 * (dashboard.has_agent_activity). HISTORICAL evidence, not a live
+		 * connection, so it reads "Agent activity detected" (TASK-3596):
+		 * "Connected" and "Ready to receive" are reserved for the live session
+		 * signals the push dialog shows. Ticks the "Agent activity detected" checklist
 		 * step and collapses step ① to a confirmation. This now flips true in
 		 * two cases (BUG-1557): (a) the first agent-CREATED item — which also
 		 * clears needs_onboarding and removes the launchpad; and (b) the
 		 * workspace itself was created via a cli/mcp agent surface (`pad init`,
 		 * MCP), which reports has_agent_activity=true before any item exists.
 		 * Because of (b) the launchpad can legitimately render with
-		 * agentActive=true, so it is a live signal — step ① adapts to it — not
-		 * just the orientation device the pre-BUG-1557 code assumed (the
-		 * deferred "connected but hasn't acted yet" signal of IDEA-1854).
+		 * agentActive=true, so step ① must adapt to it rather than treat it as
+		 * the orientation device the pre-BUG-1557 code assumed. It is still
+		 * evidence of past activity, never of a session that is there now; a
+		 * live "is an agent attached right now" signal (IDEA-1854) does not
+		 * exist here.
 		 */
 		agentActive?: boolean;
 		/** Opens the workspace's ConnectWorkspaceModal (mounted by the parent). */
@@ -48,7 +53,7 @@
 	// Compact setup-progress checklist (TASK-1857). Existing signals only.
 	let progress = $derived([
 		{ label: 'Workspace created', done: true },
-		{ label: 'Agent connected', done: agentActive },
+		{ label: 'Agent activity detected', done: agentActive },
 		{ label: 'Setup complete', done: false }
 	]);
 
@@ -88,9 +93,9 @@
 			>
 			<div class="lp-step-body">
 				{#if agentActive}
-					<h2 class="lp-step-title">Agent connected</h2>
+					<h2 class="lp-step-title">Agent activity detected</h2>
 					<p class="lp-step-text">
-						Your agent is already connected to this workspace.
+						An agent has already worked in this workspace.
 					</p>
 				{:else}
 					<h2 class="lp-step-title">Connect your agent</h2>
@@ -229,7 +234,7 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 	}
-	/* When step ① is already done (agent connected), step ② becomes the
+	/* When step ① is already done (agent activity detected), step ② becomes the
 	   primary next action — accent its border. */
 	.lp-step.next {
 		border-color: var(--accent-blue);
@@ -247,7 +252,7 @@
 		font-weight: 700;
 		font-size: 0.85em;
 	}
-	/* Completed step marker (agent already connected) — filled accent-blue
+	/* Completed step marker (agent activity detected) — filled accent-blue
 	   check, matching the .lp-progress-item.done accent language. */
 	.lp-step-num.done {
 		background: var(--accent-blue);

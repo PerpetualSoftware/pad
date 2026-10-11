@@ -237,7 +237,7 @@ function copiedMessage(because: ClipboardReason): string {
 			// sessions (PLAN-2613 S4), so this fires when nothing is ACCEPTING
 			// pushes — which includes the case where sessions are connected but
 			// none has opted in.
-			return 'No agent session accepting pushes — copied to clipboard instead';
+			return 'No agent session ready to receive — copied to clipboard instead';
 		case 'presence-unknown':
 			return 'Couldn’t check for agent sessions — copied to clipboard instead';
 		case 'too-long':

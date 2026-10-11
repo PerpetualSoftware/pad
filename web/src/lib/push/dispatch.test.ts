@@ -133,7 +133,7 @@ describe('describeDispatch', () => {
 
 	it('names the fallback AND its reason, so a copy never reads as a push', () => {
 		expect(describeDispatch({ kind: 'copied', because: 'no-sessions' }).message).toBe(
-			'No agent session accepting pushes — copied to clipboard instead'
+			'No agent session ready to receive — copied to clipboard instead'
 		);
 		expect(describeDispatch({ kind: 'copied', because: 'presence-unknown' }).message).toContain(
 			'Couldn’t check for agent sessions'
