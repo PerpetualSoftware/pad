@@ -1086,11 +1086,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	s.logAuditEventForUser(models.ActionRegister, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
 
 	// Auto-create default workspace in cloud mode
-	s.autoCreateWorkspace(user)
+	created := s.autoCreateWorkspace(user)
 
 	resp := map[string]interface{}{
 		"user":  sessionUserPayload(user),
 		"token": token,
+	}
+	// Where a first signup lands (TASK-3595): inside the workspace just made
+	// for it, not the console's list. Additive; absent off cloud and when the
+	// auto-create did not produce a usable workspace. An accepted invitation
+	// below still wins on the client, as an explicit ?redirect= does.
+	if p := createdWorkspacePath(user, created); p != "" {
+		resp["workspace_path"] = p
 	}
 	// A signup with an invitation code has already joined the workspace, so
 	// the client can land IN it, as an accept does (BUG-3284, PLAN-3002 Q5).

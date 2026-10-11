@@ -149,3 +149,20 @@ export function redirectQueryFragment(
 	if (target === DEFAULT_REDIRECT) return '';
 	return `${separator}redirect=${encodeURIComponent(target)}`;
 }
+
+/**
+ * Where a successful signup goes (TASK-3595). An explicit destination wins:
+ * a `?redirect=` (OAuth authorize, CLI/MCP auth, an invitation's join page,
+ * any preserved deep link) or an invitation the signup accepted. Otherwise a
+ * first signup lands in the workspace the server just created for it
+ * (`workspace_path`), not on the console's workspace list. A path that fails
+ * validation is ignored, as any redirect would be.
+ */
+export function postSignupTarget(
+	redirectTarget: string,
+	res: { workspace_path?: string; accepted_invitation?: unknown } | null | undefined,
+): string {
+	if (redirectTarget !== DEFAULT_REDIRECT || !res || res.accepted_invitation) return redirectTarget;
+	const landing = validateRedirect(res.workspace_path);
+	return landing === DEFAULT_REDIRECT ? redirectTarget : landing;
+}

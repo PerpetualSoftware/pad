@@ -300,6 +300,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isNewUser := false
+	var created *models.Workspace
 	var claim *store.AccountClaim
 	if user == nil {
 		// Create new user from OAuth
@@ -329,7 +330,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		slog.Info("oauth-login: created new user", "provider", input.Provider, "email", input.Email, "user_id", user.ID)
 
 		// Auto-create default workspace for new OAuth users
-		s.autoCreateWorkspace(user)
+		created = s.autoCreateWorkspace(user)
 	} else {
 		// Existing user — require explicit provider linking.
 		// The user must have previously linked this provider from their settings.
@@ -467,6 +468,13 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		"user":     sessionUserPayload(user),
 		"token":    token,
 		"new_user": isNewUser,
+	}
+	// Where a first signup lands (TASK-3595). The sidecar redirects a new
+	// user here when the sign-in carried no explicit destination; an older
+	// sidecar ignores it. Additive; absent unless a usable workspace was just
+	// auto-created for this sign-in.
+	if p := createdWorkspacePath(user, created); p != "" {
+		resp["workspace_path"] = p
 	}
 	if claim != nil {
 		resp["claimed"] = true
@@ -1853,6 +1861,12 @@ func writeError2(w http.ResponseWriter, status int, code, message string, detail
 // Called after user creation in register, bootstrap, and oauth-login handlers.
 // No-op in self-hosted mode.
 //
+// It returns the workspace only when it is usable: created, seeded and owned by
+// the user. Every failure arm returns nil, including the two that KEEP a
+// workspace whose owner row is unknown or carries the wrong role, because
+// landing the user in one of those would 403 (TASK-3595: the signup doors send
+// a first signup into what this returns).
+//
 // Errors never fail the SIGNUP — by the time this runs the user row, the session
 // and (self-serve) the verification email all exist, and a 5xx here would 409 on
 // retry for an error that was never about the account. What an error does fail
@@ -1862,9 +1876,9 @@ func writeError2(w http.ResponseWriter, status int, code, message string, detail
 // on the console's empty state. Nothing re-runs this for an account with zero
 // workspaces, which is why "log and continue" was not an option: the partial
 // workspace was permanent, and the product described it as brand-new.
-func (s *Server) autoCreateWorkspace(user *models.User) {
+func (s *Server) autoCreateWorkspace(user *models.User) *models.Workspace {
 	if !s.cloudMode {
-		return
+		return nil
 	}
 
 	name := user.Name + "'s Workspace"
@@ -1874,7 +1888,7 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 	})
 	if err != nil {
 		slog.Error("auto-create workspace failed", "user_id", user.ID, "error", err)
-		return
+		return nil
 	}
 
 	// Seed default collections with the startup starter pack. Cloud signups
@@ -1902,7 +1916,7 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 			slog.Error("auto-create workspace: the unusable workspace could NOT be removed and is still live",
 				"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", rerr)
 		}
-		return
+		return nil
 	}
 
 	// Add user as owner. This is not optional bookkeeping: without a
@@ -1952,7 +1966,7 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 					"KEEPING the workspace because its state is unknown",
 					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID,
 					"error", err, "check_error", cerr)
-				return
+				return nil
 			case member == nil:
 				// ABSENT — the original behaviour, now reached only when the row
 				// genuinely is not there and the workspace really is unreachable.
@@ -1970,7 +1984,7 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 					slog.Error("auto-create workspace: the unusable workspace could NOT be removed and is still live",
 						"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", rerr)
 				}
-				return
+				return nil
 			// The literal matches the AddWorkspaceMember call above and every other
 			// role comparison in this package; there is no shared constant.
 			case member.Role == "owner":
@@ -1994,12 +2008,23 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 					"different role; KEEPING the workspace, manual intervention required",
 					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID,
 					"found_role", member.Role, "error", err)
-				return
+				return nil
 			}
 		}
 	}
 
 	slog.Info("auto-created default workspace", "user_id", user.ID, "workspace", ws.Slug)
+	return ws
+}
+
+// createdWorkspacePath is the SPA path of a workspace autoCreateWorkspace just
+// made for user, or "" when it made none (TASK-3595). Workspace routes are
+// /{owner username}/{slug}, and the user is the owner.
+func createdWorkspacePath(user *models.User, ws *models.Workspace) string {
+	if user == nil || ws == nil || user.Username == "" || ws.Slug == "" {
+		return ""
+	}
+	return "/" + url.PathEscape(user.Username) + "/" + url.PathEscape(ws.Slug)
 }
 
 // --- Helpers ---
