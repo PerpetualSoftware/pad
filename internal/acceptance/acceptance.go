@@ -34,7 +34,8 @@ var (
 	atxRe       = regexp.MustCompile(`^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$`)
 	setextRe    = regexp.MustCompile(`^ {0,3}(=+|-+)[ \t]*$`)
 	bulletRe    = regexp.MustCompile(`^ {0,3}[-*+](?:[ \t]|$)`)
-	criterionRe = regexp.MustCompile(`^ ?[-*+][ \t]+(AC-[0-9]+)[ \t]*:[ \t]*(.*)$`)
+	itemRe      = regexp.MustCompile(`^( *)[-*+]( +)(.*)$`)
+	criterionRe = regexp.MustCompile(`^(AC-[0-9]+)[ \t]*:[ \t]*(.*)$`)
 	fenceOpenRe = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
 	closeHashRe = regexp.MustCompile(`(?:^|[ \t]+)#+$`)
 )
@@ -127,27 +128,53 @@ func Parse(body string) Section {
 		}
 		cur = nil
 	}
+	// itemCol is the content column of the open top-level list item, or -1.
+	// A bullet indented to at least that column is nested inside the item
+	// (CommonMark's rule), so an AC-shaped example under a criterion joins
+	// its text; a bullet short of it, indented up to three spaces, starts a
+	// new top-level item, which is a criterion when it reads "AC-N: text".
+	itemCol := -1
 	for i := start; i < end; i++ {
-		line := lines[i]
+		line := strings.ReplaceAll(lines[i], "\t", "    ")
 		if fenced[i] {
 			flush()
 			continue
 		}
-		// A criterion is a top-level bullet (at most one space of indent);
-		// an indented AC-shaped bullet is nested under the one above it and
-		// joins its text rather than counting as a criterion of its own.
-		if m := criterionRe.FindStringSubmatch(line); m != nil {
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if m := itemRe.FindStringSubmatch(line); m != nil {
+			if itemCol >= 0 && indent >= itemCol {
+				if cur != nil {
+					cur.Text += " " + strings.TrimSpace(line)
+				}
+				continue
+			}
+			if indent <= 3 {
+				flush()
+				gap := len(m[2])
+				if gap > 4 {
+					gap = 1
+				}
+				itemCol = indent + 1 + gap
+				if c := criterionRe.FindStringSubmatch(m[3]); c != nil {
+					cur = &Criterion{ID: c[1], Text: c[2]}
+				}
+				continue
+			}
+		}
+		if strings.TrimSpace(line) == "" {
 			flush()
-			cur = &Criterion{ID: m[1], Text: m[2]}
 			continue
 		}
-		// An indented line continues the criterion above it; anything
-		// else (a blank line, another bullet, prose) ends it.
-		if cur != nil && strings.TrimSpace(line) != "" && (strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")) {
+		// An indented line continues the criterion above it; an unindented
+		// one is prose that ends both the criterion and the list item.
+		if indent >= 2 && cur != nil {
 			cur.Text += " " + strings.TrimSpace(line)
 			continue
 		}
 		flush()
+		if indent == 0 {
+			itemCol = -1
+		}
 	}
 	flush()
 	return out

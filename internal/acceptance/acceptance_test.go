@@ -108,6 +108,26 @@ func TestParse(t *testing.T) {
 			placeholders: []string{},
 		},
 		{
+			name:  "a top-level list indented up to three spaces still holds criteria",
+			body:  "## Acceptance criteria\n  - AC-1: two spaces\n  - AC-2: also top level\n   * AC-3: three spaces\n",
+			found: true,
+			criteria: []Criterion{
+				{ID: "AC-1", Text: "two spaces"},
+				{ID: "AC-2", Text: "also top level"},
+				{ID: "AC-3", Text: "three spaces"},
+			},
+			placeholders: []string{},
+		},
+		{
+			name:  "an AC-shaped bullet nested under a non-criterion item is not a criterion",
+			body:  "## Acceptance criteria\n- Notes\n  - AC-7: an example\n- AC-1: real\n",
+			found: true,
+			criteria: []Criterion{
+				{ID: "AC-1", Text: "real"},
+			},
+			placeholders: []string{},
+		},
+		{
 			name:  "setext headings open and close the section",
 			body:  "Acceptance criteria\n===================\n- AC-1: a\n\nOpen questions\n==============\n- AC-2: b\n",
 			found: true,
