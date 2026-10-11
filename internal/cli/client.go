@@ -308,7 +308,16 @@ func (c *Client) ListCollectionItemsReport(wsSlug, collSlug string, params url.V
 
 func (c *Client) CreateItem(wsSlug, collSlug string, input models.ItemCreate) (*models.Item, error) {
 	var result models.Item
-	return &result, c.post("/workspaces/"+wsSlug+"/collections/"+collSlug+"/items", input, &result)
+	path := "/workspaces/" + wsSlug + "/collections/" + collSlug + "/items"
+	err := c.post(path, input, &result)
+	// TASK-3585: with a key, a create whose outcome the transport lost is
+	// retried ONCE; a server that honors keys answers the item the first
+	// attempt created instead of creating another.
+	if err != nil && input.OpKey != "" && retryableWithKey(err) && c.serverHonorsKeys() {
+		result = models.Item{}
+		err = c.post(path, input, &result)
+	}
+	return &result, err
 }
 
 // CollectionNotFoundIsAuthoritative reports whether a collection-not-found from

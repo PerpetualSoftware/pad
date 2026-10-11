@@ -649,6 +649,12 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 	if err := s.enqueueDecisionJobsTx(tx, item.WorkspaceID, item.ID, item.CollectionID); err != nil {
 		return nil, err
 	}
+	// TASK-3585: the caller's last word inside this transaction.
+	if input.AfterWriteTx != nil {
+		if err := input.AfterWriteTx(tx, item); err != nil {
+			return nil, err
+		}
+	}
 	return item, nil
 }
 

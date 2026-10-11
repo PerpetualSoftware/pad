@@ -353,7 +353,7 @@
             "type": "number"
           },
           "op_key": {
-            "description": "patch: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer instead of applying it again; use it whenever a retry could follow an unclear outcome. A key reused for a different request is refused (idempotency_key_reused).",
+            "description": "patch, create: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer instead of applying it again; use it whenever a retry could follow an unclear outcome. A key reused for a different request is refused (idempotency_key_reused).",
             "type": "string"
           },
           "overwrite_pending_edits": {

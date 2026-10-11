@@ -316,7 +316,7 @@ var padItemSchemaParams = []ParamDef{
 		},
 		"required": []any{"old", "new"},
 	}, Description: "patch: the edits, applied in order, all or nothing. Required for: patch."},
-	{Name: "op_key", Type: "string", Description: "patch: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer instead of applying it again; use it whenever a retry could follow an unclear outcome. A key reused for a different request is refused (idempotency_key_reused)."},
+	{Name: "op_key", Type: "string", Description: "patch, create: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer instead of applying it again; use it whenever a retry could follow an unclear outcome. A key reused for a different request is refused (idempotency_key_reused)."},
 	{Name: "undo", Type: "string", Description: "patch: invert an earlier patch on this item by its patch_id (instead of edits). Refused, writing nothing (patch_anchor_missing), when the text it changed has changed since; never reverts someone else's later edit. The undo is itself a patch."},
 	{Name: "lines", Type: "string", Description: "get: return only these body lines, numbered (\"A-B\", \"A-\" or \"A\"; 1-based), with seq and content_state, for targeting a patch. Line numbers are for reading; a patch anchors on text."},
 	// PLAN-3555: the deliberate-overwrite opt-out. Phase 1 changes no outcome;

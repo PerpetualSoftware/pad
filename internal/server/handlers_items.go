@@ -847,6 +847,42 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// TASK-3585: an idempotency key, claimed before the write. A replay
+	// answers with the item the first request created, as it stands now.
+	key, kerr := idempotencyKey(r, input.OpKey)
+	if kerr != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", kerr.Error())
+		return
+	}
+	canon := input
+	canon.OpKey = ""
+	hold, ok := s.claimKey(w, r, workspaceID, idempotencyRouteCreate, coll.ID, canon, key, func(status int, stored string) {
+		var a createdAnswer
+		if json.Unmarshal([]byte(stored), &a) != nil {
+			writeInternalError(w, fmt.Errorf("stored idempotent answer does not decode"))
+			return
+		}
+		created, gerr := s.store.GetItem(a.ItemID)
+		if gerr != nil || created == nil {
+			writeError2(w, http.StatusGone, "idempotency_target_gone", "the item this key created no longer exists", map[string]interface{}{"item_id": a.ItemID})
+			return
+		}
+		if err := s.enrichItemForResponse(r, created, visibleIDs); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeJSON(w, status, created)
+	})
+	if !ok {
+		return
+	}
+	defer s.release(hold)
+	if hold != nil {
+		input.AfterWriteTx = func(tx *sql.Tx, created *models.Item) error {
+			return s.completeTx(hold, http.StatusCreated, createdAnswer{ItemID: created.ID})(tx)
+		}
+	}
+
 	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fieldMap, parentValue, relationsRefuse)
 	if cerr != nil {
 		cerr.write(w, r)
