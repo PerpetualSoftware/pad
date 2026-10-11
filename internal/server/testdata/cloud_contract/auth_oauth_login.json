@@ -10,5 +10,6 @@
     "role": "<string>",
     "totp_enabled": false,
     "username": "<string>"
-  }
+  },
+  "workspace_path": "<string>"
 }
