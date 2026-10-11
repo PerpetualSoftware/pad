@@ -32,6 +32,7 @@
 	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
 	import { paneFocusables, nextTrapTarget, inExemptSurface } from '$lib/collections/paneFocus';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
+	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import type { PaneTarget } from '$lib/types';
 
 	interface Props {
@@ -658,6 +659,21 @@
 	// was still in flight (PLAN-2105 / TASK-2114; the pre-extraction route did
 	// this from an `openItemRef`→null effect — the shell's unmount IS that
 	// transition now).
+	// Pane-close: the middle ESC layer, between the graph drawer and the list
+	// focus marker (PLAN-2105 / TASK-2118). Registered by THIS shell, for as
+	// long as it is mounted, not by the ItemDetail inside it (BUG-3148).
+	// ItemDetail is imported on demand (below), so for the first few hundred
+	// milliseconds of a cold open the shell's `.item-pane` is on screen with no
+	// ItemDetail in it, and an ESC there found only the list-focus layer and
+	// did nothing: measured 14 of 20 deep-link opens at 4 workers with the
+	// stack's top at the list priority, every one of them a failed close.
+	$effect(() => {
+		return pushEscapeHandler(() => {
+			onClose();
+			return true;
+		}, ESCAPE_PRIORITY.pane);
+	});
+
 	// ItemDetail is imported on demand (TASK-2226): it carries the editor
 	// stack, about 1 MB a list page used to parse before its first paint. The
 	// host pages warm it in idle time, so this usually resolves at once.
