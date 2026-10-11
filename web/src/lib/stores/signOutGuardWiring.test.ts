@@ -52,4 +52,9 @@ describe('BUG-3571: sign-out wiring', () => {
 		expect(fn.slice(0, 200)).toContain('signOutDiscarding()');
 		expect(fn.slice(0, 900)).toContain('collabFlusher.snapshot(ctx)');
 	});
+
+	it('the root layout sweeps expired kept drafts at boot', () => {
+		const src = readFileSync('src/routes/+layout.svelte', 'utf8');
+		expect(src).toMatch(/onMount\(async \(\) => \{\s*(\/\/[^\n]*\n\s*)*sweepExpiredRefusedRawDrafts\(\);/);
+	});
 });

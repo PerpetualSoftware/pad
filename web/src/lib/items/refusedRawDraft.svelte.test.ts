@@ -5,6 +5,7 @@ import {
 	clearRefusedRawDraft,
 	refusedRawDraftOffer,
 	purgeRefusedRawDraftsForUser,
+	sweepExpiredRefusedRawDrafts,
 	REFUSED_RAW_DRAFT_TTL_MS,
 } from './refusedRawDraft';
 
@@ -115,5 +116,19 @@ describe('refusedRawDraft', () => {
 		keepRefusedRawDraft('u1', 'i1', 'a');
 		purgeRefusedRawDraftsForUser('');
 		expect(readRefusedRawDraft('u1', 'i1')?.markdown).toBe('a');
+	});
+
+	// Lead follow-up: a boot sweep, since expiry otherwise happens only on read.
+	it("the boot sweep removes every user's expired or unreadable drafts and keeps the rest", () => {
+		const now = 2_000_000_000_000;
+		keepRefusedRawDraft('u1', 'old', 'a', now - REFUSED_RAW_DRAFT_TTL_MS - 1);
+		keepRefusedRawDraft('u2', 'old', 'b', now - REFUSED_RAW_DRAFT_TTL_MS - 1);
+		keepRefusedRawDraft('u1', 'fresh', 'c', now - 1000);
+		keepRefusedRawDraft('u2', 'edge', 'd', now - REFUSED_RAW_DRAFT_TTL_MS);
+		localStorage.setItem('pad:refused-raw-draft:u3:bad', '{not json');
+		localStorage.setItem('pad-theme', 'dark');
+		sweepExpiredRefusedRawDrafts(now);
+		const left = Object.keys(localStorage).sort();
+		expect(left).toEqual(['pad-theme', 'pad:refused-raw-draft:u1:fresh', 'pad:refused-raw-draft:u2:edge']);
 	});
 });

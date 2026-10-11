@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { authStore } from '$lib/stores/auth.svelte';
 	import type { BillingInterval } from '$lib/api/client';
+	import { formatPrice, perInterval } from '$lib/billing/price';
 
 	// Monthly or annual Pad Pro (TASK-3468). Native radios in a fieldset, so
 	// arrow keys, labels and the group name come from the platform. One value
@@ -11,6 +12,11 @@
 	// DR-3), so this renders nothing unless authStore.commerceAllowed.
 	// noCommerceOutsideGate.test.ts lists this file as gated and checks that
 	// it reads the gate.
+	//
+	// The intervals and prices are the ones the sidecar serves
+	// (authStore.billingOffer, TASK-3577), never hard-coded: a price changed in
+	// Stripe shows here as it is charged. An interval the offer does not list
+	// is not sold, so it is not shown; with no offer the picker renders nothing.
 
 	interface Props {
 		value?: BillingInterval;
@@ -23,17 +29,23 @@
 
 	let { value = $bindable('monthly'), unavailable = [], name, disabled = false }: Props = $props();
 
-	const OPTIONS: { interval: BillingInterval; label: string; price: string }[] = [
-		{ interval: 'monthly', label: 'Monthly', price: '$8 / month' },
-		{ interval: 'annual', label: 'Annual', price: '$80 / year' }
-	];
+	const LABELS: Record<BillingInterval, string> = { monthly: 'Monthly', annual: 'Annual' };
+
+	let options = $derived(
+		(authStore.billingOffer?.intervals ?? []).map((iv) => ({
+			interval: iv.interval,
+			label: LABELS[iv.interval] ?? iv.interval,
+			price: `${formatPrice(iv.unit_amount, iv.currency)} ${perInterval(iv.interval)}`,
+		})),
+	);
+	let currencies = $derived([...new Set((authStore.billingOffer?.intervals ?? []).map((iv) => iv.currency.toUpperCase()))]);
 </script>
 
-{#if authStore.commerceAllowed}
+{#if authStore.commerceAllowed && options.length > 0}
 	<fieldset class="interval-picker" {disabled}>
 		<legend class="sr-only">Billing interval</legend>
 		<div class="options">
-			{#each OPTIONS as opt (opt.interval)}
+			{#each options as opt (opt.interval)}
 				{@const off = unavailable.includes(opt.interval)}
 				<label class="option" class:selected={value === opt.interval} class:off>
 					<input type="radio" {name} value={opt.interval} bind:group={value} disabled={off} />
@@ -42,7 +54,7 @@
 				</label>
 			{/each}
 		</div>
-		<p class="note">Prices in USD. Stripe may charge in your local currency at checkout.</p>
+		<p class="note">Prices in {currencies.join(', ')}. Stripe may charge in your local currency at checkout.</p>
 	</fieldset>
 {/if}
 

@@ -2,14 +2,17 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/config"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -177,41 +180,107 @@ func TestAuthSessionMCPURLAndAuth(t *testing.T) {
 	}
 }
 
-// billing_available is false by default and only true when BOTH cloudMode AND
-// billingAvailable are set. Tests for both the default (off) and the enabled
-// state so a future refactor can't accidentally always-expose the CTA. TASK-800.
+// fixedOffer is a BillingOffer that always answers the same config.
+type fixedOffer billing.BillingConfig
+
+func (f fixedOffer) Current() billing.BillingConfig { return billing.BillingConfig(f) }
+
+var servedOffer = fixedOffer{
+	Available: true,
+	Intervals: []billing.OfferInterval{
+		{Interval: "monthly", LookupKey: "pad_pro_monthly", UnitAmount: 800, Currency: "usd"},
+		{Interval: "annual", LookupKey: "pad_pro_annual", UnitAmount: 8000, Currency: "usd"},
+	},
+	TrialDays: 14,
+}
+
+// billing_available is true only in cloud mode, with PAD_BILLING=auto, while
+// the sidecar's offer says available; billing_offer carries that offer and is
+// null otherwise (TASK-3577; TASK-800 before it). Both are always present, in
+// the setup payload too, so a refactor cannot quietly always expose the CTA.
 func TestAuthSessionBillingAvailable(t *testing.T) {
-	// Default: both flags off — billing_available must be false.
+	session := func(t *testing.T, srv *Server) map[string]interface{} {
+		t.Helper()
+		rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("session: status %d", rr.Code)
+		}
+		var out map[string]interface{}
+		parseJSON(t, rr, &out)
+		for _, k := range []string{"billing_available", "billing_offer"} {
+			if _, ok := out[k]; !ok {
+				t.Fatalf("%s missing from session payload", k)
+			}
+		}
+		return out
+	}
+	cases := []struct {
+		name  string
+		cloud bool
+		mode  string
+		offer BillingOffer
+		want  bool
+	}{
+		{"default", false, "", nil, false},
+		{"cloud, no mode, no offer", true, "", nil, false},
+		{"cloud, auto, no sidecar", true, billing.ModeAuto, nil, false},
+		{"cloud, auto, unavailable", true, billing.ModeAuto, fixedOffer{}, false},
+		{"cloud, auto, available with no interval", true, billing.ModeAuto, fixedOffer{Available: true}, false},
+		{"cloud, off beats an available sidecar", true, billing.ModeOff, servedOffer, false},
+		{"self-host, auto, available", false, billing.ModeAuto, servedOffer, false},
+		{"cloud, auto, available", true, billing.ModeAuto, servedOffer, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+			srv.cloudMode = tc.cloud
+			srv.SetBilling(tc.mode, tc.offer)
+			got := session(t, srv)
+			if got["billing_available"] != tc.want {
+				t.Fatalf("billing_available = %v, want %v", got["billing_available"], tc.want)
+			}
+			if !tc.want {
+				if got["billing_offer"] != nil {
+					t.Fatalf("billing_offer = %v, want null while unavailable", got["billing_offer"])
+				}
+				return
+			}
+			b, _ := json.Marshal(got["billing_offer"])
+			var offer struct {
+				Intervals []billing.OfferInterval `json:"intervals"`
+				TrialDays int                     `json:"trial_days"`
+			}
+			if err := json.Unmarshal(b, &offer); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(offer.Intervals, servedOffer.Intervals) || offer.TrialDays != 14 {
+				t.Fatalf("billing_offer = %s, want the served offer", b)
+			}
+		})
+	}
+}
+
+// Lead ruling on TASK-3577: with PAD_BILLING and PAD_BILLING_AVAILABLE both
+// unset the mode is auto, and with the sidecar down that still gives
+// billing_available false: auto fails closed.
+func TestAuthSessionBillingBothUnsetSidecarDown(t *testing.T) {
+	mode, _ := billing.ResolveMode("", false, "", false)
+	if mode != billing.ModeAuto {
+		t.Fatalf("both unset: mode %q, want auto", mode)
+	}
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	down.Close() // nothing listens: connection refused
+	offers := billing.NewOfferCache(billing.NewCloudClient(down.URL, "secret"))
+	offers.Refresh(context.Background())
+
 	srv := testServer(t)
+	srv.cloudMode = true
+	srv.SetBilling(mode, offers)
 	rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("session check: expected 200, got %d", rr.Code)
-	}
-	var session map[string]interface{}
-	parseJSON(t, rr, &session)
-	if v, ok := session["billing_available"]; !ok {
-		t.Error("billing_available field missing from session payload")
-	} else if v != false {
-		t.Errorf("expected billing_available=false by default, got %v", v)
-	}
-
-	// Cloud mode only (no billingAvailable) — still false.
-	srv2 := testServer(t)
-	srv2.cloudMode = true
-	rr2 := doRequest(srv2, "GET", "/api/v1/auth/session", nil)
-	parseJSON(t, rr2, &session)
-	if session["billing_available"] != false {
-		t.Errorf("expected billing_available=false when cloudMode=true but billingAvailable=false, got %v", session["billing_available"])
-	}
-
-	// Both flags set — billing_available must be true.
-	srv3 := testServer(t)
-	srv3.cloudMode = true
-	srv3.billingAvailable = true
-	rr3 := doRequest(srv3, "GET", "/api/v1/auth/session", nil)
-	parseJSON(t, rr3, &session)
-	if session["billing_available"] != true {
-		t.Errorf("expected billing_available=true when cloudMode+billingAvailable both set, got %v", session["billing_available"])
+	var got map[string]interface{}
+	parseJSON(t, rr, &got)
+	if got["billing_available"] != false || got["billing_offer"] != nil {
+		t.Fatalf("billing_available = %v, billing_offer = %v; want false and null with the sidecar down", got["billing_available"], got["billing_offer"])
 	}
 }
 

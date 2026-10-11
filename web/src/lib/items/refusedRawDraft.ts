@@ -122,6 +122,35 @@ export function purgeRefusedRawDraftsForUser(userId: string): void {
 }
 
 /**
+ * Remove every kept draft past the TTL, for EVERY user, plus any entry that no
+ * longer parses (BUG-3571 part 2 follow-up). Expiry otherwise happens only when
+ * a draft is read, so a user who never opens that item again on this machine,
+ * or never signs in here again, would leave their text in storage past the
+ * TTL. Run once at app boot. Keys are collected before removal.
+ */
+export function sweepExpiredRefusedRawDrafts(now = Date.now()): void {
+	try {
+		const s = storage();
+		if (!s) return;
+		const expired: string[] = [];
+		for (let i = 0; i < s.length; i++) {
+			const k = s.key(i);
+			if (k === null || !k.startsWith(PREFIX)) continue;
+			let savedAt: unknown;
+			try {
+				savedAt = (JSON.parse(s.getItem(k) ?? '') as Partial<RefusedRawDraft>).savedAt;
+			} catch {
+				savedAt = undefined;
+			}
+			if (typeof savedAt !== 'number' || now - savedAt > REFUSED_RAW_DRAFT_TTL_MS) expired.push(k);
+		}
+		for (const k of expired) s.removeItem(k);
+	} catch {
+		// Nothing to recover from.
+	}
+}
+
+/**
  * What the pane should do with a kept draft when it shows the item: nothing
  * kept, or the kept text is the stored body already (the unload request landed
  * and its page never heard), which clears it silently; otherwise offer it.

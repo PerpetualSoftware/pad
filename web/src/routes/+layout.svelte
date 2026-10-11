@@ -19,6 +19,7 @@
 	import { notifyServerBusy } from '$lib/api/serverBusyToast';
 	import { notifyNetworkUnreachable } from '$lib/api/networkUnreachableToast';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { sweepExpiredRefusedRawDrafts } from '$lib/items/refusedRawDraft';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
@@ -190,6 +191,9 @@
 	});
 
 	onMount(async () => {
+		// BUG-3571 part 2 follow-up: drop every user's kept drafts past their
+		// TTL, which otherwise expire only when read.
+		sweepExpiredRefusedRawDrafts();
 		// Initialize theme
 		const savedTheme = localStorage.getItem('pad-theme');
 		if (savedTheme === 'light' || savedTheme === 'dark') {

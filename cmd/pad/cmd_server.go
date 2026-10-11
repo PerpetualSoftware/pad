@@ -355,14 +355,21 @@ func serveCmd() *cobra.Command {
 				return err
 			}
 
-			// Billing CTA gate (TASK-800). PAD_BILLING_AVAILABLE=true when
-			// the pad-cloud sidecar has Stripe keys configured so the web UI
-			// can show "Upgrade to Pro" buttons. Defaults to false so a fresh
-			// cloud deployment without Stripe doesn't expose dead-end CTAs.
-			if v := os.Getenv("PAD_BILLING_AVAILABLE"); v == "true" || v == "1" {
-				srv.SetBillingAvailable(true)
-				slog.Info("Billing CTAs enabled (PAD_BILLING_AVAILABLE)")
+			// Billing mode (TASK-3577): PAD_BILLING=auto|off, with the
+			// deprecated PAD_BILLING_AVAILABLE read for one release. In auto,
+			// billing is offered only while the sidecar says it can be bought
+			// (wired below, in cloud mode with a sidecar); off forces "coming
+			// soon". With no sidecar the offer source stays nil: never offered.
+			padBilling, padBillingSet := os.LookupEnv("PAD_BILLING")
+			legacyBilling, legacyBillingSet := os.LookupEnv("PAD_BILLING_AVAILABLE")
+			billingMode, billingWarning := billing.ResolveMode(padBilling, padBillingSet, legacyBilling, legacyBillingSet)
+			if billingWarning != "" {
+				slog.Warn(billingWarning)
 			}
+			srv.SetBilling(billingMode, nil)
+			// Stops the offer refresh loop when the server returns.
+			billingCtx, stopBilling := context.WithCancel(context.Background())
+			defer stopBilling()
 
 			// Cloud-tenant mode: enable cloud-specific endpoints and
 			// behavior. Gated on IsCloudServer() (env-var opt-in) rather
@@ -416,7 +423,17 @@ func serveCmd() *cobra.Command {
 					if outboundSecret == "" {
 						return fmt.Errorf("PAD_CLOUD_SIDECAR_URL is set but neither PAD_CLOUD_OUTBOUND_SECRET nor PAD_CLOUD_SECRET supplies a usable outbound secret")
 					}
-					srv.SetCloudSidecar(billing.NewCloudClient(cfg.CloudSidecarURL, outboundSecret))
+					sidecar := billing.NewCloudClient(cfg.CloudSidecarURL, outboundSecret)
+					srv.SetCloudSidecar(sidecar)
+					// TASK-3577: the billing offer, read from the sidecar at
+					// boot and about every 5 minutes; unavailable until it
+					// answers, and whenever it cannot.
+					if billingMode == billing.ModeAuto {
+						offers := billing.NewOfferCache(sidecar)
+						srv.SetBilling(billingMode, offers)
+						go offers.Run(billingCtx)
+					}
+					slog.Info("Billing mode", "mode", billingMode)
 					outboundSource := "PAD_CLOUD_SECRET[last]"
 					if strings.TrimSpace(cfg.CloudOutboundSecret) != "" {
 						outboundSource = "PAD_CLOUD_OUTBOUND_SECRET"
