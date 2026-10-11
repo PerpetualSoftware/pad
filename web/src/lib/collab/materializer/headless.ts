@@ -15,6 +15,7 @@ import { SafeLink, SAFE_LINK_OPTIONS } from '$lib/components/editor/extensions/s
 import { PadCodeBlock, PAD_CODE_BLOCK_OPTIONS } from '$lib/components/editor/extensions/padCodeBlock';
 import { PAD_TABLE_OPTIONS } from '$lib/components/editor/extensions/padTable';
 import { HtmlBlock } from '$lib/components/editor/extensions/htmlBlock';
+import { htmlProseExtensions } from '$lib/components/editor/extensions/htmlProse';
 import { BlockDragHandle } from '$lib/components/editor/block-drag-handle';
 import { AttachmentImage } from '$lib/components/editor/attachment-image';
 import { AttachmentChip } from '$lib/components/editor/attachment-chip';
@@ -71,7 +72,8 @@ const headless = async (): Promise<never> => {
  */
 export function headlessExtensions(markdownOverrides: Record<string, unknown> = {}) {
 	return [
-		StarterKit.configure({ codeBlock: false, link: false, undoRedo: false }),
+		StarterKit.configure({ codeBlock: false, link: false, undoRedo: false, text: false }),
+		...htmlProseExtensions(),
 		PadCodeBlock.configure(PAD_CODE_BLOCK_OPTIONS),
 		HtmlBlock,
 		TaskList,

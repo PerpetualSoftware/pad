@@ -567,6 +567,7 @@
 	import { notifyAttachmentUploaded, toUploadedAttachment } from '$lib/attachments/events';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
+	import { htmlProseExtensions } from './extensions/htmlProse';
 	import { SLASH_ITEMS } from './block-types';
 	import { atCaret, type CaretRect } from './caretPopup';
 	import ImportFromUrlModal, { type InsertContext } from './ImportFromUrlModal.svelte';
@@ -1033,8 +1034,10 @@
 			StarterKit.configure({
 				codeBlock: false,
 				link: false, // We use our own SafeLink extension below
+				text: false, // PadText (htmlProse.ts, BUG-3557) replaces it
 				...(ydoc ? { undoRedo: false } : {}),
 			}),
+			...htmlProseExtensions(),
 			MermaidCodeBlock.configure(PAD_CODE_BLOCK_OPTIONS),
 			HtmlBlock,
 			TaskList,

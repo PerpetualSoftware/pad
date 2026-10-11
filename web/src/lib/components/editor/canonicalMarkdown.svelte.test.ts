@@ -65,7 +65,6 @@ const notFixed: Array<[string, string]> = [
 	// The two shapes the population parity run found (BUG-3197 checkpoint 6):
 	// both are reshaped by an appendTransaction plugin, which parsing alone skips.
 	['a bare URL is autolinked', 'Tracker: https://example.com/org/repo/issues/56\n\nMore text.'],
-	['an HTML-looking tag in prose parses to an empty table the editor drops', 'Make @ui <Table> a drop-in for every list.'],
 	['an HTML table', '<table><tr><td><ul><li>a</li></ul></td></tr></table>\n\nafter'],
 	// The form the editor stored before Tiptap 3.31.4 (TASK-3421): a multi-block
 	// cell forces the HTML table, and 3.31.3 rendered every cell's default
@@ -75,6 +74,10 @@ const notFixed: Array<[string, string]> = [
 ];
 const fixed: Array<[string, string]> = [
 	['plain paragraph', 'a perfectly ordinary paragraph'],
+	// BUG-3557: was reshaped (the tag parsed to an empty table the editor
+	// dropped); angle-bracketed prose is now literal text and round-trips.
+	['an HTML-looking tag in prose', 'Make @ui <Table> a drop-in for every list.'],
+	['a generic type in prose', 'returns Promise<T> on success'],
 	['frontmatter', '---\ntitle: "T"\ndate: "2026-07-01"\n---\n\nBody.'],
 	['wiki link', 'see [[TASK-5]] for more'],
 	['link', 'a [link](https://example.com) here'],

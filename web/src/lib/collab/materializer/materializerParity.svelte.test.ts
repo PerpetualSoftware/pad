@@ -207,7 +207,16 @@ interface Case {
 	link_index: LinkEntry[];
 	workspace_slug: string;
 	expected: string;
+	/**
+	 * Tab B's flush when it differs from tab A's: the two live tabs converged
+	 * to different documents (BUG-3568), so the case has no single right
+	 * answer. Absent when they agree.
+	 */
+	other?: string;
 }
+
+/** Disagreeing cases tolerated per run (lead ruling, BUG-3557). */
+const MAX_TAB_DISAGREEMENTS = 2;
 
 function randomTextPos(ed: TiptapEditor, rnd: () => number): number | null {
 	const size = ed.state.doc.content.size;
@@ -361,8 +370,9 @@ async function runCase(seed: number): Promise<Case> {
 
 		const index = rnd() < 0.2 ? [] : TAB_INDEX;
 		const expected = liveFlush(a.editor, index);
-		// The two tabs must agree, or the case does not have one right answer.
-		expect(liveFlush(b.editor, index)).toBe(expected);
+		// The two tabs should agree. When they do not (BUG-3568) the case has no
+		// single right answer: it is kept, with both flushes, and judged apart.
+		const fromB = liveFlush(b.editor, index);
 		relayThrows += relayThrew;
 		return {
 			name: `seed-${seed}`,
@@ -370,6 +380,7 @@ async function runCase(seed: number): Promise<Case> {
 			link_index: projectIndex(index),
 			workspace_slug: WS,
 			expected,
+			...(fromB === expected ? {} : { other: fromB }),
 		};
 	} finally {
 		unmountTab(a);
@@ -395,7 +406,8 @@ describe('materializer parity with the live editor flush (TASK-2198)', () => {
 		if (process.env.PAD_GEN_MATERIALIZE_CORPUS === '1') {
 			const out = path.resolve(process.cwd(), '../internal/materialize/testdata/corpus.json');
 			fs.mkdirSync(path.dirname(out), { recursive: true });
-			fs.writeFileSync(out, JSON.stringify(cases, null, 1) + '\n');
+			// Only cases with one right answer: the Go test compares against it.
+			fs.writeFileSync(out, JSON.stringify(cases.filter((c) => c.other === undefined), null, 1) + '\n');
 		}
 	});
 
@@ -411,11 +423,22 @@ describe('materializer parity with the live editor flush (TASK-2198)', () => {
 		expect(cases.some((c) => c.link_index.length === 0)).toBe(true);
 	});
 
+	it('the two live tabs agree on all but a few cases (BUG-3568)', () => {
+		const disagreed = cases.filter((c) => c.other !== undefined).map((c) => c.name);
+		for (const name of disagreed) {
+			console.warn(`materializer parity: ${name} skipped, the two live tabs converged to different documents (BUG-3568)`);
+		}
+		expect(disagreed.length, `tab disagreements: ${disagreed.join(', ')}`).toBeLessThanOrEqual(MAX_TAB_DISAGREEMENTS);
+	});
+
 	it('materialize() equals the live flush on every case', () => {
 		const diverged: string[] = [];
 		for (const c of cases) {
 			const job: MaterializeJob = { rows: c.rows, link_index: c.link_index, workspace_slug: c.workspace_slug };
-			if (materialize(JSON.stringify(job)) !== c.expected) diverged.push(c.name);
+			const got = materialize(JSON.stringify(job));
+			// Where the tabs disagree the materializer must still match ONE of
+			// them: it may never produce a third document.
+			if (got !== c.expected && (c.other === undefined || got !== c.other)) diverged.push(c.name);
 		}
 		expect(diverged).toEqual([]);
 	});
