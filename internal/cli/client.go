@@ -836,7 +836,14 @@ func (c *Client) ListComments(wsSlug, itemSlug string) ([]models.Comment, error)
 
 func (c *Client) CreateComment(wsSlug, itemSlug string, input models.CommentCreate) (*models.Comment, error) {
 	var result models.Comment
-	err := c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/comments", input, &result)
+	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/comments"
+	err := c.post(path, input, &result)
+	// TASK-3585: the same single keyed retry as CreateItem, behind the same
+	// capability gate.
+	if err != nil && input.OpKey != "" && retryableWithKey(err) && c.serverHonorsKeys() {
+		result = models.Comment{}
+		err = c.post(path, input, &result)
+	}
 	return &result, wrapItemNotFound(err, itemSlug, wsSlug)
 }
 

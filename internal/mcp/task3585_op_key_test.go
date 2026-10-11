@@ -120,3 +120,30 @@ func TestTASK3585_MCPCreateReplayOfADeletedItem(t *testing.T) {
 		t.Fatalf("stdio: %+v", e)
 	}
 }
+
+// TASK-3585: op_key on comment rides to the server, so a retried comment
+// answers the comment it made instead of a twin.
+func TestTASK3585_MCPCommentOpKey(t *testing.T) {
+	f := newParentFixture(t)
+	in := map[string]any{"workspace": f.workspace.Slug, "ref": f.child.Slug, "message": "Keyed via MCP", "op_key": "mcp-cm"}
+	first := f.dispatchResult2(t, []string{"item", "comment"}, in)
+	second := f.dispatchResult2(t, []string{"item", "comment"}, in)
+	m1, _ := first.StructuredContent.(map[string]any)
+	m2, _ := second.StructuredContent.(map[string]any)
+	if first.IsError || second.IsError || m1["id"] == nil || m1["id"] != m2["id"] {
+		t.Fatalf("replay: %s / %s", textOf(first), textOf(second))
+	}
+	cs, err := f.store.ListComments(f.child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range cs {
+		if c.Body == "Keyed via MCP" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d comments; the retried comment made a twin", n)
+	}
+}

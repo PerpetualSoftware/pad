@@ -1,6 +1,7 @@
 package models
 
 import (
+	"database/sql"
 	"encoding/json"
 	"time"
 )
@@ -101,6 +102,15 @@ type CommentCreate struct {
 	Source     string `json:"source,omitempty"`
 	ParentID   string `json:"parent_id,omitempty"`
 	ActivityID string `json:"activity_id,omitempty"`
+	// OpKey is the idempotency key in the body (TASK-3585), for callers that
+	// cannot set the Idempotency-Key header. Not part of the request hash;
+	// the store ignores it.
+	OpKey string `json:"op_key,omitempty"`
+	// AfterWriteTx, when set, runs inside CreateCommentWithActivity's
+	// transaction after the comment is inserted and read back, before COMMIT
+	// (TASK-3585: the idempotency key's answer). An error rolls the comment
+	// and its activity back. Internal.
+	AfterWriteTx func(tx *sql.Tx, created *Comment) error `json:"-"`
 }
 
 // Reaction represents an emoji reaction on a comment.

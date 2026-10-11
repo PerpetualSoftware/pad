@@ -84,3 +84,12 @@ const idempotencyRouteCreate = "item.create"
 type createdAnswer struct {
 	ItemID string `json:"item_id"`
 }
+
+// idempotencyRouteComment names the comment-create route in a key's request
+// hash.
+const idempotencyRouteComment = "comment.create"
+
+// commentedAnswer is what a comment create's key stores: the comment it made.
+type commentedAnswer struct {
+	CommentID string `json:"comment_id"`
+}
