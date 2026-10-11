@@ -34,4 +34,22 @@ describe('BUG-3571: sign-out wiring', () => {
 		const unload = src.slice(src.indexOf('const onBeforeUnload = (event: BeforeUnloadEvent) => {'));
 		expect(unload.slice(0, 1600)).toContain('if (signOutDiscarding()) return;');
 	});
+
+	// BUG-3571 part 2: the keep is wired where the text stops being savable.
+	it('ItemDetail keeps the previous user\'s text FIRST in its identity listener', () => {
+		const src = readFileSync('src/lib/components/items/ItemDetail.svelte', 'utf8');
+		const listener = src.slice(src.indexOf('authStore.onIdentityChange((previousUserId) => {'));
+		const keep = listener.indexOf('if (previousUserId) keepAtRiskText(previousUserId);');
+		expect(keep, 'keeps on an identity change').toBeGreaterThan(-1);
+		expect(keep).toBeLessThan(listener.indexOf('activeCollabContext.retired = true'));
+		expect(keep).toBeLessThan(listener.indexOf('loadData()'));
+	});
+
+	it('ItemDetail registers a session-expiry keeper for the signed-in user', () => {
+		const src = readFileSync('src/lib/components/items/ItemDetail.svelte', 'utf8');
+		expect(src).toContain('registerSessionExpiryKeeper(() => keepAtRiskText(authStore.userId))');
+		const fn = src.slice(src.indexOf('function keepAtRiskText(userId: string): void {'));
+		expect(fn.slice(0, 200)).toContain('signOutDiscarding()');
+		expect(fn.slice(0, 900)).toContain('collabFlusher.snapshot(ctx)');
+	});
 });

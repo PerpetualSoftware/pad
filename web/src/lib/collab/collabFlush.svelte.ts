@@ -133,6 +133,12 @@ export interface CollabFlusher {
 	 *  teardown + beforeunload with keepalive=true to land the snapshot before
 	 *  the provider tears down. */
 	flushNow(ctx: CollabFlushContext, keepalive: boolean): boolean;
+	/** The storage-form markdown a flush-now would PATCH for `ctx`, without
+	 *  sending anything and without the dedupe: the text to keep in this
+	 *  browser when it cannot be sent under its author's session (BUG-3571
+	 *  part 2). Null when the editor is unreadable or recovery is in flight
+	 *  (the same gates a flush applies before its serialize). */
+	snapshot(ctx: CollabFlushContext): string | null;
 	/** Foreground flush the caller awaits; see the implementation (TASK-3462 U3b). */
 	flushAndWait(ctx: CollabFlushContext): Promise<CollabFlushResult>;
 	/** Arm the idle debounce to run `flushNow(ctx, false)` — unless a flush is
@@ -302,6 +308,13 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		return true;
 	}
 
+	function snapshot(ctx: CollabFlushContext): string | null {
+		if (config.isRecovering()) return null;
+		const md = config.readEditorMarkdown();
+		if (md === null) return null;
+		return config.serialize(config.normalize(md), ctx.wsSlug);
+	}
+
 	/**
 	 * A foreground flush the caller awaits (TASK-3462 U3b): cancels a pending
 	 * idle flush, reads the live editor and resolves with the flush's result,
@@ -327,6 +340,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		flush,
 		prime,
 		flushNow,
+		snapshot,
 		flushAndWait,
 		settle,
 		cancel,

@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./auth.svelte', () => ({
-	authStore: { onIdentityChange: () => () => {} },
+	authStore: { onIdentityChange: () => () => {}, userId: 'u1' },
 }));
 
 const { confirmDialog } = await import('./confirmDialog.svelte');
 const { registerSignOutGuard, confirmSignOut, signOutDiscarding, signOutFailed } = await import('./signOutGuard.svelte');
+const { keepRefusedRawDraft, readRefusedRawDraft } = await import('$lib/items/refusedRawDraft');
 
 // BUG-3571: signing out asks first while an open item holds at-risk edits;
 // a confirm discards them and keeps nothing; Cancel (the default) keeps all.
@@ -67,5 +68,44 @@ describe('BUG-3571: confirmSignOut', () => {
 		off();
 		await expect(confirmSignOut()).resolves.toBe(true);
 		expect(confirmDialog.active).toBeNull();
+	});
+});
+
+// BUG-3571 part 2: an explicit sign-out purges every draft this browser kept
+// for the signed-in user, on every item; a cancelled one purges nothing.
+describe('BUG-3571 part 2: sign-out purges the kept drafts', () => {
+	beforeEach(() => {
+		signOutFailed();
+		confirmDialog.abandonAll();
+		localStorage.clear();
+		keepRefusedRawDraft('u1', 'i1', 'mine');
+		keepRefusedRawDraft('u1', 'i2', 'mine too');
+		keepRefusedRawDraft('u2', 'i1', 'theirs');
+	});
+
+	it('nothing at risk: purged without a question', async () => {
+		await expect(confirmSignOut()).resolves.toBe(true);
+		expect(readRefusedRawDraft('u1', 'i1')).toBeNull();
+		expect(readRefusedRawDraft('u1', 'i2')).toBeNull();
+		expect(readRefusedRawDraft('u2', 'i1')?.markdown).toBe('theirs');
+	});
+
+	it('at risk, confirm: purged', async () => {
+		const off = registerSignOutGuard({ atRisk: () => true, discard: () => {} });
+		const answer = confirmSignOut();
+		confirmDialog.confirm();
+		await answer;
+		expect(readRefusedRawDraft('u1', 'i1')).toBeNull();
+		expect(readRefusedRawDraft('u2', 'i1')?.markdown).toBe('theirs');
+		off();
+	});
+
+	it('at risk, Cancel: nothing purged', async () => {
+		const off = registerSignOutGuard({ atRisk: () => true, discard: () => {} });
+		const answer = confirmSignOut();
+		confirmDialog.cancel();
+		await answer;
+		expect(readRefusedRawDraft('u1', 'i1')?.markdown).toBe('mine');
+		off();
 	});
 });

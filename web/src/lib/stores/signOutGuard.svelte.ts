@@ -9,7 +9,14 @@
 // keeps nothing (no kept draft, no unload save, no second prompt), because
 // logout navigates away BEFORE the identity changes, and that unload would
 // otherwise ask again and save or keep the text on a shared machine.
+//
+// Part 2: any explicit sign-out also purges every draft this browser kept for
+// the user (refusedRawDraft), on every item, not only the open ones: kept
+// drafts now include text kept when the user was signed out under it, and an
+// explicit sign-out leaves nothing of theirs on the device.
 import { confirmDialog } from './confirmDialog.svelte';
+import { authStore } from './auth.svelte';
+import { purgeRefusedRawDraftsForUser } from '$lib/items/refusedRawDraft';
 
 export interface SignOutGuardSource {
 	atRisk: () => boolean;
@@ -45,11 +52,15 @@ export function registerSignOutGuard(source: SignOutGuardSource): () => void {
 /**
  * Whether signing out may go ahead. Asks only when an open item holds edits
  * at risk; Cancel is the dialog's default. On a confirm every at-risk item
- * discards its edits before this answers true.
+ * discards its edits before this answers true, and whenever it answers true
+ * the user's kept drafts are purged (part 2).
  */
 export async function confirmSignOut(): Promise<boolean> {
 	const atRisk = [...sources].filter((s) => s.atRisk());
-	if (atRisk.length === 0) return true;
+	if (atRisk.length === 0) {
+		purgeRefusedRawDraftsForUser(authStore.userId);
+		return true;
+	}
 	const ok = await confirmDialog.request({
 		title: 'Sign out and discard unsaved edits?',
 		message:
@@ -61,6 +72,7 @@ export async function confirmSignOut(): Promise<boolean> {
 	if (ok) {
 		discarding = true;
 		for (const s of atRisk) s.discard();
+		purgeRefusedRawDraftsForUser(authStore.userId);
 	}
 	return ok;
 }

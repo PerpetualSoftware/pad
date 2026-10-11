@@ -104,6 +104,7 @@ import type {
 	ArchivedCollection,
 	CollectionFieldUsage
 } from '$lib/types';
+import { runSessionExpiryKeepers } from '$lib/stores/sessionExpiryKeep';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
 import { uploadImportBundle } from './importUpload';
@@ -749,6 +750,17 @@ function getCSRFToken(): string | null {
 }
 
 /**
+ * The session-expiry redirect every 401 below takes. It runs the open items'
+ * keepers first (BUG-3571 part 2): the redirect does not change the identity
+ * epoch, so nothing else keeps the signed-out user's unsaved text, and the
+ * unload flush that follows goes out on a dead session.
+ */
+function redirectToLogin(href: string): void {
+	runSessionExpiryKeepers();
+	window.location.href = href;
+}
+
+/**
  * Endpoints hit only from explicit, unauthenticated auth-form submissions
  * (login, register, 2FA challenge). A 401 from these means "the
  * credentials/code the user just typed were wrong", not "your session
@@ -1016,7 +1028,7 @@ async function requestAttempt<T>(
 		// `?redirect=` (see $lib/auth/redirect.ts).
 		if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
 			const target = window.location.pathname + window.location.search;
-			window.location.href = `/login?redirect=${encodeURIComponent(target)}`;
+			redirectToLogin(`/login?redirect=${encodeURIComponent(target)}`);
 		}
 		throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 	}
@@ -1546,7 +1558,7 @@ export const api = {
 			});
 			if (resp.status === 401) {
 				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-					window.location.href = '/login';
+					redirectToLogin('/login');
 				}
 				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 			}
@@ -2988,7 +3000,7 @@ export const api = {
 			});
 			if (resp.status === 401) {
 				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-					window.location.href = '/login';
+					redirectToLogin('/login');
 				}
 				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 			}
@@ -3113,7 +3125,7 @@ export const api = {
 			});
 			if (resp.status === 401) {
 				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-					window.location.href = '/login';
+					redirectToLogin('/login');
 				}
 				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 			}
@@ -3185,7 +3197,7 @@ export const api = {
 				);
 				if (resp.status === 401) {
 					if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-						window.location.href = '/login';
+						redirectToLogin('/login');
 					}
 					throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 				}
@@ -3419,7 +3431,7 @@ export const api = {
 		});
 		if (resp.status === 401) {
 			if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-				window.location.href = '/login';
+				redirectToLogin('/login');
 			}
 			throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 		}
@@ -3452,7 +3464,7 @@ export const api = {
 		});
 		if (resp.status === 401) {
 			if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-				window.location.href = '/login';
+				redirectToLogin('/login');
 			}
 			throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 		}
