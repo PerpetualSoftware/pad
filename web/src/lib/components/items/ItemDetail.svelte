@@ -13,6 +13,7 @@
 	import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { registerSignOutGuard, signOutDiscarding } from '$lib/stores/signOutGuard.svelte';
+	import { registerCrashDraftKeeper } from '$lib/items/crashDraft';
 	import { registerSessionExpiryKeeper } from '$lib/stores/sessionExpiryKeep';
 	import {
 		keepRefusedRawDraft,
@@ -6211,6 +6212,29 @@
 		if (md !== null) keepRefusedRawDraft(userId, ctx.itemId, md);
 	}
 
+	// TASK-3606: a crash-safe recovery draft. While this item holds edits the
+	// server may not have, its markdown is kept every couple of seconds, with
+	// the seq and body it was edited from, so a tab that dies outright (no
+	// unload prompt, no teardown flush) still offers them on the next open.
+	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string } | null {
+		if (!item) return null;
+		const base = { baseSeq: item.seq ?? 0, baseBody: item.content ?? '' };
+		if (rawContentSaver.dirty && rawContentSaver.pending !== null) return { markdown: rawContentSaver.pending, ...base };
+		const ctx = activeCollabContext;
+		if (!ctx || ctx.retired || ctx.itemId !== item.id) return null;
+		const md = collabFlusher.snapshot(ctx);
+		return md === null ? null : { markdown: md, ...base };
+	}
+	$effect(() => {
+		return registerCrashDraftKeeper({
+			userId: () => authStore.userId,
+			itemId: () => item?.id ?? null,
+			atRisk: () => (collabProvider?.editsAtRiskOnClose ?? false) || (rawContentSaver.dirty && !!item),
+			snapshot: crashDraftSnapshot,
+			discarding: signOutDiscarding,
+		});
+	});
+
 	// The session-expiry redirect does not move the identity, so the user the
 	// text belongs to is still the signed-in one (BUG-3571 part 2).
 	$effect(() => {
@@ -7210,6 +7234,7 @@
 					<RefusedRawDraftNotice
 						savedAt={refusedDraft.savedAt}
 						busy={refusedDraftBusy}
+						newer={refusedDraft.baseSeq !== undefined && (item?.seq ?? 0) > refusedDraft.baseSeq}
 						onrestore={restoreRefusedDraft}
 						oncopy={copyRefusedDraft}
 						ondismiss={discardRefusedDraft}
