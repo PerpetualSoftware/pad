@@ -1,7 +1,7 @@
 // The form an OPEN rich tab stores for markdown a raw save sent (BUG-3540).
 //
 // With a rich tab open, a raw save goes through that tab: the applier runs
-// `editor.commands.setContent(markdown)` and the tab's next collab flush stores
+// `editor.commands.setContent(toEditorMarkdown(markdown))` and the tab's next collab flush stores
 // `flushPipeline(getMarkdown(), localIndex)`. That is the BUG-2995 round trip,
 // which rewrites bullets, emphasis and blank lines, so the stored body is our
 // text in the editor's form, not byte for byte. Measured: '* one' lines beside
@@ -33,6 +33,11 @@ function load() {
 }
 
 /** The stored forms an open rich tab would write for each of `texts`. */
+/**
+ * `texts` are what the applier hands setContent: already converted by
+ * toEditorMarkdown (BUG-3582), since an open tab receives `[[REF]]` as a
+ * link, not as text. The result is in the same order.
+ */
 export async function openTabForms(texts: readonly string[], index: readonly LinkEntry[]): Promise<string[]> {
 	let loaded;
 	try {
