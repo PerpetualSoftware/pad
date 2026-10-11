@@ -67,6 +67,15 @@ describe('BUG-3584: block markers after a hard break', () => {
 			if (marker !== '>' && marker !== '*') expect(r.md, marker).not.toContain('\\' + marker.slice(-1) + '**');
 		}
 	});
+	// A number split across nodes: the mark's delimiters sit between them
+	// (`1**2. item**`), so no ordered marker forms, before or after BUG-3600.
+	it('a number split across a mark boundary opens no list', () => {
+		for (const [a, b] of [['1', '2. item'], ['1', '2) item'], ['12', '. item']]) {
+			const r = roundTrip(ed, split(a, b));
+			expect(r.same, `${a}|${b}: ${r.md}`).toBe(true);
+		}
+	});
+
 	it('control: a marker followed by marked text after a space still stays text', () => {
 		for (const marker of ['-', '#', '1.']) {
 			const r = roundTrip(ed, split(marker, ' item'));
