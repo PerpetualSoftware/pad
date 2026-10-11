@@ -27,6 +27,16 @@ test('rich text typed under an expiring session is kept and offered back', async
 
 	const ctx = await browser.newContext();
 	const page = await ctx.newPage();
+	// The redirect raises the unsaved-changes prompt (the editor still holds
+	// text the server does not have). It is DISMISSED here: the keepers run
+	// before the navigation starts, so the keep is read on the page as it
+	// stands, and Playwright's answer to a prompt on a leaving page races the
+	// navigation. The offer is then read from a fresh page.
+	let prompts = 0;
+	page.on('dialog', (d) => {
+		prompts++;
+		d.dismiss().catch(() => {});
+	});
 	let cut = false;
 	let sockets = 0;
 	await page.routeWebSocket(/\/api\/v1\/collab\//, (ws) => {
@@ -71,21 +81,37 @@ test('rich text typed under an expiring session is kept and offered back', async
 	await page.keyboard.press('Control+End');
 	await page.keyboard.type(' Typed after the socket died.');
 
-	// The idle flush (5s) PATCHes, meets the 401, and the client sends the
-	// tab to /login.
-	await page.waitForURL(/\/login/, { timeout: SYNC_TIMEOUT });
-	expect(expired, 'premise: the redirect came from the expired PATCH').toBeGreaterThan(0);
-	const kept = await page.evaluate((key) => localStorage.getItem(key), `pad:refused-raw-draft:${me.id}:${doc.id}`);
-	expect(kept, 'the text must be kept under its author').not.toBeNull();
-	expect((JSON.parse(kept!) as { markdown: string }).markdown).toContain('Typed after the socket died.');
+	// The idle flush (5s) PATCHes, meets the 401, and the client runs the
+	// keepers and sends the tab to /login.
+	const key = `pad:refused-raw-draft:${me.id}:${doc.id}`;
+	await expect.poll(() => expired, { timeout: SYNC_TIMEOUT, message: 'premise: a content PATCH met the expiry' }).toBeGreaterThan(0);
+	await expect
+		.poll(() => page.evaluate((k) => localStorage.getItem(k), key), { timeout: SYNC_TIMEOUT, message: 'the text must be kept under its author' })
+		.not.toBeNull();
+	const kept = (await page.evaluate((k) => localStorage.getItem(k), key))!;
+	expect((JSON.parse(kept) as { markdown: string }).markdown).toContain('Typed after the socket died.');
 	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${doc.id}`, { headers: authJson(fixture) })).json()) as { content: string };
 	expect(stored.content, 'premise: the server never got it').not.toContain('Typed after the socket died.');
 
-	// The author comes back (the session is still valid here) and is offered it.
-	cut = false;
-	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${doc.ref}`);
-	const notice = page.getByTestId('refused-raw-draft');
+	// Now the session REALLY ends: the old page's teardown flush on close is a
+	// keepalive request that page.route does not see, so only the server can
+	// refuse it, as it does on a real expiry.
+	const loggedOut = await page.evaluate(async () => {
+		const m = document.cookie.match(/(?:^|;\s*)(?:__Host-)?pad_csrf=([^;]+)/);
+		const r = await fetch('/api/v1/auth/logout', { method: 'POST', headers: m ? { 'X-CSRF-Token': m[1] } : {} });
+		return r.status;
+	});
+	expect(loggedOut, 'premise: the session is revoked').toBeLessThan(300);
+	await page.close({ runBeforeUnload: false });
+
+	// The author signs back in, opens the item, and is offered the text.
+	const again = await ctx.newPage();
+	await browserLogin(again);
+	await again.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${doc.ref}`);
+	const notice = again.getByTestId('refused-raw-draft');
 	await expect(notice).toBeVisible({ timeout: SYNC_TIMEOUT });
+	const after = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${doc.id}`, { headers: authJson(fixture) })).json()) as { content: string };
+	expect(after.content, 'premise: still not on the server, so the offer is the only copy').not.toContain('Typed after the socket died.');
 	expect(sockets).toBeGreaterThan(0);
 	await ctx.close();
 });
