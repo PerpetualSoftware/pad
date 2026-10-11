@@ -436,6 +436,26 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if hasSeq {
 		payload["expected_seq"] = seq
 	}
+	// PLAN-3555: the deliberate-overwrite opt-out, forwarded only when true.
+	// With a token it contradicts itself, refused here as the CLI refuses
+	// --replace with --expected-seq, so both transports answer the same.
+	if b, ok := input["replace"].(bool); ok && b {
+		if hasSeq || input["expected_updated_at"] != nil {
+			return NewErrorResult(ErrorPayload{
+				Code:    ErrValidationFailed,
+				Message: "replace conflicts with expected_seq and expected_updated_at: a token guards the write, replace says it is deliberately unguarded",
+				Hint:    "Send expected_seq to guard the write, or replace=true to overwrite on purpose, not both.",
+			}), nil
+		}
+		if _, hasContent := payload["content"]; !hasContent {
+			return NewErrorResult(ErrorPayload{
+				Code:    ErrValidationFailed,
+				Message: "replace applies to a content write",
+				Hint:    "Send replace=true together with content, or drop it.",
+			}), nil
+		}
+		payload["replace"] = true
+	}
 	// BUG-3133: lifts the content_pending_flush refusal. Forwarded only when
 	// true, like force, so a caller that never sends it sends nothing new.
 	if b, ok := input["overwrite_pending_edits"].(bool); ok && b {

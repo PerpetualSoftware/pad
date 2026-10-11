@@ -1014,6 +1014,9 @@ func classifyHTTPStatusKind(
 					hint = ContentSetAsideHint
 				}
 			}
+			if upstream.Code == string(ErrUpdateConflict) && contentWriteIn(upstream.Details) {
+				hint = UpdateConflictContentHint
+			}
 			if upstream.Code == string(ErrCommentHasReplies) {
 				// Retrying refuses identically until the replies are gone.
 				hint = CommentHasRepliesHint
@@ -1388,6 +1391,13 @@ const LeaseHeldHint = "Another holder (details.holder) has claimed this item unt
 const ContentPendingFlushHint = "Re-reading will not clear this: the stored item is unchanged until the open editor saves its edits. " +
 	"Wait for that and re-read, or resend with overwrite_pending_edits=true to replace them."
 
+// UpdateConflictContentHint replaces the generic re-read-and-retry hint on an
+// update_conflict whose details carry content_write (PLAN-3555): a resent body
+// would undo the change the caller missed. Duplicated in internal/cli, whose
+// marker carries it on stdio; a test asserts the two match.
+const UpdateConflictContentHint = "Do not resend your body: it would undo the change you missed. " +
+	"Re-read the item, apply your edit to the CURRENT content, and send that with expected_seq set to the seq you just read."
+
 // ContentSetAsideHint replaces ContentPendingFlushHint when the refusal is
 // about edits a collab schema-version rebuild set aside (BUG-3244,
 // details.set_aside_rows > 0). Waiting and re-reading cannot clear those: no
@@ -1395,6 +1405,16 @@ const ContentPendingFlushHint = "Re-reading will not clear this: the stored item
 // asserts the two match.
 const ContentSetAsideHint = "Re-reading will not clear this, and neither will waiting or opening the item: these edits were set aside by an editor upgrade and no editor will write them back. " +
 	"Read them with pad item set-aside <ref>, then resend with overwrite_pending_edits=true to discard them."
+
+// contentWriteIn reads content_write from an update_conflict's details
+// (PLAN-3555).
+func contentWriteIn(details json.RawMessage) bool {
+	var d struct {
+		ContentWrite bool `json:"content_write"`
+	}
+	_ = json.Unmarshal(details, &d)
+	return d.ContentWrite
+}
 
 // setAsideRowsIn reads set_aside_rows from a refusal's details (BUG-3244).
 func setAsideRowsIn(details json.RawMessage) int {
