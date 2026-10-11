@@ -1589,6 +1589,10 @@ type ItemUpdate struct {
 	// ServerSupportsItemFieldAppend.
 	AppendImplementationNote *ItemImplementationNoteAppend `json:"append_implementation_note,omitempty"`
 	AppendDecision           *ItemDecisionLogAppend        `json:"append_decision,omitempty"`
+	// OpKey is an idempotency key for an APPEND-ONLY update (TASK-3585):
+	// append_implementation_note and/or append_decision, plus source. Any
+	// other member alongside it is refused 400. Not part of the request hash.
+	OpKey string `json:"op_key,omitempty"`
 
 	// ImplementationNoteToAppend / DecisionToAppend are the MINTED entries
 	// the handler builds from the two request members above, for the store

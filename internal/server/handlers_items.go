@@ -1550,6 +1550,34 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// write's last_modified_by below, or an in-process caller's label (see
 	// WithStructuredEntryAuthor) — so a caller supplies only the text and
 	// cannot write an entry the extractor would not decode.
+	// TASK-3585: an idempotency key on this route covers appends only. A key
+	// on any other update would promise a replay this handler cannot give.
+	// The built-in and patch callers (b != nil) carry their own key.
+	var appendHold *idemHold
+	if b == nil {
+		key, kerr := idempotencyKey(r, input.OpKey)
+		if kerr != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", kerr.Error())
+			return
+		}
+		if key != "" {
+			if !isAppendOnlyUpdate(input) {
+				writeError(w, http.StatusBadRequest, "bad_request",
+					"an idempotency key on an item update is accepted only with append_implementation_note and/or append_decision (and source)")
+				return
+			}
+			canon := input
+			canon.OpKey = ""
+			hold, ok := s.claimKey(w, r, workspaceID, idempotencyRouteAppend, item.ID, canon, key, func(status int, stored string) {
+				s.replayAppend(w, r, updateVisIDs, status, stored)
+			})
+			if !ok {
+				return
+			}
+			appendHold = hold
+			defer s.release(hold)
+		}
+	}
 	if input.AppendImplementationNote != nil || input.AppendDecision != nil {
 		if input.Fields != nil {
 			writeError(w, http.StatusBadRequest, "bad_request",
@@ -1575,6 +1603,13 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 				CreatedAt: mintedAt,
 				CreatedBy: appendActor,
 			}
+		}
+	}
+	if appendHold != nil {
+		answer := appendedAnswer{Note: input.ImplementationNoteToAppend, Decision: input.DecisionToAppend}
+		input.AfterWriteTx = func(tx *sql.Tx, updated *models.Item) error {
+			answer.ItemID = updated.ID
+			return s.completeTx(appendHold, http.StatusOK, answer)(tx)
 		}
 	}
 

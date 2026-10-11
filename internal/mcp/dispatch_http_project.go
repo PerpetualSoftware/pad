@@ -496,6 +496,8 @@ func (d *HTTPHandlerDispatcher) dispatchItemNote(
 			Summary: strings.TrimSpace(summary),
 			Details: details,
 		},
+		// TASK-3585: the append's idempotency key, when the agent sent one.
+		OpKey: opKeyFrom(input),
 	})
 	if err != nil {
 		return dispatcherErrorResult(cmdKey, "encode body", err), nil
@@ -539,6 +541,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemDecide(
 			Decision:  strings.TrimSpace(decision),
 			Rationale: rationale,
 		},
+		OpKey: opKeyFrom(input),
 	})
 	if err != nil {
 		return dispatcherErrorResult(cmdKey, "encode body", err), nil
@@ -682,4 +685,10 @@ func (d *HTTPHandlerDispatcher) fetchLibraryEndpoint(
 		return nil, dispatcherErrorResult(cmdKey, "parse "+path, err)
 	}
 	return decoded, nil
+}
+
+// opKeyFrom is the agent's op_key, if any (TASK-3585).
+func opKeyFrom(input map[string]any) string {
+	k, _ := input["op_key"].(string)
+	return k
 }

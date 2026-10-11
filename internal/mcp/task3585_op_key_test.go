@@ -147,3 +147,27 @@ func TestTASK3585_MCPCommentOpKey(t *testing.T) {
 		t.Fatalf("%d comments; the retried comment made a twin", n)
 	}
 }
+
+// TASK-3585: op_key on note and decide rides to the server, so a retried
+// append answers the entry it made instead of appending twice.
+func TestTASK3585_MCPAppendOpKey(t *testing.T) {
+	f := newParentFixture(t)
+	ws, ref := f.workspace.Slug, f.child.Slug
+	for _, c := range []struct {
+		action string
+		in     map[string]any
+	}{
+		{"note", map[string]any{"workspace": ws, "ref": ref, "summary": "Keyed note", "op_key": "mcp-n"}},
+		{"decide", map[string]any{"workspace": ws, "ref": ref, "decision": "Keyed decision", "op_key": "mcp-d"}},
+	} {
+		first := f.dispatchResult2(t, []string{"item", c.action}, c.in)
+		second := f.dispatchResult2(t, []string{"item", c.action}, c.in)
+		if first.IsError || second.IsError {
+			t.Fatalf("%s: %s / %s", c.action, textOf(first), textOf(second))
+		}
+	}
+	got, _ := f.store.GetItem(f.child.ID)
+	if n, d := len(models.ExtractItemImplementationNotes(got.Fields)), len(models.ExtractItemDecisionLog(got.Fields)); n != 1 || d != 1 {
+		t.Fatalf("notes=%d decisions=%d; a retried append made a twin", n, d)
+	}
+}

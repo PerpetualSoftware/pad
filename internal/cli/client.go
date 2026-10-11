@@ -447,7 +447,15 @@ func (c *Client) GetItem(wsSlug, itemSlug string) (*models.Item, error) {
 
 func (c *Client) UpdateItem(wsSlug, itemSlug string, input models.ItemUpdate) (*models.Item, error) {
 	var result models.Item
-	if err := c.patch("/workspaces/"+wsSlug+"/items/"+itemSlug, input, &result); err != nil {
+	path := "/workspaces/" + wsSlug + "/items/" + itemSlug
+	err := c.patch(path, input, &result)
+	// TASK-3585: a keyed update (an append) is retried once with the same
+	// key, behind the same capability gate as create and comment.
+	if err != nil && input.OpKey != "" && retryableWithKey(err) && c.serverHonorsKeys() {
+		result = models.Item{}
+		err = c.patch(path, input, &result)
+	}
+	if err != nil {
 		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
 	}
 	return &result, nil
