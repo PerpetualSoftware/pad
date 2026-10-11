@@ -30,6 +30,9 @@ type pushRequest struct {
 	// silently dropping a field this response documents at length. It
 	// still never SENDS target_session_id.
 	TargetSessionID string `json:"target_session_id,omitempty"`
+	// OpKey is the push's idempotency key in the body (TASK-3585). Not part
+	// of the request hash.
+	OpKey string `json:"op_key,omitempty"`
 }
 
 // pushResponse is the body of a successful push (dispatcher review round
@@ -333,6 +336,31 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 			"item_ref", item.Ref, "error", presenceErr)
 		deliveredSessionsUnknown = true
 	}
+
+	// TASK-3585: an idempotency key, claimed after every refusal above and
+	// before the publish. Push writes no row, so its answer cannot commit
+	// with it: the key is completed AFTER the publish, outside any
+	// transaction. A crash in between lets the lease expire and a retry
+	// publish again, which is why every publish carries a push_id derived
+	// from the key: a monitor that has printed it drops the repeat.
+	key, kerr := idempotencyKey(r, input.OpKey)
+	if kerr != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", kerr.Error())
+		return
+	}
+	hold, ok := s.claimKey(w, r, workspaceID, idempotencyRoutePush, item.ID,
+		pushRequest{Message: message, TargetSessionID: targetSessionID}, key,
+		func(status int, stored string) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(stored))
+		})
+	if !ok {
+		return
+	}
+	defer s.release(hold)
+	pushID := pushIDFor(workspaceID, userID, key)
+
 	if targetSessionID == "" || deliveredSessions > 0 {
 		// The ONE direct Bus.Publish call in this package, and the only
 		// one that acts on the result (BUG-2699 — see
@@ -346,6 +374,7 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 		// instruction is gone, and the caller is the only one who can do
 		// anything about that.
 		if err := s.watchEvents.Publish(watchevents.Notification{
+			PushID:          pushID,
 			WorkspaceID:     workspaceID,
 			ItemID:          item.ID,
 			CollectionID:    item.CollectionID,
@@ -357,6 +386,13 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 			TargetUserID:    userID,
 			TargetSessionID: targetSessionID,
 		}); err != nil {
+			// An unconfirmed publish may have delivered: the key records
+			// that, so a same-key retry answers 409 push_outcome_unknown
+			// instead of delivering a second time. A closed bus published
+			// nothing, and the deferred release frees the key.
+			if hold != nil && !errors.Is(err, watchevents.ErrBusClosed) {
+				s.completeKey(hold, http.StatusConflict, pushOutcomeUnknownEnvelope(item.Ref))
+			}
 			writePushPublishError(w, err, item.Ref)
 			return
 		}
@@ -370,6 +406,9 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if !deliveredSessionsUnknown {
 		resp.DeliveredSessions = &deliveredSessions
+	}
+	if hold != nil {
+		s.completeKey(hold, http.StatusOK, resp)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

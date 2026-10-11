@@ -641,9 +641,27 @@ type PushResult struct {
 // --stream --for-session` consumes. Transient, fire-and-forget — see
 // server.handlePushToItem's doc comment for the no-durability rationale.
 func (c *Client) PushItem(wsSlug, itemSlug, message string) (*PushResult, error) {
+	return c.PushItemKeyed(wsSlug, itemSlug, message, "")
+}
+
+// PushItemKeyed is PushItem with an idempotency key (TASK-3585). With a key
+// it retries once with that key after a transport error or a 5xx, and only
+// against a server that advertises idempotency_keys: there the retry
+// answers the first push (or 409 push_outcome_unknown when that push could
+// not be confirmed) instead of delivering it again.
+func (c *Client) PushItemKeyed(wsSlug, itemSlug, message, opKey string) (*PushResult, error) {
 	body := map[string]string{"message": message}
+	if opKey != "" {
+		body["op_key"] = opKey
+	}
+	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/push"
 	var result PushResult
-	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/push", body, &result)
+	err := c.post(path, body, &result)
+	if err != nil && opKey != "" && retryableWithKey(err) && c.serverHonorsKeys() {
+		result = PushResult{}
+		err = c.post(path, body, &result)
+	}
+	return &result, err
 }
 
 // ListWatches returns every watch the current user holds, across all

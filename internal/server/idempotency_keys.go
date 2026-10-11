@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+
+	"github.com/google/uuid"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -51,10 +54,8 @@ func (s *Server) claimKey(w http.ResponseWriter, r *http.Request, workspaceID, r
 	if key == "" {
 		return nil, true
 	}
-	body, _ := json.Marshal(canon)
-	sum := sha256.Sum256([]byte(route + "\x00" + scope + "\x00" + string(body)))
 	userID := currentUserID(r)
-	c, err := s.store.ClaimIdempotencyKey(workspaceID, userID, key, route, hex.EncodeToString(sum[:]), idempotencyLease)
+	c, err := s.store.ClaimIdempotencyKey(workspaceID, userID, key, route, idemRequestHash(route, scope, canon), idempotencyLease)
 	if err != nil {
 		writeInternalError(w, err)
 		return nil, false
@@ -149,3 +150,54 @@ func (s *Server) replayAppend(w http.ResponseWriter, r *http.Request, visIDs []s
 // request hash. Its answer is the whole first ItemCopyResult: the warnings
 // it carries (dropped fields, attachments cloned) cannot be recomputed later.
 const idempotencyRouteCopy = "item.copy"
+
+// idempotencyRoutePush names the push route in a key's request hash.
+const idempotencyRoutePush = "item.push"
+
+// pushOutcomeUnknownCode answers a same-key retry of a push whose publish
+// could not be confirmed (TASK-3585): it may have been delivered, so it is
+// not published again.
+const pushOutcomeUnknownCode = "push_outcome_unknown"
+
+// pushOutcomeUnknownEnvelope is the stored answer for that retry, in the
+// API's error envelope.
+func pushOutcomeUnknownEnvelope(ref string) any {
+	return map[string]any{"error": map[string]any{
+		"code": pushOutcomeUnknownCode,
+		"message": "An earlier push with this key could not be confirmed; it may or may not have been delivered, so it is not sent again. " +
+			"Check your agent session; to send it anyway, use a NEW key.",
+		"details": map[string]any{"ref": ref},
+	}}
+}
+
+// completeKey records an answer for a write that has no transaction of its
+// own (push). A failure is logged, not returned: the write already
+// happened, and the push_id still lets a monitor drop a re-publish.
+func (s *Server) completeKey(h *idemHold, status int, answer any) {
+	b, err := json.Marshal(answer)
+	if err == nil {
+		err = s.store.CompleteIdempotencyKey(h.workspaceID, h.userID, h.key, h.token, status, string(b))
+	}
+	if err != nil {
+		slog.Warn("idempotency key not completed after a write with no transaction", "key", h.key, "error", err)
+	}
+}
+
+// pushIDFor is the push_id a publish carries (TASK-3585). With a key it is
+// derived from (workspace, user, key), so a re-publish after a claim
+// takeover carries the same id; without one it is fresh.
+func pushIDFor(workspaceID, userID, key string) string {
+	if key == "" {
+		return uuid.NewString()
+	}
+	sum := sha256.Sum256([]byte(workspaceID + "\x00" + userID + "\x00" + key))
+	return "push_" + hex.EncodeToString(sum[:16])
+}
+
+// idemRequestHash is the request half of a key's identity: the route, its
+// scope (the item) and the canonical request body.
+func idemRequestHash(route, scope string, canon any) string {
+	body, _ := json.Marshal(canon)
+	sum := sha256.Sum256([]byte(route + "\x00" + scope + "\x00" + string(body)))
+	return hex.EncodeToString(sum[:])
+}

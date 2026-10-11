@@ -119,6 +119,20 @@ func (s *Store) CompleteIdempotencyKeyTx(tx *sql.Tx, workspaceID, userID, key, t
 	return nil
 }
 
+// CompleteIdempotencyKey is CompleteIdempotencyKeyTx for a write that has
+// no transaction of its own (push, TASK-3585), in a transaction of its own.
+func (s *Store) CompleteIdempotencyKey(workspaceID, userID, key, token string, status int, response string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.CompleteIdempotencyKeyTx(tx, workspaceID, userID, key, token, status, response); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ReleaseIdempotencyKey gives up a claim the write refused, so a corrected
 // retry with the same key can proceed (lead ruling: refusals are not
 // stored). A pending claim is deleted; an unknown one keeps its record and

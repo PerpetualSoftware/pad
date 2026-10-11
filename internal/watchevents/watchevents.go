@@ -145,7 +145,12 @@ const (
 type Notification struct {
 	// ID is a monotonic sequence number assigned by the Bus on Publish,
 	// used for Last-Event-ID resume. Zero until Publish assigns it.
-	ID          int64
+	ID int64
+	// PushID identifies one push across re-publishes (TASK-3585): for a
+	// keyed push it is derived from the key, so a re-publish after a claim
+	// takeover carries the same id and a monitor drops the repeat. Empty on
+	// every other kind.
+	PushID      string
 	WorkspaceID string
 	ItemID      string
 	// CollectionID is the watched/assigned item's collection, needed so

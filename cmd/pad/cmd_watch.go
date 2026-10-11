@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -67,7 +68,55 @@ type watchStreamPayload struct {
 	Kind      string `json:"kind"`
 	Actor     string `json:"actor"`
 	Summary   string `json:"summary"`
+	// PushID is set on a push (TASK-3585). A re-publish of the same push
+	// (a retry after a server crash) carries the same id; seenPushes drops it.
+	PushID string `json:"push_id,omitempty"`
 }
+
+// recentSet remembers ids for a bounded time and count, so the monitor can
+// drop a push it has already printed (TASK-3585). A monitor that predates
+// push_id prints every publish: at-least-once, as before.
+type recentSet struct {
+	mu    sync.Mutex
+	max   int
+	ttl   time.Duration
+	now   func() time.Time
+	order []string
+	at    map[string]time.Time
+}
+
+func newRecentSet(max int, ttl time.Duration) *recentSet {
+	return &recentSet{max: max, ttl: ttl, now: time.Now, at: map[string]time.Time{}}
+}
+
+// seen reports whether id was recorded within the window, and records it
+// when it was not.
+func (s *recentSet) seen(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	if t, ok := s.at[id]; ok && now.Sub(t) <= s.ttl {
+		return true
+	}
+	// Evict from the oldest end: anything past the ttl, and enough to make
+	// room for this one under max. An expired copy of id goes here too.
+	for len(s.order) > 0 {
+		oldest := s.order[0]
+		if len(s.order) < s.max && now.Sub(s.at[oldest]) <= s.ttl && oldest != id {
+			break
+		}
+		delete(s.at, oldest)
+		s.order = s.order[1:]
+	}
+	s.at[id] = now
+	s.order = append(s.order, id)
+	return false
+}
+
+// seenPushes is the monitor's memory of printed pushes: about the last 256,
+// for ten minutes. One monitor runs per process, so one set serves every
+// reconnect.
+var seenPushes = newRecentSet(256, 10*time.Minute)
 
 // formatMonitorLine renders one notification as the exact stdout-line
 // contract `pad watch --stream --for-session` promises (DOC-2479):
@@ -622,7 +671,8 @@ func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string) s
 				}
 				if data != "" {
 					var payload watchStreamPayload
-					if err := json.Unmarshal([]byte(data), &payload); err == nil {
+					if err := json.Unmarshal([]byte(data), &payload); err == nil &&
+						(payload.PushID == "" || !seenPushes.seen(payload.PushID)) {
 						fmt.Fprintln(w, formatMonitorLine(payload))
 						resyncAnnounced = false
 					}
