@@ -2306,6 +2306,7 @@ func (s *Server) setupRouter() {
 						// answer per question, each marked current or not.
 						// Read-only; evaluation happens off the write path.
 						r.Get("/decisions", s.handleListItemDecisions)
+						r.Get("/context", s.handleGetItemContext)
 					})
 
 					// Links (v2)
