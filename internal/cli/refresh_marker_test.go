@@ -109,7 +109,7 @@ func TestEnsureServer_WaitsForALiveRefreshInsteadOfSpawning(t *testing.T) {
 	if waited := time.Since(start); waited < 250*time.Millisecond {
 		t.Fatalf("returned after %v, before the restart was up", waited)
 	}
-	if !serverAnswers(cfg.Host, cfg.Port) {
+	if !serverResponds(cfg.Host, cfg.Port) {
 		t.Fatal("returned nil with nothing answering")
 	}
 }

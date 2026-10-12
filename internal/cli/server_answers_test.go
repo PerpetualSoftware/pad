@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/config"
 )
@@ -55,25 +56,59 @@ func TestEnsureServer_DoesNotSpawnOverAServerThatAnswersNon200(t *testing.T) {
 }
 
 // The other half: `pad server start` binds before it migrates, so a starting
-// server holds the port but answers nothing yet. A listener that never accepts
-// is that window exactly; the kernel still completes the connect from its
-// backlog. A probe that waited for an HTTP response timed out here and spawned
-// a second start, which then lost the bind.
-func TestEnsureServer_DoesNotSpawnOverAServerThatIsStillStarting(t *testing.T) {
+// server holds the port but answers nothing yet. A listener that has not begun
+// serving is that window exactly; the kernel still completes the connect from
+// its backlog. EnsureServer must neither spawn over it nor return before it
+// serves (the caller's request would sit in the backlog past the client's
+// 10s timeout during a long migration).
+func TestEnsureServer_WaitsForAServerStillStartingInsteadOfSpawning(t *testing.T) {
 	cfg, spawns := refreshTestConfig(t)
 	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port))
 	if err != nil {
 		t.Fatalf("listen on %d: %v", cfg.Port, err)
 	}
 	t.Cleanup(func() { _ = l.Close() })
+	if !IsServerRunning(cfg) {
+		t.Fatal("IsServerRunning = false for a bound port that has not started serving")
+	}
 
+	// Startup finishes while the CLI is waiting.
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})}
+	t.Cleanup(func() { _ = srv.Close() })
+	up := time.AfterFunc(1500*time.Millisecond, func() { _ = srv.Serve(l) })
+	defer up.Stop()
+
+	start := time.Now()
 	if err := EnsureServer(cfg); err != nil {
 		t.Fatalf("EnsureServer: %v", err)
 	}
 	if got := atomic.LoadInt32(spawns); got != 0 {
 		t.Fatalf("spawns = %d, want 0: a bound port is held even before it serves", got)
 	}
-	if !IsServerRunning(cfg) {
-		t.Fatal("IsServerRunning = false for a bound port that has not started serving")
+	if waited := time.Since(start); waited < 1400*time.Millisecond {
+		t.Fatalf("returned after %v, before the server was serving", waited)
+	}
+}
+
+// A holder that never serves is refused, not spawned over, once the wait runs
+// out.
+func TestEnsureServer_RefusesRatherThanSpawnsOverAPortThatNeverServes(t *testing.T) {
+	cfg, spawns := refreshTestConfig(t)
+	orig := startupWait
+	startupWait = 1500 * time.Millisecond
+	t.Cleanup(func() { startupWait = orig })
+	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port))
+	if err != nil {
+		t.Fatalf("listen on %d: %v", cfg.Port, err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	if err := EnsureServer(cfg); err == nil {
+		t.Fatal("EnsureServer returned nil with a holder that never served")
+	}
+	if got := atomic.LoadInt32(spawns); got != 0 {
+		t.Fatalf("spawns = %d, want 0", got)
 	}
 }

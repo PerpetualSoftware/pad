@@ -109,7 +109,7 @@ func awaitRefresh(cfg *config.Config) error {
 		return nil
 	}
 	for {
-		if serverAnswers(cfg.Host, cfg.Port) {
+		if serverResponds(cfg.Host, cfg.Port) {
 			return nil
 		}
 		time.Sleep(refreshPoll)
