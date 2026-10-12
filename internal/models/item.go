@@ -612,7 +612,11 @@ func (item *Item) ComputeRef() {
 // user), and the lease is live iff ExpiresAt is in the future. Expired
 // leases are never returned — expiry is absence.
 type ItemLease struct {
-	Holder     string    `json:"holder"`
+	Holder string `json:"holder"`
+	// Worker is the SHORT form of the holder's worker id ("wk_3f2a",
+	// TASK-3613), empty for a name-only lease. Display only: the full id
+	// is never returned on a read.
+	Worker     string    `json:"worker,omitempty"`
 	AcquiredAt time.Time `json:"acquired_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
 }

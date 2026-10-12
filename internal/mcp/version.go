@@ -1738,6 +1738,17 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.97 — TASK-3613, lease worker id. ADDITIVE bump on the v0.53
+//     grounds: new optional `worker_id` on `pad_item` (claim, release)
+//     and `pad_project` (next, ready). A lease is held under a worker id
+//     plus the account; the holder label is display only. A remote
+//     call's default worker id is derived from the account and its MCP
+//     session, a claim answers with it, and passing it back resumes the
+//     lease from another connection; a malformed one is refused
+//     validation_failed. The remote default holder label drops BUG-2772's
+//     "#xxxxxxxx" suffix. `lease_held` details gain `worker` (short id).
+//     No name, enum or existing param moved.
+//
 //     0.96 — PLAN-3598 slice (c). ADDITIVE bump on the v0.53 grounds:
 //     `pad_item.action=context` (read-only) returns one brief for working
 //     an item, the body of GET /items/{ref}/context, with new optional
@@ -2158,7 +2169,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.96"
+const ToolSurfaceVersion = "0.97"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

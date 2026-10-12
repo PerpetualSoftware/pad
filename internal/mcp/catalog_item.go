@@ -203,8 +203,9 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "reminder_id", Type: "string", Description: "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required for: ack-reminder, unremind. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not."},
 
 	// ── Execution lease ── (#1221)
-	{Name: "holder", Type: "string", Description: "Lease holder for action=claim/release. Optional — defaults to your agent name, else the account's email (remote /mcp: the email). Set it only for a runner with no agent name (e.g. \"sweep-runner-2\"); next/ready compare against the default, so a custom holder's items leave your own next/ready."},
-	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"). Optional — server default 15m, max 24h. Whole seconds cross the wire: minimum 1s (shorter is refused), fractional seconds truncate. A re-claim by the live holder extends the expiry from now (heartbeat); size the TTL to your polling/heartbeat cadence, not to the whole job."},
+	{Name: "holder", Type: "string", Description: "Lease holder label for action=claim/release. Optional; defaults to your agent name. Display only with a worker_id."},
+	{Name: "worker_id", Type: "string", Description: "Your lease worker id, as a claim answers it. Optional for: claim, release; pass it to resume your leases from a new connection."},
+	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"): default 15m, max 24h, minimum 1s (fractions truncate). Size it to your heartbeat cadence, not to the whole job."},
 
 	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import — this is the artifact a prior `export` produced. NOT the same as `content` (which is just the item's Markdown body)."},
 
@@ -462,8 +463,8 @@ Actions:
     Required: reminder_id (from reminders, or from the response
     when you armed it).
   claim         — Atomically claim an item for execution (lease with expiry).
-    Required: ref. Optional: holder (default: your agent name), ttl (Go
-    duration, default 15m, max 24h).
+    Required: ref. Optional: holder, worker_id, ttl (Go duration,
+    default 15m, max 24h). Answers with your worker_id.
     Exactly one concurrent claimer wins; the loser gets a 409
     naming the live holder and expiry — log it and skip, don't
     retry in a loop. Re-claim while you hold it to extend the
@@ -471,8 +472,8 @@ Actions:
     holder blocks nobody past the TTL, and there is no reaper
     to wait for.
   release       — Release an item's execution lease when you finish.
-    Required: ref. Optional: holder (must match the live
-    holder; releasing someone else's live lease is refused).
+    Required: ref. Optional: holder, worker_id (releasing someone
+    else's live lease is refused).
     Idempotent: releasing an absent or expired lease answers
     released:false with no error, so cleanup never needs to
     check first.

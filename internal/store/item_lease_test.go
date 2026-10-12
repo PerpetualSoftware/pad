@@ -25,7 +25,7 @@ func leaseFixture(t *testing.T) (*Store, string) {
 func TestClaimItemLease_UnclaimedSucceeds(t *testing.T) {
 	s, itemID := leaseFixture(t)
 
-	lease, err := s.ClaimItemLease(itemID, "sweep-runner", "", 15*time.Minute)
+	lease, err := s.ClaimItemLease(itemID, "sweep-runner", "", "", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -43,10 +43,10 @@ func TestClaimItemLease_UnclaimedSucceeds(t *testing.T) {
 func TestClaimItemLease_ContendedReturnsLeaseHeld(t *testing.T) {
 	s, itemID := leaseFixture(t)
 
-	if _, err := s.ClaimItemLease(itemID, "winner", "", 15*time.Minute); err != nil {
+	if _, err := s.ClaimItemLease(itemID, "winner", "", "", 15*time.Minute); err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
-	_, err := s.ClaimItemLease(itemID, "loser", "", 15*time.Minute)
+	_, err := s.ClaimItemLease(itemID, "loser", "", "", 15*time.Minute)
 	var held *LeaseHeldError
 	if !errors.As(err, &held) {
 		t.Fatalf("want LeaseHeldError, got %v", err)
@@ -71,7 +71,7 @@ func TestClaimItemLease_ConcurrentSingleWinner(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = s.ClaimItemLease(itemID, string(rune('a'+i)), "", 15*time.Minute)
+			_, errs[i] = s.ClaimItemLease(itemID, string(rune('a'+i)), "", "", 15*time.Minute)
 		}(i)
 	}
 	wg.Wait()
@@ -98,11 +98,11 @@ func TestClaimItemLease_ConcurrentSingleWinner(t *testing.T) {
 func TestClaimItemLease_HolderReclaimRefreshes(t *testing.T) {
 	s, itemID := leaseFixture(t)
 
-	first, err := s.ClaimItemLease(itemID, "holder", "", 100*time.Second)
+	first, err := s.ClaimItemLease(itemID, "holder", "", "", 100*time.Second)
 	if err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
-	second, err := s.ClaimItemLease(itemID, "holder", "", 30*time.Minute)
+	second, err := s.ClaimItemLease(itemID, "holder", "", "", 30*time.Minute)
 	if err != nil {
 		t.Fatalf("re-claim by holder must succeed: %v", err)
 	}
@@ -119,10 +119,10 @@ func TestClaimItemLease_HolderReclaimRefreshes(t *testing.T) {
 func TestClaimItemLease_ExpiredIsClaimable(t *testing.T) {
 	s, itemID := leaseFixture(t)
 
-	if _, err := s.ClaimItemLease(itemID, "crashed", "", -2*time.Second); err != nil {
+	if _, err := s.ClaimItemLease(itemID, "crashed", "", "", -2*time.Second); err != nil {
 		t.Fatalf("seed expired lease: %v", err)
 	}
-	lease, err := s.ClaimItemLease(itemID, "next", "", 15*time.Minute)
+	lease, err := s.ClaimItemLease(itemID, "next", "", "", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("claim over an expired lease must succeed: %v", err)
 	}
@@ -139,13 +139,13 @@ func TestGetItemLease_ExpiredReadsAsAbsent(t *testing.T) {
 	if lease, err := s.GetItemLease(itemID); err != nil || lease != nil {
 		t.Fatalf("unclaimed item: lease=%v err=%v, want nil,nil", lease, err)
 	}
-	if _, err := s.ClaimItemLease(itemID, "crashed", "", -2*time.Second); err != nil {
+	if _, err := s.ClaimItemLease(itemID, "crashed", "", "", -2*time.Second); err != nil {
 		t.Fatalf("seed expired lease: %v", err)
 	}
 	if lease, err := s.GetItemLease(itemID); err != nil || lease != nil {
 		t.Errorf("expired lease: lease=%v err=%v, want nil,nil", lease, err)
 	}
-	if _, err := s.ClaimItemLease(itemID, "live", "", 15*time.Minute); err != nil {
+	if _, err := s.ClaimItemLease(itemID, "live", "", "", 15*time.Minute); err != nil {
 		t.Fatalf("live claim: %v", err)
 	}
 	lease, err := s.GetItemLease(itemID)
@@ -161,17 +161,17 @@ func TestGetItemLease_ExpiredReadsAsAbsent(t *testing.T) {
 func TestReleaseItemLease_HolderReleases(t *testing.T) {
 	s, itemID := leaseFixture(t)
 
-	if _, err := s.ClaimItemLease(itemID, "holder", "", 15*time.Minute); err != nil {
+	if _, err := s.ClaimItemLease(itemID, "holder", "", "", 15*time.Minute); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	released, err := s.ReleaseItemLease(itemID, "holder", "")
+	released, err := s.ReleaseItemLease(itemID, "holder", "", "")
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if !released {
 		t.Error("release by the live holder should report released=true")
 	}
-	if _, err := s.ClaimItemLease(itemID, "someone-else", "", 15*time.Minute); err != nil {
+	if _, err := s.ClaimItemLease(itemID, "someone-else", "", "", 15*time.Minute); err != nil {
 		t.Errorf("item must be claimable after release: %v", err)
 	}
 }
@@ -181,17 +181,17 @@ func TestReleaseItemLease_HolderReleases(t *testing.T) {
 func TestReleaseItemLease_AbsentOrExpiredIsNoop(t *testing.T) {
 	s, itemID := leaseFixture(t)
 
-	released, err := s.ReleaseItemLease(itemID, "nobody", "")
+	released, err := s.ReleaseItemLease(itemID, "nobody", "", "")
 	if err != nil {
 		t.Fatalf("release on unclaimed item: %v", err)
 	}
 	if released {
 		t.Error("nothing to release — released should be false")
 	}
-	if _, err := s.ClaimItemLease(itemID, "crashed", "", -2*time.Second); err != nil {
+	if _, err := s.ClaimItemLease(itemID, "crashed", "", "", -2*time.Second); err != nil {
 		t.Fatalf("seed expired lease: %v", err)
 	}
-	if _, err := s.ReleaseItemLease(itemID, "someone-else", ""); err != nil {
+	if _, err := s.ReleaseItemLease(itemID, "someone-else", "", ""); err != nil {
 		t.Errorf("releasing over an expired foreign lease must be a no-op, got %v", err)
 	}
 }
@@ -201,10 +201,10 @@ func TestReleaseItemLease_AbsentOrExpiredIsNoop(t *testing.T) {
 func TestReleaseItemLease_ForeignLiveRefused(t *testing.T) {
 	s, itemID := leaseFixture(t)
 
-	if _, err := s.ClaimItemLease(itemID, "holder", "", 15*time.Minute); err != nil {
+	if _, err := s.ClaimItemLease(itemID, "holder", "", "", 15*time.Minute); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	_, err := s.ReleaseItemLease(itemID, "intruder", "")
+	_, err := s.ReleaseItemLease(itemID, "intruder", "", "")
 	var held *LeaseHeldError
 	if !errors.As(err, &held) {
 		t.Fatalf("want LeaseHeldError, got %v", err)
@@ -223,10 +223,10 @@ func TestListItemLeases_LiveOnly(t *testing.T) {
 	expired := createTestItem(t, s, ws.ID, col.ID, "expired item", "")
 	unclaimed := createTestItem(t, s, ws.ID, col.ID, "unclaimed item", "")
 
-	if _, err := s.ClaimItemLease(live.ID, "runner", "", 15*time.Minute); err != nil {
+	if _, err := s.ClaimItemLease(live.ID, "runner", "", "", 15*time.Minute); err != nil {
 		t.Fatalf("live claim: %v", err)
 	}
-	if _, err := s.ClaimItemLease(expired.ID, "crashed", "", -2*time.Second); err != nil {
+	if _, err := s.ClaimItemLease(expired.ID, "crashed", "", "", -2*time.Second); err != nil {
 		t.Fatalf("expired claim: %v", err)
 	}
 
@@ -245,5 +245,45 @@ func TestListItemLeases_LiveOnly(t *testing.T) {
 	}
 	if _, ok := leases[unclaimed.ID]; ok {
 		t.Error("unclaimed item appeared in the listing")
+	}
+}
+
+// TASK-3613: the store refuses a malformed worker id and a worker id with no
+// user before any SQL runs, on every lease path, and a worker-bound lease is
+// matched on worker id + user regardless of its label.
+func TestTASK3613_StoreWorkerIDRules(t *testing.T) {
+	s, itemID := leaseFixture(t)
+	const w = "wk_0123456789abcdef0123456789abcdef"
+
+	if _, err := s.ClaimItemLease(itemID, "rook", "wk_nothex", "u1", time.Hour); !errors.Is(err, ErrInvalidWorkerID) {
+		t.Errorf("malformed worker id on claim: err = %v, want ErrInvalidWorkerID", err)
+	}
+	if _, err := s.ClaimItemLease(itemID, "rook", w, "", time.Hour); !errors.Is(err, ErrWorkerIDWithoutUser) {
+		t.Errorf("worker id without a user on claim: err = %v, want ErrWorkerIDWithoutUser", err)
+	}
+	if _, err := s.ReleaseItemLease(itemID, "rook", w, ""); !errors.Is(err, ErrWorkerIDWithoutUser) {
+		t.Errorf("worker id without a user on release: err = %v, want ErrWorkerIDWithoutUser", err)
+	}
+	if _, err := s.ListForeignItemLeaseIDs("ws", "rook", "wk_nothex", "u1"); !errors.Is(err, ErrInvalidWorkerID) {
+		t.Errorf("malformed worker id on the queue filter: err = %v, want ErrInvalidWorkerID", err)
+	}
+
+	lease, err := s.ClaimItemLease(itemID, "rook", w, "u1", time.Hour)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if lease.Worker != "wk_0123" {
+		t.Errorf("lease.Worker = %q, want the short form wk_0123", lease.Worker)
+	}
+	// A refresh under another label is still ours: the label is display.
+	if _, err := s.ClaimItemLease(itemID, "renamed", w, "u1", time.Hour); err != nil {
+		t.Errorf("refresh under a new label: %v", err)
+	}
+	var held *LeaseHeldError
+	if _, err := s.ClaimItemLease(itemID, "renamed", "", "u1", time.Hour); !errors.As(err, &held) || held.Worker != "wk_0123" {
+		t.Errorf("name-only claim of a worker-bound lease under its label: err = %v, want LeaseHeldError with worker wk_0123", err)
+	}
+	if ok, err := s.ReleaseItemLease(itemID, "anything", w, "u1"); err != nil || !ok {
+		t.Errorf("release by worker id: ok=%v err=%v", ok, err)
 	}
 }

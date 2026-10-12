@@ -115,7 +115,7 @@ func appAPIFixtureOn(t *testing.T, access string, cloud bool) appAPIFix {
 	if _, err := srv.store.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: f.privateItem.ID, LinkType: "parent"}, f.item.ID); err != nil {
 		t.Fatalf("parent link: %v", err)
 	}
-	if _, err := srv.store.ClaimItemLease(f.item.ID, "someone", human.ID, time.Hour); err != nil {
+	if _, err := srv.store.ClaimItemLease(f.item.ID, "someone", "", human.ID, time.Hour); err != nil {
 		t.Fatalf("lease: %v", err)
 	}
 	f.comment, err = srv.store.CreateComment(ws.ID, f.item.ID, human.ID, models.CommentCreate{Body: "seen", Author: "Ada", CreatedBy: "user"})

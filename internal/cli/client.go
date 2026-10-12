@@ -34,6 +34,11 @@ type Client struct {
 	streamClient *http.Client
 	authToken    string // session or API token, sent as Authorization: Bearer
 	agentName    string // optional agent name, sent as X-Pad-Agent header
+	// workerOnce/workerID: the lease worker id sent as X-Pad-Worker
+	// (TASK-3613), resolved on the first request rather than at
+	// construction, since resolving it may mint one into the registry.
+	workerOnce sync.Once
+	workerID   string
 
 	// capMu guards the lazy, cached probe of GET /server/capabilities behind
 	// CollectionNotFoundIsAuthoritative and ServerSupportsItemFieldAppend.
@@ -2729,6 +2734,10 @@ func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request,
 	}
 	if c.agentName != "" {
 		req.Header.Set("X-Pad-Agent", c.agentName)
+	}
+	c.workerOnce.Do(func() { c.workerID = ResolveWorkerID() })
+	if c.workerID != "" {
+		req.Header.Set("X-Pad-Worker", c.workerID)
 	}
 	// Marks the CLI's sign-ins so the server issues a CLI session, which is
 	// never accepted as a browser cookie (BUG-3350).

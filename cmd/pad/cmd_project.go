@@ -206,12 +206,16 @@ func colorProgressBar(pct, width int, filledColor *color.Color) string {
 // --- next ---
 
 func nextCmd() *cobra.Command {
-	return &cobra.Command{
+	var workerIDFlag string
+	cmd := &cobra.Command{
 		Use:     "next",
 		Short:   "Recommend the next task to work on",
 		Example: `  pad project next`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
+			if err := applyWorkerID(client, workerIDFlag); err != nil {
+				return err
+			}
 			ws := getWorkspace()
 
 			dashJSON, err := client.GetDashboard(ws)
@@ -273,6 +277,8 @@ func nextCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addWorkerIDFlag(cmd, &workerIDFlag)
+	return cmd
 }
 
 // listCompletedWorkSince fetches items that reached a *positive* terminal

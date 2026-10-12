@@ -16,6 +16,7 @@ import (
 // structured refusal naming the live holder, instead of two winners.
 
 func itemClaimCmd() *cobra.Command {
+	var workerIDFlag string
 	var (
 		holderFlag string
 		ttlFlag    string
@@ -31,16 +32,17 @@ Fails with the live holder and expiry when someone else holds the item, so
 the loser can log who won and skip instead of double-working. The lease
 expires on its own; a crashed holder blocks nobody past the TTL.
 
-Without --holder the lease is held by this session's agent name (the name
-"pad session register" recorded, else .pad.toml's agent_name, else
-$PAD_AGENT, else the detected runtime), falling back to your account's
-email. So two agents on one account get distinct leases: the second one's
-claim is refused, naming the first. Register each session under its own
-name; two unregistered sessions of the same runtime share one name.
+The lease is held under this session's WORKER ID plus your account: an
+opaque id "pad session register" mints, kept across a /clear and new for
+each process, so two sessions get distinct leases even under one agent
+name. --worker-id (or $PAD_WORKER_ID) acts as a given id, e.g. to resume
+after a restart. An unregistered session sends none and is matched on its
+holder label, as before: two unregistered sessions of one runtime share a
+name, and a name-only claim of a worker-bound lease is refused.
 
-"pad project next" / "ready" leave out items another holder has leased.
-They compare against this same default, so an item you claimed with a
-custom --holder is left out of your own next / ready too.`,
+--holder is the display label (default: this session's agent name, else
+your account's email). "pad project next" / "ready" leave out items another
+worker has leased, by the same identity a claim uses.`,
 		Example: `  pad item claim TASK-5
   pad item claim TASK-5 --holder sweep-runner --ttl 30m`,
 		Args: cobra.ExactArgs(1),
@@ -65,6 +67,9 @@ custom --holder is left out of your own next / ready too.`,
 			}
 
 			client, _ := getClient()
+			if err := applyWorkerID(client, workerIDFlag); err != nil {
+				return err
+			}
 			ws := getWorkspace()
 
 			lease, err := client.ClaimItem(ws, args[0], holderFlag, ttlSeconds)
@@ -86,13 +91,15 @@ custom --holder is left out of your own next / ready too.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&holderFlag, "holder", "", "lease holder identity (default: this session's agent name, else your email). A custom holder's items are hidden from your own project next / ready")
+	cmd.Flags().StringVar(&holderFlag, "holder", "", "lease holder display label (default: this session's agent name, else your email); the lease is matched by worker id when this session has one")
 	cmd.Flags().StringVar(&ttlFlag, "ttl", "", "lease duration, e.g. 15m, 1h (default: 15m; max 24h)")
 
+	addWorkerIDFlag(cmd, &workerIDFlag)
 	return cmd
 }
 
 func itemReleaseCmd() *cobra.Command {
+	var workerIDFlag string
 	var holderFlag string
 
 	cmd := &cobra.Command{
@@ -106,6 +113,9 @@ holder's LIVE lease is refused.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
+			if err := applyWorkerID(client, workerIDFlag); err != nil {
+				return err
+			}
 			ws := getWorkspace()
 
 			released, err := client.ReleaseItem(ws, args[0], holderFlag)
@@ -127,7 +137,8 @@ holder's LIVE lease is refused.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&holderFlag, "holder", "", "lease holder identity (default: this session's agent name, else your email; must match the claim's)")
+	cmd.Flags().StringVar(&holderFlag, "holder", "", "lease holder display label (default: this session's agent name, else your email; a name-only lease must match the claim's)")
 
+	addWorkerIDFlag(cmd, &workerIDFlag)
 	return cmd
 }

@@ -67,6 +67,11 @@ type SessionRegistration struct {
 	// Empty is an anonymous session; it does not blank an environment-
 	// declared name on writes.
 	Agent string `json:"agent,omitempty"`
+	// WorkerID is this session's lease worker id (TASK-3613): "wk_" + 32
+	// hex, minted once per session process and sent as X-Pad-Worker, so two
+	// sessions under one name and account hold distinct leases. Kept when
+	// the same process re-registers (a /clear), new for a new process.
+	WorkerID string `json:"worker_id,omitempty"`
 	// RegistrarPID is the pid of the process that wrote the file (the
 	// `pad` command). Its JSON key is v1's "pid", kept for compatibility;
 	// it is informational — the OWNER is SessionOwner.PID.
@@ -164,37 +169,50 @@ func SessionsDir() (string, error) {
 // registration and returns ("", true); the caller decides that this does not
 // override an environment-declared name.
 func registeredAgentForThisSession() (string, bool) {
+	_, reg, ok := thisSessionRegistration()
+	if !ok {
+		return "", false
+	}
+	return reg.Agent, true
+}
+
+// thisSessionRegistration is the live registry record of the session this
+// process belongs to, with the path it was read from, under every check
+// registeredAgentForThisSession documents above; ok=false when there is none
+// we can trust.
+func thisSessionRegistration() (string, SessionRegistration, bool) {
+	var none SessionRegistration
 	owner, err := CaptureSessionOwner()
 	if err != nil {
-		return "", false
+		return "", none, false
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", false
+		return "", none, false
 	}
 	path := filepath.Join(home, ".pad", "sessions", fmt.Sprintf("%d.json", owner.PID))
 	data, err := readRegistryBytes(path)
 	if err != nil {
-		return "", false
+		return "", none, false
 	}
 	if !utf8.Valid(data) {
-		return "", false
+		return "", none, false
 	}
 	var reg SessionRegistration
 	if err := json.Unmarshal(data, &reg); err != nil || !registrationWellFormed(&reg) {
-		return "", false
+		return "", none, false
 	}
 	if reg.PID != owner.PID {
 		// v1 (legacy) records have no owner pid; they never carried a name.
-		return "", false
+		return "", none, false
 	}
 	if owner.ProcStart != "" && reg.ProcStart != owner.ProcStart {
 		// Includes the empty case: a token we can check and the record
 		// cannot supply is a record we cannot trust.
-		return "", false
+		return "", none, false
 	}
 	if OwnerLiveness(&reg.SessionOwner) != LivenessAlive {
-		return "", false
+		return "", none, false
 	}
 	// The owner must be THIS process or an ancestor, where the platform can
 	// say (codex round 2): a harness-supplied pid that is alive, token-matched
@@ -205,9 +223,9 @@ func registeredAgentForThisSession() (string, bool) {
 	// platform without ancestry (see proc_ancestry_other.go), so the check is
 	// re-run here and only a checked-and-wrong answer refuses.
 	if ok, err := pidIsSelfOrAncestor(owner.PID); err == nil && !ok {
-		return "", false
+		return "", none, false
 	}
-	return reg.Agent, true
+	return path, reg, true
 }
 
 // registryFileName matches registry records — and ONLY them. The same
@@ -246,16 +264,26 @@ func RegisterSession(cwd, agent string) (SessionRecord, error) {
 		// filename order. v1 wrote whole seconds; both parse as RFC3339.
 		RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	data, err := json.MarshalIndent(reg, "", "  ")
-	if err != nil {
-		return SessionRecord{}, fmt.Errorf("marshal session registration: %w", err)
-	}
 	unlock, err := lockSessionsDir(dir)
 	if err != nil {
 		return SessionRecord{}, fmt.Errorf("lock sessions directory: %w", err)
 	}
 	defer unlock()
 	path := filepath.Join(dir, fmt.Sprintf("%d.json", reg.PID))
+	// The worker id survives a re-registration by the SAME process (same
+	// pid and start token: a /clear re-runs register) and is new for a new
+	// process, even one that reuses the pid (TASK-3613). Read under the lock,
+	// so two registrations cannot mint two ids.
+	reg.WorkerID = keptWorkerID(path, owner)
+	if reg.WorkerID == "" {
+		if reg.WorkerID, err = MintWorkerID(); err != nil {
+			return SessionRecord{}, err
+		}
+	}
+	data, err := json.MarshalIndent(reg, "", "  ")
+	if err != nil {
+		return SessionRecord{}, fmt.Errorf("marshal session registration: %w", err)
+	}
 	if err := atomicWriteFile(path, data, 0600); err != nil {
 		return SessionRecord{}, fmt.Errorf("write session registration: %w", err)
 	}

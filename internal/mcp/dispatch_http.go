@@ -334,6 +334,20 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	// (no Lister wired) skip the injection entirely so behavior
 	// stays unchanged for them.
 	input = d.maybeInjectWorkspace(ctx, input)
+	// An explicit lease worker id (TASK-3613) overrides the session-derived
+	// one for this call: the resume path for a client that reconnected, or
+	// for a stateless client with no session to derive from. Validated here
+	// so a malformed one is refused on every action, not only on claim.
+	if w, _ := input["worker_id"].(string); w != "" {
+		if !models.ValidWorkerID(w) {
+			return NewErrorResult(ErrorPayload{
+				Code:    ErrValidationFailed,
+				Message: fmt.Sprintf("%s: worker_id must be \"wk_\" followed by 32 lowercase hex characters", cmdKey),
+				Hint:    "Pass the worker_id a claim answered with, or omit it.",
+			}), nil
+		}
+		ctx = withExplicitWorkerID(ctx, w)
+	}
 	// It runs BEFORE the --assign / --role resolution below (TASK-2314):
 	// both resolve against the workspace, so a single-workspace caller who
 	// omits `workspace` must get it injected first, not be refused.
@@ -629,7 +643,7 @@ func (d *HTTPHandlerDispatcher) buildAuthedRequest(
 	// Who is writing (BUG-2772): an agent acting for the user, named by the
 	// client's declared clientInfo when it gave one.
 	caller := d.Clients.resolveRemoteCaller(ctx)
-	ctx = server.WithRemoteMCPCaller(ctx, server.RemoteMCPCaller{LeaseHolder: caller.LeaseHolder})
+	ctx = server.WithRemoteMCPCaller(ctx, server.RemoteMCPCaller{LeaseHolder: caller.LeaseHolder, WorkerID: caller.WorkerID})
 	req, err := buildHTTPRequest(ctx, method, urlPath, body, user)
 	if err != nil {
 		return nil, err

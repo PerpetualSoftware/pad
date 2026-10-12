@@ -1728,7 +1728,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 
 		// Execution-lease coordination state (#1221) — holder/expiry live on
 		// dedicated columns, never in the item's fields blob.
-		"holder": true, "ttl": true,
+		"holder": true, "ttl": true, "worker_id": true,
 
 		// The two SOURCES themselves, not keys within them.
 		"fields": true,

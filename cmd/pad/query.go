@@ -29,7 +29,8 @@ type relatedGroup struct {
 }
 
 func readyCmd() *cobra.Command {
-	return &cobra.Command{
+	var workerIDFlag string
+	cmd := &cobra.Command{
 		Use:     "ready",
 		Short:   "Show actionable next items for an agent",
 		Example: `  pad project ready`,
@@ -43,6 +44,9 @@ Bugs, Features, Backlog), ranked by priority (else severity), then age.
 Blocked items are never listed; 'pad project stale' shows them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
+			if err := applyWorkerID(client, workerIDFlag); err != nil {
+				return err
+			}
 			ws := getWorkspace()
 
 			dash, err := loadDashboard(client, ws)
@@ -84,6 +88,8 @@ Blocked items are never listed; 'pad project stale' shows them.`,
 			return nil
 		},
 	}
+	addWorkerIDFlag(cmd, &workerIDFlag)
+	return cmd
 }
 
 func staleCmd() *cobra.Command {
