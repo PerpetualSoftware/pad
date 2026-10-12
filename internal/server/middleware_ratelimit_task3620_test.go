@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -36,9 +37,16 @@ func TestRateLimit_HealthHasItsOwnBoundedBucket(t *testing.T) {
 	if got := countUntil429(srv, "/api/v1/health", addr, 400); got != 299 {
 		t.Fatalf("health probes answered before the first 429 = %d, want 299 (burst 300, one spent)", got)
 	}
-	for _, sibling := range []string{"/api/v1/health/live", "/api/v1/health/ready"} {
-		if code := rl3310Request(srv, sibling, addr, ""); code != http.StatusTooManyRequests {
-			t.Errorf("%s got %d after the health bucket was exhausted, want 429: it is not in the health bucket", sibling, code)
+	// Each sibling route draws on the same bucket: from a fresh address whose
+	// API bucket is unspent, the burst is the health one (300, not the API's
+	// 60), and the API bucket is still untouched afterwards.
+	for i, sibling := range []string{"/api/v1/health/live", "/api/v1/health/ready"} {
+		fresh := fmt.Sprintf("192.0.2.%d:1", 80+i)
+		if got := countUntil429(srv, sibling, fresh, 400); got != 300 {
+			t.Errorf("%s answered %d before the first 429, want 300: it is not in the health bucket", sibling, got)
+		}
+		if code := rl3310Request(srv, "/api/v1/workspaces", fresh, ""); code == http.StatusTooManyRequests {
+			t.Errorf("an API request got 429 after only %s probes: they spent the API bucket", sibling)
 		}
 	}
 	// Per address: another address still probes.
