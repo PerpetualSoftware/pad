@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/svelte';
 import { page } from '$app/state';
+import { tick } from 'svelte';
 import SettingsPage from './+page.svelte';
+import { workspaceStore } from '$lib/stores/workspace.svelte';
 
 /**
  * BUG-3614 — the settings page showed the workspace bundle download to
@@ -45,6 +47,15 @@ async function renderAs(slug: string, membership: Record<string, unknown>) {
 	render(SettingsPage);
 	// The General tab's workspace card has rendered once the name input is up.
 	await screen.findByDisplayValue('WS');
+	// And the membership this case set has landed, so an absence below is the
+	// gate's answer and not the page's default (codex r1).
+	await waitFor(() => {
+		expect(workspaceStore.membershipKnown).toBe(true);
+		expect(workspaceStore.currentRole).toBe(membership.role);
+		expect(workspaceStore.currentMembership?.collection_access).toBe(membership.collection_access);
+	});
+	// Let the page's permission effect run on that membership.
+	await tick();
 }
 
 describe('BUG-3614: the export download follows the server rule', () => {
@@ -61,14 +72,12 @@ describe('BUG-3614: the export download follows the server rule', () => {
 
 	it('is not shown to an editor', async () => {
 		await renderAs('ws-editor', { role: 'editor', collection_access: 'all' });
-		// Membership has landed: the editor-visible Theme section is there.
-		await screen.findByText('Theme');
 		expect(screen.queryByRole('link', { name: /Download \.tar\.gz/ })).toBeNull();
 	});
 
 	it('is not shown to an owner scoped to specific collections', async () => {
 		await renderAs('ws-scoped', { role: 'owner', collection_access: 'specific' });
-		// Owner chrome rendered (the Danger Zone tab), so membership is known.
+		// Owner chrome has rendered too, so the page has applied the membership.
 		await screen.findByRole('tab', { name: /Danger Zone/ });
 		expect(screen.queryByRole('link', { name: /Download \.tar\.gz/ })).toBeNull();
 	});
