@@ -60,10 +60,11 @@ func TestExportAccount_HappyPath_ArtifactContract(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// The download headers a browser keys the "Save as pad-export.json"
-	// prompt off. Exact match, not substring: the filename is the contract.
-	if cd := rr.Header().Get("Content-Disposition"); cd != `attachment; filename="pad-export.json"` {
-		t.Errorf("Content-Disposition = %q, want `attachment; filename=\"pad-export.json\"`", cd)
+	// The download headers a browser keys the "Save as" prompt off. Exact
+	// match, not substring: the filename is the contract. Not pad-export.json,
+	// which is the workspace bundle's file (BUG-3626).
+	if cd := rr.Header().Get("Content-Disposition"); cd != `attachment; filename="pad-account-export.json"` {
+		t.Errorf("Content-Disposition = %q, want `attachment; filename=\"pad-account-export.json\"`", cd)
 	}
 	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", ct)

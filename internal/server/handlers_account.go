@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -324,6 +325,45 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 // --- Data Export (GDPR Article 20 — Right to Portability) ---
 
+// accountExportTimeout bounds one account export; a variable so a test can
+// run out of time on demand.
+var accountExportTimeout = 60 * time.Second
+
+// accountExportFormat and accountExportVersion open every account export, so a
+// consumer can tell this artifact from a workspace bundle's pad-export.json
+// and from a later shape (BUG-3626).
+const (
+	accountExportFormat  = "pad-account-export"
+	accountExportVersion = 1
+)
+
+// The two store reads the export makes after its body has started. Variables
+// so a test can make one fail at exactly that point: a broken table fails an
+// earlier query first and answers 500 before any byte, which is not the case
+// under test (BUG-3626).
+var (
+	accountExportListCollections = func(s *Server, wsID string) ([]models.Collection, error) {
+		return s.store.ListCollections(wsID)
+	}
+	accountExportListItems = func(s *Server, wsID string, p models.ItemListParams) ([]models.Item, error) {
+		return s.store.ListItems(wsID, p)
+	}
+)
+
+// abortAccountExport ends an account export that cannot be completed. The
+// status line has already gone out, so no error status is possible; instead
+// the connection is cut mid-body (http.ErrAbortHandler, which chi's Recoverer
+// re-panics and net/http handles without a stack trace). The download then
+// FAILS in the browser, and the body never reaches its "complete": true
+// trailer. Before BUG-3626 a timeout closed the JSON early and a store error
+// was swallowed or noted inside one workspace, so a user leaving Pad could
+// save a short file that parsed as their whole account.
+func abortAccountExport(userID, reason string, err error) {
+	slog.Error("account export aborted; the download fails rather than arriving short",
+		"user_id", userID, "reason", reason, "error", err)
+	panic(http.ErrAbortHandler)
+}
+
 // handleExportAccount handles GET /api/v1/auth/export.
 // Streams user data as JSON, processing one workspace at a time to avoid
 // loading everything into memory. Enforces a 60-second timeout.
@@ -338,7 +378,7 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enforce a 60-second timeout for the entire export
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), accountExportTimeout)
 	defer cancel()
 
 	// Prefetch workspace list (small) before starting the streaming response
@@ -376,13 +416,16 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 
 	// Stream the response — once we start writing, we can't send error status codes
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"pad-export.json\"")
+	// Not pad-export.json: that is the workspace bundle's file, a different
+	// shape (BUG-3626).
+	w.Header().Set("Content-Disposition", "attachment; filename=\"pad-account-export.json\"")
 	w.WriteHeader(http.StatusOK)
 
 	enc := json.NewEncoder(w)
 
-	// Write opening structure
-	w.Write([]byte("{\n  \"user\": "))
+	// Write opening structure: the format and version first, so a reader
+	// knows what it holds before anything else.
+	fmt.Fprintf(w, "{\n  \"format\": %q,\n  \"version\": %d,\n  \"user\": ", accountExportFormat, accountExportVersion)
 	enc.Encode(map[string]interface{}{
 		"id":           user.ID,
 		"email":        user.Email,
@@ -400,8 +443,7 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 	for i, ws := range workspaces {
 		// Check timeout between workspaces
 		if ctx.Err() != nil {
-			slog.Warn("export timeout", "user_id", user.ID, "workspaces_exported", i)
-			break
+			abortAccountExport(user.ID, fmt.Sprintf("timed out after %d of %d workspaces", i, len(workspaces)), ctx.Err())
 		}
 
 		if i > 0 {
@@ -418,21 +460,21 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 
 		// Only export full data for owned workspaces
 		if ws.OwnerID == user.ID {
-			collections, _ := s.store.ListCollections(ws.ID)
+			collections, err := accountExportListCollections(s, ws.ID)
+			if err != nil {
+				abortAccountExport(user.ID, "listing collections of "+ws.Slug, err)
+			}
 			wsData["collections"] = collections
 
 			// Stream items per workspace (each workspace loaded individually, then GC'd)
 			// IncludeDeletedCollections: a user's own export keeps the items
 			// of collections they deleted, as it always has (BUG-3425).
-			items, err := s.store.ListItems(ws.ID, models.ItemListParams{IncludeArchived: true, IncludeDeletedCollections: true})
+			items, err := accountExportListItems(s, ws.ID, models.ItemListParams{IncludeArchived: true, IncludeDeletedCollections: true})
 			if err != nil {
-				slog.Error("export: failed to list items", "workspace", ws.Slug, "error", err)
-				wsData["items"] = []interface{}{}
-				wsData["export_error"] = "failed to export items"
-			} else {
-				s.hydrateItemsAppAttribution(items) // SPEC-6 U9c
-				wsData["items"] = items
+				abortAccountExport(user.ID, "listing items of "+ws.Slug, err)
 			}
+			s.hydrateItemsAppAttribution(items) // SPEC-6 U9c
+			wsData["items"] = items
 		}
 
 		w.Write([]byte("    "))
@@ -444,7 +486,13 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Write([]byte("\n  ]\n}\n"))
+	// The last workspace may have used up the budget too.
+	if ctx.Err() != nil {
+		abortAccountExport(user.ID, "timed out after the last workspace", ctx.Err())
+	}
+	// The trailer is the completeness proof: written only here, after every
+	// workspace, so a reader can refuse a file without it.
+	w.Write([]byte("\n  ],\n  \"complete\": true\n}\n"))
 
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()

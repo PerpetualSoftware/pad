@@ -1164,6 +1164,20 @@ async function requestAttempt<T>(
  * percent-decode the remaining value. Malformed input (missing the two `'`
  * delimiters, or a bad percent-encoding) falls through to the plain form.
  */
+/**
+ * Whether an account-export body is whole: valid JSON carrying the server's
+ * `"complete": true` trailer (BUG-3626). A body without it is a truncated or
+ * failed export and must not be saved as the user's account.
+ */
+export function accountExportIsComplete(text: string): boolean {
+	try {
+		const parsed = JSON.parse(text) as { complete?: unknown } | null;
+		return parsed?.complete === true;
+	} catch {
+		return false;
+	}
+}
+
 function parseContentDispositionFilename(disposition: string): string | null {
 	if (!disposition) return null;
 	// RFC 5987 extended form takes precedence — it's percent-encoded.
@@ -3052,7 +3066,16 @@ export const api = {
 				// callers to catch — satisfies TASK-1960's "!ok → PadApiError".
 				throw new PadApiError({ code: 'export_failed', message: `account export failed: ${resp.status}` });
 			}
+			// A body the server cut off (BUG-3626: it aborts on a timeout or a
+			// store error rather than send a short file) rejects here, so the
+			// caller reports a failure instead of saving a partial export.
 			const text = await resp.text();
+			if (!accountExportIsComplete(text)) {
+				throw new PadApiError({
+					code: 'export_incomplete',
+					message: 'The export did not complete, so nothing was saved. Try again.'
+				});
+			}
 			const disposition = resp.headers.get('Content-Disposition') ?? '';
 			const filename = parseContentDispositionFilename(disposition) ?? 'pad-account-export.json';
 			return { filename, text };
