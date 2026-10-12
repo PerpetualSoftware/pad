@@ -2339,3 +2339,34 @@ func TestPadItemUpdate_NonEmptyParentStillDispatched(t *testing.T) {
 		t.Errorf("--parent PLAN-9 must reach the CLI: %v", disp.gotArgs)
 	}
 }
+
+// TASK-3611: on item create and update the stdio door moves every non-string
+// `fields` value out of --field into one --fields-json object, ahead of the
+// `--` before positionals; strings stay as --field. Any other command still
+// refuses a nested value.
+func TestStdioTypedFieldArgs(t *testing.T) {
+	in := map[string]any{fieldsNativeKey: map[string]any{
+		"scalar": "fine", "n": float64(5), "b": true, "arr": []any{"a"}, "obj": map[string]any{"k": 1},
+	}}
+	args := []string{"--field", "scalar=fine", "--field", "n=5", "--field", "b=true", "--format", "json", "--", "TASK-1"}
+	for _, p := range [][]string{{"item", "create"}, {"item", "update"}} {
+		got, err := stdioTypedFieldArgs(p, in, args)
+		if err != nil {
+			t.Fatalf("%v: %v", p, err)
+		}
+		want := `--field scalar=fine --format json --fields-json {"arr":["a"],"b":true,"n":5,"obj":{"k":1}} -- TASK-1`
+		if strings.Join(got, " ") != want {
+			t.Fatalf("%v:\n got %q\nwant %q", p, strings.Join(got, " "), want)
+		}
+	}
+	if _, err := stdioTypedFieldArgs([]string{"item", "list"}, in, args); err == nil {
+		t.Fatal("another command must still refuse a structured value")
+	}
+	strs := map[string]any{fieldsNativeKey: map[string]any{"scalar": "x"}}
+	if got, err := stdioTypedFieldArgs([]string{"item", "create"}, strs, args); err != nil || strings.Join(got, " ") != strings.Join(args, " ") {
+		t.Fatalf("strings only: got %q, %v; want the args unchanged", got, err)
+	}
+	if got := withFlagsBeforePositionals([]string{"--format", "json"}, []string{"--x"}); strings.Join(got, " ") != "--format json --x" {
+		t.Fatalf("no --: %q", got)
+	}
+}

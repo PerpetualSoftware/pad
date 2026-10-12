@@ -201,6 +201,7 @@ func createCmd() *cobra.Command {
 		parentSlug  string
 		tags        string
 		fieldFlags  []string
+		fieldsJSON  string
 	)
 
 	cmd := &cobra.Command{
@@ -287,6 +288,9 @@ Run with --help-collections to see available collections and their status values
 					return ferr
 				}
 				fields[key] = parseFieldFlag(collSchema, key, val)
+			}
+			if err := applyFieldsJSON(fields, fieldsJSON); err != nil {
+				return err
 			}
 
 			// Pull column-named keys out of the blob before it's marshalled
@@ -406,6 +410,7 @@ Run with --help-collections to see available collections and their status values
 	cmd.Flags().StringVar(&category, "category", "", "category field value")
 	cmd.Flags().StringVar(&tags, "tags", "", "JSON array of tags")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value; refused for implementation_notes, decision_log, github_pr and convention (create the item, then use `pad item note` / `pad item decide` / `pad github link`; conventions come from `pad library activate`)")
+	cmd.Flags().StringVar(&fieldsJSON, "fields-json", "", fieldsJSONFlagUsage)
 
 	// Shell completion for collection arg
 	cmd.RegisterFlagCompletionFunc("status", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -1120,6 +1125,7 @@ func updateCmd() *cobra.Command {
 		category              string
 		tags                  string
 		fieldFlags            []string
+		fieldsJSON            string
 		comment               string
 		force                 bool
 		sortOrder             int
@@ -1309,7 +1315,7 @@ A body write with neither prints a warning, and a future release refuses it
 			// writer's change on the last write.
 			parentRef := parentFlag
 
-			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0 || clearParent
+			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0 || fieldsJSON != "" || clearParent
 			if hasFieldChanges {
 				patch := make(map[string]interface{})
 
@@ -1350,6 +1356,9 @@ A body write with neither prints a warning, and a future release refuses it
 						return ferr
 					}
 					patch[key] = parseFieldFlag(collSchema, key, val)
+				}
+				if err := applyFieldsJSON(patch, fieldsJSON); err != nil {
+					return err
 				}
 
 				// Pull column-named keys out of the patch (BUG-2583) and apply
@@ -1575,6 +1584,7 @@ A body write with neither prints a warning, and a future release refuses it
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set a field (repeatable): --field key=value; refused for implementation_notes (use `pad item note`), decision_log (`pad item decide`), github_pr (`pad github link`) and convention (`pad library activate`)")
+	cmd.Flags().StringVar(&fieldsJSON, "fields-json", "", fieldsJSONFlagUsage)
 	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "set the item's sort_order key (lower appears first; a sort key, not a position: drag-reorder writes values far apart, TASK-3525)")
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")

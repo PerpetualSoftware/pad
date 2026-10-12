@@ -305,7 +305,7 @@
             "type": "array"
           },
           "fields": {
-            "description": "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values keep their JSON type: a number stays a number, and an object or array is written as-is to multi_select / json fields (BUG-2850). Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref. Structured values require the REMOTE transport — the local stdio server shells out to the CLI, whose --field key=value encoding cannot carry them, and refuses with a message naming the transport.",
+            "description": "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values keep their JSON type: a number stays a number, and an object or array is written as-is to multi_select / json fields (BUG-2850). Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref. Structured values work on both transports: the local stdio server passes them to the CLI as one --fields-json object.",
             "properties": {},
             "type": "object"
           },

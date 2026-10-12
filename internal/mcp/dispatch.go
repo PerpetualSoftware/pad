@@ -126,17 +126,19 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 	if d.Binary == "" {
 		return errorResult("dispatcher: binary path not configured"), nil
 	}
-	// THIS dispatcher is the stdio door, and it cannot express a structured
-	// field value: it runs the CLI with `--field key=value` arguments, and a
-	// nested object or array has no such encoding (BUG-2850).
+	// THIS dispatcher is the stdio door. `--field key=value` carries text: a
+	// nested object or array has no such encoding (BUG-2850), and a number or
+	// boolean would reach the CLI as a string it types only by the schema. On
+	// item create and update every non-string `fields` value is therefore
+	// sent as one `--fields-json` object, which the CLI decodes with JSON
+	// types intact, the shape the remote door sends (TASK-3611). Any other
+	// command still refuses a structured value loudly rather than dropping it.
 	//
-	// The check lives HERE, not in BuildCLIArgs, because BuildCLIArgs runs for
+	// This lives HERE, not in BuildCLIArgs, because BuildCLIArgs runs for
 	// BOTH transports — env.Dispatch calls it before handing off to whichever
-	// Dispatcher is configured — so a refusal there also blocked the remote
-	// door, whose whole point in this change is that it CAN carry structures
-	// (codex round 2 [P1]). Refuse loudly rather than dropping: cliArgs simply
-	// would not contain the key, which is the silent discard this bug is about.
-	if err := refuseStructuredFieldsOverCLI(DispatchInputFromContext(ctx)); err != nil {
+	// Dispatcher is configured (codex round 2 [P1] on BUG-2850).
+	cliArgs, err := stdioTypedFieldArgs(cmdPath, DispatchInputFromContext(ctx), cliArgs)
+	if err != nil {
 		return validationFailedFromBuildErr(strings.Join(cmdPath, " "), err), nil
 	}
 	full := append(append([]string{}, cmdPath...), cliArgs...)
@@ -399,6 +401,76 @@ func refuseStructuredFieldsOverCLI(input map[string]any) error {
 		"fields.%s: a structured value cannot be written over the stdio transport, which sends --field key=value; "+
 			"use the remote transport, or write the field with the CLI directly",
 		strings.Join(keys, ", fields."))
+}
+
+// stdioTypedFieldArgs is the stdio door's encoding of the `fields` values
+// that are not strings (TASK-3611): on the two commands that write fields,
+// they move out of `--field key=value` (where BuildCLIArgs put the scalars)
+// into one `--fields-json` object ahead of the positionals. Strings stay as
+// --field, which carries them exactly. Any other command refuses a nested
+// value, as before; its scalars are untouched.
+func stdioTypedFieldArgs(cmdPath []string, input map[string]any, cliArgs []string) ([]string, error) {
+	native, ok := input[fieldsNativeKey].(map[string]any)
+	if !ok {
+		return cliArgs, nil
+	}
+	if !(len(cmdPath) == 2 && cmdPath[0] == "item" && (cmdPath[1] == "create" || cmdPath[1] == "update")) {
+		return cliArgs, refuseStructuredFieldsOverCLI(input)
+	}
+	typed := map[string]any{}
+	for k, v := range native {
+		if _, isString := v.(string); !isString {
+			typed[k] = v
+		}
+	}
+	if len(typed) == 0 {
+		return cliArgs, nil
+	}
+	b, err := json.Marshal(typed)
+	if err != nil {
+		return nil, fmt.Errorf("fields: encode typed values: %w", err)
+	}
+	return withFlagsBeforePositionals(withoutFieldFlags(cliArgs, typed), []string{"--fields-json", string(b)}), nil
+}
+
+// withoutFieldFlags drops the `--field key=value` pairs naming a key in keys,
+// up to the `--` before the positionals.
+func withoutFieldFlags(cliArgs []string, keys map[string]any) []string {
+	out := make([]string, 0, len(cliArgs))
+	for i := 0; i < len(cliArgs); i++ {
+		a := cliArgs[i]
+		if a == "--" {
+			return append(out, cliArgs[i:]...)
+		}
+		if a == "--field" && i+1 < len(cliArgs) {
+			if k, _, ok := strings.Cut(cliArgs[i+1], "="); ok {
+				if _, drop := keys[strings.TrimSpace(k)]; drop {
+					i++
+					continue
+				}
+			}
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// withFlagsBeforePositionals inserts flags ahead of the `--` that
+// BuildCLIArgs puts before the positionals: after it, the CLI would read
+// them as positional arguments.
+func withFlagsBeforePositionals(cliArgs, flags []string) []string {
+	if len(flags) == 0 {
+		return cliArgs
+	}
+	out := make([]string, 0, len(cliArgs)+len(flags))
+	for i, a := range cliArgs {
+		if a == "--" {
+			out = append(out, flags...)
+			return append(out, cliArgs[i:]...)
+		}
+		out = append(out, a)
+	}
+	return append(out, flags...)
 }
 
 func BuildCLIArgs(
