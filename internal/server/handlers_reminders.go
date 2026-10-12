@@ -305,7 +305,21 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
 		return nil, nil
 	}
-	if !s.requireItemVisible(w, r, workspaceID, item) {
+	// The visibility refusal is the SAME 404 as an unknown id (TASK-3611 codex
+	// r3): requireItemVisible's "Item not found" would tell a caller who
+	// cannot see the item that this reminder id exists. checkItemVisible is
+	// the decision requireItemVisible makes, without its message.
+	if !appCeilingAllows(r, item.CollectionID) {
+		writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
+		return nil, nil
+	}
+	visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+	if err != nil {
+		writeInternalError(w, err)
+		return nil, nil
+	}
+	if !visible {
+		writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
 		return nil, nil
 	}
 	if item.DeletedAt != nil {

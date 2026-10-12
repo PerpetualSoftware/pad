@@ -72,6 +72,7 @@ type toolSurfaceToolSummary struct {
 //   - pad_meta:       server-info/version/tool-surface/bootstrap all read.
 var readOnlyActions = map[string]map[string]bool{
 	"pad_item": {
+		"reminders":     true,
 		"get":           true,
 		"list":          true,
 		"deps":          true,
