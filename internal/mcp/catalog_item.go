@@ -80,13 +80,14 @@ var padItemTool = ToolDef{
 		// asked again. `remind` arms; `ack-reminder` acknowledges a fired one
 		// so it leaves pad_project's next/ready surface.
 		//
-		// Re-arm and disarm are deliberately CLI-only for now: both address a
-		// reminder the agent would have had to list first, and the listing
-		// action does not exist on this surface yet. Adding them later is
-		// additive; shipping them without a way to discover an id would be
-		// advertising a door with no handle.
+		// `reminders` lists an item's reminders with their ids, and
+		// `unremind` disarms one by id (TASK-3611): an agent that defers work
+		// can now see and cancel what it armed without a terminal. Re-arm
+		// stays CLI-only (`pad item remind --rearm`).
 		"remind":       passThrough([]string{"item", "remind"}),
 		"ack-reminder": passThrough([]string{"item", "ack"}),
+		"reminders":    passThrough([]string{"item", "reminders"}),
+		"unremind":     passThrough([]string{"item", "unremind"}),
 
 		// Execution lease (#1221 / PR #1238). Agents are the motivating
 		// users of the claim primitive — two pollers that both read
@@ -163,7 +164,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release, reminders. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -183,7 +184,7 @@ var padItemSchemaParams = []ParamDef{
 	// text as its tool result.
 	// ── Reminders ── (IDEA-2641)
 	{Name: "remind_at", Type: "string", Description: "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00 which is stored as the same moment in UTC). Required for: remind. A bare date (2026-08-01) is REFUSED, not assumed to mean midnight — it names a 24-hour span, and choosing an hour inside it would fire at a time nobody picked."},
-	{Name: "reminder_id", Type: "string", Description: "A reminder's id, as returned when it was armed. Required for: ack-reminder. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not."},
+	{Name: "reminder_id", Type: "string", Description: "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required for: ack-reminder, unremind. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not."},
 
 	// ── Execution lease ── (#1221)
 	{Name: "holder", Type: "string", Description: "Lease holder for action=claim/release. Optional — defaults to your agent name, else the account's email (remote /mcp: the email). Set it only for a runner with no agent name (e.g. \"sweep-runner-2\"); next/ready compare against the default, so a custom holder's items leave your own next/ready."},
@@ -425,6 +426,13 @@ Actions:
     Nothing else acknowledges one: completing the item does not,
     because a reminder may have been armed to fire after the
     work was done.
+  reminders     — List an item's reminders (armed, fired, acknowledged).
+    Each row's "id" is what unremind takes as reminder_id (and
+    ack-reminder, once that reminder has fired).
+    Required: ref.
+  unremind      — Disarm (delete) a reminder.
+    Required: reminder_id (from reminders, or from the response
+    when you armed it).
   claim         — Atomically claim an item for execution (lease with expiry).
     Required: ref. Optional: holder (default: your agent name), ttl (Go
     duration, default 15m, max 24h).

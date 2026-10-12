@@ -406,6 +406,15 @@ func init() {
 			method:       http.MethodPost,
 			pathTemplate: "/api/v1/workspaces/{workspace}/reminders/{reminder_id}/ack",
 		}.toRouteMapper(),
+		// TASK-3611: list an item's reminders, and disarm one by id.
+		"item reminders": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/reminders",
+		}.toRouteMapper(),
+		"item unremind": routeSpec{
+			method:       http.MethodDelete,
+			pathTemplate: "/api/v1/workspaces/{workspace}/reminders/{reminder_id}",
+		}.toRouteMapper(),
 
 		// --- Execution lease (#1221) ---
 		// `item claim` needs a custom mapper: the catalog's `ttl` is a Go
