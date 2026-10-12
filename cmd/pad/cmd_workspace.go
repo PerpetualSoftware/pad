@@ -837,7 +837,9 @@ func normalizeServerURL(raw string) string {
 	} else if strings.Contains(host, ":") {
 		host = "[" + host + "]"
 	}
-	return scheme + "://" + host + strings.TrimRight(u.Path, "/")
+	// The ESCAPED path, less ONE trailing slash: /a%2Fb is not /a/b, and /a//
+	// is not /a, to a server that tells them apart (codex r2).
+	return scheme + "://" + host + strings.TrimSuffix(u.EscapedPath(), "/")
 }
 
 func displayServerURL(u string) string {

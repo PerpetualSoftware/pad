@@ -186,6 +186,8 @@ func TestSameServerURL(t *testing.T) {
 		{"http://192.168.1.89:7777", "http://192.168.1.89:7778"},
 		{"https://pad.example.com/a", "https://pad.example.com/b"},
 		{"https://pad.example.com", "https://other.example.com"},
+		{"https://pad.example.com/a%2Fb", "https://pad.example.com/a/b"},
+		{"https://pad.example.com/a", "https://pad.example.com/a//"},
 	}
 	for _, c := range different {
 		if sameServerURL(c[0], c[1]) {
