@@ -72,17 +72,29 @@ the body only, which is empty for a title-only task.) Check the parent plan's or
 for a spec parent, this includes its acceptance criteria, which the PR will
 need to cite in step 8. Load linked items if wiki-links are present.
 
-### 2. Load conventions
+### 2. Load the brief
 
-Pull all relevant conventions from the workspace so you follow them:
+Load everything that governs this task in one call:
+
+` + "```" + `bash
+pad item context <ref> --intent implement --format markdown
+` + "```" + `
+
+It returns the task with its parent's acceptance criteria, the full bodies of
+the always-on conventions and of the ones for implementing, committing and
+opening the PR, the matching playbooks, the dependencies with their statuses,
+and the linked items. Add ` + "`--role <role>`" + ` if you work as a role. Anything left
+out for size is listed under "Omitted" by ref: pull it with
+` + "`pad item show <ref> --agent`" + ` if it matters. A "Conflicts" section (an open
+blocker, say) is worth reading before you start.
+
+On a server without ` + "`pad item context`" + `, load the conventions directly
+instead (` + "`--full`" + ` matters, since a convention's rule IS its content):
 
 ` + "```" + `bash
 pad item list conventions --field trigger=always --field status=active --format json --full
 pad item list conventions --field trigger=on-implement --field status=active --format json --full
 ` + "```" + `
-
-` + "`--full`" + ` matters: without it the list is the summary shape, titles with no
-` + "`content`" + `, and a convention's rule IS its content.
 
 Pay attention to branching, commit format, testing, and build conventions —
 they almost always apply.
