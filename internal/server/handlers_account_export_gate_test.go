@@ -85,7 +85,7 @@ func TestExportAccount_UnrestrictedOwner_OK(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unrestricted owner export: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
-	if cd := rr.Header().Get("Content-Disposition"); !strings.Contains(cd, "pad-export.json") {
+	if cd := rr.Header().Get("Content-Disposition"); !strings.Contains(cd, "pad-account-export.json") {
 		t.Fatalf("expected Content-Disposition attachment header on success, got %q", cd)
 	}
 	if !strings.Contains(rr.Body.String(), "\"workspaces\"") {

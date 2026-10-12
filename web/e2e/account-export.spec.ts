@@ -14,7 +14,7 @@ import { test, expect } from './fixtures';
  * saw a 200 and parsed the artifact. The exact header + JSON shape are pinned
  * server-side in internal/server/handlers_account_export_contract_test.go.
  */
-test('Danger Zone: Export my data downloads pad-export.json', async ({ page }) => {
+test('Danger Zone: Export my data downloads pad-account-export.json', async ({ page }) => {
 	await page.goto('/console/settings');
 
 	const exportBtn = page.getByRole('button', { name: 'Export my data', exact: true });
@@ -23,8 +23,8 @@ test('Danger Zone: Export my data downloads pad-export.json', async ({ page }) =
 	const [download] = await Promise.all([page.waitForEvent('download'), exportBtn.click()]);
 
 	// The filename the browser saves under comes straight from the server's
-	// `Content-Disposition: attachment; filename="pad-export.json"`.
-	expect(download.suggestedFilename()).toBe('pad-export.json');
+	// `Content-Disposition: attachment; filename="pad-account-export.json"`.
+	expect(download.suggestedFilename()).toBe('pad-account-export.json');
 
 	await expect(page.getByText('Your data export has downloaded.')).toBeVisible();
 });
