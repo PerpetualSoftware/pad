@@ -173,24 +173,23 @@ When you are about to take action, load the relevant conventions and playbooks F
 
 **Trigger vocabulary is workspace-defined and differs between conventions and playbooks.** Each template ships its own set — software conventions include `on-implement`, `on-commit`, `on-pr-create`, `on-task-complete`, `on-plan`, `always`; software playbooks include those plus `on-triage`, `on-release`, `on-review`, `on-deploy`, `manual`. A hiring workspace would have triggers like `on-candidate-advance`, `on-interview-scheduled`. A research workspace would have `on-source-cited`, `on-experiment-run`. **The bootstrap's `collections` array carries each schema** — inspect the conventions/playbooks schemas there to see the available triggers for the current workspace.
 
-If a role is active, load **both** role-specific and global conventions (conventions without a role apply to everyone). Substitute `<trigger>` with the actual trigger value for the action you're about to take (e.g. `on-implement`, `on-candidate-advance`):
+**When the action is about a specific item, load its brief in one call** (PLAN-3598):
 
 ```bash
-# Template — replace <trigger> with a concrete value from the workspace's schema:
-pad item list conventions --field trigger=<trigger> --field status=active --role <role> --format json --full        # Role-specific
-pad item list conventions --field trigger=<trigger> --field status=active --format json --full               # All (includes global)
-pad item list playbooks  --field trigger=<trigger> --field status=active --format json --full
-
-# Concrete examples in a software workspace (role="implementer"):
-pad item list conventions --field trigger=on-implement --field status=active --format json --full
-pad item list conventions --field trigger=on-commit    --field status=active --format json --full
-pad item list playbooks   --field trigger=on-review    --field status=active --format json --full
-
-# Always-on conventions apply regardless of action:
-pad item list conventions --field trigger=always --field status=active --format json --full
+pad item context <ref> --intent <intent> [--role <role>] --format json   # e.g. --intent implement before writing code
 ```
 
-When loading both role-specific and global conventions, deduplicate — if the same convention appears in both results, follow it once. Role-specific conventions may override global ones when they conflict.
+The brief carries the item with its `seq`, its parent chain with parsed acceptance criteria, the full bodies of the conventions whose trigger matches the intent plus the always-on ones (role-scoped ones only for your role), matching playbooks, dependencies with their statuses, decisions and linked items, in relevance order and within a size budget (`--budget`, default 40000 characters). `implement` also pulls the commit and PR rules. Parts that do not fit are listed under `omitted` by ref and title, never cut, so pull any you need with `pad item show <ref> --agent`; `conflicts` flags an open blocker, an open item under a closed parent, or a role rule shadowing a global one. An intent the workspace has no trigger for is refused with the valid list (when you can see its conventions).
+
+**Fallback (no item, or a server without `pad item context`):** load conventions by trigger. If a role is active, load **both** role-specific and global ones (conventions without a role apply to everyone), and deduplicate:
+
+```bash
+pad item list conventions --field trigger=<trigger> --field status=active --role <role> --format json --full   # Role-specific
+pad item list conventions --field trigger=<trigger> --field status=active --format json --full                 # All (includes global)
+pad item list playbooks   --field trigger=<trigger> --field status=active --format json --full
+```
+
+Role-specific conventions may override global ones when they conflict.
 
 Follow ALL returned conventions. If a playbook exists for the action, follow its steps in order. Conventions are project-specific rules the team has established — they override your defaults.
 
