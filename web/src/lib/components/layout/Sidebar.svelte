@@ -224,17 +224,21 @@
 		quickAddError = null;
 		quickAddSubmitting = true;
 		const session = quickAddSession;
+		// The workspace the item is created in, prefix and all: a switch while
+		// the create is in flight must not point the link elsewhere (TASK-3599).
+		const ws = wsSlug;
+		const prefix = wsPrefix;
 		try {
 			const settings = parseSettings(coll);
 			// BUG-3078: the status default goes through the declared type.
 			const defaultFields: Record<string, any> = createDefaultFields(coll);
-			const item = await api.items.create(wsSlug, coll.slug, {
+			const item = await api.items.create(ws, coll.slug, {
 				title,
 				content: settings.content_template || '',
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			const url = `${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`;
+			const url = `${prefix}/${coll.slug}/${itemUrlId(item)}?new=1`;
 			if (!open) {
 				announceCaptured(item, url);
 				// Only the dialog this submission came from is readied for the

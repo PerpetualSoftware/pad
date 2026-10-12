@@ -56,6 +56,10 @@
 	let title = $state('');
 	let submitting = $state(false);
 	let titleEl: HTMLTextAreaElement | undefined = $state();
+	// Bumped by every keystroke: a submission clears the title only if nothing
+	// was typed since it was sent, even text identical to what it sent
+	// (TASK-3599, retro of #2067). Not $state: only submit reads it.
+	let inputVersion = 0;
 
 	// Default to tasks (or the first collection) when the sheet opens. Also
 	// re-default if the remembered slug is no longer a valid collection (e.g.
@@ -85,22 +89,27 @@
 		}
 		submitting = true;
 		const t = title.trim();
+		const sentVersion = inputVersion;
+		// The workspace the item is created in, prefix and all: a switch while
+		// the create is in flight must not point the link elsewhere (TASK-3599).
+		const ws = wsSlug;
+		const prefix = wsPrefix;
 		try {
 			const settings = parseSettings(coll);
 			// BUG-3078: the status default goes through the declared type.
 			const defaultFields: Record<string, any> = createDefaultFields(coll);
-			const item = await api.items.create(wsSlug, coll.slug, {
+			const item = await api.items.create(ws, coll.slug, {
 				title: t,
 				content: settings.content_template || '',
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			const url = `${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`;
+			const url = `${prefix}/${coll.slug}/${itemUrlId(item)}?new=1`;
 			if (!openAfter) {
 				announceCaptured(item, url);
 				// Clear only what was sent: text typed while the request was
 				// in flight is the next capture, not this one.
-				if (title.trim() === t) title = '';
+				if (inputVersion === sentVersion) title = '';
 				if (open) requestAnimationFrame(() => titleEl?.focus());
 				return;
 			}
@@ -148,6 +157,7 @@
 		<textarea aria-label="New item title"
 			class="capture-title"
 			bind:value={title}
+			oninput={() => inputVersion++}
 			bind:this={titleEl}
 			use:autofocus
 			{onkeydown}
