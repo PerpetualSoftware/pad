@@ -61,8 +61,10 @@ type itemContextView struct {
 		QuestionKey string `json:"question_key"`
 		Current     bool   `json:"current"`
 	} `json:"decisions"`
-	Links   []itemContextLinkView `json:"links"`
-	Omitted []struct {
+	DecisionsBelowThreshold int                   `json:"decisions_below_threshold"`
+	DecisionsStaleQuestion  int                   `json:"decisions_stale_question"`
+	Links                   []itemContextLinkView `json:"links"`
+	Omitted                 []struct {
 		Part string `json:"part"`
 		Ref  string `json:"ref"`
 		Size int    `json:"size"`
@@ -89,8 +91,8 @@ func contextCmd() *cobra.Command {
 		Long: `Fetch one deterministic brief for working an item (PLAN-3598): the item
 with its seq, its parent chain with parsed acceptance criteria, the bodies
 of the conventions whose trigger matches the intent (plus the always-on
-ones), matching playbooks, dependencies with statuses, typed decisions,
-linked items, and the sections that say what was left out for size and
+ones), matching playbooks, dependencies with statuses, the typed decisions
+Pad would surface (the rest are only counted), linked items, and the sections that say what was left out for size and
 which rules may conflict.
 
 --intent maps onto the workspace's convention triggers: "implement" means
@@ -187,7 +189,7 @@ func renderItemContextMarkdown(w io.Writer, v *itemContextView) {
 		}
 		p("\n")
 	}
-	if len(v.Decisions) > 0 {
+	if len(v.Decisions)+v.DecisionsBelowThreshold+v.DecisionsStaleQuestion > 0 {
 		p("## Decisions\n\n")
 		for _, d := range v.Decisions {
 			state := "current"
@@ -195,6 +197,10 @@ func renderItemContextMarkdown(w io.Writer, v *itemContextView) {
 				state = "stale"
 			}
 			p("- %s (%s)\n", d.QuestionKey, state)
+		}
+		if v.DecisionsBelowThreshold+v.DecisionsStaleQuestion > 0 {
+			p("- left out: %d below their threshold, %d to a question no longer asked\n",
+				v.DecisionsBelowThreshold, v.DecisionsStaleQuestion)
 		}
 		p("\n")
 	}

@@ -58,7 +58,8 @@ func AttentionSet() QuestionSet {
 				"the next step is an action by the workspace's own people or agents",
 			),
 		},
-		Eligible: attentionEligible,
+		Eligible:  attentionEligible,
+		Threshold: AttentionThreshold,
 	}
 }
 
@@ -167,11 +168,8 @@ func (r *Runner) WorkspaceFlags(workspaceID, setName string, threshold float64) 
 	byItem := make(map[string][]candidate)
 	var order []string
 	for _, d := range rows {
-		if want, ok := qhashNow[d.QuestionKey]; !ok || d.QuestionHash != want {
-			continue
-		}
-		p, ok := NoulValue(d)
-		if !ok || p < threshold {
+		p, v := surfacing(d, qhashNow[d.QuestionKey], threshold)
+		if v != Surfaced {
 			continue
 		}
 		if _, seen := byItem[d.ItemID]; !seen {

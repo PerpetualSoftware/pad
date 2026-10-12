@@ -69,7 +69,8 @@ func ConventionsSet() QuestionSet {
 		MaxPerCall: conventionsPerCall,
 		// User collections only: a convention or playbook is not work an
 		// item-content rule is about.
-		Eligible: func(_ *models.Item, coll *models.Collection) bool { return !coll.IsSystem },
+		Eligible:  func(_ *models.Item, coll *models.Collection) bool { return !coll.IsSystem },
+		Threshold: ConventionThreshold,
 	}
 }
 
@@ -90,6 +91,7 @@ func ConventionsCommentsSet() QuestionSet {
 		NoTrail:    true,
 		MaxPerCall: conventionsPerCall,
 		Eligible:   func(_ *models.Item, coll *models.Collection) bool { return !coll.IsSystem },
+		Threshold:  ConventionThreshold,
 	}
 }
 

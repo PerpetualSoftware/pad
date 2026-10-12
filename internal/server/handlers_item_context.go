@@ -117,10 +117,21 @@ type itemContextResponse struct {
 	Conventions []itemContextConvention `json:"conventions"`
 	Playbooks   []itemContextPlaybook   `json:"playbooks"`
 	Deps        itemContextDeps         `json:"deps"`
-	Decisions   []models.ItemDecision   `json:"decisions"`
-	Links       []itemContextLinked     `json:"links"`
-	Omitted     []itemContextOmitted    `json:"omitted"`
-	Conflicts   []itemContextConflict   `json:"conflicts"`
+	// Decisions is only the answers their set would surface anywhere
+	// (TASK-3618): a current question and a Noul at or above the set's
+	// threshold. A surfaced answer whose item has moved on stays, with
+	// current=false and a stale_decision conflict.
+	Decisions []models.ItemDecision `json:"decisions"`
+	// DecisionsBelowThreshold counts the answers left out because they do
+	// not reach their set's threshold: the product shows nothing for them.
+	DecisionsBelowThreshold int `json:"decisions_below_threshold"`
+	// DecisionsStaleQuestion counts the answers left out because their
+	// question is no longer asked as it was (reworded, switched off, or
+	// another model pinned). They are not counted as below threshold.
+	DecisionsStaleQuestion int                   `json:"decisions_stale_question"`
+	Links                  []itemContextLinked   `json:"links"`
+	Omitted                []itemContextOmitted  `json:"omitted"`
+	Conflicts              []itemContextConflict `json:"conflicts"`
 }
 
 func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
@@ -344,11 +355,12 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	decs, err := s.decisionRunner().Decisions(item.ID)
+	decs, below, staleQ, err := s.decisionRunner().SurfacedDecisions(item.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	resp.DecisionsBelowThreshold, resp.DecisionsStaleQuestion = below, staleQ
 	for _, d := range decs {
 		if !d.Current {
 			resp.Conflicts = append(resp.Conflicts, itemContextConflict{Kind: "stale_decision", Refs: []string{item.Ref},
