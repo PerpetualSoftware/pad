@@ -17,6 +17,7 @@
 
 import { api, isPlanLimitError } from '$lib/api/client';
 import { showPlanLimitToast } from '$lib/billing/planLimitToast';
+import { authStore } from '$lib/stores/auth.svelte';
 import type { AttachmentUploadResult } from '$lib/types';
 
 /** Extract file payloads from a paste event (screenshots, copied files). */
@@ -141,6 +142,9 @@ export function uploadIntoTextarea(
 	const trail = end < value.length && !/^\s/.test(value.slice(end)) ? ' ' : '';
 	handle.setValue(value.slice(0, start) + lead + inserted + trail + value.slice(end));
 
+	// A refusal for the previous identity raises no plan-limit prompt naming
+	// its owner for the next one (TASK-3619).
+	const isSameIdentity = authStore.identityFence();
 	for (const job of jobs) {
 		handle.onPendingDelta(1);
 		api.attachments
@@ -155,7 +159,9 @@ export function uploadIntoTextarea(
 					handle.getValue().replace(`${job.placeholder} `, '').replace(job.placeholder, '')
 				);
 				// Over the storage limit (TASK-3619): the plan-limit prompt says so.
-				if (isPlanLimitError(err)) showPlanLimitToast(err);
+				if (isPlanLimitError(err)) {
+					if (isSameIdentity()) showPlanLimitToast(err);
+				}
 				else handle.onError(err instanceof Error ? err.message : 'Upload failed');
 			})
 			.finally(() => handle.onPendingDelta(-1));

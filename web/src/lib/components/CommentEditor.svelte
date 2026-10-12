@@ -265,9 +265,16 @@
 						pendingUploads += 1;
 						try {
 							const uploadItemId = itemId;
-							const result = await api.attachments.upload(wsSlug, file, uploadItemId).catch((err) => {
+							const isSameIdentity = authStore.identityFence();
+							let result: Awaited<ReturnType<typeof api.attachments.upload>>;
+							try {
+								result = await api.attachments.upload(wsSlug, file, uploadItemId);
+							} catch (err) {
+								// A refusal for the previous identity raises no prompt
+								// naming its owner for the next one (TASK-3619).
+								if (!isSameIdentity()) throw err;
 								throw promptOnPlanLimit(err);
-							});
+							}
 							// A comment upload carries item context too, so the
 							// server associates it and it belongs in that item's
 							// attachment strip — announce it like the body editor
