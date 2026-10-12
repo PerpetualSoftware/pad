@@ -59,7 +59,7 @@ Your new workspace ships with the canonical `onboard` playbook auto-activated. T
 
 ## Why Pad?
 
-Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is built for **developers on their machine** — and for the AI agents working alongside them. When you do want your projects on every device or a teammate on the board, [Pad Cloud](https://app.getpad.dev) hosts the same product with sync, workspace invites, and role-based access.
+Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is built for **developers on their machine** — and for the AI agents working alongside them. When you do want your projects on every device or a teammate on the board, [Pad Cloud](https://app.getpad.dev) hosts the same product with sync, workspace invites, and role-based access. A self-hosted workspace moves there by export and import; see the [move-to-Cloud guide](https://app.getpad.dev/console/move-to-cloud).
 
 | | Pad | Linear / Jira | Notion |
 |---|---|---|---|

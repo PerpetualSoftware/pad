@@ -305,17 +305,25 @@ only operation that abandons its source.
 For portable workspace backups that work across SQLite and PostgreSQL:
 
 ```bash
-# Export a workspace to JSON
-pad workspace export > my-workspace.json
+# Export a workspace as a tar.gz bundle (items, comments, versions and
+# attachment files). --json writes the older items-only JSON instead.
+pad workspace export -o my-workspace.tar.gz
 
 # Import into any Pad instance (SQLite or PostgreSQL).
 # The file is an ARGUMENT, not stdin — `pad workspace import < file` fails
 # with "accepts 1 arg(s), received 0".
-pad workspace import my-workspace.json
+pad workspace import my-workspace.tar.gz
 
 # Import with a new name
-pad workspace import --name "imported-workspace" my-workspace.json
+pad workspace import --name "imported-workspace" my-workspace.tar.gz
 ```
+
+A bundle import prints what the bundle carried next to what arrived, for
+collections, items, comments and attachments, and marks any that differ
+(TASK-3612). The web import shows the same counts. Members, invitations, API
+tokens, stars and watches are not in a bundle: the importer becomes the only
+member. To move a self-hosted workspace to Pad Cloud this way, the web guide at
+`/console/move-to-cloud` walks through it.
 
 Item reference numbers are preserved when the imported items have positive,
 workspace-unique numbers, including gaps left by deleted items. This keeps

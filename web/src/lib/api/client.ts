@@ -106,6 +106,7 @@ import type {
 	ArchivedCollection,
 	CollectionFieldUsage
 } from '$lib/types';
+import type { ImportSummary } from '$lib/types';
 import { runSessionExpiryKeepers } from '$lib/stores/sessionExpiryKeep';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
@@ -1542,7 +1543,7 @@ export const api = {
 				onUploaded?: () => void;
 				signal?: AbortSignal;
 			} = {}
-		): Promise<Workspace & { stale_bodies?: number }> => {
+		): Promise<Workspace & { stale_bodies?: number; import_summary?: ImportSummary }> => {
 			const headers: Record<string, string> = { 'Content-Type': 'application/gzip' };
 			const csrf = getCSRFToken();
 			if (csrf) headers['X-CSRF-Token'] = csrf;
@@ -1577,7 +1578,7 @@ export const api = {
 				if (body?.error) throw new PadApiError(body.error);
 				throw new Error(`API error: ${resp.status}`);
 			}
-			const ws = parsed as Workspace;
+			const ws = parsed as Workspace & { import_summary?: ImportSummary };
 			// Absent, unparseable or zero all mean "nothing to report": the
 			// field stays undefined rather than 0, so a caller can render on
 			// presence without treating a clean import as a fact worth showing.

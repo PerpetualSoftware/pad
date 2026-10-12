@@ -312,7 +312,8 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 
 	staleBodies := &staleBodyTally{}
 	var importReport store.ImportReport
-	ws, err := s.importBundle(r, gz, newName, mint, repair, staleBodies, &importReport)
+	var bundled store.WorkspaceContentCounts
+	ws, err := s.importBundle(r, gz, newName, mint, repair, staleBodies, &importReport, &bundled)
 	if err != nil {
 		// A plan-limit refusal from the store (BUG-2808) is decided before the
 		// import's commit, so the transaction rolled back and there is no
@@ -471,7 +472,42 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	staleBodies.SetHeader(w)
 	setImportCollapsedHeader(w, importReport)
 	report(importStateComplete, ws)
-	writeJSON(w, http.StatusCreated, ws)
+	writeJSON(w, http.StatusCreated, importedWorkspaceResponse{
+		Workspace:     ws,
+		ImportSummary: s.importSummary(ws, bundled),
+	})
+}
+
+// importedWorkspaceResponse is the bundle import's 201: the workspace, as
+// before, plus an additive import_summary (TASK-3612).
+type importedWorkspaceResponse struct {
+	*models.Workspace
+	ImportSummary *importSummary `json:"import_summary,omitempty"`
+}
+
+// importSummary pairs what the bundle carried with what the new workspace
+// holds, per kind, so the person moving a workspace can see that everything
+// arrived (TASK-3612). The two sides are measured independently: in_bundle
+// from the bundle's own arrays and manifest, imported by counting the new
+// workspace's rows (store.CountWorkspaceContents), never from the import
+// loop's bookkeeping, which is exactly what a silently skipped attachment
+// would also skip.
+type importSummary struct {
+	InBundle store.WorkspaceContentCounts `json:"in_bundle"`
+	Imported store.WorkspaceContentCounts `json:"imported"`
+}
+
+// importSummary counts the imported workspace. A failed count leaves the
+// summary out (logged) rather than failing an import that succeeded: the
+// field is omitempty, and a client treats its absence as "not checked".
+func (s *Server) importSummary(ws *models.Workspace, bundled store.WorkspaceContentCounts) *importSummary {
+	imported, err := s.store.CountWorkspaceContents(ws.ID)
+	if err != nil {
+		slog.Warn("import: could not count the imported workspace for the summary",
+			"workspace_id", ws.ID, "error", err)
+		return nil
+	}
+	return &importSummary{InBundle: bundled, Imported: imported}
 }
 
 // rollBackPartialImport removes a workspace an import created and could not
@@ -566,7 +602,7 @@ func (b *importTransportBody) failed() bool {
 // Split out from the handler so tests can drive it with a tar.Reader
 // over an in-memory bundle and assert on the resulting state without
 // a live HTTP server.
-func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mint workspaceMintAuth, repair *nulRepairTally, staleBodies *staleBodyTally, report *store.ImportReport) (result *models.Workspace, retErr error) {
+func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mint workspaceMintAuth, repair *nulRepairTally, staleBodies *staleBodyTally, report *store.ImportReport, bundled *store.WorkspaceContentCounts) (result *models.Workspace, retErr error) {
 	ctx := req.Context()
 	// The bundle door is the SECOND body shape behind the import route, and
 	// it mints through the same store call, so it takes the same mint
@@ -783,6 +819,13 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			// BUG-3032: read the bundle's own stale-body marker while `export`
 			// is still the thing the exporter wrote.
 			staleBodies.Observe(&export)
+			// TASK-3612: what the bundle carried, for the post-import count
+			// check. Read before the import, from the arrays the exporter wrote.
+			if bundled != nil {
+				bundled.Collections = len(export.Collections)
+				bundled.Items = len(export.Items)
+				bundled.Comments = len(export.Comments)
+			}
 			var rep store.ImportReport
 			ws, rep, err = s.store.ImportWorkspaceWithReport(&export, newName, ownerID, mint.Source, s.planLimitMintOpts(ownerID)...)
 			if report != nil {
@@ -924,6 +967,9 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				}
 				seenAttachIDs[e.ID] = true
 				manifestByPath[bundleAttachmentPath(e.ID, e.Filename)] = e
+			}
+			if bundled != nil {
+				bundled.Attachments = len(manifest.Entries)
 			}
 			manifestSeen = true
 
