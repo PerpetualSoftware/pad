@@ -4976,7 +4976,7 @@
 	// newer body (keyed to the draft it was computed for), and the diff a
 	// successful patch restore answered with. Neither is read by the effect
 	// below; each renders only for the item and draft it names.
-	let refusedDraftConflict = $state<{ itemId: string; markdown: string; base: string } | null>(null);
+	let refusedDraftConflict = $state<{ itemId: string; savedAt: number; base: string } | null>(null);
 	let restoredDraftResult = $state<{ itemId: string; diff: string } | null>(null);
 	$effect(() => {
 		const id = item && itemMatchesRef ? item.id : null;
@@ -5026,9 +5026,13 @@
 		const reqItemId = item.id;
 		const gen = loadGeneration;
 		const userId = authStore.userId;
+		// An identity change need not move loadGeneration before the reload
+		// (codex r1): the draft, the toast and the result belong to this user.
+		const identity = captureIdentity();
+		const stale = () => !item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity);
 		const edits = draftEdits(d.baseBody, d.markdown);
 		if (edits === null) {
-			refusedDraftConflict = { itemId: reqItemId, markdown: d.markdown, base: d.baseBody };
+			refusedDraftConflict = { itemId: reqItemId, savedAt: d.savedAt, base: d.baseBody };
 			return;
 		}
 		if (edits.length === 0) {
@@ -5044,23 +5048,30 @@
 			// not applied twice (TASK-3585).
 			const opKey = `restore-${reqItemId}-${d.savedAt}`;
 			const res = await api.items.patch(wsSlug, reqItemId, { edits, expected_seq: d.baseSeq, op_key: opKey });
-			if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+			if (stale()) return;
 			clearRefusedRawDraft(userId, reqItemId, d.markdown);
 			refusedDraft = null;
 			restoredDraftResult = { itemId: reqItemId, diff: res.diff };
 			toastStore.show('Applied your kept changes', 'success');
-			// An open editor applied it and its flush catches the row up; with no
-			// editor the row has it now.
 			if (res.content_state !== 'applied_pending_flush') {
+				// No editor: the row has it now.
 				const fresh = await api.items.get(wsSlug, reqItemId);
-				if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+				if (stale()) return;
 				if (rawMode) rawSeedMarkdown = null;
 				item = withInflightTags(fresh);
+				return;
 			}
+			// An open editor applied it, and the row catches up on its flush. The
+			// rich editor shows the room's document already. The raw editor shows
+			// its seed ahead of the row (codex r1), so drop the seed unless the
+			// user has typed since (that save is guarded by its own base,
+			// BUG-3540); it then follows the row, which the SSE refresh moves
+			// when the flush lands.
+			if (rawMode && rawContentSaver.pending === null) rawSeedMarkdown = null;
 		} catch (e) {
-			if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+			if (stale()) return;
 			if (e instanceof PadApiError && (e.code === 'patch_anchor_missing' || e.code === 'patch_anchor_ambiguous')) {
-				refusedDraftConflict = { itemId: reqItemId, markdown: d.markdown, base: d.baseBody };
+				refusedDraftConflict = { itemId: reqItemId, savedAt: d.savedAt, base: d.baseBody };
 				return;
 			}
 			if (e instanceof PadApiError && e.code === 'patch_room_open') {
@@ -5091,6 +5102,8 @@
 		const reqItemId = item.id;
 		const gen = loadGeneration;
 		const userId = authStore.userId;
+		// The kept text and the result are this user's (codex r1 on TASK-3607).
+		const identity = captureIdentity();
 		// BUG-3540 (codex): the restore replaces the body the user is looking
 		// at, so it is sent against that row. A body changed since is refused,
 		// shown, and the draft kept: the user restores again, deliberately.
@@ -5108,7 +5121,7 @@
 						expected_seq: shownSeq,
 						...(overwrite ? { overwrite_pending_edits: true } : {}),
 					});
-					if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+					if (!item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity)) return;
 					clearRefusedRawDraft(userId, reqItemId, d.markdown);
 					refusedDraft = null;
 					// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
@@ -5121,21 +5134,21 @@
 					toastStore.show('Restored the kept markdown', 'success');
 					return;
 				} catch (e) {
-					if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+					if (!item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity)) return;
 					if (!overwrite && isEditsNotStoredRefusal(e)) {
 						const answer = await askToOverwritePendingEdits(reqItemId, gen, pendingEditsReason(e));
-						if (!answer || !item || item.id !== reqItemId || gen !== loadGeneration) return;
+						if (!answer || !item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity)) return;
 						// TASK-3548: an unconfirmed-edits refusal moved the row's seq;
 						// resend with the fresh one while the body is still the one shown.
 						const fresh = isContentNotAppliedUnconfirmed(e) ? await api.items.get(wsSlug, reqItemId) : null;
-						if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+						if (!item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity)) return;
 						if (fresh && stillOnBase(fresh, shownContent)) shownSeq = fresh.seq ?? shownSeq;
 						overwrite = true;
 						continue;
 					}
 					if (isUpdateConflictError(e)) {
 						const fresh = await api.items.get(wsSlug, reqItemId);
-						if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+						if (!item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity)) return;
 						if (rawMode) rawSeedMarkdown = null;
 						item = withInflightTags(fresh);
 						toastStore.show('This item changed since it was shown. Review it, then restore the kept markdown again.', 'info');
@@ -7318,7 +7331,7 @@
 						busy={refusedDraftBusy}
 						newer={refusedDraft.baseSeq !== undefined && (item?.seq ?? 0) > refusedDraft.baseSeq}
 						appliesChanges={draftAppliesAsPatch(refusedDraft, item?.seq ?? 0)}
-						conflict={refusedDraftConflict && refusedDraftConflict.itemId === item?.id && refusedDraftConflict.markdown === refusedDraft.markdown
+						conflict={refusedDraftConflict && refusedDraftConflict.itemId === item?.id && refusedDraftConflict.savedAt === refusedDraft.savedAt && refusedDraftConflict.base === refusedDraft.baseBody
 							? { base: refusedDraftConflict.base, draft: refusedDraft.markdown }
 							: null}
 						onrestore={restoreRefusedDraft}
