@@ -1212,6 +1212,17 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		if _, err := s.replaceRelationLinks(tx, newItemID, ws.ID, collMap[it.CollectionID], fields); err != nil {
 			return nil, fmt.Errorf("index relation links for item %s: %w", it.Title, err)
 		}
+
+		// Index the [[wiki-links]] (BUG-3627). Import used to leave
+		// item_wiki_links empty, and only the server-start backfill filled it,
+		// so an imported workspace had no backlinks or graph edges until the
+		// next restart. HERE for the same reason as the relation edges above:
+		// every item now exists in this transaction, so a link to an item
+		// later in the bundle resolves. The content is what the first pass
+		// inserted.
+		if err := s.replaceWikiLinks(tx, newItemID, ws.ID, it.Content); err != nil {
+			return nil, fmt.Errorf("index wiki links for item %s: %w", it.Title, err)
+		}
 	}
 
 	// Import comments
