@@ -742,7 +742,11 @@ export interface ItemMovedTo {
 // user); the lease is live iff expires_at is in the future, and the server
 // never returns an expired one.
 export interface ItemLease {
+	// Display label (the agent name). Show this in lists and badges.
 	holder: string;
+	// SHORT worker id ("wk_3f2a", TASK-3613), absent for a name-only lease:
+	// for item detail and hover only. The full id is never sent on a read.
+	worker?: string;
 	acquired_at: string;
 	expires_at: string;
 }

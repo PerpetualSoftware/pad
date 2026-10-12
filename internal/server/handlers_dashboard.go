@@ -1258,7 +1258,14 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// Reminders are prepended later and are not filtered: they are the
 	// user's own instruction for this moment.
 	if len(candidates) > 0 {
-		foreign, lerr := s.store.ListForeignItemLeaseIDs(workspaceID, defaultLeaseHolder(r, currentUser(r)), currentUserID(r))
+		// The same worker id a claim would send (TASK-3613). A malformed one
+		// is ignored here rather than failing a read: the claim itself
+		// answers 400 for it.
+		worker := defaultLeaseWorker(r)
+		if !models.ValidWorkerID(worker) || currentUserID(r) == "" {
+			worker = ""
+		}
+		foreign, lerr := s.store.ListForeignItemLeaseIDs(workspaceID, defaultLeaseHolder(r, currentUser(r)), worker, currentUserID(r))
 		if lerr != nil {
 			markDegraded("suggested_next.leases", lerr)
 		} else if len(foreign) > 0 {

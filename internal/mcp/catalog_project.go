@@ -14,6 +14,11 @@ var padProjectTool = ToolDef{
 		Workspace: true,
 		Params: []ParamDef{
 			{
+				Name:        "worker_id",
+				Type:        "string",
+				Description: "Your lease worker id, as a claim answers it. Optional for action=next/ready, which leave out items leased to another worker.",
+			},
+			{
 				Name:        "days",
 				Type:        "number",
 				Description: "Lookback window in days. Optional for action=standup (default 1) and action=changelog (default 7).",

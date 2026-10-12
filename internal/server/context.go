@@ -287,10 +287,14 @@ const ctxRemoteMCPCaller contextKey = "remote_mcp_caller"
 
 // RemoteMCPCaller is a remote MCP client acting for the authenticated user.
 type RemoteMCPCaller struct {
-	// LeaseHolder is the caller's default lease holder: its declared client
-	// name, or a fallback, plus a short id from its MCP session, so two
-	// connections of one client do not share a lease (lead ruling).
+	// LeaseHolder is the caller's default lease holder label: its declared
+	// client name, or a fallback. Display only since TASK-3613.
 	LeaseHolder string
+	// WorkerID is the caller's default lease worker id (TASK-3613): one it
+	// passed explicitly, else one derived from its MCP session, so two
+	// connections of one client do not share a lease. "" for a stateless
+	// request that sent none, which then claims name-only.
+	WorkerID string
 }
 
 // WithRemoteMCPCaller marks ctx as a remote MCP call. Every such write is an

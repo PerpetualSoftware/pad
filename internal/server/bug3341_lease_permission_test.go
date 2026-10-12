@@ -141,7 +141,7 @@ func TestBUG3341_LeaseBoundToItsClaimer(t *testing.T) {
 	// A lease from before the binding: no user recorded. Its label alone
 	// still releases it, and a refresh binds it to the refresher.
 	legacy := mkItem("Legacy")
-	if _, err := srv.store.ClaimItemLease(legacy.ID, "runner", "", 15*time.Minute); err != nil {
+	if _, err := srv.store.ClaimItemLease(legacy.ID, "runner", "", "", 15*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if code := call(bob, legacy, "claim"); code != http.StatusOK {

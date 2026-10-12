@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -85,12 +86,18 @@ func newBUG2772World(t *testing.T) *bug2772World {
 		}
 		return res, nil
 	})
-	mcpSrv.MCP().AddTool(mcp.NewTool("claim_task", mcp.WithString("ref")), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		input := map[string]any{"workspace": ws.Slug, "ref": req.GetString("ref", "")}
+	withWorker := func(req mcp.CallToolRequest, input map[string]any) map[string]any {
+		if w := req.GetString("worker_id", ""); w != "" {
+			input["worker_id"] = w
+		}
+		return input
+	}
+	mcpSrv.MCP().AddTool(mcp.NewTool("claim_task", mcp.WithString("ref"), mcp.WithString("worker_id")), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		input := withWorker(req, map[string]any{"workspace": ws.Slug, "ref": req.GetString("ref", "")})
 		return d.Dispatch(WithDispatchInput(ctx, input), []string{"item", "claim"}, nil)
 	})
-	mcpSrv.MCP().AddTool(mcp.NewTool("next"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return d.Dispatch(WithDispatchInput(ctx, map[string]any{"workspace": ws.Slug}), []string{"project", "next"}, nil)
+	mcpSrv.MCP().AddTool(mcp.NewTool("next", mcp.WithString("worker_id")), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return d.Dispatch(WithDispatchInput(ctx, withWorker(req, map[string]any{"workspace": ws.Slug})), []string{"project", "next"}, nil)
 	})
 	// Stands in for the /mcp auth middleware: the request's user goes on its
 	// context, the owner unless the test names the other member.
@@ -270,10 +277,10 @@ func TestBUG2772_RemoteMCPWritesAreAgentWrites(t *testing.T) {
 }
 
 func TestBUG2772_RemoteLeaseHolderIsPerConnection(t *testing.T) {
-	// Lead ruling: a remote caller's default lease holder is its client name
-	// plus a short session id, so two connections of one client do not
-	// silently share a claim, and next/ready agree with the claim default
-	// (both go through defaultLeaseHolder).
+	// Lead ruling: two connections of one client do not silently share a
+	// claim, and next/ready agree with the claim default. Since TASK-3613
+	// the connections are told apart by a session-derived worker id; the
+	// holder label is the bare client name (display only).
 	w := newBUG2772World(t)
 	tasks, err := w.s.GetCollectionBySlug(w.ws.ID, "tasks")
 	if err != nil || tasks == nil {
@@ -286,15 +293,21 @@ func TestBUG2772_RemoteLeaseHolderIsPerConnection(t *testing.T) {
 	a := w.initialize("claude-code")
 	b := w.initialize("claude-code")
 
-	if raw := w.call("claim_task", `{"ref":"`+it.Ref+`"}`, a); strings.Contains(raw, `"isError":true`) {
-		t.Fatalf("session a's claim failed: %s", raw)
+	rawA := w.call("claim_task", `{"ref":"`+it.Ref+`"}`, a)
+	if strings.Contains(rawA, `"isError":true`) {
+		t.Fatalf("session a's claim failed: %s", rawA)
 	}
+	m := regexp.MustCompile(`"worker_id":\s*"(wk_[0-9a-f]{32})"`).FindStringSubmatch(rawA)
+	if m == nil {
+		t.Fatalf("session a's claim did not answer with its worker_id: %s", rawA)
+	}
+	workerA := m[1]
 	lease, err := w.s.GetItemLease(it.ID)
 	if err != nil || lease == nil {
 		t.Fatalf("no lease stored: %v", err)
 	}
-	if want := "claude-code#" + shortSessionID(a); lease.Holder != want {
-		t.Fatalf("holder = %q, want %q", lease.Holder, want)
+	if lease.Holder != "claude-code" || lease.Worker != workerA[:7] {
+		t.Fatalf("lease = %+v, want holder claude-code and worker %s", lease, workerA[:7])
 	}
 
 	// The same client on another connection is a different holder, refused
@@ -335,6 +348,18 @@ func TestBUG2772_RemoteLeaseHolderIsPerConnection(t *testing.T) {
 	if raw := w.call("next", `{}`, b); strings.Contains(raw, it.Ref) {
 		t.Errorf("session b was offered an item session a holds: %s", raw)
 	}
+
+	// TASK-3613: a new connection RESUMES the lease by passing the
+	// worker_id the claim answered with, and sees it in next again.
+	if raw := w.call("next", `{"worker_id":"`+workerA+`"}`, b); !strings.Contains(raw, it.Ref) {
+		t.Errorf("session b resuming as worker a was not offered a's item: %s", raw)
+	}
+	if raw := w.call("claim_task", `{"ref":"`+it.Ref+`","worker_id":"`+workerA+`"}`, b); strings.Contains(raw, `"isError":true`) {
+		t.Errorf("session b could not resume worker a's lease: %s", raw)
+	}
+	if raw := w.call("claim_task", `{"ref":"`+it.Ref+`","worker_id":"wk_not-valid"}`, b); !strings.Contains(raw, `"isError":true`) || !strings.Contains(raw, "worker_id") {
+		t.Errorf("a malformed worker_id was not refused: %s", raw)
+	}
 }
 
 func TestBUG2772_ResolveRemoteCaller(t *testing.T) {
@@ -357,9 +382,19 @@ func TestBUG2772_ResolveRemoteCaller(t *testing.T) {
 		}
 	})
 
-	t.Run("short session id", func(t *testing.T) {
-		if got := shortSessionID("pad-mcp-3f9a12c4-0000"); got != "3f9a12c4" {
-			t.Fatalf("got %q", got)
+	t.Run("session worker id: stable per session, distinct across sessions and accounts", func(t *testing.T) {
+		a1, a2 := sessionWorkerID("u1", "pad-mcp-a"), sessionWorkerID("u1", "pad-mcp-a")
+		if a1 == "" || a1 != a2 || !models.ValidWorkerID(a1) {
+			t.Fatalf("not stable or not valid: %q %q", a1, a2)
+		}
+		if b := sessionWorkerID("u1", "pad-mcp-b"); b == a1 {
+			t.Fatal("two sessions derived one worker id")
+		}
+		if o := sessionWorkerID("u2", "pad-mcp-a"); o == a1 {
+			t.Fatal("two accounts presenting one session id derived one worker id")
+		}
+		if sessionWorkerID("", "pad-mcp-a") != "" || sessionWorkerID("u1", "") != "" {
+			t.Fatal("derived a worker id without both an account and a session")
 		}
 	})
 

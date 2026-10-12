@@ -202,7 +202,7 @@ func TestTASK1809_NextLeavesOutOthersLeasedItems(t *testing.T) {
 	}
 
 	// An expired lease hides nothing.
-	if _, err := f.srv.store.ClaimItemLease(leased.ID, "wren", userIDForEmail(t, f.srv, "user-a@example.com"), -time.Minute); err != nil {
+	if _, err := f.srv.store.ClaimItemLease(leased.ID, "wren", "", userIDForEmail(t, f.srv, "user-a@example.com"), -time.Minute); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	if !has(next(f.tokenA, "rook"), leased.Ref) {
@@ -224,7 +224,7 @@ func TestTASK1809_ForeignLeasePredicateMatchesTheClaim(t *testing.T) {
 	}
 	uid := userIDForEmail(t, f.srv, "user-a@example.com")
 
-	if _, err := st.ClaimItemLease(f.item.ID, "rook", uid, time.Hour); err != nil {
+	if _, err := st.ClaimItemLease(f.item.ID, "rook", "", uid, time.Hour); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	cases := []struct {
@@ -237,7 +237,7 @@ func TestTASK1809_ForeignLeasePredicateMatchesTheClaim(t *testing.T) {
 		{"other label, same user", "wren", uid, true},
 	}
 	for _, c := range cases {
-		ids, err := st.ListForeignItemLeaseIDs(ws.ID, c.holder, c.user)
+		ids, err := st.ListForeignItemLeaseIDs(ws.ID, c.holder, "", c.user)
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
@@ -246,22 +246,22 @@ func TestTASK1809_ForeignLeasePredicateMatchesTheClaim(t *testing.T) {
 			t.Errorf("%s: foreign = %v, want %v", c.name, got, c.foreign)
 		}
 		// Cross-check against the claim itself: foreign iff a claim loses.
-		if _, cerr := st.ClaimItemLease(f.item.ID, c.holder, c.user, time.Hour); (cerr != nil) != c.foreign {
+		if _, cerr := st.ClaimItemLease(f.item.ID, c.holder, "", c.user, time.Hour); (cerr != nil) != c.foreign {
 			t.Errorf("%s: claim error = %v, but the filter says foreign = %v", c.name, cerr, c.foreign)
 		}
 	}
 
 	// A legacy lease (no user recorded): ours on its label alone.
-	if _, err := st.ReleaseItemLease(f.item.ID, "rook", uid); err != nil {
+	if _, err := st.ReleaseItemLease(f.item.ID, "rook", "", uid); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	if _, err := st.ClaimItemLease(f.item.ID, "legacy", "", time.Hour); err != nil {
+	if _, err := st.ClaimItemLease(f.item.ID, "legacy", "", "", time.Hour); err != nil {
 		t.Fatalf("legacy claim: %v", err)
 	}
-	if ids, _ := st.ListForeignItemLeaseIDs(ws.ID, "legacy", uid); len(ids) != 0 {
+	if ids, _ := st.ListForeignItemLeaseIDs(ws.ID, "legacy", "", uid); len(ids) != 0 {
 		t.Errorf("a legacy lease on the caller's label reads as foreign")
 	}
-	if ids, _ := st.ListForeignItemLeaseIDs(ws.ID, "other", uid); len(ids) != 1 {
+	if ids, _ := st.ListForeignItemLeaseIDs(ws.ID, "other", "", uid); len(ids) != 1 {
 		t.Errorf("a legacy lease on another label does not read as foreign")
 	}
 }

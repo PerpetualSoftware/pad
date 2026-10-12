@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"strings"
 	"sync"
@@ -182,10 +184,15 @@ type RemoteCaller struct {
 	// Name is the declared client name ("claude-code"); empty when the
 	// client declared nothing, which still records an agent write.
 	Name string
-	// LeaseHolder is the default lease holder: Name (or remoteAgentFallback)
-	// plus a short id from the session, so two connections of one client do
-	// not silently share a lease (lead ruling, BUG-2772).
+	// LeaseHolder is the default lease holder label: Name, or
+	// remoteAgentFallback. Display only (TASK-3613, lead ruling).
 	LeaseHolder string
+	// WorkerID is the default lease worker id, derived from the account and
+	// the MCP session, so two connections of one client do not silently
+	// share a lease (BUG-2772's goal, carried by the worker id since
+	// TASK-3613). "" for a request with no session, which claims name-only
+	// unless it passes worker_id itself.
+	WorkerID string
 }
 
 // resolveRemoteCaller applies the precedence: a modern request's own _meta
@@ -206,29 +213,31 @@ func (r *ClientRegistry) resolveRemoteCaller(ctx context.Context) RemoteCaller {
 	if base == "" {
 		base = remoteAgentFallback
 	}
-	holder := base
-	if short := shortSessionID(sessionID); short != "" {
-		holder = base + "#" + short
+	worker, _ := ctx.Value(explicitWorkerKey{}).(string)
+	if worker == "" && r != nil {
+		worker = sessionWorkerID(r.owner(ctx), sessionID)
 	}
-	return RemoteCaller{Name: name, LeaseHolder: holder}
+	return RemoteCaller{Name: name, LeaseHolder: base, WorkerID: worker}
 }
 
-// shortSessionID is the first eight hex characters of the session's UUID
-// ("pad-mcp-3f9a12c4-…" gives "3f9a12c4"): enough to tell one user's
-// concurrent connections apart, short enough to read in a lease. A lease is
-// ours only when its label AND its user match (store.ClaimItemLease), so a
-// collision needs two live sessions of one ACCOUNT with the same client name
-// and the same eight digits.
-func shortSessionID(id string) string {
-	id = strings.TrimPrefix(id, "pad-mcp-")
-	var b strings.Builder
-	for _, c := range id {
-		if b.Len() == 8 {
-			break
-		}
-		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
-			b.WriteRune(c)
-		}
+// sessionWorkerID derives a stable lease worker id from the account and the
+// MCP session id (TASK-3613): the same session always gets the same id, so a
+// legacy client that re-sends its session id after a reconnect resumes its
+// own leases, and two sessions get two ids. The account is in the hash as
+// well as in the store's match, so a session id another account presents
+// derives a different id. "" without both.
+func sessionWorkerID(userID, sessionID string) string {
+	if userID == "" || sessionID == "" {
+		return ""
 	}
-	return b.String()
+	sum := sha256.Sum256([]byte("pad-lease-worker\x00" + userID + "\x00" + sessionID))
+	return "wk_" + hex.EncodeToString(sum[:16])
+}
+
+// explicitWorkerKey carries a call's own `worker_id` param (TASK-3613) from
+// the dispatcher to resolveRemoteCaller, ahead of the session-derived id.
+type explicitWorkerKey struct{}
+
+func withExplicitWorkerID(ctx context.Context, worker string) context.Context {
+	return context.WithValue(ctx, explicitWorkerKey{}, worker)
 }
