@@ -342,3 +342,42 @@ func TestPLAN3598_ItemContextReferenceItemIsNotOpenWork(t *testing.T) {
 		}
 	})
 }
+
+// A blocker whose collection cannot be read keeps the conservative reading,
+// open work, so it still raises open_blocker (Codex round 4): only a
+// collection positively known not to track work is excluded.
+func TestPLAN3598_ItemContextUnreadableCollectionStaysOpenWork(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newCtxFixture(t, d)
+		coll, err := f.srv.store.CreateCollection(f.wsID, models.CollectionCreate{
+			Name:   "Oddities",
+			Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"terminal_options":["done"]}]}`,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		odd, err := f.srv.store.CreateItem(f.wsID, coll.ID, models.ItemCreate{Title: "Ctx odd blocker", Fields: `{"status":"open"}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.srv.store.CreateItemLink(f.wsID, models.ItemLinkCreate{TargetID: f.task.ID, LinkType: models.ItemLinkTypeBlocks}, odd.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE collections SET schema = ? WHERE id = ?`), "not json", coll.ID); err != nil {
+			t.Fatalf("corrupt schema: %v", err)
+		}
+		resp, code, body := f.context(f.ownerTok, "?intent=implement")
+		if resp == nil {
+			t.Fatalf("status %d: %s", code, body)
+		}
+		found := false
+		for _, c := range resp.Conflicts {
+			for _, r := range c.Refs {
+				found = found || (c.Kind == "open_blocker" && r == odd.Ref)
+			}
+		}
+		if !found {
+			t.Errorf("a blocker in an unreadable collection should stay open work: %+v", resp.Conflicts)
+		}
+	})
+}

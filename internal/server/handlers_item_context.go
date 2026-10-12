@@ -637,7 +637,13 @@ func (c *contextSchemaCache) load(it *models.Item) *contextSchema {
 // and, if so, whether it is done.
 func (c *contextSchemaCache) lifecycle(it *models.Item) (tracksWork, done bool) {
 	cs := c.load(it)
-	if !cs.ok || !models.CollectionTracksWork(cs.settings) {
+	if !cs.ok {
+		// An unreadable collection keeps the conservative reading: open
+		// work. Only a collection positively known not to track work
+		// excludes its items.
+		return true, false
+	}
+	if !models.CollectionTracksWork(cs.settings) {
 		return false, false
 	}
 	var m map[string]any
