@@ -271,6 +271,20 @@ export interface ImportArtifactResult {
 	warnings: string[];
 }
 
+/** What a bundle import carried next to what the new workspace holds
+ *  (TASK-3612). Sent on the bundle import's 201 as `import_summary`. */
+export interface ImportCounts {
+	collections: number;
+	items: number;
+	comments: number;
+	attachments: number;
+}
+
+export interface ImportSummary {
+	in_bundle: ImportCounts;
+	imported: ImportCounts;
+}
+
 export interface Workspace {
 	id: string;
 	name: string;

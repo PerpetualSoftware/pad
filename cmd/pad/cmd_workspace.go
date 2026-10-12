@@ -1245,7 +1245,7 @@ Format is detected by file extension. Override workspace name with --name.`,
 			}
 			defer f.Close()
 
-			var ws models.Workspace
+			var ws importedWorkspace
 			var header http.Header
 			if contentType == "application/gzip" {
 				// BUG-3476: a bundle can be large and slow. Name the attempt
@@ -1293,10 +1293,15 @@ Format is detected by file extension. Override workspace name with --name.`,
 			}
 
 			fmt.Printf("Imported workspace %q (slug: %s)\n", ws.Name, ws.Slug)
-			fmt.Printf("  Collections: imported\n")
-			fmt.Printf("  Items, comments, links, versions: imported\n")
-			if contentType == "application/gzip" {
-				fmt.Printf("  Attachments: rehydrated from bundle\n")
+			if ws.ImportSummary != nil {
+				// TASK-3612: real counts, the bundle's next to what arrived.
+				printImportSummary(os.Stdout, ws.ImportSummary)
+			} else {
+				fmt.Printf("  Collections: imported\n")
+				fmt.Printf("  Items, comments, links, versions: imported\n")
+				if contentType == "application/gzip" {
+					fmt.Printf("  Attachments: rehydrated from bundle\n")
+				}
 			}
 			fmt.Printf("  All IDs regenerated\n")
 			if repairNUL {

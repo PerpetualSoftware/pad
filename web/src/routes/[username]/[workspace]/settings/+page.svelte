@@ -1049,6 +1049,12 @@
 								Download .tar.gz
 							</a>
 						</div>
+						{#if !authStore.cloudMode}
+							<!-- TASK-3612: the guided path for taking this bundle to Cloud. -->
+							<p class="section-note">
+								Moving to Pad Cloud? <a href="/console/move-to-cloud">Follow the guide</a>.
+							</p>
+						{/if}
 					{/if}
 				</div>
 			</section>
