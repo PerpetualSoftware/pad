@@ -23,6 +23,14 @@ export interface RefusedRawDraft {
 	markdown: string;
 	/** Epoch milliseconds when the text was kept. */
 	savedAt: number;
+	/**
+	 * The item's seq and body the edits were made on (TASK-3606, crash drafts
+	 * only; absent on older entries and other producers). A seq above it now
+	 * means someone saved since, and the base body lets a later restore apply
+	 * only the user's changes rather than replace the whole document.
+	 */
+	baseSeq?: number;
+	baseBody?: string;
 }
 
 const PREFIX = 'pad:refused-raw-draft:';
@@ -48,13 +56,56 @@ function storage(): Storage | null {
 }
 
 /** Keep `markdown` for this user and item, replacing any earlier text. */
-export function keepRefusedRawDraft(userId: string, itemId: string, markdown: string, now = Date.now()): void {
-	if (!userId || !itemId) return;
+export function keepRefusedRawDraft(
+	userId: string,
+	itemId: string,
+	markdown: string,
+	now = Date.now(),
+	base?: { seq: number; body: string },
+): boolean {
+	if (!userId || !itemId) return false;
+	const value = JSON.stringify(base ? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body } : { markdown, savedAt: now });
+	const s = storage();
+	if (!s) return false;
 	try {
-		storage()?.setItem(keyFor(userId, itemId), JSON.stringify({ markdown, savedAt: now }));
+		s.setItem(keyFor(userId, itemId), value);
+		return true;
 	} catch {
-		// Blocked or full: the save still goes out; only the recovery is lost.
+		// Full (TASK-3606): make room from expired drafts and this user's
+		// oldest others, then try once more. Blocked or still full: the save
+		// still goes out; only the recovery is lost.
+		try {
+			sweepExpiredRefusedRawDrafts(now);
+			evictOldestForUser(userId, itemId);
+			s.setItem(keyFor(userId, itemId), value);
+			return true;
+		} catch {
+			return false;
+		}
 	}
+}
+
+/** Remove this user's oldest kept draft other than `keepItemId`'s. */
+function evictOldestForUser(userId: string, keepItemId: string): void {
+	const s = storage();
+	if (!s) return;
+	const prefix = `${PREFIX}${userId}:`;
+	let oldestKey: string | null = null;
+	let oldestAt = Infinity;
+	for (let i = 0; i < s.length; i++) {
+		const k = s.key(i);
+		if (k === null || !k.startsWith(prefix) || k === keyFor(userId, keepItemId)) continue;
+		try {
+			const at = (JSON.parse(s.getItem(k) ?? '{}') as { savedAt?: number }).savedAt;
+			if (typeof at === 'number' && at < oldestAt) {
+				oldestAt = at;
+				oldestKey = k;
+			}
+		} catch {
+			oldestKey ??= k;
+		}
+	}
+	if (oldestKey) s.removeItem(oldestKey);
 }
 
 /**
@@ -73,7 +124,10 @@ export function readRefusedRawDraft(userId: string, itemId: string, now = Date.n
 			s?.removeItem(keyFor(userId, itemId));
 			return null;
 		}
-		return { markdown: parsed.markdown, savedAt: parsed.savedAt };
+		const out: RefusedRawDraft = { markdown: parsed.markdown, savedAt: parsed.savedAt };
+		if (typeof parsed.baseSeq === 'number') out.baseSeq = parsed.baseSeq;
+		if (typeof parsed.baseBody === 'string') out.baseBody = parsed.baseBody;
+		return out;
 	} catch {
 		return null;
 	}

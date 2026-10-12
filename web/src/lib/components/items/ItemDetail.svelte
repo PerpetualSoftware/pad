@@ -13,6 +13,7 @@
 	import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { registerSignOutGuard, signOutDiscarding } from '$lib/stores/signOutGuard.svelte';
+	import { registerCrashDraftKeeper } from '$lib/items/crashDraft';
 	import { registerSessionExpiryKeeper } from '$lib/stores/sessionExpiryKeep';
 	import {
 		keepRefusedRawDraft,
@@ -6211,6 +6212,36 @@
 		if (md !== null) keepRefusedRawDraft(userId, ctx.itemId, md);
 	}
 
+	// TASK-3606: a crash-safe recovery draft. While this item holds edits the
+	// server may not have, its markdown is kept every couple of seconds, with
+	// the seq and body it was edited from, so a tab that dies outright (no
+	// unload prompt, no teardown flush) still offers them on the next open.
+	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string } | null {
+		if (!item) return null;
+		// Whose typing is in the editor (the teardown flush's fence): after an
+		// identity change and before the reload re-stamps it, the text is the
+		// previous user's, and the keeper would file it under the new user's
+		// key (codex r2). The identity listener already kept it for its author.
+		if (authStore.identityEpoch !== identityEpochAtLoad) return null;
+		const base = { baseSeq: item.seq ?? 0, baseBody: item.content ?? '' };
+		if (rawContentSaver.dirty && rawContentSaver.pending !== null) return { markdown: rawContentSaver.pending, ...base };
+		const ctx = activeCollabContext;
+		if (!ctx || ctx.retired || ctx.itemId !== item.id) return null;
+		const md = collabFlusher.snapshot(ctx);
+		return md === null ? null : { markdown: md, ...base };
+	}
+	$effect(() => {
+		return registerCrashDraftKeeper({
+			userId: () => authStore.userId,
+			itemId: () => item?.id ?? null,
+			atRisk: () => (collabProvider?.editsAtRiskOnClose ?? false) || (rawContentSaver.dirty && !!item),
+			snapshot: crashDraftSnapshot,
+			discarding: signOutDiscarding,
+			// Raw mode: its pending string; rich: the doc's update counter.
+			version: () => (rawContentSaver.dirty ? rawContentSaver.pending : `doc:${collabProvider?.docVersion ?? 0}`),
+		});
+	});
+
 	// The session-expiry redirect does not move the identity, so the user the
 	// text belongs to is still the signed-in one (BUG-3571 part 2).
 	$effect(() => {
@@ -7210,6 +7241,7 @@
 					<RefusedRawDraftNotice
 						savedAt={refusedDraft.savedAt}
 						busy={refusedDraftBusy}
+						newer={refusedDraft.baseSeq !== undefined && (item?.seq ?? 0) > refusedDraft.baseSeq}
 						onrestore={restoreRefusedDraft}
 						oncopy={copyRefusedDraft}
 						ondismiss={discardRefusedDraft}
