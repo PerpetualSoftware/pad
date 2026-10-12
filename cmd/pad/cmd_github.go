@@ -126,7 +126,8 @@ func fetchGitHubPR() (*GitHubPR, error) {
 }
 
 func githubLinkCmd() *cobra.Command {
-	return &cobra.Command{
+	var supplied GitHubPR
+	cmd := &cobra.Command{
 		Use:   "link [item-ref]",
 		Short: "Link the current branch's PR to a Pad item",
 		Long: `Link the current branch's GitHub pull request to a Pad item.
@@ -135,7 +136,8 @@ If no item ref is provided, attempts to auto-detect from the branch name.
 For example, branch "fix/TASK-5-oauth-bug" would auto-link to TASK-5.`,
 		Example: `  pad github link TASK-5
   pad github link fix-oauth-bug
-  pad github link                 # auto-detect from branch name`,
+  pad github link                 # auto-detect from branch name
+  pad github link TASK-5 --pr-number 42 --pr-url https://github.com/acme/app/pull/42 --pr-state open`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -145,22 +147,47 @@ For example, branch "fix/TASK-5-oauth-bug" would auto-link to TASK-5.`,
 			dim := color.New(color.Faint)
 			green := color.New(color.FgGreen, color.Bold)
 
-			// Step 1: Get current branch
-			branch, err := getCurrentBranch()
-			if err != nil {
-				return err
-			}
-			dim.Printf("Branch: %s\n", branch)
+			// Supplied metadata (TASK-3611): an agent with no checkout or `gh`
+			// names the PR itself, and nothing is fetched from GitHub. The
+			// server validates the number and URL, as for a fetched PR.
+			var branch string
+			var pr *GitHubPR
+			// ANY supplied PR flag opts in (codex r1): a lone --pr-title must
+			// not fall through to the branch and `gh`.
+			if anyFlagChanged(cmd, "pr-number", "pr-url", "pr-title", "pr-state", "pr-branch", "pr-repo") {
+				if supplied.Number <= 0 || supplied.URL == "" {
+					return fmt.Errorf("--pr-number and --pr-url are both required to link a PR you name")
+				}
+				if len(args) == 0 {
+					return fmt.Errorf("an item ref is required with --pr-number: pad github link TASK-5 --pr-number N --pr-url URL")
+				}
+				p := supplied
+				pr = &p
+			} else {
+				// Step 1: Get current branch
+				b, err := getCurrentBranch()
+				if err != nil {
+					return err
+				}
+				branch = b
+				if formatFlag != "json" {
+					dim.Printf("Branch: %s\n", branch)
+				}
 
-			// Step 2: Fetch PR info
-			pr, err := fetchGitHubPR()
-			if err != nil {
-				return err
+				// Step 2: Fetch PR info
+				fetched, err := fetchGitHubPR()
+				if err != nil {
+					return err
+				}
+				pr = fetched
 			}
 
-			stateColor := prStateColor(pr.State)
-			fmt.Printf("PR #%d  %s  %s\n", pr.Number, stateColor.Sprint(pr.State), dim.Sprint(pr.URL))
-			fmt.Printf("  %s\n\n", bold.Sprint(pr.Title))
+			text := formatFlag != "json" // JSON output carries only the item
+			if text {
+				stateColor := prStateColor(pr.State)
+				fmt.Printf("PR #%d  %s  %s\n", pr.Number, stateColor.Sprint(pr.State), dim.Sprint(pr.URL))
+				fmt.Printf("  %s\n\n", bold.Sprint(pr.Title))
+			}
 
 			// Step 3: Determine target item
 			var itemRef string
@@ -171,7 +198,9 @@ For example, branch "fix/TASK-5-oauth-bug" would auto-link to TASK-5.`,
 				if itemRef == "" {
 					return fmt.Errorf("could not detect item ref from branch %q. Specify one: pad github link TASK-5", branch)
 				}
-				dim.Printf("Auto-detected item ref: %s\n", itemRef)
+				if text {
+					dim.Printf("Auto-detected item ref: %s\n", itemRef)
+				}
 			}
 
 			// Step 4: Resolve the item
@@ -197,11 +226,24 @@ For example, branch "fix/TASK-5-oauth-bug" would auto-link to TASK-5.`,
 				return err
 			}
 
+			// --format json answers with the item, as the remote MCP door does
+			// (TASK-3611).
+			if formatFlag == "json" {
+				outputJSON(updated)
+				return nil
+			}
 			ref := cli.ItemRef(*item)
 			green.Printf("✓ Linked PR #%d (%s) → %s %q\n", pr.Number, pr.Repo, ref, item.Title)
 			return nil
 		},
 	}
+	cmd.Flags().IntVar(&supplied.Number, "pr-number", 0, "link this PR number instead of the current branch's (with --pr-url; nothing is fetched from GitHub)")
+	cmd.Flags().StringVar(&supplied.URL, "pr-url", "", "the PR's URL, with --pr-number")
+	cmd.Flags().StringVar(&supplied.Title, "pr-title", "", "the PR's title, with --pr-number")
+	cmd.Flags().StringVar(&supplied.State, "pr-state", "", "the PR's state (e.g. open, merged, closed), with --pr-number")
+	cmd.Flags().StringVar(&supplied.Branch, "pr-branch", "", "the PR's head branch, with --pr-number")
+	cmd.Flags().StringVar(&supplied.Repo, "pr-repo", "", "the PR's repository (owner/name), with --pr-number")
+	return cmd
 }
 
 func githubStatusCmd() *cobra.Command {
@@ -344,6 +386,10 @@ func githubUnlinkCmd() *cobra.Command {
 			}
 
 			green := color.New(color.FgGreen, color.Bold)
+			if formatFlag == "json" {
+				outputJSON(updated)
+				return nil
+			}
 			green.Printf("✓ Removed PR link from %s %q\n", cli.ItemRef(*item), item.Title)
 			return nil
 		},
@@ -421,3 +467,13 @@ func relativeTimeStr(t time.Time) string {
 }
 
 // --- database tools ---
+
+// anyFlagChanged reports whether any of names was set on cmd.
+func anyFlagChanged(cmd *cobra.Command, names ...string) bool {
+	for _, n := range names {
+		if cmd.Flags().Changed(n) {
+			return true
+		}
+	}
+	return false
+}

@@ -127,7 +127,8 @@ func scopePopulationHandler(onMutate func()) http.Handler {
 			return
 		}
 		if r.Method == http.MethodGet && len(parts) == 2 && parts[0] == "items" {
-			_, _ = w.Write([]byte(`{"id":"i-1","slug":"task-1","ref":"TASK-1","collection_slug":"tasks","fields":"{}"}`))
+			// The item carries a PR link so unlink-pr has one to remove (TASK-3611).
+			_, _ = w.Write([]byte(`{"id":"i-1","slug":"task-1","ref":"TASK-1","collection_slug":"tasks","fields":"{\"github_pr\":{\"number\":1}}"}`))
 			return
 		}
 		_, _ = w.Write([]byte("{}"))

@@ -84,6 +84,12 @@ var padItemTool = ToolDef{
 		// `unremind` disarms one by id (TASK-3611): an agent that defers work
 		// can now see and cancel what it armed without a terminal. Re-arm
 		// stays CLI-only (`pad item remind --rearm`).
+		// PR linking (TASK-3611): the agent supplies the PR's metadata and
+		// nothing is fetched from GitHub, so it works with no checkout and
+		// no `gh`. The server validates it as it does a fetched PR.
+		"link-pr":   refAsItemRef([]string{"github", "link"}),
+		"unlink-pr": refAsItemRef([]string{"github", "unlink"}),
+
 		"remind":       passThrough([]string{"item", "remind"}),
 		"ack-reminder": passThrough([]string{"item", "ack"}),
 		"reminders":    passThrough([]string{"item", "reminders"}),
@@ -164,7 +170,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release, reminders. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release, reminders, link-pr, unlink-pr. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -184,6 +190,13 @@ var padItemSchemaParams = []ParamDef{
 	// text as its tool result.
 	// ── Reminders ── (IDEA-2641)
 	{Name: "remind_at", Type: "string", Description: "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00 which is stored as the same moment in UTC). Required for: remind. A bare date (2026-08-01) is REFUSED, not assumed to mean midnight — it names a 24-hour span, and choosing an hour inside it would fire at a time nobody picked."},
+	// PR metadata for action=link-pr (TASK-3611), sent as given.
+	{Name: "pr_number", Type: "number", Description: "The pull request's number (> 0). Required for: link-pr."},
+	{Name: "pr_url", Type: "string", Description: "The pull request's absolute http(s) URL. Required for: link-pr."},
+	{Name: "pr_title", Type: "string", Description: "The pull request's title. Optional for: link-pr."},
+	{Name: "pr_state", Type: "string", Description: "The pull request's state as you know it (e.g. open, merged, closed). Optional for: link-pr. Pad does not check it against GitHub."},
+	{Name: "pr_branch", Type: "string", Description: "The pull request's head branch. Optional for: link-pr."},
+	{Name: "pr_repo", Type: "string", Description: "The pull request's repository, owner/name. Optional for: link-pr."},
 	{Name: "reminder_id", Type: "string", Description: "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required for: ack-reminder, unremind. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not."},
 
 	// ── Execution lease ── (#1221)
@@ -260,7 +273,7 @@ var padItemSchemaParams = []ParamDef{
 	// or just guessed shapes when other input shapes errored. The
 	// expanded description names the dedicated top-level params so
 	// agents don't fall back to `field` for them.
-	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. implementation_notes, decision_log and convention are REFUSED here on create (BUG-3163), on update (BUG-2627) and on move/copy (BUG-2674) — both reach you as code=validation_failed with the server's explanation in the hint (the server's own finer-grained code is not forwarded, so branch on the message if you need to tell the two apart). Each has its own writer: implementation_notes -> action=note, decision_log -> action=decide, convention -> library activation (no update path at all). github_pr is refused too, on every door (BUG-2696): a `field` value arrived as a string, so the PR data landed double-encoded and no link appeared. Its writer is `pad github link` / `unlink`, which needs a local git checkout and the `gh` CLI; this catalog has no PR-link action yet, so hand PR linking to a human rather than retrying. On CREATE they are refused too (BUG-3163): create the item, then use note / decide on it; convention metadata is written by library activation. On create/update the `fields` OBJECT param is an equivalent alternative."},
+	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. implementation_notes, decision_log and convention are REFUSED here on create (BUG-3163), on update (BUG-2627) and on move/copy (BUG-2674) — both reach you as code=validation_failed with the server's explanation in the hint (the server's own finer-grained code is not forwarded, so branch on the message if you need to tell the two apart). Each has its own writer: implementation_notes -> action=note, decision_log -> action=decide, convention -> library activation (no update path at all). github_pr is refused too, on every door (BUG-2696): a `field` value arrived as a string, so the PR data landed double-encoded and no link appeared. Its writers are action=link-pr (pr_number + pr_url, and optionally pr_title / pr_state / pr_branch / pr_repo; nothing is fetched from GitHub) and action=unlink-pr. On CREATE they are refused too (BUG-3163): create the item, then use note / decide on it; convention metadata is written by library activation. On create/update the `fields` OBJECT param is an equivalent alternative."},
 	// `fields`: the OBJECT alias for the write path (#1066). Reads
 	// return `fields` as a native object, so writing that same shape
 	// back is what agents naturally do — it used to be silently
@@ -413,6 +426,12 @@ Actions:
     Required: ref, target, link_type.
   deps          — Show all dependencies (incoming + outgoing) for an item.
     Required: ref.
+  link-pr       — Link a pull request to an item, from metadata you
+    supply; nothing is fetched from GitHub.
+    Required: ref, pr_number, pr_url. Optional: pr_title,
+    pr_state, pr_branch, pr_repo. Linking again replaces the
+    link. Answers with the item.
+  unlink-pr     — Remove an item's PR link. Required: ref.
   remind        — Arm a one-shot reminder that fires at a specific instant.
     Required: ref, remind_at (RFC3339 INSTANT — a bare date is
     refused, since it names a 24-hour span rather than a moment).
