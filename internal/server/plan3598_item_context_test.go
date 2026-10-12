@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
 
@@ -101,7 +102,9 @@ func TestPLAN3598_ItemContextBrief(t *testing.T) {
 		if resp.Item.Ref != f.task.Ref || resp.Item.Seq == 0 || resp.Item.Content != "task body" {
 			t.Errorf("item = %+v", resp.Item)
 		}
-		if strings.Join(resp.Triggers, ",") != "always,on-implement" {
+		// implement also pulls the commit and PR rules the workspace declares
+		// (lead dogfood: CONVE-735, the mandatory review, is on-pr-create).
+		if tr := strings.Join(resp.Triggers, ","); !strings.HasPrefix(tr, "always,on-implement,on-commit") {
 			t.Errorf("triggers = %v", resp.Triggers)
 		}
 
@@ -114,15 +117,15 @@ func TestPLAN3598_ItemContextBrief(t *testing.T) {
 			t.Errorf("acceptance criteria = %+v", ac)
 		}
 
-		// Conventions: always + on-implement, global + this role's; not
-		// on-commit, not another role's; must before should.
+		// Conventions: always + the implement triggers, global + this role's;
+		// not another role's; must before should.
 		refs := convRefs(resp.Conventions)
-		for _, k := range []string{"always-must", "impl-should", "impl-must", "impl-implementer"} {
+		for _, k := range []string{"always-must", "impl-should", "impl-must", "impl-implementer", "commit"} {
 			if ctxIndex(refs, f.conv[k].Ref) < 0 {
 				t.Errorf("missing convention %s (%s) in %v", k, f.conv[k].Ref, refs)
 			}
 		}
-		for _, k := range []string{"commit", "impl-reviewer"} {
+		for _, k := range []string{"impl-reviewer"} {
 			if ctxIndex(refs, f.conv[k].Ref) >= 0 {
 				t.Errorf("convention %s should not be in the brief: %v", k, refs)
 			}
@@ -183,9 +186,11 @@ func TestPLAN3598_ItemContextRefusals(t *testing.T) {
 	})
 }
 
-// A tiny budget keeps the item, omits the rest in order, and never lets a
-// later part in once one was refused.
-func TestPLAN3598_ItemContextBudgetIsOrderedAndWhole(t *testing.T) {
+// A tiny budget keeps the item and omits the rest, each named. A part that
+// does not fit is skipped WHOLE and filling continues, so a smaller later
+// part still ships (lead dogfood: one 32 KB convention used to crowd out
+// everything after it). The parent chain alone stops at its first miss.
+func TestPLAN3598_ItemContextBudgetSkipsAndKeepsFilling(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		full, _, _ := f.context(f.ownerTok, "?intent=implement")
@@ -204,21 +209,196 @@ func TestPLAN3598_ItemContextBudgetIsOrderedAndWhole(t *testing.T) {
 		if len(resp.Omitted) == 0 || resp.Omitted[0].Part != "parent" || resp.Omitted[0].Ref != f.plan.Ref || resp.Omitted[0].Size == 0 {
 			t.Errorf("omitted = %+v", resp.Omitted)
 		}
+		for _, o := range resp.Omitted {
+			if o.Ref == "" || o.Title == "" {
+				t.Errorf("an omitted entry does not name its ref and title: %+v", o)
+			}
+		}
 
-		// A budget that fits the item, the parent, and room for one small
-		// later part (a link) but not the first convention: the convention is
-		// refused, and the link, which would fit, must not slip in after it.
+		// Room for the item, the parent and one small link, but not the
+		// first convention. The convention is skipped, filling continues, and
+		// the result is FULL in the keep-filling sense: no omitted part would
+		// fit in what is left. (Stopping at the first miss breaks that: the
+		// link would fit the leftover and be omitted anyway.)
 		linkSize, convSize := partSize(full.Links[0]), partSize(full.Conventions[0])
 		if linkSize >= convSize {
 			t.Fatalf("precondition: a link (%d) must be smaller than the first convention (%d)", linkSize, convSize)
 		}
 		mid := itemOnly + partSize(full.Parents[0]) + linkSize
 		resp, _, _ = f.context(f.ownerTok, "?intent=implement&budget="+itoa(mid))
-		if len(resp.Parents) != 1 || len(resp.Conventions) != 0 || len(resp.Playbooks) != 0 || len(resp.Links) != 0 || len(resp.Deps.BlockedBy) != 0 || len(resp.Decisions) != 0 {
-			t.Errorf("mid budget: parents %d conventions %d playbooks %d links %d deps %d decisions %d", len(resp.Parents), len(resp.Conventions), len(resp.Playbooks), len(resp.Links), len(resp.Deps.BlockedBy), len(resp.Decisions))
+		if len(resp.Parents) != 1 {
+			t.Errorf("mid budget: parents %d, want 1", len(resp.Parents))
 		}
-		if len(resp.Omitted) == 0 || resp.Omitted[0].Part != "convention" || resp.Omitted[0].Ref != full.Conventions[0].Ref {
-			t.Errorf("mid budget omitted = %+v", resp.Omitted)
+		if ctxIndex(omittedRefs(resp.Omitted), full.Conventions[0].Ref) < 0 {
+			t.Errorf("mid budget: the first convention was not omitted: %+v", resp.Omitted)
+		}
+		if resp.Used <= itemOnly+partSize(full.Parents[0]) {
+			t.Errorf("mid budget: nothing shipped after the skipped convention (used %d)", resp.Used)
+		}
+		left := mid - resp.Used
+		for _, o := range resp.Omitted {
+			if o.Size <= left {
+				t.Errorf("omitted %s %s (%d) would fit the %d left: filling stopped early", o.Part, o.Ref, o.Size, left)
+			}
+		}
+	})
+}
+
+func omittedRefs(os []itemContextOmitted) []string {
+	out := make([]string, len(os))
+	for i, o := range os {
+		out[i] = o.Ref
+	}
+	return out
+}
+
+// Lead dogfood, PLAN-3598: a 32 KB convention ahead of small ones in the
+// order is skipped, and the small ones after it still ship.
+func TestPLAN3598_ItemContextBigConventionDoesNotBlockSmallOnes(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newCtxFixture(t, d)
+		conv, err := f.srv.store.GetCollectionBySlug(f.wsID, "conventions")
+		if err != nil || conv == nil {
+			t.Fatalf("conventions: %v", err)
+		}
+		// must on on-implement: the highest tier and priority, so it sorts
+		// ahead of every should rule whatever its size.
+		big, err := f.srv.store.CreateItem(f.wsID, conv.ID, models.ItemCreate{
+			Title: "Ctx huge rule", Content: strings.Repeat("x", 32*1024),
+			Fields: `{"status":"active","trigger":"on-implement","priority":"must","scope":"all"}`,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, code, body := f.context(f.ownerTok, "?intent=implement&budget=20000")
+		if resp == nil {
+			t.Fatalf("status %d: %s", code, body)
+		}
+		refs := convRefs(resp.Conventions)
+		if ctxIndex(refs, big.Ref) >= 0 {
+			t.Fatalf("a 32 KB rule shipped under a 20000 budget")
+		}
+		if ctxIndex(omittedRefs(resp.Omitted), big.Ref) < 0 {
+			t.Errorf("the big rule is not listed as omitted: %+v", resp.Omitted)
+		}
+		for _, k := range []string{"impl-should", "always-must", "commit"} {
+			if ctxIndex(refs, f.conv[k].Ref) < 0 {
+				t.Errorf("small rule %s was crowded out by the big one: %v", k, refs)
+			}
+		}
+	})
+}
+
+// Lead dogfood, PLAN-3598: relevance order. The intent's triggers come
+// first, then role-scoped rules, then the global always ones; within a
+// tier, must before should. Never the ref string.
+func TestPLAN3598_ItemContextConventionsInRelevanceOrder(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newCtxFixture(t, d)
+		resp, code, body := f.context(f.ownerTok, "?intent=implement&role=implementer")
+		if resp == nil {
+			t.Fatalf("status %d: %s", code, body)
+		}
+		tier := func(c itemContextConvention) int {
+			switch {
+			case c.Trigger != "always":
+				return 0
+			case c.Role != "":
+				return 1
+			}
+			return 2
+		}
+		// Equal-key conventions (same trigger, priority and body length)
+		// whose ref numbers straddle a digit boundary, so string order and
+		// numeric order disagree and only the ref NUMBER tiebreak passes.
+		conv, err := f.srv.store.GetCollectionBySlug(f.wsID, "conventions")
+		if err != nil || conv == nil {
+			t.Fatalf("conventions: %v", err)
+		}
+		var tied []string
+		for i := 0; i < 120; i++ {
+			it, err := f.srv.store.CreateItem(f.wsID, conv.ID, models.ItemCreate{
+				Title: "Ctx tie " + itoa(i), Content: "same body",
+				Fields: `{"status":"active","trigger":"on-implement","priority":"nice","scope":"all"}`,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tied = append(tied, it.Ref)
+			if _, first := splitRef(tied[0]); i > 0 && len(itoa(first)) != len(it.Ref)-strings.LastIndexByte(it.Ref, '-')-1 {
+				break
+			}
+		}
+		if _, a := splitRef(tied[0]); len(itoa(a)) == len(tied[len(tied)-1])-strings.LastIndexByte(tied[len(tied)-1], '-')-1 {
+			t.Fatalf("precondition: the tied refs %s..%s do not straddle a digit boundary", tied[0], tied[len(tied)-1])
+		}
+		resp, _, _ = f.context(f.ownerTok, "?intent=implement&role=implementer&budget=400000")
+		if got, want := tiedOrder(convRefs(resp.Conventions), tied), sortedByNumber(tied); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("equal-key conventions not in ref-number order:\n got %v\nwant %v", got, want)
+		}
+
+		cs := resp.Conventions
+		if len(cs) < 3 {
+			t.Fatalf("too few conventions to check the order: %v", convRefs(cs))
+		}
+		if cs[0].Trigger == "always" || conventionPriorityRank(cs[0].Priority) != conventionPriorityRank("must") {
+			t.Errorf("the first convention is not an intent-trigger must rule: %+v", cs[0])
+		}
+		for i := 1; i < len(cs); i++ {
+			a, b := cs[i-1], cs[i]
+			if tier(a) > tier(b) || (tier(a) == tier(b) && conventionPriorityRank(a.Priority) > conventionPriorityRank(b.Priority)) {
+				t.Errorf("%s (%s/%s) sorts before %s (%s/%s)", a.Ref, a.Trigger, a.Priority, b.Ref, b.Trigger, b.Priority)
+			}
+			// Within one tier and priority, the smaller body first.
+			if tier(a) == tier(b) && conventionPriorityRank(a.Priority) == conventionPriorityRank(b.Priority) && len(a.Content) > len(b.Content) {
+				t.Errorf("%s (%d bytes) sorts before the smaller %s (%d bytes)", a.Ref, len(a.Content), b.Ref, len(b.Content))
+			}
+		}
+		// A role-scoped rule on the intent's trigger is in the first tier:
+		// ahead of every always-on rule.
+		refs := convRefs(cs)
+		roleRule := ctxIndex(refs, f.conv["impl-implementer"].Ref)
+		if roleRule < 0 {
+			t.Fatalf("precondition: the role-scoped on-implement rule is missing from %v", refs)
+		}
+		for _, c := range cs {
+			if c.Trigger == "always" && roleRule > ctxIndex(refs, c.Ref) {
+				t.Errorf("the role-scoped on-implement rule sorts after always-on %s", c.Ref)
+			}
+		}
+		if !refLess("CONVE-13", "CONVE-1287") || refLess("CONVE-1287", "CONVE-13") {
+			t.Error("refLess compares ref numbers as strings")
+		}
+	})
+}
+
+// Lead dogfood, PLAN-3598: implement includes opening the PR, so an
+// on-pr-create rule (CONVE-735, the mandatory review) is in the brief.
+func TestPLAN3598_ItemContextImplementIncludesPRRules(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newCtxFixture(t, d)
+		conv, err := f.srv.store.GetCollectionBySlug(f.wsID, "conventions")
+		if err != nil || conv == nil {
+			t.Fatalf("conventions: %v", err)
+		}
+		pr, err := f.srv.store.CreateItem(f.wsID, conv.ID, models.ItemCreate{
+			Title: "Ctx review before merge", Content: "run the review",
+			Fields: `{"status":"active","trigger":"on-pr-create","priority":"must","scope":"all"}`,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, code, body := f.context(f.ownerTok, "?intent=implement")
+		if resp == nil {
+			t.Fatalf("status %d: %s", code, body)
+		}
+		if ctxIndex(convRefs(resp.Conventions), pr.Ref) < 0 {
+			t.Errorf("an on-pr-create must rule is missing from an implement brief: triggers %v, conventions %v", resp.Triggers, convRefs(resp.Conventions))
+		}
+		// Control: a commit brief does not pull it.
+		resp, _, _ = f.context(f.ownerTok, "?intent=commit")
+		if resp != nil && ctxIndex(convRefs(resp.Conventions), pr.Ref) >= 0 {
+			t.Errorf("a commit brief pulled the on-pr-create rule")
 		}
 	})
 }
@@ -395,4 +575,25 @@ func TestPLAN3598_ItemContextBlockerAgreesWithDashboard(t *testing.T) {
 		}
 		want("an open blocker whose collection schema does not decode", blockedBy("Ctx odd-blocked task", *odd), *odd, true)
 	})
+}
+
+// tiedOrder is the order in which the refs in want appear in got.
+func tiedOrder(got, want []string) []string {
+	in := map[string]bool{}
+	for _, r := range want {
+		in[r] = true
+	}
+	var out []string
+	for _, r := range got {
+		if in[r] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func sortedByNumber(refs []string) []string {
+	out := append([]string(nil), refs...)
+	sort.Slice(out, func(i, j int) bool { return refLess(out[i], out[j]) })
+	return out
 }

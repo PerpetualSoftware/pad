@@ -94,6 +94,7 @@ type itemContextDeps struct {
 type itemContextOmitted struct {
 	Part   string `json:"part"`
 	Ref    string `json:"ref,omitempty"`
+	Title  string `json:"title,omitempty"`
 	Seq    int64  `json:"seq,omitempty"`
 	Size   int    `json:"size"`
 	Reason string `json:"reason"`
@@ -178,7 +179,7 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 	if intent != "" && convColl == nil {
 		triggers = append(triggers, "on-"+strings.TrimPrefix(intent, "on-"))
 	} else if intent != "" {
-		trig, valid, terr := s.resolveContextIntent(convColl, intent)
+		trig, also, valid, terr := s.resolveContextIntent(convColl, intent)
 		if terr != nil {
 			writeInternalError(w, terr)
 			return
@@ -192,6 +193,7 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 		if trig != "always" {
 			triggers = append(triggers, trig)
 		}
+		triggers = append(triggers, also...)
 	}
 
 	role := strings.TrimSpace(q.Get("role"))
@@ -255,21 +257,23 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 					Detail: item.Ref + " is open but its parent " + a.Ref + " is closed"})
 			}
 		}
-		if !b.take("parent", a.Ref, a.Seq, p) {
+		// The chain stops at its first miss: an ancestor shown above a
+		// missing one would misstate the lineage.
+		if !b.take("parent", a.Ref, a.Title, a.Seq, p) {
 			break
 		}
 		resp.Parents = append(resp.Parents, p)
 	}
 
-	// Conventions whose trigger matches, deduplicated, must → should → nice,
-	// then by ref; role-scoped ones only for the named role when one is given.
+	// Conventions whose trigger matches, deduplicated, in relevance order
+	// (contextConventions); role-scoped ones only for the named role.
 	convs, err := s.contextConventions(r, workspaceID, convColl, triggers, role)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	for _, c := range convs {
-		if !b.take("convention", c.Ref, c.Seq, c) {
+		if !b.take("convention", c.Ref, c.Title, c.Seq, c) {
 			continue
 		}
 		resp.Conventions = append(resp.Conventions, c)
@@ -283,7 +287,7 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, p := range pbs {
-		if !b.take("playbook", p.Ref, 0, p) {
+		if !b.take("playbook", p.Ref, p.Title, 0, p) {
 			continue
 		}
 		resp.Playbooks = append(resp.Playbooks, p)
@@ -330,7 +334,7 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 		others = append(others, e)
 	}
 	for i, d := range deps {
-		if !b.take("dependency", d.Ref, 0, d) {
+		if !b.take("dependency", d.Ref, d.Title, 0, d) {
 			continue
 		}
 		if depKind[i] == "blocks" {
@@ -350,14 +354,14 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 			resp.Conflicts = append(resp.Conflicts, itemContextConflict{Kind: "stale_decision", Refs: []string{item.Ref},
 				Detail: "decision " + d.QuestionKey + " was evaluated against an earlier state of " + item.Ref})
 		}
-		if !b.take("decision", "", d.ItemSeq, d) {
+		if !b.take("decision", item.Ref, d.QuestionKey, d.ItemSeq, d) {
 			continue
 		}
 		resp.Decisions = append(resp.Decisions, d)
 	}
 
 	for _, l := range others {
-		if !b.take("link", l.Ref, 0, l) {
+		if !b.take("link", l.Ref, l.Title, 0, l) {
 			continue
 		}
 		resp.Links = append(resp.Links, l)
@@ -389,23 +393,23 @@ func (s *Server) contextRelatedVisible(r *http.Request, workspaceID string) func
 	}
 }
 
-// contextBudget admits parts in order until the first one that does not fit;
-// from then on every part is omitted, so order is never inverted by a
-// smaller part slipping in after a larger one was refused.
+// contextBudget admits parts in order while they fit. A part that does not
+// fit is skipped WHOLE (never truncated), listed in `omitted` by part, ref and
+// title, and filling continues: one 32 KB convention must not crowd out every
+// smaller part after it (lead dogfood, PLAN-3598). Callers order parts by
+// relevance, so what is skipped is the least relevant that does not fit.
 type contextBudget struct {
 	limit, used int
-	full        bool
 	resp        *itemContextResponse
 }
 
-func (b *contextBudget) take(part, ref string, seq int64, v any) bool {
+func (b *contextBudget) take(part, ref, title string, seq int64, v any) bool {
 	n := partSize(v)
-	if !b.full && b.used+n <= b.limit {
+	if b.used+n <= b.limit {
 		b.used += n
 		return true
 	}
-	b.full = true
-	b.resp.Omitted = append(b.resp.Omitted, itemContextOmitted{Part: part, Ref: ref, Seq: seq, Size: n, Reason: "budget"})
+	b.resp.Omitted = append(b.resp.Omitted, itemContextOmitted{Part: part, Ref: ref, Title: title, Seq: seq, Size: n, Reason: "budget"})
 	return false
 }
 
@@ -417,15 +421,25 @@ func partSize(v any) int {
 	return len(raw)
 }
 
+// intentAlsoTriggers widens an intent past its own trigger (lead dogfood,
+// PLAN-3598): implementing a task includes committing and opening the PR, so
+// the rules for those steps (CONVE-735's mandatory review is on-pr-create)
+// belong in an implement brief. Each is added only when the workspace
+// declares it.
+var intentAlsoTriggers = map[string][]string{
+	"implement": {"on-commit", "on-pr-create"},
+}
+
 // resolveContextIntent maps an intent onto a trigger the workspace declares on
-// its conventions: "on-<intent>" if declared, else "<intent>" itself. When
-// neither is declared it returns "" and the valid intents.
-func (s *Server) resolveContextIntent(conv *collections.TraitedCollection, intent string) (string, []string, error) {
+// its conventions: "on-<intent>" if declared, else "<intent>" itself, plus the
+// declared triggers intentAlsoTriggers adds. When the intent's own trigger is
+// not declared it returns "" and the valid intents.
+func (s *Server) resolveContextIntent(conv *collections.TraitedCollection, intent string) (string, []string, []string, error) {
 	var options []string
 	if conv != nil {
 		c, err := s.store.GetCollection(conv.ID)
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		if c != nil {
 			var schema models.CollectionSchema
@@ -447,13 +461,19 @@ func (s *Server) resolveContextIntent(conv *collections.TraitedCollection, inten
 		}
 	}
 	sort.Strings(valid)
+	var also []string
+	for _, t := range intentAlsoTriggers[strings.TrimPrefix(intent, "on-")] {
+		if declared[t] {
+			also = append(also, t)
+		}
+	}
 	if declared["on-"+intent] {
-		return "on-" + intent, valid, nil
+		return "on-" + intent, also, valid, nil
 	}
 	if declared[intent] {
-		return intent, valid, nil
+		return intent, also, valid, nil
 	}
-	return "", valid, nil
+	return "", nil, valid, nil
 }
 
 func (s *Server) contextAncestors(item *models.Item, visible func(string) bool) ([]models.Item, error) {
@@ -545,14 +565,61 @@ func (s *Server) contextConventions(r *http.Request, workspaceID string, conv *c
 			Priority: contextFieldString(it.Fields, "priority"), Role: it.AgentRoleSlug, Content: it.Content,
 		})
 	}
+	// Relevance order (lead dogfood, PLAN-3598), so the budget spends itself
+	// on what matters first: the intent's own triggers, then rules scoped to
+	// the caller's role, then the global always-on ones; within a tier,
+	// priority (must > should > nice), then the smaller body (more rules fit),
+	// then the ref's number. Never the ref string, which put CONVE-13 after
+	// CONVE-1287.
+	tier := func(c itemContextConvention) int {
+		switch {
+		case c.Trigger != "always":
+			return 0
+		case c.Role != "":
+			return 1
+		default:
+			return 2
+		}
+	}
 	sort.SliceStable(out, func(i, j int) bool {
-		pi, pj := conventionPriorityRank(out[i].Priority), conventionPriorityRank(out[j].Priority)
-		if pi != pj {
+		if ti, tj := tier(out[i]), tier(out[j]); ti != tj {
+			return ti < tj
+		}
+		if pi, pj := conventionPriorityRank(out[i].Priority), conventionPriorityRank(out[j].Priority); pi != pj {
 			return pi < pj
 		}
-		return out[i].Ref < out[j].Ref
+		if li, lj := len(out[i].Content), len(out[j].Content); li != lj {
+			return li < lj
+		}
+		return refLess(out[i].Ref, out[j].Ref)
 	})
 	return out, nil
+}
+
+// refLess orders refs by prefix, then by their number as a number
+// ("CONVE-13" before "CONVE-1287").
+func refLess(a, b string) bool {
+	pa, na := splitRef(a)
+	pb, nb := splitRef(b)
+	if pa != pb {
+		return pa < pb
+	}
+	if na != nb {
+		return na < nb
+	}
+	return a < b
+}
+
+func splitRef(ref string) (string, int) {
+	i := strings.LastIndexByte(ref, '-')
+	if i < 0 {
+		return ref, 0
+	}
+	n, err := strconv.Atoi(ref[i+1:])
+	if err != nil {
+		return ref, 0
+	}
+	return ref[:i], n
 }
 
 func (s *Server) contextPlaybooks(r *http.Request, workspaceID string, traited []collections.TraitedCollection, triggers []string) ([]itemContextPlaybook, error) {
@@ -576,7 +643,13 @@ func (s *Server) contextPlaybooks(r *http.Request, workspaceID string, traited [
 		}
 		out = append(out, itemContextPlaybook{Ref: it.Ref, Title: it.Title, Trigger: trig, InvocationSlug: contextFieldString(it.Fields, "invocation_slug")})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
+	// The intent's own triggers before always-on ones, then by ref number.
+	sort.SliceStable(out, func(i, j int) bool {
+		if ai, aj := out[i].Trigger == "always", out[j].Trigger == "always"; ai != aj {
+			return !ai
+		}
+		return refLess(out[i].Ref, out[j].Ref)
+	})
 	return out, nil
 }
 
