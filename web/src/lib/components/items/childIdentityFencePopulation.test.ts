@@ -196,6 +196,8 @@ const POPULATION: string[] = [
 	'lib/components/common/StaleBodyNotice.svelte',
 	// BUG-3230 U0: no requests and no awaits; its buttons call the parent.
 	'lib/components/items/RefusedRawDraftNotice.svelte',
+	// TASK-3607: renders a diff string it is given; no requests, no awaits.
+	'lib/components/items/RestoredDraftResult.svelte',
 	'lib/components/collections/EditCollectionModal.svelte',
 	'lib/components/ShareDialog.svelte',
 	'lib/components/items/CopyItemDialog.svelte',

@@ -30,6 +30,8 @@ import type {
 	ItemIndexResponse,
 	ItemIndexRow,
 	ItemUpdate,
+	ItemPatchRequest,
+	ItemPatchResponse,
 	ClientWriteStamp,
 	ItemLink,
 	ItemLinkCreate,
@@ -1900,6 +1902,19 @@ export const api = {
 				keepalive: ka.keepalive
 			}).finally(ka.release);
 		},
+
+		/**
+		 * Content-anchored edits (PLAN-3578): POST /items/{ref}/patch. A moved
+		 * seq is applied over and reported `rebased`, not refused; a missing or
+		 * ambiguous anchor answers 409 `patch_anchor_missing` /
+		 * `patch_anchor_ambiguous` with nothing written. `op_key` makes a retry
+		 * of an unknown outcome safe (TASK-3585).
+		 */
+		patch: (ws: string, ref: string, data: ItemPatchRequest) =>
+			request<ItemPatchResponse>(`/workspaces/${ws}/items/${ref}/patch`, {
+				method: 'POST',
+				body: JSON.stringify(data)
+			}),
 
 		/**
 		 * flushCollabContent PATCHes items.content with the
