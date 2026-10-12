@@ -2650,6 +2650,15 @@ func (s *Server) ListenAndServe(addr string) error {
 // separating it from Serve is what lets a caller distinguish "we own this port"
 // from "we are about to try".
 func (s *Server) Listen(addr string) (net.Listener, error) {
+	s.Prepare(addr)
+	return net.Listen("tcp", addr)
+}
+
+// Prepare builds the HTTP server for addr without binding it, for a caller
+// that bound the listener itself. `pad server start` binds before it opens the
+// database (TASK-3620), long before the Server exists, and hands that listener
+// to Serve.
+func (s *Server) Prepare(addr string) {
 	s.ensureRouter()
 
 	// ReadTimeout bounds reading the WHOLE request, headers and body, from its
@@ -2670,16 +2679,11 @@ func (s *Server) Listen(addr string) (net.Listener, error) {
 		// WriteTimeout left at 0 — SSE connections are long-lived.
 		// Non-SSE handlers should use per-request context deadlines.
 	}
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	return ln, nil
 }
 
 // Serve accepts connections on ln until the server is shut down. Pair it with
-// Listen; ListenAndServe is the two together.
+// Listen, or with Prepare for a listener bound elsewhere; ListenAndServe is
+// Listen and Serve together.
 func (s *Server) Serve(ln net.Listener) error {
 	slog.Info("Pad server listening", "addr", ln.Addr().String())
 	return s.httpServer.Serve(ln)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -72,6 +73,34 @@ func serveCmd() *cobra.Command {
 			if cmd.Flags().Changed("port") {
 				cfg.Port = port
 			}
+
+			// Bind FIRST, before anything touches shared state (TASK-3620). A
+			// start that loses the port must exit without having opened the
+			// database, run migrations or started a background worker: the CLI
+			// spawned 206 such losing starts in two days (a rate-limited health
+			// probe read as "no server"), and each one opened the live database
+			// and started its outbox drain, op-log recovery and decision and
+			// reminder ticks before its bind failed.
+			ln, lerr := net.Listen("tcp", cfg.Addr())
+			if lerr != nil {
+				return lerr
+			}
+			// Serve closes it on the normal path; this covers every early
+			// return between here and Serve. A second Close is harmless.
+			defer func() { _ = ln.Close() }()
+
+			// We hold the port, so the PID file is ours to claim. It must
+			// follow the bind (BUG-2965, codex round 2): the file names the
+			// process `pad server stop` will signal, and a start that wrote it
+			// before losing the race would, on its way out, remove the file
+			// the winner relies on. Claimed here rather than after startup, so
+			// `stop` can also address a server that is still migrating.
+			releasePIDFile := cli.ClaimPIDFile(cfg.PIDFile())
+			// Backstop for the paths that never reach the shutdown sequence
+			// (an early return, or Serve returning an error). Safe to call
+			// twice: it only removes a file that still names us, and a second
+			// call finds nothing.
+			defer releasePIDFile()
 
 			// Label pre-migration snapshots with this build's version, and
 			// honor the schema-ahead-guard escape hatch (--force or
@@ -968,38 +997,13 @@ func serveCmd() *cobra.Command {
 					"hint", "cloud bootstrap stays loopback-only by design")
 			}
 
-			// Record this process in the PID file, so `pad server stop` can
-			// address a server started HERE and not only one auto-started by
-			// EnsureServer (BUG-2965). EnsureServer spawns this very command
-			// and writes the child's pid, so the two paths write the same
-			// value and cannot disagree; before this, the same command run by
-			// a human wrote nothing and `stop` answered "not running" about a
-			// live server.
-			//
-			// Written after the listener's prerequisites are up but before
-			// ListenAndServe, and removed on the way out. A SIGKILL leaves it
-			// behind, which is why StopServer treats the file as a handle
-			// rather than as evidence and asks the port when it is missing —
-			// and why a stale file that names a dead process is cleaned up
-			// there rather than trusted.
-			// Bind FIRST, then claim the PID file (BUG-2965, codex round 2).
-			// The file names the process `pad server stop` will signal, so it
-			// must name the one that actually owns the port. Writing before the
-			// bind lets a start that LOSES the race record itself and then, on
-			// its way out, remove the file the winner is relying on — leaving a
-			// healthy server unaddressable, which is this fix's own defect
-			// reintroduced by its own cleanup.
-			ln, lerr := srv.Listen(cfg.Addr())
-			if lerr != nil {
-				return lerr
-			}
-
-			// We hold the port; the file is ours to claim.
-			releasePIDFile := cli.ClaimPIDFile(cfg.PIDFile())
-			// Backstop for the paths that never reach the shutdown sequence
-			// (Serve returns an error). Safe to call twice: it only removes a
-			// file that still names us, and a second call finds nothing.
-			defer releasePIDFile()
+			// The port was bound and the PID file claimed at the top of this
+			// command (TASK-3620, BUG-2965). The PID file lets `pad server
+			// stop` address a server started HERE and not only one
+			// auto-started by EnsureServer. A SIGKILL leaves it behind, which
+			// is why StopServer treats the file as a handle rather than as
+			// evidence.
+			srv.Prepare(cfg.Addr())
 
 			// Graceful shutdown: listen for SIGINT/SIGTERM
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
