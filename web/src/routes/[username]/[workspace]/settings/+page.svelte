@@ -10,6 +10,7 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import MoveToCloudLink from '$lib/components/workspaces/MoveToCloudLink.svelte';
 	import type { Collection, WorkspaceContext } from '$lib/types';
 	import type { WorkspaceApp } from '$lib/types';
 	import { parseSchema } from '$lib/types';
@@ -1049,12 +1050,8 @@
 								Download .tar.gz
 							</a>
 						</div>
-						{#if !authStore.cloudMode}
-							<!-- TASK-3612: the guided path for taking this bundle to Cloud. -->
-							<p class="section-note">
-								Moving to Pad Cloud? <a href="/console/move-to-cloud">Follow the guide</a>.
-							</p>
-						{/if}
+						<!-- TASK-3612: the guided path for taking this bundle to Cloud. -->
+						<MoveToCloudLink on="self-hosted" />
 					{/if}
 				</div>
 			</section>
