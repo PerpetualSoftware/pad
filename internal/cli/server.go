@@ -3,9 +3,11 @@ package cli
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -20,7 +22,7 @@ func EnsureServer(cfg *config.Config) error {
 		return nil
 	}
 
-	if isServerHealthy(cfg.Host, cfg.Port) {
+	if serverResponds(cfg.Host, cfg.Port) {
 		return nil
 	}
 
@@ -30,11 +32,42 @@ func EnsureServer(cfg *config.Config) error {
 	if err := awaitRefresh(cfg); err != nil {
 		return err
 	}
-	if isServerHealthy(cfg.Host, cfg.Port) {
+	if serverResponds(cfg.Host, cfg.Port) {
 		return nil
 	}
 
+	// Something holds the port but sent no response: a server still starting
+	// (it binds before it migrates, TASK-3620). Spawning over it only makes a
+	// second start that loses the bind. Wait for it to serve instead, so the
+	// caller's request does not sit in the backlog past its own timeout.
+	if portHeld(cfg.Host, cfg.Port) {
+		return awaitServing(cfg)
+	}
+
 	return spawnServer(cfg)
+}
+
+// startupWait bounds awaitServing. Generous, because a start that runs
+// migrations holds the port for as long as they take; a variable so a test can
+// shorten it.
+var startupWait = 2 * time.Minute
+
+// awaitServing waits for the server holding the port to answer HTTP.
+func awaitServing(cfg *config.Config) error {
+	deadline := time.Now().Add(startupWait)
+	for time.Now().Before(deadline) {
+		if serverResponds(cfg.Host, cfg.Port) {
+			return nil
+		}
+		if !portHeld(cfg.Host, cfg.Port) {
+			// The holder went away without serving. Leave the port to the
+			// next call's ordinary auto-start rather than race for it here.
+			return fmt.Errorf("the process holding %s exited before it served; retry", cfg.Addr())
+		}
+		time.Sleep(refreshPoll)
+	}
+	return fmt.Errorf("a process holds %s but has not answered HTTP within %s (a server still migrating?); "+
+		"not starting another over it. Check %s", cfg.Addr(), startupWait, cfg.LogFile())
 }
 
 // spawnServer starts `<this binary> server start` in the background and waits
@@ -82,11 +115,17 @@ func startBackgroundServer(cfg *config.Config) error {
 	// Wait for server to become healthy
 	for i := 0; i < 30; i++ {
 		time.Sleep(100 * time.Millisecond)
-		if isServerHealthy(cfg.Host, cfg.Port) {
+		if serverResponds(cfg.Host, cfg.Port) {
 			return nil
 		}
 	}
 
+	// The child binds before it migrates (TASK-3620), so a held port after
+	// three seconds is a server still starting: wait for it as EnsureServer
+	// does, rather than fail a call whose server is about to serve.
+	if portHeld(cfg.Host, cfg.Port) {
+		return awaitServing(cfg)
+	}
 	return fmt.Errorf("server failed to start within 3 seconds. Check %s for errors", cfg.LogFile())
 }
 
@@ -115,7 +154,7 @@ func StopServer(cfg *config.Config) error {
 	if owner == pidFileStale && rec.PID == 0 {
 		// No file at all. A server started outside this CLI still holds the
 		// port, and saying "not running" about it is the BUG-2965 failure.
-		if isServerHealthy(cfg.Host, cfg.Port) {
+		if portHeld(cfg.Host, cfg.Port) {
 			return fmt.Errorf(
 				"a server is answering on %s but this CLI did not start it (no PID file at %s) — "+
 					"stop it where it was started, or signal the process listening on that address",
@@ -132,7 +171,7 @@ func StopServer(cfg *config.Config) error {
 		// The file is already gone: pidFileOwner removed it while holding the
 		// lock, which is the only point at which no replacement can have
 		// claimed the path (codex round 2).
-		if isServerHealthy(cfg.Host, cfg.Port) {
+		if portHeld(cfg.Host, cfg.Port) {
 			// Deliberately NOT "the process is gone": the recorded pid may
 			// well be alive — that is the dangerous case, since it is a
 			// stranger that inherited the number — and a reader who checks
@@ -192,19 +231,46 @@ func StopServer(cfg *config.Config) error {
 	return fmt.Errorf("signalled %s but it has not exited after 6s — it may be draining connections", describePIDRecord(rec))
 }
 
-// IsServerRunning checks if the server is currently running.
+// IsServerRunning reports whether a server answers on the configured address.
 func IsServerRunning(cfg *config.Config) bool {
-	return isServerHealthy(cfg.Host, cfg.Port)
+	return portHeld(cfg.Host, cfg.Port)
 }
 
-func isServerHealthy(host string, port int) bool {
+// Two questions, two probes (TASK-3620). The old single probe was an HTTP GET
+// of /health that required a 200, and it was wrong both ways:
+//
+//   - The probe shares one per-address rate-limit bucket across every CLI on
+//     the machine, so a parallel fan-out drew 429s that read as "not running":
+//     206 `pad server start` spawns in two days, each opening the live
+//     database before losing the bind.
+//   - `pad server start` binds before it migrates, so a starting server holds
+//     the port and answers nothing until startup is done.
+//
+// portHeld answers "may I start a server here, or touch the database under
+// it?": whether a TCP connect succeeds. serverResponds answers "is it serving
+// yet?": whether an HTTP request gets any response, whatever the status, since
+// /health itself only answers 200 and anything else is middleware in front of
+// a running server.
+
+// portHeld reports whether something holds host:port.
+func portHeld(host string, port int) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// serverResponds reports whether an HTTP request to host:port gets a response.
+func serverResponds(host string, port int) bool {
 	client := &http.Client{Timeout: 1 * time.Second}
 	resp, err := client.Get(fmt.Sprintf("http://%s:%d/api/v1/health", host, port))
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	_ = resp.Body.Close()
+	return true
 }
 
 // ClaimPIDFile records this process in the PID file and holds the platform's

@@ -18,7 +18,7 @@ import (
 )
 
 // localHeadlessCfg points a Local-mode config at srv via env vars, so
-// EnsureServer's isServerHealthy(host, port) check finds the fake server
+// EnsureServer's serverResponds(host, port) check finds the fake server
 // live and skips spawning a real `pad server start` subprocess.
 // Local mode (rather than Remote) matters here: cmd_workspace.go's
 // initCmd only reaches the BUG-2538 canPromptForConfig() gate for local
