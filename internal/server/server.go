@@ -51,6 +51,12 @@ type Server struct {
 	// 30s.
 	sseKeepaliveOverride time.Duration
 
+	// accountExportHooks, when set, replace the account export's deadline and
+	// its two mid-stream store reads. Tests only (BUG-3626). Per server, not
+	// package variables: the export's read runs on its own goroutine, and a
+	// package variable restored at test cleanup raced with it.
+	accountExportHooks accountExportHooks
+
 	// clientWrites orders one browser tab's content writes to an item
 	// (BUG-3080). Nil disables it — a write is then applied exactly as it was
 	// before this existed.

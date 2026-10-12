@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -84,9 +85,9 @@ func TestBUG3626_TimedOutExportIsNotAValidCompleteFile(t *testing.T) {
 	srv := testServer(t)
 	tok := bug3626Owner(t, srv)
 
-	orig := accountExportTimeout
-	accountExportTimeout = 0 // out of time before the first workspace
-	t.Cleanup(func() { accountExportTimeout = orig })
+	// Out of time before the first workspace (the deadline has passed by
+	// the time the loop checks it).
+	srv.accountExportHooks.timeout = time.Nanosecond
 
 	_, body, readErr := bug3626Export(t, srv, tok)
 	if readErr == nil && parsesAsCompleteExport(body) {
@@ -100,40 +101,39 @@ func TestBUG3626_TimedOutExportIsNotAValidCompleteFile(t *testing.T) {
 // account. Each read is failed through its seam: a broken table fails an
 // earlier query and answers 500 before the body starts, which proves nothing.
 func TestBUG3626_StoreErrorMidExportIsNotAValidCompleteFile(t *testing.T) {
-	var calls int
 	for _, c := range []struct {
 		name   string
-		break_ func()
+		break_ func(srv *Server, calls *atomic.Int32)
 	}{
-		{"collections", func() {
-			accountExportListCollections = func(*Server, string) ([]models.Collection, error) {
-				calls++
+		{"collections", func(srv *Server, calls *atomic.Int32) {
+			srv.accountExportHooks.listCollections = func(string) ([]models.Collection, error) {
+				calls.Add(1)
 				return nil, errors.New("injected collections failure")
 			}
 		}},
-		{"items", func() {
-			accountExportListItems = func(*Server, string, models.ItemListParams) ([]models.Item, error) {
-				calls++
+		{"items", func(srv *Server, calls *atomic.Int32) {
+			srv.accountExportHooks.listItems = func(string, models.ItemListParams) ([]models.Item, error) {
+				calls.Add(1)
 				return nil, errors.New("injected items failure")
 			}
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			origC, origI := accountExportListCollections, accountExportListItems
-			t.Cleanup(func() { accountExportListCollections, accountExportListItems = origC, origI })
 			srv := testServer(t)
 			tok := bug3626Owner(t, srv)
-			c.break_()
-			calls = 0
+			var calls atomic.Int32
+			// Set before the test server starts serving, so the handler's
+			// read of the hook is ordered after this write.
+			c.break_(srv, &calls)
 
 			code, body, readErr := bug3626Export(t, srv, tok)
-			// The fault must land where the export is streaming: the seam
+			// The fault must land where the export is streaming: the hook
 			// was reached, and the answer is not an ordinary error status
 			// from an earlier step. A dropped connection (code 0: the status
 			// line was still buffered when the export aborted) and a 200
 			// whose body is cut off are both the loud failure wanted.
-			if calls != 1 {
-				t.Fatalf("the %s seam ran %d times, want 1: the fault did not land in the export loop", c.name, calls)
+			if n := calls.Load(); n != 1 {
+				t.Fatalf("the %s hook ran %d times, want 1: the fault did not land in the export loop", c.name, n)
 			}
 			if code != 0 && code != http.StatusOK {
 				t.Fatalf("status %d: an error status before the body, not the mid-export fault under test (body %s)", code, body)
@@ -195,16 +195,12 @@ func TestBUG3626_CompleteExportCarriesFormatAndTrailer(t *testing.T) {
 // A store read that stalls cannot hold the export open past its deadline: the
 // export stops waiting, aborts, and the read's late result is dropped.
 func TestBUG3626_StalledReadIsBoundedByTheDeadline(t *testing.T) {
-	origT, origI := accountExportTimeout, accountExportListItems
-	release := make(chan struct{})
-	t.Cleanup(func() {
-		close(release)
-		accountExportTimeout, accountExportListItems = origT, origI
-	})
 	srv := testServer(t)
 	tok := bug3626Owner(t, srv)
-	accountExportTimeout = 300 * time.Millisecond
-	accountExportListItems = func(s *Server, wsID string, p models.ItemListParams) ([]models.Item, error) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	srv.accountExportHooks.timeout = 300 * time.Millisecond
+	srv.accountExportHooks.listItems = func(wsID string, p models.ItemListParams) ([]models.Item, error) {
 		// Stalls until the test ends, or 8s at most, so a build without the
 		// deadline answers late (and fails the bound below) instead of
 		// hanging the test.
@@ -212,7 +208,7 @@ func TestBUG3626_StalledReadIsBoundedByTheDeadline(t *testing.T) {
 		case <-release:
 		case <-time.After(8 * time.Second):
 		}
-		return s.store.ListItems(wsID, p)
+		return srv.store.ListItems(wsID, p)
 	}
 
 	start := time.Now()

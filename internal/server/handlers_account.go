@@ -325,9 +325,8 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 // --- Data Export (GDPR Article 20 — Right to Portability) ---
 
-// accountExportTimeout bounds one account export; a variable so a test can
-// run out of time on demand.
-var accountExportTimeout = 60 * time.Second
+// accountExportTimeout bounds one account export.
+const accountExportTimeout = 60 * time.Second
 
 // accountExportFormat and accountExportVersion open every account export, so a
 // consumer can tell this artifact from a workspace bundle's pad-export.json
@@ -337,18 +336,37 @@ const (
 	accountExportVersion = 1
 )
 
-// The two store reads the export makes after its body has started. Variables
-// so a test can make one fail at exactly that point: a broken table fails an
-// earlier query first and answers 500 before any byte, which is not the case
-// under test (BUG-3626).
-var (
-	accountExportListCollections = func(s *Server, wsID string) ([]models.Collection, error) {
-		return s.store.ListCollections(wsID)
+// accountExportHooks lets a test change the export's deadline and make one
+// of its two mid-stream store reads fail or stall at exactly that point (a
+// broken table fails an earlier query first and answers 500 before any byte,
+// which is not the case under test). Zero values mean the real thing
+// (BUG-3626).
+type accountExportHooks struct {
+	timeout         time.Duration
+	listCollections func(wsID string) ([]models.Collection, error)
+	listItems       func(wsID string, p models.ItemListParams) ([]models.Item, error)
+}
+
+func (s *Server) accountExportDeadline() time.Duration {
+	if d := s.accountExportHooks.timeout; d > 0 {
+		return d
 	}
-	accountExportListItems = func(s *Server, wsID string, p models.ItemListParams) ([]models.Item, error) {
-		return s.store.ListItems(wsID, p)
+	return accountExportTimeout
+}
+
+func (s *Server) accountExportListCollections(wsID string) ([]models.Collection, error) {
+	if f := s.accountExportHooks.listCollections; f != nil {
+		return f(wsID)
 	}
-)
+	return s.store.ListCollections(wsID)
+}
+
+func (s *Server) accountExportListItems(wsID string, p models.ItemListParams) ([]models.Item, error) {
+	if f := s.accountExportHooks.listItems; f != nil {
+		return f(wsID, p)
+	}
+	return s.store.ListItems(wsID, p)
+}
 
 // withinExportDeadline runs one store read under the export's deadline. The
 // store reads take no context, so the read runs on its own goroutine and the
@@ -403,7 +421,7 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Enforce a 60-second timeout for the entire export
-	ctx, cancel := context.WithTimeout(r.Context(), accountExportTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), s.accountExportDeadline())
 	defer cancel()
 
 	// Prefetch workspace list (small) before starting the streaming response
@@ -486,7 +504,7 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 		// Only export full data for owned workspaces
 		if ws.OwnerID == user.ID {
 			collections, err := withinExportDeadline(ctx, func() ([]models.Collection, error) {
-				return accountExportListCollections(s, ws.ID)
+				return s.accountExportListCollections(ws.ID)
 			})
 			if err != nil {
 				abortAccountExport(user.ID, "listing collections of "+ws.Slug, err)
@@ -497,7 +515,7 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 			// IncludeDeletedCollections: a user's own export keeps the items
 			// of collections they deleted, as it always has (BUG-3425).
 			items, err := withinExportDeadline(ctx, func() ([]models.Item, error) {
-				return accountExportListItems(s, ws.ID, models.ItemListParams{IncludeArchived: true, IncludeDeletedCollections: true})
+				return s.accountExportListItems(ws.ID, models.ItemListParams{IncludeArchived: true, IncludeDeletedCollections: true})
 			})
 			if err != nil {
 				abortAccountExport(user.ID, "listing items of "+ws.Slug, err)
