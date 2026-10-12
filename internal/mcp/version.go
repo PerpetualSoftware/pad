@@ -1738,6 +1738,18 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.93 — TASK-3611, structured fields on stdio. ADDITIVE bump on the
+//     v0.53 grounds: `pad_item.action=create` and `update` over the local
+//     stdio transport now WRITE a `fields` value that is an object or
+//     array, where they refused it (BUG-2850). The stdio door passes those
+//     keys, and every other non-string value (a number or boolean, which
+//     --field key=value would deliver as text), to the CLI as one
+//     `--fields-json` object (a new, additive CLI flag on `pad item
+//     create` / `update`), which keeps their JSON types, the shape the
+//     remote door already sends. Any other action still
+//     refuses one. The `fields` description says so. No name, enum or
+//     param moved.
+//
 //     0.92 — TASK-3585, appends. ADDITIVE bump on the v0.53 grounds:
 //     `pad_item.action=comment`, `note` and `decide` accept `op_key`.
 //     Retrying the SAME request with the same key answers the comment or
@@ -2118,7 +2130,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.92"
+const ToolSurfaceVersion = "0.93"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
