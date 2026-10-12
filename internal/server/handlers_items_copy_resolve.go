@@ -182,30 +182,8 @@ func (s *Server) resolveAuthorizedCopy(w http.ResponseWriter, r *http.Request) (
 	}
 	out.input = input
 
-	dstWS := s.AuthorizeCrossWorkspaceEdit(r, input.TargetWorkspace, CrossWorkspaceWorkspaceOnlyScope())
-	if !dstWS.Allowed {
-		// WriteDenied, not WriteHidden: the caller named this workspace
-		// themselves, so acknowledging the refusal tells them nothing they
-		// did not already assert. It still refuses to separate "absent"
-		// from "forbidden".
-		dstWS.WriteDenied(w)
-		return out, false
-	}
-
-	targetColl, err := s.resolveItemCollectionSlug(dstWS.WorkspaceID(), input.TargetCollection)
-	if err != nil {
-		writeInternalError(w, err)
-		return out, false
-	}
-	if targetColl == nil {
-		writeError(w, http.StatusNotFound,
-			crossWorkspaceCollectionNotFoundCode, crossWorkspaceCollectionNotFoundMessage)
-		return out, false
-	}
-
-	dst := s.AuthorizeCrossWorkspaceEdit(r, input.TargetWorkspace, CrossWorkspaceCollectionScope(targetColl.ID))
-	if !dst.Allowed {
-		dst.WriteCollectionNotFound(w)
+	dst, targetColl, ok := s.authorizeCopyDestination(w, r, input)
+	if !ok {
 		return out, false
 	}
 	out.destination = dst
@@ -231,4 +209,40 @@ func (s *Server) resolveAuthorizedCopy(w http.ResponseWriter, r *http.Request) (
 	out.attachmentAuth = s.attachmentCopyAuthorizer(r, sourceWorkspaceID)
 
 	return out, true
+}
+
+// authorizeCopyDestination is the ladder's destination half (steps 4 and 5):
+// workspace-level access to the destination, then the collection lookup and
+// its visibility and edit checks. It writes the refusal and returns ok=false
+// when the caller may not copy there. Shared with the keyed replay of an
+// archived-source move (TASK-3585), which must not hand a stored copy result
+// to a caller who has since lost the destination.
+func (s *Server) authorizeCopyDestination(w http.ResponseWriter, r *http.Request, input itemCopyPreflightRequest) (CrossWorkspaceAccess, *models.Collection, bool) {
+	dstWS := s.AuthorizeCrossWorkspaceEdit(r, input.TargetWorkspace, CrossWorkspaceWorkspaceOnlyScope())
+	if !dstWS.Allowed {
+		// WriteDenied, not WriteHidden: the caller named this workspace
+		// themselves, so acknowledging the refusal tells them nothing they
+		// did not already assert. It still refuses to separate "absent"
+		// from "forbidden".
+		dstWS.WriteDenied(w)
+		return CrossWorkspaceAccess{}, nil, false
+	}
+
+	targetColl, err := s.resolveItemCollectionSlug(dstWS.WorkspaceID(), input.TargetCollection)
+	if err != nil {
+		writeInternalError(w, err)
+		return CrossWorkspaceAccess{}, nil, false
+	}
+	if targetColl == nil {
+		writeError(w, http.StatusNotFound,
+			crossWorkspaceCollectionNotFoundCode, crossWorkspaceCollectionNotFoundMessage)
+		return CrossWorkspaceAccess{}, nil, false
+	}
+
+	dst := s.AuthorizeCrossWorkspaceEdit(r, input.TargetWorkspace, CrossWorkspaceCollectionScope(targetColl.ID))
+	if !dst.Allowed {
+		dst.WriteCollectionNotFound(w)
+		return CrossWorkspaceAccess{}, nil, false
+	}
+	return dst, targetColl, true
 }
