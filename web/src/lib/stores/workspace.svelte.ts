@@ -314,6 +314,11 @@ export const workspaceStore = {
 		return perms.canEditWorkspace(currentMembership);
 	},
 
+	/** The workspace bundle download: an owner with unrestricted access (BUG-3614). */
+	get canExportWorkspace() {
+		return perms.canExportWorkspace(currentMembership);
+	},
+
 	canViewCollection(collId: string): boolean {
 		return perms.canViewCollection(currentMembership, collId);
 	},

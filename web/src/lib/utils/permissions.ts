@@ -17,14 +17,29 @@
  * Server-side coverage of the cascade lives in
  * `internal/store/permissions_test.go` and `internal/store/grants_test.go`,
  * plus the `/me` endpoint shape in `internal/server/handlers_me_test.go`.
- * Frontend unit tests are deferred until web/ adopts a unit-test runner;
- * the helpers below are intentionally thin so the cost of that gap is small.
+ * The helpers are intentionally thin; canExportWorkspace has vitest
+ * coverage in permissions.canExport.test.ts.
  */
 
 import type { WorkspaceMembership } from '$lib/types';
 
 export function canEditWorkspace(m: WorkspaceMembership | null): boolean {
 	return m?.role === 'owner';
+}
+
+/**
+ * canExportWorkspace — may this member download the workspace bundle?
+ *
+ * Mirrors the server's two checks on GET /workspaces/{ws}/export
+ * (handleExportWorkspaceBundle): the owner role, and unrestricted access
+ * (requireUnrestrictedExportAccess, BUG-1922). The bundle carries every
+ * collection and every attachment, so an owner whose access is scoped to
+ * specific collections is refused too. An editor used to be shown the
+ * download and get a 403 (BUG-3614).
+ */
+export function canExportWorkspace(m: WorkspaceMembership | null): boolean {
+	// Absent reads as 'all', as on the server (handlers_me.go: "all" or unset).
+	return m?.role === 'owner' && m.collection_access !== 'specific';
 }
 
 /**
