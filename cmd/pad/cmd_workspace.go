@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -814,9 +815,29 @@ Use 'pad workspace list' to see available workspaces.`,
 }
 
 // sameServerURL compares two .pad.toml url values. Empty means the local
-// server; a trailing slash is not a different server.
+// server. Scheme and host case, a default port and a trailing slash do not
+// make a different server (codex r1).
 func sameServerURL(a, b string) bool {
-	return strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
+	return normalizeServerURL(a) == normalizeServerURL(b)
+}
+
+func normalizeServerURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(strings.TrimSpace(raw), "/")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port != "" {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return scheme + "://" + host + strings.TrimRight(u.Path, "/")
 }
 
 func displayServerURL(u string) string {

@@ -162,3 +162,34 @@ func TestLinkWithoutURLLeavesAWorkingLinkAlone(t *testing.T) {
 		t.Error("link never asked the pinned server")
 	}
 }
+
+func TestSameServerURL(t *testing.T) {
+	t.Parallel()
+	same := [][2]string{
+		{"", ""},
+		{"https://app.getpad.dev", "https://app.getpad.dev/"},
+		{"https://app.getpad.dev", "HTTPS://App.GetPad.dev"},
+		{"https://app.getpad.dev", "https://app.getpad.dev:443"},
+		{"http://192.168.1.89:7777", "http://192.168.1.89:7777/"},
+		{"http://pad.local", "http://pad.local:80"},
+		{"https://pad.example.com/pad", "https://pad.example.com/pad/"},
+	}
+	for _, c := range same {
+		if !sameServerURL(c[0], c[1]) {
+			t.Errorf("sameServerURL(%q, %q) = false, want true", c[0], c[1])
+		}
+	}
+	different := [][2]string{
+		{"", "https://app.getpad.dev"},
+		{"https://app.getpad.dev", "http://app.getpad.dev"},
+		{"https://app.getpad.dev", "https://app.getpad.dev:8443"},
+		{"http://192.168.1.89:7777", "http://192.168.1.89:7778"},
+		{"https://pad.example.com/a", "https://pad.example.com/b"},
+		{"https://pad.example.com", "https://other.example.com"},
+	}
+	for _, c := range different {
+		if sameServerURL(c[0], c[1]) {
+			t.Errorf("sameServerURL(%q, %q) = true, want false", c[0], c[1])
+		}
+	}
+}
