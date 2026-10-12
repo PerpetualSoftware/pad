@@ -255,6 +255,13 @@ func TestPLAN3598_ItemContextGuestSeesOnlyGrantedItems(t *testing.T) {
 			t.Errorf("brief names ungranted items %v: %s", l, body)
 		}
 
+		// The conventions collection is not visible to this guest, so an
+		// unknown intent reveals none of its declared triggers.
+		_, code, body = f.context(tok, "?intent=nonsense")
+		if code != http.StatusOK || strings.Contains(body, "valid_intents") || strings.Contains(body, "on-commit") {
+			t.Errorf("guest, unknown intent: %d %s", code, body)
+		}
+
 		// Control: granted, they appear.
 		for _, it := range []models.Item{f.plan, f.blocker, f.related} {
 			if _, err := f.srv.store.CreateItemGrant(f.wsID, it.ID, guest.ID, "view", f.owner.ID); err != nil {

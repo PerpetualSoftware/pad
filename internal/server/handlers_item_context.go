@@ -160,10 +160,24 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	convColl := collections.FindByArtifactKind(traited, string(artifact.KindConvention))
+	// A caller who cannot see the conventions collection learns nothing from
+	// it, its declared triggers included: the intent is taken as given
+	// ("on-<intent>") with no validation and no list of valid intents, so a
+	// 400 cannot reveal the schema either. Its conventions are absent anyway.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if convColl != nil && visibleIDs != nil && !isCollectionVisible(convColl.ID, visibleIDs) {
+		convColl = nil
+	}
 
 	intent := strings.TrimSpace(q.Get("intent"))
 	triggers := []string{"always"}
-	if intent != "" {
+	if intent != "" && convColl == nil {
+		triggers = append(triggers, "on-"+strings.TrimPrefix(intent, "on-"))
+	} else if intent != "" {
 		trig, valid, terr := s.resolveContextIntent(convColl, intent)
 		if terr != nil {
 			writeInternalError(w, terr)
