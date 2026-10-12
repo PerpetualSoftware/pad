@@ -198,7 +198,20 @@ func (s *Store) CreateAttachmentForLiveItem(a *models.Attachment, opts ...MintOp
 	if orphan && !limited {
 		return s.createAttachmentOn(s.db, a)
 	}
+	// An ownership change between the storage check's owner read and its lock
+	// is retried in a fresh transaction (codex r3 on TASK-3619): it is rare,
+	// and the next attempt locks the new owner.
+	for attempt := 1; ; attempt++ {
+		err := s.createAttachmentForLiveItemTx(a, limited, orphan)
+		if errors.Is(err, errStorageOwnerMoved) && attempt < 3 {
+			continue
+		}
+		return err
+	}
+}
 
+// createAttachmentForLiveItemTx is one transaction of CreateAttachmentForLiveItem.
+func (s *Store) createAttachmentForLiveItemTx(a *models.Attachment, limited, orphan bool) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin create attachment tx: %w", err)
@@ -2073,6 +2086,17 @@ func (s *Store) workspaceStorageInfoQ(q Queryer, workspaceID string) (*Workspace
 	return info, user, nil
 }
 
+// errStorageOwnerMoved: the workspace's owner changed between the owner read
+// that chose the storage lock and the check under it. CreateAttachmentForLiveItem
+// retries in a fresh transaction.
+var errStorageOwnerMoved = errors.New("storage limit: workspace owner changed during the check")
+
+// testHookAfterStorageOwnerRead, when set by a test, runs between the owner
+// read that chooses the storage lock and the lock itself: the window an
+// ownership change must not slip through. It gets the transaction because on
+// SQLite nothing else can write while it is open. Nil in production.
+var testHookAfterStorageOwnerRead func(tx *sql.Tx, workspaceID string)
+
 // enforceStorageLimitTx is the authoritative storage check (TASK-3619): it
 // refuses an insert of adding bytes that would take the workspace past its
 // owner's storage_bytes limit. Usage is what WorkspaceStorageInfo sums: the
@@ -2102,12 +2126,27 @@ func (s *Store) enforceStorageLimitTx(tx *sql.Tx, workspaceID string, adding int
 	case ownerID.Valid && ownerID.String != "":
 		lockKey = ownerID.String
 	}
+	if testHookAfterStorageOwnerRead != nil {
+		testHookAfterStorageOwnerRead(tx, workspaceID)
+	}
 	if err := s.acquirePlanLimitLock(tx, lockKey, "storage_bytes"); err != nil {
 		return err
 	}
 	info, owner, err := s.workspaceStorageInfoQ(tx, workspaceID)
 	if err != nil {
 		return err
+	}
+	// The pool checked must be the one locked (codex r3): if the owner moved
+	// since the read that chose the lock, the check would hold the old
+	// owner's lock while counting the new owner's pool, and two uploads could
+	// both pass it. A move after this point is an ownership transfer, which
+	// carries its bytes unchecked by ruling.
+	if ownerID.Valid && ownerID.String != "" {
+		if owner == nil || owner.ID != lockKey {
+			return errStorageOwnerMoved
+		}
+	} else if owner != nil {
+		return errStorageOwnerMoved
 	}
 	if info.LimitBytes < 0 || info.UsedBytes+adding <= info.LimitBytes {
 		return nil

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -292,5 +293,45 @@ func TestTASK3619_ConcurrentUploadsAcrossWorkspacesShareThePool(t *testing.T) {
 		if refused != 1 {
 			t.Fatalf("round %d: refused = %d of 2, want exactly 1 (errs %v)", round, refused, errs)
 		}
+	}
+}
+
+// An ownership change between the owner read that picks the lock and the
+// check under it (codex r3) is detected, and the attempt retried in a fresh
+// transaction. The seam makes the change through the attempt's own
+// transaction (on SQLite nothing else can write while it is open), so it
+// rolls back with that attempt: a change on the first attempt only is
+// retried and then lands; a change on every attempt gives up after three.
+func TestTASK3619_OwnershipChangeMidCheckIsDetectedAndRetried(t *testing.T) {
+	f := newStorageFixture(t, "pro")
+	heir, err := f.s.CreateUser(models.UserCreate{Email: "heir-" + newID()[:8] + "@example.com", Name: "Heir", Password: "correct-horse-battery-staple", Role: "member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls, moveOn int
+	testHookAfterStorageOwnerRead = func(tx *sql.Tx, ws string) {
+		calls++
+		if ws == f.wsID && calls <= moveOn {
+			if _, err := tx.Exec(f.s.q(`UPDATE workspaces SET owner_id = ? WHERE id = ?`), heir.ID, f.wsID); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(func() { testHookAfterStorageOwnerRead = nil })
+
+	calls, moveOn = 0, 1
+	if err := f.add(10, true, WithPlanLimit()); err != nil {
+		t.Fatalf("a move on the first attempt only: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("attempts = %d, want 2 (one retry)", calls)
+	}
+
+	calls, moveOn = 0, 99
+	if err := f.add(10, true, WithPlanLimit()); !errors.Is(err, errStorageOwnerMoved) {
+		t.Fatalf("a move on every attempt: err = %v, want errStorageOwnerMoved", err)
+	}
+	if calls != 3 {
+		t.Fatalf("attempts = %d, want 3", calls)
 	}
 }
