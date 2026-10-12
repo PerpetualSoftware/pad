@@ -1221,8 +1221,8 @@ export interface ItemCopyPreflight {
 // Override semantics are identical too: an undeclared key is a 400, and a
 // `null` value unsets rather than writing null.
 //
-// ⚠ NEVER RETRY THIS CALL AUTOMATICALLY (PLAN-2357 DR-13). There is no
-// idempotency key in v1, so a retry after a request that already committed
+// ⚠ NEVER RETRY THIS CALL AUTOMATICALLY (PLAN-2357 DR-13) without the same
+// `op_key` (TASK-3585): a keyless retry after a request that already committed
 // creates a DUPLICATE item — and a client that timed out cannot tell which
 // happened. On 500 `copy_failed` the server is explicitly telling you the
 // outcome is unknown: show the message, and send the user to look at the

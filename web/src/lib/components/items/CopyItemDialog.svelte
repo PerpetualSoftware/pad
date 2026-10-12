@@ -36,8 +36,9 @@ mutation dispatched?", NOT by the server returning `copy_failed`. Once the copy
 POST is dispatched, any UNSTRUCTURED failure (rejected fetch, non-JSON 502,
 timeout) is as ambiguous to the user as an explicit `copy_failed`: the server
 may have committed. Both render the same outcome-unknown state, which
-PROHIBITS retry (there is no idempotency key) and sends the user to look at the
-destination. Structured PRE-WRITE refusals — `collection_not_found`, a
+offers no retry and sends the user to look at the destination. The copy does
+carry an idempotency key (TASK-3597, one per opening), but it is double-submit
+protection, not a recovery path. Structured PRE-WRITE refusals — `collection_not_found`, a
 destination `forbidden`, `plan_limit_exceeded`, the validation family — keep
 their own recovery paths; swallowing those into outcome-unknown would send the
 user hunting for an item that provably does not exist.
@@ -210,6 +211,14 @@ user hunting for an item that provably does not exist.
 	/** Outcome unknown — the copy may or may not have committed. Terminal:
 	 *  Confirm stays locked, and no retry is offered (DR-13). */
 	let outcomeUnknown = $state('');
+	/**
+	 * The copy's idempotency key (TASK-3597): one per opening, so a second
+	 * dispatch of the same request answers the first copy's stored result
+	 * instead of copying twice. Every way the dialog re-arms Confirm after a
+	 * dispatch is a refusal, which the server does not store, so the corrected
+	 * request may reuse it. Plain `let`: only handlers read it.
+	 */
+	let opKey = '';
 	/** The preview changed between review and submit — advisory only (see
 	 *  `reviewFingerprint`). Requires an explicit re-confirmation. */
 	let staleReview = $state('');
@@ -388,6 +397,7 @@ user hunting for an item that provably does not exist.
 		submitting = false;
 		submitError = '';
 		outcomeUnknown = '';
+		opKey = crypto.randomUUID();
 		staleReview = '';
 		destinationLost = '';
 		void loadWorkspaces();
@@ -886,9 +896,9 @@ user hunting for an item that provably does not exist.
 		const req = buildRequest();
 		// IDENTITY fence (BUG-3105), folded into `superseded` so every check
 		// below also asks it. The three generations are navigation/edit fences
-		// and none moves on a sign-out; this path ends in a COPY with no
-		// idempotency key, so the refusal must land before the dispatch — a
-		// fence after it could only refuse to REPORT a write already made.
+		// and none moves on a sign-out; this path ends in a COPY, so the
+		// refusal must land before the dispatch — a fence after it could only
+		// refuse to REPORT a write already made.
 		const isSameIdentity = authStore.identityFence();
 		const superseded = () =>
 			gen !== flowGen ||
@@ -963,12 +973,12 @@ user hunting for an item that provably does not exist.
 		// IDENTITY fence (BUG-3105). handleConfirm refuses BEFORE this is called;
 		// this one covers the other side of the copy's await, where the write has
 		// already happened under the captured identity. It REFUSES to report and
-		// never re-sends: the copy has no idempotency key (DR-13), so a retry
-		// duplicates the item. Nothing here may be read as a recovery path.
+		// never re-sends (DR-13). Nothing here may be read as a recovery path.
 		const isSameIdentity = authStore.identityFence();
+		const key = opKey;
 		submitting = true;
 		try {
-			const result = await api.items.copy(sourceWsSlug, item.slug, req);
+			const result = await api.items.copy(sourceWsSlug, item.slug, req, key);
 			if (gen !== flowGen) return;
 			if (!isSameIdentity()) return;
 			oncopied(result);

@@ -2080,21 +2080,28 @@ export const api = {
 		 * Cross-workspace copy — the MUTATION (PLAN-2357 / TASK-2365). With
 		 * `archive_source: true` it is the MOVE.
 		 *
-		 * ⚠ NEVER RETRY THIS CALL (DR-13). There is no idempotency key, so a
-		 * retry after a request that already committed creates a DUPLICATE item,
-		 * and a caller that lost the response cannot tell which happened. On a
-		 * 500 `copy_failed` — or on ANY unstructured transport failure once this
-		 * call has been dispatched — the outcome is unknown: tell the user to
-		 * check the destination workspace, and do not offer a retry.
+		 * `opKey` is sent as `op_key`, the server's idempotency key (TASK-3585):
+		 * a second send of the same request under the same key answers the
+		 * FIRST copy's stored result and copies nothing. A refusal releases the
+		 * key, so a corrected resend may reuse it; a different request under a
+		 * key that already completed is 422 `idempotency_key_reused`. Callers
+		 * mint one key per dialog open (TASK-3597).
+		 *
+		 * ⚠ Still NEVER RETRY THIS CALL WITHOUT A KEY (DR-13): a keyless retry
+		 * after a request that already committed creates a DUPLICATE item, and a
+		 * caller that lost the response cannot tell which happened. On a 500
+		 * `copy_failed`, or on ANY unstructured transport failure once this call
+		 * has been dispatched, the outcome is unknown: tell the user to check
+		 * the destination workspace.
 		 *
 		 * Deliberately no `signal` param: aborting tells you nothing about
 		 * whether the server committed, and the shared `request` never retries
-		 * non-idempotent methods, which is what keeps this aligned with DR-13.
+		 * non-idempotent methods.
 		 */
-		copy: (ws: string, slug: string, req: ItemCopyPreflightRequest) =>
+		copy: (ws: string, slug: string, req: ItemCopyPreflightRequest, opKey?: string) =>
 			request<ItemCopyResult>(`/workspaces/${ws}/items/${slug}/copy`, {
 				method: 'POST',
-				body: JSON.stringify(req)
+				body: JSON.stringify(opKey ? { ...req, op_key: opKey } : req)
 			}),
 
 		/**
@@ -2278,18 +2285,33 @@ export const api = {
 		 * broadcast call sites (QuickActionsMenu's S4 dispatch) are
 		 * unaffected by this parameter's addition.
 		 *
-		 * NEVER auto-retry this. Like the copy endpoint it carries no
-		 * idempotency key, so a retry after an ambiguous failure can deliver
-		 * the same instruction twice. A targeted miss (`delivered_sessions
-		 * === 0` in the response) is the one exception a caller may act on
-		 * safely — see ItemPushResult's doc comment.
+		 * `opKey` is sent as `op_key`, the server's idempotency key (TASK-3585):
+		 * a second send of the same push under the same key replays the stored
+		 * answer and publishes nothing. The server stores EVERY completed
+		 * answer, a targeted miss (`delivered_sessions === 0`) included, so a
+		 * caller that resends after a miss needs a NEW key: the old one would
+		 * replay the miss, or answer 422 `idempotency_key_reused` for a new
+		 * target. A pre-publish refusal releases the key.
+		 *
+		 * NEVER auto-retry this without a key: a keyless retry after an
+		 * ambiguous failure can deliver the same instruction twice. A targeted
+		 * miss is the one outcome a caller may act on safely — see
+		 * ItemPushResult's doc comment.
 		 */
-		push: (ws: string, itemSlug: string, message: string, targetSessionId?: string) =>
+		push: (
+			ws: string,
+			itemSlug: string,
+			message: string,
+			targetSessionId?: string,
+			opKey?: string
+		) =>
 			request<ItemPushResult>(`/workspaces/${ws}/items/${itemSlug}/push`, {
 				method: 'POST',
-				body: JSON.stringify(
-					targetSessionId ? { message, target_session_id: targetSessionId } : { message }
-				)
+				body: JSON.stringify({
+					message,
+					...(targetSessionId ? { target_session_id: targetSessionId } : {}),
+					...(opKey ? { op_key: opKey } : {})
+				})
 			})
 	},
 

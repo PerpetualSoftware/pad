@@ -662,7 +662,7 @@ handlers — onchange is never called.
 		//    optimistic-concurrency check already enforces.
 		//
 		// 2. A LOST RESPONSE on a create that actually committed. Real, and not
-		//    fixable here: `item create` has no idempotency key, and titles are
+		//    fixable here: this create sends no idempotency key, and titles are
 		//    not unique (colliding slugs just get `-2` suffixes,
 		//    `store.uniqueSlug`). Nothing auto-retries — the retry would be a
 		//    person clicking Create again, seeing the picker's current state —

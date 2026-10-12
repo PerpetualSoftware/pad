@@ -181,8 +181,8 @@
 	let presence = $state<PushPresence | null>(null);
 	/** Wall-clock of the last SUCCESSFUL presence read, for the expiry above. */
 	let lastAnsweredAt = 0;
-	/** True while a push is in flight. The endpoint has NO idempotency key, so
-	 *  a second dispatch would deliver the instruction twice. */
+	/** True while a push is in flight. This call site sends no idempotency
+	 *  key, so a second dispatch would deliver the instruction twice. */
 	let dispatching = $state(false);
 
 	// Fences for the presence reads. Plain `let`s, never $state: read and
@@ -360,8 +360,8 @@
 		// poll interval after a 'known' answer expired.
 		const known = currentPresence();
 		const knownCount = known?.state === 'known' ? known.count : 0;
-		// IDENTITY fence (BUG-3105). The push has no idempotency key, so the
-		// fence refuses to REPORT an outcome under the next identity; it never
+		// IDENTITY fence (BUG-3105). This push carries no idempotency key, so
+		// the fence refuses to REPORT an outcome under the next identity; it never
 		// re-sends. The toast describes a push the previous user made.
 		const isSameIdentity = authStore.identityFence();
 		const route = routePrompt(prompt, target, known);
@@ -395,14 +395,14 @@
 
 		// A push is not tied to the gesture, so a stale excerpt is ASKED about.
 		// Only captured values are used after this await, and the identity
-		// fence is re-checked: the push has no idempotency key.
+		// fence is re-checked: this push carries no idempotency key.
 		if (staleExcerpt && !(await pendingEditsDialog.request(itemLabel, 'excerpt', excerptSetAside ? 'set_aside' : 'pending'))) return;
 		if (!isSameIdentity()) return;
 
 		dispatching = true;
 		try {
-			// NEVER retried automatically, here or anywhere else: the endpoint
-			// carries no idempotency key.
+			// NEVER retried automatically, here or anywhere else: this call
+			// sends no idempotency key.
 			const result = await api.items.push(ws, target, collapsePushMessage(prompt));
 			if (!isSameIdentity()) return;
 			// The SERVER's count wins over the preflight one (codex round 5).
