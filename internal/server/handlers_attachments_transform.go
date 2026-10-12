@@ -348,7 +348,12 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 	// more, rare path rather than introducing it. Deleting the blob here
 	// would be wrong without the GC's dedupe guard: the same content hash
 	// may already back another live row.
-	if err := s.store.CreateAttachmentForLiveItem(row); err != nil {
+	if err := s.store.CreateAttachmentForLiveItem(row, s.workspaceLimitMintOpts()...); err != nil {
+		// A transform output is a new top-level attachment, so it counts
+		// against the storage limit like an upload (TASK-3619).
+		if writeStorePlanLimitError(w, r, err, "") {
+			return
+		}
 		if errors.Is(err, store.ErrAttachmentParentItemGone) {
 			writeAttachmentNotFound(w)
 			return
@@ -362,7 +367,7 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 	// the upload path.
 	s.storageInfoCache.invalidate(workspaceID)
 
-	// Quota tracking — observational only in Phase 1, same as upload.
+	// Quota observation, same as upload; the insert above enforced it.
 	s.goAsync(func() { s.maybeWarnStorageQuota(workspaceID) })
 
 	writeJSON(w, http.StatusCreated, transformResponse{

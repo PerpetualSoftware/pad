@@ -17,7 +17,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	},
 }));
 
-import { showPlanLimitToast } from './planLimitToast';
+import { showPlanLimitToast, promptOnPlanLimit, PLAN_LIMIT_PROMPTED } from './planLimitToast';
 import { planLimitPrompt } from './planLimitPrompt.svelte';
 import { PadApiError } from '$lib/api/client';
 
@@ -74,5 +74,30 @@ describe('showPlanLimitToast raises the plan-limit prompt (TASK-3601)', () => {
 		expect(planLimitPrompt.current).toMatchObject({ scope: 'invite', blocked: 'invite a member' });
 		off();
 		expect(planLimitPrompt.current, 'the host closing takes its prompt with it').toBeNull();
+	});
+});
+
+// TASK-3619: an editor's upload or image edit past the storage limit raises
+// the prompt, and its failure callback gets a marker so it adds no toast.
+describe('promptOnPlanLimit', () => {
+	beforeEach(() => planLimitPrompt.dismiss());
+
+	it('a plan-limit refusal raises the prompt and comes back as the marker', () => {
+		const out = promptOnPlanLimit(err({ plan: 'pro', payer_is_you: true }), () => true);
+		expect(out).toBeInstanceOf(Error);
+		expect((out as Error).message).toBe(PLAN_LIMIT_PROMPTED);
+		expect(planLimitPrompt.current?.message).toBe(MSG);
+	});
+
+	it('a refusal for an identity that is gone: the marker, and no prompt naming its owner', () => {
+		const out = promptOnPlanLimit(err({ plan: 'pro', payer_is_you: true }), () => false);
+		expect((out as Error).message).toBe(PLAN_LIMIT_PROMPTED);
+		expect(planLimitPrompt.current).toBeNull();
+	});
+
+	it('any other error passes through untouched and raises nothing', () => {
+		const other = new PadApiError({ code: 'file_too_large', message: 'too big' });
+		expect(promptOnPlanLimit(other, () => true)).toBe(other);
+		expect(planLimitPrompt.current).toBeNull();
 	});
 });

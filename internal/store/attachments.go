@@ -21,15 +21,32 @@ import (
 //
 // The override_active flag tracks whether the workspace owner's
 // PlanOverrides JSON contains a storage_bytes key — independent of
-// whether that override actually changes the effective limit. (On
-// pro/self-hosted plans the limit is unlimited regardless; the flag
-// still surfaces the admin's intent in the Settings → Storage UI.)
+// whether that override actually changes the effective limit. (On the
+// self-hosted plan the limit is unlimited regardless; the flag still
+// surfaces the admin's intent in the Settings → Storage UI.)
 type WorkspaceStorageInfo struct {
 	UsedBytes      int64  `json:"used_bytes"`
 	LimitBytes     int64  `json:"limit_bytes"` // -1 = unlimited
 	Plan           string `json:"plan"`
 	OverrideActive bool   `json:"override_active"`
+	// Scope says what UsedBytes sums (TASK-3619): "workspace" (this
+	// workspace's attachments) or "account" (every live workspace its owner
+	// owns, for a plan whose limit is pooled; see storagePooledPerAccount).
+	Scope string `json:"scope"`
 }
+
+// Storage scopes (WorkspaceStorageInfo.Scope).
+const (
+	StorageScopeWorkspace = "workspace"
+	StorageScopeAccount   = "account"
+)
+
+// storagePooledPerAccount reports whether a plan's storage limit is one pool
+// for the whole account rather than a limit per workspace (TASK-3619, the
+// PLAN-3605 cost analysis): Pro has unlimited workspaces, so a per-workspace
+// cap would have no ceiling. Free has a workspace limit and stays per
+// workspace.
+func storagePooledPerAccount(plan string) bool { return plan == "pro" }
 
 // attachmentColumns is the canonical column list. Keep the column names in
 // alignment with migrations/047_attachments.sql + pgmigrations/026_attachments.sql.
@@ -170,16 +187,49 @@ var ErrAttachmentParentItemGone = errors.New("attachment parent item is not live
 //
 // An orphan row (nil/empty ItemID) has no parent to pin and takes the plain
 // insert path, identical to CreateAttachment.
-func (s *Store) CreateAttachmentForLiveItem(a *models.Attachment) error {
-	if a.ItemID == nil || *a.ItemID == "" {
+//
+// WithPlanLimit makes the insert enforce the owner's storage_bytes limit
+// (TASK-3619) in the same transaction, for a user-visible original only: a
+// derived row (ParentID set) never refuses, because it is made from bytes the
+// limit already admitted. The refusal is a *PlanLimitError.
+func (s *Store) CreateAttachmentForLiveItem(a *models.Attachment, opts ...MintOption) error {
+	limited := resolveMintOptions(opts).planLimit && a.ParentID == nil
+	orphan := a.ItemID == nil || *a.ItemID == ""
+	if orphan && !limited {
 		return s.createAttachmentOn(s.db, a)
 	}
+	// An ownership change between the storage check's owner read and its lock
+	// is retried in a fresh transaction (codex r3 on TASK-3619): it is rare,
+	// and the next attempt locks the new owner.
+	for attempt := 1; ; attempt++ {
+		err := s.createAttachmentForLiveItemTx(a, limited, orphan)
+		if errors.Is(err, errStorageOwnerMoved) && attempt < 3 {
+			continue
+		}
+		return err
+	}
+}
 
+// createAttachmentForLiveItemTx is one transaction of CreateAttachmentForLiveItem.
+func (s *Store) createAttachmentForLiveItemTx(a *models.Attachment, limited, orphan bool) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin create attachment tx: %w", err)
 	}
 	defer tx.Rollback() // no-op after Commit
+
+	// The storage lock comes first: acquirePlanLimitLock's ordering rule.
+	if limited {
+		if err := s.enforceStorageLimitTx(tx, a.WorkspaceID, a.SizeBytes); err != nil {
+			return err
+		}
+	}
+	if orphan {
+		if err := s.createAttachmentOn(tx, a); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 
 	query := `SELECT workspace_id FROM items WHERE id = ? AND deleted_at IS NULL`
 	if s.dialect.Driver() == DriverPostgres {
@@ -1886,8 +1936,35 @@ func (s *Store) WorkspaceAttachmentsForExport(workspaceID string) ([]models.Atta
 // attachments in the workspace. Includes derived blobs (thumbnails) —
 // those are real bytes on disk and count against quota.
 func (s *Store) WorkspaceStorageUsage(workspaceID string) (int64, error) {
+	return s.workspaceStorageUsageQ(s.db, workspaceID)
+}
+
+// accountStorageUsageQ is the bytes of non-deleted attachments across every
+// workspace ownerID owns: the pool a per-account limit is checked against.
+//
+// A soft-deleted workspace COUNTS until it is purged (lead ruling, TASK-3619):
+// its bytes are still on disk, and the cap exists to stop a full disk.
+// Leaving it out would let upload, soft-delete, upload, restore walk past the
+// cap, and restore needs no check of its own because nothing changes on disk
+// then. Attachments on a soft-deleted ITEM already count: their rows keep
+// deleted_at NULL (see WorkspaceAttachments).
+func (s *Store) accountStorageUsageQ(q Queryer, ownerID string) (int64, error) {
 	var total sql.NullInt64
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
+		SELECT COALESCE(SUM(a.size_bytes), 0)
+		FROM attachments a
+		JOIN workspaces w ON w.id = a.workspace_id
+		WHERE w.owner_id = ? AND a.deleted_at IS NULL
+	`), ownerID).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("account storage usage: %w", err)
+	}
+	return total.Int64, nil
+}
+
+func (s *Store) workspaceStorageUsageQ(q Queryer, workspaceID string) (int64, error) {
+	var total sql.NullInt64
+	err := q.QueryRow(s.q(`
 		SELECT COALESCE(SUM(size_bytes), 0)
 		FROM attachments
 		WHERE workspace_id = ? AND deleted_at IS NULL
@@ -1925,43 +2002,55 @@ func (s *Store) WorkspaceStorageLimit(workspaceID string) (int64, error) {
 // page (TASK-882) so the UI can render the usage bar and the
 // "(override)" badge from one fetch.
 //
-// Limit resolution mirrors WorkspaceStorageLimit; pro and self-hosted
-// plans return -1 (unlimited) in Phase 1. Workspaces with no owner
-// (fresh install, deleted owner) also resolve to unlimited rather than
+// Limit resolution mirrors WorkspaceStorageLimit. The self-hosted plan
+// returns -1 (unlimited); free and pro resolve through resolveLimitQ, so pro
+// gets DefaultProLimits.StorageBytes unless a platform setting or an override
+// says otherwise (TASK-3619: pro was unlimited before). Workspaces with no
+// owner (fresh install, deleted owner) also resolve to unlimited rather than
 // blocking uploads.
 func (s *Store) WorkspaceStorageInfo(workspaceID string) (*WorkspaceStorageInfo, error) {
-	used, err := s.WorkspaceStorageUsage(workspaceID)
+	info, _, err := s.workspaceStorageInfoQ(s.db, workspaceID)
+	return info, err
+}
+
+// workspaceStorageInfoQ is WorkspaceStorageInfo on a caller-supplied executor,
+// so the limited insert reads usage and limit on its own transaction, after
+// its lock (BUG-2409). It also returns the owner whose plan set the limit
+// (nil when there is none), whom a refusal names as the payer (TASK-3601).
+func (s *Store) workspaceStorageInfoQ(q Queryer, workspaceID string) (*WorkspaceStorageInfo, *models.User, error) {
+	used, err := s.workspaceStorageUsageQ(q, workspaceID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	info := &WorkspaceStorageInfo{
 		UsedBytes:  used,
-		LimitBytes: -1, // default: no enforceable limit (no owner / pro / self-hosted)
+		LimitBytes: -1, // default: no enforceable limit (no owner / self-hosted)
+		Scope:      StorageScopeWorkspace,
 	}
 
 	var ownerID sql.NullString
-	err = s.db.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID)
+	err = q.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID)
 	if err == sql.ErrNoRows {
-		return info, nil
+		return info, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("workspace storage info: get owner: %w", err)
+		return nil, nil, fmt.Errorf("workspace storage info: get owner: %w", err)
 	}
 	// Workspaces created on a fresh install (no users yet) and legacy
 	// workspaces from before owner_id was added have no owner. In both
 	// cases there is no plan to consult — treat as unlimited rather
 	// than rejecting uploads.
 	if !ownerID.Valid || ownerID.String == "" {
-		return info, nil
+		return info, nil, nil
 	}
-	user, err := s.GetUser(ownerID.String)
+	user, err := s.GetUserQ(q, ownerID.String)
 	if err != nil {
-		return nil, fmt.Errorf("workspace storage info: get user: %w", err)
+		return nil, nil, fmt.Errorf("workspace storage info: get user: %w", err)
 	}
 	if user == nil {
 		// Owner row was deleted but the workspace still references it.
-		return info, nil
+		return info, nil, nil
 	}
 
 	plan := user.EffectivePlan(time.Now()) // expiry enforced (BUG-3356)
@@ -1969,8 +2058,8 @@ func (s *Store) WorkspaceStorageInfo(workspaceID string) (*WorkspaceStorageInfo,
 
 	// Detect whether a per-user storage_bytes override is configured.
 	// We surface this as a flag for the UI even when the plan is
-	// pro/self-hosted (where the override has no effect on the
-	// effective limit) so admins can see the configured value.
+	// self-hosted (where the override has no effect on the effective
+	// limit) so admins can see the configured value.
 	if user.PlanOverrides != "" {
 		var overrides map[string]int
 		if err := json.Unmarshal([]byte(user.PlanOverrides), &overrides); err == nil {
@@ -1980,17 +2069,99 @@ func (s *Store) WorkspaceStorageInfo(workspaceID string) (*WorkspaceStorageInfo,
 		}
 	}
 
-	// Pro and self-hosted have no enforced limit in Phase 1.
-	if plan == "pro" || plan == "self-hosted" {
-		return info, nil
+	// Self-hosted has no enforced limit.
+	if plan == "self-hosted" {
+		return info, user, nil
 	}
 
-	// resolveLimit returns int (32-bit on 32-bit platforms) so we can't
-	// store a quota larger than 2 GiB on 32-bit hosts via this path.
-	// That's a non-issue for Phase 1: hardcoded free=500MB, pro=10GB,
-	// and 32-bit production hosts are not a supported deployment target
-	// for Pad Cloud. If a future plan-tier ever exceeds INT_MAX bytes
-	// we'll widen resolveLimit.
-	info.LimitBytes = int64(s.resolveLimit(plan, "storage_bytes", user.PlanOverrides))
-	return info, nil
+	// resolveLimitQ returns int, which is 64-bit on every supported host
+	// (32-bit production hosts are not a supported deployment target).
+	info.LimitBytes = int64(s.resolveLimitQ(q, plan, "storage_bytes", user.PlanOverrides))
+	if storagePooledPerAccount(plan) {
+		info.Scope = StorageScopeAccount
+		if info.UsedBytes, err = s.accountStorageUsageQ(q, user.ID); err != nil {
+			return nil, nil, err
+		}
+	}
+	return info, user, nil
+}
+
+// errStorageOwnerMoved: the workspace's owner changed between the owner read
+// that chose the storage lock and the check under it. CreateAttachmentForLiveItem
+// retries in a fresh transaction.
+var errStorageOwnerMoved = errors.New("storage limit: workspace owner changed during the check")
+
+// testHookAfterStorageOwnerRead, when set by a test, runs between the owner
+// read that chooses the storage lock and the lock itself: the window an
+// ownership change must not slip through. It gets the transaction because on
+// SQLite nothing else can write while it is open. Nil in production.
+var testHookAfterStorageOwnerRead func(tx *sql.Tx, workspaceID string)
+
+// enforceStorageLimitTx is the authoritative storage check (TASK-3619): it
+// refuses an insert of adding bytes that would take the workspace past its
+// owner's storage_bytes limit. Usage is what WorkspaceStorageInfo sums: the
+// workspace, or the owner's whole account where the plan pools it (Pro).
+// Being over the limit only stops ADDING bytes: nothing is deleted or
+// hidden, and deleting files brings it back under.
+//
+// It takes acquirePlanLimitLock for storage_bytes first, keyed on the
+// workspace's OWNER (the workspace itself when it has none), so two uploads
+// into any of one account's workspaces count one after the other, which a
+// pooled limit needs (on SQLite, BEGIN IMMEDIATE already serialises them).
+// The owner_id read before it is a plain read and takes no lock. The caller
+// must take this before any other lock in the transaction, as that lock's
+// ordering rule requires. Reading the limit and the usage on tx, after the
+// lock, is what makes the check hold under concurrency; a check on the pool
+// would not.
+//
+// An upload that lands exactly on the limit is allowed: the limit is how many
+// bytes the workspace may hold.
+func (s *Store) enforceStorageLimitTx(tx *sql.Tx, workspaceID string, adding int64) error {
+	lockKey := workspaceID
+	var ownerID sql.NullString
+	switch err := tx.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID); {
+	case err == sql.ErrNoRows:
+	case err != nil:
+		return fmt.Errorf("storage limit: get owner: %w", err)
+	case ownerID.Valid && ownerID.String != "":
+		lockKey = ownerID.String
+	}
+	if testHookAfterStorageOwnerRead != nil {
+		testHookAfterStorageOwnerRead(tx, workspaceID)
+	}
+	if err := s.acquirePlanLimitLock(tx, lockKey, "storage_bytes"); err != nil {
+		return err
+	}
+	info, owner, err := s.workspaceStorageInfoQ(tx, workspaceID)
+	if err != nil {
+		return err
+	}
+	// The pool checked must be the one locked (codex r3): if the owner moved
+	// since the read that chose the lock, the check would hold the old
+	// owner's lock while counting the new owner's pool, and two uploads could
+	// both pass it. A move after this point is an ownership transfer, which
+	// carries its bytes unchecked by ruling.
+	if ownerID.Valid && ownerID.String != "" {
+		if owner == nil || owner.ID != lockKey {
+			return errStorageOwnerMoved
+		}
+	} else if owner != nil {
+		return errStorageOwnerMoved
+	}
+	if info.LimitBytes < 0 || info.UsedBytes+adding <= info.LimitBytes {
+		return nil
+	}
+	res := LimitResult{
+		Allowed:   false,
+		Feature:   "storage_bytes",
+		Limit:     int(info.LimitBytes),
+		Current:   int(info.UsedBytes),
+		Plan:      info.Plan,
+		Requested: int(adding),
+		Scope:     info.Scope,
+	}
+	if owner != nil {
+		res.PayerID, res.PayerName = owner.ID, owner.Name
+	}
+	return &PlanLimitError{Result: res}
 }

@@ -60,6 +60,16 @@ describe('PlanLimitPrompt (TASK-3601)', () => {
 		expect(screen.getByRole('button', { name: 'Copy note' })).toBeTruthy();
 	});
 
+	it('the owner of a Pro workspace (TASK-3619): Contact us, a mailto to support, and no Upgrade', async () => {
+		render(PlanLimitPrompt);
+		planLimitPrompt.raise(err({ plan: 'pro', payer_is_you: true }));
+		await tick();
+		const link = screen.getByRole('link', { name: 'Contact us' });
+		expect(link.getAttribute('href')).toBe('mailto:support@getpad.dev');
+		expect(screen.getByRole('alert').textContent).toContain('Need more? Contact us.');
+		expect(screen.queryByRole('button', { name: 'Upgrade' })).toBeNull();
+	});
+
 	it('billing off: the statement, Dismiss, and nothing to buy', async () => {
 		mocks.billing = false;
 		render(PlanLimitPrompt);

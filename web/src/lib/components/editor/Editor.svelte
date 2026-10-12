@@ -11,6 +11,7 @@
 </script>
 
 <script lang="ts">
+	import { promptOnPlanLimit, PLAN_LIMIT_PROMPTED } from '$lib/billing/planLimitToast';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { Editor } from '@tiptap/core';
@@ -1097,9 +1098,19 @@
 					if (!wsSlug) {
 						throw new Error('No workspace context — open the image inside a workspace to edit it.');
 					}
-					return api.attachments.transform(wsSlug, uuid, payload);
+					const isSameIdentity = authStore.identityFence();
+					try {
+						return await api.attachments.transform(wsSlug, uuid, payload);
+					} catch (err) {
+						// Any failure for the previous identity is not the next
+						// one's to hear about, and a storage refusal would name
+						// the previous owner (TASK-3619): onError drops it.
+						if (!isSameIdentity()) throw new Error(UPLOAD_IDENTITY_CHANGED);
+						throw promptOnPlanLimit(err, isSameIdentity);
+					}
 				},
 				onError: (message) => {
+					if (message === PLAN_LIMIT_PROMPTED || message === UPLOAD_IDENTITY_CHANGED) return;
 					console.error('[attachment image]', message);
 					// A toast, not a blocking window.alert that steals focus mid-edit
 					// (TASK-2221, audit C39).
@@ -1162,7 +1173,16 @@
 					// the placeholder; the file stays on the server, attached to the
 					// item, where its next listing shows it to whoever may see it.
 					const isSameIdentity = authStore.identityFence();
-					const result = await api.attachments.upload(wsSlug, file, uploadItemId);
+					let result: Awaited<ReturnType<typeof api.attachments.upload>>;
+					try {
+						result = await api.attachments.upload(wsSlug, file, uploadItemId);
+					} catch (err) {
+						// Fenced like the success path: a refusal that lands after
+						// the identity changed must not raise a prompt naming the
+						// previous user's workspace owner (TASK-3619).
+						if (!isSameIdentity()) throw new Error(UPLOAD_IDENTITY_CHANGED);
+						throw promptOnPlanLimit(err, isSameIdentity);
+					}
 					if (!isSameIdentity()) throw new Error(UPLOAD_IDENTITY_CHANGED);
 					// Only announce when the server actually persisted an
 					// association — a free-floating upload leaves item_id NULL
@@ -1174,6 +1194,8 @@
 					// Not the next user's failure to hear about, and the filename is
 					// the previous user's (BUG-3105).
 					if (message === UPLOAD_IDENTITY_CHANGED) return;
+					// Over the storage limit: the plan-limit prompt already said so.
+					if (message === PLAN_LIMIT_PROMPTED) return;
 					// A toast, not a blocking window.alert: a failed paste or drop is
 					// the main mobile upload path, and an alert steals focus and the
 					// keyboard mid-edit (TASK-2221, audit C39).

@@ -31,9 +31,11 @@ var DefaultFreeLimits = PlanLimits{
 	ItemsPerWorkspace:   1000,
 	MembersPerWorkspace: 3,
 	APITokens:           10,
-	StorageBytes:        524288000, // 500MB
-	Webhooks:            0,
-	AutomatedBackups:    0,
+	// StorageBytes is Free's storage limit, per workspace: 100 MB, Dave's
+	// decision on PLAN-3605 (TASK-3619; it was 500 MB).
+	StorageBytes:     104857600, // 100 MB
+	Webhooks:         0,
+	AutomatedBackups: 0,
 }
 
 // DefaultProLimits are the hardcoded fallback limits for the pro tier.
@@ -43,9 +45,13 @@ var DefaultProLimits = PlanLimits{
 	ItemsPerWorkspace:   -1,
 	MembersPerWorkspace: -1,
 	APITokens:           -1,
-	StorageBytes:        10737418240, // 10GB
-	Webhooks:            -1,
-	AutomatedBackups:    -1,
+	// StorageBytes is Pro's storage cap: an interim 1 GB until metered
+	// overage ships (TASK-3619, PLAN-3605 decision 6). This is the one value
+	// to change; the cloud seed below and the admin and public limit
+	// endpoints all read it.
+	StorageBytes:     1073741824, // 1 GB
+	Webhooks:         -1,
+	AutomatedBackups: -1,
 }
 
 // LimitResult is returned by CheckLimit with the enforcement decision
@@ -79,6 +85,10 @@ type LimitResult struct {
 	// workspace holding zero items, and the overload is invisible at the call
 	// site. Two questions, two fields.
 	Requested int `json:"requested,omitempty"`
+
+	// Scope is set only on a storage_bytes refusal (TASK-3619): "workspace"
+	// or "account", what Current sums. Never serialized here.
+	Scope string `json:"-"`
 }
 
 // CheckLimit checks whether a workspace operation is allowed under the
@@ -357,15 +367,10 @@ func (s *Store) acquirePlanLimitLock(tx *sql.Tx, workspaceID, feature string) er
 	return nil
 }
 
-// resolveLimit resolves the limit for a feature using the three-tier resolution:
-// user overrides → DB-stored plan defaults → hardcoded fallback.
-func (s *Store) resolveLimit(plan, feature, overridesJSON string) int {
-	return s.resolveLimitQ(s.db, plan, feature, overridesJSON)
-}
-
-// resolveLimitQ is resolveLimit parameterized over its executor (see
-// Queryer) — the plan-limit platform setting is a read, and CheckLimitTx
-// must not touch the pool (BUG-2409).
+// resolveLimitQ resolves the limit for a feature using the three-tier
+// resolution: user overrides → DB-stored plan defaults → hardcoded fallback.
+// It takes its executor (see Queryer) because the plan-limit platform setting
+// is a read, and CheckLimitTx must not touch the pool (BUG-2409).
 func (s *Store) resolveLimitQ(q Queryer, plan, feature, overridesJSON string) int {
 	// 1. Check per-user overrides
 	if overridesJSON != "" {
@@ -469,6 +474,15 @@ func hardcodedLimit(plan, feature string) int {
 	}
 }
 
+// legacyStorageSeeds are the storage_bytes values SeedPlanLimits wrote before
+// TASK-3619: Pro 10 GB (when Pro storage was not enforced) and Free 500 MB.
+// SeedPlanLimits rewrites a stored value equal to its key's entry, and only
+// that value, so an admin's own setting survives.
+var legacyStorageSeeds = map[string]string{
+	"plan_limits_pro_storage_bytes":  "10737418240",
+	"plan_limits_free_storage_bytes": "524288000",
+}
+
 // SeedPlanLimits writes the default plan limits to platform_settings if they
 // don't already exist. Called on server startup. Idempotent — existing values
 // are not overwritten, so admin changes via the UI are preserved.
@@ -499,6 +513,23 @@ func (s *Store) SeedPlanLimits() error {
 			existing, err := s.GetPlatformSetting(key)
 			if err != nil {
 				return fmt.Errorf("seed plan limits: check %s: %w", key, err)
+			}
+			if legacy, ok := legacyStorageSeeds[key]; ok && existing == legacy {
+				// The one exception (TASK-3619): this exact value is what
+				// every earlier cloud boot seeded, so it is the old default
+				// and not an admin's choice. Any other value is kept, and the
+				// write itself says so: an admin's change landing between the
+				// read above and this write is not overwritten (codex r2).
+				res, err := s.db.Exec(s.q(`UPDATE platform_settings SET value = ?, updated_at = ? WHERE key = ? AND value = ?`),
+					strconv.Itoa(limitsMap[feature]), now(), key, legacy)
+				if err != nil {
+					return fmt.Errorf("seed plan limits: rewrite %s: %w", key, err)
+				}
+				if n, _ := res.RowsAffected(); n == 1 {
+					slog.Info("plan limits: rewrote a seeded storage default",
+						"key", key, "from", legacy, "to", limitsMap[feature])
+				}
+				continue
 			}
 			if existing != "" {
 				continue // Already set — don't overwrite admin changes
