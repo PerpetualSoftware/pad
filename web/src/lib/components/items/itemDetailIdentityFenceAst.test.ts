@@ -217,8 +217,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// TASK-3607: a crash draft's own changes go as a patch; the conflict and
 	// result states are keyed to the item they were computed for.
 	applyRefusedDraftChanges: {
-		reviewed: '4d406614a611',
-		why: 'commits before the first await are synchronous; after the patch and after the refetch, stale() (item id, gen against loadGeneration, captured identity) before any commit or toast, the catch included; the pending-flush branch only drops the raw seed, after the fenced patch await; the finally clears this pane\'s own busy flag',
+		reviewed: '32a73aad3b39',
+		why: 'commits before the first await are synchronous; after the patch and after the refetch, stale() (item id, gen against loadGeneration, captured identity) before any commit or toast, both catches included (a failed refetch after a landed patch says so, codex r2); the pending-flush branch only drops the raw seed, after the fenced patch await; the finally clears this pane\'s own busy flag',
 		may: ['refusedDraftBusy'],
 	},
 };

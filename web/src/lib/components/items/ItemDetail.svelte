@@ -5054,8 +5054,16 @@
 			restoredDraftResult = { itemId: reqItemId, diff: res.diff };
 			toastStore.show('Applied your kept changes', 'success');
 			if (res.content_state !== 'applied_pending_flush') {
-				// No editor: the row has it now.
-				const fresh = await api.items.get(wsSlug, reqItemId);
+				// No editor: the row has it now. The patch has landed whatever this
+				// read does, so its failure is not the restore's (codex r2).
+				let fresh: Item;
+				try {
+					fresh = await api.items.get(wsSlug, reqItemId);
+				} catch {
+					if (stale()) return;
+					toastStore.show('Your changes were applied; reload the item to see them.', 'info');
+					return;
+				}
 				if (stale()) return;
 				if (rawMode) rawSeedMarkdown = null;
 				item = withInflightTags(fresh);
