@@ -133,20 +133,19 @@ func TestStdioSurfacesStoredStateUnreadable(t *testing.T) {
 // positive one on the wording: the point is that no future edit quietly
 // reinstates the recommendation while the underlying write is still broken.
 // BUG-2696's fix did NOT bring the advice back: it CLOSED the field write
-// (refused on every transport) rather than making it work, and deferred a
-// remote PR-link action. So the guard stays, re-aimed: a hint may mention
-// github_pr only to say the write is refused / there is no remote path.
+// (refused on every transport). TASK-3611 then gave `github link` / `unlink`
+// a remote path that does not use it: pad_item link-pr / unlink-pr write the
+// typed, validated github_pr member. So the guard is re-aimed twice over: the
+// two commands must be ROUTED, not answered with a CLI-only hint, and no hint
+// that remains may mention the github_pr field write without saying it is
+// refused.
 func TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround(t *testing.T) {
 	for _, cmd := range []string{"github link", "github unlink"} {
-		hint, ok := noRemoteEquivalent[cmd]
-		if !ok {
-			t.Fatalf("%q is no longer in noRemoteEquivalent — if it gained a remote implementation, "+
-				"revisit BUG-2696 and this test", cmd)
+		if hint, ok := noRemoteEquivalent[cmd]; ok {
+			t.Errorf("%q is CLI-only again (%s); TASK-3611 routes it through the typed github_pr member", cmd, hint)
 		}
-		if !strings.Contains(hint, "BUG-2696") {
-			t.Errorf("%q hint must name the bug that makes the field workaround useless; got: %s", cmd, hint)
-		}
-		// The failure this guards: prescribing the write without the caveat.
+	}
+	for cmd, hint := range noRemoteEquivalent {
 		lower := strings.ToLower(hint)
 		if strings.Contains(lower, "github_pr") &&
 			!strings.Contains(lower, "refused") && !strings.Contains(lower, "no remote") {

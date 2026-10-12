@@ -59,6 +59,9 @@ func parityFixtureInput() map[string]any {
 		"status":            "open",
 		"remind_at":         "2026-08-01T09:00:00Z",
 		"reminder_id":       "rem-1",
+		"pr_number":         float64(42),
+		"item_ref":          "TASK-1", // github link / unlink name their positional item-ref
+		"pr_url":            "https://github.com/acme/app/pull/42",
 		"text":              "test text",
 	}
 }

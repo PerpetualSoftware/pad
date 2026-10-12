@@ -322,6 +322,8 @@ var ChatGPTExclusions = map[ChatGPTSource]string{
 	{"pad_item", "ack-reminder"}:        "deferred to v2",
 	{"pad_item", "reminders"}:           "deferred to v2",
 	{"pad_item", "unremind"}:            "deferred to v2",
+	{"pad_item", "link-pr"}:             "coding-agent workflow: a chat has no pull request to link",
+	{"pad_item", "unlink-pr"}:           "coding-agent workflow: a chat has no pull request to link",
 	{"pad_item", "star"}:                "personal UI state",
 	{"pad_item", "unstar"}:              "personal UI state",
 	{"pad_item", "starred"}:             "personal UI state",

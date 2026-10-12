@@ -1713,6 +1713,10 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"comment_id": true, // action=edit-comment / delete-comment (TASK-2695): addresses a comment row, never an item field
 		"comment":    true, // the audit note on update
 
+		// action=link-pr (TASK-3611): PR metadata, written only through the
+		// typed github_pr member, which a field write is refused (BUG-2696).
+		"pr_number": true, "pr_url": true, "pr_title": true, "pr_state": true, "pr_branch": true, "pr_repo": true,
+
 		// action=remind / ack-reminder (IDEA-2641). Neither writes an item
 		// FIELD: a reminder is a row in its own table addressed by its own
 		// id, so these cannot collide with `fields` or `field` the way a

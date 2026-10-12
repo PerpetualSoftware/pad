@@ -1738,6 +1738,18 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.95 — TASK-3611, PR linking. ADDITIVE bump on the v0.53 grounds:
+//     `pad_item.action=link-pr` (`ref`, `pr_number`, `pr_url`, optional
+//     `pr_title` / `pr_state` / `pr_branch` / `pr_repo`) links a pull
+//     request from metadata the agent SUPPLIES (nothing is fetched from
+//     GitHub), through the typed github_pr member (BUG-2696), and
+//     `action=unlink-pr` (`ref`) removes it, refusing an item with no link,
+//     as the CLI does. Both transports: `pad github link <ref> --pr-number N
+//     --pr-url U ...` (new flags; without them the command still reads the
+//     branch and `gh`) and `pad github unlink`; remote PATCHes the typed
+//     members. The `field` description no longer sends PR linking to a
+//     human. No name, enum or param moved.
+//
 //     0.94 — TASK-3611, reminder list and cancel. ADDITIVE bump on the
 //     v0.53 grounds: `pad_item.action=reminders` (`ref`) lists an item's
 //     reminders with their ids (armed, fired, acknowledged), and
@@ -2139,7 +2151,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.94"
+const ToolSurfaceVersion = "0.95"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

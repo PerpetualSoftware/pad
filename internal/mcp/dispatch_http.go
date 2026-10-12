@@ -234,17 +234,10 @@ var noRemoteEquivalent = map[string]string{
 	// inherently lives in the agent's local checkout, not on
 	// pad-cloud.
 	//
-	// These hints USED to send agents to `item update --field
-	// github_pr=...`, and that advice was wrong: ingestFieldKVP stores
-	// every `field` value as a STRING, so the PR data lands
-	// double-encoded, no link appears, and the call reports success —
-	// the worst shape a workaround can have (BUG-2696, found reviewing
-	// BUG-2627). Until that is fixed there is no working remote path,
-	// and saying so is better than sending an agent down one that
-	// silently does nothing.
-	"github link":   "needs the agent's local git branch + `gh` CLI. There is currently NO remote alternative: an `item update` field setter naming github_pr is refused (BUG-2696), and no PR-link action exists on this surface yet. Hand PR linking to a human rather than retrying.",
+	// `github link` / `unlink` are no longer here: pad_item link-pr /
+	// unlink-pr write the PR metadata the agent supplies through the typed
+	// github_pr member, on both transports (TASK-3611).
 	"github status": "needs the agent's local git branch + `gh` CLI; query GitHub directly via the agent's tools",
-	"github unlink": "needs the agent's local git branch + `gh` CLI. Same as `github link`: an `item update` field setter naming github_pr is refused (BUG-2696), so there is no remote path today.",
 	// `project reconcile` shells out to `gh` CLI to compare stored
 	// PR metadata against live GitHub state — same locality argument.
 	"project reconcile": "shells out to `gh` CLI to compare stored PR metadata against live GitHub state; agents reconcile via their own GitHub tools + `item update`",
@@ -468,6 +461,8 @@ func (d *HTTPHandlerDispatcher) buildSpecialRoutes() map[string]specialDispatchF
 		"item implemented-by": d.dispatchItemImplementedBy,
 		"item bulk-update":    d.dispatchItemBulkUpdate,
 		"item note":           d.dispatchItemNote,
+		"github link":         d.dispatchGitHubLink,
+		"github unlink":       d.dispatchGitHubUnlink,
 		"item decide":         d.dispatchItemDecide,
 		"item import":         d.dispatchItemImport,
 		"item comment-delete": d.dispatchItemCommentDelete,

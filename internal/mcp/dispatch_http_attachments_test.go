@@ -449,14 +449,14 @@ func TestNoRemoteEquivalent_RationaleIsPerEntry(t *testing.T) {
 	}
 	githubRes, _ := d.Dispatch(
 		WithDispatchInput(context.Background(), map[string]any{}),
-		[]string{"github", "link"}, nil,
+		[]string{"github", "status"}, nil,
 	)
 	attachRes, _ := d.Dispatch(
 		WithDispatchInput(context.Background(), map[string]any{}),
 		[]string{"attachment", "upload"}, nil,
 	)
 	if !containsToolText(githubRes, "git branch") {
-		t.Errorf("github link rationale should mention git branch; got %#v", githubRes)
+		t.Errorf("github status rationale should mention git branch; got %#v", githubRes)
 	}
 	if !containsToolText(attachRes, "filesystem") {
 		t.Errorf("attachment upload rationale should mention filesystem; got %#v", attachRes)

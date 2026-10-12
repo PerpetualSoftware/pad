@@ -881,7 +881,9 @@ func TestDispatch_GithubCommandsRejectedAsCLIOnly(t *testing.T) {
 		Handler:      errorHandler(t, "github commands must not reach handler"),
 		UserResolver: fixedUserResolver(&models.User{ID: "u"}),
 	}
-	for _, cmd := range []string{"github link", "github status", "github unlink"} {
+	// github link / unlink have a remote mapper since TASK-3611 (pad_item
+	// link-pr / unlink-pr); status still needs a local checkout and `gh`.
+	for _, cmd := range []string{"github status"} {
 		t.Run(cmd, func(t *testing.T) {
 			ctx := WithDispatchInput(context.Background(), map[string]any{
 				"workspace": "docapp",

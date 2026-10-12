@@ -130,6 +130,8 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "ack-reminder"}:   {"item", "ack"},
 		{"pad_item", "reminders"}:      {"item", "reminders"},
 		{"pad_item", "unremind"}:       {"item", "unremind"},
+		{"pad_item", "link-pr"}:        {"github", "link"},
+		{"pad_item", "unlink-pr"}:      {"github", "unlink"},
 		{"pad_item", "claim"}:          {"item", "claim"},
 		{"pad_item", "release"}:        {"item", "release"},
 		{"pad_item", "patch"}:          {"item", "patch"},
@@ -298,6 +300,8 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "ack-reminder"}:   {"item", "ack"},
 		{"pad_item", "reminders"}:      {"item", "reminders"},
 		{"pad_item", "unremind"}:       {"item", "unremind"},
+		{"pad_item", "link-pr"}:        {"github", "link"},
+		{"pad_item", "unlink-pr"}:      {"github", "unlink"},
 		{"pad_item", "claim"}:          {"item", "claim"},
 		{"pad_item", "release"}:        {"item", "release"},
 		{"pad_item", "patch"}:          {"item", "patch"},
@@ -704,6 +708,16 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item unremind": {
 				Summary: "disarm a reminder",
 				Args:    mkArgs("reminder-id"),
+				Flags:   mkFlags("workspace"),
+			},
+			"github link": {
+				Summary: "link a PR to an item",
+				Args:    []cmdhelp.Arg{{Name: "item-ref"}},
+				Flags:   mkFlags("workspace", "pr-number", "pr-url", "pr-title", "pr-state", "pr-branch", "pr-repo"),
+			},
+			"github unlink": {
+				Summary: "remove an item's PR link",
+				Args:    mkArgs("item-ref"),
 				Flags:   mkFlags("workspace"),
 			},
 			"item claim": {
