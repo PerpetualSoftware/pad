@@ -77,3 +77,13 @@ func TestContextIsBoundedAndLineClipped(t *testing.T) {
 		t.Fatalf("context = %q / %q", a.CtxBefore, a.CtxAfter)
 	}
 }
+
+// Retro CONVE-735 finding on #2058: an edit that deletes a line's only
+// content left empty line-clipped context on both sides, so the inverse's
+// anchor was "" and the undo was refused as an empty anchor.
+func TestUndoOfALineEmptiedOut(t *testing.T) {
+	t.Run("middle line", func(t *testing.T) { roundTrip(t, "alpha\nbeta\ngamma\n", []Edit{{Old: "beta", New: ""}}) })
+	t.Run("first line", func(t *testing.T) { roundTrip(t, "alpha\nbeta\n", []Edit{{Old: "alpha", New: ""}}) })
+	t.Run("last line, no trailing newline", func(t *testing.T) { roundTrip(t, "alpha\nbeta", []Edit{{Old: "beta", New: ""}}) })
+	t.Run("between blank lines", func(t *testing.T) { roundTrip(t, "a\n\nb\n\nc", []Edit{{Old: "b", New: ""}}) })
+}

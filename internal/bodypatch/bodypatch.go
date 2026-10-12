@@ -7,6 +7,7 @@
 package bodypatch
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -56,6 +57,7 @@ func (e *AnchorAmbiguousError) Error() string {
 // ones before it, and returns the new body. All or nothing: the first edit
 // that cannot apply returns its error and no body.
 func Apply(body string, edits []Edit) (string, error) {
+	original := body
 	if len(edits) == 0 {
 		return "", fmt.Errorf("no edits")
 	}
@@ -96,8 +98,16 @@ func Apply(body string, edits []Edit) (string, error) {
 		}
 		body = body[:at[0]] + e.New + body[at[0]+len(e.Old):]
 	}
+	if body == original {
+		return "", ErrNoChange
+	}
 	return body, nil
 }
+
+// ErrNoChange: the edits, applied in order, leave the body exactly as it was
+// (retro CONVE-735 finding on #2055). A patch is a version; one that changes
+// nothing is refused rather than advancing seq with no version behind it.
+var ErrNoChange = errors.New("the edits change nothing")
 
 // matches returns every start offset of sub in s, overlapping ones included:
 // "aa" occurs twice in "aaa", and a uniqueness check that counted it once
@@ -156,19 +166,26 @@ func ApplyWithContext(body string, edits []Edit) (string, []AppliedEdit, error) 
 		p := at[0]
 		body = body[:p] + e.New + body[p+len(e.Old):]
 		end := p + len(e.New)
-		out = append(out, AppliedEdit{Old: e.Old, New: e.New, CtxBefore: ctxBefore(body, p), CtxAfter: ctxAfter(body, end)})
+		cb, ca := ctxBefore(body, p, true), ctxAfter(body, end, true)
+		if cb+e.New+ca == "" {
+			// The edit emptied its line (retro CONVE-735 finding on #2058):
+			// line-clipped context is empty on both sides, which would leave
+			// the undo no anchor at all. Reach across the line breaks instead.
+			cb, ca = ctxBefore(body, p, false), ctxAfter(body, end, false)
+		}
+		out = append(out, AppliedEdit{Old: e.Old, New: e.New, CtxBefore: cb, CtxAfter: ca})
 	}
 	return body, out, nil
 }
 
-// ctxBefore is up to ContextChars bytes before p, not crossing a newline, and
-// never splitting a UTF-8 sequence.
-func ctxBefore(s string, p int) string {
+// ctxBefore is up to ContextChars bytes before p, not crossing a newline when
+// clip is set, and never splitting a UTF-8 sequence.
+func ctxBefore(s string, p int, clip bool) string {
 	from := p - ContextChars
 	if from < 0 {
 		from = 0
 	}
-	if nl := strings.LastIndexByte(s[from:p], '\n'); nl >= 0 {
+	if nl := strings.LastIndexByte(s[from:p], '\n'); clip && nl >= 0 {
 		from += nl + 1
 	}
 	for from < p && !utf8.RuneStart(s[from]) {
@@ -177,13 +194,14 @@ func ctxBefore(s string, p int) string {
 	return s[from:p]
 }
 
-// ctxAfter is up to ContextChars bytes from p, stopping before a newline.
-func ctxAfter(s string, p int) string {
+// ctxAfter is up to ContextChars bytes from p, stopping before a newline when
+// clip is set.
+func ctxAfter(s string, p int, clip bool) string {
 	to := p + ContextChars
 	if to > len(s) {
 		to = len(s)
 	}
-	if nl := strings.IndexByte(s[p:to], '\n'); nl >= 0 {
+	if nl := strings.IndexByte(s[p:to], '\n'); clip && nl >= 0 {
 		to = p + nl
 	}
 	for to > p && to < len(s) && !utf8.RuneStart(s[to]) {
