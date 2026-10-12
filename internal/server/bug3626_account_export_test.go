@@ -191,3 +191,36 @@ func TestBUG3626_CompleteExportCarriesFormatAndTrailer(t *testing.T) {
 		t.Errorf("export does not hold the one workspace and its item: %+v", v.Workspaces)
 	}
 }
+
+// A store read that stalls cannot hold the export open past its deadline: the
+// export stops waiting, aborts, and the read's late result is dropped.
+func TestBUG3626_StalledReadIsBoundedByTheDeadline(t *testing.T) {
+	origT, origI := accountExportTimeout, accountExportListItems
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		close(release)
+		accountExportTimeout, accountExportListItems = origT, origI
+	})
+	srv := testServer(t)
+	tok := bug3626Owner(t, srv)
+	accountExportTimeout = 300 * time.Millisecond
+	accountExportListItems = func(s *Server, wsID string, p models.ItemListParams) ([]models.Item, error) {
+		// Stalls until the test ends, or 8s at most, so a build without the
+		// deadline answers late (and fails the bound below) instead of
+		// hanging the test.
+		select {
+		case <-release:
+		case <-time.After(8 * time.Second):
+		}
+		return s.store.ListItems(wsID, p)
+	}
+
+	start := time.Now()
+	_, body, readErr := bug3626Export(t, srv, tok)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the export waited %v on a stalled read; the 300ms deadline must bound it", elapsed)
+	}
+	if readErr == nil && parsesAsCompleteExport(body) {
+		t.Fatalf("a stalled export arrived as a valid, complete-looking file:\n%s", body)
+	}
+}

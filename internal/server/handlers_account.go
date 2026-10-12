@@ -350,6 +350,31 @@ var (
 	}
 )
 
+// withinExportDeadline runs one store read under the export's deadline. The
+// store reads take no context, so the read runs on its own goroutine and the
+// export stops waiting when the deadline passes; a stalled query then cannot
+// hold the request open past accountExportTimeout. The abandoned read
+// finishes in the background and its result is dropped (the channel is
+// buffered, so it never blocks).
+func withinExportDeadline[T any](ctx context.Context, read func() (T, error)) (T, error) {
+	type result struct {
+		v   T
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		v, err := read()
+		done <- result{v, err}
+	}()
+	select {
+	case r := <-done:
+		return r.v, r.err
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	}
+}
+
 // abortAccountExport ends an account export that cannot be completed. The
 // status line has already gone out, so no error status is possible; instead
 // the connection is cut mid-body (http.ErrAbortHandler, which chi's Recoverer
@@ -460,7 +485,9 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 
 		// Only export full data for owned workspaces
 		if ws.OwnerID == user.ID {
-			collections, err := accountExportListCollections(s, ws.ID)
+			collections, err := withinExportDeadline(ctx, func() ([]models.Collection, error) {
+				return accountExportListCollections(s, ws.ID)
+			})
 			if err != nil {
 				abortAccountExport(user.ID, "listing collections of "+ws.Slug, err)
 			}
@@ -469,7 +496,9 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 			// Stream items per workspace (each workspace loaded individually, then GC'd)
 			// IncludeDeletedCollections: a user's own export keeps the items
 			// of collections they deleted, as it always has (BUG-3425).
-			items, err := accountExportListItems(s, ws.ID, models.ItemListParams{IncludeArchived: true, IncludeDeletedCollections: true})
+			items, err := withinExportDeadline(ctx, func() ([]models.Item, error) {
+				return accountExportListItems(s, ws.ID, models.ItemListParams{IncludeArchived: true, IncludeDeletedCollections: true})
+			})
 			if err != nil {
 				abortAccountExport(user.ID, "listing items of "+ws.Slug, err)
 			}
