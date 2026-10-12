@@ -53,3 +53,27 @@ func TestEnsureServer_DoesNotSpawnOverAServerThatAnswersNon200(t *testing.T) {
 		})
 	}
 }
+
+// The other half: `pad server start` binds before it migrates, so a starting
+// server holds the port but answers nothing yet. A listener that never accepts
+// is that window exactly; the kernel still completes the connect from its
+// backlog. A probe that waited for an HTTP response timed out here and spawned
+// a second start, which then lost the bind.
+func TestEnsureServer_DoesNotSpawnOverAServerThatIsStillStarting(t *testing.T) {
+	cfg, spawns := refreshTestConfig(t)
+	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port))
+	if err != nil {
+		t.Fatalf("listen on %d: %v", cfg.Port, err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	if err := EnsureServer(cfg); err != nil {
+		t.Fatalf("EnsureServer: %v", err)
+	}
+	if got := atomic.LoadInt32(spawns); got != 0 {
+		t.Fatalf("spawns = %d, want 0: a bound port is held even before it serves", got)
+	}
+	if !IsServerRunning(cfg) {
+		t.Fatal("IsServerRunning = false for a bound port that has not started serving")
+	}
+}

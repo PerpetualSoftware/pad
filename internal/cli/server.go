@@ -3,9 +3,10 @@ package cli
 import (
 	"fmt"
 	"log/slog"
-	"net/http"
+	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -197,22 +198,28 @@ func IsServerRunning(cfg *config.Config) bool {
 	return serverAnswers(cfg.Host, cfg.Port)
 }
 
-// serverAnswers reports whether something answers HTTP on host:port: ANY
-// response, whatever its status. The callers are deciding whether the port is
-// held (spawn a server or not, restore a database under it or not), and a
-// server that answers 429 or 503 is holding it. It used to require a 200, and
-// the health probe shares one per-address rate-limit bucket across every CLI
-// on the machine, so a parallel fan-out drew 429s that read as "not running":
-// 206 `pad server start` spawns in two days, each opening the live database
-// before losing the bind (TASK-3620). /health itself only ever answers 200;
-// any other status is middleware in front of a running server.
+// serverAnswers reports whether something holds host:port: whether a TCP
+// connection to it succeeds. The callers are deciding whether the port is held
+// (spawn a server or not, restore a database under it or not), and that is the
+// question a connect answers. It used to be an HTTP GET of /health that
+// required a 200, which was wrong twice over (TASK-3620):
+//
+//   - The probe shares one per-address rate-limit bucket across every CLI on
+//     the machine, so a parallel fan-out drew 429s that read as "not running":
+//     206 `pad server start` spawns in two days, each opening the live
+//     database before losing the bind.
+//   - `pad server start` binds before it migrates, so a starting server
+//     accepts the connection but answers nothing until startup is done. A probe
+//     waiting for a response timed out there and spawned again.
+//
+// A request sent to a server still starting simply waits in its backlog until
+// it serves.
 func serverAnswers(host string, port int) bool {
-	client := &http.Client{Timeout: 1 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://%s:%d/api/v1/health", host, port))
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), time.Second)
 	if err != nil {
 		return false
 	}
-	_ = resp.Body.Close()
+	_ = conn.Close()
 	return true
 }
 
