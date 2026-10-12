@@ -1388,6 +1388,29 @@ export interface ItemCreate {
 	convention?: ItemConventionMetadata;
 }
 
+/** POST /items/{ref}/patch (PLAN-3578). */
+export interface ItemPatchRequest {
+	edits: { old: string; new: string; line_hint?: number }[];
+	/** The seq the edits were made against; a newer row is rebased over, not refused. */
+	expected_seq?: number;
+	/** Idempotency key (TASK-3585). */
+	op_key?: string;
+}
+
+export interface ItemPatchResponse {
+	ref: string;
+	seq: number;
+	patch_id: string;
+	version_id?: string;
+	rebased: boolean;
+	applied_over_seq?: number;
+	/** "applied_pending_flush" when an open editor applied it. */
+	content_state?: string;
+	intervening?: unknown;
+	/** Unified diff of what the patch changed. */
+	diff: string;
+}
+
 export interface ItemUpdate {
 	title?: string;
 	content?: string;

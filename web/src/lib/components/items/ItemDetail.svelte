@@ -43,6 +43,8 @@
 	import Editor from '$lib/components/editor/Editor.svelte';
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 	import RefusedRawDraftNotice from './RefusedRawDraftNotice.svelte';
+	import RestoredDraftResult from './RestoredDraftResult.svelte';
+	import { draftEdits } from '$lib/items/draftPatch';
 	import { isBodyStale, isSetAside } from '$lib/items/staleBody';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -4970,6 +4972,12 @@
 	// means the unload request landed after its page was gone: cleared silently.
 	let refusedDraft = $state<RefusedRawDraft | null>(null);
 	let refusedDraftBusy = $state(false);
+	// TASK-3607: a kept draft whose own changes could not be anchored in the
+	// newer body (keyed to the draft it was computed for), and the diff a
+	// successful patch restore answered with. Neither is read by the effect
+	// below; each renders only for the item and draft it names.
+	let refusedDraftConflict = $state<{ itemId: string; markdown: string; base: string } | null>(null);
+	let restoredDraftResult = $state<{ itemId: string; diff: string } | null>(null);
 	$effect(() => {
 		const id = item && itemMatchesRef ? item.id : null;
 		const body = item?.content ?? '';
@@ -5004,13 +5012,80 @@
 		}
 	}
 
+	/** A crash draft with its base, on an item someone has saved since. */
+	function draftAppliesAsPatch(d: RefusedRawDraft, seq: number): d is RefusedRawDraft & { baseSeq: number; baseBody: string } {
+		return d.baseSeq !== undefined && d.baseBody !== undefined && seq > d.baseSeq;
+	}
+
+	// TASK-3607 (PLAN-3578): send only base→draft, anchored on the base's text.
+	// The server rebases over the newer writes when every anchor still matches;
+	// when one does not, nothing is written and the user gets the diff to
+	// re-apply by hand, with Copy. The draft is cleared only on success.
+	async function applyRefusedDraftChanges(d: RefusedRawDraft & { baseSeq: number; baseBody: string }) {
+		if (!item) return;
+		const reqItemId = item.id;
+		const gen = loadGeneration;
+		const userId = authStore.userId;
+		const edits = draftEdits(d.baseBody, d.markdown);
+		if (edits === null) {
+			refusedDraftConflict = { itemId: reqItemId, markdown: d.markdown, base: d.baseBody };
+			return;
+		}
+		if (edits.length === 0) {
+			// The draft is its base: none of the user's text is missing.
+			clearRefusedRawDraft(userId, reqItemId, d.markdown);
+			refusedDraft = null;
+			toastStore.show('Nothing to restore: the kept text has no changes of yours', 'info');
+			return;
+		}
+		refusedDraftBusy = true;
+		try {
+			// Stable per draft, so a retry after an unknown outcome is answered,
+			// not applied twice (TASK-3585).
+			const opKey = `restore-${reqItemId}-${d.savedAt}`;
+			const res = await api.items.patch(wsSlug, reqItemId, { edits, expected_seq: d.baseSeq, op_key: opKey });
+			if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+			clearRefusedRawDraft(userId, reqItemId, d.markdown);
+			refusedDraft = null;
+			restoredDraftResult = { itemId: reqItemId, diff: res.diff };
+			toastStore.show('Applied your kept changes', 'success');
+			// An open editor applied it and its flush catches the row up; with no
+			// editor the row has it now.
+			if (res.content_state !== 'applied_pending_flush') {
+				const fresh = await api.items.get(wsSlug, reqItemId);
+				if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+				if (rawMode) rawSeedMarkdown = null;
+				item = withInflightTags(fresh);
+			}
+		} catch (e) {
+			if (!item || item.id !== reqItemId || gen !== loadGeneration) return;
+			if (e instanceof PadApiError && (e.code === 'patch_anchor_missing' || e.code === 'patch_anchor_ambiguous')) {
+				refusedDraftConflict = { itemId: reqItemId, markdown: d.markdown, base: d.baseBody };
+				return;
+			}
+			if (e instanceof PadApiError && e.code === 'patch_room_open') {
+				toastStore.show('This item is open in an editor that cannot take your changes yet. Copy them, or restore once it closes.', 'info');
+				return;
+			}
+			toastStore.show('Failed to apply the kept changes', 'error');
+		} finally {
+			refusedDraftBusy = false;
+		}
+	}
+
 	// Restore sends the kept text as the body, under the same refusal as every
 	// raw save; the user answers the dialog if another tab still holds edits.
+	// A crash draft the item has moved on from goes as a patch of the user's
+	// own changes instead (TASK-3607).
 	async function restoreRefusedDraft() {
 		const d = refusedDraft;
 		if (!d || !item || refusedDraftBusy) return;
 		if (rawMode && rawContentSaver.pending !== null) {
 			toastStore.show('Wait for your current edits to save, then restore.', 'info');
+			return;
+		}
+		if (draftAppliesAsPatch(d, item.seq ?? 0)) {
+			await applyRefusedDraftChanges(d);
 			return;
 		}
 		const reqItemId = item.id;
@@ -7242,10 +7317,17 @@
 						savedAt={refusedDraft.savedAt}
 						busy={refusedDraftBusy}
 						newer={refusedDraft.baseSeq !== undefined && (item?.seq ?? 0) > refusedDraft.baseSeq}
+						appliesChanges={draftAppliesAsPatch(refusedDraft, item?.seq ?? 0)}
+						conflict={refusedDraftConflict && refusedDraftConflict.itemId === item?.id && refusedDraftConflict.markdown === refusedDraft.markdown
+							? { base: refusedDraftConflict.base, draft: refusedDraft.markdown }
+							: null}
 						onrestore={restoreRefusedDraft}
 						oncopy={copyRefusedDraft}
 						ondismiss={discardRefusedDraft}
 					/>
+				{/if}
+				{#if restoredDraftResult && restoredDraftResult.itemId === item?.id}
+					<RestoredDraftResult diff={restoredDraftResult.diff} ondismiss={() => (restoredDraftResult = null)} />
 				{/if}
 				<!-- BUG-2263 invisible freeze: the Rich⇄Markdown toggle renders on
 				     BOTH sides. It IS a provider-LIFECYCLE control (Markdown flushes,

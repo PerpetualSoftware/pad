@@ -158,7 +158,8 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		// every capitalised tag with an `on*=` prop. The rest, with their reasons:
 		// - synchronous callbacks: FieldEditor, TagInput, the editors, the menus,
 		//   ContentError, the pickers, Graph, RefusedRawDraftNotice (BUG-3230
-		//   U0: its buttons call the parent's handlers directly; it has no await);
+		//   U0: its buttons call the parent's handlers directly; it has no await),
+		//   RestoredDraftResult (TASK-3607: its one button calls ondismiss; no await);
 		// - already epoch-aware: EditorBubbleMenu;
 		// - PushToAgentDialog calls `onclose` after its send's await, but only
 		//   behind its own `stillMine()` check, and the parent's load closes the
@@ -168,7 +169,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		// is bumped by the cleanup that runs when the identity key remounts it.
 		// A new child tag with a callback prop must be read and either added
 		// above or added here with its reason.
-		const SYNC_OR_AWARE = new Set(['FieldEditor', 'TagInput', 'RawMarkdownEditor', 'Editor', 'Menu', 'MenuItem', 'ContentError', 'EditorLinkPopover', 'Graph', 'ItemPicker', 'EditorBubbleMenu', 'PushToAgentDialog', 'RefusedRawDraftNotice']);
+		const SYNC_OR_AWARE = new Set(['FieldEditor', 'TagInput', 'RawMarkdownEditor', 'Editor', 'Menu', 'MenuItem', 'ContentError', 'EditorLinkPopover', 'Graph', 'ItemPicker', 'EditorBubbleMenu', 'PushToAgentDialog', 'RefusedRawDraftNotice', 'RestoredDraftResult']);
 		const tags = new Set([...MARKUP.matchAll(/<([A-Z]\w+)\b[^>]*?\bon[a-zA-Z]+=\{/gs)].map((m) => m[1]!));
 		const unknown = [...tags].filter((t) => !(t in CALLBACK_CHILDREN) && !SYNC_OR_AWARE.has(t));
 		expect(unknown).toEqual([]);

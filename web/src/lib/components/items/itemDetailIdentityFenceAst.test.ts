@@ -210,8 +210,15 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	copyRefusedDraft: { reviewed: '839b51b59798', why: 'the copied text was captured before the await; the toast after it describes that copy, whichever item is shown', may: ['toastStore.show'] },
 	// BUG-3540 (codex): the restore sends the shown row's seq; a conflict refetches (fenced) and keeps the draft.
 	restoreRefusedDraft: {
-		reviewed: '78282ea344d4',
-		why: 'item id and gen against loadGeneration after every await; the finally clears this pane\'s own busy flag',
+		reviewed: '5a987d8526fc',
+		why: 'item id and gen against loadGeneration after every await; the finally clears this pane\'s own busy flag; a draft the item moved on from is handed to applyRefusedDraftChanges, awaited last, with nothing committed after it (TASK-3607)',
+		may: ['refusedDraftBusy'],
+	},
+	// TASK-3607: a crash draft's own changes go as a patch; the conflict and
+	// result states are keyed to the item they were computed for.
+	applyRefusedDraftChanges: {
+		reviewed: 'eb92b33465b5',
+		why: 'commits before the first await are synchronous; after the patch and after the refetch, item id and gen against loadGeneration before any commit or toast, the catch included; the finally clears this pane\'s own busy flag',
 		may: ['refusedDraftBusy'],
 	},
 };
@@ -365,6 +372,8 @@ const CONTINUATIONS: SignedRow[] = [
  * one is an edit to every unit that reaches it.
  */
 const HELPERS: Record<string, string> = {
+	// TASK-3607: a pure read of the draft and the shown seq.
+	draftAppliesAsPatch: '94b15f31cced',
 	// TASK-2199: read by onForceRefresh; a pure read of the live editor.
 	liveEditorMarkdown: '898dfa3cfe31',
 	// TASK-2232: the editor-markdown shadow's only reader. It drains the
