@@ -81,6 +81,42 @@ type QuestionSet struct {
 	// MaxPerCall bounds the questions sent in one provider call; a larger
 	// set is split into several calls. Zero sends them all in one.
 	MaxPerCall int
+
+	// Threshold is the Noul probability at or above which an answer in this
+	// set is surfaced anywhere (a dashboard flag, a chip, the item brief).
+	// Below it the product shows nothing, so a read that serves agents must
+	// not serve it either (TASK-3618). Zero surfaces every Noul answer.
+	Threshold float64
+}
+
+// Surfacing is the verdict of [surfacing] on one stored answer.
+type Surfacing int
+
+const (
+	// Surfaced: the question is current and the answer reaches the threshold.
+	Surfaced Surfacing = iota
+	// BelowThreshold: the question is current, but the answer is not a Noul
+	// at or above the threshold.
+	BelowThreshold
+	// StaleQuestion: the answer is to a question no longer asked as it was
+	// (reworded, re-resolved, another model pinned, or no longer registered).
+	StaleQuestion
+)
+
+// surfacing is THE row test every surfacing read applies (TASK-3618):
+// WorkspaceFlags for the dashboard and SurfacedDecisions for the item brief.
+// qhashNow is the fingerprint of the question as registered now, "" when
+// there is none. It says nothing about the ITEM's currency: each caller
+// decides what an item that moved on means for it.
+func surfacing(d models.ItemDecision, qhashNow string, threshold float64) (float64, Surfacing) {
+	if qhashNow == "" || d.QuestionHash != qhashNow {
+		return 0, StaleQuestion
+	}
+	p, ok := NoulValue(d)
+	if !ok || p < threshold {
+		return p, BelowThreshold
+	}
+	return p, Surfaced
 }
 
 func (qs QuestionSet) appliesTo(collectionSlug string) bool {
@@ -704,23 +740,61 @@ func storedAnswerOf(a Answer) storedAnswer {
 // Current when it was computed from the item's present state. A nil runner
 // returns an empty list: no provider, no decisions, no error.
 func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
+	rows, _, err := r.decisionsNow(itemID)
+	return rows, err
+}
+
+// SurfacedDecisions is the item's latest answers that its set would surface
+// (TASK-3618, for the item brief): the question is current and the answer
+// reaches the set's Threshold, by the same row test WorkspaceFlags applies.
+// Every other row is only counted: belowThreshold for a current question
+// whose answer does not reach it, staleQuestion for an answer to a question
+// no longer asked as it was.
+//
+// Unlike WorkspaceFlags, an answer whose ITEM has moved on is kept, with
+// Current false: an agent about to work the item is better told that a
+// surfaced answer may be out of date than not told at all.
+func (r *Runner) SurfacedDecisions(itemID string) (surfaced []models.ItemDecision, belowThreshold, staleQuestion int, err error) {
+	rows, qhashes, err := r.decisionsNow(itemID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	surfaced = []models.ItemDecision{}
+	for i, d := range rows {
+		qs, _ := r.registry.Get(d.QuestionSet)
+		switch _, v := surfacing(d, qhashes[i], qs.Threshold); v {
+		case Surfaced:
+			surfaced = append(surfaced, d)
+		case BelowThreshold:
+			belowThreshold++
+		default:
+			staleQuestion++
+		}
+	}
+	return surfaced, belowThreshold, staleQuestion, nil
+}
+
+// decisionsNow is Decisions plus, per row, the fingerprint of its question as
+// registered now ("" when there is none), for the surfacing test.
+func (r *Runner) decisionsNow(itemID string) ([]models.ItemDecision, []string, error) {
 	if r == nil {
-		return []models.ItemDecision{}, nil
+		return []models.ItemDecision{}, nil, nil
 	}
 	rows, err := r.store.LatestItemDecisions(itemID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(rows) == 0 {
-		return []models.ItemDecision{}, nil
+		return []models.ItemDecision{}, nil, nil
 	}
 	item, _, err := r.State(itemID)
 	if err != nil {
 		if errors.Is(err, ErrItemGone) {
-			return []models.ItemDecision{}, nil
+			return []models.ItemDecision{}, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
+	qhashes := make([]string, len(rows))
 	// Each set is judged against ITS state (with links or not) and ITS
 	// questions as they stand now (a resolved set re-resolves), built once
 	// per set.
@@ -764,7 +838,7 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 		// round 2 on TASK-3118).
 		now, err := nowFor(rows[i].QuestionSet)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		qhashNow := ""
 		stateNow := now.st.Hash
@@ -779,7 +853,7 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 			}
 			h, err := r.commentStateNow(item, commentID, commentHashes)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if h == "" {
 				continue
@@ -791,6 +865,7 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 				qhashNow = QuestionFingerprint(model, q)
 			}
 		}
+		qhashes[i] = qhashNow
 		if !(now.ok && rows[i].StateHash == stateNow && qhashNow != "" && rows[i].QuestionHash == qhashNow) {
 			continue
 		}
@@ -799,13 +874,13 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 		if !seen {
 			ok, err = r.appliesNow(qs, item)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			applies[qs.Name] = ok
 		}
 		rows[i].Current = ok
 	}
-	return rows, nil
+	return rows, qhashes, nil
 }
 
 // appliesNow reports whether the set would be asked about the item as it
