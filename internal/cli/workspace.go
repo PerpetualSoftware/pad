@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -119,12 +120,33 @@ func LoadPadToml() (*PadToml, error) {
 // equivalently cfg.URL) for any non-local mode (remote, cloud) so that the
 // directory targets the right server even when the user's global config
 // points at a different one. See BUG-1535.
+//
+// An existing .pad.toml in dir is UPDATED, not replaced (TASK-3612): only
+// `workspace` and `url` change, so `agent_name`, the `[push]` table (the
+// repository's auto-arm consent) and any key a newer pad wrote survive a
+// relink. Comments and key order are not preserved; values are.
 func WriteWorkspaceLink(dir, slug, serverURL string) error {
 	path := filepath.Join(dir, ".pad.toml")
-	f, err := os.Create(path)
-	if err != nil {
+	doc := map[string]any{}
+	if _, err := os.Stat(path); err == nil {
+		if _, err := toml.DecodeFile(path, &doc); err != nil {
+			// Refuse rather than overwrite: a file we cannot read may hold
+			// settings the caller would lose without being told.
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(PadToml{Workspace: slug, URL: serverURL})
+	doc["workspace"] = slug
+	if serverURL != "" {
+		doc["url"] = serverURL
+	} else {
+		delete(doc, "url")
+	}
+	// Encode before touching the file, so a failed encode leaves it intact.
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(doc); err != nil {
+		return err
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o644)
 }

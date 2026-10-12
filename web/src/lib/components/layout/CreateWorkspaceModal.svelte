@@ -33,6 +33,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { ERROR_DURATION } from '$lib/stores/toast.svelte';
 	import { describeImportSummary } from '$lib/workspaces/importSummary';
+	import MoveToCloudLink from '$lib/components/workspaces/MoveToCloudLink.svelte';
 	import type { Workspace, WorkspaceTemplate } from '$lib/types';
 	import { groupTemplatesByCategory } from '$lib/utils/templates';
 	import Modal from '$lib/components/common/Modal.svelte';
@@ -666,11 +667,9 @@
 						style="display:none"
 					/>
 				</div>
-				{#if !importFile && authStore.cloudMode}
+				{#if !importFile}
 					<!-- TASK-3612: the guided path for moving a self-hosted workspace here. -->
-					<p class="import-hint">
-						Moving a workspace from a self-hosted Pad? <a href="/console/move-to-cloud" onclick={close}>Follow the guide</a>.
-					</p>
+					<MoveToCloudLink on="cloud" onnavigate={close} />
 				{/if}
 				{#if importFile}
 					<p class="import-hint">Creates a new workspace with regenerated IDs (items, comments, attachments, version history all preserved). Original data is unchanged.</p>
@@ -1000,8 +999,6 @@
 	.drop-file-name { font-size: 0.88em; font-weight: 500; color: var(--text-primary); }
 	.drop-hint { font-size: 0.75em; color: var(--text-muted); }
 	.import-hint { font-size: 0.8em; color: var(--text-muted); margin: 0; }
-	/* A link inside running text must not rely on colour alone (axe link-in-text-block). */
-	.import-hint a { text-decoration: underline; }
 	.import-progress { display: flex; flex-direction: column; gap: var(--space-1); }
 	.import-progress progress { width: 100%; height: 6px; accent-color: var(--accent); }
 	.import-progress-text { font-size: 0.8em; color: var(--text-secondary); margin: 0; }

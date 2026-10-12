@@ -733,11 +733,18 @@ func linkCmd() *cobra.Command {
 		Use:     "link <workspace>",
 		Short:   "Link the current directory to an existing workspace",
 		Example: `  pad workspace link mobile-app`,
-		Long: `Link the current directory to an existing workspace by creating a .pad.toml file.
+		Long: `Link the current directory to an existing workspace by writing its .pad.toml file.
 
 Unlike 'pad workspace init', this does NOT create a new workspace — it only links to one that already exists.
 
   pad workspace link myproject
+
+An existing .pad.toml is updated, not replaced: only the workspace and the
+server url change, so agent_name and [push] are kept. With --url, a directory
+linked to another server is moved to that one, even when the slug is the same
+there (moving a workspace to Pad Cloud):
+
+  pad workspace link myproject --url https://app.getpad.dev
 
 Use 'pad workspace list' to see available workspaces.`,
 		Args: cobra.ExactArgs(1),
@@ -746,10 +753,22 @@ Use 'pad workspace list' to see available workspaces.`,
 			cwd, _ := os.Getwd()
 			nameOrSlug := args[0]
 
-			// Check if already linked
-			existingSlug, err := cli.DetectWorkspace("")
-			if err == nil {
-				ws, err := client.GetWorkspace(existingSlug)
+			// Use the cfg returned by getClient() — it carries the
+			// .pad.toml URL override that getClient just used to
+			// reach the server. Re-deriving from raw getConfig()
+			// would drop the URL when relinking inside an existing
+			// remote-pinned directory whose global config is local.
+			targetURL := padTomlURLFor(cfg)
+
+			// Already linked only when the existing link names a workspace
+			// this server has AND already points at this server. A link
+			// whose url pins another server is re-pointed (TASK-3612): after
+			// `pad workspace link <slug> --url https://app.getpad.dev` a
+			// directory moved to Cloud must stop talking to the old server,
+			// even when Cloud's slug is the same as the old one.
+			existing, _ := cli.LoadPadToml()
+			if existing != nil && existing.Workspace != "" && sameServerURL(existing.URL, targetURL) {
+				ws, err := client.GetWorkspace(existing.Workspace)
 				if err == nil && ws != nil {
 					fmt.Printf("Already linked to workspace %q (slug: %s)\n", ws.Name, ws.Slug)
 					offerSkillInstall()
@@ -779,21 +798,32 @@ Use 'pad workspace list' to see available workspaces.`,
 				return fmt.Errorf("workspace %q does not exist — use 'pad workspace init %s' to create it", nameOrSlug, nameOrSlug)
 			}
 
-			// Use the cfg returned by getClient() — it carries the
-			// .pad.toml URL override that getClient just used to
-			// reach the server. Re-deriving from raw getConfig()
-			// would drop the URL when relinking inside an existing
-			// remote-pinned directory whose global config is local.
-			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, padTomlURLFor(cfg)); err != nil {
+			if err := cli.WriteWorkspaceLink(cwd, ws.Slug, targetURL); err != nil {
 				return fmt.Errorf("write .pad.toml: %w", err)
 			}
 
 			fmt.Printf("Linked to workspace %q (slug: %s)\n", ws.Name, ws.Slug)
 			fmt.Printf("  %s/.pad.toml\n", cwd)
+			if existing != nil && !sameServerURL(existing.URL, targetURL) {
+				fmt.Printf("  server: %s (was %s)\n", displayServerURL(targetURL), displayServerURL(existing.URL))
+			}
 			offerSkillInstall()
 			return nil
 		},
 	}
+}
+
+// sameServerURL compares two .pad.toml url values. Empty means the local
+// server; a trailing slash is not a different server.
+func sameServerURL(a, b string) bool {
+	return strings.TrimRight(a, "/") == strings.TrimRight(b, "/")
+}
+
+func displayServerURL(u string) string {
+	if u == "" {
+		return "the local server"
+	}
+	return u
 }
 
 func offerSkillInstall() {
