@@ -34,6 +34,7 @@ var seqMovingSites = map[string]string{
 	"items.go:bumpStructuralLinkSourceTx":                 "BREAKS: a link change bumps the source item",
 	"items.go:moveItemWithPreCheckOnce":                   "BREAKS: collection move",
 	"items_cross_workspace_copy.go:archiveItemForCopyTx":  "BREAKS: archive-source on a cross-workspace move",
+	"convention_role_backfill.go:copyConventionRole":      "STAMPED: the startup role backfill (PLAN-3598) writes a system activity entry with {prev_seq, seq} in the same transaction",
 }
 
 func TestPLAN3578_EverySeqMovingSiteIsClassified(t *testing.T) {

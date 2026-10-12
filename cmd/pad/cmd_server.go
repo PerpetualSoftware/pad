@@ -233,6 +233,24 @@ func serveCmd() *cobra.Command {
 				slog.Info("Attachment bidi filename backfill complete", "rows_rewritten", bb.RowsRewritten)
 			}
 
+			// Copy a convention's free-text `role` field into its empty
+			// agent-role column where it names a live role (PLAN-3598): the
+			// column is what role-scoped reads use. Each copy logs itself; a
+			// value naming no role never self-heals, so it is summarized per
+			// boot with details for the first few rows only. Non-fatal: an
+			// uncopied convention is just unscoped, as before.
+			if cr, err := s.BackfillConventionRoles(); err != nil {
+				slog.Warn("convention role backfill failed; non-fatal", "error", err,
+					"copied_before_error", cr.Copied)
+			} else {
+				slog.Info("Convention role backfill complete", "copied", cr.Copied,
+					"invalid", cr.Invalid, "raced", cr.Raced)
+				for _, inv := range cr.InvalidSample {
+					slog.Warn("convention role field names no role in its workspace; left as is",
+						"workspace_id", inv.WorkspaceID, "item_id", inv.ItemID, "value", inv.Value)
+				}
+			}
+
 			// Persist an id on every implementation note / decision entry
 			// stored without a usable, unique one (BUG-2788), so a timeline
 			// entry's identity no longer depends on its position in the array.
