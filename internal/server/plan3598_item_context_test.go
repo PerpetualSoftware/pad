@@ -276,3 +276,28 @@ func TestPLAN3598_ItemContextGuestSeesOnlyGrantedItems(t *testing.T) {
 		}
 	})
 }
+
+// An archived item is served read-only, exactly as the single-item GET serves
+// it: to a caller who can read it, and as the same 404 as a missing item to
+// one who cannot.
+func TestPLAN3598_ItemContextArchivedFollowsGet(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newCtxFixture(t, d)
+		if err := f.srv.store.DeleteItem(f.task.ID); err != nil {
+			t.Fatalf("archive: %v", err)
+		}
+		get := f.do("GET", "/api/v1/workspaces/"+f.wsSlug+"/items/"+f.task.Ref, f.ownerTok, nil)
+		f.must(get, http.StatusOK, "precondition: GET serves the archived item to its owner")
+		if resp, code, body := f.context(f.ownerTok, "?intent=implement"); resp == nil || resp.Item.Ref != f.task.Ref {
+			t.Errorf("owner, archived item: %d %s", code, body)
+		}
+
+		stranger := mkUser(t, f.srv, "ctx-archived-stranger@example.com")
+		tok := f.token(stranger)
+		hidden := f.do("GET", "/api/v1/workspaces/"+f.wsSlug+"/items/"+f.task.Ref+"/context", tok, nil)
+		missing := f.do("GET", "/api/v1/workspaces/"+f.wsSlug+"/items/TASK-999999/context", tok, nil)
+		if hidden.Code != missing.Code || hidden.Body.String() != missing.Body.String() {
+			t.Errorf("archived and hidden: %d %s vs missing %d %s", hidden.Code, hidden.Body.String(), missing.Code, missing.Body.String())
+		}
+	})
+}
