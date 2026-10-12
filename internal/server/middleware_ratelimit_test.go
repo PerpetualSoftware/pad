@@ -102,18 +102,18 @@ func TestRateLimit_DifferentIPsNotAffected(t *testing.T) {
 func TestRateLimit_SearchEndpointLimited(t *testing.T) {
 	srv := testServer(t)
 
-	// Search limiter has burst=10, so first 10 should succeed
-	for i := 0; i < 10; i++ {
+	// Search limiter has burst=30 (TASK-3620), so first 30 should succeed
+	for i := 0; i < 30; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test", nil)
 		req.RemoteAddr = "10.0.0.3:1234"
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
 		if w.Code == http.StatusTooManyRequests {
-			t.Fatalf("request %d should not be rate-limited yet (search burst=10)", i+1)
+			t.Fatalf("request %d should not be rate-limited yet (search burst=30)", i+1)
 		}
 	}
 
-	// The 11th should be rate-limited
+	// The 31st should be rate-limited
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test", nil)
 	req.RemoteAddr = "10.0.0.3:1234"
 	w := httptest.NewRecorder()

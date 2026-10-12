@@ -271,6 +271,14 @@ type RateLimiters struct {
 	API *ipRateLimiter
 	// Search: per-user or per-IP
 	Search *ipRateLimiter
+	// Health: per address, for GET /api/v1/health and its /live and /ready
+	// siblings (TASK-3620). The probe is unauthenticated, so every pad CLI on
+	// one machine shares one address bucket for it; in the general API
+	// bucket it drew 889 of 1,496 local 429s in 14 days, all during parallel
+	// CLI fan-outs, and a 429 there read to the CLI as "no server". Its own
+	// bucket, generous because the handlers are constant-cost, and still
+	// bounded because /health is public on Cloud.
+	Health *ipRateLimiter
 	// InvitationPreview: per-IP limiter for the public, pre-auth
 	// GET /api/v1/invitations/{code}/preview endpoint (BUG-1934). The
 	// endpoint is always-200 by design, so the status code can't be used
@@ -471,10 +479,24 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(5),
 			Burst: 50,
 		}),
-		// Search: 30 requests per minute per user/IP (= 30/60 per second, burst 10)
+		// Search: 30 requests per minute per user/IP (= 30/60 per second),
+		// burst 30. The burst was 10 until TASK-3620: an agent's run of ~20
+		// sequential searches (one per sub-question) drew 176 local 429s in 14
+		// days. A burst of 30 serves such a run; the sustained rate, the abuse
+		// ceiling for the costly FTS endpoint, is unchanged.
 		Search: newIPRateLimiter(rateLimitConfig{
 			Rate:  rate.Limit(30.0 / 60.0),
-			Burst: 10,
+			Burst: 30,
+		}),
+		// Health: 20 per second per address, burst 300 (TASK-3620; rationale
+		// on the field). The measured peak was ~90 probes/s for 9 s from ~20
+		// parallel CLIs, inflated by the CLI's retry-on-429 spawn loop, which
+		// TASK-3620 PR A removed: each CLI call now probes once. 300 covers a
+		// fan-out an order of magnitude wider, and 20/s sustains 20 CLI calls a
+		// second from one machine.
+		Health: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(20),
+			Burst: 300,
 		}),
 		// InvitationPreview: 20 requests per minute per IP (= 20/60 per second,
 		// burst 20). The /join page fetches this once on mount, so the ceiling
@@ -626,6 +648,7 @@ func (rls *RateLimiters) Stop() {
 		rls.CloudAdmin,
 		rls.API,
 		rls.Search,
+		rls.Health,
 		rls.InvitationPreview,
 		rls.RecoveryCode,
 		rls.SharePasswordIP,
@@ -803,6 +826,19 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+		}
+
+		// Health probes (TASK-3620): their own per-address bucket, never the
+		// general API one. Keyed on the address even for a signed-in caller,
+		// so a user's probes and their API calls never share a bucket.
+		if r.Method == http.MethodGet && (path == "/api/v1/health" || path == "/api/v1/health/live" || path == "/api/v1/health/ready") {
+			if !s.rateLimiters.Health.allow(addr) {
+				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "health")
+				writeRateLimitResponse(w, s.rateLimiters.Health.config)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
 		}
 
 		if path == "/api/v1/search" {
