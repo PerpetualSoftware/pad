@@ -73,6 +73,9 @@ var padItemTool = ToolDef{
 		"link":   actionItemLink,
 		"unlink": actionItemUnlink,
 		"deps":   passThrough([]string{"item", "deps"}),
+		// PLAN-3598: one brief for working an item (item, parents with
+		// acceptance criteria, matching conventions, deps, decisions, links).
+		"context": passThrough([]string{"item", "context"}),
 
 		// Reminders (IDEA-2641 / GitHub #1010). An agent that can RECEIVE a
 		// reminder but not set one has half the primitive: deferring a piece
@@ -170,7 +173,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release, reminders, link-pr, unlink-pr. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, context, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release, reminders, link-pr, unlink-pr. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -220,7 +223,10 @@ var padItemSchemaParams = []ParamDef{
 	// declared only because both transports genuinely honor it (the
 	// v0.18 lesson: never advertise a param one transport drops).
 	{Name: "full", Type: "bool", Description: "For action=list, return complete item content bodies instead of the default summary shape. For action=history, include each version's resolved content body. Token-expensive on large workspaces — prefer action=get for a single item's body."},
-	{Name: "role", Type: "string", Description: "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter."},
+	{Name: "role", Type: "string", Description: "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter, context."},
+	// PLAN-3598 action=context.
+	{Name: "intent", Type: "string", Description: "Optional for: context. What you are about to do (implement, review, ...): picks the conventions whose trigger matches; without it, only always-on ones."},
+	{Name: "budget", Type: "number", Description: "Optional for: context. Size cap in characters (default 40000); whole parts past it are listed as omitted."},
 	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear (it reads as \"not provided\", like every other optional string here)."},
 	// The canonical clear form (IDEA-2584). Booleans rather than an empty
 	// string on assign/role, for two reasons that both matter:
@@ -238,8 +244,8 @@ var padItemSchemaParams = []ParamDef{
 	// The empty-string `assigned_user_id: ""` form still works over the
 	// remote transport and is not deprecated — it's just not discoverable
 	// from this schema, which is what these params fix.
-	{Name: "clear_assigned_user", Type: "bool", Description: "Unassign the item (clear assigned_user_id). THE canonical way to unassign. Optional for: update — update only, since an item is created unassigned unless `assign` is given. Cannot be combined with assigning a user in the same call (`assign`, or assigned_user_id via `field`): that contradiction is REFUSED, not silently resolved."},
-	{Name: "clear_agent_role", Type: "bool", Description: "Clear the item's agent role (agent_role_id). THE canonical way to remove a role. Optional for: update — update only, since an item is created with no role unless `role` is given. Cannot be combined with setting a role in the same call: that contradiction is REFUSED, not silently resolved."},
+	{Name: "clear_assigned_user", Type: "bool", Description: "Unassign the item (clear assigned_user_id); THE canonical way. Optional for: update. Combining it with assigning a user in the same call (`assign`, or assigned_user_id via `field`) is REFUSED."},
+	{Name: "clear_agent_role", Type: "bool", Description: "Clear the item's agent role (agent_role_id); THE canonical way. Optional for: update. Combining it with setting a role in the same call is REFUSED."},
 	// BUG-2078: same shape as clear_assigned_user/clear_agent_role above, for
 	// the same reason — an empty `parent` is inert everywhere else this
 	// mapper treats empty strings as "not provided", so it can't double as a
@@ -248,7 +254,7 @@ var padItemSchemaParams = []ParamDef{
 	// (extractParentLink treats a PRESENT-but-empty "parent" key in
 	// fields_patch as "detach"); this is the first client-visible way to
 	// reach it.
-	{Name: "clear_parent", Type: "bool", Description: "Detach the item from its parent (clear the parent link). THE canonical way to un-parent an item. Optional for: update — update only, an item has no parent unless `parent` is given at create. An empty `parent` does NOT clear (it reads as \"not provided\", like every other optional string here). Cannot be combined with setting a parent in the same call: that contradiction is REFUSED, not silently resolved."},
+	{Name: "clear_parent", Type: "bool", Description: "Detach the item from its parent; THE canonical way to un-parent. Optional for: update. An empty `parent` does NOT clear (it reads as \"not provided\"). Combining it with setting a parent in the same call is REFUSED."},
 
 	// ── Tagging ──
 	// `tags`: agents naturally pass a JSON array of strings (e.g.
@@ -273,7 +279,7 @@ var padItemSchemaParams = []ParamDef{
 	// or just guessed shapes when other input shapes errored. The
 	// expanded description names the dedicated top-level params so
 	// agents don't fall back to `field` for them.
-	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. implementation_notes, decision_log and convention are REFUSED here on create (BUG-3163), on update (BUG-2627) and on move/copy (BUG-2674) — both reach you as code=validation_failed with the server's explanation in the hint (the server's own finer-grained code is not forwarded, so branch on the message if you need to tell the two apart). Each has its own writer: implementation_notes -> action=note, decision_log -> action=decide, convention -> library activation (no update path at all). github_pr is refused too, on every door (BUG-2696): a `field` value arrived as a string, so the PR data landed double-encoded and no link appeared. Its writers are action=link-pr (pr_number + pr_url, and optionally pr_title / pr_state / pr_branch / pr_repo; nothing is fetched from GitHub) and action=unlink-pr. On CREATE they are refused too (BUG-3163): create the item, then use note / decide on it; convention metadata is written by library activation. On create/update the `fields` OBJECT param is an equivalent alternative."},
+	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. Four keys are REFUSED on create, update and move (code=validation_failed, reason in the hint), each with its own writer: implementation_notes -> action=note, decision_log -> action=decide, github_pr -> action=link-pr / unlink-pr, convention -> library activation only. On create, create the item first, then note / decide on it. On create/update the `fields` OBJECT param is an equivalent alternative."},
 	// `fields`: the OBJECT alias for the write path (#1066). Reads
 	// return `fields` as a native object, so writing that same shape
 	// back is what agents naturally do — it used to be silently
@@ -426,6 +432,9 @@ Actions:
     Required: ref, target, link_type.
   deps          — Show all dependencies (incoming + outgoing) for an item.
     Required: ref.
+  context       — One brief before starting work: the item, parents
+    with acceptance criteria, matching conventions, deps, links.
+    Required: ref. Optional: intent, role, budget.
   link-pr       — Link a pull request to an item, from metadata you
     supply; nothing is fetched from GitHub.
     Required: ref, pr_number, pr_url. Optional: pr_title,

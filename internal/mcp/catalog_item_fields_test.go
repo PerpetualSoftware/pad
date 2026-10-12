@@ -1691,7 +1691,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"limit": true, "offset": true, "full": true, "agent": true, "sort": true, "query": true,
 		"group_by": true, "all": true, "archived": true, "include_archived": true,
 		"unparented": true, "since": true, "days": true, "actor": true,
-		"category_filter": true, "parent_ref": true,
+		"category_filter": true, "parent_ref": true, "intent": true, "budget": true,
 
 		// Control the write without naming a field value.
 		// expected_seq joins expected_updated_at here for the same reason

@@ -143,6 +143,7 @@ func itemCmd() *cobra.Command {
 		blocksCmd(),
 		blockedByCmd(),
 		depsCmd(),
+		contextCmd(),
 		unblockCmd(),
 		splitFromCmd(),
 		supersedesCmd(),

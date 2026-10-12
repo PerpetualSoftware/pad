@@ -217,6 +217,49 @@ func TestRoute_ItemShow(t *testing.T) {
 	}
 }
 
+// PLAN-3598: the brief's intent, role and budget ride the query string; a
+// whole-number budget (JSON float64) goes out without a trailing ".0", and
+// absent params leave the query off entirely.
+func TestRoute_ItemContext(t *testing.T) {
+	m, p, body, err := routeTable["item context"](map[string]any{
+		"workspace": "docapp", "ref": "TASK-5",
+		"intent": "implement", "role": "implementer", "budget": float64(20000),
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if m != http.MethodGet {
+		t.Errorf("method = %q", m)
+	}
+	path, rawQuery, _ := strings.Cut(p, "?")
+	if path != "/api/v1/workspaces/docapp/items/TASK-5/context" {
+		t.Errorf("path = %q", p)
+	}
+	q, perr := url.ParseQuery(rawQuery)
+	if perr != nil {
+		t.Fatalf("query %q: %v", rawQuery, perr)
+	}
+	for k, want := range map[string]string{"intent": "implement", "role": "implementer", "budget": "20000"} {
+		if got := q.Get(k); got != want {
+			t.Errorf("query %s = %q, want %q (full %q)", k, got, want, rawQuery)
+		}
+	}
+	if len(q) != 3 {
+		t.Errorf("query has %d params, want 3: %q", len(q), rawQuery)
+	}
+	if body != nil {
+		t.Errorf("expected nil body for GET; got %s", body)
+	}
+
+	_, p, _, err = routeTable["item context"](map[string]any{"workspace": "docapp", "ref": "TASK-5"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if p != "/api/v1/workspaces/docapp/items/TASK-5/context" {
+		t.Errorf("bare path = %q", p)
+	}
+}
+
 func TestRoute_ItemDelete(t *testing.T) {
 	m, p, _, err := routeTable["item delete"](map[string]any{
 		"workspace": "docapp", "ref": "TASK-5",

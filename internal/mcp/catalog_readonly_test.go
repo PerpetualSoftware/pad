@@ -126,6 +126,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "move"}:           {"item", "move"},
 		{"pad_item", "restore"}:        {"item", "restore"},
 		{"pad_item", "deps"}:           {"item", "deps"},
+		{"pad_item", "context"}:        {"item", "context"},
 		{"pad_item", "remind"}:         {"item", "remind"},
 		{"pad_item", "ack-reminder"}:   {"item", "ack"},
 		{"pad_item", "reminders"}:      {"item", "reminders"},
@@ -296,6 +297,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "move"}:           {"item", "move"},
 		{"pad_item", "restore"}:        {"item", "restore"},
 		{"pad_item", "deps"}:           {"item", "deps"},
+		{"pad_item", "context"}:        {"item", "context"},
 		{"pad_item", "remind"}:         {"item", "remind"},
 		{"pad_item", "ack-reminder"}:   {"item", "ack"},
 		{"pad_item", "reminders"}:      {"item", "reminders"},
@@ -689,6 +691,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Summary: "show deps",
 				Args:    mkArgs("ref"),
 				Flags:   mkFlags("workspace"),
+			},
+			"item context": {
+				Summary: "item brief",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace", "intent", "role", "budget"),
 			},
 			"item remind": {
 				Summary: "arm a reminder",
