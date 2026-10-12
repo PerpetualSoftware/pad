@@ -120,6 +120,12 @@ func startBackgroundServer(cfg *config.Config) error {
 		}
 	}
 
+	// The child binds before it migrates (TASK-3620), so a held port after
+	// three seconds is a server still starting: wait for it as EnsureServer
+	// does, rather than fail a call whose server is about to serve.
+	if portHeld(cfg.Host, cfg.Port) {
+		return awaitServing(cfg)
+	}
 	return fmt.Errorf("server failed to start within 3 seconds. Check %s for errors", cfg.LogFile())
 }
 
