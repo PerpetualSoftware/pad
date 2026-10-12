@@ -812,6 +812,31 @@ func (c *Client) MoveItemWithForce(wsSlug, itemSlug string, input map[string]any
 	return &result, c.post(path, input, &result)
 }
 
+// --- Item context (PLAN-3598) ---
+
+// GetItemContext fetches the item's brief (GET /items/{ref}/context) as the
+// server's JSON, verbatim. intent, role and budget are optional ("" / 0).
+// Any other budget is sent as given, so a negative one gets the server's
+// 400, as it does over MCP, rather than silently becoming the default.
+func (c *Client) GetItemContext(wsSlug, itemSlug, intent, role string, budget int) (json.RawMessage, error) {
+	q := url.Values{}
+	if intent != "" {
+		q.Set("intent", intent)
+	}
+	if role != "" {
+		q.Set("role", role)
+	}
+	if budget != 0 {
+		q.Set("budget", strconv.Itoa(budget))
+	}
+	path := "/workspaces/" + wsSlug + "/items/" + url.PathEscape(itemSlug) + "/context"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var result json.RawMessage
+	return result, c.get(path, &result)
+}
+
 // --- Links ---
 
 func (c *Client) GetItemLinks(wsSlug, itemSlug string) ([]models.ItemLink, error) {

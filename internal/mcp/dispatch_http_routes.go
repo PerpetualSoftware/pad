@@ -213,6 +213,13 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}",
 		}.toRouteMapper(),
+		// PLAN-3598: the item's brief. The CLI's --format json prints the
+		// same body verbatim.
+		"item context": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/context",
+			queryParams:  map[string]string{"intent": "intent", "role": "role", "budget": "budget"},
+		}.toRouteMapper(),
 		"item delete": routeSpec{
 			method:       http.MethodDelete,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}",

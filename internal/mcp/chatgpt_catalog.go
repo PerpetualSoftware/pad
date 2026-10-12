@@ -315,6 +315,7 @@ var ChatGPTExclusions = map[ChatGPTSource]string{
 	{"pad_item", "delete-comment"}:      "destructive, rarely needed",
 	{"pad_item", "edit-comment"}:        "overwrite; deferred to v2",
 	{"pad_item", "unlink"}:              "deferred to v2",
+	{"pad_item", "context"}:             "an agent-workflow brief (conventions by trigger, budgeted parts); in chat, get_item and item_dependencies answer the same questions",
 	{"pad_item", "claim"}:               "agent lease semantics, not a chat concept",
 	{"pad_item", "release"}:             "agent lease semantics, not a chat concept",
 	{"pad_item", "patch"}:               "update_item already versions every content write so a chat edit can be undone; anchored patching is an agent workflow (PLAN-3578)",

@@ -1738,6 +1738,13 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.96 — PLAN-3598 slice (c). ADDITIVE bump on the v0.53 grounds:
+//     `pad_item.action=context` (read-only) returns one brief for working
+//     an item, the body of GET /items/{ref}/context, with new optional
+//     params `intent` and `budget`, and `role` now also read by it. New
+//     codes `unknown_intent` (400, with details.valid_intents) and
+//     `unknown_role` (400). No existing name, enum or param moved.
+//
 //     0.95 — TASK-3611, PR linking. ADDITIVE bump on the v0.53 grounds:
 //     `pad_item.action=link-pr` (`ref`, `pr_number`, `pr_url`, optional
 //     `pr_title` / `pr_state` / `pr_branch` / `pr_repo`) links a pull
@@ -2151,7 +2158,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.95"
+const ToolSurfaceVersion = "0.96"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

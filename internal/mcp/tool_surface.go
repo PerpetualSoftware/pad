@@ -76,6 +76,7 @@ var readOnlyActions = map[string]map[string]bool{
 		"get":           true,
 		"list":          true,
 		"deps":          true,
+		"context":       true,
 		"starred":       true,
 		"list-comments": true,
 		"backlinks":     true,
