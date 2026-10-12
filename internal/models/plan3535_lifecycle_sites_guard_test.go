@@ -44,6 +44,7 @@ var lifecycleSites = map[string]string{
 	"internal/server/handlers_dashboard.go::isItemDone::IsTerminalItem":          "keep: the done predicate itself; each caller below is classified",
 	"internal/server/handlers_dashboard.go::childProgressState::IsAbandonedItem": "exclude: the progress predicate; isReferenceCollection answers first",
 	"internal/server/handlers_dashboard.go::childProgressState::IsTerminalItem":  "exclude: the progress predicate; isReferenceCollection answers first",
+	"internal/server/handlers_item_context.go::lifecycle::IsTerminalItem":        "exclude: item-context conflicts (PLAN-3598); CollectionTracksWork answers first, so a reference item is neither an open blocker nor a closed parent",
 	"internal/store/items.go::nonTerminalFilter::doneFiltersForWorkspace":        "keep: the list filter for an item list's own open items (a doc's status filters its own list)",
 	"internal/store/items.go::nonTerminalFilter::buildChildrenDoneExpr":          "keep: as above",
 	"internal/store/items.go::ListItems::nonTerminalFilter":                      "keep: `pad item list` / MCP list's default open filter, a list's own items",

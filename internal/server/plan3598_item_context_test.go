@@ -308,3 +308,37 @@ func TestPLAN3598_ItemContextArchivedFollowsGet(t *testing.T) {
 		}
 	})
 }
+
+// A reference item (in a collection that does not track work, PLAN-3535) is
+// neither open nor closed: a doc that blocks the item raises no open_blocker.
+func TestPLAN3598_ItemContextReferenceItemIsNotOpenWork(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newCtxFixture(t, d)
+		doc := f.itemIn("docs", map[string]any{"title": "Ctx reference doc"})
+		if _, err := f.srv.store.CreateItemLink(f.wsID, models.ItemLinkCreate{TargetID: f.task.ID, LinkType: models.ItemLinkTypeBlocks}, doc.ID); err != nil {
+			t.Fatal(err)
+		}
+		resp, code, body := f.context(f.ownerTok, "?intent=implement")
+		if resp == nil {
+			t.Fatalf("status %d: %s", code, body)
+		}
+		var sawDoc, sawTask bool
+		for _, b := range resp.Deps.BlockedBy {
+			sawDoc = sawDoc || b.Ref == doc.Ref
+		}
+		for _, c := range resp.Conflicts {
+			if c.Kind != "open_blocker" {
+				continue
+			}
+			for _, r := range c.Refs {
+				if r == doc.Ref {
+					t.Errorf("a reference doc was reported as an open blocker: %+v", c)
+				}
+				sawTask = sawTask || r == f.blocker.Ref
+			}
+		}
+		if !sawDoc || !sawTask {
+			t.Errorf("precondition: the doc should be listed as a blocker (%v) and the open task blocker still conflict (%v)", sawDoc, sawTask)
+		}
+	})
+}
