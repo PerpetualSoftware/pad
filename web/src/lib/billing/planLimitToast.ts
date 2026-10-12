@@ -25,12 +25,15 @@ export function showPlanLimitToast(err: PadApiError, opts: { scope?: string; blo
 export const PLAN_LIMIT_PROMPTED = 'plan-limit-prompted';
 
 /**
- * For an editor's upload/transform callback: a plan-limit refusal raises the
- * prompt and comes back as an Error carrying PLAN_LIMIT_PROMPTED; any other
- * error is returned as it was. The caller throws the result.
+ * For an editor's upload/transform callback: a plan-limit refusal comes back
+ * as an Error carrying PLAN_LIMIT_PROMPTED, having raised the prompt only when
+ * `sameIdentity` says the user who started the request is still signed in. A
+ * refusal for the previous identity is dropped silently, neither prompted nor
+ * toasted, since its message names that identity's owner and plan (codex r2).
+ * Any other error is returned as it was. The caller throws the result.
  */
-export function promptOnPlanLimit(err: unknown): unknown {
+export function promptOnPlanLimit(err: unknown, sameIdentity: () => boolean): unknown {
 	if (!isPlanLimitError(err)) return err;
-	showPlanLimitToast(err);
+	if (sameIdentity()) showPlanLimitToast(err);
 	return new Error(PLAN_LIMIT_PROMPTED);
 }

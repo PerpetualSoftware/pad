@@ -517,12 +517,18 @@ func (s *Store) SeedPlanLimits() error {
 			if legacy, ok := legacyStorageSeeds[key]; ok && existing == legacy {
 				// The one exception (TASK-3619): this exact value is what
 				// every earlier cloud boot seeded, so it is the old default
-				// and not an admin's choice. Any other value is kept.
-				if err := s.SetPlatformSetting(key, strconv.Itoa(limitsMap[feature])); err != nil {
+				// and not an admin's choice. Any other value is kept, and the
+				// write itself says so: an admin's change landing between the
+				// read above and this write is not overwritten (codex r2).
+				res, err := s.db.Exec(s.q(`UPDATE platform_settings SET value = ?, updated_at = ? WHERE key = ? AND value = ?`),
+					strconv.Itoa(limitsMap[feature]), now(), key, legacy)
+				if err != nil {
 					return fmt.Errorf("seed plan limits: rewrite %s: %w", key, err)
 				}
-				slog.Info("plan limits: rewrote a seeded storage default",
-					"key", key, "from", legacy, "to", limitsMap[feature])
+				if n, _ := res.RowsAffected(); n == 1 {
+					slog.Info("plan limits: rewrote a seeded storage default",
+						"key", key, "from", legacy, "to", limitsMap[feature])
+				}
 				continue
 			}
 			if existing != "" {

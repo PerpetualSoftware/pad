@@ -1102,15 +1102,15 @@
 					try {
 						return await api.attachments.transform(wsSlug, uuid, payload);
 					} catch (err) {
-						// A refusal for the previous identity raises no prompt
-						// for the next one (TASK-3619); its error reaches the
-						// plugin's onError unchanged, as before.
-						if (!isSameIdentity()) throw err;
-						throw promptOnPlanLimit(err);
+						// Any failure for the previous identity is not the next
+						// one's to hear about, and a storage refusal would name
+						// the previous owner (TASK-3619): onError drops it.
+						if (!isSameIdentity()) throw new Error(UPLOAD_IDENTITY_CHANGED);
+						throw promptOnPlanLimit(err, isSameIdentity);
 					}
 				},
 				onError: (message) => {
-					if (message === PLAN_LIMIT_PROMPTED) return;
+					if (message === PLAN_LIMIT_PROMPTED || message === UPLOAD_IDENTITY_CHANGED) return;
 					console.error('[attachment image]', message);
 					// A toast, not a blocking window.alert that steals focus mid-edit
 					// (TASK-2221, audit C39).
@@ -1181,7 +1181,7 @@
 						// the identity changed must not raise a prompt naming the
 						// previous user's workspace owner (TASK-3619).
 						if (!isSameIdentity()) throw new Error(UPLOAD_IDENTITY_CHANGED);
-						throw promptOnPlanLimit(err);
+						throw promptOnPlanLimit(err, isSameIdentity);
 					}
 					if (!isSameIdentity()) throw new Error(UPLOAD_IDENTITY_CHANGED);
 					// Only announce when the server actually persisted an

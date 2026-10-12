@@ -83,15 +83,21 @@ describe('promptOnPlanLimit', () => {
 	beforeEach(() => planLimitPrompt.dismiss());
 
 	it('a plan-limit refusal raises the prompt and comes back as the marker', () => {
-		const out = promptOnPlanLimit(err({ plan: 'pro', payer_is_you: true }));
+		const out = promptOnPlanLimit(err({ plan: 'pro', payer_is_you: true }), () => true);
 		expect(out).toBeInstanceOf(Error);
 		expect((out as Error).message).toBe(PLAN_LIMIT_PROMPTED);
 		expect(planLimitPrompt.current?.message).toBe(MSG);
 	});
 
+	it('a refusal for an identity that is gone: the marker, and no prompt naming its owner', () => {
+		const out = promptOnPlanLimit(err({ plan: 'pro', payer_is_you: true }), () => false);
+		expect((out as Error).message).toBe(PLAN_LIMIT_PROMPTED);
+		expect(planLimitPrompt.current).toBeNull();
+	});
+
 	it('any other error passes through untouched and raises nothing', () => {
 		const other = new PadApiError({ code: 'file_too_large', message: 'too big' });
-		expect(promptOnPlanLimit(other)).toBe(other);
+		expect(promptOnPlanLimit(other, () => true)).toBe(other);
 		expect(planLimitPrompt.current).toBeNull();
 	});
 });

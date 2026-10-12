@@ -270,10 +270,9 @@
 							try {
 								result = await api.attachments.upload(wsSlug, file, uploadItemId);
 							} catch (err) {
-								// A refusal for the previous identity raises no prompt
-								// naming its owner for the next one (TASK-3619).
-								if (!isSameIdentity()) throw err;
-								throw promptOnPlanLimit(err);
+								// A storage refusal for the previous identity is neither
+								// prompted nor toasted for the next one (TASK-3619).
+								throw promptOnPlanLimit(err, isSameIdentity);
 							}
 							// A comment upload carries item context too, so the
 							// server associates it and it belongs in that item's
