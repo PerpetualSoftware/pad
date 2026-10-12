@@ -251,11 +251,10 @@
 		if (workspaceStore.membershipKnown) {
 			canEditWs = workspaceStore.canEditWorkspace;
 			isOwner = workspaceStore.isOwner;
-			// Editor-or-owner predicate for affordances outside the strict
-			// owner-only line (Export bundle is a read-side action gated to
-			// editor+ per project policy).
-			const role = workspaceStore.currentRole;
-			canExport = role === 'owner' || role === 'editor';
+			// The server lets only an owner with unrestricted access download
+			// the bundle. This used to say editor+, and an editor clicking it
+			// got a raw 403 (BUG-3614).
+			canExport = workspaceStore.canExportWorkspace;
 		}
 	});
 	let tabs = $derived(allTabs.filter(t => !t.ownerOnly || canEditWs));
