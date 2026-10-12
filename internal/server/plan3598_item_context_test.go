@@ -309,43 +309,61 @@ func TestPLAN3598_ItemContextArchivedFollowsGet(t *testing.T) {
 	})
 }
 
-// A reference item (in a collection that does not track work, PLAN-3535) is
-// neither open nor closed: a doc that blocks the item raises no open_blocker.
-func TestPLAN3598_ItemContextReferenceItemIsNotOpenWork(t *testing.T) {
+// The brief's open_blocker agrees with the dashboard's blocked attention on
+// a REFERENCE blocker (lead ruling on #2094, PLAN-3535 PR 2): an explicitly
+// linked doc blocks until it reaches its terminal status, in both places.
+// The subject task has no other blocker, so the dashboard's first active
+// blocker can only be the doc.
+func TestPLAN3598_ItemContextReferenceBlockerAgreesWithDashboard(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
-		doc := f.itemIn("docs", map[string]any{"title": "Ctx reference doc"})
-		if _, err := f.srv.store.CreateItemLink(f.wsID, models.ItemLinkCreate{TargetID: f.task.ID, LinkType: models.ItemLinkTypeBlocks}, doc.ID); err != nil {
+		task := f.itemIn("tasks", map[string]any{"title": "Ctx doc-blocked task", "fields": `{"status":"open"}`})
+		doc := f.itemIn("docs", map[string]any{"title": "Ctx reference doc", "fields": `{"status":"draft"}`})
+		if _, err := f.srv.store.CreateItemLink(f.wsID, models.ItemLinkCreate{TargetID: task.ID, LinkType: models.ItemLinkTypeBlocks}, doc.ID); err != nil {
 			t.Fatal(err)
 		}
-		resp, code, body := f.context(f.ownerTok, "?intent=implement")
-		if resp == nil {
-			t.Fatalf("status %d: %s", code, body)
-		}
-		var sawDoc, sawTask bool
-		for _, b := range resp.Deps.BlockedBy {
-			sawDoc = sawDoc || b.Ref == doc.Ref
-		}
-		for _, c := range resp.Conflicts {
-			if c.Kind != "open_blocker" {
-				continue
-			}
-			for _, r := range c.Refs {
-				if r == doc.Ref {
-					t.Errorf("a reference doc was reported as an open blocker: %+v", c)
+		briefBlocks := func() bool {
+			rr := f.do("GET", "/api/v1/workspaces/"+f.wsSlug+"/items/"+task.Ref+"/context", f.ownerTok, nil)
+			f.must(rr, http.StatusOK, "context")
+			var resp itemContextResponse
+			parseJSON(t, rr, &resp)
+			for _, c := range resp.Conflicts {
+				if c.Kind == "open_blocker" && len(c.Refs) == 2 && c.Refs[0] == task.Ref && c.Refs[1] == doc.Ref {
+					return true
 				}
-				sawTask = sawTask || r == f.blocker.Ref
 			}
+			return false
 		}
-		if !sawDoc || !sawTask {
-			t.Errorf("precondition: the doc should be listed as a blocker (%v) and the open task blocker still conflict (%v)", sawDoc, sawTask)
+		dashboardBlocks := func() bool {
+			rr := f.do("GET", "/api/v1/workspaces/"+f.wsSlug+"/dashboard", f.ownerTok, nil)
+			f.must(rr, http.StatusOK, "dashboard")
+			var resp DashboardResponse
+			parseJSON(t, rr, &resp)
+			for _, a := range resp.Attention {
+				if a.Type == "blocked" && a.ItemRef == task.Ref {
+					return true
+				}
+			}
+			return false
+		}
+
+		if b, dsh := briefBlocks(), dashboardBlocks(); !b || !dsh {
+			t.Errorf("a draft doc linked as a blocker: brief open_blocker=%v, dashboard blocked=%v; both must be true", b, dsh)
+		}
+
+		archived := `{"status":"archived"}`
+		if _, err := f.srv.store.UpdateItem(doc.ID, models.ItemUpdate{Fields: &archived}); err != nil {
+			t.Fatal(err)
+		}
+		if b, dsh := briefBlocks(), dashboardBlocks(); b || dsh {
+			t.Errorf("an archived (terminal) doc blocker: brief open_blocker=%v, dashboard blocked=%v; both must be false", b, dsh)
 		}
 	})
 }
 
-// A blocker whose collection cannot be read keeps the conservative reading,
-// open work, so it still raises open_blocker (Codex round 4): only a
-// collection positively known not to track work is excluded.
+// A blocker whose collection's schema cannot be read still raises
+// open_blocker: isItemDone, the dashboard's predicate, reads an unparseable
+// schema as zero-valued, so an open status stays open.
 func TestPLAN3598_ItemContextUnreadableCollectionStaysOpenWork(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)

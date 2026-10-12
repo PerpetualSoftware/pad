@@ -204,7 +204,14 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	visible := s.contextRelatedVisible(r, workspaceID)
-	sc := newContextSchemaCache(s)
+	// Lifecycle reads use the dashboard's predicates (lead ruling, PLAN-3598
+	// #2094): the brief must agree with firstActiveBlocker and workItems.
+	colls, err := s.store.ListCollectionsMinimal(workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	ctxMap := buildDoneContextMap(colls)
 	resp := itemContextResponse{
 		Intent: intent, Triggers: triggers, Role: role, Budget: budget,
 		Parents: []itemContextParent{}, Conventions: []itemContextConvention{},
@@ -230,7 +237,9 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	itemOpen := sc.openWork(item)
+	// The item is open work by the dashboard's workItems rule: a reference
+	// item (PLAN-3535) is not work, so it is never "open" here.
+	itemOpen := !isReferenceCollection(item.CollectionID, ctxMap) && !isItemDone(item.Fields, item.CollectionID, ctxMap)
 	for i, a := range ancestors {
 		p := itemContextParent{Ref: a.Ref, Title: a.Title, Collection: a.CollectionSlug, Seq: a.Seq, Status: contextFieldString(a.Fields, "status")}
 		if ac := acceptance.Parse(a.Content); ac.Found {
@@ -238,7 +247,10 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 		}
 		if i == 0 {
 			p.Content = a.Content
-			if itemOpen && sc.closedWork(&a) {
+			// A closed parent of any collection: the close guard refuses
+			// to close a parent over an open work child, so this pair is
+			// an anomaly whichever collection the parent is in.
+			if itemOpen && isItemDone(a.Fields, a.CollectionID, ctxMap) {
 				resp.Conflicts = append(resp.Conflicts, itemContextConflict{Kind: "open_under_closed_parent", Refs: []string{item.Ref, a.Ref},
 					Detail: item.Ref + " is open but its parent " + a.Ref + " is closed"})
 			}
@@ -306,7 +318,9 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 			}
 			depKind = append(depKind, kind)
 			if !outgoing && itemOpen {
-				if other, gerr := s.store.GetItem(otherID); gerr == nil && other != nil && sc.openWork(other) {
+				if other, gerr := s.store.GetItem(otherID); gerr == nil && other != nil && !isItemDone(other.Fields, other.CollectionID, ctxMap) {
+					// firstActiveBlocker's predicate: an explicitly linked
+					// reference blocker still blocks (PLAN-3535 PR 2).
 					resp.Conflicts = append(resp.Conflicts, itemContextConflict{Kind: "open_blocker", Refs: []string{item.Ref, ref},
 						Detail: item.Ref + " is blocked by " + ref + ", which is still open"})
 				}
@@ -597,68 +611,4 @@ func contextFieldString(fieldsJSON, key string) string {
 	}
 	v, _ := m[key].(string)
 	return v
-}
-
-// contextSchemaCache answers "is this item open work, closed work, or not
-// work at all?" per collection: CollectionTracksWork first, then the
-// done-field-aware check (models.IsTerminalItem).
-type contextSchemaCache struct {
-	s  *Server
-	by map[string]*contextSchema
-}
-
-type contextSchema struct {
-	schema   models.CollectionSchema
-	settings models.CollectionSettings
-	ok       bool
-}
-
-func newContextSchemaCache(s *Server) *contextSchemaCache {
-	return &contextSchemaCache{s: s, by: map[string]*contextSchema{}}
-}
-
-func (c *contextSchemaCache) load(it *models.Item) *contextSchema {
-	cs, ok := c.by[it.CollectionID]
-	if !ok {
-		cs = &contextSchema{}
-		if coll, err := c.s.store.GetCollection(it.CollectionID); err == nil && coll != nil {
-			cs.ok = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &cs.schema) == nil
-			if coll.Settings != "" {
-				_ = json.Unmarshal([]byte(coll.Settings), &cs.settings)
-			}
-		}
-		c.by[it.CollectionID] = cs
-	}
-	return cs
-}
-
-// lifecycle reports whether the item is work at all (a reference item, in a
-// collection that does not track work, is neither open nor closed: PLAN-3535)
-// and, if so, whether it is done.
-func (c *contextSchemaCache) lifecycle(it *models.Item) (tracksWork, done bool) {
-	cs := c.load(it)
-	if !cs.ok {
-		// An unreadable collection keeps the conservative reading: open
-		// work. Only a collection positively known not to track work
-		// excludes its items.
-		return true, false
-	}
-	if !models.CollectionTracksWork(cs.settings) {
-		return false, false
-	}
-	var m map[string]any
-	if json.Unmarshal([]byte(it.Fields), &m) != nil {
-		return true, false
-	}
-	return true, models.IsTerminalItem(m, cs.schema, cs.settings)
-}
-
-func (c *contextSchemaCache) openWork(it *models.Item) bool {
-	work, done := c.lifecycle(it)
-	return work && !done
-}
-
-func (c *contextSchemaCache) closedWork(it *models.Item) bool {
-	work, done := c.lifecycle(it)
-	return work && done
 }

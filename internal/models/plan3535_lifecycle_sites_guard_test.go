@@ -44,7 +44,6 @@ var lifecycleSites = map[string]string{
 	"internal/server/handlers_dashboard.go::isItemDone::IsTerminalItem":          "keep: the done predicate itself; each caller below is classified",
 	"internal/server/handlers_dashboard.go::childProgressState::IsAbandonedItem": "exclude: the progress predicate; isReferenceCollection answers first",
 	"internal/server/handlers_dashboard.go::childProgressState::IsTerminalItem":  "exclude: the progress predicate; isReferenceCollection answers first",
-	"internal/server/handlers_item_context.go::lifecycle::IsTerminalItem":        "exclude: item-context conflicts (PLAN-3598); CollectionTracksWork answers first, so a reference item is neither an open blocker nor a closed parent",
 	"internal/store/items.go::nonTerminalFilter::doneFiltersForWorkspace":        "keep: the list filter for an item list's own open items (a doc's status filters its own list)",
 	"internal/store/items.go::nonTerminalFilter::buildChildrenDoneExpr":          "keep: as above",
 	"internal/store/items.go::ListItems::nonTerminalFilter":                      "keep: `pad item list` / MCP list's default open filter, a list's own items",
@@ -60,7 +59,8 @@ var lifecycleSites = map[string]string{
 	"internal/server/handlers_dashboard.go::buildDashboardResponse::childProgressState": "exclude: active-plan progress, childProgressState",
 
 	// Dashboard open-work sections.
-	"internal/server/handlers_dashboard.go::buildDashboardResponse::isItemDone": "exclude: overdue, blocked, suggested_next and by_role read workItems; orphaned_task checks isReferenceCollection; the blocker check keeps a reference BLOCKER, an explicit link",
+	"internal/server/handlers_item_context.go::handleGetItemContext::isItemDone": "exclude: item-context conflicts (PLAN-3598) mirror the dashboard: the subject item checks isReferenceCollection first; a blocker keeps a reference BLOCKER, an explicit link; a closed parent of any collection is an anomaly (the close guard skips only reference children)",
+	"internal/server/handlers_dashboard.go::buildDashboardResponse::isItemDone":  "exclude: overdue, blocked, suggested_next and by_role read workItems; orphaned_task checks isReferenceCollection; the blocker check keeps a reference BLOCKER, an explicit link",
 
 	// Close guard.
 	"internal/server/handlers_items_open_children_guard.go::runOpenChildrenGuard::isItemDone": "exclude: a reference child is skipped before the done check",
