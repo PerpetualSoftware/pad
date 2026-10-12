@@ -39,10 +39,14 @@ effective limit for the workspace owner's plan.
 The effective limit follows the resolution chain:
   1. Per-user storage_bytes override (admin-set)
   2. Platform plan_limits_<plan>_storage_bytes setting
-  3. Hardcoded plan default (free=500MB, pro=10GB)
+  3. Hardcoded plan default (free=100MB, pro=1GB)
 
-A limit of "unlimited" indicates no enforced cap (pro / self-hosted /
-workspaces with no owner).`,
+On Pro the limit is one pool for the owner's whole account: usage sums every
+workspace they own, including soft-deleted ones until they are purged. On Free
+it is per workspace. On Pad Cloud an upload that would pass the limit is
+refused; existing files stay available, and deleting files frees space. A
+limit of "unlimited" indicates no enforced cap (self-hosted / workspaces with
+no owner).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -62,6 +66,7 @@ workspaces with no owner).`,
 				LimitBytes     int64  `json:"limit_bytes"`
 				Plan           string `json:"plan"`
 				OverrideActive bool   `json:"override_active"`
+				Scope          string `json:"scope"`
 			}
 			if err := json.Unmarshal(raw, &resp); err != nil {
 				return fmt.Errorf("decode storage usage: %w", err)
@@ -86,6 +91,9 @@ workspaces with no owner).`,
 				suffix = " — admin override active"
 			}
 			fmt.Printf("Plan: %s%s\n", plan, suffix)
+			if resp.Scope == "account" {
+				fmt.Println("Usage is across every workspace the owner owns, including workspaces in the restore window until they're permanently deleted.")
+			}
 
 			return nil
 		},

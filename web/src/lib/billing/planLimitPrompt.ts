@@ -5,6 +5,9 @@
 //   - anyone else, where Pro can be bought: ask the payer, by name;
 //   - billing off, or no commerce here (self-host, the mobile apps): the
 //     statement alone.
+// A limit on Pro (TASK-3619: the interim storage cap) has no plan to upgrade
+// to: the payer gets "Need more? Contact us", anyone else is asked to raise
+// it with the payer.
 // Copy is plain and was shown to Dave before merge (TASK-3601 ruling).
 
 /** Where Upgrade goes: the plan picker, which starts checkout. */
@@ -19,7 +22,7 @@ export interface PlanLimitDetails {
 	payer_name?: string;
 }
 
-export type PlanLimitAction = 'upgrade' | 'ask' | 'none';
+export type PlanLimitAction = 'upgrade' | 'contact' | 'ask' | 'none';
 
 export interface PlanLimitPromptModel {
 	/** The server's statement of fact, e.g. "This workspace has reached its 3-member limit on Free." */
@@ -47,10 +50,20 @@ export function planLimitPromptModel(
 	if (details?.payer_is_you === undefined) {
 		return { message: statement, action: 'none', hint: '', note: '' };
 	}
+	const onPro = details.plan === 'pro';
 	if (details.payer_is_you) {
+		if (onPro) return { message: statement, action: 'contact', hint: 'Need more? Contact us.', note: '' };
 		return { message: statement, action: 'upgrade', hint: 'Upgrade to Pro to add more.', note: '' };
 	}
 	const who = details.payer_name?.trim();
+	if (onPro) {
+		return {
+			message: statement,
+			action: 'ask',
+			hint: who ? `Ask ${who}, the workspace owner, about more room.` : 'Ask the workspace owner about more room.',
+			note: `${statement} Could you free some space, or ask Pad for more?`,
+		};
+	}
 	return {
 		message: statement,
 		action: 'ask',

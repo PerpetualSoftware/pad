@@ -15,7 +15,8 @@
  * resolved into a posted comment) falls to GC after the grace period.
  */
 
-import { api } from '$lib/api/client';
+import { api, isPlanLimitError } from '$lib/api/client';
+import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 import type { AttachmentUploadResult } from '$lib/types';
 
 /** Extract file payloads from a paste event (screenshots, copied files). */
@@ -153,7 +154,9 @@ export function uploadIntoTextarea(
 				handle.setValue(
 					handle.getValue().replace(`${job.placeholder} `, '').replace(job.placeholder, '')
 				);
-				handle.onError(err instanceof Error ? err.message : 'Upload failed');
+				// Over the storage limit (TASK-3619): the plan-limit prompt says so.
+				if (isPlanLimitError(err)) showPlanLimitToast(err);
+				else handle.onError(err instanceof Error ? err.message : 'Upload failed');
 			})
 			.finally(() => handle.onPendingDelta(-1));
 	}

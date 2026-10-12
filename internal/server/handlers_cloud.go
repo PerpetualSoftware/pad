@@ -1850,11 +1850,54 @@ func planLimitMessage(r *http.Request, result *store.LimitResult) string {
 	// every value that gets here rather than a general pluralizer. A second
 	// bulk feature would need its own plural and a test; there is deliberately
 	// no speculative machinery for one that does not exist.
+	// Storage is counted in bytes and refused per upload (TASK-3619): the
+	// sentence names the plan the limit belongs to (it is not always free)
+	// and says what being over it does and does not mean.
+	if result.Feature == "storage_bytes" {
+		holder := "this workspace"
+		if result.Scope == store.StorageScopeAccount {
+			holder = "the owner's account"
+		}
+		return fmt.Sprintf("This file (%s) would take %s past its %s storage limit on the %s plan (%s used). Existing files stay available; deleting files frees space.",
+			humanBytes(int64(result.Requested)), holder, humanBytes(int64(result.Limit)), planDisplayName(result.Plan), humanBytes(int64(result.Current)))
+	}
 	if result.Requested > 0 {
 		return fmt.Sprintf("This import would add %d %ss, over the %s limit on the free plan.", result.Requested, label, limitStr)
 	}
 
 	return fmt.Sprintf("You've reached the %s limit on the free plan.", limitStr)
+}
+
+// humanBytes renders a byte count for a refusal sentence, in binary units
+// with the decimal-style labels the billing page uses ("1 GB" for 1<<30).
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit && exp < 3; m /= unit {
+		div *= unit
+		exp++
+	}
+	v := float64(n) / float64(div)
+	label := []string{"KB", "MB", "GB", "TB"}[exp]
+	if v == float64(int64(v)) {
+		return fmt.Sprintf("%d %s", int64(v), label)
+	}
+	return fmt.Sprintf("%.1f %s", v, label)
+}
+
+// planDisplayName is a plan slug as a sentence says it.
+func planDisplayName(plan string) string {
+	switch plan {
+	case "pro":
+		return "Pro"
+	case "free", "":
+		return "free"
+	default:
+		return plan
+	}
 }
 
 // writeError2 is like writeError but also embeds a details object inside the error

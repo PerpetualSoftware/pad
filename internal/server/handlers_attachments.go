@@ -178,8 +178,9 @@ func (s *Server) requireUploadItemEdit(w http.ResponseWriter, r *http.Request, w
 //  6. Call AttachmentStore.Put — Put hash-verifies and writes via
 //     atomic temp+rename, content-addressed by the sha256 we computed.
 //  7. Insert the attachments row.
-//  8. Track (do not enforce) quota: WorkspaceStorageUsage vs the
-//     workspace owner's storage_bytes limit. Phase 2 will enforce.
+//  8. Enforce the storage limit inside that insert (cloud mode,
+//     TASK-3619): WorkspaceStorageUsage plus this file against the
+//     workspace owner's storage_bytes limit.
 //  9. Return JSON {id, url, mime, size, width?, height?, filename, category, render_mode}.
 func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if s.attachments == nil {
@@ -462,7 +463,12 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	//
 	// Derivation is the deliberate exception and stays on the unlocked path —
 	// see the comment on thumbnailParentItemLive for that trade.
-	if err := s.store.CreateAttachmentForLiveItem(att); err != nil {
+	if err := s.store.CreateAttachmentForLiveItem(att, s.workspaceLimitMintOpts()...); err != nil {
+		// Over the storage limit (TASK-3619): the 403 every plan limit
+		// writes. The blob is left rowless on disk, as below.
+		if writeStorePlanLimitError(w, r, err, "") {
+			return
+		}
 		if errors.Is(err, store.ErrAttachmentParentItemGone) {
 			// The same 404 every other attachment denial writes. The caller
 			// must not be able to tell "your item was archived mid-upload"
@@ -495,10 +501,12 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// stays consistent with the actual on-disk total.
 	s.storageInfoCache.invalidate(workspaceID)
 
-	// Quota tracking — log only, no enforcement in Phase 1. The download
-	// URL points at the GET handler shipped in TASK-872 (same PR series).
-	// Workspaces are addressed by slug everywhere else in the API; we
-	// surface the {slug} form here so the UI can link directly.
+	// Quota observation — the insert above enforces the limit in cloud mode
+	// (TASK-3619); this logs a workspace that is over it anyway (self-hosted
+	// owners on a finite plan, variants, the doors TASK-3625 covers). The
+	// download URL points at the GET handler shipped in TASK-872 (same PR
+	// series). Workspaces are addressed by slug everywhere else in the API;
+	// we surface the {slug} form here so the UI can link directly.
 	s.goAsync(func() { s.maybeWarnStorageQuota(workspaceID) })
 
 	// Thumbnail derivation (TASK-878). For images on the supported
@@ -970,7 +978,7 @@ func (s *Server) maybeWarnStorageQuota(workspaceID string) {
 		return // unlimited plan
 	}
 	if usage > limit {
-		slog.Warn("attachments: workspace exceeds storage quota (Phase 1 = no enforcement)",
+		slog.Warn("attachments: workspace exceeds storage quota",
 			"workspace_id", workspaceID,
 			"used_bytes", usage,
 			"limit_bytes", limit)

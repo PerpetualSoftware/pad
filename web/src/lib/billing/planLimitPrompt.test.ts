@@ -36,3 +36,27 @@ describe('planLimitPromptModel (TASK-3601)', () => {
 		expect(planLimitPromptModel(MSG, undefined, on).action).toBe('none');
 	});
 });
+
+describe('planLimitPromptModel on Pro (TASK-3619)', () => {
+	const PRO = 'This file (2 MB) would take this workspace past its 1 GB storage limit on the Pro plan (1 GB used).';
+
+	it('the payer is offered contact, never an upgrade to the plan they have', () => {
+		const m = planLimitPromptModel(PRO, { plan: 'pro', payer_is_you: true }, on);
+		expect(m).toMatchObject({ message: PRO, action: 'contact', hint: 'Need more? Contact us.' });
+	});
+
+	it('anyone else is asked to raise it with the payer, not to upgrade', () => {
+		const m = planLimitPromptModel(PRO, { plan: 'pro', payer_is_you: false, payer_name: 'Dana' }, on);
+		expect(m.action).toBe('ask');
+		expect(m.hint).toBe('Ask Dana, the workspace owner, about more room.');
+		expect(m.hint + m.note).not.toMatch(/upgrade/i);
+	});
+
+	it('no commerce here: the statement alone, on Pro too', () => {
+		expect(planLimitPromptModel(PRO, { plan: 'pro', payer_is_you: true }, { commerceAllowed: false, billingAvailable: true }).action).toBe('none');
+	});
+
+	it('a free-plan limit still offers Upgrade', () => {
+		expect(planLimitPromptModel(MSG, { plan: 'free', payer_is_you: true }, on).action).toBe('upgrade');
+	});
+});

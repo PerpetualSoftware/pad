@@ -2589,6 +2589,12 @@ export interface WorkspaceStorageInfo {
 	limit_bytes: number;
 	plan: string;
 	override_active: boolean;
+	/**
+	 * What used_bytes sums (TASK-3619): this workspace, or (Pro) every
+	 * workspace the owner owns, including soft-deleted ones still in the
+	 * restore window.
+	 */
+	scope?: 'workspace' | 'account';
 }
 
 /**

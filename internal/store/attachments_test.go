@@ -48,9 +48,9 @@ func TestWorkspaceStorageInfo_NoOwner(t *testing.T) {
 //
 //  1. Free plan with no override → limit_bytes = DefaultFreeLimits, override_active=false
 //  2. Free plan + storage_bytes override → limit_bytes = override value, override_active=true
-//  3. Pro plan → limit_bytes = -1 unconditionally (Phase 1 quirk:
-//     pro/self-hosted bypass override resolution; the flag still
-//     surfaces the configured override for admin visibility)
+//  3. Pro plan + override → limit_bytes = override value (TASK-3619: pro
+//     resolves like free; only self-hosted is unlimited)
+//  4. Pro plan, no override → DefaultProLimits.StorageBytes, 1 GB
 func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -92,23 +92,22 @@ func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
 	}
 
 	// 2. Free plan + override.
-	if err := s.SetUserPlanOverrides(owner.ID, `{"storage_bytes":1073741824}`); err != nil {
+	if err := s.SetUserPlanOverrides(owner.ID, `{"storage_bytes":2147483648}`); err != nil {
 		t.Fatalf("SetUserPlanOverrides: %v", err)
 	}
 	info, err = s.WorkspaceStorageInfo(wsID)
 	if err != nil {
 		t.Fatalf("WorkspaceStorageInfo (override): %v", err)
 	}
-	if info.LimitBytes != 1073741824 {
-		t.Errorf("limit_bytes with override = %d, want 1073741824", info.LimitBytes)
+	if info.LimitBytes != 2147483648 {
+		t.Errorf("limit_bytes with override = %d, want 2147483648", info.LimitBytes)
 	}
 	if !info.OverrideActive {
 		t.Errorf("override_active = false, want true after setting override")
 	}
 
-	// 3. Pro plan: the limit is unlimited regardless of override (Phase 1).
-	// The override_active flag still surfaces the configured override
-	// so the admin UI can show it; it just doesn't affect the limit.
+	// 3. Pro plan (TASK-3619): capped like free, through the same chain. The
+	// override still wins, and still shows as active.
 	if _, err := s.SetUserPlan(owner.ID, PlanWrite{Plan: "pro", Source: PlanSourceManual, Force: true}); err != nil {
 		t.Fatalf("SetUserPlan(pro): %v", err)
 	}
@@ -116,11 +115,23 @@ func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkspaceStorageInfo (pro): %v", err)
 	}
-	if info.LimitBytes != -1 {
-		t.Errorf("pro plan limit_bytes = %d, want -1 (unlimited)", info.LimitBytes)
+	if info.LimitBytes != 2147483648 {
+		t.Errorf("pro plan limit_bytes with override = %d, want 2147483648", info.LimitBytes)
 	}
 	if !info.OverrideActive {
 		t.Errorf("override_active should still be true for pro plan with configured override")
+	}
+
+	// 4. Pro plan, no override: the 1 GB default.
+	if err := s.SetUserPlanOverrides(owner.ID, ""); err != nil {
+		t.Fatalf("clear overrides: %v", err)
+	}
+	info, err = s.WorkspaceStorageInfo(wsID)
+	if err != nil {
+		t.Fatalf("WorkspaceStorageInfo (pro, default): %v", err)
+	}
+	if info.LimitBytes != 1<<30 || int64(DefaultProLimits.StorageBytes) != 1<<30 {
+		t.Errorf("pro plan limit_bytes = %d (default %d), want 1 GB", info.LimitBytes, DefaultProLimits.StorageBytes)
 	}
 }
 

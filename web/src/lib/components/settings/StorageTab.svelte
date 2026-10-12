@@ -629,6 +629,13 @@
 					</div>
 				{/if}
 
+				{#if usage.scope === 'account'}
+					<div class="usage-subline">
+						Across every workspace the owner owns. Includes workspaces in the restore window until they're
+						permanently deleted.
+					</div>
+				{/if}
+
 				{#if usage.override_active && usage.plan}
 					<div class="usage-subline">
 						Plan: {usage.plan} — admin override active

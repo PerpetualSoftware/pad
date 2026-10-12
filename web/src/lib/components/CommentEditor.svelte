@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { promptOnPlanLimit, PLAN_LIMIT_PROMPTED } from '$lib/billing/planLimitToast';
 	/**
 	 * Lean WYSIWYG comment editor (TASK-1664 / PLAN-1662). A small, purpose-
 	 * built Tiptap instance — NOT the heavy block editor (Editor.svelte). It
@@ -264,7 +265,9 @@
 						pendingUploads += 1;
 						try {
 							const uploadItemId = itemId;
-							const result = await api.attachments.upload(wsSlug, file, uploadItemId);
+							const result = await api.attachments.upload(wsSlug, file, uploadItemId).catch((err) => {
+								throw promptOnPlanLimit(err);
+							});
 							// A comment upload carries item context too, so the
 							// server associates it and it belongs in that item's
 							// attachment strip — announce it like the body editor
@@ -277,6 +280,8 @@
 						}
 					},
 					onError: (filename, message) => {
+						// Over the storage limit: the plan-limit prompt already said so.
+						if (message === PLAN_LIMIT_PROMPTED) return;
 						console.error(`[comment attachment] ${filename}: ${message}`);
 						// A toast, not a blocking window.alert (TASK-2221, audit C39).
 						toastStore.show(`Couldn't upload ${filename}: ${message}`, 'error');

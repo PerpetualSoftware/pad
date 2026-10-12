@@ -13,6 +13,7 @@
 	import { planLimitPrompt, currentPlace } from '$lib/billing/planLimitPrompt.svelte';
 	import { BILLING_PATH } from '$lib/billing/planLimitPrompt';
 	import { saveUpgradeResume } from '$lib/billing/upgradeResume';
+	import { SUPPORT_MAILTO } from '$lib/brand/links';
 
 	let { scope = null }: { scope?: string | null } = $props();
 
@@ -57,6 +58,8 @@
 			<div class="plan-limit-actions">
 				{#if p.action === 'upgrade'}
 					<button type="button" class="plan-limit-primary" onclick={upgrade}>Upgrade</button>
+				{:else if p.action === 'contact'}
+					<a class="plan-limit-primary" href={SUPPORT_MAILTO}>Contact us</a>
 				{:else if p.action === 'ask'}
 					<button type="button" class="plan-limit-secondary" onclick={copyNote}>{copied ? 'Copied' : 'Copy note'}</button>
 				{/if}
@@ -109,6 +112,15 @@
 		color: var(--text-primary);
 		font: inherit;
 		cursor: pointer;
+	}
+	/* Contact us is a mailto link styled as the primary button. */
+	a.plan-limit-primary {
+		display: inline-flex;
+		align-items: center;
+		padding: var(--space-1) var(--space-3);
+		border-radius: var(--radius-sm);
+		border: 1px solid;
+		text-decoration: none;
 	}
 	.plan-limit-actions .plan-limit-primary {
 		background: var(--accent-blue);
