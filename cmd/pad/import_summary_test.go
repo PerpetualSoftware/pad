@@ -15,7 +15,7 @@ func TestPrintImportSummary(t *testing.T) {
 	if !printImportSummary(&out, &importSummary{InBundle: matched, Imported: matched}) {
 		t.Errorf("equal counts reported as a mismatch:\n%s", out.String())
 	}
-	if strings.Contains(out.String(), "does not match") || strings.Contains(out.String(), "did not arrive") {
+	if strings.Contains(out.String(), "does not match") || strings.Contains(out.String(), "counts differ") {
 		t.Errorf("equal counts printed a shortfall:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "412") {
@@ -37,7 +37,7 @@ func TestPrintImportSummary(t *testing.T) {
 	if len(flagged) != 1 || flagged[0] != "Attachments" {
 		t.Errorf("flagged rows = %v, want only Attachments:\n%s", flagged, out.String())
 	}
-	if !strings.Contains(out.String(), "did not arrive") {
+	if !strings.Contains(out.String(), "counts differ") {
 		t.Errorf("a shortfall printed no explanation:\n%s", out.String())
 	}
 }

@@ -28,7 +28,7 @@ type importCounts struct {
 }
 
 // printImportSummary prints what the bundle carried next to what arrived,
-// and names every kind that fell short. It reports whether all of them
+// and marks every kind whose count differs. It reports whether all of them
 // matched.
 func printImportSummary(w io.Writer, s *importSummary) bool {
 	rows := []struct {
@@ -51,7 +51,7 @@ func printImportSummary(w io.Writer, s *importSummary) bool {
 		fmt.Fprintf(w, "  %-12s %10d %10d%s\n", r.name, r.bundled, r.got, mark)
 	}
 	if !matched {
-		fmt.Fprintln(w, "  Some of the bundle did not arrive. The workspace you exported from is unchanged,")
+		fmt.Fprintln(w, "  The counts differ from the bundle. The workspace you exported from is unchanged,")
 		fmt.Fprintln(w, "  so you can delete this copy, export again and re-import.")
 	}
 	return matched

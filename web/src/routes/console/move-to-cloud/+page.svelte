@@ -9,6 +9,9 @@
 
 	const CLOUD_URL = 'https://app.getpad.dev';
 	const CLOUD_MCP_URL = 'https://mcp.getpad.dev';
+	// On Cloud the session names its own MCP address; a self-hosted reader is
+	// shown Cloud's.
+	const mcpUrl = $derived(authStore.cloudMode && authStore.mcpPublicUrl ? authStore.mcpPublicUrl : CLOUD_MCP_URL);
 </script>
 
 <svelte:head>
@@ -53,11 +56,15 @@
 			<h2>Sign in to Pad Cloud</h2>
 			{#if authStore.cloudMode}
 				<p>You're on Pad Cloud already.</p>
-			{:else}
+			{:else if !authStore.nativeShell}
+				<!-- Never inside a mobile app's web view: the app stores' anti-steering
+				     rules (TASK-3299). -->
 				<p>
 					Go to <a href={CLOUD_URL} target="_blank" rel="noopener noreferrer">app.getpad.dev</a>
 					and sign up or sign in.
 				</p>
+			{:else}
+				<p>Sign up or sign in to Pad Cloud.</p>
 			{/if}
 		</li>
 
@@ -75,7 +82,7 @@
 			<p>
 				When the import finishes, Pad shows how many collections, items, comments and
 				attachments were in the bundle and how many arrived. They should match. If they don't,
-				the message says what fell short. Your self-hosted copy is untouched, so you can export
+				the message says which counts differ. Your self-hosted copy is untouched, so you can export
 				and import again.
 			</p>
 		</li>
@@ -90,7 +97,7 @@
 					project directory.
 				</li>
 				<li>
-					<strong>MCP:</strong> add <code>{CLOUD_MCP_URL}</code> as the remote MCP server
+					<strong>MCP:</strong> add <code>{mcpUrl}</code> as the remote MCP server
 					(replacing your own server's URL) and sign in with OAuth.
 				</li>
 				<li>

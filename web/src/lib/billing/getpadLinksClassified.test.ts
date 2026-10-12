@@ -26,12 +26,18 @@ const KEPT: RegExp[] = [
 	/^https:\/\/getpad\.dev\/learn(\/|$)/,
 	/^https:\/\/getpad\.dev\/(changelog|privacy|terms|subprocessors|security|connect)$/,
 	/^https:\/\/status\.getpad\.dev$/,
+	// TASK-3612 (lead ruling, day 92): Cloud's MCP endpoint. A connection
+	// address the move-to-Cloud guide names; it sells nothing.
+	/^https:\/\/mcp\.getpad\.dev$/,
 	/^mailto:support@getpad\.dev$/
 ];
 
 const GATED: RegExp[] = [
 	/^https:\/\/getpad\.dev\/?$/,
 	/^https:\/\/getpad\.dev\/(blog|faq|contribute)$/,
+	// TASK-3612 (lead ruling, day 92): Pad Cloud's sign-up, linked from the
+	// move-to-Cloud guide on a self-hosted instance only.
+	/^https:\/\/app\.getpad\.dev$/,
 	/^mailto:info@getpad\.dev(\?|$)/
 ];
 
