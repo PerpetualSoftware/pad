@@ -309,32 +309,43 @@ func TestPLAN3598_ItemContextArchivedFollowsGet(t *testing.T) {
 	})
 }
 
-// The brief's open_blocker agrees with the dashboard's blocked attention on
-// a REFERENCE blocker (lead ruling on #2094, PLAN-3535 PR 2): an explicitly
-// linked doc blocks until it reaches its terminal status, in both places.
-// The subject task has no other blocker, so the dashboard's first active
-// blocker can only be the doc.
-func TestPLAN3598_ItemContextReferenceBlockerAgreesWithDashboard(t *testing.T) {
+// The brief's open_blocker agrees with the dashboard's blocked attention
+// (lead ruling on #2094): the brief reuses firstActiveBlocker's predicate,
+// so the two must not drift for any blocker. Two blockers the brief once
+// judged on its own are pinned here:
+//   - a REFERENCE doc (PLAN-3535 PR 2): an explicit link blocks until the
+//     doc reaches its terminal status;
+//   - an item in a collection whose schema does not decode: it reads as
+//     open work, never as reference.
+//
+// Each blocked task has no other blocker, so the dashboard's first active
+// blocker can only be the one under test.
+func TestPLAN3598_ItemContextBlockerAgreesWithDashboard(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
-		task := f.itemIn("tasks", map[string]any{"title": "Ctx doc-blocked task", "fields": `{"status":"open"}`})
-		doc := f.itemIn("docs", map[string]any{"title": "Ctx reference doc", "fields": `{"status":"draft"}`})
-		if _, err := f.srv.store.CreateItemLink(f.wsID, models.ItemLinkCreate{TargetID: task.ID, LinkType: models.ItemLinkTypeBlocks}, doc.ID); err != nil {
-			t.Fatal(err)
+		blockedBy := func(title string, blocker models.Item) models.Item {
+			t.Helper()
+			task := f.itemIn("tasks", map[string]any{"title": title, "fields": `{"status":"open"}`})
+			if _, err := f.srv.store.CreateItemLink(f.wsID, models.ItemLinkCreate{TargetID: task.ID, LinkType: models.ItemLinkTypeBlocks}, blocker.ID); err != nil {
+				t.Fatal(err)
+			}
+			return task
 		}
-		briefBlocks := func() bool {
+		briefBlocks := func(task, blocker models.Item) bool {
+			t.Helper()
 			rr := f.do("GET", "/api/v1/workspaces/"+f.wsSlug+"/items/"+task.Ref+"/context", f.ownerTok, nil)
 			f.must(rr, http.StatusOK, "context")
 			var resp itemContextResponse
 			parseJSON(t, rr, &resp)
 			for _, c := range resp.Conflicts {
-				if c.Kind == "open_blocker" && len(c.Refs) == 2 && c.Refs[0] == task.Ref && c.Refs[1] == doc.Ref {
+				if c.Kind == "open_blocker" && len(c.Refs) == 2 && c.Refs[0] == task.Ref && c.Refs[1] == blocker.Ref {
 					return true
 				}
 			}
 			return false
 		}
-		dashboardBlocks := func() bool {
+		dashboardBlocks := func(task models.Item) bool {
+			t.Helper()
 			rr := f.do("GET", "/api/v1/workspaces/"+f.wsSlug+"/dashboard", f.ownerTok, nil)
 			f.must(rr, http.StatusOK, "dashboard")
 			var resp DashboardResponse
@@ -346,17 +357,42 @@ func TestPLAN3598_ItemContextReferenceBlockerAgreesWithDashboard(t *testing.T) {
 			}
 			return false
 		}
-
-		if b, dsh := briefBlocks(), dashboardBlocks(); !b || !dsh {
-			t.Errorf("a draft doc linked as a blocker: brief open_blocker=%v, dashboard blocked=%v; both must be true", b, dsh)
+		want := func(what string, task, blocker models.Item, blocked bool) {
+			t.Helper()
+			if b, dsh := briefBlocks(task, blocker), dashboardBlocks(task); b != blocked || dsh != blocked {
+				t.Errorf("%s: brief open_blocker=%v, dashboard blocked=%v; both must be %v", what, b, dsh, blocked)
+			}
 		}
 
+		doc := f.itemIn("docs", map[string]any{"title": "Ctx reference doc", "fields": `{"status":"draft"}`})
+		docTask := blockedBy("Ctx doc-blocked task", doc)
+		want("a draft doc linked as a blocker", docTask, doc, true)
 		archived := `{"status":"archived"}`
 		if _, err := f.srv.store.UpdateItem(doc.ID, models.ItemUpdate{Fields: &archived}); err != nil {
 			t.Fatal(err)
 		}
-		if b, dsh := briefBlocks(), dashboardBlocks(); b || dsh {
-			t.Errorf("an archived (terminal) doc blocker: brief open_blocker=%v, dashboard blocked=%v; both must be false", b, dsh)
+		want("an archived (terminal) doc blocker", docTask, doc, false)
+
+		coll, err := f.srv.store.CreateCollection(f.wsID, models.CollectionCreate{
+			Name:   "Oddities",
+			Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"terminal_options":["done"]}]}`,
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
+		odd, err := f.srv.store.CreateItem(f.wsID, coll.ID, models.ItemCreate{Title: "Ctx odd blocker", Fields: `{"status":"open"}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Valid JSON of the wrong shape: it fails the schema decode, and
+		// Postgres's json column refuses a non-JSON string (22P02).
+		if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE collections SET schema = ? WHERE id = ?`), `{"fields":"not a list"}`, coll.ID); err != nil {
+			t.Fatalf("corrupt schema: %v", err)
+		}
+		var probe models.CollectionSchema
+		if models.UnmarshalItemFieldSchema([]byte(`{"fields":"not a list"}`), &probe) == nil {
+			t.Fatal("precondition: the corrupt schema must fail to decode")
+		}
+		want("an open blocker whose collection schema does not decode", blockedBy("Ctx odd-blocked task", *odd), *odd, true)
 	})
 }
