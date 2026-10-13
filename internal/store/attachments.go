@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1342,8 +1343,14 @@ func (s *Store) AttachmentHashesWithRows(hashes []string) (map[string]bool, erro
 // delete so a row inserted after the batched subtraction still protects
 // its bytes (see runRowlessBlobSweep's TOCTOU note).
 func (s *Store) AttachmentRowsExistForHash(hash string) (bool, error) {
+	return s.AttachmentRowsExistForHashContext(context.Background(), hash)
+}
+
+// AttachmentRowsExistForHashContext is AttachmentRowsExistForHash bounded by
+// ctx, for a caller that runs it under a process-wide lock (BUG-3652).
+func (s *Store) AttachmentRowsExistForHashContext(ctx context.Context, hash string) (bool, error) {
 	var n int
-	err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM attachments WHERE content_hash = ?`), hash).Scan(&n)
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM attachments WHERE content_hash = ?`), hash).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("attachment rows exist for hash: %w", err)
 	}

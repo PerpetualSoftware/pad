@@ -1211,6 +1211,9 @@ func (s *Server) rehydrateAttachment(
 	}
 	// Charged against the importer's storage cap in cloud mode (BUG-3653).
 	if err := s.store.CreateAttachment(att, s.planLimitMintOpts(ownerID)...); err != nil {
+		// A refused row (the storage cap, BUG-3653) takes the blob this
+		// import wrote with it, under the rowless sweep's guards (BUG-3652).
+		s.reclaimRefusedBlob(ctx, store, hash, storageKey)
 		return "", fmt.Errorf("create attachment row: %w", err)
 	}
 
