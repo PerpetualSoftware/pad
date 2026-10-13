@@ -107,6 +107,11 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can invite members")
 		return
 	}
+	// An invitation carries no scope, so the member it makes sees every
+	// collection: a restricted caller cannot send one (BUG-3634).
+	if !s.requireCallerCanSetCollectionAccess(w, r, workspaceID, "all", nil) {
+		return
+	}
 
 	var input struct {
 		Email string `json:"email"`
@@ -328,6 +333,29 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// A role applies across the target's scope, so a restricted caller may
+	// change it only for a member whose scope lies within its own
+	// (BUG-3634). A missing member falls through to the store's 404.
+	if target, err := s.store.GetWorkspaceMember(workspaceID, userID); err != nil {
+		writeInternalError(w, err)
+		return
+	} else if target != nil {
+		var targetIDs []string
+		if target.CollectionAccess == "specific" {
+			if targetIDs, err = s.store.GetMemberCollectionAccess(workspaceID, userID); err != nil {
+				writeInternalError(w, err)
+				return
+			}
+		}
+		mode := target.CollectionAccess
+		if mode != "specific" {
+			mode = "all"
+		}
+		if !s.requireCallerCanSetCollectionAccess(w, r, workspaceID, mode, targetIDs) {
+			return
+		}
+	}
+
 	if err := s.store.UpdateWorkspaceMemberRole(workspaceID, userID, input.Role); err != nil {
 		writeMemberChangeError(w, err)
 		return
@@ -543,6 +571,12 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 		writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
 		return "", false
 	}
+	// The inviter has been restricted since (BUG-3634): refused, with a
+	// reason, and the invitation stays pending. Nothing was written.
+	if errors.Is(err, store.ErrInviterScopeTooNarrow) {
+		writeError(w, http.StatusForbidden, inviterScopeChangedCode, inviterScopeChangedMessage)
+		return "", false
+	}
 	if err != nil {
 		// RECONCILE BEFORE REFUSING (BUG-3026). The store returns the raw
 		// commit error, so a lost acknowledgement lands the membership and the
@@ -589,6 +623,13 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 	}
 	return role, true
 }
+
+// The refusal every accept door gives an invitation whose inviter is now
+// restricted to specific collections (BUG-3634).
+const (
+	inviterScopeChangedCode    = "inviter_scope_changed"
+	inviterScopeChangedMessage = "The person who invited you can no longer grant access to this workspace. Ask a workspace owner to invite you again."
+)
 
 // writeInvitationAccepted is the success body both accept doors answer with.
 // workspace_slug and owner_username (TASK-3277, additive) let a client open

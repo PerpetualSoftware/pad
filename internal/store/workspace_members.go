@@ -150,6 +150,14 @@ func (s *Store) commitWorkspaceMemberTx(tx *sql.Tx) error {
 // it (BUG-2136). The accept is rolled back.
 var ErrInvitationGone = errors.New("invitation no longer pending")
 
+// ErrInviterScopeTooNarrow: the member who sent the invitation is now
+// restricted to specific collections, and an accepted invitation makes a
+// member with access to every collection, more than the inviter holds
+// (BUG-3634). The accept is refused, not narrowed: the invitation carries
+// no scope to narrow to, and a silent downgrade would leave the invitee
+// with access nobody chose. An unrestricted owner can send a new one.
+var ErrInviterScopeTooNarrow = errors.New("the inviter can no longer grant this access")
+
 // AcceptWorkspaceInvitation accepts an invitation in one transaction: the
 // membership through addWorkspaceMemberTx, then the invitation's accepted_at.
 // An existing membership is an idempotent success (BUG-3281, lead ruling):
@@ -170,6 +178,9 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 	}
 	defer tx.Rollback()
 
+	if err := s.requireInviterScopeTx(tx, invitationID, workspaceID); err != nil {
+		return false, "", err
+	}
 	added, effectiveRole, err = s.addWorkspaceMemberTx(tx, workspaceID, userID, role, resolveMintOptions(opts), true)
 	if err != nil {
 		return false, "", err
@@ -201,6 +212,32 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 		return added, effectiveRole, fmt.Errorf("accept workspace invitation: %w", err)
 	}
 	return added, effectiveRole, nil
+}
+
+// requireInviterScopeTx refuses an accept whose inviter is now a member
+// restricted to specific collections (BUG-3634), read at accept time so a
+// restriction made after the invitation was sent still applies. An
+// instance admin is unrestricted, as visibleCollectionIDs treats one. An
+// inviter who is no longer a member, or no recorded inviter, is left as
+// before.
+func (s *Store) requireInviterScopeTx(tx *sql.Tx, invitationID, workspaceID string) error {
+	var access, userRole string
+	err := tx.QueryRow(s.q(`
+		SELECT m.collection_access, u.role
+		FROM workspace_invitations i
+		JOIN workspace_members m ON m.workspace_id = ? AND m.user_id = i.invited_by
+		JOIN users u ON u.id = i.invited_by
+		WHERE i.id = ?`), workspaceID, invitationID).Scan(&access, &userRole)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("accept workspace invitation: read inviter: %w", err)
+	}
+	if access == "specific" && userRole != "admin" {
+		return ErrInviterScopeTooNarrow
+	}
+	return nil
 }
 
 // RemoveWorkspaceMember removes a user from a workspace.
