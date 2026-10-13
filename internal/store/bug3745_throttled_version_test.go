@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/diff"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -62,6 +63,15 @@ func TestBUG3745_ThrottledWriteKeepsTheNewestVersionExact(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no version resolves to exactly the body before alice's edits; got %d versions", len(versions))
+	}
+	// Its line counts describe the change it now covers: a to c.
+	wantAdded, wantRemoved := diff.LineCounts(a, c)
+	var added, removed int
+	if err := s.db.QueryRow(s.q(`SELECT lines_added, lines_removed FROM item_versions WHERE item_id = ? ORDER BY created_at DESC, version_seq DESC LIMIT 1`), item.ID).Scan(&added, &removed); err != nil {
+		t.Fatal(err)
+	}
+	if added != wantAdded || removed != wantRemoved {
+		t.Errorf("newest version counts +%d -%d, want +%d -%d (a to c)", added, removed, wantAdded, wantRemoved)
 	}
 }
 

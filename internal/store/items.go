@@ -5971,7 +5971,9 @@ func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body st
 // made against, and stored again against newBody: as a patch when that is
 // smaller, otherwise in full. A newest version that is already a full body
 // needs nothing. A patch that does not apply to oldBody was already broken
-// before this write, and is left as it is.
+// before this write (data written before this fix can be), and is left as it
+// is: refusing the write instead would block every edit to that item over
+// history that is already damaged.
 func (s *Store) rebaseNewestVersionPatch(tx *sql.Tx, itemID, oldBody, newBody string) error {
 	var vid, content string
 	var isDiff bool
@@ -5995,7 +5997,11 @@ func (s *Store) rebaseNewestVersionPatch(tx *sql.Tx, itemID, oldBody, newBody st
 	if patch := diff.CreateReversePatch(body, newBody); diff.IsDiffSmaller(patch, body) {
 		stored, storedDiff = patch, true
 	}
-	_, err = tx.Exec(s.q(`UPDATE item_versions SET content = ?, is_diff = ? WHERE id = ?`), stored, s.dialect.BoolToInt(storedDiff), vid)
+	// The version's recorded change is its body to the one that replaced it
+	// (PLAN-2348 U2), which is now newBody: the throttled edits joined it.
+	added, removed := diff.LineCounts(body, newBody)
+	_, err = tx.Exec(s.q(`UPDATE item_versions SET content = ?, is_diff = ?, lines_added = ?, lines_removed = ? WHERE id = ?`),
+		stored, s.dialect.BoolToInt(storedDiff), added, removed, vid)
 	return err
 }
 
