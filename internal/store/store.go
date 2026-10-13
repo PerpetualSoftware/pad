@@ -1414,9 +1414,25 @@ func (s *Store) indexExists(name string) bool {
 // The entire operation runs in a single transaction — if anything fails the
 // database is left unchanged and the migration will be retried on next startup.
 func (s *Store) migrateToWorkspaceNumbering() error {
-	// Nothing to migrate if the old index doesn't exist
 	if !s.indexExists("idx_items_collection_number") {
-		return nil
+		// The old index was the only marker, and SQLite migration 056 drops
+		// it: its items rebuild recreates only the indexes migrations made,
+		// and this one was made in code (BUG-3664). A legacy database that
+		// upgrades through 056 in one go arrives here without the marker,
+		// still numbered per collection. So, with no workspace index yet,
+		// numbers repeated within a workspace are the marker instead. This
+		// also recovers a database an earlier release left in that state,
+		// whose every startup failed creating the workspace index.
+		if s.indexExists("idx_items_workspace_number") {
+			return nil
+		}
+		dup, err := s.hasRepeatedWorkspaceItemNumbers()
+		if err != nil {
+			return err
+		}
+		if !dup {
+			return nil
+		}
 	}
 
 	tx, err := s.db.Begin()
@@ -1492,6 +1508,22 @@ func (s *Store) migrateToWorkspaceNumbering() error {
 	}
 
 	return nil
+}
+
+// hasRepeatedWorkspaceItemNumbers reports whether two live or archived items
+// in one workspace share an item_number: the shape of per-collection
+// numbering, which the workspace index cannot be created over.
+func (s *Store) hasRepeatedWorkspaceItemNumbers() (bool, error) {
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM items WHERE item_number IS NOT NULL
+		GROUP BY workspace_id, item_number HAVING COUNT(*) > 1 LIMIT 1`).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check repeated item numbers: %w", err)
+	}
+	return true, nil
 }
 
 // backfillNullItemNumbers assigns the next workspace-global item_number to any
