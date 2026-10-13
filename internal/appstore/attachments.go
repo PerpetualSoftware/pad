@@ -260,9 +260,14 @@ func (p *PendingUpload) Close() {
 	// raced, or the caller's re-check refused it before Insert) takes the
 	// blob with it, while its hash guard is still held (BUG-3652). The blob
 	// stays when another row or writer shares it.
-	if !p.inserted && p.row.StorageKey != "" && p.a.opts.Reclaimer != nil {
-		p.a.opts.Reclaimer.ReclaimRefusedBlob(context.Background(), p.row.ContentHash, p.row.StorageKey)
+	if !p.inserted && p.row.StorageKey != "" {
+		// One attempt, whatever its outcome: the key is cleared before the
+		// call, so a second Close never retries after the guard is gone.
+		hash, key := p.row.ContentHash, p.row.StorageKey
 		p.row.StorageKey = ""
+		if p.a.opts.Reclaimer != nil {
+			p.a.opts.Reclaimer.ReclaimRefusedBlob(context.Background(), hash, key)
+		}
 	}
 	if p.guard != "" {
 		p.a.opts.InFlight.Release(p.guard)
