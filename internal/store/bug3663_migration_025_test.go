@@ -186,3 +186,26 @@ func TestBUG3663_FKOffRebuildThatRenumbersALegacyViolationIsNotRefused(t *testin
 		t.Fatalf("instrument: c2's rowid = %d (%v), want 1 (renumbered from 2)", rowid, err)
 	}
 }
+
+// foreign_key_check can fail outright ("foreign key mismatch") when an FK's
+// parent key has no unique index, as a rebuild can leave mid-chain (CI on
+// #2120, re-applying 056). That is not a violation the migration made, and
+// must not refuse it.
+func TestBUG3663_FKOffMigrationIsNotRefusedWhenTheCheckCannotRun(t *testing.T) {
+	s := fkCheckStore(t)
+	for _, stmt := range []string{
+		`CREATE TABLE fk3663_loose_parent (code TEXT)`,
+		`CREATE TABLE fk3663_loose_child (id TEXT PRIMARY KEY, code TEXT REFERENCES fk3663_loose_parent(code))`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const name = "999_bug3663_over_a_mismatched_fk.sql"
+	if err := applySQLiteMigration(s.db, name, "PRAGMA foreign_keys = OFF;\nCREATE TABLE fk3663_noop (id TEXT);\nPRAGMA foreign_keys = ON;\n"); err != nil {
+		t.Fatalf("an FK-off migration over a schema the check cannot read: %v", err)
+	}
+	if !recorded(t, s, name) {
+		t.Error("the migration was not recorded")
+	}
+}

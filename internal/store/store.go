@@ -1110,19 +1110,28 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 	// the ones the database already had: a legacy database may carry some
 	// from before FKs were enforced on every connection (see New), and
 	// refusing those here would turn this check into an upgrade blocker.
+	//
+	// The check itself can fail rather than report: foreign_key_check errors
+	// with "foreign key mismatch" when some FK's parent key has no unique
+	// index, which a rebuild can leave in a schema the chain is not yet done
+	// with (CI on #2120: re-applying 056 over a database that has
+	// item_decisions). It is a safety net, never a new way to refuse an
+	// upgrade, so a failed check is logged and skipped, not fatal.
 	var fkBefore map[string]int
-	if fkOff {
+	fkCheck := fkOff
+	if fkCheck {
 		if fkBefore, err = foreignKeyViolations(ctx, tx); err != nil {
-			return fmt.Errorf("apply migration %s: foreign key check before: %w", name, err)
+			slog.Warn("migration foreign key check unavailable; skipped", "migration", name, "stage", "before", "error", err)
+			fkCheck = false
 		}
 	}
 	if err := execMulti(tx, body); err != nil {
 		return fmt.Errorf("apply migration %s: %w", name, err)
 	}
-	if fkOff {
+	if fkCheck {
 		after, err := foreignKeyViolations(ctx, tx)
 		if err != nil {
-			return fmt.Errorf("apply migration %s: foreign key check after: %w", name, err)
+			slog.Warn("migration foreign key check unavailable; skipped", "migration", name, "stage", "after", "error", err)
 		}
 		for fk, n := range after {
 			if n > fkBefore[fk] {
