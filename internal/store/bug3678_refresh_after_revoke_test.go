@@ -1,7 +1,7 @@
 package store
 
 import (
-	"errors"
+	"database/sql"
 	"os"
 	"sync"
 	"testing"
@@ -216,7 +216,8 @@ func TestBUG3678_RevokeRacingRefreshLeavesNothingActive_Postgres(t *testing.T) {
 
 // An installed app's grant is minted through the install barrier, not the
 // ordinary insert: a revoke through fosite (RFC 7009 or a refresh replay)
-// must hold there too (codex round 1 on BUG-3678).
+// ends it the way RevokeUserAppGrant does, with the binding tombstoned
+// (codex rounds 1 and 2 on BUG-3678).
 func TestBUG3678_RevokedInstallGrantMintsNothing(t *testing.T) {
 	f := task3399Fixture(t, "inst-3678", "write")
 	task3399Delegated(t, f, "req-3678-app")
@@ -224,7 +225,14 @@ func TestBUG3678_RevokedInstallGrantMintsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := task3399Req(f.clientID, f.person.ID, "req-3678-app", "read", 1)
-	if err := f.s.CreateRefreshToken(r); !errors.Is(err, ErrOAuthGrantRevoked) {
-		t.Fatalf("a revoked installed-app grant minted a refresh token: %v, want ErrOAuthGrantRevoked", err)
+	if err := f.s.CreateRefreshToken(r); err == nil {
+		t.Fatal("a revoked installed-app grant minted a refresh token")
+	}
+	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM oauth_refresh_tokens WHERE signature = ?`, r.Signature); n != 0 {
+		t.Error("the refused refresh token was stored")
+	}
+	var revokedAt sql.NullString
+	if err := f.s.db.QueryRow(f.s.q(`SELECT revoked_at FROM app_token_bindings WHERE request_id = ?`), "req-3678-app").Scan(&revokedAt); err != nil || !revokedAt.Valid {
+		t.Errorf("the binding was not tombstoned: %v %v", revokedAt, err)
 	}
 }

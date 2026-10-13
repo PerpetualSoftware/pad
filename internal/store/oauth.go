@@ -467,58 +467,53 @@ func (s *Store) flipOAuthFamiliesTx(tx *sql.Tx, requestID string) error {
 
 // RevokeOAuthGrant ends a grant for good (BUG-3678): it records the
 // request_id in oauth_revoked_grants and flips every token of the grant
-// inactive, in one transaction that first takes the row issuance holds
-// while it checks for the record and inserts: the subject's users row
-// (insertOAuthRequestRow, FOR SHARE), or for an installed app's grant the
-// install row (installIssuanceBarrierTx, FOR UPDATE). So a refresh racing
-// this either committed its pair before the flips here, which then see
-// it, or finds the record and mints nothing. Idempotent.
+// inactive, in one transaction that first takes the subject's users row.
+// Issuance holds that row FOR SHARE while it checks for the record and
+// inserts (insertOAuthRequestRow), so a refresh racing this either
+// committed its pair before the flips here, which then see it, or finds
+// the record and mints nothing. Idempotent.
 //
 // The connected-apps revoke and fosite's RevokeRefreshToken (RFC 7009 and
 // refresh replay) come here. A rotation does not: it ends tokens, not the
 // grant.
 func (s *Store) RevokeOAuthGrant(requestID string) error {
+	// An installed app's grant has its own tombstone (the binding's
+	// revoked_at) and lock order, which the issuance barrier, the claim and
+	// disable already share: end it the way RevokeUserAppGrant does (codex
+	// round 2 on BUG-3678).
+	var bound int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM app_token_bindings WHERE request_id = ?`), requestID).Scan(&bound); err != nil {
+		return fmt.Errorf("revoke grant: read binding: %w", err)
+	}
+	if bound > 0 {
+		attempt := 0
+		return s.retryOnDeadlock("revoke_app_grant", func() error {
+			_, err := s.revokeAppGrantOnce(requestID, &attempt)
+			return err
+		})
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("revoke grant: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var clientID, subject sql.NullString
+	var subject sql.NullString
 	err = tx.QueryRow(s.q(`
-		SELECT client_id, subject FROM oauth_refresh_tokens WHERE request_id = ?
+		SELECT subject FROM oauth_refresh_tokens WHERE request_id = ? AND subject <> ''
 		UNION ALL
-		SELECT client_id, subject FROM oauth_access_tokens WHERE request_id = ?
+		SELECT subject FROM oauth_access_tokens WHERE request_id = ? AND subject <> ''
 		LIMIT 1
-	`), requestID, requestID).Scan(&clientID, &subject)
+	`), requestID, requestID).Scan(&subject)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("revoke grant: read grant: %w", err)
+		return fmt.Errorf("revoke grant: read subject: %w", err)
 	}
-	var installID sql.NullString
-	if clientID.Valid {
-		if err := tx.QueryRow(s.q(`SELECT app_install_id FROM oauth_clients WHERE id = ?`), clientID.String).Scan(&installID); err != nil &&
-			!errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("revoke grant: read client: %w", err)
-		}
-	}
-	if s.dialect.Driver() == DriverPostgres {
+	if subject.Valid && s.dialect.Driver() == DriverPostgres {
+		// The strong lock first: issuance holds FOR SHARE on this row, and
+		// a share lock upgraded later in this transaction could deadlock.
 		var one int
-		switch {
-		case installID.Valid && installID.String != "":
-			// An installed app's tokens are minted under the install row
-			// (installIssuanceBarrierTx), and a service grant's subject is
-			// the bot, which the install lifecycle locks after the install.
-			if err := tx.QueryRow(s.q(`SELECT 1 FROM app_installs WHERE id = ? FOR UPDATE`), installID.String).Scan(&one); err != nil &&
-				!errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("revoke grant: lock install: %w", err)
-			}
-		case subject.Valid && subject.String != "":
-			// The strong lock first: issuance holds FOR SHARE on this row,
-			// and a share lock upgraded later in this transaction could
-			// deadlock.
-			if err := tx.QueryRow(s.q(`SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE`), subject.String).Scan(&one); err != nil &&
-				!errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("revoke grant: lock subject: %w", err)
-			}
+		if err := tx.QueryRow(s.q(`SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE`), subject.String).Scan(&one); err != nil &&
+			!errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("revoke grant: lock subject: %w", err)
 		}
 	}
 	if _, err := tx.Exec(s.q(`

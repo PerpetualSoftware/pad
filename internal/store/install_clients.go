@@ -401,13 +401,6 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	if disabledAt.Valid && disabledAt.String != "" {
 		return true, ErrInstallClientDisabled
 	}
-	// No token on a revoked grant (BUG-3678), read under the install row:
-	// RevokeOAuthGrant locks it before recording an installed app's grant
-	// as revoked, and the account claim records a delegated grant under the
-	// person's row, which a delegated grant share-locked above.
-	if err := s.refuseRevokedGrantTx(tx, table, req.RequestID); err != nil {
-		return true, err
-	}
 	// The grant's kind (read above), and for a delegated grant the access
 	// the person consented to, as the consent decision put them in the
 	// session data.
