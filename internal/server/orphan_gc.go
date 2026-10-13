@@ -445,12 +445,13 @@ func (s *Server) runRowlessBlobSweep(ctx context.Context, blobCutoff time.Time) 
 // Either leaves the blob alone. A failure here only logs: the rowless sweep
 // remains the backstop.
 //
-// The delete is bounded by refusedBlobDeleteTimeout. The in-flight lock is
-// process-wide, and every upload takes it to mark its hash, so a stalled
-// backend must not hold it for longer than that (codex r1). The request's
+// The row check and the delete together are bounded by
+// refusedBlobDeleteTimeout. The in-flight lock is process-wide, and every
+// upload takes it to mark its hash, so a stalled database or backend must
+// not hold it for longer than that (codex r1, r2). The request's
 // own cancellation is dropped: a client that hung up still leaves no blob.
-// refusedBlobDeleteTimeout bounds reclaimRefusedBlob's delete, which runs
-// under the process-wide in-flight lock.
+// refusedBlobDeleteTimeout bounds reclaimRefusedBlob's row check and
+// delete, which run under the process-wide in-flight lock.
 const refusedBlobDeleteTimeout = 5 * time.Second
 
 func (s *Server) reclaimRefusedBlob(ctx context.Context, backend attachments.AttachmentStore, hash, storageKey string) {
@@ -461,7 +462,7 @@ func (s *Server) reclaimRefusedBlob(ctx context.Context, backend attachments.Att
 	if s.inFlight.CountLocked(hash) > 1 {
 		return
 	}
-	exists, err := s.store.AttachmentRowsExistForHash(hash)
+	exists, err := s.store.AttachmentRowsExistForHashContext(ctx, hash)
 	if err != nil {
 		slog.Warn("refused write: blob row re-check failed; the rowless sweep will reclaim it",
 			"storage_key", storageKey, "error", err)
