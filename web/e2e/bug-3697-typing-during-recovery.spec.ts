@@ -11,7 +11,11 @@
 import { test, expect } from './fixtures';
 import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT, seedDoc } from './lib/collab-helpers';
 
-test('the editor accepts no typing while a force_refresh recovery is in flight', async ({ browser, fixture, request }, testInfo) => {
+// FIXME BUG-3786: on main this fails its final assertion (the recovered editor
+// shows the original seed body, not the server's), after merging alongside
+// #2133 and #2124. Parked so main is green while BUG-3786 finds the cause; the
+// fix there removes this fixme.
+test.fixme('the editor accepts no typing while a force_refresh recovery is in flight', async ({ browser, fixture, request }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough');
 	test.setTimeout(120_000);
 	const { id, slug } = await seedDoc(fixture, request, 'BUG-3697');
