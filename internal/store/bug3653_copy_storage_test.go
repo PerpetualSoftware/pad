@@ -233,10 +233,10 @@ func TestTASK3779_UploadWaitsForAHeldCopyAndIsRefused(t *testing.T) {
 	uploadStarted = true
 	go func() { defer close(uploadDone); uploadErr <- f.add(600, false, WithPlanLimit()) }()
 
-	// The upload must be seen WAITING on an advisory lock in this database,
-	// in Postgres's own lock table, while the copy is held: the proof that
-	// the lock serialises them, not merely that the upload was slow. Without
-	// the lock no waiter ever appears and the upload commits past the cap.
+	// The upload must be seen WAITING on the owner's storage lock, in
+	// Postgres's own lock table, while the copy is held: the proof that the
+	// lock serialises them, not merely that the upload was slow. Without the
+	// lock no waiter ever appears and the upload commits past the cap.
 	waiting := false
 	deadline := time.Now().Add(10 * time.Second)
 	for !waiting && time.Now().Before(deadline) {
@@ -246,14 +246,20 @@ func TestTASK3779_UploadWaitsForAHeldCopyAndIsRefused(t *testing.T) {
 		case <-time.After(20 * time.Millisecond):
 		}
 		var n int
+		// The storage lock's own key: acquirePlanLimitLock takes
+		// pg_advisory_xact_lock(hashtext('pad:plan-limit:storage_bytes:' ||
+		// owner)), a single bigint key whose low 32 bits pg_locks shows as
+		// objid, with objsubid 1.
 		if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
-			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&n); err != nil {
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND objsubid = 1
+			AND objid = ((hashtext('pad:plan-limit:storage_bytes:' || $1)::bigint) & 4294967295)::oid`, f.owner.ID).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		waiting = n > 0
 	}
 	if !waiting {
-		t.Fatal("the upload never waited on an advisory lock while the copy was held")
+		t.Fatal("the upload never waited on the storage lock while the copy was held")
 	}
 	releaseCopy()
 	if err := <-copyErr; err != nil {
