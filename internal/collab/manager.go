@@ -68,8 +68,14 @@ type RoomManager struct {
 	// Embedded so SetObserver is part of the type's surface (TASK-3501).
 	observable
 
-	store         opLogStore
-	bus           OpBus
+	store opLogStore
+	bus   OpBus
+
+	// Websocket liveness (BUG-3771, BUG-3636), copied onto each connection
+	// at Join. Set before the manager serves; the defaults above otherwise.
+	writeTimeout  time.Duration
+	pongWait      time.Duration
+	pingPeriod    time.Duration
 	schemaVersion string
 	graceTTL      time.Duration
 
@@ -332,6 +338,9 @@ func NewRoomManagerWithConfig(store opLogStore, bus OpBus, cfg RoomManagerConfig
 		schemaVersion: schemaVersion,
 		graceTTL:      graceTTL,
 		rooms:         make(map[string]*Room),
+		writeTimeout:  defaultCollabWriteTimeout,
+		pongWait:      defaultCollabPongWait,
+		pingPeriod:    defaultCollabPingPeriod,
 	}
 }
 
@@ -559,9 +568,12 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 		}
 
 		rc := &roomConn{
-			id:          nextConnID(),
-			conn:        conn,
-			connectedAt: time.Now(),
+			id:           nextConnID(),
+			conn:         conn,
+			connectedAt:  time.Now(),
+			writeTimeout: m.writeTimeout,
+			pongWait:     m.pongWait,
+			pingPeriod:   m.pingPeriod,
 		}
 		// A peer the bus had to drop an op for is closed (TASK-1273): it
 		// would otherwise stay connected with a document missing that op
@@ -856,7 +868,7 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 
 	if replayErr != nil {
 		room.removeConn(rc)
-		<-writerDone
+		closeThenWait(rc, writerDone)
 		return replayErr
 	}
 
@@ -900,13 +912,13 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 	if perr != nil {
 		rc.writeMu.Unlock()
 		room.removeConn(rc)
-		<-writerDone
+		closeThenWait(rc, writerDone)
 		return perr
 	}
-	if werr := rc.conn.WriteMessage(websocket.TextMessage, payload); werr != nil {
+	if werr := rc.writeLocked(websocket.TextMessage, payload); werr != nil {
 		rc.writeMu.Unlock()
 		room.removeConn(rc)
-		<-writerDone
+		closeThenWait(rc, writerDone)
 		return werr
 	}
 	rc.replayDone.Store(true)
@@ -916,14 +928,22 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 	readErr := room.readLoop(rc)
 
 	// Reader returned: take the conn out of the room (which closes
-	// the bus subscription, which unblocks the writer).
+	// the bus subscription, which unblocks an idle writer).
 	room.removeConn(rc)
-
-	// Wait for the writer to drain before returning so the handler's
-	// `defer conn.Close()` doesn't fire mid-WriteMessage.
-	<-writerDone
+	closeThenWait(rc, writerDone)
 
 	return readErr
+}
+
+// closeThenWait closes the socket, then waits for the writer to exit. The
+// order matters (BUG-3636): a writer blocked mid-write to a peer that stopped
+// reading would otherwise be waited on before anything closed the socket
+// under it, leaking the socket, both goroutines and the admission slot.
+// gorilla's Close is safe alongside an in-flight WriteMessage, which then
+// fails, and the handler's own deferred Close is a no-op after this one.
+func closeThenWait(rc *roomConn, writerDone <-chan struct{}) {
+	_ = rc.conn.Close()
+	<-writerDone
 }
 
 // getOrCreate returns the existing Room for itemID or, atomically
@@ -1383,6 +1403,21 @@ func (m *RoomManager) unfreezeAndReleaseAppend(room *Room) {
 // completes; short enough that a stuck-write conn doesn't block
 // the revoke path.
 const closeFrameDeadline = 1 * time.Second
+
+// Websocket liveness (BUG-3771, BUG-3636). The manager carries them, and each
+// connection copies them at Join, so tests shorten them per manager.
+const (
+	// defaultCollabWriteTimeout bounds every frame written to a collab
+	// socket, so a peer that stops reading cannot hold writeMu, the item's
+	// setup lock during replay, or teardown.
+	defaultCollabWriteTimeout = 10 * time.Second
+	// defaultCollabPongWait is how long a socket may go without a frame or a
+	// pong before its read fails and the connection is torn down.
+	defaultCollabPongWait = 60 * time.Second
+	// defaultCollabPingPeriod is how often the server pings: under the pong
+	// wait, so a live peer's pong always lands in time.
+	defaultCollabPingPeriod = defaultCollabPongWait * 9 / 10
+)
 
 // CloseConn force-closes a single WebSocket connection registered
 // with the manager, sending a close frame with a machine-readable
