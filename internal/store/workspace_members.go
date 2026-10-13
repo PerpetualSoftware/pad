@@ -216,10 +216,16 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 
 // requireInviterScopeTx refuses an accept whose inviter is now a member
 // restricted to specific collections (BUG-3634), read at accept time so a
-// restriction made after the invitation was sent still applies. An
-// instance admin is unrestricted, as visibleCollectionIDs treats one. An
-// inviter who is no longer a member, or no recorded inviter, is left as
-// before.
+// restriction made after the invitation was sent still applies.
+//
+// An instance admin is exempt. visibleCollectionIDs scopes an admin's
+// BEARER requests to their membership, but that bounds what a token can
+// reach, not the admin's authority: from a cookie session the admin can set
+// any member's access to all, including their own and this invitee's. So
+// an admin's invitation never grants more than the admin can grant, and
+// the property this guards (no one grants beyond what they hold) is not at
+// stake. An inviter who is no longer a member, or no recorded inviter, is
+// left as before.
 func (s *Store) requireInviterScopeTx(tx *sql.Tx, invitationID, workspaceID string) error {
 	var access, userRole string
 	err := tx.QueryRow(s.q(`
