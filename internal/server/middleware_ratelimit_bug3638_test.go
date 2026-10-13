@@ -94,3 +94,36 @@ func TestNewIPRateLimiter_RaisesShortRetention(t *testing.T) {
 		})
 	}
 }
+
+// TestRateLimiters_IdleBucketIsNotReset (BUG-3638): the eviction itself.
+// A caller who drains the registration budget and then waits 35 minutes,
+// past the old 30-minute default but well inside the hour the budget
+// takes to refill, must still be refused. Before the fix the sweep deleted
+// the drained bucket and the next request got a fresh burst of 5.
+func TestRateLimiters_IdleBucketIsNotReset(t *testing.T) {
+	rls := NewRateLimiters()
+	defer rls.Stop()
+	rl := rls.Register
+
+	const key = "198.51.100.7"
+	for i := 0; i < rl.config.Burst; i++ {
+		if !rl.allow(key) {
+			t.Fatalf("request %d of the burst was refused", i+1)
+		}
+	}
+	if rl.allow(key) {
+		t.Fatal("bucket not drained after the burst")
+	}
+
+	rl.mu.Lock()
+	rl.sweepLocked(time.Now().Add(35 * time.Minute))
+	_, kept := rl.limiters[key]
+	rl.mu.Unlock()
+
+	if !kept {
+		t.Error("sweep 35 minutes later evicted a bucket that has not refilled")
+	}
+	if rl.allow(key) {
+		t.Error("request after the sweep was allowed; the drained budget was reset")
+	}
+}

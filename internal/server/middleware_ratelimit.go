@@ -23,19 +23,19 @@ type rateLimitConfig struct {
 	Rate  rate.Limit // events per second
 	Burst int        // max burst
 	// Retention is how long an inactive key stays in memory before the
-	// background cleanup evicts it. Must be at least as long as the rate
-	// window (≈ burst / rate) or premature eviction lets an attacker reset
-	// their bucket by waiting — defeating "N per hour" limits that pause
-	// naturally between bursts. Zero means "use the default".
+	// background cleanup evicts it. Zero means "use the default".
+	// newIPRateLimiter raises any value below the refill window (burst /
+	// rate) to that window, since evicting a bucket that has not refilled
+	// hands its owner a full one (BUG-3638).
 	Retention time.Duration
 	// MaxEntries caps how many keys the limiter holds at once. Zero means
 	// defaultMaxEntries. See evictLocked for what happens at the cap.
 	MaxEntries int
 }
 
-// defaultRetention is the minimum retention for a limiter whose config
-// doesn't specify one. Suitable for sub-minute windows like per-IP login
-// limiting; longer windows must set Retention explicitly.
+// defaultRetention is the retention for a limiter whose config doesn't
+// specify one. A limiter whose refill window is longer gets that window
+// instead (newIPRateLimiter, BUG-3638).
 const defaultRetention = 30 * time.Minute
 
 // defaultMaxEntries bounds one limiter's map (BUG-3308). Retention alone
@@ -249,12 +249,18 @@ func (rl *ipRateLimiter) cleanup() {
 			return
 		case <-ticker.C:
 			rl.mu.Lock()
-			for key, entry := range rl.limiters {
-				if time.Since(entry.lastSeen) > rl.retention {
-					delete(rl.limiters, key)
-				}
-			}
+			rl.sweepLocked(time.Now())
 			rl.mu.Unlock()
+		}
+	}
+}
+
+// sweepLocked evicts every key idle for longer than the retention as of
+// now. Caller holds rl.mu.
+func (rl *ipRateLimiter) sweepLocked(now time.Time) {
+	for key, entry := range rl.limiters {
+		if now.Sub(entry.lastSeen) > rl.retention {
+			delete(rl.limiters, key)
 		}
 	}
 }
