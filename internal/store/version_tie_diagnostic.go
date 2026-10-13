@@ -89,9 +89,12 @@ func beginDiagnosticTx(ctx context.Context, db *sql.DB, postgres bool, timeout t
 		if timeout <= 0 {
 			timeout = 30 * time.Second
 		}
+		// The timeout is the first statement in the transaction, so every
+		// statement after it is capped. BEGIN and this SET cannot be: they are
+		// bounded by the run deadline, which DiagnoseVersionTiesAt requires.
 		for _, stmt := range []string{
-			"SET TRANSACTION READ ONLY",
 			fmt.Sprintf("SET LOCAL statement_timeout = %d", statementTimeoutMS(timeout)),
+			"SET TRANSACTION READ ONLY",
 		} {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				_ = tx.Rollback()
@@ -442,6 +445,11 @@ func permute(n int, fn func([]int) bool) {
 // production database without changing it. postgres selects the driver; a
 // SQLite path is opened query-only, which refuses writes on the connection.
 func DiagnoseVersionTiesAt(ctx context.Context, dsn string, postgres bool, opts DiagnoseOptions) (*VersionTieReport, error) {
+	// The run deadline is what bounds the statements statement_timeout cannot
+	// reach (opening the transaction), so a production run must have one.
+	if opts.MaxDuration <= 0 {
+		return nil, errors.New("version tie diagnostic: a positive max duration is required")
+	}
 	db, err := openDiagnosticDB(dsn, postgres)
 	if err != nil {
 		return nil, err

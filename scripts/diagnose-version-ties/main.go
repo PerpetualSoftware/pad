@@ -27,7 +27,7 @@ func main() {
 	pg := flag.String("pg", "", "PostgreSQL connection URL")
 	sqlite := flag.String("sqlite", "", "SQLite database path")
 	timeout := flag.Duration("timeout", 30*time.Second, "per-statement timeout (Postgres)")
-	maxDuration := flag.Duration("max-duration", 15*time.Minute, "stop after this long and report what was scanned (bounds the read-only snapshot)")
+	maxDuration := flag.Duration("max-duration", 15*time.Minute, "stop after this long and report what was scanned (bounds the read-only snapshot; must be positive)")
 	flag.Parse()
 	if (*pg == "") == (*sqlite == "") {
 		fmt.Fprintln(os.Stderr, "pass exactly one of -pg or -sqlite")

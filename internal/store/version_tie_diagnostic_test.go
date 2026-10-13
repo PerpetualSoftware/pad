@@ -117,11 +117,20 @@ func TestBUG3751_DiagnosticCannotWrite(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	if s.dialect.Driver() == DriverPostgres {
-		tx, err := beginDiagnosticTx(ctx, s.db, true, 0)
+		tx, err := beginDiagnosticTx(ctx, s.db, true, 1500*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback() //nolint:errcheck
+		// The timeout is set first in the transaction and SET TRANSACTION
+		// READ ONLY is still accepted after it (codex on BUG-3751).
+		for setting, want := range map[string]string{"statement_timeout": "1500ms", "transaction_read_only": "on"} {
+			var got string
+			if err := tx.QueryRowContext(ctx, "SHOW "+setting).Scan(&got); err != nil || got != want {
+				t.Fatalf("SHOW %s = %q (%v), want %q", setting, got, err, want)
+			}
+		}
+		t.Log("ran on Postgres: statement_timeout and read-only verified")
 		_, err = tx.ExecContext(ctx, `UPDATE items SET title = title`)
 		if err == nil || !strings.Contains(err.Error(), "25006") {
 			t.Fatalf("a write inside the diagnostic transaction: err = %v, want SQLSTATE 25006 (read-only transaction)", err)
@@ -250,6 +259,17 @@ func TestBUG3751_StatementTimeoutNeverRoundsToZero(t *testing.T) {
 	} {
 		if got := statementTimeoutMS(d); got != want {
 			t.Errorf("statementTimeoutMS(%v) = %d, want %d", d, got, want)
+		}
+	}
+}
+
+// The operator entry point refuses to run without a run deadline: it is the
+// only bound on opening the transaction (codex on BUG-3751).
+func TestBUG3751_OperatorRunRequiresADeadline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "never-opened.db")
+	for _, d := range []time.Duration{0, -time.Second} {
+		if _, err := DiagnoseVersionTiesAt(context.Background(), path, false, DiagnoseOptions{MaxDuration: d}); err == nil || !strings.Contains(err.Error(), "max duration") {
+			t.Errorf("MaxDuration %v: err = %v, want a refusal naming the max duration", d, err)
 		}
 	}
 }
