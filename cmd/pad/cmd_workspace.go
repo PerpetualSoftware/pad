@@ -51,7 +51,7 @@ no owner).`,
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			raw, err := client.RawGet("/workspaces/" + ws + "/storage/usage")
+			raw, err := client.RawGet("/workspaces/" + url.PathEscape(ws) + "/storage/usage")
 			if err != nil {
 				return err
 			}
@@ -114,7 +114,7 @@ func membersCmd() *cobra.Command {
 				Members     json.RawMessage `json:"members"`
 				Invitations json.RawMessage `json:"invitations"`
 			}
-			raw, err := client.RawGet("/workspaces/" + ws + "/members")
+			raw, err := client.RawGet("/workspaces/" + url.PathEscape(ws) + "/members")
 			if err != nil {
 				return err
 			}
@@ -211,7 +211,7 @@ func inviteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := client.PostRaw("/workspaces/"+ws+"/members/invite", raw, &result); err != nil {
+			if err := client.PostRaw("/workspaces/"+url.PathEscape(ws)+"/members/invite", raw, &result); err != nil {
 				// TASK-788: emit structured marker so MCP stdio classifier
 				// can surface ErrPlanLimitExceeded instead of ErrServerError.
 				if apiErr, ok := err.(*cli.APIError); ok {
@@ -261,7 +261,7 @@ func joinCmd() *cobra.Command {
 			code := args[0]
 
 			var result map[string]interface{}
-			if err := client.PostRaw("/invitations/"+code+"/accept", nil, &result); err != nil {
+			if err := client.PostRaw("/invitations/"+url.PathEscape(code)+"/accept", nil, &result); err != nil {
 				return fmt.Errorf("failed to accept invitation: %w", err)
 			}
 
@@ -1179,7 +1179,7 @@ Both formats can be re-imported via 'pad workspace import'.`,
 			ws := getWorkspace()
 			bundle := !jsonOnly
 
-			path := "/workspaces/" + ws + "/export"
+			path := "/workspaces/" + url.PathEscape(ws) + "/export"
 			defaultExt := ".json"
 			if bundle {
 				path += "?format=tar"

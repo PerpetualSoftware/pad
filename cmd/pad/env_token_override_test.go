@@ -181,11 +181,11 @@ func containsToken(haystack, needle string) bool {
 // exactly when PAD_TOKEN is set.
 func TestEnvTokenNotice(t *testing.T) {
 	t.Setenv("PAD_TOKEN", "pad_x")
-	if got := envTokenNotice(); got == "" {
+	if got := envTokenNotice("http://127.0.0.1:7777"); got == "" {
 		t.Fatal("expected a notice when PAD_TOKEN is set")
 	}
 	t.Setenv("PAD_TOKEN", "")
-	if got := envTokenNotice(); got != "" {
+	if got := envTokenNotice("http://127.0.0.1:7777"); got != "" {
 		t.Errorf("expected empty notice when unset, got %q", got)
 	}
 }

@@ -98,7 +98,7 @@ func NewClientFromURL(baseURL string) *Client {
 	// suffix added below) so the lookup matches what login/save
 	// commands key on. Credentials for other servers are left untouched
 	// in the store — see TASK-1228 / IDEA-1226 for the per-server design.
-	if tok := EnvToken(); tok != "" {
+	if tok := EnvTokenFor(baseURL); tok != "" {
 		c.authToken = tok
 	} else if store, err := LoadStore(); err == nil {
 		if creds := store.Get(baseURL); creds != nil {
@@ -151,12 +151,12 @@ func (c *Client) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspac
 
 func (c *Client) GetWorkspace(slug string) (*models.Workspace, error) {
 	var result models.Workspace
-	return &result, c.get("/workspaces/"+slug, &result)
+	return &result, c.get("/workspaces/"+url.PathEscape(slug), &result)
 }
 
 func (c *Client) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*models.Workspace, error) {
 	var result models.Workspace
-	return &result, c.patch("/workspaces/"+slug, input, &result)
+	return &result, c.patch("/workspaces/"+url.PathEscape(slug), input, &result)
 }
 
 // DeletedWorkspace is one entry from GET /api/v1/workspaces/deleted — a
@@ -180,7 +180,7 @@ func (c *Client) ListDeletedWorkspaces() ([]DeletedWorkspace, error) {
 // endpoint (owner-only server-side). Returns the now-live workspace.
 func (c *Client) RestoreWorkspace(slug string) (*models.Workspace, error) {
 	var result models.Workspace
-	return &result, c.post("/workspaces/"+slug+"/restore", nil, &result)
+	return &result, c.post("/workspaces/"+url.PathEscape(slug)+"/restore", nil, &result)
 }
 
 // ClaimWorkspaceResponse is the shape of POST /api/v1/oauth/claim.
@@ -210,22 +210,22 @@ func (c *Client) ClaimWorkspace(workspaceSlug, code string) (*ClaimWorkspaceResp
 
 func (c *Client) ListCollections(wsSlug string) ([]models.Collection, error) {
 	var result []models.Collection
-	return result, c.get("/workspaces/"+wsSlug+"/collections", &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/collections", &result)
 }
 
 func (c *Client) CreateCollection(wsSlug string, input models.CollectionCreate) (*models.Collection, error) {
 	var result models.Collection
-	return &result, c.post("/workspaces/"+wsSlug+"/collections", input, &result)
+	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/collections", input, &result)
 }
 
 func (c *Client) GetCollection(wsSlug, collSlug string) (*models.Collection, error) {
 	var result models.Collection
-	return &result, c.get("/workspaces/"+wsSlug+"/collections/"+collSlug, &result)
+	return &result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/collections/"+url.PathEscape(collSlug), &result)
 }
 
 func (c *Client) UpdateCollection(wsSlug, collSlug string, input models.CollectionUpdate) (*models.Collection, error) {
 	var result models.Collection
-	return &result, c.patch("/workspaces/"+wsSlug+"/collections/"+collSlug, input, &result)
+	return &result, c.patch("/workspaces/"+url.PathEscape(wsSlug)+"/collections/"+url.PathEscape(collSlug), input, &result)
 }
 
 // DeleteCollection soft-deletes a collection by setting
@@ -236,21 +236,21 @@ func (c *Client) UpdateCollection(wsSlug, collSlug string, input models.Collecti
 // (handlers_collections.go::handleDeleteCollection,
 // store/collections.go:316).
 func (c *Client) DeleteCollection(wsSlug, collSlug string) error {
-	return c.delete("/workspaces/" + wsSlug + "/collections/" + collSlug)
+	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/collections/" + url.PathEscape(collSlug))
 }
 
 // ListArchivedCollections returns the workspace's archived collections
 // (TASK-2189).
 func (c *Client) ListArchivedCollections(wsSlug string) ([]models.ArchivedCollection, error) {
 	var out []models.ArchivedCollection
-	err := c.get("/workspaces/"+wsSlug+"/archived-collections", &out)
+	err := c.get("/workspaces/"+url.PathEscape(wsSlug)+"/archived-collections", &out)
 	return out, err
 }
 
 // RestoreCollection un-archives a collection by slug or id (TASK-2189).
 func (c *Client) RestoreCollection(wsSlug, collRef string) (*models.Collection, error) {
 	var out models.Collection
-	if err := c.post("/workspaces/"+wsSlug+"/archived-collections/"+url.PathEscape(collRef)+"/restore", nil, &out); err != nil {
+	if err := c.post("/workspaces/"+url.PathEscape(wsSlug)+"/archived-collections/"+url.PathEscape(collRef)+"/restore", nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -270,7 +270,7 @@ func (c *Client) ListItems(wsSlug string, params url.Values) ([]models.Item, err
 // for a caller that warns about them.
 func (c *Client) ListItemsReport(wsSlug string, params url.Values) ([]models.Item, []string, error) {
 	var result []models.Item
-	path := "/workspaces/" + wsSlug + "/items"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items"
 	if len(params) > 0 {
 		path += "?" + params.Encode()
 	}
@@ -290,7 +290,7 @@ func undeclaredFilterKeys(h http.Header) []string {
 // per-tag item counts (ordered by count desc then tag asc).
 func (c *Client) ListTags(wsSlug string) ([]models.TagCount, error) {
 	var result []models.TagCount
-	return result, c.get("/workspaces/"+wsSlug+"/tags", &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/tags", &result)
 }
 
 // ListCollectionItems returns items within a specific collection.
@@ -303,7 +303,7 @@ func (c *Client) ListCollectionItems(wsSlug, collSlug string, params url.Values)
 // keys the server honoured (see ListItemsReport).
 func (c *Client) ListCollectionItemsReport(wsSlug, collSlug string, params url.Values) ([]models.Item, []string, error) {
 	var result []models.Item
-	path := "/workspaces/" + wsSlug + "/collections/" + collSlug + "/items"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/collections/" + url.PathEscape(collSlug) + "/items"
 	if len(params) > 0 {
 		path += "?" + params.Encode()
 	}
@@ -313,7 +313,7 @@ func (c *Client) ListCollectionItemsReport(wsSlug, collSlug string, params url.V
 
 func (c *Client) CreateItem(wsSlug, collSlug string, input models.ItemCreate) (*models.Item, error) {
 	var result models.Item
-	path := "/workspaces/" + wsSlug + "/collections/" + collSlug + "/items"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/collections/" + url.PathEscape(collSlug) + "/items"
 	err := c.post(path, input, &result)
 	// TASK-3585: with a key, a create whose outcome the transport lost is
 	// retried ONCE; a server that honors keys answers the item the first
@@ -444,7 +444,7 @@ func (c *Client) probeServerCapabilities() (serverCapabilityFlags, bool) {
 
 func (c *Client) GetItem(wsSlug, itemSlug string) (*models.Item, error) {
 	var result models.Item
-	if err := c.get("/workspaces/"+wsSlug+"/items/"+itemSlug, &result); err != nil {
+	if err := c.get("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug), &result); err != nil {
 		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
 	}
 	return &result, nil
@@ -452,7 +452,7 @@ func (c *Client) GetItem(wsSlug, itemSlug string) (*models.Item, error) {
 
 func (c *Client) UpdateItem(wsSlug, itemSlug string, input models.ItemUpdate) (*models.Item, error) {
 	var result models.Item
-	path := "/workspaces/" + wsSlug + "/items/" + itemSlug
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug)
 	err := c.patch(path, input, &result)
 	// TASK-3585: a keyed update (an append) is retried once with the same
 	// key, behind the same capability gate as create and comment.
@@ -476,7 +476,7 @@ type CollabSetAside struct {
 // ListCollabSetAside reads the item's set-aside edits as raw updates.
 func (c *Client) ListCollabSetAside(wsSlug, itemSlug string) (*CollabSetAside, error) {
 	var result CollabSetAside
-	if err := c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/collab-set-aside", &result); err != nil {
+	if err := c.get("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/collab-set-aside", &result); err != nil {
 		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
 	}
 	return &result, nil
@@ -488,14 +488,14 @@ func (c *Client) DiscardCollabSetAside(wsSlug, itemSlug string) (int64, error) {
 	var result struct {
 		Discarded int64 `json:"discarded"`
 	}
-	if err := c.deleteWithResult("/workspaces/"+wsSlug+"/items/"+itemSlug+"/collab-set-aside", &result); err != nil {
+	if err := c.deleteWithResult("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/collab-set-aside", &result); err != nil {
 		return 0, wrapItemNotFound(err, itemSlug, wsSlug)
 	}
 	return result.Discarded, nil
 }
 
 func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
-	return wrapItemNotFound(c.delete("/workspaces/"+wsSlug+"/items/"+itemSlug), itemSlug, wsSlug)
+	return wrapItemNotFound(c.delete("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)), itemSlug, wsSlug)
 }
 
 // wrapItemNotFound rewrites a bare "not_found" APIError from the item-by-ref
@@ -539,7 +539,7 @@ func (c *Client) ListItemVersions(wsSlug, itemSlug string) ([]models.Version, er
 // chain, so a history listing that projects to metadata was paying for bodies
 // it never showed.
 func (c *Client) ListItemVersionsPage(wsSlug, itemSlug string, limit int, summary bool) ([]models.Version, error) {
-	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/versions"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/versions"
 	q := url.Values{}
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
@@ -559,23 +559,23 @@ func (c *Client) ListItemVersionsPage(wsSlug, itemSlug string, limit int, summar
 // resolver 404s on archived items). Returns the restored item.
 func (c *Client) RestoreItem(wsSlug, itemSlug string) (*models.Item, error) {
 	var result models.Item
-	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/restore", nil, &result)
+	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/restore", nil, &result)
 }
 
 // StarItem stars an item for the current user.
 func (c *Client) StarItem(wsSlug, itemSlug string) error {
-	return c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/star", nil, nil)
+	return c.post("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/star", nil, nil)
 }
 
 // UnstarItem removes a star from an item for the current user.
 func (c *Client) UnstarItem(wsSlug, itemSlug string) error {
-	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug + "/star")
+	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/star")
 }
 
 // ListStarredItems returns the current user's starred items in a workspace.
 func (c *Client) ListStarredItems(wsSlug string, includeTerminal bool) ([]models.Item, error) {
 	var result []models.Item
-	path := "/workspaces/" + wsSlug + "/starred"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/starred"
 	if includeTerminal {
 		path += "?include_terminal=true"
 	}
@@ -591,12 +591,12 @@ func (c *Client) CreateWatch(wsSlug, itemSlug, predicate string) (*models.Watch,
 		body = map[string]string{"predicate": predicate}
 	}
 	var result models.Watch
-	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/watch", body, &result)
+	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/watch", body, &result)
 }
 
 // DeleteWatch removes the current user's watch on an item.
 func (c *Client) DeleteWatch(wsSlug, itemSlug string) error {
-	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug + "/watch")
+	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/watch")
 }
 
 // PushResult is the response body of a successful pad push, mirroring
@@ -659,7 +659,7 @@ func (c *Client) PushItemKeyed(wsSlug, itemSlug, message, opKey string) (*PushRe
 	if opKey != "" {
 		body["op_key"] = opKey
 	}
-	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/push"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/push"
 	var result PushResult
 	err := c.post(path, body, &result)
 	if err != nil && opKey != "" && retryableWithKey(err) && c.serverHonorsKeys() {
@@ -810,7 +810,7 @@ func (c *Client) MoveItem(wsSlug, itemSlug string, input map[string]any) (*model
 // semantics as `pad item update --force`.
 func (c *Client) MoveItemWithForce(wsSlug, itemSlug string, input map[string]any, force bool) (*models.Item, error) {
 	var result models.Item
-	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/move"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/move"
 	if force {
 		path += "?force=true"
 	}
@@ -834,7 +834,7 @@ func (c *Client) GetItemContext(wsSlug, itemSlug, intent, role string, budget in
 	if budget != 0 {
 		q.Set("budget", strconv.Itoa(budget))
 	}
-	path := "/workspaces/" + wsSlug + "/items/" + url.PathEscape(itemSlug) + "/context"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/context"
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
@@ -846,16 +846,16 @@ func (c *Client) GetItemContext(wsSlug, itemSlug, intent, role string, budget in
 
 func (c *Client) GetItemLinks(wsSlug, itemSlug string) ([]models.ItemLink, error) {
 	var result []models.ItemLink
-	return result, c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/links", &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/links", &result)
 }
 
 func (c *Client) CreateItemLink(wsSlug, itemSlug string, input models.ItemLinkCreate) (*models.ItemLink, error) {
 	var result models.ItemLink
-	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/links", input, &result)
+	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/links", input, &result)
 }
 
 func (c *Client) DeleteItemLink(wsSlug, linkID string) error {
-	return c.delete("/workspaces/" + wsSlug + "/links/" + linkID)
+	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/links/" + url.PathEscape(linkID))
 }
 
 // GetBacklinks fetches the items that contain a `[[<itemRef>]]`
@@ -880,19 +880,19 @@ func (c *Client) GetBacklinks(wsSlug, itemSlug string, limit, offset int) ([]mod
 		q += "offset=" + strconv.Itoa(offset)
 	}
 	var result []models.Backlink
-	return result, c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/backlinks"+q, &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/backlinks"+q, &result)
 }
 
 // --- Comments ---
 
 func (c *Client) ListComments(wsSlug, itemSlug string) ([]models.Comment, error) {
 	var result []models.Comment
-	return result, c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/comments", &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/comments", &result)
 }
 
 func (c *Client) CreateComment(wsSlug, itemSlug string, input models.CommentCreate) (*models.Comment, error) {
 	var result models.Comment
-	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/comments"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/comments"
 	err := c.post(path, input, &result)
 	// TASK-3585: the same single keyed retry as CreateItem, behind the same
 	// capability gate.
@@ -922,7 +922,7 @@ func (c *Client) DeleteComment(wsSlug, itemRef, commentID string) error {
 }
 
 func itemCommentPath(wsSlug, itemRef, commentID string) string {
-	return "/workspaces/" + wsSlug + "/items/" + url.PathEscape(itemRef) + "/comments/" + url.PathEscape(commentID)
+	return "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemRef) + "/comments/" + url.PathEscape(commentID)
 }
 
 // ServerSupportsItemScopedCommentWrites reports whether this server routes
@@ -1007,7 +1007,7 @@ func (c *Client) postPatch(wsSlug, itemSlug string, body map[string]any, opKey s
 	if opKey != "" {
 		body["op_key"] = opKey
 	}
-	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/patch"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/patch"
 	var result PatchResult
 	err := c.post(path, body, &result)
 	if err != nil && opKey != "" && retryableWithKey(err) && c.serverHonorsKeys() {
@@ -1178,7 +1178,7 @@ type BuiltinState struct {
 // GetItemBuiltin reads an item's state relative to Pad's current text.
 func (c *Client) GetItemBuiltin(wsSlug, ref string) (*BuiltinState, error) {
 	var st BuiltinState
-	if err := c.get("/workspaces/"+wsSlug+"/items/"+ref+"/builtin", &st); err != nil {
+	if err := c.get("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(ref)+"/builtin", &st); err != nil {
 		return nil, err
 	}
 	return &st, nil
@@ -1193,7 +1193,7 @@ func (c *Client) UpdateItemBuiltin(wsSlug, ref string, expectedSeq int64, overwr
 		body["overwrite_pending_edits"] = true
 	}
 	var result models.Item
-	if err := c.post("/workspaces/"+wsSlug+"/items/"+ref+"/builtin/update", body, &result); err != nil {
+	if err := c.post("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(ref)+"/builtin/update", body, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -1203,7 +1203,7 @@ func (c *Client) UpdateItemBuiltin(wsSlug, ref string, expectedSeq int64, overwr
 // title, server-side (TASK-3462).
 func (c *Client) ActivateLibraryEntry(wsSlug, title string) (*models.Item, error) {
 	var result models.Item
-	return &result, c.post("/workspaces/"+wsSlug+"/library/activate", map[string]string{"title": title}, &result)
+	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/library/activate", map[string]string{"title": title}, &result)
 }
 
 // AttachmentAttachResult is the attach response.
@@ -1216,7 +1216,7 @@ type AttachmentAttachResult struct {
 // itemRef is sent as typed; the server resolves it like the item routes.
 func (c *Client) AttachAttachment(wsSlug, attachmentID, itemRef string) (*AttachmentAttachResult, error) {
 	var result AttachmentAttachResult
-	err := c.post("/workspaces/"+wsSlug+"/attachments/"+url.PathEscape(attachmentID)+"/attach",
+	err := c.post("/workspaces/"+url.PathEscape(wsSlug)+"/attachments/"+url.PathEscape(attachmentID)+"/attach",
 		map[string]string{"item": itemRef}, &result)
 	return &result, err
 }
@@ -1227,7 +1227,7 @@ func (c *Client) AttachAttachment(wsSlug, attachmentID, itemRef string) (*Attach
 // The DashboardResponse type lives in the server package, so we use json.RawMessage.
 func (c *Client) GetDashboard(wsSlug string) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.get("/workspaces/"+wsSlug+"/dashboard", &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/dashboard", &result)
 }
 
 // GetReport returns the windowed project report JSON (PLAN-1628 / TASK-1630).
@@ -1241,7 +1241,7 @@ func (c *Client) GetReport(wsSlug, window, collections string) (json.RawMessage,
 	if collections != "" {
 		q.Set("collections", collections)
 	}
-	path := "/workspaces/" + wsSlug + "/report"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/report"
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
@@ -1259,7 +1259,7 @@ func (c *Client) GetReport(wsSlug, window, collections string) (json.RawMessage,
 // as raw JSON and delegates parsing to the caller.
 func (c *Client) GetAgentBootstrap(wsSlug string) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.get("/workspaces/"+wsSlug+"/agent/bootstrap", &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/agent/bootstrap", &result)
 }
 
 // --- Playbooks ---
@@ -1268,14 +1268,14 @@ func (c *Client) GetAgentBootstrap(wsSlug string) (json.RawMessage, error) {
 // (PLAN-1377 / TASK-1382). Same shape as bootstrap.playbooks.
 func (c *Client) ListPlaybooks(wsSlug string) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.get("/workspaces/"+wsSlug+"/playbooks", &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/playbooks", &result)
 }
 
 // ShowPlaybook returns the full playbook item identified by ref, slug,
 // or invocation_slug.
 func (c *Client) ShowPlaybook(wsSlug, identifier string) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.get("/workspaces/"+wsSlug+"/playbooks/"+identifier, &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/playbooks/"+url.PathEscape(identifier), &result)
 }
 
 // MatchPlaybook asks the workspace's typed-decision provider whether text
@@ -1285,7 +1285,7 @@ func (c *Client) ShowPlaybook(wsSlug, identifier string) (json.RawMessage, error
 // hard failure.
 func (c *Client) MatchPlaybook(wsSlug, text string) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.post("/workspaces/"+wsSlug+"/playbooks/match", map[string]any{"text": text}, &result)
+	return result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/playbooks/match", map[string]any{"text": text}, &result)
 }
 
 // RunPlaybook binds the supplied args to the playbook's declared spec
@@ -1309,7 +1309,7 @@ func (c *Client) RunPlaybook(wsSlug, identifier string, args map[string]any, raw
 		body["allow_draft"] = true
 	}
 	var result json.RawMessage
-	return result, c.post("/workspaces/"+wsSlug+"/playbooks/"+identifier+"/run", body, &result)
+	return result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/playbooks/"+url.PathEscape(identifier)+"/run", body, &result)
 }
 
 // --- Search ---
@@ -1328,7 +1328,7 @@ func (c *Client) SearchItems(params url.Values) (json.RawMessage, error) {
 
 func (c *Client) ListActivity(wsSlug string, params url.Values) ([]models.Activity, error) {
 	var result []models.Activity
-	path := "/workspaces/" + wsSlug + "/activity"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/activity"
 	if len(params) > 0 {
 		path += "?" + params.Encode()
 	}
@@ -1462,23 +1462,23 @@ func (c *Client) GetLibraryEntry(title string) (*LibraryEntryResponse, error) {
 // ListWebhooks returns all webhooks for a workspace.
 func (c *Client) ListWebhooks(wsSlug string) ([]models.Webhook, error) {
 	var result []models.Webhook
-	return result, c.get("/workspaces/"+wsSlug+"/webhooks", &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/webhooks", &result)
 }
 
 // CreateWebhook registers a new webhook for a workspace.
 func (c *Client) CreateWebhook(wsSlug string, input models.WebhookCreate) (*models.Webhook, error) {
 	var result models.Webhook
-	return &result, c.post("/workspaces/"+wsSlug+"/webhooks", input, &result)
+	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/webhooks", input, &result)
 }
 
 // DeleteWebhook removes a webhook by ID.
 func (c *Client) DeleteWebhook(wsSlug, webhookID string) error {
-	return c.delete("/workspaces/" + wsSlug + "/webhooks/" + webhookID)
+	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/webhooks/" + url.PathEscape(webhookID))
 }
 
 // TestWebhook sends a test payload to a webhook.
 func (c *Client) TestWebhook(wsSlug, webhookID string) error {
-	return c.post("/workspaces/"+wsSlug+"/webhooks/"+webhookID+"/test", nil, nil)
+	return c.post("/workspaces/"+url.PathEscape(wsSlug)+"/webhooks/"+url.PathEscape(webhookID)+"/test", nil, nil)
 }
 
 // --- Workspace Members ---
@@ -1488,7 +1488,7 @@ func (c *Client) ListWorkspaceMembers(wsSlug string) ([]models.WorkspaceMember, 
 	var result struct {
 		Members []models.WorkspaceMember `json:"members"`
 	}
-	if err := c.get("/workspaces/"+wsSlug+"/members", &result); err != nil {
+	if err := c.get("/workspaces/"+url.PathEscape(wsSlug)+"/members", &result); err != nil {
 		return nil, err
 	}
 	return result.Members, nil
@@ -1499,30 +1499,30 @@ func (c *Client) ListWorkspaceMembers(wsSlug string) ([]models.WorkspaceMember, 
 // ListAgentRoles returns all agent roles for a workspace.
 func (c *Client) ListAgentRoles(wsSlug string) ([]models.AgentRole, error) {
 	var result []models.AgentRole
-	return result, c.get("/workspaces/"+wsSlug+"/agent-roles", &result)
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/agent-roles", &result)
 }
 
 // CreateAgentRole creates a new agent role in a workspace.
 func (c *Client) CreateAgentRole(wsSlug string, input models.AgentRoleCreate) (*models.AgentRole, error) {
 	var result models.AgentRole
-	return &result, c.post("/workspaces/"+wsSlug+"/agent-roles", input, &result)
+	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/agent-roles", input, &result)
 }
 
 // GetAgentRole gets a single agent role by ID or slug.
 func (c *Client) GetAgentRole(wsSlug, idOrSlug string) (*models.AgentRole, error) {
 	var result models.AgentRole
-	return &result, c.get("/workspaces/"+wsSlug+"/agent-roles/"+idOrSlug, &result)
+	return &result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/agent-roles/"+url.PathEscape(idOrSlug), &result)
 }
 
 // UpdateAgentRole updates an existing agent role.
 func (c *Client) UpdateAgentRole(wsSlug, idOrSlug string, input models.AgentRoleUpdate) (*models.AgentRole, error) {
 	var result models.AgentRole
-	return &result, c.patch("/workspaces/"+wsSlug+"/agent-roles/"+idOrSlug, input, &result)
+	return &result, c.patch("/workspaces/"+url.PathEscape(wsSlug)+"/agent-roles/"+url.PathEscape(idOrSlug), input, &result)
 }
 
 // DeleteAgentRole removes an agent role from a workspace.
 func (c *Client) DeleteAgentRole(wsSlug, idOrSlug string) error {
-	return c.delete("/workspaces/" + wsSlug + "/agent-roles/" + idOrSlug)
+	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/agent-roles/" + url.PathEscape(idOrSlug))
 }
 
 // --- Export / Import ---
@@ -1542,7 +1542,7 @@ type ExportItemArtifactResult struct {
 // ref is an issue ID (e.g. PLAYB-3) or slug. A non-playbook/convention ref
 // comes back as a 4xx whose server message is surfaced via parseError.
 func (c *Client) ExportItemArtifact(wsSlug, ref string) (*ExportItemArtifactResult, error) {
-	req, err := c.newRequest("GET", "/workspaces/"+wsSlug+"/items/"+ref+"/export", nil)
+	req, err := c.newRequest("GET", "/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(ref)+"/export", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1581,7 +1581,7 @@ type ImportArtifactResult struct {
 func (c *Client) ImportArtifact(wsSlug string, body []byte) (*ImportArtifactResult, error) {
 	var result ImportArtifactResult
 	if err := c.PostRawWithContentType(
-		"/workspaces/"+wsSlug+"/import-artifact",
+		"/workspaces/"+url.PathEscape(wsSlug)+"/import-artifact",
 		body,
 		"text/markdown; charset=utf-8",
 		&result,
@@ -1914,7 +1914,7 @@ func (c *Client) CreateCLIAuthSession() (*CLIAuthSessionResponse, error) {
 // PollCLIAuthSession checks the status of a CLI auth session.
 func (c *Client) PollCLIAuthSession(code string) (*CLIAuthSessionStatus, error) {
 	var result CLIAuthSessionStatus
-	err := c.get("/auth/cli/sessions/"+code, &result)
+	err := c.get("/auth/cli/sessions/"+url.PathEscape(code), &result)
 	return &result, err
 }
 
@@ -2521,7 +2521,7 @@ func (c *Client) UploadAttachment(wsSlug, itemRef, filename string, body io.Read
 		}
 	}()
 
-	req, err := c.newRequest("POST", "/workspaces/"+wsSlug+"/attachments", pr)
+	req, err := c.newRequest("POST", "/workspaces/"+url.PathEscape(wsSlug)+"/attachments", pr)
 	if err != nil {
 		return nil, err
 	}
@@ -2572,7 +2572,7 @@ func (c *Client) DownloadAttachment(wsSlug, attachmentID, variant string, w io.W
 	if err != nil {
 		return "", 0, err
 	}
-	path := "/workspaces/" + wsSlug + "/attachments/" + p
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/attachments/" + p
 	if variant != "" {
 		path += "?variant=" + url.QueryEscape(variant)
 	}
@@ -2621,7 +2621,7 @@ func (c *Client) HeadAttachment(wsSlug, attachmentID, variant string) (*Attachme
 	if err != nil {
 		return nil, err
 	}
-	path := "/workspaces/" + wsSlug + "/attachments/" + p
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/attachments/" + p
 	if variant != "" {
 		path += "?variant=" + url.QueryEscape(variant)
 	}
@@ -2712,7 +2712,7 @@ func (c *Client) ListAttachments(wsSlug string, params AttachmentListParams) (*A
 	if params.Offset > 0 {
 		q.Set("offset", strconv.Itoa(params.Offset))
 	}
-	path := "/workspaces/" + wsSlug + "/attachments"
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/attachments"
 	if encoded := q.Encode(); encoded != "" {
 		path += "?" + encoded
 	}
@@ -2725,6 +2725,9 @@ func (c *Client) ListAttachments(wsSlug string, params AttachmentListParams) (*A
 
 // newRequest creates an http.Request with auth and agent headers set.
 func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request, error) {
+	if err := checkRequestPath(path); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequest(method, c.baseURL+path, body)
 	if err != nil {
 		return nil, err
@@ -3005,7 +3008,7 @@ func (c *Client) ListItemReminders(wsSlug, itemSlug string) ([]models.Reminder, 
 	var result struct {
 		Reminders []models.Reminder `json:"reminders"`
 	}
-	if err := c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/reminders", &result); err != nil {
+	if err := c.get("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/reminders", &result); err != nil {
 		return nil, err
 	}
 	return result.Reminders, nil
@@ -3017,26 +3020,26 @@ func (c *Client) ListItemReminders(wsSlug, itemSlug string) ([]models.Reminder, 
 // server's wording rather than a second, differently-worded local one.
 func (c *Client) CreateItemReminder(wsSlug, itemSlug, remindAt string) (*models.Reminder, error) {
 	var result models.Reminder
-	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/reminders",
+	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/reminders",
 		map[string]string{"remind_at": remindAt}, &result)
 }
 
 // RearmReminder moves a reminder's instant, clearing its fire marks.
 func (c *Client) RearmReminder(wsSlug, reminderID, remindAt string) (*models.Reminder, error) {
 	var result models.Reminder
-	return &result, c.patch("/workspaces/"+wsSlug+"/reminders/"+reminderID,
+	return &result, c.patch("/workspaces/"+url.PathEscape(wsSlug)+"/reminders/"+url.PathEscape(reminderID),
 		map[string]string{"remind_at": remindAt}, &result)
 }
 
 // AckReminder acknowledges a fired reminder.
 func (c *Client) AckReminder(wsSlug, reminderID string) (*models.Reminder, error) {
 	var result models.Reminder
-	return &result, c.post("/workspaces/"+wsSlug+"/reminders/"+reminderID+"/ack", nil, &result)
+	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/reminders/"+url.PathEscape(reminderID)+"/ack", nil, &result)
 }
 
 // DeleteReminder disarms a reminder by removing it.
 func (c *Client) DeleteReminder(wsSlug, reminderID string) error {
-	return c.delete("/workspaces/" + wsSlug + "/reminders/" + reminderID)
+	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/reminders/" + url.PathEscape(reminderID))
 }
 
 // MyInvitation is one pending invitation addressed to the signed-in account

@@ -253,6 +253,9 @@ func getConfig() *config.Config {
 // setup` to refuse to run locally. Call this from client-API entry
 // points (getConfiguredConfig, the pad init client phase) instead.
 func applyPadTomlOverride(cfg *config.Config) {
+	// Cleared first, so a call that applies no override never inherits an
+	// earlier call's (BUG-3646).
+	cli.NotePadTomlURLOverride("", "")
 	if cfg == nil {
 		return
 	}
@@ -265,7 +268,11 @@ func applyPadTomlOverride(cfg *config.Config) {
 	if pt == nil || pt.URL == "" {
 		return
 	}
+	// PAD_TOKEN stays bound to the server chosen before this override
+	// (BUG-3646): a committed .pad.toml must not pick where it is sent.
+	chosen := cfg.BaseURL()
 	cfg.URL = pt.URL
+	cli.NotePadTomlURLOverride(chosen, cfg.BaseURL())
 	if cfg.Mode == "" || cfg.Mode == config.ModeLocal {
 		cfg.Mode = config.ModeRemote
 	}

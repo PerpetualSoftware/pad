@@ -202,7 +202,7 @@ func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
 		report.Auth.CredentialsMatchServer = true
 	}
 
-	report.Auth.EnvTokenOverride = cli.EnvToken() != ""
+	report.Auth.EnvTokenOverride = cli.EnvTokenFor(cfg.BaseURL()) != ""
 
 	client := cli.NewClientFromURL(cfg.BaseURL())
 	client.SetAuthToken("")
@@ -215,7 +215,7 @@ func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
 		// PAD_TOKEN override when set (#879), else the stored
 		// credential for this server.
 		if report.Auth.EnvTokenOverride {
-			client.SetAuthToken(cli.EnvToken())
+			client.SetAuthToken(cli.EnvTokenFor(cfg.BaseURL()))
 		} else if creds != nil && creds.Token != "" && report.Auth.CredentialsMatchServer {
 			client.SetAuthToken(creds.Token)
 		}

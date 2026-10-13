@@ -578,6 +578,8 @@ PAD_TOKEN=pad_xxxxxxxx pad item list
 
 `PAD_TOKEN` takes precedence over credentials saved by `pad auth login`, like `gh`'s `GH_TOKEN`. It suits CI, scripts, and machines where several agents share one CLI install but should act as different Pad users: give each its own token in its environment. `pad auth whoami` reports the token's identity. `pad auth logout` signs out the stored session only; revoke an env token with `pad token revoke` or under **Settings → API tokens**.
 
+`PAD_TOKEN` is only sent to the server you chose: `--url`, `PAD_URL`, your config, or the default. A repository's `.pad.toml` can name a different server, and anyone can commit one, so the CLI does not send `PAD_TOKEN` to a server that only `.pad.toml` names. Requests there use the credential saved for that server, and the CLI prints one line saying so. To use the token with that server, set `PAD_URL` to it or pass `--url`.
+
 #### Managing API tokens from the CLI
 
 ```bash
