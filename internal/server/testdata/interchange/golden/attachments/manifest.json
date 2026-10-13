@@ -1,0 +1,18 @@
+{
+  "entries": [
+    {
+      "content_hash": "2b1da20a14b97d8f01f0a809d9f7d53eeefc59df6312eaa5a0c8b5c1228d1d7f",
+      "created_at": "2026-10-13T13:55:19Z",
+      "filename": "logo.png",
+      "filename_source": "caller",
+      "height": 1,
+      "id": "e893c3c3-fc2b-491b-83bb-67c421bca77e",
+      "item_id": "59ec786f-74d9-4f69-be0a-97823784d53a",
+      "mime": "image/png",
+      "size_bytes": 67,
+      "uploaded_by": "system",
+      "width": 1
+    }
+  ],
+  "version": 1
+}
