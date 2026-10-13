@@ -34,18 +34,19 @@ import (
 // minimal flicker — newer tabs probably don't have the full history
 // yet on a fresh reconnect.
 //
-// Failure: if the chosen applier doesn't ack within
-// applierFirstTimeout, retry with the next-longest-connected client
-// (applierRetryTimeout). If no client acks after both attempts,
-// caller falls back to direct items.content write — the current
-// editors will overwrite it on next flush (data loss vs. graceful
-// degradation; the documented contract is "best-effort under
-// active co-edit, direct write is the worst case").
+// Failure: if the request could not be written to the chosen applier,
+// retry with the next-longest-connected client (applierRetryTimeout).
+// If it WAS written and no ack arrives within the timeout, the outcome
+// is unknown and nothing is re-sent (BUG-3586 for patches, BUG-3748 for
+// markdown): the peer may have applied it, and a re-sent body would
+// roll back any write that landed in between. If no write reached a
+// peer, the caller falls back to a direct items.content write.
 
 const (
-	// applierMaxAttempts caps the retry loop. Two is the sweet spot:
-	// covers a single slow tab AND a tab that disconnected mid-flow.
-	// More attempts mostly just delay the fall-back path.
+	// applierMaxAttempts caps the retry loop. A retry happens only when
+	// the request could not be written to the chosen tab (a tab that
+	// disconnected mid-flow); a request that was written and timed out
+	// is not re-sent (BUG-3748).
 	applierMaxAttempts = 2
 
 	// controlMessageType values. The browser (TASK-1263) writes a
@@ -610,7 +611,8 @@ func (m *RoomManager) HasElectablePatchApplier(itemID string) bool {
 	return room.pickApplierFor(nil, true) != nil
 }
 
-// electAndApply runs one designated-applier election (first attempt + one retry)
+// electAndApply runs one designated-applier election (first attempt, plus one
+// retry when the first request could not be written)
 // against the room, gated on the restore coordinator. It returns
 // (err, superseded, sentAny): superseded==true means a version restore interrupted
 // the election and has resolved, so ApplyExternalContent should restart; err is
@@ -771,13 +773,18 @@ func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPa
 			}
 		case <-time.After(timeouts[attempt]):
 			room.cancelPendingAck(requestID)
-			// BUG-3586: a PATCH that reached a peer and timed out is NOT
-			// re-sent to another tab. The peer may have applied it with its
-			// ack late; the next tab's document would then already hold the
-			// change, and an insert-shaped edit (new contains old) keeps its
-			// anchor there and would apply twice. A markdown request may fall
-			// through: re-applying a whole body converges. The outcome is
-			// unknown, and that is the honest answer.
+			// A request that reached a peer and timed out is NOT re-sent to
+			// another tab. The peer may have applied it with its ack late.
+			// BUG-3586 (patch): the next tab's document would already hold
+			// the change, and an insert-shaped edit (new contains old) keeps
+			// its anchor there and would apply twice. BUG-3748 (markdown): a
+			// whole body re-applied later is not convergent, it is a
+			// rollback. If another write lands between the attempts, the
+			// re-sent body replaces it. The outcome is unknown, and that is
+			// the honest answer: the caller re-reads and retries with its own
+			// concurrency token, which compares against what it last saw.
+			// Only a request that never reached a peer (a failed write,
+			// above) moves on to the next applier.
 			if payload.isPatch() {
 				slog.Warn("collab: patch applier_request timed out; not re-sending to another tab",
 					"item_id", itemID,
@@ -786,16 +793,12 @@ func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPa
 				)
 				return nil, &PatchOutcomeUnknownError{ConnID: connRef(applier)}, false, anyWriteSucceeded
 			}
-			slog.Warn("collab: applier_request timed out; will retry next applier",
+			slog.Warn("collab: applier_request timed out; not re-sending to another tab",
 				"item_id", itemID,
 				"client_id", applier.id,
 				"attempt", attempt+1,
 			)
-			// Fall through to next attempt. Any late-arriving ack
-			// for this request_id from the timed-out conn is
-			// rejected because we just cancelled the entry; the
-			// browser is also expected to drop the stale request
-			// via its expires_at_millis check (TASK-1263).
+			return nil, ErrAllAppliersTimedOut, false, anyWriteSucceeded
 		}
 	}
 

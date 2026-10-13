@@ -476,12 +476,13 @@ func writeContentNotAppliedError(w http.ResponseWriter, ref string, landedFields
 		}
 	default: // contentOutcomeUnknown
 		// content_landed is DELIBERATELY ABSENT rather than false: the request went
-		// out and may have been applied. A caller that retries converges either way
-		// — a re-applied identical markdown is a no-op diff — but a caller that
-		// reads content_landed:false may take an action premised on the content
-		// being gone, and that premise would be unfounded.
+		// out and may have been applied, and a caller that reads
+		// content_landed:false may take an action premised on the content being
+		// gone. A blind resend does NOT converge either (BUG-3748): if another
+		// write landed after this one applied, resending the same body rolls it
+		// back. So the advice is re-read, then resend with that read's seq.
 		msg = fmt.Sprintf(
-			"%s was updated, but the outcome of applying its content to the live collaborative document is unknown; retry the content on its own.",
+			"%s was updated, but the outcome of applying its content to the live collaborative document is unknown. Re-read the item: if the content is not what you sent, send it again with expected_seq from that read, so a write that landed since is not overwritten.",
 			ref)
 	}
 	writeJSON(w, http.StatusConflict, map[string]any{
