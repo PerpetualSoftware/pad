@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -179,5 +180,57 @@ func TestBUG3653_CopyRetriesAnOwnershipChangeMidCheck(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("attempts = %d, want 3", calls)
+	}
+}
+
+// TASK-3779: the race above never overlapped the two writes, so it passed
+// with the storage lock removed. Here the copy is held after its check passes
+// and before it inserts, with room for only one of the two 600-byte writes,
+// and the upload starts inside that window. With the lock the upload waits for
+// the copy to commit and is refused; without it both commit past the cap.
+func TestTASK3779_UploadWaitsForAHeldCopyAndIsRefused(t *testing.T) {
+	f := newCopyStorageFixture(t, "pro", 600, 0)
+	used, err := f.s.accountStorageUsageQ(f.s.db, f.owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.SetUserPlanOverrides(f.owner.ID, fmt.Sprintf(`{"storage_bytes":%d}`, used+1000)); err != nil {
+		t.Fatal(err)
+	}
+	held, release := make(chan struct{}), make(chan struct{})
+	testHookCopyAfterStorageCheck = func() {
+		close(held)
+		<-release
+	}
+	t.Cleanup(func() { testHookCopyAfterStorageCheck = nil })
+
+	copyErr, uploadErr := make(chan error, 1), make(chan error, 1)
+	go func() { copyErr <- f.copy(true) }()
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the copy never reached its storage check")
+	}
+	go func() { uploadErr <- f.add(600, false, WithPlanLimit()) }()
+
+	// The upload must not finish while the copy holds the lock. On SQLite
+	// BEGIN IMMEDIATE already serialises writers, so this holds there too.
+	select {
+	case err := <-uploadErr:
+		close(release)
+		<-copyErr
+		t.Fatalf("the upload finished while the copy was held between its check and its commit (err %v): the storage lock does not serialise them", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(release)
+	if err := <-copyErr; err != nil {
+		t.Fatalf("the held copy: %v", err)
+	}
+	var ple *PlanLimitError
+	if err := <-uploadErr; !errors.As(err, &ple) {
+		t.Fatalf("the upload after the copy committed: err = %v, want *PlanLimitError", err)
+	}
+	if usage, _ := f.s.accountStorageUsageQ(f.s.db, f.owner.ID); usage > used+1000 {
+		t.Fatalf("usage %d is past the limit %d", usage, used+1000)
 	}
 }

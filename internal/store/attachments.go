@@ -2141,6 +2141,12 @@ var ErrStorageOwnerMoved = errStorageOwnerMoved
 // SQLite nothing else can write while it is open. Nil in production.
 var testHookAfterStorageOwnerRead func(tx *sql.Tx, workspaceID string)
 
+// testHookCopyAfterStorageCheck, when set by a test, runs in a cross-workspace
+// copy after its storage check passed and before it inserts anything, with
+// the storage lock held: the window a concurrent upload must wait out
+// (TASK-3779). Nil in production.
+var testHookCopyAfterStorageCheck func()
+
 // enforceStorageLimitTx is the authoritative storage check (TASK-3619): it
 // refuses an insert of adding bytes that would take the workspace past its
 // owner's storage_bytes limit. Usage is what WorkspaceStorageInfo sums: the
