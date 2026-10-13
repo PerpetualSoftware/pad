@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -966,6 +967,32 @@ func extractPragmas(sqlText string) (pragmas []string, rest string) {
 	return pragmas, out.String()
 }
 
+// foreignKeyViolations runs PRAGMA foreign_key_check on tx and returns each
+// violation as "table|rowid|parent|fkid". Rowid is empty for a WITHOUT ROWID
+// table.
+func foreignKeyViolations(ctx context.Context, tx *sql.Tx) (map[string]bool, error) {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var table, parent string
+		var rowid sql.NullInt64
+		var fkid int64
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			return nil, err
+		}
+		id := ""
+		if rowid.Valid {
+			id = strconv.FormatInt(rowid.Int64, 10)
+		}
+		out[table+"|"+id+"|"+parent+"|"+strconv.FormatInt(fkid, 10)] = true
+	}
+	return out, rows.Err()
+}
+
 // applySQLiteMigration applies a single migration file atomically.
 //
 // Behavior (IDEA-1485):
@@ -1036,11 +1063,13 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 		}
 	}
 
+	fkOff := false
 	for _, p := range beforeTx {
 		if _, err := conn.ExecContext(ctx, p); err != nil {
 			return fmt.Errorf("apply migration %s: pre-tx pragma %q: %w", name, p, err)
 		}
 		if isForeignKeysOff(p) {
+			fkOff = true
 			// FK-restore MUST be a defer, not a success-path block:
 			// once foreign_keys=OFF lands on the pinned conn, ANY later
 			// failure (BeginTx, execMulti, INSERT, Commit, post-tx
@@ -1078,8 +1107,30 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 		}
 	}()
 
+	// With foreign keys off the body can leave a dangling reference that
+	// nothing reports (BUG-3663). The violations it leaves are checked against
+	// the ones the database already had: a legacy database may carry some
+	// from before FKs were enforced on every connection (see New), and
+	// refusing those here would turn this check into an upgrade blocker.
+	var fkBefore map[string]bool
+	if fkOff {
+		if fkBefore, err = foreignKeyViolations(ctx, tx); err != nil {
+			return fmt.Errorf("apply migration %s: foreign key check before: %w", name, err)
+		}
+	}
 	if err := execMulti(tx, body); err != nil {
 		return fmt.Errorf("apply migration %s: %w", name, err)
+	}
+	if fkOff {
+		after, err := foreignKeyViolations(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("apply migration %s: foreign key check after: %w", name, err)
+		}
+		for v := range after {
+			if !fkBefore[v] {
+				return fmt.Errorf("apply migration %s: leaves a foreign key violation it did not find (table|rowid|parent|fkid %s)", name, v)
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", name, now()); err != nil {
 		return fmt.Errorf("record migration %s: %w", name, err)
