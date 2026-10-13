@@ -1031,18 +1031,27 @@ func foreignKeyViolationsOf(ctx context.Context, tx *sql.Tx, table string) (map[
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := map[string]int{}
 	for rows.Next() {
 		var child, parent string
 		var rowid sql.NullInt64
 		var fkid int64
 		if err := rows.Scan(&child, &rowid, &parent, &fkid); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out[child+"|"+parent+"|"+strconv.FormatInt(fkid, 10)]++
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// A close error is a failed check too (codex on #2120), never counts
+	// reported as complete.
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // applySQLiteMigration applies a single migration file atomically.
