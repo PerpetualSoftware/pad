@@ -420,7 +420,7 @@ func (s *Store) DeleteRefreshToken(signature string) error {
 // the bug Codex review #370 round 2 caught.
 //
 // signatureToRotate is the presented refresh token. It is spent
-// conditionally, in the same transaction as the family flips, and a
+// conditionally before the family flips, and a
 // rotation that finds it already inactive fails with
 // ErrOAuthRefreshNotActive (BUG-3678): two concurrent refreshes both
 // validate the token before either rotates it, and only one may go on
@@ -430,12 +430,11 @@ func (s *Store) RotateRefreshToken(requestID, signatureToRotate string) error {
 	if s.beforeRotateRefresh != nil {
 		s.beforeRotateRefresh(requestID)
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("rotate refresh: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	res, err := tx.Exec(s.q(`
+	// Its own statement, not a transaction with the flips below: holding
+	// this row while flipping the access family would deadlock against the
+	// account claim and disable, which flip access before refresh under the
+	// users row (codex round 1 on BUG-3678).
+	res, err := s.db.Exec(s.q(`
 		UPDATE oauth_refresh_tokens SET active = ?
 		WHERE signature = ? AND request_id = ? AND active = ?
 	`), false, signatureToRotate, requestID, true)
@@ -445,11 +444,11 @@ func (s *Store) RotateRefreshToken(requestID, signatureToRotate string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrOAuthRefreshNotActive
 	}
-	if err := s.flipOAuthFamiliesTx(tx, requestID); err != nil {
-		return fmt.Errorf("rotate refresh: %w", err)
+	if err := s.RevokeRefreshTokenFamily(requestID); err != nil {
+		return fmt.Errorf("rotate refresh: revoke refresh family: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("rotate refresh: commit: %w", err)
+	if err := s.RevokeAccessTokenFamily(requestID); err != nil {
+		return fmt.Errorf("rotate refresh: revoke access family: %w", err)
 	}
 	return nil
 }
@@ -468,11 +467,12 @@ func (s *Store) flipOAuthFamiliesTx(tx *sql.Tx, requestID string) error {
 
 // RevokeOAuthGrant ends a grant for good (BUG-3678): it records the
 // request_id in oauth_revoked_grants and flips every token of the grant
-// inactive, in one transaction that first takes the subject's users row.
-// Issuance holds that row FOR SHARE while it checks for the record and
-// inserts (insertOAuthRequestRow), so a refresh racing this either
-// committed its pair before the flips here, which then see it, or finds
-// the record and mints nothing. Idempotent.
+// inactive, in one transaction that first takes the row issuance holds
+// while it checks for the record and inserts: the subject's users row
+// (insertOAuthRequestRow, FOR SHARE), or for an installed app's grant the
+// install row (installIssuanceBarrierTx, FOR UPDATE). So a refresh racing
+// this either committed its pair before the flips here, which then see
+// it, or finds the record and mints nothing. Idempotent.
 //
 // The connected-apps revoke and fosite's RevokeRefreshToken (RFC 7009 and
 // refresh replay) come here. A rotation does not: it ends tokens, not the
@@ -483,23 +483,42 @@ func (s *Store) RevokeOAuthGrant(requestID string) error {
 		return fmt.Errorf("revoke grant: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var subject sql.NullString
+	var clientID, subject sql.NullString
 	err = tx.QueryRow(s.q(`
-		SELECT subject FROM oauth_refresh_tokens WHERE request_id = ? AND subject <> ''
+		SELECT client_id, subject FROM oauth_refresh_tokens WHERE request_id = ?
 		UNION ALL
-		SELECT subject FROM oauth_access_tokens WHERE request_id = ? AND subject <> ''
+		SELECT client_id, subject FROM oauth_access_tokens WHERE request_id = ?
 		LIMIT 1
-	`), requestID, requestID).Scan(&subject)
+	`), requestID, requestID).Scan(&clientID, &subject)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("revoke grant: read subject: %w", err)
+		return fmt.Errorf("revoke grant: read grant: %w", err)
 	}
-	if subject.Valid && s.dialect.Driver() == DriverPostgres {
-		// The strong lock first: issuance holds FOR SHARE on this row, and
-		// a share lock upgraded later in this transaction could deadlock.
-		var one int
-		if err := tx.QueryRow(s.q(`SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE`), subject.String).Scan(&one); err != nil &&
+	var installID sql.NullString
+	if clientID.Valid {
+		if err := tx.QueryRow(s.q(`SELECT app_install_id FROM oauth_clients WHERE id = ?`), clientID.String).Scan(&installID); err != nil &&
 			!errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("revoke grant: lock subject: %w", err)
+			return fmt.Errorf("revoke grant: read client: %w", err)
+		}
+	}
+	if s.dialect.Driver() == DriverPostgres {
+		var one int
+		switch {
+		case installID.Valid && installID.String != "":
+			// An installed app's tokens are minted under the install row
+			// (installIssuanceBarrierTx), and a service grant's subject is
+			// the bot, which the install lifecycle locks after the install.
+			if err := tx.QueryRow(s.q(`SELECT 1 FROM app_installs WHERE id = ? FOR UPDATE`), installID.String).Scan(&one); err != nil &&
+				!errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("revoke grant: lock install: %w", err)
+			}
+		case subject.Valid && subject.String != "":
+			// The strong lock first: issuance holds FOR SHARE on this row,
+			// and a share lock upgraded later in this transaction could
+			// deadlock.
+			if err := tx.QueryRow(s.q(`SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE`), subject.String).Scan(&one); err != nil &&
+				!errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("revoke grant: lock subject: %w", err)
+			}
 		}
 	}
 	if _, err := tx.Exec(s.q(`
@@ -723,20 +742,31 @@ func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest) err
 	// No token on a revoked grant (BUG-3678), read under the users row
 	// lock above, which RevokeOAuthGrant and the account claim take before
 	// they record a revoked grant.
-	if table == "oauth_access_tokens" || table == "oauth_refresh_tokens" {
-		var one int
-		err := tx.QueryRow(s.q(`SELECT 1 FROM oauth_revoked_grants WHERE request_id = ?`), req.RequestID).Scan(&one)
-		if err == nil {
-			return ErrOAuthGrantRevoked
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("oauth: read revoked grants: %w", err)
-		}
+	if err := s.refuseRevokedGrantTx(tx, table, req.RequestID); err != nil {
+		return err
 	}
 	if err := s.insertOAuthRequestRowTx(tx, table, req, requestedStr); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// refuseRevokedGrantTx returns ErrOAuthGrantRevoked when an access or
+// refresh token would be minted on a grant recorded as revoked (BUG-3678).
+// The caller holds the row the revoking door locks first.
+func (s *Store) refuseRevokedGrantTx(tx *sql.Tx, table, requestID string) error {
+	if table != "oauth_access_tokens" && table != "oauth_refresh_tokens" {
+		return nil
+	}
+	var one int
+	err := tx.QueryRow(s.q(`SELECT 1 FROM oauth_revoked_grants WHERE request_id = ?`), requestID).Scan(&one)
+	if err == nil {
+		return ErrOAuthGrantRevoked
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("oauth: read revoked grants: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) insertOAuthRequestRowTx(tx *sql.Tx, table string, req models.OAuthRequest, requestedStr string) error {

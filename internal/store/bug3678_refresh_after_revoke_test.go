@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -210,5 +211,20 @@ func TestBUG3678_RevokeRacingRefreshLeavesNothingActive_Postgres(t *testing.T) {
 		if n := g.activeTokens(t); n != 0 {
 			t.Fatalf("round %d: %d active tokens after a revoke, want 0", i, n)
 		}
+	}
+}
+
+// An installed app's grant is minted through the install barrier, not the
+// ordinary insert: a revoke through fosite (RFC 7009 or a refresh replay)
+// must hold there too (codex round 1 on BUG-3678).
+func TestBUG3678_RevokedInstallGrantMintsNothing(t *testing.T) {
+	f := task3399Fixture(t, "inst-3678", "write")
+	task3399Delegated(t, f, "req-3678-app")
+	if err := f.s.RevokeOAuthGrant("req-3678-app"); err != nil {
+		t.Fatal(err)
+	}
+	r := task3399Req(f.clientID, f.person.ID, "req-3678-app", "read", 1)
+	if err := f.s.CreateRefreshToken(r); !errors.Is(err, ErrOAuthGrantRevoked) {
+		t.Fatalf("a revoked installed-app grant minted a refresh token: %v, want ErrOAuthGrantRevoked", err)
 	}
 }
