@@ -510,8 +510,10 @@ func writeInterchangeGolden(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Old golden aside, new one in, then the old one deleted: at no point is
-	// there no golden on disk.
+	// Old golden aside, new one in, then the old one deleted, so an interrupted
+	// run leaves a complete golden on disk: at the path, or as .old for the
+	// instant between the two renames (a directory cannot be swapped in one
+	// step). The golden is tracked in git either way.
 	old := interchangeGoldenDir + ".old"
 	if err := os.RemoveAll(old); err != nil {
 		t.Fatal(err)
