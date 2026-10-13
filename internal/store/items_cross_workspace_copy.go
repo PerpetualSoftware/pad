@@ -309,6 +309,13 @@ type CrossWorkspaceCopyRequest struct {
 	// self-hosted callers do not.
 	EnforceItemLimit bool
 
+	// EnforceStorageLimit charges the bytes of every attachment row the copy
+	// clones against the DESTINATION owner's storage_bytes limit (BUG-3653),
+	// inside the transaction, and refuses with *PlanLimitError past it. A
+	// caller flag for the same reason as EnforceItemLimit: cloud callers set
+	// it, self-hosted callers do not.
+	EnforceStorageLimit bool
+
 	// failAfterStage is a TEST-ONLY seam. It is unexported, so nothing outside
 	// internal/store can set it, and it is the only way to PROVE the rollback
 	// obligation the acceptance criteria state — "a failure at each stage
@@ -487,7 +494,13 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 		return nil, err
 	}
 
+	// An ownership change between the storage check's owner read and its
+	// check is retried in a fresh transaction, as CreateAttachmentForLiveItem
+	// does; the next attempt locks the new owner.
 	result, err := s.copyItemAcrossWorkspacesTx(req, sourceWorkspaceID)
+	for attempt := 1; errors.Is(err, errStorageOwnerMoved) && attempt < 3; attempt++ {
+		result, err = s.copyItemAcrossWorkspacesTx(req, sourceWorkspaceID)
+	}
 	if err != nil {
 		// DR-9's observability obligation: the lock ordering is the one failure
 		// mode nothing else surfaces, so an UNEXPECTED rollback — a deadlock
@@ -559,6 +572,17 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		return nil, fmt.Errorf("copy item across workspaces: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	// --- Step 0: the destination's storage lock, before every other lock,
+	// as acquirePlanLimitLock's ordering rule requires (BUG-3653). The bytes
+	// are only known once the attachments are planned, so the check itself
+	// runs there. ---
+	var storageLock storageLimitLock
+	if req.EnforceStorageLimit {
+		if storageLock, err = s.lockStorageLimitTx(tx, req.TargetWorkspaceID); err != nil {
+			return nil, err
+		}
+	}
 
 	// --- Step 1: both workspace advisory locks, ordered by lock KEY. ---
 	if _, err := s.acquireWorkspaceLocksOrdered(tx, sourceWorkspaceID, req.TargetWorkspaceID); err != nil {
@@ -755,6 +779,17 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	}
 	if plan.CrossBackend {
 		return nil, ErrCopyCrossBackendAttachments
+	}
+	// Every cloned row counts, variants included: usage sums every live row,
+	// and in the destination nothing admitted these bytes (BUG-3653).
+	if req.EnforceStorageLimit {
+		var adding int64
+		for i := range plan.Rows {
+			adding += plan.Rows[i].Attachment.SizeBytes
+		}
+		if err := s.checkStorageLimitTx(tx, storageLock, adding); err != nil {
+			return nil, err
+		}
 	}
 	if len(plan.UnresolvableRefs) > 0 {
 		// DR-11a observability: a spike means either a data-integrity problem
@@ -1468,10 +1503,12 @@ func isExpectedCopyRejection(err error) bool {
 	var validation *FieldValidationError
 	var undeclared *UndeclaredOverrideError
 	var limit *ItemLimitError
+	var storage *PlanLimitError
 	var precheck *CopyPreCheckError
 	return errors.As(err, &validation) ||
 		errors.As(err, &undeclared) ||
 		errors.As(err, &limit) ||
+		errors.As(err, &storage) ||
 		errors.As(err, &precheck) ||
 		errors.Is(err, sql.ErrNoRows) ||
 		errors.Is(err, ErrCopySourceCollectionMissing) ||

@@ -201,10 +201,10 @@ func (s *Server) effectiveBlobMaxBytes() int64 {
 // BUG-2709, on the mid-stream KEEP path too, so a kept partial workspace is
 // reachable by the person who imported it rather than ownerless.
 //
-// Quota: per-user storage quotas are NOT enforced on import. The
-// upload handler is also warn-only in Phase 1 (see handlers_attachments.go
-// maybeWarnStorageQuota). When quota enforcement lands the import
-// path needs the same gate. Tracked as a follow-up under PLAN-890.
+// Quota: in cloud mode each rehydrated attachment is charged against the
+// importer's storage_bytes limit as it is inserted, as an upload is
+// (BUG-3653). The first refusal stops the import with the plan-limit 403,
+// and the partial workspace is rolled back like any other reject.
 //
 // Bundle layout (matches handlers_export_bundle.go):
 //
@@ -1015,6 +1015,19 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			}
 			newAttID, err := s.rehydrateAttachment(ctx, ws.ID, entry, blob,
 				itemIDMap, ownerID)
+			// Past the storage cap is a refusal of the import, not a file to
+			// skip (BUG-3653): an import that silently left files behind
+			// would read as complete. An importStatusError takes the reject
+			// arm, which rolls back the partial workspace.
+			var ple *store.PlanLimitError
+			if errors.As(err, &ple) {
+				return ws, &importStatusError{
+					status:  http.StatusForbidden,
+					code:    "plan_limit_exceeded",
+					message: planLimitMessage(req, &ple.Result),
+					details: planLimitDetails(req, &ple.Result),
+				}
+			}
 			if err != nil {
 				slog.Warn("import: rehydrate failed",
 					"attachment_id", entry.ID, "error", err)
@@ -1196,7 +1209,8 @@ func (s *Server) rehydrateAttachment(
 
 		FilenameSource: string(filenameSource),
 	}
-	if err := s.store.CreateAttachment(att); err != nil {
+	// Charged against the importer's storage cap in cloud mode (BUG-3653).
+	if err := s.store.CreateAttachment(att, s.planLimitMintOpts(ownerID)...); err != nil {
 		return "", fmt.Errorf("create attachment row: %w", err)
 	}
 

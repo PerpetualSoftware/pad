@@ -1,0 +1,183 @@
+package store
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// BUG-3653: a cross-workspace copy charges the attachment rows it clones
+// against the destination owner's storage_bytes limit.
+
+// copyStorageFixture is a source workspace whose item references one
+// original of origBytes with one thumbnail variant of variantBytes, and a
+// sibling destination workspace with a collection, both owned by one user.
+type copyStorageFixture struct {
+	*storageFixture
+	dst    *storageFixture
+	dstCol string
+	srcRef string
+}
+
+func newCopyStorageFixture(t *testing.T, plan string, origBytes, variantBytes int64) *copyStorageFixture {
+	t.Helper()
+	f := newStorageFixture(t, plan)
+	orig := &models.Attachment{ID: newID(), WorkspaceID: f.wsID, ItemID: &f.itemID, StorageKey: "fs:" + newID(), ContentHash: newID(),
+		MimeType: "image/png", SizeBytes: origBytes, Filename: "pic.png"}
+	if err := f.s.CreateAttachment(orig); err != nil {
+		t.Fatal(err)
+	}
+	variant := models.AttachmentVariantThumbSm
+	thumb := &models.Attachment{ID: newID(), WorkspaceID: f.wsID, ItemID: &f.itemID, StorageKey: "fs:" + newID(), ContentHash: newID(),
+		MimeType: "image/png", SizeBytes: variantBytes, Filename: "pic.png", ParentID: &orig.ID, Variant: &variant}
+	if err := f.s.CreateAttachment(thumb); err != nil {
+		t.Fatal(err)
+	}
+	content := "![pic](pad-attachment:" + orig.ID + ")"
+	if _, err := f.s.UpdateItem(f.itemID, models.ItemUpdate{Content: &content}); err != nil {
+		t.Fatal(err)
+	}
+	dst := f.sibling(t)
+	col, err := f.s.CreateCollection(dst.wsID, models.CollectionCreate{Name: "Tasks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &copyStorageFixture{storageFixture: f, dst: dst, dstCol: col.ID, srcRef: f.itemID}
+}
+
+func (f *copyStorageFixture) copy(enforce bool) error {
+	_, err := f.s.CopyItemAcrossWorkspaces(CrossWorkspaceCopyRequest{
+		SourceItemID:        f.srcRef,
+		TargetWorkspaceID:   f.dst.wsID,
+		TargetCollectionID:  f.dstCol,
+		Actor:               f.owner.ID,
+		EnforceStorageLimit: enforce,
+	})
+	return err
+}
+
+func (f *copyStorageFixture) dstRows(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := f.s.db.QueryRow(f.s.q(`SELECT COUNT(*) FROM attachments WHERE workspace_id = ? AND deleted_at IS NULL`), f.dst.wsID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// Free is per workspace, so the destination starts empty. With a limit of
+// 120 the original alone (100) would fit; with its 50-byte thumbnail the copy
+// adds 150 and is refused, which proves the variant is charged. At 150 it
+// lands exactly on the limit. Unenforced (self-hosted) it always lands.
+func TestBUG3653_CopyChargesEveryClonedRowIncludingVariants(t *testing.T) {
+	f := newCopyStorageFixture(t, "free", 100, 50)
+	if err := f.s.SetUserPlanOverrides(f.owner.ID, `{"storage_bytes":120}`); err != nil {
+		t.Fatal(err)
+	}
+	ple := planLimitErr(t, f.copy(true))
+	if ple.Result.Requested != 150 || ple.Result.Current != 0 || ple.Result.Limit != 120 || ple.Result.Feature != "storage_bytes" {
+		t.Fatalf("refusal = %+v, want requested 150, current 0, limit 120", ple.Result)
+	}
+	if n := f.dstRows(t); n != 0 {
+		t.Fatalf("refused copy left %d rows in the destination", n)
+	}
+	if err := f.copy(false); err != nil {
+		t.Fatalf("unenforced copy: %v", err)
+	}
+	if n := f.dstRows(t); n != 2 {
+		t.Fatalf("unenforced copy cloned %d rows, want 2", n)
+	}
+
+	g := newCopyStorageFixture(t, "free", 100, 50)
+	if err := g.s.SetUserPlanOverrides(g.owner.ID, `{"storage_bytes":150}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.copy(true); err != nil {
+		t.Fatalf("copy landing exactly on the limit: %v", err)
+	}
+}
+
+// Pro pools the account: a copy into one workspace and an upload into the
+// other, with room for only one, never both pass. Repeated in rounds because
+// on Postgres the race is real and only the storage lock serialises them.
+func TestBUG3653_ConcurrentCopyAndUploadShareThePool(t *testing.T) {
+	f := newCopyStorageFixture(t, "pro", 600, 0)
+	for round := 0; round < 25; round++ {
+		used, err := f.s.accountStorageUsageQ(f.s.db, f.owner.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Room for exactly one of the two 600-byte writes.
+		if err := f.s.SetUserPlanOverrides(f.owner.ID, fmt.Sprintf(`{"storage_bytes":%d}`, used+1000)); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make([]error, 2)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[0] = f.copy(true)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[1] = f.add(600, false, WithPlanLimit())
+		}()
+		close(start)
+		wg.Wait()
+		refused := 0
+		for _, err := range errs {
+			var ple *PlanLimitError
+			if errors.As(err, &ple) {
+				refused++
+			} else if err != nil {
+				t.Fatalf("round %d: unexpected error: %v", round, err)
+			}
+		}
+		if refused != 1 {
+			t.Fatalf("round %d: refused = %d of 2, want exactly 1 (errs %v)", round, refused, errs)
+		}
+	}
+}
+
+// An ownership change between the destination's owner read and the check is
+// detected, and the copy retried in a fresh transaction, as an upload is.
+func TestBUG3653_CopyRetriesAnOwnershipChangeMidCheck(t *testing.T) {
+	f := newCopyStorageFixture(t, "pro", 10, 0)
+	heir, err := f.s.CreateUser(models.UserCreate{Email: "heir-" + newID()[:8] + "@example.com", Name: "Heir", Password: "correct-horse-battery-staple", Role: "member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls, moveOn int
+	testHookAfterStorageOwnerRead = func(tx *sql.Tx, ws string) {
+		calls++
+		if ws == f.dst.wsID && calls <= moveOn {
+			if _, err := tx.Exec(f.s.q(`UPDATE workspaces SET owner_id = ? WHERE id = ?`), heir.ID, f.dst.wsID); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(func() { testHookAfterStorageOwnerRead = nil })
+
+	calls, moveOn = 0, 1
+	if err := f.copy(true); err != nil {
+		t.Fatalf("a move on the first attempt only: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("attempts = %d, want 2 (one retry)", calls)
+	}
+
+	calls, moveOn = 0, 99
+	if err := f.copy(true); !errors.Is(err, errStorageOwnerMoved) {
+		t.Fatalf("a move on every attempt: err = %v, want errStorageOwnerMoved", err)
+	}
+	if calls != 3 {
+		t.Fatalf("attempts = %d, want 3", calls)
+	}
+}

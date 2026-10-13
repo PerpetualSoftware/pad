@@ -120,8 +120,39 @@ func scanAttachment(row interface {
 // exactly that shape deliberately — StorageKey blank until the caller
 // transfers the bytes and writes back Put's key — so this guard is what
 // turns "the caller must Put first" from a comment into an invariant.
-func (s *Store) CreateAttachment(a *models.Attachment) error {
-	return s.createAttachmentOn(s.db, a)
+//
+// WithPlanLimit makes the insert enforce the owner's storage_bytes limit in
+// its own transaction, as CreateAttachmentForLiveItem does, for a
+// user-visible original only (ParentID nil). The bundle import passes it in
+// cloud mode (BUG-3653). The refusal is a *PlanLimitError.
+func (s *Store) CreateAttachment(a *models.Attachment, opts ...MintOption) error {
+	if !resolveMintOptions(opts).planLimit || a.ParentID != nil {
+		return s.createAttachmentOn(s.db, a)
+	}
+	for attempt := 1; ; attempt++ {
+		err := s.createLimitedAttachmentTx(a)
+		if errors.Is(err, errStorageOwnerMoved) && attempt < 3 {
+			continue
+		}
+		return err
+	}
+}
+
+// createLimitedAttachmentTx is one transaction of a limited CreateAttachment.
+func (s *Store) createLimitedAttachmentTx(a *models.Attachment) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin create attachment tx: %w", err)
+	}
+	defer tx.Rollback() // no-op after Commit
+	// The storage lock comes first: acquirePlanLimitLock's ordering rule.
+	if err := s.enforceStorageLimitTx(tx, a.WorkspaceID, a.SizeBytes); err != nil {
+		return err
+	}
+	if err := s.createAttachmentOn(tx, a); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CreateAttachmentTx inserts an attachment row inside an existing transaction.
@@ -2087,8 +2118,9 @@ func (s *Store) workspaceStorageInfoQ(q Queryer, workspaceID string) (*Workspace
 }
 
 // errStorageOwnerMoved: the workspace's owner changed between the owner read
-// that chose the storage lock and the check under it. CreateAttachmentForLiveItem
-// retries in a fresh transaction.
+// that chose the storage lock and the check under it. Every caller
+// (CreateAttachmentForLiveItem, a limited CreateAttachment, the cross-workspace
+// copy) retries in a fresh transaction.
 var errStorageOwnerMoved = errors.New("storage limit: workspace owner changed during the check")
 
 // testHookAfterStorageOwnerRead, when set by a test, runs between the owner
@@ -2117,21 +2149,50 @@ var testHookAfterStorageOwnerRead func(tx *sql.Tx, workspaceID string)
 // An upload that lands exactly on the limit is allowed: the limit is how many
 // bytes the workspace may hold.
 func (s *Store) enforceStorageLimitTx(tx *sql.Tx, workspaceID string, adding int64) error {
-	lockKey := workspaceID
-	var ownerID sql.NullString
-	switch err := tx.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID); {
+	lock, err := s.lockStorageLimitTx(tx, workspaceID)
+	if err != nil {
+		return err
+	}
+	return s.checkStorageLimitTx(tx, lock, adding)
+}
+
+// storageLimitLock is what lockStorageLimitTx locked, for the
+// checkStorageLimitTx that follows it in the same transaction.
+type storageLimitLock struct {
+	workspaceID string
+	ownerID     sql.NullString
+	key         string
+}
+
+// lockStorageLimitTx is the first half of enforceStorageLimitTx: it reads the
+// workspace's owner and takes the storage_bytes plan-limit lock on it. A
+// caller that only learns how many bytes it adds after taking other locks
+// (the cross-workspace copy, BUG-3653) takes this first, as the lock's
+// ordering rule requires, and checks with checkStorageLimitTx once it knows.
+func (s *Store) lockStorageLimitTx(tx *sql.Tx, workspaceID string) (storageLimitLock, error) {
+	lock := storageLimitLock{workspaceID: workspaceID, key: workspaceID}
+	switch err := tx.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&lock.ownerID); {
 	case err == sql.ErrNoRows:
 	case err != nil:
-		return fmt.Errorf("storage limit: get owner: %w", err)
-	case ownerID.Valid && ownerID.String != "":
-		lockKey = ownerID.String
+		return lock, fmt.Errorf("storage limit: get owner: %w", err)
+	case lock.ownerID.Valid && lock.ownerID.String != "":
+		lock.key = lock.ownerID.String
 	}
 	if testHookAfterStorageOwnerRead != nil {
 		testHookAfterStorageOwnerRead(tx, workspaceID)
 	}
-	if err := s.acquirePlanLimitLock(tx, lockKey, "storage_bytes"); err != nil {
-		return err
+	if err := s.acquirePlanLimitLock(tx, lock.key, "storage_bytes"); err != nil {
+		return lock, err
 	}
+	return lock, nil
+}
+
+// checkStorageLimitTx is the second half of enforceStorageLimitTx: under the
+// lock, it refuses adding bytes that would take the workspace past its
+// owner's limit. It returns errStorageOwnerMoved when the owner changed
+// since the lock was chosen; the caller retries in a fresh transaction.
+func (s *Store) checkStorageLimitTx(tx *sql.Tx, lock storageLimitLock, adding int64) error {
+	workspaceID, ownerID, lockKey := lock.workspaceID, lock.ownerID, lock.key
 	info, owner, err := s.workspaceStorageInfoQ(tx, workspaceID)
 	if err != nil {
 		return err
