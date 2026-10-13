@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { page } from '$app/state';
 import SettingsPage from './+page.svelte';
+import { api } from '$lib/api/client';
 
 /**
  * BUG-3698: the member access panel shares one form (mode + collection ids)
@@ -24,6 +25,9 @@ const COLLECTIONS = [
 	{ id: 'c-tasks', slug: 'tasks', name: 'Tasks', icon: 'T', is_system: false, is_default: true, sort_order: 0 },
 	{ id: 'c-docs', slug: 'docs', name: 'Docs', icon: 'D', is_system: false, is_default: true, sort_order: 1 },
 ];
+
+// Reactive, so the workspace-switch leg re-runs the page's load (BUG-3237).
+vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
 
 vi.mock('$lib/stores/toast.svelte', () => ({
 	toastStore: { show: () => 'toast-id', dismiss: () => {}, get toasts() { return []; } },
@@ -115,6 +119,7 @@ describe('BUG-3698: the access panel only shows and saves the member that is ope
 
 	afterEach(() => {
 		cleanup();
+		vi.mocked(api.members.list).mockClear();
 		window.location.hash = '';
 	});
 
@@ -207,5 +212,23 @@ describe('BUG-3698: the access panel only shows and saves the member that is ope
 		reads[0].reject(new Error('boom'));
 		await settle();
 		expect(modeSelect()!.value).toBe('specific');
+	});
+
+	it('switching workspace closes the panel, so a read from the old workspace cannot open a form in the new one', async () => {
+		await openMembers();
+		manageAccess('Bob');
+		await waitFor(() => expect(reads.length).toBe(1));
+
+		page.params = { username: 'dave', workspace: 'ws2' };
+		await waitFor(() => expect(meCalls.length).toBe(2));
+		meCalls[1]!(OWNER);
+		// ws2's own members load, not the two rows already on screen for ws.
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some((c) => c[0] === 'ws2')).toBe(true));
+		await waitFor(() => expect(screen.getAllByRole('button', { name: /Manage access/ }).length).toBe(2));
+
+		reads[0].resolve(BOB); // ws's answer for Bob, landing in ws2
+		await settle();
+		expect(modeSelect()).toBeNull();
+		expect(screen.queryByRole('button', { name: /^Save$/ })).toBeNull();
 	});
 });

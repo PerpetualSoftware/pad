@@ -347,6 +347,10 @@
 			members = [];
 			invitations = [];
 			workspaceApps = [];
+			// An access panel belongs to the workspace it was opened in
+			// (BUG-3698, codex r1): closing it also retires any read or save
+			// still in flight for it.
+			setAccessPanel(null);
 			if (wsSlug) load(wsSlug);
 		});
 	});
