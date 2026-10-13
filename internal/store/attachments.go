@@ -1759,6 +1759,7 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		collectionID string
 		content      string
 		fields       string
+		oldContent   string
 	}
 	var updates []rowUpdate
 	for rows.Next() {
@@ -1770,7 +1771,7 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		newContent := remapAttachmentRefs(content, oldToNew)
 		newFields := remapAttachmentRefs(fields, oldToNew)
 		if newContent != content || newFields != fields {
-			updates = append(updates, rowUpdate{id: id, collectionID: collectionID, content: newContent, fields: newFields})
+			updates = append(updates, rowUpdate{id: id, collectionID: collectionID, content: newContent, fields: newFields, oldContent: content})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1872,6 +1873,13 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ?, seq = `+nextWorkspaceSeqSubquery+` WHERE id = ?`),
 			u.content, u.fields, workspaceID, u.id); err != nil {
 			return fmt.Errorf("update item %s: %w", u.id, err)
+		}
+		// The body changed with no version, so the newest version's reverse
+		// patch is rebased onto it (BUG-3745).
+		if u.content != u.oldContent {
+			if err := s.rebaseNewestVersionPatch(tx, u.id, u.oldContent, u.content); err != nil {
+				return fmt.Errorf("rebase newest version of %s: %w", u.id, err)
+			}
 		}
 		// This rewrite maps `pad-attachment:` ids and cannot change a relation
 		// VALUE — but it does write the blob, and the hook is a pure function

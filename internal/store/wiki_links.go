@@ -846,6 +846,11 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 		`), newContent, ts, ts, work.workspaceID, work.id); err != nil {
 			return fmt.Errorf("cascade rename: update source %s: %w", work.id, err)
 		}
+		// The body changed with no version, so the newest version's reverse
+		// patch is rebased onto it (BUG-3745).
+		if err := s.rebaseNewestVersionPatch(tx, work.id, content, newContent); err != nil {
+			return fmt.Errorf("rebase newest version of %s: %w", work.id, err)
+		}
 		if err := s.replaceWikiLinks(tx, work.id, work.workspaceID, newContent); err != nil {
 			return fmt.Errorf("cascade rename: reparse %s: %w", work.id, err)
 		}

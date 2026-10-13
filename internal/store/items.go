@@ -3036,6 +3036,16 @@ func (s *Store) updateItemWithParentLinkOnce(
 			}
 		} else {
 			bodyEditedWithoutVersion = true
+			// The row's body moves on without a version of its own, so a
+			// reverse patch in the newest version, made against the body
+			// being replaced, would be resolved against one it was never made
+			// from (BUG-3745). Only Content moves the row; ExternalContent
+			// leaves it, and the patch with it, as they are.
+			if input.Content != nil {
+				if err := s.rebaseNewestVersionPatch(tx, id, existing.Content, *input.Content); err != nil {
+					return nil, fmt.Errorf("rebase newest version: %w", err)
+				}
+			}
 		}
 	}
 
@@ -5950,6 +5960,55 @@ func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body st
 	// revert B->A inside ONE second, then a flush: that flush's version is
 	// skipped and its change reads under A->B's row.
 	return !parseTime(createdAt).Before(parseTime(flushedAt.String)), nil
+}
+
+// rebaseNewestVersionPatch keeps the newest version exact when an
+// unversioned write replaces the row's body (BUG-3745). Versions are reverse
+// patches resolved backwards from the row, and diff.ApplyPatch does not check
+// that a patch's base matches: a patch made against oldBody, resolved against
+// newBody, can apply and carry newBody's later text into the old version. So
+// the version's own body is materialized from oldBody, the base its patch was
+// made against, and stored again against newBody: as a patch when that is
+// smaller, otherwise in full. Either way its line counts are recomputed. A
+// patch that does not apply to oldBody was already broken before this write
+// (data written before this fix can be), and is left as it is: refusing the
+// write instead would block every edit to that item over history that is
+// already damaged.
+func (s *Store) rebaseNewestVersionPatch(tx *sql.Tx, itemID, oldBody, newBody string) error {
+	var vid, content string
+	var isDiff bool
+	err := tx.QueryRow(s.q(`
+		SELECT id, content, is_diff FROM item_versions
+		WHERE item_id = ?
+		ORDER BY created_at DESC, version_seq DESC
+		LIMIT 1
+	`), itemID).Scan(&vid, &content, &isDiff)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// The version's recorded change is its body to the one that replaced it
+	// (PLAN-2348 U2), which is now newBody: the unversioned edits joined it.
+	// A full-body version needs only its counts brought up to date.
+	if !isDiff {
+		added, removed := diff.LineCounts(content, newBody)
+		_, err = tx.Exec(s.q(`UPDATE item_versions SET lines_added = ?, lines_removed = ? WHERE id = ?`), added, removed, vid)
+		return err
+	}
+	body, err := diff.ApplyPatch(oldBody, content)
+	if err != nil {
+		return nil
+	}
+	stored, storedDiff := body, false
+	if patch := diff.CreateReversePatch(body, newBody); diff.IsDiffSmaller(patch, body) {
+		stored, storedDiff = patch, true
+	}
+	added, removed := diff.LineCounts(body, newBody)
+	_, err = tx.Exec(s.q(`UPDATE item_versions SET content = ?, is_diff = ?, lines_added = ?, lines_removed = ? WHERE id = ?`),
+		stored, s.dialect.BoolToInt(storedDiff), added, removed, vid)
+	return err
 }
 
 func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source, viaApp string) (bool, error) {
