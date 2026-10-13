@@ -220,11 +220,30 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 		query += " AND credential_epoch = ?"
 		args = append(args, *input.ExpectedEpoch)
 	}
-	result, err := s.db.Exec(s.q(query), args...)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("update user: begin: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 	n, _ := result.RowsAffected()
+	if n > 0 && input.Password != nil {
+		// A changed password kills every outstanding reset link, as issuing
+		// a new link does (BUG-3679). Same transaction as the password write:
+		// a ConsumePasswordReset racing it either finds no live token, or
+		// spent one under the old epoch and its fenced write is refused.
+		if _, err := tx.Exec(s.q(`
+			UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL
+		`), now(), id); err != nil {
+			return nil, fmt.Errorf("update user: invalidate reset tokens: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("update user: commit: %w", err)
+	}
 	if n == 0 {
 		if fenced {
 			if u, err := s.GetUser(id); err == nil && u != nil {
