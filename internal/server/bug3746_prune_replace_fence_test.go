@@ -15,7 +15,7 @@ import (
 // force_refresh) is unchanged and already tested for restores; this pins that
 // a replacement now moves the boundary, durably and in memory.
 func TestBUG3746_ContentReplacementMovesTheSeedBoundary(t *testing.T) {
-	srv := testServer(t)
+	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
 		"title":   "BUG-3746",
@@ -28,9 +28,6 @@ func TestBUG3746_ContentReplacementMovesTheSeedBoundary(t *testing.T) {
 	var created models.Item
 	parseJSON(t, rr, &created)
 	seqA := created.Seq
-	if _, err := srv.store.AppendYjsUpdate(created.ID, []byte{0x00, 0x01}, "1"); err != nil {
-		t.Fatal(err)
-	}
 
 	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+created.Slug,
 		map[string]interface{}{"content": "B"})
