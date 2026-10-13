@@ -271,6 +271,10 @@ func writeAppAttachmentError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, store.ErrAppAttachmentLimit):
 		// No totals (DOC-3371 §4).
 		writeError(w, http.StatusForbidden, "attachment_limit_reached", "The app has reached its attachment limit")
+	case errors.Is(err, store.ErrAppStorageLimit):
+		// The plan's storage cap (BUG-3653). No totals, as for the item cap:
+		// the human renderer's figures are the owner's, not the app's.
+		writeError(w, http.StatusForbidden, "storage_limit_reached", "The workspace has reached its storage limit")
 	case errors.Is(err, appstore.ErrAppSizeMismatch), errors.Is(err, io.ErrUnexpectedEOF):
 		// A body that ends before its declared length: over a connection
 		// the request body reports io.ErrUnexpectedEOF (codex U6c r2), the

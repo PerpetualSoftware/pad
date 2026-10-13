@@ -49,6 +49,9 @@ type FencedTx struct {
 	companions  map[string]struct{}
 	seqLocked   bool
 	done        bool
+	// storageLock is set when the spec asked for the storage cap
+	// (FenceSpec.StorageLimit): the lock BeginFenced took first.
+	storageLock *storageLimitLock
 }
 
 // FenceSpec is what a request was admitted under: the install, the epoch its
@@ -59,6 +62,11 @@ type FenceSpec struct {
 	WorkspaceID string
 	Epoch       int64
 	Companions  []string
+	// StorageLimit takes the workspace owner's storage_bytes plan-limit lock
+	// before anything else in the transaction, as that lock's ordering rule
+	// requires, so CheckStorageLimit can charge an app upload against the
+	// cap (BUG-3653). Set on Pad Cloud only.
+	StorageLimit bool
 }
 
 // ErrFenceStale: the install is no longer active under the epoch the request
@@ -90,6 +98,15 @@ func (s *Store) BeginFenced(ctx context.Context, spec FenceSpec) (*FencedTx, err
 	if err != nil {
 		return nil, fmt.Errorf("begin fenced: %w", err)
 	}
+	var storageLock *storageLimitLock
+	if spec.StorageLimit {
+		lock, err := s.lockStorageLimitTx(tx, spec.WorkspaceID)
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		storageLock = &lock
+	}
 	q := `SELECT auth_epoch, state, workspace_id FROM app_installs WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		q += ` FOR SHARE`
@@ -108,7 +125,7 @@ func (s *Store) BeginFenced(ctx context.Context, spec FenceSpec) (*FencedTx, err
 	for _, id := range spec.Companions {
 		companions[id] = struct{}{}
 	}
-	return &FencedTx{s: s, tx: tx, installID: spec.InstallID, workspaceID: spec.WorkspaceID, epoch: epoch, companions: companions}, nil
+	return &FencedTx{s: s, tx: tx, installID: spec.InstallID, workspaceID: spec.WorkspaceID, epoch: epoch, companions: companions, storageLock: storageLock}, nil
 }
 
 // Commit commits the fenced transaction.

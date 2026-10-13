@@ -190,7 +190,7 @@ func (a *Store) StageUpload(ctx context.Context, spec store.FenceSpec, itemID st
 			p.Close()
 		}
 	}()
-	if err := a.admitUpload(ctx, spec, itemID, actor); err != nil {
+	if err := a.admitUpload(ctx, spec, itemID, actor, in.DeclaredSize); err != nil {
 		return nil, err
 	}
 
@@ -259,7 +259,8 @@ func (p *PendingUpload) Close() {
 	p.res.release()
 }
 
-func (a *Store) admitUpload(ctx context.Context, spec store.FenceSpec, itemID string, actor store.FencedActor) error {
+func (a *Store) admitUpload(ctx context.Context, spec store.FenceSpec, itemID string, actor store.FencedActor, declared int64) error {
+	spec.StorageLimit = a.opts.PlanLimit
 	ftx, err := a.s.BeginFenced(ctx, spec)
 	if err != nil {
 		return err
@@ -274,10 +275,32 @@ func (a *Store) admitUpload(ctx context.Context, spec store.FenceSpec, itemID st
 	if files+pendingFiles > store.AppAttachmentMaxFiles || size+pendingBytes > store.AppAttachmentMaxBytes {
 		return store.ErrAppAttachmentLimit
 	}
+	// The plan's storage cap at the declared size (BUG-3653), before any
+	// byte is read, so the common refusal writes no blob. It is advisory:
+	// concurrent uploads can each pass it, and the row insert charges the
+	// cap authoritatively. An owner move is left to that check.
+	if err := ftx.CheckStorageLimit(declared); err != nil && !errors.Is(err, store.ErrStorageOwnerMoved) {
+		return err
+	}
 	return nil
 }
 
 func (a *Store) insertUpload(ctx context.Context, spec store.FenceSpec, res *reservation, in store.FencedAttachmentCreate) (*AppAttachment, error) {
+	// The storage cap is charged in the row's own transaction (BUG-3653). An
+	// ownership change between its owner read and its check is retried in a
+	// fresh transaction, as the human upload does.
+	spec.StorageLimit = a.opts.PlanLimit
+	for attempt := 1; ; attempt++ {
+		att, err := a.insertUploadTx(ctx, spec, res, in)
+		if errors.Is(err, store.ErrStorageOwnerMoved) && attempt < 3 {
+			continue
+		}
+		return att, err
+	}
+}
+
+// insertUploadTx is one transaction of insertUpload.
+func (a *Store) insertUploadTx(ctx context.Context, spec store.FenceSpec, res *reservation, in store.FencedAttachmentCreate) (*AppAttachment, error) {
 	ftx, err := a.s.BeginFenced(ctx, spec)
 	if err != nil {
 		return nil, err
