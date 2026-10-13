@@ -206,8 +206,37 @@ func (s *Server) requireAppsOwner(w http.ResponseWriter, r *http.Request) (works
 	return workspaceID, owner, true
 }
 
+// appsUnrestrictedMessage answers a restricted owner at a granting door.
+const appsUnrestrictedMessage = "Installing or re-authorizing an app requires unrestricted workspace access"
+
+// requireAppsGrantOwner is requireAppsOwner for the doors that GRANT an app
+// access or hand out its credentials: install preview and confirm, install
+// code, enable, rotate, upgrade preview and confirm. It also refuses a caller
+// whose access is restricted to specific collections (BUG-3768).
+//
+// The install adds the app's bot as a member with collection_access 'all',
+// capped only by the install's read ceiling: the workspace's system
+// collections plus the app's companions. A restricted owner may not see those
+// system collections, so installing, re-enabling or re-crediting the app hands
+// it collections the owner cannot read. The same whole-workspace capability
+// class as export (BUG-1922) and webhooks (BUG-3340).
+//
+// Reading an install or a pending install, deleting a pending install,
+// disabling and uninstalling stay on requireAppsOwner: they grant nothing,
+// and the last three are revocation, which BUG-3340 kept open too.
+func (s *Server) requireAppsGrantOwner(w http.ResponseWriter, r *http.Request) (workspaceID string, owner *models.User, ok bool) {
+	workspaceID, owner, ok = s.requireAppsOwner(w, r)
+	if !ok {
+		return "", nil, false
+	}
+	if !s.requireUnrestrictedAccess(w, r, workspaceID, appsUnrestrictedMessage) {
+		return "", nil, false
+	}
+	return workspaceID, owner, true
+}
+
 func (s *Server) handleAppInstallPreview(w http.ResponseWriter, r *http.Request) {
-	workspaceID, owner, ok := s.requireAppsOwner(w, r)
+	workspaceID, owner, ok := s.requireAppsGrantOwner(w, r)
 	if !ok {
 		return
 	}

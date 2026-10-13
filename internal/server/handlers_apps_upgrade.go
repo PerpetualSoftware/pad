@@ -49,7 +49,7 @@ func (s *Server) installUpgradeBase(installState *store.InstallUpgradeState) (*a
 }
 
 func (s *Server) handleAppUpgradePreview(w http.ResponseWriter, r *http.Request) {
-	workspaceID, owner, ok := s.requireAppsOwner(w, r)
+	workspaceID, owner, ok := s.requireAppsGrantOwner(w, r)
 	if !ok {
 		return
 	}
@@ -120,7 +120,7 @@ type appUpgradeConfirmResponse struct {
 }
 
 func (s *Server) handleAppUpgradeConfirm(w http.ResponseWriter, r *http.Request) {
-	workspaceID, owner, ok := s.requireAppsOwner(w, r)
+	workspaceID, owner, ok := s.requireAppsGrantOwner(w, r)
 	if !ok {
 		return
 	}

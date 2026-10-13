@@ -2373,7 +2373,9 @@ func (s *Server) setupRouter() {
 					r.Get("/storage/usage", s.handleGetWorkspaceStorageUsage)
 
 					// App install staging (SPEC-6 U8a, TASK-3397). Owner-only and
-					// gated on appsAvailable inside each handler.
+					// gated on appsAvailable inside each handler. The doors below
+					// that grant an app access or credentials also refuse a
+					// collection-restricted owner (requireAppsGrantOwner, BUG-3768).
 					r.Route("/apps/install", func(r chi.Router) {
 						r.Post("/preview", s.handleAppInstallPreview)
 						r.Get("/pending/{pendingID}", s.handleGetAppInstallPending)

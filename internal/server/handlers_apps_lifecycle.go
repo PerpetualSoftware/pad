@@ -111,7 +111,7 @@ func (s *Server) handleDisableAppInstall(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleEnableAppInstall(w http.ResponseWriter, r *http.Request) {
-	workspaceID, _, ok := s.requireAppsOwner(w, r)
+	workspaceID, _, ok := s.requireAppsGrantOwner(w, r)
 	if !ok {
 		return
 	}
@@ -126,7 +126,7 @@ func (s *Server) handleEnableAppInstall(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleRotateAppInstall(w http.ResponseWriter, r *http.Request) {
-	workspaceID, _, ok := s.requireAppsOwner(w, r)
+	workspaceID, _, ok := s.requireAppsGrantOwner(w, r)
 	if !ok {
 		return
 	}
