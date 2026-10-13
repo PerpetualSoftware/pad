@@ -208,7 +208,7 @@ func runTwoFactorDisable(client *cli.Client, in *bufio.Reader, out io.Writer, sa
 // when it rotated sessions. A PAD_TOKEN session lives in the environment,
 // which the CLI cannot rewrite, so that case is reported instead.
 func replaceSessionToken(cfg *config.Config, token string) error {
-	if os.Getenv("PAD_TOKEN") != "" {
+	if cli.EnvTokenFor(cfg.BaseURL()) != "" {
 		return fmt.Errorf("this session came from PAD_TOKEN, which the CLI cannot update")
 	}
 	store, err := cli.LoadStore()

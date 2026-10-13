@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -1271,7 +1272,7 @@ func openCmd() *cobra.Command {
 			// If there's a workspace, go directly to it
 			ws, _ := cli.DetectWorkspace(workspaceFlag)
 			if ws != "" {
-				url += "/" + ws
+				url += "/" + neturl.PathEscape(ws)
 			}
 
 			fmt.Printf("Opening %s\n", url)

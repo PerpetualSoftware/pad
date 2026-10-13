@@ -261,7 +261,7 @@ your current status.`,
 				// user — and the final status line would still claim the
 				// override was active. Fail with the distinct message
 				// instead, mirroring whoami's treatment.
-				if cli.EnvToken() != "" {
+				if cli.EnvTokenFor(cfg.BaseURL()) != "" {
 					return fmt.Errorf("PAD_TOKEN is set but the server rejected it — fix or unset PAD_TOKEN, then re-run 'pad init'")
 				}
 
@@ -609,7 +609,7 @@ func printInitStatus(client *cli.Client, cfg *config.Config, ws *models.Workspac
 	// Auth — entry for the configured server only. Under the PAD_TOKEN
 	// override (#879) the stored entry is not what API calls use, so
 	// disclose the override instead of implying the stored identity.
-	if cli.EnvToken() != "" {
+	if cli.EnvTokenFor(cfg.BaseURL()) != "" {
 		green.Print("  ✓ Auth       ")
 		fmt.Println("PAD_TOKEN environment override")
 	} else {

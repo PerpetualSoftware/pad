@@ -345,7 +345,7 @@ func loginCmd() *cobra.Command {
 			}()
 
 			cfg := getConfiguredConfig()
-			if n := envTokenNotice(); n != "" {
+			if n := envTokenNotice(cfg.BaseURL()); n != "" {
 				fmt.Fprintln(os.Stderr, n)
 			}
 			if err := cli.EnsureServer(cfg); err != nil {
@@ -362,7 +362,7 @@ func loginCmd() *cobra.Command {
 			// right after the override notice would contradict it —
 			// API calls run as the env token's user regardless. login
 			// manages stored credentials, so proceed to the real flow.
-			if cli.EnvToken() == "" {
+			if cli.EnvTokenFor(cfg.BaseURL()) == "" {
 				store, _ := cli.LoadStore()
 				creds := store.Get(cfg.BaseURL())
 				if creds != nil && creds.Token != "" {
@@ -828,8 +828,8 @@ func readPasswordFrom(fallback *bufio.Reader) (string, error) {
 // when it isn't. login/logout print it to stderr (gh-style) so users
 // aren't surprised that managing stored credentials doesn't change the
 // identity API calls use while the override is active (#879).
-func envTokenNotice() string {
-	if cli.EnvToken() == "" {
+func envTokenNotice(baseURL string) string {
+	if cli.EnvTokenFor(baseURL) == "" {
 		return ""
 	}
 	return "Note: PAD_TOKEN is set and overrides stored credentials for all API calls."
@@ -842,7 +842,7 @@ func logoutCmd() *cobra.Command {
 		Example: `  pad auth logout`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := getConfiguredConfig()
-			if n := envTokenNotice(); n != "" {
+			if n := envTokenNotice(cfg.BaseURL()); n != "" {
 				fmt.Fprintln(os.Stderr, n)
 			}
 			if err := cli.EnsureServer(cfg); err != nil {
@@ -861,7 +861,7 @@ func logoutCmd() *cobra.Command {
 			// session instead of the stored one — pin to the stored
 			// token, and skip the server call entirely when there is no
 			// stored session to invalidate.
-			if cli.EnvToken() != "" {
+			if cli.EnvTokenFor(cfg.BaseURL()) != "" {
 				if creds := store.Get(cfg.BaseURL()); creds != nil && creds.Token != "" {
 					client.SetAuthToken(creds.Token)
 					_ = client.Logout()
@@ -927,7 +927,7 @@ func whoamiCmd() *cobra.Command {
 			// user, and every other command authenticates as the env
 			// token's user, so the store short-circuit below would make
 			// whoami lie.
-			envToken := cli.EnvToken()
+			envToken := cli.EnvTokenFor(cfg.BaseURL())
 
 			var creds *cli.Credentials
 			if envToken == "" {
