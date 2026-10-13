@@ -1942,7 +1942,7 @@ func remapAttachmentRefs(s string, oldToNew map[string]string) string {
 	})
 }
 
-// WorkspaceAttachmentsForExport returns every original (non-derived,
+// workspaceAttachmentsForExportQ returns every original (non-derived,
 // non-deleted) attachment in the workspace so the export bundler
 // can stream them into the tar. Derived rows (thumbnails) are
 // excluded — they're re-derived on import via the existing pipeline.
@@ -1952,8 +1952,12 @@ func remapAttachmentRefs(s string, oldToNew map[string]string) string {
 // chose to export the workspace. Surfacing them lets a round-trip
 // preserve the audit trail (the import path will recreate the row
 // as an orphan, or the soft-deleted item gets restored separately).
-func (s *Store) WorkspaceAttachmentsForExport(workspaceID string) ([]models.Attachment, error) {
-	rows, err := s.db.Query(s.q(`
+//
+// There is no pooled form. The only caller is ExportWorkspaceSnapshot, so the
+// manifest and the JSON it ships beside always come from one snapshot
+// (BUG-3654).
+func (s *Store) workspaceAttachmentsForExportQ(q Queryer, workspaceID string) ([]models.Attachment, error) {
+	rows, err := q.Query(s.q(`
 		SELECT `+attachmentColumns+`
 		FROM attachments
 		WHERE workspace_id = ? AND deleted_at IS NULL AND parent_id IS NULL

@@ -1,8 +1,10 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -127,14 +129,78 @@ func importCoercedSlug(raw string) (string, bool) {
 	return string([]rune(raw)[:models.MaxItemTitleRunes]), true
 }
 
-// ExportWorkspace exports all data for a workspace into a portable format.
-//
-// It reads the POOL, so each of its sections takes its own snapshot and a
-// concurrent writer can land between any two of them. Callers that need one
-// consistent bundle pass a transaction to ExportWorkspaceQ instead.
+// ExportWorkspace exports all data for a workspace into a portable format,
+// every section read from ONE snapshot (see ExportWorkspaceSnapshot).
 func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
-	return s.ExportWorkspaceQ(s.db, slug)
+	export, _, err := s.ExportWorkspaceSnapshot(context.Background(), slug, false)
+	return export, err
 }
+
+// ErrExportManifest marks an ExportWorkspaceSnapshot failure in the
+// attachment-manifest read, after the export itself was read: the bundle door
+// answers it 500 where it answers an export failure 404.
+var ErrExportManifest = errors.New("export attachment manifest")
+
+// ExportWorkspaceSnapshot reads a workspace export and, when withAttachments
+// is set, the bundle's attachment rows, all inside one read-only transaction,
+// so the archive is one instant of the database (BUG-3654).
+//
+// Read on the pool, each section took its own snapshot. A collection and its
+// first item created between the collections scan and the items scan put the
+// item in the bundle without its collection, and ImportWorkspace drops an item
+// whose collection is missing. Links, comments and the attachment manifest had
+// the same gap against the items they name.
+//
+// The transaction is READ ONLY, and on SQLite that is what keeps it from being
+// a writer: the DSN's _txlock=immediate makes db.Begin() a BEGIN IMMEDIATE,
+// which would hold the one write lock for the whole export, but modernc issues
+// a plain BEGIN (deferred) for a ReadOnly transaction. A deferred transaction
+// fixes its WAL snapshot at its first read and keeps it until it ends, and
+// writers carry on beside it. On Postgres the default READ COMMITTED gives
+// every statement a new snapshot, so the transaction asks for REPEATABLE READ,
+// which keeps the first statement's snapshot for all of them.
+func (s *Store) ExportWorkspaceSnapshot(ctx context.Context, slug string, withAttachments bool) (*models.WorkspaceExport, []models.Attachment, error) {
+	tx, err := s.beginReadSnapshot(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin export snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	export, err := s.ExportWorkspaceQ(tx, slug)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !withAttachments {
+		return export, nil, nil
+	}
+	ws, err := s.getWorkspaceBySlugQ(tx, slug)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: workspace lookup: %w", ErrExportManifest, err)
+	}
+	if ws == nil {
+		return nil, nil, fmt.Errorf("%w: workspace not found: %s", ErrExportManifest, slug)
+	}
+	attachments, err := s.workspaceAttachmentsForExportQ(tx, ws.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", ErrExportManifest, err)
+	}
+	return export, attachments, nil
+}
+
+// beginReadSnapshot opens a read-only transaction whose reads share one
+// snapshot; ExportWorkspaceSnapshot says why each option is there.
+func (s *Store) beginReadSnapshot(ctx context.Context) (*sql.Tx, error) {
+	opts := &sql.TxOptions{ReadOnly: true}
+	if s.dialect.Driver() == DriverPostgres {
+		opts.Isolation = sql.LevelRepeatableRead
+	}
+	return s.db.BeginTx(ctx, opts)
+}
+
+// exportAfterCollectionsHook, when set by a test, runs between the collections
+// section and the items section of ExportWorkspaceQ: the gap a concurrent
+// writer would land in (BUG-3654).
+var exportAfterCollectionsHook func(slug string)
 
 // ExportWorkspaceQ is ExportWorkspace against a caller-supplied executor, so
 // every section of a bundle can be read inside one transaction (BUG-3072).
@@ -156,9 +222,9 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 // and pooled reads begin to disagree with each other silently while
 // transaction-scoped reads stay correct.
 //
-// The pool remains a legitimate executor and is what ExportWorkspace passes:
-// the two HTTP export doors hold no transaction and accept that their sections
-// can disagree under concurrency, which is pre-existing and out of scope here.
+// The pool is still a legitimate executor, but its sections can disagree under
+// concurrency. ExportWorkspace and the two HTTP export doors pass a read-only
+// snapshot transaction instead (ExportWorkspaceSnapshot, BUG-3654).
 func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExport, error) {
 	ws, err := s.getWorkspaceBySlugQ(q, slug)
 	if err != nil {
@@ -217,6 +283,9 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if exportAfterCollectionsHook != nil {
+		exportAfterCollectionsHook(slug)
+	}
 
 	// Items
 	//
@@ -228,8 +297,8 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	// SECTIONS agree with each other is a property of the EXECUTOR, not of this
 	// SELECT: on the pool they can disagree under concurrency (each connection
 	// takes its own WAL snapshot), and inside one transaction they cannot.
-	// BUG-3072 gave the migration the transaction for exactly that reason; the
-	// two HTTP export doors still pass the pool.
+	// BUG-3072 gave the migration the transaction for exactly that reason, and
+	// BUG-3654 gave the two HTTP export doors a read-only one.
 	itemRows, err := q.Query(s.q(`
 		SELECT i.id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags, i.pinned, i.sort_order,
 		       COALESCE(i.parent_id, ''), i.created_by, i.last_modified_by, i.source, COALESCE(i.item_number, 0), i.created_at, i.updated_at

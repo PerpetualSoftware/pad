@@ -4,7 +4,7 @@ import "fmt"
 
 // WorkspaceContentCounts is what a workspace holds, counted with the SAME
 // filters the workspace export applies (ExportWorkspace and
-// WorkspaceAttachmentsForExport), so a count taken here after an import can
+// workspaceAttachmentsForExportQ), so a count taken here after an import can
 // be compared one-to-one with the arrays of the bundle that was imported
 // (TASK-3612):
 //

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -301,9 +302,9 @@ func TestDR15_BundleExportOrphansAttachmentOfSoftDeletedParent(t *testing.T) {
 	}
 
 	// The attachment export still includes the live attachment...
-	atts, err := s.WorkspaceAttachmentsForExport(ws.ID)
+	_, atts, err := s.ExportWorkspaceSnapshot(context.Background(), ws.Slug, true)
 	if err != nil {
-		t.Fatalf("WorkspaceAttachmentsForExport: %v", err)
+		t.Fatalf("ExportWorkspaceSnapshot: %v", err)
 	}
 	var exported *models.Attachment
 	for i := range atts {
