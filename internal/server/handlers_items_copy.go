@@ -97,6 +97,12 @@ import (
 //	                              would hide an actionable answer behind a
 //	                              distinction a POST to the same collection
 //	                              erases anyway (Codex round 8, declined).
+//	403 plan_limit_exceeded     — the cloned attachments would take the
+//	                              destination owner past storage_bytes
+//	                              (BUG-3653), every cloned row counted,
+//	                              variants included. Cloud mode only, like
+//	                              the item cap, and the same payload an
+//	                              upload's refusal carries.
 //	404 not_found               — source item absent or not visible, or the
 //	                              caller may not edit it (WriteHidden; the
 //	                              source side never distinguishes the two)
@@ -465,6 +471,8 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		// forcing it on would apply free-tier item caps to self-hosted users
 		// whose plan row says "free".
 		EnforceItemLimit: s.cloudMode,
+		// The storage cap, gated the same way (BUG-3653).
+		EnforceStorageLimit: s.cloudMode,
 
 		// DR-9's in-tx re-check, against the under-lock snapshots.
 		PreCheck: copyResourceInvariantPreCheck(copyAuthorizedResources{
@@ -828,6 +836,9 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 	var limit *store.ItemLimitError
 	if errors.As(err, &limit) {
 		writePlanLimitError(w, r, limit.Result)
+		return
+	}
+	if writeStorePlanLimitError(w, r, err, "") {
 		return
 	}
 
