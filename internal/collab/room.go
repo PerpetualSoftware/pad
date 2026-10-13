@@ -158,6 +158,19 @@ type roomConn struct {
 	// on this conn's readLoop, so a frame and the barrier behind it are
 	// ordered without a lock.
 	appendFailed bool
+
+	// Liveness (BUG-3771, BUG-3636), from the manager at Join. A zero value
+	// (a conn built outside Join) means the default, never "no time at all".
+	writeTimeout time.Duration
+	pongWait     time.Duration
+	pingPeriod   time.Duration
+}
+
+func orDefault(d, def time.Duration) time.Duration {
+	if d <= 0 {
+		return def
+	}
+	return d
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -167,6 +180,16 @@ type roomConn struct {
 func (rc *roomConn) writeMessage(messageType int, data []byte) error {
 	rc.writeMu.Lock()
 	defer rc.writeMu.Unlock()
+	return rc.writeLocked(messageType, data)
+}
+
+// writeLocked writes one frame under the connection's write deadline. The
+// caller holds writeMu. Every frame to a collab socket goes through here or
+// writeMessageWithDeadline, so a peer that stops reading fails its write
+// within the timeout instead of holding writeMu (and, during replay, the
+// item's setup lock) for as long as its socket stays open (BUG-3636).
+func (rc *roomConn) writeLocked(messageType int, data []byte) error {
+	_ = rc.conn.SetWriteDeadline(time.Now().Add(orDefault(rc.writeTimeout, defaultCollabWriteTimeout)))
 	return rc.conn.WriteMessage(messageType, data)
 }
 
@@ -519,10 +542,43 @@ type inboundFrame struct {
 // drained at one store commit per keystroke. The reader exits on its first
 // error, which readLoop returns after handling every frame before it.
 func (r *Room) readLoop(rc *roomConn) error {
+	// Liveness (BUG-3771): a half-open peer never produces a read error, so
+	// without a deadline it held its room membership, awareness and per-user
+	// admission slot until restart. The read deadline is extended by every
+	// frame and every pong; the server pings well inside it, and a browser
+	// answers pings on its own. A peer silent for the pong wait fails its
+	// read and is torn down like any other.
+	pongWait := orDefault(rc.pongWait, defaultCollabPongWait)
+	pingPeriod := orDefault(rc.pingPeriod, defaultCollabPingPeriod)
+	writeTimeout := orDefault(rc.writeTimeout, defaultCollabWriteTimeout)
+	_ = rc.conn.SetReadDeadline(time.Now().Add(pongWait))
+	rc.conn.SetPongHandler(func(string) error {
+		return rc.conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+	stopPing := make(chan struct{})
+	defer close(stopPing)
+	go func() {
+		tick := time.NewTicker(pingPeriod)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stopPing:
+				return
+			case <-tick.C:
+				// WriteControl is safe alongside the writer's WriteMessage.
+				if err := rc.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeTimeout)); err != nil {
+					return
+				}
+			}
+		}
+	}()
 	frames := make(chan inboundFrame, maxSyncBatch)
 	go func() {
 		for {
 			msgType, data, err := rc.conn.ReadMessage()
+			if err == nil {
+				_ = rc.conn.SetReadDeadline(time.Now().Add(pongWait))
+			}
 			frames <- inboundFrame{msgType: msgType, data: data, err: err}
 			if err != nil {
 				return
@@ -796,7 +852,7 @@ func (r *Room) writeLoop(rc *roomConn) {
 			}
 			payload, _ := json.Marshal(ControlMessage{Type: ControlMessageSeedGrant})
 			rc.writeMu.Lock()
-			err := rc.conn.WriteMessage(websocket.TextMessage, payload)
+			err := rc.writeLocked(websocket.TextMessage, payload)
 			rc.writeMu.Unlock()
 			if err != nil {
 				_ = rc.conn.Close()
@@ -828,7 +884,7 @@ func (r *Room) writeLoop(rc *roomConn) {
 		// TASK-1319.
 		rc.writeMu.Lock()
 		if !isSelf {
-			if err := rc.conn.WriteMessage(websocket.BinaryMessage, ev.Data); err != nil {
+			if err := rc.writeLocked(websocket.BinaryMessage, ev.Data); err != nil {
 				rc.writeMu.Unlock()
 				_ = rc.conn.Close()
 				return
@@ -846,7 +902,7 @@ func (r *Room) writeLoop(rc *roomConn) {
 						"client_id", rc.id,
 						"error", perr,
 					)
-				} else if werr := rc.conn.WriteMessage(websocket.TextMessage, payload); werr != nil {
+				} else if werr := rc.writeLocked(websocket.TextMessage, payload); werr != nil {
 					rc.writeMu.Unlock()
 					_ = rc.conn.Close()
 					return
