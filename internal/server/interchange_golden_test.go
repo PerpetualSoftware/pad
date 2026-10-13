@@ -43,11 +43,12 @@ const interchangeGoldenDir = "testdata/interchange/golden"
 // reason. Paths are `<section>/<entity key>/<field>[/<nested key>...]`.
 var interchangeKnownLosses = []struct {
 	path   string
+	count  int // exactly how many differences the entry covers
 	reason string
 }{
-	{`^attachments/attachment:[0-9a-f]{64}/created_at$`,
+	{`^attachments/attachment:[0-9a-f]{64}/created_at$`, 1,
 		"import writes a new attachment row stamped now; the manifest's created_at is not restored"},
-	{`^item_links/link:item:Parent task><unknown [0-9a-f-]{36}>\|blocks/`,
+	{`^item_links/link:item:Parent task><unknown [0-9a-f-]{36}>\|blocks/(created_at|created_by|link_type|source_id|target_id)$`, 5,
 		"a link whose endpoint is a soft-deleted item is exported (the raw graph) but skipped on import, because the item is not in the bundle (lead ruling on TASK-3628, day 92)"},
 }
 
@@ -56,6 +57,7 @@ func TestInterchangeGolden_RoundTrip(t *testing.T) {
 		writeInterchangeGolden(t)
 	}
 	golden := readInterchangeGolden(t)
+	assertInterchangeGoldenCoverage(t, golden)
 
 	dest, _ := testServerWithAttachments(t)
 	rr := postBundle(dest, "", packInterchangeBundle(t, golden))
@@ -90,14 +92,15 @@ func TestInterchangeGolden_RoundTrip(t *testing.T) {
 	}
 	sort.Strings(diffs)
 
-	used := make([]bool, len(interchangeKnownLosses))
+	used := make([]int, len(interchangeKnownLosses))
 	var unexpected []string
 	for _, d := range diffs {
 		path := d[:strings.Index(d, "  (")]
 		matched := false
 		for i, l := range interchangeKnownLosses {
 			if regexp.MustCompile(l.path).MatchString(path) {
-				used[i], matched = true, true
+				used[i]++
+				matched = true
 			}
 		}
 		if !matched {
@@ -108,8 +111,8 @@ func TestInterchangeGolden_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip difference not in interchangeKnownLosses: %s", d)
 	}
 	for i, l := range interchangeKnownLosses {
-		if !used[i] {
-			t.Errorf("stale interchangeKnownLosses entry %q (%s): no difference matches it any more", l.path, l.reason)
+		if used[i] != l.count {
+			t.Errorf("interchangeKnownLosses entry %q (%s) covers %d differences, want %d: stale, or a new loss at the same path", l.path, l.reason, used[i], l.count)
 		}
 	}
 }
@@ -174,7 +177,7 @@ func packInterchangeBundle(t *testing.T, files map[string][]byte) []byte {
 	return buf.Bytes()
 }
 
-var interchangeUUID = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+var interchangeUUID = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 
 // flattenInterchange turns a bundle into path -> value, with every entity keyed
 // by a natural key instead of its id (an import mints new ids), every id
@@ -228,9 +231,13 @@ func flattenInterchange(t *testing.T, side string, files map[string][]byte) map[
 	for _, l := range list(exp, "item_links") {
 		key(str(l, "id"), "link:"+ref(str(l, "source_id"))+">"+ref(str(l, "target_id"))+"|"+str(l, "link_type"))
 	}
+	// Versions by their position in the item's history: the export orders them
+	// by (created_at, version_seq), and two can share a second and a body.
+	nth := map[string]int{}
 	for _, v := range list(exp, "item_versions") {
-		h := sha256.Sum256([]byte(str(v, "content")))
-		key(str(v, "id"), "version:"+ref(str(v, "item_id"))+"|"+str(v, "created_at")+"|"+hex.EncodeToString(h[:6]))
+		item := ref(str(v, "item_id"))
+		nth[item]++
+		key(str(v, "id"), fmt.Sprintf("version:%s#%d", item, nth[item]))
 	}
 	for _, a := range list(manifest, "entries") {
 		key(str(a, "id"), "attachment:"+str(a, "content_hash"))
@@ -329,6 +336,9 @@ func flattenInterchange(t *testing.T, side string, files map[string][]byte) map[
 // directory, replacing what was there.
 func writeInterchangeGolden(t *testing.T) {
 	t.Helper()
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Fatal("regenerate the interchange golden on SQLite: the generator writes a set-aside row with raw SQL")
+	}
 	srv, _ := testServerWithAttachments(t)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Interchange Golden", "template": "blank"})
 	if rr.Code != http.StatusCreated {
@@ -353,6 +363,7 @@ func writeInterchangeGolden(t *testing.T) {
 	// default, a number, a date, and a relation to the same collection.
 	post("/collections", map[string]any{
 		"name": "Tasks", "slug": "tasks", "prefix": "TASK", "icon": "✅", "description": "Work to do",
+		"settings": `{"default_view":"board","board_group_by":"status"}`,
 		"schema": `{"fields":[` +
 			`{"key":"status","label":"Status","type":"select","options":["open","in-progress","done","cancelled"],"default":"open","terminal_options":["done","cancelled"],"abandoned_options":["cancelled"]},` +
 			`{"key":"priority","label":"Priority","type":"select","options":["low","medium","high"]},` +
@@ -377,19 +388,33 @@ func writeInterchangeGolden(t *testing.T) {
 	// Items: a parent and children, fields, tags, a pin, a relation value.
 	plan := post("/collections/tasks/items", map[string]any{"title": "Parent task", "content": "The parent.\n\nSee [[Child task one]].",
 		"fields": `{"status":"in-progress","priority":"high","estimate":5,"due":"2026-11-01"}`, "tags": `["golden","parent"]`, "pinned": true})
-	one := post("/collections/tasks/items", map[string]any{"title": "Child task one", "content": "First child.", "parent_id": plan["id"],
-		"fields": `{"status":"done","priority":"low"}`})
+	// Written as an agent through the store: the HTTP door stamps the caller.
+	tasksColl, err := st.GetCollectionBySlug(ws.ID, "tasks")
+	if err != nil || tasksColl == nil {
+		t.Fatalf("tasks collection: %v", err)
+	}
+	parentID := plan["id"].(string)
+	oneItem, err := st.CreateItem(ws.ID, tasksColl.ID, models.ItemCreate{Title: "Child task one", Content: "First child.", ParentID: &parentID,
+		Fields: `{"status":"done","priority":"low"}`, CreatedBy: "agent", Source: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	one := map[string]any{"id": oneItem.ID, "slug": oneItem.Slug}
 	two := post("/collections/tasks/items", map[string]any{"title": "Child task two", "content": "Second child.", "parent_id": plan["id"],
 		"fields": fmt.Sprintf(`{"status":"cancelled","follows":%q}`, one["id"])})
 	doc := post("/collections/docs/items", map[string]any{"title": "Design doc", "content": "Draft one."})
 
-	// Versions: two edits to the doc.
-	for _, body := range []string{"Draft two.", "Draft three, with a table:\n\n| a | b |\n| - | - |\n| 1 | 2 |"} {
-		if rr := doRequest(srv, "PATCH", base+"/items/"+doc["slug"].(string), map[string]any{"content": body}); rr.Code != http.StatusOK {
-			t.Fatalf("edit doc: %d %s", rr.Code, rr.Body.String())
+	// Versions: two edits to the doc, one by an agent. ForceVersion, because
+	// a second edit by the same actor inside VersionThrottleInterval writes
+	// no version row.
+	editDoc := func(body, actor string) {
+		t.Helper()
+		if _, err := st.UpdateItem(doc["id"].(string), models.ItemUpdate{Content: &body, LastModifiedBy: actor, ForceVersion: true}); err != nil {
+			t.Fatalf("edit doc: %v", err)
 		}
-		time.Sleep(1100 * time.Millisecond) // versions are throttled per second
 	}
+	editDoc("Draft two.", "user")
+	editDoc("Draft three, with a table:\n\n| a | b |\n| - | - |\n| 1 | 2 |", "agent")
 
 	// Comments.
 	post("/items/"+plan["slug"].(string)+"/comments", map[string]any{"body": "First comment."})
@@ -451,17 +476,21 @@ func writeInterchangeGolden(t *testing.T) {
 	if err := st.AttachAttachmentToItem(ws.ID, att.ID, doc["id"].(string)); err != nil {
 		t.Fatal(err)
 	}
-	if rr := doRequest(srv, "PATCH", base+"/items/"+doc["slug"].(string), map[string]any{
-		"content": "Draft three, with a table and a picture:\n\n![logo](pad-attachment:" + att.ID + ")"}); rr.Code != http.StatusOK {
-		t.Fatalf("reference attachment: %d %s", rr.Code, rr.Body.String())
-	}
+	editDoc("Draft three, with a table and a picture:\n\n![logo](pad-attachment:"+att.ID+")", "user")
 
 	rr = doRequest(srv, "GET", base+"/export?format=tar", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("export golden: %d %s", rr.Code, rr.Body.String())
 	}
 	files := readBundle(t, rr.Body.Bytes())
-	if err := os.RemoveAll(interchangeGoldenDir); err != nil {
+	assertInterchangeGoldenCoverage(t, files)
+	if t.Failed() {
+		t.FailNow() // leave the committed golden alone
+	}
+	// Written beside the golden and swapped in, so a failure part way leaves
+	// the committed golden in place.
+	tmp := interchangeGoldenDir + ".new"
+	if err := os.RemoveAll(tmp); err != nil {
 		t.Fatal(err)
 	}
 	for name, b := range files {
@@ -473,7 +502,7 @@ func writeInterchangeGolden(t *testing.T) {
 			b, _ = json.MarshalIndent(v, "", "  ")
 			b = append(b, '\n')
 		}
-		p := filepath.Join(interchangeGoldenDir, filepath.FromSlash(name))
+		p := filepath.Join(tmp, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -481,5 +510,81 @@ func writeInterchangeGolden(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.RemoveAll(interchangeGoldenDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, interchangeGoldenDir); err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("wrote %d golden bundle entries to %s", len(files), interchangeGoldenDir)
+}
+
+// assertInterchangeGoldenCoverage fails when the golden no longer carries one
+// of the shapes the round trip exists to check, so a regeneration that lost
+// one (a template change, a generator edit) cannot pass by checking less.
+func assertInterchangeGoldenCoverage(t *testing.T, files map[string][]byte) {
+	t.Helper()
+	var exp models.WorkspaceExport
+	if err := json.Unmarshal(files["pad-export.json"], &exp); err != nil {
+		t.Fatalf("decode pad-export.json: %v", err)
+	}
+	var manifest models.AttachmentManifest
+	if err := json.Unmarshal(files["attachments/manifest.json"], &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	has := map[string]bool{}
+	collSlug := map[string]string{}
+	for _, c := range exp.Collections {
+		collSlug[c.ID] = c.Slug
+		has["archived collection"] = has["archived collection"] || c.DeletedAt != ""
+		has["collection settings"] = has["collection settings"] || strings.Contains(c.Settings, "default_view")
+		has["relation field"] = has["relation field"] || strings.Contains(c.Schema, `"relation"`)
+	}
+	itemIDs := map[string]bool{}
+	for _, it := range exp.Items {
+		itemIDs[it.ID] = true
+	}
+	for _, it := range exp.Items {
+		has["parent"] = has["parent"] || it.ParentID != ""
+		has["pinned"] = has["pinned"] || it.Pinned
+		has["tags"] = has["tags"] || (it.Tags != "" && it.Tags != "[]")
+		has["agent author"] = has["agent author"] || it.CreatedBy == "agent"
+		has["set-aside edit"] = has["set-aside edit"] || len(it.CollabSetAside) > 0
+		has["content_state"] = has["content_state"] || it.ContentState != ""
+		has["builtin origin"] = has["builtin origin"] || it.BuiltinOrigin != nil
+		has["convention"] = has["convention"] || collSlug[it.CollectionID] == "conventions"
+		has["playbook"] = has["playbook"] || collSlug[it.CollectionID] == "playbooks"
+		for _, m := range interchangeUUID.FindAllString(it.Fields, -1) {
+			has["relation value"] = has["relation value"] || itemIDs[m]
+		}
+		for _, a := range manifest.Entries {
+			has["attachment ref in content"] = has["attachment ref in content"] || strings.Contains(it.Content, "pad-attachment:"+a.ID)
+		}
+	}
+	for _, v := range exp.ItemVersions {
+		has["edit version"] = has["edit version"] || !v.IsCreate
+		has["agent version"] = has["agent version"] || v.CreatedBy == "agent"
+	}
+	for _, r := range exp.Reminders {
+		has["armed reminder"] = has["armed reminder"] || r.FiredAt == ""
+		has["acked reminder"] = has["acked reminder"] || r.AckedAt != ""
+	}
+	for _, l := range exp.ItemLinks {
+		has["link to a dropped item"] = has["link to a dropped item"] || !itemIDs[l.TargetID]
+		has["live link"] = has["live link"] || (itemIDs[l.SourceID] && itemIDs[l.TargetID])
+	}
+	has["comment"] = len(exp.Comments) > 0
+	for _, a := range manifest.Entries {
+		has["attached attachment"] = has["attached attachment"] || itemIDs[a.ItemID]
+	}
+	for _, want := range []string{
+		"archived collection", "collection settings", "relation field", "parent", "pinned", "tags", "agent author",
+		"set-aside edit", "content_state", "builtin origin", "convention", "playbook", "relation value",
+		"attachment ref in content", "edit version", "agent version", "armed reminder", "acked reminder",
+		"link to a dropped item", "live link", "comment", "attached attachment",
+	} {
+		if !has[want] {
+			t.Errorf("the interchange golden no longer carries: %s", want)
+		}
+	}
 }
