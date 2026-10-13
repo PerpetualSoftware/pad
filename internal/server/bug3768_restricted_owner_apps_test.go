@@ -75,8 +75,12 @@ func TestBUG3768_RestrictedOwnerCannotGrantAnApp(t *testing.T) {
 	want("restricted owner install code", code, body, http.StatusForbidden)
 	code, body = do("POST", app+"/rotate", nil, co)
 	want("restricted owner rotate", code, body, http.StatusForbidden)
+	pendingBefore := u.pendingRows(t)
 	code, body = do("POST", app+"/upgrade/preview", nil, co)
 	want("restricted owner upgrade preview", code, body, http.StatusForbidden)
+	if n := u.pendingRows(t); n != pendingBefore {
+		t.Errorf("a refused upgrade preview staged a pending upgrade: %d rows, was %d", n, pendingBefore)
+	}
 
 	// Reads stay open.
 	code, body = do("GET", ws+"/apps", nil, co)
