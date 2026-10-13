@@ -518,6 +518,35 @@ type TitleEscaper struct {
 	// without touching the strings at all.
 	titleLen int
 	slugLen  int
+	// refDisplay is set when the new title is itself reference-shaped (see
+	// WithOwnRef): the bracket then names the renamed item by its own
+	// reference, and refDisplay ("|" + the escaped new title) becomes its
+	// display segment when the bracket had none.
+	refDisplay string
+}
+
+// WithOwnRef guards a rename whose new title parses as a reference, like
+// "TASK-1" (BUG-3693). Written into a bracket as a title, it would be read as
+// a reference, and the index and the renderer both resolve a reference before
+// a title, so every [[old title]] link would move to whichever item that
+// reference names. In that case the rewrite emits the renamed item's own
+// reference (ownRef) instead, keeping the new title as the display text:
+// [[old title]] becomes [[ownRef|TASK-1]], and [[old title|alias]] becomes
+// [[ownRef|alias]]. A collection-qualified bracket drops its prefix, which a
+// reference does not take. Any other title, or an empty ownRef, leaves e as
+// it is.
+func (e TitleEscaper) WithOwnRef(newTitle, ownRef string) TitleEscaper {
+	if ownRef == "" {
+		return e
+	}
+	ref := parseBody(e.escTitle)
+	if ref == nil || (ref.Kind != WikiLinkKindRef && ref.Kind != WikiLinkKindWorkspaceRef) {
+		return e
+	}
+	e.refDisplay = "|" + e.escTitle
+	e.escTitle = escapeWikiBody(ownRef)
+	e.titleLen = escapedWikiBodyLen(ownRef)
+	return e
 }
 
 // NewTitleEscaper precomputes the escaped forms for one rename.
@@ -759,6 +788,15 @@ func bracketRewriteAt(content string, position int, targetTitle string, esc Titl
 		// body, never a copy, and it is deliberately not re-escaped — it is
 		// already in stored form.
 		displaySuffix = body[len(rawKey):]
+	}
+	if esc.refDisplay != "" {
+		// The bracket names the item by its own reference (WithOwnRef). The
+		// writer, the projection and bracketUnchanged all read these two
+		// outputs, so changing them here keeps the three in agreement.
+		if displaySuffix == "" {
+			displaySuffix = esc.refDisplay
+		}
+		return false, displaySuffix, bracketEnd, true
 	}
 
 	// Only now, on a confirmed match: does the `<collSlug>/` prefix carry over?
