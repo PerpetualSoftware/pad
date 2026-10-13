@@ -211,13 +211,17 @@ func TestTASK3779_UploadWaitsForAHeldCopyAndIsRefused(t *testing.T) {
 		<-release
 	}
 	copyErr, uploadErr := make(chan error, 1), make(chan error, 1)
-	copyDone := make(chan struct{})
-	// Failure paths must not leave the copy parked holding its locks.
+	copyDone, uploadDone := make(chan struct{}), make(chan struct{})
+	uploadStarted := false
+	// Failure paths must not leave the copy parked holding its locks, or a
+	// goroutine running past the test.
 	t.Cleanup(func() {
 		releaseCopy()
 		<-copyDone
+		if uploadStarted {
+			<-uploadDone
+		}
 		testHookCopyAfterStorageCheck = nil
-		testHookAfterStorageOwnerRead = nil
 	})
 
 	go func() { defer close(copyDone); copyErr <- f.copy(true) }()
@@ -226,26 +230,30 @@ func TestTASK3779_UploadWaitsForAHeldCopyAndIsRefused(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the copy never reached its storage check")
 	}
-	// Armed only now, so it fires for the upload alone (the copy read its
-	// owner before it was held), right before the upload takes the lock: the
-	// window below starts with the upload at the lock, not merely started.
-	reached := make(chan struct{})
-	var reachedOnce sync.Once
-	testHookAfterStorageOwnerRead = func(*sql.Tx, string) { reachedOnce.Do(func() { close(reached) }) }
-	go func() { uploadErr <- f.add(600, false, WithPlanLimit()) }()
-	select {
-	case <-reached:
-	case err := <-uploadErr:
-		t.Fatalf("the upload finished before it reached the storage lock: %v", err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("the upload never reached the storage lock")
-	}
+	uploadStarted = true
+	go func() { defer close(uploadDone); uploadErr <- f.add(600, false, WithPlanLimit()) }()
 
-	// The upload must not finish while the copy holds the lock.
-	select {
-	case err := <-uploadErr:
-		t.Fatalf("the upload finished while the copy was held between its check and its commit (err %v): the storage lock does not serialise them", err)
-	case <-time.After(500 * time.Millisecond):
+	// The upload must be seen WAITING on an advisory lock in this database,
+	// in Postgres's own lock table, while the copy is held: the proof that
+	// the lock serialises them, not merely that the upload was slow. Without
+	// the lock no waiter ever appears and the upload commits past the cap.
+	waiting := false
+	deadline := time.Now().Add(10 * time.Second)
+	for !waiting && time.Now().Before(deadline) {
+		select {
+		case err := <-uploadErr:
+			t.Fatalf("the upload finished while the copy was held between its check and its commit (err %v): the storage lock does not serialise them", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+		var n int
+		if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		waiting = n > 0
+	}
+	if !waiting {
+		t.Fatal("the upload never waited on an advisory lock while the copy was held")
 	}
 	releaseCopy()
 	if err := <-copyErr; err != nil {
