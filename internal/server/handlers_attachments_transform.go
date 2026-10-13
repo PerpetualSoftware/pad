@@ -339,16 +339,12 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 	// unreadable under DR-13 anyway, and the caller must not be able to
 	// tell "your item was archived just now" from "no such attachment".
 	//
-	// The already-written blob is left on disk. It carries no row, so no
-	// quota is charged for it (usage is derived from live rows) — but note
-	// that the orphan GC walks attachment ROWS, so a rowless blob is not
-	// reclaimed by it either. That is the pre-existing shape of every
-	// Put-then-insert failure window in this codebase (upload and thumbnail
-	// derivation have the same one); this refusal makes it reachable on one
-	// more, rare path rather than introducing it. Deleting the blob here
-	// would be wrong without the GC's dedupe guard: the same content hash
-	// may already back another live row.
+	// On any refusal the already-written blob is reclaimed under the
+	// rowless sweep's guards (BUG-3652): kept if another row or writer
+	// shares the content hash, deleted otherwise, so a refused transform
+	// leaves nothing it wrote on disk.
 	if err := s.store.CreateAttachmentForLiveItem(row, s.workspaceLimitMintOpts()...); err != nil {
+		s.reclaimRefusedBlob(r.Context(), dstStore, hash, storageKey)
 		// A transform output is a new top-level attachment, so it counts
 		// against the storage limit like an upload (TASK-3619).
 		if writeStorePlanLimitError(w, r, err, "") {

@@ -425,6 +425,47 @@ func (s *Server) runRowlessBlobSweep(ctx context.Context, blobCutoff time.Time) 
 	return res, nil
 }
 
+// reclaimRefusedBlob deletes the blob a write path Put when that path's row
+// insert then failed or was refused (BUG-3652), so a refusal leaves nothing
+// on disk that its caller wrote. Without it the blob sat rowless and
+// uncharged until runRowlessBlobSweep's grace (30 days by default) let it
+// go, so repeated refused uploads could fill a disk the storage cap exists
+// to protect.
+//
+// It applies the rowless sweep's guards minus the age gate, which only
+// covers windows the process did not live to observe; the caller observed
+// this one from Put to refusal. The caller must still hold its own
+// markUploadInFlight mark for hash. Under the in-flight lock:
+//
+//   - any OTHER mark on the hash means another writer is between its Put
+//     and its insert of these same bytes, and the blob is theirs too;
+//   - a row in ANY state for the hash means Put deduplicated onto a blob
+//     another row owns (or a soft-deleted row still claims, BUG-2415).
+//
+// Either leaves the blob alone. A failure here only logs: the rowless sweep
+// remains the backstop.
+func (s *Server) reclaimRefusedBlob(ctx context.Context, backend attachments.AttachmentStore, hash, storageKey string) {
+	ctx = context.WithoutCancel(ctx) // a client that hung up still leaves no blob
+	s.inFlight.Lock()
+	defer s.inFlight.Unlock()
+	if s.inFlight.CountLocked(hash) > 1 {
+		return
+	}
+	exists, err := s.store.AttachmentRowsExistForHash(hash)
+	if err != nil {
+		slog.Warn("refused write: blob row re-check failed; the rowless sweep will reclaim it",
+			"storage_key", storageKey, "error", err)
+		return
+	}
+	if exists {
+		return
+	}
+	if err := backend.Delete(ctx, storageKey); err != nil {
+		slog.Warn("refused write: blob delete failed; the rowless sweep will reclaim it",
+			"storage_key", storageKey, "error", err)
+	}
+}
+
 // orphanGCConfig captures runtime knobs for the periodic loop.
 // Stored on Server via SetOrphanGCConfig so tests + cmd/pad can
 // override defaults independently.
