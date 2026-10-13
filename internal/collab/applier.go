@@ -245,6 +245,12 @@ const (
 	// applied nothing. Not retried on another applier: the refusal is about the
 	// document's live state, not about this connection.
 	applierRefused
+	// applierNotDurable — an op-log append failed inside the bracket (BUG-3749).
+	// The frame was broadcast, so the tabs hold the content, but the op-log does
+	// not, and only the barrier repair (the tab re-sending) can store it. Not
+	// success, and not re-applied: a re-apply diffs against a document that
+	// already holds the content, sends nothing, and would then read as stored.
+	applierNotDurable
 )
 
 type pendingApplierAck struct {
@@ -257,6 +263,9 @@ type pendingApplierAck struct {
 	// scopes to exactly the setContent frame.
 	startPersistedOpID int64
 	startFrozenDropSeq int64
+	// startAppendFailSeq is the conn's append-failure count at the same
+	// baseline (BUG-3749).
+	startAppendFailSeq int64
 	// applyStarted is set when apply_start was received.
 	applyStarted bool
 	// delivered guards resultCh against a double send (ack vs finalization race).
@@ -420,6 +429,13 @@ var (
 	// a direct write / re-apply (either could clobber); instead it returns a RETRYABLE
 	// error to the external-write caller so the write is retried once clients converge.
 	ErrApplierAmbiguous = errors.New("collab: applier outcome ambiguous (legacy conn during restore); retry")
+
+	// ErrApplierNotDurable — the applier applied the content and the open tabs
+	// hold it, but an op-log append in its apply bracket failed, so it is not
+	// stored (BUG-3749). Not re-applied (the document already holds it). The
+	// outcome is unknown to the caller: the tab's barrier repair may store it
+	// later, or every copy may be lost first.
+	ErrApplierNotDurable = errors.New("collab: applier content reached the open tabs but its op-log append failed")
 
 	// ErrApplierRefusedUnconfirmed — the applier refused a guarded request
 	// because its tab holds local edits the server may not have stored yet
@@ -745,6 +761,19 @@ func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPa
 					return nil, patchRefusal, false, anyWriteSucceeded
 				}
 				return nil, ErrApplierRefusedUnconfirmed, false, anyWriteSucceeded
+			case applierNotDurable:
+				slog.Warn("collab: applier round-trip not durable (op-log append failed in its bracket)",
+					"item_id", itemID,
+					"client_id", applier.id,
+				)
+				if payload.isPatch() {
+					// The tab applied the patch; only its storage failed. Same
+					// answer as a timed-out patch (BUG-3586): unknown, and a
+					// retry goes back to this connection, never to a tab that
+					// would re-plan the edits and could apply them twice.
+					return nil, &PatchOutcomeUnknownError{ConnID: connRef(applier)}, false, anyWriteSucceeded
+				}
+				return nil, ErrApplierNotDurable, false, anyWriteSucceeded
 			case applierAmbiguous:
 				// Legacy conn caught by a restore: setContent MIGHT have landed but we
 				// can't confirm. FAIL-SAFE — do NOT re-apply (that could clobber peer
@@ -982,6 +1011,7 @@ func (r *Room) registerPendingAck(requestID string, applier *roomConn) (<-chan a
 		resultCh:           ch,
 		startPersistedOpID: applier.lastPersistedOpID.Load(),
 		startFrozenDropSeq: applier.frozenDropSeq.Load(),
+		startAppendFailSeq: applier.appendFailSeq.Load(),
 	}
 	return ch, nil
 }
@@ -1010,6 +1040,7 @@ func (r *Room) startApplierApply(requestID string, rc *roomConn) {
 	}
 	pending.startPersistedOpID = rc.lastPersistedOpID.Load()
 	pending.startFrozenDropSeq = rc.frozenDropSeq.Load()
+	pending.startAppendFailSeq = rc.appendFailSeq.Load()
 	pending.applyStarted = true
 }
 
@@ -1036,7 +1067,14 @@ func (r *Room) resolveApplierAck(requestID string, rc *roomConn) {
 		return
 	}
 	dropped := rc.frozenDropSeq.Load() > pending.startFrozenDropSeq
+	// BUG-3749: a failed append is not a drop, and it is not a landing either.
+	// For a legacy round-trip the failure may belong to concurrent typing
+	// rather than the applier's frame; reporting it as not durable is the safe
+	// side of that ambiguity, since the store just failed.
+	failed := rc.appendFailSeq.Load() > pending.startAppendFailSeq
 	switch {
+	case !dropped && failed:
+		pending.deliver(applierNotDurable)
 	case !dropped:
 		pending.deliver(applierPersisted)
 	case rc.bracketCapable.Load() && pending.applyStarted:
@@ -1107,9 +1145,16 @@ func (r *Room) freezeAndFinalizePending() {
 			// Applier conn gone; can't confirm — fail safe.
 			outcome = applierAmbiguous
 		case pending.applyStarted:
-			if rc.lastPersistedOpID.Load() > pending.startPersistedOpID {
+			switch {
+			case rc.appendFailSeq.Load() > pending.startAppendFailSeq:
+				// BUG-3749: a frame in the bracket was broadcast but not
+				// stored. Checked first: another frame landing does not make
+				// this one durable, and a re-apply after the restore would
+				// diff to nothing and read as stored.
+				outcome = applierNotDurable
+			case rc.lastPersistedOpID.Load() > pending.startPersistedOpID:
 				outcome = applierPersisted
-			} else {
+			default:
 				outcome = applierNotPersisted
 			}
 		case rc.bracketCapable.Load():

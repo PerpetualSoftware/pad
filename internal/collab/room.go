@@ -135,6 +135,12 @@ type roomConn struct {
 	// atomic so the finalizing/ack goroutines can read them without appendMu.
 	lastPersistedOpID atomic.Int64
 	frozenDropSeq     atomic.Int64
+	// appendFailSeq counts op-log append failures of this conn's sync frames
+	// (BUG-3749), under appendMu like the two above. A failed frame is still
+	// broadcast, so the tabs hold it while the op-log does not: an applier
+	// bracket in which this advanced resolves as not durable, never as
+	// persisted. appendFailed (below) is the barrier's view of the same event.
+	appendFailSeq atomic.Int64
 
 	// bracketCapable reports whether this connection's client sends the
 	// applier_apply_start bracket (BUG-2276 residual 2). Announced at Join via
@@ -749,6 +755,7 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 		// event (we'd be advertising a fictional id).
 		results = make([]store.SyncFrameAppend, len(batch))
 		rc.appendFailed = true
+		rc.appendFailSeq.Add(1)
 		if r.onAppendFail != nil {
 			r.onAppendFail()
 		}
