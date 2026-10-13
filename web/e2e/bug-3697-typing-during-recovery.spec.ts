@@ -54,7 +54,11 @@ test('the editor accepts no typing while a force_refresh recovery is in flight',
 	// `c` in this text opened quick-add, which took the rest (BUG-3786).
 	const editor = page.locator(EDITOR_SELECTOR);
 	await expect(editor).toHaveAttribute('contenteditable', 'false');
-	await editor.click({ force: true });
+	// focus(), not click({ force: true }): a forced click lands on whatever is
+	// on top at the editor's centre, and in the shared e2e world that was
+	// another spec's "E2E Admin created N items →" activity toast, whose link
+	// closed the pane (BUG-3786).
+	await editor.focus();
 	await expect(editor, 'premise: the frozen editor holds focus').toBeFocused();
 	await page.keyboard.type('Typed during recovery.');
 	await expect(editor).not.toContainText('Typed during recovery.');
