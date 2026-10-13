@@ -17,8 +17,10 @@ import (
 // item row (no seq, updated_at or etag change) and no last_referenced_at
 // stamp (DOC-3371 day-85 revisions).
 //
-// LOCKS. The workspace seq lock comes first, as in every fenced write: it
-// pins the companion check against a concurrent move, and it is what
+// LOCKS. On Pad Cloud the owner's storage plan-limit lock comes before
+// everything (BeginFenced, FenceSpec.StorageLimit, BUG-3653). After the
+// fence's own install read, the workspace seq lock comes first, as in every
+// fenced write: it pins the companion check against a concurrent move, and it is what
 // serializes the cap recount. Every app writer of via_app rows holds it, so
 // two uploads for one install cannot both pass a recount that only one of
 // them fits. The spec names a FOR UPDATE on the install row for this, but the

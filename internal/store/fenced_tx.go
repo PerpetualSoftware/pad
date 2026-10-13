@@ -26,7 +26,11 @@ import (
 // admitted under is current and the install is active. Disable, rotate and
 // uninstall take the same row FOR UPDATE and bump the epoch, so an app write
 // either commits before them or fails inside its own transaction. The shared
-// lock is the transaction's first lock and nothing upgrades it. On SQLite
+// lock is the transaction's first lock and nothing upgrades it, with one
+// exception: a spec with StorageLimit (an app upload on Pad Cloud, BUG-3653)
+// takes the owner's storage plan-limit advisory lock before it, because that
+// lock's ordering rule requires it first. No holder of the install row waits
+// on that lock, so the order adds no cycle. On SQLite
 // the DSN's _txlock=immediate makes BEGIN the writer lock, which serializes
 // the same way.
 //
