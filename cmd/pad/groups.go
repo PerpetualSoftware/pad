@@ -219,7 +219,6 @@ func dbCmd() *cobra.Command {
 		dbBackupCmd(),
 		dbRestoreCmd(),
 		dbMigrateToPgCmd(),
-		dbDiagnoseVersionTiesCmd(),
 		dbScanNULCmd(),
 		dbRepairNULCmd(),
 		dbReleaseCloudCmd(),

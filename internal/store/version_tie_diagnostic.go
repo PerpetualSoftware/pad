@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/diff"
 )
@@ -52,15 +53,51 @@ type tieVersion struct {
 	isDiff    bool
 }
 
-// DiagnoseVersionTies reads every item that has same-second versions and
-// classifies each tie group (see VersionTieReport). It only reads, inside a
-// read-only transaction on Postgres, and takes the database handle directly so
-// an operator can point it at a production database without the store's
-// migrate-on-open.
-func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool) (*VersionTieReport, error) {
+// DiagnoseOptions bounds a diagnostic run.
+type DiagnoseOptions struct {
+	// StatementTimeout caps each statement on Postgres (0: 30s).
+	StatementTimeout time.Duration
+	// Progress, when set, is called after each item with the count done and
+	// the total, so a long run shows it is moving.
+	Progress func(done, total int)
+}
+
+// beginDiagnosticTx opens the diagnostic's one transaction, read-only by
+// construction on Postgres: BEGIN READ ONLY through TxOptions and again
+// with SET TRANSACTION READ ONLY, so a write inside it is refused by the
+// server (SQLSTATE 25006) however the code around it is wrong. SQLite has no
+// read-only transaction; DiagnoseVersionTiesAt opens it query_only instead.
+func beginDiagnosticTx(ctx context.Context, db *sql.DB, postgres bool, timeout time.Duration) (*sql.Tx, error) {
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: postgres})
 	if err != nil {
 		return nil, fmt.Errorf("version tie diagnostic: begin: %w", err)
+	}
+	if postgres {
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		for _, stmt := range []string{
+			"SET TRANSACTION READ ONLY",
+			fmt.Sprintf("SET LOCAL statement_timeout = %d", timeout.Milliseconds()),
+		} {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				_ = tx.Rollback()
+				return nil, fmt.Errorf("version tie diagnostic: %s: %w", stmt, err)
+			}
+		}
+	}
+	return tx, nil
+}
+
+// DiagnoseVersionTies reads every item that has same-second versions and
+// classifies each tie group (see VersionTieReport). It only reads, in one
+// read-only transaction, one item at a time, and takes the database handle
+// directly so an operator can point it at a production database without the
+// store's migrate-on-open.
+func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts DiagnoseOptions) (*VersionTieReport, error) {
+	tx, err := beginDiagnosticTx(ctx, db, postgres, opts.StatementTimeout)
+	if err != nil {
+		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck // read-only; nothing to keep
 
@@ -129,6 +166,9 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool) (*Versi
 		}
 		rep.ItemsScanned++
 		classifyTieGroups(current, versions, rep)
+		if opts.Progress != nil {
+			opts.Progress(rep.ItemsScanned, len(itemIDs))
+		}
 	}
 	return rep, nil
 }
@@ -264,8 +304,17 @@ func permute(n int, fn func([]int) bool) {
 // DiagnoseVersionTiesAt opens the database at dsn WITHOUT running migrations,
 // runs DiagnoseVersionTies and closes it, so an operator can measure a
 // production database without changing it. postgres selects the driver; a
-// SQLite path is opened query-only.
-func DiagnoseVersionTiesAt(ctx context.Context, dsn string, postgres bool) (*VersionTieReport, error) {
+// SQLite path is opened query-only, which refuses writes on the connection.
+func DiagnoseVersionTiesAt(ctx context.Context, dsn string, postgres bool, opts DiagnoseOptions) (*VersionTieReport, error) {
+	db, err := openDiagnosticDB(dsn, postgres)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return DiagnoseVersionTies(ctx, db, postgres, opts)
+}
+
+func openDiagnosticDB(dsn string, postgres bool) (*sql.DB, error) {
 	if err := registerGuardedDrivers(); err != nil {
 		return nil, err
 	}
@@ -277,6 +326,5 @@ func DiagnoseVersionTiesAt(ctx context.Context, dsn string, postgres bool) (*Ver
 	if err != nil {
 		return nil, fmt.Errorf("version tie diagnostic: open: %w", err)
 	}
-	defer db.Close()
-	return DiagnoseVersionTies(ctx, db, postgres)
+	return db, nil
 }
