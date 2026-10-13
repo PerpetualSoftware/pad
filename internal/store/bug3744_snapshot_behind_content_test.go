@@ -127,3 +127,30 @@ func TestBUG3744_SameOrNewerCursorIsWritten(t *testing.T) {
 		t.Fatalf("content = %q, want c", got)
 	}
 }
+
+// A snapshot without a cursor cannot show what it covers: refused once the
+// stored body has recorded one, written as before when none has (codex r2).
+func TestBUG3744_CursorlessSnapshotRefusedOnceACursorIsRecorded(t *testing.T) {
+	s, itemID, ids := bug3744Item(t, 1)
+	bare := func(body string) error {
+		_, err := s.UpdateItem(itemID, models.ItemUpdate{
+			Content:        &body,
+			LastModifiedBy: "user",
+			VersionSource:  "collab-snapshot",
+		})
+		return err
+	}
+	if err := bare("legacy"); err != nil {
+		t.Fatalf("cursorless snapshot before any cursor: %v", err)
+	}
+	if err := snapshot(s, itemID, "tracked", ids[0]); err != nil {
+		t.Fatalf("tracked snapshot: %v", err)
+	}
+	var behind *SnapshotBehindContentError
+	if err := bare("stale"); !errors.As(err, &behind) {
+		t.Fatalf("cursorless snapshot after a cursor: err = %v, want SnapshotBehindContentError", err)
+	}
+	if got := contentOf(t, s, itemID); got != "tracked" {
+		t.Fatalf("content = %q, want tracked", got)
+	}
+}

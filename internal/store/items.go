@@ -3105,13 +3105,22 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// stays where it was, would then sit above content that no longer
 		// reflects it. Read in this transaction, after the post-lock re-read
 		// above, so it is ordered against every other content writer.
+		//
+		// A snapshot with NO cursor cannot show what it covers, so once the
+		// stored body has recorded one it is refused too (codex r2): its
+		// edits travelled as ops and are in the op-log, so nothing durable is
+		// lost. Before any cursor is recorded (0) it is written as it always
+		// was. Cursor -1 in the error marks the missing one.
 		snapshotLike := input.VersionSource == "collab-snapshot" || input.Recovered
-		if snapshotLike && input.OpLogCursor != nil {
+		if snapshotLike {
 			var covered int64
 			if err := tx.QueryRow(s.q(`SELECT content_op_cursor FROM items WHERE id = ?`), id).Scan(&covered); err != nil {
 				return nil, fmt.Errorf("read content cursor: %w", err)
 			}
-			if *input.OpLogCursor < covered {
+			switch {
+			case input.OpLogCursor == nil && covered > 0:
+				return nil, &SnapshotBehindContentError{Cursor: -1, Covered: covered}
+			case input.OpLogCursor != nil && *input.OpLogCursor < covered:
 				return nil, &SnapshotBehindContentError{Cursor: *input.OpLogCursor, Covered: covered}
 			}
 		}
