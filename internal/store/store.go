@@ -1606,7 +1606,7 @@ func (s *Store) migrateToWorkspaceNumbering() error {
 	// Renumber items per workspace: assign 1, 2, 3… ordered by created_at, id
 	for _, wsID := range wsIDs {
 		itemRows, err := tx.Query(s.q(`
-			SELECT i.id, i.item_number, COALESCE(c.prefix, '')
+			SELECT i.id, i.item_number, COALESCE(c.prefix, ''), i.deleted_at IS NULL
 			FROM items i LEFT JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? ORDER BY i.created_at ASC, i.id ASC`),
 			wsID,
@@ -1619,11 +1619,12 @@ func (s *Store) migrateToWorkspaceNumbering() error {
 			id     string
 			old    sql.NullInt64
 			prefix string
+			live   bool
 		}
 		var items []numbered
 		for itemRows.Next() {
 			var it numbered
-			if err := itemRows.Scan(&it.id, &it.old, &it.prefix); err != nil {
+			if err := itemRows.Scan(&it.id, &it.old, &it.prefix, &it.live); err != nil {
 				itemRows.Close()
 				return err
 			}
@@ -1634,33 +1635,58 @@ func (s *Store) migrateToWorkspaceNumbering() error {
 			return err
 		}
 
-		// Assign sequential numbers across the entire workspace, and record
-		// each reference that moves: a stored [[IDEA-1]] whose item becomes
-		// IDEA-2 would otherwise resolve to another item, through
-		// GetItemByRef's workspace-number fallback (BUG-3750). A key two items
-		// share (two collections with one prefix) is ambiguous, and dropped.
-		renamed := map[string]string{}
+		// Assign sequential numbers across the entire workspace, and keep
+		// what each stored reference resolved to before (BUG-3750): a stored
+		// [[IDEA-1]] whose item becomes IDEA-2 would otherwise resolve to
+		// another item. Before the conversion, GetItemByRef took the exact
+		// PREFIX-N match, else the live item holding number N; both are
+		// recorded here with the new reference, and a key that does not name
+		// one item (two collections with one prefix, or a number several live
+		// items held) is dropped rather than guessed.
+		exact := map[string]string{}
 		ambiguous := map[string]bool{}
+		byNumber := map[int64]string{}
+		sharedNumber := map[int64]bool{}
 		for i, it := range items {
 			num := i + 1
 			if _, err := tx.Exec(s.q("UPDATE items SET item_number = ? WHERE id = ?"), num, it.id); err != nil {
 				return fmt.Errorf("renumber item %s to %d: %w", it.id, num, err)
 			}
-			if it.prefix == "" || !it.old.Valid {
+			if !it.old.Valid || !it.live {
 				continue
 			}
-			from := strings.ToUpper(formatRef(it.prefix, int(it.old.Int64)))
-			if _, seen := renamed[from]; seen || ambiguous[from] {
-				delete(renamed, from)
-				ambiguous[from] = true
-				continue
+			to := ""
+			if it.prefix != "" {
+				to = formatRef(strings.ToUpper(it.prefix), num)
+				from := strings.ToUpper(formatRef(it.prefix, int(it.old.Int64)))
+				if _, seen := exact[from]; seen || ambiguous[from] {
+					delete(exact, from)
+					ambiguous[from] = true
+				} else {
+					exact[from] = to
+				}
 			}
-			renamed[from] = formatRef(strings.ToUpper(it.prefix), num)
+			if _, seen := byNumber[it.old.Int64]; seen || sharedNumber[it.old.Int64] {
+				delete(byNumber, it.old.Int64)
+				sharedNumber[it.old.Int64] = true
+			} else {
+				byNumber[it.old.Int64] = to
+			}
 		}
-		for from, to := range renamed {
-			if strings.EqualFold(from, to) {
-				delete(renamed, from)
+		renamed := func(ref string) (string, bool) {
+			prefix, number, ok := splitRef(ref)
+			if !ok {
+				return "", false
 			}
+			key := strings.ToUpper(prefix) + "-" + strconv.Itoa(number)
+			to, found := exact[key]
+			if !found && !ambiguous[key] {
+				to, found = byNumber[int64(number)]
+			}
+			if !found || to == "" || strings.EqualFold(to, ref) {
+				return "", false
+			}
+			return to, true
 		}
 		if err := s.rewriteRenumberedRefsTx(tx, wsID, renamed); err != nil {
 			return err
@@ -1682,10 +1708,7 @@ func (s *Store) migrateToWorkspaceNumbering() error {
 // rewriteRenumberedRefsTx rewrites the stored reference links of one
 // workspace, item bodies and comment bodies, by renamed (old ref -> new ref),
 // as part of converting legacy numbering (BUG-3750).
-func (s *Store) rewriteRenumberedRefsTx(tx *sql.Tx, workspaceID string, renamed map[string]string) error {
-	if len(renamed) == 0 {
-		return nil
-	}
+func (s *Store) rewriteRenumberedRefsTx(tx *sql.Tx, workspaceID string, renamed func(ref string) (string, bool)) error {
 	for _, target := range []struct{ table, column string }{{"items", "content"}, {"comments", "body"}} {
 		rows, err := tx.Query(s.q(`SELECT id, `+target.column+` FROM `+target.table+` WHERE workspace_id = ? AND `+target.column+` LIKE '%[[%'`), workspaceID)
 		if err != nil {
