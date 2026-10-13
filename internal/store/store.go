@@ -967,26 +967,72 @@ func extractPragmas(sqlText string) (pragmas []string, rest string) {
 	return pragmas, out.String()
 }
 
-// foreignKeyViolations runs PRAGMA foreign_key_check on tx and counts the
-// violations per foreign key, keyed "table|parent|fkid". Counts, not rowids
-// (codex r1): a table rebuild renumbers rowids, so a legacy violation would
-// look new under a rowid key, and a WITHOUT ROWID table reports no rowid at
-// all.
-func foreignKeyViolations(ctx context.Context, tx *sql.Tx) (map[string]int, error) {
-	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+// fkCheckResult is one PRAGMA foreign_key_check pass, run per table so a
+// table whose check cannot run ("foreign key mismatch": an FK whose parent
+// key has no unique index) does not blind the check for every other table
+// (codex on #2120).
+type fkCheckResult struct {
+	// counts holds the violations per foreign key, keyed
+	// "table|parent|fkid". Counts, not rowids (codex r1): a table rebuild
+	// renumbers rowids, so a legacy violation would look new under a rowid
+	// key, and a WITHOUT ROWID table reports no rowid at all.
+	counts map[string]int
+	// checked and unavailable partition the tables that existed: a table in
+	// neither did not exist when the pass ran.
+	checked     map[string]bool
+	unavailable map[string]error
+}
+
+// foreignKeyViolations runs PRAGMA foreign_key_check on tx for each table.
+// Only listing the tables is fatal; a table whose check fails is recorded as
+// unavailable.
+func foreignKeyViolations(ctx context.Context, tx *sql.Tx) (fkCheckResult, error) {
+	res := fkCheckResult{counts: map[string]int{}, checked: map[string]bool{}, unavailable: map[string]error{}}
+	var tables []string
+	rows, err := tx.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	if err != nil {
+		return res, err
+	}
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			rows.Close()
+			return res, err
+		}
+		tables = append(tables, t)
+	}
+	if err := rows.Close(); err != nil {
+		return res, err
+	}
+	for _, t := range tables {
+		counts, err := foreignKeyViolationsOf(ctx, tx, t)
+		if err != nil {
+			res.unavailable[t] = err
+			continue
+		}
+		res.checked[t] = true
+		for fk, n := range counts {
+			res.counts[fk] += n
+		}
+	}
+	return res, nil
+}
+
+func foreignKeyViolationsOf(ctx context.Context, tx *sql.Tx, table string) (map[string]int, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check("`+strings.ReplaceAll(table, `"`, `""`)+`")`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[string]int{}
 	for rows.Next() {
-		var table, parent string
+		var child, parent string
 		var rowid sql.NullInt64
 		var fkid int64
-		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+		if err := rows.Scan(&child, &rowid, &parent, &fkid); err != nil {
 			return nil, err
 		}
-		out[table+"|"+parent+"|"+strconv.FormatInt(fkid, 10)]++
+		out[child+"|"+parent+"|"+strconv.FormatInt(fkid, 10)]++
 	}
 	return out, rows.Err()
 }
@@ -1112,30 +1158,43 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 	// refusing those here would turn this check into an upgrade blocker.
 	//
 	// The check itself can fail rather than report: foreign_key_check errors
-	// with "foreign key mismatch" when some FK's parent key has no unique
+	// with "foreign key mismatch" when an FK's parent key has no unique
 	// index, which a rebuild can leave in a schema the chain is not yet done
 	// with (CI on #2120: re-applying 056 over a database that has
 	// item_decisions). It is a safety net, never a new way to refuse an
-	// upgrade, so a failed check is logged and skipped, not fatal.
-	var fkBefore map[string]int
-	fkCheck := fkOff
-	if fkCheck {
+	// upgrade, so it runs per table: a table whose check fails on either
+	// side is logged and skipped, and every other table is still compared.
+	// A table the body creates has a baseline of zero. A table that was
+	// unavailable before has no baseline, so its violations after are
+	// logged, not refused: they may be legacy ones the check could not see.
+	var fkBefore fkCheckResult
+	if fkOff {
 		if fkBefore, err = foreignKeyViolations(ctx, tx); err != nil {
-			slog.Warn("migration foreign key check unavailable; skipped", "migration", name, "stage", "before", "error", err)
-			fkCheck = false
+			return fmt.Errorf("apply migration %s: foreign key check before: %w", name, err)
+		}
+		for t, cerr := range fkBefore.unavailable {
+			slog.Warn("migration foreign key check unavailable for table; skipped", "migration", name, "stage", "before", "table", t, "error", cerr)
 		}
 	}
 	if err := execMulti(tx, body); err != nil {
 		return fmt.Errorf("apply migration %s: %w", name, err)
 	}
-	if fkCheck {
+	if fkOff {
 		after, err := foreignKeyViolations(ctx, tx)
 		if err != nil {
-			slog.Warn("migration foreign key check unavailable; skipped", "migration", name, "stage", "after", "error", err)
+			return fmt.Errorf("apply migration %s: foreign key check after: %w", name, err)
 		}
-		for fk, n := range after {
-			if n > fkBefore[fk] {
-				return fmt.Errorf("apply migration %s: leaves %d foreign key violation(s) on %s (table|parent|fkid) where it found %d", name, n, fk, fkBefore[fk])
+		for t, cerr := range after.unavailable {
+			slog.Warn("migration foreign key check unavailable for table; skipped", "migration", name, "stage", "after", "table", t, "error", cerr)
+		}
+		for fk, n := range after.counts {
+			table := fk[:strings.Index(fk, "|")]
+			if _, blind := fkBefore.unavailable[table]; blind {
+				slog.Warn("migration foreign key violations on a table with no baseline; not refused", "migration", name, "table", table, "fk", fk, "count", n)
+				continue
+			}
+			if n > fkBefore.counts[fk] {
+				return fmt.Errorf("apply migration %s: leaves %d foreign key violation(s) on %s (table|parent|fkid) where it found %d", name, n, fk, fkBefore.counts[fk])
 			}
 		}
 	}

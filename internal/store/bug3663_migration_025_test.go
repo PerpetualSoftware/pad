@@ -247,6 +247,38 @@ func fkCheckRuns(t *testing.T, s *Store) error {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	_, err = foreignKeyViolations(context.Background(), tx)
-	return err
+	res, err := foreignKeyViolations(context.Background(), tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cerr := range res.unavailable {
+		return cerr
+	}
+	return nil
+}
+
+// A table whose check cannot run does not blind the check for the others
+// (codex on #2120): with one unreadable FK in the schema, a dangling
+// reference the body leaves in a different, readable table is refused.
+func TestBUG3663_UnreadableTableDoesNotHideAViolationElsewhere(t *testing.T) {
+	s := fkCheckStore(t)
+	for _, stmt := range []string{
+		`CREATE TABLE fk3663_loose_parent (code TEXT)`,
+		`CREATE TABLE fk3663_loose_child (id TEXT PRIMARY KEY, code TEXT REFERENCES fk3663_loose_parent(code))`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := fkCheckRuns(t, s); err == nil {
+		t.Fatal("instrument: the loose FK must make one table's check fail")
+	}
+	const name = "999_bug3663_dangles_beside_a_mismatch.sql"
+	err := applySQLiteMigration(s.db, name, "PRAGMA foreign_keys = OFF;\nDELETE FROM fk3663_parent WHERE id = 'p1';\nPRAGMA foreign_keys = ON;\n")
+	if err == nil || !strings.Contains(err.Error(), "fk3663_child|fk3663_parent") {
+		t.Fatalf("a dangling reference beside an unreadable FK: err = %v, want a refusal naming fk3663_child|fk3663_parent", err)
+	}
+	if recorded(t, s, name) {
+		t.Error("the refused migration was recorded")
+	}
 }
