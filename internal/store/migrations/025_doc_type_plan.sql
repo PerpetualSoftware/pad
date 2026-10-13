@@ -1,5 +1,15 @@
 -- Rename doc_type 'phase-plan' to 'plan' in the CHECK constraint.
 -- SQLite does not support ALTER CHECK, so we recreate the table.
+--
+-- Foreign keys are off for the rebuild (BUG-3663): versions.document_id
+-- references documents with no cascade, so DROP TABLE documents failed
+-- with "FOREIGN KEY constraint failed" on any database holding a version.
+-- Every id is preserved by the copy, so the references stay valid after
+-- the rename, and the runner refuses the migration if it leaves a
+-- violation that was not there before it ran. Databases that already
+-- applied 025 never run it again: the runner tracks migrations by name.
+
+PRAGMA foreign_keys = OFF;
 
 CREATE TABLE documents_new (
     id               TEXT PRIMARY KEY,
@@ -67,3 +77,5 @@ END;
 
 -- Rebuild FTS index to match potentially renamed doc_type values
 INSERT INTO documents_fts(documents_fts) VALUES ('rebuild');
+
+PRAGMA foreign_keys = ON;
