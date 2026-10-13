@@ -815,3 +815,55 @@ func bracketRewriteAt(content string, position int, targetTitle string, esc Titl
 	}
 	return qualified, displaySuffix, bracketEnd, true
 }
+
+// RewriteRefs rewrites same-workspace reference links ([[TASK-1]] and
+// [[TASK-1|alias]]) whose reference is a key of renamed, to the reference it
+// maps to, keeping any display segment verbatim. Keys and values are
+// "PREFIX-NUMBER" with the prefix upper-cased; a link's reference is matched
+// case-insensitively. Every bracket is rewritten from its position in the
+// ORIGINAL content in one pass, so a chain (TASK-1 -> TASK-2, TASK-2 ->
+// TASK-3) moves each link once. Workspace-qualified links (ws::TASK-1) are
+// left alone: their numbers are another workspace's. Returns the content and
+// how many links changed.
+//
+// It exists for converting legacy per-collection numbering, which renumbers
+// items and must keep stored references on the items they meant (BUG-3750).
+func RewriteRefs(content string, renamed map[string]string) (string, int) {
+	if len(renamed) == 0 {
+		return content, 0
+	}
+	var b strings.Builder
+	cursor, changed := 0, 0
+	for _, l := range ExtractWikiLinks(content) {
+		if l.Kind != WikiLinkKindRef || l.Position < cursor {
+			continue
+		}
+		to, ok := renamed[strings.ToUpper(l.Ref)]
+		if !ok {
+			continue
+		}
+		body, end, found := scanBracketBody(content, l.Position)
+		if !found {
+			continue
+		}
+		key, _, _ := splitOnUnescapedPipe(body)
+		if !strings.EqualFold(strings.TrimSpace(unescapeWikiBody(key)), l.Ref) {
+			continue
+		}
+		if changed == 0 {
+			b.Grow(len(content))
+		}
+		b.WriteString(content[cursor:l.Position])
+		b.WriteString("[[")
+		b.WriteString(to)
+		b.WriteString(body[len(key):])
+		b.WriteString("]]")
+		cursor = end
+		changed++
+	}
+	if changed == 0 {
+		return content, 0
+	}
+	b.WriteString(content[cursor:])
+	return b.String(), changed
+}
