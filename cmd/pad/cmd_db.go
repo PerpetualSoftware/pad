@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -327,6 +328,50 @@ WARNING: This will overwrite the current database contents.`,
 
 	cmd.Flags().BoolVar(&force, "force", false, "skip confirmation prompt")
 
+	return cmd
+}
+
+// dbDiagnoseVersionTiesCmd counts same-second item-version groups whose
+// stored order breaks the reverse-patch chain (BUG-3751). Read-only and
+// migration-free, so it can be pointed at a production database.
+func dbDiagnoseVersionTiesCmd() *cobra.Command {
+	var sqlitePath, pgURL string
+	cmd := &cobra.Command{
+		Use:   "diagnose-version-ties",
+		Short: "Count item-version tie groups whose order breaks history (read-only)",
+		Long: `Reads every item that has two or more versions created in the same second and
+reports, as counts only, whether the order history reads them in still
+reconstructs their content. Opens the database without running migrations and
+writes nothing (a read-only transaction on PostgreSQL, query-only on SQLite).
+Prints JSON. See BUG-3751.`,
+		Example: `  pad db diagnose-version-ties --pg postgres://pad@localhost:5432/pad
+  pad db diagnose-version-ties --sqlite ~/.pad/pad.db`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if sqlitePath != "" && pgURL != "" {
+				return fmt.Errorf("pass --sqlite or --pg, not both")
+			}
+			dsn, postgres := pgURL, pgURL != ""
+			if !postgres {
+				dsn = sqlitePath
+				if dsn == "" {
+					resolved, err := resolveSQLiteDBPath()
+					if err != nil {
+						return err
+					}
+					dsn = resolved
+				}
+			}
+			rep, err := store.DiagnoseVersionTiesAt(cmd.Context(), dsn, postgres)
+			if err != nil {
+				return err
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(rep)
+		},
+	}
+	cmd.Flags().StringVar(&sqlitePath, "sqlite", "", "SQLite database path (default: this instance's)")
+	cmd.Flags().StringVar(&pgURL, "pg", "", "PostgreSQL connection URL")
 	return cmd
 }
 
