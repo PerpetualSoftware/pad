@@ -151,6 +151,20 @@
 	let accessCollectionIds = $state<string[]>([]);
 	let accessLoading = $state(false);
 	let accessSaving = $state(false);
+	// Bumped whenever the open access panel changes (open, close, Cancel), so a
+	// read or save answered for one member never paints the panel of another
+	// (BUG-3698). Plain, not $state: only the async handlers read it.
+	let accessPanelGen = 0;
+
+	function setAccessPanel(userId: string | null) {
+		accessPanelGen++;
+		expandedAccessUserId = userId;
+	}
+
+	// The panel a request was made for is still the one on screen.
+	function accessPanelHeld(gen: number, userId: string, ws: string): boolean {
+		return gen === accessPanelGen && expandedAccessUserId === userId && ws === wsSlug;
+	}
 
 	// Tabs \u2014 Danger Zone is owner-only (PLAN-1100 / TASK-1102). All other
 	// tabs remain visible to every member; their content is gated within.
@@ -333,6 +347,10 @@
 			members = [];
 			invitations = [];
 			workspaceApps = [];
+			// An access panel belongs to the workspace it was opened in
+			// (BUG-3698, codex r1): closing it also retires any read or save
+			// still in flight for it.
+			setAccessPanel(null);
 			if (wsSlug) load(wsSlug);
 		});
 	});
@@ -776,27 +794,34 @@
 		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
 		if (expandedAccessUserId === userId) {
-			expandedAccessUserId = null;
+			setAccessPanel(null);
 			return;
 		}
-		expandedAccessUserId = userId;
+		setAccessPanel(userId);
+		const gen = accessPanelGen;
+		const reqWs = wsSlug;
 		accessLoading = true;
 		accessMode = 'all';
 		accessCollectionIds = [];
 		try {
-			const data = await api.members.getMemberCollectionAccess(wsSlug, userId);
+			const data = await api.members.getMemberCollectionAccess(reqWs, userId);
 			// A READ, and it still commits: this paints one member's access
 			// rights into the panel. Under a changed identity that is the
-			// previous session's answer rendered to whoever is signed in now.
-			if (!identityHeld(epochAtEntry)) return;
+			// previous session's answer rendered to whoever is signed in now;
+			// under a changed panel it is one member's access shown, and then
+			// saved, as another's (BUG-3698).
+			if (!identityHeld(epochAtEntry) || !accessPanelHeld(gen, userId, reqWs)) return;
 			accessMode = data.collection_access === 'specific' ? 'specific' : 'all';
 			accessCollectionIds = data.collection_ids ?? [];
 		} catch {
-			if (!identityHeld(epochAtEntry)) return;
+			if (!identityHeld(epochAtEntry) || !accessPanelHeld(gen, userId, reqWs)) return;
 			accessMode = 'all';
 			accessCollectionIds = [];
 		} finally {
-			accessLoading = false;
+			// Only the current panel's read may end its loading state: a stale
+			// one clearing it would show the default 'all' form, with Save
+			// enabled, while this member's access is still on its way.
+			if (gen === accessPanelGen) accessLoading = false;
 		}
 	}
 
@@ -815,28 +840,36 @@
 		const epochAtEntry = captureIdentity();
 		accessSaving = true;
 		const userId = expandedAccessUserId;
+		const gen = accessPanelGen;
+		const reqWs = wsSlug;
 		const prevMode = accessMode;
 		const prevIds = [...accessCollectionIds];
 		try {
 			const result = await api.members.setMemberCollectionAccess(
-				wsSlug,
+				reqWs,
 				userId,
 				accessMode,
 				accessMode === 'specific' ? accessCollectionIds : []
 			);
 			if (!identityHeld(epochAtEntry)) return;
+			toastStore.show('Collection access updated', 'success');
+			// The save landed for `userId` either way; the form is refreshed
+			// only while that member's panel is still the one open.
+			if (!accessPanelHeld(gen, userId, reqWs)) return;
 			accessMode = result.collection_access === 'specific' ? 'specific' : 'all';
 			accessCollectionIds = result.collection_ids ?? [];
-			toastStore.show('Collection access updated', 'success');
 		} catch {
 			// The REVERT is a commit like any other, and a worse one to leave
 			// unfenced: `prevMode` / `prevIds` were captured before the await,
 			// under the PREVIOUS identity, so restoring them writes one
 			// session's view of another member's access into the new session.
 			if (!identityHeld(epochAtEntry)) return;
+			toastStore.show('Failed to update collection access', 'error');
+			// Reverting another member's panel to this one's values is the
+			// BUG-3698 overwrite in its failure form.
+			if (!accessPanelHeld(gen, userId, reqWs)) return;
 			accessMode = prevMode;
 			accessCollectionIds = prevIds;
-			toastStore.show('Failed to update collection access', 'error');
 		} finally {
 			accessSaving = false;
 		}
@@ -1226,7 +1259,7 @@
 												<Button variant="primary" size="sm" onclick={saveCollectionAccess} disabled={accessSaving}>
 													{accessSaving ? 'Saving...' : 'Save'}
 												</Button>
-												<Button variant="secondary" size="sm" onclick={() => { expandedAccessUserId = null; }}>
+												<Button variant="secondary" size="sm" onclick={() => setAccessPanel(null)}>
 													Cancel
 												</Button>
 											</div>
