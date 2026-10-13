@@ -1217,7 +1217,9 @@ func (s *Server) rehydrateAttachment(
 	// Re-derive thumbnails for image originals. Mirrors the upload
 	// handler — runs async via goAsync so the import handler doesn't
 	// stall on imaging work, and Server.Stop() waits for in-flight
-	// derivation before close.
+	// derivation before close. The thumbnails are not charged against the
+	// storage cap, as at upload: server-made variants never refuse
+	// (TASK-3625 ruling); only the original above is.
 	if allowed.Category == attachments.CategoryImage && s.imageProcessor != nil {
 		original := att.ID
 		s.goAsync(func() { s.deriveThumbnails(original) })
