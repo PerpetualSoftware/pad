@@ -30,6 +30,23 @@ import (
 // [P1] of TASK-1319.
 var errStaleCollabSnapshot = errors.New("collab-snapshot: cursor incompatible with op-log")
 
+// writeSnapshotBehindContentError answers a browser snapshot refused because
+// its op-log cursor is below the one the stored body covers (BUG-3744).
+// Nothing was written. It is answered like a superseded write, which the pane
+// treats as done rather than failed: the item already holds a newer body.
+func writeSnapshotBehindContentError(w http.ResponseWriter, itemID string, err error) bool {
+	var behind *store.SnapshotBehindContentError
+	if !errors.As(err, &behind) {
+		return false
+	}
+	slog.Info("collab-snapshot: refused; cursor behind the stored content",
+		"item_id", itemID, "cursor", behind.Cursor, "covered", behind.Covered)
+	writeError2(w, http.StatusConflict, "superseded_write",
+		"a newer body is already stored; this snapshot was not written",
+		map[string]interface{}{"op_log_cursor": behind.Cursor, "content_op_cursor": behind.Covered})
+	return true
+}
+
 // handleListItems lists all items across collections in a workspace.
 func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
@@ -2466,6 +2483,9 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 					"This editor's view is out of sync with the server; please reload.")
 				return
 			}
+			if writeSnapshotBehindContentError(w, item.ID, err) {
+				return
+			}
 			if conflict, ok := asUpdateConflictError(err); ok {
 				writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 				return
@@ -2637,6 +2657,9 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// TASK-2022: optimistic-concurrency conflict → structured 409.
 		if conflict, ok := asUpdateConflictError(err); ok {
 			writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
+			return
+		}
+		if writeSnapshotBehindContentError(w, item.ID, err) {
 			return
 		}
 		if pending, ok := store.AsContentPendingFlushError(err); ok {
