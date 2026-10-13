@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -179,5 +180,97 @@ func TestBUG3653_CopyRetriesAnOwnershipChangeMidCheck(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("attempts = %d, want 3", calls)
+	}
+}
+
+// TASK-3779: the race above never overlapped the two writes, so it passed
+// with the storage lock removed. Here the copy is held after its check passes
+// and before it inserts, with room for only one of the two 600-byte writes,
+// and the upload starts inside that window. With the lock the upload waits for
+// the copy to commit and is refused; without it both commit past the cap.
+func TestTASK3779_UploadWaitsForAHeldCopyAndIsRefused(t *testing.T) {
+	f := newCopyStorageFixture(t, "pro", 600, 0)
+	if f.s.dialect.Driver() != DriverPostgres {
+		// The advisory lock under test is Postgres-only. On SQLite the
+		// upload's BEGIN IMMEDIATE waits behind the held copy's writer lock
+		// before it can reach the lock this test watches.
+		t.Skip("the storage advisory lock is Postgres-only")
+	}
+	used, err := f.s.accountStorageUsageQ(f.s.db, f.owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.SetUserPlanOverrides(f.owner.ID, fmt.Sprintf(`{"storage_bytes":%d}`, used+1000)); err != nil {
+		t.Fatal(err)
+	}
+	held, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCopy := func() { releaseOnce.Do(func() { close(release) }) }
+	testHookCopyAfterStorageCheck = func() {
+		close(held)
+		<-release
+	}
+	copyErr, uploadErr := make(chan error, 1), make(chan error, 1)
+	copyDone, uploadDone := make(chan struct{}), make(chan struct{})
+	uploadStarted := false
+	// Failure paths must not leave the copy parked holding its locks, or a
+	// goroutine running past the test.
+	t.Cleanup(func() {
+		releaseCopy()
+		<-copyDone
+		if uploadStarted {
+			<-uploadDone
+		}
+		testHookCopyAfterStorageCheck = nil
+	})
+
+	go func() { defer close(copyDone); copyErr <- f.copy(true) }()
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the copy never reached its storage check")
+	}
+	uploadStarted = true
+	go func() { defer close(uploadDone); uploadErr <- f.add(600, false, WithPlanLimit()) }()
+
+	// The upload must be seen WAITING on the owner's storage lock, in
+	// Postgres's own lock table, while the copy is held: the proof that the
+	// lock serialises them, not merely that the upload was slow. Without the
+	// lock no waiter ever appears and the upload commits past the cap.
+	waiting := false
+	deadline := time.Now().Add(10 * time.Second)
+	for !waiting && time.Now().Before(deadline) {
+		select {
+		case err := <-uploadErr:
+			t.Fatalf("the upload finished while the copy was held between its check and its commit (err %v): the storage lock does not serialise them", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+		var n int
+		// The storage lock's own key: acquirePlanLimitLock takes
+		// pg_advisory_xact_lock(hashtext('pad:plan-limit:storage_bytes:' ||
+		// owner)), a single bigint key that pg_locks splits into classid (high
+		// 32 bits) and objid (low 32 bits), with objsubid 1. Both are matched.
+		if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND objsubid = 1
+			AND classid = (((hashtext('pad:plan-limit:storage_bytes:' || $1)::bigint) >> 32) & 4294967295)::oid
+			AND objid = ((hashtext('pad:plan-limit:storage_bytes:' || $1)::bigint) & 4294967295)::oid`, f.owner.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		waiting = n > 0
+	}
+	if !waiting {
+		t.Fatal("the upload never waited on the storage lock while the copy was held")
+	}
+	releaseCopy()
+	if err := <-copyErr; err != nil {
+		t.Fatalf("the held copy: %v", err)
+	}
+	var ple *PlanLimitError
+	if err := <-uploadErr; !errors.As(err, &ple) {
+		t.Fatalf("the upload after the copy committed: err = %v, want *PlanLimitError", err)
+	}
+	if usage, _ := f.s.accountStorageUsageQ(f.s.db, f.owner.ID); usage > used+1000 {
+		t.Fatalf("usage %d is past the limit %d", usage, used+1000)
 	}
 }

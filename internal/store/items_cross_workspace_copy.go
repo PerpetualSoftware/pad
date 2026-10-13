@@ -790,6 +790,9 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		if err := s.checkStorageLimitTx(tx, storageLock, adding); err != nil {
 			return nil, err
 		}
+		if testHookCopyAfterStorageCheck != nil {
+			testHookCopyAfterStorageCheck()
+		}
 	}
 	if len(plan.UnresolvableRefs) > 0 {
 		// DR-11a observability: a spike means either a data-integrity problem
