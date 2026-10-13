@@ -150,6 +150,14 @@ func (s *Store) commitWorkspaceMemberTx(tx *sql.Tx) error {
 // it (BUG-2136). The accept is rolled back.
 var ErrInvitationGone = errors.New("invitation no longer pending")
 
+// ErrInviterScopeTooNarrow: the member who sent the invitation is now
+// restricted to specific collections, and an accepted invitation makes a
+// member with access to every collection, more than the inviter holds
+// (BUG-3634). The accept is refused, not narrowed: the invitation carries
+// no scope to narrow to, and a silent downgrade would leave the invitee
+// with access nobody chose. An unrestricted owner can send a new one.
+var ErrInviterScopeTooNarrow = errors.New("the inviter can no longer grant this access")
+
 // AcceptWorkspaceInvitation accepts an invitation in one transaction: the
 // membership through addWorkspaceMemberTx, then the invitation's accepted_at.
 // An existing membership is an idempotent success (BUG-3281, lead ruling):
@@ -170,6 +178,9 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 	}
 	defer tx.Rollback()
 
+	if err := s.requireInviterScopeTx(tx, invitationID, workspaceID); err != nil {
+		return false, "", err
+	}
 	added, effectiveRole, err = s.addWorkspaceMemberTx(tx, workspaceID, userID, role, resolveMintOptions(opts), true)
 	if err != nil {
 		return false, "", err
@@ -201,6 +212,55 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 		return added, effectiveRole, fmt.Errorf("accept workspace invitation: %w", err)
 	}
 	return added, effectiveRole, nil
+}
+
+// requireInviterScopeTx refuses an accept whose inviter is now a member
+// restricted to specific collections (BUG-3634), read at accept time so a
+// restriction made after the invitation was sent still applies.
+//
+// An instance admin is exempt. visibleCollectionIDs scopes an admin's
+// BEARER requests to their membership, but that bounds what a token can
+// reach, not the admin's authority: from a cookie session the admin can set
+// any member's access to all, including their own and this invitee's. So
+// an admin's invitation never grants more than the admin can grant, and
+// the property this guards (no one grants beyond what they hold) is not at
+// stake. An inviter who is no longer a member, or no recorded inviter, is
+// left as before.
+func (s *Store) requireInviterScopeTx(tx *sql.Tx, invitationID, workspaceID string) error {
+	var inviterID, userRole string
+	err := tx.QueryRow(s.q(`
+		SELECT i.invited_by, u.role FROM workspace_invitations i
+		JOIN users u ON u.id = i.invited_by
+		WHERE i.id = ?`), invitationID).Scan(&inviterID, &userRole)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("accept workspace invitation: read inviter: %w", err)
+	}
+	if userRole == "admin" {
+		return nil
+	}
+	// Share-locked on Postgres, so a restriction of the inviter committing
+	// alongside this accept either lands first and is read here, or waits
+	// for the membership this accept writes and narrows nothing it relies
+	// on (codex round 2). SQLite's single writer orders them already.
+	q := `SELECT collection_access FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		q += ` FOR SHARE`
+	}
+	var access string
+	err = tx.QueryRow(s.q(q), workspaceID, inviterID).Scan(&access)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("accept workspace invitation: read inviter scope: %w", err)
+	}
+	if access == "specific" {
+		return ErrInviterScopeTooNarrow
+	}
+	return nil
 }
 
 // RemoveWorkspaceMember removes a user from a workspace.
@@ -853,6 +913,21 @@ func (s *Store) IsWorkspaceMember(workspaceID, userID string) (bool, error) {
 
 // UpdateWorkspaceMemberRole changes a member's role in a workspace.
 func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) error {
+	return s.UpdateWorkspaceMemberRoleWithin(workspaceID, userID, role, nil)
+}
+
+// ErrMemberScopeChanged refuses a role change by a collection-restricted
+// owner when the target's scope changed since the caller's check and is
+// no longer within the scope it was checked against (BUG-3634).
+var ErrMemberScopeChanged = errors.New("the member's collection access changed; reload and try again")
+
+// UpdateWorkspaceMemberRoleWithin is UpdateWorkspaceMemberRole for a caller
+// restricted to specific collections (BUG-3634). within is the target's
+// collection set the caller checked against its own scope; under the row
+// lock the role write takes anyway, the target must still be restricted to
+// a subset of it, or the change is refused with ErrMemberScopeChanged. A nil
+// within checks nothing.
+func (s *Store) UpdateWorkspaceMemberRoleWithin(workspaceID, userID, role string, within []string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -865,6 +940,48 @@ func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) erro
 	if role != "owner" {
 		if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
 			return err
+		}
+	}
+	if within != nil {
+		// Where the UPDATE below would lock the row anyway, so the lock
+		// order is unchanged. SetMemberCollectionAccess writes this row
+		// first, so a widening either committed before this read or waits
+		// for this role change to commit.
+		q := `SELECT collection_access FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
+		if s.dialect.Driver() == DriverPostgres {
+			q += ` FOR UPDATE`
+		}
+		var access string
+		switch err := tx.QueryRow(s.q(q), workspaceID, userID).Scan(&access); {
+		case errors.Is(err, sql.ErrNoRows):
+			return sql.ErrNoRows
+		case err != nil:
+			return fmt.Errorf("update workspace member role: read scope: %w", err)
+		}
+		if access != "specific" {
+			return ErrMemberScopeChanged
+		}
+		allowed := make(map[string]bool, len(within))
+		for _, id := range within {
+			allowed[id] = true
+		}
+		rows, err := tx.Query(s.q(`SELECT collection_id FROM member_collection_access WHERE workspace_id = ? AND user_id = ?`), workspaceID, userID)
+		if err != nil {
+			return fmt.Errorf("update workspace member role: read scope: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("update workspace member role: read scope: %w", err)
+			}
+			if !allowed[id] {
+				_ = rows.Close()
+				return ErrMemberScopeChanged
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("update workspace member role: read scope: %w", err)
 		}
 	}
 	result, err := tx.Exec(

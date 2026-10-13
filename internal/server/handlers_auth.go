@@ -937,6 +937,29 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			notJoined = &invitationNotJoined{Code: "invitation_gone",
 				Message: "This invitation is no longer valid. Your account was created, but you were not added to the workspace."}
 			addErr = nil
+		} else if errors.Is(addErr, store.ErrInviterScopeTooNarrow) && !inviteIsAdmission {
+			// The inviter has been restricted since (BUG-3634). Registration
+			// is open, so the account stands and joins nothing, as above.
+			slog.Info("invitation signup: the inviter is now restricted; registration is open, so the "+
+				"account is kept and joins nothing",
+				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)
+			notJoined = &invitationNotJoined{Code: inviterScopeChangedCode,
+				Message: "Your account was created, but you were not added to the workspace. " + inviterScopeChangedMessage}
+			addErr = nil
+		} else if errors.Is(addErr, store.ErrInviterScopeTooNarrow) {
+			// The invitation was the admission, so the account goes with it,
+			// as for a gone invitation below.
+			slog.Info("invitation signup: the inviter is now restricted; rolling back the account",
+				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)
+			if derr := s.rollbackSignup(user.ID); derr != nil {
+				slog.Error("invitation signup: failed to roll back the account; the email is held by an "+
+					"account with no workspace access",
+					"user_id", user.ID, "error", derr)
+				writeInternalError(w, derr)
+				return
+			}
+			writeError(w, http.StatusForbidden, inviterScopeChangedCode, inviterScopeChangedMessage)
+			return
 		} else if errors.Is(addErr, store.ErrInvitationGone) {
 			slog.Info("invitation signup: the invitation was gone at its claim; rolling back the account",
 				"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "invitation_id", invitation.ID)

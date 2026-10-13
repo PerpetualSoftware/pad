@@ -107,6 +107,11 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can invite members")
 		return
 	}
+	// An invitation carries no scope, so the member it makes sees every
+	// collection: a restricted caller cannot send one (BUG-3634).
+	if !s.requireCallerCanSetCollectionAccess(w, r, workspaceID, "all", nil) {
+		return
+	}
 
 	var input struct {
 		Email string `json:"email"`
@@ -328,7 +333,39 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.store.UpdateWorkspaceMemberRole(workspaceID, userID, input.Role); err != nil {
+	// A role applies across the target's scope, so a restricted caller may
+	// change it only for a member whose scope lies within its own
+	// (BUG-3634). The store re-checks that scope under the row lock the
+	// write takes (within), so a concurrent widening cannot slip between
+	// this check and the write. A missing member falls through to the
+	// store's 404.
+	var within []string
+	callerVisible, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if callerVisible != nil {
+		if target, err := s.store.GetWorkspaceMember(workspaceID, userID); err != nil {
+			writeInternalError(w, err)
+			return
+		} else if target != nil {
+			mode, targetIDs := "all", []string{}
+			if target.CollectionAccess == "specific" {
+				mode = "specific"
+				if targetIDs, err = s.store.GetMemberCollectionAccess(workspaceID, userID); err != nil {
+					writeInternalError(w, err)
+					return
+				}
+			}
+			if !s.requireCallerCanSetCollectionAccess(w, r, workspaceID, mode, targetIDs) {
+				return
+			}
+			within = append([]string{}, targetIDs...)
+		}
+	}
+
+	if err := s.store.UpdateWorkspaceMemberRoleWithin(workspaceID, userID, input.Role, within); err != nil {
 		writeMemberChangeError(w, err)
 		return
 	}
@@ -355,6 +392,8 @@ func writeMemberChangeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "canonical_owner", "This is the workspace's owner, who cannot be demoted or removed; transfer ownership first")
 	case errors.Is(err, store.ErrLastOwner):
 		writeError(w, http.StatusConflict, "last_owner", "A workspace must keep at least one owner; make another member an owner first")
+	case errors.Is(err, store.ErrMemberScopeChanged):
+		writeError(w, http.StatusConflict, "member_scope_changed", "This member's collection access changed; reload and try again")
 	case errors.Is(err, store.ErrAppPrincipal):
 		// TASK-3392: a bot's membership belongs to its install; removing it
 		// is uninstalling the app.
@@ -543,6 +582,12 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 		writeError(w, http.StatusNotFound, "not_found", "Invitation not found or already accepted")
 		return "", false
 	}
+	// The inviter has been restricted since (BUG-3634): refused, with a
+	// reason, and the invitation stays pending. Nothing was written.
+	if errors.Is(err, store.ErrInviterScopeTooNarrow) {
+		writeError(w, http.StatusForbidden, inviterScopeChangedCode, inviterScopeChangedMessage)
+		return "", false
+	}
 	if err != nil {
 		// RECONCILE BEFORE REFUSING (BUG-3026). The store returns the raw
 		// commit error, so a lost acknowledgement lands the membership and the
@@ -589,6 +634,13 @@ func (s *Server) acceptInvitationCore(w http.ResponseWriter, r *http.Request, in
 	}
 	return role, true
 }
+
+// The refusal every accept door gives an invitation whose inviter is now
+// restricted to specific collections (BUG-3634).
+const (
+	inviterScopeChangedCode    = "inviter_scope_changed"
+	inviterScopeChangedMessage = "The person who invited you can no longer grant access to this workspace. Ask a workspace owner to invite you again."
+)
 
 // writeInvitationAccepted is the success body both accept doors answer with.
 // workspace_slug and owner_username (TASK-3277, additive) let a client open
