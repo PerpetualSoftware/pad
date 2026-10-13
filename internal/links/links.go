@@ -518,6 +518,43 @@ type TitleEscaper struct {
 	// without touching the strings at all.
 	titleLen int
 	slugLen  int
+	// refDisplay is set when the new title is itself reference-shaped (see
+	// WithOwnRef): the bracket then names the renamed item by its own
+	// reference, and refDisplay ("|" + the escaped new title) becomes its
+	// display segment when the bracket had none.
+	refDisplay string
+	// refShapedNoRef is set when the new title is reference-shaped but the
+	// renamed item has no reference of its own to emit (see WithOwnRef).
+	refShapedNoRef bool
+}
+
+// WithOwnRef guards a rename whose new title parses as a reference, like
+// "TASK-1" (BUG-3693). Written into a bracket as a title, it would be read as
+// a reference, and the index and the renderer both resolve a reference before
+// a title, so every [[old title]] link would move to whichever item that
+// reference names. In that case the rewrite emits the renamed item's own
+// reference (ownRef) instead, keeping the new title as the display text:
+// [[old title]] becomes [[ownRef|TASK-1]], and [[old title|alias]] becomes
+// [[ownRef|alias]]. A collection-qualified bracket drops its prefix, which a
+// reference does not take. An item with no reference of its own (a
+// collection with no prefix) is written collection-qualified instead,
+// [[<collSlug>/TASK-1]], which parses as a title, not a reference; with no
+// slug either, the bracket is left as it is: a link that no longer resolves
+// is better than one that names a different item. Any other title leaves e
+// as it is.
+func (e TitleEscaper) WithOwnRef(newTitle, ownRef string) TitleEscaper {
+	ref := parseBody(e.escTitle)
+	if ref == nil || (ref.Kind != WikiLinkKindRef && ref.Kind != WikiLinkKindWorkspaceRef) {
+		return e
+	}
+	if ownRef == "" {
+		e.refShapedNoRef = true
+		return e
+	}
+	e.refDisplay = "|" + e.escTitle
+	e.escTitle = escapeWikiBody(ownRef)
+	e.titleLen = escapedWikiBodyLen(ownRef)
+	return e
 }
 
 // NewTitleEscaper precomputes the escaped forms for one rename.
@@ -760,6 +797,15 @@ func bracketRewriteAt(content string, position int, targetTitle string, esc Titl
 		// already in stored form.
 		displaySuffix = body[len(rawKey):]
 	}
+	if esc.refDisplay != "" {
+		// The bracket names the item by its own reference (WithOwnRef). The
+		// writer, the projection and bracketUnchanged all read these two
+		// outputs, so changing them here keeps the three in agreement.
+		if displaySuffix == "" {
+			displaySuffix = esc.refDisplay
+		}
+		return false, displaySuffix, bracketEnd, true
+	}
 
 	// Only now, on a confirmed match: does the `<collSlug>/` prefix carry over?
 	// A qualified body like `[[tasks/Old Title]]` becomes `[[tasks/New Title]]`,
@@ -775,5 +821,62 @@ func bracketRewriteAt(content string, position int, targetTitle string, esc Titl
 		// title. Leave the bracket alone rather than emit a guess.
 		return false, "", 0, false
 	}
+	if esc.refShapedNoRef {
+		// A bare reference-shaped title would be read as a reference
+		// (WithOwnRef). Qualified, it is read as a title; with no slug to
+		// qualify it, the bracket is left alone.
+		if esc.slugLen == 0 {
+			return false, "", 0, false
+		}
+		qualified = true
+	}
 	return qualified, displaySuffix, bracketEnd, true
+}
+
+// RewriteRefs rewrites same-workspace reference links ([[TASK-1]] and
+// [[TASK-1|alias]]) for which renamed returns a new reference, keeping any
+// display segment verbatim. renamed receives the link's reference as written.
+// Every bracket is rewritten from its position in the
+// ORIGINAL content in one pass, so a chain (TASK-1 -> TASK-2, TASK-2 ->
+// TASK-3) moves each link once. Workspace-qualified links (ws::TASK-1) are
+// left alone: their numbers are another workspace's. Returns the content and
+// how many links changed.
+//
+// It exists for converting legacy per-collection numbering, which renumbers
+// items and must keep stored references on the items they meant (BUG-3750).
+func RewriteRefs(content string, renamed func(ref string) (string, bool)) (string, int) {
+	var b strings.Builder
+	cursor, changed := 0, 0
+	for _, l := range ExtractWikiLinks(content) {
+		if l.Kind != WikiLinkKindRef || l.Position < cursor {
+			continue
+		}
+		to, ok := renamed(l.Ref)
+		if !ok {
+			continue
+		}
+		body, end, found := scanBracketBody(content, l.Position)
+		if !found {
+			continue
+		}
+		key, _, _ := splitOnUnescapedPipe(body)
+		if !strings.EqualFold(strings.TrimSpace(unescapeWikiBody(key)), l.Ref) {
+			continue
+		}
+		if changed == 0 {
+			b.Grow(len(content))
+		}
+		b.WriteString(content[cursor:l.Position])
+		b.WriteString("[[")
+		b.WriteString(to)
+		b.WriteString(body[len(key):])
+		b.WriteString("]]")
+		cursor = end
+		changed++
+	}
+	if changed == 0 {
+		return content, 0
+	}
+	b.WriteString(content[cursor:])
+	return b.String(), changed
 }

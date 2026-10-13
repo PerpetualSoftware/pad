@@ -781,6 +781,13 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// links.TitleEscaper.qualifiedFor for the two measured cases and
 	// items_rename_slug_prefix_test.go for both fixtures.
 	esc := links.NewTitleEscaper(oldTitle, newTitle, collSlug)
+	// A reference-shaped new title must not retarget [[old title]] links to
+	// the item that reference names (BUG-3693).
+	ownRef, err := s.itemRefTx(tx, renamedItemID)
+	if err != nil {
+		return fmt.Errorf("cascade rename: own ref: %w", err)
+	}
+	esc = esc.WithOwnRef(newTitle, ownRef)
 
 	var cascaded []string
 	for _, work := range works {
@@ -1878,3 +1885,25 @@ const (
 )
 
 const MaxItemRenameCascadeBytes = 64 << 20
+
+// itemRefTx is the item's "PREFIX-NUMBER" reference, read inside tx, or ""
+// when it has none (no item number, or a collection with no prefix).
+func (s *Store) itemRefTx(tx *sql.Tx, itemID string) (string, error) {
+	var number sql.NullInt64
+	var prefix sql.NullString
+	err := tx.QueryRow(s.q(`
+		SELECT i.item_number, c.prefix
+		FROM items i JOIN collections c ON c.id = i.collection_id
+		WHERE i.id = ?
+	`), itemID).Scan(&number, &prefix)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !number.Valid || !prefix.Valid || prefix.String == "" {
+		return "", nil
+	}
+	return formatRef(prefix.String, int(number.Int64)), nil
+}
