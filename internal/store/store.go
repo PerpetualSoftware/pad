@@ -967,16 +967,18 @@ func extractPragmas(sqlText string) (pragmas []string, rest string) {
 	return pragmas, out.String()
 }
 
-// foreignKeyViolations runs PRAGMA foreign_key_check on tx and returns each
-// violation as "table|rowid|parent|fkid". Rowid is empty for a WITHOUT ROWID
-// table.
-func foreignKeyViolations(ctx context.Context, tx *sql.Tx) (map[string]bool, error) {
+// foreignKeyViolations runs PRAGMA foreign_key_check on tx and counts the
+// violations per foreign key, keyed "table|parent|fkid". Counts, not rowids
+// (codex r1): a table rebuild renumbers rowids, so a legacy violation would
+// look new under a rowid key, and a WITHOUT ROWID table reports no rowid at
+// all.
+func foreignKeyViolations(ctx context.Context, tx *sql.Tx) (map[string]int, error) {
 	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]bool{}
+	out := map[string]int{}
 	for rows.Next() {
 		var table, parent string
 		var rowid sql.NullInt64
@@ -984,11 +986,7 @@ func foreignKeyViolations(ctx context.Context, tx *sql.Tx) (map[string]bool, err
 		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
 			return nil, err
 		}
-		id := ""
-		if rowid.Valid {
-			id = strconv.FormatInt(rowid.Int64, 10)
-		}
-		out[table+"|"+id+"|"+parent+"|"+strconv.FormatInt(fkid, 10)] = true
+		out[table+"|"+parent+"|"+strconv.FormatInt(fkid, 10)]++
 	}
 	return out, rows.Err()
 }
@@ -1112,7 +1110,7 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 	// the ones the database already had: a legacy database may carry some
 	// from before FKs were enforced on every connection (see New), and
 	// refusing those here would turn this check into an upgrade blocker.
-	var fkBefore map[string]bool
+	var fkBefore map[string]int
 	if fkOff {
 		if fkBefore, err = foreignKeyViolations(ctx, tx); err != nil {
 			return fmt.Errorf("apply migration %s: foreign key check before: %w", name, err)
@@ -1126,9 +1124,9 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 		if err != nil {
 			return fmt.Errorf("apply migration %s: foreign key check after: %w", name, err)
 		}
-		for v := range after {
-			if !fkBefore[v] {
-				return fmt.Errorf("apply migration %s: leaves a foreign key violation it did not find (table|rowid|parent|fkid %s)", name, v)
+		for fk, n := range after {
+			if n > fkBefore[fk] {
+				return fmt.Errorf("apply migration %s: leaves %d foreign key violation(s) on %s (table|parent|fkid) where it found %d", name, n, fk, fkBefore[fk])
 			}
 		}
 	}

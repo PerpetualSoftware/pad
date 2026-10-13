@@ -160,3 +160,29 @@ func TestBUG3663_FKOffMigrationIgnoresAViolationThatPredatesIt(t *testing.T) {
 		t.Error("the clean migration was not recorded")
 	}
 }
+
+// The legacy violation sits in a table the migration rebuilds, and the copy
+// renumbers its rowids (codex r1): it is still the same one violation, and
+// does not block.
+func TestBUG3663_FKOffRebuildThatRenumbersALegacyViolationIsNotRefused(t *testing.T) {
+	s := fkCheckStore(t)
+	conn, err := s.db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{"PRAGMA foreign_keys = OFF", "DELETE FROM fk3663_parent WHERE id = 'p2'", "PRAGMA foreign_keys = ON"} {
+		if _, err := conn.ExecContext(context.Background(), stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn.Close()
+	const name = "999_bug3663_rebuilds_the_child.sql"
+	body := "PRAGMA foreign_keys = OFF;\nCREATE TABLE fk3663_child_new (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES fk3663_parent(id));\nINSERT INTO fk3663_child_new (id, parent_id) SELECT id, parent_id FROM fk3663_child ORDER BY id DESC;\nDROP TABLE fk3663_child;\nALTER TABLE fk3663_child_new RENAME TO fk3663_child;\nPRAGMA foreign_keys = ON;\n"
+	if err := applySQLiteMigration(s.db, name, body); err != nil {
+		t.Fatalf("a rebuild that renumbers a legacy violation: %v", err)
+	}
+	var rowid int64
+	if err := s.db.QueryRow(`SELECT rowid FROM fk3663_child WHERE id = 'c2'`).Scan(&rowid); err != nil || rowid != 1 {
+		t.Fatalf("instrument: c2's rowid = %d (%v), want 1 (renumbered from 2)", rowid, err)
+	}
+}
