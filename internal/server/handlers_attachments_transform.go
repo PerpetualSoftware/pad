@@ -341,8 +341,8 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 	//
 	// On any refusal the already-written blob is reclaimed under the
 	// rowless sweep's guards (BUG-3652): kept if another row or writer
-	// shares the content hash, deleted otherwise, so a refused transform
-	// leaves nothing it wrote on disk.
+	// shares the content hash, deleted otherwise. If the check or the
+	// delete fails, the rowless sweep reclaims it after its grace.
 	if err := s.store.CreateAttachmentForLiveItem(row, s.workspaceLimitMintOpts()...); err != nil {
 		s.reclaimRefusedBlob(r.Context(), dstStore, hash, storageKey)
 		// A transform output is a new top-level attachment, so it counts

@@ -157,3 +157,19 @@ func TestBUG3652_RefusedUploadKeepsABlobAnotherWriterHasInFlight(t *testing.T) {
 		t.Fatalf("blobs on disk: %d %v, want 2 (the in-flight writer's blob kept)", len(keys), keys)
 	}
 }
+
+// A bundle import refused at the storage cap (BUG-3653) takes the blob it
+// rehydrated with it: the importer is left with no workspace and no bytes.
+func TestBUG3652_RefusedImportLeavesNoBlob(t *testing.T) {
+	bundle := realBundleWithBlob(t)
+	srv := attachmentsServerOn(t, store.DriverSQLite)
+	srv.cloudMode = true
+	user, tok := memberImporter(t, srv)
+	capPlan(t, srv, user.ID, "free", 10)
+	if rr := importAs(srv, "refused-import", bundle, tok); rr.Code != http.StatusForbidden {
+		t.Fatalf("import past the limit: %d %s, want 403", rr.Code, rr.Body.String())
+	}
+	if keys := fsBackendKeys(t, srv); len(keys) != 0 {
+		t.Fatalf("blobs on disk after a refused import: %v, want none", keys)
+	}
+}
