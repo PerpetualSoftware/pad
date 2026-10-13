@@ -523,6 +523,9 @@ type TitleEscaper struct {
 	// reference, and refDisplay ("|" + the escaped new title) becomes its
 	// display segment when the bracket had none.
 	refDisplay string
+	// refShapedNoRef is set when the new title is reference-shaped but the
+	// renamed item has no reference of its own to emit (see WithOwnRef).
+	refShapedNoRef bool
 }
 
 // WithOwnRef guards a rename whose new title parses as a reference, like
@@ -533,14 +536,19 @@ type TitleEscaper struct {
 // reference (ownRef) instead, keeping the new title as the display text:
 // [[old title]] becomes [[ownRef|TASK-1]], and [[old title|alias]] becomes
 // [[ownRef|alias]]. A collection-qualified bracket drops its prefix, which a
-// reference does not take. Any other title, or an empty ownRef, leaves e as
-// it is.
+// reference does not take. An item with no reference of its own (a
+// collection with no prefix) is written collection-qualified instead,
+// [[<collSlug>/TASK-1]], which parses as a title, not a reference; with no
+// slug either, the bracket is left as it is: a link that no longer resolves
+// is better than one that names a different item. Any other title leaves e
+// as it is.
 func (e TitleEscaper) WithOwnRef(newTitle, ownRef string) TitleEscaper {
-	if ownRef == "" {
-		return e
-	}
 	ref := parseBody(e.escTitle)
 	if ref == nil || (ref.Kind != WikiLinkKindRef && ref.Kind != WikiLinkKindWorkspaceRef) {
+		return e
+	}
+	if ownRef == "" {
+		e.refShapedNoRef = true
 		return e
 	}
 	e.refDisplay = "|" + e.escTitle
@@ -812,6 +820,15 @@ func bracketRewriteAt(content string, position int, targetTitle string, esc Titl
 		// Index drift: this row's target_title is neither form of the old
 		// title. Leave the bracket alone rather than emit a guess.
 		return false, "", 0, false
+	}
+	if esc.refShapedNoRef {
+		// A bare reference-shaped title would be read as a reference
+		// (WithOwnRef). Qualified, it is read as a title; with no slug to
+		// qualify it, the bracket is left alone.
+		if esc.slugLen == 0 {
+			return false, "", 0, false
+		}
+		qualified = true
 	}
 	return qualified, displaySuffix, bracketEnd, true
 }

@@ -17,7 +17,8 @@ func TestBUG3693_ReferenceShapedTitleWritesTheOwnRef(t *testing.T) {
 		{"qualified", "TASK-1", "TASK-2", "a [[tasks/Old]] b", "a [[TASK-2|TASK-1]] b"},
 		{"workspace ref", "acme::BUG-7", "TASK-2", "a [[Old]] b", "a [[TASK-2|acme::BUG-7]] b"},
 		{"not a ref", "Task 1", "TASK-2", "a [[Old]] b", "a [[Task 1]] b"},
-		{"no own ref", "TASK-1", "", "a [[Old]] b", "a [[TASK-1]] b"},
+		{"no own ref: qualified title", "TASK-1", "", "a [[Old]] b", "a [[tasks/TASK-1]] b"},
+		{"no own ref, aliased", "TASK-1", "", "a [[Old|see]] b", "a [[tasks/TASK-1|see]] b"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			esc := NewTitleEscaper("Old", tc.newTitle, "tasks").WithOwnRef(tc.newTitle, tc.ownRef)
@@ -38,5 +39,18 @@ func TestBUG3693_ReferenceShapedTitleWritesTheOwnRef(t *testing.T) {
 				t.Errorf("a second pass rewrote %q to %q", got, again)
 			}
 		})
+	}
+}
+
+// No own ref and no slug to qualify with: the bracket is left as it is.
+func TestBUG3693_ReferenceShapedTitleWithNothingSafeToWriteIsLeft(t *testing.T) {
+	esc := NewTitleEscaper("Old", "TASK-1", "").WithOwnRef("TASK-1", "")
+	in := "a [[Old]] b"
+	rw := []BracketRewrite{{Position: 2, TargetTitle: "Old"}}
+	if got, applied := RewriteBracketsAt(in, rw, esc); got != in || applied != 0 {
+		t.Errorf("got %q (applied %d), want it unchanged", got, applied)
+	}
+	if n, a := ProjectRewrittenLen(in, rw, esc); n != len(in) || a != 0 {
+		t.Errorf("projection %d/%d, want %d/0", n, a, len(in))
 	}
 }
