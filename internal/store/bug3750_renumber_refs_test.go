@@ -98,6 +98,9 @@ func TestBUG3750_RenumberingKeepsStoredReferencesOnTheirItems(t *testing.T) {
 // written) resolved, before the conversion, through the number fallback: to
 // the one live item holding that number. It keeps that target. Where several
 // items held the number, it never had one target, and is left as written.
+// A collection with no prefix gets one (ITEM, when its name derives none)
+// from backfillItemNumbers before the conversion runs, so its items are
+// reached by the same two rules (codex r3 asked about prefixless targets).
 func TestBUG3750_StalePrefixReferenceKeepsItsFallbackTarget(t *testing.T) {
 	path := bug3664Path(t)
 	db := openRaw(t, path)
@@ -124,9 +127,11 @@ func TestBUG3750_StalePrefixReferenceKeepsItsFallbackTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTwoNumberOnes(t, db) // i1 TASK-1, i2 IDEA-1: number 1 is shared
-	body := "Moved: [[PLAN-5]]. Shared: [[PLAN-1]]."
+	body := "Moved: [[PLAN-5]]. Shared: [[PLAN-1]]. Prefixless: [[NOTE-7]]."
 	for _, stmt := range []string{
 		`INSERT INTO items (id, workspace_id, collection_id, title, slug, item_number, created_at, updated_at) VALUES ('i4', 'w1', 'c1', 'Moved', 'moved', 5, '2026-01-01T00:00:03Z', '2026-01-01T00:00:03Z')`,
+		`INSERT INTO collections (id, workspace_id, name, slug, prefix, created_at, updated_at) VALUES ('c3', 'w1', '123', 'notes', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		`INSERT INTO items (id, workspace_id, collection_id, title, slug, item_number, created_at, updated_at) VALUES ('i6', 'w1', 'c3', 'A note', 'a-note', 7, '2026-01-01T00:00:05Z', '2026-01-01T00:00:05Z')`,
 		`INSERT INTO items (id, workspace_id, collection_id, title, slug, item_number, content, created_at, updated_at) VALUES ('i5', 'w1', 'c1', 'Doc', 'doc', 6, '` + body + `', '2026-01-01T00:00:04Z', '2026-01-01T00:00:04Z')`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
@@ -142,14 +147,17 @@ func TestBUG3750_StalePrefixReferenceKeepsItsFallbackTarget(t *testing.T) {
 	defer s.Close()
 
 	var content string
-	var moved int
+	var moved, note int
 	if err := s.db.QueryRow(`SELECT content FROM items WHERE id = 'i5'`).Scan(&content); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.db.QueryRow(`SELECT item_number FROM items WHERE id = 'i4'`).Scan(&moved); err != nil {
 		t.Fatal(err)
 	}
-	if want := "Moved: [[TASK-" + strconv.Itoa(moved) + "]]. Shared: [[PLAN-1]]."; content != want {
+	if err := s.db.QueryRow(`SELECT item_number FROM items WHERE id = 'i6'`).Scan(&note); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Moved: [[TASK-" + strconv.Itoa(moved) + "]]. Shared: [[PLAN-1]]. Prefixless: [[ITEM-" + strconv.Itoa(note) + "]]."; content != want {
 		t.Errorf("content = %q, want %q", content, want)
 	}
 }
