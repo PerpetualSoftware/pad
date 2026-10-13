@@ -209,3 +209,44 @@ func TestBUG3663_FKOffMigrationIsNotRefusedWhenTheCheckCannotRun(t *testing.T) {
 		t.Error("the migration was not recorded")
 	}
 }
+
+// The same, but the check runs cleanly BEFORE and only the migration's body
+// leaves the schema it cannot read: the parent key starts with a unique
+// index and the body drops it. This is the after-stage path; the leg above
+// skips the check before the body runs and never reaches it.
+func TestBUG3663_FKOffMigrationIsNotRefusedWhenItsBodyBreaksTheCheck(t *testing.T) {
+	s := fkCheckStore(t)
+	for _, stmt := range []string{
+		`CREATE TABLE fk3663_keyed_parent (code TEXT)`,
+		`CREATE UNIQUE INDEX fk3663_keyed_parent_code ON fk3663_keyed_parent (code)`,
+		`CREATE TABLE fk3663_keyed_child (id TEXT PRIMARY KEY, code TEXT REFERENCES fk3663_keyed_parent(code))`,
+	} {
+		if _, err := s.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := fkCheckRuns(t, s); err != nil {
+		t.Fatalf("instrument: the check must run before the body: %v", err)
+	}
+	const name = "999_bug3663_body_drops_the_parent_key.sql"
+	if err := applySQLiteMigration(s.db, name, "PRAGMA foreign_keys = OFF;\nDROP INDEX fk3663_keyed_parent_code;\nPRAGMA foreign_keys = ON;\n"); err != nil {
+		t.Fatalf("an FK-off migration whose body leaves a schema the check cannot read: %v", err)
+	}
+	if !recorded(t, s, name) {
+		t.Error("the migration was not recorded")
+	}
+	if err := fkCheckRuns(t, s); err == nil {
+		t.Fatal("instrument: after the body the check must fail, or this leg does not reach the after stage")
+	}
+}
+
+func fkCheckRuns(t *testing.T, s *Store) error {
+	t.Helper()
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	_, err = foreignKeyViolations(context.Background(), tx)
+	return err
+}
