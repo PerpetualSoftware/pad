@@ -50,7 +50,7 @@ type confirmItem struct {
 const appInstallCodeNotice = "Give this install code to the app. It works once, for 10 minutes. If the app loses it, issue a new code from the install."
 
 func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request) {
-	workspaceID, owner, ok := s.requireAppsOwner(w, r)
+	workspaceID, owner, ok := s.requireAppsGrantOwner(w, r)
 	if !ok {
 		return
 	}
@@ -354,7 +354,7 @@ func itemStatus(item *models.Item) string {
 }
 
 func (s *Server) handleIssueAppInstallCode(w http.ResponseWriter, r *http.Request) {
-	workspaceID, _, ok := s.requireAppsOwner(w, r)
+	workspaceID, _, ok := s.requireAppsGrantOwner(w, r)
 	if !ok {
 		return
 	}
