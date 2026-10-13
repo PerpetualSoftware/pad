@@ -91,7 +91,7 @@ func beginDiagnosticTx(ctx context.Context, db *sql.DB, postgres bool, timeout t
 		}
 		for _, stmt := range []string{
 			"SET TRANSACTION READ ONLY",
-			fmt.Sprintf("SET LOCAL statement_timeout = %d", timeout.Milliseconds()),
+			fmt.Sprintf("SET LOCAL statement_timeout = %d", statementTimeoutMS(timeout)),
 		} {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				_ = tx.Rollback()
@@ -100,6 +100,13 @@ func beginDiagnosticTx(ctx context.Context, db *sql.DB, postgres bool, timeout t
 		}
 	}
 	return tx, nil
+}
+
+// statementTimeoutMS is a positive timeout in whole milliseconds, rounded up:
+// truncating one under 1ms would give 0, which PostgreSQL reads as no timeout
+// at all (codex on BUG-3751).
+func statementTimeoutMS(d time.Duration) int64 {
+	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
 
 // DiagnoseVersionTies reads every item that has same-second versions and
@@ -217,8 +224,21 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 			}
 			return nil, err
 		}
+		// The item is classified into its own report and folded in only when
+		// it finishes: classification is CPU work the deadline must also
+		// bound (codex on BUG-3751), and a half-judged item is not a count.
+		if testHookBeforeClassify != nil {
+			testHookBeforeClassify(rep.ItemsScanned)
+		}
+		var item VersionTieReport
+		if !classifyTieGroups(ctx, current, versions, &item) {
+			if truncated(nil) {
+				return rep, nil
+			}
+			return nil, fmt.Errorf("version tie diagnostic: %w", ctx.Err())
+		}
+		rep.add(item)
 		rep.ItemsScanned++
-		classifyTieGroups(current, versions, rep)
 		if opts.Progress != nil {
 			opts.Progress(rep.ItemsScanned, len(itemIDs))
 		}
@@ -226,11 +246,31 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 	return rep, nil
 }
 
+// testHookBeforeClassify, when set, runs before each item is classified,
+// with the count of items already scanned.
+var testHookBeforeClassify func(scanned int)
+
+// add folds one item's group counts into r.
+func (r *VersionTieReport) add(o VersionTieReport) {
+	r.TieGroups += o.TieGroups
+	r.CurrentOrderOnly += o.CurrentOrderOnly
+	r.Ambiguous += o.Ambiguous
+	r.Misordered += o.Misordered
+	r.Unresolvable += o.Unresolvable
+	r.SkippedLarge += o.SkippedLarge
+	r.WithSnapshot += o.WithSnapshot
+	r.ChainBroken += o.ChainBroken
+}
+
 // classifyTieGroups walks one item's versions from its current content and
-// counts its tie groups into rep.
-func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieReport) {
+// counts its tie groups into rep. It returns false, leaving rep partial, when
+// ctx ends first.
+func classifyTieGroups(ctx context.Context, current string, versions []tieVersion, rep *VersionTieReport) bool {
 	content := current
 	for i := 0; i < len(versions); {
+		if ctx.Err() != nil {
+			return false
+		}
 		j := i + 1
 		for j < len(versions) && versions[j].createdAt == versions[i].createdAt {
 			j++
@@ -241,7 +281,7 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 			out, ok := applyVersion(content, group[0])
 			if !ok {
 				rep.ChainBroken++
-				return
+				return true
 			}
 			content, i = out, j
 			continue
@@ -258,7 +298,7 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 			out, ok := applyOrder(content, group, identity(len(group)), rest)
 			if !ok {
 				rep.ChainBroken++
-				return
+				return true
 			}
 			content, i = out, j
 			continue
@@ -268,7 +308,7 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 			out, ok := applyOrder(content, group, identity(len(group)), rest)
 			if !ok {
 				rep.ChainBroken++
-				return
+				return true
 			}
 			content, i = out, j
 			continue
@@ -276,6 +316,9 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 		currentOut, currentOK := applyOrder(content, group, identity(len(group)), rest)
 		otherOK, otherOut := false, ""
 		permute(len(group), func(order []int) bool {
+			if ctx.Err() != nil {
+				return false
+			}
 			if isIdentity(order) {
 				return true
 			}
@@ -285,6 +328,9 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 			}
 			return true
 		})
+		if ctx.Err() != nil {
+			return false
+		}
 		switch {
 		case currentOK && otherOK:
 			rep.Ambiguous++
@@ -297,10 +343,11 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 			content = otherOut
 		default:
 			rep.Unresolvable++
-			return
+			return true
 		}
 		i = j
 	}
+	return true
 }
 
 // applyOrder applies a tie group in the given order, then checks that the

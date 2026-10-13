@@ -82,6 +82,23 @@ func TestBUG3751_VersionTieDiagnosticCounts(t *testing.T) {
 		t.Fatalf("report = %+v, want %+v", *rep, want)
 	}
 
+	// A deadline reached while an item is being classified stops the run
+	// there: that item is not counted, and the report says truncated rather
+	// than presenting a complete result (codex on BUG-3751).
+	testHookBeforeClassify = func(scanned int) {
+		if scanned == 1 {
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	rep, err = DiagnoseVersionTies(context.Background(), s.db, s.dialect.Driver() == DriverPostgres, DiagnoseOptions{MaxDuration: 100 * time.Millisecond})
+	testHookBeforeClassify = nil
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Truncated || rep.ItemsScanned != 1 {
+		t.Fatalf("a deadline inside classification: %+v, want truncated after exactly 1 item", *rep)
+	}
+
 	// A run past its deadline stops and says so.
 	rep, err = DiagnoseVersionTies(context.Background(), s.db, s.dialect.Driver() == DriverPostgres, DiagnoseOptions{MaxDuration: time.Nanosecond})
 	if err != nil {
@@ -128,5 +145,39 @@ func TestBUG3751_DiagnosticCannotWrite(t *testing.T) {
 	defer tx.Rollback() //nolint:errcheck
 	if _, err := tx.ExecContext(ctx, `UPDATE items SET title = title`); err == nil || !strings.Contains(strings.ToLower(err.Error()), "readonly") {
 		t.Fatalf("a write on the diagnostic's SQLite connection: err = %v, want a read-only refusal", err)
+	}
+}
+
+// Classification is bounded by the context, so a deadline that lands inside
+// one item's tie groups ends that item's walk (codex on BUG-3751).
+func TestBUG3751_ClassificationStopsWhenTheContextEnds(t *testing.T) {
+	const a, b, c = "the quick brown fox jumps over the hedge", "lazy dogs sleep all afternoon in the sun", "completely different words are written here"
+	versions := []tieVersion{
+		{createdAt: "t5", content: diff.CreateReversePatch(b, c), isDiff: true},
+		{createdAt: "t5", content: diff.CreateReversePatch(a, b), isDiff: true},
+	}
+	var live VersionTieReport
+	if !classifyTieGroups(context.Background(), c, versions, &live) || live.TieGroups != 1 {
+		t.Fatalf("instrument: a live context classifies the group: %+v", live)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var rep VersionTieReport
+	if classifyTieGroups(ctx, c, versions, &rep) {
+		t.Fatalf("an ended context: classification reported complete: %+v", rep)
+	}
+}
+
+func TestBUG3751_StatementTimeoutNeverRoundsToZero(t *testing.T) {
+	for d, want := range map[time.Duration]int64{
+		time.Nanosecond:                    1,
+		999 * time.Microsecond:             1,
+		time.Millisecond:                   1,
+		time.Millisecond + time.Nanosecond: 2,
+		30 * time.Second:                   30000,
+	} {
+		if got := statementTimeoutMS(d); got != want {
+			t.Errorf("statementTimeoutMS(%v) = %d, want %d", d, got, want)
+		}
 	}
 }
