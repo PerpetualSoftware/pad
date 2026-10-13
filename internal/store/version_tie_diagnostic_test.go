@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/diff"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -54,13 +55,40 @@ func TestBUG3751_VersionTieDiagnosticCounts(t *testing.T) {
 	seed("misordered", 2, 1, true) // what a ctid backfill can produce
 	seed("not a tie", 1, 2, false) // different seconds: never a tie group
 
+	// A tie group holding a full-content row: its order cannot be told.
+	snap, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "snapshot tie", Content: latest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM item_versions WHERE item_id = ?`), snap.ID); err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range []struct {
+		content string
+		isDiff  bool
+	}{{diff.CreateReversePatch(middle, latest), true}, {oldest, false}} {
+		if _, err := s.db.Exec(s.q(`INSERT INTO item_versions (id, item_id, content, is_diff, created_at, version_seq) VALUES (?, ?, ?, ?, ?, ?)`),
+			newID(), snap.ID, v.content, v.isDiff, "2026-01-01T00:00:05Z", 2-i); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	rep, err := DiagnoseVersionTies(context.Background(), s.db, s.dialect.Driver() == DriverPostgres, DiagnoseOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := VersionTieReport{ItemsScanned: 2, TieGroups: 2, CurrentOrderOnly: 1, Misordered: 1}
+	want := VersionTieReport{ItemsScanned: 3, ItemsWithTies: 3, TieGroups: 3, CurrentOrderOnly: 1, Misordered: 1, WithSnapshot: 1}
 	if *rep != want {
 		t.Fatalf("report = %+v, want %+v", *rep, want)
+	}
+
+	// A run past its deadline stops and says so.
+	rep, err = DiagnoseVersionTies(context.Background(), s.db, s.dialect.Driver() == DriverPostgres, DiagnoseOptions{MaxDuration: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Truncated || rep.ItemsScanned >= rep.ItemsWithTies {
+		t.Fatalf("a run past its deadline: %+v, want truncated with fewer items scanned than have ties", *rep)
 	}
 }
 

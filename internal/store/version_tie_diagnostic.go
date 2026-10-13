@@ -39,6 +39,14 @@ type VersionTieReport struct {
 	Unresolvable int `json:"unresolvable"`
 	// SkippedLarge: groups over maxTiePermute rows, not tried.
 	SkippedLarge int `json:"skipped_large"`
+	// WithSnapshot: groups holding a full-content row (is_diff false). A
+	// snapshot replaces the content whatever came before it, so the patches
+	// cannot tell such a group's order; it is neither ordered nor misordered.
+	WithSnapshot int `json:"with_snapshot"`
+	// ItemsWithTies is how many items have a tie group; ItemsScanned falls
+	// short of it only when the run stopped at its deadline (Truncated).
+	ItemsWithTies int  `json:"items_with_ties"`
+	Truncated     bool `json:"truncated"`
 	// ChainBroken: items whose walk failed on a version outside any tie
 	// group, so the groups behind it could not be judged.
 	ChainBroken int `json:"chain_broken"`
@@ -60,6 +68,10 @@ type DiagnoseOptions struct {
 	// Progress, when set, is called after each item with the count done and
 	// the total, so a long run shows it is moving.
 	Progress func(done, total int)
+	// MaxDuration bounds the whole run, and with it how long the read-only
+	// transaction holds its snapshot on a production database (0: no bound).
+	// A run that reaches it stops and reports what it scanned, Truncated.
+	MaxDuration time.Duration
 }
 
 // beginDiagnosticTx opens the diagnostic's one transaction, read-only by
@@ -137,8 +149,16 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 		return nil, err
 	}
 
-	rep := &VersionTieReport{}
+	rep := &VersionTieReport{ItemsWithTies: len(itemIDs)}
+	var deadline time.Time
+	if opts.MaxDuration > 0 {
+		deadline = time.Now().Add(opts.MaxDuration)
+	}
 	for _, itemID := range itemIDs {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			rep.Truncated = true
+			break
+		}
 		var current string
 		switch err := tx.QueryRowContext(ctx, rebind(`SELECT content FROM items WHERE id = ?`), itemID).Scan(&current); {
 		case err == sql.ErrNoRows:
@@ -197,6 +217,22 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 			continue
 		}
 		rep.TieGroups++
+		snapshot := false
+		for _, v := range group {
+			if !v.isDiff {
+				snapshot = true
+			}
+		}
+		if snapshot {
+			rep.WithSnapshot++
+			out, ok := applyOrder(content, group, identity(len(group)), next)
+			if !ok {
+				rep.ChainBroken++
+				return
+			}
+			content, i = out, j
+			continue
+		}
 		if len(group) > maxTiePermute {
 			rep.SkippedLarge++
 			out, ok := applyOrder(content, group, identity(len(group)), next)
