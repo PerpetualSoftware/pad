@@ -2497,6 +2497,14 @@
 	// the new collab $effect run (after rebuild completes). Per
 	// Codex round 7 [P1] of TASK-1319.
 	let forceRefreshInFlight = false;
+	// The editor is read-only from a force_refresh until the rebuilt provider
+	// is wired, and stays so if the refetch fails (BUG-3697). The provider is
+	// destroyed by then, so a keystroke in that window reaches no Y.Doc, is not
+	// in the recovery copy captured at the start, and vanishes on the rebuild.
+	// $state, unlike forceRefreshInFlight, because the editor's `editable`
+	// reads it; Svelte applies it in the microtask after the handler, before
+	// any later keystroke event can run.
+	let recoveryFrozen = $state(false);
 	// Gated on `itemMatchesRef` (PLAN-2105 / TASK-2112 switch-safety): the
 	// instant `ref` changes, `item` still holds the PREVIOUS item until the
 	// new fetch resolves, so without this gate collabKey would stay the old
@@ -2867,6 +2875,9 @@
 			// either flushes a real difference or dedupes and stamps.
 			onOpLogCursor: () => settleCollabIfCurrent(ctx),
 			onForceRefresh: () => {
+				// BUG-3697: no keystroke is accepted that this recovery would
+				// then discard. Frozen in the same task as the capture below.
+				recoveryFrozen = true;
 				// TASK-2199: local edits this rebuild discards are captured first
 				// and handed back, never written over the server's text.
 				const recovered = offlineRecoveryOnForceRefresh({
@@ -2951,8 +2962,10 @@
 						// corruption force_refresh was meant to
 						// prevent. Surface a hard error and ask
 						// the user to reload manually instead.
-						// The provider is already destroyed so
-						// the editor is read-only effectively;
+						// The provider is already destroyed and
+						// recoveryFrozen stays true, so the editor
+						// stays read-only (BUG-3697: it used to stay
+						// editable, and typing here was lost);
 						// forceRefreshInFlight stays true so any
 						// in-flight or scheduled flush is blocked.
 						// Per Codex round 17 [P1] of TASK-1319.
@@ -2975,6 +2988,7 @@
 		// this point can safely schedule flushes again. Per Codex
 		// round 7 [P1] of TASK-1319.
 		forceRefreshInFlight = false;
+		recoveryFrozen = false;
 
 		return () => {
 			// Best-effort flush of items.content BEFORE we tear the
@@ -7680,7 +7694,7 @@
 								<Editor
 									content={editorContent}
 									onUpdate={handleContentUpdate}
-									editable={!peeking}
+									editable={!peeking && !recoveryFrozen}
 									itemId={item.id}
 									hostToken={attachmentHostToken}
 									ydoc={ydoc}
