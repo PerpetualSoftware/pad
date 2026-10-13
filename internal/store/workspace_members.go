@@ -227,20 +227,37 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 // stake. An inviter who is no longer a member, or no recorded inviter, is
 // left as before.
 func (s *Store) requireInviterScopeTx(tx *sql.Tx, invitationID, workspaceID string) error {
-	var access, userRole string
+	var inviterID, userRole string
 	err := tx.QueryRow(s.q(`
-		SELECT m.collection_access, u.role
-		FROM workspace_invitations i
-		JOIN workspace_members m ON m.workspace_id = ? AND m.user_id = i.invited_by
+		SELECT i.invited_by, u.role FROM workspace_invitations i
 		JOIN users u ON u.id = i.invited_by
-		WHERE i.id = ?`), workspaceID, invitationID).Scan(&access, &userRole)
+		WHERE i.id = ?`), invitationID).Scan(&inviterID, &userRole)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("accept workspace invitation: read inviter: %w", err)
 	}
-	if access == "specific" && userRole != "admin" {
+	if userRole == "admin" {
+		return nil
+	}
+	// Share-locked on Postgres, so a restriction of the inviter committing
+	// alongside this accept either lands first and is read here, or waits
+	// for the membership this accept writes and narrows nothing it relies
+	// on (codex round 2). SQLite's single writer orders them already.
+	q := `SELECT collection_access FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		q += ` FOR SHARE`
+	}
+	var access string
+	err = tx.QueryRow(s.q(q), workspaceID, inviterID).Scan(&access)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("accept workspace invitation: read inviter scope: %w", err)
+	}
+	if access == "specific" {
 		return ErrInviterScopeTooNarrow
 	}
 	return nil
