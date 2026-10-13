@@ -177,9 +177,11 @@ func TestIPRateLimiter_SweepDropsFullBucketsBeforeSpentOnes(t *testing.T) {
 }
 
 // Keys idle past retention are dropped by the sweep too, whatever their
-// tokens, the same rule cleanup applies.
+// tokens, the same rule cleanup applies. The refill window is one minute
+// (burst 1 at 1/min), so the minute's retention survives the floor
+// newIPRateLimiter applies (BUG-3638), and each key's only token is spent.
 func TestIPRateLimiter_SweepDropsIdleKeys(t *testing.T) {
-	rl := newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(1.0 / 3600), Burst: 5, MaxEntries: 8, Retention: time.Minute})
+	rl := newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(1.0 / 60), Burst: 1, MaxEntries: 8, Retention: time.Minute})
 	t.Cleanup(rl.Stop)
 	for i := 0; i < 8; i++ {
 		rl.getLimiter(fmt.Sprintf("ip:k%d", i)).Allow()

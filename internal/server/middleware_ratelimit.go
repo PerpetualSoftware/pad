@@ -23,19 +23,19 @@ type rateLimitConfig struct {
 	Rate  rate.Limit // events per second
 	Burst int        // max burst
 	// Retention is how long an inactive key stays in memory before the
-	// background cleanup evicts it. Must be at least as long as the rate
-	// window (≈ burst / rate) or premature eviction lets an attacker reset
-	// their bucket by waiting — defeating "N per hour" limits that pause
-	// naturally between bursts. Zero means "use the default".
+	// background cleanup evicts it. Zero means "use the default".
+	// newIPRateLimiter raises any value below the refill window (burst /
+	// rate) to that window, since evicting a bucket that has not refilled
+	// hands its owner a full one (BUG-3638).
 	Retention time.Duration
 	// MaxEntries caps how many keys the limiter holds at once. Zero means
 	// defaultMaxEntries. See evictLocked for what happens at the cap.
 	MaxEntries int
 }
 
-// defaultRetention is the minimum retention for a limiter whose config
-// doesn't specify one. Suitable for sub-minute windows like per-IP login
-// limiting; longer windows must set Retention explicitly.
+// defaultRetention is the retention for a limiter whose config doesn't
+// specify one. A limiter whose refill window is longer gets that window
+// instead (newIPRateLimiter, BUG-3638).
 const defaultRetention = 30 * time.Minute
 
 // defaultMaxEntries bounds one limiter's map (BUG-3308). Retention alone
@@ -76,6 +76,25 @@ func newIPRateLimiter(cfg rateLimitConfig) *ipRateLimiter {
 	retention := cfg.Retention
 	if retention <= 0 {
 		retention = defaultRetention
+	}
+	// Retention never sits below the full refill window (BUG-3638). A bucket
+	// idle for less than burst / rate has not refilled, and evicting it hands
+	// its owner a full bucket, so a shorter retention lets a caller reset
+	// their limit by waiting. Raising it here covers every limiter, present
+	// and future, not only the ones whose config remembered to set it.
+	if cfg.Rate > 0 {
+		// Capped before the conversion: for a tiny rate burst / rate exceeds
+		// what a time.Duration holds, and the overflowed value would switch
+		// the floor off. A capped retention never expires; MaxEntries still
+		// bounds the map.
+		secs := float64(cfg.Burst) / float64(cfg.Rate)
+		refill := time.Duration(math.MaxInt64)
+		if secs < float64(math.MaxInt64)/float64(time.Second) {
+			refill = time.Duration(secs * float64(time.Second))
+		}
+		if retention < refill {
+			retention = refill
+		}
 	}
 	maxEntries := cfg.MaxEntries
 	if maxEntries <= 0 {
@@ -238,12 +257,18 @@ func (rl *ipRateLimiter) cleanup() {
 			return
 		case <-ticker.C:
 			rl.mu.Lock()
-			for key, entry := range rl.limiters {
-				if time.Since(entry.lastSeen) > rl.retention {
-					delete(rl.limiters, key)
-				}
-			}
+			rl.sweepLocked(time.Now())
 			rl.mu.Unlock()
+		}
+	}
+}
+
+// sweepLocked evicts every key idle for longer than the retention as of
+// now. Caller holds rl.mu.
+func (rl *ipRateLimiter) sweepLocked(now time.Time) {
+	for key, entry := range rl.limiters {
+		if now.Sub(entry.lastSeen) > rl.retention {
+			delete(rl.limiters, key)
 		}
 	}
 }
@@ -438,23 +463,30 @@ func NewRateLimiters() *RateLimiters {
 			Retention: 2 * time.Hour,
 		}),
 		// Password reset: 3 per hour per IP (= 3/3600 per second, burst 3)
+		// Retention ≥ the refill window (3 ÷ (3/hour) = 1 h); 2 h gives margin
+		// (BUG-3638).
 		PasswordReset: newIPRateLimiter(rateLimitConfig{
-			Rate:  rate.Limit(3.0 / 3600.0),
-			Burst: 3,
+			Rate:      rate.Limit(3.0 / 3600.0),
+			Burst:     3,
+			Retention: 2 * time.Hour,
 		}),
 		// Verification link consume + claim: 10 per hour per IP, burst 10
 		// (BUG-3382). Separate from PasswordReset so one verification page
 		// load, a refresh and a claim do not spend the budget the claimant
 		// then needs to set a password. The token is a 256-bit secret, so
-		// this bounds load, not guessing.
+		// this bounds load, not guessing. Retention ≥ the 1 h refill window
+		// (BUG-3638).
 		EmailVerify: newIPRateLimiter(rateLimitConfig{
-			Rate:  rate.Limit(10.0 / 3600.0),
-			Burst: 10,
+			Rate:      rate.Limit(10.0 / 3600.0),
+			Burst:     10,
+			Retention: 2 * time.Hour,
 		}),
-		// Registration: 5 per hour per IP (= 5/3600 per second, burst 5)
+		// Registration: 5 per hour per IP (= 5/3600 per second, burst 5).
+		// Retention ≥ the 1 h refill window (BUG-3638).
 		Register: newIPRateLimiter(rateLimitConfig{
-			Rate:  rate.Limit(5.0 / 3600.0),
-			Burst: 5,
+			Rate:      rate.Limit(5.0 / 3600.0),
+			Burst:     5,
+			Retention: 2 * time.Hour,
 		}),
 		// OAuth login/link: 20 per minute per IP (sidecar calls this — higher than regular auth)
 		OAuthLogin: newIPRateLimiter(rateLimitConfig{
@@ -508,8 +540,9 @@ func NewRateLimiters() *RateLimiters {
 		}),
 		// RecoveryCode: up to 6 attempts per challenge token before lockout.
 		// Challenge tokens live for 5 minutes, so we only need the limiter to
-		// remember that long — but retention defaults to 30 minutes so we
-		// pick up a couple of wall-clock minutes of slop. Rate is effectively
+		// remember that long; the refill floor in newIPRateLimiter keeps an
+		// idle key for the hour burst 6 at 6/hour takes to refill (BUG-3638),
+		// which leaves ample slop. Rate is effectively
 		// "no refill over the window" since burst = 6 and the limiter won't
 		// meaningfully refill in 5 min at 6/hour.
 		RecoveryCode: newIPRateLimiter(rateLimitConfig{
