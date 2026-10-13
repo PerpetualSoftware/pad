@@ -335,28 +335,37 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 
 	// A role applies across the target's scope, so a restricted caller may
 	// change it only for a member whose scope lies within its own
-	// (BUG-3634). A missing member falls through to the store's 404.
-	if target, err := s.store.GetWorkspaceMember(workspaceID, userID); err != nil {
+	// (BUG-3634). The store re-checks that scope under the row lock the
+	// write takes (within), so a concurrent widening cannot slip between
+	// this check and the write. A missing member falls through to the
+	// store's 404.
+	var within []string
+	callerVisible, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
 		writeInternalError(w, err)
 		return
-	} else if target != nil {
-		var targetIDs []string
-		if target.CollectionAccess == "specific" {
-			if targetIDs, err = s.store.GetMemberCollectionAccess(workspaceID, userID); err != nil {
-				writeInternalError(w, err)
+	}
+	if callerVisible != nil {
+		if target, err := s.store.GetWorkspaceMember(workspaceID, userID); err != nil {
+			writeInternalError(w, err)
+			return
+		} else if target != nil {
+			mode, targetIDs := "all", []string{}
+			if target.CollectionAccess == "specific" {
+				mode = "specific"
+				if targetIDs, err = s.store.GetMemberCollectionAccess(workspaceID, userID); err != nil {
+					writeInternalError(w, err)
+					return
+				}
+			}
+			if !s.requireCallerCanSetCollectionAccess(w, r, workspaceID, mode, targetIDs) {
 				return
 			}
-		}
-		mode := target.CollectionAccess
-		if mode != "specific" {
-			mode = "all"
-		}
-		if !s.requireCallerCanSetCollectionAccess(w, r, workspaceID, mode, targetIDs) {
-			return
+			within = append([]string{}, targetIDs...)
 		}
 	}
 
-	if err := s.store.UpdateWorkspaceMemberRole(workspaceID, userID, input.Role); err != nil {
+	if err := s.store.UpdateWorkspaceMemberRoleWithin(workspaceID, userID, input.Role, within); err != nil {
 		writeMemberChangeError(w, err)
 		return
 	}
@@ -383,6 +392,8 @@ func writeMemberChangeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "canonical_owner", "This is the workspace's owner, who cannot be demoted or removed; transfer ownership first")
 	case errors.Is(err, store.ErrLastOwner):
 		writeError(w, http.StatusConflict, "last_owner", "A workspace must keep at least one owner; make another member an owner first")
+	case errors.Is(err, store.ErrMemberScopeChanged):
+		writeError(w, http.StatusConflict, "member_scope_changed", "This member's collection access changed; reload and try again")
 	case errors.Is(err, store.ErrAppPrincipal):
 		// TASK-3392: a bot's membership belongs to its install; removing it
 		// is uninstalling the app.

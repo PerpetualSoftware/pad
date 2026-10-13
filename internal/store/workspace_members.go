@@ -913,6 +913,21 @@ func (s *Store) IsWorkspaceMember(workspaceID, userID string) (bool, error) {
 
 // UpdateWorkspaceMemberRole changes a member's role in a workspace.
 func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) error {
+	return s.UpdateWorkspaceMemberRoleWithin(workspaceID, userID, role, nil)
+}
+
+// ErrMemberScopeChanged refuses a role change by a collection-restricted
+// owner when the target's scope changed since the caller's check and is
+// no longer within the scope it was checked against (BUG-3634).
+var ErrMemberScopeChanged = errors.New("the member's collection access changed; reload and try again")
+
+// UpdateWorkspaceMemberRoleWithin is UpdateWorkspaceMemberRole for a caller
+// restricted to specific collections (BUG-3634). within is the target's
+// collection set the caller checked against its own scope; under the row
+// lock the role write takes anyway, the target must still be restricted to
+// a subset of it, or the change is refused with ErrMemberScopeChanged. A nil
+// within checks nothing.
+func (s *Store) UpdateWorkspaceMemberRoleWithin(workspaceID, userID, role string, within []string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -925,6 +940,48 @@ func (s *Store) UpdateWorkspaceMemberRole(workspaceID, userID, role string) erro
 	if role != "owner" {
 		if err := s.guardOwnerLossTx(tx, workspaceID, userID); err != nil {
 			return err
+		}
+	}
+	if within != nil {
+		// Where the UPDATE below would lock the row anyway, so the lock
+		// order is unchanged. SetMemberCollectionAccess writes this row
+		// first, so a widening either committed before this read or waits
+		// for this role change to commit.
+		q := `SELECT collection_access FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
+		if s.dialect.Driver() == DriverPostgres {
+			q += ` FOR UPDATE`
+		}
+		var access string
+		switch err := tx.QueryRow(s.q(q), workspaceID, userID).Scan(&access); {
+		case errors.Is(err, sql.ErrNoRows):
+			return sql.ErrNoRows
+		case err != nil:
+			return fmt.Errorf("update workspace member role: read scope: %w", err)
+		}
+		if access != "specific" {
+			return ErrMemberScopeChanged
+		}
+		allowed := make(map[string]bool, len(within))
+		for _, id := range within {
+			allowed[id] = true
+		}
+		rows, err := tx.Query(s.q(`SELECT collection_id FROM member_collection_access WHERE workspace_id = ? AND user_id = ?`), workspaceID, userID)
+		if err != nil {
+			return fmt.Errorf("update workspace member role: read scope: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("update workspace member role: read scope: %w", err)
+			}
+			if !allowed[id] {
+				_ = rows.Close()
+				return ErrMemberScopeChanged
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("update workspace member role: read scope: %w", err)
 		}
 	}
 	result, err := tx.Exec(

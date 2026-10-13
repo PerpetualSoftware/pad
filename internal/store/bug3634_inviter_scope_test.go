@@ -79,3 +79,57 @@ func TestBUG3634_AcceptWaitsOnAConcurrentInviterRestriction_Postgres(t *testing.
 		t.Fatal("the accept never finished")
 	}
 }
+
+// A restricted owner's role change re-checks the target's scope under the
+// row lock the write takes: widened since the caller's check, the target's
+// role is not changed.
+func TestBUG3634_RoleChangeWithinRechecksTheTargetsScope(t *testing.T) {
+	s := testStore(t)
+	owner, err := s.CreateUser(models.UserCreate{Email: "o-3634r@example.com", Name: "O", Password: "pw-test-12345"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := s.CreateUser(models.UserCreate{Email: "t-3634r@example.com", Name: "T", Password: "pw-test-12345"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "WS 3634r", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddWorkspaceMember(ws.ID, target.ID, "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "A3634", Slug: "a3634"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "B3634", Slug: "b3634"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMemberCollectionAccess(ws.ID, target.ID, "specific", []string{a.ID}); err != nil {
+		t.Fatal(err)
+	}
+	checked := []string{a.ID}
+
+	// Still within: the change lands.
+	if err := s.UpdateWorkspaceMemberRoleWithin(ws.ID, target.ID, "editor", checked); err != nil {
+		t.Fatalf("role change within scope: %v", err)
+	}
+	// Widened to another collection, then to all: refused, role unchanged.
+	for _, widen := range []func() error{
+		func() error { return s.SetMemberCollectionAccess(ws.ID, target.ID, "specific", []string{a.ID, b.ID}) },
+		func() error { return s.SetMemberCollectionAccess(ws.ID, target.ID, "all", nil) },
+	} {
+		if err := widen(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UpdateWorkspaceMemberRoleWithin(ws.ID, target.ID, "owner", checked); !errors.Is(err, ErrMemberScopeChanged) {
+			t.Fatalf("role change after a widening: %v, want ErrMemberScopeChanged", err)
+		}
+		if m, _ := s.GetWorkspaceMember(ws.ID, target.ID); m == nil || m.Role != "editor" {
+			t.Fatalf("the widened member's role changed: %+v", m)
+		}
+	}
+}
