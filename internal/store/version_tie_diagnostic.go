@@ -264,7 +264,8 @@ func (r *VersionTieReport) add(o VersionTieReport) {
 
 // classifyTieGroups walks one item's versions from its current content and
 // counts its tie groups into rep. It returns false, leaving rep partial, when
-// ctx ends first.
+// ctx ends before it finishes: every return re-checks ctx, so an item whose
+// last step crossed the deadline is not reported complete.
 func classifyTieGroups(ctx context.Context, current string, versions []tieVersion, rep *VersionTieReport) bool {
 	content := current
 	for i := 0; i < len(versions); {
@@ -281,7 +282,7 @@ func classifyTieGroups(ctx context.Context, current string, versions []tieVersio
 			out, ok := applyVersion(content, group[0])
 			if !ok {
 				rep.ChainBroken++
-				return true
+				return ctx.Err() == nil
 			}
 			content, i = out, j
 			continue
@@ -295,42 +296,39 @@ func classifyTieGroups(ctx context.Context, current string, versions []tieVersio
 		}
 		if snapshot {
 			rep.WithSnapshot++
-			out, ok := applyOrder(content, group, identity(len(group)), rest)
+			out, ok := applyOrder(ctx, content, group, identity(len(group)), rest)
 			if !ok {
 				rep.ChainBroken++
-				return true
+				return ctx.Err() == nil
 			}
 			content, i = out, j
 			continue
 		}
 		if len(group) > maxTiePermute {
 			rep.SkippedLarge++
-			out, ok := applyOrder(content, group, identity(len(group)), rest)
+			out, ok := applyOrder(ctx, content, group, identity(len(group)), rest)
 			if !ok {
 				rep.ChainBroken++
-				return true
+				return ctx.Err() == nil
 			}
 			content, i = out, j
 			continue
 		}
-		currentOut, currentOK := applyOrder(content, group, identity(len(group)), rest)
+		currentOut, currentOK := applyOrder(ctx, content, group, identity(len(group)), rest)
 		otherOK, otherOut := false, ""
+		// No deadline check is needed in the search or after it: applyOrder
+		// refuses once ctx ends, so nothing is applied past the deadline, and
+		// the return below re-checks ctx, so this item is not counted.
 		permute(len(group), func(order []int) bool {
-			if ctx.Err() != nil {
-				return false
-			}
 			if isIdentity(order) {
 				return true
 			}
-			if out, ok := applyOrder(content, group, order, rest); ok {
+			if out, ok := applyOrder(ctx, content, group, order, rest); ok {
 				otherOK, otherOut = true, out
 				return false
 			}
 			return true
 		})
-		if ctx.Err() != nil {
-			return false
-		}
 		switch {
 		case currentOK && otherOK:
 			rep.Ambiguous++
@@ -343,21 +341,25 @@ func classifyTieGroups(ctx context.Context, current string, versions []tieVersio
 			content = otherOut
 		default:
 			rep.Unresolvable++
-			return true
+			return ctx.Err() == nil
 		}
 		i = j
 	}
-	return true
+	return ctx.Err() == nil
 }
 
-// applyOrder applies a tie group in the given order, then checks that the
+// applyOrder applies a tie group in the given order (stopping, as not
+// applying, once ctx ends), then checks that the
 // history behind it still applies to the result: two orders of patches that
 // each apply can differ in what they leave for the older versions. The check
 // runs in stored order through every older version up to the next tie group
 // (whose own order is that group's question) or the next full snapshot (which
 // replaces the content, so nothing behind it depends on this order).
-func applyOrder(content string, group []tieVersion, order []int, rest []tieVersion) (string, bool) {
+func applyOrder(ctx context.Context, content string, group []tieVersion, order []int, rest []tieVersion) (string, bool) {
 	for _, k := range order {
+		if ctx.Err() != nil {
+			return "", false
+		}
 		out, ok := applyVersion(content, group[k])
 		if !ok {
 			return "", false
@@ -366,6 +368,9 @@ func applyOrder(content string, group []tieVersion, order []int, rest []tieVersi
 	}
 	probe := content
 	for i, v := range rest {
+		if ctx.Err() != nil {
+			return "", false
+		}
 		if !v.isDiff {
 			break
 		}
@@ -381,7 +386,13 @@ func applyOrder(content string, group []tieVersion, order []int, rest []tieVersi
 	return content, true
 }
 
+// testHookApplyVersion, when set, runs on every version application.
+var testHookApplyVersion func()
+
 func applyVersion(content string, v tieVersion) (string, bool) {
+	if testHookApplyVersion != nil {
+		testHookApplyVersion()
+	}
 	if !v.isDiff {
 		return v.content, true
 	}

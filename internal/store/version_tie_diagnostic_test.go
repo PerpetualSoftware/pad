@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -148,23 +149,94 @@ func TestBUG3751_DiagnosticCannotWrite(t *testing.T) {
 	}
 }
 
-// Classification is bounded by the context, so a deadline that lands inside
-// one item's tie groups ends that item's walk (codex on BUG-3751).
-func TestBUG3751_ClassificationStopsWhenTheContextEnds(t *testing.T) {
-	const a, b, c = "the quick brown fox jumps over the hedge", "lazy dogs sleep all afternoon in the sun", "completely different words are written here"
-	versions := []tieVersion{
-		{createdAt: "t5", content: diff.CreateReversePatch(b, c), isDiff: true},
-		{createdAt: "t5", content: diff.CreateReversePatch(a, b), isDiff: true},
+// expiringCtx reports the deadline once expired is set.
+type expiringCtx struct {
+	context.Context
+	expired bool
+}
+
+func (c *expiringCtx) Err() error {
+	if c.expired {
+		return context.DeadlineExceeded
 	}
-	var live VersionTieReport
-	if !classifyTieGroups(context.Background(), c, versions, &live) || live.TieGroups != 1 {
-		t.Fatalf("instrument: a live context classifies the group: %+v", live)
+	return nil
+}
+
+// Classification is bounded by the context wherever the deadline lands
+// (codex on BUG-3751): for every version application during which it can
+// expire, the item is not reported complete and nothing is applied after it.
+// The histories walk every path: a tie group small enough to permute,
+// singletons, a group too large to permute, a group holding a snapshot, a
+// chain that breaks at a singleton, and a group no order of which applies.
+func TestBUG3751_ClassificationStopsWhereverTheDeadlineLands(t *testing.T) {
+	words := []string{"amber", "basalt", "cobalt", "dune", "ember", "fjord", "garnet", "harbor", "indigo", "juniper", "kestrel", "lagoon", "meadow"}
+	texts := make([]string, len(words))
+	for i, w := range words {
+		texts[i] = strings.Repeat(w+" ", 8) + fmt.Sprint(i)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	var rep VersionTieReport
-	if classifyTieGroups(ctx, c, versions, &rep) {
-		t.Fatalf("an ended context: classification reported complete: %+v", rep)
+	// chain builds versions that walk texts[0] back through texts[1..], one
+	// per entry of at; a patch from a text no walk reaches does not apply.
+	chain := func(at ...string) []tieVersion {
+		var vs []tieVersion
+		for i := range at {
+			vs = append(vs, tieVersion{createdAt: at[i], content: diff.CreateReversePatch(texts[i+1], texts[i]), isDiff: true})
+		}
+		return vs
+	}
+	stray := tieVersion{content: diff.CreateReversePatch(texts[12], texts[11]), isDiff: true}
+
+	every := chain("t9", "t9", "t8", "t7", "t6", "t6", "t6", "t6", "t6", "t6", "t5", "t5")
+	every[11] = tieVersion{createdAt: "t5", content: texts[12]}
+	brokenSingle := append(chain("t9", "t8"), tieVersion{createdAt: "t7", content: stray.content, isDiff: true})
+	unresolvable := append(chain("t9"), tieVersion{createdAt: "t8", content: stray.content, isDiff: true}, tieVersion{createdAt: "t8", content: stray.content, isDiff: true})
+
+	for _, h := range []struct {
+		name     string
+		versions []tieVersion
+		want     VersionTieReport
+	}{
+		{"every group shape", every, VersionTieReport{TieGroups: 3, CurrentOrderOnly: 1, SkippedLarge: 1, WithSnapshot: 1}},
+		{"chain breaks at a singleton", brokenSingle, VersionTieReport{ChainBroken: 1}},
+		{"no order applies", unresolvable, VersionTieReport{TieGroups: 1, Unresolvable: 1}},
+	} {
+		t.Run(h.name, func(t *testing.T) {
+			// The deadline is tied to the work, not to the checks: it expires
+			// during the n-th version application, so a missing check shows
+			// up as a version applied after it, or as a complete report.
+			var ctx *expiringCtx
+			applies, n, appliedAfter := 0, 0, 0
+			testHookApplyVersion = func() {
+				if ctx.expired {
+					appliedAfter++
+				}
+				applies++
+				if applies == n {
+					ctx.expired = true
+				}
+			}
+			t.Cleanup(func() { testHookApplyVersion = nil })
+
+			ctx = &expiringCtx{Context: context.Background()}
+			var rep VersionTieReport
+			if !classifyTieGroups(ctx, texts[0], h.versions, &rep) {
+				t.Fatal("instrument: a live context classifies the whole history")
+			}
+			if rep != h.want {
+				t.Fatalf("instrument: report = %+v, want %+v", rep, h.want)
+			}
+			total := applies
+
+			for n = 1; n <= total; n++ {
+				ctx, applies, appliedAfter = &expiringCtx{Context: context.Background()}, 0, 0
+				var rep VersionTieReport
+				if classifyTieGroups(ctx, texts[0], h.versions, &rep) {
+					t.Errorf("deadline during application %d of %d: classification reported complete", n, total)
+				}
+				if appliedAfter != 0 {
+					t.Errorf("deadline during application %d of %d: %d version(s) applied after it", n, total, appliedAfter)
+				}
+			}
+		})
 	}
 }
 
