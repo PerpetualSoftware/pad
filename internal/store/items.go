@@ -5969,11 +5969,11 @@ func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body st
 // newBody, can apply and carry newBody's later text into the old version. So
 // the version's own body is materialized from oldBody, the base its patch was
 // made against, and stored again against newBody: as a patch when that is
-// smaller, otherwise in full. A newest version that is already a full body
-// needs nothing. A patch that does not apply to oldBody was already broken
-// before this write (data written before this fix can be), and is left as it
-// is: refusing the write instead would block every edit to that item over
-// history that is already damaged.
+// smaller, otherwise in full. Either way its line counts are recomputed. A
+// patch that does not apply to oldBody was already broken before this write
+// (data written before this fix can be), and is left as it is: refusing the
+// write instead would block every edit to that item over history that is
+// already damaged.
 func (s *Store) rebaseNewestVersionPatch(tx *sql.Tx, itemID, oldBody, newBody string) error {
 	var vid, content string
 	var isDiff bool
@@ -5983,10 +5983,18 @@ func (s *Store) rebaseNewestVersionPatch(tx *sql.Tx, itemID, oldBody, newBody st
 		ORDER BY created_at DESC, version_seq DESC
 		LIMIT 1
 	`), itemID).Scan(&vid, &content, &isDiff)
-	if err == sql.ErrNoRows || (err == nil && !isDiff) {
+	if err == sql.ErrNoRows {
 		return nil
 	}
 	if err != nil {
+		return err
+	}
+	// The version's recorded change is its body to the one that replaced it
+	// (PLAN-2348 U2), which is now newBody: the unversioned edits joined it.
+	// A full-body version needs only its counts brought up to date.
+	if !isDiff {
+		added, removed := diff.LineCounts(content, newBody)
+		_, err = tx.Exec(s.q(`UPDATE item_versions SET lines_added = ?, lines_removed = ? WHERE id = ?`), added, removed, vid)
 		return err
 	}
 	body, err := diff.ApplyPatch(oldBody, content)
@@ -5997,8 +6005,6 @@ func (s *Store) rebaseNewestVersionPatch(tx *sql.Tx, itemID, oldBody, newBody st
 	if patch := diff.CreateReversePatch(body, newBody); diff.IsDiffSmaller(patch, body) {
 		stored, storedDiff = patch, true
 	}
-	// The version's recorded change is its body to the one that replaced it
-	// (PLAN-2348 U2), which is now newBody: the throttled edits joined it.
 	added, removed := diff.LineCounts(body, newBody)
 	_, err = tx.Exec(s.q(`UPDATE item_versions SET content = ?, is_diff = ?, lines_added = ?, lines_removed = ? WHERE id = ?`),
 		stored, s.dialect.BoolToInt(storedDiff), added, removed, vid)

@@ -207,3 +207,35 @@ func TestBUG3745_SystemRewritesKeepTheNewestVersionExact(t *testing.T) {
 		}
 	})
 }
+
+// A newest version stored in full needs no rebase, but its line counts
+// still describe the change it covers, which the throttled write extended.
+func TestBUG3745_FullBodyVersionCountsFollowTheThrottledWrite(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Counts")
+	col := createTestCollection(t, s, ws.ID, "Docs")
+	a := "one\ntwo"
+	b := "completely\ndifferent\nwords" // a patch is not smaller than a body this short
+	c := b + "\nand\nthree\nmore"
+	item := createTestItem(t, s, ws.ID, col.ID, "Short", a)
+	for i, body := range []string{b, c} {
+		out, err := s.UpdateItem(item.ID, models.ItemUpdate{Content: &body, LastModifiedBy: "alice", Source: "web"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (i == 1) != out.BodyEditedWithoutVersion {
+			t.Fatalf("instrument: write %d throttled=%v", i, out.BodyEditedWithoutVersion)
+		}
+	}
+	var isDiff bool
+	var added, removed int
+	if err := s.db.QueryRow(s.q(`SELECT is_diff, lines_added, lines_removed FROM item_versions WHERE item_id = ? ORDER BY created_at DESC, version_seq DESC LIMIT 1`), item.ID).Scan(&isDiff, &added, &removed); err != nil {
+		t.Fatal(err)
+	}
+	if isDiff {
+		t.Fatal("instrument: the newest version must be stored in full")
+	}
+	if wa, wr := diff.LineCounts(a, c); added != wa || removed != wr {
+		t.Errorf("newest version counts +%d -%d, want +%d -%d (a to c)", added, removed, wa, wr)
+	}
+}
