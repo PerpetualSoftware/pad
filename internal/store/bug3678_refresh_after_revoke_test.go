@@ -2,9 +2,11 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -234,5 +236,72 @@ func TestBUG3678_RevokedInstallGrantMintsNothing(t *testing.T) {
 	var revokedAt sql.NullString
 	if err := f.s.db.QueryRow(f.s.q(`SELECT revoked_at FROM app_token_bindings WHERE request_id = ?`), "req-3678-app").Scan(&revokedAt); err != nil || !revokedAt.Valid {
 		t.Errorf("the binding was not tombstoned: %v %v", revokedAt, err)
+	}
+}
+
+// A grant whose consent is recorded but whose first tokens are not yet
+// written is still revoked for good: its connection row names the person
+// to lock, and the record refuses the first issuance (codex round 3).
+func TestBUG3678_GrantRevokedBeforeFirstIssuanceMintsNothing(t *testing.T) {
+	s := testStore(t)
+	c := newTestClient(t, s)
+	if err := s.CreateOAuthConnection(OAuthConnection{RequestID: "req-3678-first", UserID: "user-123", Name: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeOAuthGrant("req-3678-first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAccessToken(newTestRequest(c.ID, "first-a", "req-3678-first")); !errors.Is(err, ErrOAuthGrantRevoked) {
+		t.Fatalf("first issuance on a revoked grant: %v, want ErrOAuthGrantRevoked", err)
+	}
+}
+
+// The revoke of a grant with no tokens yet waits on the person's row that a
+// first issuance share-locks, so it cannot finish between that issuance's
+// check and its commit.
+func TestBUG3678_TokenlessRevokeWaitsOnIssuanceLock_Postgres(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("Postgres-only: row-lock ordering")
+	}
+	s := testStore(t)
+	newTestClient(t, s)
+	if err := s.CreateOAuthConnection(OAuthConnection{RequestID: "req-3678-wait", UserID: "user-123", Name: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	issuance, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = issuance.Rollback() }()
+	if err := s.requireActiveUserTx(issuance, "user-123"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.RevokeOAuthGrant("req-3678-wait") }()
+	waiting := false
+	for i := 0; i < 100 && !waiting; i++ {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query LIKE '%FOR NO KEY UPDATE%'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		waiting = n > 0
+		if !waiting {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if !waiting {
+		t.Fatal("the revoke did not wait on the issuance's share lock")
+	}
+	if err := issuance.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("revoke: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the revoke never finished")
 	}
 }

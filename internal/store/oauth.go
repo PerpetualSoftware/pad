@@ -502,11 +502,16 @@ func (s *Store) RevokeOAuthGrant(requestID string) error {
 		SELECT subject FROM oauth_refresh_tokens WHERE request_id = ? AND subject <> ''
 		UNION ALL
 		SELECT subject FROM oauth_access_tokens WHERE request_id = ? AND subject <> ''
+		UNION ALL
+		SELECT user_id FROM oauth_connections WHERE request_id = ?
 		LIMIT 1
-	`), requestID, requestID).Scan(&subject)
+	`), requestID, requestID, requestID).Scan(&subject)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("revoke grant: read subject: %w", err)
 	}
+	// The consent's connection row names the person before any token
+	// exists, so a first issuance still in flight is ordered too (codex
+	// round 3 on BUG-3678).
 	if subject.Valid && s.dialect.Driver() == DriverPostgres {
 		// The strong lock first: issuance holds FOR SHARE on this row, and
 		// a share lock upgraded later in this transaction could deadlock.
