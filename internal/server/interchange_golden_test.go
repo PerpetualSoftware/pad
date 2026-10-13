@@ -510,10 +510,20 @@ func writeInterchangeGolden(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.RemoveAll(interchangeGoldenDir); err != nil {
+	// Old golden aside, new one in, then the old one deleted: at no point is
+	// there no golden on disk.
+	old := interchangeGoldenDir + ".old"
+	if err := os.RemoveAll(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(interchangeGoldenDir, old); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 	if err := os.Rename(tmp, interchangeGoldenDir); err != nil {
+		_ = os.Rename(old, interchangeGoldenDir)
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(old); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("wrote %d golden bundle entries to %s", len(files), interchangeGoldenDir)
