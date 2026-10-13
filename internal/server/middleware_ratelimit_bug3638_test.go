@@ -1,6 +1,7 @@
 package server
 
 import (
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -71,6 +72,14 @@ func TestNewIPRateLimiter_RaisesShortRetention(t *testing.T) {
 				Burst: 3,
 			},
 			want: time.Hour,
+		},
+		{
+			name: "refill window too long for a Duration is capped, not overflowed",
+			cfg: rateLimitConfig{
+				Rate:  rate.Limit(1e-300),
+				Burst: 1,
+			},
+			want: time.Duration(math.MaxInt64),
 		},
 		{
 			name: "retention already longer than refill is kept",

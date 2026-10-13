@@ -83,7 +83,15 @@ func newIPRateLimiter(cfg rateLimitConfig) *ipRateLimiter {
 	// their limit by waiting. Raising it here covers every limiter, present
 	// and future, not only the ones whose config remembered to set it.
 	if cfg.Rate > 0 {
-		refill := time.Duration(float64(cfg.Burst) / float64(cfg.Rate) * float64(time.Second))
+		// Capped before the conversion: for a tiny rate burst / rate exceeds
+		// what a time.Duration holds, and the overflowed value would switch
+		// the floor off. A capped retention never expires; MaxEntries still
+		// bounds the map.
+		secs := float64(cfg.Burst) / float64(cfg.Rate)
+		refill := time.Duration(math.MaxInt64)
+		if secs < float64(math.MaxInt64)/float64(time.Second) {
+			refill = time.Duration(secs * float64(time.Second))
+		}
 		if retention < refill {
 			retention = refill
 		}
@@ -532,8 +540,9 @@ func NewRateLimiters() *RateLimiters {
 		}),
 		// RecoveryCode: up to 6 attempts per challenge token before lockout.
 		// Challenge tokens live for 5 minutes, so we only need the limiter to
-		// remember that long — but retention defaults to 30 minutes so we
-		// pick up a couple of wall-clock minutes of slop. Rate is effectively
+		// remember that long; the refill floor in newIPRateLimiter keeps an
+		// idle key for the hour burst 6 at 6/hour takes to refill (BUG-3638),
+		// which leaves ample slop. Rate is effectively
 		// "no refill over the window" since burst = 6 and the limiter won't
 		// meaningfully refill in 5 min at 6/hour.
 		RecoveryCode: newIPRateLimiter(rateLimitConfig{
