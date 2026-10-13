@@ -87,8 +87,8 @@ func TestBUG3751_VersionTieDiagnosticCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rep.Truncated || rep.ItemsScanned >= rep.ItemsWithTies {
-		t.Fatalf("a run past its deadline: %+v, want truncated with fewer items scanned than have ties", *rep)
+	if !rep.Truncated || rep.ItemsScanned >= 3 {
+		t.Fatalf("a run past its deadline: %+v, want truncated with fewer than the 3 tied items scanned", *rep)
 	}
 }
 

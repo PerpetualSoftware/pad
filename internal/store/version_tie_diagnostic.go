@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -107,8 +108,29 @@ func beginDiagnosticTx(ctx context.Context, db *sql.DB, postgres bool, timeout t
 // directly so an operator can point it at a production database without the
 // store's migrate-on-open.
 func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts DiagnoseOptions) (*VersionTieReport, error) {
+	// The whole-run bound is a context deadline from the first statement on,
+	// so it cancels a long query (SQLite included) and ends the read-only
+	// snapshot with it. Reaching it is a partial report, not an error.
+	rep := &VersionTieReport{}
+	if opts.MaxDuration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.MaxDuration)
+		defer cancel()
+	}
+	// A driver's cancellation error need not wrap the context's, so the
+	// deadline itself is what is asked.
+	truncated := func(error) bool {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			rep.Truncated = true
+			return true
+		}
+		return false
+	}
 	tx, err := beginDiagnosticTx(ctx, db, postgres, opts.StatementTimeout)
 	if err != nil {
+		if truncated(err) {
+			return rep, nil
+		}
 		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck // read-only; nothing to keep
@@ -133,6 +155,9 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT item_id FROM item_versions
 		GROUP BY item_id, created_at HAVING COUNT(*) > 1`)
 	if err != nil {
+		if truncated(err) {
+			return rep, nil
+		}
 		return nil, fmt.Errorf("version tie diagnostic: find tied items: %w", err)
 	}
 	var itemIDs []string
@@ -146,16 +171,15 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
+		if truncated(err) {
+			return rep, nil
+		}
 		return nil, err
 	}
 
-	rep := &VersionTieReport{ItemsWithTies: len(itemIDs)}
-	var deadline time.Time
-	if opts.MaxDuration > 0 {
-		deadline = time.Now().Add(opts.MaxDuration)
-	}
+	rep.ItemsWithTies = len(itemIDs)
 	for _, itemID := range itemIDs {
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		if ctx.Err() != nil {
 			rep.Truncated = true
 			break
 		}
@@ -164,11 +188,17 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 		case err == sql.ErrNoRows:
 			continue
 		case err != nil:
+			if truncated(err) {
+				return rep, nil
+			}
 			return nil, fmt.Errorf("version tie diagnostic: read item: %w", err)
 		}
 		vrows, err := tx.QueryContext(ctx, rebind(`SELECT created_at, content, is_diff FROM item_versions
 			WHERE item_id = ? ORDER BY created_at DESC, version_seq DESC`), itemID)
 		if err != nil {
+			if truncated(err) {
+				return rep, nil
+			}
 			return nil, fmt.Errorf("version tie diagnostic: read versions: %w", err)
 		}
 		var versions []tieVersion
@@ -182,6 +212,9 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 		}
 		vrows.Close()
 		if err := vrows.Err(); err != nil {
+			if truncated(err) {
+				return rep, nil
+			}
 			return nil, err
 		}
 		rep.ItemsScanned++
@@ -203,10 +236,7 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 			j++
 		}
 		group := versions[i:j]
-		var next *tieVersion
-		if j < len(versions) {
-			next = &versions[j]
-		}
+		rest := versions[j:]
 		if len(group) == 1 {
 			out, ok := applyVersion(content, group[0])
 			if !ok {
@@ -225,7 +255,7 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 		}
 		if snapshot {
 			rep.WithSnapshot++
-			out, ok := applyOrder(content, group, identity(len(group)), next)
+			out, ok := applyOrder(content, group, identity(len(group)), rest)
 			if !ok {
 				rep.ChainBroken++
 				return
@@ -235,7 +265,7 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 		}
 		if len(group) > maxTiePermute {
 			rep.SkippedLarge++
-			out, ok := applyOrder(content, group, identity(len(group)), next)
+			out, ok := applyOrder(content, group, identity(len(group)), rest)
 			if !ok {
 				rep.ChainBroken++
 				return
@@ -243,13 +273,13 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 			content, i = out, j
 			continue
 		}
-		currentOut, currentOK := applyOrder(content, group, identity(len(group)), next)
+		currentOut, currentOK := applyOrder(content, group, identity(len(group)), rest)
 		otherOK, otherOut := false, ""
 		permute(len(group), func(order []int) bool {
 			if isIdentity(order) {
 				return true
 			}
-			if out, ok := applyOrder(content, group, order, next); ok {
+			if out, ok := applyOrder(content, group, order, rest); ok {
 				otherOK, otherOut = true, out
 				return false
 			}
@@ -274,9 +304,12 @@ func classifyTieGroups(current string, versions []tieVersion, rep *VersionTieRep
 }
 
 // applyOrder applies a tie group in the given order, then checks that the
-// next older version still applies to the result: two orders of patches that
-// each apply can differ in what they leave for the version behind them.
-func applyOrder(content string, group []tieVersion, order []int, next *tieVersion) (string, bool) {
+// history behind it still applies to the result: two orders of patches that
+// each apply can differ in what they leave for the older versions. The check
+// runs in stored order through every older version up to the next tie group
+// (whose own order is that group's question) or the next full snapshot (which
+// replaces the content, so nothing behind it depends on this order).
+func applyOrder(content string, group []tieVersion, order []int, rest []tieVersion) (string, bool) {
 	for _, k := range order {
 		out, ok := applyVersion(content, group[k])
 		if !ok {
@@ -284,10 +317,19 @@ func applyOrder(content string, group []tieVersion, order []int, next *tieVersio
 		}
 		content = out
 	}
-	if next != nil {
-		if _, ok := applyVersion(content, *next); !ok {
+	probe := content
+	for i, v := range rest {
+		if !v.isDiff {
+			break
+		}
+		if i+1 < len(rest) && rest[i+1].createdAt == v.createdAt {
+			break
+		}
+		out, ok := applyVersion(probe, v)
+		if !ok {
 			return "", false
 		}
+		probe = out
 	}
 	return content, true
 }
