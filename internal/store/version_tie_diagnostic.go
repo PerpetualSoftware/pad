@@ -173,8 +173,14 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 	var itemIDs []string
 	for rows.Next() {
 		var id string
+		if testHookBeforeScan != nil {
+			testHookBeforeScan("items")
+		}
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
+			if truncated(err) {
+				return rep, nil
+			}
 			return nil, err
 		}
 		itemIDs = append(itemIDs, id)
@@ -214,8 +220,14 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 		var versions []tieVersion
 		for vrows.Next() {
 			var v tieVersion
+			if testHookBeforeScan != nil {
+				testHookBeforeScan("versions")
+			}
 			if err := vrows.Scan(&v.createdAt, &v.content, &v.isDiff); err != nil {
 				vrows.Close()
+				if truncated(err) {
+					return rep, nil
+				}
 				return nil, err
 			}
 			versions = append(versions, v)
@@ -248,6 +260,10 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 	}
 	return rep, nil
 }
+
+// testHookBeforeScan, when set, runs before each row scan of the named loop:
+// the deadline can close the rows between Next and Scan (codex on BUG-3751).
+var testHookBeforeScan func(loop string)
 
 // testHookBeforeClassify, when set, runs before each item is classified,
 // with the count of items already scanned.

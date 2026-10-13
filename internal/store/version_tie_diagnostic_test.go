@@ -100,6 +100,26 @@ func TestBUG3751_VersionTieDiagnosticCounts(t *testing.T) {
 		t.Fatalf("a deadline inside classification: %+v, want truncated after exactly 1 item", *rep)
 	}
 
+	// The deadline can close the rows between Next and Scan; in either row
+	// loop that is a truncated report, not an error (codex on BUG-3751).
+	for _, loop := range []string{"items", "versions"} {
+		fired := false
+		testHookBeforeScan = func(l string) {
+			if l == loop && !fired {
+				fired = true
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+		rep, err = DiagnoseVersionTies(context.Background(), s.db, s.dialect.Driver() == DriverPostgres, DiagnoseOptions{MaxDuration: 100 * time.Millisecond})
+		testHookBeforeScan = nil
+		if !fired {
+			t.Fatalf("instrument: the %s scan hook never ran", loop)
+		}
+		if err != nil || rep == nil || !rep.Truncated {
+			t.Fatalf("a deadline before a %s scan: report %+v, err %v; want a truncated report", loop, rep, err)
+		}
+	}
+
 	// A run past its deadline stops and says so.
 	rep, err = DiagnoseVersionTies(context.Background(), s.db, s.dialect.Driver() == DriverPostgres, DiagnoseOptions{MaxDuration: time.Nanosecond})
 	if err != nil {
