@@ -190,6 +190,12 @@ func TestBUG3653_CopyRetriesAnOwnershipChangeMidCheck(t *testing.T) {
 // the copy to commit and is refused; without it both commit past the cap.
 func TestTASK3779_UploadWaitsForAHeldCopyAndIsRefused(t *testing.T) {
 	f := newCopyStorageFixture(t, "pro", 600, 0)
+	if f.s.dialect.Driver() != DriverPostgres {
+		// The advisory lock under test is Postgres-only. On SQLite the
+		// upload's BEGIN IMMEDIATE waits behind the held copy's writer lock
+		// before it can reach the lock this test watches.
+		t.Skip("the storage advisory lock is Postgres-only")
+	}
 	used, err := f.s.accountStorageUsageQ(f.s.db, f.owner.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -198,31 +204,50 @@ func TestTASK3779_UploadWaitsForAHeldCopyAndIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	held, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCopy := func() { releaseOnce.Do(func() { close(release) }) }
 	testHookCopyAfterStorageCheck = func() {
 		close(held)
 		<-release
 	}
-	t.Cleanup(func() { testHookCopyAfterStorageCheck = nil })
-
 	copyErr, uploadErr := make(chan error, 1), make(chan error, 1)
-	go func() { copyErr <- f.copy(true) }()
+	copyDone := make(chan struct{})
+	// Failure paths must not leave the copy parked holding its locks.
+	t.Cleanup(func() {
+		releaseCopy()
+		<-copyDone
+		testHookCopyAfterStorageCheck = nil
+		testHookAfterStorageOwnerRead = nil
+	})
+
+	go func() { defer close(copyDone); copyErr <- f.copy(true) }()
 	select {
 	case <-held:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the copy never reached its storage check")
 	}
+	// Armed only now, so it fires for the upload alone (the copy read its
+	// owner before it was held), right before the upload takes the lock: the
+	// window below starts with the upload at the lock, not merely started.
+	reached := make(chan struct{})
+	var reachedOnce sync.Once
+	testHookAfterStorageOwnerRead = func(*sql.Tx, string) { reachedOnce.Do(func() { close(reached) }) }
 	go func() { uploadErr <- f.add(600, false, WithPlanLimit()) }()
+	select {
+	case <-reached:
+	case err := <-uploadErr:
+		t.Fatalf("the upload finished before it reached the storage lock: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the upload never reached the storage lock")
+	}
 
-	// The upload must not finish while the copy holds the lock. On SQLite
-	// BEGIN IMMEDIATE already serialises writers, so this holds there too.
+	// The upload must not finish while the copy holds the lock.
 	select {
 	case err := <-uploadErr:
-		close(release)
-		<-copyErr
 		t.Fatalf("the upload finished while the copy was held between its check and its commit (err %v): the storage lock does not serialise them", err)
 	case <-time.After(500 * time.Millisecond):
 	}
-	close(release)
+	releaseCopy()
 	if err := <-copyErr; err != nil {
 		t.Fatalf("the held copy: %v", err)
 	}
