@@ -169,10 +169,12 @@ func TestApplyExternalContentTimeoutsThenFails(t *testing.T) {
 	}
 }
 
-// TestApplyExternalContentTimeoutThenSecondAcks: first applier never
-// responds, second one does — the retry should hit the second
-// applier and succeed.
-func TestApplyExternalContentTimeoutThenSecondAcks(t *testing.T) {
+// TestApplyExternalContentTimeoutIsNotResentToSecond (BUG-3748; it used to
+// assert the retry): the first applier is asked and never answers, and the
+// call returns the unknown outcome without asking the second. The first may
+// have applied the body with its ack late. Re-sending the same body to
+// another tab after a write landed in between would roll that write back.
+func TestApplyExternalContentTimeoutIsNotResentToSecond(t *testing.T) {
 	origFirst, origRetry := applierFirstTimeoutVar, applierRetryTimeoutVar
 	swapApplierTimeouts(80*time.Millisecond, 1*time.Second)
 	defer swapApplierTimeouts(origFirst, origRetry)
@@ -193,13 +195,13 @@ func TestApplyExternalContentTimeoutThenSecondAcks(t *testing.T) {
 	// `first` registers before `second` is dialled, so pickApplier
 	// (connectedAt asc, then conn id, which nextConnID hands out in
 	// order) chooses it for attempt 1 even when the clock cannot tell the
-	// two apart. This replaces a 15ms sleep that only made that LIKELY.
+	// two apart.
 	waitElectable(t, mgr, "item-a", 1)
 
-	// Second conn: echoes acks, so the retry lands on it.
+	// Second conn: would echo acks if it were asked, and counts.
 	second := dialWS(t, srv, "item-a")
-	stop := runApplierEcho(t, second)
-	defer stop()
+	defer second.Close()
+	secondAsked := drainCountingRequests(second)
 
 	waitElectable(t, mgr, "item-a", 2)
 
@@ -210,17 +212,19 @@ func TestApplyExternalContentTimeoutThenSecondAcks(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("retry path: want nil, got %v", err)
+		if !errors.Is(err, ErrAllAppliersTimedOut) {
+			t.Fatalf("a written request that timed out: got %v, want ErrAllAppliersTimedOut (outcome unknown)", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("retry path did not complete within 3s")
+		t.Fatal("the call did not return within 3s")
 	}
-	// The success came through the RETRY: `first` was asked and never
-	// answered. Without this, a pick that went to `second` first would
-	// also succeed, and the test would pass without exercising a retry.
 	if got := firstAsked(); got != 1 {
-		t.Errorf("the first applier was asked %d times, want 1 (attempt 1 goes to it, the retry to the second)", got)
+		t.Errorf("the first applier was asked %d times, want 1", got)
+	}
+	// Give a would-be retry time to arrive before asserting its absence.
+	time.Sleep(200 * time.Millisecond)
+	if got := secondAsked(); got != 0 {
+		t.Errorf("the second applier was asked %d times after the first timed out, want 0 (no re-send)", got)
 	}
 }
 
