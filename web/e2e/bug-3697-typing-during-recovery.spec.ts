@@ -11,11 +11,7 @@
 import { test, expect } from './fixtures';
 import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT, seedDoc } from './lib/collab-helpers';
 
-// FIXME BUG-3786: on main this fails its final assertion (the recovered editor
-// shows the original seed body, not the server's), after merging alongside
-// #2133 and #2124. Parked so main is green while BUG-3786 finds the cause; the
-// fix there removes this fixme.
-test.fixme('the editor accepts no typing while a force_refresh recovery is in flight', async ({ browser, fixture, request }, testInfo) => {
+test('the editor accepts no typing while a force_refresh recovery is in flight', async ({ browser, fixture, request }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough');
 	test.setTimeout(120_000);
 	const { id, slug } = await seedDoc(fixture, request, 'BUG-3697');
@@ -53,12 +49,17 @@ test.fixme('the editor accepts no typing while a force_refresh recovery is in fl
 	await expect.poll(() => held, { timeout: SYNC_TIMEOUT, message: 'premise: the force_refresh refetch started and is parked' }).toBeGreaterThan(0);
 
 	// The recovery window: the editor must refuse input, and typing into it
-	// must change nothing.
+	// must change nothing. That includes the page: a frozen editor is not
+	// contenteditable, so its keys used to reach the page shortcuts, and the
+	// `c` in this text opened quick-add, which took the rest (BUG-3786).
 	const editor = page.locator(EDITOR_SELECTOR);
 	await expect(editor).toHaveAttribute('contenteditable', 'false');
 	await editor.click({ force: true });
+	await expect(editor, 'premise: the frozen editor holds focus').toBeFocused();
 	await page.keyboard.type('Typed during recovery.');
 	await expect(editor).not.toContainText('Typed during recovery.');
+	await expect(page.locator('.quick-add-input'), 'a shortcut fired from the frozen editor').toHaveCount(0);
+	await expect(editor).toBeFocused();
 
 	hold = false;
 	release();

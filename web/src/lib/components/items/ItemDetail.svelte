@@ -122,6 +122,7 @@
 	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { createLinksRetry, type LinksRetryTarget } from '$lib/items/linksRetry';
 	import { rawSeedDecision } from '$lib/items/rawSeed';
+	import { characterKey } from '$lib/a11y/characterShortcuts.svelte';
 
 	type RelationshipEntry = {
 		key: string;
@@ -2505,6 +2506,33 @@
 	// reads it; Svelte applies it in the microtask after the handler, before
 	// any later keystroke event can run.
 	let recoveryFrozen = $state(false);
+	// A frozen editor is contenteditable=false with no tabindex, so the browser
+	// drops its focus to <body>, outside the pane, and the shortcut guards
+	// (isInputFocused, the collection page's `.item-pane` check) no longer see
+	// a text field: a user typing through the recovery got the quick-add dialog
+	// on `c`, holding the rest of what they typed, and an arrow or Enter would
+	// move the pane to another item (BUG-3786). While frozen the editor stays
+	// focusable, which keeps it inside the pane's guards, and a typed character
+	// stops at it: whatever `characterKey` returns, which is what every
+	// single-key shortcut reads, and nothing else. Every other key (Escape,
+	// Tab, arrows, Enter, space, chords) still reaches its window owners —
+	// DockedSheet, the PaneHost focus trap, scroll restore — as it does from an
+	// editable editor (BUG-3786 codex r2, r3). ProseMirror's own listener sits
+	// on this same node, so it still sees every key.
+	$effect(() => {
+		const dom = editorInstance?.view?.dom;
+		if (!dom || !recoveryFrozen) return;
+		const hadTabIndex = dom.hasAttribute('tabindex');
+		if (!hadTabIndex) dom.tabIndex = -1;
+		const hold = (e: KeyboardEvent) => {
+			if (characterKey(e) !== null) e.stopPropagation();
+		};
+		dom.addEventListener('keydown', hold);
+		return () => {
+			dom.removeEventListener('keydown', hold);
+			if (!hadTabIndex) dom.removeAttribute('tabindex');
+		};
+	});
 	// Gated on `itemMatchesRef` (PLAN-2105 / TASK-2112 switch-safety): the
 	// instant `ref` changes, `item` still holds the PREVIOUS item until the
 	// new fetch resolves, so without this gate collabKey would stay the old
