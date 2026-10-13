@@ -37,6 +37,18 @@ describe('TASK-2199: ItemDetail protects edits that have not reached the server'
 		expect(handler).toMatch(/if \(recovered\) offlineRecovery = recovered/);
 	});
 
+	it('BUG-3697: force_refresh freezes the editor before it captures, and only the rebuilt provider unfreezes it', () => {
+		const handler = between('onForceRefresh: () => {', 'void api.items');
+		const freeze = handler.indexOf('recoveryFrozen = true');
+		expect(freeze, 'onForceRefresh does not freeze the editor').toBeGreaterThan(-1);
+		expect(freeze, 'the freeze must come before the recovery capture').toBeLessThan(handler.indexOf('offlineRecoveryOnForceRefresh('));
+		// The refetch's failure arm must not unfreeze: the provider is gone.
+		const failure = between('.catch((err) => {', 'ydoc = doc;');
+		expect(failure).not.toMatch(/recoveryFrozen\s*=\s*false/);
+		expect(between('ydoc = doc;', 'return () => {')).toMatch(/recoveryFrozen = false/);
+		expect(CODE).toMatch(/editable=\{!peeking && !recoveryFrozen\}/);
+	});
+
 	it('in-app navigation asks leaveQuestion and cancels on a No, leaving tab close to beforeunload', () => {
 		const guard = between('beforeNavigate((nav) => {', '\n\t});');
 		expect(guard).toMatch(/if \(nav\.type === 'leave'\) return;/);
