@@ -155,7 +155,8 @@ func (a *Store) UploadAttachment(ctx context.Context, spec store.FenceSpec, item
 // The caller may re-check what is not the store's to decide (the server
 // re-checks the subject's visibility and edit right, TASK-3401 U6c codex
 // r3), then calls Insert, and always Close. A pending upload that is closed
-// without an Insert leaves its blob for orphan GC, as any refused row does.
+// without a committed Insert reclaims its blob through Options.Reclaimer
+// (BUG-3652), or leaves it for the rowless sweep when that is nil.
 type PendingUpload struct {
 	a      *Store
 	spec   store.FenceSpec
@@ -163,6 +164,8 @@ type PendingUpload struct {
 	staged *attachments.Staged
 	guard  string
 	row    store.FencedAttachmentCreate
+	// inserted is set once Insert committed the row.
+	inserted bool
 }
 
 // StageUpload runs steps 1 to 4: size, admission, type and blob.
@@ -190,7 +193,7 @@ func (a *Store) StageUpload(ctx context.Context, spec store.FenceSpec, itemID st
 			p.Close()
 		}
 	}()
-	if err := a.admitUpload(ctx, spec, itemID, actor); err != nil {
+	if err := a.admitUpload(ctx, spec, itemID, actor, in.DeclaredSize); err != nil {
 		return nil, err
 	}
 
@@ -242,12 +245,30 @@ func (a *Store) StageUpload(ctx context.Context, spec store.FenceSpec, itemID st
 
 // Insert runs step 5: the row, in ONE fenced transaction.
 func (p *PendingUpload) Insert(ctx context.Context) (*AppAttachment, error) {
-	return p.a.insertUpload(ctx, p.spec, p.res, p.row)
+	att, err := p.a.insertUpload(ctx, p.spec, p.res, p.row)
+	if err == nil {
+		p.inserted = true
+	}
+	return att, err
 }
 
 // Close releases the hash guard, the staged blob and the reservation, in that
 // order; each is idempotent, and Close is safe to call more than once.
 func (p *PendingUpload) Close() {
+	// An upload whose blob went canonical but whose row never committed (its
+	// insert refused, as by the storage cap after an admission another upload
+	// raced, or the caller's re-check refused it before Insert) takes the
+	// blob with it, while its hash guard is still held (BUG-3652). The blob
+	// stays when another row or writer shares it.
+	if !p.inserted && p.row.StorageKey != "" {
+		// One attempt, whatever its outcome: the key is cleared before the
+		// call, so a second Close never retries after the guard is gone.
+		hash, key := p.row.ContentHash, p.row.StorageKey
+		p.row.StorageKey = ""
+		if p.a.opts.Reclaimer != nil {
+			p.a.opts.Reclaimer.ReclaimRefusedBlob(context.Background(), hash, key)
+		}
+	}
 	if p.guard != "" {
 		p.a.opts.InFlight.Release(p.guard)
 		p.guard = ""
@@ -259,7 +280,8 @@ func (p *PendingUpload) Close() {
 	p.res.release()
 }
 
-func (a *Store) admitUpload(ctx context.Context, spec store.FenceSpec, itemID string, actor store.FencedActor) error {
+func (a *Store) admitUpload(ctx context.Context, spec store.FenceSpec, itemID string, actor store.FencedActor, declared int64) error {
+	spec.StorageLimit = a.opts.PlanLimit
 	ftx, err := a.s.BeginFenced(ctx, spec)
 	if err != nil {
 		return err
@@ -274,10 +296,32 @@ func (a *Store) admitUpload(ctx context.Context, spec store.FenceSpec, itemID st
 	if files+pendingFiles > store.AppAttachmentMaxFiles || size+pendingBytes > store.AppAttachmentMaxBytes {
 		return store.ErrAppAttachmentLimit
 	}
+	// The plan's storage cap at the declared size (BUG-3653), before any
+	// byte is read, so the common refusal writes no blob. It is advisory:
+	// concurrent uploads can each pass it, and the row insert charges the
+	// cap authoritatively. An owner move is left to that check.
+	if err := ftx.CheckStorageLimit(declared); err != nil && !errors.Is(err, store.ErrStorageOwnerMoved) {
+		return err
+	}
 	return nil
 }
 
 func (a *Store) insertUpload(ctx context.Context, spec store.FenceSpec, res *reservation, in store.FencedAttachmentCreate) (*AppAttachment, error) {
+	// The storage cap is charged in the row's own transaction (BUG-3653). An
+	// ownership change between its owner read and its check is retried in a
+	// fresh transaction, as the human upload does.
+	spec.StorageLimit = a.opts.PlanLimit
+	for attempt := 1; ; attempt++ {
+		att, err := a.insertUploadTx(ctx, spec, res, in)
+		if errors.Is(err, store.ErrStorageOwnerMoved) && attempt < 3 {
+			continue
+		}
+		return att, err
+	}
+}
+
+// insertUploadTx is one transaction of insertUpload.
+func (a *Store) insertUploadTx(ctx context.Context, spec store.FenceSpec, res *reservation, in store.FencedAttachmentCreate) (*AppAttachment, error) {
 	ftx, err := a.s.BeginFenced(ctx, spec)
 	if err != nil {
 		return nil, err

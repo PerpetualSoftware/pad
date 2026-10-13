@@ -2130,6 +2130,11 @@ func (s *Store) workspaceStorageInfoQ(q Queryer, workspaceID string) (*Workspace
 // copy) retries in a fresh transaction.
 var errStorageOwnerMoved = errors.New("storage limit: workspace owner changed during the check")
 
+// ErrStorageOwnerMoved is errStorageOwnerMoved for a caller outside this
+// package that drives its own transaction (the app upload, BUG-3653): retry
+// in a fresh one.
+var ErrStorageOwnerMoved = errStorageOwnerMoved
+
 // testHookAfterStorageOwnerRead, when set by a test, runs between the owner
 // read that chooses the storage lock and the lock itself: the window an
 // ownership change must not slip through. It gets the transaction because on

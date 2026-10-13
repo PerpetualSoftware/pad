@@ -17,8 +17,10 @@ import (
 // item row (no seq, updated_at or etag change) and no last_referenced_at
 // stamp (DOC-3371 day-85 revisions).
 //
-// LOCKS. The workspace seq lock comes first, as in every fenced write: it
-// pins the companion check against a concurrent move, and it is what
+// LOCKS. On Pad Cloud the owner's storage plan-limit lock comes before
+// everything (BeginFenced, FenceSpec.StorageLimit, BUG-3653). After the
+// fence's own install read, the workspace seq lock comes first, as in every
+// fenced write: it pins the companion check against a concurrent move, and it is what
 // serializes the cap recount. Every app writer of via_app rows holds it, so
 // two uploads for one install cannot both pass a recount that only one of
 // them fits. The spec names a FOR UPDATE on the install row for this, but the
@@ -36,6 +38,10 @@ var (
 	// ErrAppAttachmentLimit: the install is at its file or byte cap. It
 	// carries no totals.
 	ErrAppAttachmentLimit = errors.New("app write: attachment limit reached")
+	// ErrAppStorageLimit: the upload would take the workspace owner past
+	// their plan's storage_bytes limit (BUG-3653). Like the item cap, it
+	// carries no totals for the app.
+	ErrAppStorageLimit = errors.New("app write: storage limit reached")
 	// ErrAppAttachmentNotFound: the attachment is not visible to the app
 	// (missing, deleted, foreign, or bound to a non-companion item). One
 	// error for all of them.
@@ -117,6 +123,9 @@ func (f *FencedTx) CreateAttachment(in FencedAttachmentCreate) (*models.Attachme
 	if files+1 > AppAttachmentMaxFiles || bytes+in.Size > AppAttachmentMaxBytes {
 		return nil, ErrAppAttachmentLimit
 	}
+	if err := f.CheckStorageLimit(in.Size); err != nil {
+		return nil, err
+	}
 	source := in.FilenameSource
 	if source == "" {
 		source = "unknown"
@@ -187,4 +196,25 @@ func (f *FencedTx) visibleAttachment(id string) (*models.Attachment, error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+// CheckStorageLimit refuses adding bytes that would take the workspace owner
+// past their storage_bytes limit (BUG-3653), under the lock BeginFenced took
+// for a spec with StorageLimit set; without it, it is a no-op. CreateAttachment
+// runs it authoritatively; an upload's admission runs it first so the common
+// refusal comes before any blob is written. It returns ErrAppStorageLimit, or
+// ErrStorageOwnerMoved when the caller should retry in a fresh transaction.
+func (f *FencedTx) CheckStorageLimit(adding int64) error {
+	if f.unusable() {
+		return ErrFenceClosed
+	}
+	if f.storageLock == nil {
+		return nil
+	}
+	err := f.s.checkStorageLimitTx(f.tx, *f.storageLock, adding)
+	var pl *PlanLimitError
+	if errors.As(err, &pl) {
+		return ErrAppStorageLimit
+	}
+	return err
 }

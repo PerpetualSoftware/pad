@@ -88,6 +88,14 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"emitItemEventAsInstallTx":        "INSERT INTO event_outbox (through writeOutboxTx) for the item it is given; sets the block's actor_via_app",
 	"emitItemUpdateEventsAsInstallTx": "INSERT INTO event_outbox for the item it is given (status_changed and/or updated); sets the block's actor_via_app",
 	"emitCommentEventAsInstallTx":     "INSERT INTO event_outbox (through writeOutboxTx) for the comment it is given; sets the block's actor_via_app",
+	// BUG-3653 part B: the storage cap on an app upload. BeginFenced takes the
+	// lock first when the spec sets StorageLimit; CheckStorageLimit reads.
+	"lockStorageLimitTx":     "reads workspaces.owner_id, then acquirePlanLimitLock; writes nothing",
+	"acquirePlanLimitLock":   "pg_advisory_xact_lock on the plan-limit key; writes nothing (a no-op on SQLite)",
+	"checkStorageLimitTx":    "reads the owner's plan, settings and storage usage (workspaceStorageInfoQ) under the caller's lock",
+	"workspaceStorageInfoQ":  "reads the workspace owner, user plan, platform settings and attachment byte sums",
+	"workspaceStorageUsageQ": "reads SUM(size_bytes) of the workspace's live attachments",
+	"accountStorageUsageQ":   "reads SUM(size_bytes) of the live attachments in every workspace the owner owns",
 }
 
 // reviewedStoreFuncs are package-level internal/store functions that are part
@@ -110,6 +118,9 @@ var allowedFuncValues = map[string]map[string]string{
 	},
 	"github.com/PerpetualSoftware/pad/internal/store.collapseChanges": {
 		"isLossySummary": "a closure defined in the same body and never reassigned; the walk inspects its body",
+	},
+	"(*github.com/PerpetualSoftware/pad/internal/store.Store).lockStorageLimitTx": {
+		"testHookAfterStorageOwnerRead": "a test-only seam: nil in production, set only by internal/store tests (TASK-3619's ownership-move test)",
 	},
 	"github.com/PerpetualSoftware/pad/internal/store.itemUpdatedSliceChanged": {
 		"normalize": "a closure defined in the same body and never reassigned; the walk inspects its body",
