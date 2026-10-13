@@ -282,3 +282,41 @@ func TestBUG3663_UnreadableTableDoesNotHideAViolationElsewhere(t *testing.T) {
 		t.Error("the refused migration was recorded")
 	}
 }
+
+// Failing to list the tables at all is the check being unavailable, not a
+// reason to refuse the upgrade (codex on #2120).
+func TestBUG3663_FKOffMigrationIsNotRefusedWhenTheTablesCannotBeListed(t *testing.T) {
+	s := fkCheckStore(t)
+	saved := fkCheckTablesQuery
+	fkCheckTablesQuery = `SELECT name FROM fk3663_no_such_table`
+	t.Cleanup(func() { fkCheckTablesQuery = saved })
+	const name = "999_bug3663_unlistable.sql"
+	if err := applySQLiteMigration(s.db, name, "PRAGMA foreign_keys = OFF;\nCREATE TABLE fk3663_noop (id TEXT);\nPRAGMA foreign_keys = ON;\n"); err != nil {
+		t.Fatalf("an FK-off migration whose check cannot list the tables: %v", err)
+	}
+	if !recorded(t, s, name) {
+		t.Error("the migration was not recorded")
+	}
+}
+
+// The same at the after stage only: the listing reads a sentinel table the
+// body drops, so the before pass lists and the after pass cannot.
+func TestBUG3663_FKOffMigrationIsNotRefusedWhenItsBodyBreaksTheListing(t *testing.T) {
+	s := fkCheckStore(t)
+	if _, err := s.db.Exec(`CREATE TABLE fk3663_sentinel (id TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	saved := fkCheckTablesQuery
+	fkCheckTablesQuery = saved[:strings.Index(saved, " ORDER BY")] + ` AND EXISTS (SELECT 1 FROM fk3663_sentinel) ORDER BY name`
+	t.Cleanup(func() { fkCheckTablesQuery = saved })
+	if err := fkCheckRuns(t, s); err != nil {
+		t.Fatalf("instrument: the before pass must list: %v", err)
+	}
+	const name = "999_bug3663_drops_the_sentinel.sql"
+	if err := applySQLiteMigration(s.db, name, "PRAGMA foreign_keys = OFF;\nDROP TABLE fk3663_sentinel;\nPRAGMA foreign_keys = ON;\n"); err != nil {
+		t.Fatalf("an FK-off migration whose body breaks the table listing: %v", err)
+	}
+	if !recorded(t, s, name) {
+		t.Error("the migration was not recorded")
+	}
+}

@@ -983,13 +983,17 @@ type fkCheckResult struct {
 	unavailable map[string]error
 }
 
+// fkCheckTablesQuery lists the tables the check runs on; a var so a test can
+// make the listing itself fail.
+var fkCheckTablesQuery = `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+
 // foreignKeyViolations runs PRAGMA foreign_key_check on tx for each table.
 // Only listing the tables is fatal; a table whose check fails is recorded as
 // unavailable.
 func foreignKeyViolations(ctx context.Context, tx *sql.Tx) (fkCheckResult, error) {
 	res := fkCheckResult{counts: map[string]int{}, checked: map[string]bool{}, unavailable: map[string]error{}}
 	var tables []string
-	rows, err := tx.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	rows, err := tx.QueryContext(ctx, fkCheckTablesQuery)
 	if err != nil {
 		return res, err
 	}
@@ -1167,10 +1171,13 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 	// A table the body creates has a baseline of zero. A table that was
 	// unavailable before has no baseline, so its violations after are
 	// logged, not refused: they may be legacy ones the check could not see.
+	// A failure to list the tables at all skips the check, on either side.
 	var fkBefore fkCheckResult
-	if fkOff {
+	fkCheck := fkOff
+	if fkCheck {
 		if fkBefore, err = foreignKeyViolations(ctx, tx); err != nil {
-			return fmt.Errorf("apply migration %s: foreign key check before: %w", name, err)
+			slog.Warn("migration foreign key check unavailable; skipped", "migration", name, "stage", "before", "error", err)
+			fkCheck = false
 		}
 		for t, cerr := range fkBefore.unavailable {
 			slog.Warn("migration foreign key check unavailable for table; skipped", "migration", name, "stage", "before", "table", t, "error", cerr)
@@ -1179,10 +1186,10 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 	if err := execMulti(tx, body); err != nil {
 		return fmt.Errorf("apply migration %s: %w", name, err)
 	}
-	if fkOff {
+	if fkCheck {
 		after, err := foreignKeyViolations(ctx, tx)
 		if err != nil {
-			return fmt.Errorf("apply migration %s: foreign key check after: %w", name, err)
+			slog.Warn("migration foreign key check unavailable; skipped", "migration", name, "stage", "after", "error", err)
 		}
 		for t, cerr := range after.unavailable {
 			slog.Warn("migration foreign key check unavailable for table; skipped", "migration", name, "stage", "after", "table", t, "error", cerr)
