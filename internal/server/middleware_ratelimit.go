@@ -77,6 +77,17 @@ func newIPRateLimiter(cfg rateLimitConfig) *ipRateLimiter {
 	if retention <= 0 {
 		retention = defaultRetention
 	}
+	// Retention never sits below the full refill window (BUG-3638). A bucket
+	// idle for less than burst / rate has not refilled, and evicting it hands
+	// its owner a full bucket, so a shorter retention lets a caller reset
+	// their limit by waiting. Raising it here covers every limiter, present
+	// and future, not only the ones whose config remembered to set it.
+	if cfg.Rate > 0 {
+		refill := time.Duration(float64(cfg.Burst) / float64(cfg.Rate) * float64(time.Second))
+		if retention < refill {
+			retention = refill
+		}
+	}
 	maxEntries := cfg.MaxEntries
 	if maxEntries <= 0 {
 		maxEntries = defaultMaxEntries
@@ -438,23 +449,30 @@ func NewRateLimiters() *RateLimiters {
 			Retention: 2 * time.Hour,
 		}),
 		// Password reset: 3 per hour per IP (= 3/3600 per second, burst 3)
+		// Retention ≥ the refill window (3 ÷ (3/hour) = 1 h); 2 h gives margin
+		// (BUG-3638).
 		PasswordReset: newIPRateLimiter(rateLimitConfig{
-			Rate:  rate.Limit(3.0 / 3600.0),
-			Burst: 3,
+			Rate:      rate.Limit(3.0 / 3600.0),
+			Burst:     3,
+			Retention: 2 * time.Hour,
 		}),
 		// Verification link consume + claim: 10 per hour per IP, burst 10
 		// (BUG-3382). Separate from PasswordReset so one verification page
 		// load, a refresh and a claim do not spend the budget the claimant
 		// then needs to set a password. The token is a 256-bit secret, so
-		// this bounds load, not guessing.
+		// this bounds load, not guessing. Retention ≥ the 1 h refill window
+		// (BUG-3638).
 		EmailVerify: newIPRateLimiter(rateLimitConfig{
-			Rate:  rate.Limit(10.0 / 3600.0),
-			Burst: 10,
+			Rate:      rate.Limit(10.0 / 3600.0),
+			Burst:     10,
+			Retention: 2 * time.Hour,
 		}),
-		// Registration: 5 per hour per IP (= 5/3600 per second, burst 5)
+		// Registration: 5 per hour per IP (= 5/3600 per second, burst 5).
+		// Retention ≥ the 1 h refill window (BUG-3638).
 		Register: newIPRateLimiter(rateLimitConfig{
-			Rate:  rate.Limit(5.0 / 3600.0),
-			Burst: 5,
+			Rate:      rate.Limit(5.0 / 3600.0),
+			Burst:     5,
+			Retention: 2 * time.Hour,
 		}),
 		// OAuth login/link: 20 per minute per IP (sidecar calls this — higher than regular auth)
 		OAuthLogin: newIPRateLimiter(rateLimitConfig{
