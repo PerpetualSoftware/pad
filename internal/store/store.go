@@ -1005,6 +1005,10 @@ func foreignKeyViolations(ctx context.Context, tx *sql.Tx) (fkCheckResult, error
 		}
 		tables = append(tables, t)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return res, err
+	}
 	if err := rows.Close(); err != nil {
 		return res, err
 	}

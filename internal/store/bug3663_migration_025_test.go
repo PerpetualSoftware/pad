@@ -320,3 +320,36 @@ func TestBUG3663_FKOffMigrationIsNotRefusedWhenItsBodyBreaksTheListing(t *testin
 		t.Error("the migration was not recorded")
 	}
 }
+
+// A listing that returns rows and THEN fails is a failed listing, not a
+// complete one (codex on #2120): the partial list must not be compared. Here
+// the partial list includes fk3663_child, where the body leaves a dangling
+// reference; treated as complete, that would refuse the migration.
+func TestBUG3663_ListingThatFailsMidwayIsNotTreatedAsComplete(t *testing.T) {
+	s := fkCheckStore(t)
+	saved := fkCheckTablesQuery
+	fkCheckTablesQuery = `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' UNION ALL SELECT CAST(abs(-9223372036854775807 - (rowid > 0)) AS TEXT) FROM sqlite_master WHERE name = 'fk3663_child'`
+	t.Cleanup(func() { fkCheckTablesQuery = saved })
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query(fkCheckTablesQuery)
+	if err != nil {
+		t.Fatalf("instrument: the listing must prepare and start: %v", err)
+	}
+	n := 0
+	for rows.Next() {
+		n++
+	}
+	iterErr := rows.Err()
+	rows.Close()
+	tx.Rollback()
+	if n == 0 || iterErr == nil {
+		t.Fatalf("instrument: want rows then an iteration error, got %d rows, err %v", n, iterErr)
+	}
+	const name = "999_bug3663_partial_listing.sql"
+	if err := applySQLiteMigration(s.db, name, "PRAGMA foreign_keys = OFF;\nDELETE FROM fk3663_parent WHERE id = 'p1';\nPRAGMA foreign_keys = ON;\n"); err != nil {
+		t.Fatalf("an FK-off migration whose table listing fails midway: %v", err)
+	}
+}
