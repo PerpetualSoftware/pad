@@ -155,7 +155,8 @@ func (a *Store) UploadAttachment(ctx context.Context, spec store.FenceSpec, item
 // The caller may re-check what is not the store's to decide (the server
 // re-checks the subject's visibility and edit right, TASK-3401 U6c codex
 // r3), then calls Insert, and always Close. A pending upload that is closed
-// without an Insert leaves its blob for orphan GC, as any refused row does.
+// without a committed Insert reclaims its blob through Options.Reclaimer
+// (BUG-3652), or leaves it for the rowless sweep when that is nil.
 type PendingUpload struct {
 	a      *Store
 	spec   store.FenceSpec
@@ -163,6 +164,8 @@ type PendingUpload struct {
 	staged *attachments.Staged
 	guard  string
 	row    store.FencedAttachmentCreate
+	// inserted is set once Insert committed the row.
+	inserted bool
 }
 
 // StageUpload runs steps 1 to 4: size, admission, type and blob.
@@ -242,12 +245,25 @@ func (a *Store) StageUpload(ctx context.Context, spec store.FenceSpec, itemID st
 
 // Insert runs step 5: the row, in ONE fenced transaction.
 func (p *PendingUpload) Insert(ctx context.Context) (*AppAttachment, error) {
-	return p.a.insertUpload(ctx, p.spec, p.res, p.row)
+	att, err := p.a.insertUpload(ctx, p.spec, p.res, p.row)
+	if err == nil {
+		p.inserted = true
+	}
+	return att, err
 }
 
 // Close releases the hash guard, the staged blob and the reservation, in that
 // order; each is idempotent, and Close is safe to call more than once.
 func (p *PendingUpload) Close() {
+	// An upload whose blob went canonical but whose row never committed (its
+	// insert refused, as by the storage cap after an admission another upload
+	// raced, or the caller's re-check refused it before Insert) takes the
+	// blob with it, while its hash guard is still held (BUG-3652). The blob
+	// stays when another row or writer shares it.
+	if !p.inserted && p.row.StorageKey != "" && p.a.opts.Reclaimer != nil {
+		p.a.opts.Reclaimer.ReclaimRefusedBlob(context.Background(), p.row.ContentHash, p.row.StorageKey)
+		p.row.StorageKey = ""
+	}
 	if p.guard != "" {
 		p.a.opts.InFlight.Release(p.guard)
 		p.guard = ""

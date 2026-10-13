@@ -52,6 +52,22 @@ type Options struct {
 	// shared so an app upload fences against the same orphan-GC sweep the
 	// human uploads do.
 	InFlight *attachments.InFlight
+	// Reclaimer deletes the canonical blob of an upload whose row never
+	// committed, under the server's rowless-sweep guards (BUG-3652): kept
+	// when another row or writer shares its hash. Called while the upload
+	// still holds its hash guard. Nil leaves the blob for the rowless sweep.
+	//
+	// An interface, not a func field: the boundary guard refuses function
+	// values in app code outright (rule 9), and refuses interface calls only
+	// where an internal/store type could answer them (rule 4); no store type
+	// implements this. The server's implementation reads whether rows exist
+	// for the hash and deletes the blob file; it writes no row.
+	Reclaimer BlobReclaimer
+}
+
+// BlobReclaimer is Options.Reclaimer.
+type BlobReclaimer interface {
+	ReclaimRefusedBlob(ctx context.Context, hash, storageKey string)
 }
 
 // New wraps the store for app writes.

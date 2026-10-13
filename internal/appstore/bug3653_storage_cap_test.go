@@ -105,3 +105,66 @@ func TestBUG3653_AppUploadInsertChargesTheCapAuthoritatively(t *testing.T) {
 		t.Fatalf("insert past the cap: err = %v, want ErrAppStorageLimit", err)
 	}
 }
+
+// BUG-3652 on the app door: an upload whose row never commits hands its
+// canonical blob to the reclaim hook, once, while its hash guard is held; a
+// committed upload never does.
+func TestBUG3652_AppUploadReclaimsTheBlobOfARowThatNeverCommitted(t *testing.T) {
+	ctx := context.Background()
+	type call struct{ hash, key string }
+	var calls []call
+	var guardHeld []bool
+	newF := func() uploadFixture {
+		f := newCappedUploadFixture(t, true, "20")
+		f.a.opts.Reclaimer = reclaimRecorder(func(hash, key string) {
+			calls = append(calls, call{hash, key})
+			f.inflight.Lock()
+			guardHeld = append(guardHeld, f.inflight.CountLocked(hash) > 0)
+			f.inflight.Unlock()
+		})
+		return f
+	}
+
+	// Committed: no reclaim.
+	f := newF()
+	if _, err := f.upload(ctx, f.spec, f.mine.ID, []byte(strings.Repeat("a", 5)), "a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("a committed upload was reclaimed: %v", calls)
+	}
+
+	// Refused at its insert after admission: reclaimed once, guard held.
+	body := []byte(strings.Repeat("p", 15))
+	pending, err := f.a.StageUpload(ctx, f.spec, f.mine.ID, AppUpload{Body: bytes.NewReader(body), DeclaredSize: int64(len(body)), Filename: "p.txt"}, f.actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.upload(ctx, f.spec, f.mine.ID, []byte(strings.Repeat("q", 10)), "q.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pending.Insert(ctx); !errors.Is(err, store.ErrAppStorageLimit) {
+		t.Fatalf("insert: %v", err)
+	}
+	want := call{pending.row.ContentHash, pending.row.StorageKey}
+	pending.Close()
+	pending.Close() // idempotent: still one call
+	if len(calls) != 1 || calls[0] != want || !guardHeld[0] {
+		t.Fatalf("calls = %v (guard held %v), want one call %v with the guard held", calls, guardHeld, want)
+	}
+
+	// Closed without Insert (the caller's re-check refused it): reclaimed.
+	other := []byte(strings.Repeat("r", 3))
+	p2, err := f.a.StageUpload(ctx, f.spec, f.mine.ID, AppUpload{Body: bytes.NewReader(other), DeclaredSize: int64(len(other)), Filename: "r.txt"}, f.actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2.Close()
+	if len(calls) != 2 || calls[1].hash != p2.row.ContentHash {
+		t.Fatalf("calls = %v, want a second call for the upload closed without Insert", calls)
+	}
+}
+
+type reclaimRecorder func(hash, key string)
+
+func (r reclaimRecorder) ReclaimRefusedBlob(_ context.Context, hash, key string) { r(hash, key) }

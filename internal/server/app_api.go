@@ -134,8 +134,12 @@ func (s *Server) appStore() (*appstore.Store, error) {
 		if s.attachments != nil {
 			blobs, _ = s.attachments.Backends()[attachments.FSPrefix].(*attachments.FSStore)
 		}
+		var reclaimer appstore.BlobReclaimer
+		if blobs != nil {
+			reclaimer = appBlobReclaimer{s: s, backend: blobs}
+		}
 		s.appstoreState.store = appstore.New(s.store, appstore.Options{PlanLimit: s.cloudMode, ETagKey: key,
-			Blobs: blobs, InFlight: s.UploadInFlight()})
+			Blobs: blobs, InFlight: s.UploadInFlight(), Reclaimer: reclaimer})
 	})
 	return s.appstoreState.store, s.appstoreState.err
 }
@@ -763,4 +767,15 @@ func appWriteAllows(r *http.Request, collectionID string) bool {
 		}
 	}
 	return false
+}
+
+// appBlobReclaimer gives app uploads the human doors' refused-blob reclaim
+// (BUG-3652), on the filesystem backend app uploads write through.
+type appBlobReclaimer struct {
+	s       *Server
+	backend attachments.AttachmentStore
+}
+
+func (r appBlobReclaimer) ReclaimRefusedBlob(ctx context.Context, hash, storageKey string) {
+	r.s.reclaimRefusedBlob(ctx, r.backend, hash, storageKey)
 }
