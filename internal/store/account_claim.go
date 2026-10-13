@@ -381,13 +381,15 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, c
 		{"delete sessions", `DELETE FROM sessions WHERE user_id = ?`, []any{userID}},
 		{"delete api tokens", `DELETE FROM api_tokens WHERE user_id = ?`, []any{userID}},
 		// Every grant the account held is recorded as revoked, so a refresh
-		// that validated before the claim mints nothing after it
-		// (BUG-3678). Issuance checks this under the users row, which the
+		// or code exchange that validated before the claim mints nothing
+		// after it (BUG-3678). The connection rows, read before the delete
+		// below, name grants with no token yet (codex round 4). Issuance checks this under the users row, which the
 		// first statement holds.
 		{"record revoked oauth grants", `INSERT INTO oauth_revoked_grants (request_id, revoked_at)
 			SELECT request_id, ? FROM oauth_refresh_tokens WHERE subject = ?
 			UNION SELECT request_id, ? FROM oauth_access_tokens WHERE subject = ?
-			ON CONFLICT (request_id) DO NOTHING`, []any{ts, userID, ts, userID}},
+			UNION SELECT request_id, ? FROM oauth_connections WHERE user_id = ?
+			ON CONFLICT (request_id) DO NOTHING`, []any{ts, userID, ts, userID, ts, userID}},
 		{"revoke oauth access tokens", `UPDATE oauth_access_tokens SET active = ? WHERE subject = ?`, []any{s.dialect.BoolToInt(false), userID}},
 		{"revoke oauth refresh tokens", `UPDATE oauth_refresh_tokens SET active = ? WHERE subject = ?`, []any{s.dialect.BoolToInt(false), userID}},
 		{"revoke oauth authorization codes", `UPDATE oauth_authorization_codes SET active = ? WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{s.dialect.BoolToInt(false), userID}},

@@ -305,3 +305,28 @@ func TestBUG3678_TokenlessRevokeWaitsOnIssuanceLock_Postgres(t *testing.T) {
 		t.Fatal("the revoke never finished")
 	}
 }
+
+// A claim also ends a grant consented to before it whose code is not yet
+// exchanged: the exchange, validated before the claim, mints nothing after
+// it (codex round 4).
+func TestBUG3678_ClaimEndsAGrantWithNoTokenYet(t *testing.T) {
+	s := testStore(t)
+	c := newTestClient(t, s)
+	u := createUnverifiedUser(t, s, "claim-first-3678@example.com")
+	if err := s.CreateOAuthConnection(OAuthConnection{RequestID: "req-3678-preclaim", UserID: u.ID, Name: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	vTok, err := s.CreateEmailVerification(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimAccountByVerification(vTok); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	r := newTestRequest(c.ID, "preclaim-a", "req-3678-preclaim")
+	r.Subject = u.ID
+	r.SessionData = `{"subject":"` + u.ID + `"}`
+	if err := s.CreateAccessToken(r); !errors.Is(err, ErrOAuthGrantRevoked) {
+		t.Fatalf("code exchange after the claim: %v, want ErrOAuthGrantRevoked", err)
+	}
+}
