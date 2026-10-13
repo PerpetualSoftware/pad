@@ -248,11 +248,12 @@ func TestTASK3779_UploadWaitsForAHeldCopyAndIsRefused(t *testing.T) {
 		var n int
 		// The storage lock's own key: acquirePlanLimitLock takes
 		// pg_advisory_xact_lock(hashtext('pad:plan-limit:storage_bytes:' ||
-		// owner)), a single bigint key whose low 32 bits pg_locks shows as
-		// objid, with objsubid 1.
+		// owner)), a single bigint key that pg_locks splits into classid (high
+		// 32 bits) and objid (low 32 bits), with objsubid 1. Both are matched.
 		if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
 			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
 			AND objsubid = 1
+			AND classid = (((hashtext('pad:plan-limit:storage_bytes:' || $1)::bigint) >> 32) & 4294967295)::oid
 			AND objid = ((hashtext('pad:plan-limit:storage_bytes:' || $1)::bigint) & 4294967295)::oid`, f.owner.ID).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
