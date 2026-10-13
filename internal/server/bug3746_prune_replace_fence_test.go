@@ -51,3 +51,34 @@ func TestBUG3746_ContentReplacementMovesTheSeedBoundary(t *testing.T) {
 		t.Fatalf("in-memory seed boundary = (%d, %v), want (%d, true): Join reads it before the column", mem, ok, updated.Seq)
 	}
 }
+
+// The patch route's twin. It prunes and replaces through its own
+// PruneAndApply call (handlers_items_patch.go), so it is wired separately
+// and needs its own leg (CONVE-19). The fixture seeds the body through the
+// content route, which already stamps a boundary, so this asserts the
+// boundary moves past the seed's seq to the patch's.
+func TestBUG3746_PatchReplacementMovesTheSeedBoundary(t *testing.T) {
+	srv := testServerWithCollab(t)
+	f := newPatchFixture(t, srv, "alpha\nbeta\ngamma\n")
+	seeded := f.current(t).Seq
+
+	code, out := f.patch(t, map[string]any{"edits": edits("beta", "BETA")})
+	if code != http.StatusOK {
+		t.Fatalf("patch: %d %v", code, out)
+	}
+	after := f.current(t)
+	if after.Seq <= seeded {
+		t.Fatalf("precondition: the patch did not land (seq %d after %d)", after.Seq, seeded)
+	}
+
+	durable, ok, err := srv.store.ItemLastRestoreSeq(f.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || durable != after.Seq {
+		t.Fatalf("durable seed boundary = (%d, %v), want (%d, true): a tab seeded before the patch (seq %d) would be admitted", durable, ok, after.Seq, seeded)
+	}
+	if mem, ok := srv.collab.LastRestoreSeq(f.item.ID); !ok || mem != after.Seq {
+		t.Fatalf("in-memory seed boundary = (%d, %v), want (%d, true)", mem, ok, after.Seq)
+	}
+}
