@@ -277,7 +277,17 @@ func (s *Storage) CreateAccessTokenSession(_ context.Context, signature string, 
 	if err != nil {
 		return err
 	}
-	return s.store.CreateAccessToken(r)
+	return mapGrantRevoked(s.store.CreateAccessToken(r))
+}
+
+// mapGrantRevoked turns a mint refused on a revoked grant into
+// fosite.ErrInactiveToken, which fosite answers invalid_request rather
+// than server_error (BUG-3678).
+func mapGrantRevoked(err error) error {
+	if errors.Is(err, store.ErrOAuthGrantRevoked) {
+		return fmt.Errorf("%w: %w", fosite.ErrInactiveToken, err)
+	}
+	return err
 }
 
 // GetAccessTokenSession hydrates an access token. Inactive rows
@@ -327,7 +337,7 @@ func (s *Storage) CreateRefreshTokenSession(_ context.Context, signature, access
 		return err
 	}
 	r.AccessTokenSignature = accessSignature
-	return s.store.CreateRefreshToken(r)
+	return mapGrantRevoked(s.store.CreateRefreshToken(r))
 }
 
 // GetRefreshTokenSession hydrates a refresh token. Inactive rows
@@ -387,10 +397,15 @@ func (s *Storage) DeleteRefreshTokenSession(_ context.Context, signature string)
 // + CreateRefreshTokenSession (which inherit the same request_id and
 // land active=TRUE per the store's hardcode).
 //
-// signatureToRotate is fosite's hint about which row triggered the
-// rotation; the store layer ignores it and revokes by request_id.
+// signatureToRotate is the presented refresh token; the store spends it
+// conditionally, so only one of two concurrent refreshes rotates.
 func (s *Storage) RotateRefreshToken(_ context.Context, requestID, signatureToRotate string) error {
 	if err := s.store.RotateRefreshToken(requestID, signatureToRotate); err != nil {
+		if errors.Is(err, store.ErrOAuthRefreshNotActive) {
+			// A concurrent refresh rotated it first, or a revoke landed
+			// (BUG-3678). Fosite answers invalid_request.
+			return fmt.Errorf("%w: %w", fosite.ErrSerializationFailure, err)
+		}
 		return err
 	}
 	// TASK-961: report rotation-induced revocation to the observability
@@ -414,8 +429,13 @@ func (s *Storage) RotateRefreshToken(_ context.Context, requestID, signatureToRo
 // with RevokeAccessToken — emitting from both would double-count.
 // We let the access-side emitter own the reporting and keep this
 // path lean.
+//
+// It ends the grant, not only its refresh tokens (BUG-3678): fosite calls
+// it for every RFC 7009 revoke, whatever the token type, and on a refresh
+// replay, and a refresh that validated before either must not mint a
+// pair after it.
 func (s *Storage) RevokeRefreshToken(_ context.Context, requestID string) error {
-	return s.store.RevokeRefreshTokenFamily(requestID)
+	return s.store.RevokeOAuthGrant(requestID)
 }
 
 // RevokeAccessToken mirrors RevokeRefreshToken for access tokens.

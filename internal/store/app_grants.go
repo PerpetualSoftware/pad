@@ -122,6 +122,14 @@ func (s *Store) revokeUserAppGrantOnce(userID, requestID string, attempt *int) (
 	if !ok {
 		return "", ErrAppGrantNotFound
 	}
+	return s.revokeAppGrantOnce(requestID, attempt)
+}
+
+// revokeAppGrantOnce is one attempt at ending an installed app's grant by
+// request id, whoever holds it: RevokeUserAppGrant after its ownership
+// check, and RevokeOAuthGrant for an installed app's grant that fosite
+// revokes (BUG-3678).
+func (s *Store) revokeAppGrantOnce(requestID string, attempt *int) (installID string, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return "", err

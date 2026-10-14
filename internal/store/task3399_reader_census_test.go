@@ -30,6 +30,7 @@ var task3399ReaderCensus = map[string]string{
 	"oauth.go::DeleteOAuthClient":                                       censusPerGrant,
 	"oauth.go::DeleteRefreshToken":                                      censusPerGrant,
 	"oauth.go::OldestAccessTokenIssuedAtByRequestID":                    censusPerGrant,
+	"oauth.go::RevokeOAuthGrant":                                        censusPerGrant,
 	"oauth.go::queryOAuthRequestRow":                                    censusPerGrant,
 	"oauth_connections.go::AddConnectionWorkspace":                      censusNoRow,
 	"oauth_connections.go::AddCreatedWorkspaceIfPermitted":              censusNoRow,

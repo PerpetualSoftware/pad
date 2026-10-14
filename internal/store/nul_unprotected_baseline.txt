@@ -284,6 +284,8 @@ oauth_refresh_tokens.request_id
 oauth_refresh_tokens.requested_at
 oauth_refresh_tokens.signature
 oauth_refresh_tokens.subject
+oauth_revoked_grants.request_id
+oauth_revoked_grants.revoked_at
 password_reset_tokens.created_at
 password_reset_tokens.expires_at
 password_reset_tokens.id

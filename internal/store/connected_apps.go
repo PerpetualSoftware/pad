@@ -279,9 +279,8 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 //  1. Look up any access OR refresh row in the chain whose subject
 //     matches userID. If none, return ErrConnectionNotFound — either
 //     the requestID is bogus or it's not theirs to revoke.
-//  2. Call RevokeRefreshTokenFamily + RevokeAccessTokenFamily —
-//     both walk the request_id index and flip every chain row
-//     inactive. Handlers wrapping this call write an audit_trail
+//  2. Call RevokeOAuthGrant, which records the grant as revoked and
+//     flips every chain row inactive (BUG-3678). Handlers wrapping this call write an audit_trail
 //     row recording who revoked what.
 //
 // Idempotent: revoking an already-revoked chain returns nil (the
@@ -330,13 +329,9 @@ func (s *Store) RevokeUserOAuthConnection(userID, requestID string) error {
 		return ErrConnectionNotFound
 	}
 
-	if err := s.RevokeRefreshTokenFamily(requestID); err != nil {
-		return fmt.Errorf("revoke refresh family: %w", err)
-	}
-	if err := s.RevokeAccessTokenFamily(requestID); err != nil {
-		return fmt.Errorf("revoke access family: %w", err)
-	}
-	return nil
+	// Recorded as revoked, so a refresh that validated before this does
+	// not mint a pair after it (BUG-3678).
+	return s.RevokeOAuthGrant(requestID)
 }
 
 // classifyCapabilityTier maps a fosite-style space-separated scope

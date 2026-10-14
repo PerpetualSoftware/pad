@@ -145,6 +145,12 @@ type Store struct {
 	// (codex round 3).
 	afterItemPreLockRead func(itemID string)
 
+	// beforeRotateRefresh is a TEST-ONLY seam, nil in production. When set,
+	// RotateRefreshToken calls it first, outside any transaction: the window
+	// between fosite validating a refresh token and rotating it, where a
+	// revoke or a second refresh can land (BUG-3678).
+	beforeRotateRefresh func(requestID string)
+
 	// afterItemRestoreOrMoveCommit is a TEST-ONLY seam, nil in production.
 	// restoreItemOnce and MoveItemWithPreCheck call it right after their
 	// COMMIT and before they return. It exists for BUG-2717: both used to

@@ -157,6 +157,18 @@ func (s *Store) SetAfterItemPreLockReadHookForTesting(hook func(itemID string)) 
 	return func() { s.afterItemPreLockRead = prev }
 }
 
+// SetBeforeRotateRefreshHookForTesting runs hook at the start of every
+// RotateRefreshToken, before the presented token is spent: the window after
+// fosite validated it (BUG-3678). The hook may make nested store calls.
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep
+// signal. Set it only while no other request is in flight against this Store.
+func (s *Store) SetBeforeRotateRefreshHookForTesting(hook func(requestID string)) (restore func()) {
+	prev := s.beforeRotateRefresh
+	s.beforeRotateRefresh = hook
+	return func() { s.beforeRotateRefresh = prev }
+}
+
 // SetAddWorkspaceMemberCommitHookForTesting routes the COMMIT of
 // AddWorkspaceMember and AcceptWorkspaceInvitation (commitWorkspaceMemberTx,
 // BUG-3281) through hook for the lifetime of the returned restore function.

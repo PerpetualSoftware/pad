@@ -64,6 +64,17 @@ var (
 	// has been revoked or rotated out. Adapters map to
 	// fosite.ErrInactiveToken.
 	ErrOAuthInactiveToken = errors.New("oauth: token inactive")
+
+	// ErrOAuthGrantRevoked is returned when a token would be minted on a
+	// grant that was revoked (BUG-3678). Adapters map to
+	// fosite.ErrInactiveToken.
+	ErrOAuthGrantRevoked = errors.New("oauth: grant revoked")
+
+	// ErrOAuthRefreshNotActive is returned by RotateRefreshToken when the
+	// presented refresh token is no longer active: a concurrent refresh
+	// rotated it first, or a revoke landed (BUG-3678). Adapters map to
+	// fosite.ErrSerializationFailure.
+	ErrOAuthRefreshNotActive = errors.New("oauth: refresh token no longer active")
 )
 
 // ============================================================
@@ -387,9 +398,9 @@ func (s *Store) DeleteRefreshToken(signature string) error {
 	return nil
 }
 
-// RotateRefreshToken revokes the entire grant — both the refresh
-// family AND the paired access family for the given requestID —
-// then fosite immediately issues a new refresh + access pair via
+// RotateRefreshToken retires every token of the grant — both the
+// refresh family AND the paired access family for the given requestID
+// (the grant itself lives on; RevokeOAuthGrant ends it) — then fosite immediately issues a new refresh + access pair via
 // CreateRefreshTokenSession + CreateAccessTokenSession.
 //
 // This matches fosite's reference MemoryStore.RotateRefreshToken
@@ -408,16 +419,119 @@ func (s *Store) DeleteRefreshToken(signature string) error {
 // issued access token would remain active until its TTL expired —
 // the bug Codex review #370 round 2 caught.
 //
-// signatureToRotate is fosite's hint about which specific refresh
-// row triggered the rotation; we ignore it because revoking by
-// request_id catches the entire chain whether we flip one row at
-// a time or all at once.
-func (s *Store) RotateRefreshToken(requestID, _ /*signatureToRotate*/ string) error {
+// signatureToRotate is the presented refresh token. It is spent
+// conditionally before the family flips, and a
+// rotation that finds it already inactive fails with
+// ErrOAuthRefreshNotActive (BUG-3678): two concurrent refreshes both
+// validate the token before either rotates it, and only one may go on
+// to mint a pair. A revoke that landed after validation fails it the
+// same way.
+func (s *Store) RotateRefreshToken(requestID, signatureToRotate string) error {
+	if s.beforeRotateRefresh != nil {
+		s.beforeRotateRefresh(requestID)
+	}
+	// Its own statement, not a transaction with the flips below: holding
+	// this row while flipping the access family would deadlock against the
+	// account claim and disable, which flip access before refresh under the
+	// users row (codex round 1 on BUG-3678).
+	res, err := s.db.Exec(s.q(`
+		UPDATE oauth_refresh_tokens SET active = ?
+		WHERE signature = ? AND request_id = ? AND active = ?
+	`), false, signatureToRotate, requestID, true)
+	if err != nil {
+		return fmt.Errorf("rotate refresh: spend presented token: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrOAuthRefreshNotActive
+	}
 	if err := s.RevokeRefreshTokenFamily(requestID); err != nil {
 		return fmt.Errorf("rotate refresh: revoke refresh family: %w", err)
 	}
 	if err := s.RevokeAccessTokenFamily(requestID); err != nil {
 		return fmt.Errorf("rotate refresh: revoke access family: %w", err)
+	}
+	return nil
+}
+
+// flipOAuthFamiliesTx marks every refresh and access token of the grant
+// inactive.
+func (s *Store) flipOAuthFamiliesTx(tx *sql.Tx, requestID string) error {
+	if _, err := tx.Exec(s.q(`UPDATE oauth_refresh_tokens SET active = ? WHERE request_id = ?`), false, requestID); err != nil {
+		return fmt.Errorf("revoke refresh family: %w", err)
+	}
+	if _, err := tx.Exec(s.q(`UPDATE oauth_access_tokens SET active = ? WHERE request_id = ?`), false, requestID); err != nil {
+		return fmt.Errorf("revoke access family: %w", err)
+	}
+	return nil
+}
+
+// RevokeOAuthGrant ends a grant for good (BUG-3678): it records the
+// request_id in oauth_revoked_grants and flips every token of the grant
+// inactive, in one transaction that first takes the subject's users row.
+// Issuance holds that row FOR SHARE while it checks for the record and
+// inserts (insertOAuthRequestRow), so a refresh racing this either
+// committed its pair before the flips here, which then see it, or finds
+// the record and mints nothing. Idempotent.
+//
+// The connected-apps revoke and fosite's RevokeRefreshToken (RFC 7009 and
+// refresh replay) come here. A rotation does not: it ends tokens, not the
+// grant.
+func (s *Store) RevokeOAuthGrant(requestID string) error {
+	// An installed app's grant has its own tombstone (the binding's
+	// revoked_at) and lock order, which the issuance barrier, the claim and
+	// disable already share: end it the way RevokeUserAppGrant does (codex
+	// round 2 on BUG-3678).
+	var bound int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM app_token_bindings WHERE request_id = ?`), requestID).Scan(&bound); err != nil {
+		return fmt.Errorf("revoke grant: read binding: %w", err)
+	}
+	if bound > 0 {
+		attempt := 0
+		return s.retryOnDeadlock("revoke_app_grant", func() error {
+			_, err := s.revokeAppGrantOnce(requestID, &attempt)
+			return err
+		})
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("revoke grant: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var subject sql.NullString
+	err = tx.QueryRow(s.q(`
+		SELECT subject FROM oauth_refresh_tokens WHERE request_id = ? AND subject <> ''
+		UNION ALL
+		SELECT subject FROM oauth_access_tokens WHERE request_id = ? AND subject <> ''
+		UNION ALL
+		SELECT user_id FROM oauth_connections WHERE request_id = ?
+		LIMIT 1
+	`), requestID, requestID, requestID).Scan(&subject)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("revoke grant: read subject: %w", err)
+	}
+	// The consent's connection row names the person before any token
+	// exists, so a first issuance still in flight is ordered too (codex
+	// round 3 on BUG-3678).
+	if subject.Valid && s.dialect.Driver() == DriverPostgres {
+		// The strong lock first: issuance holds FOR SHARE on this row, and
+		// a share lock upgraded later in this transaction could deadlock.
+		var one int
+		if err := tx.QueryRow(s.q(`SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE`), subject.String).Scan(&one); err != nil &&
+			!errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("revoke grant: lock subject: %w", err)
+		}
+	}
+	if _, err := tx.Exec(s.q(`
+		INSERT INTO oauth_revoked_grants (request_id, revoked_at) VALUES (?, ?)
+		ON CONFLICT (request_id) DO NOTHING
+	`), requestID, now()); err != nil {
+		return fmt.Errorf("revoke grant: record: %w", err)
+	}
+	if err := s.flipOAuthFamiliesTx(tx, requestID); err != nil {
+		return fmt.Errorf("revoke grant: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("revoke grant: commit: %w", err)
 	}
 	return nil
 }
@@ -625,10 +739,34 @@ func (s *Store) insertOAuthRequestRow(table string, req models.OAuthRequest) err
 			return err
 		}
 	}
+	// No token on a revoked grant (BUG-3678), read under the users row
+	// lock above, which RevokeOAuthGrant and the account claim take before
+	// they record a revoked grant.
+	if err := s.refuseRevokedGrantTx(tx, table, req.RequestID); err != nil {
+		return err
+	}
 	if err := s.insertOAuthRequestRowTx(tx, table, req, requestedStr); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// refuseRevokedGrantTx returns ErrOAuthGrantRevoked when an access or
+// refresh token would be minted on a grant recorded as revoked (BUG-3678).
+// The caller holds the row the revoking door locks first.
+func (s *Store) refuseRevokedGrantTx(tx *sql.Tx, table, requestID string) error {
+	if table != "oauth_access_tokens" && table != "oauth_refresh_tokens" {
+		return nil
+	}
+	var one int
+	err := tx.QueryRow(s.q(`SELECT 1 FROM oauth_revoked_grants WHERE request_id = ?`), requestID).Scan(&one)
+	if err == nil {
+		return ErrOAuthGrantRevoked
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("oauth: read revoked grants: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) insertOAuthRequestRowTx(tx *sql.Tx, table string, req models.OAuthRequest, requestedStr string) error {
