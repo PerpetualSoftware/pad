@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -109,11 +110,13 @@ func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, ids []int64, f
 		return 0, ErrCompactionRefused
 	}
 	// The lowest cursor the snapshot covers (BUG-3747): the oldest row it
-	// replaces, unless that row is this generation's previous snapshot, whose
-	// own floor carries. A deleted log clears the columns, so a previous
-	// snapshot among ids is always this generation's.
+	// replaces, or the previous snapshot's floor when that snapshot is among
+	// the rows replaced, whichever is lower. A log-deleting path clears the
+	// columns, so a previous snapshot among ids is always this generation's;
+	// it need not be ids[0], since a Postgres row allocated a lower id can
+	// commit after it (the leftover check above).
 	from := ids[0]
-	if prevSnap.Valid && prevFrom.Valid && prevSnap.Int64 == ids[0] {
+	if prevSnap.Valid && prevFrom.Valid && prevFrom.Int64 < from && sortedIDsContain(ids, prevSnap.Int64) {
 		from = prevFrom.Int64
 	}
 	snapID, err := s.insertYjsFrameQ(tx, itemID, frame, schemaVersion, time.Now().UTC().Format(time.RFC3339), yjsFrameHash(frame), true)
@@ -213,4 +216,10 @@ func (s *Store) deleteYjsRowsByIDTx(tx *sql.Tx, itemID string, ids []int64) erro
 		}
 	}
 	return nil
+}
+
+// sortedIDsContain reports whether id is in ids (sorted ascending).
+func sortedIDsContain(ids []int64, id int64) bool {
+	i := sort.Search(len(ids), func(i int) bool { return ids[i] >= id })
+	return i < len(ids) && ids[i] == id
 }

@@ -152,3 +152,36 @@ func TestBUG3747_ASnapshotWithoutAFloorCoversNothing(t *testing.T) {
 		})
 	}
 }
+
+// A row allocated a lower id that commits after a snapshot (Postgres) sits
+// below the snapshot at the next compaction, so the previous snapshot is not
+// the oldest row replaced. Its floor still carries: the generation's cursors
+// from the first snapshot stay covered.
+func TestBUG3747_TheFloorCarriesPastALateLowerRow(t *testing.T) {
+	for _, b := range contentBackends() {
+		t.Run(b.name, func(t *testing.T) {
+			s := b.open(t)
+			itemID, _ := seedDormantLog(t, s, b.name, 3)
+			first := opLogIDs(t, s, itemID)[0]
+			snap1 := compactAll(t, s, itemID)
+			late := first + 1 // freed by the first compaction, below snap1
+			if late >= snap1 {
+				t.Fatalf("premise: an id below the snapshot is free (%d >= %d)", late, snap1)
+			}
+			if _, err := s.DB().Exec(rebind2(b.name, `INSERT INTO item_yjs_updates (id, item_id, update_data, schema_version, created_at) SELECT ?, item_id, update_data, schema_version, created_at FROM item_yjs_updates WHERE id = ?`), late, snap1); err != nil {
+				t.Fatal(err)
+			}
+			last := appendFrame(t, s, itemID, []byte{0x00, 0x02, 0x02, 0x70, 0x7f})
+			ageAndFlush(t, s, b.name, itemID, last)
+			if ids := opLogIDs(t, s, itemID); ids[0] != late || ids[1] != snap1 {
+				t.Fatalf("premise: the late row is the oldest, then the snapshot: %v", ids)
+			}
+			compactAll(t, s, itemID)
+			for since, want := range map[int64]bool{first: true, late: true, last: true} {
+				if got, err := s.CompactedResumeCovers(itemID, since); err != nil || got != want {
+					t.Fatalf("covers(since=%d) = %v, %v; want %v", since, got, err, want)
+				}
+			}
+		})
+	}
+}
