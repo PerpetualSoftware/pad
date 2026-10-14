@@ -93,3 +93,32 @@ func TestAdoptLegacyBuiltins_EditAfterScanIsSeen(t *testing.T) {
 		}
 	}
 }
+
+// Codex r1 on #2179: the collection's kind is re-read under the lock too. A
+// conventions collection whose traits stop declaring it one after the scan
+// is not adopted from, while another collection's items still are.
+func TestAdoptLegacyBuiltins_CollectionChangedAfterScanIsSeen(t *testing.T) {
+	s := testStore(t)
+	wsID := legacyAdoptionWorkspace(t, s)
+
+	conv := legacyItemByTitle(t, s, wsID, "Conventional commit format")
+	play := legacyItemByTitle(t, s, wsID, "Decompose a plan into tasks")
+
+	adoptLegacyAfterScanHook = func() {
+		adoptLegacyAfterScanHook = nil
+		if _, err := s.db.Exec(s.q(`UPDATE collections SET traits = '{}' WHERE id = (SELECT collection_id FROM items WHERE id = ?)`), conv); err != nil {
+			t.Errorf("clear traits: %v", err)
+		}
+	}
+	t.Cleanup(func() { adoptLegacyAfterScanHook = nil })
+
+	if _, err := s.AdoptLegacyBuiltins(); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if o, err := s.GetItemBuiltinOrigin(conv); err != nil || o != nil {
+		t.Errorf("item in a collection no longer declaring conventions: origin %+v err %v, want none", o, err)
+	}
+	if o, err := s.GetItemBuiltinOrigin(play); err != nil || o == nil {
+		t.Errorf("untouched playbook: origin %+v err %v, want adopted", o, err)
+	}
+}
