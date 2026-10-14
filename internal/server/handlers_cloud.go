@@ -403,7 +403,21 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	// 6a. Provider account binding (TASK-3351). The address alone does not
 	// say WHICH provider account is asserting it, and an address can move
 	// between accounts. The first sign-in carrying a subject binds it; a
-	// different one is refused.
+	// different one is refused. Once one is bound, a sign-in WITHOUT a
+	// subject is refused too (BUG-3671): an email match alone must not sign
+	// in to an account tied to a particular provider account. (A caller that
+	// never sends subjects binds none, so it keeps the email path.)
+	if !isNewUser && input.Subject == "" {
+		bound, err := s.store.BoundOAuthSubject(user.ID, input.Provider)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if bound != "" {
+			s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, store.ErrOAuthSubjectMismatch)
+			return
+		}
+	}
 	if !isNewUser && input.Subject != "" {
 		if err := s.store.BindOAuthIdentity(user.ID, input.Provider, input.Subject); err != nil {
 			s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
