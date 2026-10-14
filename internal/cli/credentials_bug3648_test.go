@@ -205,3 +205,30 @@ func TestBUG3649_GuardNoUnlockedCredentialWrites(t *testing.T) {
 		t.Fatalf("guard scanned only %d files; the walk root is wrong", scanned)
 	}
 }
+
+func TestBUG3648_LockFileIsTightenedWhenItExists(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits")
+	}
+	home := withTempHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".pad"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(home, ".pad", "credentials.json.lock")
+	if err := os.WriteFile(lock, nil, 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lock, 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateStore(func(*CredentialStore) error { return nil }); err != nil {
+		t.Fatalf("UpdateStore: %v", err)
+	}
+	info, err := os.Stat(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("lock file mode = %o, want 0600", got)
+	}
+}

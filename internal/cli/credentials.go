@@ -319,6 +319,15 @@ func WipeCredentialsFile() error {
 	if err != nil {
 		return err
 	}
+	// Under the UpdateStore lock, so a concurrent update cannot rename a
+	// file back into place after the wipe (Codex round 1, BUG-3649).
+	if _, err := os.Stat(filepath.Dir(path)); err == nil {
+		unlock, err := lockCredentialsFile(path + ".lock")
+		if err != nil {
+			return fmt.Errorf("lock credentials: %w", err)
+		}
+		defer unlock()
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete credentials: %w", err)
 	}
