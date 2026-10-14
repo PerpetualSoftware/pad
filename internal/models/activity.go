@@ -166,6 +166,10 @@ type ActivityVisibility struct {
 	// exists. The dashboard sets it for a guest, whom it never shows
 	// workspace-level activity (member invites, role changes).
 	ExcludeWorkspaceLevel bool
+	// ExcludeUnresolvedItems drops rows whose item no longer exists, which
+	// the feed shows as workspace-level and the dashboard never renders. The
+	// dashboard sets it so those rows cannot fill its window either.
+	ExcludeUnresolvedItems bool
 }
 
 // AuditLogParams are query parameters for the audit log endpoint.

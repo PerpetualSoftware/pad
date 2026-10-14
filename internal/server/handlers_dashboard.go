@@ -946,6 +946,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			FullCollectionIDs:     dashFullCollIDs,
 			GrantedItemIDs:        dashGrantedItemIDs,
 			ExcludeWorkspaceLevel: workspaceRole(r) == "guest",
+			// The loop below drops a row whose item is gone (Codex round 1,
+			// BUG-3687), so the query must not spend the window on them.
+			ExcludeUnresolvedItems: true,
 		}
 	}
 	activities, err := s.store.ListWorkspaceActivity(workspaceID, activityParams)

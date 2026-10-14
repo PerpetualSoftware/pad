@@ -249,3 +249,67 @@ func TestBUG3687_DashboardGuestNotStarvedByWorkspaceLevelRows(t *testing.T) {
 		}
 	})
 }
+
+func TestBUG3687_DashboardNotStarvedByRowsOfMissingItems(t *testing.T) {
+	// Codex round 1: rows naming an item that no longer exists pass the feed
+	// as workspace-level, but the dashboard drops them, so 30 of them used to
+	// fill its window as surely as hidden rows did.
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		f := newBUG3687Fixture(t, srv)
+		f.seed(t, f.task.ID, 3, bug3687Older)
+		f.seed(t, "00000000-0000-0000-0000-00000bug3687", 40, bug3687Newer)
+		tok := f.session(t, f.restricted(t))
+
+		seen := 0
+		for _, a := range f.dashboard(t, tok) {
+			if a.ItemTitle == f.task.Title && a.Action == bug3687Action {
+				seen++
+			}
+		}
+		if seen != 3 {
+			t.Errorf("dashboard recent activity shows %d of the 3 visible seeded rows under 40 newer rows of a missing item", seen)
+		}
+		// The feed keeps showing those rows, as workspace-level, as before.
+		got := countByDoc(f.feed(t, tok, 30))
+		if got[f.task.ID] != 3 || got["00000000-0000-0000-0000-00000bug3687"] != 40 {
+			t.Errorf("restricted feed: %v, want 3 task rows and the 40 missing-item rows", got)
+		}
+	})
+}
+
+func TestBUG3687_FeedBearerAdminIsScopedAndNotStarved(t *testing.T) {
+	// A platform admin who is a restricted member, over a bearer token, is
+	// scoped to that membership (BUG-1617), and the scope is in the query too.
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		f := newBUG3687Fixture(t, srv)
+		f.seed(t, f.task.ID, 3, bug3687Older)
+		f.seed(t, f.idea2.ID, 40, bug3687Newer)
+		admin, err := srv.store.CreateUser(models.UserCreate{Email: "admin-3687@example.com", Name: "Admin", Username: "admin-3687", Password: "pw-test-12345", Role: "admin"})
+		if err != nil {
+			t.Fatalf("CreateUser admin: %v", err)
+		}
+		if err := srv.store.AddWorkspaceMember(f.ws.ID, admin.ID, "editor"); err != nil {
+			t.Fatalf("AddWorkspaceMember: %v", err)
+		}
+		tasks, err := srv.store.GetCollectionBySlug(f.ws.ID, "tasks")
+		if err != nil || tasks == nil {
+			t.Fatalf("GetCollectionBySlug tasks: %v", err)
+		}
+		if err := srv.store.SetMemberCollectionAccess(f.ws.ID, admin.ID, "specific", []string{tasks.ID}); err != nil {
+			t.Fatalf("SetMemberCollectionAccess: %v", err)
+		}
+		tok, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{Name: "admin-pat", WorkspaceID: f.ws.ID}, 0, 0)
+		if err != nil {
+			t.Fatalf("CreateAPIToken: %v", err)
+		}
+		rr := doRequestWithBearer(srv, "GET", fmt.Sprintf("/api/v1/workspaces/%s/activity?action=%s&limit=30", f.ws.Slug, bug3687Action), tok.Token, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("bearer GET activity: %d %s", rr.Code, rr.Body.String())
+		}
+		var page []models.Activity
+		parseJSON(t, rr, &page)
+		if got := countByDoc(page); got[f.task.ID] != 3 || len(got) != 1 {
+			t.Errorf("bearer admin feed: %v, want exactly the 3 task rows", got)
+		}
+	})
+}
