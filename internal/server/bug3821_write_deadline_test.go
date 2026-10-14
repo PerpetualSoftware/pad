@@ -27,12 +27,12 @@ import (
 
 const bug3821Timeout = 300 * time.Millisecond
 
-// bug3821Server serves srv on a real listener whose accepted connections get
-// sndbuf, and reports each request's handler return on the returned channel
+// bug3821Server serves srv, with a write timeout of timeout, on a real
+// listener whose accepted connections get sndbuf, and reports each request's handler return on the returned channel
 // (the path, once the handler has returned).
-func bug3821Server(t *testing.T, srv *Server, sndbuf int) (*httptest.Server, <-chan string) {
+func bug3821Server(t *testing.T, srv *Server, timeout time.Duration, sndbuf int) (*httptest.Server, <-chan string) {
 	t.Helper()
-	srv.responseWriteTimeoutOverride = bug3821Timeout
+	srv.responseWriteTimeoutOverride = timeout
 	returned := make(chan string, 16)
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		srv.ServeHTTP(w, r)
@@ -106,12 +106,12 @@ func awaitReturn(t *testing.T, returned <-chan string, path string) {
 	}
 }
 
-// bigExportWorkspace makes a workspace whose JSON export is several MB, of
+// bigExportWorkspace makes a workspace whose JSON export is n x 768 KB of
 // hex text, which gzips about 2:1, so the compressed body is large too.
-func bigExportWorkspace(t *testing.T, srv *Server) string {
+func bigExportWorkspace(t *testing.T, srv *Server, n int) string {
 	t.Helper()
 	slug := createWSForTest(t, srv)
-	for i := 0; i < 6; i++ {
+	for i := 0; i < n; i++ {
 		raw := make([]byte, 384<<10)
 		if _, err := rand.Read(raw); err != nil {
 			t.Fatal(err)
@@ -141,7 +141,7 @@ func TestBUG3821_StalledReaderOfAnAttachmentReleasesItsHandler(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &att); err != nil {
 		t.Fatal(err)
 	}
-	ts, returned := bug3821Server(t, srv, 4096)
+	ts, returned := bug3821Server(t, srv, bug3821Timeout, 4096)
 	path := "/api/v1/workspaces/" + slug + "/attachments/" + att.ID
 	stallAfterHead(t, ts, path)
 	awaitReturn(t, returned, path)
@@ -150,8 +150,8 @@ func TestBUG3821_StalledReaderOfAnAttachmentReleasesItsHandler(t *testing.T) {
 func TestBUG3821_StalledReaderOfTheJSONExportReleasesItsHandler(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
-	slug := bigExportWorkspace(t, srv)
-	ts, returned := bug3821Server(t, srv, 4096)
+	slug := bigExportWorkspace(t, srv, 6)
+	ts, returned := bug3821Server(t, srv, bug3821Timeout, 4096)
 	path := "/api/v1/workspaces/" + slug + "/export"
 	stallAfterHead(t, ts, path)
 	awaitReturn(t, returned, path)
@@ -163,18 +163,23 @@ func TestBUG3821_StalledReaderOfTheJSONExportReleasesItsHandler(t *testing.T) {
 // document in ONE Write, so this also pins the placement: a deadline armed
 // above the compressor is armed once for that Write and expires mid-body.
 // Buffers stay above loopback's 64KB MSS, so a reading client is not slowed by
-// TCP's persist timer instead of by the test.
+// TCP's persist timer instead of by the test. The timeout is 1s, not
+// bug3821Timeout: alongside the whole package's parallel tests, the reader
+// can go unscheduled for longer than 300ms, which cut the body off once in a
+// full run.
 func TestBUG3821_SteadyReaderOfALongCompressedBodyCompletes(t *testing.T) {
 	t.Parallel()
+	const timeout = time.Second
 	srv := testServer(t)
-	slug := bigExportWorkspace(t, srv)
-	ts, _ := bug3821Server(t, srv, 128<<10)
+	const items = 12
+	slug := bigExportWorkspace(t, srv, items)
+	ts, _ := bug3821Server(t, srv, timeout, 128<<10)
 	conn := bug3821Dial(t, ts, 128<<10)
 	path := "/api/v1/workspaces/" + slug + "/export"
 	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n", path)
 
 	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-	slow := &throttledReader{r: conn, chunk: 32 << 10, pause: 20 * time.Millisecond}
+	slow := &throttledReader{r: conn, chunk: 16 << 10, pause: 20 * time.Millisecond}
 	resp, err := http.ReadResponse(bufio.NewReaderSize(slow, 32<<10), nil)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
@@ -193,18 +198,18 @@ func TestBUG3821_SteadyReaderOfALongCompressedBodyCompletes(t *testing.T) {
 	}
 	if err := json.NewDecoder(gz).Decode(&export); err != nil {
 		t.Fatalf("after %v of steady reading the body was cut off (write timeout %v): %v",
-			time.Since(start).Round(time.Millisecond), bug3821Timeout, err)
+			time.Since(start).Round(time.Millisecond), timeout, err)
 	}
 	if _, err := io.Copy(io.Discard, gz); err != nil {
 		t.Fatalf("after %v the gzip stream did not end cleanly: %v", time.Since(start).Round(time.Millisecond), err)
 	}
 	// The control: the read must have outlasted the timeout several times
 	// over, or it proves nothing about rolling.
-	if took := time.Since(start); took < 3*bug3821Timeout {
-		t.Fatalf("the body drained in %v, under 3x the %v write timeout: grow the workspace or slow the reader", took, bug3821Timeout)
+	if took := time.Since(start); took < 3*timeout {
+		t.Fatalf("the body drained in %v, under 3x the %v write timeout: grow the workspace or slow the reader", took, timeout)
 	}
-	if len(export.Items) != 6 {
-		t.Errorf("export carried %d items, want 6", len(export.Items))
+	if len(export.Items) != items {
+		t.Errorf("export carried %d items, want %d", len(export.Items), items)
 	}
 }
 
@@ -247,7 +252,7 @@ func TestBUG3821_ExemptRequestDoesNotInheritAnExpiredDeadline(t *testing.T) {
 			t.Errorf("the upgraded connection's first write failed: %v", err)
 		}
 	})
-	ts, _ := bug3821Server(t, srv, 1<<20)
+	ts, _ := bug3821Server(t, srv, bug3821Timeout, 1<<20)
 	conn := bug3821Dial(t, ts, 1<<20)
 	br := bufio.NewReader(conn)
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -283,7 +288,7 @@ func TestBUG3821_ABufferedBodyIsFlushedAfterALongHandler(t *testing.T) {
 		_, _ = io.WriteString(w, "done\n")
 		time.Sleep(3 * bug3821Timeout)
 	})
-	ts, _ := bug3821Server(t, srv, 1<<20)
+	ts, _ := bug3821Server(t, srv, bug3821Timeout, 1<<20)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(ts.URL + "/__bug3821/slow")
 	if err != nil {
