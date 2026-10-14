@@ -14,8 +14,9 @@ import (
 // unsent edits; a deleted log forces it to refresh and hands its text back.
 //
 // items.yjs_compacted_through is the highest op-log id the snapshot covers,
-// and items.yjs_snapshot_op_id is the snapshot row. Join admits a resume
-// cursor <= yjs_compacted_through only while the snapshot row still exists
+// items.yjs_compacted_from the lowest (BUG-3747), and items.yjs_snapshot_op_id
+// is the snapshot row. Join admits a resume cursor in that range only while
+// the snapshot row still exists
 // (CompactedResumeCovers), so a later path that deletes the op-log cannot
 // leave the columns admitting a tab onto a rebuilt document. The paths that
 // delete the whole log also clear them (clearOpLogCompactionQ), as hygiene.
@@ -73,8 +74,8 @@ func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, ids []int64, f
 	if s.dialect.Driver() == DriverPostgres {
 		lock = " FOR UPDATE"
 	}
-	var watermark sql.NullInt64
-	if err := tx.QueryRow(s.dialect.Rebind(`SELECT content_flushed_op_log_id FROM items WHERE id = ?`+lock), itemID).Scan(&watermark); err != nil {
+	var watermark, prevSnap, prevFrom sql.NullInt64
+	if err := tx.QueryRow(s.dialect.Rebind(`SELECT content_flushed_op_log_id, yjs_snapshot_op_id, yjs_compacted_from FROM items WHERE id = ?`+lock), itemID).Scan(&watermark, &prevSnap, &prevFrom); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, ErrCompactionRefused
 		}
@@ -107,14 +108,22 @@ func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, ids []int64, f
 	if leftover {
 		return 0, ErrCompactionRefused
 	}
+	// The lowest cursor the snapshot covers (BUG-3747): the oldest row it
+	// replaces, unless that row is this generation's previous snapshot, whose
+	// own floor carries. A deleted log clears the columns, so a previous
+	// snapshot among ids is always this generation's.
+	from := ids[0]
+	if prevSnap.Valid && prevFrom.Valid && prevSnap.Int64 == ids[0] {
+		from = prevFrom.Int64
+	}
 	snapID, err := s.insertYjsFrameQ(tx, itemID, frame, schemaVersion, time.Now().UTC().Format(time.RFC3339), yjsFrameHash(frame), true)
 	if err != nil {
 		return 0, fmt.Errorf("compact op-log (insert snapshot): %w", err)
 	}
 	if _, err := tx.Exec(s.dialect.Rebind(`
 		UPDATE items
-		SET content_flushed_op_log_id = ?, yjs_compacted_through = ?, yjs_snapshot_op_id = ?
-		WHERE id = ?`), snapID, expectMaxID, snapID, itemID); err != nil {
+		SET content_flushed_op_log_id = ?, yjs_compacted_through = ?, yjs_snapshot_op_id = ?, yjs_compacted_from = ?
+		WHERE id = ?`), snapID, expectMaxID, snapID, from, itemID); err != nil {
 		return 0, fmt.Errorf("compact op-log (stamp item): %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -124,10 +133,12 @@ func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, ids []int64, f
 }
 
 // CompactedResumeCovers reports whether a resume cursor `since` is covered by
-// itemID's compaction snapshot: the item was compacted through an id >= since,
-// AND its snapshot row still exists. The second condition is what makes a
-// stale yjs_compacted_through harmless: every path that deletes the op-log
-// deletes the snapshot row with it.
+// itemID's compaction snapshot: since lies in [yjs_compacted_from,
+// yjs_compacted_through], AND the snapshot row still exists. The row check is
+// what makes a stale yjs_compacted_through harmless: every path that deletes
+// the op-log deletes the snapshot row with it. The lower bound keeps a cursor
+// from a deleted earlier generation out once a later one is compacted past it
+// (BUG-3747): that generation's rows all have higher ids.
 func (s *Store) CompactedResumeCovers(itemID string, since int64) (bool, error) {
 	if since <= 0 {
 		return false, nil
@@ -138,7 +149,8 @@ func (s *Store) CompactedResumeCovers(itemID string, since int64) (bool, error) 
 			SELECT 1 FROM items i
 			JOIN item_yjs_updates u ON u.id = i.yjs_snapshot_op_id AND u.item_id = i.id
 			WHERE i.id = ? AND i.yjs_compacted_through IS NOT NULL AND i.yjs_compacted_through >= ?
-		)`), itemID, since).Scan(&covers)
+			  AND i.yjs_compacted_from IS NOT NULL AND i.yjs_compacted_from <= ?
+		)`), itemID, since, since).Scan(&covers)
 	if err != nil {
 		return false, fmt.Errorf("compacted resume check: %w", err)
 	}
@@ -168,7 +180,7 @@ func (s *Store) IsCompactedLog(itemID string) (bool, error) {
 func (s *Store) clearOpLogCompactionQ(q interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }, itemID string) error {
-	if _, err := q.Exec(s.dialect.Rebind(`UPDATE items SET yjs_compacted_through = NULL, yjs_snapshot_op_id = NULL WHERE id = ? AND yjs_snapshot_op_id IS NOT NULL`), itemID); err != nil {
+	if _, err := q.Exec(s.dialect.Rebind(`UPDATE items SET yjs_compacted_through = NULL, yjs_snapshot_op_id = NULL, yjs_compacted_from = NULL WHERE id = ? AND yjs_snapshot_op_id IS NOT NULL`), itemID); err != nil {
 		return fmt.Errorf("clear op-log compaction: %w", err)
 	}
 	return nil

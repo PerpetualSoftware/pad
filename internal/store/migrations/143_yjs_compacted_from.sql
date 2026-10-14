@@ -1,0 +1,15 @@
+-- Migration 143: the LOWEST op-log id a compaction snapshot covers (BUG-3747).
+--
+-- yjs_compacted_through (migration 134) bounds a covered resume cursor from
+-- above only. After a path deletes the op-log (a direct write, a restore, a
+-- dormant prune, a schema rebuild), the next rows start a new generation with
+-- higher ids; once that generation is compacted past an old tab's cursor, the
+-- cursor read as covered, and the tab merged the deleted generation's text
+-- back in. A cursor is covered only from yjs_compacted_from up: the oldest row
+-- the first snapshot of this generation replaced, carried by every later
+-- snapshot of the same generation.
+--
+-- NULL with a snapshot set means the item was compacted before this column
+-- existed; its cursors read as uncovered, so those tabs refresh once (the
+-- safe answer). Written only by CompactItemOpLog.
+ALTER TABLE items ADD COLUMN yjs_compacted_from INTEGER;
