@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -552,6 +553,11 @@ type ImportReport struct {
 	// import renames when two items share one, so an attachment landed on
 	// the wrong item.
 	ItemIDs map[string]string
+	// DroppedRelationDefaults names each "collection.field" whose relation
+	// default named an item by an id the import has no item for (BUG-3658).
+	// The default is removed rather than left naming nothing; a value that is
+	// not an id (a ref like TASK-2) is kept, since it resolves late.
+	DroppedRelationDefaults []string
 }
 
 // ImportWorkspace is ImportWorkspaceWithReport for callers with no use for the
@@ -1238,6 +1244,30 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 	}
 
+	// Relation DEFAULTS in the imported schemas name items by their SOURCE
+	// ids too (BUG-3658). The collection insert above stores the schema as
+	// the bundle carries it, and a create in the new workspace then resolved
+	// the source id to nothing and dropped the default (or refused, for a
+	// required field). Remapped here, once every item has its new id.
+	for _, c := range data.Collections {
+		newCollID := collMap[c.ID]
+		if newCollID == "" || c.Schema == "" {
+			continue
+		}
+		schema, dropped, changed := remapImportRelationDefaults(c.Schema, insertedItemMap)
+		if !changed {
+			continue
+		}
+		for _, d := range dropped {
+			slog.Warn("import: dropping a relation default that names an item not in the import",
+				"workspace_id", ws.ID, "collection", c.Slug, "field", d.field, "value", d.value)
+			report.DroppedRelationDefaults = append(report.DroppedRelationDefaults, c.Slug+"."+d.field)
+		}
+		if _, err := tx.Exec(s.q(`UPDATE collections SET schema = ? WHERE id = ?`), schema, newCollID); err != nil {
+			return nil, fmt.Errorf("remap relation defaults for %s: %w", c.Slug, err)
+		}
+	}
+
 	// Second pass: remap parent_id and relation fields (now all items exist).
 	// Use the coerced first-pass fields value as the remap input so a
 	// malformed-and-coerced row doesn't get its coercion clobbered by the
@@ -1648,6 +1678,87 @@ func remapFieldIDs(fieldsJSON string, itemMap map[string]string) string {
 		result = strings.ReplaceAll(result, `"`+oldID+`"`, `"`+newID+`"`)
 	}
 	return result
+}
+
+type droppedRelationDefault struct{ field, value string }
+
+// remapImportRelationDefaults rewrites the default of every relation and
+// multi_relation field in an imported schema through itemMap (source item id
+// to imported item id). A value itemMap does not hold is dropped when it is
+// an id, since every item in the new workspace has a fresh one and it can name
+// nothing there; anything else is kept. A multi default left empty loses its
+// default key. The schema is re-encoded only when something changed, through
+// a generic decode so keys this build does not model survive.
+func remapImportRelationDefaults(schemaJSON string, itemMap map[string]string) (string, []droppedRelationDefault, bool) {
+	dec := json.NewDecoder(strings.NewReader(schemaJSON))
+	dec.UseNumber()
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		return schemaJSON, nil, false
+	}
+	fields, _ := doc["fields"].([]any)
+	var dropped []droppedRelationDefault
+	changed := false
+	remap := func(key string, v any) (any, bool) {
+		str, ok := v.(string)
+		if !ok {
+			return v, true
+		}
+		if n, ok := itemMap[str]; ok && n != "" {
+			if n != str {
+				changed = true
+			}
+			return n, true
+		}
+		if isUUID(str) {
+			dropped = append(dropped, droppedRelationDefault{field: key, value: str})
+			changed = true
+			return nil, false
+		}
+		return v, true
+	}
+	for _, f := range fields {
+		fm, ok := f.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := fm["type"].(string)
+		def, has := fm["default"]
+		if !has || (typ != "relation" && typ != "multi_relation") {
+			continue
+		}
+		key, _ := fm["key"].(string)
+		switch d := def.(type) {
+		case []any:
+			out := make([]any, 0, len(d))
+			for _, v := range d {
+				if nv, keep := remap(key, v); keep {
+					out = append(out, nv)
+				}
+			}
+			if len(out) == 0 && len(d) > 0 {
+				delete(fm, "default")
+			} else {
+				fm["default"] = out
+			}
+		default:
+			if nv, keep := remap(key, d); keep {
+				fm["default"] = nv
+			} else {
+				delete(fm, "default")
+			}
+		}
+	}
+	if !changed {
+		return schemaJSON, nil, false
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(doc); err != nil {
+		return schemaJSON, nil, false
+	}
+	return strings.TrimSuffix(buf.String(), "\n"), dropped, true
 }
 
 // dropDuplicateImportDeclarations returns traits with any declaration already
