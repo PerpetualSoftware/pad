@@ -17,13 +17,9 @@ const oauthProviderTestSecret = "shh-its-a-secret"
 
 // postOAuthLogin fires a cloud-secret-authenticated oauth-login request and
 // returns the recorder. The cloud secret rides the JSON body (the same
-// channel validateCloudSecret reads).
-// postOAuthLogin posts a sidecar oauth-login. A body without a "subject" key
-// gets a stable one per provider and address, as pad-cloud always sends one
-// (BUG-3797); an explicit "" is sent as is, and oauthLoginNoSubject sends no
-// key at all.
-// postOAuthLogin posts a sidecar oauth-login exactly as given: a body that
-// should sign in must name its "subject", as pad-cloud always does (BUG-3797).
+// channel validateCloudSecret reads). The body is otherwise sent as given: one
+// that should sign in must name its "subject", as pad-cloud always does
+// (BUG-3797).
 func postOAuthLogin(t *testing.T, srv *Server, body map[string]interface{}) *httptest.ResponseRecorder {
 	t.Helper()
 	body["cloud_secret"] = oauthProviderTestSecret
