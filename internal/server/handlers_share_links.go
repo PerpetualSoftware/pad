@@ -614,8 +614,10 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 	// to avoid leaking internal IDs, creator info, and other sensitive fields.
 	switch link.TargetType {
 	case "item":
-		item, err := s.store.GetItem(link.TargetID)
-		if err != nil || item == nil {
+		// Live item AND live collection (BUG-3635): the same check the
+		// attachment endpoint uses, so the two public doors cannot disagree.
+		item, ok := s.shareTargetLive(link)
+		if !ok {
 			writeError(w, http.StatusNotFound, "not_found", "Not found")
 			return
 		}
