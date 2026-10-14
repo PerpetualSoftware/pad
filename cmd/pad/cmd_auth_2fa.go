@@ -211,15 +211,15 @@ func replaceSessionToken(cfg *config.Config, token string) error {
 	if cli.EnvTokenFor(cfg.BaseURL()) != "" {
 		return fmt.Errorf("this session came from PAD_TOKEN, which the CLI cannot update")
 	}
-	store, err := cli.LoadStore()
-	if err != nil {
-		return err
-	}
-	creds := store.Get(cfg.BaseURL())
-	if creds == nil {
-		return fmt.Errorf("no saved credentials for %s", cfg.BaseURL())
-	}
-	creds.Token = token
-	store.Set(cfg.BaseURL(), creds)
-	return store.Save()
+	// Under the credentials lock, so a concurrent login to another server
+	// keeps its entry (BUG-3649).
+	return cli.UpdateStore(func(store *cli.CredentialStore) error {
+		creds := store.Get(cfg.BaseURL())
+		if creds == nil {
+			return fmt.Errorf("no saved credentials for %s", cfg.BaseURL())
+		}
+		creds.Token = token
+		store.Set(cfg.BaseURL(), creds)
+		return nil
+	})
 }

@@ -1,0 +1,786 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// BUG-3648: Save used os.WriteFile, which applies 0600 only when it creates
+// the file, so an existing loose-mode credentials.json kept its mode with
+// fresh tokens written into it.
+func TestBUG3648_SaveTightensALooseExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	store := newEmptyStore()
+	store.Set("http://x:7777", &Credentials{Token: "fresh"})
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("credentials.json mode after Save over a 0644 file = %o, want 0600", got)
+	}
+}
+
+func TestBUG3648_SaveCreatesThePadDirPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits")
+	}
+	home := withTempHome(t)
+	store := newEmptyStore()
+	store.Set("http://x:7777", &Credentials{Token: "t"})
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(home, ".pad"))
+	if err != nil {
+		t.Fatalf("stat .pad: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0700 {
+		t.Errorf(".pad mode = %o, want 0700", got)
+	}
+	entries, _ := os.ReadDir(filepath.Join(home, ".pad"))
+	for _, e := range entries {
+		// The lock file is Save's own and persists, as UpdateStore's does.
+		if e.Name() != "credentials.json" && e.Name() != "credentials.json.lock" {
+			t.Errorf("Save left %q behind in .pad", e.Name())
+		}
+	}
+}
+
+// BUG-3649: two load-modify-save runs (e.g. `pad auth login` against two
+// servers) each loaded the same snapshot and saved it with only their own
+// entry, so the later save dropped the earlier one's. The sleep inside fn
+// holds every writer between its load and its save, which is the window.
+func TestBUG3649_ConcurrentUpdatesKeepEveryEntry(t *testing.T) {
+	withTempHome(t)
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- UpdateStore(func(s *CredentialStore) error {
+				time.Sleep(20 * time.Millisecond)
+				s.Set(fmt.Sprintf("http://server-%d:7777", i), &Credentials{Token: fmt.Sprintf("t%d", i)})
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("UpdateStore: %v", err)
+		}
+	}
+	store, err := LoadStore()
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if got := len(store.Credentials); got != n {
+		t.Errorf("after %d concurrent updates the store holds %d entries, want %d: %v", n, got, n, store.Credentials)
+	}
+}
+
+func TestBUG3649_UpdateStoreSavesNothingWhenFnFails(t *testing.T) {
+	home := withTempHome(t)
+	writeCredsFile(t, home, `{"version": 2, "credentials": {"http://keep:7777": {"token": "k"}}}`)
+	want := readCredsFile(t, home)
+	err := UpdateStore(func(s *CredentialStore) error {
+		s.Delete("http://keep:7777")
+		return fmt.Errorf("refused")
+	})
+	if err == nil {
+		t.Fatalf("UpdateStore returned nil for a failing fn")
+	}
+	if got := readCredsFile(t, home); got != want {
+		t.Errorf("a failing fn still saved: %s", got)
+	}
+}
+
+// BUG-3649: Save truncated the live file before writing it, and LoadStore
+// reads an empty file as an empty store, so a reader racing a save could
+// see no credentials, or half a JSON document. The store is large so each
+// write takes long enough for the reader to land inside it.
+func TestBUG3649_ReaderNeverSeesAPartialFile(t *testing.T) {
+	withTempHome(t)
+	store := newEmptyStore()
+	for i := range 3000 {
+		store.Set(fmt.Sprintf("http://server-%04d:7777", i), &Credentials{Token: fmt.Sprintf("token-%04d-padding-padding-padding", i)})
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := store.Save(); err != nil {
+				t.Errorf("Save: %v", err)
+				return
+			}
+		}
+	}()
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	reads := 0
+	for time.Now().Before(deadline) {
+		got, err := LoadStore()
+		reads++
+		if err != nil {
+			t.Errorf("read %d during a save: %v", reads, err)
+			break
+		}
+		if len(got.Credentials) != 3000 {
+			t.Errorf("read %d during a save saw %d entries, want 3000", reads, len(got.Credentials))
+			break
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
+
+// TestBUG3649_GuardNoUnlockedCredentialWrites is the wiring half of the fix:
+// UpdateStore only helps if the writers use it. Any non-test file that loads
+// the store into a variable and calls Save on that variable is a
+// load-modify-save outside the lock.
+func TestBUG3649_GuardNoUnlockedCredentialWrites(t *testing.T) {
+	root := filepath.Join("..", "..")
+	load := regexp.MustCompile(`(\w+), \w+ :?= (?:cli\.)?LoadStore\(\)`)
+	scanned := 0
+	for _, dir := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			scanned++
+			if filepath.Base(path) == "credentials.go" && filepath.Base(filepath.Dir(path)) == "cli" {
+				return nil // UpdateStore itself
+			}
+			for _, m := range load.FindAllStringSubmatch(string(src), -1) {
+				if regexp.MustCompile(`\b` + regexp.QuoteMeta(m[1]) + `\.Save\(\)`).Match(src) {
+					t.Errorf("%s loads the credentials store into %q and saves it outside UpdateStore", path, m[1])
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", dir, err)
+		}
+	}
+	if scanned < 100 {
+		t.Fatalf("guard scanned only %d files; the walk root is wrong", scanned)
+	}
+}
+
+func TestBUG3648_LockFileIsTightenedWhenItExists(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits")
+	}
+	home := withTempHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".pad"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(home, ".pad", "credentials.json.lock")
+	if err := os.WriteFile(lock, nil, 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lock, 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateStore(func(*CredentialStore) error { return nil }); err != nil {
+		t.Fatalf("UpdateStore: %v", err)
+	}
+	info, err := os.Stat(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("lock file mode = %o, want 0600", got)
+	}
+}
+
+// TestBUG3649_WipeWaitsForTheLock: a wipe racing UpdateStore could land in
+// the middle of its load-modify-save, so Wipe takes the same lock (Codex
+// round 1). Holding the lock must hold Wipe; releasing it must let Wipe
+// finish.
+func TestBUG3649_WipeWaitsForTheLock(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)
+	unlock, err := lockCredentialsFile(path+".lock", true)
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- WipeCredentialsFile() }()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("WipeCredentialsFile returned (%v) while the credentials lock was held", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("credentials.json removed while the lock was held: %v", err)
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WipeCredentialsFile: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("WipeCredentialsFile did not finish after the lock was released")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("credentials.json still present after the wipe: %v", err)
+	}
+}
+
+func TestBUG3648_SaveWritesThroughASymlinkedFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	home := withTempHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".pad"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, "dotfiles-credentials.json")
+	if err := os.WriteFile(target, []byte(`{"version": 2, "credentials": {}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".pad", "credentials.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	store := newEmptyStore()
+	store.Set("http://x:7777", &Credentials{Token: "fresh"})
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("credentials.json is no longer a symlink after Save (err %v)", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"fresh"`) {
+		t.Errorf("the symlink target did not receive the save: %s", data)
+	}
+}
+
+// Rows 3-7 of the population table on BUG-3649: a symlinked credentials.json
+// is written in place through the link, so a dangling link keeps being a
+// link, a target in a read-only directory is still writable, and a loose
+// target is tightened.
+// longSeed is longer than the save that replaces it, so an in-place write
+// that skipped the truncate would leave trailing bytes and invalid JSON.
+var longSeed = []byte(`{"version": 2, "credentials": {"https://an-old-server.example.com:7777": {"token": "` + strings.Repeat("x", 400) + `"}}}`)
+
+func symlinkedCredentials(t *testing.T, targetDir string, seed bool, mode os.FileMode) (link, target string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	home := withTempHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".pad"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, targetDir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target = filepath.Join(dir, "credentials.json")
+	if seed {
+		if err := os.WriteFile(target, longSeed, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(target, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link = filepath.Join(home, ".pad", "credentials.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	return link, target
+}
+
+func saveFresh(t *testing.T) {
+	t.Helper()
+	store := newEmptyStore()
+	store.Set("http://x:7777", &Credentials{Token: "fresh"})
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+}
+
+func assertLinkedSave(t *testing.T, link, target string) {
+	t.Helper()
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("credentials.json is no longer a symlink after Save (err %v)", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"fresh"`) || !json.Valid(data) {
+		t.Errorf("the symlink target did not receive the save whole: %s", data)
+	}
+	fi, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0600 {
+		t.Errorf("target mode = %o, want 600", got)
+	}
+}
+
+func TestBUG3648_SaveKeepsADanglingSymlink(t *testing.T) {
+	link, target := symlinkedCredentials(t, "dotfiles", false, 0)
+	saveFresh(t)
+	assertLinkedSave(t, link, target)
+}
+
+func TestBUG3648_SaveThroughASymlinkIntoAReadOnlyDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	link, target := symlinkedCredentials(t, "secrets", true, 0600)
+	dir := filepath.Dir(target)
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+	saveFresh(t)
+	assertLinkedSave(t, link, target)
+}
+
+func TestBUG3648_SaveTightensALooseSymlinkTarget(t *testing.T) {
+	link, target := symlinkedCredentials(t, "dotfiles", true, 0644)
+	saveFresh(t)
+	assertLinkedSave(t, link, target)
+}
+
+// Save takes the UpdateStore lock, so a direct Save cannot interleave its
+// in-place fallback write with a locked update (scoped Codex round on the
+// row 8 fix).
+func TestBUG3649_SaveWaitsForTheLock(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
+	unlock, err := lockCredentialsFile(path+".lock", true)
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	store := newEmptyStore()
+	store.Set("http://x:7777", &Credentials{Token: "fresh"})
+	done := make(chan error, 1)
+	go func() { done <- store.Save() }()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("Save returned (%v) while the credentials lock was held", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if data, err := os.ReadFile(path); err != nil || strings.Contains(string(data), `"fresh"`) {
+		t.Fatalf("credentials.json written while the lock was held (err %v): %s", err, data)
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Save did not finish after the lock was released")
+	}
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"fresh"`) {
+		t.Errorf("Save did not land after the lock was released: %s", data)
+	}
+}
+
+// Option B on BUG-3649: Save writes in place, so the file keeps its inode,
+// and with it its owner and any ACL, as os.WriteFile's write did.
+func TestBUG3649_SaveKeepsTheFilesInode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no inode numbers")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, string(longSeed))
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveFresh(t)
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Errorf("Save replaced credentials.json with a new file; owner and ACL go with the old one")
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"fresh"`) || !json.Valid(data) {
+		t.Errorf("Save did not write the file whole: %s", data)
+	}
+}
+
+// A reader takes the shared side of the lock, so it waits out a writer
+// rather than reading a truncated file.
+func TestBUG3649_LoadStoreWaitsForAWriter(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)
+	unlock, err := lockCredentialsFile(path+".lock", true)
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0600); err != nil { // a writer mid-save
+		t.Fatal(err)
+	}
+	type result struct {
+		store *CredentialStore
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		s, err := LoadStore()
+		done <- result{s, err}
+	}()
+	select {
+	case r := <-done:
+		unlock()
+		t.Fatalf("LoadStore returned (%v) while a writer held the lock", r.err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := os.WriteFile(path, []byte(`{"version": 2, "credentials": {"http://x:7777": {"token": "t2"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("LoadStore: %v", r.err)
+		}
+		if c := r.store.Get("http://x:7777"); c == nil || c.Token != "t2" {
+			t.Errorf("LoadStore read %+v, want the finished save", c)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("LoadStore did not finish after the lock was released")
+	}
+}
+
+// Readers share the lock: one reader does not block another.
+func TestBUG3649_ReadersShareTheLock(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
+	unlock, err := lockCredentialsFile(path+".lock", false)
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	defer unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := LoadStore()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadStore: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("LoadStore blocked behind another reader's shared lock")
+	}
+}
+
+// Row 11: a ~/.pad this user cannot write, holding a credentials.json the
+// user can. os.WriteFile worked there; the lock file cannot be created, so
+// the write goes ahead unlocked and says so, and a read stays quiet.
+func TestBUG3649_ReadOnlyPadDirWritesUnlockedWithAWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+	var warn strings.Builder
+	orig := credentialsLockWarning
+	credentialsLockWarning = &warn
+	t.Cleanup(func() { credentialsLockWarning = orig })
+
+	if err := UpdateStore(func(s *CredentialStore) error {
+		s.Set("http://x:7777", &Credentials{Token: "fresh"})
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateStore in a read-only ~/.pad: %v", err)
+	}
+	if !strings.Contains(warn.String(), "without it") {
+		t.Errorf("an unlocked write did not warn; stderr got %q", warn.String())
+	}
+	warn.Reset()
+	store, err := LoadStore()
+	if err != nil {
+		t.Fatalf("LoadStore in a read-only ~/.pad: %v", err)
+	}
+	if c := store.Get("http://x:7777"); c == nil || c.Token != "fresh" {
+		t.Errorf("LoadStore read %+v, want the save", c)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("a read warned: %q", warn.String())
+	}
+}
+
+// swapLock replaces the lock with fn for the test and captures the warning.
+func swapLock(t *testing.T, fn func(lockPath string, exclusive bool) (func(), error)) *strings.Builder {
+	t.Helper()
+	origLock, origWarn := lockCredentials, credentialsLockWarning
+	var warn strings.Builder
+	lockCredentials, credentialsLockWarning = fn, &warn
+	t.Cleanup(func() { lockCredentials, credentialsLockWarning = origLock, origWarn })
+	return &warn
+}
+
+// A filesystem without flock (NFS without lockd answers ENOLCK) served reads
+// and writes before the lock existed, so it still does: the lock is never the
+// reason a working command fails (BUG-3649 ruling).
+func TestBUG3649_UnsupportedLockFallsBackUnlocked(t *testing.T) {
+	home := withTempHome(t)
+	writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)
+	warn := swapLock(t, func(string, bool) (func(), error) {
+		return nil, &fs.PathError{Op: "flock", Path: "x", Err: syscall.ENOLCK}
+	})
+	store, err := LoadStore()
+	if err != nil {
+		t.Fatalf("LoadStore with an unsupported lock: %v", err)
+	}
+	if c := store.Get("http://x:7777"); c == nil || c.Token != "t" {
+		t.Errorf("LoadStore read %+v, want the token", c)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("a read warned: %q", warn.String())
+	}
+	if err := UpdateStore(func(s *CredentialStore) error {
+		s.Set("http://y:7777", &Credentials{Token: "fresh"})
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateStore with an unsupported lock: %v", err)
+	}
+	if !strings.Contains(warn.String(), "without it") {
+		t.Errorf("an unlocked write did not warn; stderr got %q", warn.String())
+	}
+	store, _ = LoadStore()
+	if c := store.Get("http://y:7777"); c == nil || c.Token != "fresh" {
+		t.Errorf("the unlocked save did not land: %+v", c)
+	}
+}
+
+// EINTR is retried before the lock is given up on.
+func TestBUG3649_InterruptedLockIsRetried(t *testing.T) {
+	home := withTempHome(t)
+	writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
+	calls, taken := 0, false
+	warn := swapLock(t, func(string, bool) (func(), error) {
+		calls++
+		if calls <= 2 {
+			return nil, syscall.EINTR
+		}
+		taken = true
+		return func() {}, nil
+	})
+	if err := UpdateStore(func(s *CredentialStore) error { return nil }); err != nil {
+		t.Fatalf("UpdateStore: %v", err)
+	}
+	if !taken || warn.Len() != 0 {
+		t.Errorf("after two EINTRs the lock was not retried to success (calls %d, warning %q)", calls, warn.String())
+	}
+}
+
+// A read with no ~/.pad answers "no credentials" without creating it, and a
+// read whose ~/.pad appears between the first lock attempt and the check
+// takes the lock rather than reading a file a save may be truncating.
+func TestBUG3649_ReadRacingTheFirstSaveTakesTheLock(t *testing.T) {
+	home := withTempHome(t)
+	padDir := filepath.Join(home, ".pad")
+	store, err := LoadStore()
+	if err != nil || len(store.Credentials) != 0 {
+		t.Fatalf("LoadStore with no ~/.pad = %+v, %v; want an empty store", store, err)
+	}
+	if _, err := os.Stat(padDir); !os.IsNotExist(err) {
+		t.Fatalf("a read created ~/.pad (stat err %v)", err)
+	}
+
+	realLock := lockCredentials
+	calls, lockedRead := 0, false
+	swapLock(t, func(lockPath string, exclusive bool) (func(), error) {
+		calls++
+		if calls == 1 { // a save creates ~/.pad just after this attempt
+			if err := os.MkdirAll(padDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(padDir, "credentials.json"), []byte(`{"version": 2, "credentials": {}}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			return nil, &fs.PathError{Op: "open", Path: lockPath, Err: syscall.ENOENT}
+		}
+		lockedRead = !exclusive
+		return realLock(lockPath, exclusive)
+	})
+	if _, err := LoadStore(); err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if !lockedRead {
+		t.Errorf("the read did not take the lock once ~/.pad appeared (lock calls %d)", calls)
+	}
+}
+
+// A holder that never lets go (a stopped process) is waited for only up to
+// credentialsLockWait; then the read and the write proceed unlocked, as they
+// did before the lock existed (final review round).
+func TestBUG3649_AStuckHolderDoesNotHangCommands(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)
+	unlock, err := lockCredentialsFile(path+".lock", true)
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	defer unlock()
+	origWait, origWarn := credentialsLockWait, credentialsLockWarning
+	var warn strings.Builder
+	credentialsLockWait, credentialsLockWarning = 200*time.Millisecond, &warn
+	t.Cleanup(func() { credentialsLockWait, credentialsLockWarning = origWait, origWarn })
+
+	done := make(chan error, 1)
+	go func() {
+		store, err := LoadStore()
+		if err == nil && (store.Get("http://x:7777") == nil || store.Get("http://x:7777").Token != "t") {
+			err = fmt.Errorf("read %+v, want the token", store.Get("http://x:7777"))
+		}
+		if err == nil {
+			err = UpdateStore(func(s *CredentialStore) error {
+				s.Set("http://y:7777", &Credentials{Token: "fresh"})
+				return nil
+			})
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("with a stuck holder: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("a stuck lock holder hung LoadStore/UpdateStore")
+	}
+	if !strings.Contains(warn.String(), "without it") {
+		t.Errorf("the unlocked write did not warn; stderr got %q", warn.String())
+	}
+}
+
+// A link to something that is not a regular file (/dev/null) took
+// os.WriteFile's write; it is neither chmodded nor truncated now, so it still
+// does (final review round, both hunters).
+func TestBUG3648_SaveThroughALinkToDevNull(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no /dev/null")
+	}
+	home := withTempHome(t)
+	padDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(padDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/dev/null", filepath.Join(padDir, "credentials.json")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat("/dev/null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveFresh(t)
+	after, err := os.Stat("/dev/null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Mode() != after.Mode() {
+		t.Errorf("Save changed /dev/null's mode from %v to %v", before.Mode(), after.Mode())
+	}
+}
+
+// A wipe with no ~/.pad has nothing to do, and on a read-only home it must
+// not fail trying to create one (final review round).
+func TestBUG3649_WipeWithNoPadDirCreatesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	home := withTempHome(t)
+	if err := os.Chmod(home, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0700) })
+	if err := WipeCredentialsFile(); err != nil {
+		t.Fatalf("WipeCredentialsFile with no ~/.pad on a read-only home: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".pad")); !os.IsNotExist(err) {
+		t.Errorf("a wipe created ~/.pad (stat err %v)", err)
+	}
+}
