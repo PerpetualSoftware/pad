@@ -1076,13 +1076,21 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	// which the tar reader never asks it to. Read the rest through the
 	// decompression budget, so trailing bytes count against it too. A damaged
 	// stream is a damaged bundle: the reject arm rolls the workspace back.
-	if _, err := io.Copy(io.Discard, budget); err != nil {
+	// What follows the terminator may only be tar record padding, which is
+	// zeros: gzip.Reader reads concatenated members, so a second, intact
+	// member would otherwise carry any bytes at all past the end (codex r1).
+	if trailing, err := drainTarPadding(budget); err != nil {
 		if budget.exceeded {
 			return ws, bundleTooLargeError(s.decompressedCapMessage(""))
 		}
 		return ws, &importStatusError{
 			status: http.StatusBadRequest, code: "bad_bundle",
 			message: "Bundle archive is damaged after its last entry (the gzip checksum or length does not verify): " + err.Error(),
+		}
+	} else if trailing {
+		return ws, &importStatusError{
+			status: http.StatusBadRequest, code: "bad_bundle",
+			message: "Bundle archive has data after its end-of-archive marker",
 		}
 	}
 
@@ -1119,6 +1127,25 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	s.storageInfoCache.invalidate(ws.ID)
 
 	return ws, nil
+}
+
+// drainTarPadding reads r to EOF and reports whether any byte was not zero.
+func drainTarPadding(r io.Reader) (nonZero bool, err error) {
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := r.Read(buf)
+		for _, c := range buf[:n] {
+			if c != 0 {
+				nonZero = true
+			}
+		}
+		if err == io.EOF {
+			return nonZero, nil
+		}
+		if err != nil {
+			return nonZero, err
+		}
+	}
 }
 
 // keepMintedWorkspaceAfterPanic runs the keep door for a workspace a panicking
