@@ -56,3 +56,37 @@ func TestBlocked(t *testing.T) {
 		}
 	}
 }
+
+// BUG-3660: the provider metadata endpoints we know of, each with the range
+// that blocks it. A new provider endpoint goes here first; if no existing
+// range covers it, it goes in platformAddresses.
+func TestBlocked_CloudMetadataCensus(t *testing.T) {
+	for _, c := range []struct{ endpoint, ip string }{
+		{"AWS/GCP/Azure/Oracle/DO/Hetzner/OpenStack/Huawei IMDS", "169.254.169.254"},
+		{"AWS ECS task credentials", "169.254.170.2"},
+		{"AWS EKS pod identity", "169.254.170.23"},
+		{"AWS Route 53 resolver", "169.254.169.253"},
+		{"AWS IMDS IPv6", "fd00:ec2::254"},
+		{"AWS EKS pod identity IPv6", "fd00:ec2::23"},
+		{"GCP metadata IPv6", "fd20:ce::254"},
+		{"Azure WireServer", "168.63.129.16"},
+		{"Azure WireServer, IPv4-mapped", "::ffff:168.63.129.16"},
+		{"Azure WireServer, NAT64", "64:ff9b::a83f:8110"},
+		{"Alibaba metadata", "100.100.100.200"},
+		{"Oracle Cloud IMDS IPv6", "fd00:c1::a9fe:a9fe"},
+		{"Oracle Cloud Classic metadata", "192.0.0.192"},
+		{"Tencent metadata", "169.254.0.23"},
+		{"Scaleway metadata", "169.254.42.42"},
+		{"Scaleway metadata IPv6", "fd00:42::42"},
+	} {
+		if !Blocked(net.ParseIP(c.ip)) {
+			t.Errorf("%s (%s): Blocked = false, want true", c.endpoint, c.ip)
+		}
+	}
+	// The WireServer entry is one address, not Microsoft's public space.
+	for _, s := range []string{"168.63.129.15", "168.63.129.17"} {
+		if Blocked(net.ParseIP(s)) {
+			t.Errorf("Blocked(%s) = true, want false (neighbour of WireServer)", s)
+		}
+	}
+}

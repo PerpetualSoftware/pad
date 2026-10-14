@@ -4,9 +4,10 @@
 //
 // Fetcher applies a strict SSRF guard, a per-request timeout, and a
 // response-size cap so a malicious or large upstream cannot abuse the
-// in-process HTTP client. The default policy blocks loopback, RFC1918,
-// CGNAT, IPv4 link-local (including 169.254.169.254 cloud-metadata),
-// IPv6 unique local, IPv6 link-local, and the unspecified address.
+// in-process HTTP client. The address policy is netpolicy.Blocked, shared
+// with webhooks: private, reserved and link-local ranges (which hold the
+// cloud metadata endpoints) plus public-address platform endpoints such as
+// Azure WireServer.
 //
 // See PLAN-1467 ("Insert from URL — HTML→Markdown utility in the item
 // editor") for the design discussion.
