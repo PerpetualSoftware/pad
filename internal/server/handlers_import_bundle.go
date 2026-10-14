@@ -1070,6 +1070,22 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		}
 	}
 
+	// The tar terminator is not the end of the archive (BUG-3657). The gzip
+	// footer after it carries the CRC-32 and length that verify everything
+	// read so far, and gzip.Reader checks them only when it reads to EOF,
+	// which the tar reader never asks it to. Read the rest through the
+	// decompression budget, so trailing bytes count against it too. A damaged
+	// stream is a damaged bundle: the reject arm rolls the workspace back.
+	if _, err := io.Copy(io.Discard, budget); err != nil {
+		if budget.exceeded {
+			return ws, bundleTooLargeError(s.decompressedCapMessage(""))
+		}
+		return ws, &importStatusError{
+			status: http.StatusBadRequest, code: "bad_bundle",
+			message: "Bundle archive is damaged after its last entry (the gzip checksum or length does not verify): " + err.Error(),
+		}
+	}
+
 	if !exportSeen {
 		return nil, &importStatusError{
 			status: http.StatusBadRequest, code: "bad_bundle",
