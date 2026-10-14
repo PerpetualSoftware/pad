@@ -3,7 +3,7 @@
 	import { roleIcon } from '$lib/utils/roleIcon';
 	import { page } from '$app/state';
 	import { titleStore } from '$lib/stores/title.svelte';
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import { api, isPlanLimitError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -69,6 +69,12 @@
 	// [P1]). A plain `let` is not tracked, so that effect would never re-run
 	// when the epoch is re-stamped and would keep whichever answer it saw first.
 	let identityEpochAtLoad = $state(authStore.identityEpoch);
+	// The workspace the board on screen was loaded for, stamped by `loadData`
+	// beside the epoch (BUG-3701). The page's data belongs to an identity AND
+	// a workspace: SvelteKit keeps this component mounted across
+	// /A/roles -> /B/roles, so without it A's lanes vouch for themselves under
+	// B's heading and the drag handlers address B with A's rows.
+	let workspaceAtLoad = $state('');
 
 	/** The epoch as of now — captured at a handler's entry, before its awaits. */
 	function captureIdentity(): number {
@@ -80,7 +86,7 @@
 	}
 
 	function pageIdentityHeld(): boolean {
-		return authStore.identityEpoch === identityEpochAtLoad;
+		return authStore.identityEpoch === identityEpochAtLoad && workspaceAtLoad === wsSlug;
 	}
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -663,9 +669,25 @@
 	onDestroy(stopIdentityWatch);
 
 	onMount(() => {
-		workspaceStore.setCurrent(wsSlug);
 		uiStore.onNavigate();
-		loadData();
+	});
+
+	// LOADS ON THE WORKSPACE, not on mount (BUG-3701). A param-only navigation
+	// (/A/roles -> /B/roles, which the workspace switcher makes through the
+	// saved per-workspace route) keeps this component, so a mount-only load
+	// left A's board under B. A switch resets the transient interaction state
+	// for the identity listener's reasons (an open modal shows A's role; a
+	// drag in flight latches `isDragging`), then loads B. UNTRACKED: the key
+	// is the workspace; `loadData` reads the identity epoch, which the
+	// listener above already reloads for.
+	$effect(() => {
+		const ws = wsSlug;
+		if (!ws) return;
+		untrack(() => {
+			resetTransientState();
+			workspaceStore.setCurrent(ws);
+			void loadData();
+		});
 	});
 
 	// Bumped by every `loadData()`. Without it an OLDER load's unconditional
@@ -678,12 +700,13 @@
 
 	async function loadData() {
 		const epochAtEntry = captureIdentity();
+		const wsAtEntry = wsSlug;
 		const myLoad = ++loadGen;
 		loading = true;
 		error = '';
 		try {
 			const [boardResult, session] = await Promise.all([
-				api.agentRoles.board(wsSlug),
+				api.agentRoles.board(wsAtEntry),
 				api.auth.session()
 			]);
 			if (!identityHeld(epochAtEntry)) return;
@@ -725,6 +748,7 @@
 			// is bounded on both sides — after the state is replaced, and on
 			// every path that leaves the page usable.
 			identityEpochAtLoad = epochAtEntry;
+			workspaceAtLoad = wsAtEntry;
 		} catch (err) {
 			if (!identityHeld(epochAtEntry)) return;
 			if (myLoad !== loadGen) return;
@@ -750,6 +774,7 @@
 			// clears that state itself, below, rather than relying on anyone
 			// else having done it.
 			identityEpochAtLoad = epochAtEntry;
+			workspaceAtLoad = wsAtEntry;
 		} finally {
 			// NOT identity-fenced: this must run on every exit path or the board
 			// is pinned at "Loading…" on a page that did not remount, and the

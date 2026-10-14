@@ -30,8 +30,11 @@ identityGateSuite({
 				why: `${PAGE_AND_ENTRY}; the identity check sits BEFORE the role write, because that write carries currentUserId; a lost-identity exit writes no shared interaction state`,
 			},
 			loadData: {
-				reviewed: 'beee4ab0237c',
-				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378)',
+				// Re-reviewed for BUG-3701: fetches the workspace captured at
+				// entry, and stamps workspaceAtLoad beside identityEpochAtLoad on
+				// both arms; no await or check moved.
+				reviewed: 'b010e24f70e8',
+				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad and workspaceAtLoad only after the data they vouch for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
 			saveRole: { reviewed: 'd5057790dac8', why: `${PAGE_AND_ENTRY}, per branch; the failure toast (TASK-2204) after the check` },
 			deleteRole: { reviewed: '3c79a726945d', why: `${PAGE_AND_ENTRY}; the failure toast (TASK-2204) after the check. Re-reviewed for TASK-3543: entry, board and role captured before the confirm dialog's await, and all re-checked after it` },
@@ -54,7 +57,7 @@ identityGateSuite({
 			failureToast: '646c9d6e6a5d', // TASK-2204: toasts only while the page shows the write's workspace; called after the identity checks
 			identityHeld: 'e4fd3989a707',
 			laneKey: '26c9b8e573fd',
-			pageIdentityHeld: 'd6d5caf46ddb',
+			pageIdentityHeld: '2ff7132567b7', // BUG-3701: also requires the board's workspace to be the route's
 		},
 		identifierCallbacks: [],
 	},
@@ -90,8 +93,8 @@ identityGateSuite({
 		{
 			cls: 4,
 			what: 'pageIdentityHeld keeps its name and stops comparing',
-			old: '\t\treturn authStore.identityEpoch === identityEpochAtLoad;\n',
-			new: '\t\treturn authStore.identityEpoch === authStore.identityEpoch;\n',
+			old: '\t\treturn authStore.identityEpoch === identityEpochAtLoad && workspaceAtLoad === wsSlug;\n',
+			new: '\t\treturn authStore.identityEpoch === authStore.identityEpoch && workspaceAtLoad === wsSlug;\n',
 			names: 'helper pageIdentityHeld()',
 		},
 		{

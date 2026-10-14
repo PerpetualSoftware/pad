@@ -283,6 +283,7 @@ describe('the roles board fences every async commit point', () => {
 		// has to be looked at, which is the whole point of enumerating.
 		const DATA_OR_IDENTITY: Record<string, string> = {
 			identityEpochAtLoad: 'identity bookkeeping — only loadData may write it',
+			workspaceAtLoad: 'identity bookkeeping (BUG-3701): the workspace the board was loaded for — only loadData may write it',
 			lanes: 'page DATA — loadData replaces it, and clears it on the error arm',
 			currentUserId: 'page DATA — loadData replaces it, and clears it when unauthenticated',
 			loading: 'owned by loadData\'s generation-guarded finally',
