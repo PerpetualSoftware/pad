@@ -2,7 +2,9 @@ package store
 
 import (
 	"database/sql"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -186,5 +188,79 @@ func TestBackfillWikiLinks_HoldsWorkspaceLockFromTheReread(t *testing.T) {
 	}
 	if !probed {
 		t.Fatal("the after-read hook never ran for the source, so nothing was probed")
+	}
+}
+
+// End to end, for the interval the lock probe above covers: a content write
+// started after the re-read must wait for the backfill to commit, and then
+// its own reindex wins. If it could commit inside the window, the backfill
+// would write rows from the content it re-read, which is stale by then.
+// Postgres only: SQLite's single writer serialises this by construction.
+func TestBackfillWikiLinks_WriteAfterTheRereadWaitsAndWins(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("needs a concurrent writer; SQLite serialises writers by construction")
+	}
+	_, _, source := backfillSourceUnindexed(t, s)
+
+	const deadline = 10 * time.Second
+	body := "No links any more."
+	editDone := make(chan error, 1)
+	var once sync.Once
+	outcome := ""
+	wikiBackfillAfterReadHook = func(got *Store, _ *sql.Tx, _, itemID string) {
+		if got != s || itemID != source.ID {
+			return
+		}
+		once.Do(func() {
+			go func() {
+				_, err := s.UpdateItem(source.ID, models.ItemUpdate{Content: &body})
+				editDone <- err
+			}()
+			stop := time.After(deadline)
+			for outcome == "" {
+				select {
+				case err := <-editDone:
+					outcome = "committed"
+					editDone <- err // hand it on to the check after the backfill
+				case <-stop:
+					t.Errorf("within %s the edit neither committed nor was seen waiting on a lock: inconclusive", deadline)
+					return
+				case <-time.After(20 * time.Millisecond):
+					var waiting int
+					if err := s.db.QueryRow(`SELECT count(*) FROM pg_stat_activity
+						WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+						t.Errorf("read pg_stat_activity: %v", err)
+						return
+					}
+					if waiting > 0 {
+						outcome = "blocked"
+					}
+				}
+			}
+		})
+	}
+	t.Cleanup(func() { wikiBackfillAfterReadHook = nil })
+
+	if _, err := s.BackfillWikiLinks(); err != nil {
+		t.Fatalf("BackfillWikiLinks: %v", err)
+	}
+	if outcome == "" {
+		t.Fatal("the seam never reached an outcome (it did not fire, or the run was inconclusive), so this run exercised nothing")
+	}
+	select {
+	case err := <-editDone:
+		if err != nil {
+			t.Fatalf("the concurrent edit failed, so this run never exercised the race: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the concurrent edit never finished after the backfill committed")
+	}
+
+	if outcome != "blocked" {
+		t.Error("the concurrent edit COMMITTED between the backfill's re-read and its replacement: nothing serialised them")
+	}
+	if n := wikiRowCount(t, s, source.ID); n != 0 {
+		t.Errorf("source has %d wiki rows after the edit removed its link; want 0", n)
 	}
 }
