@@ -322,6 +322,7 @@ vi.mock('$lib/stores/collections.svelte', () => ({
 import { page } from '$app/state';
 import { goto } from '$app/navigation';
 import { api } from '$lib/api/client';
+import { localSearch } from '$lib/stores/localSearch.svelte';
 import CollectionPage from './+page.svelte';
 
 type Props = Record<string, unknown>;
@@ -888,5 +889,81 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 			vi.mocked(api.search).mock.calls.length,
 			"the previous session's query was sent under the new identity"
 		).toBe(0);
+	});
+});
+
+// BUG-3710: the search rank map is applied in `filteredItems` AFTER the active
+// filters, so a map capped at 200 hid every match past the cap, including one
+// the filters would keep (200 done items outranking the one open item a status
+// filter asks for). Both search paths now hand the page every match. Observed
+// at the page's bindings: the server walk at api.search, the local path at
+// localSearch.search.
+describe('the collection page searches every match, not the first 200 (BUG-3710)', () => {
+	beforeEach(() => {
+		auth.resetEpoch();
+	});
+	afterEach(() => {
+		cleanup();
+		vi.useRealTimers();
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search).mockImplementation(async () => ({ results: [] }) as never);
+	});
+
+	async function searchBox() {
+		await mountPage();
+		searchOpeners[0]!();
+		await tick();
+		return waitFor(() => {
+			const fn = findProp<(q: string) => void>('onSearchChange');
+			if (!fn) throw new Error('filter bar not rendered yet');
+			return fn;
+		});
+	}
+
+	it('the body search walks every page of matches', async () => {
+		const onSearchChange = await searchBox();
+		const page = (from: number, n: number) => ({
+			results: Array.from({ length: n }, (_, i) => ({ item: { id: `m${from + i}` } })),
+			total: 201,
+		});
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search)
+			.mockResolvedValueOnce(page(0, 200) as never)
+			.mockResolvedValueOnce(page(200, 1) as never);
+		vi.useFakeTimers();
+		onSearchChange('body:foo');
+		await vi.advanceTimersByTimeAsync(250);
+		const calls = vi.mocked(api.search).mock.calls as unknown as Array<[string, { offset?: number; limit?: number }]>;
+		expect(calls.map(([, f]) => [f.offset ?? 0, f.limit]), 'the walk stopped at the first page').toEqual([
+			[0, 200],
+			[200, 200],
+		]);
+	});
+
+	it('control: a body search whose first page holds every match asks once', async () => {
+		const onSearchChange = await searchBox();
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search).mockResolvedValueOnce({ results: [{ item: { id: 'only' } }], total: 1 } as never);
+		vi.useFakeTimers();
+		onSearchChange('body:foo');
+		await vi.advanceTimersByTimeAsync(250);
+		expect(vi.mocked(api.search).mock.calls.length).toBe(1);
+	});
+
+	it('the local search is not capped', async () => {
+		const spy = vi.spyOn(localSearch, 'search');
+		try {
+			const onSearchChange = await searchBox();
+			onSearchChange('foo');
+			await tick();
+			await waitFor(() => {
+				if (!spy.mock.calls.length) throw new Error('local search not run yet');
+			});
+			for (const [, , opts] of spy.mock.calls as unknown as Array<[string, string, { limit?: number }]>) {
+				expect(opts.limit, 'the local search was capped').toBe(Infinity);
+			}
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

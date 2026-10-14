@@ -2126,6 +2126,10 @@
 			searchResultRank = null;
 			const snapshotQuery = trimmed;
 			const snapshotArchived = archivedInView;
+			// The server's /search page size, and the most matches walked
+			// for one body search (BUG-3710).
+			const BODY_SEARCH_PAGE = 200;
+			const BODY_SEARCH_MAX = 1000;
 			// Fenced INSIDE the timer body, not at the effect: 200ms separates
 			// the two, and a check at the effect says nothing about who is
 			// signed in when this fires (BUG-3084).
@@ -2149,28 +2153,35 @@
 			const epochAtSchedule = untrack(() => captureIdentity());
 			searchTimeout = setTimeout(async () => {
 				if (!identityHeld(epochAtSchedule)) return;
+				// Stale-response guard: drop the result if the user
+				// navigated away or changed the query while a page was
+				// in flight.
+				const moved = () =>
+					searchQuery.trim() !== snapshotQuery ||
+					wsSlug !== snapshotWs ||
+					collSlug !== snapshotColl ||
+					(showArchived || parsedSearch.archived) !== snapshotArchived;
 				try {
-					const resp = await api.search(bodyQuery, {
-						workspace: snapshotWs,
-						collection: snapshotColl,
-						limit: 200,
-						includeArchived: snapshotArchived,
-					});
-					// Stale-response guard: drop the result if the user
-					// navigated away or changed the query while the
-					// request was in flight.
-					if (
-						searchQuery.trim() !== snapshotQuery ||
-						wsSlug !== snapshotWs ||
-						collSlug !== snapshotColl ||
-						(showArchived || parsedSearch.archived) !== snapshotArchived
-					) {
-						return;
+					// Every match, page by page, not the first 200 (BUG-3710):
+					// the active filters apply in `filteredItems`, AFTER this
+					// rank map, so a capped map hid a match that sat past the
+					// cap behind ones the filters then removed. The server
+					// pages at 200; BODY_SEARCH_MAX bounds the walk.
+					const ranked: string[] = [];
+					for (;;) {
+						const resp = await api.search(bodyQuery, {
+							workspace: snapshotWs,
+							collection: snapshotColl,
+							limit: BODY_SEARCH_PAGE,
+							offset: ranked.length,
+							includeArchived: snapshotArchived,
+						});
+						if (moved() || !identityHeld(epochAtSchedule)) return;
+						const page = resp.results ?? [];
+						for (const r of page) ranked.push(r.item.id);
+						if (page.length < BODY_SEARCH_PAGE || ranked.length >= (resp.total ?? 0) || ranked.length >= BODY_SEARCH_MAX) break;
 					}
-					if (!identityHeld(epochAtSchedule)) return;
-					searchResultRank = new Map(
-						resp.results.map((r, i) => [r.item.id, i]),
-					);
+					searchResultRank = new Map(ranked.map((id, i) => [id, i]));
 				} catch {
 					if (
 						identityHeld(epochAtSchedule) &&
@@ -2200,10 +2211,14 @@
 		// the `coll:` / `is:archived` / `#N` / ref vocabulary works
 		// uniformly across consumers (collection page + CommandPalette,
 		// TASK-1367).
+		// No cap (BUG-3710): the active filters apply in `filteredItems`,
+		// AFTER this rank map, so a capped map hid every match past the cap,
+		// including ones the filters would keep. MiniSearch already returns
+		// every match; the limit only truncated them.
 		const hits = localSearch.search(snapshotWs, trimmed, {
 			collection: snapshotColl,
 			includeArchived: archivedInView,
-			limit: 200,
+			limit: Infinity,
 		});
 		searchResultRank = new Map(hits.map((h, i) => [h.id, i]));
 	});
