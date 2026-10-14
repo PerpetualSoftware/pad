@@ -2050,6 +2050,13 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	var query string
 	var args []interface{}
 	var ftsRank string
+	// As in ListItems: archived (soft-deleted) items only on request
+	// (BUG-3686; the clause used to be hard-coded, so include_archived was
+	// ignored whenever the list carried a search term).
+	archivedClause := " AND i.deleted_at IS NULL"
+	if params.IncludeArchived {
+		archivedClause = ""
+	}
 
 	if s.dialect.Driver() == DriverPostgres {
 		// PostgreSQL: search_vector lives on the items table (aliased as "i").
@@ -2068,9 +2075,9 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			JOIN collections c ON c.id = i.collection_id
 			LEFT JOIN users au ON au.id = i.assigned_user_id
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-			WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+			WHERE i.workspace_id = ?%s
 			AND %s
-		`, ftsMatch)
+		`, archivedClause, ftsMatch)
 		// PG FTSMatch consumes TWO args: the raw user query AND its
 		// hyphen-sanitized form, OR-combined inside the SQL fragment so
 		// that hyphenated terms like `task-five` match titles indexed as
@@ -2095,9 +2102,9 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			JOIN collections c ON c.id = i.collection_id
 			LEFT JOIN users au ON au.id = i.assigned_user_id
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-			WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+			WHERE i.workspace_id = ?%s
 			AND %s
-		`, ftsMatch)
+		`, archivedClause, ftsMatch)
 		// Wrap each whitespace-delimited token in double quotes so FTS5 treats
 		// hyphens (and other special chars like AND/OR/NOT/(/)) as literals
 		// rather than boolean operators. Without this, `?search=TASK-5` raises
@@ -2197,11 +2204,16 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		args = append(args, ntArgs...)
 	}
 
+	// An explicit sort is the list's own (BUG-3686: it used to be ignored
+	// here); relevance is only the default. buildItemSort ends on i.id, so
+	// paging stays stable either way.
 	// SQLite bm25(): more negative = more relevant → ASC (default).
 	// PostgreSQL ts_rank(): higher = more relevant → DESC.
 	// PG FTSRank embeds the same OR-combined plainto_tsquery as FTSMatch
 	// and consumes TWO args (raw + hyphen-sanitized) — BUG-842.
-	if s.dialect.Driver() == DriverPostgres {
+	if strings.TrimSpace(params.Sort) != "" {
+		query += buildItemSort(params.Sort, s.dialect)
+	} else if s.dialect.Driver() == DriverPostgres {
 		query += " ORDER BY " + ftsRank + " DESC, i.id"
 		args = append(args, params.Search, sanitizePGFTSQuery(params.Search))
 	} else {

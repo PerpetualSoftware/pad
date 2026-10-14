@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -128,9 +129,15 @@ type Dialect interface {
 	FTSRank(table, column string) string
 
 	// JSONArrayContains returns SQL + the arg to check if a JSON array column
-	// contains a given text value.
-	// SQLite: "column LIKE ?" with arg `%"value"%`
-	// PostgreSQL: "column::jsonb @> ?::jsonb" with arg `["value"]`
+	// contains a given text value, compared exactly (case and all).
+	// SQLite: a json_each element of type text equal to the arg, on a valid
+	// JSON array (a malformed row matches nothing rather than erroring).
+	// PostgreSQL: "column::jsonb @> ?::jsonb" with the arg json-encoded as a
+	// one-element array.
+	// BUG-3706: SQLite used LIKE '%"value"%', so % and _ in a tag were
+	// wildcards, case was ignored, and a tag holding a quote never matched;
+	// Postgres built the JSON by hand, so a quote made invalid JSON and
+	// `a","b` asked for two elements.
 	JSONArrayContains(column, value string) (string, interface{})
 
 	// JSONArrayElements returns a FROM-clause table-function fragment that
@@ -227,7 +234,9 @@ func (d *sqliteDialect) FTSRank(_, _ string) string {
 }
 
 func (d *sqliteDialect) JSONArrayContains(column, value string) (string, interface{}) {
-	return column + " LIKE ?", "%\"" + value + "\"%"
+	// The CASE keeps json_type/json_each away from a malformed row, which
+	// would otherwise fail the whole query.
+	return "(CASE WHEN json_valid(" + column + ") THEN (json_type(" + column + ") = 'array' AND EXISTS (SELECT 1 FROM json_each(" + column + ") je_tag WHERE je_tag.type = 'text' AND je_tag.value = ?)) ELSE 0 END)", value
 }
 
 func (d *sqliteDialect) JSONArrayElements(column, alias string) (string, string) {
@@ -338,7 +347,8 @@ func (d *postgresDialect) FTSRank(table, column string) string {
 }
 
 func (d *postgresDialect) JSONArrayContains(column, value string) (string, interface{}) {
-	return column + "::jsonb @> ?::jsonb", `["` + value + `"]`
+	arg, _ := json.Marshal([]string{value}) // a []string always marshals
+	return column + "::jsonb @> ?::jsonb", string(arg)
 }
 
 func (d *postgresDialect) JSONArrayElements(column, alias string) (string, string) {
