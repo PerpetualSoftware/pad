@@ -208,11 +208,19 @@ func TestBackfillWikiLinks_WriteAfterTheRereadWaitsAndWins(t *testing.T) {
 	editDone := make(chan error, 1)
 	var once sync.Once
 	outcome := ""
-	wikiBackfillAfterReadHook = func(got *Store, _ *sql.Tx, _, itemID string) {
+	wikiBackfillAfterReadHook = func(got *Store, tx *sql.Tx, _, itemID string) {
 		if got != s || itemID != source.ID {
 			return
 		}
 		once.Do(func() {
+			// "Blocked" means blocked BY THIS transaction, not any lock wait in
+			// the database (codex r2): an unrelated waiter would otherwise read
+			// as the edit waiting, and an edit that ran only later would pass.
+			var backfillPID int
+			if err := tx.QueryRow("SELECT pg_backend_pid()").Scan(&backfillPID); err != nil {
+				t.Errorf("read the backfill's backend pid: %v", err)
+				return
+			}
 			go func() {
 				_, err := s.UpdateItem(source.ID, models.ItemUpdate{Content: &body})
 				editDone <- err
@@ -224,12 +232,12 @@ func TestBackfillWikiLinks_WriteAfterTheRereadWaitsAndWins(t *testing.T) {
 					outcome = "committed"
 					editDone <- err // hand it on to the check after the backfill
 				case <-stop:
-					t.Errorf("within %s the edit neither committed nor was seen waiting on a lock: inconclusive", deadline)
+					t.Errorf("within %s the edit neither committed nor was seen blocked by the backfill: inconclusive", deadline)
 					return
 				case <-time.After(20 * time.Millisecond):
 					var waiting int
 					if err := s.db.QueryRow(`SELECT count(*) FROM pg_stat_activity
-						WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+						WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))`, backfillPID).Scan(&waiting); err != nil {
 						t.Errorf("read pg_stat_activity: %v", err)
 						return
 					}
