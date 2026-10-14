@@ -1544,6 +1544,7 @@ kubectl apply -f deploy/k8s/secret.yaml
 
 # Deploy
 kubectl apply -f deploy/k8s/configmap.yaml
+kubectl apply -f deploy/k8s/pvc.yaml
 kubectl apply -f deploy/k8s/deployment.yaml
 kubectl apply -f deploy/k8s/service.yaml
 kubectl apply -f deploy/k8s/ingress.yaml
@@ -1551,9 +1552,34 @@ kubectl apply -f deploy/k8s/ingress.yaml
 
 **Run exactly one replica (BUG-3573).** Real-time collaboration keeps each item's editing room in the process that serves it: an in-process bus, and op-log appends serialized per item. Two pods would each hold their own room for the same item, miss each other's edits, and leave gaps in the op-log. So the manifest runs `replicas: 1` with `strategy: Recreate` (a rolling update would overlap the old and new pod as two writers; Recreate stops the old one first, a brief outage per upgrade), and there is no autoscaler. Scaling out needs a shared collab bus, which is not built. If you applied the `hpa.yaml` an earlier version of these manifests shipped, remove it: `kubectl delete hpa pad -n pad`.
 
+**`/data` is a PersistentVolumeClaim (BUG-3714).** Attachment files live in `/data/attachments` in every storage mode, PostgreSQL included: the database holds their metadata, not their bytes. `deploy/k8s/pvc.yaml` claims a 10Gi `ReadWriteOnce` volume from the cluster's default StorageClass; size it for your attachments, and set `storageClassName` if the cluster has no default (the pod stays `Pending` until the claim binds). An earlier version of these manifests mounted `/data` as an `emptyDir`, which loses every attachment whenever the pod is replaced (an upgrade, a node drain, an eviction); if you run that one, copy the attachments out of the running pod BEFORE you apply the new manifests (applying them replaces the pod, and the files with it), then back into the volume:
+
+```bash
+EXPORTED=false; RESTORED=false
+kubectl -n pad exec deploy/pad -- tar -C /data -cf - attachments > pad-attachments.tar \
+  && tar -tf pad-attachments.tar > pad-attachments.list \
+  && N=$(grep -vc '/$' pad-attachments.list || true) && EXPORTED=true
+echo "EXPORTED=${EXPORTED} files=${N:-?}"
+# Only once EXPORTED=true: this replaces the pod, and the old /data with it.
+[ "$EXPORTED" = true ] \
+  && kubectl apply -f deploy/k8s/pvc.yaml -f deploy/k8s/deployment.yaml \
+  && kubectl -n pad rollout status deploy/pad \
+  && kubectl -n pad exec -i deploy/pad -- tar -C /data -xf - < pad-attachments.tar \
+  && [ "$(kubectl -n pad exec deploy/pad -- find /data/attachments -type f | wc -l)" -ge "$N" ] \
+  && RESTORED=true
+echo "RESTORED=${RESTORED}"
+```
+
+`EXPORTED=false` changed nothing: read the error and rerun. `RESTORED=false` after `EXPORTED=true`: keep `pad-attachments.tar`, see where it stopped (`kubectl -n pad get pod,pvc`), and once the pod is running rerun the restore line, `kubectl -n pad exec -i deploy/pad -- tar -C /data -xf - < pad-attachments.tar`, then check that `kubectl -n pad exec deploy/pad -- find /data/attachments -type f | wc -l` is at least the `files=` figure.
+
+(`tar` rather than `kubectl cp`: the new pod creates `/data/attachments` at start, and `kubectl cp` into an existing directory nests the copy one level down, where pad does not look.)
+
+A `pg_dump` does not include attachment files, so back up the volume as well. The pod also mounts an `emptyDir` at `/tmp`, because the root filesystem is read-only and uploads stage in the temp directory; without it every upload fails with a 500.
+
 **Pin the image.** `deploy/k8s/deployment.yaml` names a release tag (`ghcr.io/perpetualsoftware/pad:<version>`). Set it to the release you mean to run, and change it to upgrade. Do not use `latest` here: a pod that restarts after a new release would pull it unannounced and run migrations you did not plan.
 
 **Prerequisites:**
+- A StorageClass that can provision a `ReadWriteOnce` volume (for `pvc.yaml`)
 - External PostgreSQL (e.g., AWS RDS, Cloud SQL, managed PG)
 - External Redis (e.g., ElastiCache, Memorystore)
 - Ingress controller (nginx-ingress or similar)

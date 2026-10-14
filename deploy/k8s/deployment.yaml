@@ -81,9 +81,17 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            # The root filesystem is read-only, and uploads stage in the
+            # temp dir before they land in /data/attachments: without a
+            # writable /tmp every attachment upload fails with a 500
+            # (BUG-3714).
+            - name: tmp
+              mountPath: /tmp
       volumes:
-        - name: data
+        - name: tmp
           emptyDir: {}
-          # For SQLite mode, use a PersistentVolumeClaim instead:
-          # persistentVolumeClaim:
-          #   claimName: pad-data
+        # Attachments live in /data in every storage mode, PostgreSQL
+        # included, so it must outlive the pod (pvc.yaml, BUG-3714).
+        - name: data
+          persistentVolumeClaim:
+            claimName: pad-data
