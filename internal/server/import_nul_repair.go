@@ -138,6 +138,14 @@ func nulRepairRemedy(t *nulRepairTally) string {
 // server that predates the header. The server log names each blob and member.
 const ImportCollapsedDuplicateKeysHeader = "X-Pad-Import-Collapsed-Duplicate-Keys"
 
+// ImportDroppedRelationDefaultsHeader carries how many collection relation
+// defaults a workspace import dropped because they named an item by an id the
+// import had no item for (BUG-3658). Set beside the collapsed-keys header on
+// every successful import, "0" included; the server log names each
+// collection, field and value.
+const ImportDroppedRelationDefaultsHeader = "X-Pad-Import-Dropped-Relation-Defaults"
+
 func setImportCollapsedHeader(w http.ResponseWriter, report store.ImportReport) {
 	w.Header().Set(ImportCollapsedDuplicateKeysHeader, strconv.Itoa(report.CollapsedDuplicateKeys))
+	w.Header().Set(ImportDroppedRelationDefaultsHeader, strconv.Itoa(len(report.DroppedRelationDefaults)))
 }
