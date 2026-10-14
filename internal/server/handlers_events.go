@@ -170,11 +170,20 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify streaming support
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
 		return
 	}
+	// Every write from here on, refusals included, goes through the stream,
+	// so no frame can block past sseWriteTimeout (BUG-3637).
+	stream, err := s.openSSEStream(w)
+	if err != nil {
+		slog.Error("SSE: refusing to stream", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
+		return
+	}
+	w = stream
+	flusher := stream
 
 	// EVERY REFUSAL PATH BEFORE THE SSE HEADERS, so a 429 is an ordinary
 	// JSON error response. Setting Content-Type: text/event-stream first
@@ -470,6 +479,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			// Client disconnected
+			return
+
+		case <-stream.Dead():
+			// A write or flush failed or overran its deadline: the client is
+			// gone or not reading. Leave now, releasing the admission slot.
+			slog.Debug("SSE: stream write failed, closing", "workspace", ws.Slug, "error", stream.Err())
 			return
 
 		case event, ok := <-ch:

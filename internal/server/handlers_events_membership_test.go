@@ -108,8 +108,11 @@ func TestSSEEntryRequiresMembership(t *testing.T) {
 	t.Run("member connects with 200 + connected", func(t *testing.T) {
 		req, cancel := mkReq(owner, ws.Slug)
 		defer cancel()
-		rr := httptest.NewRecorder()
-		srv.handleSSE(rr, req)
+		// A recorder that takes a write deadline: the stream refuses a
+		// writer that cannot (BUG-3637).
+		rec := newDeadlineRecorder()
+		rr := rec.ResponseRecorder
+		srv.handleSSE(rec, req)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("member: got %d, want 200; body=%q", rr.Code, rr.Body.String())
 		}

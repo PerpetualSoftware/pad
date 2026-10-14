@@ -47,9 +47,14 @@ import (
 
 type Server struct {
 	// sseKeepaliveOverride, when non-zero, replaces sseKeepaliveInterval for
-	// this server's SSE streams. Tests only (TASK-2197): the real interval is
+	// this server's SSE streams, and watchEventsKeepaliveInterval for the
+	// watch stream's (BUG-3637). Tests only (TASK-2197): the real interval is
 	// 30s.
 	sseKeepaliveOverride time.Duration
+
+	// sseWriteTimeoutOverride, when non-zero, replaces sseWriteTimeout for
+	// this server's SSE streams. Tests only (BUG-3637).
+	sseWriteTimeoutOverride time.Duration
 
 	// accountExportHooks, when set, replace the account export's deadline and
 	// its two mid-stream store reads. Tests only (BUG-3626). Per server, not
