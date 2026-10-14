@@ -1738,6 +1738,14 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.98 — BUG-3704, item list truncation. ADDITIVE bump on the v0.53
+//     grounds: `pad_item.action=list` asks for one row past its limit and,
+//     when that row comes back, returns `limit` rows with `has_more: true`
+//     on the structured result plus a second text block saying more items
+//     match (narrow the filters or raise limit, max 300). It never pages.
+//     A list that fits is byte-identical to before. No name, enum or param
+//     moved; the default 50 / max 300 are unchanged.
+//
 //     0.97 — TASK-3613, lease worker id. ADDITIVE bump on the v0.53
 //     grounds: new optional `worker_id` on `pad_item` (claim, release)
 //     and `pad_project` (next, ready). A lease is held under a worker id
@@ -2169,7 +2177,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.97"
+const ToolSurfaceVersion = "0.98"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

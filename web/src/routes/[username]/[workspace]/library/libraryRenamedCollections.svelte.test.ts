@@ -34,7 +34,7 @@ vi.mock('$lib/api/client', () => ({
 			}))
 		},
 		items: {
-			listByCollection: vi.fn(async (_ws: string, slug: string) => {
+			listAllByCollection: vi.fn(async (_ws: string, slug: string) => {
 				listed.push(slug);
 				return [];
 			})

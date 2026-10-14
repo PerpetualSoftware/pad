@@ -2202,15 +2202,20 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	// PG FTSRank embeds the same OR-combined plainto_tsquery as FTSMatch
 	// and consumes TWO args (raw + hyphen-sanitized) — BUG-842.
 	if s.dialect.Driver() == DriverPostgres {
-		query += " ORDER BY " + ftsRank + " DESC"
+		query += " ORDER BY " + ftsRank + " DESC, i.id"
 		args = append(args, params.Search, sanitizePGFTSQuery(params.Search))
 	} else {
-		query += " ORDER BY " + ftsRank
+		query += " ORDER BY " + ftsRank + ", i.id"
 	}
 
 	if params.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, params.Limit)
+		// Paged like ListItems (BUG-3704); the offset used to be dropped here.
+		if params.Offset > 0 {
+			query += " OFFSET ?"
+			args = append(args, params.Offset)
+		}
 	}
 
 	rows, err := s.db.Query(s.q(query), args...)
@@ -2378,11 +2383,18 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 // with a warning, only when items actually carry it). Only scope's
 // collection scope, permission pair and include_archived are used, and each
 // key is asked through ListItems, so the permission clauses are the list's own.
+//
+// It stops at the first key no item stores (BUG-3703): the caller refuses the
+// list on that key, so asking about the rest would be a scan of the scope each,
+// for nothing. Pass keys in the order the caller checks them.
 func (s *Store) StoredFieldKeys(workspaceID string, scope models.ItemListParams, keys []string) (map[string]bool, error) {
 	out := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		if !isValidFieldKey(key) {
 			continue
+		}
+		if testHookStoredFieldKeyProbe != nil {
+			testHookStoredFieldKeyProbe(key)
 		}
 		found, err := s.ListItems(workspaceID, models.ItemListParams{
 			ScopeCollectionID: scope.ScopeCollectionID,
@@ -2396,12 +2408,17 @@ func (s *Store) StoredFieldKeys(workspaceID string, scope models.ItemListParams,
 		if err != nil {
 			return nil, err
 		}
-		if len(found) > 0 {
-			out[key] = true
+		if len(found) == 0 {
+			return out, nil
 		}
+		out[key] = true
 	}
 	return out, nil
 }
+
+// testHookStoredFieldKeyProbe, when set, sees each key StoredFieldKeys scans
+// for (BUG-3703 tests count them).
+var testHookStoredFieldKeyProbe func(key string)
 
 // scalarRelationFilterKeys returns the scalar `relation` keys of the collection
 // a list is scoped to, for the BUG-3028 empty-value filter. Nil when the list
@@ -5901,9 +5918,12 @@ func (s *Store) moveItemWithPreCheckOnce(
 // validSortField matches safe field names (alphanumeric + underscore, starting with a letter).
 var validSortField = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
 
+// buildItemSort always ends on i.id (BUG-3704): rows that tie on every sort
+// key otherwise come back in an unspecified order, and an offset page could
+// then repeat one row and skip another.
 func buildItemSort(sort string, dialect Dialect) string {
 	if sort == "" {
-		return " ORDER BY i.pinned DESC, i.updated_at DESC"
+		return " ORDER BY i.pinned DESC, i.updated_at DESC, i.id"
 	}
 
 	var parts []string
@@ -5944,7 +5964,16 @@ func buildItemSort(sort string, dialect Dialect) string {
 	}
 
 	if len(parts) == 0 {
-		return " ORDER BY i.pinned DESC, i.updated_at DESC"
+		return " ORDER BY i.pinned DESC, i.updated_at DESC, i.id"
+	}
+	hasID := false
+	for _, p := range parts {
+		if strings.HasPrefix(p, "i.id ") {
+			hasID = true
+		}
+	}
+	if !hasID {
+		parts = append(parts, "i.id")
 	}
 	return " ORDER BY " + strings.Join(parts, ", ")
 }

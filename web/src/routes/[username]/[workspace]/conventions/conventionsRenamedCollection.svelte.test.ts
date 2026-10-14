@@ -24,7 +24,7 @@ const collectionsFor = vi.hoisted(() => ({ list: [] as unknown[] }));
 vi.mock('$lib/api/client', () => ({
 	api: {
 		items: {
-			listByCollection: vi.fn(async (_ws: string, slug: string) => {
+			listAllByCollection: vi.fn(async (_ws: string, slug: string) => {
 				lists.push(slug);
 				return [];
 			}),

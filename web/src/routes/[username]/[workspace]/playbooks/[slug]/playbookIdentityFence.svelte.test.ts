@@ -71,7 +71,7 @@ vi.mock('$lib/api/client', () => {
 					getCalls.push(d);
 					return d.promise;
 				}),
-				listByCollection: vi.fn(async () => []),
+				listAllByCollection: vi.fn(async () => []),
 				update: vi.fn((_ws: string, _slug: string, payload: Record<string, unknown>) => {
 					const d = deferred<unknown>();
 					updateCalls.push({ payload, d });

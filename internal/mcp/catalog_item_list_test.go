@@ -30,7 +30,7 @@ func TestPadItemList_InjectsDefaultLimit(t *testing.T) {
 		t.Errorf("cmdPath = %v, want [item list]", disp.gotPath)
 	}
 	joined := strings.Join(disp.gotArgs, " ")
-	wantLimit := "--limit 50"
+	wantLimit := "--limit 51" // the default, plus the one-row has-more probe (BUG-3704)
 	if !strings.Contains(joined, wantLimit) {
 		t.Errorf("cliArgs %q should inject the default %q", joined, wantLimit)
 	}
@@ -55,8 +55,8 @@ func TestPadItemList_ClampsOversizedLimit(t *testing.T) {
 		t.Fatalf("actionItemList error: %v", err)
 	}
 	joined := strings.Join(disp.gotArgs, " ")
-	if !strings.Contains(joined, "--limit 300") {
-		t.Errorf("cliArgs %q should clamp oversized limit to 300", joined)
+	if !strings.Contains(joined, "--limit 301") {
+		t.Errorf("cliArgs %q should clamp oversized limit to 300 (+1 probe)", joined)
 	}
 	if strings.Contains(joined, "999999") {
 		t.Errorf("cliArgs %q must not forward the oversized limit verbatim", joined)
@@ -80,8 +80,8 @@ func TestPadItemList_RespectsInRangeLimit(t *testing.T) {
 		t.Fatalf("actionItemList error: %v", err)
 	}
 	joined := strings.Join(disp.gotArgs, " ")
-	if !strings.Contains(joined, "--limit 25") {
-		t.Errorf("cliArgs %q should honor an in-range limit of 25", joined)
+	if !strings.Contains(joined, "--limit 26") {
+		t.Errorf("cliArgs %q should honor an in-range limit of 25 (+1 probe)", joined)
 	}
 }
 

@@ -80,7 +80,7 @@ vi.mock('$lib/api/client', () => ({
 				playbookCalls.push({ args, resolve: resolve as (v: unknown) => void, reject });
 			})),
 		},
-		items: { listByCollection: vi.fn(async () => []) },
+		items: { listAllByCollection: vi.fn(async () => []) },
 		builtins: { list: vi.fn(async () => []) },
 	},
 }));

@@ -28,7 +28,7 @@ vi.mock('$lib/api/client', () => ({
 			}),
 			getPlaybooks: vi.fn(async () => ({ categories: [] }))
 		},
-		items: { listByCollection: vi.fn(async () => []) },
+		items: { listAllByCollection: vi.fn(async () => []) },
 		builtins: { list: vi.fn(async () => []) },
 		collections: { list: vi.fn(async () => []) }
 	}

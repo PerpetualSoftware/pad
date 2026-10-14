@@ -30,7 +30,7 @@ vi.mock('$lib/api/client', () => ({
 	api: {
 		items: {
 			get: vi.fn(async () => loadedItem.current),
-			listByCollection: vi.fn(async () => []),
+			listAllByCollection: vi.fn(async () => []),
 		},
 		collections: {
 			list: vi.fn(async () => collectionsFor.list),

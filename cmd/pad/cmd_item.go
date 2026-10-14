@@ -444,8 +444,21 @@ const (
 	maxItemListLimit     = 1000
 )
 
+// printItemListTruncation tells a human, on stderr, that the list stopped
+// short and how to see the rest. The server says so exactly (BUG-3704); an
+// older server does not, and then len==limit is the hedged guess it always was.
+func printItemListTruncation(page cli.ItemListPage, n, limit int) {
+	switch {
+	case page.Known && page.HasMore:
+		cli.Dim.Fprintf(os.Stderr, "\n(showing %d items; more exist: pass --offset %d for the next page, or --limit up to %d)\n", n, page.NextOffset, maxItemListLimit)
+	case !page.Known && n == limit:
+		cli.Dim.Fprintf(os.Stderr, "\n(showing %d items — capped by limit; pass --limit N to see more)\n", limit)
+	}
+}
+
 func listCmd() *cobra.Command {
 	var (
+		offsetNum      int
 		statusFilter   string
 		priorityFilter string
 		assigneeFilter string
@@ -542,6 +555,9 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 				effectiveLimit = maxItemListLimit
 			}
 			params.Set("limit", fmt.Sprintf("%d", effectiveLimit))
+			if offsetNum > 0 {
+				params.Set("offset", fmt.Sprintf("%d", offsetNum))
+			}
 
 			// Apply arbitrary --field key=value filters as query params.
 			//
@@ -563,7 +579,7 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 			}
 
 			var items []models.Item
-			var undeclared []string
+			var page cli.ItemListPage
 			var err error
 
 			if len(args) > 0 {
@@ -571,21 +587,24 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 				// by its singular alias (BUG-2630); the fallback preserves
 				// shorthand against pre-resolver servers (BUG-2578).
 				items, err = cli.WithCollectionAliasFallback(args[0], client.CollectionNotFoundIsAuthoritative, func(slug string) ([]models.Item, error) {
-					got, keys, lerr := client.ListCollectionItemsReport(ws, slug, params)
-					undeclared = keys
+					got, pg, lerr := client.ListCollectionItemsReport(ws, slug, params)
+					page = pg
 					return got, lerr
 				})
 			} else {
-				items, undeclared, err = client.ListItemsReport(ws, params)
+				items, page, err = client.ListItemsReport(ws, params)
 			}
 			if err != nil {
 				return err
 			}
 			// Stderr, like the write warnings, so --format json stays
 			// parseable (BUG-3480).
-			if len(undeclared) > 0 {
-				fmt.Fprintf(os.Stderr, "warning: filtered on %s, which no schema declares (matched against the value items store)\n", strings.Join(undeclared, ", "))
+			if len(page.UndeclaredKeys) > 0 {
+				fmt.Fprintf(os.Stderr, "warning: filtered on %s, which no schema declares (matched against the value items store)\n", strings.Join(page.UndeclaredKeys, ", "))
 			}
+			// The truncation notice goes to stderr after the output, in every
+			// format (BUG-3704).
+			defer printItemListTruncation(page, len(items), effectiveLimit)
 
 			if formatFlag == "json" {
 				// Default to the token-light summary shape (drops the rich
@@ -617,13 +636,6 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 				cli.PrintItemTable(items)
 			}
 
-			// Nudge when the result was (possibly) capped by the limit so a
-			// human doesn't silently miss items. len==limit is a heuristic:
-			// it can't distinguish "exactly N" from "N and more", so the
-			// message hedges.
-			if len(items) == effectiveLimit {
-				cli.Dim.Fprintf(os.Stderr, "\n(showing %d items — capped by limit; pass --limit N to see more)\n", effectiveLimit)
-			}
 			return nil
 		},
 	}
@@ -642,6 +654,7 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 	cmd.Flags().StringVar(&sortBy, "sort", "", "sort order (e.g. priority:desc,created_at:asc)")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "group results by field")
 	cmd.Flags().IntVar(&limitNum, "limit", 0, fmt.Sprintf("max number of items to return (default %d, max %d)", defaultItemListLimit, maxItemListLimit))
+	cmd.Flags().IntVar(&offsetNum, "offset", 0, "skip the first N items (for pagination)")
 	cmd.Flags().BoolVar(&showAll, "all", false, "include done/completed/archived items")
 	cmd.Flags().BoolVar(&fullOutput, "full", false, "JSON output only: include full content + all fields (default: token-light summary shape)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "filter by field value (repeatable): --field key=value")

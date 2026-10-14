@@ -14,8 +14,8 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			loadData: {
-				reviewed: 'bf6fb95d5a80',
-				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378). Re-reviewed for TASK-2203: loadError is written on both arms after the same checks',
+				reviewed: '8c273b8de01d',
+				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378). Re-reviewed for TASK-2203: loadError is written on both arms after the same checks. Re-reviewed for BUG-3704: listAllByCollection pages inside one awaited call, and the same checks run after it resolves, so a result whose pages straddled an identity change is discarded whole',
 			},
 			activateConvention: {
 				reviewed: '500f0d1fabdf',
@@ -29,9 +29,9 @@ identityGateSuite({
 		nested: [],
 		markup: [],
 		continuations: [
-			{ call: /\(ws, convSlug\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing', reviewed: 'd12ac67a307e' },
-			{ call: /\(ws, pbSlug\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing', reviewed: 'd12ac67a307e' },
-			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing', reviewed: '19ec27a693c3' },
+			{ call: /\(ws, convSlug\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing. Re-reviewed for BUG-3704: now listAllByCollection, every page in one awaited call', reviewed: '1c93d2991eb5' },
+			{ call: /\(ws, pbSlug\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing. Re-reviewed for BUG-3704: now listAllByCollection, every page in one awaited call', reviewed: '1c93d2991eb5' },
+			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing. Re-reviewed for BUG-3704: unchanged; its hash moved with the two fetch lines above it', reviewed: 'ac7322d86a09' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activateConvention', count: 2, why: `activateConvention toast timer, one per arm: ${TIMER_WHY}`, reviewed: '8f5423f36951' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtEntry\)/, in: 'activatePlaybook', count: 2, why: `activatePlaybook toast timer, one per arm: ${TIMER_WHY}`, reviewed: '1e8470e2050a' },
 		],

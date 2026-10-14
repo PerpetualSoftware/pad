@@ -58,7 +58,7 @@ vi.mock('$lib/api/client', () => ({
 			activatePlaybook: vi.fn(async () => data.created)
 		},
 		items: {
-			listByCollection: vi.fn(async (_ws: string, slug: string) => (slug === 'conventions' ? data.conventions : []))
+			listAllByCollection: vi.fn(async (_ws: string, slug: string) => (slug === 'conventions' ? data.conventions : []))
 		},
 		builtins: { list: vi.fn(async () => data.builtins) },
 		collections: { list: vi.fn(async () => []) }
