@@ -109,12 +109,16 @@ func TestWatchEventsStream_OAuthShapedTokenCannotAuthenticate(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		req := newStreamReq(t, pat.Token).WithContext(ctx)
-		rr := httptest.NewRecorder()
+		// A recorder that takes a write deadline, so the stream actually
+		// opens: a plain one is refused 500 (BUG-3637), which also is not
+		// 401 and would pass this control without reaching the stream.
+		rec := newDeadlineRecorder()
+		rr := rec.ResponseRecorder
 
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			srv.ServeHTTP(rr, req)
+			srv.ServeHTTP(rec, req)
 		}()
 
 		// The handler holds the connection open; the ctx timeout closes
@@ -124,8 +128,8 @@ func TestWatchEventsStream_OAuthShapedTokenCannotAuthenticate(t *testing.T) {
 		case <-time.After(4 * time.Second):
 			t.Fatal("stream handler did not return after context expiry")
 		}
-		if rr.Code == http.StatusUnauthorized {
-			t.Fatalf("negative control failed: a valid PAT was refused (%d) — "+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("negative control failed: a valid PAT did not open the stream (%d) — "+
 				"the probe leg's 401 proves nothing about token format: %s",
 				rr.Code, rr.Body.String())
 		}
