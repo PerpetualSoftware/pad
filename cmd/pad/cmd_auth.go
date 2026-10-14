@@ -545,17 +545,17 @@ func pollAndSaveCLIAuth(ctx context.Context, client *cli.Client, cfg *config.Con
 			case "approved":
 				// Save credentials keyed by this server URL so other
 				// servers' tokens stay intact (TASK-1228).
-				store, err := cli.LoadStore()
-				if err != nil {
-					return fmt.Errorf("load credentials: %w", err)
-				}
-				store.Set(cfg.BaseURL(), &cli.Credentials{
-					Token:  status.Token,
-					UserID: status.User.ID,
-					Email:  status.User.Email,
-					Name:   status.User.Name,
-				})
-				if err := store.Save(); err != nil {
+				// Under the credentials lock, so a concurrent login to
+				// another server keeps its entry (BUG-3649).
+				if err := cli.UpdateStore(func(store *cli.CredentialStore) error {
+					store.Set(cfg.BaseURL(), &cli.Credentials{
+						Token:  status.Token,
+						UserID: status.User.ID,
+						Email:  status.User.Email,
+						Name:   status.User.Name,
+					})
+					return nil
+				}); err != nil {
 					return fmt.Errorf("save credentials: %w", err)
 				}
 
@@ -762,17 +762,17 @@ func promptAndBootstrap(client *cli.Client) (*cli.LoginResponse, error) {
 }
 
 func saveCredentials(cfg *config.Config, resp *cli.LoginResponse) error {
-	store, err := cli.LoadStore()
-	if err != nil {
-		return fmt.Errorf("load credentials: %w", err)
-	}
-	store.Set(cfg.BaseURL(), &cli.Credentials{
-		Token:  resp.Token,
-		UserID: resp.User.ID,
-		Email:  resp.User.Email,
-		Name:   resp.User.Name,
-	})
-	if err := store.Save(); err != nil {
+	// Under the credentials lock, so a concurrent login to another server
+	// keeps its entry (BUG-3649).
+	if err := cli.UpdateStore(func(store *cli.CredentialStore) error {
+		store.Set(cfg.BaseURL(), &cli.Credentials{
+			Token:  resp.Token,
+			UserID: resp.User.ID,
+			Email:  resp.User.Email,
+			Name:   resp.User.Name,
+		})
+		return nil
+	}); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
 	return nil
@@ -875,8 +875,15 @@ func logoutCmd() *cobra.Command {
 			// the whole file). If the entry isn't present, Delete is a
 			// silent no-op which matches what the user expects from
 			// `pad auth logout` against an unauthed server.
-			store.Delete(cfg.BaseURL())
-			if err := store.Save(); err != nil {
+			//
+			// The delete re-reads the file under the credentials lock
+			// (BUG-3649) rather than saving the snapshot read above: the
+			// server call in between is too slow to hold the lock across,
+			// and a login to another server may have landed meanwhile.
+			if err := cli.UpdateStore(func(store *cli.CredentialStore) error {
+				store.Delete(cfg.BaseURL())
+				return nil
+			}); err != nil {
 				return fmt.Errorf("save credentials: %w", err)
 			}
 

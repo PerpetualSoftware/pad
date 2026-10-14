@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -206,13 +207,21 @@ func (s *CredentialStore) Delete(serverURL string) {
 // Save writes the store to disk in v2 format with mode 0600. Always
 // writes the current version constant — even if the store was loaded
 // from v1, this is the migration moment.
+//
+// The write is an atomic replace (BUG-3648, BUG-3649): a private 0600 temp
+// file in the same directory, synced, then renamed over credentials.json.
+// os.WriteFile applied 0600 only when it CREATED the file, so an existing
+// loose-mode file kept its mode with fresh tokens in it, and it truncated
+// the live file first, so a concurrent reader could see no credentials or
+// half a JSON document. Save alone does not stop two processes losing each
+// other's entries; a load-modify-save goes through UpdateStore.
 func (s *CredentialStore) Save() error {
 	path, err := credentialsPath()
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("create credentials directory: %w", err)
 	}
 
@@ -226,10 +235,79 @@ func (s *CredentialStore) Save() error {
 		return fmt.Errorf("marshal credentials: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := writeFileAtomic0600(path, data); err != nil {
 		return fmt.Errorf("write credentials: %w", err)
 	}
 	return nil
+}
+
+// writeFileAtomic0600 replaces path with data through a temp file that is
+// 0600 from the moment it exists, so the tokens are never readable under a
+// looser mode, and a reader sees either the old file or the new one whole.
+func writeFileAtomic0600(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".credentials-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	// CreateTemp already opens 0600; the chmod keeps that true on a
+	// platform or umask where it would not be.
+	if err := tmp.Chmod(0600); err != nil && runtime.GOOS != "windows" {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	tmpName = ""
+	return nil
+}
+
+// UpdateStore is the load-modify-save for credentials.json, under a
+// cross-process lock on credentials.json.lock (BUG-3649): two `pad auth
+// login` runs for different servers each used to load the same snapshot
+// and save it with their own entry, so the second dropped the first's.
+// fn mutates the freshly loaded store; when it returns an error nothing is
+// saved. fn must not call UpdateStore, and nothing slow (a network call)
+// belongs inside it: the lock is held for the whole call.
+func UpdateStore(fn func(*CredentialStore) error) error {
+	path, err := credentialsPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create credentials directory: %w", err)
+	}
+	unlock, err := lockCredentialsFile(path + ".lock")
+	if err != nil {
+		return fmt.Errorf("lock credentials: %w", err)
+	}
+	defer unlock()
+
+	store, err := LoadStore()
+	if err != nil {
+		return err
+	}
+	if err := fn(store); err != nil {
+		return err
+	}
+	return store.Save()
 }
 
 // WipeCredentialsFile removes ~/.pad/credentials.json entirely. Distinct
