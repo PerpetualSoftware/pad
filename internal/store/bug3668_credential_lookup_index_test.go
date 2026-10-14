@@ -1,6 +1,7 @@
 package store
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -12,9 +13,10 @@ import (
 // for an index search. The question is whether the column is indexed, so
 // each query is the lookup's predicate alone, not the full statement.
 //
-// SQLite: EXPLAIN QUERY PLAN must not report a SCAN of the table. Postgres
-// plans a seq scan on a tiny table even with an index, so the plan is read
-// with enable_seqscan off: an index scan is then chosen iff one exists.
+// SQLite: EXPLAIN QUERY PLAN must report a SEARCH of the table using an
+// index. Postgres plans a seq scan on a tiny table even with an index, so the
+// plan is read with enable_seqscan off: an index scan is then chosen iff one
+// exists.
 func TestBUG3668_CredentialLookupsAreIndexed(t *testing.T) {
 	s := testStore(t)
 	census := []struct{ lookup, table, query string }{
@@ -30,17 +32,22 @@ func TestBUG3668_CredentialLookupsAreIndexed(t *testing.T) {
 		{"OAuth access token", "oauth_access_tokens", `SELECT signature FROM oauth_access_tokens WHERE signature = ?`},
 		{"OAuth refresh token", "oauth_refresh_tokens", `SELECT signature FROM oauth_refresh_tokens WHERE signature = ?`},
 		{"OAuth PKCE request", "oauth_pkce_requests", `SELECT signature FROM oauth_pkce_requests WHERE signature = ?`},
+		{"app install code", "app_install_codes", `SELECT install_id FROM app_install_codes WHERE code_sha256 = ?`},
+		{"app context code", "app_context_codes", `SELECT install_id FROM app_context_codes WHERE code_sha256 = ?`},
 	}
 	for _, c := range census {
 		plan := explainPlan(t, s, c.query, "x")
-		scanned := false
+		// Positive: the plan must read the table through an index, not
+		// merely avoid one named scan node (codex r1).
+		var indexed bool
 		if s.dialect.Driver() == DriverPostgres {
-			scanned = strings.Contains(plan, "Seq Scan on "+c.table)
+			indexed = regexp.MustCompile(`(Index Scan|Index Only Scan) using \S+ on ` + c.table + `\b|Bitmap Index Scan on `).MatchString(plan) &&
+				!strings.Contains(plan, "Seq Scan on "+c.table)
 		} else {
-			scanned = strings.Contains(plan, "SCAN "+c.table)
+			indexed = regexp.MustCompile(`SEARCH ` + c.table + ` USING (COVERING )?INDEX `).MatchString(plan)
 		}
-		if scanned {
-			t.Errorf("%s: the lookup on %s scans the table:\n%s", c.lookup, c.table, plan)
+		if !indexed {
+			t.Errorf("%s: the lookup on %s does not use an index:\n%s", c.lookup, c.table, plan)
 		} else {
 			t.Logf("%s: %s", c.lookup, strings.ReplaceAll(strings.TrimSpace(plan), "\n", " | "))
 		}
