@@ -283,8 +283,28 @@ export interface PersistDeps<T extends OrderedCard> {
 	 * refused the request, in which case it wrote nothing.
 	 */
 	send: (writes: OrderWrite[]) => Promise<{ id: string; seq: number }[]>;
-	/** Settle the stored row locally. Returns false to stop (identity changed). */
-	settle: (row: T) => boolean;
+	/**
+	 * Settle one landed write locally: its id, the sort_order stored, and the
+	 * seq the server answered (when it named one). Returns false to stop
+	 * (identity changed).
+	 *
+	 * Deliberately NOT a full row (BUG-3699). The only full row this function
+	 * holds is the one captured BEFORE the request, and stamping it with the
+	 * new seq claimed the server's row at that seq was the old snapshot plus
+	 * the new sort_order. A collaborator's edit that landed in between (say a
+	 * rename at seq 11, under a reorder answering seq 12) was then reverted
+	 * locally by a row the seq guard could not refuse. The caller applies the
+	 * sort_order to whatever row it holds now and lets an authoritative read
+	 * supply the rest.
+	 */
+	settle: (landed: LandedWrite) => boolean;
+}
+
+/** One write the server stored: see PersistDeps.settle. */
+export interface LandedWrite {
+	id: string;
+	sort_order: number;
+	seq?: number;
 }
 
 /**
@@ -315,10 +335,10 @@ export async function persistReorder<T extends OrderedCard>(
 		return false;
 	}
 	const seqs = new Map(stored.map((r) => [r.id, r.seq]));
-	for (const { write, original } of pending) {
+	for (const { write } of pending) {
 		const seq = seqs.get(write.id);
-		const row = { ...original, sort_order: write.sort_order, ...(seq === undefined ? {} : { seq }) };
-		if (!deps.settle(row)) return false;
+		const landed: LandedWrite = { id: write.id, sort_order: write.sort_order, ...(seq === undefined ? {} : { seq }) };
+		if (!deps.settle(landed)) return false;
 	}
 	return true;
 }

@@ -43,6 +43,7 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { planLaneOrder, persistReorder } from '$lib/collections/reorderPlan';
+	import { sleep } from '$lib/utils/sleep';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { enterWorkspaceIndex } from '$lib/stores/workspaceIndexEntry';
@@ -2369,6 +2370,21 @@
 		}
 	}
 
+	// Which reorder last wrote each card locally (BUG-3699). A reorder settles,
+	// rolls back or restores a card only while the card still holds ITS write,
+	// so an overlapping reorder's optimistic row is never replaced by an older
+	// one's. PLAIN, not `$state`: nothing renders from it.
+	const reorderOwner = new Map<string, symbol>();
+	// Each card's last STAMPED row while any reorder holds it unconfirmed: the
+	// order a total read-back failure restores. A reorder that starts on a card
+	// another reorder still holds finds that one's optimistic row, not a
+	// confirmed one, so the stamped row is kept from the first (Codex on #2150).
+	const lastConfirmed = new Map<string, Item>();
+	// Read-back retry delays for a reorder's cards: bounded, then the scope is
+	// marked stale for a full resync instead of retrying forever (Heron's
+	// ruling on BUG-3699).
+	const REORDER_READBACK_DELAYS_MS = [0, 500, 1000, 2000];
+
 	async function handleReorder(updates: { slug: string; sort_order: number }[], movedId?: string) {
 		if (!wsSlug) return;
 		const ws = wsSlug;
@@ -2392,7 +2408,17 @@
 			toastStore.show("Couldn't keep that order: a card you can only view is in the way.", 'error');
 			return;
 		}
-		if (plan.writes.length === 0) return;
+		// A card another reorder still holds unconfirmed is written too, at the
+		// value on screen: this drop asserts it, so the drop holds whether that
+		// reorder lands or is refused (Codex r5 on #2150).
+		const planned = new Set(plan.writes.map((w) => w.id));
+		const writes = [
+			...plan.writes,
+			...lane
+				.filter((i) => reorderOwner.has(i.id) && !planned.has(i.id) && workspaceStore.canEditItem(i))
+				.map((i) => ({ id: i.id, sort_order: i.sort_order })),
+		];
+		if (writes.length === 0) return;
 		// Optimistic local writes first: the callers (e.g. ListView) don't await
 		// onReorder and resync their rendered groups from `items` at once, so
 		// without them the rows snap back until the PATCH returns. Clearing
@@ -2402,12 +2428,25 @@
 		// restores every card to its original row, which carries its original
 		// seq, so a fresher SSE row is not overwritten (BUG-3259).
 		let epoch = localIndex.scopeEpochFor(ws);
-		const landed = await persistReorder<Item>(plan.writes, {
-			original: (id) => lane.find((i) => i.id === id),
-			applyLocal: (row) => localIndex.upsert(ws, { ...row, seq: undefined }),
-			// After a refused await: under the identity that made the request only.
+		const token = Symbol('reorder');
+		const owns = (id: string) => reorderOwner.get(id) === token;
+		// The card's row as this reorder found it: stamped, the last order the
+		// server confirmed for it.
+		const originals = new Map(lane.map((i) => [i.id, i]));
+		const landedSeqs = new Map<string, number>();
+		const landed = await persistReorder<Item>(writes, {
+			original: (id) => originals.get(id),
+			applyLocal: (row) => {
+				const found = originals.get(row.id);
+				if (found?.seq !== undefined) lastConfirmed.set(row.id, found);
+				reorderOwner.set(row.id, token);
+				localIndex.upsert(ws, { ...row, seq: undefined });
+			},
+			// After a refused await: under the identity that made the request
+			// only, and only a card still holding this reorder's write. A later
+			// reorder's optimistic row is ITS to settle or roll back (BUG-3699).
 			restoreLocal: (row) => {
-				if (identityHeld(epochAtEntry)) localIndex.upsert(ws, row, epoch);
+				if (identityHeld(epochAtEntry) && owns(row.id)) localIndex.upsert(ws, row, epoch);
 			},
 			send: (writes) => {
 				// The epoch the settles are checked against: a resync after
@@ -2416,17 +2455,101 @@
 				// One all-or-nothing request (TASK-3517).
 				return api.items.reorder(ws, writes);
 			},
-			settle: (updated) => {
+			settle: (landed) => {
 				// An identity change after the request stops the settles
 				// (BUG-3084).
 				if (!identityHeld(epochAtEntry)) return false;
-				localIndex.upsert(ws, updated, epoch);
+				// The stored sort_order on the row as it stands NOW, unstamped
+				// (BUG-3699): a collaborator's edit that landed during the
+				// request is kept, and the authoritative row (the SSE event, or
+				// the reconcile below) replaces this one when it arrives. The
+				// old code stamped the pre-request snapshot with the new seq,
+				// which reverted that edit and could not be refused.
+				if (landed.seq !== undefined) landedSeqs.set(landed.id, landed.seq);
+				// A card a later reorder has written since is that reorder's to
+				// settle (BUG-3699).
+				if (!owns(landed.id)) return true;
+				// The server stamps every write it stores (PUT /items/sort-order is
+				// all-or-nothing). A landed write without a seq cannot be judged
+				// by the seq guard, so nothing is written; the read-back below
+				// confirms the card or restores it (BUG-3699).
+				if (landed.seq === undefined) return true;
+				const current = localIndex.findByIdOrSlug(ws, landed.id);
+				// A row already at or past this write's seq is authoritative and
+				// holds this sort_order or a later one; an unstamped write would
+				// bypass the seq guard and replace it.
+				if (current?.seq !== undefined && current.seq >= landed.seq) return true;
+				if (current) localIndex.upsert(ws, { ...current, sort_order: landed.sort_order, seq: undefined }, epoch);
 				return true;
 			}
 		});
-		if (!landed && identityHeld(epochAtEntry)) {
-			console.error('Failed to persist sort order');
+		if (!identityHeld(epochAtEntry)) return;
+		if (!landed) console.error('Failed to persist sort order');
+		// Read each written card back from the server, landed or refused, and
+		// let upsert's seq guard keep the newest (BUG-3699, BUG-3700). A
+		// landed reorder's unstamped settle needs an authoritative row, and a
+		// delta from the cursor may already be past it. A refused reorder's
+		// rollback restored each card as this reorder found it, which, when
+		// another reorder was in flight, was ITS optimistic row: an order the
+		// server never stored. With every reorder reading back, a delayed
+		// stale read is refused by a newer stamped row whichever arrives
+		// first.
+		//
+		// Each card retries on a bounded schedule. One that never reads back,
+		// and still holds this reorder's unstamped write, is put back to its
+		// original stamped row: an order the server never confirmed must not
+		// LOOK settled. The scope is then marked stale, so the next reconcile
+		// (focus, reconnect, SSE) installs a full snapshot (Heron's ruling).
+		// A landed card is confirmed once the index holds a stamped row at or
+		// past its write. A refused card always reads back: the row its
+		// rollback restored is only what this reorder found.
+		const confirmed = (id: string) => {
+			const want = landedSeqs.get(id);
+			if (want === undefined) return false;
+			const row = localIndex.findByIdOrSlug(ws, id);
+			return row?.seq !== undefined && row.seq >= want;
+		};
+		const readBack = async (id: string): Promise<boolean> => {
+			for (const delay of REORDER_READBACK_DELAYS_MS) {
+				if (delay > 0) await sleep(delay);
+				if (!identityHeld(epochAtEntry)) return true;
+				if (confirmed(id)) return true;
+				try {
+					const row = await api.items.get(ws, id);
+					if (!identityHeld(epochAtEntry)) return true;
+					// A later reorder holding the card OPTIMISTICALLY is the newer
+					// intent: its own read-back settles it, so this one yields
+					// (Codex on #2150). Over a STAMPED row the seq guard decides,
+					// because this write may be the server's newest (Codex r5).
+					if (!owns(id) && localIndex.findByIdOrSlug(ws, id)?.seq === undefined) return true;
+					localIndex.upsert(ws, row, epoch);
+					// A landed card is confirmed only by a row at or past its
+					// write; an older read is retried like a failed one.
+					if (!landedSeqs.has(id) || confirmed(id)) return true;
+				} catch {
+					// Retried on the schedule; the last failure falls through.
+				}
+			}
+			return false;
+		};
+		const ids = writes.map((w) => w.id);
+		const read = await Promise.all(ids.map((id) => readBack(id)));
+		if (!identityHeld(epochAtEntry)) return;
+		let unconfirmed = false;
+		for (const [i, id] of ids.entries()) {
+			const ok = read[i];
+			if (!owns(id)) continue;
+			reorderOwner.delete(id);
+			const confirmedRow = lastConfirmed.get(id);
+			lastConfirmed.delete(id);
+			if (ok) continue;
+			unconfirmed = true;
+			const row = localIndex.findByIdOrSlug(ws, id);
+			// The card's last STAMPED row, kept across overlapping reorders: an
+			// order the server confirmed.
+			if (row?.seq === undefined && confirmedRow) localIndex.upsert(ws, confirmedRow, epoch);
 		}
+		if (unconfirmed) localIndex.markScopeStale(ws);
 	}
 
 	async function handleGroupReorder(newOrder: string[]) {
