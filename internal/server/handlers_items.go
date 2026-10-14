@@ -4497,6 +4497,11 @@ func (s *Server) checkListFilterKeys(workspaceID string, params models.ItemListP
 	if len(keys) == 0 {
 		return nil, nil
 	}
+	// A bound before any store work (BUG-3703): each undeclared key can cost a
+	// probe of the list's scope.
+	if len(keys) > maxListFilterKeys {
+		return nil, listFilterRefusal(fmt.Sprintf("invalid list filter: %d field filters, at most %d", len(keys), maxListFilterKeys))
+	}
 	sort.Strings(keys)
 	var unknown []string
 	for _, k := range keys {
@@ -4529,6 +4534,10 @@ func (s *Server) checkListFilterKeys(workspaceID string, params models.ItemListP
 	}
 	return undeclared, nil
 }
+
+// maxListFilterKeys bounds the field filters (field filters and any-of
+// filters together) one list request may carry (BUG-3703).
+const maxListFilterKeys = 50
 
 // listFilterRefusal is checkListFilterKeys' 400; any other error it returns
 // is a store failure. Both messages start "invalid list filter": local stdio
