@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -144,14 +145,13 @@ func (f *mcpStallFixture) assertUnregisteredWithin(t *testing.T, d time.Duration
 	}
 }
 
-// The two ways the library's loop can be blocked, each ended by a different
-// half of the fix:
-//
-//   - large frames overflow net/http's buffer inside Write, so the blocked
-//     call is a Write; the deadline fails it and the loop leaves on the error.
-//   - small frames never overflow it, so every socket write is the Flush that
-//     follows; Flush returns no error, so after the pump stops only the
-//     cancelled request context gets the loop out.
+// Two frame sizes, so the blocked call is a Write (large frames overflow
+// net/http's buffer inside Write) or a Flush (small ones never do). Either
+// way the deadline fails it. A failed Write ends the library's loop on the
+// error; a failed Flush reports nothing, and here the frames still queued in
+// mcp-go's channels (16 each) make the next Write fail on the stream's
+// sticky error. The case with nothing queued after a failed Flush is
+// TestMCP_BUG3808_DeadStreamCancelsTheRequestContext.
 func TestMCP_BUG3808_StalledReaderReleasesTheGETStream(t *testing.T) {
 	for _, c := range []struct {
 		name      string
@@ -159,7 +159,7 @@ func TestMCP_BUG3808_StalledReaderReleasesTheGETStream(t *testing.T) {
 		stopAfter time.Duration // 0: keep pumping until the end
 	}{
 		{"blocked-in-write", 64 << 10, 0},
-		{"blocked-in-flush-then-silence", 200, 1500 * time.Millisecond},
+		{"blocked-in-flush", 200, 1500 * time.Millisecond},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newMCPStallFixture(t)
@@ -257,5 +257,34 @@ func TestMCP_BUG3808_WriterWithoutDeadlineIsRefused(t *testing.T) {
 	}
 	if n := f.registered.Load(); n != 1 {
 		t.Errorf("sessions registered = %d, want 1 (the control GET only): a refused request reached the transport", n)
+	}
+}
+
+// flushFailingWriter takes a write deadline and fails every flush, the state
+// of a stream whose last frame stalled in Flush past the deadline.
+type flushFailingWriter struct{ *httptest.ResponseRecorder }
+
+func (flushFailingWriter) SetWriteDeadline(time.Time) error { return nil }
+func (flushFailingWriter) FlushError() error                { return errors.New("flush: i/o timeout") }
+
+// A failed Flush returns no error to the library, and with nothing queued its
+// loop waits on its channels and ctx.Done() only. mcpBoundWrites must cancel
+// the request context when the stream dies, or that handler waits for a
+// notification that may never come.
+func TestMCP_BUG3808_DeadStreamCancelsTheRequestContext(t *testing.T) {
+	srv := testServer(t)
+	cancelled := make(chan bool, 1)
+	h := srv.mcpBoundWrites(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+			cancelled <- true
+		case <-time.After(5 * time.Second):
+			cancelled <- false
+		}
+	}))
+	h.ServeHTTP(flushFailingWriter{httptest.NewRecorder()}, httptest.NewRequest(http.MethodGet, "/mcp", nil))
+	if !<-cancelled {
+		t.Fatal("the request context was not cancelled after the stream's flush failed: a handler waiting on it is pinned")
 	}
 }
