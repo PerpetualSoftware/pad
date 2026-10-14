@@ -1943,10 +1943,11 @@ type versionRemap struct {
 // successor changed are rewritten. Line counts are left alone: a remap
 // swaps one id for another and changes no line.
 //
-// It returns the rewrites and the items whose chains it covered, including
-// the newest row against the remapped body, so the caller skips its
-// newest-only rebase for them. A chain that does not resolve (a patch that
-// fails to apply) is left to that rebase, as before this fix, and logged.
+// It returns the rewrites and the items whose newest row it re-encoded
+// against the remapped body, so the caller skips its newest-only rebase for
+// them. A patch that fails to apply leaves the rows from it down to the next
+// full row without a body; their patch text is remapped as written, and the
+// item is logged.
 func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew map[string]string) ([]versionRemap, map[string]bool, error) {
 	// ORDER BY id for the lock order, as the item scan above.
 	rows, err := tx.Query(s.q(`
@@ -2001,30 +2002,43 @@ func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew
 		}
 		vrows.Close()
 
-		resolved := true
-		successor := it.content
+		// A full row restarts the walk, so a patch that fails to apply blinds
+		// only the rows between it and the next full row below it.
+		known := make([]bool, len(chain))
+		successor, succKnown := it.content, true
 		for i := range chain {
 			if !chain[i].isDiff {
-				chain[i].body = chain[i].stored
-			} else if body, err := diff.ApplyPatch(successor, chain[i].stored); err == nil {
-				chain[i].body = body
-			} else {
-				resolved = false
-				break
+				chain[i].body, known[i] = chain[i].stored, true
+			} else if succKnown {
+				if body, err := diff.ApplyPatch(successor, chain[i].stored); err == nil {
+					chain[i].body, known[i] = body, true
+				}
 			}
-			successor = chain[i].body
+			succKnown = known[i]
+			if known[i] {
+				successor = chain[i].body
+			}
 		}
-		if !resolved {
-			slog.Warn("attachment remap: version history does not resolve, so only its newest version is rebased",
-				"workspace_id", workspaceID, "item_id", it.id)
-			continue
+		if len(chain) > 0 && known[0] {
+			rechained[it.id] = true
 		}
-		rechained[it.id] = true
 
 		oldSucc, newSucc := it.content, remapAttachmentRefs(it.content, oldToNew)
-		for _, r := range chain {
+		broken := false
+		for i, r := range chain {
+			if !known[i] {
+				// No body to re-diff. Remap the patch text itself: an id it
+				// carries whole is replaced by one of the same length, so the
+				// hunk counts still hold. It resolved no better at the source.
+				broken = true
+				if t := remapAttachmentRefs(r.stored, oldToNew); t != r.stored {
+					out = append(out, versionRemap{id: r.id, content: t, isDiff: true})
+				}
+				continue
+			}
 			newBody := remapAttachmentRefs(r.body, oldToNew)
-			if newBody != r.body || newSucc != oldSucc {
+			// A known patch row's successor is always known: it resolved from it.
+			if newBody != r.body || (r.isDiff && newSucc != oldSucc) {
 				stored, isDiff := newBody, false
 				if r.isDiff {
 					if patch := diff.CreateReversePatch(newBody, newSucc); diff.IsDiffSmaller(patch, newBody) {
@@ -2036,6 +2050,10 @@ func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew
 				}
 			}
 			oldSucc, newSucc = r.body, newBody
+		}
+		if broken {
+			slog.Warn("attachment remap: part of an item's version history does not resolve; its patch text was remapped as written",
+				"workspace_id", workspaceID, "item_id", it.id)
 		}
 	}
 	return out, rechained, nil
