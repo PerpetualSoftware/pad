@@ -5791,6 +5791,9 @@ func (s *Store) moveItemWithPreCheckOnce(
 	if existing == nil {
 		return nil, sql.ErrNoRows
 	}
+	if s.beforeMoveLock != nil {
+		s.beforeMoveLock(itemID)
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -5932,7 +5935,12 @@ func (s *Store) moveItemWithPreCheckOnce(
 	// anyway). The seq is the value the UPDATE just assigned — read it
 	// back under the still-held lock so the tombstone seq matches what
 	// /items-changes sees for the item.
-	if targetCollectionID != existing.CollectionID {
+	// preMove, not existing (BUG-3665): on the no-precheck path (a forced
+	// move, or a direct MoveItem call) existing is the PRE-LOCK read, so a
+	// move another writer landed in between recorded the wrong origin. A
+	// client that cached the item in the collection it actually left, and
+	// cannot see the stale one, then never got the moved-out tombstone.
+	if targetCollectionID != preMove.CollectionID {
 		var moveSeq int64
 		if err = tx.QueryRow(s.q(`SELECT seq FROM items WHERE id = ?`), itemID).Scan(&moveSeq); err != nil {
 			return nil, fmt.Errorf("read post-move seq: %w", err)
@@ -5940,7 +5948,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 		if _, err = tx.Exec(s.q(`
 			INSERT INTO item_collection_moves (id, workspace_id, item_id, from_collection_id, to_collection_id, seq, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`), newID(), existing.WorkspaceID, itemID, existing.CollectionID, targetCollectionID, moveSeq, moveTS); err != nil {
+		`), newID(), existing.WorkspaceID, itemID, preMove.CollectionID, targetCollectionID, moveSeq, moveTS); err != nil {
 			return nil, fmt.Errorf("record collection move: %w", err)
 		}
 	}
