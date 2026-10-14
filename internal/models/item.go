@@ -1264,6 +1264,16 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
+// UniqueCheck asks the store to refuse a write, inside its transaction and
+// after its workspace lock, when a `unique_scope: workspace_collection` field's
+// value in Fields is already held by another live item of the collection
+// (BUG-3812). The server's check before the write has no lock, so two writers
+// could both pass it. Internal-only.
+type UniqueCheck struct {
+	Schema []FieldDef
+	Fields map[string]any
+}
+
 type ItemCreate struct {
 	// ActorUserID is the request's user, stamped on the create's version row
 	// (PLAN-2348 U2). Internal-only.
@@ -1301,6 +1311,8 @@ type ItemCreate struct {
 	// sets are re-validated against the new schema and a failure refuses the
 	// write. Nil (internal callers) keeps the store's contract unchanged.
 	ValidatedSchema *string `json:"-"`
+	// UniqueCheck: see the type (BUG-3812). Internal-only.
+	UniqueCheck *UniqueCheck `json:"-"`
 	// BuiltinOrigin, when set, records the built-in convention or playbook
 	// this item is made from (TASK-3462), in the create's own transaction.
 	// Internal-only: set by template seeding and library activation, never
@@ -1612,6 +1624,8 @@ type ItemUpdate struct {
 	// sets are re-validated against the new schema and a failure refuses the
 	// write. Nil (internal callers) keeps the store's contract unchanged.
 	ValidatedSchema *string `json:"-"`
+	// UniqueCheck: see the type (BUG-3812). Internal-only.
+	UniqueCheck *UniqueCheck `json:"-"`
 	// BuiltinSeed, when set, moves the item's built-in origin to this seed
 	// inside the update's own transaction (TASK-3462, codex r1): the item and
 	// the record of which version of Pad's text it holds commit together.

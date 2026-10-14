@@ -452,6 +452,14 @@ func bulkStoreError(err error) *bulkOpError {
 	if v, ok := store.AsValidationError(err); ok {
 		return &bulkOpError{message: v.Reason, code: "validation_error"}
 	}
+	// BUG-3812: a concurrent writer stored the unique value after the check.
+	if held, ok := store.AsUniqueFieldHeldError(err); ok {
+		return &bulkOpError{message: held.Error(), code: "conflict"}
+	}
+	var moveConflict *store.UniqueFieldConflictError
+	if errors.As(err, &moveConflict) {
+		return &bulkOpError{message: moveConflict.Error(), code: "conflict"}
+	}
 	return &bulkOpError{message: err.Error()}
 }
 
@@ -838,6 +846,8 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		ActorUserID:     currentUserID(r), // BUG-3372
 		Source:          source,
 		ValidatedSchema: &validatedSchema,
+		// BUG-3812: checked again inside the write, under its lock.
+		UniqueCheck: &models.UniqueCheck{Schema: schema.Fields, Fields: fieldMap},
 	}
 
 	updated, err := s.store.UpdateItemWithPreCheck(item.ID, input, precheck, store.WithEventBatch(batchID))
@@ -1200,6 +1210,22 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 			}
 			return nil
 		}
+	}
+
+	// BUG-3812: the uniqueness check above ran on the pool, with no lock;
+	// single move re-checks under the move's lock (BUG-3665) and bulk move now
+	// does the same, before the open-children guard.
+	guardPrecheck := precheck
+	precheck = func(tx *sql.Tx, existing *models.Item) error {
+		if conflicts, err := s.store.UniqueFieldConflictsQ(tx, targetColl.ID, item.ID, targetSchema.Fields, result.Fields); err != nil {
+			return err
+		} else if len(conflicts) > 0 {
+			return &store.UniqueFieldConflictError{Keys: conflicts}
+		}
+		if guardPrecheck != nil {
+			return guardPrecheck(tx, existing)
+		}
+		return nil
 	}
 
 	// BUG-3407: the target schema the moved fields were validated against

@@ -153,6 +153,48 @@ func UniqueFieldConflictsMessage(keys []string) string {
 	return fmt.Sprintf("fields %q must be unique in the destination collection, and other items there already have these values; set different values with field overrides", keys)
 }
 
+// UniqueFieldHeldError is a create or update refused under the store's lock
+// because a unique_scope value it writes is already held by another live item
+// of the collection (BUG-3812). Its sentence is the one the server's check
+// before the write answers, holder slug included, so a write that loses the
+// race reads the same as one refused up front.
+type UniqueFieldHeldError struct {
+	Key, Value, HolderSlug string
+}
+
+func (e *UniqueFieldHeldError) Error() string {
+	return fmt.Sprintf("field %q value %q is already used by item %s", e.Key, e.Value, e.HolderSlug)
+}
+
+// AsUniqueFieldHeldError unwraps a UniqueFieldHeldError.
+func AsUniqueFieldHeldError(err error) (*UniqueFieldHeldError, bool) {
+	var e *UniqueFieldHeldError
+	if errors.As(err, &e) {
+		return e, true
+	}
+	return nil, false
+}
+
+// checkUniqueTx runs uc inside tx (BUG-3812). The caller holds the workspace
+// seq lock (Postgres) or the database write lock (SQLite's BEGIN IMMEDIATE),
+// which every item insert, update, move and copy in the workspace also takes,
+// so no other writer can store the value between this read and the write.
+func (s *Store) checkUniqueTx(tx Queryer, collectionID, excludeItemID string, uc *models.UniqueCheck) error {
+	if uc == nil {
+		return nil
+	}
+	conflicts, err := s.uniqueFieldConflictsQ(tx, collectionID, excludeItemID, uc.Schema, uc.Fields)
+	if err != nil || len(conflicts) == 0 {
+		return err
+	}
+	c := conflicts[0]
+	var slug string
+	if err := tx.QueryRow(s.q(`SELECT slug FROM items WHERE id = ?`), c.holderID).Scan(&slug); err != nil {
+		return fmt.Errorf("unique field holder %s: %w", c.holderID, err)
+	}
+	return &UniqueFieldHeldError{Key: c.key, Value: c.value, HolderSlug: slug}
+}
+
 // UniqueFieldConflictError is a copy refused because a destination
 // unique_scope field already holds the value (BUG-2367). Typed so the HTTP
 // layer answers the same 409 sentence the move doors do.

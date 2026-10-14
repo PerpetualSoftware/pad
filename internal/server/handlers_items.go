@@ -1022,6 +1022,9 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to marshal validated fields"}
 	}
 	input.Fields = string(validatedFields)
+	// BUG-3812: prepareCreateFields checked uniqueness without a lock; the
+	// store checks again under the insert's lock.
+	input.UniqueCheck = &models.UniqueCheck{Schema: schema.Fields, Fields: fieldMap}
 
 	// Persist the source and the writer's kind from the request's auth
 	// context so the item row reflects which client created it, and who.
@@ -1061,6 +1064,10 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		// allowing after this handler validated them.
 		if v, ok := store.AsValidationError(err); ok {
 			return nil, &itemCreateError{status: http.StatusBadRequest, code: "validation_error", message: v.Reason}
+		}
+		// BUG-3812: a concurrent writer stored the value after the check above.
+		if held, ok := store.AsUniqueFieldHeldError(err); ok {
+			return nil, &itemCreateError{status: http.StatusConflict, code: "conflict", message: held.Error()}
 		}
 		var badTitle *store.InvalidItemTitleError
 		if errors.As(err, &badTitle) {
@@ -1358,6 +1365,18 @@ func writeItemRenameCascadeTooLarge(w http.ResponseWriter, err error) bool {
 // The Reason is taken from the TYPED field, never by splicing err.Error(): the
 // call path wraps this error on the way up and those wrappers must not be
 // published to the client.
+// writeUniqueFieldHeld answers a write the store refused under its lock
+// because a concurrent writer stored the unique_scope value first (BUG-3812):
+// the same 409 and sentence as the check before the write.
+func writeUniqueFieldHeld(w http.ResponseWriter, err error) bool {
+	held, ok := store.AsUniqueFieldHeldError(err)
+	if !ok {
+		return false
+	}
+	writeError(w, http.StatusConflict, "conflict", held.Error())
+	return true
+}
+
 func writeInvalidItemTitle(w http.ResponseWriter, err error) bool {
 	var bad *store.InvalidItemTitleError
 	if !errors.As(err, &bad) {
@@ -1851,6 +1870,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			writeError(w, http.StatusConflict, "conflict", err.Error())
 			return
 		}
+		// BUG-3812: checked again inside the write, under its lock.
+		input.UniqueCheck = &models.UniqueCheck{Schema: schema.Fields, Fields: fieldMap}
 
 		// Auto-populate date fields on status changes
 		autoPopulateDates(fieldMap, item.Fields, schema)
@@ -2060,6 +2081,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			writeError(w, http.StatusConflict, "conflict", err.Error())
 			return
 		}
+		// BUG-3812: checked again inside the write, under its lock.
+		input.UniqueCheck = &models.UniqueCheck{Schema: schema.Fields, Fields: patchMap}
 
 		// Auto-populate start_date/end_date on a status change — but ONLY when
 		// the item's CURRENT stored value for that date is empty. A partial
@@ -2495,6 +2518,9 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 				writeError(w, http.StatusBadRequest, "validation_error", v.Reason)
 				return
 			}
+			if writeUniqueFieldHeld(w, err) {
+				return
+			}
 			// BUG-2804 / codex R2: without this the cascade refusal reaches the
 			// client as a 500 from this path only, while the plain path answers
 			// 413 for the identical store error.
@@ -2670,6 +2696,9 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// handler validated them.
 		if v, ok := store.AsValidationError(err); ok {
 			writeError(w, http.StatusBadRequest, "validation_error", v.Reason)
+			return
+		}
+		if writeUniqueFieldHeld(w, err) {
 			return
 		}
 		// BUG-2804: the item rename cascade refuses renames that would process

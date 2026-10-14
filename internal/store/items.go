@@ -601,6 +601,12 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 		}
 	}
 
+	// BUG-3812: the unique_scope check, under the same lock, so a concurrent
+	// create of the same value is either committed and seen or not yet inserted.
+	if err := s.checkUniqueTx(tx, collectionID, "", input.UniqueCheck); err != nil {
+		return nil, err
+	}
+
 	// The plan limit is decided here, under the lock every item insert in this
 	// workspace takes, so a concurrent create's row is either committed and
 	// counted or not yet inserted (BUG-2808). The cross-workspace copy counts under
@@ -2909,6 +2915,11 @@ func (s *Store) updateItemWithParentLinkOnce(
 		if err := precheck(tx, existing); err != nil {
 			return nil, err
 		}
+	}
+	// BUG-3812: the unique_scope check, under the lock above, which every
+	// writer of this workspace's items takes.
+	if err := s.checkUniqueTx(tx, existing.CollectionID, existing.ID, input.UniqueCheck); err != nil {
+		return nil, err
 	}
 
 	// Field-level merge (IDEA-1480): fold the caller's field patch onto the
