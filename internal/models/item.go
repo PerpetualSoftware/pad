@@ -1405,7 +1405,8 @@ type ItemUpdate struct {
 	ActorUserID string `json:"-"`
 	// MarkRestoreBoundary stamps items.last_restore_seq with this update's newly
 	// assigned seq, INSIDE the same transaction as the content write + op-log
-	// prune (BUG-2264). Set only by version RESTORE. That durable per-item
+	// prune (BUG-2264). Set by version RESTORE and, since BUG-3746, by every
+	// prune-and-replace content write (fenceSeedsBefore). That durable per-item
 	// boundary is what Join reads to force_refresh a client whose ?content_seq
 	// seed predates the restore — surviving a server restart, unlike the
 	// in-memory fast-path. Internal-only (`json:"-"`); no HTTP client can set it.

@@ -153,10 +153,11 @@ func (s *Server) routeContentUpdate(
 		func() error {
 			return s.collab.PruneAndApply(item.ID, func() error {
 				precheck := composePruneWithPrecheck(s, item.ID, openChildrenPrecheck, pruned)
-				u, uerr := s.store.UpdateItemWithParentLink(item.ID, *input, precheck, parentLink)
+				u, uerr := s.store.UpdateItemWithParentLink(item.ID, fenceSeedsBefore(*input), precheck, parentLink)
 				if uerr != nil {
 					return uerr
 				}
+				s.noteSeedBoundary(item.ID, u)
 				updated = u
 				return nil
 			})
@@ -374,6 +375,28 @@ func classifyApplyOutcome(err error) string {
 		return contentOutcomeNotApplied
 	default:
 		return contentOutcomeUnknown
+	}
+}
+
+// fenceSeedsBefore marks a prune-and-replace content write as a seed boundary
+// (BUG-3746). The write prunes the op-log and replaces items.content, so a tab
+// that fetched the old body and has not joined yet would, on a since=0 join,
+// seed that old body into the now-empty document and flush it over the new
+// one. A restore had the same hole and closed it with last_restore_seq
+// (BUG-2264); every prune-and-replace now stamps it too, so Join
+// force-refreshes a client whose ?content_seq predates the write.
+func fenceSeedsBefore(input models.ItemUpdate) models.ItemUpdate {
+	input.MarkRestoreBoundary = true
+	return input
+}
+
+// noteSeedBoundary records the write's seq in the collab manager's in-memory
+// fence, which Join reads before the durable column. Called inside
+// PruneAndApply, under the item lock Join also takes, so no join lands between
+// the commit and this. Monotonic: an older seq never lowers it.
+func (s *Server) noteSeedBoundary(itemID string, updated *models.Item) {
+	if updated != nil {
+		s.collab.SetLastRestoreSeq(itemID, updated.Seq)
 	}
 }
 

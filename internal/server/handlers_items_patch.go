@@ -319,10 +319,11 @@ func (s *Server) patchRoute(
 		func() error {
 			return s.collab.PruneAndApply(item.ID, func() error {
 				pc := composePruneWithPrecheck(s, item.ID, precheck, pruned)
-				u, uerr := s.store.UpdateItemWithParentLink(item.ID, *input, pc, parentLink)
+				u, uerr := s.store.UpdateItemWithParentLink(item.ID, fenceSeedsBefore(*input), pc, parentLink)
 				if uerr != nil {
 					return uerr
 				}
+				s.noteSeedBoundary(item.ID, u)
 				updated = u
 				return nil
 			})
