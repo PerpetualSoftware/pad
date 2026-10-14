@@ -22,8 +22,9 @@ import (
 // unique-local (fc00::/7), link-local (169.254.0.0/16, which holds the
 // AWS/GCP/Azure metadata address 169.254.169.254, and fe80::/10), multicast
 // (224.0.0.0/4, ff00::/8) and the unspecified address; reservedRanges adds
-// the rest. An IPv4-mapped IPv6 address (::ffff:a.b.c.d) is judged as its
-// IPv4 address, since net.IPNet.Contains and the predicates unwrap it.
+// the rest, and platformAddresses the cloud platform endpoints that sit on
+// public addresses. An IPv4-mapped IPv6 address (::ffff:a.b.c.d) is judged as
+// its IPv4 address, since net.IPNet.Contains and the predicates unwrap it.
 func Blocked(ip net.IP) bool {
 	// Anything that is not a well-formed 4- or 16-byte address is refused:
 	// the predicates below answer false for a malformed slice, which would
@@ -56,8 +57,28 @@ func Blocked(ip net.IP) bool {
 			return true
 		}
 	}
+	for _, cidr := range platformAddresses {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
 	return false
 }
+
+// platformAddresses are cloud platform endpoints a VM can reach without
+// credentials whose addresses lie in public address space, so no range above
+// covers them (BUG-3660). They are not reachable from the internet; the
+// platform answers them inside its own network fabric. Every other provider metadata endpoint we know of
+// is already blocked by a range: 169.254.0.0/16 holds the AWS, GCP, Azure,
+// Oracle, DigitalOcean, Hetzner, OpenStack and Huawei IMDS, AWS ECS and EKS
+// credentials (169.254.170.2, .23), Tencent (169.254.0.23) and Scaleway
+// (169.254.42.42); fc00::/7 holds their IPv6 forms (fd00:ec2::254,
+// fd20:ce::254, fd00:c1::a9fe:a9fe, fd00:42::42); CGNAT holds Alibaba
+// (100.100.100.200); 192.0.0.0/24 holds Oracle Classic (192.0.0.192).
+// TestBlocked_CloudMetadataCensus pins that table.
+var platformAddresses = mustParseCIDRs(
+	"168.63.129.16/32", // Azure WireServer: VM agent goal state, extensions config, DNS, health probes
+)
 
 // reservedRanges are blocks not routable on the public internet, or that
 // carry an IPv4 address inside an IPv6 one (and so can reach any IPv4 range
