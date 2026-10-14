@@ -293,6 +293,12 @@ type Store struct {
 	// goroutine, since the calling transaction holds the lock that write needs.
 	afterRemapScan func(workspaceID string)
 
+	// beforeMoveLock is a TEST-ONLY seam, nil in production. A move calls it
+	// after its pre-lock read of the item and before it takes the workspace
+	// lock: the window in which another writer can move the item first
+	// (BUG-3665). No lock is held, so the hook may write directly.
+	beforeMoveLock func(itemID string)
+
 	// stopMaint signals the background WAL checkpointer to exit; maintDone
 	// is closed once it has. Both are nil on the Postgres path (no WAL
 	// file to checkpoint) and Close() guards on nil accordingly.

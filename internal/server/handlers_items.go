@@ -3438,7 +3438,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// JSON contract. Same semantics as `pad item update --force`.
 	moveForce := r.URL.Query().Get("force") == "true"
 
-	var movePrecheck func(tx *sql.Tx, existing *models.Item) error
+	var guardPrecheck func(tx *sql.Tx, existing *models.Item) error
 	if !moveForce {
 		var destSettings models.CollectionSettings
 		if targetColl.Settings != "" {
@@ -3465,7 +3465,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 			guestFullCollIDs:     guestFull,
 			guestGrantedItemIDs:  guestGranted,
 		}
-		movePrecheck = func(tx *sql.Tx, existing *models.Item) error {
+		guardPrecheck = func(tx *sql.Tx, existing *models.Item) error {
 			txCtx := mgctx
 			txCtx.currentFieldsJS = existing.Fields
 			details, derr := s.runOpenChildrenGuard(tx, txCtx)
@@ -3479,10 +3479,66 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The payload above was built from reads taken before the move takes its
+	// lock (BUG-3665). Every input to it is re-read under the lock, and a move
+	// whose inputs changed answers 409; the caller re-reads and moves again.
+	// Every move checks this, a forced one included (force skips only the
+	// open-children guard). The inputs, and where each is checked:
+	//   - the item's collection and fields: here (codex r1);
+	//   - the source collection's schema and settings, which the migration
+	//     and the close-state check read: here (codex r2);
+	//   - the target collection's schema and settings, likewise: here (the
+	//     store also re-validates the fields against the target schema under
+	//     the lock, BUG-3407);
+	//   - the target's unique-field holders: re-queried here on the lock's
+	//     transaction.
+	// Without it a write landing in between was overwritten by fields
+	// migrated from the older body, and the move's history and events
+	// described that older body.
+	sameCollection := func(tx *sql.Tx, read *models.Collection) error {
+		cur, err := s.store.GetCollectionQ(tx, read.ID)
+		if err != nil {
+			return err
+		}
+		if cur == nil || cur.Schema != read.Schema || cur.Settings != read.Settings {
+			return errItemChangedDuringMove
+		}
+		return nil
+	}
+	movePrecheck := func(tx *sql.Tx, existing *models.Item) error {
+		if existing.CollectionID != item.CollectionID || existing.Fields != item.Fields {
+			return errItemChangedDuringMove
+		}
+		if err := sameCollection(tx, sourceColl); err != nil {
+			return err
+		}
+		if err := sameCollection(tx, targetColl); err != nil {
+			return err
+		}
+		if conflicts, err := s.store.UniqueFieldConflictsQ(tx, targetColl.ID, item.ID, targetSchema.Fields, result.Fields); err != nil {
+			return err
+		} else if len(conflicts) > 0 {
+			return &moveUniqueConflictError{msg: store.UniqueFieldConflictsMessage(conflicts)}
+		}
+		if guardPrecheck != nil {
+			return guardPrecheck(tx, existing)
+		}
+		return nil
+	}
+
 	// Move the item
 	// BUG-3407: the target schema the moved fields were validated against.
 	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), movePrecheck, store.WithValidatedSchema(targetColl.Schema))
 	if err != nil {
+		if errors.Is(err, errItemChangedDuringMove) {
+			writeError(w, http.StatusConflict, "conflict", "The item or its collections changed while it was being moved; reload it and move it again")
+			return
+		}
+		var uc *moveUniqueConflictError
+		if errors.As(err, &uc) {
+			writeError(w, http.StatusConflict, "conflict", uc.msg)
+			return
+		}
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
 			return
@@ -4680,3 +4736,14 @@ func (s *Server) requireRawParentInWorkspace(w http.ResponseWriter, workspaceID 
 	}
 	return true
 }
+
+// errItemChangedDuringMove is a move's precheck finding the item, or a
+// collection its payload was built from, changed between the reads the
+// payload was built from and the move's lock (BUG-3665).
+var errItemChangedDuringMove = errors.New("item changed during move")
+
+// moveUniqueConflictError is the under-lock re-check of the target's unique
+// fields finding a holder that appeared after the handler's own check.
+type moveUniqueConflictError struct{ msg string }
+
+func (e *moveUniqueConflictError) Error() string { return e.msg }
