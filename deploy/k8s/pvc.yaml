@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pad-data
+  namespace: pad
+  labels:
+    app: pad
+spec:
+  # /data holds every attachment's bytes, in PostgreSQL mode too: the
+  # database stores only their metadata (BUG-3714). An emptyDir there loses
+  # them all whenever the pod is replaced. ReadWriteOnce is enough for the
+  # single replica, and the Recreate strategy releases the volume before the
+  # new pod mounts it. Size it for your attachments; storageClassName unset
+  # takes the cluster default.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
