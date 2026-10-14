@@ -2202,15 +2202,20 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	// PG FTSRank embeds the same OR-combined plainto_tsquery as FTSMatch
 	// and consumes TWO args (raw + hyphen-sanitized) — BUG-842.
 	if s.dialect.Driver() == DriverPostgres {
-		query += " ORDER BY " + ftsRank + " DESC"
+		query += " ORDER BY " + ftsRank + " DESC, i.id"
 		args = append(args, params.Search, sanitizePGFTSQuery(params.Search))
 	} else {
-		query += " ORDER BY " + ftsRank
+		query += " ORDER BY " + ftsRank + ", i.id"
 	}
 
 	if params.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, params.Limit)
+		// Paged like ListItems (BUG-3704); the offset used to be dropped here.
+		if params.Offset > 0 {
+			query += " OFFSET ?"
+			args = append(args, params.Offset)
+		}
 	}
 
 	rows, err := s.db.Query(s.q(query), args...)
@@ -5913,9 +5918,12 @@ func (s *Store) moveItemWithPreCheckOnce(
 // validSortField matches safe field names (alphanumeric + underscore, starting with a letter).
 var validSortField = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
 
+// buildItemSort always ends on i.id (BUG-3704): rows that tie on every sort
+// key otherwise come back in an unspecified order, and an offset page could
+// then repeat one row and skip another.
 func buildItemSort(sort string, dialect Dialect) string {
 	if sort == "" {
-		return " ORDER BY i.pinned DESC, i.updated_at DESC"
+		return " ORDER BY i.pinned DESC, i.updated_at DESC, i.id"
 	}
 
 	var parts []string
@@ -5956,7 +5964,16 @@ func buildItemSort(sort string, dialect Dialect) string {
 	}
 
 	if len(parts) == 0 {
-		return " ORDER BY i.pinned DESC, i.updated_at DESC"
+		return " ORDER BY i.pinned DESC, i.updated_at DESC, i.id"
+	}
+	hasID := false
+	for _, p := range parts {
+		if strings.HasPrefix(p, "i.id ") {
+			hasID = true
+		}
+	}
+	if !hasID {
+		parts = append(parts, "i.id")
 	}
 	return " ORDER BY " + strings.Join(parts, ", ")
 }

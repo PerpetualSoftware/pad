@@ -116,7 +116,7 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := s.store.ListItems(workspaceID, params)
+	result, err := s.listItemsPage(w, workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -690,7 +690,7 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 		w.Header().Set(undeclaredFilterKeysHeader, strings.Join(undeclared, ","))
 	}
 
-	result, err := s.store.ListItems(workspaceID, params)
+	result, err := s.listItemsPage(w, workspaceID, params)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -4365,17 +4365,18 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 			params.Limit = l
 		}
 	}
-	// Hard-max backstop (TASK-2000): clamp an explicit oversized limit so a
-	// raw `?limit=999999` against this endpoint can't materialize the whole
-	// workspace. No default is applied here — a zero/absent limit stays
-	// unbounded so the many internal callers of store.ListItems (dashboard,
-	// bootstrap, playbooks, …) that intentionally fetch every row are
-	// untouched. The CLI applies its own default before it ever reaches here.
-	if params.Limit > maxItemListQueryLimit {
+	// Every HTTP item list is bounded (BUG-3704). A missing, zero, negative or
+	// invalid limit takes the MAXIMUM, not a smaller default: a client that
+	// does not read the has-more headers then loses rows only on lists past
+	// it, never on an ordinary one (lead ruling). An explicit limit above it
+	// is clamped (TASK-2000). This parser is the HTTP boundary only; internal
+	// callers of store.ListItems (dashboard, bootstrap, playbooks, ...) do not
+	// come through it and stay unbounded.
+	if params.Limit <= 0 || params.Limit > maxItemListQueryLimit {
 		params.Limit = maxItemListQueryLimit
 	}
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
-		if o, err := strconv.Atoi(offsetStr); err == nil {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o > 0 {
 			params.Offset = o
 		}
 	}
@@ -4533,6 +4534,35 @@ func (s *Server) checkListFilterKeys(workspaceID string, params models.ItemListP
 		undeclared = append(undeclared, k)
 	}
 	return undeclared, nil
+}
+
+// Paging headers on the item lists (BUG-3704). The body stays a bare array,
+// so the paging state rides in headers: has-more is "true" or "false" on
+// every response, and next-offset is set only when there is more.
+const (
+	itemListHasMoreHeader    = "X-Pad-Has-More"
+	itemListNextOffsetHeader = "X-Pad-Next-Offset"
+)
+
+// listItemsPage runs the list one row past params.Limit (always set, by
+// parseItemListParams) to learn whether more exist, trims that row, and sets
+// the paging headers. The handlers filter nothing after the store call, so
+// the extra row is exact.
+func (s *Server) listItemsPage(w http.ResponseWriter, workspaceID string, params models.ItemListParams) ([]models.Item, error) {
+	limit := params.Limit
+	params.Limit = limit + 1
+	items, err := s.store.ListItems(workspaceID, params)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) > limit {
+		items = items[:limit]
+		w.Header().Set(itemListHasMoreHeader, "true")
+		w.Header().Set(itemListNextOffsetHeader, strconv.Itoa(params.Offset+limit))
+	} else {
+		w.Header().Set(itemListHasMoreHeader, "false")
+	}
+	return items, nil
 }
 
 // maxListFilterKeys bounds the field filters (field filters and any-of
