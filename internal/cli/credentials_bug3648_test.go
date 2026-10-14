@@ -585,25 +585,105 @@ func TestBUG3649_ReadOnlyPadDirWritesUnlockedWithAWarning(t *testing.T) {
 	}
 }
 
-// Which lock errors fall back to unlocked: only "may not create or open the
-// lock file". Anything else is returned.
-func TestBUG3649_LockRefusedMapping(t *testing.T) {
-	path := func(errno syscall.Errno) error { return &fs.PathError{Op: "open", Path: "x", Err: errno} }
-	cases := []struct {
-		err  error
-		want bool
-	}{
-		{path(syscall.EACCES), true},
-		{path(syscall.EPERM), true},
-		{path(syscall.EROFS), true},
-		{path(syscall.ENOENT), false},
-		{path(syscall.EINTR), false},
-		{path(syscall.EIO), false},
-		{fmt.Errorf("boom"), false},
+// swapLock replaces the lock with fn for the test and captures the warning.
+func swapLock(t *testing.T, fn func(lockPath string, exclusive bool) (func(), error)) *strings.Builder {
+	t.Helper()
+	origLock, origWarn := lockCredentials, credentialsLockWarning
+	var warn strings.Builder
+	lockCredentials, credentialsLockWarning = fn, &warn
+	t.Cleanup(func() { lockCredentials, credentialsLockWarning = origLock, origWarn })
+	return &warn
+}
+
+// A filesystem without flock (NFS without lockd answers ENOLCK) served reads
+// and writes before the lock existed, so it still does: the lock is never the
+// reason a working command fails (BUG-3649 ruling).
+func TestBUG3649_UnsupportedLockFallsBackUnlocked(t *testing.T) {
+	home := withTempHome(t)
+	writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)
+	warn := swapLock(t, func(string, bool) (func(), error) {
+		return nil, &fs.PathError{Op: "flock", Path: "x", Err: syscall.ENOLCK}
+	})
+	store, err := LoadStore()
+	if err != nil {
+		t.Fatalf("LoadStore with an unsupported lock: %v", err)
 	}
-	for _, c := range cases {
-		if got := lockRefused(c.err); got != c.want {
-			t.Errorf("lockRefused(%v) = %v, want %v", c.err, got, c.want)
+	if c := store.Get("http://x:7777"); c == nil || c.Token != "t" {
+		t.Errorf("LoadStore read %+v, want the token", c)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("a read warned: %q", warn.String())
+	}
+	if err := UpdateStore(func(s *CredentialStore) error {
+		s.Set("http://y:7777", &Credentials{Token: "fresh"})
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateStore with an unsupported lock: %v", err)
+	}
+	if !strings.Contains(warn.String(), "without it") {
+		t.Errorf("an unlocked write did not warn; stderr got %q", warn.String())
+	}
+	store, _ = LoadStore()
+	if c := store.Get("http://y:7777"); c == nil || c.Token != "fresh" {
+		t.Errorf("the unlocked save did not land: %+v", c)
+	}
+}
+
+// EINTR is retried before the lock is given up on.
+func TestBUG3649_InterruptedLockIsRetried(t *testing.T) {
+	home := withTempHome(t)
+	writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
+	calls, taken := 0, false
+	warn := swapLock(t, func(string, bool) (func(), error) {
+		calls++
+		if calls <= 2 {
+			return nil, syscall.EINTR
 		}
+		taken = true
+		return func() {}, nil
+	})
+	if err := UpdateStore(func(s *CredentialStore) error { return nil }); err != nil {
+		t.Fatalf("UpdateStore: %v", err)
+	}
+	if !taken || warn.Len() != 0 {
+		t.Errorf("after two EINTRs the lock was not retried to success (calls %d, warning %q)", calls, warn.String())
+	}
+}
+
+// A read with no ~/.pad answers "no credentials" without creating it, and a
+// read whose ~/.pad appears between the first lock attempt and the check
+// takes the lock rather than reading a file a save may be truncating.
+func TestBUG3649_ReadRacingTheFirstSaveTakesTheLock(t *testing.T) {
+	home := withTempHome(t)
+	padDir := filepath.Join(home, ".pad")
+	store, err := LoadStore()
+	if err != nil || len(store.Credentials) != 0 {
+		t.Fatalf("LoadStore with no ~/.pad = %+v, %v; want an empty store", store, err)
+	}
+	if _, err := os.Stat(padDir); !os.IsNotExist(err) {
+		t.Fatalf("a read created ~/.pad (stat err %v)", err)
+	}
+
+	realLock := lockCredentials
+	calls, lockedRead := 0, false
+	swapLock(t, func(lockPath string, exclusive bool) (func(), error) {
+		calls++
+		if calls == 1 { // a save creates ~/.pad just after this attempt
+			if err := os.MkdirAll(padDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(padDir, "credentials.json"), []byte(`{"version": 2, "credentials": {}}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			return nil, &fs.PathError{Op: "open", Path: lockPath, Err: syscall.ENOENT}
+		}
+		lockedRead = !exclusive
+		return realLock(lockPath, exclusive)
+	})
+	if _, err := LoadStore(); err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if !lockedRead {
+		t.Errorf("the read did not take the lock once ~/.pad appeared (lock calls %d)", calls)
 	}
 }

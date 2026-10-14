@@ -108,6 +108,9 @@ func LoadStore() (*CredentialStore, error) {
 		store, err = loadStoreLocked(path)
 		return err
 	})
+	if errors.Is(err, errNoCredentialsDir) {
+		return newEmptyStore(), nil
+	}
 	return store, err
 }
 
@@ -290,12 +293,14 @@ var credentialsLockWarning io.Writer = os.Stderr
 // withCredentialsLock runs fn with the path of credentials.json while
 // holding credentials.json.lock: exclusive for a write, shared for a read.
 //
-// A lock file this user may not create or open (a read-only or foreign-owned
-// ~/.pad, or a lock file a sudo run left behind) is EACCES, EPERM or EROFS,
-// and then fn runs unlocked, as every read and write did before BUG-3649;
-// a write says so on stderr, a read stays quiet because every pad command
-// reads. Any other lock error is returned. A read whose directory does not
-// exist has nothing to read and runs unlocked rather than creating it.
+// The lock sits on top of what os.WriteFile and os.ReadFile did and is never
+// the reason a working command fails (BUG-3649 ruling): when it cannot be
+// taken for any reason (a read-only or foreign-owned ~/.pad, a lock file a
+// sudo run left behind, a filesystem without flock such as NFS without
+// lockd), fn runs unlocked, as before. A write says so on stderr; a read
+// stays quiet, because every pad command reads. EINTR is retried first. A
+// read whose directory does not exist has nothing to read and returns
+// errNoCredentialsDir rather than creating it.
 func withCredentialsLock(exclusive bool, fn func(path string) error) error {
 	path, err := credentialsPath()
 	if err != nil {
@@ -306,26 +311,46 @@ func withCredentialsLock(exclusive bool, fn func(path string) error) error {
 			return fmt.Errorf("create credentials directory: %w", err)
 		}
 	}
-	unlock, err := lockCredentialsFile(path+".lock", exclusive)
-	switch {
-	case err == nil:
-		defer unlock()
-	case !exclusive && errors.Is(err, fs.ErrNotExist):
-	case lockRefused(err):
+	unlock, err := lockCredentialsRetrying(path+".lock", exclusive)
+	if !exclusive && errors.Is(err, fs.ErrNotExist) {
+		// No ~/.pad when the lock was opened. If it is still absent there is
+		// nothing to read, and the read is decided here, without opening a
+		// file a save may since have created. If a save created it in between,
+		// its lock exists now (Save creates the lock before the file), so take
+		// it rather than read a file that save may be truncating (Codex, 3a
+		// round on option B).
+		if _, serr := os.Stat(filepath.Dir(path)); errors.Is(serr, fs.ErrNotExist) {
+			return errNoCredentialsDir
+		}
+		unlock, err = lockCredentialsRetrying(path+".lock", exclusive)
+	}
+	if err != nil {
 		if exclusive {
 			fmt.Fprintf(credentialsLockWarning, "warning: could not lock %s (%v); saving credentials without it\n", path+".lock", err)
 		}
-	default:
-		return fmt.Errorf("lock credentials: %w", err)
+		return fn(path)
 	}
+	defer unlock()
 	return fn(path)
 }
 
-// lockRefused reports whether a lock error means this user may not create or
-// open the lock file, rather than that locking itself failed.
-func lockRefused(err error) bool {
-	return errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS)
+// lockCredentials is lockCredentialsFile, swappable so a test can make the
+// lock fail the way a filesystem without flock does.
+var lockCredentials = lockCredentialsFile
+
+// lockCredentialsRetrying takes the lock, retrying an interrupted call
+// (EINTR) a few times before giving up on it.
+func lockCredentialsRetrying(lockPath string, exclusive bool) (func(), error) {
+	unlock, err := lockCredentials(lockPath, exclusive)
+	for i := 0; i < 4 && errors.Is(err, syscall.EINTR); i++ {
+		unlock, err = lockCredentials(lockPath, exclusive)
+	}
+	return unlock, err
 }
+
+// errNoCredentialsDir is a read's answer when ~/.pad does not exist: no
+// credentials, decided without touching the file.
+var errNoCredentialsDir = errors.New("no credentials directory")
 
 // UpdateStore is the load-modify-save for credentials.json, under the
 // exclusive credentials lock (BUG-3649): two `pad auth login` runs for
