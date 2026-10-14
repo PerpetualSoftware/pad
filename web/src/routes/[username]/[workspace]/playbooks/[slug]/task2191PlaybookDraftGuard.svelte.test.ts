@@ -57,7 +57,7 @@ vi.mock('$lib/api/client', () => ({
 	api: {
 		items: {
 			get: vi.fn(async () => PLAYBOOK),
-			listByCollection: vi.fn(async () => []),
+			listAllByCollection: vi.fn(async () => []),
 			update: vi.fn(async (_ws: string, _slug: string, payload: Record<string, unknown>) => {
 				updates.push(payload);
 				return { ...PLAYBOOK, title: payload.title, seq: PLAYBOOK.seq + updates.length };

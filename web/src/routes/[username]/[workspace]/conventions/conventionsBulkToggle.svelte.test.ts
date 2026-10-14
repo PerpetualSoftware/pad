@@ -28,7 +28,7 @@ const conv = (n: number) => ({
 vi.mock('$lib/api/client', () => ({
 	api: {
 		items: {
-			listByCollection: vi.fn(async () => [conv(1), conv(2), conv(3)]),
+			listAllByCollection: vi.fn(async () => [conv(1), conv(2), conv(3)]),
 			update: vi.fn(async (_ws: string, slug: string) => {
 				writes.push({ slug, at: Date.now() });
 				if (holdNext.has(slug)) {
