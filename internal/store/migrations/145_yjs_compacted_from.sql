@@ -1,4 +1,4 @@
--- Migration 143: the LOWEST op-log id a compaction snapshot covers (BUG-3747).
+-- Migration 145: the LOWEST op-log id a compaction snapshot covers (BUG-3747).
 --
 -- yjs_compacted_through (migration 134) bounds a covered resume cursor from
 -- above only. After a path deletes the op-log (a direct write, a restore, a

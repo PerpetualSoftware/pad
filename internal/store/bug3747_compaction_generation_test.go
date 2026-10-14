@@ -131,7 +131,7 @@ func TestBUG3747_ARecompactionKeepsItsGenerationsCursors(t *testing.T) {
 	}
 }
 
-// An item compacted before migration 143 has a snapshot but no floor. Nothing
+// An item compacted before migration 145 has a snapshot but no floor. Nothing
 // says which generation its cursors came from, so none is covered: those tabs
 // refresh once, the safe answer.
 func TestBUG3747_ASnapshotWithoutAFloorCoversNothing(t *testing.T) {
