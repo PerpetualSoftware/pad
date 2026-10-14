@@ -155,6 +155,12 @@
 	// that a `Set`-only filter let `updated_at DESC` order override the
 	// ranking.
 	let searchResultRank = $state<Map<string, number> | null>(null);
+	// The most matches one body search walks (BUG-3710), matching the
+	// server's list max (#2143). Never silent: a walk that stops here with
+	// more matches left sets `bodySearchCapped`, and the page says so,
+	// because a filter can then hide a match past the cap (Heron's ruling).
+	const BODY_SEARCH_MAX = 1000;
+	let bodySearchCapped = $state(false);
 	let searchTimeout: ReturnType<typeof setTimeout>;
 
 	/**
@@ -973,6 +979,7 @@
 		// Typed input.
 		searchQuery = '';
 		searchResultRank = null;
+		bodySearchCapped = false;
 		quickCreateTitle = '';
 		saveViewName = '';
 		draftText = {};
@@ -2097,6 +2104,7 @@
 		const snapshotColl = collSlug;
 
 		clearTimeout(searchTimeout);
+		bodySearchCapped = false;
 		if (!trimmed) {
 			searchResultRank = null; // null = no search active
 			return;
@@ -2126,6 +2134,11 @@
 			searchResultRank = null;
 			const snapshotQuery = trimmed;
 			const snapshotArchived = archivedInView;
+			// The server's /search page size. The walk stops at BODY_SEARCH_MAX,
+			// so a body search with more matches than that can still hide one
+			// the filters would keep: that is the bound, and the page shows a
+			// notice when it bites. The local path has none.
+			const BODY_SEARCH_PAGE = 200;
 			// Fenced INSIDE the timer body, not at the effect: 200ms separates
 			// the two, and a check at the effect says nothing about who is
 			// signed in when this fires (BUG-3084).
@@ -2149,36 +2162,52 @@
 			const epochAtSchedule = untrack(() => captureIdentity());
 			searchTimeout = setTimeout(async () => {
 				if (!identityHeld(epochAtSchedule)) return;
+				// Stale-response guard: drop the result if the user
+				// navigated away or changed the query while a page was
+				// in flight, or a newer run of this effect armed its own
+				// timer (same query, so the snapshots alone cannot tell;
+				// a multi-page walk is long enough to be overtaken).
+				const myTimer = searchTimeout;
+				const moved = () =>
+					searchTimeout !== myTimer ||
+					searchQuery.trim() !== snapshotQuery ||
+					wsSlug !== snapshotWs ||
+					collSlug !== snapshotColl ||
+					(showArchived || parsedSearch.archived) !== snapshotArchived;
 				try {
-					const resp = await api.search(bodyQuery, {
-						workspace: snapshotWs,
-						collection: snapshotColl,
-						limit: 200,
-						includeArchived: snapshotArchived,
-					});
-					// Stale-response guard: drop the result if the user
-					// navigated away or changed the query while the
-					// request was in flight.
-					if (
-						searchQuery.trim() !== snapshotQuery ||
-						wsSlug !== snapshotWs ||
-						collSlug !== snapshotColl ||
-						(showArchived || parsedSearch.archived) !== snapshotArchived
-					) {
-						return;
+					// Every match, page by page, not the first 200 (BUG-3710):
+					// the active filters apply in `filteredItems`, AFTER this
+					// rank map, so a capped map hid a match that sat past the
+					// cap behind ones the filters then removed. The server
+					// pages at 200; BODY_SEARCH_MAX bounds the walk.
+					const ranked: string[] = [];
+					let capped = false;
+					for (;;) {
+						const resp = await api.search(bodyQuery, {
+							workspace: snapshotWs,
+							collection: snapshotColl,
+							limit: BODY_SEARCH_PAGE,
+							offset: ranked.length,
+							includeArchived: snapshotArchived,
+						});
+						if (moved() || !identityHeld(epochAtSchedule)) return;
+						const page = resp.results ?? [];
+						for (const r of page) ranked.push(r.item.id);
+						// Stopped by the max with more matches left: a full last
+						// page, and no total saying this was all of them.
+						if (ranked.length >= BODY_SEARCH_MAX && page.length >= BODY_SEARCH_PAGE && ranked.length < (resp.total ?? Infinity)) {
+							capped = true;
+							break;
+						}
+						if (page.length < BODY_SEARCH_PAGE || ranked.length >= (resp.total ?? 0) || ranked.length >= BODY_SEARCH_MAX) break;
 					}
-					if (!identityHeld(epochAtSchedule)) return;
-					searchResultRank = new Map(
-						resp.results.map((r, i) => [r.item.id, i]),
-					);
+					searchResultRank = new Map(ranked.map((id, i) => [id, i]));
+					bodySearchCapped = capped;
 				} catch {
-					if (
-						identityHeld(epochAtSchedule) &&
-						searchQuery.trim() === snapshotQuery &&
-						wsSlug === snapshotWs &&
-						collSlug === snapshotColl &&
-						(showArchived || parsedSearch.archived) === snapshotArchived
-					) {
+					// The same fence as the success arm, including the timer:
+					// an overtaken walk whose page fails must not clear the
+					// newer run's results (BUG-3710, codex r2).
+					if (identityHeld(epochAtSchedule) && !moved()) {
 						searchResultRank = null;
 					}
 				}
@@ -2200,10 +2229,14 @@
 		// the `coll:` / `is:archived` / `#N` / ref vocabulary works
 		// uniformly across consumers (collection page + CommandPalette,
 		// TASK-1367).
+		// No cap (BUG-3710): the active filters apply in `filteredItems`,
+		// AFTER this rank map, so a capped map hid every match past the cap,
+		// including ones the filters would keep. MiniSearch already returns
+		// every match; the limit only truncated them.
 		const hits = localSearch.search(snapshotWs, trimmed, {
 			collection: snapshotColl,
 			includeArchived: archivedInView,
-			limit: 200,
+			limit: Infinity,
 		});
 		searchResultRank = new Map(hits.map((h, i) => [h.id, i]));
 	});
@@ -4390,6 +4423,12 @@
 				</div>
 			{/if}
 
+			{#if bodySearchCapped && searchResultRank !== null}
+				<p class="search-cap-notice" role="status">
+					Showing the first {BODY_SEARCH_MAX} matches; refine your search.
+				</p>
+			{/if}
+
 			<!-- Saved views live in the View menu now (PLAN-2290 Phase 3);
 			     the tab bar is retired. TASK-1366's pin/default semantics
 			     carry over unchanged. -->
@@ -5211,6 +5250,12 @@
 		height: 6px;
 		border-radius: 50%;
 		background: var(--accent-primary, var(--accent-blue));
+	}
+
+	.search-cap-notice {
+		margin: 0 0 var(--space-2);
+		font-size: 0.8125rem;
+		color: var(--text-muted);
 	}
 
 	.filters-panel {
