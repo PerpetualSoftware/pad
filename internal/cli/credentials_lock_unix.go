@@ -7,10 +7,9 @@ import (
 	"syscall"
 )
 
-// lockCredentialsFile takes an exclusive advisory flock on lockPath, which
-// UpdateStore holds across a credentials load-modify-save (BUG-3649).
-// Readers do not take it: Save's atomic rename gives them a whole file.
-func lockCredentialsFile(lockPath string) (unlock func(), err error) {
+// lockCredentialsFile takes an advisory flock on lockPath (BUG-3649):
+// exclusive (LOCK_EX) for a write, shared (LOCK_SH) for a read.
+func lockCredentialsFile(lockPath string, exclusive bool) (unlock func(), err error) {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
@@ -21,10 +20,14 @@ func lockCredentialsFile(lockPath string) (unlock func(), err error) {
 	// with group or world write) refuses fchmod with EPERM, and the lock file
 	// holds no secret, so that must not turn a working login into a failure
 	// (bug-hunter pilot, lead ruling). A foreign-owned 0600 lock file, such
-	// as one a sudo run creates, fails at the open above instead, as a
-	// foreign-owned credentials.json always has; this does not change that.
+	// as one a sudo run creates, fails at the open above instead, and the
+	// caller then proceeds unlocked (withCredentialsLock).
 	_ = f.Chmod(0600)
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	how := syscall.LOCK_SH
+	if exclusive {
+		how = syscall.LOCK_EX
+	}
+	if err := syscall.Flock(int(f.Fd()), how); err != nil {
 		_ = f.Close()
 		return nil, err
 	}

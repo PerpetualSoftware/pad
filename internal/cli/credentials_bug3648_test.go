@@ -236,16 +236,17 @@ func TestBUG3648_LockFileIsTightenedWhenItExists(t *testing.T) {
 	}
 }
 
-// TestBUG3649_WipeWaitsForTheLock: a wipe racing UpdateStore could be
-// undone by the update's rename, so Wipe takes the same lock (Codex round
-// 1). Holding the lock must hold Wipe; releasing it must let Wipe finish.
+// TestBUG3649_WipeWaitsForTheLock: a wipe racing UpdateStore could land in
+// the middle of its load-modify-save, so Wipe takes the same lock (Codex
+// round 1). Holding the lock must hold Wipe; releasing it must let Wipe
+// finish.
 func TestBUG3649_WipeWaitsForTheLock(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		t.Skip("no cross-process credentials lock on this platform")
 	}
 	home := withTempHome(t)
 	path := writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)
-	unlock, err := lockCredentialsFile(path + ".lock")
+	unlock, err := lockCredentialsFile(path+".lock", true)
 	if err != nil {
 		t.Fatalf("lockCredentialsFile: %v", err)
 	}
@@ -400,103 +401,6 @@ func TestBUG3648_SaveTightensALooseSymlinkTarget(t *testing.T) {
 	assertLinkedSave(t, link, target)
 }
 
-// Row 6: a rename over a bind-mounted file fails EBUSY (measured in a
-// container, BUG-3649), where os.WriteFile's in-place write worked, so Save
-// falls back to writing in place.
-func TestBUG3648_SaveWritesInPlaceWhenTheRenameIsBusy(t *testing.T) {
-	home := withTempHome(t)
-	path := filepath.Join(home, ".pad", "credentials.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, longSeed, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0644); err != nil {
-		t.Fatal(err)
-	}
-	orig := osRename
-	osRename = func(oldpath, newpath string) error {
-		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EBUSY}
-	}
-	t.Cleanup(func() { osRename = orig })
-	saveFresh(t)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"fresh"`) || !json.Valid(data) {
-		t.Errorf("the busy target did not receive the save whole: %s", data)
-	}
-	if runtime.GOOS != "windows" {
-		fi, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := fi.Mode().Perm(); got != 0600 {
-			t.Errorf("mode = %o, want 600", got)
-		}
-	}
-}
-
-// Rows 6 and 8: which rename failures fall back to the in-place write.
-func TestBUG3649_RenameFailureWritesInPlaceMapping(t *testing.T) {
-	link := func(errno syscall.Errno) error {
-		return &os.LinkError{Op: "rename", Old: "a", New: "b", Err: errno}
-	}
-	cases := []struct {
-		name string
-		goos string
-		err  error
-		want bool
-	}{
-		{"windows access denied", "windows", link(5), true},
-		{"windows sharing violation", "windows", link(32), true},
-		{"windows file not found", "windows", link(2), false},
-		{"windows path not found", "windows", link(3), false},
-		{"windows non-errno error", "windows", fmt.Errorf("boom"), false},
-		{"linux EBUSY", "linux", link(syscall.EBUSY), true},
-		{"linux EIO (errno 5)", "linux", link(syscall.EIO), false},
-		{"linux EACCES", "linux", link(syscall.EACCES), false},
-		{"linux EXDEV", "linux", link(syscall.EXDEV), false},
-		{"darwin EBUSY", "darwin", link(syscall.EBUSY), true},
-		{"nil", "linux", nil, false},
-		{"nil windows", "windows", nil, false},
-	}
-	for _, c := range cases {
-		if got := renameFailureWritesInPlace(c.goos, c.err); got != c.want {
-			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
-// Row 8 through Save: a Windows rename refused by another process's open
-// handle writes in place.
-func TestBUG3649_SaveWritesInPlaceWhenWindowsRefusesTheRename(t *testing.T) {
-	home := withTempHome(t)
-	path := filepath.Join(home, ".pad", "credentials.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, longSeed, 0600); err != nil {
-		t.Fatal(err)
-	}
-	origRename, origGOOS := osRename, credentialsGOOS
-	osRename = func(oldpath, newpath string) error {
-		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: errorSharingViolation}
-	}
-	credentialsGOOS = "windows"
-	t.Cleanup(func() { osRename, credentialsGOOS = origRename, origGOOS })
-	saveFresh(t)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"fresh"`) || !json.Valid(data) {
-		t.Errorf("the held-open target did not receive the save whole: %s", data)
-	}
-}
-
 // Save takes the UpdateStore lock, so a direct Save cannot interleave its
 // in-place fallback write with a locked update (scoped Codex round on the
 // row 8 fix).
@@ -506,7 +410,7 @@ func TestBUG3649_SaveWaitsForTheLock(t *testing.T) {
 	}
 	home := withTempHome(t)
 	path := writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
-	unlock, err := lockCredentialsFile(path + ".lock")
+	unlock, err := lockCredentialsFile(path+".lock", true)
 	if err != nil {
 		t.Fatalf("lockCredentialsFile: %v", err)
 	}
@@ -534,5 +438,172 @@ func TestBUG3649_SaveWaitsForTheLock(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"fresh"`) {
 		t.Errorf("Save did not land after the lock was released: %s", data)
+	}
+}
+
+// Option B on BUG-3649: Save writes in place, so the file keeps its inode,
+// and with it its owner and any ACL, as os.WriteFile's write did.
+func TestBUG3649_SaveKeepsTheFilesInode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no inode numbers")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, string(longSeed))
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveFresh(t)
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Errorf("Save replaced credentials.json with a new file; owner and ACL go with the old one")
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"fresh"`) || !json.Valid(data) {
+		t.Errorf("Save did not write the file whole: %s", data)
+	}
+}
+
+// A reader takes the shared side of the lock, so it waits out a writer
+// rather than reading a truncated file.
+func TestBUG3649_LoadStoreWaitsForAWriter(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)
+	unlock, err := lockCredentialsFile(path+".lock", true)
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0600); err != nil { // a writer mid-save
+		t.Fatal(err)
+	}
+	type result struct {
+		store *CredentialStore
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		s, err := LoadStore()
+		done <- result{s, err}
+	}()
+	select {
+	case r := <-done:
+		unlock()
+		t.Fatalf("LoadStore returned (%v) while a writer held the lock", r.err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := os.WriteFile(path, []byte(`{"version": 2, "credentials": {"http://x:7777": {"token": "t2"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("LoadStore: %v", r.err)
+		}
+		if c := r.store.Get("http://x:7777"); c == nil || c.Token != "t2" {
+			t.Errorf("LoadStore read %+v, want the finished save", c)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("LoadStore did not finish after the lock was released")
+	}
+}
+
+// Readers share the lock: one reader does not block another.
+func TestBUG3649_ReadersShareTheLock(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
+	unlock, err := lockCredentialsFile(path+".lock", false)
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	defer unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := LoadStore()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadStore: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("LoadStore blocked behind another reader's shared lock")
+	}
+}
+
+// Row 11: a ~/.pad this user cannot write, holding a credentials.json the
+// user can. os.WriteFile worked there; the lock file cannot be created, so
+// the write goes ahead unlocked and says so, and a read stays quiet.
+func TestBUG3649_ReadOnlyPadDirWritesUnlockedWithAWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+	var warn strings.Builder
+	orig := credentialsLockWarning
+	credentialsLockWarning = &warn
+	t.Cleanup(func() { credentialsLockWarning = orig })
+
+	if err := UpdateStore(func(s *CredentialStore) error {
+		s.Set("http://x:7777", &Credentials{Token: "fresh"})
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateStore in a read-only ~/.pad: %v", err)
+	}
+	if !strings.Contains(warn.String(), "without it") {
+		t.Errorf("an unlocked write did not warn; stderr got %q", warn.String())
+	}
+	warn.Reset()
+	store, err := LoadStore()
+	if err != nil {
+		t.Fatalf("LoadStore in a read-only ~/.pad: %v", err)
+	}
+	if c := store.Get("http://x:7777"); c == nil || c.Token != "fresh" {
+		t.Errorf("LoadStore read %+v, want the save", c)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("a read warned: %q", warn.String())
+	}
+}
+
+// Which lock errors fall back to unlocked: only "may not create or open the
+// lock file". Anything else is returned.
+func TestBUG3649_LockRefusedMapping(t *testing.T) {
+	path := func(errno syscall.Errno) error { return &fs.PathError{Op: "open", Path: "x", Err: errno} }
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{path(syscall.EACCES), true},
+		{path(syscall.EPERM), true},
+		{path(syscall.EROFS), true},
+		{path(syscall.ENOENT), false},
+		{path(syscall.EINTR), false},
+		{path(syscall.EIO), false},
+		{fmt.Errorf("boom"), false},
+	}
+	for _, c := range cases {
+		if got := lockRefused(c.err); got != c.want {
+			t.Errorf("lockRefused(%v) = %v, want %v", c.err, got, c.want)
+		}
 	}
 }

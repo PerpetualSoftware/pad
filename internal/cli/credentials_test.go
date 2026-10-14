@@ -351,7 +351,7 @@ func TestStore_Save_PreservesAllEntries(t *testing.T) {
 // TestStore_Save_FilePermissionsAre0600 — credentials.json must be 0600
 // so other local users can't read tokens. Defends against a regression
 // where Save loosens the permissions during the write (e.g. someone
-// accidentally writes via a path that isn't atomic + 0600).
+// accidentally writes via a path that doesn't enforce 0600).
 func TestStore_Save_FilePermissionsAre0600(t *testing.T) {
 	home := withTempHome(t)
 	store := newEmptyStore()

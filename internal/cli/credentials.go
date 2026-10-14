@@ -41,12 +41,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
-	"time"
 )
 
 // credentialsVersion is what new saves write. Bump and add a migration
@@ -97,12 +97,22 @@ func credentialsPath() (string, error) {
 // LoadStore is the only intended way to read credentials. Internal
 // callers that need a single server's entry should call
 // LoadStore().Get(url).
+//
+// It reads under a shared lock on credentials.json.lock (BUG-3649), so it
+// never sees a save half-written: Save writes in place, as os.WriteFile
+// did, under the exclusive side of the same lock.
 func LoadStore() (*CredentialStore, error) {
-	path, err := credentialsPath()
-	if err != nil {
-		return nil, err
-	}
+	var store *CredentialStore
+	err := withCredentialsLock(false, func(path string) error {
+		var err error
+		store, err = loadStoreLocked(path)
+		return err
+	})
+	return store, err
+}
 
+// loadStoreLocked is LoadStore for a caller that holds the credentials lock.
+func loadStoreLocked(path string) (*CredentialStore, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -211,43 +221,27 @@ func (s *CredentialStore) Delete(serverURL string) {
 // writes the current version constant — even if the store was loaded
 // from v1, this is the migration moment.
 //
-// The write is an atomic replace (BUG-3648, BUG-3649): a private 0600 temp
-// file in the same directory, synced, then renamed over credentials.json.
-// os.WriteFile applied 0600 only when it CREATED the file, so an existing
-// loose-mode file kept its mode with fresh tokens in it, and it truncated
-// the live file first, so a concurrent reader could see no credentials or
-// half a JSON document. Save takes the UpdateStore lock, since an in-place
-// fallback write must not interleave with a locked one (scoped Codex round,
-// BUG-3649), but it alone does not stop two processes losing each other's
-// entries; a load-modify-save goes through UpdateStore. Never call it from
-// an UpdateStore callback, which already holds the lock.
+// The write is in place, the shape os.WriteFile had, so a symlinked,
+// bind-mounted, foreign-owned or ACL-carrying credentials.json, or one in a
+// read-only directory, keeps working as it did (option B on BUG-3649: an
+// atomic temp-plus-rename was worse than os.WriteFile for each of those).
+// What changes is privacy and readers. os.WriteFile applied 0600 only when
+// it CREATED the file, so an existing loose-mode file kept its mode with
+// fresh tokens in it (BUG-3648); Save chmods before it truncates. And it
+// writes under the exclusive side of the credentials lock, so LoadStore,
+// which reads under the shared side, never sees the truncated file.
+//
+// Save alone does not stop two processes losing each other's entries; a
+// load-modify-save goes through UpdateStore. Never call Save, LoadStore,
+// UpdateStore or WipeCredentialsFile from an UpdateStore callback: they take
+// the same lock and would wait on it forever (flock is per open file, so
+// this process's own hold blocks them too).
 func (s *CredentialStore) Save() error {
-	path, err := credentialsPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fmt.Errorf("create credentials directory: %w", err)
-	}
-	unlock, err := lockCredentialsFile(path + ".lock")
-	if err != nil {
-		return fmt.Errorf("lock credentials: %w", err)
-	}
-	defer unlock()
-	return s.saveLocked()
+	return withCredentialsLock(true, s.saveLocked)
 }
 
 // saveLocked is Save for a caller that holds the credentials lock.
-func (s *CredentialStore) saveLocked() error {
-	path, err := credentialsPath()
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fmt.Errorf("create credentials directory: %w", err)
-	}
-
+func (s *CredentialStore) saveLocked(path string) error {
 	s.Version = credentialsVersion
 	if s.Credentials == nil {
 		s.Credentials = map[string]*Credentials{}
@@ -257,57 +251,17 @@ func (s *CredentialStore) saveLocked() error {
 	if err != nil {
 		return fmt.Errorf("marshal credentials: %w", err)
 	}
-
-	// Each target shape must fare at least as well as os.WriteFile did, or
-	// keep its behaviour (population table on BUG-3649). A symlinked
-	// credentials.json, live or dangling, is written through the link in
-	// place: renaming over it would replace the link with a plain file, and a
-	// temp file beside its target fails in a read-only directory. A
-	// bind-mounted file cannot be renamed over (EBUSY), nor can a Windows
-	// file another process holds open past the rename retries, so those are
-	// written in place too.
-	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		err = writeFileInPlace0600(path, data)
-		if err != nil {
-			return fmt.Errorf("write credentials: %w", err)
-		}
-		return nil
-	}
-	err = writeFileAtomic0600(path, data)
-	if renameFailureWritesInPlace(credentialsGOOS, err) {
-		err = writeFileInPlace0600(path, data)
-	}
-	if err != nil {
+	if err := writeFileInPlace0600(path, data); err != nil {
 		return fmt.Errorf("write credentials: %w", err)
 	}
 	return nil
 }
 
-// Windows error codes for a rename blocked by another process's open
-// handle; syscall names them only in its Windows build.
-const (
-	errorAccessDenied     syscall.Errno = 5  // ERROR_ACCESS_DENIED
-	errorSharingViolation syscall.Errno = 32 // ERROR_SHARING_VIOLATION
-)
-
-// renameFailureWritesInPlace reports whether a failed replace should fall
-// back to writing in place, the shapes where os.WriteFile would still have
-// succeeded (rows 6 and 8 of the population table on BUG-3649): EBUSY over a
-// bind-mounted file, and on Windows a file held open by another process.
-// Any other rename error is returned.
-func renameFailureWritesInPlace(goos string, err error) bool {
-	if goos == "windows" {
-		var errno syscall.Errno
-		return errors.As(err, &errno) && (errno == errorAccessDenied || errno == errorSharingViolation)
-	}
-	return errors.Is(err, syscall.EBUSY)
-}
-
 // writeFileInPlace0600 writes data over path in place, following a symlink,
-// as os.WriteFile did, for the shapes a rename cannot replace. The file is
-// made 0600 before it is truncated, so the new tokens never land under a
-// looser mode on a file we own; on one we cannot chmod (a foreign-owned
-// symlink target) the write goes ahead, as os.WriteFile's did.
+// as os.WriteFile did. The file is made 0600 before it is truncated, so the
+// new tokens never land under a looser mode on a file we own; on one we
+// cannot chmod (a foreign-owned file we may write) the write goes ahead, as
+// os.WriteFile's did.
 func writeFileInPlace0600(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
@@ -329,130 +283,85 @@ func writeFileInPlace0600(path string, data []byte) error {
 	return f.Close()
 }
 
-// writeFileAtomic0600 replaces path with data through a temp file that is
-// 0600 from the moment it exists, so the tokens are never readable under a
-// looser mode, and a reader sees either the old file or the new one whole.
-func writeFileAtomic0600(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".credentials-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		if tmpName != "" {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	// CreateTemp already opens 0600; the chmod keeps that true on a
-	// platform or umask where it would not be.
-	if err := tmp.Chmod(0600); err != nil && runtime.GOOS != "windows" {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := renameReplacing(tmpName, path); err != nil {
-		return err
-	}
-	tmpName = ""
-	return nil
-}
+// credentialsLockWarning is where a write that could not take the lock says
+// so; a variable so a test can read it.
+var credentialsLockWarning io.Writer = os.Stderr
 
-// credentialsGOOS is runtime.GOOS, swappable so a test on any platform can
-// reach Save's Windows fallback.
-var credentialsGOOS = runtime.GOOS
-
-// osRename is os.Rename, swappable so a test can make the replace fail as
-// it does over a bind-mounted file, which needs a mount to reproduce.
-var osRename = os.Rename
-
-// renameReplacing renames src over dst. Go opens files on Windows without
-// FILE_SHARE_DELETE (syscall_windows.go), so the replace fails while any
-// process is reading dst, which every pad command does through LoadStore.
-// That reader holds it for a few milliseconds, so on Windows the rename is
-// retried for about a second before the error is returned (final review
-// round, both hunters).
-func renameReplacing(src, dst string) error {
-	err := osRename(src, dst)
-	if runtime.GOOS != "windows" {
-		return err
-	}
-	for i := 0; err != nil && i < 50; i++ {
-		time.Sleep(20 * time.Millisecond)
-		err = osRename(src, dst)
-	}
-	return err
-}
-
-// UpdateStore is the load-modify-save for credentials.json, under a
-// cross-process lock on credentials.json.lock (BUG-3649): two `pad auth
-// login` runs for different servers each used to load the same snapshot
-// and save it with their own entry, so the second dropped the first's.
-// fn mutates the freshly loaded store; when it returns an error nothing is
-// saved. fn must not call UpdateStore, Save or WipeCredentialsFile, which take the
-// same lock and would block on it forever (flock is per open file, so this
-// process's own hold blocks it too); nothing slow (a network call) belongs
-// inside it either, since the lock is held for the whole call.
-func UpdateStore(fn func(*CredentialStore) error) error {
+// withCredentialsLock runs fn with the path of credentials.json while
+// holding credentials.json.lock: exclusive for a write, shared for a read.
+//
+// A lock file this user may not create or open (a read-only or foreign-owned
+// ~/.pad, or a lock file a sudo run left behind) is EACCES, EPERM or EROFS,
+// and then fn runs unlocked, as every read and write did before BUG-3649;
+// a write says so on stderr, a read stays quiet because every pad command
+// reads. Any other lock error is returned. A read whose directory does not
+// exist has nothing to read and runs unlocked rather than creating it.
+func withCredentialsLock(exclusive bool, fn func(path string) error) error {
 	path, err := credentialsPath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fmt.Errorf("create credentials directory: %w", err)
+	if exclusive {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return fmt.Errorf("create credentials directory: %w", err)
+		}
 	}
-	unlock, err := lockCredentialsFile(path + ".lock")
-	if err != nil {
+	unlock, err := lockCredentialsFile(path+".lock", exclusive)
+	switch {
+	case err == nil:
+		defer unlock()
+	case !exclusive && errors.Is(err, fs.ErrNotExist):
+	case lockRefused(err):
+		if exclusive {
+			fmt.Fprintf(credentialsLockWarning, "warning: could not lock %s (%v); saving credentials without it\n", path+".lock", err)
+		}
+	default:
 		return fmt.Errorf("lock credentials: %w", err)
 	}
-	defer unlock()
+	return fn(path)
+}
 
-	store, err := LoadStore()
-	if err != nil {
-		return err
-	}
-	if err := fn(store); err != nil {
-		return err
-	}
-	return store.saveLocked()
+// lockRefused reports whether a lock error means this user may not create or
+// open the lock file, rather than that locking itself failed.
+func lockRefused(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS)
+}
+
+// UpdateStore is the load-modify-save for credentials.json, under the
+// exclusive credentials lock (BUG-3649): two `pad auth login` runs for
+// different servers each used to load the same snapshot and save it with
+// their own entry, so the second dropped the first's. fn mutates the
+// freshly loaded store; when it returns an error nothing is saved. fn must
+// not call Save, LoadStore, UpdateStore or WipeCredentialsFile (see Save);
+// nothing slow (a network call) belongs inside it either, since the lock is
+// held for the whole call.
+func UpdateStore(fn func(*CredentialStore) error) error {
+	return withCredentialsLock(true, func(path string) error {
+		store, err := loadStoreLocked(path)
+		if err != nil {
+			return err
+		}
+		if err := fn(store); err != nil {
+			return err
+		}
+		return store.saveLocked(path)
+	})
 }
 
 // WipeCredentialsFile removes ~/.pad/credentials.json entirely. Distinct
 // from CredentialStore.Delete (which removes a single server's entry)
 // — used by tests and any future "pad auth wipe" that wants a clean
 // slate. Silently succeeds if the file is already absent.
+//
+// Under the exclusive lock, so it cannot land in the middle of a save
+// (Codex round 1, BUG-3649). Never call it from an UpdateStore callback.
 func WipeCredentialsFile() error {
-	path, err := credentialsPath()
-	if err != nil {
-		return err
-	}
-	// Under the UpdateStore lock, so a concurrent update cannot rename a
-	// file back into place after the wipe (Codex round 1, BUG-3649). Never
-	// call this from an UpdateStore callback: it would wait on the lock that
-	// callback's UpdateStore holds (Codex round 2). The directory is created
-	// first, as UpdateStore creates it, so a wipe on a fresh home is locked
-	// too (final Codex round: a skipped lock let an update land after it).
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fmt.Errorf("create credentials directory: %w", err)
-	}
-	unlock, err := lockCredentialsFile(path + ".lock")
-	if err != nil {
-		return fmt.Errorf("lock credentials: %w", err)
-	}
-	defer unlock()
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("delete credentials: %w", err)
-	}
-	return nil
+	return withCredentialsLock(true, func(path string) error {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delete credentials: %w", err)
+		}
+		return nil
+	})
 }
 
 // normalizeServerURL canonicalizes a server URL for use as a credential
