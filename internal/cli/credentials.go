@@ -216,9 +216,29 @@ func (s *CredentialStore) Delete(serverURL string) {
 // os.WriteFile applied 0600 only when it CREATED the file, so an existing
 // loose-mode file kept its mode with fresh tokens in it, and it truncated
 // the live file first, so a concurrent reader could see no credentials or
-// half a JSON document. Save alone does not stop two processes losing each
-// other's entries; a load-modify-save goes through UpdateStore.
+// half a JSON document. Save takes the UpdateStore lock, since an in-place
+// fallback write must not interleave with a locked one (scoped Codex round,
+// BUG-3649), but it alone does not stop two processes losing each other's
+// entries; a load-modify-save goes through UpdateStore. Never call it from
+// an UpdateStore callback, which already holds the lock.
 func (s *CredentialStore) Save() error {
+	path, err := credentialsPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create credentials directory: %w", err)
+	}
+	unlock, err := lockCredentialsFile(path + ".lock")
+	if err != nil {
+		return fmt.Errorf("lock credentials: %w", err)
+	}
+	defer unlock()
+	return s.saveLocked()
+}
+
+// saveLocked is Save for a caller that holds the credentials lock.
+func (s *CredentialStore) saveLocked() error {
 	path, err := credentialsPath()
 	if err != nil {
 		return err
@@ -378,7 +398,7 @@ func renameReplacing(src, dst string) error {
 // login` runs for different servers each used to load the same snapshot
 // and save it with their own entry, so the second dropped the first's.
 // fn mutates the freshly loaded store; when it returns an error nothing is
-// saved. fn must not call UpdateStore or WipeCredentialsFile, which take the
+// saved. fn must not call UpdateStore, Save or WipeCredentialsFile, which take the
 // same lock and would block on it forever (flock is per open file, so this
 // process's own hold blocks it too); nothing slow (a network call) belongs
 // inside it either, since the lock is held for the whole call.
@@ -403,7 +423,7 @@ func UpdateStore(fn func(*CredentialStore) error) error {
 	if err := fn(store); err != nil {
 		return err
 	}
-	return store.Save()
+	return store.saveLocked()
 }
 
 // WipeCredentialsFile removes ~/.pad/credentials.json entirely. Distinct

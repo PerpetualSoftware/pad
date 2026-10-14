@@ -61,7 +61,8 @@ func TestBUG3648_SaveCreatesThePadDirPrivate(t *testing.T) {
 	}
 	entries, _ := os.ReadDir(filepath.Join(home, ".pad"))
 	for _, e := range entries {
-		if e.Name() != "credentials.json" {
+		// The lock file is Save's own and persists, as UpdateStore's does.
+		if e.Name() != "credentials.json" && e.Name() != "credentials.json.lock" {
 			t.Errorf("Save left %q behind in .pad", e.Name())
 		}
 	}
@@ -493,5 +494,45 @@ func TestBUG3649_SaveWritesInPlaceWhenWindowsRefusesTheRename(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"fresh"`) || !json.Valid(data) {
 		t.Errorf("the held-open target did not receive the save whole: %s", data)
+	}
+}
+
+// Save takes the UpdateStore lock, so a direct Save cannot interleave its
+// in-place fallback write with a locked update (scoped Codex round on the
+// row 8 fix).
+func TestBUG3649_SaveWaitsForTheLock(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {}}`)
+	unlock, err := lockCredentialsFile(path + ".lock")
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	store := newEmptyStore()
+	store.Set("http://x:7777", &Credentials{Token: "fresh"})
+	done := make(chan error, 1)
+	go func() { done <- store.Save() }()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("Save returned (%v) while the credentials lock was held", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if data, err := os.ReadFile(path); err != nil || strings.Contains(string(data), `"fresh"`) {
+		t.Fatalf("credentials.json written while the lock was held (err %v): %s", err, data)
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Save did not finish after the lock was released")
+	}
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"fresh"`) {
+		t.Errorf("Save did not land after the lock was released: %s", data)
 	}
 }
