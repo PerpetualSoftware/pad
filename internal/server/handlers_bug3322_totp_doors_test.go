@@ -49,6 +49,8 @@ func oauthLoginBody(email string) map[string]interface{} {
 		"name":           "Two Factor",
 		"email_verified": true,
 		"avatar_url":     "https://avatars.example.com/u/1.png",
+		// pad-cloud always sends one (BUG-3797).
+		"subject": "gh-" + email,
 	}
 }
 

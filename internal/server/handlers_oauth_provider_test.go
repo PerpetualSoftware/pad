@@ -17,7 +17,9 @@ const oauthProviderTestSecret = "shh-its-a-secret"
 
 // postOAuthLogin fires a cloud-secret-authenticated oauth-login request and
 // returns the recorder. The cloud secret rides the JSON body (the same
-// channel validateCloudSecret reads).
+// channel validateCloudSecret reads). The body is otherwise sent as given: one
+// that should sign in must name its "subject", as pad-cloud always does
+// (BUG-3797).
 func postOAuthLogin(t *testing.T, srv *Server, body map[string]interface{}) *httptest.ResponseRecorder {
 	t.Helper()
 	body["cloud_secret"] = oauthProviderTestSecret
@@ -37,6 +39,7 @@ func TestOAuthLogin_AppleProvider_CreatesAndLinksUser(t *testing.T) {
 		"email":          "applefan@example.com",
 		"name":           "Apple Fan",
 		"email_verified": true,
+		"subject":        "apple-applefan",
 	})
 
 	if rr.Code != http.StatusOK {
@@ -74,6 +77,7 @@ func TestOAuthLogin_AppleProvider_CreatesAndLinksUser(t *testing.T) {
 		"provider":       "apple",
 		"email":          "applefan@example.com",
 		"email_verified": true,
+		"subject":        "apple-applefan",
 	})
 	if rr2.Code != http.StatusOK {
 		t.Fatalf("returning apple login: got %d, want 200: %s", rr2.Code, rr2.Body.String())
@@ -88,6 +92,7 @@ func TestOAuthLogin_AppleProvider_StillRequiresVerifiedEmail(t *testing.T) {
 		"provider":       "apple",
 		"email":          "unverified@example.com",
 		"email_verified": false,
+		"subject":        "apple-unverified",
 	})
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("unverified apple email: got %d, want 403: %s", rr.Code, rr.Body.String())
@@ -111,6 +116,7 @@ func TestOAuthLogin_SessionTTLMatchesWebSession(t *testing.T) {
 		"email":          "ttlcheck@example.com",
 		"name":           "TTL Check",
 		"email_verified": true,
+		"subject":        "google-ttlcheck",
 	})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("oauth-login: got %d, want 200: %s", rr.Code, rr.Body.String())
@@ -147,6 +153,7 @@ func TestOAuthLink_AppleProvider_Links(t *testing.T) {
 		"email":          "linker@example.com",
 		"name":           "Linker",
 		"email_verified": true,
+		"subject":        "google-linker",
 	}); rr.Code != http.StatusOK {
 		t.Fatalf("seed google login: got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -180,6 +187,7 @@ func TestOAuthLogin_UnknownProvider_Rejected(t *testing.T) {
 		"provider":       "facebook",
 		"email":          "someone@example.com",
 		"email_verified": true,
+		"subject":        "facebook-someone",
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("unknown provider: got %d, want 400: %s", rr.Code, rr.Body.String())
