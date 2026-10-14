@@ -41,7 +41,7 @@ func TestBUG3668_CredentialLookupsAreIndexed(t *testing.T) {
 		// merely avoid one named scan node (codex r1).
 		var indexed bool
 		if s.dialect.Driver() == DriverPostgres {
-			indexed = regexp.MustCompile(`(Index Scan|Index Only Scan) using \S+ on ` + c.table + `\b|Bitmap Index Scan on `).MatchString(plan) &&
+			indexed = regexp.MustCompile(`(Index Scan|Index Only Scan) using \S+ on `+c.table+`\b|Bitmap Index Scan on `).MatchString(plan) &&
 				!strings.Contains(plan, "Seq Scan on "+c.table)
 		} else {
 			indexed = regexp.MustCompile(`SEARCH ` + c.table + ` USING (COVERING )?INDEX `).MatchString(plan)
