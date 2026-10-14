@@ -6,7 +6,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { renderMarkedWithAttachments, sanitizeMarkdownHtml } from '$lib/utils/markdown';
 	import { renderAttachmentUnavailable } from '$lib/markdown/attachments';
-	import { inertInternalReferences } from '$lib/components/share/shareRender';
+	import { inertInternalReferences, restrictShareMarkup } from '$lib/components/share/shareRender';
 	import { mermaidBlocks } from '$lib/components/share/shareMermaid';
 	import PublicCollectionView from '$lib/components/share/PublicCollectionView.svelte';
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
@@ -378,10 +378,12 @@
 			});
 			// Wiki-links and internal links are made inert AFTER the sanitizer,
 			// so the pass only ever sees markup the allowlist already accepted.
-			return typeof window !== 'undefined' ? inertInternalReferences(sanitizeMarkdownHtml(raw), titleByRef) : '';
+			// Classes are restricted to what the renderer emits (BUG-3799) before
+			// the inert pass adds its own.
+			return typeof window !== 'undefined' ? inertInternalReferences(restrictShareMarkup(sanitizeMarkdownHtml(raw)), titleByRef) : '';
 		} catch {
 			// Sanitize the fallback too — never pass user content to {@html} raw
-			return sanitizeMarkdownHtml(content);
+			return restrictShareMarkup(sanitizeMarkdownHtml(content));
 		}
 	}
 

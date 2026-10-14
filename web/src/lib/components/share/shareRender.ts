@@ -62,6 +62,70 @@ function inCode(node: Node): boolean {
  * viewer. `titleByRef` maps an UPPER-CASE ref (`TASK-5`) to the title the
  * share payload carries for it.
  */
+/**
+ * The classes the markdown renderer itself emits, by tag (BUG-3799), from a
+ * census of renderMarkedWithAttachments + sanitizeMarkdownHtml on the share
+ * path: external links, attachment file chips and their unavailable / missing
+ * placeholders, and marked's `language-*` on fenced code (which the mermaid
+ * pass reads). The in-app sanitizer keeps any class, so a share body could
+ * reuse the app's CSS (a fixed or full-screen utility) to lay a fake login or
+ * banner over the page. Classes the share page's own passes add
+ * (share-wiki-ref, share-internal-ref, share-mermaid) are added AFTER this
+ * runs, so they are not listed.
+ */
+const SHARE_CLASSES_BY_TAG: Readonly<Record<string, ReadonlySet<string>>> = {
+	a: new Set(['external-link', 'file-chip']),
+	span: new Set([
+		'external-icon',
+		'file-chip-icon',
+		'file-chip-name',
+		'file-chip-size',
+		'attachment-missing',
+		'attachment-unavailable',
+		'attachment-unavailable-note',
+	]),
+};
+const CODE_LANGUAGE_CLASS = /^language-[a-z0-9_+#.-]+$/i;
+
+/** The allowlist as `tag.class` pairs, for the census test that pins it. */
+export function shareClassAllowlist(): string[] {
+	return Object.entries(SHARE_CLASSES_BY_TAG).flatMap(([tag, set]) => [...set].map((c) => `${tag}.${c}`)).sort();
+}
+
+function shareClassAllowed(tag: string, cls: string): boolean {
+	if (tag === 'code') return CODE_LANGUAGE_CLASS.test(cls);
+	return SHARE_CLASSES_BY_TAG[tag]?.has(cls) ?? false;
+}
+
+/**
+ * Restrict sanitized share HTML to what the markdown renderer itself emits
+ * (BUG-3799), so a body cannot select the app's global CSS:
+ * - every class the renderer would not have emitted, on that tag, is stripped;
+ * - an <input> survives only as the renderer's task-list checkbox, and is
+ *   forced disabled. Any other input (a text field) matched the global
+ *   `input` rule, which is a styled fake sign-in field without any class
+ *   (Codex r1 on this unit).
+ * Runs on the sanitizer's output, before the share page's own passes. Fails
+ * CLOSED without a DOM: it returns nothing rather than HTML it could not check.
+ */
+export function restrictShareMarkup(html: string): string {
+	if (!html) return html;
+	if (typeof document === 'undefined') return '';
+	const tpl = document.createElement('template');
+	tpl.innerHTML = html;
+	for (const input of tpl.content.querySelectorAll('input')) {
+		if ((input.getAttribute('type') ?? '').toLowerCase() === 'checkbox') input.setAttribute('disabled', '');
+		else input.remove();
+	}
+	for (const el of tpl.content.querySelectorAll('[class]')) {
+		const tag = el.tagName.toLowerCase();
+		const kept = [...el.classList].filter((c) => shareClassAllowed(tag, c));
+		if (kept.length) el.setAttribute('class', kept.join(' '));
+		else el.removeAttribute('class');
+	}
+	return tpl.innerHTML;
+}
+
 export function inertInternalReferences(
 	html: string,
 	titleByRef: ReadonlyMap<string, string>,
