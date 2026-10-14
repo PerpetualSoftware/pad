@@ -17,9 +17,12 @@ func lockCredentialsFile(lockPath string) (unlock func(), err error) {
 	}
 	// The mode on OpenFile applies only on creation (BUG-3648's class), so
 	// an existing lock file is tightened here (Codex round 1). Best effort:
-	// a lock file this user does not own (left by a sudo run) refuses fchmod
-	// with EPERM, and the lock file holds no secret, so that must not turn a
-	// working login into a failure (bug-hunter pilot, lead ruling).
+	// a lock file this user can write but does not own (another uid's file
+	// with group or world write) refuses fchmod with EPERM, and the lock file
+	// holds no secret, so that must not turn a working login into a failure
+	// (bug-hunter pilot, lead ruling). A foreign-owned 0600 lock file, such
+	// as one a sudo run creates, fails at the open above instead, as a
+	// foreign-owned credentials.json always has; this does not change that.
 	_ = f.Chmod(0600)
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		_ = f.Close()
