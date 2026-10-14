@@ -1570,7 +1570,7 @@ echo "EXPORTED=${EXPORTED} files=${N:-?}"
 echo "RESTORED=${RESTORED}"
 ```
 
-`EXPORTED=false` changed nothing: read the error and rerun. `RESTORED=false` after `EXPORTED=true`: keep `pad-attachments.tar`, see where it stopped (`kubectl -n pad get pod,pvc`), and rerun the restore line, `kubectl -n pad exec -i deploy/pad -- tar -C /data -xf - < pad-attachments.tar`, once the pod is running.
+`EXPORTED=false` changed nothing: read the error and rerun. `RESTORED=false` after `EXPORTED=true`: keep `pad-attachments.tar`, see where it stopped (`kubectl -n pad get pod,pvc`), and once the pod is running rerun the restore line, `kubectl -n pad exec -i deploy/pad -- tar -C /data -xf - < pad-attachments.tar`, then check that `kubectl -n pad exec deploy/pad -- find /data/attachments -type f | wc -l` is at least the `files=` figure.
 
 (`tar` rather than `kubectl cp`: the new pod creates `/data/attachments` at start, and `kubectl cp` into an existing directory nests the copy one level down, where pad does not look.)
 
