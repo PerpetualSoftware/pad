@@ -265,17 +265,68 @@ func (c *Client) ListItems(wsSlug string, params url.Values) ([]models.Item, err
 	return items, err
 }
 
-// ListItemsReport is ListItems plus the filter keys the server honoured
-// although no schema declares them (BUG-3480's X-Pad-Undeclared-Filter-Keys),
-// for a caller that warns about them.
-func (c *Client) ListItemsReport(wsSlug string, params url.Values) ([]models.Item, []string, error) {
+// ItemListPage is what an item list response says besides its rows: the
+// filter keys the server honoured although no schema declares them (BUG-3480's
+// X-Pad-Undeclared-Filter-Keys) and the paging state (BUG-3704).
+type ItemListPage struct {
+	UndeclaredKeys []string
+	// Known is false when the server sent no X-Pad-Has-More (one older than
+	// BUG-3704); HasMore and NextOffset are then unset.
+	Known      bool
+	HasMore    bool
+	NextOffset int
+}
+
+func itemListPage(h http.Header) ItemListPage {
+	p := ItemListPage{UndeclaredKeys: undeclaredFilterKeys(h)}
+	switch h.Get("X-Pad-Has-More") {
+	case "true":
+		p.Known, p.HasMore = true, true
+		p.NextOffset, _ = strconv.Atoi(h.Get("X-Pad-Next-Offset"))
+	case "false":
+		p.Known = true
+	}
+	return p
+}
+
+// ListAllItems is ListItems for a caller that needs every matching row (a
+// report): it follows the server's next-offset until has-more is false
+// (BUG-3704). params' limit and offset are its own. A server older than
+// BUG-3704 sends no paging state and lists everything in one response.
+func (c *Client) ListAllItems(wsSlug string, params url.Values) ([]models.Item, error) {
+	q := url.Values{}
+	for k, v := range params {
+		q[k] = v
+	}
+	q.Del("limit")
+	q.Del("offset")
+	var all []models.Item
+	for offset := 0; ; {
+		if offset > 0 {
+			q.Set("offset", strconv.Itoa(offset))
+		}
+		items, page, err := c.ListItemsReport(wsSlug, q)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		if !page.HasMore || page.NextOffset <= offset {
+			return all, nil
+		}
+		offset = page.NextOffset
+	}
+}
+
+// ListItemsReport is ListItems plus what the response says besides its rows
+// (ItemListPage), for a caller that warns about undeclared keys or truncation.
+func (c *Client) ListItemsReport(wsSlug string, params url.Values) ([]models.Item, ItemListPage, error) {
 	var result []models.Item
 	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items"
 	if len(params) > 0 {
 		path += "?" + params.Encode()
 	}
 	h, err := c.getWithHeader(path, &result)
-	return result, undeclaredFilterKeys(h), err
+	return result, itemListPage(h), err
 }
 
 func undeclaredFilterKeys(h http.Header) []string {
@@ -299,16 +350,16 @@ func (c *Client) ListCollectionItems(wsSlug, collSlug string, params url.Values)
 	return items, err
 }
 
-// ListCollectionItemsReport is ListCollectionItems plus the undeclared filter
-// keys the server honoured (see ListItemsReport).
-func (c *Client) ListCollectionItemsReport(wsSlug, collSlug string, params url.Values) ([]models.Item, []string, error) {
+// ListCollectionItemsReport is ListCollectionItems plus the ItemListPage
+// (see ListItemsReport).
+func (c *Client) ListCollectionItemsReport(wsSlug, collSlug string, params url.Values) ([]models.Item, ItemListPage, error) {
 	var result []models.Item
 	path := "/workspaces/" + url.PathEscape(wsSlug) + "/collections/" + url.PathEscape(collSlug) + "/items"
 	if len(params) > 0 {
 		path += "?" + params.Encode()
 	}
 	h, err := c.getWithHeader(path, &result)
-	return result, undeclaredFilterKeys(h), err
+	return result, itemListPage(h), err
 }
 
 func (c *Client) CreateItem(wsSlug, collSlug string, input models.ItemCreate) (*models.Item, error) {

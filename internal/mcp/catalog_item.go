@@ -8,6 +8,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // padItemTool is the v0.2 tool that consolidates the ~20 v0.1 verb
@@ -885,9 +887,46 @@ func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*
 	if limit > mcpItemListMaxLimit {
 		limit = mcpItemListMaxLimit
 	}
-	out["limit"] = limit
+	// One row past the limit tells whether the list was cut short (BUG-3704):
+	// the result then says so. It never pages for the agent, which is what
+	// the limit is for (lead ruling).
+	out["limit"] = limit + 1
 
-	return env.Dispatch(ctx, []string{"item", "list"}, out)
+	res, err := env.Dispatch(ctx, []string{"item", "list"}, out)
+	if err != nil || res == nil || res.IsError {
+		return res, err
+	}
+	return markItemListTruncation(res, limit), nil
+}
+
+// itemListTruncatedNote is the text an agent sees when its list was cut short.
+const itemListTruncatedNote = "More items match than this list shows (has_more). Narrow the filters, or raise limit (max %d)."
+
+// markItemListTruncation trims a list result fetched with limit+1 back to
+// limit and, when it had the extra row, sets has_more on the structured
+// result and adds a note. A list that fit is returned unchanged.
+func markItemListTruncation(res *CallToolResult, limit int) *CallToolResult {
+	obj, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		return res
+	}
+	rows, ok := obj["items"].([]any)
+	if !ok || len(rows) <= limit {
+		return res
+	}
+	marked := make(map[string]any, len(obj)+1)
+	for k, v := range obj {
+		marked[k] = v
+	}
+	marked["items"] = rows[:limit]
+	marked["has_more"] = true
+	text, err := json.Marshal(rows[:limit])
+	if err != nil {
+		return res
+	}
+	out := structuredResult(marked, string(text))
+	out.Content = append(out.Content, mcp.NewTextContent(fmt.Sprintf(itemListTruncatedNote, mcpItemListMaxLimit)))
+	return out
 }
 
 // mcpItemHistoryDefaultLimit / MaxLimit bound pad_item.action=history the same

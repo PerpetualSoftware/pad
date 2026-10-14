@@ -424,8 +424,8 @@ func standupCmd() *cobra.Command {
 			cutoff := time.Now().AddDate(0, 0, -days)
 			completedItems, doneField := listCompletedWorkSince(client, ws, cutoff, 20)
 
-			// Fetch in-progress items
-			inProgressItems, err := client.ListItems(ws, url.Values{
+			// Fetch in-progress items: all of them, paged (BUG-3704).
+			inProgressItems, err := client.ListAllItems(ws, url.Values{
 				"status": {"in-progress"},
 				"sort":   {"updated_at:desc"},
 			})
