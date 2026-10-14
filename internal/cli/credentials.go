@@ -47,6 +47,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // credentialsVersion is what new saves write. Bump and add a migration
@@ -261,28 +262,30 @@ func (s *CredentialStore) saveLocked(path string) error {
 }
 
 // writeFileInPlace0600 writes data over path in place, following a symlink,
-// as os.WriteFile did. The file is made 0600 before it is truncated, so the
-// new tokens never land under a looser mode on a file we own; on one we
-// cannot chmod (a foreign-owned file we may write) the write goes ahead, as
-// os.WriteFile's did.
+// as os.WriteFile did. A regular file is made 0600 before it is truncated,
+// so the new tokens never land under a looser mode on a file we own; on one
+// we cannot chmod (a foreign-owned file we may write) the write goes ahead,
+// as os.WriteFile's did. Anything else a link may point at (/dev/null, a
+// FIFO) is neither chmodded nor truncated, as O_TRUNC leaves it, and the
+// sync is best effort since os.WriteFile never synced: a target os.WriteFile
+// could write stays writable (final review round, both hunters).
 func writeFileInPlace0600(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		return err
 	}
-	_ = f.Chmod(0600)
-	if err := f.Truncate(0); err != nil {
-		_ = f.Close()
-		return err
+	if fi, err := f.Stat(); err == nil && fi.Mode().IsRegular() {
+		_ = f.Chmod(0600)
+		if err := f.Truncate(0); err != nil {
+			_ = f.Close()
+			return err
+		}
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
+	_ = f.Sync()
 	return f.Close()
 }
 
@@ -338,14 +341,32 @@ func withCredentialsLock(exclusive bool, fn func(path string) error) error {
 // lock fail the way a filesystem without flock does.
 var lockCredentials = lockCredentialsFile
 
-// lockCredentialsRetrying takes the lock, retrying an interrupted call
-// (EINTR) a few times before giving up on it.
+// errCredentialsLockBusy is the platform lock's answer when another process
+// holds it; the lock is only ever tried without blocking.
+var errCredentialsLockBusy = errors.New("credentials lock is held by another process")
+
+// credentialsLockWait bounds how long a busy lock is waited for. A holder
+// that never lets go (a stopped process, a hung NFS lock) must not hang every
+// pad command, so after this the caller proceeds unlocked (final review
+// round). A variable so a test can shorten it.
+var credentialsLockWait = 5 * time.Second
+
+// lockCredentialsRetrying takes the lock, retrying a busy lock until
+// credentialsLockWait passes and an interrupted call (EINTR) a few times.
 func lockCredentialsRetrying(lockPath string, exclusive bool) (func(), error) {
-	unlock, err := lockCredentials(lockPath, exclusive)
-	for i := 0; i < 4 && errors.Is(err, syscall.EINTR); i++ {
-		unlock, err = lockCredentials(lockPath, exclusive)
+	deadline := time.Now().Add(credentialsLockWait)
+	interrupts := 0
+	for {
+		unlock, err := lockCredentials(lockPath, exclusive)
+		switch {
+		case errors.Is(err, syscall.EINTR) && interrupts < 4:
+			interrupts++
+		case errors.Is(err, errCredentialsLockBusy) && time.Now().Before(deadline):
+			time.Sleep(20 * time.Millisecond)
+		default:
+			return unlock, err
+		}
 	}
-	return unlock, err
 }
 
 // errNoCredentialsDir is a read's answer when ~/.pad does not exist: no
@@ -381,6 +402,14 @@ func UpdateStore(fn func(*CredentialStore) error) error {
 // Under the exclusive lock, so it cannot land in the middle of a save
 // (Codex round 1, BUG-3649). Never call it from an UpdateStore callback.
 func WipeCredentialsFile() error {
+	// No ~/.pad, nothing to wipe: answered without creating it, which on a
+	// read-only home would fail where the wipe used to succeed (final review
+	// round).
+	if path, err := credentialsPath(); err == nil {
+		if _, err := os.Stat(filepath.Dir(path)); errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+	}
 	return withCredentialsLock(true, func(path string) error {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("delete credentials: %w", err)

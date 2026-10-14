@@ -687,3 +687,100 @@ func TestBUG3649_ReadRacingTheFirstSaveTakesTheLock(t *testing.T) {
 		t.Errorf("the read did not take the lock once ~/.pad appeared (lock calls %d)", calls)
 	}
 }
+
+// A holder that never lets go (a stopped process) is waited for only up to
+// credentialsLockWait; then the read and the write proceed unlocked, as they
+// did before the lock existed (final review round).
+func TestBUG3649_AStuckHolderDoesNotHangCommands(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)
+	unlock, err := lockCredentialsFile(path+".lock", true)
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	defer unlock()
+	origWait, origWarn := credentialsLockWait, credentialsLockWarning
+	var warn strings.Builder
+	credentialsLockWait, credentialsLockWarning = 200*time.Millisecond, &warn
+	t.Cleanup(func() { credentialsLockWait, credentialsLockWarning = origWait, origWarn })
+
+	done := make(chan error, 1)
+	go func() {
+		store, err := LoadStore()
+		if err == nil && (store.Get("http://x:7777") == nil || store.Get("http://x:7777").Token != "t") {
+			err = fmt.Errorf("read %+v, want the token", store.Get("http://x:7777"))
+		}
+		if err == nil {
+			err = UpdateStore(func(s *CredentialStore) error {
+				s.Set("http://y:7777", &Credentials{Token: "fresh"})
+				return nil
+			})
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("with a stuck holder: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("a stuck lock holder hung LoadStore/UpdateStore")
+	}
+	if !strings.Contains(warn.String(), "without it") {
+		t.Errorf("the unlocked write did not warn; stderr got %q", warn.String())
+	}
+}
+
+// A link to something that is not a regular file (/dev/null) took
+// os.WriteFile's write; it is neither chmodded nor truncated now, so it still
+// does (final review round, both hunters).
+func TestBUG3648_SaveThroughALinkToDevNull(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no /dev/null")
+	}
+	home := withTempHome(t)
+	padDir := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(padDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/dev/null", filepath.Join(padDir, "credentials.json")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat("/dev/null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveFresh(t)
+	after, err := os.Stat("/dev/null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Mode() != after.Mode() {
+		t.Errorf("Save changed /dev/null's mode from %v to %v", before.Mode(), after.Mode())
+	}
+}
+
+// A wipe with no ~/.pad has nothing to do, and on a read-only home it must
+// not fail trying to create one (final review round).
+func TestBUG3649_WipeWithNoPadDirCreatesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	home := withTempHome(t)
+	if err := os.Chmod(home, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0700) })
+	if err := WipeCredentialsFile(); err != nil {
+		t.Fatalf("WipeCredentialsFile with no ~/.pad on a read-only home: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".pad")); !os.IsNotExist(err) {
+		t.Errorf("a wipe created ~/.pad (stat err %v)", err)
+	}
+}

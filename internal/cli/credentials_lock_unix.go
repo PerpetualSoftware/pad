@@ -3,12 +3,14 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
 
-// lockCredentialsFile takes an advisory flock on lockPath (BUG-3649):
-// exclusive (LOCK_EX) for a write, shared (LOCK_SH) for a read.
+// lockCredentialsFile tries an advisory flock on lockPath without blocking
+// (BUG-3649): exclusive (LOCK_EX) for a write, shared (LOCK_SH) for a read.
+// A lock another process holds is errCredentialsLockBusy.
 func lockCredentialsFile(lockPath string, exclusive bool) (unlock func(), err error) {
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
@@ -27,8 +29,11 @@ func lockCredentialsFile(lockPath string, exclusive bool) (unlock func(), err er
 	if exclusive {
 		how = syscall.LOCK_EX
 	}
-	if err := syscall.Flock(int(f.Fd()), how); err != nil {
+	if err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errCredentialsLockBusy
+		}
 		return nil, err
 	}
 	return func() {
