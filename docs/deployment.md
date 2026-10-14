@@ -1555,13 +1555,22 @@ kubectl apply -f deploy/k8s/ingress.yaml
 **`/data` is a PersistentVolumeClaim (BUG-3714).** Attachment files live in `/data/attachments` in every storage mode, PostgreSQL included: the database holds their metadata, not their bytes. `deploy/k8s/pvc.yaml` claims a 10Gi `ReadWriteOnce` volume from the cluster's default StorageClass; size it for your attachments, and set `storageClassName` if the cluster has no default (the pod stays `Pending` until the claim binds). An earlier version of these manifests mounted `/data` as an `emptyDir`, which loses every attachment whenever the pod is replaced (an upgrade, a node drain, an eviction); if you run that one, copy the attachments out of the running pod BEFORE you apply the new manifests (applying them replaces the pod, and the files with it), then back into the volume:
 
 ```bash
-kubectl -n pad exec deploy/pad -- tar -C /data -cf - attachments > pad-attachments.tar
-tar -tf pad-attachments.tar | grep -vc '/$'     # the file count: check it before going on
-kubectl apply -f deploy/k8s/pvc.yaml -f deploy/k8s/deployment.yaml
-kubectl -n pad rollout status deploy/pad
-kubectl -n pad exec -i deploy/pad -- tar -C /data -xf - < pad-attachments.tar
-kubectl -n pad exec deploy/pad -- find /data/attachments -type f | wc -l     # the same count
+EXPORTED=false; RESTORED=false
+kubectl -n pad exec deploy/pad -- tar -C /data -cf - attachments > pad-attachments.tar \
+  && tar -tf pad-attachments.tar > pad-attachments.list \
+  && N=$(grep -vc '/$' pad-attachments.list || true) && EXPORTED=true
+echo "EXPORTED=${EXPORTED} files=${N:-?}"
+# Only once EXPORTED=true: this replaces the pod, and the old /data with it.
+[ "$EXPORTED" = true ] \
+  && kubectl apply -f deploy/k8s/pvc.yaml -f deploy/k8s/deployment.yaml \
+  && kubectl -n pad rollout status deploy/pad \
+  && kubectl -n pad exec -i deploy/pad -- tar -C /data -xf - < pad-attachments.tar \
+  && [ "$(kubectl -n pad exec deploy/pad -- find /data/attachments -type f | wc -l)" -ge "$N" ] \
+  && RESTORED=true
+echo "RESTORED=${RESTORED}"
 ```
+
+`EXPORTED=false` changed nothing: read the error and rerun. `RESTORED=false` after `EXPORTED=true`: keep `pad-attachments.tar`, see where it stopped (`kubectl -n pad get pod,pvc`), and rerun the restore line, `kubectl -n pad exec -i deploy/pad -- tar -C /data -xf - < pad-attachments.tar`, once the pod is running.
 
 (`tar` rather than `kubectl cp`: the new pod creates `/data/attachments` at start, and `kubectl cp` into an existing directory nests the copy one level down, where pad does not look.)
 
