@@ -66,8 +66,9 @@ func Blocked(ip net.IP) bool {
 }
 
 // platformAddresses are cloud platform endpoints a VM can reach without
-// credentials that sit on publicly routable addresses, so no range above
-// covers them (BUG-3660). Every other provider metadata endpoint we know of
+// credentials whose addresses lie in public address space, so no range above
+// covers them (BUG-3660). They are not reachable from the internet; the
+// platform answers them inside its own network fabric. Every other provider metadata endpoint we know of
 // is already blocked by a range: 169.254.0.0/16 holds the AWS, GCP, Azure,
 // Oracle, DigitalOcean, Hetzner, OpenStack and Huawei IMDS, AWS ECS and EKS
 // credentials (169.254.170.2, .23), Tencent (169.254.0.23) and Scaleway
