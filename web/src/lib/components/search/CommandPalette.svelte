@@ -284,7 +284,10 @@
 		};
 	});
 
-	function buildFilters(offset = 0, wsSlug?: string): SearchFilters {
+	// `typed` is the query text the caller parsed for its request, so the
+	// filters and the text it sends come from the same query, not from
+	// whatever the input holds when this runs (BUG-3709, codex r1).
+	function buildFilters(typed: string, offset = 0, wsSlug?: string): SearchFilters {
 		const filters: SearchFilters = {
 			// "All workspaces" names none: the server then searches every
 			// workspace the caller may see, loaded here or not (TASK-3604).
@@ -297,7 +300,7 @@
 		// them from the text they send (withoutScopeTokens): `is:archived` as
 		// include_archived (TASK-2864), `coll:<slug>` as the collection
 		// (BUG-3709). The chip wins over `coll:`, as on the local path.
-		const parsed = parseSearchQuery(query.trim());
+		const parsed = parseSearchQuery(typed.trim());
 		const collection = filterCollection ?? parsed.collection;
 		if (collection) filters.collection = collection;
 		if (filterStatus) filters.status = filterStatus;
@@ -475,7 +478,7 @@
 						}
 						return;
 					}
-					const resp = await api.search(serverQuery, buildFilters(0));
+					const resp = await api.search(serverQuery, buildFilters(trimmed, 0));
 					if (!isSameDispatch()) return;
 					results = resp.results ?? [];
 					total = resp.total ?? 0;
@@ -590,7 +593,7 @@
 		contentLoading = true;
 		contentSearchTimeout = setTimeout(async () => {
 			try {
-				const resp = await api.search(text, buildFilters(0, wsSlug));
+				const resp = await api.search(text, buildFilters(trimmed, 0, wsSlug));
 				// Superseded by a newer dispatch, or the query moved on
 				// while the request was in flight — discard.
 				if (myReqId !== contentReqId || query.trim() !== trimmed) return;
@@ -745,7 +748,7 @@
 			filterStatus !== snapshotStatus ||
 			workspaceStore.current?.slug !== snapshotWsSlug;
 		try {
-			const resp = await api.search(serverQuery, buildFilters(results.length));
+			const resp = await api.search(serverQuery, buildFilters(snapshotQuery, results.length));
 			if (scopeMoved()) return;
 			if (!parsed.body) {
 				// Non-body server paging: if the current workspace
@@ -853,7 +856,7 @@
 						// of searching exactly what was typed.
 						const resp = await api.search(
 							target.ref ? String(target.num) : typedAtEnter,
-							buildFilters(0)
+							buildFilters(typedAtEnter, 0)
 						);
 						// Stale-query fence: if the user kept typing while
 						// the probe was in flight, discard it — don't
