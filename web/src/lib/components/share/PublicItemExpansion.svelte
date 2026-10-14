@@ -7,7 +7,7 @@
 	// link would 404 or bypass item-level share ACLs). Strictly read-only.
 	//
 	// The component does NOT sanitize: it receives already-sanitized HTML via the
-	// `html` prop, produced by the route's single marked()+DOMPurify pipeline
+	// `html` prop, produced by the route's single marked() + sanitizeMarkdownHtml pipeline
 	// (the same one the single-item share case uses). Keeping sanitization in one
 	// place avoids introducing a second, divergent {@html} source.
 	import type { FieldDef } from '$lib/types';
@@ -40,7 +40,7 @@
 
 	{#if html}
 		{#if item.contentStale}<StaleBodyNotice />{/if}
-		<!-- `html` is pre-sanitized by the route's marked()+DOMPurify pipeline.
+		<!-- `html` is pre-sanitized by the route's marked() + sanitizeMarkdownHtml pipeline.
 		     No new XSS surface — same sanitized source as the single-item view. -->
 		<div class="expansion-content" {@attach mermaidBlocks(html)}>
 			{@html html}

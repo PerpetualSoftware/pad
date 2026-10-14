@@ -4,9 +4,8 @@
 	import { onMount } from 'svelte';
 	import { api, withRequestDeadline } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { renderMarkedWithAttachments } from '$lib/utils/markdown';
+	import { renderMarkedWithAttachments, sanitizeMarkdownHtml } from '$lib/utils/markdown';
 	import { renderAttachmentUnavailable } from '$lib/markdown/attachments';
-	import DOMPurify from 'dompurify';
 	import { inertInternalReferences } from '$lib/components/share/shareRender';
 	import { mermaidBlocks } from '$lib/components/share/shareMermaid';
 	import PublicCollectionView from '$lib/components/share/PublicCollectionView.svelte';
@@ -329,7 +328,11 @@
 		attachmentRefs = refs && typeof refs === 'object' ? refs : {};
 	}
 
-	// Single sanitized markdown pipeline for the whole page: marked → DOMPurify.
+	// Single sanitized markdown pipeline for the whole page: marked → the
+	// markdown allowlist (sanitizeMarkdownHtml), the policy every other rendered
+	// body uses. Default DOMPurify kept <form>, password inputs, action/method
+	// and style, so any editor of a shared item could put a credential form on
+	// Pad's origin (BUG-3669).
 	// Used by both the single-ITEM share view (`renderedContent`) and the
 	// collection inline-expand (`renderItemContent`). Keeping ONE {@html} source
 	// means no second, divergent sanitization path — no new XSS surface.
@@ -374,11 +377,11 @@
 				missing: renderAttachmentUnavailable
 			});
 			// Wiki-links and internal links are made inert AFTER the sanitizer,
-			// so the pass only ever sees markup DOMPurify already accepted.
-			return typeof window !== 'undefined' ? inertInternalReferences(DOMPurify.sanitize(raw), titleByRef) : raw;
+			// so the pass only ever sees markup the allowlist already accepted.
+			return typeof window !== 'undefined' ? inertInternalReferences(sanitizeMarkdownHtml(raw), titleByRef) : '';
 		} catch {
 			// Sanitize the fallback too — never pass user content to {@html} raw
-			return typeof window !== 'undefined' ? DOMPurify.sanitize(content) : content;
+			return sanitizeMarkdownHtml(content);
 		}
 	}
 
@@ -396,7 +399,7 @@
 	}
 
 	// Memoize per-item sanitized HTML so toggling/re-rendering doesn't re-run
-	// marked()+DOMPurify on every keystroke or reactive pass. Keyed by the item's
+	// marked() and the sanitizer on every keystroke or reactive pass. Keyed by the item's
 	// stable `key`. The map is rebuilt whenever the parsed item set changes.
 	let contentCache = $derived.by(() => {
 		// Touch the parsed items so the cache resets when the payload/view changes,

@@ -15,7 +15,7 @@
  *   bytes, which this page's own renderer emits).
  * - EXTERNAL links open in a new tab, `rel="noopener noreferrer"`.
  *
- * Runs on a DOM, so it is a no-op without one (SSR): the page's DOMPurify pass
+ * Runs on a DOM, so it is a no-op without one (SSR): the page's sanitizer pass
  * is client-only for the same reason. Code spans and code blocks are left
  * alone, since `[[x]]` in code is code. A wiki-link whose brackets markdown
  * split across elements (`[[TA*SK*-5]]`) is matched per text node and stays

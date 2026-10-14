@@ -2597,6 +2597,10 @@ func (s *Server) spaHandler() http.Handler {
 		//   for older browsers that don't implement strict-dynamic.
 		// - script-src-attr 'none' blocks inline event handlers regardless of the
 		//   script-src nonce — per CSP spec, event attributes bypass script-src.
+		// - form-action 'self': default-src does not cover form submission, so a
+		//   form that reached rendered content could post to any origin (BUG-3669).
+		//   Every SPA form submits via fetch, and the OAuth consent page sets its
+		//   own policy.
 		// - frame-src: Pad Cloud only, the in-app tutorial player's
 		//   youtube-nocookie iframe (TASK-3452), mounted only after the viewer
 		//   presses play. A self-hosted server adds nothing: it links out.
@@ -2605,7 +2609,7 @@ func (s *Server) spaHandler() http.Handler {
 			frameSrc = " frame-src https://www.youtube-nocookie.com;"
 		}
 		w.Header().Set("Content-Security-Policy", fmt.Sprintf(
-			"default-src 'self'; script-src 'self' 'nonce-%s' 'strict-dynamic'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';%s frame-ancestors 'none'",
+			"default-src 'self'; script-src 'self' 'nonce-%s' 'strict-dynamic'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self';%s frame-ancestors 'none'",
 			nonce, frameSrc))
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
