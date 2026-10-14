@@ -242,10 +242,17 @@ func (s *Server) shareAttachmentAnchors(link *models.ShareLink, att *models.Atta
 	if entry, ok := attachments.LookupMIME(att.MimeType); !ok || entry.Category != attachments.CategoryImage {
 		return false
 	}
+	// The share's target must still be live (BUG-3635): an item whose
+	// collection was archived, or an archived collection, serves nothing.
+	if _, ok := s.shareTargetLive(link); !ok {
+		return false
+	}
 	switch link.TargetType {
 	case "item":
 		return *att.ItemID == link.TargetID
 	case "collection":
+		// The attachment's own item must be live too: GetItem refuses a
+		// deleted item, and the collection is the live target checked above.
 		item, err := s.store.GetItem(*att.ItemID)
 		if err != nil || item == nil {
 			return false
@@ -253,6 +260,36 @@ func (s *Server) shareAttachmentAnchors(link *models.ShareLink, att *models.Atta
 		return item.CollectionID == link.TargetID
 	default:
 		return false
+	}
+}
+
+// shareTargetLive resolves a share link's target and reports whether it is
+// still live (BUG-3635): for an item share, the item AND its collection; for a
+// collection share, the collection. GetItem's collection JOIN checks only the
+// item's own deleted_at, so an item in an archived collection used to keep
+// serving its content, fields and attachment bytes through a public link.
+// GetCollection refuses an archived (soft-deleted) collection. Returns the
+// item for an item share, nil otherwise. Fail-closed on any lookup error.
+func (s *Server) shareTargetLive(link *models.ShareLink) (*models.Item, bool) {
+	switch link.TargetType {
+	case "item":
+		item, err := s.store.GetItem(link.TargetID)
+		if err != nil || item == nil {
+			return nil, false
+		}
+		coll, err := s.store.GetCollection(item.CollectionID)
+		if err != nil || coll == nil {
+			return nil, false
+		}
+		return item, true
+	case "collection":
+		coll, err := s.store.GetCollection(link.TargetID)
+		if err != nil || coll == nil {
+			return nil, false
+		}
+		return nil, true
+	default:
+		return nil, false
 	}
 }
 
