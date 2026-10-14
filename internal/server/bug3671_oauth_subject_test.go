@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -96,5 +97,44 @@ func TestBUG3671_AnUnlinkedAccountIsNotBoundBySignIn(t *testing.T) {
 	}
 	if n := oauthIdentityRows(t, srv, "google", "g-intruder"); n != 0 {
 		t.Fatal("an unlinked account was bound to the subject by a sign-in")
+	}
+}
+
+// Codex r1 (Low): the refusal comes before the 2FA challenge, so a
+// subject-less sign-in to a bound account with TOTP on gets no challenge
+// token either, while the bound subject still reaches the challenge.
+func TestBUG3671_ASubjectlessSignInGetsNoTwoFactorChallenge(t *testing.T) {
+	srv := testServer(t)
+	srv.SetCloudMode(oauthProviderTestSecret)
+	linkedTOTPUser(t, srv, "totp@example.com", true)
+	withSubject := oauthLoginBody("totp@example.com")
+	withSubject["subject"] = "gh-totp"
+	rr := postOAuthLogin(t, srv, withSubject)
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "two_factor_required") {
+		t.Fatalf("bound subject: got %d %s, want the 2FA challenge", rr.Code, rr.Body.String())
+	}
+	if n := oauthIdentityRows(t, srv, "github", "gh-totp"); n != 1 {
+		t.Fatalf("the subject was not bound before the challenge: %d rows", n)
+	}
+	rr = postOAuthLogin(t, srv, oauthLoginBody("totp@example.com"))
+	body := rr.Body.String()
+	if rr.Code != http.StatusForbidden || !strings.Contains(body, "oauth_subject_mismatch") || strings.Contains(body, "challenge_token") {
+		t.Fatalf("subject-less: got %d %s, want oauth_subject_mismatch and no challenge", rr.Code, body)
+	}
+}
+
+// Codex r1 (Low): a subject-less oauth-link never changes a bound subject.
+func TestBUG3671_ASubjectlessLinkKeepsTheBoundSubject(t *testing.T) {
+	srv := testServer(t)
+	srv.SetCloudMode(oauthProviderTestSecret)
+	if rr := postOAuthLogin(t, srv, map[string]interface{}{"provider": "google", "email": "kept@example.com", "email_verified": true, "subject": "g-kept"}); rr.Code != http.StatusOK {
+		t.Fatalf("signup: %d %s", rr.Code, rr.Body.String())
+	}
+	body := map[string]interface{}{"cloud_secret": oauthProviderTestSecret, "provider": "google", "email": "kept@example.com", "email_verified": true}
+	req := cloudAdminReq(t, "POST", "/api/v1/auth/oauth-link", body, map[string]string{"X-Cloud-Secret": oauthProviderTestSecret})
+	srv.ServeHTTP(httptest.NewRecorder(), req)
+	u, _ := srv.store.GetUserByEmail("kept@example.com")
+	if got, err := srv.store.BoundOAuthSubject(u.ID, "google"); err != nil || got != "g-kept" {
+		t.Fatalf("bound subject after a subject-less link: %q, %v; want g-kept", got, err)
 	}
 }
