@@ -890,7 +890,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// user recovers via POST /auth/resend-verification.
 	//
 	// It runs BEFORE the invitation's membership and accept writes (BUG-3348
-	// codex r2): once a membership row exists DeleteUser cannot roll the
+	// codex r2): once a membership row exists a bare user delete cannot roll the
 	// account back, and the invitation path's own early returns would skip
 	// a later send, stranding an unverified account with no link. A rollback
 	// further down can leave an already-sent link pointing at a deleted
@@ -995,7 +995,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		if addErr != nil {
 			// RECONCILE BEFORE DESTROYING — here too (codex round 2).
 			//
-			// Round 1 added a DeleteUser rollback here and got the ORDER of
+			// Round 1 added an account-delete rollback here and got the ORDER of
 			// reasoning wrong: the store returns the raw tx.Commit() error, so a
 			// lost acknowledgement LANDS THE MEMBERSHIP (and, since BUG-3438, the
 			// claim in the same transaction) and reports failure. Deleting the account on that error destroys a signup that

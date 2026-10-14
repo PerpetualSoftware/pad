@@ -28,6 +28,14 @@ func TestGetInvitationByCode_SoftDeletedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create owner: %v", err)
 	}
+	// The owner is an admin, and the sole active admin cannot delete their
+	// account (BUG-3811); a second admin keeps this test about the lookup.
+	if _, err := s.CreateUser(models.UserCreate{
+		Email: "keeper-3104@example.com", Username: "keeper3104", Name: "Keeper",
+		Password: "correcthorsebattery", Role: "admin",
+	}); err != nil {
+		t.Fatalf("create keeper admin: %v", err)
+	}
 	coOwner, err := s.CreateUser(models.UserCreate{
 		Email: "coowner-3104@example.com", Username: "coowner3104", Name: "Co-owner",
 		Password: "correcthorsebattery", Role: "member",

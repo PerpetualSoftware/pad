@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/billing"
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -76,6 +77,12 @@ func bootstrapAccountDeleteUser(t *testing.T, srv *Server, customerID string) (s
 	u, err := srv.store.GetUserByEmail("delete-me@test.com")
 	if err != nil || u == nil {
 		t.Fatalf("failed to locate bootstrapped user: %v", err)
+	}
+	// The bootstrapped user is the instance's first admin, and the sole
+	// active admin cannot delete their account (BUG-3811). A second admin
+	// keeps these tests about the deletion they exercise.
+	if _, err := srv.store.CreateUser(models.UserCreate{Email: "keeper-admin@test.com", Name: "Keeper", Password: "pw-keeper-12345", Role: "admin"}); err != nil {
+		t.Fatalf("create the keeper admin: %v", err)
 	}
 	if customerID != "" {
 		if err := srv.store.SetUserStripeCustomerID(u.ID, customerID); err != nil {
