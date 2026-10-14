@@ -2,14 +2,14 @@
 // and internal links inert for an anonymous viewer. jsdom, because the pass
 // runs on a DOM.
 import { describe, it, expect } from 'vitest';
-import DOMPurify from 'dompurify';
+import { sanitizeMarkdownHtml } from '$lib/utils/markdown';
 import { marked } from 'marked';
 import { inertInternalReferences, isInternalHref } from './shareRender';
 
 const ORIGIN = location.origin;
 const PAGE = `${ORIGIN}/s/tok`;
 const titles = new Map([['TASK-5', 'Ship the navbar']]);
-const render = (md: string) => inertInternalReferences(DOMPurify.sanitize(marked(md) as string), titles, PAGE);
+const render = (md: string) => inertInternalReferences(sanitizeMarkdownHtml(marked(md) as string), titles, PAGE);
 const doc = (html: string) => {
 	const d = document.createElement('div');
 	d.innerHTML = html;

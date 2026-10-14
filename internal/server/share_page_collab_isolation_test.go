@@ -12,7 +12,8 @@ import (
 // (PLAN-1248 share-page read-only verification).
 //
 // The public share page at /s/{token} MUST keep rendering markdown
-// directly (`marked` + `DOMPurify`) and MUST NOT open a WebSocket to
+// directly (`marked` + the markdown allowlist, `sanitizeMarkdownHtml`)
+// and MUST NOT open a WebSocket to
 // the collab endpoint. Anonymous viewers can't authenticate; even if
 // the upgrade succeeded, exposing per-item Y.Doc traffic to the public
 // internet would be a security regression. The render path is already
@@ -25,8 +26,8 @@ import (
 // the bare-route check would otherwise miss it. Per Codex review
 // round 2 [P2].
 //
-// External packages (node_modules) are not scanned: `marked` /
-// `DOMPurify` are intentionally referenced by the share page, and
+// External packages (node_modules) are not scanned: `marked` and
+// `DOMPurify` (under sanitizeMarkdownHtml) are intentionally reached, and
 // scanning them would flood the test with their own internal symbol
 // names. The forbidden list is targeted at our own source tree — if
 // somebody adds `import { CollabProvider } from '@my/collab-pkg'`
@@ -89,7 +90,7 @@ func TestSharePageDoesNotImportCollab(t *testing.T) {
 				t.Errorf(
 					"share-page import closure file %s contains "+
 						"forbidden token %q. The share-page render path "+
-						"is read-only markdown via `marked` + `DOMPurify` "+
+						"is read-only markdown via `marked` + `sanitizeMarkdownHtml` "+
 						"(TASK-1266); pulling in collab would expose "+
 						"per-item Y.Doc traffic to anonymous viewers and "+
 						"is a security regression. If you need to render "+
@@ -129,22 +130,41 @@ func TestSharePageDoesNotImportCollab(t *testing.T) {
 		// marked() call, so pad-attachment: refs get honest
 		// placeholders. Sanitization posture is unchanged: the wrapper
 		// returns unsanitized HTML and the page owns the single
-		// DOMPurify pass asserted below.
+		// sanitizer pass asserted below: the markdown allowlist, not
+		// DOMPurify's default policy, which keeps <form> and style
+		// (BUG-3669).
 		{"attachment-aware marked wrapper import", "renderMarkedWithAttachments"},
 		{"attachment-aware marked wrapper invocation", "renderMarkedWithAttachments("},
-		{"DOMPurify import", "from 'dompurify'"},
-		{"DOMPurify sanitize call", "DOMPurify.sanitize("},
 	}
 	for _, req := range requiredShapes {
 		if !strings.Contains(rootStripped, req.need) {
 			t.Errorf(
 				"share-page route %s no longer contains %q (expected %s). "+
 					"The read-only render path depends on the marked + "+
-					"DOMPurify pipeline; if you've replaced the renderer, "+
+					"sanitizeMarkdownHtml pipeline; if you've replaced the renderer, "+
 					"update this test to assert on the new safe path.",
 				rootFile, req.need, req.why,
 			)
 		}
+	}
+	// BUG-3669: DOMPurify's DEFAULT policy kept <form>, password inputs and
+	// style, so a shared body could carry a credential form. The route must
+	// import the markdown allowlist from its module and call it by that name,
+	// and must not call DOMPurify's sanitize at all. This is a tripwire on
+	// source shape; the per-path behaviour is pinned by vitest
+	// (bug3669ShareSanitize.svelte.test.ts).
+	sanitizerImport := regexp.MustCompile(`import\s*\{[^}]*\bsanitizeMarkdownHtml\b[^}]*\}\s*from\s*['"]\$lib/utils/markdown['"]`)
+	sanitizerCall := regexp.MustCompile(`(^|[^\w$.])sanitizeMarkdownHtml\s*\(`)
+	defaultPolicyCall := regexp.MustCompile(`\bDOMPurify\s*\.\s*sanitize\s*\(`)
+	if !sanitizerImport.MatchString(rootStripped) {
+		t.Errorf("share-page route %s does not import sanitizeMarkdownHtml from $lib/utils/markdown (BUG-3669)", rootFile)
+	}
+	if n := len(sanitizerCall.FindAllString(rootStripped, -1)); n < 2 {
+		t.Errorf("share-page route %s calls sanitizeMarkdownHtml %d time(s); both render paths (the marked pipeline and its fallback) must (BUG-3669)", rootFile, n)
+	}
+	if defaultPolicyCall.MatchString(rootStripped) {
+		t.Errorf("share-page route %s calls DOMPurify.sanitize (the default policy); "+
+			"sanitize with sanitizeMarkdownHtml (BUG-3669)", rootFile)
 	}
 }
 

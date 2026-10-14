@@ -377,7 +377,7 @@
 				missing: renderAttachmentUnavailable
 			});
 			// Wiki-links and internal links are made inert AFTER the sanitizer,
-			// so the pass only ever sees markup DOMPurify already accepted.
+			// so the pass only ever sees markup the allowlist already accepted.
 			return typeof window !== 'undefined' ? inertInternalReferences(sanitizeMarkdownHtml(raw), titleByRef) : '';
 		} catch {
 			// Sanitize the fallback too — never pass user content to {@html} raw
@@ -399,7 +399,7 @@
 	}
 
 	// Memoize per-item sanitized HTML so toggling/re-rendering doesn't re-run
-	// marked()+DOMPurify on every keystroke or reactive pass. Keyed by the item's
+	// marked() and the sanitizer on every keystroke or reactive pass. Keyed by the item's
 	// stable `key`. The map is rebuilt whenever the parsed item set changes.
 	let contentCache = $derived.by(() => {
 		// Touch the parsed items so the cache resets when the payload/view changes,

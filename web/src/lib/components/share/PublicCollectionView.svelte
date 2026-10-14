@@ -41,7 +41,7 @@
 		 *  expansion panel in the leaf renderers. */
 		expandedKey?: string;
 		/** Returns pre-sanitized HTML for an item's markdown body. Owned by the
-		 *  route (single marked()+DOMPurify pipeline) so there's one {@html}
+		 *  route (single marked() + sanitizeMarkdownHtml pipeline) so there's one {@html}
 		 *  source — no new XSS surface. */
 		renderContent?: (item: PublicItem) => string;
 	}

@@ -30,7 +30,7 @@
 		 *  item, the inline expansion renders. */
 		expandedKey?: string;
 		/** Returns pre-sanitized HTML for the item's markdown body (route-owned
-		 *  marked()+DOMPurify pipeline). */
+		 *  marked() + sanitizeMarkdownHtml pipeline). */
 		renderContent?: (item: PublicItem) => string;
 	}
 
