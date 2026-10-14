@@ -172,3 +172,16 @@ func (s *Store) OAuthIdentityOwner(provider, subject string) (string, error) {
 	}
 	return owner, nil
 }
+
+// BoundOAuthSubject returns the provider account subject bound to userID for
+// provider, or "" when none is bound (BUG-3671: an account with one bound no
+// longer signs in on an email match alone).
+func (s *Store) BoundOAuthSubject(userID, provider string) (string, error) {
+	var subject string
+	err := s.db.QueryRow(s.q(`SELECT COALESCE((SELECT subject FROM user_oauth_identities WHERE user_id = ? AND provider = ?), '')`),
+		userID, provider).Scan(&subject)
+	if err != nil {
+		return "", fmt.Errorf("bound oauth subject: %w", err)
+	}
+	return subject, nil
+}
