@@ -106,7 +106,25 @@ func TestBUG3811_DemoteAndDisableAnswer409(t *testing.T) {
 				code = errorCode(t, rr)
 				done <- rr.Code
 			}()
-			time.Sleep(300 * time.Millisecond)
+			// Commit only once the request is seen WAITING on the guard's
+			// lock, not after a fixed sleep (codex r1 on #2178).
+			waited := false
+			for deadline := time.Now().Add(10 * time.Second); !waited && time.Now().Before(deadline); {
+				var n int
+				if err := srv.store.DB().QueryRow(`SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+					AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+					AND objsubid = 1
+					AND classid = (((hashtext('pad:active-admins')::bigint) >> 32) & 4294967295)::oid
+					AND objid = ((hashtext('pad:active-admins')::bigint) & 4294967295)::oid`).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				if waited = n > 0; !waited {
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
+			if !waited {
+				t.Fatalf("the %s request never waited on the active-admin lock", door.name)
+			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}

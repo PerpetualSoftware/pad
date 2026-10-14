@@ -1217,15 +1217,6 @@ func (s *Store) demoteGuardedTx(tx *sql.Tx, userID string) error {
 	return nil
 }
 
-// DeleteUser permanently deletes a user by ID.
-func (s *Store) DeleteUser(id string) error {
-	_, err := s.db.Exec(s.q(`DELETE FROM users WHERE id = ?`), id)
-	if err != nil {
-		return fmt.Errorf("delete user: %w", err)
-	}
-	return nil
-}
-
 // DeleteAccountAtomic deletes a user and all their owned workspaces in a single
 // transaction. If any step fails, the entire operation is rolled back and no data
 // is modified. This prevents orphaned workspaces from partial deletions.

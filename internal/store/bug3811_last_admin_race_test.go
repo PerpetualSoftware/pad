@@ -33,6 +33,22 @@ func bug3811ActiveAdmins(t *testing.T, s *Store) int {
 	return n
 }
 
+// bug3811GuardHasWaiter reports whether a session is waiting on the
+// pad:active-admins advisory lock. pg_locks splits the bigint key into classid
+// (high 32 bits) and objid (low 32 bits), with objsubid 1.
+func bug3811GuardHasWaiter(t *testing.T, db *sql.DB) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+		AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		AND objsubid = 1
+		AND classid = (((hashtext('pad:active-admins')::bigint) >> 32) & 4294967295)::oid
+		AND objid = ((hashtext('pad:active-admins')::bigint) & 4294967295)::oid`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n > 0
+}
+
 // The racy pairs. The interleaving is made deterministic by holding the
 // FIRST removal of admin A open in a transaction (the door's real
 // transaction body, uncommitted) while the SECOND door, the real public
@@ -73,26 +89,37 @@ func TestBUG3811_ConcurrentRemovalsKeepAnActiveAdmin(t *testing.T) {
 				done := make(chan error, 1)
 				go func() { done <- run(s, b) }()
 
+				// Commit A only once B is seen WAITING on the guard's lock, so
+				// the pair is concurrent by observation, not by a timer: a B
+				// that ran after the commit would refuse sequentially and pass
+				// without the lock (codex r1 on #2178).
 				var bErr error
 				returnedEarly := false
-				select {
-				case bErr = <-done:
-					returnedEarly = true
-				case <-time.After(500 * time.Millisecond):
+				deadline := time.Now().Add(10 * time.Second)
+				for !returnedEarly && !bug3811GuardHasWaiter(t, s.db) {
+					if time.Now().After(deadline) {
+						t.Fatalf("B's %s never waited on the active-admin lock while A's %s was held", sn, fn)
+					}
+					select {
+					case bErr = <-done:
+						returnedEarly = true
+					case <-time.After(20 * time.Millisecond):
+					}
+				}
+				if returnedEarly {
+					t.Fatalf("B's %s returned before A's %s committed (err %v): it did not wait on the active-admin lock", sn, fn, bErr)
 				}
 				if err := tx.Commit(); err != nil {
 					t.Fatalf("commit A's %s: %v", fn, err)
 				}
-				if !returnedEarly {
-					select {
-					case bErr = <-done:
-					case <-time.After(10 * time.Second):
-						t.Fatalf("B's %s never returned after A's %s committed", sn, fn)
-					}
+				select {
+				case bErr = <-done:
+				case <-time.After(10 * time.Second):
+					t.Fatalf("B's %s never returned after A's %s committed", sn, fn)
 				}
 
 				if n := bug3811ActiveAdmins(t, s); n == 0 {
-					t.Errorf("zero active admins: B's %s returned %v (before A committed: %v)", sn, bErr, returnedEarly)
+					t.Errorf("zero active admins: B's %s returned %v", sn, bErr)
 				}
 				if !errors.Is(bErr, ErrLastAdmin) {
 					t.Errorf("B's %s err = %v, want ErrLastAdmin", sn, bErr)
