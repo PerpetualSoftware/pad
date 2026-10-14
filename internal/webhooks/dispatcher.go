@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -333,13 +334,41 @@ func (d *Dispatcher) checkRedirect(req *http.Request, via []*http.Request) error
 	if len(via) >= maxWebhookRedirects {
 		return fmt.Errorf("%w: stopped after %d redirects", errRedirectRejected, maxWebhookRedirects)
 	}
+	// The event must arrive as sent (BUG-3662). net/http turns a 301, 302 or
+	// 303 after a POST into a bodyless GET and keeps the headers, so the
+	// receiver got a GET carrying a signature for a body it never saw, and a
+	// 2xx to it was recorded as delivered. 307 and 308 keep the method and
+	// the body, and are followed.
+	if len(via) > 0 {
+		orig := via[0]
+		if req.Method != orig.Method || (orig.GetBody != nil && req.GetBody == nil) {
+			return fmt.Errorf("%w: a %s redirect to %s would resend the event as a bodyless %s",
+				errRedirectRejected, redirectStatus(req), req.URL.Redacted(), req.Method)
+		}
+	}
 	if d.SkipSSRF {
 		return nil
 	}
-	if err := ValidateWebhookURL(req.URL.String()); err != nil {
+	// The lookup is bound to the attempt (BUG-3661); a failed one is the
+	// resolver's, not the policy's, and stays retryable: it is returned
+	// without errRedirectRejected, so the delivery is transient.
+	ctx, cancel := context.WithTimeout(req.Context(), deliveryTimeout)
+	defer cancel()
+	if err := ValidateWebhookURLContext(ctx, req.URL.String()); err != nil {
+		if IsResolveError(err) {
+			return fmt.Errorf("redirect to %s: %w", req.URL.Redacted(), err)
+		}
 		return fmt.Errorf("%w: redirect to %s blocked: %v", errRedirectRejected, req.URL.Redacted(), err)
 	}
 	return nil
+}
+
+// redirectStatus names the status that produced a redirect hop, for logs.
+func redirectStatus(req *http.Request) string {
+	if req.Response != nil {
+		return strconv.Itoa(req.Response.StatusCode)
+	}
+	return "redirect"
 }
 
 // screenDialAddr rejects a dial to a private/reserved IP. The dialer calls
@@ -353,13 +382,19 @@ func screenDialAddr(address string) error {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return fmt.Errorf("webhook dial blocked: %q is not a resolved IP", address)
+		return fmt.Errorf("%w: %q is not a resolved IP", errDialBlocked, address)
 	}
 	if isPrivateIP(ip) {
-		return fmt.Errorf("webhook dial blocked: private or reserved IP %s", ip)
+		return fmt.Errorf("%w: private or reserved IP %s", errDialBlocked, ip)
 	}
 	return nil
 }
+
+// errDialBlocked marks screenDialAddr's refusal. It is the policy's, like a
+// blocked URL, so a delivery that hits it is permanent, not a network error
+// to retry (BUG-3661, codex r1): before, any Do error that was not a
+// rejected redirect counted as transient, this one included.
+var errDialBlocked = errors.New("webhook dial blocked")
 
 // Dispatch sends the event payload to all matching active webhooks for the
 // workspace. Each delivery runs in its own goroutine so the caller is never
@@ -575,9 +610,22 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	}
 
 	// Defense in depth: re-validate URL before making the request. An
-	// SSRF block is permanent — retrying won't make the target public.
+	// SSRF block is permanent — retrying won't make the target public. A
+	// failed lookup is not a block (BUG-3661): a DNS timeout or SERVFAIL
+	// used to end the endpoint's part in the event for good. It is
+	// transient, and the lookup is bound to the attempt's timeout.
+	// One deadline covers the whole attempt, the lookup above included
+	// (codex r1): the lookup used to get its own deliveryTimeout before the
+	// request got another.
+	attemptCtx, attemptCancel := context.WithTimeout(context.Background(), deliveryTimeout)
+	defer attemptCancel()
 	if !d.SkipSSRF {
-		if err := ValidateWebhookURL(hook.URL); err != nil {
+		err := ValidateWebhookURLContext(attemptCtx, hook.URL)
+		if err != nil && IsResolveError(err) {
+			slog.Warn("webhook hostname did not resolve; will retry", "url", hook.URL, "error", err)
+			return deliveryTransient
+		}
+		if err != nil {
 			slog.Warn("blocked webhook delivery", "url", hook.URL, "error", err)
 			return deliveryPermanent
 		}
@@ -592,7 +640,7 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	// and cancelling closes those windows. A request already being written
 	// at the instant of a deletion cannot be recalled; that is the
 	// irreducible window.
-	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), webhookWorkspaceKey{}, hook.WorkspaceID))
+	ctx, cancel := context.WithCancel(context.WithValue(attemptCtx, webhookWorkspaceKey{}, hook.WorkspaceID))
 	defer cancel()
 	var connGone, connUnknown atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
@@ -658,6 +706,10 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 		}
 		if errors.Is(err, errRedirectRejected) {
 			slog.Warn("blocked webhook redirect", "url", hook.URL, "error", err)
+			return deliveryPermanent
+		}
+		if errors.Is(err, errDialBlocked) {
+			slog.Warn("blocked webhook dial", "url", hook.URL, "error", err)
 			return deliveryPermanent
 		}
 		// Network error / timeout — transient, worth retrying.

@@ -288,3 +288,29 @@ func TestPoster_ZeroByteWriteFailureIsUnsent(t *testing.T) {
 		t.Fatal("a write failing after 3 bytes was reported unsent")
 	}
 }
+
+// BUG-3661: a resolver failure is the network's, not the policy's, so an app
+// webhook delivery that hits one is transient and unsent, never refused.
+func TestBUG3661_PosterResolverFailureIsNotARefusal(t *testing.T) {
+	p, err := NewPoster(nil, 5*time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookupWas := lookupIP
+	t.Cleanup(func() { lookupIP = lookupWas })
+
+	lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return nil, &net.DNSError{Err: "server misbehaving", Name: "hooks.example.test", IsTemporary: true}
+	}
+	_, err = p.Post(context.Background(), "https://hooks.example.test/x", nil, http.Header{})
+	if err == nil || errors.Is(err, ErrRefused) || !errors.Is(err, ErrNotSent) {
+		t.Errorf("a SERVFAIL: err %v, want an unsent network error, not ErrRefused", err)
+	}
+
+	lookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.1")}, nil
+	}
+	if _, err = p.Post(context.Background(), "https://hooks.example.test/x", nil, http.Header{}); !errors.Is(err, ErrRefused) {
+		t.Errorf("control: a private answer: err %v, want ErrRefused", err)
+	}
+}

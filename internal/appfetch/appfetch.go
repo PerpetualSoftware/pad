@@ -161,7 +161,10 @@ func (f *Fetcher) dial(ctx context.Context, d *net.Dialer, network, addr string)
 	} else {
 		ips, err = lookupIP(ctx, "ip", host)
 		if err != nil {
-			return nil, refused("resolve %s: %v", host, err)
+			// The resolver's failure, not the policy's (BUG-3661): a
+			// network error, so a webhook delivery that hits it is
+			// transient rather than refused for good.
+			return nil, fmt.Errorf("resolve %s: %w", host, err)
 		}
 	}
 	var lastErr error = refused("%s resolves to no permitted address", host)
