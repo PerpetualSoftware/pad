@@ -100,7 +100,7 @@ func TestMCPAudit_RecordsToolCallWithToolNameAndArgsHash(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -164,7 +164,7 @@ func TestMCPAudit_NonToolsCallMethod_RecordsMethodAsToolName(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
