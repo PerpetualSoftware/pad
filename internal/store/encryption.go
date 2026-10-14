@@ -104,6 +104,14 @@ func (s *Store) decrypt(value string) (string, error) {
 	return string(plaintext), nil
 }
 
+// backfillTOTPAfterReadHook and encryptWebhookSecretsAfterReadHook, when set
+// by a test, run between the pass's read of the plaintext secrets and its
+// writes (BUG-3805).
+var (
+	backfillTOTPAfterReadHook          func()
+	encryptWebhookSecretsAfterReadHook func()
+)
+
 // BackfillEncryptTOTPSecrets encrypts any plaintext TOTP secrets in the database.
 // Idempotent: skips secrets that already have the "enc:" prefix.
 // Called on startup when an encryption key is first configured.
@@ -132,18 +140,32 @@ func (s *Store) BackfillEncryptTOTPSecrets() (int, error) {
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	rows.Close()
+	if backfillTOTPAfterReadHook != nil {
+		backfillTOTPAfterReadHook()
+	}
 
+	// Compare-and-set on the value read (BUG-3805): a re-enroll or a disable
+	// that landed since the read must not be overwritten with the old secret.
+	// A row that moved is skipped, not counted.
+	encryptedCount := 0
 	for _, r := range toEncrypt {
 		encrypted, err := s.encrypt(r.secret)
 		if err != nil {
 			return 0, fmt.Errorf("encrypt secret for user %s: %w", r.id, err)
 		}
-		if _, err := s.db.Exec(s.q(`UPDATE users SET totp_secret = ? WHERE id = ?`), encrypted, r.id); err != nil {
+		res, err := s.db.Exec(s.q(`UPDATE users SET totp_secret = ? WHERE id = ? AND totp_secret = ?`), encrypted, r.id, r.secret)
+		if err != nil {
 			return 0, fmt.Errorf("update secret for user %s: %w", r.id, err)
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("update secret for user %s: rows affected: %w", r.id, err)
+		}
+		encryptedCount += int(n)
 	}
 
-	return len(toEncrypt), nil
+	return encryptedCount, nil
 }
 
 // webhookSecretsEncryptedFlag marks that the one-time legacy migration of
@@ -215,6 +237,9 @@ func (s *Store) EncryptWebhookSecretsAtRest() (int, error) {
 		return 0, err
 	}
 	rows.Close() // release the read before opening the write transaction (SQLite)
+	if encryptWebhookSecretsAfterReadHook != nil {
+		encryptWebhookSecretsAfterReadHook()
+	}
 
 	if len(toEncrypt) == 0 && !firstRun {
 		return 0, nil
@@ -230,14 +255,25 @@ func (s *Store) EncryptWebhookSecretsAtRest() (int, error) {
 	}
 	defer tx.Rollback()
 
+	// Compare-and-set on the value read (BUG-3805): a secret rotated or a row
+	// deleted since the read (another replica, or any write during startup)
+	// must not be overwritten with the stale value. A row that moved is
+	// skipped, not counted.
+	encryptedCount := 0
 	for _, r := range toEncrypt {
 		encrypted, err := s.encrypt(r.secret)
 		if err != nil {
 			return 0, fmt.Errorf("encrypt secret for webhook %s: %w", r.id, err)
 		}
-		if _, err := tx.Exec(s.q(`UPDATE webhooks SET secret = ? WHERE id = ?`), encrypted, r.id); err != nil {
+		res, err := tx.Exec(s.q(`UPDATE webhooks SET secret = ? WHERE id = ? AND secret = ?`), encrypted, r.id, r.secret)
+		if err != nil {
 			return 0, fmt.Errorf("update secret for webhook %s: %w", r.id, err)
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("update secret for webhook %s: rows affected: %w", r.id, err)
+		}
+		encryptedCount += int(n)
 	}
 
 	if firstRun {
@@ -253,7 +289,7 @@ func (s *Store) EncryptWebhookSecretsAtRest() (int, error) {
 		return 0, fmt.Errorf("commit webhook-secret migration: %w", err)
 	}
 
-	return len(toEncrypt), nil
+	return encryptedCount, nil
 }
 
 // ErrNoEncryptionKey means no encryption key is configured.
