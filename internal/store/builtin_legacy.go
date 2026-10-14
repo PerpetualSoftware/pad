@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +14,10 @@ import (
 
 // legacyBuiltinAdoptionSetting records that the one-time adoption ran.
 const legacyBuiltinAdoptionSetting = "builtin_legacy_adoption"
+
+// adoptLegacyAfterScanHook, when set by a test, runs between the candidate
+// scan and the adoption writes (BUG-3806).
+var adoptLegacyAfterScanHook func()
 
 // LegacyBuiltinAdoption is what AdoptLegacyBuiltins did.
 type LegacyBuiltinAdoption struct {
@@ -85,10 +91,7 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 		return res, err
 	}
 
-	type candidate struct {
-		id, title, content, fields, collectionID string
-	}
-	var cands []candidate
+	var cands []legacyCandidate
 	ids := make([]string, 0, len(kindOf))
 	for id := range kindOf {
 		ids = append(ids, id)
@@ -107,7 +110,7 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 			args = append(args, id)
 		}
 		rows, err := s.db.Query(s.q(`
-			SELECT i.id, i.title, i.content, i.fields, i.collection_id, i.created_at, w.created_at
+			SELECT i.id, i.title, i.content, i.fields, i.collection_id, i.workspace_id, i.created_at, w.created_at
 			FROM items i
 			JOIN workspaces w ON w.id = i.workspace_id
 			LEFT JOIN item_builtin_origin o ON o.item_id = i.id
@@ -118,9 +121,9 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 			return res, fmt.Errorf("list legacy items: %w", err)
 		}
 		for rows.Next() {
-			var c candidate
+			var c legacyCandidate
 			var createdAt, wsCreatedAt string
-			if err := rows.Scan(&c.id, &c.title, &c.content, &c.fields, &c.collectionID, &createdAt, &wsCreatedAt); err != nil {
+			if err := rows.Scan(&c.id, &c.title, &c.content, &c.fields, &c.collectionID, &c.workspaceID, &createdAt, &wsCreatedAt); err != nil {
 				rows.Close()
 				return res, fmt.Errorf("scan item: %w", err)
 			}
@@ -153,34 +156,93 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 		}
 	}
 
-	entries := collections.BuiltinEntries()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return res, err
+	if adoptLegacyAfterScanHook != nil {
+		adoptLegacyAfterScanHook()
 	}
-	defer tx.Rollback() //nolint:errcheck
-	ts := now()
+
+	// One transaction per workspace, each candidate re-read under the
+	// workspace seq lock and matched on what was re-read (BUG-3806): the scan
+	// above is unlocked, and a rename, move or delete landing since must not
+	// be adopted from the buffered values. A crash between workspaces is
+	// safe: an adopted item has an origin, so a rerun's scan skips it.
+	byWorkspace := map[string][]legacyCandidate{}
+	var order []string
 	for _, c := range cands {
-		kind := kindOf[c.collectionID]
-		res.Considered++
-		var f struct {
-			InvocationSlug string `json:"invocation_slug"`
+		if _, ok := byWorkspace[c.workspaceID]; !ok {
+			order = append(order, c.workspaceID)
 		}
-		_ = json.Unmarshal([]byte(c.fields), &f)
-		key := collections.MatchLegacyBuiltin(entries, kind, c.title, f.InvocationSlug, c.content)
-		if key == "" {
-			continue
-		}
-		if err := s.insertBuiltinOriginTx(tx, c.id, models.BuiltinOrigin{Key: key}, ts); err != nil {
+		byWorkspace[c.workspaceID] = append(byWorkspace[c.workspaceID], c)
+	}
+	entries := collections.BuiltinEntries()
+	for _, wsID := range order {
+		adopted, err := s.adoptLegacyWorkspace(wsID, byWorkspace[wsID], kindOf, entries)
+		if err != nil {
 			return res, err
 		}
-		res.Adopted++
-	}
-	if err := tx.Commit(); err != nil {
-		return res, err
+		res.Considered += len(byWorkspace[wsID])
+		res.Adopted += adopted
 	}
 	if err := s.SetPlatformSetting(legacyBuiltinAdoptionSetting, "done"); err != nil {
 		return res, fmt.Errorf("record adoption marker: %w", err)
 	}
 	return res, nil
+}
+
+// legacyCandidate is an item the scan found, as the scan read it.
+type legacyCandidate struct {
+	id, title, content, fields, collectionID, workspaceID string
+}
+
+// adoptLegacyWorkspace adopts one workspace's candidates in one transaction
+// and returns how many it adopted. Workspace lock first, then each item row:
+// the order every item write takes, so this cannot invert against them.
+func (s *Store) adoptLegacyWorkspace(workspaceID string, cands []legacyCandidate, kindOf map[string]string, entries []collections.BuiltinEntry) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return 0, err
+	}
+	// SQLite's write lock already serialises and it does not take the clause.
+	lockedRead := `SELECT i.title, i.content, i.fields, i.collection_id, o.item_id IS NOT NULL
+		FROM items i LEFT JOIN item_builtin_origin o ON o.item_id = i.id
+		WHERE i.id = ? AND i.deleted_at IS NULL`
+	if s.dialect.Driver() == DriverPostgres {
+		lockedRead += " FOR UPDATE OF i"
+	}
+	ts := now()
+	adopted := 0
+	for _, c := range cands {
+		var title, content, fields, collectionID string
+		var hasOrigin bool
+		err := tx.QueryRow(s.q(lockedRead), c.id).Scan(&title, &content, &fields, &collectionID, &hasOrigin)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // deleted since the scan
+		}
+		if err != nil {
+			return 0, fmt.Errorf("re-read legacy item %s: %w", c.id, err)
+		}
+		kind, ok := kindOf[collectionID]
+		if hasOrigin || !ok {
+			continue // given an origin, or moved out of conventions/playbooks, since the scan
+		}
+		var f struct {
+			InvocationSlug string `json:"invocation_slug"`
+		}
+		_ = json.Unmarshal([]byte(fields), &f)
+		key := collections.MatchLegacyBuiltin(entries, kind, title, f.InvocationSlug, content)
+		if key == "" {
+			continue
+		}
+		if err := s.insertBuiltinOriginTx(tx, c.id, models.BuiltinOrigin{Key: key}, ts); err != nil {
+			return 0, err
+		}
+		adopted++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return adopted, nil
 }
