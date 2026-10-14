@@ -73,8 +73,8 @@ func (s *Server) responseWriteTimeout() time.Duration {
 // body smaller than net/http's buffer reaches the socket only when the server
 // flushes it after the handler, which may be long after the last Write.
 // net/http clears the deadline after each response and on hijack, so nothing
-// armed here outlives the request (TestBUG3821_ExemptRequestDoesNotInherit-
-// AnExpiredDeadline holds it to that).
+// armed here outlives the request (TestBUG3821_AConnectionCarriesNoDeadline-
+// IntoItsNextRequestOrAHijack holds it to that).
 func (s *Server) boundResponseWrites(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ownsWriteDeadline(r) {

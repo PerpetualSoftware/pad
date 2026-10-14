@@ -229,11 +229,18 @@ func (s *throttledReader) Read(p []byte) (int, error) {
 }
 
 // The middleware never clears the deadline it leaves on a connection, because
-// net/http does: after each response and on hijack. If that ever changed, a
-// keep-alive connection would carry an expired deadline into its next request,
-// and an exempt one would break first: a collab upgrade writes its 101 before
-// collab arms any deadline of its own. This holds net/http to it.
-func TestBUG3821_ExemptRequestDoesNotInheritAnExpiredDeadline(t *testing.T) {
+// net/http does: after each response (so a keep-alive connection's next
+// request starts with none) and on hijack (so a hijacked connection carries
+// none, whatever was armed before). This holds net/http to both, through the
+// router: a bounded response, a wait past its deadline, then an upgrade on the
+// same connection whose hijacked handler writes only after a second wait past
+// the timeout.
+//
+// It does NOT pin that upgrades are exempt, and nothing can: the hijack clears
+// whatever the middleware armed, so the exemption has no observable effect on
+// a hijacked connection. Upgrades are in ownsWriteDeadline because they are in
+// compressSkips' set, which the predicate serves too (codex r3).
+func TestBUG3821_AConnectionCarriesNoDeadlineIntoItsNextRequestOrAHijack(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	srv.ensureRouter()
@@ -247,9 +254,10 @@ func TestBUG3821_ExemptRequestDoesNotInheritAnExpiredDeadline(t *testing.T) {
 			return
 		}
 		defer conn.Close()
+		time.Sleep(2 * bug3821Timeout)
 		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\nhello\n")
 		if err := rw.Flush(); err != nil {
-			t.Errorf("the upgraded connection's first write failed: %v", err)
+			t.Errorf("the hijacked connection's write, %v after the hijack, failed: %v", 2*bug3821Timeout, err)
 		}
 	})
 	ts, _ := bug3821Server(t, srv, bug3821Timeout, 1<<20)
@@ -272,7 +280,7 @@ func TestBUG3821_ExemptRequestDoesNotInheritAnExpiredDeadline(t *testing.T) {
 	status, err := br.ReadString('\n')
 	if err != nil || !strings.Contains(status, " 101 ") {
 		t.Fatalf("upgrade on a reused connection: status line %q (%v), want 101: "+
-			"the exempt request inherited the previous response's expired write deadline", status, err)
+			"a write deadline outlived the previous response or the hijack", status, err)
 	}
 }
 
