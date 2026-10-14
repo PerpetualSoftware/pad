@@ -288,3 +288,30 @@ func TestMCP_BUG3808_DeadStreamCancelsTheRequestContext(t *testing.T) {
 		t.Fatal("the request context was not cancelled after the stream's flush failed: a handler waiting on it is pinned")
 	}
 }
+
+// Both MCP mounts serve the same mcp-go transport type, so both are bounded:
+// each refuses a writer without a write deadline before its transport runs,
+// and reaches it through one that has (control).
+func TestMCP_BUG3808_BothMountsAreBounded(t *testing.T) {
+	srv := chatGPTMountServer(t, true)
+	sess := newOAuthSession(t, srv)
+	mcpTok, _ := mintWithResource(t, srv, sess, testCanonicalAudience)
+	gptTok, _ := mintWithResource(t, srv, sess, testChatGPTResource)
+	for _, c := range []struct{ path, token, transport string }{
+		{"/mcp", mcpTok, "mcp"},
+		{"/mcp/chatgpt", gptTok, "chatgpt"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, c.path, strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusInternalServerError || rr.Body.String() == c.transport {
+			t.Errorf("%s through a writer without deadlines: %d %q, want 500 before the transport", c.path, rr.Code, rr.Body.String())
+		}
+		if ok := postMCP(srv, c.path, c.token); ok.Code != http.StatusOK || ok.Body.String() != c.transport {
+			t.Errorf("control: %s through a deadline writer: %d %q, want 200 from the %s transport", c.path, ok.Code, ok.Body.String(), c.transport)
+		}
+	}
+}
