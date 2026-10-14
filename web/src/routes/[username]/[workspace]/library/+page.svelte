@@ -253,8 +253,8 @@
 				// unknown parameter as a FIELD filter, and so answered [] here, which
 				// left the title match below matching nothing. A plain list already
 				// returns every status.
-				api.items.listByCollection(ws, convSlug).catch(() => [] as Item[]),
-				api.items.listByCollection(ws, pbSlug).catch(() => [] as Item[]),
+				api.items.listAllByCollection(ws, convSlug).catch(() => [] as Item[]),
+				api.items.listAllByCollection(ws, pbSlug).catch(() => [] as Item[]),
 				// A server before TASK-3462 has no listing: the title match
 				// below then decides "Active" alone, as it always did.
 				api.builtins.list(ws).catch(() => [] as BuiltinListEntry[]),

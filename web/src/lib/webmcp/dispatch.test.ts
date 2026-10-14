@@ -154,6 +154,42 @@ describe('dispatch — wsSlug injection (DR-4)', () => {
 	});
 });
 
+// ── pad_item list is bounded and says when it is cut short (BUG-3704) ────────
+
+describe('dispatch — pad_item list bounds (BUG-3704)', () => {
+	const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ ref: `TASK-${i + 1}` }));
+
+	it('asks for the default 50 plus one probe row, and returns a list that fits as is', async () => {
+		const api = mockApi();
+		api.items.list.mockResolvedValueOnce(rows(50) as never);
+		const res = await run(api, 'pad_item', { action: 'list' });
+		const out = JSON.parse(res.content[0].text);
+		expect(api.items.list).toHaveBeenCalledWith(WS, expect.objectContaining({ limit: 51 }));
+		expect(Array.isArray(out)).toBe(true);
+		expect((out as unknown[]).length).toBe(50);
+	});
+
+	it('clamps an oversized limit to 300 (plus the probe)', async () => {
+		const api = mockApi();
+		await run(api, 'pad_item', { action: 'list', collection: 'bugs', limit: 99999 });
+		expect(api.items.listByCollection).toHaveBeenCalledWith(WS, 'bugs', expect.objectContaining({ limit: 301 }));
+	});
+
+	it('trims the probe row and says has_more when it came back', async () => {
+		const api = mockApi();
+		api.items.list.mockResolvedValueOnce(rows(11) as never);
+		const res = await run(api, 'pad_item', { action: 'list', limit: 10 });
+		const out = JSON.parse(res.content[0].text) as {
+			items: unknown[];
+			has_more: boolean;
+			note: string;
+		};
+		expect(out.items.length).toBe(10);
+		expect(out.has_more).toBe(true);
+		expect(out.note).toContain('More items match');
+	});
+});
+
 // ── Supplied-workspace rejection applies to writes too (DR-4) ────────────────
 
 describe('dispatch — supplied-workspace rejection (DR-4)', () => {

@@ -124,7 +124,7 @@
 		// over the one for the renamed collection that superseded it.
 		const current = () => ws === wsSlug && pb === playbooksSlug;
 		try {
-			const list = await api.items.listByCollection(ws, pb, {});
+			const list = await api.items.listAllByCollection(ws, pb, {});
 			if (!current()) return;
 			playbooks = list;
 		} catch {

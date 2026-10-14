@@ -904,6 +904,9 @@ function fetchJsonWithDeadline<T>(url: string, init?: RequestInit): Promise<T> {
 	);
 }
 
+/** The server's cap on one item-list response (BUG-3704). */
+const ITEM_LIST_PAGE = 1000;
+
 async function request<T>(
 	path: string,
 	options?: RequestInit,
@@ -1758,6 +1761,28 @@ export const api = {
 			request<Item[]>(
 				`/workspaces/${ws}/collections/${coll}/items${qs(params)}`
 			),
+
+		/**
+		 * EVERY item of a collection, for a page that needs the whole set
+		 * (BUG-3704): the server caps one response at 1000, so this asks for
+		 * pages of 1000 and stops at the first short one. The order ends on
+		 * the item id server-side, so pages neither repeat nor skip a row.
+		 * `limit` / `offset` in params are ignored.
+		 */
+		listAllByCollection: async (
+			ws: string,
+			coll: string,
+			params?: Record<string, string | number | boolean | undefined>
+		): Promise<Item[]> => {
+			const all: Item[] = [];
+			for (let offset = 0; ; offset += ITEM_LIST_PAGE) {
+				const page = await request<Item[]>(
+					`/workspaces/${ws}/collections/${coll}/items${qs({ ...params, limit: ITEM_LIST_PAGE, offset })}`
+				);
+				all.push(...page);
+				if (page.length < ITEM_LIST_PAGE) return all;
+			}
+		},
 
 		/**
 		 * Skinny-projection cross-collection listing for the local-first

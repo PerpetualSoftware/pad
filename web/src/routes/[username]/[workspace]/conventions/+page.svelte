@@ -123,7 +123,7 @@
 		// Dropped when the route or the resolved slug moved while in flight.
 		const current = () => ws === workspace && cs === conventionsSlug;
 		try {
-			const list = await api.items.listByCollection(ws, cs, { include_archived: false });
+			const list = await api.items.listAllByCollection(ws, cs, { include_archived: false });
 			if (!current()) return;
 			conventions = list;
 		} catch {

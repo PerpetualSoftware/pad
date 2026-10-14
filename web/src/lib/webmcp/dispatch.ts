@@ -64,6 +64,10 @@ function str(args: Record<string, unknown>, key: string): string | undefined {
  * reachable here since WebMCP args arrive via structured clone rather than
  * JSON.parse, which can't produce NaN) throws rather than silently dropping.
  */
+/** pad_item list bounds, the Go catalog's mcpItemListDefaultLimit / MaxLimit. */
+const ITEM_LIST_DEFAULT = 50;
+const ITEM_LIST_MAX = 300;
+
 function num(args: Record<string, unknown>, key: string): number | undefined {
 	const v = args[key];
 	if (v === undefined || v === null) return undefined;
@@ -416,18 +420,31 @@ const HANDLERS: Record<string, Handler> = {
 	// workspace-wide list read `?collection=` as a filter on a field nobody
 	// declares and answered [] for every collection-scoped call; it now
 	// refuses the parameter outright.
-	'pad_item:list': (api, ws, args) => {
+	//
+	// Bounded like the Go pad_item list (TASK-2000, BUG-3704): 50 by default,
+	// at most 300, and one row past the limit tells whether the list was cut
+	// short. Then the result says has_more instead of passing for the whole
+	// set; it never pages for the agent. A list that fits is the plain array.
+	'pad_item:list': async (api, ws, args) => {
+		const asked = num(args, 'limit');
+		const limit = Math.min(asked && asked > 0 ? asked : ITEM_LIST_DEFAULT, ITEM_LIST_MAX);
 		const filters = {
 			status: str(args, 'status'),
 			priority: str(args, 'priority'),
 			parent: str(args, 'parent'),
 			tag: str(args, 'tag'),
-			limit: num(args, 'limit'),
+			limit: limit + 1,
 		};
 		const collection = str(args, 'collection');
-		return collection
-			? api.items.listByCollection(ws, collection, filters)
-			: api.items.list(ws, filters);
+		const rows = collection
+			? await api.items.listByCollection(ws, collection, filters)
+			: await api.items.list(ws, filters);
+		if (rows.length <= limit) return rows;
+		return {
+			items: rows.slice(0, limit),
+			has_more: true,
+			note: `More items match than this list shows. Narrow the filters, or raise limit (max ${ITEM_LIST_MAX}).`,
+		};
 	},
 	'pad_item:get': (api, ws, args) => api.items.get(ws, requireRef(args)),
 	'pad_item:deps': (api, ws, args) => api.links.list(ws, requireRef(args)),

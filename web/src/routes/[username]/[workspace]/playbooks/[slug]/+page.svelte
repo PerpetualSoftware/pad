@@ -215,7 +215,7 @@
 	async function loadPlaybooks(ws: string, pb: string) {
 		const isSameIdentity = authStore.identityFence();
 		try {
-			const list = await api.items.listByCollection(ws, pb, {});
+			const list = await api.items.listAllByCollection(ws, pb, {});
 			if (ws !== wsSlug || pb !== playbooksSlug || !isSameIdentity()) return;
 			existingPlaybooks = list;
 		} catch {
