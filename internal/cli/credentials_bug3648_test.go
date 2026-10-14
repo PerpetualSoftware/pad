@@ -232,3 +232,41 @@ func TestBUG3648_LockFileIsTightenedWhenItExists(t *testing.T) {
 		t.Errorf("lock file mode = %o, want 0600", got)
 	}
 }
+
+// TestBUG3649_WipeWaitsForTheLock: a wipe racing UpdateStore could be
+// undone by the update's rename, so Wipe takes the same lock (Codex round
+// 1). Holding the lock must hold Wipe; releasing it must let Wipe finish.
+func TestBUG3649_WipeWaitsForTheLock(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("no cross-process credentials lock on this platform")
+	}
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)
+	unlock, err := lockCredentialsFile(path + ".lock")
+	if err != nil {
+		t.Fatalf("lockCredentialsFile: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- WipeCredentialsFile() }()
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("WipeCredentialsFile returned (%v) while the credentials lock was held", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("credentials.json removed while the lock was held: %v", err)
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WipeCredentialsFile: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("WipeCredentialsFile did not finish after the lock was released")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("credentials.json still present after the wipe: %v", err)
+	}
+}
