@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -178,5 +180,52 @@ func TestBUG3659_CollectionsAndItemsShareOneSnapshot(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("instrument: the export does not carry workspace %s", ws.ID)
+	}
+}
+
+// TASK-3401 review of the snapshot path (lead, on BUG-3659): the access
+// re-check inside the export's snapshot applies the app ceiling exactly as
+// visibleCollectionIDs does, because both run visibleCollectionIDsQ. The
+// account export route sits outside the app routes, so a real request never
+// carries an app context there; this pins the ceiling anyway, so a future
+// re-check that bypassed it fails here. Given an app context whose ceiling
+// hides the workspace's collection, the pool path and the snapshot path both
+// read the caller as restricted, and the snapshot refuses the workspace.
+func TestBUG3659_SnapshotAccessCheckAppliesTheAppCeiling(t *testing.T) {
+	srv := testServer(t)
+	_ = bug3626Owner(t, srv)
+	ownerID, ws := bug3659OwnerAndWorkspace(t, srv)
+	owner, err := srv.store.GetUser(ownerID)
+	if err != nil || owner == nil {
+		t.Fatalf("owner: %v", err)
+	}
+	base := httptest.NewRequest(http.MethodGet, "/api/v1/auth/export", nil)
+	base = base.WithContext(context.WithValue(base.Context(), ctxCurrentUser, owner))
+
+	// Control: without an app context the owner is unrestricted on both paths.
+	if ids, err := srv.visibleCollectionIDs(base, ws.ID); err != nil || ids != nil {
+		t.Fatalf("control, pool path: %v %v", ids, err)
+	}
+	if _, _, err := srv.accountExportWorkspace(context.Background(), base, ws.ID); err != nil {
+		t.Fatalf("control, snapshot path: %v", err)
+	}
+
+	ac := &appContext{WorkspaceID: ws.ID, ReadCeiling: []string{}}
+	app := base.WithContext(context.WithValue(base.Context(), appCtxKey{}, ac))
+	pool, err := srv.visibleCollectionIDs(app, ws.ID)
+	if err != nil || pool == nil {
+		t.Fatalf("the pool path did not apply the ceiling: %v %v", pool, err)
+	}
+	tx, err := srv.store.BeginReadSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := srv.visibleCollectionIDsQ(app, tx, ws.ID)
+	_ = tx.Rollback()
+	if err != nil || snap == nil || len(snap) != len(pool) {
+		t.Errorf("the snapshot path's ceiling (%v, %v) differs from the pool path's (%v)", snap, err, pool)
+	}
+	if _, _, err := srv.accountExportWorkspace(context.Background(), app, ws.ID); !errors.Is(err, errAccountExportRestricted) {
+		t.Errorf("the snapshot read a ceilinged request as unrestricted: %v", err)
 	}
 }

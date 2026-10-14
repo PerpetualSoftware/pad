@@ -46,7 +46,7 @@ var lifecycleSites = map[string]string{
 	"internal/server/handlers_dashboard.go::childProgressState::IsTerminalItem":  "exclude: the progress predicate; isReferenceCollection answers first",
 	"internal/store/items.go::nonTerminalFilter::doneFiltersForWorkspace":        "keep: the list filter for an item list's own open items (a doc's status filters its own list)",
 	"internal/store/items.go::nonTerminalFilter::buildChildrenDoneExpr":          "keep: as above",
-	"internal/store/items.go::ListItems::nonTerminalFilter":                      "keep: `pad item list` / MCP list's default open filter, a list's own items",
+	"internal/store/items.go::listItemsQ::nonTerminalFilter":                     "keep: `pad item list` / MCP list's default open filter, a list's own items (ListItems delegates here; ListItemsQ refuses NonTerminal, BUG-3659)",
 	"internal/store/items.go::listItemsFTS::nonTerminalFilter":                   "keep: the same filter on the search-backed list",
 
 	// Progress.
