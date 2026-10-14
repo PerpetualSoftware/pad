@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -301,5 +303,137 @@ func TestBUG3648_SaveWritesThroughASymlinkedFile(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"fresh"`) {
 		t.Errorf("the symlink target did not receive the save: %s", data)
+	}
+}
+
+// Rows 3-7 of the population table on BUG-3649: a symlinked credentials.json
+// is written in place through the link, so a dangling link keeps being a
+// link, a target in a read-only directory is still writable, and a loose
+// target is tightened.
+// longSeed is longer than the save that replaces it, so an in-place write
+// that skipped the truncate would leave trailing bytes and invalid JSON.
+var longSeed = []byte(`{"version": 2, "credentials": {"https://an-old-server.example.com:7777": {"token": "` + strings.Repeat("x", 400) + `"}}}`)
+
+func symlinkedCredentials(t *testing.T, targetDir string, seed bool, mode os.FileMode) (link, target string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	home := withTempHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".pad"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, targetDir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target = filepath.Join(dir, "credentials.json")
+	if seed {
+		if err := os.WriteFile(target, longSeed, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(target, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link = filepath.Join(home, ".pad", "credentials.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	return link, target
+}
+
+func saveFresh(t *testing.T) {
+	t.Helper()
+	store := newEmptyStore()
+	store.Set("http://x:7777", &Credentials{Token: "fresh"})
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+}
+
+func assertLinkedSave(t *testing.T, link, target string) {
+	t.Helper()
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("credentials.json is no longer a symlink after Save (err %v)", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"fresh"`) || !json.Valid(data) {
+		t.Errorf("the symlink target did not receive the save whole: %s", data)
+	}
+	fi, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0600 {
+		t.Errorf("target mode = %o, want 600", got)
+	}
+}
+
+func TestBUG3648_SaveKeepsADanglingSymlink(t *testing.T) {
+	link, target := symlinkedCredentials(t, "dotfiles", false, 0)
+	saveFresh(t)
+	assertLinkedSave(t, link, target)
+}
+
+func TestBUG3648_SaveThroughASymlinkIntoAReadOnlyDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	link, target := symlinkedCredentials(t, "secrets", true, 0600)
+	dir := filepath.Dir(target)
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+	saveFresh(t)
+	assertLinkedSave(t, link, target)
+}
+
+func TestBUG3648_SaveTightensALooseSymlinkTarget(t *testing.T) {
+	link, target := symlinkedCredentials(t, "dotfiles", true, 0644)
+	saveFresh(t)
+	assertLinkedSave(t, link, target)
+}
+
+// Row 6: a rename over a bind-mounted file fails EBUSY (measured in a
+// container, BUG-3649), where os.WriteFile's in-place write worked, so Save
+// falls back to writing in place.
+func TestBUG3648_SaveWritesInPlaceWhenTheRenameIsBusy(t *testing.T) {
+	home := withTempHome(t)
+	path := filepath.Join(home, ".pad", "credentials.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, longSeed, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	orig := osRename
+	osRename = func(oldpath, newpath string) error {
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EBUSY}
+	}
+	t.Cleanup(func() { osRename = orig })
+	saveFresh(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"fresh"`) || !json.Valid(data) {
+		t.Errorf("the busy target did not receive the save whole: %s", data)
+	}
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Mode().Perm(); got != 0600 {
+			t.Errorf("mode = %o, want 600", got)
+		}
 	}
 }

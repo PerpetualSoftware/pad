@@ -39,11 +39,13 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -236,17 +238,54 @@ func (s *CredentialStore) Save() error {
 		return fmt.Errorf("marshal credentials: %w", err)
 	}
 
-	// A symlinked credentials.json (a dotfiles repo, an encrypted volume) is
-	// written through to its target, as os.WriteFile did; renaming over the
-	// link would replace it with a plain file and strand the target
-	// (final review round, both hunters).
-	if target, err := filepath.EvalSymlinks(path); err == nil && target != path {
-		path = target
+	// Each target shape must fare at least as well as os.WriteFile did, or
+	// keep its behaviour (population table on BUG-3649). A symlinked
+	// credentials.json, live or dangling, is written through the link in
+	// place: renaming over it would replace the link with a plain file, and a
+	// temp file beside its target fails in a read-only directory. A
+	// bind-mounted file cannot be renamed over (EBUSY), so it is written in
+	// place too.
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		err = writeFileInPlace0600(path, data)
+		if err != nil {
+			return fmt.Errorf("write credentials: %w", err)
+		}
+		return nil
 	}
-	if err := writeFileAtomic0600(path, data); err != nil {
+	err = writeFileAtomic0600(path, data)
+	if errors.Is(err, syscall.EBUSY) {
+		err = writeFileInPlace0600(path, data)
+	}
+	if err != nil {
 		return fmt.Errorf("write credentials: %w", err)
 	}
 	return nil
+}
+
+// writeFileInPlace0600 writes data over path in place, following a symlink,
+// as os.WriteFile did, for the shapes a rename cannot replace. The file is
+// made 0600 before it is truncated, so the new tokens never land under a
+// looser mode on a file we own; on one we cannot chmod (a foreign-owned
+// symlink target) the write goes ahead, as os.WriteFile's did.
+func writeFileInPlace0600(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	_ = f.Chmod(0600)
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // writeFileAtomic0600 replaces path with data through a temp file that is
@@ -287,6 +326,10 @@ func writeFileAtomic0600(path string, data []byte) error {
 	return nil
 }
 
+// osRename is os.Rename, swappable so a test can make the replace fail as
+// it does over a bind-mounted file, which needs a mount to reproduce.
+var osRename = os.Rename
+
 // renameReplacing renames src over dst. Go opens files on Windows without
 // FILE_SHARE_DELETE (syscall_windows.go), so the replace fails while any
 // process is reading dst, which every pad command does through LoadStore.
@@ -294,13 +337,13 @@ func writeFileAtomic0600(path string, data []byte) error {
 // retried for about a second before the error is returned (final review
 // round, both hunters).
 func renameReplacing(src, dst string) error {
-	err := os.Rename(src, dst)
+	err := osRename(src, dst)
 	if runtime.GOOS != "windows" {
 		return err
 	}
 	for i := 0; err != nil && i < 50; i++ {
 		time.Sleep(20 * time.Millisecond)
-		err = os.Rename(src, dst)
+		err = osRename(src, dst)
 	}
 	return err
 }
