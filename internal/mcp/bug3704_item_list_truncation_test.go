@@ -68,3 +68,16 @@ func TestBUG3704_PadItemListSaysWhenItIsTruncated(t *testing.T) {
 		})
 	}
 }
+
+// A fractional limit under 1 takes the default, as zero does (it used to,
+// through the CLI's own default; the probe row must not turn it into 1).
+func TestBUG3704_PadItemListFractionalLimitTakesTheDefault(t *testing.T) {
+	disp := &listRowsDispatcher{rows: 3}
+	env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState("docapp"), Dispatcher: disp}
+	if _, err := actionItemList(context.Background(), map[string]any{"limit": float64(0.5)}, env); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(disp.gotArgs, " "), "--limit 51") {
+		t.Fatalf("args %v: want the default 50 plus the probe", disp.gotArgs)
+	}
+}

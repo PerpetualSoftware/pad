@@ -175,6 +175,14 @@ describe('dispatch — pad_item list bounds (BUG-3704)', () => {
 		expect(api.items.listByCollection).toHaveBeenCalledWith(WS, 'bugs', expect.objectContaining({ limit: 301 }));
 	});
 
+	it('asks for whole rows: a fractional limit is floored, and one under 1 takes the default', async () => {
+		const api = mockApi();
+		await run(api, 'pad_item', { action: 'list', limit: 7.9 });
+		expect(api.items.list).toHaveBeenLastCalledWith(WS, expect.objectContaining({ limit: 8 }));
+		await run(api, 'pad_item', { action: 'list', limit: 0.5 });
+		expect(api.items.list).toHaveBeenLastCalledWith(WS, expect.objectContaining({ limit: 51 }));
+	});
+
 	it('trims the probe row and says has_more when it came back', async () => {
 		const api = mockApi();
 		api.items.list.mockResolvedValueOnce(rows(11) as never);

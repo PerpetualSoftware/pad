@@ -426,8 +426,10 @@ const HANDLERS: Record<string, Handler> = {
 	// short. Then the result says has_more instead of passing for the whole
 	// set; it never pages for the agent. A list that fits is the plain array.
 	'pad_item:list': async (api, ws, args) => {
-		const asked = num(args, 'limit');
-		const limit = Math.min(asked && asked > 0 ? asked : ITEM_LIST_DEFAULT, ITEM_LIST_MAX);
+		// Whole rows only: the server reads a fractional limit as invalid,
+		// which means its 1000-row maximum.
+		const asked = Math.floor(num(args, 'limit') ?? 0);
+		const limit = Math.min(asked > 0 ? asked : ITEM_LIST_DEFAULT, ITEM_LIST_MAX);
 		const filters = {
 			status: str(args, 'status'),
 			priority: str(args, 'priority'),

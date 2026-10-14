@@ -880,8 +880,9 @@ func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*
 		out[k] = v
 	}
 
+	// Whole rows: a fractional limit under 1 takes the default, as zero does.
 	limit := mcpItemListDefaultLimit
-	if n, ok := numericInput(input["limit"]); ok && n > 0 {
+	if n, ok := numericInput(input["limit"]); ok && int(n) > 0 {
 		limit = int(n)
 	}
 	if limit > mcpItemListMaxLimit {
