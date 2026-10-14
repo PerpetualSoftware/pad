@@ -950,6 +950,27 @@ describe('the collection page searches every match, not the first 200 (BUG-3710)
 		expect(vi.mocked(api.search).mock.calls.length).toBe(1);
 	});
 
+	it('a walk overtaken by a newer run of the same search does not commit', async () => {
+		const onSearchChange = await searchBox();
+		let releaseOld!: (v: unknown) => void;
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search)
+			.mockImplementationOnce(() => new Promise((r) => (releaseOld = r)) as never)
+			.mockResolvedValueOnce({ results: [{ item: { id: 'i1' } }], total: 1 } as never);
+		vi.useFakeTimers();
+		onSearchChange('body:foo');
+		await vi.advanceTimersByTimeAsync(250); // the old walk is in flight
+		onSearchChange('body:foo '); // same trimmed query: same snapshots
+		await vi.advanceTimersByTimeAsync(250); // the new walk commits i1
+		const shown = () =>
+			((stubProps().find((p) => Array.isArray((p as Record<string, unknown>).items)) as Record<string, unknown> | undefined)
+				?.items as Array<{ id: string }> | undefined)?.map((i) => i.id);
+		expect(shown(), 'premise: the newer walk committed').toEqual(['i1']);
+		releaseOld({ results: [], total: 0 });
+		await vi.advanceTimersByTimeAsync(10);
+		expect(shown(), 'the overtaken walk overwrote the newer result').toEqual(['i1']);
+	});
+
 	it('the local search is not capped', async () => {
 		const spy = vi.spyOn(localSearch, 'search');
 		try {

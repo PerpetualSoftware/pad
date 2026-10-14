@@ -2127,7 +2127,10 @@
 			const snapshotQuery = trimmed;
 			const snapshotArchived = archivedInView;
 			// The server's /search page size, and the most matches walked
-			// for one body search (BUG-3710).
+			// for one body search (BUG-3710). The walk stops at the max, so a
+			// body search with more matches than that can still hide one the
+			// filters would keep. That is the bound, accepted for a body grep;
+			// the local path has none.
 			const BODY_SEARCH_PAGE = 200;
 			const BODY_SEARCH_MAX = 1000;
 			// Fenced INSIDE the timer body, not at the effect: 200ms separates
@@ -2155,8 +2158,12 @@
 				if (!identityHeld(epochAtSchedule)) return;
 				// Stale-response guard: drop the result if the user
 				// navigated away or changed the query while a page was
-				// in flight.
+				// in flight, or a newer run of this effect armed its own
+				// timer (same query, so the snapshots alone cannot tell;
+				// a multi-page walk is long enough to be overtaken).
+				const myTimer = searchTimeout;
 				const moved = () =>
+					searchTimeout !== myTimer ||
 					searchQuery.trim() !== snapshotQuery ||
 					wsSlug !== snapshotWs ||
 					collSlug !== snapshotColl ||
