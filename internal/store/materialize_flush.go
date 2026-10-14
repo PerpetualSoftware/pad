@@ -371,6 +371,12 @@ func (s *Store) MaterializeFlush(itemID string, cursor int64, markdown string) (
 		if errors.As(err, &abort) {
 			return abort.outcome, nil, nil
 		}
+		// BUG-3744: a snapshot covering more rows than this job stored its
+		// body first. The job is stale, as when the cursor moves under it.
+		var behind *SnapshotBehindContentError
+		if errors.As(err, &behind) {
+			return MaterializeCursorMoved, nil, nil
+		}
 		return "", nil, err
 	}
 	if updated == nil {

@@ -2233,6 +2233,18 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate, opts ...MutationO
 // mutation, so a matching timestamp is a genuine guarantee that nothing
 // slipped in between. The handler maps this to a pad-structured-error/v1
 // conflict envelope (HTTP 409, code "update_conflict").
+// SnapshotBehindContentError refuses a browser snapshot whose op-log cursor
+// is below the cursor the stored body already covers (BUG-3744). Nothing was
+// written: a newer body, built from more ops, is what the item holds.
+type SnapshotBehindContentError struct {
+	Cursor  int64
+	Covered int64
+}
+
+func (e *SnapshotBehindContentError) Error() string {
+	return fmt.Sprintf("snapshot at op-log cursor %d is behind the stored content (cursor %d)", e.Cursor, e.Covered)
+}
+
 type UpdateConflictError struct {
 	ItemID            string
 	ExpectedUpdatedAt string
@@ -3086,6 +3098,32 @@ func (s *Store) updateItemWithParentLinkOnce(
 		args = append(args, newSlug)
 	}
 	if input.Content != nil {
+		// BUG-3744: a browser snapshot (or recovery) is refused when its
+		// cursor is below the cursor the stored body already covers: a
+		// delayed flush from a tab that had seen fewer ops would otherwise
+		// overwrite a body built from more, and the GC watermark, which
+		// stays where it was, would then sit above content that no longer
+		// reflects it. Read in this transaction, after the post-lock re-read
+		// above, so it is ordered against every other content writer.
+		//
+		// A snapshot with NO cursor cannot show what it covers, so once the
+		// stored body has recorded one it is refused too (codex r2): its
+		// edits travelled as ops and are in the op-log, so nothing durable is
+		// lost. Before any cursor is recorded (0) it is written as it always
+		// was. Cursor -1 in the error marks the missing one.
+		snapshotLike := input.VersionSource == "collab-snapshot" || input.Recovered
+		if snapshotLike {
+			var covered int64
+			if err := tx.QueryRow(s.q(`SELECT content_op_cursor FROM items WHERE id = ?`), id).Scan(&covered); err != nil {
+				return nil, fmt.Errorf("read content cursor: %w", err)
+			}
+			switch {
+			case input.OpLogCursor == nil && covered > 0:
+				return nil, &SnapshotBehindContentError{Cursor: -1, Covered: covered}
+			case input.OpLogCursor != nil && *input.OpLogCursor < covered:
+				return nil, &SnapshotBehindContentError{Cursor: *input.OpLogCursor, Covered: covered}
+			}
+		}
 		sets = append(sets, "content = ?")
 		args = append(args, *input.Content)
 		// Bump the human-readable timestamp on every content
@@ -3129,10 +3167,17 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// cursor-gated arm too: its markdown was rebuilt from the rows up to
 		// its cursor and no further, so stamping MAX would claim a row that
 		// committed after the job was built.
-		if input.VersionSource != "collab-snapshot" && !input.Recovered {
+		if !snapshotLike {
 			sets = append(sets, "content_flushed_op_log_id = (SELECT COALESCE(MAX(id), 0) FROM item_yjs_updates WHERE item_id = ?)")
 			args = append(args, id)
+			// BUG-3744: a full server-driven write covers every row there is.
+			sets = append(sets, "content_op_cursor = (SELECT COALESCE(MAX(id), 0) FROM item_yjs_updates WHERE item_id = ?)")
+			args = append(args, id)
 		} else if input.OpLogCursor != nil {
+			// BUG-3744: the body now covers exactly this cursor (checked above
+			// to be at or above what it covered before).
+			sets = append(sets, "content_op_cursor = ?")
+			args = append(args, *input.OpLogCursor)
 			// Conditional advance: the SQL UPDATE stamps the
 			// caller's cursor IFF that cursor still matches the
 			// current MAX(op-log.id) at COMMIT time. A peer op
