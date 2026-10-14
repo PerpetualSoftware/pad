@@ -176,7 +176,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	// Every write from here on, refusals included, goes through the stream,
 	// so no frame can block past sseWriteTimeout (BUG-3637).
-	stream, err := openSSEStream(w, s.sseFrameWriteTimeout())
+	stream, err := s.openSSEStream(w)
 	if err != nil {
 		slog.Error("SSE: refusing to stream", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")

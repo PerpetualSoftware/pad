@@ -50,13 +50,15 @@ func (s *Server) sseFrameWriteTimeout() time.Duration {
 // write deadline, so nothing could bound a frame.
 var errSSENoWriteDeadline = errors.New("event stream: the response writer does not support write deadlines")
 
-// openSSEStream wraps w, or refuses when w cannot take a write deadline. It
+// openSSEStream wraps w, or refuses when w cannot take a write deadline. The
+// bound is always sseFrameWriteTimeout: a method taking no timeout, so a
+// handler has no way to pass a different one (codex r4). It
 // FAILS CLOSED (codex r1 High): streaming without the deadline is the pinned
 // handler this type exists to prevent, so a writer that cannot be bounded is
 // not streamed to at all. The probe clears any deadline, which is the state
 // net/http leaves a connection in when it has no WriteTimeout. net/http's own
 // HTTP/1 and HTTP/2 writers support it; a wrapper without Unwrap does not.
-func openSSEStream(w http.ResponseWriter, timeout time.Duration) (*sseStream, error) {
+func (s *Server) openSSEStream(w http.ResponseWriter) (*sseStream, error) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
 		return nil, fmt.Errorf("%w: %w", errSSENoWriteDeadline, err)
@@ -64,7 +66,7 @@ func openSSEStream(w http.ResponseWriter, timeout time.Duration) (*sseStream, er
 	return &sseStream{
 		ResponseWriter: w,
 		rc:             rc,
-		timeout:        timeout,
+		timeout:        s.sseFrameWriteTimeout(),
 		dead:           make(chan struct{}),
 	}, nil
 }

@@ -222,6 +222,13 @@ func TestWatchEvents_BUG3637_WriterWithoutDeadlineIsRefused(t *testing.T) {
 // reading normally. Real constants, no overrides.
 func TestSSE_BUG3637_WriteTimeoutOutlastsTheKeepaliveCadence(t *testing.T) {
 	const margin = 2
+	// An absolute floor too (bug-hunter r4): the first stream's interval is
+	// what the bound is defined from, so the margin alone cannot fail for it
+	// if both shrink together.
+	const floor = 30 * time.Second
+	if sseWriteTimeout < floor {
+		t.Errorf("sseWriteTimeout = %v, want at least %v", sseWriteTimeout, floor)
+	}
 	for _, c := range []struct {
 		stream    string
 		keepalive time.Duration
@@ -234,7 +241,13 @@ func TestSSE_BUG3637_WriteTimeoutOutlastsTheKeepaliveCadence(t *testing.T) {
 				c.stream, sseWriteTimeout, margin, c.keepalive)
 		}
 	}
-	if srv := (&Server{}); srv.sseFrameWriteTimeout() != sseWriteTimeout {
-		t.Errorf("with no override the stream uses %v, want sseWriteTimeout (%v)", srv.sseFrameWriteTimeout(), sseWriteTimeout)
+	// The bound a stream actually carries, from the constructor both handlers
+	// call, which takes no timeout of its own.
+	st, err := (&Server{}).openSSEStream(newDeadlineRecorder())
+	if err != nil {
+		t.Fatalf("openSSEStream: %v", err)
+	}
+	if st.timeout != sseWriteTimeout {
+		t.Errorf("with no override a stream is bounded by %v, want sseWriteTimeout (%v)", st.timeout, sseWriteTimeout)
 	}
 }
