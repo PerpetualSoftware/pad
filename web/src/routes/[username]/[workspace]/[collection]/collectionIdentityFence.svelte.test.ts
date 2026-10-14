@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { bindReactiveEpoch, isEpochReactive } from '../../../../test/identityEpochMock.svelte';
+import { bindReactiveCounter } from '../../../../test/reactiveCounter.svelte';
 
 /**
  * BUG-3084 surface 1 — the BEHAVIOURAL half. `collectionIdentityFence.test.ts`
@@ -137,6 +138,21 @@ const ROW = vi.hoisted(() => ({
 	updated_at: '2026-01-01T00:00:00Z',
 }));
 
+/**
+ * The reorder settle (BUG-3699 / BUG-3700). `rows` replaces the one-row
+ * collection when a case needs a lane of two; `current` is what the local
+ * index holds for an id NOW (a collaborator's newer row, say). Both default
+ * to off, so every other leg sees the suite as it was.
+ */
+const reorderState = vi.hoisted(() => ({
+	rows: null as null | Array<Record<string, unknown>>,
+	current: new Map<string, Record<string, unknown>>(),
+	// LIVE: the lane is the current rows, as the real store's is, so a reorder
+	// that starts while another holds a card finds that one's optimistic row.
+	live: false,
+	ver: { read: null as null | (() => number), write: null as null | ((n: number) => void) },
+}));
+
 function defer<T>(sink: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }>): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		sink.push({ resolve: resolve as (v: unknown) => void, reject });
@@ -161,6 +177,8 @@ vi.mock('$lib/api/client', () => ({
 			restore: vi.fn(async () => ({ id: 'i1' })),
 			bulk: vi.fn(() => defer(deferredBulk)),
 			plansProgress: vi.fn(async () => []),
+			reorder: vi.fn(async () => []),
+			get: vi.fn(async () => ({})),
 		},
 		search: vi.fn(async () => ({ results: [] })),
 	},
@@ -196,9 +214,25 @@ vi.mock('$lib/stores/localIndex.svelte', () => ({
 	localIndex: {
 		bootstrap: vi.fn(async () => {}),
 		reconcile: vi.fn(async () => true),
-		getByCollection: () => [ROW],
-		upsert: (_ws: string, row: unknown) => { upserts.push(row); },
+		getByCollection: () => {
+			reorderState.ver.read?.();
+			if (reorderState.live) return [...reorderState.current.values()];
+			return reorderState.rows ?? [ROW];
+		},
+		findByIdOrSlug: (_ws: string, id: string) => reorderState.current.get(id) ?? null,
+		upsert: (_ws: string, row: unknown) => {
+			upserts.push(row);
+			// For the reorder cases, the real seq guard (localIndex.upsert):
+			// a stamped row at or below a stamped row already held is refused.
+			if (!reorderState.rows) return;
+			const r = row as { id: string; seq?: number };
+			const held = reorderState.current.get(r.id) as { seq?: number } | undefined;
+			if (held?.seq !== undefined && r.seq !== undefined && r.seq <= held.seq) return;
+			reorderState.current.set(r.id, row as Record<string, unknown>);
+			if (reorderState.live) reorderState.ver.write?.((reorderState.ver.read?.() ?? 0) + 1);
+		},
 		scopeEpochFor: () => 1,
+		markScopeStale: vi.fn(),
 		retagCollection: vi.fn(),
 		reset: vi.fn(),
 		bootstrapStateFor: () => 'ready',
@@ -237,6 +271,7 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 		get isOwner() { return true; },
 		get currentRole() { return 'owner'; },
 		canEditCollection: () => true,
+		canEditItem: () => true,
 		get current() { return { id: 'ws1', slug: 'ws', name: 'WS' }; },
 	},
 }));
@@ -323,6 +358,7 @@ import { page } from '$app/state';
 import { goto } from '$app/navigation';
 import { api } from '$lib/api/client';
 import { localSearch } from '$lib/stores/localSearch.svelte';
+import { localIndex } from '$lib/stores/localIndex.svelte';
 import CollectionPage from './+page.svelte';
 
 type Props = Record<string, unknown>;
@@ -368,6 +404,7 @@ function findProp<T>(name: string): T | undefined {
 // its header for why a non-reactive double turns every "did this effect
 // re-run?" assertion into "does this compile?".
 bindReactiveEpoch(auth.__hook);
+bindReactiveCounter(reorderState.ver);
 
 function flipIdentity(): void {
 	const before = auth.identityEpoch;
@@ -1097,5 +1134,421 @@ describe('the collection page searches every match, not the first 200 (BUG-3710)
 		} finally {
 			spy.mockRestore();
 		}
+	});
+});
+
+// BUG-3699 / BUG-3700: the collection page's reorder settles to what the
+// server stored. Observed at localIndex.upsert, the page's commit point.
+describe('the collection page settles a reorder to what the server stored (BUG-3699, BUG-3700)', () => {
+	const A = { ...ROW, id: 'a', slug: 'a', title: 'A', sort_order: 0, seq: 10 };
+	const B = { ...ROW, id: 'b', slug: 'b', title: 'B', sort_order: 1, seq: 20 };
+	beforeEach(() => {
+		auth.resetEpoch();
+		reorderState.rows = [A, B];
+		reorderState.current = new Map([['a', { ...A }], ['b', { ...B }]]);
+		upserts.length = 0;
+	});
+	afterEach(() => {
+		cleanup();
+		reorderState.rows = null;
+		reorderState.live = false;
+		reorderState.current = new Map();
+		vi.mocked(api.items.reorder).mockReset();
+		vi.mocked(api.items.reorder).mockImplementation(async () => []);
+		vi.mocked(api.items.get).mockReset();
+		vi.mocked(api.items.get).mockImplementation(async () => ({}) as never);
+	});
+
+	async function reorderHandler() {
+		await mountPage();
+		return waitFor(() => {
+			const fn = findProp<(u: { slug: string; sort_order: number }[], moved?: string) => Promise<void>>('onReorder');
+			if (!fn) throw new Error('no view rendered yet');
+			return fn;
+		});
+	}
+	const lastUpsertFor = (id: string) =>
+		[...upserts].reverse().find((r) => (r as { id: string }).id === id) as Record<string, unknown> | undefined;
+
+	it('a collaborator edit that lands during the reorder is kept (BUG-3699)', async () => {
+		const onReorder = await reorderHandler();
+		let land!: (v: unknown) => void;
+		vi.mocked(api.items.reorder).mockImplementationOnce(() => new Promise((r) => (land = r)) as never);
+		const pending = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		await waitFor(() => {
+			if (!land) throw new Error('reorder not sent yet');
+		});
+		// A collaborator renames B at seq 21 while the reorder is in flight.
+		reorderState.current.set('b', { ...B, title: 'B renamed', seq: 21 });
+		let readBack!: (v: unknown) => void;
+		vi.mocked(api.items.get).mockImplementationOnce(() => new Promise((r) => (readBack = r)) as never);
+		land([{ id: 'b', seq: 22 }]);
+		// The reorder now waits for its read-backs, so the settle is observed
+		// before the held read answers.
+		await waitFor(() => {
+			if (!readBack) throw new Error('no read-back issued yet');
+		});
+		const settled = lastUpsertFor('b');
+		expect(settled, 'premise: the reorder settled B').toBeTruthy();
+		expect(settled!.title, 'the settle reverted the collaborator edit').toBe('B renamed');
+		expect(settled!.seq, 'the settle stamped a row the server never held').toBeUndefined();
+		// The read-back supplies the authoritative row at the reorder's seq.
+		readBack({ ...B, title: 'B renamed', sort_order: settled!.sort_order, seq: 22 });
+		await pending;
+		expect(reorderState.current.get('b')?.seq, 'the read-back did not land').toBe(22);
+		expect(reorderState.current.get('b')!.title).toBe('B renamed');
+	});
+
+	it('a settle does not replace a newer row that arrived first (BUG-3699)', async () => {
+		const onReorder = await reorderHandler();
+		let land!: (v: unknown) => void;
+		vi.mocked(api.items.reorder).mockImplementationOnce(() => new Promise((r) => (land = r)) as never);
+		vi.mocked(api.items.get).mockImplementation(() => new Promise(() => {}) as never); // reads never answer
+		const pending = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		await waitFor(() => {
+			if (!land) throw new Error('reorder not sent yet');
+		});
+		const newer = { ...B, title: 'B later', sort_order: 7, seq: 30 };
+		reorderState.current.set('b', newer);
+		land([{ id: 'b', seq: 22 }]);
+		await pending;
+		expect(reorderState.current.get('b'), 'the settle replaced a newer authoritative row').toEqual(newer);
+	});
+
+	it('two overlapping reorders: a delayed stale read-back loses to the newer one (BUG-3700)', async () => {
+		const onReorder = await reorderHandler();
+		// R1 is refused, and its read-back is held; R2 lands and reads back at once.
+		vi.mocked(api.items.reorder)
+			.mockRejectedValueOnce(new Error('403'))
+			.mockResolvedValueOnce([{ id: 'b', seq: 22 }] as never);
+		let staleRead!: (v: unknown) => void;
+		vi.mocked(api.items.get)
+			.mockImplementationOnce(() => new Promise((r) => (staleRead = r)) as never)
+			.mockResolvedValueOnce({ ...B, sort_order: -1024, seq: 22 } as never);
+		const r1 = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		await waitFor(() => {
+			if (!staleRead) throw new Error('R1 read-back not issued yet');
+		});
+		await onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		expect(reorderState.current.get('b')?.seq, 'R2 read-back not in').toBe(22);
+		staleRead({ ...B, sort_order: 1, seq: 20 });
+		await r1;
+		expect(reorderState.current.get('b'), 'a stale read-back overwrote the newer row').toMatchObject({ seq: 22, sort_order: -1024 });
+	});
+
+	// The rework (BUG-3699 plan, Heron's ruling): bounded read-back retries,
+	// then the last confirmed order and a stale scope; never an unconfirmed
+	// order that looks settled.
+	const staleCalls = () => vi.mocked(localIndex.markScopeStale).mock.calls;
+	const unstampedFor = (id: string) =>
+		upserts.filter((r) => (r as { id: string; seq?: number }).id === id && (r as { seq?: number }).seq === undefined);
+
+	it('a landed write without a seq writes no settle; the read-back confirms it', async () => {
+		const onReorder = await reorderHandler();
+		vi.mocked(api.items.reorder).mockResolvedValueOnce([] as never); // no seq for b
+		vi.mocked(api.items.get).mockResolvedValueOnce({ ...B, sort_order: -1024, seq: 22 } as never);
+		await onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		expect(unstampedFor('b'), 'only the optimistic write may be unstamped').toHaveLength(1);
+		expect(reorderState.current.get('b')).toMatchObject({ seq: 22, sort_order: -1024 });
+		expect(staleCalls()).toHaveLength(0);
+	});
+
+	it('a read-back that fails once is retried and converges', async () => {
+		const onReorder = await reorderHandler();
+		vi.mocked(api.items.reorder).mockResolvedValueOnce([{ id: 'b', seq: 22 }] as never);
+		vi.mocked(api.items.get)
+			.mockRejectedValueOnce(new Error('network'))
+			.mockResolvedValueOnce({ ...B, sort_order: -1024, seq: 22 } as never);
+		vi.useFakeTimers();
+		try {
+			const pending = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+			await vi.advanceTimersByTimeAsync(5000);
+			await pending;
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(vi.mocked(api.items.get).mock.calls.length, 'the failed read was not retried').toBe(2);
+		expect(reorderState.current.get('b')).toMatchObject({ seq: 22, sort_order: -1024 });
+		expect(staleCalls(), 'a converged reorder marked the scope stale').toHaveLength(0);
+	});
+
+	it('a read-back that fails every retry restores the confirmed order and marks the scope stale', async () => {
+		const onReorder = await reorderHandler();
+		vi.mocked(api.items.reorder).mockResolvedValueOnce([{ id: 'b', seq: 22 }] as never);
+		vi.mocked(api.items.get).mockRejectedValue(new Error('network'));
+		vi.useFakeTimers();
+		try {
+			const pending = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+			await vi.advanceTimersByTimeAsync(5000);
+			await pending;
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(vi.mocked(api.items.get).mock.calls.length, 'the retries are bounded').toBe(4);
+		// Not the optimistic order: the card is back on its last stamped row.
+		expect(reorderState.current.get('b'), 'an unconfirmed order looks settled').toMatchObject({ seq: B.seq, sort_order: B.sort_order });
+		expect(staleCalls(), 'the scope was not marked stale').toEqual([['ws']]);
+	});
+
+	it('a read-back older than the landed write is retried, not taken as confirmation', async () => {
+		const onReorder = await reorderHandler();
+		vi.mocked(api.items.reorder).mockResolvedValueOnce([{ id: 'b', seq: 22 }] as never);
+		vi.mocked(api.items.get)
+			.mockResolvedValueOnce({ ...B, seq: 20 } as never) // a lagging read: before the write
+			.mockResolvedValueOnce({ ...B, sort_order: -1024, seq: 22 } as never);
+		vi.useFakeTimers();
+		try {
+			const pending = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+			await vi.advanceTimersByTimeAsync(5000);
+			await pending;
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(vi.mocked(api.items.get).mock.calls.length, 'the stale read counted as confirmation').toBe(2);
+		expect(reorderState.current.get('b')).toMatchObject({ seq: 22, sort_order: -1024 });
+		expect(staleCalls()).toHaveLength(0);
+	});
+
+	it('an identity change during the retries stops them and commits nothing', async () => {
+		const onReorder = await reorderHandler();
+		vi.mocked(api.items.reorder).mockResolvedValueOnce([{ id: 'b', seq: 22 }] as never);
+		vi.mocked(api.items.get).mockRejectedValue(new Error('network'));
+		vi.useFakeTimers();
+		try {
+			const pending = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+			await vi.advanceTimersByTimeAsync(10); // the first read has failed
+			const before = upserts.length;
+			const reads = vi.mocked(api.items.get).mock.calls.length;
+			auth.bumpEpoch();
+			await vi.advanceTimersByTimeAsync(5000);
+			await pending;
+			expect(vi.mocked(api.items.get).mock.calls.length, 'retried under a new identity').toBe(reads);
+			expect(upserts.length, 'committed under a new identity').toBe(before);
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(staleCalls()).toHaveLength(0);
+	});
+
+	it('a failed reorder does not restore over a later reorder that wrote the card', async () => {
+		const onReorder = await reorderHandler();
+		vi.mocked(api.items.reorder)
+			.mockResolvedValueOnce([{ id: 'b', seq: 22 }] as never)
+			.mockImplementationOnce(() => new Promise(() => {}) as never); // R2 never answers
+		vi.mocked(api.items.get).mockRejectedValue(new Error('network'));
+		vi.useFakeTimers();
+		try {
+			const r1 = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+			await vi.advanceTimersByTimeAsync(10);
+			// R2 writes B again while R1's read-backs are still failing (the
+			// mocked lane is the stored order, so B to the front is a write).
+			void onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+			await vi.advanceTimersByTimeAsync(10);
+			const r2Row = reorderState.current.get('b');
+			expect(r2Row?.seq, 'premise: R2 wrote B optimistically').toBeUndefined();
+			await vi.advanceTimersByTimeAsync(5000);
+			await r1;
+			expect(reorderState.current.get('b'), "R1's restore replaced R2's write").toEqual(r2Row);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("an older reorder's late read-back does not replace a newer reorder's optimistic row", async () => {
+		const onReorder = await reorderHandler();
+		let r1Read!: (v: unknown) => void;
+		vi.mocked(api.items.reorder)
+			.mockRejectedValueOnce(new Error('403')) // R1 refused
+			.mockImplementationOnce(() => new Promise(() => {}) as never); // R2 in flight
+		vi.mocked(api.items.get).mockImplementationOnce(() => new Promise((r) => (r1Read = r)) as never);
+		const r1 = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		await waitFor(() => {
+			if (!r1Read) throw new Error('R1 read-back not issued');
+		});
+		void onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		await waitFor(() => {
+			if (vi.mocked(api.items.reorder).mock.calls.length < 2) throw new Error('R2 not sent');
+		});
+		const r2Row = reorderState.current.get('b');
+		expect(r2Row?.seq, 'premise: R2 holds B optimistically').toBeUndefined();
+		r1Read({ ...B, seq: 20 });
+		await r1;
+		expect(reorderState.current.get('b'), "R1's read-back replaced R2's row").toEqual(r2Row);
+	});
+
+	it('overlapping reorders that both fail restore the last CONFIRMED order, not the earlier optimistic one', async () => {
+		reorderState.live = true;
+		const onReorder = await reorderHandler();
+		let landR1!: (v: unknown) => void;
+		vi.mocked(api.items.reorder)
+			.mockImplementationOnce(() => new Promise((r) => (landR1 = r)) as never)
+			.mockResolvedValueOnce([{ id: 'b', seq: 23 }] as never);
+		vi.mocked(api.items.get).mockRejectedValue(new Error('network'));
+		vi.useFakeTimers();
+		try {
+			// R1 moves B to the front; R2 starts while R1 holds B optimistically,
+			// so R2 finds R1's unstamped row as B's original.
+			const r1 = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+			await vi.advanceTimersByTimeAsync(10);
+			expect(reorderState.current.get('b')?.seq, 'premise: R1 holds B optimistically').toBeUndefined();
+			const r2 = onReorder([{ slug: 'a', sort_order: 0 }, { slug: 'b', sort_order: 1 }], 'b');
+			await vi.advanceTimersByTimeAsync(10);
+			landR1([{ id: 'b', seq: 22 }]);
+			await vi.advanceTimersByTimeAsync(10000);
+			await r1;
+			await r2;
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(reorderState.current.get('b'), 'an unconfirmed order was left looking settled').toMatchObject({ seq: B.seq, sort_order: B.sort_order });
+		expect(staleCalls().length).toBeGreaterThan(0);
+	});
+
+	it('a drop repeating an in-flight reorder still writes, so it survives that reorder being refused', async () => {
+		reorderState.live = true;
+		const onReorder = await reorderHandler();
+		let refuseR1!: (e: unknown) => void;
+		const server = fakeServer();
+		vi.mocked(api.items.reorder)
+			.mockImplementationOnce(() => new Promise((_, rej) => (refuseR1 = rej)) as never)
+			.mockImplementationOnce((async (_ws: string, w: Array<{ id: string; sort_order: number }>) => server.apply(w)) as never);
+		vi.mocked(api.items.get).mockImplementation(async (_ws: string, id: string) => ({ ...server.rows.get(id) }) as never);
+		const r1 = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		await waitFor(() => {
+			if (!refuseR1) throw new Error('R1 not sent');
+		});
+		// The same order again, while R1's optimistic rows are what is on screen.
+		const r2 = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		await waitFor(() => {
+			if (vi.mocked(api.items.reorder).mock.calls.length < 2) throw new Error('the repeated drop wrote nothing');
+		});
+		const sent = vi.mocked(api.items.reorder).mock.calls[1][1] as Array<{ id: string }>;
+		expect(sent.map((w) => w.id), 'the repeated drop did not write B').toContain('b');
+		refuseR1(new Error('network'));
+		await r1;
+		await r2;
+		expect(server.rows.get('b')!.sort_order, "premise: the repeated drop reached the server").not.toBe(B.sort_order);
+		expectEveryCardOnServer(server);
+	});
+
+	// A fake server for the overlap cases: applies a landing reorder's writes
+	// with fresh seqs and answers reads from what it holds.
+	function fakeServer() {
+		const rows = new Map<string, Record<string, unknown>>([['a', { ...A }], ['b', { ...B }]]);
+		let seq = 20;
+		return {
+			rows,
+			apply(writes: Array<{ id: string; sort_order: number }>) {
+				return writes.map((w) => {
+					seq += 1;
+					rows.set(w.id, { ...rows.get(w.id)!, sort_order: w.sort_order, seq });
+					return { id: w.id, seq };
+				});
+			},
+		};
+	}
+	// Every card the server holds, as the page holds it: order and seq.
+	function expectEveryCardOnServer(server: ReturnType<typeof fakeServer>) {
+		for (const [id, want] of server.rows) {
+			const local = reorderState.current.get(id)!;
+			expect({ id, sort_order: local.sort_order, seq: local.seq }, `card ${id} did not end on the server order`).toEqual({
+				id,
+				sort_order: want.sort_order,
+				seq: want.seq,
+			});
+		}
+	}
+
+	// Every completion order of two overlapping reorders that both write B,
+	// each landing or refused, against a fake server: the card ends on the
+	// order the server holds (Codex r5 on #2150, the interleavings gap).
+	for (const r1Lands of [true, false])
+		for (const r2Lands of [true, false])
+			for (const r1First of [true, false])
+				it(`overlap: R1 ${r1Lands ? 'lands' : 'refused'}, R2 ${r2Lands ? 'lands' : 'refused'}, ${r1First ? 'R1' : 'R2'} answers first`, async () => {
+					reorderState.live = true;
+					const server = fakeServer();
+					const answers: Array<() => void> = [];
+					const reorderCall = (lands: boolean) => (_ws: string, writes: Array<{ id: string; sort_order: number }>) =>
+						new Promise((resolve, reject) => {
+							answers.push(() => (lands ? resolve(server.apply(writes)) : reject(new Error('refused'))));
+						});
+					const onReorder = await reorderHandler();
+					vi.mocked(api.items.reorder)
+						.mockImplementationOnce(reorderCall(r1Lands) as never)
+						.mockImplementationOnce(reorderCall(r2Lands) as never);
+					vi.mocked(api.items.get).mockImplementation(async (_ws: string, id: string) => ({ ...server.rows.get(id) }) as never);
+					const r1 = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+					await waitFor(() => {
+						if (answers.length < 1) throw new Error('R1 not sent');
+					});
+					const r2 = onReorder([{ slug: 'a', sort_order: 0 }, { slug: 'b', sort_order: 1 }], 'b');
+					await waitFor(() => {
+						if (answers.length < 2) throw new Error('R2 not sent');
+					});
+					const [first, second] = r1First ? [answers[0], answers[1]] : [answers[1], answers[0]];
+					first();
+					await new Promise((r) => setTimeout(r, 0));
+					second();
+					await Promise.all([r1, r2]);
+					expectEveryCardOnServer(server);
+				});
+
+	// Read-backs completing OUT OF ORDER (Heron, GO-blocking): two landed
+	// reorders on B, their read-backs answering newer-first and older-first.
+	for (const newerFirst of [true, false])
+		it(`overlap: both land, read-backs answer ${newerFirst ? 'newer' : 'older'} first`, async () => {
+			reorderState.live = true;
+			const server = fakeServer();
+			const onReorder = await reorderHandler();
+			vi.mocked(api.items.reorder)
+				.mockImplementationOnce((async (_ws: string, w: Array<{ id: string; sort_order: number }>) => server.apply(w)) as never)
+				.mockImplementationOnce((async (_ws: string, w: Array<{ id: string; sort_order: number }>) => server.apply(w)) as never);
+			// Each read is answered by hand, with the server row as of the moment
+			// it was ISSUED: a slow read of an older state.
+			const reads: Array<{ id: string; row: Record<string, unknown>; answer: (v: unknown) => void }> = [];
+			vi.mocked(api.items.get).mockImplementation(((_ws: string, id: string) =>
+				new Promise((answer) => reads.push({ id, row: { ...server.rows.get(id) }, answer }))) as never);
+			const r1 = onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+			await waitFor(() => {
+				if (!reads.some((r) => r.id === 'b')) throw new Error('R1 read-back not issued');
+			});
+			const r2 = onReorder([{ slug: 'a', sort_order: 0 }, { slug: 'b', sort_order: 1 }], 'b');
+			await waitFor(() => {
+				if (reads.filter((r) => r.id === 'b').length < 2) throw new Error('R2 read-back not issued');
+			});
+			const [olderB, newerB] = reads.filter((r) => r.id === 'b');
+			expect((newerB.row.seq as number) > (olderB.row.seq as number), 'premise: the reads saw different states').toBe(true);
+			const afterR2 = reorderState.current.get('b')!.sort_order;
+			const r2Wrote = (vi.mocked(api.items.reorder).mock.calls[1][1] as Array<{ id: string; sort_order: number }>).find((w) => w.id === 'b');
+			expect(r2Wrote, 'premise: R2 wrote B').toBeTruthy();
+			expect(afterR2, "premise: R2's order is the one on screen").toBe(r2Wrote!.sort_order);
+			if (newerFirst) {
+				newerB.answer(newerB.row);
+				await new Promise((r) => setTimeout(r, 0));
+				olderB.answer(olderB.row);
+			} else {
+				olderB.answer(olderB.row);
+				await new Promise((r) => setTimeout(r, 0));
+				// The older read must not have put R1's order back over R2's drop.
+				expect(reorderState.current.get('b')!.sort_order, "an older read-back replaced the newer reorder's order").toBe(afterR2);
+				newerB.answer(newerB.row);
+			}
+			for (const r of reads.filter((r) => r.id !== 'b')) r.answer(r.row);
+			await Promise.all([r1, r2]);
+			expectEveryCardOnServer(server);
+		});
+
+	it('a refused reorder reads each written card back from the server (BUG-3700)', async () => {
+		const onReorder = await reorderHandler();
+		vi.mocked(api.items.reorder).mockRejectedValueOnce(new Error('403'));
+		const stored = { ...B, sort_order: 1, seq: 20, title: 'B' };
+		vi.mocked(api.items.get).mockResolvedValue(stored as never);
+		await onReorder([{ slug: 'b', sort_order: 0 }, { slug: 'a', sort_order: 1 }], 'b');
+		await waitFor(() => {
+			const r = lastUpsertFor('b');
+			if (!r || r.seq !== 20 || r.sort_order !== 1) throw new Error('no read-back yet');
+		});
+		expect(vi.mocked(api.items.get).mock.calls.map((c) => c[1])).toContain('b');
 	});
 });

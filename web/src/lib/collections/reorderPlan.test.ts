@@ -291,8 +291,8 @@ describe('persistReorder (BUG-3259, TASK-3517)', () => {
 					if (refuse) throw new Error('403');
 					return ws.map((w) => ({ id: w.id, seq: originals.get(w.id)!.seq + 10 }));
 				},
-				settle: (row: { id: string; sort_order: number; seq: number }) => {
-					local.set(row.id, row);
+				settle: (row: { id: string; sort_order: number; seq?: number }) => {
+					local.set(row.id, { ...row, seq: row.seq as number });
 					return true;
 				}
 			}
@@ -322,6 +322,24 @@ describe('persistReorder (BUG-3259, TASK-3517)', () => {
 		expect(h.local.get('c')).toEqual({ id: 'c', sort_order: 2, seq: 12 });
 		expect(h.local.get('a')).toEqual({ id: 'a', sort_order: 0, seq: 10 });
 		expect(h.local.get('b')).toEqual({ id: 'b', sort_order: 1, seq: 11 });
+	});
+
+	it('settles only what the server stored: no field of the pre-request snapshot (BUG-3699)', async () => {
+		const settled: Record<string, unknown>[] = [];
+		const ok = await persistReorder([{ id: 'b', sort_order: 0 }], {
+			original: () => ({ id: 'b', sort_order: 1, seq: 20, title: 'B as captured' }),
+			applyLocal: () => {},
+			restoreLocal: () => {},
+			send: async () => [{ id: 'b', seq: 22 }],
+			settle: (landed) => {
+				settled.push({ ...landed });
+				return true;
+			}
+		});
+		expect(ok).toBe(true);
+		// A full row stamped with the new seq claimed the server held the
+		// captured title at seq 22, which reverted a collaborator's rename.
+		expect(settled).toEqual([{ id: 'b', sort_order: 0, seq: 22 }]);
 	});
 
 	it('sends nothing when no write names a known card', async () => {

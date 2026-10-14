@@ -114,6 +114,22 @@ class WorkspaceState {
 	// inside effects, and nothing renders from it.
 	bootstrapBeforeFirstRead = false;
 
+	// Asks for a FULL resync on the next reconcile (BUG-3699). A caller that
+	// cannot confirm what the server holds (a reorder whose read-backs all
+	// failed) asks, and the next reconcile, which every focus, reconnect and
+	// SSE nudge already runs, installs an authoritative snapshot instead of a
+	// delta from a cursor that may be past the rows in question.
+	// PLAIN, not `$state`: nothing renders from them.
+	// A stale ask is answered only by a projection resync that STARTED after
+	// it, never by one already in flight when it was made (Codex on #2150):
+	// `resyncStarts` counts starts (a join is not one), `staleSince` is that
+	// count at the latest outstanding ask (null when none), and
+	// `resyncCompleted` is the start number of the newest resync that
+	// installed its snapshot.
+	resyncStarts = 0;
+	resyncCompleted = 0;
+	staleSince: number | null = null;
+
 	// `pendingResync` is true when the warm-cache path hydrated rows
 	// from IDB but the follow-up /items-changes reconcile didn't
 	// complete (transient network blip). The cache is usable —
@@ -810,6 +826,17 @@ async function reconcileWorkspace(
 	state: WorkspaceState,
 	isStale: () => boolean = () => false,
 ): Promise<boolean> {
+	// An outstanding stale ask is answered by a full snapshot first (BUG-3699).
+	// A failed fetch throws out of here with the ask still outstanding, so the
+	// next reconcile tries again.
+	// A joined resync that started before the ask does not answer it; the
+	// next call then starts one that does (its owner clears it from the map
+	// before this await resumes). Two calls suffice; the bound is a backstop.
+	for (let i = 0; i < 3 && scopeStale(state); i++) {
+		await resyncProjectionScope(ws, state);
+		if (isStale()) return false;
+	}
+	if (!scopeStale(state)) state.staleSince = null;
 	// Cap iterations defensively — a healthy server drains in < 10 pages even
 	// for huge gaps; if something pathological loops without cursor advance,
 	// give up after 50 and let the caller retry. 50 x 5000 = 250,000 rows. A cap
@@ -925,6 +952,11 @@ async function reconcilePassBody(ws: string): Promise<boolean> {
 	}
 }
 
+/** An outstanding stale ask that no resync started after it has answered. */
+function scopeStale(state: WorkspaceState): boolean {
+	return state.staleSince !== null && state.resyncCompleted <= state.staleSince;
+}
+
 async function resyncProjectionScope(
 	ws: string,
 	state: WorkspaceState,
@@ -942,6 +974,7 @@ async function resyncProjectionScope(
 ): Promise<void> {
 	const pending = projectionResyncs.get(ws);
 	if (pending) return pending;
+	const startNumber = (state.resyncStarts += 1);
 	const generation = state.generation;
 	const userId = state.userId;
 	const promise = (async () => {
@@ -1122,6 +1155,9 @@ async function resyncProjectionScope(
 			// absent epoch on disk.
 			state.accessEpoch,
 		);
+		// Installed: this snapshot answers every stale ask made before it
+		// started (BUG-3699).
+		state.resyncCompleted = Math.max(state.resyncCompleted, startNumber);
 	})();
 	projectionResyncs.set(ws, promise);
 	try {
@@ -1976,6 +2012,22 @@ export const localIndex = {
 	 * snapshot, plus a second small one. Now it is one pass, from the
 	 * snapshot's cursor.
 	 */
+	/**
+	 * Ask for a full resync of `ws` on its next reconcile (BUG-3699): for a
+	 * caller holding rows it could not confirm against the server. No-op for a
+	 * workspace with no state (nothing cached, so nothing to distrust).
+	 */
+	markScopeStale(ws: string): void {
+		const state = workspaces.get(ws);
+		if (state) state.staleSince = state.resyncStarts;
+	},
+
+	/** Whether `ws` has a stale ask no completed resync has answered yet. */
+	scopeStaleFor(ws: string): boolean {
+		const state = workspaces.get(ws);
+		return !!state && scopeStale(state);
+	},
+
 	reconcile(ws: string): Promise<boolean> {
 		const state = workspaces.get(ws);
 		if (!state) return Promise.resolve(true);
