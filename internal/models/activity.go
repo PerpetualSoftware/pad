@@ -144,6 +144,33 @@ type ActivityListParams struct {
 	// Mutually exclusive with Offset at the HTTP doors.
 	Before   time.Time
 	BeforeID string
+	// Visibility, when non-nil, restricts the feed to rows the caller may
+	// see, in the SQL query so LIMIT and the keyset cursor count only visible
+	// rows (BUG-3687). Filtering after the LIMIT returned short or empty
+	// pages to a restricted member, and a short page reads as the end of the
+	// feed. nil means unrestricted (a cookie-session admin).
+	Visibility *ActivityVisibility
+	// ExcludeUnresolvedItems drops rows that name an item which no longer
+	// exists, for every caller, scoped or not. The feed shows such rows as
+	// workspace-level; the dashboard never renders them, so it sets this to
+	// keep them from filling its window (BUG-3687, Codex rounds 1 and 2).
+	ExcludeUnresolvedItems bool
+}
+
+// ActivityVisibility is the caller's read scope for activity rows, as the
+// server's visibleCollectionIDs and guestResourceFilter resolve it. A row
+// with no item, or whose item no longer exists, is workspace-level and always
+// visible. A row on an item is visible when the item's collection is in
+// CollectionIDs AND, if the caller holds any item grants, the collection is
+// in FullCollectionIDs or the item is in GrantedItemIDs.
+type ActivityVisibility struct {
+	CollectionIDs     []string
+	FullCollectionIDs []string
+	GrantedItemIDs    []string
+	// ExcludeWorkspaceLevel drops rows with no item, or whose item no longer
+	// exists. The dashboard sets it for a guest, whom it never shows
+	// workspace-level activity (member invites, role changes).
+	ExcludeWorkspaceLevel bool
 }
 
 // AuditLogParams are query parameters for the audit log endpoint.

@@ -862,6 +862,12 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 		query += " AND a.document_id IN (SELECT id FROM items WHERE collection_id = ?)"
 		args = append(args, params.CollectionID)
 	}
+	if params.Visibility != nil {
+		query += activityVisibilityClause(params.Visibility, &args)
+	}
+	if params.ExcludeUnresolvedItems {
+		query += " AND (COALESCE(a.document_id, '') = '' OR EXISTS (SELECT 1 FROM items ui WHERE ui.id = a.document_id))"
+	}
 
 	query += activityKeysetClause(params.Before, params.BeforeID, &args)
 	query += " ORDER BY a.created_at DESC, a.id DESC"
@@ -882,6 +888,47 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 	defer rows.Close()
 
 	return scanActivitiesWithUser(rows)
+}
+
+// activityVisibilityClause is ActivityVisibility as SQL (BUG-3687). It is the
+// feed handler's former post-LIMIT filter, keyed on the item's collection ID
+// where that filter matched the collection's slug: a slug can be re-taken by
+// another collection, an ID cannot (BUG-2631). The item is read
+// include-deleted, as the feed's enrichment reads it, so an archived item's
+// history stays behind its collection's visibility instead of passing as
+// workspace-level.
+func activityVisibilityClause(v *models.ActivityVisibility, args *[]interface{}) string {
+	var terms []string
+	if !v.ExcludeWorkspaceLevel {
+		terms = append(terms,
+			"COALESCE(a.document_id, '') = ''",
+			"NOT EXISTS (SELECT 1 FROM items vi WHERE vi.id = a.document_id)")
+	}
+	if len(v.CollectionIDs) > 0 {
+		term := "EXISTS (SELECT 1 FROM items vi WHERE vi.id = a.document_id" +
+			" AND vi.collection_id IN (" + placeholders(len(v.CollectionIDs)) + ")"
+		for _, id := range v.CollectionIDs {
+			*args = append(*args, id)
+		}
+		if len(v.GrantedItemIDs) > 0 {
+			term += " AND (vi.id IN (" + placeholders(len(v.GrantedItemIDs)) + ")"
+			for _, id := range v.GrantedItemIDs {
+				*args = append(*args, id)
+			}
+			if len(v.FullCollectionIDs) > 0 {
+				term += " OR vi.collection_id IN (" + placeholders(len(v.FullCollectionIDs)) + ")"
+				for _, id := range v.FullCollectionIDs {
+					*args = append(*args, id)
+				}
+			}
+			term += ")"
+		}
+		terms = append(terms, term+")")
+	}
+	if len(terms) == 0 {
+		return " AND 1 = 0"
+	}
+	return " AND (" + strings.Join(terms, " OR ") + ")"
 }
 
 func (s *Store) ListDocumentActivity(documentID string, params models.ActivityListParams) ([]models.Activity, error) {

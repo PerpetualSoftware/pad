@@ -933,11 +933,24 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 
-	// Recent activity — enriched with item titles and user names
-	// Fetch more than needed since some may be filtered out by visibility
-	activities, err := s.store.ListWorkspaceActivity(workspaceID, models.ActivityListParams{
-		Limit: 30,
-	})
+	// Recent activity — enriched with item titles and user names. The
+	// caller's visibility rides into the query (BUG-3687), so the 30 rows are
+	// rows this caller may see and the ten are not starved by a run of hidden
+	// ones; the filters below stay, since the guest grant rule
+	// (isItemVisibleToGuest) is narrower than the query's. The over-fetch
+	// still covers reorder batches that merge into one entry.
+	// The loop below drops a row whose item is gone, so the query must not
+	// spend the window on them, for scoped and unscoped callers alike.
+	activityParams := models.ActivityListParams{Limit: 30, ExcludeUnresolvedItems: true}
+	if visibleIDs != nil {
+		activityParams.Visibility = &models.ActivityVisibility{
+			CollectionIDs:         visibleIDs,
+			FullCollectionIDs:     dashFullCollIDs,
+			GrantedItemIDs:        dashGrantedItemIDs,
+			ExcludeWorkspaceLevel: workspaceRole(r) == "guest",
+		}
+	}
+	activities, err := s.store.ListWorkspaceActivity(workspaceID, activityParams)
 	if err != nil {
 		markDegraded("recent_activity", err)
 	} else if activities != nil {
