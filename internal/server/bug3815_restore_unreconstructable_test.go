@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -138,6 +139,52 @@ func TestBUG3815_DiffRefusesAnUnreconstructableVersion(t *testing.T) {
 		}
 		if code, _ := decodeErrorCode(t, rr); code != "version_unreconstructable" {
 			t.Fatalf("diff of %s code: want version_unreconstructable, got %q", id, code)
+		}
+	}
+	// CONTROL: vp's pair is its own real body → vg's, both rebuilt. A body
+	// that only looks like the placeholder is still diffed.
+	rr := doRequest(f.srv, "GET", f.path("vp", "diff"), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("diff of vp: want 200, got %d %s", rr.Code, rr.Body.String())
+	}
+	var d models.ItemVersionDiff
+	if err := json.Unmarshal(rr.Body.Bytes(), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Before != bug3815Lookalike || d.After != bug3815Good {
+		t.Fatalf("diff of vp: %q → %q, want %q → %q", d.Before, d.After, bug3815Lookalike, bug3815Good)
+	}
+}
+
+// The reads still serve the placeholder, flagged, and only on the failed row.
+func TestBUG3815_VersionReadsMarkTheUnreconstructableRow(t *testing.T) {
+	f := newBug3815Fixture(t)
+	rr := doRequest(f.srv, "GET", "/api/v1/workspaces/"+f.wsSlug+"/items/"+f.itemSlug+"/versions/vb", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET vb: %d %s", rr.Code, rr.Body.String())
+	}
+	var one map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &one); err != nil {
+		t.Fatal(err)
+	}
+	if one["unreconstructable"] != true {
+		t.Errorf("GET vb: unreconstructable = %v, want true", one["unreconstructable"])
+	}
+	rr = doRequest(f.srv, "GET", "/api/v1/workspaces/"+f.wsSlug+"/items/"+f.itemSlug+"/versions", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET versions: %d %s", rr.Code, rr.Body.String())
+	}
+	var list []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v (%s)", err, rr.Body.String())
+	}
+	if len(list) != 3 {
+		t.Fatalf("GET versions: %d rows, want 3", len(list))
+	}
+	for _, v := range list {
+		_, flagged := v["unreconstructable"]
+		if flagged != (v["id"] == "vb") {
+			t.Errorf("version %v: unreconstructable present = %v", v["id"], flagged)
 		}
 	}
 }
