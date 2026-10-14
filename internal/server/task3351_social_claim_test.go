@@ -42,6 +42,7 @@ func TestTASK3351_SidecarOAuthRoutesAreCloudOnly(t *testing.T) {
 	srv.SetCloudMode(oauthProviderTestSecret)
 	rr := postOAuthLogin(t, srv, map[string]interface{}{
 		"provider": "google", "email": "someone@example.com", "email_verified": true,
+		"subject": "google-someone",
 	})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("control, cloud mode: got %d: %s", rr.Code, rr.Body.String())
@@ -165,7 +166,7 @@ func TestTASK3351_LinkBindsAndRefusesASubjectBoundElsewhere(t *testing.T) {
 	if rr := postOAuthLogin(t, srv, map[string]interface{}{"provider": "google", "email": "a@example.com", "email_verified": true, "subject": "g-a"}); rr.Code != http.StatusOK {
 		t.Fatalf("a: %d %s", rr.Code, rr.Body.String())
 	}
-	if rr := postOAuthLogin(t, srv, map[string]interface{}{"provider": "github", "email": "b@example.com", "email_verified": true}); rr.Code != http.StatusOK {
+	if rr := postOAuthLogin(t, srv, map[string]interface{}{"provider": "github", "email": "b@example.com", "email_verified": true, "subject": "github-b"}); rr.Code != http.StatusOK {
 		t.Fatalf("b: %d %s", rr.Code, rr.Body.String())
 	}
 	link := func(subject string) *httptest.ResponseRecorder {
@@ -288,12 +289,14 @@ func TestTASK3351_GitHubClaimsOnlyThePrimaryAddress(t *testing.T) {
 	f := newSocialSquat(t)
 	rr := postOAuthLogin(t, f.srv, map[string]interface{}{
 		"provider": "github", "email": "victim@example.com", "email_verified": true,
+		"subject": "github-victim",
 	})
 	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "oauth_provider_not_linked") {
 		t.Fatalf("github without email_primary: %d %s", rr.Code, rr.Body.String())
 	}
 	rr = postOAuthLogin(t, f.srv, map[string]interface{}{
 		"provider": "github", "email": "victim@example.com", "email_verified": true, "email_primary": false,
+		"subject": "github-victim",
 	})
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("github, secondary address: %d %s", rr.Code, rr.Body.String())
@@ -303,6 +306,7 @@ func TestTASK3351_GitHubClaimsOnlyThePrimaryAddress(t *testing.T) {
 	}
 	rr = postOAuthLogin(t, f.srv, map[string]interface{}{
 		"provider": "github", "email": "victim@example.com", "email_verified": true, "email_primary": true,
+		"subject": "github-victim",
 	})
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"claimed":true`) {
 		t.Fatalf("github primary: %d %s", rr.Code, rr.Body.String())
@@ -314,6 +318,7 @@ func TestTASK3351_VerifiedAccountIsNotClaimable(t *testing.T) {
 	f := newSocialSquat(t)
 	rr := postOAuthLogin(t, f.srv, map[string]interface{}{
 		"provider": "google", "email": "admin@pad.test", "email_verified": true,
+		"subject": "google-admin",
 	})
 	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "oauth_provider_not_linked") {
 		t.Fatalf("verified account: %d %s", rr.Code, rr.Body.String())
@@ -329,6 +334,7 @@ func TestTASK3351_SocialClaimRefusesBilling(t *testing.T) {
 	}
 	rr := postOAuthLogin(t, f.srv, map[string]interface{}{
 		"provider": "google", "email": "victim@example.com", "email_verified": true,
+		"subject": "google-victim",
 	})
 	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "account_claim_needs_support") {
 		t.Fatalf("billing: %d %s", rr.Code, rr.Body.String())
@@ -346,6 +352,7 @@ func TestTASK3351_SocialClaimNeverAssignsAReservedUsername(t *testing.T) {
 		// "console" is reserved and, unlike "admin" here, not already held,
 		// so only the rules keep the claim from assigning it.
 		"provider": "google", "email": "victim@example.com", "email_verified": true, "name": "Console",
+		"subject": "google-victim",
 	})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("claim: %d %s", rr.Code, rr.Body.String())

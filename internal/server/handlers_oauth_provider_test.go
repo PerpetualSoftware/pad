@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,16 +22,10 @@ const oauthProviderTestSecret = "shh-its-a-secret"
 // gets a stable one per provider and address, as pad-cloud always sends one
 // (BUG-3797); an explicit "" is sent as is, and oauthLoginNoSubject sends no
 // key at all.
-// oauthLoginNoSubject marks a postOAuthLogin body that must carry no subject.
-const oauthLoginNoSubject = "_test_no_subject"
-
+// postOAuthLogin posts a sidecar oauth-login exactly as given: a body that
+// should sign in must name its "subject", as pad-cloud always does (BUG-3797).
 func postOAuthLogin(t *testing.T, srv *Server, body map[string]interface{}) *httptest.ResponseRecorder {
 	t.Helper()
-	if _, omit := body[oauthLoginNoSubject]; omit {
-		delete(body, oauthLoginNoSubject)
-	} else if _, has := body["subject"]; !has {
-		body["subject"] = fmt.Sprintf("sub-%v-%v", body["provider"], body["email"])
-	}
 	body["cloud_secret"] = oauthProviderTestSecret
 	req := cloudAdminReq(t, "POST", "/api/v1/auth/oauth-login", body,
 		map[string]string{"X-Cloud-Secret": oauthProviderTestSecret})
@@ -50,6 +43,7 @@ func TestOAuthLogin_AppleProvider_CreatesAndLinksUser(t *testing.T) {
 		"email":          "applefan@example.com",
 		"name":           "Apple Fan",
 		"email_verified": true,
+		"subject":        "apple-applefan",
 	})
 
 	if rr.Code != http.StatusOK {
@@ -87,6 +81,7 @@ func TestOAuthLogin_AppleProvider_CreatesAndLinksUser(t *testing.T) {
 		"provider":       "apple",
 		"email":          "applefan@example.com",
 		"email_verified": true,
+		"subject":        "apple-applefan",
 	})
 	if rr2.Code != http.StatusOK {
 		t.Fatalf("returning apple login: got %d, want 200: %s", rr2.Code, rr2.Body.String())
@@ -101,6 +96,7 @@ func TestOAuthLogin_AppleProvider_StillRequiresVerifiedEmail(t *testing.T) {
 		"provider":       "apple",
 		"email":          "unverified@example.com",
 		"email_verified": false,
+		"subject":        "apple-unverified",
 	})
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("unverified apple email: got %d, want 403: %s", rr.Code, rr.Body.String())
@@ -124,6 +120,7 @@ func TestOAuthLogin_SessionTTLMatchesWebSession(t *testing.T) {
 		"email":          "ttlcheck@example.com",
 		"name":           "TTL Check",
 		"email_verified": true,
+		"subject":        "google-ttlcheck",
 	})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("oauth-login: got %d, want 200: %s", rr.Code, rr.Body.String())
@@ -160,6 +157,7 @@ func TestOAuthLink_AppleProvider_Links(t *testing.T) {
 		"email":          "linker@example.com",
 		"name":           "Linker",
 		"email_verified": true,
+		"subject":        "google-linker",
 	}); rr.Code != http.StatusOK {
 		t.Fatalf("seed google login: got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -193,6 +191,7 @@ func TestOAuthLogin_UnknownProvider_Rejected(t *testing.T) {
 		"provider":       "facebook",
 		"email":          "someone@example.com",
 		"email_verified": true,
+		"subject":        "facebook-someone",
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("unknown provider: got %d, want 400: %s", rr.Code, rr.Body.String())

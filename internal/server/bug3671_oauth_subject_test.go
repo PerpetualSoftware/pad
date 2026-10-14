@@ -19,8 +19,6 @@ func TestBUG3671_AnEmailAloneNoLongerReachesASubjectBoundAccount(t *testing.T) {
 		body := map[string]interface{}{"provider": "google", "email": email, "email_verified": true}
 		if subject != "" {
 			body["subject"] = subject
-		} else {
-			body[oauthLoginNoSubject] = true
 		}
 		return postOAuthLogin(t, srv, body)
 	}
@@ -125,7 +123,6 @@ func TestBUG3671_ASubjectlessSignInGetsNoTwoFactorChallenge(t *testing.T) {
 	}
 	subjectless := oauthLoginBody("totp@example.com")
 	delete(subjectless, "subject")
-	subjectless[oauthLoginNoSubject] = true
 	rr = postOAuthLogin(t, srv, subjectless)
 	body := rr.Body.String()
 	if rr.Code != http.StatusBadRequest || !strings.Contains(body, "oauth_subject_required") || strings.Contains(body, "challenge_token") {

@@ -44,8 +44,6 @@ func TestBUG3797_ASignInWithoutASubjectIsRefusedForEveryProvider(t *testing.T) {
 					body := map[string]interface{}{"provider": provider, "email": email, "email_verified": true, "email_primary": true}
 					if subject != nil {
 						body["subject"] = subject
-					} else {
-						body[oauthLoginNoSubject] = true
 					}
 					rr := postOAuthLogin(t, srv, body)
 					var resp struct {
