@@ -155,6 +155,12 @@
 	// that a `Set`-only filter let `updated_at DESC` order override the
 	// ranking.
 	let searchResultRank = $state<Map<string, number> | null>(null);
+	// The most matches one body search walks (BUG-3710), matching the
+	// server's list max (#2143). Never silent: a walk that stops here with
+	// more matches left sets `bodySearchCapped`, and the page says so,
+	// because a filter can then hide a match past the cap (Heron's ruling).
+	const BODY_SEARCH_MAX = 1000;
+	let bodySearchCapped = $state(false);
 	let searchTimeout: ReturnType<typeof setTimeout>;
 
 	/**
@@ -973,6 +979,7 @@
 		// Typed input.
 		searchQuery = '';
 		searchResultRank = null;
+		bodySearchCapped = false;
 		quickCreateTitle = '';
 		saveViewName = '';
 		draftText = {};
@@ -2097,6 +2104,7 @@
 		const snapshotColl = collSlug;
 
 		clearTimeout(searchTimeout);
+		bodySearchCapped = false;
 		if (!trimmed) {
 			searchResultRank = null; // null = no search active
 			return;
@@ -2126,13 +2134,11 @@
 			searchResultRank = null;
 			const snapshotQuery = trimmed;
 			const snapshotArchived = archivedInView;
-			// The server's /search page size, and the most matches walked
-			// for one body search (BUG-3710). The walk stops at the max, so a
-			// body search with more matches than that can still hide one the
-			// filters would keep. That is the bound, accepted for a body grep;
-			// the local path has none.
+			// The server's /search page size. The walk stops at BODY_SEARCH_MAX,
+			// so a body search with more matches than that can still hide one
+			// the filters would keep: that is the bound, and the page shows a
+			// notice when it bites. The local path has none.
 			const BODY_SEARCH_PAGE = 200;
-			const BODY_SEARCH_MAX = 1000;
 			// Fenced INSIDE the timer body, not at the effect: 200ms separates
 			// the two, and a check at the effect says nothing about who is
 			// signed in when this fires (BUG-3084).
@@ -2175,6 +2181,7 @@
 					// cap behind ones the filters then removed. The server
 					// pages at 200; BODY_SEARCH_MAX bounds the walk.
 					const ranked: string[] = [];
+					let capped = false;
 					for (;;) {
 						const resp = await api.search(bodyQuery, {
 							workspace: snapshotWs,
@@ -2186,9 +2193,16 @@
 						if (moved() || !identityHeld(epochAtSchedule)) return;
 						const page = resp.results ?? [];
 						for (const r of page) ranked.push(r.item.id);
+						// Stopped by the max with more matches left: a full last
+						// page, and no total saying this was all of them.
+						if (ranked.length >= BODY_SEARCH_MAX && page.length >= BODY_SEARCH_PAGE && ranked.length < (resp.total ?? Infinity)) {
+							capped = true;
+							break;
+						}
 						if (page.length < BODY_SEARCH_PAGE || ranked.length >= (resp.total ?? 0) || ranked.length >= BODY_SEARCH_MAX) break;
 					}
 					searchResultRank = new Map(ranked.map((id, i) => [id, i]));
+					bodySearchCapped = capped;
 				} catch {
 					// The same fence as the success arm, including the timer:
 					// an overtaken walk whose page fails must not clear the
@@ -4409,6 +4423,12 @@
 				</div>
 			{/if}
 
+			{#if bodySearchCapped && searchResultRank !== null}
+				<p class="search-cap-notice" role="status">
+					Showing the first {BODY_SEARCH_MAX} matches; refine your search.
+				</p>
+			{/if}
+
 			<!-- Saved views live in the View menu now (PLAN-2290 Phase 3);
 			     the tab bar is retired. TASK-1366's pin/default semantics
 			     carry over unchanged. -->
@@ -5230,6 +5250,12 @@
 		height: 6px;
 		border-radius: 50%;
 		background: var(--accent-primary, var(--accent-blue));
+	}
+
+	.search-cap-notice {
+		margin: 0 0 var(--space-2);
+		font-size: 0.8125rem;
+		color: var(--text-muted);
 	}
 
 	.filters-panel {

@@ -47,7 +47,7 @@ identityGateSuite({
 		nested: [
 			{ body: /event\.type === 'collection_updated'/, why: "SSE item events: pageIdentityHeld() at entry; the refresh arm checks collGen, the slug, then identityHeld(epochAtEntry) before its write", reviewed: '7b0ae5504172' },
 			{ body: /result\.workspace !== wsSlug/, why: 'sync results: pageIdentityHeld() at entry, identityHeld(epochAtEntry) after the progress refresh', reviewed: 'c75a0156ba81' },
-			{ body: /BODY_SEARCH_PAGE/, why: 'search timer, as an async function: identityHeld(epochAtSchedule) at fire time and after EVERY page of the search, with the query, route and archived-flag snapshots (TASK-2864) and the timer it fired under (a newer run of the effect supersedes it), on the success AND catch arms; one commit after the walk (BUG-3710)', reviewed: 'aabbd0d47d7f' },
+			{ body: /BODY_SEARCH_PAGE/, why: 'search timer, as an async function: identityHeld(epochAtSchedule) at fire time and after EVERY page of the search, with the query, route and archived-flag snapshots (TASK-2864) and the timer it fired under (a newer run of the effect supersedes it), on the success AND catch arms; one commit after the walk (BUG-3710); the cap flag commits beside the rank map under the same fence', reviewed: '0025dd6fffa1' },
 		],
 		markup: [],
 		continuations: [
@@ -56,7 +56,7 @@ identityGateSuite({
 			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: '2a319a915b32' },
 			{ call: /handleStatusChange\(item, value, 'priority'\)\.catch\($/, body: /./, why: 'card priority write (TASK-2214): the rejection was already toasted inside handleStatusChange, which fences its own commits; the catch commits nothing', reviewed: '8405d65b80af' },
 			{ call: /api\.members\.list\(ws\)\.catch\($/, body: /./, why: 'loadCollection members fetch: a failure reads as none; commits nothing', reviewed: 'cfb203c9497b' },
-			{ call: /^setTimeout\($/, body: /BODY_SEARCH_PAGE/, why: 'search timer, as the deferred callback: the same unit as the nested row above', reviewed: 'aabbd0d47d7f' },
+			{ call: /^setTimeout\($/, body: /BODY_SEARCH_PAGE/, why: 'search timer, as the deferred callback: the same unit as the nested row above', reviewed: '0025dd6fffa1' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtSchedule\)\) return; bypassNavGuard/, why: 'leave-guard popstate reset: identityHeld(epochAtSchedule) before clearing bypassNavGuard', reviewed: 'b3974e1c39d9' },
 			{
 				call: /^goto\(url\)\.finally\($/,

@@ -950,6 +950,94 @@ describe('the collection page searches every match, not the first 200 (BUG-3710)
 		expect(vi.mocked(api.search).mock.calls.length).toBe(1);
 	});
 
+	// Heron's ruling on BUG-3710: the 1000 cap stays, but never silently.
+	const capPage = (from: number, n: number, total: number | undefined) => ({
+		results: Array.from({ length: n }, (_, i) => ({ item: { id: `m${from + i}` } })),
+		total,
+	});
+	const capNotice = () => document.querySelector('.search-cap-notice');
+
+	it('a body search stopped by the 1000 cap says so', async () => {
+		const onSearchChange = await searchBox();
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search).mockImplementation((async (_q: string, f: { offset?: number }) =>
+			capPage(f.offset ?? 0, 200, 1500)) as never);
+		vi.useFakeTimers();
+		onSearchChange('body:foo');
+		await vi.advanceTimersByTimeAsync(250);
+		expect(vi.mocked(api.search).mock.calls.length, 'the walk did not stop at the cap').toBe(5);
+		expect(capNotice()?.textContent, 'a capped search showed no notice').toMatch(/Showing the first 1000 matches; refine your search/);
+		// A new search that is not capped takes the notice down.
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search).mockResolvedValueOnce(capPage(0, 1, 1) as never);
+		onSearchChange('body:bar');
+		await vi.advanceTimersByTimeAsync(250);
+		expect(capNotice(), 'the notice outlived the capped search').toBeNull();
+	});
+
+	it('a capped body search followed by a local search drops the notice', async () => {
+		const spy = vi.spyOn(localSearch, 'search');
+		try {
+			const onSearchChange = await searchBox();
+			vi.mocked(api.search).mockReset();
+			vi.mocked(api.search).mockImplementation((async (_q: string, f: { offset?: number }) =>
+				capPage(f.offset ?? 0, 200, 1500)) as never);
+			vi.useFakeTimers();
+			onSearchChange('body:foo');
+			await vi.advanceTimersByTimeAsync(250);
+			expect(capNotice(), 'premise: the body search was capped').not.toBeNull();
+			spy.mockClear();
+			onSearchChange('foo');
+			await vi.advanceTimersByTimeAsync(10);
+			expect(spy, 'premise: the local path ran').toHaveBeenCalled();
+			expect(capNotice(), 'the body search notice stayed on a local search').toBeNull();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it('a capped body search followed by a failed one drops the notice', async () => {
+		const onSearchChange = await searchBox();
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search).mockImplementation((async (_q: string, f: { offset?: number }) =>
+			capPage(f.offset ?? 0, 200, 1500)) as never);
+		vi.useFakeTimers();
+		onSearchChange('body:foo');
+		await vi.advanceTimersByTimeAsync(250);
+		expect(capNotice(), 'premise: the body search was capped').not.toBeNull();
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search).mockRejectedValueOnce(new Error('network') as never);
+		onSearchChange('body:bar');
+		await vi.advanceTimersByTimeAsync(250);
+		expect(vi.mocked(api.search).mock.calls.length, 'premise: the failing search ran').toBe(1);
+		expect(capNotice(), 'a failed search kept the previous notice').toBeNull();
+	});
+
+	it('control: exactly 1000 matches, all walked, shows no notice', async () => {
+		const onSearchChange = await searchBox();
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search).mockImplementation((async (_q: string, f: { offset?: number }) =>
+			capPage(f.offset ?? 0, 200, 1000)) as never);
+		vi.useFakeTimers();
+		onSearchChange('body:foo');
+		await vi.advanceTimersByTimeAsync(250);
+		expect(vi.mocked(api.search).mock.calls.length).toBe(5);
+		expect(capNotice(), 'every match was shown, yet the page said it was capped').toBeNull();
+	});
+
+	it('control: a short walk shows no notice', async () => {
+		const onSearchChange = await searchBox();
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search)
+			.mockResolvedValueOnce(capPage(0, 200, 201) as never)
+			.mockResolvedValueOnce(capPage(200, 1, 201) as never);
+		vi.useFakeTimers();
+		onSearchChange('body:foo');
+		await vi.advanceTimersByTimeAsync(250);
+		expect(vi.mocked(api.search).mock.calls.length).toBe(2);
+		expect(capNotice()).toBeNull();
+	});
+
 	it('a walk overtaken by a newer run of the same search does not commit', async () => {
 		const onSearchChange = await searchBox();
 		let releaseOld!: (v: unknown) => void;
