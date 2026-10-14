@@ -593,6 +593,15 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// The target must be live BEFORE a view is charged (BUG-3635): an archived
+	// item or collection serves nothing, and a refused request must not spend
+	// max_views, or restoring the target would leave the link exhausted.
+	liveItem, ok := s.shareTargetLive(link)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "Not found")
+		return
+	}
+
 	// Atomically record the view and enforce max_views
 	fingerprint := clientIP(r)
 	userID := ""
@@ -614,13 +623,10 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 	// to avoid leaking internal IDs, creator info, and other sensitive fields.
 	switch link.TargetType {
 	case "item":
-		// Live item AND live collection (BUG-3635): the same check the
-		// attachment endpoint uses, so the two public doors cannot disagree.
-		item, ok := s.shareTargetLive(link)
-		if !ok {
-			writeError(w, http.StatusNotFound, "not_found", "Not found")
-			return
-		}
+		// Live item AND live collection, checked above by shareTargetLive: the
+		// same check the attachment endpoint uses, so the two public doors
+		// cannot disagree (BUG-3635).
+		item := liveItem
 		resp := map[string]interface{}{
 			"type":       "item",
 			"item":       publicShareItemDTO(item),

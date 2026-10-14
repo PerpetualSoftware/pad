@@ -2,7 +2,10 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // BUG-3635: a public share link must serve nothing once its target is no
@@ -126,8 +129,15 @@ func TestBUG3635_CollectionShareOfArchivedItem(t *testing.T) {
 	f.setContent(t, f.item2ID, imageRef(a2))
 	link := f.createLink(t, "collection", f.collID, nil)
 
+	if body := doRequest(f.srv, "GET", "/api/v1/s/"+link.Token, nil).Body.String(); !strings.Contains(body, `"title":"Other"`) {
+		t.Fatalf("precondition: live collection share JSON lacks the item: %s", body)
+	}
 	if err := f.srv.store.DeleteItem(f.item2ID); err != nil {
 		t.Fatalf("DeleteItem: %v", err)
+	}
+	rr := doRequest(f.srv, "GET", "/api/v1/s/"+link.Token, nil)
+	if rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), `"title":"Other"`) {
+		t.Errorf("collection share JSON after archiving an item: status %d, body %s; want 200 without it", rr.Code, rr.Body.String())
 	}
 	if rr := f.getAsset(link.Token, a2, "variant=thumb-md"); rr.Code != http.StatusNotFound {
 		t.Errorf("collection share, archived item: asset status %d, want 404", rr.Code)
@@ -137,5 +147,35 @@ func TestBUG3635_CollectionShareOfArchivedItem(t *testing.T) {
 	}
 	if rr := f.getAsset(link.Token, a2, "variant=thumb-md"); rr.Code != http.StatusOK {
 		t.Errorf("collection share, restored item: asset status %d, want 200", rr.Code)
+	}
+}
+
+func TestBUG3635_ArchivedTargetDoesNotSpendMaxViews(t *testing.T) {
+	// A request refused because the target is archived must not charge a
+	// view: under max_views=1 the restored link still serves once.
+	t.Parallel()
+	for _, tc := range []struct{ name, targetType string }{
+		{"item", "item"},
+		{"collection", "collection"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newShareAssetFixture(t)
+			target := f.itemID
+			if tc.targetType == "collection" {
+				target = f.collID
+			}
+			one := 1
+			link := f.createLink(t, tc.targetType, target, &store.ShareLinkOptions{MaxViews: &one})
+
+			f.archiveCollection(t)
+			if code := f.resolveStatus(link.Token); code != http.StatusNotFound {
+				t.Fatalf("archived target: resolve status %d, want 404", code)
+			}
+			f.restoreCollection(t)
+			if code := f.resolveStatus(link.Token); code != http.StatusOK {
+				t.Errorf("restored target under max_views=1: resolve status %d, want 200 (the refused request spent the view)", code)
+			}
+		})
 	}
 }
