@@ -309,20 +309,38 @@ func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, lim
 			continue
 		}
 		for _, status := range values {
-			params := url.Values{
-				field:   {status},
-				"sort":  {"updated_at:desc"},
-				"limit": {strconv.Itoa(limit)},
-			}
-			items, err := client.ListCollectionItems(ws, c.Slug, params)
-			if err != nil {
-				continue
-			}
-			for _, item := range items {
-				if item.UpdatedAt.After(cutoff) && !seen[item.ID] {
-					seen[item.ID] = true
-					out = append(out, item)
+			// Newest first, `limit` rows a page, until a page reaches past the
+			// cutoff or the list ends (BUG-3793, Codex r1): one page used to be
+			// read as every match, so a status with more than `limit` items
+			// changed since the cutoff lost the older ones from the report.
+			for offset := 0; ; {
+				params := url.Values{
+					field:   {status},
+					"sort":  {"updated_at:desc"},
+					"limit": {strconv.Itoa(limit)},
 				}
+				if offset > 0 {
+					params.Set("offset", strconv.Itoa(offset))
+				}
+				items, page, err := client.ListCollectionItemsReport(ws, c.Slug, params)
+				if err != nil {
+					break
+				}
+				reachedCutoff := false
+				for _, item := range items {
+					if !item.UpdatedAt.After(cutoff) {
+						reachedCutoff = true
+						continue
+					}
+					if !seen[item.ID] {
+						seen[item.ID] = true
+						out = append(out, item)
+					}
+				}
+				if reachedCutoff || !page.HasMore || page.NextOffset <= offset {
+					break
+				}
+				offset = page.NextOffset
 			}
 		}
 	}

@@ -150,9 +150,10 @@ func reconcileTargetItems(client *cli.Client, ws string, args []string) ([]model
 		return []models.Item{*item}, nil
 	}
 
-	items, err := client.ListItems(ws, url.Values{
+	// Every page (BUG-3793): a fixed limit read a capped list as the whole
+	// workspace and reconciled only part of it, silently.
+	items, err := client.ListAllItems(ws, url.Values{
 		"include_archived": {"true"},
-		"limit":            {"500"},
 	})
 	if err != nil {
 		return nil, err

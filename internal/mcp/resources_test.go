@@ -369,7 +369,8 @@ func TestReadItems_DispatchesItemListJSON(t *testing.T) {
 	if tc.MIMEType != jsonMIMEType {
 		t.Errorf("MIMEType = %q, want %q", tc.MIMEType, jsonMIMEType)
 	}
-	wantArgs := []string{"item", "list", "--all", "--workspace", "docapp", "--format", "json"}
+	// One row past the cap, to say whether the list was cut short (BUG-3793).
+	wantArgs := []string{"item", "list", "--all", "--workspace", "docapp", "--format", "json", "--limit", "201"}
 	if !equalSlice(f.gotArgs, wantArgs) {
 		t.Errorf("dispatched args = %v, want %v", f.gotArgs, wantArgs)
 	}
