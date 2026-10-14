@@ -243,8 +243,9 @@ func (s *CredentialStore) Save() error {
 	// credentials.json, live or dangling, is written through the link in
 	// place: renaming over it would replace the link with a plain file, and a
 	// temp file beside its target fails in a read-only directory. A
-	// bind-mounted file cannot be renamed over (EBUSY), so it is written in
-	// place too.
+	// bind-mounted file cannot be renamed over (EBUSY), nor can a Windows
+	// file another process holds open past the rename retries, so those are
+	// written in place too.
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		err = writeFileInPlace0600(path, data)
 		if err != nil {
@@ -253,13 +254,33 @@ func (s *CredentialStore) Save() error {
 		return nil
 	}
 	err = writeFileAtomic0600(path, data)
-	if errors.Is(err, syscall.EBUSY) {
+	if renameFailureWritesInPlace(credentialsGOOS, err) {
 		err = writeFileInPlace0600(path, data)
 	}
 	if err != nil {
 		return fmt.Errorf("write credentials: %w", err)
 	}
 	return nil
+}
+
+// Windows error codes for a rename blocked by another process's open
+// handle; syscall names them only in its Windows build.
+const (
+	errorAccessDenied     syscall.Errno = 5  // ERROR_ACCESS_DENIED
+	errorSharingViolation syscall.Errno = 32 // ERROR_SHARING_VIOLATION
+)
+
+// renameFailureWritesInPlace reports whether a failed replace should fall
+// back to writing in place, the shapes where os.WriteFile would still have
+// succeeded (rows 6 and 8 of the population table on BUG-3649): EBUSY over a
+// bind-mounted file, and on Windows a file held open by another process.
+// Any other rename error is returned.
+func renameFailureWritesInPlace(goos string, err error) bool {
+	if goos == "windows" {
+		var errno syscall.Errno
+		return errors.As(err, &errno) && (errno == errorAccessDenied || errno == errorSharingViolation)
+	}
+	return errors.Is(err, syscall.EBUSY)
 }
 
 // writeFileInPlace0600 writes data over path in place, following a symlink,
@@ -325,6 +346,10 @@ func writeFileAtomic0600(path string, data []byte) error {
 	tmpName = ""
 	return nil
 }
+
+// credentialsGOOS is runtime.GOOS, swappable so a test on any platform can
+// reach Save's Windows fallback.
+var credentialsGOOS = runtime.GOOS
 
 // osRename is os.Rename, swappable so a test can make the replace fail as
 // it does over a bind-mounted file, which needs a mount to reproduce.

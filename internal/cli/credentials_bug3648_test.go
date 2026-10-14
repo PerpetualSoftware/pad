@@ -437,3 +437,61 @@ func TestBUG3648_SaveWritesInPlaceWhenTheRenameIsBusy(t *testing.T) {
 		}
 	}
 }
+
+// Rows 6 and 8: which rename failures fall back to the in-place write.
+func TestBUG3649_RenameFailureWritesInPlaceMapping(t *testing.T) {
+	link := func(errno syscall.Errno) error {
+		return &os.LinkError{Op: "rename", Old: "a", New: "b", Err: errno}
+	}
+	cases := []struct {
+		name string
+		goos string
+		err  error
+		want bool
+	}{
+		{"windows access denied", "windows", link(5), true},
+		{"windows sharing violation", "windows", link(32), true},
+		{"windows file not found", "windows", link(2), false},
+		{"windows path not found", "windows", link(3), false},
+		{"windows non-errno error", "windows", fmt.Errorf("boom"), false},
+		{"linux EBUSY", "linux", link(syscall.EBUSY), true},
+		{"linux EIO (errno 5)", "linux", link(syscall.EIO), false},
+		{"linux EACCES", "linux", link(syscall.EACCES), false},
+		{"linux EXDEV", "linux", link(syscall.EXDEV), false},
+		{"darwin EBUSY", "darwin", link(syscall.EBUSY), true},
+		{"nil", "linux", nil, false},
+		{"nil windows", "windows", nil, false},
+	}
+	for _, c := range cases {
+		if got := renameFailureWritesInPlace(c.goos, c.err); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// Row 8 through Save: a Windows rename refused by another process's open
+// handle writes in place.
+func TestBUG3649_SaveWritesInPlaceWhenWindowsRefusesTheRename(t *testing.T) {
+	home := withTempHome(t)
+	path := filepath.Join(home, ".pad", "credentials.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, longSeed, 0600); err != nil {
+		t.Fatal(err)
+	}
+	origRename, origGOOS := osRename, credentialsGOOS
+	osRename = func(oldpath, newpath string) error {
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: errorSharingViolation}
+	}
+	credentialsGOOS = "windows"
+	t.Cleanup(func() { osRename, credentialsGOOS = origRename, origGOOS })
+	saveFresh(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"fresh"`) || !json.Valid(data) {
+		t.Errorf("the held-open target did not receive the save whole: %s", data)
+	}
+}
