@@ -32,9 +32,11 @@ type ChangesResponse struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
-// changesCursor is the opaque /changes continuation: the walk's `since` and
-// first-page server time, and the last row the previous page returned.
+// changesCursor is the opaque /changes continuation: the workspace it walks,
+// the walk's `since` and first-page server time, and the last row the previous
+// page returned.
 type changesCursor struct {
+	WorkspaceID  string
 	SinceMs      int64
 	ServerTimeMs int64
 	After        store.ChangesPosition
@@ -43,7 +45,7 @@ type changesCursor struct {
 const changesCursorPrefix = "c1."
 
 func (c changesCursor) encode() string {
-	raw := fmt.Sprintf("%d.%d.%d.%s", c.SinceMs, c.ServerTimeMs, c.After.Seq, c.After.ID)
+	raw := fmt.Sprintf("%s.%d.%d.%d.%s", c.WorkspaceID, c.SinceMs, c.ServerTimeMs, c.After.Seq, c.After.ID)
 	return changesCursorPrefix + base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -57,19 +59,20 @@ func decodeChangesCursor(s string) (changesCursor, bool) {
 	if err != nil {
 		return c, false
 	}
-	parts := strings.SplitN(string(raw), ".", 4)
-	if len(parts) != 4 || parts[3] == "" {
+	parts := strings.SplitN(string(raw), ".", 5)
+	if len(parts) != 5 || parts[0] == "" || parts[4] == "" {
 		return c, false
 	}
 	nums := make([]int64, 3)
 	for i := range nums {
-		v, err := strconv.ParseInt(parts[i], 10, 64)
+		v, err := strconv.ParseInt(parts[i+1], 10, 64)
 		if err != nil || v < 0 {
 			return c, false
 		}
 		nums[i] = v
 	}
-	c.SinceMs, c.ServerTimeMs, c.After = nums[0], nums[1], store.ChangesPosition{Seq: nums[2], ID: parts[3]}
+	c.WorkspaceID = parts[0]
+	c.SinceMs, c.ServerTimeMs, c.After = nums[0], nums[1], store.ChangesPosition{Seq: nums[2], ID: parts[4]}
 	return c, true
 }
 
@@ -98,8 +101,10 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 	var after *store.ChangesPosition
 	if cursorStr := q.Get("cursor"); cursorStr != "" {
 		c, ok := decodeChangesCursor(cursorStr)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "bad_request", "cursor is not a /changes next_cursor")
+		// A cursor continues one workspace's walk; another's position and
+		// since would skip this one's rows.
+		if !ok || c.WorkspaceID != workspaceID {
+			writeError(w, http.StatusBadRequest, "bad_request", "cursor is not a /changes next_cursor for this workspace")
 			return
 		}
 		if sinceStr := q.Get("since"); sinceStr != "" && sinceStr != strconv.FormatInt(c.SinceMs, 10) {
@@ -121,7 +126,7 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 		}
 		// Taken before the reads, so a change committed after them is at or
 		// after the caller's next since.
-		walk = changesCursor{SinceMs: sinceMs, ServerTimeMs: time.Now().UnixMilli()}
+		walk = changesCursor{WorkspaceID: workspaceID, SinceMs: sinceMs, ServerTimeMs: time.Now().UnixMilli()}
 	}
 
 	// As the item lists take it (BUG-3704): a missing or invalid limit is the

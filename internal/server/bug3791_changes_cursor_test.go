@@ -293,7 +293,6 @@ func TestBUG3791_WalkWindowIsOverVisibleRows(t *testing.T) {
 func TestBUG3791_CursorIsValidated(t *testing.T) {
 	srv := testServer(t)
 	slug, wsID := task3462Workspace(t, srv, "Cursor 3791", "startup")
-	_ = wsID
 	base := "/api/v1/workspaces/" + slug + "/changes"
 	p := bug3791Get(t, srv, base+"?since=0&limit=1", "")
 	if !p.HasMore {
@@ -302,7 +301,8 @@ func TestBUG3791_CursorIsValidated(t *testing.T) {
 	for _, q := range []string{
 		"?cursor=garbage",
 		"?cursor=c1.!!!",
-		"?cursor=" + changesCursor{SinceMs: 0, ServerTimeMs: 1}.encode(), // no row id
+		"?cursor=" + changesCursor{WorkspaceID: wsID, SinceMs: 0, ServerTimeMs: 1}.encode(),                             // no row id
+		"?cursor=" + changesCursor{SinceMs: 0, ServerTimeMs: 1, After: store.ChangesPosition{Seq: 1, ID: "x"}}.encode(), // no workspace
 		"?since=5&cursor=" + p.NextCursor,
 	} {
 		if rr := doRequest(srv, "GET", base+q, nil); rr.Code != http.StatusBadRequest {
@@ -311,5 +311,10 @@ func TestBUG3791_CursorIsValidated(t *testing.T) {
 	}
 	if rr := doRequest(srv, "GET", base+"?since=0&cursor="+p.NextCursor, nil); rr.Code != http.StatusOK {
 		t.Errorf("a since equal to the cursor's: %d, want 200", rr.Code)
+	}
+	// Codex r1 (Medium): a cursor continues only the workspace it came from.
+	otherSlug, _ := task3462Workspace(t, srv, "Cursor 3791 other", "startup")
+	if rr := doRequest(srv, "GET", "/api/v1/workspaces/"+otherSlug+"/changes?cursor="+p.NextCursor, nil); rr.Code != http.StatusBadRequest {
+		t.Errorf("another workspace's cursor: %d, want 400", rr.Code)
 	}
 }
