@@ -6,14 +6,19 @@
 -- the cross-dialect fix).
 ALTER TABLE item_versions ADD COLUMN IF NOT EXISTS version_seq BIGINT NOT NULL DEFAULT 0;
 
--- Backfill existing rows deterministically per item. Postgres lacks rowid,
--- so ctid (the physical row locator) is the stable per-partition
--- tie-breaker for same-second rows — the analogue of the SQLite migration's
--- rowid ordering.
+-- Backfill existing rows deterministically per item: by created_at, then
+-- id. Rows written before this migration carry no sub-second chronology
+-- (second-precision created_at, random UUIDv4 id), so versions saved in the
+-- same second are ordered by id, which is arbitrary but stable. It used to
+-- be ctid, which is NOT chronology either: an UPDATE moves a row, so it
+-- could order a tie differently on every database (BUG-3751). The runner
+-- records applied migrations by filename only (store.go migratePostgres),
+-- so databases that already ran this keep their numbering; operators can
+-- check theirs with scripts/diagnose-version-ties.
 UPDATE item_versions AS v
 SET version_seq = sub.rn
 FROM (
-    SELECT id, ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY created_at, ctid) AS rn
+    SELECT id, ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY created_at, id) AS rn
     FROM item_versions
 ) AS sub
 WHERE v.id = sub.id;
