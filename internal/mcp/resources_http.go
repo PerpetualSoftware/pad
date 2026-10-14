@@ -164,7 +164,13 @@ func (f *HTTPResourceFetcher) FetchBytes(ctx context.Context, args []string) ([]
 // resource identical to stdio.
 func (f *HTTPResourceFetcher) fetchItemList(ctx context.Context, user *models.User, ws string, flags map[string]string) (string, error) {
 	q := url.Values{}
-	q.Set("limit", strconv.Itoa(itemListResourceLimit))
+	// readItems asks for one row past the cap (BUG-3793), as the CLI's
+	// --limit does on stdio.
+	limit := itemListResourceLimit
+	if n, err := strconv.Atoi(flags["limit"]); err == nil && n > 0 {
+		limit = n
+	}
+	q.Set("limit", strconv.Itoa(limit))
 	if _, all := flags["all"]; !all {
 		// Match `pad item list` (cmd/pad/cmd_item.go): the default hides
 		// terminal-status items via non_terminal; --all lifts ONLY that

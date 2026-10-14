@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -455,8 +456,46 @@ func (r *resources) readItems(ctx context.Context, req mcp.ReadResourceRequest) 
 	if kind != resourceKindItem || arg != "" {
 		return nil, fmt.Errorf("resource %q is not the items list URI", req.Params.URI)
 	}
-	return r.fetchAsResource(ctx, req.Params.URI, jsonMIMEType,
-		[]string{"item", "list", "--all", "--workspace", ws, "--format", "json"})
+	// One row past the cap says whether the list was cut short (BUG-3793): a
+	// capped list used to read as the whole workspace. Both transports take
+	// --limit (stdio as the CLI flag, remote through fetchItemList).
+	contents, err := r.fetchAsResource(ctx, req.Params.URI, jsonMIMEType,
+		[]string{"item", "list", "--all", "--workspace", ws, "--format", "json",
+			"--limit", strconv.Itoa(itemListResourceLimit + 1)})
+	if err != nil {
+		return nil, err
+	}
+	return markItemListResourceTruncation(req.Params.URI, contents, itemListResourceLimit), nil
+}
+
+// itemListResourceTruncatedNote is the second content block of an item list
+// resource that was cut short.
+const itemListResourceTruncatedNote = "This list shows the first %d items; more exist. Use pad_item action=list with filters to reach the rest."
+
+// markItemListResourceTruncation trims an item list resource fetched with one
+// row past limit back to limit and, when the extra row came back, adds a
+// note (BUG-3793). A list that fits is returned unchanged.
+func markItemListResourceTruncation(uri string, contents []mcp.ResourceContents, limit int) []mcp.ResourceContents {
+	if len(contents) != 1 {
+		return contents
+	}
+	text, ok := contents[0].(mcp.TextResourceContents)
+	if !ok {
+		return contents
+	}
+	var rows []json.RawMessage
+	if err := json.Unmarshal([]byte(text.Text), &rows); err != nil || len(rows) <= limit {
+		return contents
+	}
+	trimmed, err := json.Marshal(rows[:limit])
+	if err != nil {
+		return contents
+	}
+	text.Text = string(trimmed)
+	return []mcp.ResourceContents{
+		text,
+		mcp.TextResourceContents{URI: uri, MIMEType: "text/plain", Text: fmt.Sprintf(itemListResourceTruncatedNote, limit)},
+	}
 }
 
 // readDashboard handles pad://workspace/{ws}/dashboard.

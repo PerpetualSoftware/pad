@@ -271,20 +271,9 @@ func githubStatusCmd() *cobra.Command {
 			}
 
 			// All items mode — scan across all collections for items with github_pr in fields
-			colls, err := client.ListCollections(ws)
+			items, err := githubStatusScanItems(client, ws)
 			if err != nil {
 				return err
-			}
-			var items []models.Item
-			for _, coll := range colls {
-				collItems, err := client.ListCollectionItems(ws, coll.Slug, url.Values{
-					"limit":            {"100"},
-					"include_archived": {"true"},
-				})
-				if err != nil {
-					continue
-				}
-				items = append(items, collItems...)
 			}
 
 			if formatFlag == "json" {
@@ -476,4 +465,27 @@ func anyFlagChanged(cmd *cobra.Command, names ...string) bool {
 		}
 	}
 	return false
+}
+
+// githubStatusScanItems is every item of every collection, archived included,
+// that `pad github status` scans for linked PRs. Every page of each collection
+// is read (BUG-3793): a 100-row limit silently dropped the rest of a larger
+// collection from the report. A collection that fails to list is skipped, as
+// before.
+func githubStatusScanItems(client *cli.Client, ws string) ([]models.Item, error) {
+	colls, err := client.ListCollections(ws)
+	if err != nil {
+		return nil, err
+	}
+	var items []models.Item
+	for _, coll := range colls {
+		collItems, err := client.ListAllCollectionItems(ws, coll.Slug, url.Values{
+			"include_archived": {"true"},
+		})
+		if err != nil {
+			continue
+		}
+		items = append(items, collItems...)
+	}
+	return items, nil
 }

@@ -317,6 +317,32 @@ func (c *Client) ListAllItems(wsSlug string, params url.Values) ([]models.Item, 
 	}
 }
 
+// ListAllCollectionItems is ListAllItems for one collection: it follows the
+// server's next-offset until has-more is false (BUG-3793).
+func (c *Client) ListAllCollectionItems(wsSlug, collSlug string, params url.Values) ([]models.Item, error) {
+	q := url.Values{}
+	for k, v := range params {
+		q[k] = v
+	}
+	q.Del("limit")
+	q.Del("offset")
+	var all []models.Item
+	for offset := 0; ; {
+		if offset > 0 {
+			q.Set("offset", strconv.Itoa(offset))
+		}
+		items, page, err := c.ListCollectionItemsReport(wsSlug, collSlug, q)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		if !page.HasMore || page.NextOffset <= offset {
+			return all, nil
+		}
+		offset = page.NextOffset
+	}
+}
+
 // ListItemsReport is ListItems plus what the response says besides its rows
 // (ItemListPage), for a caller that warns about undeclared keys or truncation.
 func (c *Client) ListItemsReport(wsSlug string, params url.Values) ([]models.Item, ItemListPage, error) {
