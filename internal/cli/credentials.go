@@ -284,8 +284,10 @@ func writeFileAtomic0600(path string, data []byte) error {
 // login` runs for different servers each used to load the same snapshot
 // and save it with their own entry, so the second dropped the first's.
 // fn mutates the freshly loaded store; when it returns an error nothing is
-// saved. fn must not call UpdateStore, and nothing slow (a network call)
-// belongs inside it: the lock is held for the whole call.
+// saved. fn must not call UpdateStore or WipeCredentialsFile, which take the
+// same lock and would block on it forever (flock is per open file, so this
+// process's own hold blocks it too); nothing slow (a network call) belongs
+// inside it either, since the lock is held for the whole call.
 func UpdateStore(fn func(*CredentialStore) error) error {
 	path, err := credentialsPath()
 	if err != nil {
@@ -320,7 +322,9 @@ func WipeCredentialsFile() error {
 		return err
 	}
 	// Under the UpdateStore lock, so a concurrent update cannot rename a
-	// file back into place after the wipe (Codex round 1, BUG-3649).
+	// file back into place after the wipe (Codex round 1, BUG-3649). Never
+	// call this from an UpdateStore callback: it would wait on the lock that
+	// callback's UpdateStore holds (Codex round 2).
 	if _, err := os.Stat(filepath.Dir(path)); err == nil {
 		unlock, err := lockCredentialsFile(path + ".lock")
 		if err != nil {
