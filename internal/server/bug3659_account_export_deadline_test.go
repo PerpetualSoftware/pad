@@ -157,10 +157,12 @@ func TestBUG3659_CollectionsAndItemsShareOneSnapshot(t *testing.T) {
 	if err := json.Unmarshal(body, &v); err != nil || !v.Complete {
 		t.Fatalf("export is not a complete file: %v\n%s", err, body)
 	}
+	found := false
 	for _, w := range v.Workspaces {
 		if w.ID != ws.ID {
 			continue
 		}
+		found = true
 		have := map[string]bool{}
 		for _, c := range w.Collections {
 			have[c.ID] = true
@@ -173,5 +175,8 @@ func TestBUG3659_CollectionsAndItemsShareOneSnapshot(t *testing.T) {
 				t.Errorf("item %q is exported without its collection %s", it.Title, it.CollectionID)
 			}
 		}
+	}
+	if !found {
+		t.Fatalf("instrument: the export does not carry workspace %s", ws.ID)
 	}
 }
