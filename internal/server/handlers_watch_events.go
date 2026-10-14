@@ -106,11 +106,15 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
 		return
 	}
+	// Every write from here on, refusals included, goes through the stream,
+	// so no frame can block past sseWriteTimeout (BUG-3637).
+	stream := newSSEStream(w, s.sseFrameWriteTimeout())
+	w = stream
+	flusher := stream
 
 	// ADMISSION (BUG-2726). This endpoint had no connection bound at all:
 	// PAD_SSE_MAX_* gated only /api/v1/events, and the API rate limiter
@@ -325,7 +329,11 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	keepalive := time.NewTicker(watchEventsKeepaliveInterval)
+	keepaliveEvery := watchEventsKeepaliveInterval
+	if s.sseKeepaliveOverride > 0 {
+		keepaliveEvery = s.sseKeepaliveOverride
+	}
+	keepalive := time.NewTicker(keepaliveEvery)
 	defer keepalive.Stop()
 	reval := time.NewTicker(watchListRevalInterval)
 	defer reval.Stop()
@@ -388,6 +396,11 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	for {
 		select {
 		case <-ctx.Done():
+			return
+
+		case <-stream.Dead():
+			// A write or flush failed or overran its deadline (BUG-3637).
+			slog.Debug("watch-events: stream write failed, closing", "user_id", user.ID, "error", stream.Err())
 			return
 
 		case n, ok := <-ch:
