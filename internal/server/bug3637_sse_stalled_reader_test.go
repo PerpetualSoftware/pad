@@ -214,3 +214,27 @@ func TestWatchEvents_BUG3637_WriterWithoutDeadlineIsRefused(t *testing.T) {
 		t.Errorf("control: status %d, body %q; want 200", rec.Code, rec.Body.String())
 	}
 }
+
+// The production write deadline must outlast the keepalive cadence by a
+// stated margin, twice, on both streams (lead ruling on codex final-round
+// Low): the stalled-reader tests use a 200ms override, so on their own they
+// would pass a production bound short enough to disconnect a client that is
+// reading normally. Real constants, no overrides.
+func TestSSE_BUG3637_WriteTimeoutOutlastsTheKeepaliveCadence(t *testing.T) {
+	const margin = 2
+	for _, c := range []struct {
+		stream    string
+		keepalive time.Duration
+	}{
+		{"/api/v1/events", sseKeepaliveInterval},
+		{"/api/v1/events/stream", watchEventsKeepaliveInterval},
+	} {
+		if sseWriteTimeout < margin*c.keepalive {
+			t.Errorf("%s: sseWriteTimeout = %v, want at least %d x the %v keepalive interval",
+				c.stream, sseWriteTimeout, margin, c.keepalive)
+		}
+	}
+	if srv := (&Server{}); srv.sseFrameWriteTimeout() != sseWriteTimeout {
+		t.Errorf("with no override the stream uses %v, want sseWriteTimeout (%v)", srv.sseFrameWriteTimeout(), sseWriteTimeout)
+	}
+}

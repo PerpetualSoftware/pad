@@ -17,8 +17,11 @@ import (
 // admission slot, so all three stop with it.
 //
 // Generous on purpose: a keepalive is a few bytes and a replay frame a few
-// kilobytes, so a reader that is merely slow drains one in far less.
-const sseWriteTimeout = 30 * time.Second
+// kilobytes, so a reader that is merely slow drains one in far less. Pinned
+// at no less than twice the keepalive cadence on both streams (the test
+// TestSSE_BUG3637_WriteTimeoutOutlastsTheKeepaliveCadence), so a reader that
+// can keep up with keepalives is never cut off by this bound.
+const sseWriteTimeout = 2 * sseKeepaliveInterval
 
 // sseStream is the ResponseWriter an event-stream handler writes through once
 // it has decided to stream. Every Write and Flush arms a fresh write deadline
