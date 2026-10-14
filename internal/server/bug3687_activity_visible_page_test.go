@@ -313,3 +313,26 @@ func TestBUG3687_FeedBearerAdminIsScopedAndNotStarved(t *testing.T) {
 		}
 	})
 }
+
+func TestBUG3687_UnscopedDashboardNotStarvedByRowsOfMissingItems(t *testing.T) {
+	// Codex round 2: a cookie-session platform admin has no visibility scope,
+	// so the exclusion of missing-item rows cannot ride on that scope.
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		f := newBUG3687Fixture(t, srv)
+		f.seed(t, f.task.ID, 3, bug3687Older)
+		f.seed(t, "00000000-0000-0000-0000-00000bug3687", 40, bug3687Newer)
+		admin, err := srv.store.CreateUser(models.UserCreate{Email: "admin-3687@example.com", Name: "Admin", Username: "admin-3687", Password: "pw-test-12345", Role: "admin"})
+		if err != nil {
+			t.Fatalf("CreateUser admin: %v", err)
+		}
+		seen := 0
+		for _, a := range f.dashboard(t, f.session(t, admin)) {
+			if a.ItemTitle == f.task.Title && a.Action == bug3687Action {
+				seen++
+			}
+		}
+		if seen != 3 {
+			t.Errorf("cookie admin dashboard shows %d of the 3 seeded task rows under 40 newer rows of a missing item", seen)
+		}
+	})
+}

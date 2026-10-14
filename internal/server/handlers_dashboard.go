@@ -939,16 +939,15 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// ones; the filters below stay, since the guest grant rule
 	// (isItemVisibleToGuest) is narrower than the query's. The over-fetch
 	// still covers reorder batches that merge into one entry.
-	activityParams := models.ActivityListParams{Limit: 30}
+	// The loop below drops a row whose item is gone, so the query must not
+	// spend the window on them, for scoped and unscoped callers alike.
+	activityParams := models.ActivityListParams{Limit: 30, ExcludeUnresolvedItems: true}
 	if visibleIDs != nil {
 		activityParams.Visibility = &models.ActivityVisibility{
 			CollectionIDs:         visibleIDs,
 			FullCollectionIDs:     dashFullCollIDs,
 			GrantedItemIDs:        dashGrantedItemIDs,
 			ExcludeWorkspaceLevel: workspaceRole(r) == "guest",
-			// The loop below drops a row whose item is gone (Codex round 1,
-			// BUG-3687), so the query must not spend the window on them.
-			ExcludeUnresolvedItems: true,
 		}
 	}
 	activities, err := s.store.ListWorkspaceActivity(workspaceID, activityParams)

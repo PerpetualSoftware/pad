@@ -150,6 +150,11 @@ type ActivityListParams struct {
 	// pages to a restricted member, and a short page reads as the end of the
 	// feed. nil means unrestricted (a cookie-session admin).
 	Visibility *ActivityVisibility
+	// ExcludeUnresolvedItems drops rows that name an item which no longer
+	// exists, for every caller, scoped or not. The feed shows such rows as
+	// workspace-level; the dashboard never renders them, so it sets this to
+	// keep them from filling its window (BUG-3687, Codex rounds 1 and 2).
+	ExcludeUnresolvedItems bool
 }
 
 // ActivityVisibility is the caller's read scope for activity rows, as the
@@ -166,10 +171,6 @@ type ActivityVisibility struct {
 	// exists. The dashboard sets it for a guest, whom it never shows
 	// workspace-level activity (member invites, role changes).
 	ExcludeWorkspaceLevel bool
-	// ExcludeUnresolvedItems drops rows whose item no longer exists, which
-	// the feed shows as workspace-level and the dashboard never renders. The
-	// dashboard sets it so those rows cannot fill its window either.
-	ExcludeUnresolvedItems bool
 }
 
 // AuditLogParams are query parameters for the audit log endpoint.

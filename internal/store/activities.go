@@ -865,6 +865,9 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 	if params.Visibility != nil {
 		query += activityVisibilityClause(params.Visibility, &args)
 	}
+	if params.ExcludeUnresolvedItems {
+		query += " AND (COALESCE(a.document_id, '') = '' OR EXISTS (SELECT 1 FROM items ui WHERE ui.id = a.document_id))"
+	}
 
 	query += activityKeysetClause(params.Before, params.BeforeID, &args)
 	query += " ORDER BY a.created_at DESC, a.id DESC"
@@ -897,10 +900,9 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 func activityVisibilityClause(v *models.ActivityVisibility, args *[]interface{}) string {
 	var terms []string
 	if !v.ExcludeWorkspaceLevel {
-		terms = append(terms, "COALESCE(a.document_id, '') = ''")
-		if !v.ExcludeUnresolvedItems {
-			terms = append(terms, "NOT EXISTS (SELECT 1 FROM items vi WHERE vi.id = a.document_id)")
-		}
+		terms = append(terms,
+			"COALESCE(a.document_id, '') = ''",
+			"NOT EXISTS (SELECT 1 FROM items vi WHERE vi.id = a.document_id)")
 	}
 	if len(v.CollectionIDs) > 0 {
 		term := "EXISTS (SELECT 1 FROM items vi WHERE vi.id = a.document_id" +
