@@ -8,7 +8,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { localSearch, parseSearchQuery, parseGoToTarget, withoutArchivedToken } from '$lib/stores/localSearch.svelte';
+	import { localSearch, parseSearchQuery, parseGoToTarget, withoutScopeTokens } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import {
 		groupResultsByCollection,
@@ -293,11 +293,15 @@
 			limit: PAGE_SIZE,
 			offset
 		};
-		if (filterCollection) filters.collection = filterCollection;
+		// The query's scope tokens travel as filters, and the callers strip
+		// them from the text they send (withoutScopeTokens): `is:archived` as
+		// include_archived (TASK-2864), `coll:<slug>` as the collection
+		// (BUG-3709). The chip wins over `coll:`, as on the local path.
+		const parsed = parseSearchQuery(query.trim());
+		const collection = filterCollection ?? parsed.collection;
+		if (collection) filters.collection = collection;
 		if (filterStatus) filters.status = filterStatus;
-		// `is:archived` in the query travels as include_archived, and the
-		// callers strip it from the text they send (TASK-2864).
-		if (parseSearchQuery(query.trim()).archived) filters.includeArchived = true;
+		if (parsed.archived) filters.includeArchived = true;
 		return filters;
 	}
 
@@ -462,7 +466,7 @@
 						}
 						return;
 					}
-					const serverQuery = parsed.body ? parsed.text : withoutArchivedToken(trimmed);
+					const serverQuery = parsed.body ? parsed.text : withoutScopeTokens(trimmed);
 					if (!serverQuery.trim()) {
 						if (isSameDispatch()) {
 							results = [];
@@ -572,7 +576,7 @@
 	function maybeRunContentSearch(trimmed: string, wsSlug: string | undefined) {
 		clearTimeout(contentSearchTimeout);
 		const sparse = results.length < CONTENT_SEARCH_THRESHOLD;
-		const text = withoutArchivedToken(trimmed);
+		const text = withoutScopeTokens(trimmed);
 		const bareDigit = /^\d+$/.test(text);
 		if (!wsSlug || !sparse || bareDigit || text.length < 2) {
 			// Nothing to supplement — invalidate any in-flight fetch and
@@ -731,7 +735,7 @@
 			loadingMore = false;
 			return;
 		}
-		const serverQuery = parsed.body ? parsed.text : withoutArchivedToken(query);
+		const serverQuery = parsed.body ? parsed.text : withoutScopeTokens(query);
 		// One check for both outcomes: a page for a scope that has moved on
 		// neither appends nor reports a failure (TASK-3599, retro of #2063).
 		const scopeMoved = () =>

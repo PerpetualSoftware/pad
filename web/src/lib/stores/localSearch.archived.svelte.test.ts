@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ItemIndexRow } from '$lib/types';
-import { localSearch, parseSearchQuery, withoutArchivedToken } from './localSearch.svelte';
+import { localSearch, parseSearchQuery, withoutScopeTokens } from './localSearch.svelte';
 
 // TASK-2864: `is:archived` widens a search to archived (soft-deleted) rows,
 // on the local index and, through include_archived, on the server.
@@ -22,11 +22,13 @@ describe('parseSearchQuery is:archived', () => {
 	});
 });
 
-describe('withoutArchivedToken', () => {
-	it('removes only the archived token', () => {
-		expect(withoutArchivedToken('  is:archived  coll:tasks foo ')).toBe('coll:tasks foo');
-		expect(withoutArchivedToken('foo')).toBe('foo');
-		expect(withoutArchivedToken('is:archived')).toBe('');
+describe('withoutScopeTokens', () => {
+	it('removes the archived and collection tokens, and nothing else (BUG-3709)', () => {
+		expect(withoutScopeTokens('  is:archived  coll:tasks foo ')).toBe('foo');
+		expect(withoutScopeTokens('foo')).toBe('foo');
+		expect(withoutScopeTokens('is:archived')).toBe('');
+		expect(withoutScopeTokens('coll:tasks')).toBe('');
+		expect(withoutScopeTokens('#5 TASK-5 coll:Docs needle')).toBe('#5 TASK-5 needle');
 	});
 });
 

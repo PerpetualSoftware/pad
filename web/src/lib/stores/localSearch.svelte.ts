@@ -181,17 +181,18 @@ export function parseSearchQuery(raw: string): ParsedSearchQuery {
 }
 
 /**
- * The query as typed, minus any `is:archived` token, for a caller that
- * sends the raw query to the server: the token travels as
- * `include_archived` instead, and left in the text it would be searched
- * for literally and match nothing (TASK-2864). Other prefixes are left
- * as they were.
+ * The query as typed, minus its scope tokens, for a caller that sends the
+ * raw query to the server. `is:archived` travels as `include_archived`
+ * (TASK-2864) and `coll:<slug>` as the `collection` filter (BUG-3709); left
+ * in the text, either would be searched for literally and match nothing,
+ * and `coll:` used to leave the search unscoped as well. Other prefixes
+ * are left as they were.
  */
-export function withoutArchivedToken(raw: string): string {
+export function withoutScopeTokens(raw: string): string {
 	return raw
 		.trim()
 		.split(/\s+/)
-		.filter((tok) => tok && !PREFIX_ARCHIVED_RE.test(tok))
+		.filter((tok) => tok && !PREFIX_ARCHIVED_RE.test(tok) && !PREFIX_COLL_RE.test(tok))
 		.join(' ');
 }
 
