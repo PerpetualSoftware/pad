@@ -10,8 +10,8 @@ import (
 // BUG-3671: a social sign-in binds to the provider's stable subject. An
 // account linked before subjects existed binds the first subject a verified
 // sign-in carries (the migration); from then on a different subject is
-// refused (TASK-3351), and so is a sign-in carrying NO subject: an email
-// match alone no longer reaches an account tied to a provider account.
+// refused (TASK-3351). A sign-in carrying NO subject is refused too, bound or
+// not, since BUG-3797 (it was refused only once one was bound).
 func TestBUG3671_AnEmailAloneNoLongerReachesASubjectBoundAccount(t *testing.T) {
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
@@ -19,6 +19,8 @@ func TestBUG3671_AnEmailAloneNoLongerReachesASubjectBoundAccount(t *testing.T) {
 		body := map[string]interface{}{"provider": "google", "email": email, "email_verified": true}
 		if subject != "" {
 			body["subject"] = subject
+		} else {
+			body[oauthLoginNoSubject] = true
 		}
 		return postOAuthLogin(t, srv, body)
 	}
@@ -41,11 +43,15 @@ func TestBUG3671_AnEmailAloneNoLongerReachesASubjectBoundAccount(t *testing.T) {
 	}
 
 	// An account linked before subjects existed: no subject bound.
-	if o := got(login("owner@example.com", "")); o.code != http.StatusOK {
-		t.Fatalf("legacy signup: %+v", o)
+	legacy, err := srv.store.CreateOAuthUser("owner@example.com", "Owner", "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Before any subject is bound, the email path is unchanged.
-	if o := got(login("owner@example.com", "")); o.code != http.StatusOK {
+	if err := srv.store.LinkOAuthProvider(legacy.ID, "google", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Before any subject is bound, an email alone is refused too (BUG-3797).
+	if o := got(login("owner@example.com", "")); o != (outcome{http.StatusBadRequest, "oauth_subject_required"}) {
 		t.Fatalf("subject-less login before any bind: %+v", o)
 	}
 	steps := []struct {
@@ -55,7 +61,7 @@ func TestBUG3671_AnEmailAloneNoLongerReachesASubjectBoundAccount(t *testing.T) {
 	}{
 		{"the first verified sign-in with a subject binds it (migration)", "g-owner", outcome{http.StatusOK, ""}},
 		{"the same subject signs in", "g-owner", outcome{http.StatusOK, ""}},
-		{"NO subject is now refused (email alone)", "", outcome{http.StatusForbidden, "oauth_subject_mismatch"}},
+		{"NO subject is refused (email alone)", "", outcome{http.StatusBadRequest, "oauth_subject_required"}},
 		{"a different subject is refused (a reassigned address)", "g-newowner", outcome{http.StatusForbidden, "oauth_subject_mismatch"}},
 		{"the bound subject still signs in afterwards", "g-owner", outcome{http.StatusOK, ""}},
 	}
@@ -102,7 +108,8 @@ func TestBUG3671_AnUnlinkedAccountIsNotBoundBySignIn(t *testing.T) {
 
 // Codex r1 (Low): the refusal comes before the 2FA challenge, so a
 // subject-less sign-in to a bound account with TOTP on gets no challenge
-// token either, while the bound subject still reaches the challenge.
+// token either, while the bound subject still reaches the challenge. Since
+// BUG-3797 that refusal is oauth_subject_required.
 func TestBUG3671_ASubjectlessSignInGetsNoTwoFactorChallenge(t *testing.T) {
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
@@ -116,10 +123,13 @@ func TestBUG3671_ASubjectlessSignInGetsNoTwoFactorChallenge(t *testing.T) {
 	if n := oauthIdentityRows(t, srv, "github", "gh-totp"); n != 1 {
 		t.Fatalf("the subject was not bound before the challenge: %d rows", n)
 	}
-	rr = postOAuthLogin(t, srv, oauthLoginBody("totp@example.com"))
+	subjectless := oauthLoginBody("totp@example.com")
+	delete(subjectless, "subject")
+	subjectless[oauthLoginNoSubject] = true
+	rr = postOAuthLogin(t, srv, subjectless)
 	body := rr.Body.String()
-	if rr.Code != http.StatusForbidden || !strings.Contains(body, "oauth_subject_mismatch") || strings.Contains(body, "challenge_token") {
-		t.Fatalf("subject-less: got %d %s, want oauth_subject_mismatch and no challenge", rr.Code, body)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(body, "oauth_subject_required") || strings.Contains(body, "challenge_token") {
+		t.Fatalf("subject-less: got %d %s, want oauth_subject_required and no challenge", rr.Code, body)
 	}
 }
 

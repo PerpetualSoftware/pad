@@ -66,9 +66,14 @@ func TestTASK3351_ProviderSubjectBindsOnNextLoginThenMustMatch(t *testing.T) {
 		}
 		return postOAuthLogin(t, srv, body)
 	}
-	// An account linked before subjects existed: no subject sent, no row.
-	if rr := login(""); rr.Code != http.StatusOK {
-		t.Fatalf("first login: %d %s", rr.Code, rr.Body.String())
+	// An account linked before subjects existed: no row. (A sign-in without
+	// a subject is refused since BUG-3797, so it is made directly.)
+	legacy, err := srv.store.CreateOAuthUser("owner@example.com", "Owner", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.LinkOAuthProvider(legacy.ID, "google", ""); err != nil {
+		t.Fatal(err)
 	}
 	if n := oauthIdentityRows(t, srv, "google", "g-111"); n != 0 {
 		t.Fatalf("precondition: %d rows", n)

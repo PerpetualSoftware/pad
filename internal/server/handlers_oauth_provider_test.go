@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,8 +19,20 @@ const oauthProviderTestSecret = "shh-its-a-secret"
 // postOAuthLogin fires a cloud-secret-authenticated oauth-login request and
 // returns the recorder. The cloud secret rides the JSON body (the same
 // channel validateCloudSecret reads).
+// postOAuthLogin posts a sidecar oauth-login. A body without a "subject" key
+// gets a stable one per provider and address, as pad-cloud always sends one
+// (BUG-3797); an explicit "" is sent as is, and oauthLoginNoSubject sends no
+// key at all.
+// oauthLoginNoSubject marks a postOAuthLogin body that must carry no subject.
+const oauthLoginNoSubject = "_test_no_subject"
+
 func postOAuthLogin(t *testing.T, srv *Server, body map[string]interface{}) *httptest.ResponseRecorder {
 	t.Helper()
+	if _, omit := body[oauthLoginNoSubject]; omit {
+		delete(body, oauthLoginNoSubject)
+	} else if _, has := body["subject"]; !has {
+		body["subject"] = fmt.Sprintf("sub-%v-%v", body["provider"], body["email"])
+	}
 	body["cloud_secret"] = oauthProviderTestSecret
 	req := cloudAdminReq(t, "POST", "/api/v1/auth/oauth-login", body,
 		map[string]string{"X-Cloud-Secret": oauthProviderTestSecret})

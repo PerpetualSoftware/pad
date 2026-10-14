@@ -211,8 +211,8 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		EmailVerified bool   `json:"email_verified"`
 		CloudSecret   string `json:"cloud_secret"`
 		// Subject is the provider's stable account id (TASK-3351).
-		// Optional: a sidecar that predates it sends none, and the login
-		// proceeds as before.
+		// Required (BUG-3797): without it the sign-in would rest on the
+		// email address alone, whatever the account's binding state.
 		Subject string `json:"subject"`
 		// EmailPrimary: the address is the provider account's PRIMARY one.
 		// Only GitHub's matters (TASK-3351 ruling 2): an account claim from
@@ -246,7 +246,21 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "valid email is required")
 		return
 	}
-	if input.Subject != "" && !validOAuthSubject(input.Subject) {
+	// A sign-in without the provider account's id is refused (BUG-3797). It
+	// used to be refused only once the account had a subject bound
+	// (BUG-3671), and every account unbound until its first subject-bearing
+	// sign-in still signed in on its email alone.
+	if input.Subject == "" {
+		slog.Warn("oauth-login: rejected sign-in without a provider subject", "provider", input.Provider)
+		s.logAuditEvent(models.ActionOAuthLoginFailed, r, auditMeta(map[string]string{
+			"provider": input.Provider,
+			"email":    input.Email,
+			"reason":   "subject_missing",
+		}))
+		writeError(w, http.StatusBadRequest, "oauth_subject_required", "subject is required")
+		return
+	}
+	if !validOAuthSubject(input.Subject) {
 		writeError(w, http.StatusBadRequest, "bad_request", "subject must be 1-255 printable characters")
 		return
 	}
@@ -283,20 +297,18 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	// A provider account bound to a DIFFERENT pad account (its address
 	// changed at the provider) neither creates an account nor signs in to
 	// this one (TASK-3351). Checked before anything is created.
-	if input.Subject != "" {
-		owner, err := s.store.OAuthIdentityOwner(input.Provider, input.Subject)
-		if err != nil {
-			writeInternalError(w, err)
-			return
+	owner, err := s.store.OAuthIdentityOwner(input.Provider, input.Subject)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if owner != "" && (user == nil || owner != user.ID) {
+		refusedFor := owner
+		if user != nil {
+			refusedFor = user.ID
 		}
-		if owner != "" && (user == nil || owner != user.ID) {
-			refusedFor := owner
-			if user != nil {
-				refusedFor = user.ID
-			}
-			s.refuseOAuthSubject(w, r, refusedFor, input.Provider, input.Email, store.ErrOAuthSubjectMismatch)
-			return
-		}
+		s.refuseOAuthSubject(w, r, refusedFor, input.Provider, input.Email, store.ErrOAuthSubjectMismatch)
+		return
 	}
 
 	isNewUser := false
@@ -403,22 +415,9 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	// 6a. Provider account binding (TASK-3351). The address alone does not
 	// say WHICH provider account is asserting it, and an address can move
 	// between accounts. The first sign-in carrying a subject binds it; a
-	// different one is refused. Once one is bound, a sign-in WITHOUT a
-	// subject is refused too (BUG-3671): an email match alone must not sign
-	// in to an account tied to a particular provider account. (A caller that
-	// never sends subjects binds none, so it keeps the email path.)
-	if !isNewUser && input.Subject == "" {
-		bound, err := s.store.BoundOAuthSubject(user.ID, input.Provider)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if bound != "" {
-			s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, store.ErrOAuthSubjectMismatch)
-			return
-		}
-	}
-	if !isNewUser && input.Subject != "" {
+	// different one is refused. A sign-in without one was refused above
+	// (BUG-3797).
+	if !isNewUser {
 		if err := s.store.BindOAuthIdentity(user.ID, input.Provider, input.Subject); err != nil {
 			s.refuseOAuthSubject(w, r, user.ID, input.Provider, input.Email, err)
 			return
@@ -719,7 +718,7 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 		EmailVerified bool   `json:"email_verified"`
 		CloudSecret   string `json:"cloud_secret"`
 		// Subject: the provider's stable account id, bound on link
-		// (TASK-3351). Optional, as on oauth-login.
+		// (TASK-3351). Optional here; oauth-login requires one (BUG-3797).
 		Subject string `json:"subject"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
