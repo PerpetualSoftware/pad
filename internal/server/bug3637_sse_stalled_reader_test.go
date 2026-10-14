@@ -120,7 +120,16 @@ func TestSSE_BUG3637_StalledReaderReleasesItsSlot(t *testing.T) {
 	slug := createTestWorkspace(t, ts.URL, "Stalled")
 
 	openStalledStream(t, ts, "/api/v1/events?workspace="+slug, nil)
+	if n := srv.events.SubscriberCount(); n != 1 {
+		t.Fatalf("bus subscribers once the stream opened = %d, want 1", n)
+	}
 	assertSlotReleased(t, srv)
+	// The subscription and its buffers go with the handler, not only the
+	// slot (codex final round 2). Unsubscribe is deferred on the same
+	// return as the release, so it has run once the slot reads free.
+	if n := srv.events.SubscriberCount(); n != 0 {
+		t.Errorf("bus subscribers after the stalled stream ended = %d, want 0", n)
+	}
 }
 
 func TestWatchEvents_BUG3637_StalledReaderReleasesItsSlot(t *testing.T) {
@@ -198,6 +207,9 @@ func TestWatchEvents_BUG3637_WriterWithoutDeadlineIsRefused(t *testing.T) {
 
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500; body=%q", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "event:") || strings.Contains(rr.Body.String(), ": keepalive") {
+		t.Errorf("a refused watch stream wrote stream frames; body=%q", rr.Body.String())
 	}
 	if held := srv.admission().heldTotal(); held != 0 {
 		t.Errorf("admission slots held after a refusal = %d, want 0", held)
