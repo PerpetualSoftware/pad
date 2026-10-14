@@ -913,7 +913,7 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !s.requireUnrestrictedExportAccess(w, r, ws.ID) {
 		return
 	}
-	export, err := s.store.ExportWorkspace(ws.Slug)
+	export, _, err := s.store.ExportWorkspaceSnapshot(r.Context(), ws.Slug, false)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return

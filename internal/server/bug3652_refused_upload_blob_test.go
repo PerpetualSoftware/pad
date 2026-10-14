@@ -76,7 +76,9 @@ func TestBUG3652_RefusedUploadKeepsASharedBlob(t *testing.T) {
 	if keys := fsBackendKeys(t, srv); len(keys) != 1 {
 		t.Fatalf("blobs on disk: %d %v, want the shared blob kept", len(keys), keys)
 	}
-	atts, err := srv.store.WorkspaceAttachmentsForExport(ws.ID)
+	// The live, non-derived rows. Not the export manifest query, which since
+	// BUG-3654 runs only inside the export's snapshot transaction.
+	atts, _, err := srv.store.WorkspaceAttachments(ws.ID, store.AttachmentListFilters{})
 	if err != nil || len(atts) != 1 {
 		t.Fatalf("live rows = %d (%v), want 1", len(atts), err)
 	}

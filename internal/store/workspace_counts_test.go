@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -64,13 +65,9 @@ func TestCountWorkspaceContents_MatchesTheExport(t *testing.T) {
 		t.Fatalf("create thumbnail: %v", err)
 	}
 
-	export, err := s.ExportWorkspace(ws.Slug)
+	export, atts, err := s.ExportWorkspaceSnapshot(context.Background(), ws.Slug, true)
 	if err != nil {
 		t.Fatalf("export: %v", err)
-	}
-	atts, err := s.WorkspaceAttachmentsForExport(ws.ID)
-	if err != nil {
-		t.Fatalf("export attachments: %v", err)
 	}
 	want := WorkspaceContentCounts{
 		Collections: len(export.Collections),

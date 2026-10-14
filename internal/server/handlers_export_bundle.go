@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // exportBundleVersion pins the on-disk bundle layout. Bumped if the
@@ -71,7 +73,7 @@ func (s *Server) requireUnrestrictedAccess(w http.ResponseWriter, r *http.Reques
 //  1. pad-export.json
 //  2. attachments/manifest.json
 //  3. attachments/<uuid>.<ext>  — sorted by (created_at, id) via the
-//     store's ORDER BY in WorkspaceAttachmentsForExport.
+//     store's ORDER BY in workspaceAttachmentsForExportQ.
 //
 // We stream chunks straight to the response writer rather than
 // buffering — a workspace with multi-GB of attachments would otherwise
@@ -99,18 +101,17 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	export, err := s.store.ExportWorkspace(ws.Slug)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", err.Error())
+	// The export and the manifest rows come from one snapshot (BUG-3654), and
+	// both are read before anything is written to the response so a store
+	// error doesn't strand half a tar header. Streaming the blobs themselves
+	// still happens after we commit to the response.
+	export, attachments, err := s.store.ExportWorkspaceSnapshot(r.Context(), ws.Slug, true)
+	if errors.Is(err, store.ErrExportManifest) {
+		writeInternalError(w, err)
 		return
 	}
-
-	// Build the manifest before writing anything to the response so a
-	// store error doesn't strand half a tar header. Streaming the
-	// blobs themselves still happens after we commit to the response.
-	attachments, err := s.store.WorkspaceAttachmentsForExport(ws.ID)
 	if err != nil {
-		writeInternalError(w, err)
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
 
@@ -145,7 +146,7 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			entry.ItemID = *a.ItemID
 		}
 		// ParentID + Variant stay empty for shipped entries — derived
-		// rows are filtered out in WorkspaceAttachmentsForExport.
+		// rows are filtered out in workspaceAttachmentsForExportQ.
 		manifest.Entries = append(manifest.Entries, entry)
 	}
 
