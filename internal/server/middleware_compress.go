@@ -35,14 +35,13 @@ func compressSkips(r *http.Request) bool {
 	}
 	p := r.URL.Path
 	switch {
-	// Long-lived streams: SSE (both event endpoints) and MCP's streamable
-	// HTTP. A compressor buffers, and an event held in its window is an event
-	// the client does not get.
-	case strings.HasPrefix(p, "/api/v1/events"), p == "/mcp" || strings.HasPrefix(p, "/mcp/"):
-		return true
-	// The collab WebSocket, and any other upgrade: the connection is hijacked
-	// and is not an HTTP response body.
-	case strings.HasPrefix(p, "/api/v1/collab/"), r.Header.Get("Upgrade") != "":
+	// Routes that bound their own writes: the long-lived streams (SSE and
+	// MCP's streamable HTTP), where an event held in a compressor's window is
+	// an event the client does not get; the collab WebSocket and any other
+	// upgrade, whose connection is hijacked and is not an HTTP response body;
+	// and an app's attachment download, covered by the attachments rule below
+	// as well. boundResponseWrites exempts the same set (BUG-3821).
+	case ownsWriteDeadline(r):
 		return true
 	// A Range request's 206 names byte offsets of the identity body; a
 	// compressed body would contradict its Content-Range.
