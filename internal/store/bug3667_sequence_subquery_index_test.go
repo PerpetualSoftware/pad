@@ -37,7 +37,7 @@ func TestBUG3667_SequenceSubqueriesAreIndexed(t *testing.T) {
 			indexed = regexp.MustCompile(`(Index Scan|Index Only Scan)( Backward)? using \S+ on `+c.table+`\b`).MatchString(plan) &&
 				!strings.Contains(plan, "Seq Scan on "+c.table)
 		} else {
-			indexed = regexp.MustCompile(`SEARCH `+c.table+` USING (COVERING )?INDEX `).MatchString(plan)
+			indexed = regexp.MustCompile(`SEARCH ` + c.table + ` USING (COVERING )?INDEX `).MatchString(plan)
 		}
 		if !indexed {
 			t.Errorf("%s: MAX over %s does not read an index:\n%s", c.site, c.table, plan)
