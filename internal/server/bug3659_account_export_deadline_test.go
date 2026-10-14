@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
@@ -86,5 +87,91 @@ func TestBUG3659_AttributionErrorAbortsTheExport(t *testing.T) {
 	_, body, readErr := bug3626Export(t, srv, tok)
 	if readErr == nil && parsesAsCompleteExport(body) {
 		t.Fatalf("an export whose attribution read failed arrived as a complete file:\n%s", body)
+	}
+}
+
+func bug3659OwnerAndWorkspace(t *testing.T, srv *Server) (string, *models.Workspace) {
+	t.Helper()
+	u, err := srv.store.GetUserByEmail("bug3626@example.com")
+	if err != nil || u == nil {
+		t.Fatalf("owner: %v", err)
+	}
+	wss, err := srv.store.GetUserWorkspaces(u.ID)
+	if err != nil || len(wss) != 1 {
+		t.Fatalf("workspaces: %d %v", len(wss), err)
+	}
+	return u.ID, &wss[0]
+}
+
+// Codex r1: access restricted after the preflight must not be exported.
+// The snapshot re-checks it, so the export aborts rather than ship content
+// the account can no longer see.
+func TestBUG3659_AccessRestrictedAfterPreflightIsNotExported(t *testing.T) {
+	srv := testServer(t)
+	tok := bug3626Owner(t, srv)
+	ownerID, ws := bug3659OwnerAndWorkspace(t, srv)
+	colls, err := srv.store.ListCollections(ws.ID)
+	if err != nil || len(colls) == 0 {
+		t.Fatalf("collections: %v", err)
+	}
+	srv.accountExportHooks.afterPreflight = func() {
+		if err := srv.store.SetMemberCollectionAccess(ws.ID, ownerID, "specific", []string{colls[0].ID}); err != nil {
+			t.Errorf("restrict: %v", err)
+		}
+	}
+	_, body, readErr := bug3626Export(t, srv, tok)
+	if readErr == nil && parsesAsCompleteExport(body) {
+		t.Fatalf("an export whose access was restricted mid-way arrived complete:\n%s", body)
+	}
+}
+
+// Codex r1: a workspace's collections and items come from one snapshot, so a
+// collection and item created between the two reads are in neither, and every
+// exported item's collection is in the export.
+func TestBUG3659_CollectionsAndItemsShareOneSnapshot(t *testing.T) {
+	srv := testServer(t)
+	tok := bug3626Owner(t, srv)
+	_, ws := bug3659OwnerAndWorkspace(t, srv)
+	srv.accountExportHooks.afterSnapshotCollections = func(wsID string) {
+		c, err := srv.store.CreateCollection(wsID, models.CollectionCreate{Name: "Late", Slug: "late", Prefix: "LATE", Schema: `{"fields":[]}`})
+		if err != nil {
+			t.Errorf("late collection: %v", err)
+			return
+		}
+		if _, err := srv.store.CreateItem(wsID, c.ID, models.ItemCreate{Title: "Late item", Fields: "{}"}); err != nil {
+			t.Errorf("late item: %v", err)
+		}
+	}
+	code, body, readErr := bug3626Export(t, srv, tok)
+	if readErr != nil || code != http.StatusOK {
+		t.Fatalf("export: %d %v", code, readErr)
+	}
+	var v struct {
+		Complete   bool `json:"complete"`
+		Workspaces []struct {
+			ID          string              `json:"id"`
+			Collections []models.Collection `json:"collections"`
+			Items       []models.Item       `json:"items"`
+		} `json:"workspaces"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil || !v.Complete {
+		t.Fatalf("export is not a complete file: %v\n%s", err, body)
+	}
+	for _, w := range v.Workspaces {
+		if w.ID != ws.ID {
+			continue
+		}
+		have := map[string]bool{}
+		for _, c := range w.Collections {
+			have[c.ID] = true
+		}
+		if len(w.Items) == 0 {
+			t.Fatal("instrument: the workspace exported no items")
+		}
+		for _, it := range w.Items {
+			if !have[it.CollectionID] {
+				t.Errorf("item %q is exported without its collection %s", it.Title, it.CollectionID)
+			}
+		}
 	}
 }

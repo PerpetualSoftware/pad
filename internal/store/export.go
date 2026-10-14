@@ -188,6 +188,12 @@ func (s *Store) ExportWorkspaceSnapshot(ctx context.Context, slug string, withAt
 	return export, attachments, nil
 }
 
+// BeginReadSnapshot is beginReadSnapshot for callers outside the store
+// (BUG-3659, the account export). The caller rolls it back.
+func (s *Store) BeginReadSnapshot(ctx context.Context) (*sql.Tx, error) {
+	return s.beginReadSnapshot(ctx)
+}
+
 // beginReadSnapshot opens a read-only transaction whose reads share one
 // snapshot; ExportWorkspaceSnapshot says why each option is there.
 func (s *Store) beginReadSnapshot(ctx context.Context) (*sql.Tx, error) {

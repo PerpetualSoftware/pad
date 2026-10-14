@@ -1267,6 +1267,21 @@ func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.I
 }
 
 func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]models.Item, error) {
+	return s.listItemsQ(s.db, workspaceID, params)
+}
+
+// ListItemsQ is ListItems on a caller-supplied executor, so it can read inside
+// a snapshot transaction (BUG-3659). Only the plain listing: search, field
+// filters and the non-terminal filter read through helpers that use the pool,
+// so a call asking for them is refused rather than half on the executor.
+func (s *Store) ListItemsQ(q Queryer, workspaceID string, params models.ItemListParams) ([]models.Item, error) {
+	if strings.TrimSpace(params.Search) != "" || len(params.Fields) > 0 || params.NonTerminal {
+		return nil, fmt.Errorf("ListItemsQ: search, field filters and NonTerminal are not supported on an executor")
+	}
+	return s.listItemsQ(q, workspaceID, params)
+}
+
+func (s *Store) listItemsQ(q Queryer, workspaceID string, params models.ItemListParams) ([]models.Item, error) {
 	// Non-nil empty CollectionIDs means "no visible collections" — return
 	// empty results immediately, unless ItemIDs are also provided (item-level
 	// grants may still allow access to specific items even without full
@@ -1420,7 +1435,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		}
 	}
 
-	rows, err := s.db.Query(s.q(query), args...)
+	rows, err := q.Query(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("list items: %w", err)
 	}

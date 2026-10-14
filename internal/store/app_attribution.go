@@ -28,23 +28,27 @@ const attributionChunk = 500
 // attributionQuery looks up table.installCol for ids, joined to the
 // install and its bot, attributionChunk ids per query.
 func (s *Store) attributionQuery(table, installCol string, ids []string) (map[string]AppAttribution, error) {
+	return s.attributionQueryQ(s.db, table, installCol, ids)
+}
+
+func (s *Store) attributionQueryQ(q Queryer, table, installCol string, ids []string) (map[string]AppAttribution, error) {
 	out := map[string]AppAttribution{}
 	for start := 0; start < len(ids); start += attributionChunk {
 		end := min(start+attributionChunk, len(ids))
-		if err := s.attributionChunkQuery(table, installCol, ids[start:end], out); err != nil {
+		if err := s.attributionChunkQuery(q, table, installCol, ids[start:end], out); err != nil {
 			return nil, err
 		}
 	}
 	return out, nil
 }
 
-func (s *Store) attributionChunkQuery(table, installCol string, ids []string, out map[string]AppAttribution) error {
+func (s *Store) attributionChunkQuery(q Queryer, table, installCol string, ids []string, out map[string]AppAttribution) error {
 	ph := make([]string, len(ids))
 	args := make([]any, len(ids))
 	for i, id := range ids {
 		ph[i], args[i] = "?", id
 	}
-	rows, err := s.db.Query(s.q(`SELECT t.id, a.id, COALESCE(u.name, ''), a.origin
+	rows, err := q.Query(s.q(`SELECT t.id, a.id, COALESCE(u.name, ''), a.origin
 		FROM `+table+` t
 		JOIN app_installs a ON a.id = t.`+installCol+`
 		LEFT JOIN users u ON u.id = a.bot_user_id
@@ -73,6 +77,12 @@ func (s *Store) attributionChunkQuery(table, installCol string, ids []string, ou
 // (items.via_app) is not exposed here.
 func (s *Store) ItemsCreatedViaApp(itemIDs []string) (map[string]AppAttribution, error) {
 	return s.attributionQuery("items", "created_via_app", itemIDs)
+}
+
+// ItemsCreatedViaAppQ is ItemsCreatedViaApp on a caller-supplied executor
+// (BUG-3659).
+func (s *Store) ItemsCreatedViaAppQ(q Queryer, itemIDs []string) (map[string]AppAttribution, error) {
+	return s.attributionQueryQ(q, "items", "created_via_app", itemIDs)
 }
 
 // CommentsViaApp returns, for the comments an app wrote, that app.

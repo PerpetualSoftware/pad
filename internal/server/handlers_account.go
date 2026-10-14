@@ -336,11 +336,11 @@ const (
 	accountExportVersion = 1
 )
 
-// accountExportHooks lets a test change the export's deadline and make one
-// of its two mid-stream store reads fail or stall at exactly that point (a
-// broken table fails an earlier query first and answers 500 before any byte,
-// which is not the case under test). Zero values mean the real thing
-// (BUG-3626).
+// accountExportHooks lets a test change the export's deadline, make one of
+// its store reads fail or stall at exactly that point (a broken table fails an
+// earlier query first and answers 500 before any byte, which is not the case
+// under test), or act in a gap between reads. Zero values mean the real thing
+// (BUG-3626, BUG-3659). A read hook replaces the snapshot read it stands for.
 type accountExportHooks struct {
 	timeout         time.Duration
 	listCollections func(wsID string) ([]models.Collection, error)
@@ -349,6 +349,89 @@ type accountExportHooks struct {
 	listWorkspaces  func(userID string) ([]models.Workspace, error)
 	visibleColls    func(r *http.Request, wsID string) ([]string, error)
 	itemAttribution func(itemIDs []string) (map[string]store.AppAttribution, error)
+	// afterPreflight runs after the access preflight, before the body.
+	afterPreflight func()
+	// afterSnapshotCollections runs inside a workspace's snapshot, between
+	// its collection and item reads.
+	afterSnapshotCollections func(wsID string)
+}
+
+// errAccountExportRestricted is the snapshot's access re-check failing: the
+// caller became restricted in the workspace after the export's preflight.
+var errAccountExportRestricted = errors.New("workspace access became restricted during the export")
+
+// accountExportWorkspace reads one owned workspace's collections, items and
+// their app attribution from ONE read-only snapshot, after re-checking on that
+// same snapshot that the caller's access is unrestricted (BUG-3659). Read
+// apart, an item created between the collection and item reads could appear
+// without its collection, and access restricted after the preflight would
+// still export what it now hides. An attribution error is returned, never
+// swallowed: an export without it would read as complete.
+func (s *Server) accountExportWorkspace(ctx context.Context, r *http.Request, wsID string) ([]models.Collection, []models.Item, error) {
+	tx, err := s.store.BeginReadSnapshot(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var visible []string
+	if f := s.accountExportHooks.visibleColls; f != nil {
+		visible, err = f(r, wsID)
+	} else {
+		visible, err = s.visibleCollectionIDsQ(r, tx, wsID)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("access check: %w", err)
+	}
+	if visible != nil {
+		return nil, nil, errAccountExportRestricted
+	}
+	var collections []models.Collection
+	if f := s.accountExportHooks.listCollections; f != nil {
+		collections, err = f(wsID)
+	} else {
+		collections, err = s.store.ListCollectionsQ(tx, wsID)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing collections: %w", err)
+	}
+	if f := s.accountExportHooks.afterSnapshotCollections; f != nil {
+		f(wsID)
+	}
+	// IncludeDeletedCollections: a user's own export keeps the items of
+	// collections they deleted, as it always has (BUG-3425).
+	params := models.ItemListParams{IncludeArchived: true, IncludeDeletedCollections: true}
+	var items []models.Item
+	if f := s.accountExportHooks.listItems; f != nil {
+		items, err = f(wsID, params)
+	} else {
+		items, err = s.store.ListItemsQ(tx, wsID, params)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing items: %w", err)
+	}
+	// SPEC-6 U9c.
+	if len(items) > 0 {
+		ids := make([]string, len(items))
+		for i := range items {
+			ids[i] = items[i].ID
+		}
+		var attr map[string]store.AppAttribution
+		if f := s.accountExportHooks.itemAttribution; f != nil {
+			attr, err = f(ids)
+		} else {
+			attr, err = s.store.ItemsCreatedViaAppQ(tx, ids)
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading app attribution: %w", err)
+		}
+		for i := range items {
+			if a, ok := attr[items[i].ID]; ok {
+				items[i].ViaApp, items[i].ViaAppName = a.InstallID, a.Name
+			}
+		}
+	}
+	return collections, items, nil
 }
 
 func (s *Server) accountExportListWorkspaces(userID string) ([]models.Workspace, error) {
@@ -363,33 +446,6 @@ func (s *Server) accountExportVisibleCollections(r *http.Request, wsID string) (
 		return f(r, wsID)
 	}
 	return s.visibleCollectionIDs(r, wsID)
-}
-
-// accountExportHydrateAttribution is hydrateItemsAppAttribution with its
-// error returned rather than logged: an export that silently left the
-// attribution off would read as complete (BUG-3659, the BUG-3626 rule).
-func (s *Server) accountExportHydrateAttribution(items []models.Item) error {
-	if len(items) == 0 {
-		return nil
-	}
-	ids := make([]string, len(items))
-	for i := range items {
-		ids[i] = items[i].ID
-	}
-	read := s.store.ItemsCreatedViaApp
-	if f := s.accountExportHooks.itemAttribution; f != nil {
-		read = f
-	}
-	attr, err := read(ids)
-	if err != nil {
-		return err
-	}
-	for i := range items {
-		if a, ok := attr[items[i].ID]; ok {
-			items[i].ViaApp, items[i].ViaAppName = a.InstallID, a.Name
-		}
-	}
-	return nil
 }
 
 // refuseAccountExportBeforeBody answers an export that cannot start: no byte
@@ -409,20 +465,6 @@ func (s *Server) accountExportDeadline() time.Duration {
 		return d
 	}
 	return accountExportTimeout
-}
-
-func (s *Server) accountExportListCollections(wsID string) ([]models.Collection, error) {
-	if f := s.accountExportHooks.listCollections; f != nil {
-		return f(wsID)
-	}
-	return s.store.ListCollections(wsID)
-}
-
-func (s *Server) accountExportListItems(wsID string, p models.ItemListParams) ([]models.Item, error) {
-	if f := s.accountExportHooks.listItems; f != nil {
-		return f(wsID, p)
-	}
-	return s.store.ListItems(wsID, p)
 }
 
 // withinExportDeadline runs one store read under the export's deadline. The
@@ -521,6 +563,10 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if f := s.accountExportHooks.afterPreflight; f != nil {
+		f()
+	}
+
 	// Stream the response — once we start writing, we can't send error status codes
 	w.Header().Set("Content-Type", "application/json")
 	// Not pad-export.json: that is the workspace bundle's file, a different
@@ -565,33 +611,22 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 			"created_at": ws.CreatedAt,
 		}
 
-		// Only export full data for owned workspaces
+		// Only export full data for owned workspaces, read from one snapshot
+		// inside the deadline (BUG-3659).
 		if ws.OwnerID == user.ID {
-			collections, err := withinExportDeadline(ctx, func() ([]models.Collection, error) {
-				return s.accountExportListCollections(ws.ID)
+			type content struct {
+				collections []models.Collection
+				items       []models.Item
+			}
+			c, err := withinExportDeadline(ctx, func() (content, error) {
+				colls, items, err := s.accountExportWorkspace(ctx, r, ws.ID)
+				return content{colls, items}, err
 			})
 			if err != nil {
-				abortAccountExport(user.ID, "listing collections of "+ws.Slug, err)
+				abortAccountExport(user.ID, "reading "+ws.Slug, err)
 			}
-			wsData["collections"] = collections
-
-			// Stream items per workspace (each workspace loaded individually, then GC'd)
-			// IncludeDeletedCollections: a user's own export keeps the items
-			// of collections they deleted, as it always has (BUG-3425).
-			items, err := withinExportDeadline(ctx, func() ([]models.Item, error) {
-				return s.accountExportListItems(ws.ID, models.ItemListParams{IncludeArchived: true, IncludeDeletedCollections: true})
-			})
-			if err != nil {
-				abortAccountExport(user.ID, "listing items of "+ws.Slug, err)
-			}
-			// SPEC-6 U9c. Inside the deadline, and a failure aborts the
-			// export rather than shipping items without it (BUG-3659).
-			if _, err := withinExportDeadline(ctx, func() (struct{}, error) {
-				return struct{}{}, s.accountExportHydrateAttribution(items)
-			}); err != nil {
-				abortAccountExport(user.ID, "reading app attribution for "+ws.Slug, err)
-			}
-			wsData["items"] = items
+			wsData["collections"] = c.collections
+			wsData["items"] = c.items
 		}
 
 		w.Write([]byte("    "))
