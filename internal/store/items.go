@@ -6371,9 +6371,45 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 	return items, rows.Err()
 }
 
-// ItemsModifiedSince returns items in a workspace that were updated after the
-// given timestamp. Used for incremental sync on tab resume. Also returns IDs of
-// items that were deleted (hard-deleted or archived) since the timestamp.
+// MaxChangesLimit bounds one /changes page (BUG-3791), the same ceiling the
+// item lists take (BUG-3704).
+const MaxChangesLimit = 1000
+
+// ChangesPosition is a row's place in the /changes order: the workspace write
+// seq, tie-broken by id.
+type ChangesPosition struct {
+	Seq int64
+	ID  string
+}
+
+// ItemsModifiedSinceParams selects one page of ItemsModifiedSince.
+type ItemsModifiedSinceParams struct {
+	Since time.Time
+	// After resumes past a row already returned; nil starts at the beginning.
+	After *ChangesPosition
+	// Limit is the row count to return, so a caller probing for more asks for
+	// one past its page. Zero or anything above MaxChangesLimit+1 is taken as
+	// MaxChangesLimit+1.
+	Limit int
+	// CollectionIDs nil means every collection; non-nil restricts to those
+	// (empty: none). With GrantedItemIDs set, a row must also be a granted item
+	// or sit in one of FullCollectionIDs, as guestResourceFilter reports them.
+	CollectionIDs     []string
+	FullCollectionIDs []string
+	GrantedItemIDs    []string
+}
+
+// ItemsModifiedSince returns one page of the items in a workspace that were
+// updated at or after the given timestamp. Used for incremental sync on tab
+// resume. Rows whose deleted_at is set are the items deleted (archived) since
+// the timestamp.
+//
+// Pages are ordered by (seq, id), not by updated_at (BUG-3791). Every write
+// that moves updated_at also moves seq, under the workspace seq lock on
+// Postgres and the single writer on SQLite, so a write committing while a
+// caller pages gets a seq past every committed row and lands in a later page:
+// a cursor on that order cannot skip it. updated_at gives no such guarantee:
+// it is whole seconds, so rows tie, and nothing orders it against commits.
 //
 // The updated list includes both active AND recently archived items (those with
 // deleted_at at/after since). This lets the frontend update archived views
@@ -6402,12 +6438,20 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 // mixing formats in one column breaks the lexicographic ordering these string
 // comparisons rely on ("…20.451Z" sorts BEFORE "…20Z"), so precision is a
 // migration, not a one-line change.
-func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated []models.Item, deletedIDs []string, err error) {
-	sinceStr := since.UTC().Truncate(time.Second).Format(time.RFC3339)
+func (s *Store) ItemsModifiedSince(workspaceID string, p ItemsModifiedSinceParams) ([]models.Item, error) {
+	if p.CollectionIDs != nil && len(p.CollectionIDs) == 0 {
+		return nil, nil
+	}
+	limit := p.Limit
+	if limit <= 0 || limit > MaxChangesLimit+1 {
+		limit = MaxChangesLimit + 1
+	}
+	sinceStr := p.Since.UTC().Truncate(time.Second).Format(time.RFC3339)
 
-	// Fetch updated items: active items modified since the timestamp,
-	// PLUS items archived since the timestamp (so archived views can update).
-	query := s.q(`
+	// Active items modified since the timestamp, PLUS items archived since it
+	// (so archived views can update). Each row's deleted_at is scanned, so the
+	// caller derives the deleted list from the same page.
+	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
@@ -6422,40 +6466,45 @@ func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated
 		WHERE i.workspace_id = ?
 		  AND i.updated_at >= ?
 		  AND (i.deleted_at IS NULL OR i.deleted_at >= ?)
-		ORDER BY i.updated_at ASC
-	`)
+	`
+	args := []interface{}{workspaceID, sinceStr, sinceStr}
 
-	rows, err := s.db.Query(query, workspaceID, sinceStr, sinceStr)
+	// Visibility is applied HERE, not after the rows come back (BUG-3791): a
+	// window over hidden rows would let the has-more probe and the cursor count
+	// them, and the cursor would carry a hidden row's position.
+	if p.CollectionIDs != nil {
+		query += " AND i.collection_id IN (" + placeholders(len(p.CollectionIDs)) + ")"
+		for _, id := range p.CollectionIDs {
+			args = append(args, id)
+		}
+		if len(p.GrantedItemIDs) > 0 {
+			query += " AND (i.id IN (" + placeholders(len(p.GrantedItemIDs)) + ")"
+			for _, id := range p.GrantedItemIDs {
+				args = append(args, id)
+			}
+			if len(p.FullCollectionIDs) > 0 {
+				query += " OR i.collection_id IN (" + placeholders(len(p.FullCollectionIDs)) + ")"
+				for _, id := range p.FullCollectionIDs {
+					args = append(args, id)
+				}
+			}
+			query += ")"
+		}
+	}
+
+	if p.After != nil {
+		query += " AND (i.seq > ? OR (i.seq = ? AND i.id > ?))"
+		args = append(args, p.After.Seq, p.After.Seq, p.After.ID)
+	}
+	query += " ORDER BY i.seq ASC, i.id ASC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer rows.Close()
-	updated, err = scanItems(rows)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Fetch IDs of items deleted since the timestamp.
-	delQuery := s.q(`
-		SELECT id FROM items
-		WHERE workspace_id = ?
-		  AND deleted_at IS NOT NULL
-		  AND deleted_at >= ?
-	`)
-	delRows, err := s.db.Query(delQuery, workspaceID, sinceStr)
-	if err != nil {
-		return updated, nil, err
-	}
-	defer delRows.Close()
-	for delRows.Next() {
-		var id string
-		if err := delRows.Scan(&id); err != nil {
-			return updated, nil, err
-		}
-		deletedIDs = append(deletedIDs, id)
-	}
-
-	return updated, deletedIDs, delRows.Err()
+	return scanItems(rows)
 }
 
 // ItemCollectionRef is a minimal item reference with collection ID, used for
@@ -6463,19 +6512,6 @@ func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated
 type ItemCollectionRef struct {
 	ID           string
 	CollectionID string
-}
-
-// GetDeletedItemsWithCollection returns minimal item info (ID + CollectionID)
-// for soft-deleted items, used to filter deleted item IDs by collection visibility.
-//
-// Despite the name, this is just GetItemCollectionRefs under the hood — the
-// underlying query has no deleted_at filter, so it works for any item state.
-// The name is kept for this call site's existing meaning (its caller only
-// ever passes already-known-deleted IDs); BUG-1928 needed the same
-// state-agnostic lookup for live-or-deleted item grants, hence the rename
-// of the shared implementation to the more accurate GetItemCollectionRefs.
-func (s *Store) GetDeletedItemsWithCollection(workspaceID string, itemIDs []string) ([]ItemCollectionRef, error) {
-	return s.GetItemCollectionRefs(workspaceID, itemIDs)
 }
 
 // GetItemCollectionRefs returns minimal item info (ID + CollectionID) for the

@@ -110,6 +110,7 @@ import type { ImportSummary } from '$lib/types';
 import { runSessionExpiryKeepers } from '$lib/stores/sessionExpiryKeep';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
+import { walkChanges, type ChangesPageQuery } from './changesWalk';
 import { uploadImportBundle } from './importUpload';
 import { reserveKeepalive } from './keepaliveBudget';
 
@@ -2686,9 +2687,20 @@ export const api = {
 	// ── Incremental Sync ─────────────────────────────────────────────────────
 
 	changes: {
-		/** Fetch items modified since the given timestamp (unix ms). */
+		/**
+		 * Fetch every item modified since the given timestamp (unix ms), walking
+		 * the server's bounded pages (BUG-3791).
+		 */
 		since: (ws: string, sinceMs: number) =>
-			request<ChangesResponse>(`/workspaces/${ws}/changes?since=${sinceMs}`)
+			walkChanges((q) => api.changes.page(ws, q), sinceMs),
+		/** One page of /changes: a walk's start, or its continuation. */
+		page: (ws: string, q: ChangesPageQuery, limit?: number) => {
+			const params = new URLSearchParams(
+				'cursor' in q ? { cursor: q.cursor } : { since: String(q.since) }
+			);
+			if (limit !== undefined) params.set('limit', String(limit));
+			return request<ChangesResponse>(`/workspaces/${ws}/changes?${params}`);
+		}
 	},
 
 	// ── Search ────────────────────────────────────────────────────────────────

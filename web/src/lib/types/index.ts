@@ -2201,6 +2201,12 @@ export interface ChangesResponse {
 	deleted: string[];
 	server_time: number;
 	collections_changed: boolean;
+	/**
+	 * The walk continues: ask again with `cursor=next_cursor` (BUG-3791). Until
+	 * a page says false, `server_time` is not a safe next `since`.
+	 */
+	has_more: boolean;
+	next_cursor?: string;
 }
 
 // ─── Search ──────────────────────────────────────────────────────────────────
