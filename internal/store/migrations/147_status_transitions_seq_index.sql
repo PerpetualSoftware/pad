@@ -1,0 +1,12 @@
+-- Migration 147: index status_transitions(seq) (BUG-3667).
+--
+-- Every write that records a status transition (a create with an initial
+-- status, a status-changing update or move) stamps the row with
+-- nextTransitionSeqSubquery, an UNFILTERED MAX(seq)+1 over the whole table,
+-- inside its write transaction. Nothing indexed seq (migration 065 added the
+-- column; the two indexes from 063 lead with workspace_id and item_id), so
+-- each such write scanned every workspace's transitions while it held the
+-- workspace lock and SQLite's one writer lock. With this index the MAX is an
+-- index endpoint lookup. Not UNIQUE: rows from before migration 065 share
+-- seq 0.
+CREATE INDEX IF NOT EXISTS idx_status_transitions_seq ON status_transitions(seq);
