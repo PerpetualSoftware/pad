@@ -60,9 +60,9 @@ func (f *capFixture) doWithBearer(t *testing.T, rt capRoute, pat string) *httpte
 	req.Header.Set("Content-Type", rt.contentType)
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+pat)
-	rr := httptest.NewRecorder()
+	rr := newMCPRecorder()
 	f.srv.ServeHTTP(rr, req)
-	return rr
+	return rr.ResponseRecorder
 }
 
 func bootstrapWorkspaceSlug(t *testing.T, out map[string]any) (string, bool) {
