@@ -2,7 +2,7 @@
 	import { safeText } from '$lib/fields/fieldShape';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
-	import { api, withRequestDeadline } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { renderMarkedWithAttachments, sanitizeMarkdownHtml } from '$lib/utils/markdown';
 	import { renderAttachmentUnavailable } from '$lib/markdown/attachments';
@@ -501,21 +501,18 @@
 		passwordError = '';
 		passwordLoading = true;
 		try {
-			// Under the API deadline (BUG-3216): `passwordLoading` is held across it.
-			const { resp, data } = await withRequestDeadline(
-				async (signal) => {
-					const resp = await fetch(`/api/v1/s/${token}`, {
-						credentials: 'same-origin',
-						headers: { 'X-Share-Password': passwordInput },
-						signal
-					});
-					return { resp, data: await resp.json() };
-				},
-				{ idempotent: true }
-			);
-			if (!resp.ok) {
-				passwordError = data?.error?.message ?? 'Incorrect password';
-				return;
+			// Through the share loader, so a collection past one page arrives
+			// whole (BUG-3792, Codex r1); each page is under the API deadline
+			// (BUG-3216), and `passwordLoading` is held across them.
+			let data: SharePayload;
+			try {
+				data = await api.share.get(token, passwordInput);
+			} catch (e: any) {
+				if (e instanceof PadApiError) {
+					passwordError = e.message || 'Incorrect password';
+					return;
+				}
+				throw e;
 			}
 			if (data.require_password) {
 				passwordError = 'Incorrect password';

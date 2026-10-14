@@ -115,7 +115,7 @@ var padItemTool = ToolDef{
 		// Stars
 		"star":    passThrough([]string{"item", "star"}),
 		"unstar":  passThrough([]string{"item", "unstar"}),
-		"starred": passThrough([]string{"item", "starred"}),
+		"starred": actionItemStarred,
 
 		// Comments. reply-comment isn't a separate CLI verb — the
 		// `comment` command takes a --reply-to flag, exposed here as
@@ -291,7 +291,7 @@ var padItemSchemaParams = []ParamDef{
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
-	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks, history. Each defaults to 50, max 300. For history the window is the NEWEST N versions."},
+	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks, history. Each defaults to 50, max 300. For history the window is the NEWEST N versions. starred takes no limit: it returns at most 300, most recently starred first, with has_more when more exist."},
 	{Name: "offset", Type: "number", Description: "Skip the first N results (paging). Optional for: backlinks."},
 	{Name: "sort", Type: "string", Description: "Sort field. Optional for: list."},
 	{Name: "group_by", Type: "string", Description: "Group-by field. Optional for: list."},
@@ -898,6 +898,24 @@ func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*
 		return res, err
 	}
 	return markItemListTruncation(res, limit), nil
+}
+
+// actionItemStarred handles pad_item.action=starred. Like list it never pages
+// (BUG-3790, lead ruling, as BUG-3704 ruled for list): it asks for one row past
+// the list cap, on both transports (the HTTP mapper sends it as ?limit=, stdio
+// as pad item starred --limit), and a result that had the extra row says
+// has_more with the truncation note.
+func actionItemStarred(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	out := make(map[string]any, len(input)+1)
+	for k, v := range input {
+		out[k] = v
+	}
+	out["limit"] = mcpItemListMaxLimit + 1
+	res, err := env.Dispatch(ctx, []string{"item", "starred"}, out)
+	if err != nil || res == nil || res.IsError {
+		return res, err
+	}
+	return markItemListTruncation(res, mcpItemListMaxLimit), nil
 }
 
 // itemListTruncatedNote is the text an agent sees when its list was cut short.

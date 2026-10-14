@@ -3921,16 +3921,8 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	children, err := s.store.GetChildItems(item.ID)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if children == nil {
-		children = []models.Item{}
-	}
-
-	// Filter children by collection visibility and item-level grants
+	// Visibility is applied in the query and the list is windowed (BUG-3789),
+	// so the has-more probe counts only children the caller may see.
 	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
 	if visErr != nil {
 		writeInternalError(w, visErr)
@@ -3941,36 +3933,36 @@ func (s *Server) handleGetItemChildren(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, grantErr)
 		return
 	}
+	limit, offset := parseListWindow(r)
+	params := store.ChildListParams{Limit: limit + 1, Offset: offset}
 	if visibleIDs != nil {
-		filtered := children[:0]
-		for _, child := range children {
-			if !isCollectionVisible(child.CollectionID, visibleIDs) {
-				continue
-			}
-			if !s.isItemVisibleToGuest(r, workspaceID, &child, fullCollIDs, grantedItemIDs) {
-				continue
-			}
-			filtered = append(filtered, child)
-		}
-		children = filtered
+		params.CollectionIDs = visibleIDs
+		params.FullCollectionIDs, params.GrantedItemIDs = fullCollIDs, grantedItemIDs
+	}
+	children, err := s.store.ListChildItems(item.ID, params)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	children = setListWindowHeaders(w, children, limit, offset)
+	if children == nil {
+		children = []models.Item{}
 	}
 
 	s.enrichItemsWithParent(r, workspaceID, children, visibleIDs)
 	if visibleIDs != nil {
 		// Visibility-aware has_children: only count visible grandchildren
+		// One visible grandchild decides it; the probe reads one row
+		// (BUG-3789: it read every grandchild, with bodies, per child).
+		probe := params
+		probe.Limit, probe.Offset = 1, 0
 		for i := range children {
-			grandchildren, _ := s.store.GetChildItems(children[i].ID)
-			children[i].HasChildren = false
-			for _, gc := range grandchildren {
-				if !isCollectionVisible(gc.CollectionID, visibleIDs) {
-					continue
-				}
-				if !s.isItemVisibleToGuest(r, workspaceID, &gc, fullCollIDs, grantedItemIDs) {
-					continue
-				}
-				children[i].HasChildren = true
-				break
+			grandchildren, err := s.store.ListChildItems(children[i].ID, probe)
+			if err != nil {
+				writeInternalError(w, err)
+				return
 			}
+			children[i].HasChildren = len(grandchildren) > 0
 		}
 	} else {
 		s.store.PopulateHasChildren(children)
@@ -4563,6 +4555,33 @@ func (s *Server) listItemsPage(w http.ResponseWriter, workspaceID string, params
 		w.Header().Set(itemListHasMoreHeader, "false")
 	}
 	return items, nil
+}
+
+// parseListWindow reads ?limit= and ?offset= for a bounded list that is not an
+// item list (BUG-3789, BUG-3790, BUG-3792), as parseItemListParams reads them
+// for the item lists (BUG-3704): a missing, zero, negative or invalid limit is
+// the maximum, an explicit one is clamped to it, and a bad offset is 0.
+func parseListWindow(r *http.Request) (limit, offset int) {
+	limit = maxItemListQueryLimit
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 && l < limit {
+		limit = l
+	}
+	if o, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && o > 0 {
+		offset = o
+	}
+	return limit, offset
+}
+
+// setListWindowHeaders takes rows read one past limit, trims the probe row and
+// sets the paging headers the item lists set (BUG-3704).
+func setListWindowHeaders[T any](w http.ResponseWriter, rows []T, limit, offset int) []T {
+	if len(rows) > limit {
+		w.Header().Set(itemListHasMoreHeader, "true")
+		w.Header().Set(itemListNextOffsetHeader, strconv.Itoa(offset+limit))
+		return rows[:limit]
+	}
+	w.Header().Set(itemListHasMoreHeader, "false")
+	return rows
 }
 
 // maxListFilterKeys bounds the field filters (field filters and any-of

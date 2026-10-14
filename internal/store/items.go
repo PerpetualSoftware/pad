@@ -5478,6 +5478,83 @@ func (s *Store) getChildItems(q childQueryer, parentItemID string, includeDelete
 	return scanItems(rows)
 }
 
+// ChildListParams selects one page of ListChildItems (BUG-3789).
+type ChildListParams struct {
+	// Limit and Offset window the children in their list order. Limit <= 0
+	// returns every child: in-process callers (progress, guards) need them
+	// whole, and only the HTTP door bounds the list.
+	Limit, Offset int
+	// CollectionIDs nil means every collection; non-nil restricts to those
+	// (empty: none). With FullCollectionIDs or GrantedItemIDs non-nil, a child
+	// must also be a granted item or sit in a full-grant collection, as
+	// isItemVisibleToGuest decides it.
+	CollectionIDs     []string
+	FullCollectionIDs []string
+	GrantedItemIDs    []string
+}
+
+// ListChildItems is GetChildItems with the caller's visibility applied in the
+// query and an optional window over it (BUG-3789). Visibility is in the
+// query, not after it, so a window and its has-more probe count only rows the
+// caller may see. The order ends on the id, so offset pages neither repeat
+// nor skip children that tie on sort_order and created_at.
+func (s *Store) ListChildItems(parentItemID string, p ChildListParams) ([]models.Item, error) {
+	if p.CollectionIDs != nil && len(p.CollectionIDs) == 0 {
+		return nil, nil
+	}
+	query := `
+		SELECT DISTINCT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+		       i.created_by, i.last_modified_by, i.source,
+		       i.item_number, i.seq, i.created_at, i.updated_at,
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (` + childLinkTypeSQL() + `) AND il.target_id = ?
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL`
+	args := []interface{}{parentItemID}
+	if p.CollectionIDs != nil {
+		query += " AND i.collection_id IN (" + placeholders(len(p.CollectionIDs)) + ")"
+		for _, id := range p.CollectionIDs {
+			args = append(args, id)
+		}
+		if p.FullCollectionIDs != nil || p.GrantedItemIDs != nil {
+			var alts []string
+			if len(p.FullCollectionIDs) > 0 {
+				alts = append(alts, "i.collection_id IN ("+placeholders(len(p.FullCollectionIDs))+")")
+				for _, id := range p.FullCollectionIDs {
+					args = append(args, id)
+				}
+			}
+			if len(p.GrantedItemIDs) > 0 {
+				alts = append(alts, "i.id IN ("+placeholders(len(p.GrantedItemIDs))+")")
+				for _, id := range p.GrantedItemIDs {
+					args = append(args, id)
+				}
+			}
+			if len(alts) == 0 {
+				return nil, nil
+			}
+			query += " AND (" + strings.Join(alts, " OR ") + ")"
+		}
+	}
+	query += " ORDER BY i.sort_order ASC, i.created_at ASC, i.id ASC"
+	if p.Limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, p.Limit, max(p.Offset, 0))
+	}
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list child items: %w", err)
+	}
+	defer rows.Close()
+	return scanItems(rows)
+}
+
 // GetChildItemsForParents returns the live child items for each of the given
 // parent item IDs, grouped by parent ID, in ONE query — collapsing the
 // per-parent GetChildItems N+1 the dashboard used to run once per active plan

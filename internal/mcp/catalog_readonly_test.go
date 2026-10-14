@@ -757,6 +757,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Flags: map[string]cmdhelp.Flag{
 					"workspace": {Type: "string"},
 					"all":       {Type: "bool"},
+					"limit":     {Type: "int"}, // BUG-3790
 				},
 			},
 			"item comment": {

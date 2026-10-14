@@ -4400,6 +4400,7 @@ func unstarCmd() *cobra.Command {
 
 func starredCmd() *cobra.Command {
 	var all bool
+	var limit int
 
 	cmd := &cobra.Command{
 		Use:     "starred",
@@ -4410,7 +4411,19 @@ func starredCmd() *cobra.Command {
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			items, err := client.ListStarredItems(ws, all)
+			// --limit asks for one page from the start and says on stderr when
+			// more exist; without it every page is read (BUG-3790).
+			var items []models.Item
+			var err error
+			if limit > 0 {
+				var page cli.ItemListPage
+				items, page, err = client.ListStarredItemsPage(ws, all, limit)
+				if err == nil && page.HasMore {
+					fmt.Fprintf(os.Stderr, "More starred items exist than --limit %d shows.\n", limit)
+				}
+			} else {
+				items, err = client.ListStarredItems(ws, all)
+			}
 			if err != nil {
 				return err
 			}
@@ -4438,6 +4451,7 @@ func starredCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&all, "all", false, "include completed/terminal items")
+	cmd.Flags().IntVar(&limit, "limit", 0, "at most this many, from the most recently starred (default: all)")
 
 	return cmd
 }

@@ -133,7 +133,7 @@ func (s *Server) handleUnstarItem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListStarredItems returns all starred items for the authenticated user in a workspace.
+// handleListStarredItems returns one bounded page of the authenticated user's starred items in a workspace (BUG-3790).
 // GET /api/v1/workspaces/{slug}/starred
 // Query params:
 //   - include_terminal=true — include items in terminal statuses (default: false)
@@ -156,7 +156,8 @@ func (s *Server) handleListStarredItems(w http.ResponseWriter, r *http.Request) 
 
 	includeTerminal := r.URL.Query().Get("include_terminal") == "true"
 
-	items, err := s.store.ListStarredItems(userID, workspaceID, includeTerminal)
+	// Bodies are loaded below for the returned page only (BUG-3790).
+	items, err := s.store.ListStarredItemsWithoutBodies(userID, workspaceID, includeTerminal)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -208,12 +209,33 @@ func (s *Server) handleListStarredItems(w http.ResponseWriter, r *http.Request) 
 	}
 	items = filtered
 
+	// The list is bounded and paged like the item lists (BUG-3790). The
+	// window comes after the visibility and terminal filters, which run in Go,
+	// so has-more counts only rows this caller is served.
+	limit, offset := parseListWindow(r)
+	if offset >= len(items) {
+		items = nil
+	} else {
+		items = items[offset:min(len(items), offset+limit+1)]
+	}
+	items = setListWindowHeaders(w, items, limit, offset)
+
 	// Hydrate items with parent links and computed refs
 	s.enrichItemsWithParent(r, workspaceID, items, visibleIDs)
 
-	if r.URL.Query().Get("summary") == "true" {
+	if r.URL.Query().Get("summary") != "true" {
+		ids := make([]string, len(items))
 		for i := range items {
-			items[i].Content = ""
+			ids[i] = items[i].ID
+		}
+		bodies, err := s.store.ItemBodies(ids)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		for i := range items {
+			b := bodies[items[i].ID]
+			items[i].Content, items[i].ContentState = b.Content, b.ContentState
 		}
 	}
 
