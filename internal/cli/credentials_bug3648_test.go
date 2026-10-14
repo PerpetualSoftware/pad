@@ -270,3 +270,36 @@ func TestBUG3649_WipeWaitsForTheLock(t *testing.T) {
 		t.Errorf("credentials.json still present after the wipe: %v", err)
 	}
 }
+
+func TestBUG3648_SaveWritesThroughASymlinkedFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	home := withTempHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".pad"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, "dotfiles-credentials.json")
+	if err := os.WriteFile(target, []byte(`{"version": 2, "credentials": {}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".pad", "credentials.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	store := newEmptyStore()
+	store.Set("http://x:7777", &Credentials{Token: "fresh"})
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("credentials.json is no longer a symlink after Save (err %v)", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"fresh"`) {
+		t.Errorf("the symlink target did not receive the save: %s", data)
+	}
+}

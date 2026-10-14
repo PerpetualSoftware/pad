@@ -44,6 +44,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // credentialsVersion is what new saves write. Bump and add a migration
@@ -235,6 +236,13 @@ func (s *CredentialStore) Save() error {
 		return fmt.Errorf("marshal credentials: %w", err)
 	}
 
+	// A symlinked credentials.json (a dotfiles repo, an encrypted volume) is
+	// written through to its target, as os.WriteFile did; renaming over the
+	// link would replace it with a plain file and strand the target
+	// (final review round, both hunters).
+	if target, err := filepath.EvalSymlinks(path); err == nil && target != path {
+		path = target
+	}
 	if err := writeFileAtomic0600(path, data); err != nil {
 		return fmt.Errorf("write credentials: %w", err)
 	}
@@ -272,11 +280,29 @@ func writeFileAtomic0600(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := renameReplacing(tmpName, path); err != nil {
 		return err
 	}
 	tmpName = ""
 	return nil
+}
+
+// renameReplacing renames src over dst. Go opens files on Windows without
+// FILE_SHARE_DELETE (syscall_windows.go), so the replace fails while any
+// process is reading dst, which every pad command does through LoadStore.
+// That reader holds it for a few milliseconds, so on Windows the rename is
+// retried for about a second before the error is returned (final review
+// round, both hunters).
+func renameReplacing(src, dst string) error {
+	err := os.Rename(src, dst)
+	if runtime.GOOS != "windows" {
+		return err
+	}
+	for i := 0; err != nil && i < 50; i++ {
+		time.Sleep(20 * time.Millisecond)
+		err = os.Rename(src, dst)
+	}
+	return err
 }
 
 // UpdateStore is the load-modify-save for credentials.json, under a
@@ -324,14 +350,17 @@ func WipeCredentialsFile() error {
 	// Under the UpdateStore lock, so a concurrent update cannot rename a
 	// file back into place after the wipe (Codex round 1, BUG-3649). Never
 	// call this from an UpdateStore callback: it would wait on the lock that
-	// callback's UpdateStore holds (Codex round 2).
-	if _, err := os.Stat(filepath.Dir(path)); err == nil {
-		unlock, err := lockCredentialsFile(path + ".lock")
-		if err != nil {
-			return fmt.Errorf("lock credentials: %w", err)
-		}
-		defer unlock()
+	// callback's UpdateStore holds (Codex round 2). The directory is created
+	// first, as UpdateStore creates it, so a wipe on a fresh home is locked
+	// too (final Codex round: a skipped lock let an update land after it).
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create credentials directory: %w", err)
 	}
+	unlock, err := lockCredentialsFile(path + ".lock")
+	if err != nil {
+		return fmt.Errorf("lock credentials: %w", err)
+	}
+	defer unlock()
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete credentials: %w", err)
 	}
