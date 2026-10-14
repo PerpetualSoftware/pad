@@ -202,8 +202,10 @@ func TestBUG3745_SystemRewritesKeepTheNewestVersionExact(t *testing.T) {
 		if cur, _ := s.GetItem(item.ID); !strings.Contains(cur.Content, newID) {
 			t.Fatal("instrument: the remap must rewrite the item's body")
 		}
-		if got := newest(t, s, item.ID); got != before {
-			t.Errorf("the newest version after the remap resolves to %q..., want the body before alice's edit, with the old id", got[:40])
+		// With the NEW id: the remap rewrites history too (BUG-3655), since
+		// the old id names nothing in the workspace it runs on.
+		if want := strings.ReplaceAll(before, oldID, newID); newest(t, s, item.ID) != want {
+			t.Errorf("the newest version after the remap resolves to %q..., want the body before alice's edit, with the new id", newest(t, s, item.ID)[:40])
 		}
 	})
 }

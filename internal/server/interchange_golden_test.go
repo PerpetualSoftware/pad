@@ -477,6 +477,19 @@ func writeInterchangeGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	editDoc("Draft three, with a table and a picture:\n\n![logo](pad-attachment:"+att.ID+")", "user")
+	// History that carries the reference below the newest version (BUG-3655),
+	// where import's remap did not reach, so restoring it brought back the
+	// source id. Draft four shares too little with the picture draft for a
+	// patch, so that version is a FULL snapshot carrying the reference. Draft
+	// five drops the picture line, so draft four's version is a reverse patch
+	// that re-inserts the reference whole; draft six puts it back at the end,
+	// which leaves that patch below the newest version.
+	prose := "Draft four puts the picture first and replaces every sentence that came before it, " +
+		"so the version holding draft three is stored whole rather than as a patch."
+	picture := "![logo](pad-attachment:" + att.ID + ")"
+	editDoc(picture+"\n\n"+prose, "agent")
+	editDoc(prose, "user")
+	editDoc(prose+"\n\n"+picture, "agent")
 
 	rr = doRequest(srv, "GET", base+"/export?format=tar", nil)
 	if rr.Code != http.StatusOK {
@@ -573,9 +586,24 @@ func assertInterchangeGoldenCoverage(t *testing.T, files map[string][]byte) {
 			has["attachment ref in content"] = has["attachment ref in content"] || strings.Contains(it.Content, "pad-attachment:"+a.ID)
 		}
 	}
+	// The newest version of each item, which import's remap has always
+	// rebased; a reference below it is what BUG-3655 found unremapped. The
+	// export lists versions oldest first, so the last one per item wins.
+	newest := map[string]string{}
+	for _, v := range exp.ItemVersions {
+		newest[v.ItemID] = v.ID
+	}
 	for _, v := range exp.ItemVersions {
 		has["edit version"] = has["edit version"] || !v.IsCreate
 		has["agent version"] = has["agent version"] || v.CreatedBy == "agent"
+		for _, a := range manifest.Entries {
+			// The bare id: patch text may escape the characters around it.
+			if !strings.Contains(v.Content, a.ID) {
+				continue
+			}
+			has["attachment ref in a full version snapshot"] = has["attachment ref in a full version snapshot"] || !v.IsDiff
+			has["attachment ref in an older version's patch"] = has["attachment ref in an older version's patch"] || (v.IsDiff && newest[v.ItemID] != v.ID)
+		}
 	}
 	for _, r := range exp.Reminders {
 		has["armed reminder"] = has["armed reminder"] || r.FiredAt == ""
@@ -592,7 +620,8 @@ func assertInterchangeGoldenCoverage(t *testing.T, files map[string][]byte) {
 	for _, want := range []string{
 		"archived collection", "collection settings", "relation field", "parent", "pinned", "tags", "agent author",
 		"set-aside edit", "content_state", "builtin origin", "convention", "playbook", "relation value",
-		"attachment ref in content", "edit version", "agent version", "armed reminder", "acked reminder",
+		"attachment ref in content", "attachment ref in a full version snapshot", "attachment ref in an older version's patch",
+		"edit version", "agent version", "armed reminder", "acked reminder",
 		"link to a dropped item", "live link", "comment", "attached attachment",
 	} {
 		if !has[want] {

@@ -569,6 +569,12 @@ type Server struct {
 	// keep door could not be driven by a test.
 	importBundleAfterMintHook func()
 
+	// importBundleRemapFault is a TEST SEAM (always nil in production,
+	// BUG-3656): when non-nil, importBundle's final reference remap returns
+	// its error instead of running. The remap is one store transaction with
+	// no natural way to fail on demand.
+	importBundleRemapFault func() error
+
 	// membershipCheck is a TEST SEAM (always nil in production, BUG-3026). When
 	// non-nil, autoCreateWorkspace's reconcile calls it instead of
 	// store.IsWorkspaceMember.

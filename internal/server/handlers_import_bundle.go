@@ -676,6 +676,30 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	// rehydrate the attachment twice, and references would follow the last.
 	rehydratedPaths := map[string]bool{}
 	oldAttachToNew := map[string]string{}
+	// The reference remap runs on every exit that KEEPS the workspace
+	// (BUG-3656). It used to run only on success, so a plain error after some
+	// attachments were rehydrated (an oversized blob, a read failure) kept a
+	// workspace whose content still named the SOURCE ids while the clones sat
+	// unreferenced. Registered after the keep door above, so it runs first,
+	// before that door rewrites retErr. An importStatusError, or a budget
+	// trip that door turns into one, takes the rollback arm, which removes the
+	// workspace, so it is skipped there; so is a panic (retErr nil, and not
+	// remapped), which keeps the workspace with no response to report on.
+	remapped := false
+	defer func() {
+		if remapped || retErr == nil || ws == nil || len(oldAttachToNew) == 0 || budget.exceeded || budget.headersTripped {
+			return
+		}
+		var statusErr *importStatusError
+		if errors.As(retErr, &statusErr) {
+			return
+		}
+		if err := s.store.RemapAttachmentReferencesInWorkspace(ws.ID, oldAttachToNew); err != nil {
+			slog.Error("import: attachment reference remap failed on a kept partial workspace",
+				"workspace_id", ws.ID, "error", err)
+			retErr = fmt.Errorf("%w; attachment references were not remapped either, so some content still points at the source workspace's files", retErr)
+		}
+	}()
 	exportSeen := false
 	manifestSeen := false
 
@@ -1054,15 +1078,23 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	}
 
 	// Phase 3: rewrite pad-attachment:OLD references in every imported
-	// item's content + fields to pad-attachment:NEW. Done via store
-	// helper so we get a single transactional pass and the FTS index
-	// is updated correctly.
+	// item's content + fields, comments and version history to
+	// pad-attachment:NEW. Done via store helper so we get a single
+	// transactional pass and the FTS index is updated correctly.
+	//
+	// A failure is the import's failure (BUG-3656). It used to be logged and
+	// the import answered 201, so a workspace whose references named the
+	// source's files read as complete. The remap is one transaction, so a
+	// failure writes nothing; the plain error takes the handler's keep arm,
+	// which keeps the workspace, marks it partial and says so in the 400.
+	remapped = true
 	if len(oldAttachToNew) > 0 {
-		if err := s.store.RemapAttachmentReferencesInWorkspace(ws.ID, oldAttachToNew); err != nil {
-			slog.Warn("import: attachment reference remap failed",
-				"workspace_id", ws.ID, "error", err)
-			// Non-fatal — items still exist with stale references.
-			// Operator can re-run a remap manually if needed.
+		remap := func() error { return s.store.RemapAttachmentReferencesInWorkspace(ws.ID, oldAttachToNew) }
+		if s.importBundleRemapFault != nil {
+			remap = s.importBundleRemapFault
+		}
+		if err := remap(); err != nil {
+			return ws, fmt.Errorf("attachment reference remap: %w", err)
 		}
 	}
 
@@ -1355,6 +1387,8 @@ func partialImportCategory(err error) string {
 		return "the attachment manifest could not be read, so attachments were not restored"
 	case strings.HasPrefix(msg, "blob "), strings.HasPrefix(msg, "read blob"), strings.HasPrefix(msg, "skip unmanifested blob"):
 		return "an attachment file could not be read, so some attachments are missing"
+	case strings.HasPrefix(msg, "attachment reference remap"):
+		return "attachment references could not be updated, so some content still points at the source workspace's files"
 	}
 	return "the bundle stopped reading partway through"
 }

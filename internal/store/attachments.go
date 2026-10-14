@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
+	"github.com/PerpetualSoftware/pad/internal/diff"
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -1671,9 +1673,9 @@ func (s *Store) WorkspaceItemSlugMap(workspaceID string) (map[string]string, err
 }
 
 // RemapAttachmentReferencesInWorkspace rewrites every
-// "pad-attachment:OLD" reference in items.content + items.fields
-// AND in comment bodies (BUG-2615) to "pad-attachment:NEW" for
-// every (old, new) pair in the map. Run after a bundle import has
+// "pad-attachment:OLD" reference in items.content + items.fields,
+// in comment bodies (BUG-2615) AND in version history (BUG-3655) to
+// "pad-attachment:NEW" for every (old, new) pair in the map. Run after a bundle import has
 // rehydrated attachments so the imported content points at the new
 // attachment ids instead of the source workspace's ids.
 //
@@ -1693,9 +1695,10 @@ func (s *Store) WorkspaceItemSlugMap(workspaceID string) (map[string]string, err
 // function, not of the comment leg added for BUG-2615.
 //
 // Implementation: a single transaction that loads every item's
-// content+fields and every comment body, runs remapAttachmentRefs
-// over each, stamps the attachment rows the rewrites will point at,
-// then writes back only what changed. That helper tokenizes with
+// content+fields, every comment body and every live item's version
+// chain (planVersionChainRemapTx), runs remapAttachmentRefs over each,
+// stamps the attachment rows the content and comment rewrites will
+// point at, then writes back only what changed. That helper tokenizes with
 // attachmentRefRE and matches whole ids — NOT strings.ReplaceAll,
 // which used to rewrite a mapped id sitting as the PREFIX of a
 // longer one (Codex round 26). See its doc.
@@ -1812,6 +1815,15 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	crows.Close()
 
+	// Version history carries references too (BUG-3655): a full snapshot holds
+	// a past body whole, and a reverse patch can hold an id in the text it
+	// re-inserts. Restoring either brought back the SOURCE id. Rewrite the
+	// whole chain here, against the remapped bodies.
+	versionUpdates, rechained, err := s.planVersionChainRemapTx(tx, workspaceID, oldToNew)
+	if err != nil {
+		return err
+	}
+
 	// Both scans are done and nothing is written yet: the lost-update window
 	// the workspace seq lock above closes (BUG-2797).
 	if s.afterRemapScan != nil {
@@ -1875,8 +1887,9 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 			return fmt.Errorf("update item %s: %w", u.id, err)
 		}
 		// The body changed with no version, so the newest version's reverse
-		// patch is rebased onto it (BUG-3745).
-		if u.content != u.oldContent {
+		// patch is rebased onto it (BUG-3745). A chain rewritten whole above
+		// already encodes its newest version against the new body.
+		if u.content != u.oldContent && !rechained[u.id] {
 			if err := s.rebaseNewestVersionPatch(tx, u.id, u.oldContent, u.content); err != nil {
 				return fmt.Errorf("rebase newest version of %s: %w", u.id, err)
 			}
@@ -1897,6 +1910,12 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 			return fmt.Errorf("update comment %s: %w", u.id, err)
 		}
 	}
+	for _, u := range versionUpdates {
+		if _, err := tx.Exec(s.q(`UPDATE item_versions SET content = ?, is_diff = ? WHERE id = ?`),
+			u.content, s.dialect.BoolToInt(u.isDiff), u.id); err != nil {
+			return fmt.Errorf("update version %s: %w", u.id, err)
+		}
+	}
 
 	// The UPDATEs above fired items_fts_update, which already reindexed the
 	// rewritten content; there is no separate FTS pass (BUG-2758).
@@ -1904,6 +1923,138 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		return fmt.Errorf("commit remap: %w", err)
 	}
 	return nil
+}
+
+// versionRemap is one item_versions row's rewritten storage.
+type versionRemap struct {
+	id      string
+	content string
+	isDiff  bool
+}
+
+// planVersionChainRemapTx plans the item_versions rewrite for
+// RemapAttachmentReferencesInWorkspace (BUG-3655). Versions are reverse
+// patches resolved from the item's body backwards, so a reference in history
+// cannot be rewritten in place: each live item's chain is resolved against
+// its body as it stands (the remap has not written yet), every resolved body
+// is remapped, and each row is re-encoded against its remapped successor. A
+// full row stays full; a patch row is re-diffed and kept only while smaller
+// than the body, the rule every version writer uses. Only rows whose body or
+// successor changed are rewritten. Line counts are left alone: a remap
+// swaps one id for another and changes no line.
+//
+// It returns the rewrites and the items whose newest row it re-encoded
+// against the remapped body, so the caller skips its newest-only rebase for
+// them. A patch that fails to apply has no body; its text is remapped as
+// written, the rows below it resolve past it as the reader's walk does, and
+// the item is logged.
+func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew map[string]string) ([]versionRemap, map[string]bool, error) {
+	// ORDER BY id for the lock order, as the item scan above.
+	rows, err := tx.Query(s.q(`
+		SELECT i.id, i.content FROM items i
+		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		  AND EXISTS (SELECT 1 FROM item_versions v WHERE v.item_id = i.id)
+		ORDER BY i.id`), workspaceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("scan versioned items for remap: %w", err)
+	}
+	type versioned struct{ id, content string }
+	var items []versioned
+	for rows.Next() {
+		var it versioned
+		if err := rows.Scan(&it.id, &it.content); err != nil {
+			rows.Close()
+			return nil, nil, fmt.Errorf("scan versioned item: %w", err)
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, fmt.Errorf("iterate versioned items: %w", err)
+	}
+	rows.Close()
+
+	var out []versionRemap
+	rechained := map[string]bool{}
+	for _, it := range items {
+		// Newest first, the order the chain resolves in (ListItemVersionsPage).
+		vrows, err := tx.Query(s.q(`SELECT id, content, is_diff FROM item_versions
+			WHERE item_id = ? ORDER BY created_at DESC, version_seq DESC`), it.id)
+		if err != nil {
+			return nil, nil, fmt.Errorf("scan versions of %s: %w", it.id, err)
+		}
+		type row struct {
+			id, stored, body string
+			isDiff           bool
+		}
+		var chain []row
+		for vrows.Next() {
+			var r row
+			if err := vrows.Scan(&r.id, &r.stored, &r.isDiff); err != nil {
+				vrows.Close()
+				return nil, nil, fmt.Errorf("scan version: %w", err)
+			}
+			chain = append(chain, r)
+		}
+		if err := vrows.Err(); err != nil {
+			vrows.Close()
+			return nil, nil, fmt.Errorf("iterate versions of %s: %w", it.id, err)
+		}
+		vrows.Close()
+
+		// The walk ListItemVersionsResolvedPage does, so every body here is
+		// the one a reader is shown: a patch that fails to apply is skipped,
+		// and the row below it resolves against the same successor.
+		known := make([]bool, len(chain))
+		successor := it.content
+		for i := range chain {
+			if !chain[i].isDiff {
+				chain[i].body, known[i] = chain[i].stored, true
+			} else if body, err := diff.ApplyPatch(successor, chain[i].stored); err == nil {
+				chain[i].body, known[i] = body, true
+			}
+			if known[i] {
+				successor = chain[i].body
+			}
+		}
+		if len(chain) > 0 && known[0] {
+			rechained[it.id] = true
+		}
+
+		oldSucc, newSucc := it.content, remapAttachmentRefs(it.content, oldToNew)
+		broken := false
+		for i, r := range chain {
+			if !known[i] {
+				// No body to re-diff. Remap the patch text itself: an id it
+				// carries whole is replaced by one of the same length, so the
+				// hunk counts still hold. It resolved no better at the source.
+				// The successors stay as they are, as in the walk above.
+				broken = true
+				if t := remapAttachmentRefs(r.stored, oldToNew); t != r.stored {
+					out = append(out, versionRemap{id: r.id, content: t, isDiff: true})
+				}
+				continue
+			}
+			newBody := remapAttachmentRefs(r.body, oldToNew)
+			if newBody != r.body || (r.isDiff && newSucc != oldSucc) {
+				stored, isDiff := newBody, false
+				if r.isDiff {
+					if patch := diff.CreateReversePatch(newBody, newSucc); diff.IsDiffSmaller(patch, newBody) {
+						stored, isDiff = patch, true
+					}
+				}
+				if stored != r.stored || isDiff != r.isDiff {
+					out = append(out, versionRemap{id: r.id, content: stored, isDiff: isDiff})
+				}
+			}
+			oldSucc, newSucc = r.body, newBody
+		}
+		if broken {
+			slog.Warn("attachment remap: part of an item's version history does not resolve; its patch text was remapped as written",
+				"workspace_id", workspaceID, "item_id", it.id)
+		}
+	}
+	return out, rechained, nil
 }
 
 // remapAttachmentRefs replaces "pad-attachment:OLD" with
