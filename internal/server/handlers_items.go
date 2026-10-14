@@ -3438,7 +3438,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// JSON contract. Same semantics as `pad item update --force`.
 	moveForce := r.URL.Query().Get("force") == "true"
 
-	var movePrecheck func(tx *sql.Tx, existing *models.Item) error
+	var guardPrecheck func(tx *sql.Tx, existing *models.Item) error
 	if !moveForce {
 		var destSettings models.CollectionSettings
 		if targetColl.Settings != "" {
@@ -3465,7 +3465,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 			guestFullCollIDs:     guestFull,
 			guestGrantedItemIDs:  guestGranted,
 		}
-		movePrecheck = func(tx *sql.Tx, existing *models.Item) error {
+		guardPrecheck = func(tx *sql.Tx, existing *models.Item) error {
 			txCtx := mgctx
 			txCtx.currentFieldsJS = existing.Fields
 			details, derr := s.runOpenChildrenGuard(tx, txCtx)
@@ -3479,10 +3479,31 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The payload above was built from `item`, read before the move takes its
+	// lock (BUG-3665, codex r1). A write that lands in between would be
+	// overwritten by fields migrated from the older body, and the move's
+	// history and events would describe that older body. So every move, a
+	// forced one included (force skips only the open-children guard), checks
+	// under the lock that the item is still what the payload was built from,
+	// and answers 409 otherwise; the caller re-reads and moves again.
+	movePrecheck := func(tx *sql.Tx, existing *models.Item) error {
+		if existing.CollectionID != item.CollectionID || existing.Fields != item.Fields {
+			return errItemChangedDuringMove
+		}
+		if guardPrecheck != nil {
+			return guardPrecheck(tx, existing)
+		}
+		return nil
+	}
+
 	// Move the item
 	// BUG-3407: the target schema the moved fields were validated against.
 	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), movePrecheck, store.WithValidatedSchema(targetColl.Schema))
 	if err != nil {
+		if errors.Is(err, errItemChangedDuringMove) {
+			writeError(w, http.StatusConflict, "conflict", "The item changed while it was being moved; reload it and move it again")
+			return
+		}
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
 			return
@@ -4680,3 +4701,8 @@ func (s *Server) requireRawParentInWorkspace(w http.ResponseWriter, workspaceID 
 	}
 	return true
 }
+
+// errItemChangedDuringMove is a move's precheck finding the item changed
+// between the read the move's payload was built from and the move's lock
+// (BUG-3665).
+var errItemChangedDuringMove = errors.New("item changed during move")

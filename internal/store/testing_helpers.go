@@ -284,3 +284,12 @@ func (s *Store) SetStripeEventReadFailureHookForTesting(hook func(eventID string
 	s.failStripeEventRead = hook
 	return func() { s.failStripeEventRead = prev }
 }
+
+// SetBeforeMoveLockForTesting installs the beforeMoveLock seam (BUG-3665) for
+// the lifetime of the returned restore function: a move calls hook after its
+// pre-lock read of the item and before it takes the workspace lock.
+func (s *Store) SetBeforeMoveLockForTesting(hook func(itemID string)) (restore func()) {
+	prev := s.beforeMoveLock
+	s.beforeMoveLock = hook
+	return func() { s.beforeMoveLock = prev }
+}
