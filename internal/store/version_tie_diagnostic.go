@@ -19,10 +19,12 @@ import (
 //
 // Versions are stored as reverse patches, so history rebuilds each one by
 // walking back from the item's current content, newest first, in the order
-// (created_at DESC, version_seq DESC). Postgres migration 054 assigned
-// version_seq to rows that already existed ordering ties by ctid, which is a
-// physical location, not chronology, so a tie group can have been numbered
-// out of order. Whether an order is right shows only in whether the patches
+// (created_at DESC, version_seq DESC). Postgres migration 054, as first
+// shipped, assigned version_seq to rows that already existed ordering ties by
+// ctid, which is a physical location, not chronology, so on a database that
+// ran it then a tie group can have been numbered out of order. (054 now
+// orders ties by id, BUG-3751; databases that already ran it keep their
+// numbering.) Whether an order is right shows only in whether the patches
 // apply along it.
 type VersionTieReport struct {
 	ItemsScanned int `json:"items_scanned"`
