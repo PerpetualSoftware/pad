@@ -8,7 +8,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { localSearch, parseSearchQuery, parseGoToTarget, withoutArchivedToken } from '$lib/stores/localSearch.svelte';
+	import { localSearch, parseSearchQuery, parseGoToTarget, withoutScopeTokens } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import {
 		groupResultsByCollection,
@@ -284,7 +284,10 @@
 		};
 	});
 
-	function buildFilters(offset = 0, wsSlug?: string): SearchFilters {
+	// `typed` is the query text the caller parsed for its request, so the
+	// filters and the text it sends come from the same query, not from
+	// whatever the input holds when this runs (BUG-3709, codex r1).
+	function buildFilters(typed: string, offset = 0, wsSlug?: string): SearchFilters {
 		const filters: SearchFilters = {
 			// "All workspaces" names none: the server then searches every
 			// workspace the caller may see, loaded here or not (TASK-3604).
@@ -293,11 +296,15 @@
 			limit: PAGE_SIZE,
 			offset
 		};
-		if (filterCollection) filters.collection = filterCollection;
+		// The query's scope tokens travel as filters, and the callers strip
+		// them from the text they send (withoutScopeTokens): `is:archived` as
+		// include_archived (TASK-2864), `coll:<slug>` as the collection
+		// (BUG-3709). The chip wins over `coll:`, as on the local path.
+		const parsed = parseSearchQuery(typed.trim());
+		const collection = filterCollection ?? parsed.collection;
+		if (collection) filters.collection = collection;
 		if (filterStatus) filters.status = filterStatus;
-		// `is:archived` in the query travels as include_archived, and the
-		// callers strip it from the text they send (TASK-2864).
-		if (parseSearchQuery(query.trim()).archived) filters.includeArchived = true;
+		if (parsed.archived) filters.includeArchived = true;
 		return filters;
 	}
 
@@ -462,7 +469,7 @@
 						}
 						return;
 					}
-					const serverQuery = parsed.body ? parsed.text : withoutArchivedToken(trimmed);
+					const serverQuery = parsed.body ? parsed.text : withoutScopeTokens(trimmed);
 					if (!serverQuery.trim()) {
 						if (isSameDispatch()) {
 							results = [];
@@ -471,7 +478,7 @@
 						}
 						return;
 					}
-					const resp = await api.search(serverQuery, buildFilters(0));
+					const resp = await api.search(serverQuery, buildFilters(trimmed, 0));
 					if (!isSameDispatch()) return;
 					results = resp.results ?? [];
 					total = resp.total ?? 0;
@@ -572,7 +579,7 @@
 	function maybeRunContentSearch(trimmed: string, wsSlug: string | undefined) {
 		clearTimeout(contentSearchTimeout);
 		const sparse = results.length < CONTENT_SEARCH_THRESHOLD;
-		const text = withoutArchivedToken(trimmed);
+		const text = withoutScopeTokens(trimmed);
 		const bareDigit = /^\d+$/.test(text);
 		if (!wsSlug || !sparse || bareDigit || text.length < 2) {
 			// Nothing to supplement — invalidate any in-flight fetch and
@@ -586,7 +593,7 @@
 		contentLoading = true;
 		contentSearchTimeout = setTimeout(async () => {
 			try {
-				const resp = await api.search(text, buildFilters(0, wsSlug));
+				const resp = await api.search(text, buildFilters(trimmed, 0, wsSlug));
 				// Superseded by a newer dispatch, or the query moved on
 				// while the request was in flight — discard.
 				if (myReqId !== contentReqId || query.trim() !== trimmed) return;
@@ -731,7 +738,7 @@
 			loadingMore = false;
 			return;
 		}
-		const serverQuery = parsed.body ? parsed.text : withoutArchivedToken(query);
+		const serverQuery = parsed.body ? parsed.text : withoutScopeTokens(query);
 		// One check for both outcomes: a page for a scope that has moved on
 		// neither appends nor reports a failure (TASK-3599, retro of #2063).
 		const scopeMoved = () =>
@@ -741,7 +748,7 @@
 			filterStatus !== snapshotStatus ||
 			workspaceStore.current?.slug !== snapshotWsSlug;
 		try {
-			const resp = await api.search(serverQuery, buildFilters(results.length));
+			const resp = await api.search(serverQuery, buildFilters(snapshotQuery, results.length));
 			if (scopeMoved()) return;
 			if (!parsed.body) {
 				// Non-body server paging: if the current workspace
@@ -849,7 +856,7 @@
 						// of searching exactly what was typed.
 						const resp = await api.search(
 							target.ref ? String(target.num) : typedAtEnter,
-							buildFilters(0)
+							buildFilters(typedAtEnter, 0)
 						);
 						// Stale-query fence: if the user kept typing while
 						// the probe was in flight, discard it — don't
