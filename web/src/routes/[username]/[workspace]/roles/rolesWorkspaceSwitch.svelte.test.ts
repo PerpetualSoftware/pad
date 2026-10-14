@@ -184,6 +184,20 @@ describe('the roles board follows the workspace in the route (BUG-3701)', () => 
 		expect(document.body.textContent).not.toContain('AlphaRole');
 	});
 
+	it("closes a dialog opened on the old workspace's board", async () => {
+		// The switch resets the transient interaction state: an edit dialog
+		// opened on A holds A's role, and Save would address B with it.
+		mountAt('alpha');
+		(await nextBoardCall(1))(boardFor('AlphaRole'));
+		await waitFor(() => expect(document.body.textContent).toContain('AlphaRole'));
+		(document.querySelector('.lane-edit-btn') as HTMLButtonElement).click();
+		await waitFor(() => expect(document.getElementById('roles-dialog-title')?.textContent).toBe('Edit Role'));
+
+		await navigateTo('beta');
+		await nextBoardCall(2);
+		await waitFor(() => expect(document.getElementById('roles-dialog-title')).toBeNull());
+	});
+
 	it('CONTROL: the same route does not reload', async () => {
 		mountAt('alpha');
 		(await nextBoardCall(1))(boardFor('AlphaRole'));
