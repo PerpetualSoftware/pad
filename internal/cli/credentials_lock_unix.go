@@ -16,11 +16,11 @@ func lockCredentialsFile(lockPath string) (unlock func(), err error) {
 		return nil, err
 	}
 	// The mode on OpenFile applies only on creation (BUG-3648's class), so
-	// an existing lock file is tightened here (Codex round 1).
-	if err := f.Chmod(0600); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
+	// an existing lock file is tightened here (Codex round 1). Best effort:
+	// a lock file this user does not own (left by a sudo run) refuses fchmod
+	// with EPERM, and the lock file holds no secret, so that must not turn a
+	// working login into a failure (bug-hunter pilot, lead ruling).
+	_ = f.Chmod(0600)
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		_ = f.Close()
 		return nil, err
