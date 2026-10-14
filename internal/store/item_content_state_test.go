@@ -2,7 +2,6 @@ package store_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -299,8 +298,7 @@ func everyContentBearingReadDoor(t *testing.T, s *store.Store) {
 	}, item.ID)
 	first("GetChildItems", func() ([]models.Item, error) { return s.GetChildItems(item.ID) }, child.ID)
 	first("ItemsModifiedSince", func() ([]models.Item, error) {
-		updated, _, err := s.ItemsModifiedSince(wsID, time.Time{})
-		return updated, err
+		return s.ItemsModifiedSince(wsID, store.ItemsModifiedSinceParams{})
 	}, item.ID)
 
 	// The starred door specifically: it lives in item_stars.go and reaches the

@@ -99,9 +99,15 @@ func runSameSecondCursorLeg(t *testing.T, cursorLead time.Duration, wantSameSeco
 		t.Fatalf("cursor %s is not earlier than the mutations", cursor)
 	}
 
-	updated, deletedIDs, err := s.ItemsModifiedSince(ws.ID, cursor)
+	updated, err := s.ItemsModifiedSince(ws.ID, ItemsModifiedSinceParams{Since: cursor})
 	if err != nil {
 		t.Fatalf("ItemsModifiedSince: %v", err)
+	}
+	var deletedIDs []string
+	for _, it := range updated {
+		if it.DeletedAt != nil {
+			deletedIDs = append(deletedIDs, it.ID)
+		}
 	}
 
 	if !containsID(deletedIDs, archived.ID) {
