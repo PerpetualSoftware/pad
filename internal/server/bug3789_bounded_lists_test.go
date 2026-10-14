@@ -361,3 +361,38 @@ func TestBUG3789_TiesComeBackInIDOrder(t *testing.T) {
 		}
 	}
 }
+
+// Lead check (#2153): an offset past the end is an empty page that serialises
+// as [] (not null), with has-more false, on both bare-array lists.
+func TestBUG3789_AnOffsetPastTheEndIsAnEmptyArray(t *testing.T) {
+	srv := testServer(t)
+	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "End 3789"}, ownerCookie)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+	owner, _ := srv.store.GetUserByEmail("owner@test.com")
+	tasks, _ := srv.store.GetCollectionBySlug(ws.ID, "tasks")
+	parent, _ := srv.store.CreateItem(ws.ID, tasks.ID, models.ItemCreate{Title: "Parent"})
+	child, _ := srv.store.CreateItem(ws.ID, tasks.ID, models.ItemCreate{Title: "Child"})
+	if _, err := srv.store.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: parent.ID, LinkType: "parent"}, child.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.StarItem(owner.ID, child.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/api/v1/workspaces/" + ws.Slug + "/starred?offset=5",
+		"/api/v1/workspaces/" + ws.Slug + "/items/" + parent.Slug + "/children?offset=5",
+	} {
+		p := bug3789Get(t, srv, path, ownerCookie)
+		if body := string(p.rawBody); body != "[]\n" && body != "[]" {
+			t.Fatalf("%s: body %q, want []", path, body)
+		}
+		if p.more != "false" || p.next != "" {
+			t.Fatalf("%s: has-more %q next %q", path, p.more, p.next)
+		}
+	}
+}
