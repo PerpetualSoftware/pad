@@ -971,6 +971,29 @@ describe('the collection page searches every match, not the first 200 (BUG-3710)
 		expect(shown(), 'the overtaken walk overwrote the newer result').toEqual(['i1']);
 	});
 
+	it('a walk overtaken by a newer run does not clear its results when its page fails', async () => {
+		const onSearchChange = await searchBox();
+		let failOld!: (e: unknown) => void;
+		vi.mocked(api.search).mockReset();
+		vi.mocked(api.search)
+			.mockImplementationOnce(() => new Promise((_, r) => (failOld = r)) as never)
+			.mockResolvedValueOnce({ results: [{ item: { id: 'i1' } }], total: 1 } as never);
+		vi.useFakeTimers();
+		onSearchChange('body:foo');
+		await vi.advanceTimersByTimeAsync(250);
+		onSearchChange('body:foo ');
+		await vi.advanceTimersByTimeAsync(250);
+		const shown = () =>
+			((stubProps().find((p) => Array.isArray((p as Record<string, unknown>).items)) as Record<string, unknown> | undefined)
+				?.items as Array<{ id: string }> | undefined)?.map((i) => i.id);
+		expect(shown(), 'premise: the newer walk committed').toEqual(['i1']);
+		failOld(new Error('network'));
+		await vi.advanceTimersByTimeAsync(10);
+		// A cleared rank map falls back to the substring scan, which "body:foo"
+		// does not match on the row's title, so a clear shows up as no items.
+		expect(shown(), 'the overtaken walk cleared the newer result').toEqual(['i1']);
+	});
+
 	it('the local search is not capped', async () => {
 		const spy = vi.spyOn(localSearch, 'search');
 		try {

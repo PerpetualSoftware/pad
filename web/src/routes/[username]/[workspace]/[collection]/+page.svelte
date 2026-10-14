@@ -2190,13 +2190,10 @@
 					}
 					searchResultRank = new Map(ranked.map((id, i) => [id, i]));
 				} catch {
-					if (
-						identityHeld(epochAtSchedule) &&
-						searchQuery.trim() === snapshotQuery &&
-						wsSlug === snapshotWs &&
-						collSlug === snapshotColl &&
-						(showArchived || parsedSearch.archived) === snapshotArchived
-					) {
+					// The same fence as the success arm, including the timer:
+					// an overtaken walk whose page fails must not clear the
+					// newer run's results (BUG-3710, codex r2).
+					if (identityHeld(epochAtSchedule) && !moved()) {
 						searchResultRank = null;
 					}
 				}
