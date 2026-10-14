@@ -269,12 +269,21 @@ func (s *CredentialStore) saveLocked(path string) error {
 // FIFO) is neither chmodded nor truncated, as O_TRUNC leaves it, and the
 // sync is best effort since os.WriteFile never synced: a target os.WriteFile
 // could write stays writable (final review round, both hunters).
+//
+// A failed stat fails the write before anything is written (BUG-3810): it
+// cannot say whether the target is a regular file to truncate, and writing
+// a shorter body without the truncate would leave the old tail behind.
 func writeFileInPlace0600(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		return err
 	}
-	if fi, err := f.Stat(); err == nil && fi.Mode().IsRegular() {
+	fi, err := statOpenFile(f)
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	if fi.Mode().IsRegular() {
 		_ = f.Chmod(0600)
 		if err := f.Truncate(0); err != nil {
 			_ = f.Close()
@@ -288,6 +297,9 @@ func writeFileInPlace0600(path string, data []byte) error {
 	_ = f.Sync()
 	return f.Close()
 }
+
+// statOpenFile is f.Stat, a variable so a test can fail it (BUG-3810).
+var statOpenFile = (*os.File).Stat
 
 // credentialsLockWarning is where a write that could not take the lock says
 // so; a variable so a test can read it.
