@@ -492,6 +492,13 @@ func (s *Server) destroyReplacedSessions(r *http.Request) {
 // requests with different emails could each pass validation and end up
 // creating two admins from one token.
 func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	// Bootstrap signs the browser into the admin it creates, and is
+	// CSRF-exempt. On a fresh instance a cross-site form from a browser that
+	// can reach it (loopback, the LAN in open-bootstrap mode) could plant the
+	// attacker's admin and sign the visitor in (BUG-3680).
+	if s.refuseCrossSiteSignIn(w, r) {
+		return
+	}
 	s.bootstrapMu.Lock()
 	defer s.bootstrapMu.Unlock()
 
@@ -648,6 +655,13 @@ func (s *Server) rollbackSignup(userID string) error {
 // Registration is restricted to admins or users with a valid invitation code
 // so invitees can create an account via the /join/[code] flow.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	// An anonymous signup signs the browser into the new account, and the
+	// path is CSRF-exempt without a session: refuse a cross-site form, as
+	// login does, or a form could sign a visitor into an account the attacker
+	// made (BUG-3680).
+	if s.refuseCrossSiteSignIn(w, r) {
+		return
+	}
 	var input struct {
 		Email          string `json:"email"`
 		Username       string `json:"username"`
@@ -1831,6 +1845,11 @@ func (s *Server) handleLocalReset(w http.ResponseWriter, r *http.Request) {
 
 // handleResetPassword validates a reset token and sets a new password.
 func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	// A completed reset signs the browser in (below), so it is a sign-in
+	// door, CSRF-exempt like login: refuse a cross-site form (BUG-3680).
+	if s.refuseCrossSiteSignIn(w, r) {
+		return
+	}
 	var input struct {
 		Token    string `json:"token"`
 		Password string `json:"password"`
