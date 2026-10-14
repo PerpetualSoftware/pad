@@ -345,6 +345,63 @@ type accountExportHooks struct {
 	timeout         time.Duration
 	listCollections func(wsID string) ([]models.Collection, error)
 	listItems       func(wsID string, p models.ItemListParams) ([]models.Item, error)
+	// BUG-3659: the reads that ran outside the deadline.
+	listWorkspaces  func(userID string) ([]models.Workspace, error)
+	visibleColls    func(r *http.Request, wsID string) ([]string, error)
+	itemAttribution func(itemIDs []string) (map[string]store.AppAttribution, error)
+}
+
+func (s *Server) accountExportListWorkspaces(userID string) ([]models.Workspace, error) {
+	if f := s.accountExportHooks.listWorkspaces; f != nil {
+		return f(userID)
+	}
+	return s.store.GetUserWorkspaces(userID)
+}
+
+func (s *Server) accountExportVisibleCollections(r *http.Request, wsID string) ([]string, error) {
+	if f := s.accountExportHooks.visibleColls; f != nil {
+		return f(r, wsID)
+	}
+	return s.visibleCollectionIDs(r, wsID)
+}
+
+// accountExportHydrateAttribution is hydrateItemsAppAttribution with its
+// error returned rather than logged: an export that silently left the
+// attribution off would read as complete (BUG-3659, the BUG-3626 rule).
+func (s *Server) accountExportHydrateAttribution(items []models.Item) error {
+	if len(items) == 0 {
+		return nil
+	}
+	ids := make([]string, len(items))
+	for i := range items {
+		ids[i] = items[i].ID
+	}
+	read := s.store.ItemsCreatedViaApp
+	if f := s.accountExportHooks.itemAttribution; f != nil {
+		read = f
+	}
+	attr, err := read(ids)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		if a, ok := attr[items[i].ID]; ok {
+			items[i].ViaApp, items[i].ViaAppName = a.InstallID, a.Name
+		}
+	}
+	return nil
+}
+
+// refuseAccountExportBeforeBody answers an export that cannot start: no byte
+// of the body has gone out, so a status is still possible. A timeout is 503
+// unavailable; anything else is the usual 500.
+func refuseAccountExportBeforeBody(w http.ResponseWriter, userID, what string, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		slog.Error("account export timed out before the body started", "user_id", userID, "while", what, "error", err)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "The account export timed out before it could start; try again")
+		return
+	}
+	writeInternalError(w, err)
 }
 
 func (s *Server) accountExportDeadline() time.Duration {
@@ -424,10 +481,15 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.accountExportDeadline())
 	defer cancel()
 
-	// Prefetch workspace list (small) before starting the streaming response
-	workspaces, err := s.store.GetUserWorkspaces(user.ID)
+	// Prefetch workspace list (small) before starting the streaming response.
+	// Every read from here on runs inside the deadline (BUG-3659): these
+	// first ones used to run outside it, so a read held by a lock kept the
+	// request open with nothing bounding it.
+	workspaces, err := withinExportDeadline(ctx, func() ([]models.Workspace, error) {
+		return s.accountExportListWorkspaces(user.ID)
+	})
 	if err != nil {
-		writeInternalError(w, err)
+		refuseAccountExportBeforeBody(w, user.ID, "listing workspaces", err)
 		return
 	}
 
@@ -445,9 +507,11 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 		if ws.OwnerID != user.ID {
 			continue
 		}
-		visibleIDs, err := s.visibleCollectionIDs(r, ws.ID)
+		visibleIDs, err := withinExportDeadline(ctx, func() ([]string, error) {
+			return s.accountExportVisibleCollections(r, ws.ID)
+		})
 		if err != nil {
-			writeInternalError(w, err)
+			refuseAccountExportBeforeBody(w, user.ID, "checking access to "+ws.Slug, err)
 			return
 		}
 		if visibleIDs != nil {
@@ -520,7 +584,13 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				abortAccountExport(user.ID, "listing items of "+ws.Slug, err)
 			}
-			s.hydrateItemsAppAttribution(items) // SPEC-6 U9c
+			// SPEC-6 U9c. Inside the deadline, and a failure aborts the
+			// export rather than shipping items without it (BUG-3659).
+			if _, err := withinExportDeadline(ctx, func() (struct{}, error) {
+				return struct{}{}, s.accountExportHydrateAttribution(items)
+			}); err != nil {
+				abortAccountExport(user.ID, "reading app attribution for "+ws.Slug, err)
+			}
 			wsData["items"] = items
 		}
 
