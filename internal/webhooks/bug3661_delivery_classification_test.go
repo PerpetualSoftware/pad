@@ -134,3 +134,17 @@ func TestBUG3662_CheckRedirectNamesTheRefusal(t *testing.T) {
 		t.Errorf("checkRedirect = %v, want errRedirectRejected", err)
 	}
 }
+
+// Codex r1: the dial-time screen's refusal is the policy's too. Validation
+// sees a public answer (the stub), then the dialer resolves the name itself
+// to loopback, as a DNS rebind would; the screen refuses the dial, and that
+// is permanent, not a network error to retry.
+func TestBUG3661_DialTimeBlockIsPermanent(t *testing.T) {
+	d := NewDispatcher(newMockStore(nil))
+	d.SkipSSRF = false
+	stubWebhookLookup(t, func(string) ([]net.IP, error) { return []net.IP{net.ParseIP("93.184.216.34")}, nil })
+	hook := models.Webhook{ID: "h", WorkspaceID: "ws", URL: "http://localhost:1/hook"}
+	if got := d.attemptDeliver(hook, []byte("{}")); got != deliveryPermanent {
+		t.Errorf("a dial the screen refused: result %v, want permanent", got)
+	}
+}
