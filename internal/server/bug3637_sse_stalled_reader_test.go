@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -130,4 +131,86 @@ func TestWatchEvents_BUG3637_StalledReaderReleasesItsSlot(t *testing.T) {
 
 	openStalledStream(t, ts, "/api/v1/events/stream", http.Header{"Authorization": {"Bearer " + tok.Token}})
 	assertSlotReleased(t, srv)
+}
+
+// deadlineRecorder is an httptest.ResponseRecorder that accepts write
+// deadlines, for tests that stream into a recorder. A plain recorder does not,
+// and the event streams refuse such a writer.
+type deadlineRecorder struct{ *httptest.ResponseRecorder }
+
+func newDeadlineRecorder() *deadlineRecorder {
+	return &deadlineRecorder{httptest.NewRecorder()}
+}
+
+func (deadlineRecorder) SetWriteDeadline(time.Time) error { return nil }
+
+// A writer that cannot take a write deadline is refused before anything is
+// streamed or subscribed: the frames could not be bounded (codex r1 High).
+// httptest.ResponseRecorder is that writer: it is a Flusher with no deadline.
+func TestSSE_BUG3637_WriterWithoutDeadlineIsRefused(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithEvents(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	slug := createTestWorkspace(t, ts.URL, "NoDeadline")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace="+slug, nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%q", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "event: connected") {
+		t.Errorf("a refused stream wrote a connected event; body=%q", rr.Body.String())
+	}
+	if n := srv.events.SubscriberCount(); n != 0 {
+		t.Errorf("SubscriberCount = %d after a refusal, want 0", n)
+	}
+	if held := srv.admission().heldTotal(); held != 0 {
+		t.Errorf("admission slots held after a refusal = %d, want 0", held)
+	}
+
+	// Control: the same request through a writer that takes a deadline
+	// streams, so the 500 above is the deadline check and not the request.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+	rec := newDeadlineRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/events?workspace="+slug, nil).WithContext(ctx2))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "event: connected") {
+		t.Errorf("control: status %d, body %q; want 200 with a connected event", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWatchEvents_BUG3637_WriterWithoutDeadlineIsRefused(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	_, _, tok, _ := setupWatchTestUser(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events/stream", nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%q", rr.Code, rr.Body.String())
+	}
+	if held := srv.admission().heldTotal(); held != 0 {
+		t.Errorf("admission slots held after a refusal = %d, want 0", held)
+	}
+
+	// Control, as above.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/events/stream", nil).WithContext(ctx2)
+	req2.Header.Set("Authorization", "Bearer "+tok.Token)
+	rec := newDeadlineRecorder()
+	srv.ServeHTTP(rec, req2)
+	if rec.Code != http.StatusOK {
+		t.Errorf("control: status %d, body %q; want 200", rec.Code, rec.Body.String())
+	}
 }

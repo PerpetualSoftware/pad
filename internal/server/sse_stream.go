@@ -2,7 +2,7 @@ package server
 
 import (
 	"errors"
-	"log/slog"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -33,10 +33,6 @@ type sseStream struct {
 	mu   sync.Mutex
 	err  error
 	dead chan struct{}
-
-	// noDeadline is set once SetWriteDeadline has reported it cannot work on
-	// this writer, so the warning is logged once per stream, not per frame.
-	noDeadline bool
 }
 
 // sseFrameWriteTimeout is sseWriteTimeout, or a test's override.
@@ -47,13 +43,27 @@ func (s *Server) sseFrameWriteTimeout() time.Duration {
 	return sseWriteTimeout
 }
 
-func newSSEStream(w http.ResponseWriter, timeout time.Duration) *sseStream {
+// errSSENoWriteDeadline is openSSEStream's refusal: the writer cannot take a
+// write deadline, so nothing could bound a frame.
+var errSSENoWriteDeadline = errors.New("event stream: the response writer does not support write deadlines")
+
+// openSSEStream wraps w, or refuses when w cannot take a write deadline. It
+// FAILS CLOSED (codex r1 High): streaming without the deadline is the pinned
+// handler this type exists to prevent, so a writer that cannot be bounded is
+// not streamed to at all. The probe clears any deadline, which is the state
+// net/http leaves a connection in when it has no WriteTimeout. net/http's own
+// HTTP/1 and HTTP/2 writers support it; a wrapper without Unwrap does not.
+func openSSEStream(w http.ResponseWriter, timeout time.Duration) (*sseStream, error) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		return nil, fmt.Errorf("%w: %w", errSSENoWriteDeadline, err)
+	}
 	return &sseStream{
 		ResponseWriter: w,
-		rc:             http.NewResponseController(w),
+		rc:             rc,
 		timeout:        timeout,
 		dead:           make(chan struct{}),
-	}
+	}, nil
 }
 
 // Unwrap lets http.ResponseController and middleware see the writer beneath.
@@ -73,7 +83,9 @@ func (s *sseStream) Write(p []byte) (int, error) {
 	if err := s.Err(); err != nil {
 		return 0, err
 	}
-	s.arm()
+	if err := s.arm(); err != nil {
+		return 0, err
+	}
 	n, err := s.ResponseWriter.Write(p)
 	if err != nil {
 		s.fail(err)
@@ -87,24 +99,22 @@ func (s *sseStream) Flush() {
 	if s.Err() != nil {
 		return
 	}
-	s.arm()
+	if s.arm() != nil {
+		return
+	}
 	if err := s.rc.Flush(); err != nil {
 		s.fail(err)
 	}
 }
 
-func (s *sseStream) arm() {
-	if s.noDeadline {
-		return
-	}
+// arm sets a fresh deadline for the write about to happen. A failure here
+// fails the stream: the write would otherwise be unbounded.
+func (s *sseStream) arm() error {
 	if err := s.rc.SetWriteDeadline(time.Now().Add(s.timeout)); err != nil {
-		s.noDeadline = true
-		if errors.Is(err, http.ErrNotSupported) {
-			slog.Warn("SSE: write deadline not supported by this ResponseWriter; a stalled reader can pin the stream")
-		} else {
-			slog.Warn("SSE: set write deadline failed", "error", err)
-		}
+		s.fail(err)
+		return err
 	}
+	return nil
 }
 
 func (s *sseStream) fail(err error) {
