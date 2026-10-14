@@ -659,14 +659,22 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		// share page renders items in the order they arrive, because the public
 		// payload carries no sort columns. ListItems' default (pinned, then
 		// updated_at DESC) reshuffled a shared collection on every edit.
+		// Bounded and paged (BUG-3792): an anonymous reader used to get every
+		// item with its body in one response. The order ends on the id, so
+		// offset pages neither repeat nor skip rows.
+		limit, offset := parseListWindow(r)
 		items, err := s.store.ListItems(link.WorkspaceID, models.ItemListParams{
 			ScopeCollectionID: coll.ID,
 			Sort:              "sort_order:asc,created_at:asc,_id:asc",
+			Limit:             limit + 1,
+			Offset:            offset,
 		})
 		if err != nil {
 			writeInternalError(w, err)
 			return
 		}
+		hasMore := len(items) > limit
+		items = setListWindowHeaders(w, items, limit, offset)
 		// Build public item list with only safe fields. content is the
 		// item's markdown body, included so the public viewer can render an
 		// inline read-only row expand (TASK-1678 / TASK-1684) without a
@@ -758,7 +766,11 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			"type":       "collection",
 			"collection": publicCollection,
 			"items":      publicItems,
-			"permission": "view",
+			// The page's place in the list (BUG-3792); the viewer asks again
+			// with ?offset=next_offset until has_more is false.
+			"has_more":    hasMore,
+			"next_offset": offset + len(items),
+			"permission":  "view",
 			"share_link": map[string]interface{}{
 				"target_type": link.TargetType,
 			},

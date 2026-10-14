@@ -339,7 +339,7 @@
             "type": "string"
           },
           "limit": {
-            "description": "Maximum results. Optional for: list, backlinks, history. Each defaults to 50, max 300. For history the window is the NEWEST N versions.",
+            "description": "Maximum results. Optional for: list, backlinks, history. Each defaults to 50, max 300. For history the window is the NEWEST N versions. starred takes no limit: it returns at most 300, most recently starred first, with has_more when more exist.",
             "type": "number"
           },
           "lines": {

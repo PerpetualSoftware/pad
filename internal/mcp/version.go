@@ -1738,6 +1738,16 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.99 — BUG-3790, starred truncation. ADDITIVE bump on the v0.53
+//     grounds: `pad_item.action=starred` returns at most 300 items, most
+//     recently starred first, and when more exist says `has_more: true`
+//     on the structured result plus the same truncation note as list. It
+//     never pages (lead ruling, as for list). Both transports ask for one
+//     row past the cap: remote as GET /starred?limit=301, stdio as
+//     `pad item starred --limit 301` (a new CLI flag; without it the CLI
+//     walks every page). Starred used to return everything. The `limit`
+//     param's description names starred; no name, enum or param moved.
+//
 //     0.98 — BUG-3704, item list truncation. ADDITIVE bump on the v0.53
 //     grounds: `pad_item.action=list` asks for one row past its limit and,
 //     when that row comes back, returns `limit` rows with `has_more: true`
@@ -2177,7 +2187,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.98"
+const ToolSurfaceVersion = "0.99"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

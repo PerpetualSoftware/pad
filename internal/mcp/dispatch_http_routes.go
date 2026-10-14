@@ -783,9 +783,17 @@ func mapItemStarred(input map[string]any) (string, string, []byte, error) {
 	if workspace == "" {
 		return "", "", nil, errWorkspaceRequired
 	}
-	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/starred"
+	q := url.Values{}
 	if all, _ := input["all"].(bool); all {
-		urlPath += "?include_terminal=true"
+		q.Set("include_terminal", "true")
+	}
+	// actionItemStarred always sets it, one past the MCP cap (BUG-3790).
+	if n, ok := numericInput(input["limit"]); ok && int(n) > 0 {
+		q.Set("limit", strconv.Itoa(int(n)))
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/starred"
+	if len(q) > 0 {
+		urlPath += "?" + q.Encode()
 	}
 	return http.MethodGet, urlPath, nil, nil
 }

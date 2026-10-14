@@ -623,14 +623,49 @@ func (c *Client) UnstarItem(wsSlug, itemSlug string) error {
 	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/star")
 }
 
-// ListStarredItems returns the current user's starred items in a workspace.
-func (c *Client) ListStarredItems(wsSlug string, includeTerminal bool) ([]models.Item, error) {
-	var result []models.Item
-	path := "/workspaces/" + url.PathEscape(wsSlug) + "/starred"
+// ListStarredItemsPage returns at most limit of the current user's starred
+// items, from the start of the list, and whether more exist (BUG-3790: MCP
+// asks for one row past its cap and states the truncation; it never pages).
+func (c *Client) ListStarredItemsPage(wsSlug string, includeTerminal bool, limit int) ([]models.Item, ItemListPage, error) {
+	q := url.Values{}
 	if includeTerminal {
-		path += "?include_terminal=true"
+		q.Set("include_terminal", "true")
 	}
-	return result, c.get(path, &result)
+	q.Set("limit", strconv.Itoa(limit))
+	var page []models.Item
+	h, err := c.getWithHeader("/workspaces/"+url.PathEscape(wsSlug)+"/starred?"+q.Encode(), &page)
+	return page, itemListPage(h), err
+}
+
+// ListStarredItems returns the current user's starred items in a workspace,
+// following the server's next-offset until has-more is false (BUG-3790: the
+// list is bounded per page).
+func (c *Client) ListStarredItems(wsSlug string, includeTerminal bool) ([]models.Item, error) {
+	q := url.Values{}
+	if includeTerminal {
+		q.Set("include_terminal", "true")
+	}
+	var all []models.Item
+	for offset := 0; ; {
+		if offset > 0 {
+			q.Set("offset", strconv.Itoa(offset))
+		}
+		var page []models.Item
+		path := "/workspaces/" + url.PathEscape(wsSlug) + "/starred"
+		if len(q) > 0 {
+			path += "?" + q.Encode()
+		}
+		h, err := c.getWithHeader(path, &page)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		p := itemListPage(h)
+		if !p.HasMore || p.NextOffset <= offset {
+			return all, nil
+		}
+		offset = p.NextOffset
+	}
 }
 
 // CreateWatch creates (or replaces the predicate on) a durable watch for

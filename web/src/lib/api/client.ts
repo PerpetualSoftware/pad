@@ -111,6 +111,8 @@ import { runSessionExpiryKeepers } from '$lib/stores/sessionExpiryKeep';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
 import { walkChanges, type ChangesPageQuery } from './changesWalk';
+import { walkSharePages, type SharePage } from './shareWalk';
+import { walkOffsetPages } from './listWalk';
 import { uploadImportBundle } from './importUpload';
 import { reserveKeepalive } from './keepaliveBudget';
 
@@ -2220,17 +2222,19 @@ export const api = {
 				})}`
 			),
 
-		/** Get child items linked to a parent item */
+		/** Get EVERY child item linked to a parent item, walking the bounded
+		 *  pages (BUG-3789). */
 		children: (ws: string, slug: string) =>
-			request<Item[]>(`/workspaces/${ws}/items/${slug}/children`),
+			walkOffsetPages((limit, offset) =>
+				request<Item[]>(`/workspaces/${ws}/items/${slug}/children${qs({ limit, offset })}`)
+			),
 
 		/** Get completion progress for an item's children */
 		progress: (ws: string, slug: string) =>
 			request<{total: number; done: number; percentage: number}>(`/workspaces/${ws}/items/${slug}/progress`),
 
 		/** @deprecated Use children() */
-		tasks: (ws: string, slug: string) =>
-			request<Item[]>(`/workspaces/${ws}/items/${slug}/children`),
+		tasks: (ws: string, slug: string) => api.items.children(ws, slug),
 
 		/** @deprecated Use progress() per-item instead */
 		plansProgress: (ws: string) =>
@@ -2308,7 +2312,9 @@ export const api = {
 		/** List all starred items in a workspace for the current user, most
 		 *  recently starred first. `summary` leaves out each body (TASK-2231). */
 		starred: (ws: string, params?: {include_terminal?: boolean; summary?: boolean}) =>
-			request<Item[]>(`/workspaces/${ws}/starred${qs(params)}`),
+			walkOffsetPages((limit, offset) =>
+				request<Item[]>(`/workspaces/${ws}/starred${qs({ ...params, limit, offset })}`)
+			),
 
 		/**
 		 * Push an instruction about this item to the caller's OWN agent
@@ -2925,19 +2931,24 @@ export const api = {
 	// ── Public Share (no auth) ──────────────────────────────────────────────
 
 	share: {
-		get: (token: string, password?: string): Promise<SharePayload> => {
+		/** A shared item, or EVERY page of a shared collection (BUG-3792). */
+		get: (token: string, password?: string): Promise<SharePayload> =>
+			walkSharePages((offset) => api.share.page(token, password, offset)),
+		/** One page of a share link; a collection's items start at `offset`. */
+		page: (token: string, password?: string, offset = 0): Promise<SharePage> => {
 			const headers: Record<string, string> = {};
 			if (password) headers['X-Share-Password'] = password;
+			const qs = offset > 0 ? `?offset=${offset}` : '';
 			// Under the API deadline (BUG-3216). A GET, so a timeout is idempotent.
 			return withRequestDeadline(
 				async (signal) => {
-					const resp = await fetch(`${BASE}/s/${token}`, { credentials: 'same-origin', headers, signal });
+					const resp = await fetch(`${BASE}/s/${token}${qs}`, { credentials: 'same-origin', headers, signal });
 					if (!resp.ok) {
 						const body = await resp.json().catch(() => null);
 						if (body?.error) throw new PadApiError(body.error);
 						throw new Error(`API error: ${resp.status}`);
 					}
-					return (await resp.json()) as SharePayload;
+					return (await resp.json()) as SharePage;
 				},
 				{ idempotent: true }
 			);

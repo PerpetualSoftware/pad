@@ -94,8 +94,25 @@ func (s *Store) AreItemsStarred(userID string, itemIDs []string) (map[string]boo
 // collection and assignment info. Only non-deleted items are returned.
 // If includeTerminal is false, items in terminal statuses are excluded.
 func (s *Store) ListStarredItems(userID, workspaceID string, includeTerminal bool) ([]models.Item, error) {
+	return s.listStarredItems(userID, workspaceID, includeTerminal, true)
+}
+
+// ListStarredItemsWithoutBodies is ListStarredItems with every body (and its
+// content_state) left empty (BUG-3790): the starred door windows the list after
+// filtering it, and loads bodies only for the page it returns (ItemBodies).
+func (s *Store) ListStarredItemsWithoutBodies(userID, workspaceID string, includeTerminal bool) ([]models.Item, error) {
+	return s.listStarredItems(userID, workspaceID, includeTerminal, false)
+}
+
+func (s *Store) listStarredItems(userID, workspaceID string, includeTerminal, withBodies bool) ([]models.Item, error) {
+	// No content_state beside an empty body: it would describe content this
+	// query does not return (BUG-3000).
+	bodyCols := "'', ''"
+	if withBodies {
+		bodyCols = "i.content, " + contentStateSQL
+	}
 	query := `
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, ` + bodyCols + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -110,7 +127,7 @@ func (s *Store) ListStarredItems(userID, workspaceID string, includeTerminal boo
 		WHERE s.user_id = ?
 		  AND i.workspace_id = ?
 		  AND i.deleted_at IS NULL
-		ORDER BY s.created_at DESC
+		ORDER BY s.created_at DESC, i.id ASC
 	`
 
 	rows, err := s.db.Query(s.q(query), userID, workspaceID)
@@ -233,4 +250,37 @@ func (s *Store) DeleteStarsForItem(itemID string) error {
 		return fmt.Errorf("delete stars for item: %w", err)
 	}
 	return nil
+}
+
+// ItemBody is one item's body and its content_state.
+type ItemBody struct {
+	Content      string
+	ContentState string
+}
+
+// ItemBodies loads the body and content_state of the given items, keyed by id
+// (BUG-3790: a door that windows a body-less list fills in only its page).
+func (s *Store) ItemBodies(ids []string) (map[string]ItemBody, error) {
+	out := make(map[string]ItemBody, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := s.db.Query(s.q(`SELECT i.id, i.content, `+contentStateSQL+` FROM items i WHERE i.id IN (`+placeholders(len(ids))+`)`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("item bodies: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var b ItemBody
+		if err := rows.Scan(&id, &b.Content, &b.ContentState); err != nil {
+			return nil, fmt.Errorf("item bodies: %w", err)
+		}
+		out[id] = b
+	}
+	return out, rows.Err()
 }
