@@ -590,7 +590,7 @@ func TestTask3401_ACrossItemParentProjectsToNull(t *testing.T) {
 // the ceiling reaches it. A new caller fails until it is reviewed.
 func TestTask3401_EveryVisibilityCallerIsCeilinged(t *testing.T) {
 	reviewed := map[string]string{
-		"server.go::visibleCollectionIDs":               "applies the request's app ceiling; the store ceilings a bot",
+		"server.go::visibleCollectionIDsQ":              "applies the request's app ceiling; the store ceilings a bot. Reached by visibleCollectionIDs and by the account export's snapshot re-check (BUG-3659, which pins the ceiling there)",
 		"server.go::checkItemVisibleQ":                  "reached from app routes only through requireItemVisible, which checks the app ceiling first; the store ceilings a bot",
 		"handlers_me.go::handleGetMe":                   "not an app route (TokenAuth refuses an app token); the store ceilings a bot",
 		"handlers_reports.go::reportVisibleCollections": "not an app route; the store ceilings a bot",

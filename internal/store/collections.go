@@ -451,7 +451,14 @@ func (s *Store) ListTraitedCollectionsQ(q Queryer, workspaceID string) ([]collec
 }
 
 func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.ListCollectionsQ(s.db, workspaceID)
+}
+
+// ListCollectionsQ is ListCollections on a caller-supplied executor, so it can
+// read inside a snapshot transaction (BUG-3659: the account export reads a
+// workspace's collections and items from one snapshot).
+func (s *Store) ListCollectionsQ(q Queryer, workspaceID string) ([]models.Collection, error) {
+	rows, err := q.Query(s.q(`
 		SELECT c.id, c.workspace_id, c.name, c.slug, c.prefix, c.icon, c.description,
 		       c.schema, c.settings, c.traits, c.sort_order, c.is_default, c.is_system, c.created_at, c.updated_at,
 		       COUNT(i.id) as item_count
@@ -505,7 +512,7 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 		doneKey, termPlaceholders, termArgs := models.TerminalPlaceholdersForDoneField(schema, settings)
 		jsonExtractDone := s.dialect.JSONFieldText("i.fields", doneKey)
 		args := append([]any{c.ID}, termArgs...)
-		err := s.db.QueryRow(s.q(fmt.Sprintf(`
+		err := q.QueryRow(s.q(fmt.Sprintf(`
 			SELECT COUNT(*) FROM items i
 			WHERE i.collection_id = ? AND i.deleted_at IS NULL
 			AND LOWER(COALESCE(%s, '')) NOT IN (%s)

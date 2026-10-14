@@ -3232,11 +3232,18 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 			return nil, err
 		}
 	}
+	return s.visibleCollectionIDsQ(r, s.store.Q(), workspaceID)
+}
+
+// visibleCollectionIDsQ is visibleCollectionIDs read on a caller-supplied
+// executor, without the fault seam (BUG-3659: the account export re-checks
+// access inside the snapshot it reads the workspace from).
+func (s *Server) visibleCollectionIDsQ(r *http.Request, q store.Queryer, workspaceID string) ([]string, error) {
 	user := currentUser(r)
 	if user == nil || (user.Role == "admin" && !isBearerAuth(r)) {
 		return nil, nil // No filtering for admins (cookie session) or unauthenticated
 	}
-	ids, err := s.store.VisibleCollectionIDs(workspaceID, user.ID)
+	ids, err := s.store.VisibleCollectionIDsQ(q, workspaceID, user.ID)
 	if err != nil {
 		return nil, err
 	}
