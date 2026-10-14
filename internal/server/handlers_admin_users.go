@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -432,10 +433,10 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// SetUserRole atomically guards against demoting the last admin.
+		// SetUserRole refuses to demote the last active admin (BUG-3811).
 		if err := s.store.SetUserRole(userID, *input.Role); err != nil {
-			if err == store.ErrLastAdmin {
-				writeError(w, http.StatusBadRequest, "bad_request", "Cannot demote the last admin")
+			if errors.Is(err, store.ErrLastAdmin) {
+				writeLastActiveAdmin(w)
 				return
 			}
 			writeInternalError(w, err)
@@ -666,6 +667,10 @@ func (s *Server) handleAdminDisableUser(w http.ResponseWriter, r *http.Request) 
 	// PAT or an MCP grant kept working after a disable. Idempotent, so a
 	// retry after a failure redoes all of it.
 	if err := s.store.DisableUserAndRevokeAccess(userID); err != nil {
+		if errors.Is(err, store.ErrLastAdmin) {
+			writeLastActiveAdmin(w)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -940,4 +945,12 @@ func (s *Server) adminRefuseAppPrincipal(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// writeLastActiveAdmin answers a demotion, disable or account deletion that
+// would leave the instance with no active human admin (BUG-3811). One code
+// for all three doors.
+func writeLastActiveAdmin(w http.ResponseWriter) {
+	writeError(w, http.StatusConflict, "last_active_admin",
+		"The instance must keep at least one active admin. Make another user an admin first.")
 }

@@ -189,6 +189,18 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The sole active admin cannot delete their account (BUG-3811). Asked
+	// here, before the Stripe cancel below, which cannot be undone; the
+	// deletion's transaction asks again under the lock.
+	if err := s.store.CheckActiveAdminLoss(user.ID); err != nil {
+		if errors.Is(err, store.ErrLastAdmin) {
+			writeLastActiveAdmin(w)
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+
 	// Owned workspaces, sessions and the user are deleted atomically below.
 	// The owned set is read INSIDE that transaction, under the user-row lock
 	// (BUG-3099): read here, before the Stripe cancel, a workspace minted in
@@ -264,6 +276,10 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// from the rows the transaction deleted, so a grant created after any
 	// earlier read cannot be missed (codex r2 on PR2), and kicked below.
 	issuedGrantWorkspaces, err := s.store.DeleteAccountAtomicReport(user.ID)
+	if errors.Is(err, store.ErrLastAdmin) && !stripeWasCancelled {
+		writeLastActiveAdmin(w)
+		return
+	}
 	if err != nil {
 		// Cross-system danger zone: if Stripe was already cancelled, the
 		// user's billing is gone but their account data is still present.

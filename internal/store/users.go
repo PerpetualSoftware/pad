@@ -823,8 +823,48 @@ func (s *Store) RemoveOAuthProvider(userID, provider string) error {
 	return tx.Commit()
 }
 
-// ErrLastAdmin is returned when a role change would leave zero admins.
-var ErrLastAdmin = fmt.Errorf("cannot demote the last admin")
+// ErrLastAdmin refuses a demotion, disable or account deletion that would
+// leave the instance with no ACTIVE human admin (BUG-3811). A disabled admin
+// does not count: they cannot sign in to recover anything.
+var ErrLastAdmin = fmt.Errorf("the instance must keep at least one active admin")
+
+// guardActiveAdminLossTx is called inside every transaction that can take
+// userID out of the set of active human admins: a demotion, a disable, an
+// account deletion. It refuses with ErrLastAdmin when userID is an active
+// human admin and no other one exists.
+//
+// On Postgres it first takes one advisory lock that all three share, so two
+// such transactions cannot each count the other as the admin who remains
+// (BUG-3811: under READ COMMITTED two cross-demotions both committed and left
+// zero admins). Call it before taking any row lock: a transaction waiting on
+// it then holds nothing. Account deletion takes its own pad:account-deletion
+// lock first and this one second; no transaction takes them in the other
+// order. Promotion and enable do not take it: they only grow the set.
+// SQLite's BEGIN IMMEDIATE already serialises every writer.
+func (s *Store) guardActiveAdminLossTx(tx *sql.Tx, userID string) error {
+	if s.dialect.Driver() == DriverPostgres {
+		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:active-admins'))"); err != nil {
+			return fmt.Errorf("active admin guard: lock: %w", err)
+		}
+	}
+	var isActiveAdmin int
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM users
+		WHERE id = ? AND role = 'admin' AND kind = 'human' AND disabled_at IS NULL`), userID).Scan(&isActiveAdmin); err != nil {
+		return fmt.Errorf("active admin guard: read user: %w", err)
+	}
+	if isActiveAdmin == 0 {
+		return nil
+	}
+	var others int
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM users
+		WHERE role = 'admin' AND kind = 'human' AND disabled_at IS NULL AND id != ?`), userID).Scan(&others); err != nil {
+		return fmt.Errorf("active admin guard: count admins: %w", err)
+	}
+	if others == 0 {
+		return ErrLastAdmin
+	}
+	return nil
+}
 
 // AdminUserMetrics carries the windowed engagement metrics rendered by the
 // admin user modal's Overview tab (T1553). Values are intentionally a
@@ -1032,7 +1072,7 @@ func (s *Store) DisableUserAndRevokeAccess(userID string) error {
 			return fmt.Errorf("disable user: begin: %w", err)
 		}
 		defer func() { _ = tx.Rollback() }()
-		if err := s.disableUserAndRevokeAccessTx(tx, userID); err != nil {
+		if err := s.disableGuardedTx(tx, userID); err != nil {
 			return err
 		}
 		if err := s.injectedDeadlock("disable_user", &attempt); err != nil {
@@ -1043,6 +1083,17 @@ func (s *Store) DisableUserAndRevokeAccess(userID string) error {
 		}
 		return nil
 	})
+}
+
+// disableGuardedTx is DisableUserAndRevokeAccess's transaction body: the
+// active-admin guard, before any row lock (BUG-3811), then the disable. The
+// guard is not inside disableUserAndRevokeAccessTx because the app uninstall
+// calls that mid-transaction for a bot, which is never an admin.
+func (s *Store) disableGuardedTx(tx *sql.Tx, userID string) error {
+	if err := s.guardActiveAdminLossTx(tx, userID); err != nil {
+		return err
+	}
+	return s.disableUserAndRevokeAccessTx(tx, userID)
 }
 
 // disableUserAndRevokeAccessTx is DisableUserAndRevokeAccess on the caller's
@@ -1109,14 +1160,18 @@ func (s *Store) SetUserRole(userID, role string) error {
 	}
 
 	if role == "member" {
-		// Atomic guard: only demote if another admin remains.
-		result, err = s.db.Exec(s.q(`
-			UPDATE users SET role = ?, updated_at = ?
-			WHERE id = ? AND (
-				role != 'admin'
-				OR (SELECT COUNT(*) FROM users WHERE role = 'admin' AND kind = 'human' AND id != ?) > 0
-			)
-		`), role, now(), userID, userID)
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("set user role: begin: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := s.demoteGuardedTx(tx, userID); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("set user role: commit: %w", err)
+		}
+		return nil
 	} else {
 		result, err = s.db.Exec(s.q(`UPDATE users SET role = ?, updated_at = ? WHERE id = ?`),
 			role, now(), userID)
@@ -1128,6 +1183,36 @@ func (s *Store) SetUserRole(userID, role string) error {
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return ErrLastAdmin
+	}
+	return nil
+}
+
+// CheckActiveAdminLoss answers ErrLastAdmin when removing userID now would
+// leave no active human admin. It runs the same guard in a transaction it
+// rolls back, so it decides nothing: account deletion asks it BEFORE its
+// irreversible Stripe cancel, and the deletion's own transaction re-runs the
+// guard under the lock (BUG-3811).
+func (s *Store) CheckActiveAdminLoss(userID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("active admin check: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	return s.guardActiveAdminLossTx(tx, userID)
+}
+
+// demoteGuardedTx sets userID's role to member on tx, refusing with
+// ErrLastAdmin when that would leave no active human admin.
+func (s *Store) demoteGuardedTx(tx *sql.Tx, userID string) error {
+	if err := s.guardActiveAdminLossTx(tx, userID); err != nil {
+		return err
+	}
+	result, err := tx.Exec(s.q(`UPDATE users SET role = 'member', updated_at = ? WHERE id = ?`), now(), userID)
+	if err != nil {
+		return fmt.Errorf("set user role: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("set user role: user not found")
 	}
 	return nil
 }
@@ -1321,6 +1406,11 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:account-deletion'))"); err != nil {
 			return fmt.Errorf("delete account: serialise: %w", err)
 		}
+	}
+	// The sole active admin cannot delete their account (BUG-3811). Second
+	// lock, still before any row lock.
+	if err := s.guardActiveAdminLossTx(tx, userID); err != nil {
+		return err
 	}
 
 	// 0. Lock the user's row FIRST, with the lock every limited mint of a
