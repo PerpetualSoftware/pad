@@ -1911,8 +1911,8 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		}
 	}
 	for _, u := range versionUpdates {
-		if _, err := tx.Exec(s.q(`UPDATE item_versions SET content = ?, is_diff = ? WHERE id = ?`),
-			u.content, s.dialect.BoolToInt(u.isDiff), u.id); err != nil {
+		if _, err := tx.Exec(s.q(`UPDATE item_versions SET content = ?, is_diff = ?, body_sha256 = ? WHERE id = ?`),
+			u.content, s.dialect.BoolToInt(u.isDiff), nullIfEmpty(u.bodySHA256), u.id); err != nil {
 			return fmt.Errorf("update version %s: %w", u.id, err)
 		}
 	}
@@ -1930,6 +1930,10 @@ type versionRemap struct {
 	id      string
 	content string
 	isDiff  bool
+	// bodySHA256 is the row's body_sha256 after the rewrite ("" = NULL):
+	// the remapped body's hash when the old body was verified against one,
+	// otherwise the row's hash as it was (BUG-3820).
+	bodySHA256 string
 }
 
 // planVersionChainRemapTx plans the item_versions rewrite for
@@ -1978,19 +1982,19 @@ func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew
 	rechained := map[string]bool{}
 	for _, it := range items {
 		// Newest first, the order the chain resolves in (ListItemVersionsPage).
-		vrows, err := tx.Query(s.q(`SELECT id, content, is_diff FROM item_versions
+		vrows, err := tx.Query(s.q(`SELECT id, content, is_diff, COALESCE(body_sha256, '') FROM item_versions
 			WHERE item_id = ? ORDER BY created_at DESC, version_seq DESC`), it.id)
 		if err != nil {
 			return nil, nil, fmt.Errorf("scan versions of %s: %w", it.id, err)
 		}
 		type row struct {
-			id, stored, body string
-			isDiff           bool
+			id, stored, body, hash string
+			isDiff                 bool
 		}
 		var chain []row
 		for vrows.Next() {
 			var r row
-			if err := vrows.Scan(&r.id, &r.stored, &r.isDiff); err != nil {
+			if err := vrows.Scan(&r.id, &r.stored, &r.isDiff, &r.hash); err != nil {
 				vrows.Close()
 				return nil, nil, fmt.Errorf("scan version: %w", err)
 			}
@@ -2003,7 +2007,8 @@ func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew
 		vrows.Close()
 
 		// The walk ListItemVersionsResolvedPage does, so every body here is
-		// the one a reader is shown: a patch that fails to apply is skipped,
+		// the one a reader is shown: a patch that fails to apply, or whose
+		// result does not match the row's body_sha256 (BUG-3820), is skipped,
 		// and the row below it resolves against the same successor.
 		known := make([]bool, len(chain))
 		successor := it.content
@@ -2012,6 +2017,9 @@ func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew
 				chain[i].body, known[i] = chain[i].stored, true
 			} else if body, err := diff.ApplyPatch(successor, chain[i].stored); err == nil {
 				chain[i].body, known[i] = body, true
+			}
+			if known[i] && chain[i].hash != "" && versionBodySHA256(chain[i].body) != chain[i].hash {
+				chain[i].body, known[i] = "", false
 			}
 			if known[i] {
 				successor = chain[i].body
@@ -2031,7 +2039,7 @@ func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew
 				// The successors stay as they are, as in the walk above.
 				broken = true
 				if t := remapAttachmentRefs(r.stored, oldToNew); t != r.stored {
-					out = append(out, versionRemap{id: r.id, content: t, isDiff: true})
+					out = append(out, versionRemap{id: r.id, content: t, isDiff: r.isDiff, bodySHA256: r.hash})
 				}
 				continue
 			}
@@ -2043,8 +2051,15 @@ func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew
 						stored, isDiff = patch, true
 					}
 				}
-				if stored != r.stored || isDiff != r.isDiff {
-					out = append(out, versionRemap{id: r.id, content: stored, isDiff: isDiff})
+				// A hash is re-minted only for a body that was verified
+				// against one: an unhashed row's body was reconstructed, not
+				// verified, and stays unhashed (BUG-3820).
+				hash := r.hash
+				if hash != "" {
+					hash = versionBodySHA256(newBody)
+				}
+				if stored != r.stored || isDiff != r.isDiff || hash != r.hash {
+					out = append(out, versionRemap{id: r.id, content: stored, isDiff: isDiff, bodySHA256: hash})
 				}
 			}
 			oldSucc, newSucc = r.body, newBody

@@ -1598,6 +1598,15 @@ export interface Version {
 	 */
 	via_app?: string;
 	via_app_name?: string;
+	/**
+	 * Set on a resolved version the history walk could not rebuild or verify
+	 * (BUG-3815, BUG-3820). The server refuses to diff or restore it. The
+	 * reason: `patch_failed` and `hash_mismatch` serve a "[patch error: ...]"
+	 * placeholder as content; `unverified` serves a best-effort body that may
+	 * be wrong.
+	 */
+	unreconstructable?: boolean;
+	unreconstructable_reason?: 'patch_failed' | 'hash_mismatch' | 'unverified';
 }
 
 /** The change one item version row records (PLAN-2348 U2). */

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -376,11 +378,11 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		added, removed := diff.LineCounts("", input.Content)
 		_, err = tx.Exec(s.q(`
 			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
-			                           user_id, lines_added, lines_removed, is_create)
+			                           user_id, lines_added, lines_removed, is_create, body_sha256)
 			VALUES (?, ?, ?, '', ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?),
-			        ?, ?, ?, ?)
+			        ?, ?, ?, ?, ?)
 		`), vid, id, input.Content, createdBy, source, s.dialect.BoolToInt(false), ts, id,
-			versionUserID(input.ActorUserID), added, removed, s.dialect.BoolToInt(true))
+			versionUserID(input.ActorUserID), added, removed, s.dialect.BoolToInt(true), versionBodySHA256(input.Content))
 		if err != nil {
 			return fmt.Errorf("create initial version: %w", err)
 		}
@@ -3094,11 +3096,11 @@ func (s *Store) updateItemWithParentLinkOnce(
 			added, removed := diff.LineCounts(existing.Content, *newBody)
 			_, err = tx.Exec(s.q(`
 				INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
-				                           user_id, lines_added, lines_removed, is_create)
+				                           user_id, lines_added, lines_removed, is_create, body_sha256)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?),
-				        ?, ?, ?, ?)
+				        ?, ?, ?, ?, ?)
 			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, s.dialect.BoolToInt(isDiff), ts, id,
-				versionUserID(input.ActorUserID), added, removed, s.dialect.BoolToInt(false))
+				versionUserID(input.ActorUserID), added, removed, s.dialect.BoolToInt(false), versionBodySHA256(existing.Content))
 			if err != nil {
 				return nil, fmt.Errorf("create version: %w", err)
 			}
@@ -6173,14 +6175,14 @@ func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body st
 // write instead would block every edit to that item over history that is
 // already damaged.
 func (s *Store) rebaseNewestVersionPatch(tx *sql.Tx, itemID, oldBody, newBody string) error {
-	var vid, content string
+	var vid, content, bodyHash string
 	var isDiff bool
 	err := tx.QueryRow(s.q(`
-		SELECT id, content, is_diff FROM item_versions
+		SELECT id, content, is_diff, COALESCE(body_sha256, '') FROM item_versions
 		WHERE item_id = ?
 		ORDER BY created_at DESC, version_seq DESC
 		LIMIT 1
-	`), itemID).Scan(&vid, &content, &isDiff)
+	`), itemID).Scan(&vid, &content, &isDiff, &bodyHash)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -6197,6 +6199,13 @@ func (s *Store) rebaseNewestVersionPatch(tx *sql.Tx, itemID, oldBody, newBody st
 	}
 	body, err := diff.ApplyPatch(oldBody, content)
 	if err != nil {
+		return nil
+	}
+	// A patch can apply fuzzily to a base it was not made from (BUG-3820).
+	// When the row records its body's hash and this is not that body, the
+	// row was already broken: leave it, as for a patch that does not apply.
+	// The hash itself never changes here, since the row's body does not.
+	if bodyHash != "" && versionBodySHA256(body) != bodyHash {
 		return nil
 	}
 	stored, storedDiff := body, false
@@ -6281,24 +6290,67 @@ func (s *Store) ListItemVersionsResolvedPage(itemID, currentContent string, limi
 
 // resolveItemVersionChain resolves versions (newest first) in place, walking
 // from currentContent and applying reverse patches.
+//
+// diff.ApplyPatch matches fuzzily, so a patch applied to the wrong base can
+// return a wrong body with no error (BUG-3820). Every resolved body is
+// therefore checked against the row's body_sha256 where it has one, and a
+// mismatch is treated as a failed apply. A failed or mismatched row leaves
+// the walk at the newer body (BUG-3655): right when the row was a stray
+// patch, wrong when it was a real link. The walk cannot tell which, so until
+// a full-body or verified row re-anchors it, every older diff row without a
+// hash is served as "unverified" and refused for restore and diff.
 func resolveItemVersionChain(currentContent string, versions []models.Version) {
 	content := currentContent
+	broken := false
+	fail := func(v *models.Version, reason string, err error) {
+		v.Content = fmt.Sprintf(patchErrorPrefix+"%v]", err)
+		v.IsDiff = false
+		v.Unreconstructable = true
+		v.UnreconstructableReason = reason
+		broken = true
+	}
 	for i := range versions {
-		if !versions[i].IsDiff {
-			content = versions[i].Content
+		v := &versions[i]
+		if !v.IsDiff {
+			if v.BodySHA256 != "" && versionBodySHA256(v.Content) != v.BodySHA256 {
+				fail(v, "hash_mismatch", errVersionBodyMismatch)
+				continue
+			}
+			content = v.Content
+			broken = false
 			continue
 		}
-		resolved, applyErr := diff.ApplyPatch(content, versions[i].Content)
+		resolved, applyErr := diff.ApplyPatch(content, v.Content)
 		if applyErr != nil {
-			versions[i].Content = fmt.Sprintf(patchErrorPrefix+"%v]", applyErr)
-			versions[i].IsDiff = false
-			versions[i].Unreconstructable = true
+			fail(v, "patch_failed", applyErr)
 			continue
 		}
-		versions[i].Content = resolved
-		versions[i].IsDiff = false
+		switch {
+		case v.BodySHA256 != "":
+			if versionBodySHA256(resolved) != v.BodySHA256 {
+				fail(v, "hash_mismatch", errVersionBodyMismatch)
+				continue
+			}
+			broken = false
+		case broken:
+			v.Unreconstructable = true
+			v.UnreconstructableReason = "unverified"
+		}
+		v.Content = resolved
+		v.IsDiff = false
 		content = resolved
 	}
+}
+
+// errVersionBodyMismatch is the placeholder's cause when a version's resolved
+// body does not hash to its body_sha256 (BUG-3820).
+var errVersionBodyMismatch = errors.New("resolved body does not match the version's recorded hash")
+
+// versionBodySHA256 is the body_sha256 of a version standing for body
+// (BUG-3820): hex sha256 of its UTF-8 bytes.
+func versionBodySHA256(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
 }
 
 // ListItemVersionsResolvedSnapshot reads the item's body and its newest
@@ -6476,7 +6528,8 @@ func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, befo
 // do (PLAN-2348 U2). Every column is qualified, because users also has
 // created_at and id.
 const itemVersionCols = `v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at,
-	COALESCE(v.user_id, ''), COALESCE(u.name, ''), v.lines_added, v.lines_removed, v.is_create, v.imported`
+	COALESCE(v.user_id, ''), COALESCE(u.name, ''), v.lines_added, v.lines_removed, v.is_create, v.imported,
+	COALESCE(v.body_sha256, '')`
 
 const itemVersionFrom = `item_versions v LEFT JOIN users u ON u.id = v.user_id`
 
@@ -6489,7 +6542,7 @@ func scanItemVersions(rows *sql.Rows) ([]models.Version, error) {
 		var added, removed sql.NullInt64
 		var imported int
 		if err := rows.Scan(&v.ID, &v.DocumentID, &v.Content, &v.ChangeSummary, &v.CreatedBy, &v.Source, &isDiff, &createdAt,
-			&v.UserID, &v.ActorName, &added, &removed, &isCreate, &imported); err != nil {
+			&v.UserID, &v.ActorName, &added, &removed, &isCreate, &imported, &v.BodySHA256); err != nil {
 			return nil, err
 		}
 		v.IsDiff = isDiff

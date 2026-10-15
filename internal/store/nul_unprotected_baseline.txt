@@ -197,6 +197,7 @@ item_reminders.workspace_id
 item_stars.created_at
 item_stars.item_id
 item_stars.user_id
+item_versions.body_sha256
 item_versions.created_at
 item_versions.id
 item_versions.item_id
