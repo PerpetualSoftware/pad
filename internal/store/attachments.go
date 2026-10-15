@@ -2047,7 +2047,7 @@ func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew
 			if newBody != r.body || (r.isDiff && newSucc != oldSucc) {
 				stored, isDiff := newBody, false
 				if r.isDiff {
-					if patch := diff.CreateReversePatch(newBody, newSucc); diff.IsDiffSmaller(patch, newBody) {
+					if patch, ok := diff.ReversePatch(newBody, newSucc); ok && diff.IsDiffSmaller(patch, newBody) {
 						stored, isDiff = patch, true
 					}
 				}

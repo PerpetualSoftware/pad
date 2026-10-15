@@ -4,7 +4,9 @@ package diff
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	difflib "github.com/sergi/go-diff/diffmatchpatch"
 )
@@ -13,6 +15,7 @@ var dmp = difflib.New()
 
 // CreatePatch computes a compact patch that transforms oldText into newText.
 // The patch can be applied with ApplyPatch to recover newText from oldText.
+// Both texts must be valid UTF-8 (BUG-3839; see ReversePatch).
 func CreatePatch(oldText, newText string) string {
 	diffs := dmp.DiffMain(oldText, newText, true)
 	patches := dmp.PatchMake(oldText, diffs)
@@ -20,23 +23,80 @@ func CreatePatch(oldText, newText string) string {
 }
 
 // ApplyPatch applies a patch to baseText to produce the target text.
-// Returns an error if the patch cannot be applied cleanly.
+// Returns an error if the patch cannot be applied cleanly, or if the base or
+// the patch's text is not valid UTF-8: go-diff slices such text at offsets it
+// derives from runes, and panics or builds the wrong text (BUG-3839).
+//
+// go-diff also panics on valid text, when a patch is applied over a base it
+// was not made from and the base holds multi-byte runes (about 1.5% of such
+// pairs in the BUG-3839 measurement), or returns text that is not valid
+// UTF-8. The version walk does exactly that after it skips a row, so both
+// are errors here too.
+//
+// An empty patch returns baseText as it is, valid or not: it records a
+// version byte-identical to its base, and go-diff is never reached.
 func ApplyPatch(baseText, patchText string) (string, error) {
 	if patchText == "" {
 		return baseText, nil
+	}
+	if !utf8.ValidString(baseText) {
+		return "", fmt.Errorf("base text is not valid UTF-8")
+	}
+	if !patchTextValidUTF8(patchText) {
+		return "", fmt.Errorf("patch text is not valid UTF-8")
 	}
 	patches, err := dmp.PatchFromText(patchText)
 	if err != nil {
 		return "", fmt.Errorf("parse patch: %w", err)
 	}
-	result, applied := dmp.PatchApply(patches, baseText)
+	result, applied, err := patchApply(patches, baseText)
+	if err != nil {
+		return "", err
+	}
 	// Check that all hunks applied
 	for i, ok := range applied {
 		if !ok {
 			return "", fmt.Errorf("patch hunk %d failed to apply", i)
 		}
 	}
+	// Over a base it was not made from, go-diff can also succeed and cut a
+	// rune in half: valid text in, invalid text out. No version recorded that.
+	if !utf8.ValidString(result) {
+		return "", fmt.Errorf("applying the patch produced text that is not valid UTF-8")
+	}
 	return result, nil
+}
+
+// patchTextValidUTF8 reports whether every text line of a patch decodes to
+// valid UTF-8. A line is escaped, so "%FF" is the byte 0xFF once parsed; this
+// decodes each line the way PatchFromText does, whose result is unexported.
+func patchTextValidUTF8(patchText string) bool {
+	for _, line := range strings.Split(patchText, "\n") {
+		if line == "" {
+			continue
+		}
+		switch line[0] {
+		case ' ', '-', '+':
+			// PatchFromText ignores the error too: a malformed line decodes
+			// to "", which is valid.
+			text, _ := url.QueryUnescape(strings.ReplaceAll(line[1:], "+", "%2b"))
+			if !utf8.ValidString(text) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// patchApply is go-diff's PatchApply with its panic returned as an error.
+func patchApply(patches []difflib.Patch, base string) (result string, applied []bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result, applied, err = "", nil, fmt.Errorf("go-diff panicked applying the patch: %v", r)
+		}
+	}()
+	result, applied = dmp.PatchApply(patches, base)
+	return result, applied, nil
 }
 
 // IsDiffSmaller returns true if storing a diff would be meaningfully smaller
@@ -52,8 +112,26 @@ func IsDiffSmaller(patch, fullContent string) bool {
 // CreateReversePatch computes a patch that transforms newText back into oldText.
 // Used for reverse-diff version storage: current doc has latest content,
 // versions store patches to go backwards.
+//
+// Both texts must be valid UTF-8, as for CreatePatch; production code calls
+// ReversePatch, which checks (BUG-3839, TestNoUncheckedPatchCallers).
 func CreateReversePatch(oldText, newText string) string {
 	return CreatePatch(newText, oldText)
+}
+
+// ReversePatch is CreateReversePatch for text that may not be valid UTF-8
+// (BUG-3839). go-diff works on runes and slices the input at byte offsets it
+// derives from them, so invalid UTF-8 near an edit either panics (slice
+// bounds out of range) or yields a patch that does not reproduce oldText:
+// "hello world" -> "hello \xff world" reverse-applied to "hello d". ok is
+// false when either side is not valid UTF-8, and the caller stores the full
+// body instead. Never sanitize and diff: the version would then record a body
+// it does not hold.
+func ReversePatch(oldText, newText string) (patch string, ok bool) {
+	if !utf8.ValidString(oldText) || !utf8.ValidString(newText) {
+		return "", false
+	}
+	return CreatePatch(newText, oldText), true
 }
 
 // FormatDiffSummary returns a human-readable summary of changes. Its "lines"
