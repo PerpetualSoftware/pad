@@ -1424,20 +1424,6 @@ func requiredErrorsUnsatisfiedBy(errs []string, supplied map[string]any) []strin
 	return out
 }
 
-// fieldsPatchFromMerge returns the field-level patch that turns `stored` into
-// `merged`: every key whose value differs (added or changed), plus an explicit
-// nil for every key `stored` had and `merged` does not, which
-// store.mergeFieldsPatch treats as a delete.
-//
-// BUG-3049. The point is what it OMITS: a key present in both with an equal
-// value is left out entirely, so a write built from a snapshot read outside the
-// write transaction can no longer revert a concurrent change to a key it never
-// meant to touch.
-//
-// Equality is reflect.DeepEqual over the decoded JSON values. Two values that
-// are semantically equal but decode differently (a number stored as a string,
-// then coerced) compare unequal and stay in the patch — see the call site's
-// note on that residual.
 // dropCoercionOnlyKeys removes from patch every key the caller did not set
 // whose patched value is exactly what CoerceFields makes of the stored value,
 // while differing from the stored value itself: the only change is a type
@@ -1470,6 +1456,20 @@ func lockedValueIsSet(locked map[string]any, k string) bool {
 	return true
 }
 
+// fieldsPatchFromMerge returns the field-level patch that turns `stored` into
+// `merged`: every key whose value differs (added or changed), plus an explicit
+// nil for every key `stored` had and `merged` does not, which
+// store.mergeFieldsPatch treats as a delete.
+//
+// BUG-3049. The point is what it OMITS: a key present in both with an equal
+// value is left out entirely, so a write built from a snapshot read outside the
+// write transaction can no longer revert a concurrent change to a key it never
+// meant to touch.
+//
+// Equality is reflect.DeepEqual over the decoded JSON values. Two values that
+// are semantically equal but decode differently (a number stored as a string,
+// then coerced) compare unequal and stay in the patch here; the call site
+// removes those coercion-only keys with dropCoercionOnlyKeys (BUG-3831).
 func fieldsPatchFromMerge(stored, merged map[string]any) map[string]any {
 	patch := make(map[string]any, len(merged))
 	for k, v := range merged {
