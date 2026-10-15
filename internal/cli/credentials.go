@@ -426,8 +426,7 @@ func writeFileInPlace0600(path string, data []byte) error {
 		// mtime on ftruncate only when the size changes, and Windows'
 		// SetEndOfFile need not either (BUG-3838). Best effort, like the chmod:
 		// a foreign-owned file we may write but not touch keeps that residual.
-		now := time.Now()
-		_ = os.Chtimes(path, now, now)
+		_ = touchCredentialsFile(f, path)
 		if err := truncateCredentialsFile(f, 0); err != nil {
 			_ = f.Close()
 			return err

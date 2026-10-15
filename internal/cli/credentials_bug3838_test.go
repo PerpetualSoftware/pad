@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -13,9 +14,14 @@ import (
 
 // posixTruncate gives the save's truncate the semantics of a platform where
 // ftruncate leaves an empty file's mtime alone, and stalls the save after it
-// until release is closed. truncated is closed once the truncate has run.
-func posixTruncate(t *testing.T, path string) (truncated, release chan struct{}) {
-	truncated, release = make(chan struct{}), make(chan struct{})
+// until release is called. truncated is closed once the truncate has run.
+// Cleanup releases a save the test left stalled, so a failing test leaves no
+// goroutine blocked in the seam (codex r1 on BUG-3838).
+func posixTruncate(t *testing.T, path string) (truncated chan struct{}, release func()) {
+	truncated = make(chan struct{})
+	stall := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(stall) }) }
 	orig := truncateCredentialsFile
 	truncateCredentialsFile = func(f *os.File, size int64) error {
 		before, err := os.Stat(path)
@@ -31,10 +37,11 @@ func posixTruncate(t *testing.T, path string) (truncated, release chan struct{})
 			}
 		}
 		close(truncated)
-		<-release
+		<-stall
 		return nil
 	}
 	t.Cleanup(func() { truncateCredentialsFile = orig })
+	t.Cleanup(release)
 	return truncated, release
 }
 
@@ -64,12 +71,23 @@ func TestBUG3838_MemoDoesNotSkipASaveWhoseTruncateKeepsTheMtime(t *testing.T) {
 	truncated, release := posixTruncate(t, path)
 	saved := make(chan error, 1)
 	go func() { saved <- writeFileInPlace0600(path, []byte(twoServers)) }()
+	// Registered after posixTruncate's, so it runs first: release, then wait.
+	t.Cleanup(func() {
+		release()
+		if err := <-saved; err != nil {
+			t.Error(err)
+		}
+	})
 	<-truncated
 	reads := countReads(t, func(n int) {
 		if n == 2 {
-			close(release)
-			if err := <-saved; err != nil {
-				t.Error(err)
+			release()
+			// Wait for the write without consuming the save's result.
+			for {
+				if fi, err := os.Stat(path); err == nil && fi.Size() != 0 {
+					return
+				}
+				time.Sleep(time.Millisecond)
 			}
 		}
 	})
@@ -79,8 +97,6 @@ func TestBUG3838_MemoDoesNotSkipASaveWhoseTruncateKeepsTheMtime(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n := *reads; n < 2 {
-		close(release)
-		<-saved
 		t.Fatalf("reads = %d: the load answered from the memo during the save", n)
 	}
 	if store.Get("http://a:7777") == nil || store.Get("http://b:7777") == nil {
