@@ -160,3 +160,27 @@ func TestBUG3829_FutureMtimeIsNotRemembered(t *testing.T) {
 		t.Errorf("reads over two loads of a future-mtime file = %d, want 8 (1+3 re-reads each)", *reads)
 	}
 }
+
+// The stat that records a confirmed-empty file follows the empty read, so a
+// save can land in between: a non-empty state is never remembered, or a later
+// truncate keeping its mtime could match it (Codex r4).
+func TestBUG3829_NonEmptyStateIsNotRemembered(t *testing.T) {
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, twoServers)
+	resetEmptyConfirmed(t)
+	aged := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyConfirmed.set(path, fi)
+	emptyConfirmed.mu.Lock()
+	remembered := emptyConfirmed.fi != nil
+	emptyConfirmed.mu.Unlock()
+	if remembered {
+		t.Error("a non-empty file state was remembered as confirmed empty")
+	}
+}

@@ -164,8 +164,9 @@ func loadStoreLocked(path string) (*CredentialStore, error) {
 }
 
 // emptyConfirmed is the empty credentials file a locked load already waited
-// out (BUG-3829). A save that truncates a non-empty file, or writes into an
-// empty one, moves its mtime, so a later empty read of a file a save is
+// out (BUG-3829). A save moves the mtime at its truncate, even of a file that
+// is already empty (measured on ext4, Linux 6.17: ftruncate(0) of an empty
+// file sets mtime to now), so a later empty read of a file a save is
 // rewriting does not match and is re-read again.
 //
 // Only a file whose mtime is emptyConfirmedMinAge older than the confirmation
@@ -194,7 +195,9 @@ func (c *confirmedEmptyFile) matches(path string, fi fs.FileInfo) bool {
 }
 
 func (c *confirmedEmptyFile) set(path string, fi fs.FileInfo) {
-	if fi != nil && time.Since(fi.ModTime()) < emptyConfirmedMinAge {
+	// The stat follows the empty read, so a save can complete in between: only
+	// a state that is itself empty is remembered (Codex r4).
+	if fi != nil && (fi.Size() != 0 || time.Since(fi.ModTime()) < emptyConfirmedMinAge) {
 		return
 	}
 	c.mu.Lock()
