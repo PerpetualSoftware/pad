@@ -3,12 +3,15 @@ package server
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -20,26 +23,70 @@ import (
 //
 // Through the real router and a real TCP connection (CONVE-19), because the
 // write deadline reaches the socket only if every middleware writer in between
-// unwraps. Both ends' buffers are shrunk and keepalives sent every
-// millisecond, so the buffers fill in well under a second.
+// unwraps. Both ends' buffers are shrunk and keepalives are scheduled every
+// millisecond, so the buffers fill quickly, though how quickly depends on the
+// scheduler (see stallFillCeiling).
 
 // stalledStreamServer starts srv behind a listener whose accepted connections
-// have a small send buffer.
-func stalledStreamServer(t *testing.T, srv *Server) *httptest.Server {
+// have a small send buffer and report their first failed write, which is the
+// moment a frame write overran its deadline.
+func stalledStreamServer(t *testing.T, srv *Server) (*httptest.Server, *writeFailures) {
 	t.Helper()
 	srv.sseKeepaliveOverride = time.Millisecond
 	srv.sseWriteTimeoutOverride = 200 * time.Millisecond
 	ts := httptest.NewUnstartedServer(srv)
-	ts.Config.ConnState = func(c net.Conn, st http.ConnState) {
-		if st == http.StateNew {
-			if tc, ok := c.(*net.TCPConn); ok {
-				_ = tc.SetWriteBuffer(4096)
-			}
-		}
-	}
+	wf := &writeFailures{failed: make(chan struct{})}
+	ts.Listener = &writeFailureListener{Listener: ts.Listener, wf: wf}
 	ts.Start()
 	t.Cleanup(ts.Close)
-	return ts
+	return ts, wf
+}
+
+// writeFailures records the first write that failed on any connection the
+// server accepted. failed is closed when it happens.
+type writeFailures struct {
+	once   sync.Once
+	failed chan struct{}
+	err    error
+	at     time.Time
+}
+
+func (wf *writeFailures) record(err error) {
+	wf.once.Do(func() {
+		wf.err, wf.at = err, time.Now()
+		close(wf.failed)
+	})
+}
+
+type writeFailureListener struct {
+	net.Listener
+	wf *writeFailures
+}
+
+func (l *writeFailureListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.SetWriteBuffer(4096)
+	}
+	return &writeFailureConn{Conn: c, wf: l.wf}, nil
+}
+
+// writeFailureConn passes everything through, SetWriteDeadline included, and
+// reports a failed Write.
+type writeFailureConn struct {
+	net.Conn
+	wf *writeFailures
+}
+
+func (c *writeFailureConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if err != nil {
+		c.wf.record(err)
+	}
+	return n, err
 }
 
 // openStalledStream sends one GET for path over a raw connection, reads the
@@ -94,36 +141,66 @@ func openStalledStream(t *testing.T, ts *httptest.Server, path string, header ht
 	_ = conn.SetReadDeadline(time.Time{})
 }
 
+// How long the buffers may take to fill. This bounds the harness, not the
+// code under test: the 1ms keepalives fill both 4KB buffers in about 1.1s
+// under -race on an idle 8-core box (BUG-3824), and a loaded CI runner drops
+// ticks, which is what made a single end-to-end budget flaky.
+const stallFillCeiling = 60 * time.Second
+
+// How long the handler may take, after its frame write fails, to return and
+// release its slot. The release is a deferred call on that return, so this is
+// scheduling slack only; it stays well under stallFillCeiling so a slot that
+// is never released cannot pass as a slow fill.
+const stallReleaseMargin = 5 * time.Second
+
 // assertSlotReleased requires the stream's admission slot to be held first
 // (otherwise the release check passes against a handler that never admitted
-// the stream) and then released while the client is still connected.
-func assertSlotReleased(t *testing.T, srv *Server) {
+// the stream), then waits for the server's write to the stalled socket to fail
+// on its deadline, and then requires the slot released while the client is
+// still connected.
+//
+// The two phases are timed apart (BUG-3824). Filling the buffers takes as
+// long as the scheduler lets the keepalive ticker run; that is the harness.
+// From the failed write on, the release is the code under test. Without a
+// write deadline no write ever fails, and the first wait ends the test.
+func assertSlotReleased(t *testing.T, srv *Server, wf *writeFailures) {
 	t.Helper()
 	if held := srv.admission().heldTotal(); held != 1 {
 		t.Fatalf("admission slots held once the stream opened = %d, want 1: the slot this test is about was never reserved", held)
 	}
-	const within = 5 * time.Second
-	deadline := time.Now().Add(within)
+	start := time.Now()
+	select {
+	case <-wf.failed:
+	case <-time.After(stallFillCeiling):
+		t.Fatalf("no write to the stalled client failed within %v (write timeout %v): "+
+			"a blocked frame write pins the handler, or the buffers never filled", stallFillCeiling, srv.sseWriteTimeoutOverride)
+	}
+	if !errors.Is(wf.err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the first failed write returned %v, want a write deadline overrun", wf.err)
+	}
+	deadline := wf.at.Add(stallReleaseMargin)
 	for srv.admission().heldTotal() != 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("the admission slot was still held %v after the client stopped reading (write timeout %v): "+
-				"a blocked frame write pins the handler", within, srv.sseWriteTimeoutOverride)
+			t.Fatalf("the admission slot was still held %v after a frame write overran its deadline: "+
+				"the handler did not return", stallReleaseMargin)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	t.Logf("buffers filled and a write failed after %v; slot released %v later",
+		wf.at.Sub(start).Round(time.Millisecond), time.Since(wf.at).Round(time.Millisecond))
 }
 
 func TestSSE_BUG3637_StalledReaderReleasesItsSlot(t *testing.T) {
 	t.Parallel()
 	srv := testServerWithEvents(t)
-	ts := stalledStreamServer(t, srv)
+	ts, wf := stalledStreamServer(t, srv)
 	slug := createTestWorkspace(t, ts.URL, "Stalled")
 
 	openStalledStream(t, ts, "/api/v1/events?workspace="+slug, nil)
 	if n := srv.events.SubscriberCount(); n != 1 {
 		t.Fatalf("bus subscribers once the stream opened = %d, want 1", n)
 	}
-	assertSlotReleased(t, srv)
+	assertSlotReleased(t, srv, wf)
 	// The subscription and its buffers go with the handler, not only the
 	// slot (codex final round 2). Unsubscribe is deferred on the same
 	// return as the release, so it has run once the slot reads free.
@@ -136,10 +213,10 @@ func TestWatchEvents_BUG3637_StalledReaderReleasesItsSlot(t *testing.T) {
 	t.Parallel()
 	srv := testServerWithWatchEvents(t)
 	_, _, tok, _ := setupWatchTestUser(t, srv)
-	ts := stalledStreamServer(t, srv)
+	ts, wf := stalledStreamServer(t, srv)
 
 	openStalledStream(t, ts, "/api/v1/events/stream", http.Header{"Authorization": {"Bearer " + tok.Token}})
-	assertSlotReleased(t, srv)
+	assertSlotReleased(t, srv, wf)
 }
 
 // deadlineRecorder is an httptest.ResponseRecorder that accepts write
