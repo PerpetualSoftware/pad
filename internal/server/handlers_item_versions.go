@@ -66,7 +66,8 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	versions, err := s.store.ListItemVersionsResolvedPage(item.ID, item.Content, limit)
+	// One snapshot for the body and the chain, not item.Content (BUG-3814).
+	_, versions, err := s.store.ListItemVersionsResolvedSnapshot(r.Context(), item.ID, limit)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -168,7 +169,7 @@ func (s *Server) handleGetItemVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	version, err := s.store.GetItemVersionResolved(item.ID, versionID, item.Content)
+	version, err := s.store.GetItemVersionResolvedSnapshot(r.Context(), item.ID, versionID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -204,7 +205,7 @@ func (s *Server) handleGetItemVersionDiff(w http.ResponseWriter, r *http.Request
 	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
-	d, err := s.store.GetItemVersionDiff(item.ID, chi.URLParam(r, "versionID"), item.Content)
+	d, err := s.store.GetItemVersionDiffSnapshot(r.Context(), item.ID, chi.URLParam(r, "versionID"))
 	if errors.Is(err, store.ErrVersionChainBroken) {
 		writeVersionUnreconstructable(w)
 		return
@@ -262,8 +263,9 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Get all resolved versions to find the target
-	versions, err := s.store.ListItemVersionsResolved(item.ID, item.Content)
+	// Get all resolved versions to find the target, resolved from the body
+	// read in the same snapshot as the chain, not item.Content (BUG-3814).
+	_, versions, err := s.store.ListItemVersionsResolvedSnapshot(r.Context(), item.ID, 0)
 	if err != nil {
 		writeInternalError(w, err)
 		return

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -6247,6 +6248,10 @@ func (s *Store) shouldCreateItemVersion(q rowQueryer, itemID, actor, source, via
 // ListItemVersionsResolved returns versions with full content (diffs resolved).
 // Requires the current item content to reconstruct diff-based versions.
 //
+// currentContent must be the body the version rows were written against. A
+// body read separately from the rows is not (BUG-3814): request handlers use
+// ListItemVersionsResolvedSnapshot, which reads both in one snapshot.
+//
 // Unbounded: every version is read and every reverse patch applied. Callers
 // that only need the newest N should use ListItemVersionsResolvedPage, which
 // bounds BOTH the read and the patch walk (BUG-2608). This form remains
@@ -6270,8 +6275,13 @@ func (s *Store) ListItemVersionsResolvedPage(itemID, currentContent string, limi
 	if err != nil {
 		return nil, err
 	}
+	resolveItemVersionChain(currentContent, versions)
+	return versions, nil
+}
 
-	// Resolve diffs: walk from newest to oldest, applying reverse patches.
+// resolveItemVersionChain resolves versions (newest first) in place, walking
+// from currentContent and applying reverse patches.
+func resolveItemVersionChain(currentContent string, versions []models.Version) {
 	content := currentContent
 	for i := range versions {
 		if !versions[i].IsDiff {
@@ -6289,7 +6299,69 @@ func (s *Store) ListItemVersionsResolvedPage(itemID, currentContent string, limi
 		versions[i].IsDiff = false
 		content = resolved
 	}
-	return versions, nil
+}
+
+// ListItemVersionsResolvedSnapshot reads the item's body and its newest
+// `limit` versions (limit <= 0: all) in one read snapshot, and resolves the
+// versions from that body (BUG-3814). It returns the body it resolved from.
+//
+// Resolving from a body read separately is wrong whenever a content write
+// lands between the two reads: the write adds a version, or rebases the
+// newest one (BUG-3745), against the NEW body, while the walk starts from the
+// OLD one, and diff.ApplyPatch does not check a patch's base. A handler that
+// read the item for its permission checks must therefore not pass that
+// item's Content to ListItemVersionsResolved; it calls this.
+//
+// The body is read whether or not the item is soft-deleted, since the read
+// doors resolve deleted items' history too. An item whose row is gone by the
+// time the snapshot is taken has no versions to show: the result is empty,
+// and the caller answers as for a missing version.
+func (s *Store) ListItemVersionsResolvedSnapshot(ctx context.Context, itemID string, limit int) (string, []models.Version, error) {
+	tx, err := s.beginReadSnapshot(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("begin version snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var current string
+	err = tx.QueryRow(s.q(`SELECT content FROM items WHERE id = ?`), itemID).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	versions, err := s.listItemVersionsPageQ(tx, itemID, limit)
+	if err != nil {
+		return "", nil, err
+	}
+	resolveItemVersionChain(current, versions)
+	return current, versions, nil
+}
+
+// GetItemVersionResolvedSnapshot is GetItemVersionResolved over one read
+// snapshot (BUG-3814). Returns nil if not found.
+func (s *Store) GetItemVersionResolvedSnapshot(ctx context.Context, itemID, versionID string) (*models.Version, error) {
+	_, versions, err := s.ListItemVersionsResolvedSnapshot(ctx, itemID, 0)
+	if err != nil {
+		return nil, err
+	}
+	for i := range versions {
+		if versions[i].ID == versionID {
+			return &versions[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// GetItemVersionDiffSnapshot is GetItemVersionDiff over one read snapshot
+// (BUG-3814): the newest version's After is the body the walk started from.
+func (s *Store) GetItemVersionDiffSnapshot(ctx context.Context, itemID, versionID string) (*models.ItemVersionDiff, error) {
+	current, versions, err := s.ListItemVersionsResolvedSnapshot(ctx, itemID, 0)
+	if err != nil {
+		return nil, err
+	}
+	return itemVersionDiffFrom(versions, versionID, current)
 }
 
 // GetItemVersionResolved returns a single version with its diff resolved to
@@ -6331,6 +6403,12 @@ func (s *Store) GetItemVersionDiff(itemID, versionID, currentContent string) (*m
 	if err != nil {
 		return nil, err
 	}
+	return itemVersionDiffFrom(versions, versionID, currentContent)
+}
+
+// itemVersionDiffFrom is GetItemVersionDiff over versions already resolved
+// from currentContent.
+func itemVersionDiffFrom(versions []models.Version, versionID, currentContent string) (*models.ItemVersionDiff, error) {
 	for i := range versions {
 		if versions[i].ID != versionID {
 			continue
@@ -6434,6 +6512,13 @@ func (s *Store) ListItemVersions(itemID string) ([]models.Version, error) {
 // `limit` rows (limit <= 0 means unbounded). Raw rows — reverse-patch versions
 // still carry patch text, not content; see ListItemVersionsResolvedPage.
 func (s *Store) ListItemVersionsPage(itemID string, limit int) ([]models.Version, error) {
+	return s.listItemVersionsPageQ(s.db, itemID, limit)
+}
+
+func (s *Store) listItemVersionsPageQ(q Queryer, itemID string, limit int) ([]models.Version, error) {
+	if s.beforeItemVersionsRead != nil {
+		s.beforeItemVersionsRead(itemID)
+	}
 	query := `
 		SELECT ` + itemVersionCols + `
 		FROM ` + itemVersionFrom + `
@@ -6445,7 +6530,7 @@ func (s *Store) ListItemVersionsPage(itemID string, limit int) ([]models.Version
 		query += " LIMIT ?"
 		args = append(args, limit)
 	}
-	rows, err := s.db.Query(s.q(query), args...)
+	rows, err := q.Query(s.q(query), args...)
 	if err != nil {
 		return nil, err
 	}

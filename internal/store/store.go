@@ -145,6 +145,15 @@ type Store struct {
 	// (codex round 3).
 	afterItemPreLockRead func(itemID string)
 
+	// beforeItemVersionsRead is a TEST-ONLY seam, nil in production. When set,
+	// listItemVersionsPageQ calls it before its query: after the caller read
+	// the item's body and before the version list is read, the window in which
+	// a content write makes the two disagree (BUG-3814). Inside
+	// ListItemVersionsResolvedSnapshot it fires after the snapshot's body read,
+	// so a hook that writes commits outside the snapshot. A hook that writes
+	// must guard against its own nested version reads.
+	beforeItemVersionsRead func(itemID string)
+
 	// beforeRotateRefresh is a TEST-ONLY seam, nil in production. When set,
 	// RotateRefreshToken calls it first, outside any transaction: the window
 	// between fosite validating a refresh token and rotating it, where a
