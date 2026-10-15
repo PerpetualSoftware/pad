@@ -278,7 +278,7 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 		}()
 		if release != nil {
 			// A long-lived door ends with its credential (BUG-3837).
-			go s.runMCPCredentialTick(ctx, r, cancel)
+			s.startMCPCredentialTick(ctx, r, cancel)
 		}
 		mw := newMCPStreamWriter(stream)
 		stop := make(chan struct{})

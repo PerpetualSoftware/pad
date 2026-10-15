@@ -75,6 +75,16 @@ func newBug3837Fixture(t *testing.T, accessLifespan time.Duration) *bug3837Fixtu
 // returns a channel closed when its handler returns.
 func (f *bug3837Fixture) open(t *testing.T, bearer string, listen bool) <-chan struct{} {
 	t.Helper()
+	return f.openAs(t, "Bearer", bearer, listen)
+}
+
+func (f *bug3837Fixture) openWithScheme(t *testing.T, scheme, bearer string) <-chan struct{} {
+	t.Helper()
+	return f.openAs(t, scheme, bearer, false)
+}
+
+func (f *bug3837Fixture) openAs(t *testing.T, scheme, bearer string, listen bool) <-chan struct{} {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	req := httptest.NewRequest("GET", "/mcp", nil)
@@ -84,7 +94,7 @@ func (f *bug3837Fixture) open(t *testing.T, bearer string, listen bool) <-chan s
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 	}
-	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Authorization", scheme+" "+bearer)
 	req.RemoteAddr = "192.0.2.1:1234"
 	req = req.WithContext(ctx)
 	done := make(chan struct{})
@@ -111,7 +121,7 @@ func (f *bug3837Fixture) assertEnds(t *testing.T, done <-chan struct{}, why stri
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatalf("%s: the stream is still open", why)
 	}
 	if held := f.srv.admission().heldTotal(); held != 0 {
@@ -160,8 +170,10 @@ func TestMCP_BUG3837_RevokedOAuthGrantEndsGETAndListen(t *testing.T) {
 	}
 }
 
+// The lifespan leaves the fixture's setup seconds of margin before the token
+// expires (hunter r1); the stream must be admitted on a live token.
 func TestMCP_BUG3837_ExpiredOAuthTokenEndsTheStream(t *testing.T) {
-	f := newBug3837Fixture(t, 2*time.Second)
+	f := newBug3837Fixture(t, 5*time.Second)
 	done := f.open(t, f.access, false)
 	f.assertStaysOpen(t, done, 20)
 	f.assertEnds(t, done, "OAuth access token expired")
@@ -202,4 +214,43 @@ func TestMCP_BUG3837_OAuthStoreFailureKeepsTheStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.assertEnds(t, done, "OAuth grant revoked after the store recovered")
+}
+
+// A deleted token row (fosite ErrNotFound) ends the stream.
+func TestMCP_BUG3837_DeletedOAuthTokenEndsTheStream(t *testing.T) {
+	f := newBug3837Fixture(t, 0)
+	done := f.open(t, f.access, false)
+	f.assertStaysOpen(t, done, 20)
+	if _, err := f.srv.store.DB().Exec(`DELETE FROM oauth_access_tokens WHERE request_id = ?`, <-f.reqID); err != nil {
+		t.Fatal(err)
+	}
+	f.assertEnds(t, done, "OAuth access token row deleted")
+}
+
+// The bearer scheme is case-insensitive (RFC 6750), and admission accepts
+// "bearer <tok>". The tick must read the token the same way (hunter r1). A
+// case-sensitive read fails one of two ways: the PAT door finds no token and
+// closes a live stream, and fosite rejects the whole header as a malformed
+// token, which is "could not ask", so a REVOKED OAuth stream stays open. Each
+// subtest therefore checks both halves: open across ticks, then ended by a
+// revocation.
+func TestMCP_BUG3837_LowercaseBearerIsReadLikeAdmission(t *testing.T) {
+	t.Run("pat", func(t *testing.T) {
+		f := newBug3837Fixture(t, 0)
+		done := f.openWithScheme(t, "bearer", f.pat.Token)
+		f.assertStaysOpen(t, done, 20)
+		if err := f.srv.store.DeleteAPITokenScoped(f.pat.ID, f.pat.WorkspaceID); err != nil {
+			t.Fatal(err)
+		}
+		f.assertEnds(t, done, "PAT revoked")
+	})
+	t.Run("oauth", func(t *testing.T) {
+		f := newBug3837Fixture(t, 0)
+		done := f.openWithScheme(t, "bearer", f.access)
+		f.assertStaysOpen(t, done, 20)
+		if err := f.srv.store.RevokeOAuthGrant(<-f.reqID); err != nil {
+			t.Fatal(err)
+		}
+		f.assertEnds(t, done, "OAuth grant revoked")
+	})
 }

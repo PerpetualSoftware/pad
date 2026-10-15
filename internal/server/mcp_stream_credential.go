@@ -2,8 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -24,14 +22,20 @@ import (
 // keepalive and release the slot. "Could not ask" keeps the stream, as the
 // other long-lived connections do.
 
-// runMCPCredentialTick re-checks r's credential every interval until ctx ends,
-// and calls end when it is no longer valid.
-func (s *Server) runMCPCredentialTick(ctx context.Context, r *http.Request, end context.CancelFunc) {
+// startMCPCredentialTick re-checks r's credential every interval until ctx
+// ends, and calls end when it is no longer valid. The interval and the first
+// delay are read here, on the handler's goroutine: tests swap both package
+// variables, and the tick goroutine is not joined (hunter r1).
+func (s *Server) startMCPCredentialTick(ctx context.Context, r *http.Request, end context.CancelFunc) {
 	interval := watchListRevalInterval
 	if s.mcpCredentialRevalOverride > 0 {
 		interval = s.mcpCredentialRevalOverride
 	}
-	timer := time.NewTimer(revalFirstDelay(interval))
+	go s.runMCPCredentialTick(ctx, r, end, interval, revalFirstDelay(interval))
+}
+
+func (s *Server) runMCPCredentialTick(ctx context.Context, r *http.Request, end context.CancelFunc, interval, first time.Duration) {
+	timer := time.NewTimer(first)
 	defer timer.Stop()
 	for {
 		select {
@@ -58,10 +62,7 @@ func (s *Server) mcpStreamPrincipalStillValid(r *http.Request) bool {
 	if user == nil {
 		return true
 	}
-	fresh, err := s.store.GetUser(user.ID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false
-	}
+	fresh, err := s.store.GetUser(user.ID) // (nil, nil) for a deleted user
 	if err != nil {
 		slog.Warn("MCP: stream user re-check could not complete", "error", err)
 		return true

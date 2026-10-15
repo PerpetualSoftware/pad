@@ -112,8 +112,12 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		return credentialInvalid
 
 	case authKindAPIToken:
-		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		if token == "" {
+		// extractBearer, the parse both bearer accept points use: the scheme
+		// is case-insensitive (RFC 6750), so a case-sensitive trim here would
+		// read "bearer <tok>" as the whole header and close a live stream
+		// every tick (BUG-3837 hunter r1).
+		token, ok := extractBearer(r.Header.Get("Authorization"))
+		if !ok {
 			return credentialInvalid
 		}
 		// The LIVENESS door, not the ordinary one: a revalidation tick must not
@@ -129,7 +133,8 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		return credentialValid
 
 	case authKindOAuth:
-		return s.oauthLiveness(r.Context(), strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
+		token, _ := extractBearer(r.Header.Get("Authorization"))
+		return s.oauthLiveness(r.Context(), token)
 
 	case "":
 		// NOTHING TO REVALIDATE, and this branch is explicit rather than a
@@ -196,9 +201,9 @@ func (s *Server) sessionLiveness(token string) credentialLiveness {
 // Introspection writes nothing.
 //
 // fosite wraps a STORAGE failure in ErrRequestUnauthorized too, so the error
-// is classified by its cause, not its outer type: only the three named causes
-// end the stream, and anything else is "could not ask", which keeps it, as
-// the session and PAT doors do on a store error.
+// is classified by its cause, not its outer type: the named causes end the
+// stream, and anything else is "could not ask", which keeps it, as the
+// session and PAT doors do on a store error.
 func (s *Server) oauthLiveness(ctx context.Context, token string) credentialLiveness {
 	if token == "" || s.oauthServer == nil {
 		return credentialInvalid
