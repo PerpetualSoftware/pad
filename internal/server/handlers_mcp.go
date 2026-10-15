@@ -254,5 +254,11 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 			}
 		}()
 		next.ServeHTTP(stream, r.WithContext(ctx))
+		// A handler that only calls WriteHeader (mcp-go's DELETE) leaves the
+		// response for net/http to commit after it returns, outside every
+		// Write and Flush above, and openSSEStream cleared the deadline. Arm
+		// one for that last write; net/http clears it once the response is
+		// finished, before the connection serves its next request.
+		_ = stream.arm()
 	})
 }

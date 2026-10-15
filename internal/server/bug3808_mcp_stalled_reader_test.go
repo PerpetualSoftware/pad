@@ -315,3 +315,74 @@ func TestMCP_BUG3808_BothMountsAreBounded(t *testing.T) {
 		}
 	}
 }
+
+// A DELETE answers with WriteHeader alone, so its response is committed by
+// net/http after the transport returns, outside every Write and Flush the
+// stream bounds. Pipelined DELETEs on one connection whose client never
+// reads fill the socket with those header-only responses: without a deadline
+// armed for that final write, the server blocks on it with nothing to end it,
+// and the connection never closes.
+func TestMCP_BUG3808_StalledReaderReleasesAHeaderOnlyDELETE(t *testing.T) {
+	f := newMCPStallFixture(t)
+	f.srv.sseWriteTimeoutOverride = 200 * time.Millisecond
+	// The per-token MCP limiter would answer the later DELETEs with a 429
+	// written by middleware, outside the stream, and the stall would land on
+	// that response instead of the one under test.
+	f.srv.rateLimiters = nil
+
+	// CONTROL: a DELETE through the real transport answers a header-only 200,
+	// so the pipelined responses below are that path and not a refusal.
+	dr := newDeadlineRecorder()
+	ctl := httptest.NewRequest(http.MethodDelete, "/mcp", nil)
+	ctl.Header.Set("Authorization", "Bearer "+f.token)
+	ctl.RemoteAddr = "192.0.2.1:1234"
+	f.srv.ServeHTTP(dr, ctl)
+	if dr.Code != http.StatusOK || dr.Body.Len() != 0 {
+		t.Fatalf("control DELETE: %d with %d body bytes, want a header-only 200", dr.Code, dr.Body.Len())
+	}
+
+	var served atomic.Int32
+	closed := make(chan struct{})
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served.Add(1)
+		f.srv.ServeHTTP(w, r)
+	}))
+	ts.Config.ConnState = func(c net.Conn, st http.ConnState) {
+		switch st {
+		case http.StateNew:
+			if tc, ok := c.(*net.TCPConn); ok {
+				_ = tc.SetWriteBuffer(4096)
+			}
+		case http.StateClosed:
+			close(closed)
+		}
+	}
+	ts.Start()
+	t.Cleanup(ts.Close)
+
+	u, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	_ = conn.(*net.TCPConn).SetReadBuffer(4096)
+	req := "DELETE /mcp HTTP/1.1\r\nHost: " + u.Host + "\r\nAuthorization: Bearer " + f.token + "\r\n\r\n"
+	const pipelined = 400
+	go func() { _, _ = conn.Write([]byte(strings.Repeat(req, pipelined))) }()
+
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the connection was still open 5s after its client stopped reading (%d of %d DELETEs served, write timeout %v): the header-only response's write is unbounded",
+			served.Load(), pipelined, f.srv.sseWriteTimeoutOverride)
+	}
+	// Instrument: the stall came before the client's requests ran out, so the
+	// close is the deadline firing on a blocked write, not the end of input.
+	if n := served.Load(); n >= pipelined {
+		t.Fatalf("instrument: all %d DELETEs were served, so no response blocked", n)
+	}
+}
