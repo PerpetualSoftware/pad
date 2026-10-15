@@ -38,7 +38,11 @@ import (
 //
 // Interleaving is safe at Write boundaries only because mcp-go writes each
 // SSE event with ONE Write (writeSSEEvent's single fmt.Fprintf): a keepalive
-// taken under mu can land between two events, never inside one.
+// taken under mu can land between two events, never inside one. mcp-go's
+// writeSSEEventRaw writes an event in TWO (its id: line, then the event), but
+// only on the event-store (resumption) path, and Pad configures no event
+// store. Configuring one (WithEventStore) breaks this premise: a keepalive
+// could land between the two halves.
 type mcpStreamWriter struct {
 	stream *sseStream
 
@@ -109,8 +113,8 @@ func (w *mcpStreamWriter) keepalive() bool {
 	return w.stream.Err() == nil
 }
 
-// end stops any further keepalive. Called when the handler returns: net/http
-// forbids a write after that.
+// end stops any further keepalive. Called once the transport returns, before
+// mcpBoundWrites joins the keepalive goroutine and itself returns.
 func (w *mcpStreamWriter) end() {
 	w.mu.Lock()
 	defer w.mu.Unlock()

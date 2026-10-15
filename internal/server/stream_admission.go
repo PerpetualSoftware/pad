@@ -25,8 +25,8 @@ import (
 // because it is genuinely workspace-scoped and the watch stream has no
 // coherent workspace to count against.
 //
-// MCP (BUG-3835): the transport's long-lived streams, GET /mcp and a
-// subscriptions/listen POST, take a slot here too, at request entry
+// MCP (BUG-3835): the transport's long-lived streams, a GET stream and a
+// subscriptions/listen POST, on either MCP mount, take a slot here too, at request entry
 // (admitMCPStream). A tool call upgraded to SSE mid-call does not.
 //
 // COMPATIBILITY: PAD_SSE_MAX_CONNECTIONS now covers both endpoints, so

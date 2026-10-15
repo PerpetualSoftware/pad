@@ -277,7 +277,10 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 			s.runMCPKeepalive(mw, stop)
 		}()
 		next.ServeHTTP(mw, r.WithContext(ctx))
-		// No keepalive may follow the handler's return (BUG-3835).
+		// The keepalive goroutine is stopped and joined before this handler
+		// returns, so net/http never sees a write after it (BUG-3835). A tick
+		// between the transport's return and end() can still add one comment
+		// frame to a response that is ending, which is valid SSE (Codex r1).
 		mw.end()
 		close(stop)
 		keepalives.Wait()

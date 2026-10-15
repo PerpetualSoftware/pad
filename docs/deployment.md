@@ -104,7 +104,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 |----------|---------|-------------|
 | `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
 | `PAD_REDIS_NAMESPACE` | — | Scopes every Redis key and channel to one installation. Set it when two Pad installations share a Redis endpoint. Unset means the historical names; a whitespace-only value is rejected at startup rather than treated as unset. |
-| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across `/api/v1/events`, `/api/v1/events/stream` and the MCP transport's long-lived streams (`GET /mcp`, `subscriptions/listen`) |
+| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across `/api/v1/events`, `/api/v1/events/stream` and the MCP transport's long-lived streams (GET and `subscriptions/listen` streams on `/mcp` and `/mcp/chatgpt`) |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
 | `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both SSE endpoints and MCP's long-lived streams, **per instance** |
 | `PAD_COLLAB_MAX_PER_USER` | `50` | Per-user maximum open collaborative-editing WebSockets (`/api/v1/collab/{itemID}`), **per instance**. See *Collab connection limits* below |
@@ -131,8 +131,8 @@ against.
 > before this change; if you run many agent sessions per user, check
 > `PAD_SSE_MAX_PER_USER` against your fleet size.
 >
-> **Upgrading (BUG-3835):** the MCP transport's long-lived streams (`GET /mcp`,
-> and `subscriptions/listen` on either MCP mount) now take a slot in the same
+> **Upgrading (BUG-3835):** the MCP transport's long-lived streams (a GET stream
+> and `subscriptions/listen`, on `/mcp` and `/mcp/chatgpt`) now take a slot in the same
 > budget. They had no limit before. A user running many MCP clients alongside
 > agent watch sessions reaches `PAD_SSE_MAX_PER_USER` sooner; over it, the MCP
 > stream is refused with `429 sse_limit_exceeded` before it opens.
