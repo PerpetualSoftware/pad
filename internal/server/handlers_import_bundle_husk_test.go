@@ -187,7 +187,7 @@ func rejectRollbackLeavesNoHuskAndReclaimsBlobs(t *testing.T, driver store.Drive
 	u, tok := memberImporter(t, dest)
 	logs := captureLogs(t)
 
-	rr := importAs(dest, "Husk", bundle, tok)
+	rr := importAs(dest, "husk", bundle, tok)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "duplicate") {
 		t.Fatalf("expected the duplicate-manifest 400, got %d: %s", rr.Code, rr.Body.String())
 	}
@@ -195,7 +195,7 @@ func rejectRollbackLeavesNoHuskAndReclaimsBlobs(t *testing.T, driver store.Drive
 	if husks := restorableHusks(t, dest, u.ID); len(husks) != 0 {
 		t.Errorf("rejected import is RESTORABLE by the importer (%d row(s) in ListDeletedWorkspaces); want none", len(husks))
 	}
-	if live, _ := dest.store.GetWorkspaceBySlug("Husk"); live != nil {
+	if live, _ := dest.store.GetWorkspaceBySlug("husk"); live != nil {
 		t.Errorf("rejected import's workspace is still live")
 	}
 	var rows int
@@ -264,7 +264,7 @@ func rejectRollbackReclaimRefused(t *testing.T, driver store.DriverType) {
 	unmark := dest.markUploadInFlight(hex.EncodeToString(sum[:]))
 	defer unmark()
 
-	rr := importAs(dest, "Held", bundle, tok)
+	rr := importAs(dest, "held", bundle, tok)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}

@@ -44,11 +44,11 @@ func importPartialMarkerKeepPath(t *testing.T, driver store.DriverType) {
 	dest := attachmentsServerOn(t, driver)
 	_, tok := memberImporter(t, dest)
 
-	rr := importAs(dest, "Kept", bundle, tok)
+	rr := importAs(dest, "kept", bundle, tok)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "kept") {
 		t.Fatalf("expected the keep path's 400, got %d: %s", rr.Code, rr.Body.String())
 	}
-	live, err := dest.store.GetWorkspaceBySlug("Kept")
+	live, err := dest.store.GetWorkspaceBySlug("kept")
 	if err != nil || live == nil {
 		t.Fatalf("kept workspace missing: %v %v", live, err)
 	}
@@ -138,7 +138,7 @@ func TestImportPartialMarker_OrdinaryPatchKeepsMarker(t *testing.T) {
 	bundle := withUndecodableManifest(t, realBundleWithBlob(t))
 	dest := attachmentsServerOn(t, store.DriverSQLite)
 	_, tok := memberImporter(t, dest)
-	if rr := importAs(dest, "Kept", bundle, tok); rr.Code != http.StatusBadRequest {
+	if rr := importAs(dest, "kept", bundle, tok); rr.Code != http.StatusBadRequest {
 		t.Fatalf("import: %d %s", rr.Code, rr.Body.String())
 	}
 	rr := doRequestWithCookie(dest, "PATCH", "/api/v1/workspaces/Kept", map[string]any{"description": "x"}, tok)
@@ -156,10 +156,10 @@ func TestImportPartialMarker_RollbackAndSuccessUnmarked(t *testing.T) {
 	dest := attachmentsServerOn(t, store.DriverSQLite)
 	u, tok := memberImporter(t, dest)
 
-	if rr := importAs(dest, "Dup", withDuplicateManifest(t, real), tok); rr.Code == http.StatusCreated {
+	if rr := importAs(dest, "dup", withDuplicateManifest(t, real), tok); rr.Code == http.StatusCreated {
 		t.Fatalf("duplicate manifest must be refused, got 201")
 	}
-	if rr := importAs(dest, "Clean", real, tok); rr.Code != http.StatusCreated {
+	if rr := importAs(dest, "clean", real, tok); rr.Code != http.StatusCreated {
 		t.Fatalf("clean import: %d %s", rr.Code, rr.Body.String())
 	}
 	mine, err := dest.store.GetUserWorkspaces(u.ID)
@@ -170,7 +170,7 @@ func TestImportPartialMarker_RollbackAndSuccessUnmarked(t *testing.T) {
 	for _, ws := range mine {
 		ids = append(ids, ws.ID)
 	}
-	if dup, _ := dest.store.GetWorkspaceBySlug("Dup"); dup != nil {
+	if dup, _ := dest.store.GetWorkspaceBySlug("dup"); dup != nil {
 		ids = append(ids, dup.ID)
 	}
 	marks, err := dest.store.ListWorkspaceImportStatuses(ids)
@@ -191,7 +191,7 @@ func TestImportPartialMarker_NotExported(t *testing.T) {
 	bundle := withUndecodableManifest(t, realBundleWithBlob(t))
 	dest := attachmentsServerOn(t, store.DriverSQLite)
 	_, tok := memberImporter(t, dest)
-	if rr := importAs(dest, "Kept", bundle, tok); rr.Code != http.StatusBadRequest {
+	if rr := importAs(dest, "kept", bundle, tok); rr.Code != http.StatusBadRequest {
 		t.Fatalf("import: %d %s", rr.Code, rr.Body.String())
 	}
 	rr := doRequestWithCookie(dest, "GET", "/api/v1/workspaces/Kept/export", nil, tok)
