@@ -629,3 +629,28 @@ func TestBUG3821_AnOverlappingWriteKeepsItsDeadline(t *testing.T) {
 	}))
 	h.ServeHTTP(log, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil))
 }
+
+// panickingHeaderLog is a deadlineLog whose WriteHeader panics.
+type panickingHeaderLog struct{ deadlineLog }
+
+func (p *panickingHeaderLog) WriteHeader(int) { panic("writer failed") }
+
+// A WriteHeader whose writer panics still clears its deadline, as Write and
+// Flush do, so the handler unwinding from it is not under one (codex r15).
+func TestBUG3821_APanickingWriteHeaderClearsItsDeadline(t *testing.T) {
+	srv := testServer(t)
+	srv.responseWriteTimeoutOverride = time.Hour
+	log := &panickingHeaderLog{deadlineLog{ResponseRecorder: httptest.NewRecorder()}}
+	h := srv.boundResponseWrites(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("instrument: WriteHeader did not panic")
+			}
+			if last := log.set[len(log.set)-1]; !last.IsZero() {
+				t.Errorf("a panicking WriteHeader left a live deadline (%v)", last)
+			}
+		}()
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	h.ServeHTTP(log, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil))
+}

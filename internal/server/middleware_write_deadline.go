@@ -198,11 +198,10 @@ func (d *deadlineWriter) SetWriteDeadline(deadline time.Time) error {
 // socket at once, and a handler that ran longer than the timeout would send
 // it under a deadline that has already passed (codex r12).
 func (d *deadlineWriter) WriteHeader(code int) {
-	armed := d.arm() == nil
-	d.ResponseWriter.WriteHeader(code)
-	if armed {
-		d.disarm()
+	if d.arm() == nil {
+		defer d.disarm()
 	}
+	d.ResponseWriter.WriteHeader(code)
 }
 
 // Write fails rather than writing unbounded when the deadline cannot be set.
