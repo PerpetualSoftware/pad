@@ -104,12 +104,19 @@ func credentialsPath() (string, error) {
 // did, under the exclusive side of the same lock.
 func LoadStore() (*CredentialStore, error) {
 	var store *CredentialStore
-	err := withCredentialsLock(false, func(path string) error {
+	err := withCredentialsLock(false, func(path string, locked bool) error {
 		var err error
-		store, err = loadStoreLocked(path)
+		if locked {
+			store, err = loadStoreLocked(path)
+		} else {
+			store, err = loadStoreUnlocked(path)
+		}
 		return err
 	})
-	if errors.Is(err, errNoCredentialsDir) {
+	// A read is only a read: an empty file it could not tell from a save in
+	// progress is answered as no credentials, as before (BUG-3828). The worst
+	// case is a spurious "not logged in"; only UpdateStore must not act on it.
+	if errors.Is(err, errNoCredentialsDir) || errors.Is(err, errCredentialsEmptyUnlocked) {
 		return newEmptyStore(), nil
 	}
 	return store, err
@@ -117,7 +124,7 @@ func LoadStore() (*CredentialStore, error) {
 
 // loadStoreLocked is LoadStore for a caller that holds the credentials lock.
 func loadStoreLocked(path string) (*CredentialStore, error) {
-	data, err := os.ReadFile(path)
+	data, err := readCredentialsFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return newEmptyStore(), nil
@@ -128,6 +135,52 @@ func loadStoreLocked(path string) (*CredentialStore, error) {
 	if len(strings.TrimSpace(string(data))) == 0 {
 		return newEmptyStore(), nil
 	}
+	return parseStore(data)
+}
+
+// errCredentialsEmptyUnlocked is loadStoreUnlocked's answer for a file that
+// stayed empty on every re-read: unknown, not empty (BUG-3828).
+var errCredentialsEmptyUnlocked = errors.New("credentials file is empty and could not be read under the lock; another pad process may be writing it")
+
+// credentialsEmptyRereads and credentialsEmptyRereadPause bound how long a
+// read without the lock waits for an empty credentials file to fill.
+// Variables so a test can shorten them.
+var (
+	credentialsEmptyRereads     = 10
+	credentialsEmptyRereadPause = 20 * time.Millisecond
+)
+
+// loadStoreUnlocked is loadStoreLocked for a caller that could not take the
+// lock (BUG-3828). Save truncates in place before it writes, so an empty file
+// read without the lock may be another process's save caught between the two,
+// not an empty store. It is re-read a bounded number of times; one that stays
+// empty is errCredentialsEmptyUnlocked, never an empty store, so UpdateStore
+// cannot save a store built from it over every other server's entry.
+func loadStoreUnlocked(path string) (*CredentialStore, error) {
+	for i := 0; ; i++ {
+		data, err := readCredentialsFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return newEmptyStore(), nil
+			}
+			return nil, fmt.Errorf("read credentials: %w", err)
+		}
+		if len(strings.TrimSpace(string(data))) != 0 {
+			return parseStore(data)
+		}
+		if i >= credentialsEmptyRereads {
+			return nil, errCredentialsEmptyUnlocked
+		}
+		time.Sleep(credentialsEmptyRereadPause)
+	}
+}
+
+// readCredentialsFile is os.ReadFile, a variable so a test can count the
+// re-reads and change the file between them (BUG-3828).
+var readCredentialsFile = os.ReadFile
+
+// parseStore parses a non-empty credentials file, v1 or v2.
+func parseStore(data []byte) (*CredentialStore, error) {
 
 	// Detect format. v1 has a top-level `token` string; v2 has a
 	// top-level `credentials` object. Probe with a generic map so a
@@ -241,7 +294,9 @@ func (s *CredentialStore) Delete(serverURL string) {
 // the same lock and would wait on it forever (flock is per open file, so
 // this process's own hold blocks them too).
 func (s *CredentialStore) Save() error {
-	return withCredentialsLock(true, s.saveLocked)
+	return withCredentialsLock(true, func(path string, _ bool) error {
+		return s.saveLocked(path)
+	})
 }
 
 // saveLocked is Save for a caller that holds the credentials lock.
@@ -307,6 +362,8 @@ var credentialsLockWarning io.Writer = os.Stderr
 
 // withCredentialsLock runs fn with the path of credentials.json while
 // holding credentials.json.lock: exclusive for a write, shared for a read.
+// fn is told whether it holds the lock: a read without it cannot tell an
+// empty file from a save in progress (BUG-3828).
 //
 // The lock sits on top of what os.WriteFile and os.ReadFile did and is never
 // the reason a working command fails (BUG-3649 ruling): when it cannot be
@@ -316,7 +373,7 @@ var credentialsLockWarning io.Writer = os.Stderr
 // stays quiet, because every pad command reads. EINTR is retried first. A
 // read whose directory does not exist has nothing to read and returns
 // errNoCredentialsDir rather than creating it.
-func withCredentialsLock(exclusive bool, fn func(path string) error) error {
+func withCredentialsLock(exclusive bool, fn func(path string, locked bool) error) error {
 	path, err := credentialsPath()
 	if err != nil {
 		return err
@@ -343,10 +400,10 @@ func withCredentialsLock(exclusive bool, fn func(path string) error) error {
 		if exclusive {
 			fmt.Fprintf(credentialsLockWarning, "warning: could not lock %s (%v); saving credentials without it\n", path+".lock", err)
 		}
-		return fn(path)
+		return fn(path, false)
 	}
 	defer unlock()
-	return fn(path)
+	return fn(path, true)
 }
 
 // lockCredentials is lockCredentialsFile, swappable so a test can make the
@@ -393,9 +450,24 @@ var errNoCredentialsDir = errors.New("no credentials directory")
 // not call Save, LoadStore, UpdateStore or WipeCredentialsFile (see Save);
 // nothing slow (a network call) belongs inside it either, since the lock is
 // held for the whole call.
+//
+// Without the lock, an empty file is not loaded as an empty store
+// (BUG-3828): it may be another process's save between its truncate and its
+// write, and saving fn's change over it would wipe every other server's
+// credentials. UpdateStore re-reads it, and if it stays empty refuses with
+// errCredentialsEmptyUnlocked and saves nothing.
 func UpdateStore(fn func(*CredentialStore) error) error {
-	return withCredentialsLock(true, func(path string) error {
-		store, err := loadStoreLocked(path)
+	return withCredentialsLock(true, func(path string, locked bool) error {
+		var store *CredentialStore
+		var err error
+		if locked {
+			store, err = loadStoreLocked(path)
+		} else {
+			store, err = loadStoreUnlocked(path)
+		}
+		if errors.Is(err, errCredentialsEmptyUnlocked) {
+			return fmt.Errorf("%w; nothing was saved, retry (if it persists with no other pad running, remove the empty %s)", err, path)
+		}
 		if err != nil {
 			return err
 		}
@@ -422,7 +494,7 @@ func WipeCredentialsFile() error {
 			return nil
 		}
 	}
-	return withCredentialsLock(true, func(path string) error {
+	return withCredentialsLock(true, func(path string, _ bool) error {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("delete credentials: %w", err)
 		}

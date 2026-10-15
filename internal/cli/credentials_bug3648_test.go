@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -124,6 +125,12 @@ func TestBUG3649_UpdateStoreSavesNothingWhenFnFails(t *testing.T) {
 // reads an empty file as an empty store, so a reader racing a save could
 // see no credentials, or half a JSON document. The store is large so each
 // write takes long enough for the reader to land inside it.
+//
+// It measures reads UNDER the lock, so it also checks that every read took
+// it (BUG-3828): a writer saving in a tight loop starved the reader past
+// credentialsLockWait, and the read that then went ahead unlocked is a
+// different path (credentials_bug3828_test.go). The writer is paced so a
+// reader gets a turn.
 func TestBUG3649_ReaderNeverSeesAPartialFile(t *testing.T) {
 	withTempHome(t)
 	store := newEmptyStore()
@@ -134,6 +141,16 @@ func TestBUG3649_ReaderNeverSeesAPartialFile(t *testing.T) {
 		t.Fatalf("seed Save: %v", err)
 	}
 
+	realLock := lockCredentials
+	var sharedTaken atomic.Int64
+	swapLock(t, func(lockPath string, exclusive bool) (func(), error) {
+		unlock, err := realLock(lockPath, exclusive)
+		if err == nil && !exclusive {
+			sharedTaken.Add(1)
+		}
+		return unlock, err
+	})
+
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -143,7 +160,7 @@ func TestBUG3649_ReaderNeverSeesAPartialFile(t *testing.T) {
 			select {
 			case <-stop:
 				return
-			default:
+			case <-time.After(time.Millisecond):
 			}
 			if err := store.Save(); err != nil {
 				t.Errorf("Save: %v", err)
@@ -167,6 +184,9 @@ func TestBUG3649_ReaderNeverSeesAPartialFile(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+	if n := sharedTaken.Load(); n != int64(reads) {
+		t.Errorf("%d of %d reads took the shared lock: the rest read unlocked, so they did not test what this test names", n, reads)
+	}
 }
 
 // TestBUG3649_GuardNoUnlockedCredentialWrites is the wiring half of the fix:
