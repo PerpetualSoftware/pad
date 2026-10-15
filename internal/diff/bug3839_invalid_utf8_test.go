@@ -79,9 +79,13 @@ func TestBUG3839_NoUncheckedPatchCallers(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			switch d.Name() {
-			case "node_modules", ".git", "web", "vendor":
-				return filepath.SkipDir
+			// The web UI and the module's own tooling dirs, at the root only:
+			// a Go package named web elsewhere is still production code.
+			if filepath.Dir(path) == root {
+				switch d.Name() {
+				case "node_modules", ".git", "web", "vendor":
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
@@ -92,40 +96,94 @@ func TestBUG3839_NoUncheckedPatchCallers(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		inDiff := f.Name.Name == "diff" && filepath.Base(filepath.Dir(path)) == "diff"
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			var name string
-			switch fn := call.Fun.(type) {
-			case *ast.SelectorExpr:
-				if x, ok := fn.X.(*ast.Ident); ok && x.Name == "diff" {
-					name = fn.Sel.Name
-				}
-			case *ast.Ident:
-				if inDiff {
-					name = fn.Name
-				}
-			}
-			if name != "CreatePatch" && name != "CreateReversePatch" {
-				return true
-			}
-			// Inside the package, ReversePatch and CreateReversePatch are
-			// the checked door and its unchecked twin.
-			if inDiff {
-				return true
-			}
-			bad = append(bad, fset.Position(call.Pos()).String()+": "+name)
-			return true
-		})
+		// Inside the package, ReversePatch and CreateReversePatch are the
+		// checked door and its unchecked twin.
+		if f.Name.Name == "diff" && filepath.Base(filepath.Dir(path)) == "diff" {
+			return nil
+		}
+		bad = append(bad, uncheckedPatchUses(fset, f)...)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(bad) > 0 {
-		t.Fatalf("production code calls an unchecked patch builder; use diff.ReversePatch (BUG-3839):\n%s", strings.Join(bad, "\n"))
+		t.Fatalf("production code uses an unchecked patch builder; use diff.ReversePatch (BUG-3839):\n%s", strings.Join(bad, "\n"))
+	}
+}
+
+const diffImportPath = "github.com/PerpetualSoftware/pad/internal/diff"
+
+// uncheckedPatchUses lists every reference to CreatePatch or
+// CreateReversePatch through this file's import of the package: a call, a
+// method value, under any import name, or bare under a dot import.
+func uncheckedPatchUses(fset *token.FileSet, f *ast.File) []string {
+	local, dot := "", false
+	for _, imp := range f.Imports {
+		if strings.Trim(imp.Path.Value, `"`) != diffImportPath {
+			continue
+		}
+		switch {
+		case imp.Name == nil:
+			local = "diff"
+		case imp.Name.Name == ".":
+			dot = true
+		case imp.Name.Name != "_":
+			local = imp.Name.Name
+		}
+	}
+	if local == "" && !dot {
+		return nil
+	}
+	unchecked := func(name string) bool { return name == "CreatePatch" || name == "CreateReversePatch" }
+	var out []string
+	// A selector's own name is never a dot-imported identifier.
+	sel := map[*ast.Ident]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.SelectorExpr:
+			sel[x.Sel] = true
+			// A selector on a local variable that shadows the import name is
+			// a false positive here; none exists, and a hit says which file.
+			if id, ok := x.X.(*ast.Ident); ok && local != "" && id.Name == local && unchecked(x.Sel.Name) {
+				out = append(out, fset.Position(x.Pos()).String()+": "+x.Sel.Name)
+			}
+		case *ast.Ident:
+			if dot && !sel[x] && unchecked(x.Name) {
+				out = append(out, fset.Position(x.Pos()).String()+": "+x.Name)
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// The census's own instrument: each way a file can reach the unchecked
+// builders is found, and the checked door and a same-named local are not.
+func TestBUG3839_UncheckedPatchCensusFindsEveryForm(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		hits int
+	}{
+		{"call", `import "` + diffImportPath + `"; func f() { diff.CreatePatch("a", "b") }`, 1},
+		{"method_value", `import "` + diffImportPath + `"; var g = diff.CreateReversePatch`, 1},
+		{"alias", `import d "` + diffImportPath + `"; func f() { d.CreatePatch("a", "b") }`, 1},
+		{"dot", `import . "` + diffImportPath + `"; func f() { CreateReversePatch("a", "b"); _ = CreatePatch }`, 2},
+		{"dot_inside_a_selector", `import . "` + diffImportPath + `"; func f() { _ = T{CreatePatch("a", "b")}.x; _ = other.CreatePatch }`, 1},
+		{"checked_door", `import "` + diffImportPath + `"; func f() { diff.ReversePatch("a", "b") }`, 0},
+		{"other_package_named_diff", `import "example.com/diff"; func f() { diff.CreatePatch("a", "b") }`, 0},
+		{"alias_frees_the_name", `import d "` + diffImportPath + `"; func f(diff T) { diff.CreatePatch() }`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, "x.go", "package x\n"+tc.src, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := uncheckedPatchUses(fset, f); len(got) != tc.hits {
+				t.Fatalf("found %d uses, want %d: %v", len(got), tc.hits, got)
+			}
+		})
 	}
 }
