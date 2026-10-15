@@ -164,25 +164,7 @@ func TestBUG3817_AResendRacingADeletionMintsNothing(t *testing.T) {
 		done <- err
 	}()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var waiting int
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity
-			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting > 0 {
-			break
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("the resend returned (err %v) before the deletion committed: it did not wait on the workspace row", err)
-		case <-time.After(20 * time.Millisecond):
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the resend never waited on the workspace row")
-		}
-	}
+	bug3817AwaitLiveCheckWait(t, s, done)
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit the deletion: %v", err)
 	}
@@ -198,5 +180,90 @@ func TestBUG3817_AResendRacingADeletionMintsNothing(t *testing.T) {
 	}
 	if got := bug3817Pending(t, s, ws.ID); len(got) != 1 || got[0] != old.ID {
 		t.Errorf("pending = %v, want only the original %s: a code was minted for a deleted workspace", got, old.ID)
+	}
+}
+
+// bug3817AwaitLiveCheckWait returns once a backend is waiting on a lock while
+// running createInvitationTx's FOR SHARE liveness read, so a test proves the
+// resend reached that statement and blocked there, not that some other query
+// in the database is waiting (codex r1 Medium). It fails if done delivers
+// first: the resend did not wait.
+func bug3817AwaitLiveCheckWait(t *testing.T, s *Store, done <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'
+			AND query LIKE '%FROM workspaces WHERE id = $1 AND deleted_at IS NULL FOR SHARE%'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the resend returned (err %v) before the other transaction committed: it did not wait on the workspace row", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the resend never waited on the workspace row's liveness read")
+		}
+	}
+}
+
+// A resend racing the deletion of the account that owns the workspace and
+// sent the invitation. Account deletion locks the user, soft-deletes their
+// workspaces, then deletes the invitations they sent (DeleteAccountAtomic's
+// order, replayed here step by step so the resend can be caught between
+// them). A resend that took the invitation row before the workspace row
+// deadlocked with it (codex r1 High); now it waits holding no invitation
+// row, the deletion finishes, and the resend refuses.
+//
+// Postgres only, as above.
+func TestBUG3817_AResendRacingTheOwnersAccountDeletionDoesNotDeadlock(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() != DriverPostgres {
+		t.Skip("Postgres only: SQLite's single writer serializes the pair")
+	}
+	ws, admin, old := bug3817Env(t, s)
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(s.q(`SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE`), old.InvitedBy); err != nil {
+		t.Fatalf("lock the owner: %v", err)
+	}
+	ts := now()
+	if _, err := tx.Exec(s.q(`UPDATE workspaces SET deleted_at = ?, updated_at = ? WHERE id = ?`), ts, ts, ws.ID); err != nil {
+		t.Fatalf("soft-delete the owned workspace: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.ResendInvitationAdmin(old.ID, admin.ID)
+		done <- err
+	}()
+	bug3817AwaitLiveCheckWait(t, s, done)
+
+	if _, err := tx.Exec(s.q(`DELETE FROM workspace_invitations WHERE invited_by = ?`), old.InvitedBy); err != nil {
+		t.Fatalf("the deletion's invitation step failed while the resend waited (a deadlock is 40P01): %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit the deletion: %v", err)
+	}
+	var resendErr error
+	select {
+	case resendErr = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the resend never returned after the deletion committed")
+	}
+	if !errors.Is(resendErr, ErrInvitationWorkspaceDeleted) {
+		t.Errorf("resend err = %v, want ErrInvitationWorkspaceDeleted", resendErr)
+	}
+	if got := bug3817Pending(t, s, ws.ID); len(got) != 0 {
+		t.Errorf("pending = %v, want none: the deletion removed the owner's invitations and the resend minted nothing", got)
 	}
 }

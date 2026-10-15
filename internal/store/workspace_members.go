@@ -1084,7 +1084,7 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 		return nil, fmt.Errorf("insert invitation: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	inv, err := s.createInvitationTx(tx, workspaceID, email, role, invitedBy, codeHash, proofHash)
+	inv, err := s.createInvitationTx(tx, workspaceID, email, role, invitedBy, codeHash, proofHash, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1151,9 +1151,11 @@ func (s *Store) ResendInvitationAdmin(invitationID, inviterID string) (*models.W
 		return nil, fmt.Errorf("resend invitation: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// The workspace lock first, the order createInvitationTx and the other
-	// workspace writers take; then the old row, read again under it, so the
-	// address and role are the ones a concurrent re-invite did not replace.
+	// The workspace advisory lock first, the order createInvitationTx takes;
+	// then the old row, read again under it, so the address and role are the
+	// ones a concurrent re-invite (which takes the same lock) did not replace.
+	// The revoke itself happens inside createInvitationTx, after its row
+	// locks: see revokeID there.
 	if err := s.acquireWorkspaceSeqLock(tx, old.WorkspaceID); err != nil {
 		return nil, fmt.Errorf("resend invitation: lock: %w", err)
 	}
@@ -1164,10 +1166,7 @@ func (s *Store) ResendInvitationAdmin(invitationID, inviterID string) (*models.W
 	if cur == nil || cur.AcceptedAt != nil || cur.WorkspaceID != old.WorkspaceID {
 		return nil, ErrInvitationNotPending
 	}
-	if _, err := tx.Exec(s.q(`DELETE FROM workspace_invitations WHERE id = ? AND accepted_at IS NULL`), invitationID); err != nil {
-		return nil, fmt.Errorf("resend invitation: revoke: %w", err)
-	}
-	inv, err := s.createInvitationTx(tx, cur.WorkspaceID, cur.Email, cur.Role, inviterID, codeHash, proofHash)
+	inv, err := s.createInvitationTx(tx, cur.WorkspaceID, cur.Email, cur.Role, inviterID, codeHash, proofHash, invitationID)
 	if err != nil {
 		return nil, err
 	}
@@ -1189,8 +1188,17 @@ var ErrInvitationWorkspaceDeleted = errors.New("invitation: workspace deleted")
 var ErrInvitationNotPending = errors.New("invitation: no longer pending")
 
 // createInvitationTx writes a pending invitation with the given hashes and
-// returns it as read back inside tx. The caller commits.
-func (s *Store) createInvitationTx(tx *sql.Tx, workspaceID, email, role, invitedBy, codeHash, proofHash string) (*models.WorkspaceInvitation, error) {
+// returns it as read back inside tx. The caller commits. A non-empty revokeID
+// names a pending invitation to revoke in the same transaction (a resend);
+// ErrInvitationNotPending if it is no longer pending.
+//
+// Lock order: the workspace advisory lock, the inviter's users row, the
+// workspaces row, and only then any invitation row. Account deletion takes
+// the departing user's row, soft-deletes their workspaces and then deletes
+// the invitations they sent, so an invitation row taken before the other
+// two closes a cycle with it (codex r1 on BUG-3817: a resend that revoked
+// first deadlocked against deleting the inviter or the workspace's owner).
+func (s *Store) createInvitationTx(tx *sql.Tx, workspaceID, email, role, invitedBy, codeHash, proofHash, revokeID string) (*models.WorkspaceInvitation, error) {
 	id := newID()
 	ts := now()
 	expiresAt := time.Now().UTC().Add(InvitationTTL).Format(time.RFC3339)
@@ -1217,7 +1225,9 @@ func (s *Store) createInvitationTx(tx *sql.Tx, workspaceID, email, role, invited
 	// so an invite that loses the race sees deleted_at instead of minting a
 	// code and an email for a deleted workspace (BUG-3817; the request-time
 	// check is BUG-3104's). Taken after the inviter's row: the users-then-
-	// workspace order DeleteWorkspace uses.
+	// workspace order DeleteWorkspace uses. Soft delete and restore both
+	// serialize against it through this row lock, not the advisory lock,
+	// which neither takes (codex r1 Low).
 	live := `SELECT id FROM workspaces WHERE id = ? AND deleted_at IS NULL`
 	if s.dialect.Driver() == DriverPostgres {
 		live += ` FOR SHARE`
@@ -1228,6 +1238,17 @@ func (s *Store) createInvitationTx(tx *sql.Tx, workspaceID, email, role, invited
 			return nil, ErrInvitationWorkspaceDeleted
 		}
 		return nil, fmt.Errorf("insert invitation: check workspace: %w", err)
+	}
+	if revokeID != "" {
+		res, err := tx.Exec(s.q(`DELETE FROM workspace_invitations WHERE id = ? AND accepted_at IS NULL`), revokeID)
+		if err != nil {
+			return nil, fmt.Errorf("insert invitation: revoke: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return nil, fmt.Errorf("insert invitation: revoke: %w", err)
+		} else if n == 0 {
+			return nil, ErrInvitationNotPending
+		}
 	}
 	if _, err := tx.Exec(s.q(`DELETE FROM workspace_invitations WHERE workspace_id = ? AND email = ? AND accepted_at IS NULL`),
 		workspaceID, strings.ToLower(strings.TrimSpace(email))); err != nil {
