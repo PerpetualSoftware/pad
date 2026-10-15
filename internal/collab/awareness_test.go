@@ -3,6 +3,7 @@ package collab
 import (
 	"bytes"
 	"encoding/hex"
+	"runtime"
 	"testing"
 	"time"
 
@@ -72,6 +73,60 @@ func TestAwarenessRefusesMalformedFrames(t *testing.T) {
 			t.Errorf("%s: decoded a malformed frame", name)
 		}
 	}
+}
+
+// BUG-3772: the entry count is bounded by the bytes that follow it, at three
+// bytes an entry, before anything is allocated from it. The accepting half pins
+// the bound as no tighter than the bytes allow. The refusing half is an outcome
+// check only: the parse loop refuses that frame too, so it passes with the
+// bound removed. TestAwarenessLyingCountAllocatesNothingForIt is the
+// regression pin.
+func TestAwarenessCountBoundedByEntryBytes(t *testing.T) {
+	// Exactly as many minimal entries as the bytes hold decodes.
+	const n = 5
+	update := appendVarUint(nil, n)
+	for k := uint64(1); k <= n; k++ {
+		update = append(update, byte(k), 0x01, 0x00)
+	}
+	got, err := decodeAwarenessFrame(awarenessFrame(update))
+	if err != nil {
+		t.Fatalf("%d minimal entries in %d bytes: %v", n, n*minAwarenessEntryBytes, err)
+	}
+	if len(got) != n || got[n-1] != (awarenessEntry{clientID: n, clock: 1, live: true}) {
+		t.Fatalf("decoded %+v", got)
+	}
+	// One more than they hold is refused.
+	update[0] = n + 1
+	if _, err := decodeAwarenessFrame(awarenessFrame(update)); err == nil {
+		t.Fatalf("a count of %d over %d entry bytes decoded", n+1, n*minAwarenessEntryBytes)
+	}
+}
+
+// BUG-3772: a frame at the WebSocket read limit (handlers_collab.go,
+// collabMaxMessageBytes) claiming one entry per byte reserved room for a
+// million entries, about 24 MB, before failing to parse them.
+func TestAwarenessLyingCountAllocatesNothingForIt(t *testing.T) {
+	const size = 1 << 20
+	update := appendVarUint(nil, size-8)
+	update = append(update, make([]byte, size-8-len(update))...)
+	frame := awarenessFrame(update)
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := decodeAwarenessFrame(frame)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("a count past the frame's entries decoded")
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > 1<<20 {
+		t.Fatalf("decoding a %d-byte frame allocated %d bytes", len(frame), got)
+	}
+}
+
+func awarenessFrame(update []byte) []byte {
+	frame := appendVarUint(nil, yMessageAwareness)
+	frame = appendVarUint(frame, uint64(len(update)))
+	return append(frame, update...)
 }
 
 func liveFrame(clientID, clock uint64) []byte {
