@@ -85,10 +85,16 @@ func (s *Server) responseWriteTimeout() time.Duration {
 // Above the compressor it would arm only the writes going in, and a
 // compressor buffers.
 //
-// It arms once before the handler runs, which is also the probe for a writer
-// that cannot take a deadline, and once more after the handler returns: a
-// body smaller than net/http's buffer reaches the socket only when the server
-// flushes it after the handler, which may be long after the last Write.
+// The deadline is live only while a write is in progress: each Write, Flush
+// and WriteHeader arms it, and clears it when it returns, so the handler's
+// own work never runs under it (codex r13). That matters for HTTP/2, where a
+// write deadline is a timer that resets the stream when it fires, writing or
+// not, and http.ResponseController documents that a deadline already passed
+// is not extended by setting a new one; on HTTP/1 a deadline only acts on a
+// write in progress. It arms once more after the handler returns and leaves
+// that one set: a body smaller than net/http's buffer reaches the socket only
+// when the server flushes it after the handler. Before the handler runs it
+// only probes, with a cleared deadline, for a writer that cannot take one.
 // net/http clears the deadline after each response and on hijack, so nothing
 // armed here outlives the request (TestBUG3821_AKeepAliveConnectionStarts-
 // ItsNextRequestWithNoDeadline and TestBUG3821_AHijackedConnectionCarriesNo-
@@ -100,7 +106,7 @@ func (s *Server) boundResponseWrites(next http.Handler) http.Handler {
 			return
 		}
 		dw := &deadlineWriter{ResponseWriter: w, rc: http.NewResponseController(w), timeout: s.responseWriteTimeout()}
-		if err := dw.arm(); errors.Is(err, http.ErrNotSupported) {
+		if err := dw.rc.SetWriteDeadline(time.Time{}); errors.Is(err, http.ErrNotSupported) {
 			// A writer that cannot take a deadline (a wrapper without Unwrap)
 			// is served unbounded, as before: failing the request would turn
 			// a missing bound into an outage.
@@ -141,6 +147,17 @@ func (d *deadlineWriter) arm() error {
 	return d.rc.SetWriteDeadline(time.Now().Add(d.timeout))
 }
 
+// disarm clears the deadline once a write has returned, so it bounds only
+// that write and not whatever the handler does next.
+func (d *deadlineWriter) disarm() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.handlerOwned {
+		return
+	}
+	_ = d.rc.SetWriteDeadline(time.Time{})
+}
+
 // SetWriteDeadline is where a handler's http.ResponseController lands: the
 // controller stops at the first writer that has the method. A handler that
 // sets its own deadline owns it from then on, as it did before this
@@ -169,6 +186,7 @@ func (d *deadlineWriter) SetWriteDeadline(deadline time.Time) error {
 func (d *deadlineWriter) WriteHeader(code int) {
 	_ = d.arm()
 	d.ResponseWriter.WriteHeader(code)
+	d.disarm()
 }
 
 // Write fails rather than writing unbounded when the deadline cannot be set.
@@ -176,6 +194,7 @@ func (d *deadlineWriter) Write(p []byte) (int, error) {
 	if err := d.arm(); err != nil {
 		return 0, err
 	}
+	defer d.disarm()
 	return d.ResponseWriter.Write(p)
 }
 
@@ -188,6 +207,7 @@ func (d *deadlineWriter) FlushError() error {
 	if err := d.arm(); err != nil {
 		return err
 	}
+	defer d.disarm()
 	return d.rc.Flush()
 }
 

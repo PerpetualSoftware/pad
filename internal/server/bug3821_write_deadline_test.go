@@ -489,22 +489,85 @@ func TestBUG3821_AHandlersOwnDeadlineIsNotReArmed(t *testing.T) {
 }
 
 // WriteHeader arms like Write: an informational status goes to the socket at
-// once, so a handler that ran past the timeout must not send it under the
-// deadline armed before it started (codex r12).
+// once, so it must be sent under a live deadline (codex r12), and the
+// deadline is cleared again when it returns (codex r13).
 func TestBUG3821_WriteHeaderArms(t *testing.T) {
 	srv := testServer(t)
 	srv.responseWriteTimeoutOverride = time.Hour
-	var before int
 	log := &deadlineLog{ResponseRecorder: httptest.NewRecorder()}
 	h := srv.boundResponseWrites(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		before = len(log.set)
+		before := len(log.set)
 		w.WriteHeader(http.StatusEarlyHints)
-		if len(log.set) != before+1 {
-			t.Errorf("WriteHeader(103) set %d deadlines, want 1", len(log.set)-before)
+		during := log.set[before:]
+		if len(during) == 0 || !during[0].After(time.Now()) {
+			t.Errorf("WriteHeader(103) did not arm a deadline first: %v", during)
+		}
+		if last := log.set[len(log.set)-1]; !last.IsZero() {
+			t.Errorf("WriteHeader left a live deadline (%v) for the handler's next work", last)
 		}
 	}))
 	h.ServeHTTP(log, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil))
-	if before == 0 {
-		t.Fatal("instrument: the middleware armed nothing before the handler ran")
+}
+
+// The deadline is live only during a write: before the handler's first write
+// and after each one returns it is cleared, so the handler's own work cannot
+// run it out (codex r13). The last deadline is the one armed after the
+// handler returns, for net/http's final flush.
+func TestBUG3821_NoDeadlineIsLiveWhileTheHandlerWorks(t *testing.T) {
+	srv := testServer(t)
+	srv.responseWriteTimeoutOverride = time.Hour
+	log := &deadlineLog{ResponseRecorder: httptest.NewRecorder()}
+	live := func(when string) {
+		if len(log.set) == 0 {
+			return
+		}
+		if last := log.set[len(log.set)-1]; !last.IsZero() {
+			t.Errorf("%s: a deadline (%v) is live while the handler works", when, last)
+		}
+	}
+	h := srv.boundResponseWrites(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		live("before the first write")
+		_, _ = w.Write([]byte("a"))
+		live("after a Write")
+		_ = http.NewResponseController(w).Flush()
+		live("after a Flush")
+	}))
+	h.ServeHTTP(log, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil))
+	if last := log.set[len(log.set)-1]; !last.After(time.Now()) {
+		t.Errorf("no deadline armed after the handler returned, for the final flush: last %v", last)
+	}
+}
+
+// Over HTTP/2 a write deadline is a timer that resets the stream when it
+// fires, whether or not a write is in progress. A handler that pauses longer
+// than the timeout between two writes must still deliver its whole body to a
+// client that is reading (codex r13).
+func TestBUG3821_AHandlerPauseOverHTTP2DoesNotResetTheStream(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	srv.responseWriteTimeoutOverride = 200 * time.Millisecond
+	srv.ensureRouter()
+	srv.router.Get("/__bug3821/pause", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("first."))
+		_ = http.NewResponseController(w).Flush()
+		time.Sleep(4 * srv.responseWriteTimeoutOverride)
+		_, _ = w.Write([]byte("second."))
+	})
+	ts := httptest.NewUnstartedServer(srv)
+	ts.EnableHTTP2 = true
+	ts.StartTLS()
+	t.Cleanup(ts.Close)
+
+	resp, err := ts.Client().Get(ts.URL + "/__bug3821/pause")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.ProtoMajor != 2 {
+		t.Fatalf("instrument: served over %s, want HTTP/2", resp.Proto)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != "first.second." {
+		t.Fatalf("body %q, err %v: the stream was reset while the handler paused between writes", body, err)
 	}
 }
