@@ -154,6 +154,11 @@ func loadStoreLocked(path string) (*CredentialStore, error) {
 			return newEmptyStore(), nil
 		}
 		if i >= credentialsEmptyRereads {
+			// A stat that shows a body means a save wrote between the last read
+			// and the stat: read once more rather than answer empty (BUG-3838).
+			if serr == nil && fi.Size() != 0 && i == credentialsEmptyRereads {
+				continue
+			}
 			if serr == nil {
 				emptyConfirmed.set(path, fi)
 			}
@@ -164,10 +169,15 @@ func loadStoreLocked(path string) (*CredentialStore, error) {
 }
 
 // emptyConfirmed is the empty credentials file a locked load already waited
-// out (BUG-3829). A save moves the mtime at its truncate, even of a file that
-// is already empty (measured on ext4, Linux 6.17: ftruncate(0) of an empty
-// file sets mtime to now), so a later empty read of a file a save is
-// rewriting does not match and is re-read again.
+// out (BUG-3829). A save sets the file's mtime to now before it truncates
+// (writeFileInPlace0600), even when the file is already empty, so a later
+// empty read of a file a save is rewriting does not match and is re-read
+// again. The save sets it explicitly because the truncate alone is not
+// enough everywhere: ftruncate(0) of an empty file moved mtime on ext4
+// (Linux 6.17), but POSIX requires that only when the size changes, and
+// macOS and Windows were never measured (BUG-3838). Residuals: a save by a
+// pad built before BUG-3838, or one whose touch fails (a foreign-owned
+// file), relies on the truncate as before.
 //
 // Only a file whose mtime is emptyConfirmedMinAge older than the confirmation
 // is remembered. A later save is stamped no earlier than the confirmation, so
@@ -411,7 +421,14 @@ func writeFileInPlace0600(path string, data []byte) error {
 	}
 	if fi.Mode().IsRegular() {
 		_ = f.Chmod(0600)
-		if err := f.Truncate(0); err != nil {
+		// The mtime is set before the truncate, so a reader's emptyConfirmed
+		// memo stops matching even when the file is already empty: POSIX moves
+		// mtime on ftruncate only when the size changes, and Windows'
+		// SetEndOfFile need not either (BUG-3838). Best effort, like the chmod:
+		// a foreign-owned file we may write but not touch keeps that residual.
+		now := time.Now()
+		_ = os.Chtimes(path, now, now)
+		if err := truncateCredentialsFile(f, 0); err != nil {
 			_ = f.Close()
 			return err
 		}
@@ -426,6 +443,12 @@ func writeFileInPlace0600(path string, data []byte) error {
 
 // statOpenFile is f.Stat, a variable so a test can fail it (BUG-3810).
 var statOpenFile = (*os.File).Stat
+
+// truncateCredentialsFile is f.Truncate, a variable so a test can stall a
+// save between its truncate and its write, and give the truncate the
+// semantics of a platform where it leaves an empty file's mtime alone
+// (BUG-3838).
+var truncateCredentialsFile = (*os.File).Truncate
 
 // credentialsLockWarning is where a write that could not take the lock says
 // so; a variable so a test can read it.
