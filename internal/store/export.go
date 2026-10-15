@@ -693,7 +693,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		Settings:    data.Workspace.Settings,
 		OwnerID:     ownerID,
 		Source:      source,
-	})
+	}, mintOpts.preserveSlug)
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}

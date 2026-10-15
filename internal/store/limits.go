@@ -246,7 +246,8 @@ func (e *PlanLimitError) Error() string {
 type MintOption func(*mintOptions)
 
 type mintOptions struct {
-	planLimit bool
+	planLimit    bool
+	preserveSlug bool
 }
 
 // WithPlanLimit makes the insert enforce the owner's plan limit for what it
@@ -255,6 +256,15 @@ type mintOptions struct {
 // import pass nothing and are unchanged.
 func WithPlanLimit() MintOption {
 	return func(o *mintOptions) { o.planLimit = true }
+}
+
+// WithPreservedSlug keeps a supplied workspace slug VERBATIM instead of
+// slugifying it (BUG-3769), still made unique. It is for a COPY of an
+// existing workspace, whose slug is already in URLs, bookmarks and .pad.toml
+// links: `pad db migrate-to-pg` passes it. Every door that mints a new
+// workspace leaves it off and gets a canonical slug.
+func WithPreservedSlug() MintOption {
+	return func(o *mintOptions) { o.preserveSlug = true }
 }
 
 func resolveMintOptions(opts []MintOption) mintOptions {

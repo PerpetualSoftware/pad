@@ -98,15 +98,16 @@ type execQueryer interface {
 // the import asking for the owner lock at its end. With one order, the create
 // waits on the slug holding nothing, and the import commits.
 func (s *Store) CreateWorkspace(input models.WorkspaceCreate, opts ...MintOption) (*models.Workspace, error) {
-	if !resolveMintOptions(opts).planLimit {
-		return s.createWorkspaceQ(s.db, input)
+	mo := resolveMintOptions(opts)
+	if !mo.planLimit {
+		return s.createWorkspaceQ(s.db, input, mo.preserveSlug)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: begin: %w", err)
 	}
 	defer tx.Rollback()
-	ws, err := s.createWorkspaceQ(tx, input)
+	ws, err := s.createWorkspaceQ(tx, input, mo.preserveSlug)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +137,7 @@ var workspaceSlugProbedHook func(slug string)
 // the caller's transaction holds its own connection can wait for a free one,
 // and under MaxOpenConns(1) there is none to wait for — the deadlock class
 // BUG-2778 and BUG-2409 are both instances of.
-func (s *Store) createWorkspaceQ(q execQueryer, input models.WorkspaceCreate) (*models.Workspace, error) {
+func (s *Store) createWorkspaceQ(q execQueryer, input models.WorkspaceCreate, preserveSlug bool) (*models.Workspace, error) {
 	// A bot never owns a workspace (TASK-3392).
 	if input.OwnerID != "" {
 		if err := s.refuseAppPrincipalQ(q, input.OwnerID); err != nil {
@@ -151,8 +152,12 @@ func (s *Store) createWorkspaceQ(q execQueryer, input models.WorkspaceCreate) (*
 	// an import name override all used to land verbatim, spaces and capitals
 	// included, in a value every URL carries. A name with nothing slugify
 	// keeps (all punctuation, or all non-ASCII) falls back to "workspace",
-	// as roles, items and collections fall back to theirs.
+	// as roles, items and collections fall back to theirs. A copy of an
+	// existing workspace (WithPreservedSlug) keeps the slug it already has.
 	slug := slugify(input.Slug)
+	if preserveSlug && input.Slug != "" {
+		slug = input.Slug
+	}
 	if slug == "" {
 		slug = slugify(input.Name)
 	}
