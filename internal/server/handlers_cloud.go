@@ -860,6 +860,13 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.RemoveOAuthProvider(user.ID, input.Provider); err != nil {
+		if errors.Is(err, store.ErrLastSignInMethod) {
+			// A concurrent unlink took the other method after the check
+			// above read the account (BUG-3816).
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"Cannot unlink your only sign-in method. Link another provider or set a password first.")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
