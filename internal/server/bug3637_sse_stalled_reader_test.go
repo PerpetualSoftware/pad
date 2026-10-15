@@ -109,7 +109,7 @@ func (c *writeFailureConn) Write(p []byte) (int, error) {
 // openStalledStream sends one GET for path over a raw connection, reads the
 // response head, and then never reads again. The connection stays open until
 // the test ends, so a release cannot come from the client going away.
-func openStalledStream(t *testing.T, ts *httptest.Server, wf *writeFailures, path string, header http.Header) {
+func openStalledStream(t *testing.T, ts *httptest.Server, wf *writeFailures, path string, header http.Header) http.Header {
 	t.Helper()
 	u, err := url.Parse(ts.URL)
 	if err != nil {
@@ -120,7 +120,9 @@ func openStalledStream(t *testing.T, ts *httptest.Server, wf *writeFailures, pat
 		t.Fatalf("dial: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	wf.watch(conn.LocalAddr().String())
+	if wf != nil { // nil: a server not built by stalledStreamServer
+		wf.watch(conn.LocalAddr().String())
+	}
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetReadBuffer(4096)
 	}
@@ -147,6 +149,7 @@ func openStalledStream(t *testing.T, ts *httptest.Server, wf *writeFailures, pat
 	if !strings.Contains(status, " 200 ") {
 		t.Fatalf("status line %q, want 200", strings.TrimSpace(status))
 	}
+	got := http.Header{}
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
@@ -155,8 +158,12 @@ func openStalledStream(t *testing.T, ts *httptest.Server, wf *writeFailures, pat
 		if line == "\r\n" {
 			break
 		}
+		if k, v, ok := strings.Cut(strings.TrimRight(line, "\r\n"), ":"); ok {
+			got.Add(k, strings.TrimSpace(v))
+		}
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	return got
 }
 
 // How long the buffers may take to fill. This bounds the harness, not the

@@ -40,7 +40,7 @@ func StructuredLogger(next http.Handler) http.Handler {
 		start := time.Now()
 		ww := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
-		next.ServeHTTP(ww, r)
+		next.ServeHTTP(withFlushError(ww), r) // BUG-3827: chi drops flush errors
 
 		duration := time.Since(start)
 		status := ww.Status()

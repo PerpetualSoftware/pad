@@ -56,6 +56,13 @@ type Server struct {
 	// this server's SSE streams. Tests only (BUG-3637).
 	sseWriteTimeoutOverride time.Duration
 
+	// sseStreamFailedForTesting, when set, is called with the error that
+	// failed an event stream (its first failed write or flush). A TEST-ONLY
+	// seam, nil in production: it is how a test sees that a flush failure
+	// reached the stream through the middleware chain (BUG-3827), which
+	// otherwise looks the same from outside as the request's context ending.
+	sseStreamFailedForTesting func(err error)
+
 	// accountExportHooks, when set, replace the account export's deadline and
 	// its two mid-stream store reads. Tests only (BUG-3626). Per server, not
 	// package variables: the export's read runs on its own goroutine, and a

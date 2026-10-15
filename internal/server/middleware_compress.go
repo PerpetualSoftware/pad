@@ -81,7 +81,11 @@ func compressSkips(r *http.Request) bool {
 // CompressResponses gzips (or deflates) what the client accepts, except what
 // compressSkips names.
 func CompressResponses(next http.Handler) http.Handler {
-	compressed := chimiddleware.Compress(5)(next)
+	// chi's compressor drops flush errors (BUG-3827); the handler gets a
+	// writer that reports them.
+	compressed := chimiddleware.Compress(5)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(withFlushError(w), r)
+	}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if compressSkips(r) {
 			next.ServeHTTP(w, r)
