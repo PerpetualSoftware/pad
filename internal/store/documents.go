@@ -404,8 +404,8 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 			// Falls back to full content if the diff isn't meaningfully smaller.
 			versionContent := existing.Content
 			isDiff := false
-			patch := diff.CreateReversePatch(existing.Content, *input.Content)
-			if diff.IsDiffSmaller(patch, existing.Content) {
+			// ok is false for text go-diff cannot patch (BUG-3839).
+			if patch, ok := diff.ReversePatch(existing.Content, *input.Content); ok && diff.IsDiffSmaller(patch, existing.Content) {
 				versionContent = patch
 				isDiff = true
 			}

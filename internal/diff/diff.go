@@ -5,6 +5,7 @@ package diff
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	difflib "github.com/sergi/go-diff/diffmatchpatch"
 )
@@ -13,6 +14,7 @@ var dmp = difflib.New()
 
 // CreatePatch computes a compact patch that transforms oldText into newText.
 // The patch can be applied with ApplyPatch to recover newText from oldText.
+// Both texts must be valid UTF-8 (BUG-3839; see ReversePatch).
 func CreatePatch(oldText, newText string) string {
 	diffs := dmp.DiffMain(oldText, newText, true)
 	patches := dmp.PatchMake(oldText, diffs)
@@ -52,8 +54,26 @@ func IsDiffSmaller(patch, fullContent string) bool {
 // CreateReversePatch computes a patch that transforms newText back into oldText.
 // Used for reverse-diff version storage: current doc has latest content,
 // versions store patches to go backwards.
+//
+// Both texts must be valid UTF-8, as for CreatePatch; production code calls
+// ReversePatch, which checks (BUG-3839, TestNoUncheckedPatchCallers).
 func CreateReversePatch(oldText, newText string) string {
 	return CreatePatch(newText, oldText)
+}
+
+// ReversePatch is CreateReversePatch for text that may not be valid UTF-8
+// (BUG-3839). go-diff works on runes and slices the input at byte offsets it
+// derives from them, so invalid UTF-8 near an edit either panics (slice
+// bounds out of range) or yields a patch that does not reproduce oldText:
+// "hello world" -> "hello \xff world" reverse-applied to "hello d". ok is
+// false when either side is not valid UTF-8, and the caller stores the full
+// body instead. Never sanitize and diff: the version would then record a body
+// it does not hold.
+func ReversePatch(oldText, newText string) (patch string, ok bool) {
+	if !utf8.ValidString(oldText) || !utf8.ValidString(newText) {
+		return "", false
+	}
+	return CreatePatch(newText, oldText), true
 }
 
 // FormatDiffSummary returns a human-readable summary of changes. Its "lines"

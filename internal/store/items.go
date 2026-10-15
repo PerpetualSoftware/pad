@@ -3075,13 +3075,15 @@ func (s *Store) updateItemWithParentLinkOnce(
 			createdVersionID = vid
 			versionContent := existing.Content
 			isDiff := false
-			patch := diff.CreateReversePatch(existing.Content, *newBody)
+			// ok is false for a body that is not valid UTF-8, which go-diff
+			// cannot patch (BUG-3839): the full body is stored instead.
+			patch, patchOK := diff.ReversePatch(existing.Content, *newBody)
 			// A reverse patch is resolved backwards from the ROW's body, which
 			// on the applier path (ExternalContent, BUG-3327) is still the old
 			// body until the tab's flush lands: a patch would resolve against
 			// the wrong base in that window. The full body resolves the same
 			// whatever the row holds.
-			if input.Content != nil && diff.IsDiffSmaller(patch, existing.Content) {
+			if input.Content != nil && patchOK && diff.IsDiffSmaller(patch, existing.Content) {
 				versionContent = patch
 				isDiff = true
 			}
@@ -6209,7 +6211,7 @@ func (s *Store) rebaseNewestVersionPatch(tx *sql.Tx, itemID, oldBody, newBody st
 		return nil
 	}
 	stored, storedDiff := body, false
-	if patch := diff.CreateReversePatch(body, newBody); diff.IsDiffSmaller(patch, body) {
+	if patch, ok := diff.ReversePatch(body, newBody); ok && diff.IsDiffSmaller(patch, body) {
 		stored, storedDiff = patch, true
 	}
 	added, removed := diff.LineCounts(body, newBody)
