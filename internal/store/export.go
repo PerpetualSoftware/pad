@@ -580,6 +580,11 @@ type ImportReport struct {
 	// The default is removed rather than left naming nothing; a value that is
 	// not an id (a ref like TASK-2) is kept, since it resolves late.
 	DroppedRelationDefaults []string
+	// DroppedUniqueValues lists each unique value the import removed from an
+	// item because an item earlier in the archive already held it (BUG-3825).
+	// An import creates a new workspace, so a duplicate can only come from
+	// inside the archive. The first item in archive order keeps the value.
+	DroppedUniqueValues []models.ImportUniqueDrop
 }
 
 // ImportWorkspace is ImportWorkspaceWithReport for callers with no use for the
@@ -753,6 +758,10 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// outside the constraint and can conflict with nothing.
 	seenKinds := map[string]string{}
 	invocationCollection := ""
+	// BUG-3825: per new collection, its ref prefix and the keys whose values
+	// must be unique among its live items. See importUniqueKeys.
+	collPrefix := map[string]string{}
+	collUniqueKeys := map[string][]string{}
 
 	for _, c := range data.Collections {
 		newCollID := newID()
@@ -938,6 +947,8 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 				return nil, invalidf("import collection %q: %v; fix abandoned_options in the export and import again", c.Name, err)
 			}
 		}
+		collPrefix[newCollID] = prefix
+		collUniqueKeys[newCollID] = importUniqueKeys(importedSchema)
 
 		// NULLIF so an ABSENT deleted_at — every archive written before
 		// BUG-2884, which decodes the missing key as "" — imports the
@@ -1037,6 +1048,11 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	coercedTags := make(map[string]string, len(data.Items))
 	// Slugs this import has already written. See the collision note in the loop.
 	claimedSlugs := make(map[string]bool, len(data.Items))
+	// Unique values this import has already written (BUG-3825), keyed by
+	// collection, field key and slot (see importUniqueValue), to the ref of
+	// the item holding it. In
+	// memory, not by query: the new workspace holds only this import's rows.
+	claimedUnique := map[[3]string]string{}
 	// itemMap records the id an item WOULD get; insertedItems records the ones
 	// that actually landed. The two differ for an orphaned item — one whose
 	// collection is missing from the bundle — because the map entry is written
@@ -1156,6 +1172,23 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			return nil, fmt.Errorf("import item %s: persist structured entry ids: %w", it.ID, err)
 		} else if changed {
 			fieldsJSON = fixed
+		}
+		// BUG-3825: a unique value an earlier item in the archive already
+		// holds is dropped and reported. Before the INSERT, so the
+		// invocation_slug index never sees the duplicate, and before
+		// coercedFields, which the second pass rewrites the row from.
+		itemRef := fmt.Sprintf("%s-%d", collPrefix[newCollID], itemNumber)
+		if keys := collUniqueKeys[newCollID]; len(keys) > 0 {
+			kept, drops, err := dropImportedUniqueDuplicates(fieldsJSON, newCollID, itemRef, keys, claimedUnique)
+			if err != nil {
+				return nil, fmt.Errorf("import item %s: %w", it.ID, err)
+			}
+			for _, d := range drops {
+				slog.Warn("import: dropped a unique value an earlier item in the archive holds",
+					"workspace_id", ws.ID, "item", d.Item, "field", d.Key, "holder", d.Holder)
+			}
+			fieldsJSON = kept
+			report.DroppedUniqueValues = append(report.DroppedUniqueValues, drops...)
 		}
 		tagsJSON := coerceJSONForImport(it.Tags, "[]", "items.tags", it.ID, ws.ID, false)
 		coercedFields[it.ID] = fieldsJSON

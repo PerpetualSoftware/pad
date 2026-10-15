@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func TestPrintImportSummary(t *testing.T) {
@@ -64,5 +66,25 @@ func TestImportedWorkspaceDecodesBothHalves(t *testing.T) {
 	}
 	if old.ImportSummary != nil {
 		t.Errorf("a response with no summary decoded one: %+v", old.ImportSummary)
+	}
+}
+
+// BUG-3825: each unique value the import dropped is printed on its own line in
+// move's `dropped:` shape, led by the item that lost it.
+func TestPrintImportDrops(t *testing.T) {
+	var out bytes.Buffer
+	printImportDrops(&out, []models.ImportUniqueDrop{
+		{Item: "PLAYB-2", Key: "invocation_slug", Value: "ship", Holder: "PLAYB-1"},
+		{Item: "KEY-3", Key: "code", Value: "a\tb", Holder: "KEY-1"},
+	})
+	want := "  dropped: PLAYB-2: invocation_slug \"ship\" is taken by PLAYB-1\n" +
+		"  dropped: KEY-3: code \"a\\tb\" is taken by KEY-1\n"
+	if out.String() != want {
+		t.Errorf("got\n%s\nwant\n%s", out.String(), want)
+	}
+	out.Reset()
+	printImportDrops(&out, nil)
+	if out.Len() != 0 {
+		t.Errorf("no drops printed %q, want nothing", out.String())
 	}
 }
