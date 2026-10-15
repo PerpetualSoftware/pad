@@ -24,8 +24,8 @@ func advisoryHasWaiter(t *testing.T, db *sql.DB, key string) bool {
 	return n > 0
 }
 
-// TestBUG3811_ConcurrentRemovalsKeepAnActiveAdmin holds demote or disable
-// open as the FIRST door. This holds account deletion open, at the point it
+// Unlike TestBUG3811_ConcurrentRemovalsKeepAnActiveAdmin, which holds demote
+// or disable open as the FIRST door, this holds account deletion open, at the point it
 // already holds its user-row lock, so a regression that moved the deletion's
 // guard after that lock (inverting account-deletion -> active-admins -> row)
 // lets the second door run straight through, and goes red.
