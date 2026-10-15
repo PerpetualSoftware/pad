@@ -267,3 +267,29 @@ func TestAdvertisedRevisionMatchesWhatTheTransportServes(t *testing.T) {
 			newest, AdvertisedMCPProtocolVersion)
 	}
 }
+
+// The server's stream admission keys the listen door on the versions the
+// mount's transport serves (BUG-3835 r7), read through SupportsProtocolVersion.
+// Both production mounts must expose it, the ChatGPT one through its wrapper,
+// or admission falls back to counting every modern version and a probing
+// client at a full budget gets 429 instead of the 400 it falls back on.
+func TestBothMountsReportTheVersionsTheyServe(t *testing.T) {
+	type versions interface{ SupportsProtocolVersion(string) bool }
+	for name, h := range map[string]http.Handler{
+		"mcp":     NewRemoteTransport(server.NewMCPServer("pad-test", "0.0.0"), generateOnlySessionIDs{}),
+		"chatgpt": WithChatGPTToolSchemes(NewRemoteTransport(server.NewMCPServer("pad-test", "0.0.0"), generateOnlySessionIDs{})),
+	} {
+		v, ok := h.(versions)
+		if !ok {
+			t.Fatalf("%s: the mount's handler does not report the versions it serves", name)
+		}
+		if v.SupportsProtocolVersion(mcpspec.ProtocolVersion20260728) {
+			t.Errorf("%s: reports serving %s", name, mcpspec.ProtocolVersion20260728)
+		}
+		for _, legacy := range ServedProtocolVersions() {
+			if !v.SupportsProtocolVersion(legacy) {
+				t.Errorf("%s: does not report serving %s", name, legacy)
+			}
+		}
+	}
+}

@@ -199,7 +199,7 @@ type Server struct {
 	// Zero (production) means midStreamGapCooldown. Tests only; set before
 	// serving, read per connection.
 	midStreamGapCooldownOverride time.Duration
-	sseMaxPerUser                int              // per-user SSE connection limit across BOTH stream endpoints (0 = unlimited, BUG-2726)
+	sseMaxPerUser                int              // per-user streaming connection limit across both SSE endpoints and MCP's long-lived streams (0 = unlimited, BUG-2726, BUG-3835)
 	streamAdmit                  *streamAdmission // shared admission gate for both stream endpoints (BUG-2726)
 	collabAdmitOnce              sync.Once        // lazily builds collabAdmit for servers that never call SetCollabLimits
 	collabAdmit                  *streamAdmission // per-user open collab WebSocket bound (BUG-1308)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -241,13 +242,30 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 // the middleware chain writes before this runs are bounded too. The stream's
 // first deadline call reaches deadlineWriter.SetWriteDeadline, after which
 // the deadline is this stream's alone.
+//
+// It also bounds the transport's long-lived streams (BUG-3835): a request
+// mcpLongLivedRequest names (the GET stream, or a listen on a modern
+// protocol version the transport serves) takes a stream admission slot
+// before the transport runs and is refused 429 over the budget, and a
+// response committed as an event stream carries a ': keepalive' comment
+// until its final event or the handler's return.
 func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
+	served := mcpServedVersion(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		stream, err := s.openSSEStream(w)
 		if err != nil {
 			slog.Error("MCP: refusing to serve", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
 			return
+		}
+		// The long-lived doors take a stream slot before the transport runs,
+		// so a refusal is a plain 429 and leaves no session state (BUG-3835).
+		release, ok := s.admitMCPStream(stream, r, served)
+		if !ok {
+			return
+		}
+		if release != nil {
+			defer release()
 		}
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
@@ -258,7 +276,29 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 			case <-ctx.Done():
 			}
 		}()
-		next.ServeHTTP(stream, r.WithContext(ctx))
+		mw := newMCPStreamWriter(stream)
+		stop := make(chan struct{})
+		var keepalives sync.WaitGroup
+		keepalives.Add(1)
+		go func() {
+			defer keepalives.Done()
+			s.runMCPKeepalive(mw, stop)
+		}()
+		func() {
+			// The keepalive goroutine is stopped and joined before this
+			// handler returns, so net/http never sees a write after it
+			// (BUG-3835). Deferred, so a panicking transport stops it too
+			// (hunter r2): chi's Recoverer swallows the panic and the
+			// connection may be reused. A tick between the transport's return
+			// and end() can still add one comment frame to a response that is
+			// ending, which is valid SSE (Codex r1).
+			defer func() {
+				mw.end()
+				close(stop)
+				keepalives.Wait()
+			}()
+			next.ServeHTTP(mw, r.WithContext(ctx))
+		}()
 		// A handler that only calls WriteHeader (mcp-go's DELETE) leaves the
 		// response for net/http to commit after it returns, outside every
 		// Write and Flush above, and openSSEStream cleared the deadline. Arm

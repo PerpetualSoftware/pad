@@ -112,9 +112,9 @@ type Config struct {
 	IPChangeEnforce string `toml:"ip_change_enforce"` // "" (log only) or "strict" (revoke+reject session when client IP OR User-Agent hash differs from the one recorded at session creation).
 
 	// SSE limits
-	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)
+	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max streaming connections: both SSE endpoints and MCP's long-lived streams (0 = unlimited)
 	SSEMaxPerWorkspace int `toml:"sse_max_per_workspace"` // Per-workspace max SSE connections (0 = unlimited)
-	SSEMaxPerUser      int `toml:"sse_max_per_user"`      // Per-user max streaming connections across BOTH SSE endpoints (0 = unlimited, BUG-2726)
+	SSEMaxPerUser      int `toml:"sse_max_per_user"`      // Per-user max streaming connections across both SSE endpoints and MCP's long-lived streams (0 = unlimited, BUG-2726, BUG-3835)
 	CollabMaxPerUser   int `toml:"collab_max_per_user"`   // Per-user max open collab WebSockets (0 or less = unlimited, as the SSE knobs, BUG-1308)
 
 	// RedisNamespace scopes every Redis key and channel Pad uses to one

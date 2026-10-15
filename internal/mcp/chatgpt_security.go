@@ -83,33 +83,57 @@ const chatGPTListBodyLimit = 64 << 10
 // marshals a fixed set of keys, so the top-level copy is added here. Only
 // a single (non-batch) tools/list request's JSON response is rewritten;
 // every other request and response passes through byte for byte.
+//
+// The returned handler forwards SupportsProtocolVersion when next has it, so
+// the server's stream admission sees the same served versions through the
+// wrapper as on /mcp (BUG-3835).
 func WithChatGPTToolSchemes(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Body == nil {
-			next.ServeHTTP(w, r)
-			return
+	h := chatGPTToolSchemes{next: next}
+	if v, ok := next.(interface{ SupportsProtocolVersion(string) bool }); ok {
+		return chatGPTToolSchemesVersioned{h, v}
+	}
+	return h
+}
+
+type chatGPTToolSchemes struct{ next http.Handler }
+
+// chatGPTToolSchemesVersioned is chatGPTToolSchemes over a transport that
+// reports the protocol versions it serves.
+type chatGPTToolSchemesVersioned struct {
+	chatGPTToolSchemes
+	versions interface{ SupportsProtocolVersion(string) bool }
+}
+
+func (h chatGPTToolSchemesVersioned) SupportsProtocolVersion(v string) bool {
+	return h.versions.SupportsProtocolVersion(v)
+}
+
+func (h chatGPTToolSchemes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	next := h.next
+	if r.Method != http.MethodPost || r.Body == nil {
+		next.ServeHTTP(w, r)
+		return
+	}
+	head, err := io.ReadAll(io.LimitReader(r.Body, chatGPTListBodyLimit+1))
+	r.Body = readCloser{io.MultiReader(bytes.NewReader(head), r.Body), r.Body}
+	if err != nil || !isToolsList(head) {
+		next.ServeHTTP(w, r)
+		return
+	}
+	rec := &bufferedResponse{header: http.Header{}, status: http.StatusOK}
+	next.ServeHTTP(rec, r)
+	body := rec.body.Bytes()
+	if rec.status == http.StatusOK && strings.HasPrefix(rec.header.Get("Content-Type"), "application/json") {
+		if out, ok := liftSecuritySchemes(body); ok {
+			body = out
+			rec.header.Set("Content-Length", strconv.Itoa(len(body)))
 		}
-		head, err := io.ReadAll(io.LimitReader(r.Body, chatGPTListBodyLimit+1))
-		r.Body = readCloser{io.MultiReader(bytes.NewReader(head), r.Body), r.Body}
-		if err != nil || !isToolsList(head) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		rec := &bufferedResponse{header: http.Header{}, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		body := rec.body.Bytes()
-		if rec.status == http.StatusOK && strings.HasPrefix(rec.header.Get("Content-Type"), "application/json") {
-			if out, ok := liftSecuritySchemes(body); ok {
-				body = out
-				rec.header.Set("Content-Length", strconv.Itoa(len(body)))
-			}
-		}
-		for k, v := range rec.header {
-			w.Header()[k] = v
-		}
-		w.WriteHeader(rec.status)
-		_, _ = w.Write(body)
-	})
+	}
+	for k, v := range rec.header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(rec.status)
+	_, _ = w.Write(body)
 }
 
 type readCloser struct {
