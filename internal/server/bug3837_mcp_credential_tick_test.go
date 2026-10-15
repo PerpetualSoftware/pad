@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,11 +19,16 @@ import (
 // context ends, which is how mcp-go's GET and listen loops leave.
 
 type bug3837Fixture struct {
-	srv    *Server
-	user   *models.User
-	pat    *models.APITokenWithSecret
-	access string
-	reqID  chan string // OAuth request ids seen by the transport
+	srv      *Server
+	user     *models.User
+	pat      *models.APITokenWithSecret
+	access   string
+	refresh  string
+	clientID string
+	reqID    chan string // OAuth request ids seen by the transport
+	// emit makes the transport write notification frames until its context
+	// ends, one Write per frame, as mcp-go's writeSSEEvent does.
+	emit atomic.Bool
 }
 
 func newBug3837Fixture(t *testing.T, accessLifespan time.Duration) *bug3837Fixture {
@@ -37,6 +44,15 @@ func newBug3837Fixture(t *testing.T, accessLifespan time.Duration) *bug3837Fixtu
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
+		for f.emit.Load() {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(time.Millisecond):
+			}
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", `{"jsonrpc":"2.0","method":"notifications/message"}`)
+			w.(http.Flusher).Flush()
+		}
 		<-r.Context().Done()
 	}), testCanonicalAudience, testAuthServerURL, nil)
 	o, err := oauth.NewServer(oauth.Config{
@@ -56,9 +72,11 @@ func newBug3837Fixture(t *testing.T, accessLifespan time.Duration) *bug3837Fixtu
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
 		"verifier-bug3837-quick-brown-fox-jumps-over-lazy-dog-12")
+	f.clientID = clientID
 	f.access, _ = tokens["access_token"].(string)
-	if f.access == "" {
-		t.Fatalf("missing access token: %v", tokens)
+	f.refresh, _ = tokens["refresh_token"].(string)
+	if f.access == "" || f.refresh == "" {
+		t.Fatalf("missing access or refresh token: %v", tokens)
 	}
 	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "BUG-3837"})
 	if err != nil {
@@ -85,6 +103,15 @@ func (f *bug3837Fixture) openWithScheme(t *testing.T, scheme, bearer string) <-c
 
 func (f *bug3837Fixture) openAs(t *testing.T, scheme, bearer string, listen bool) <-chan struct{} {
 	t.Helper()
+	done, _ := f.openRecorded(t, scheme, bearer, listen)
+	return done
+}
+
+// openRecorded is openAs, and also returns the response recorder. Read its
+// body only after done is closed.
+func (f *bug3837Fixture) openRecorded(t *testing.T, scheme, bearer string, listen bool) (<-chan struct{}, *deadlineRecorder) {
+	t.Helper()
+	rec := newDeadlineRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	req := httptest.NewRequest("GET", "/mcp", nil)
@@ -100,7 +127,7 @@ func (f *bug3837Fixture) openAs(t *testing.T, scheme, bearer string, listen bool
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		f.srv.ServeHTTP(newDeadlineRecorder(), req)
+		f.srv.ServeHTTP(rec, req)
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for f.srv.admission().heldTotal() == 0 {
@@ -114,7 +141,7 @@ func (f *bug3837Fixture) openAs(t *testing.T, scheme, bearer string, listen bool
 		}
 		time.Sleep(time.Millisecond)
 	}
-	return done
+	return done, rec
 }
 
 func (f *bug3837Fixture) assertEnds(t *testing.T, done <-chan struct{}, why string) {
@@ -275,4 +302,54 @@ func TestMCP_BUG3837_DeletedUserIsNotStillValid(t *testing.T) {
 	if f.srv.mcpStreamPrincipalStillValid(req) {
 		t.Fatal("a stream whose user no longer exists is still valid")
 	}
+}
+
+// The lead's KEEP ruling on rotation (on BUG-3837): a refresh rotation flips
+// the old access token inactive, so a live stream opened with it ends at its
+// next tick, even though the grant is live. Pinned with its three conditions:
+// it ends within one tick of the rotation, it ends between frames (the tick
+// only cancels the context, and the transport sees that between writes), and
+// the rotated-in token opens a fresh stream that stays open.
+func TestMCP_BUG3837_RefreshRotationEndsTheStreamAndTheNewTokenOpensOne(t *testing.T) {
+	f := newBug3837Fixture(t, 0)
+	// A tick long enough to measure "within one" against, short enough to run.
+	const tick = 400 * time.Millisecond
+	f.srv.mcpCredentialRevalOverride = tick
+	f.emit.Store(true)
+	done, rec := f.openRecorded(t, "Bearer", f.access, false)
+	// Past the jittered first tick, so the next one is at most a tick away.
+	f.assertStaysOpen(t, done, 2)
+
+	code, body := bug3678Refresh(f.srv, f.clientID, f.refresh)
+	rotated := time.Now()
+	if code != http.StatusOK {
+		t.Fatalf("refresh: status %d: %v", code, body)
+	}
+	newAccess, _ := body["access_token"].(string)
+	if newAccess == "" || newAccess == f.access {
+		t.Fatalf("refresh minted no new access token: %v", body)
+	}
+	f.assertEnds(t, done, "access token rotated out by a refresh")
+	// One tick, plus scheduling and one introspection's worth of slack.
+	if took := time.Since(rotated); took > tick+600*time.Millisecond {
+		t.Fatalf("the stream ended %v after the rotation, want within one tick (%v)", took, tick)
+	}
+
+	frames := rec.Body.String()
+	if n := strings.Count(frames, "event: message\n"); n == 0 {
+		t.Fatal("instrument: the transport wrote no frames before the stream ended")
+	}
+	if !strings.HasSuffix(frames, "\n\n") {
+		t.Fatalf("the stream ended mid-frame: body ends %q", frames[max(0, len(frames)-80):])
+	}
+	for _, frame := range strings.Split(strings.TrimSuffix(frames, "\n\n"), "\n\n") {
+		if frame != `event: message`+"\n"+`data: {"jsonrpc":"2.0","method":"notifications/message"}` &&
+			!strings.HasPrefix(frame, ":") {
+			t.Fatalf("a half-written or foreign frame on the stream: %q", frame)
+		}
+	}
+
+	f.emit.Store(false)
+	fresh := f.open(t, newAccess, false)
+	f.assertStaysOpen(t, fresh, 3)
 }
