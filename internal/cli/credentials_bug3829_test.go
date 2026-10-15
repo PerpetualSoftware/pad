@@ -137,3 +137,26 @@ func TestBUG3829_RecentlyEmptiedFileIsNotRemembered(t *testing.T) {
 		t.Errorf("reads over two loads of a just-emptied file = %d, want 8 (1+3 re-reads each)", *reads)
 	}
 }
+
+// A file whose mtime is in the future (clock skew) is not remembered either:
+// it is re-read on every load rather than trusted.
+func TestBUG3829_FutureMtimeIsNotRemembered(t *testing.T) {
+	home := withTempHome(t)
+	path := writeCredsFile(t, home, "")
+	resetEmptyConfirmed(t)
+	shortRereads(t, 3, time.Millisecond)
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	reads := countReads(t, nil)
+
+	for i := 0; i < 2; i++ {
+		if _, err := LoadStore(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if *reads != 4+4 {
+		t.Errorf("reads over two loads of a future-mtime file = %d, want 8 (1+3 re-reads each)", *reads)
+	}
+}

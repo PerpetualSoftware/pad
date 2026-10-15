@@ -173,6 +173,9 @@ func loadStoreLocked(path string) (*CredentialStore, error) {
 // on a filesystem with coarse timestamps it could otherwise land in the same
 // tick and leave the mtime unchanged (Codex r1). A file emptied within the
 // last two seconds just pays the re-read bound on each load until it ages.
+// So does a file whose mtime is in the future (clock skew, Codex r2): the age
+// check reads it as recent and never remembers it. That errs toward the
+// re-read, which is the safe side, at the cost of the bound on every load.
 var emptyConfirmed confirmedEmptyFile
 
 const emptyConfirmedMinAge = 2 * time.Second
