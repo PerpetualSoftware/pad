@@ -63,6 +63,11 @@ type Server struct {
 	// otherwise looks the same from outside as the request's context ending.
 	sseStreamFailedForTesting func(err error)
 
+	// responseWriteTimeoutOverride, when non-zero, replaces
+	// responseWriteTimeout for this server's bounded responses. Tests only
+	// (BUG-3821).
+	responseWriteTimeoutOverride time.Duration
+
 	// accountExportHooks, when set, replace the account export's deadline and
 	// its two mid-stream store reads. Tests only (BUG-3626). Per server, not
 	// package variables: the export's read runs on its own goroutine, and a
@@ -1623,6 +1628,10 @@ func (s *Server) setupRouter() {
 		r.Use(MetricsMiddleware(s.metrics))
 	}
 	r.Use(chimiddleware.Recoverer)
+	// A rolling deadline on every response write, except routes that bound
+	// their own (BUG-3821; see middleware_write_deadline.go). It MUST come
+	// before CompressResponses, so its writer sits beneath the compressor.
+	r.Use(s.boundResponseWrites)
 	// gzip what the client accepts, except streams, upgrades, ranges and
 	// credential responses (TASK-2225; see middleware_compress.go).
 	r.Use(CompressResponses)
@@ -2706,8 +2715,9 @@ func (s *Server) Prepare(addr string) {
 		// legitimate request (cookies, auth, content-type, a few CSRF/CORS
 		// headers) and tight enough to cheaply reject header-flood DoS.
 		MaxHeaderBytes: 64 * 1024,
-		// WriteTimeout left at 0 — SSE connections are long-lived.
-		// Non-SSE handlers should use per-request context deadlines.
+		// WriteTimeout left at 0: the event streams are long-lived. Every
+		// other response is bounded per write by boundResponseWrites
+		// (BUG-3821); a context deadline cannot unblock a socket write.
 	}
 }
 
