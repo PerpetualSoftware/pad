@@ -78,7 +78,14 @@ func TestBUG3838_MemoDoesNotSkipASaveWhoseTruncateKeepsTheMtime(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	<-truncated
+	select {
+	case <-truncated:
+	case err := <-saved:
+		saved <- err // for the cleanup's receive
+		t.Fatalf("the save returned before its truncate stalled: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the save never reached its truncate")
+	}
 	reads := countReads(t, func(n int) {
 		if n == 2 {
 			release()
@@ -137,5 +144,52 @@ func TestBUG3838_FinalStatShowingABodyRereadsOnce(t *testing.T) {
 	}
 	if store.Get("http://a:7777") == nil || store.Get("http://b:7777") == nil {
 		t.Errorf("store = %+v, want the save's two entries", store.Credentials)
+	}
+}
+
+// The touch lands on the file the save opened, not on whatever the path names
+// by the time it runs: a symlink retargeted after the open must not take the
+// stamp while the opened file keeps its old mtime (codex r3 on BUG-3838).
+func TestBUG3838_TouchStampsTheOpenedFile(t *testing.T) {
+	dir := t.TempDir()
+	opened, other, link := dir+"/opened", dir+"/other", dir+"/credentials.json"
+	aged := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for _, p := range []string{opened, other} {
+		if err := os.WriteFile(p, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, aged, aged); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(opened, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	f, err := os.OpenFile(link, os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := touchCredentialsFile(f, link); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	for _, c := range []struct {
+		path  string
+		moved bool
+	}{{opened, true}, {other, false}} {
+		fi, err := os.Stat(c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if moved := !fi.ModTime().Equal(aged); moved != c.moved {
+			t.Errorf("%s mtime moved = %v, want %v", c.path, moved, c.moved)
+		}
 	}
 }
