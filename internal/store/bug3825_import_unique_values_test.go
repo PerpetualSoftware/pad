@@ -211,6 +211,9 @@ func TestBUG3825_SlotsMatchTheDatabase(t *testing.T) {
 		`1.7976931348623157e308`, `1e400`, `2e400`, `-1e400`, `1e-400`,
 		`123456789012345678901234567890`, `123456789012345678901234567891`,
 		`1e1000`, `10e999`, `1e1001`, `10e1000`, `"1` + strings.Repeat("0", 1001) + `"`,
+		`-1`, `-1.5`, `"-1.5"`, `-1e2`, `"-100"`, `-100`, `1E2`,
+		`0e-3`, `"0.000"`, `0.00e1`, `0.000`, `5e-1`, `0.5`, `"0.5"`,
+		`1e9223372036854775807`, `1e-9223372036854775808`,
 		`{"a":1}`, `"{\"a\":1}"`, `[1]`,
 	}
 	type slotted struct {
@@ -237,15 +240,18 @@ func TestBUG3825_SlotsMatchTheDatabase(t *testing.T) {
 	}
 	query := s.q(`SELECT ` + extract + ` = ` + extract)
 	checked := 0
+	refused := map[string]bool{}
 	for i := range vs {
 		for j := i + 1; j < len(vs); j++ {
 			a, b := vs[i], vs[j]
 			var equal sql.NullBool
 			err := s.db.QueryRow(query, `{"v":`+a.lit+`}`, `{"v":`+b.lit+`}`).Scan(&equal)
 			if err != nil {
-				// Postgres refuses a number outside numeric's range. Such a
-				// value cannot be stored, so it cannot collide either.
-				if s.dialect.Driver() == DriverPostgres {
+				// Postgres refuses a number outside numeric's range, SQLSTATE
+				// 22003 (hunter r5: only that error, never any). Such a value
+				// cannot be stored, so it cannot collide either.
+				if s.dialect.Driver() == DriverPostgres && strings.Contains(err.Error(), "SQLSTATE 22003") {
+					refused[a.lit+" vs "+b.lit] = true
 					continue
 				}
 				t.Fatalf("%s vs %s: %v", a.lit, b.lit, err)
@@ -270,6 +276,7 @@ func TestBUG3825_SlotsMatchTheDatabase(t *testing.T) {
 	if checked < 1000 {
 		t.Fatalf("instrument: only %d pairs were compared", checked)
 	}
+	t.Logf("%d pairs compared, %d refused by the database", checked, len(refused))
 }
 
 // Neither slot grows with the exponent: an archive is untrusted, and 1e999999

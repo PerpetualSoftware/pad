@@ -82,13 +82,15 @@ func importUniqueValue(key string, v any) (string, []string, bool) {
 		pg, value := importNumberSlots(string(t))
 		return text, []string{"pg:n:" + pg, "sqlite:n:" + value}, true
 	default:
-		// An object or array, never a valid slug. SQLite reads it as its
-		// compact JSON text, which a string can equal. Postgres prints jsonb's
-		// own rendering ({"a": 1}, keys reordered), which this does not
-		// reproduce, so on Postgres it is compared only with other objects and
-		// arrays, by the decoded value (Go re-encodes maps with sorted keys).
-		// The one miss left: a STRING spelled exactly as jsonb renders an
-		// object, which then fails the import on Postgres as it always did.
+		// An object or array, never a valid slug. Neither dialect's text for
+		// it is reproduced here: SQLite returns the stored text in its own key
+		// order, and Postgres prints jsonb's rendering ({"a": 1}, keys
+		// reordered, numbers normalised). It is compared by Go's re-encoding
+		// (sorted keys), and on Postgres only with other objects and arrays.
+		// The misses left, all hand-edited archives with a non-slug: a string
+		// spelled exactly as the database renders an object, and on Postgres
+		// two composites that differ only in a number's spelling ([1e2] and
+		// [100]). Each fails that import on the index, as it always did.
 		return text, []string{"pg:o:" + text, "sqlite:s:" + text}, true
 	}
 }
@@ -127,17 +129,23 @@ func importNumberSQLiteValue(lit string) string {
 	return "r:" + strconv.FormatFloat(f, 'g', -1, 64)
 }
 
+// importNumericMaxExp bounds the exponent importNumericKey does arithmetic
+// with, so len(intPart)+exp cannot overflow (codex r5). Postgres's numeric
+// holds at most 131072 digits before the point and 16383 after, so no number
+// it accepts comes near it.
+const importNumericMaxExp = 1 << 24
+
 // importNumericKey is the (value, scale) of a JSON number literal as
 // Postgres's numeric holds it: sign, significant digits, the decimal exponent
 // of the first of them, and the scale, max(0, fraction digits - exponent).
-// Zero has no sign. An exponent too large for an int stands for itself;
+// Zero has no sign. An exponent beyond importNumericMaxExp stands for itself;
 // Postgres refuses such a number anyway.
 func importNumericKey(lit string) string {
 	neg := strings.HasPrefix(lit, "-")
 	mant, exp := strings.TrimPrefix(lit, "-"), 0
 	if i := strings.IndexAny(mant, "eE"); i >= 0 {
 		e, err := strconv.Atoi(mant[i+1:])
-		if err != nil {
+		if err != nil || e > importNumericMaxExp || e < -importNumericMaxExp {
 			return "lit:" + lit
 		}
 		mant, exp = mant[:i], e
