@@ -118,7 +118,7 @@ func TestBUG3349_DisabledAccountIsRefusedBeforeTheAuthExemption(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Disabled, but the credential not revoked: the survivor case.
-	if err := srv.store.DisableUser(user.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(user.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -151,7 +151,7 @@ func TestBUG3349_DisabledAccountsOAuthGrantIsRefusedAtMCP(t *testing.T) {
 	if err != nil || user == nil {
 		t.Fatal(err)
 	}
-	if err := srv.store.DisableUser(user.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(user.ID); err != nil {
 		t.Fatal(err)
 	}
 	if rr := postMCP(srv, "/mcp", tok); rr.Code != http.StatusUnauthorized {
@@ -169,7 +169,7 @@ func TestBUG3349_TokenEndpointRefusesADisabledSubject(t *testing.T) {
 	}
 	refresh, client := lastRefresh, lastClientID
 	user, _ := srv.store.GetUserByEmail("oauth-test@example.com")
-	if err := srv.store.DisableUser(user.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(user.ID); err != nil {
 		t.Fatal(err)
 	}
 	rr := postOAuthForm(srv, "/oauth/token", url.Values{
@@ -189,7 +189,7 @@ func TestBUG3349_ConsentRefusesADisabledSession(t *testing.T) {
 	srv := twoResourceOAuthServer(t)
 	sess := newOAuthSession(t, srv)
 	user, _ := srv.store.GetUserByEmail("oauth-test@example.com")
-	if err := srv.store.DisableUser(user.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(user.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, code := mintWithResource(t, srv, sess, testCanonicalAudience); code == http.StatusOK {
@@ -215,7 +215,7 @@ func TestBUG3349_TOTPChallengeMintsNothingForADisabledAccount(t *testing.T) {
 	if b.Error.Details.ChallengeToken == "" {
 		t.Fatalf("no challenge minted (%d): %s", rr.Code, rr.Body.String())
 	}
-	if err := srv.store.DisableUser(userID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(userID); err != nil {
 		t.Fatal(err)
 	}
 	before := countRows(t, srv, `SELECT COUNT(*) FROM sessions WHERE user_id = ?`, userID)
@@ -239,7 +239,7 @@ func TestBUG3349_NoSessionForADisabledAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := srv.store.DisableUser(u.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(u.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := srv.store.CreateSession(u.ID, "cli-browser-auth", "192.0.2.1", "", time.Hour); !errors.Is(err, store.ErrUserDisabled) {
@@ -265,7 +265,7 @@ func TestBUG3349_ShareLinksAreSuspendedWhileTheCreatorIsDisabled(t *testing.T) {
 	if rr := doRequest(srv, "GET", "/api/v1/s/"+link.Token, nil); rr.Code != http.StatusOK {
 		t.Fatalf("fixture: the link does not serve (%d)", rr.Code)
 	}
-	if err := srv.store.DisableUser(creator.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(creator.ID); err != nil {
 		t.Fatal(err)
 	}
 	suspended := doRequest(srv, "GET", "/api/v1/s/"+link.Token, nil)
@@ -293,7 +293,7 @@ func TestBUG3349_EmailVerificationRefusesADisabledAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := srv.store.DisableUser(u.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(u.ID); err != nil {
 		t.Fatal(err)
 	}
 	rr := doRequest(srv, "POST", "/api/v1/auth/verify-email", map[string]any{"token": tok})
@@ -319,7 +319,7 @@ func TestBUG3349_AuthorizeTreatsADisabledSessionAsSignedOut(t *testing.T) {
 	if rr := doRequestWithCookie(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sess.sessionToken); rr.Code != http.StatusOK {
 		t.Fatalf("fixture: the consent page does not render for an enabled session (%d)", rr.Code)
 	}
-	if err := srv.store.DisableUser(user.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(user.ID); err != nil {
 		t.Fatal(err)
 	}
 	rr := doRequestWithCookie(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sess.sessionToken)

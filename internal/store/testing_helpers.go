@@ -306,3 +306,20 @@ func (s *Store) SetBeforeItemVersionsReadHookForTesting(hook func(itemID string)
 	s.beforeItemVersionsRead = hook
 	return func() { s.beforeItemVersionsRead = prev }
 }
+
+// DisableUserLeavingCredentialsForTesting sets disabled_at without revoking
+// anything and without the last-admin guard: the state a disable made before
+// BUG-3349 left behind, which the credential gates must still refuse. The
+// only production door is DisableUserAndRevokeAccess; Store.DisableUser,
+// which did this unguarded, was removed (BUG-3826).
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep
+// signal.
+func (s *Store) DisableUserLeavingCredentialsForTesting(userID string) error {
+	_, err := s.db.Exec(s.q(`UPDATE users SET disabled_at = ?, updated_at = ?, credential_epoch = credential_epoch + 1 WHERE id = ?`),
+		now(), now(), userID)
+	if err != nil {
+		return fmt.Errorf("disable user: %w", err)
+	}
+	return nil
+}

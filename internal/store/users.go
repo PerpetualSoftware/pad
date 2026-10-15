@@ -828,6 +828,11 @@ func (s *Store) RemoveOAuthProvider(userID, provider string) error {
 // does not count: they cannot sign in to recover anything.
 var ErrLastAdmin = fmt.Errorf("the instance must keep at least one active admin")
 
+// ErrUserNotFound is a role change or disable whose user is gone, typically
+// deleted between the handler's read and the write (BUG-3826). The handlers
+// answer it 404, not 409 last_active_admin or 500.
+var ErrUserNotFound = errors.New("user not found")
+
 // guardActiveAdminLossTx is called inside every transaction that can take
 // userID out of the set of active human admins: a demotion, a disable, an
 // account deletion. It refuses with ErrLastAdmin when userID is an active
@@ -1002,16 +1007,6 @@ func throttleTime(ts string) string {
 	return t.Add(-5 * time.Minute).Format(time.RFC3339)
 }
 
-// DisableUser soft-disables a user account by setting disabled_at.
-func (s *Store) DisableUser(userID string) error {
-	_, err := s.db.Exec(s.q(`UPDATE users SET disabled_at = ?, updated_at = ?, credential_epoch = credential_epoch + 1 WHERE id = ?`),
-		now(), now(), userID)
-	if err != nil {
-		return fmt.Errorf("disable user: %w", err)
-	}
-	return nil
-}
-
 // requireActiveUserTx is the one gate every credential-minting insert passes
 // (BUG-3349): it reads the user's row inside the insert's own transaction,
 // FOR SHARE on Postgres, and refuses with ErrUserDisabled when the account is
@@ -1092,6 +1087,20 @@ func (s *Store) DisableUserAndRevokeAccess(userID string) error {
 func (s *Store) disableGuardedTx(tx *sql.Tx, userID string) error {
 	if err := s.guardActiveAdminLossTx(tx, userID); err != nil {
 		return err
+	}
+	// The row lock the disable's UPDATE takes anyway, taken first so a user
+	// deleted since the handler read it is ErrUserNotFound, not a disable of
+	// nothing answered 200 (BUG-3826). After the guard, per its lock order.
+	q := `SELECT 1 FROM users WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		q += ` FOR NO KEY UPDATE`
+	}
+	var one int
+	if err := tx.QueryRow(s.q(q), userID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("disable user: read user: %w", err)
 	}
 	return s.disableUserAndRevokeAccessTx(tx, userID)
 }
@@ -1180,9 +1189,11 @@ func (s *Store) SetUserRole(userID, role string) error {
 		return fmt.Errorf("set user role: %w", err)
 	}
 
+	// A promotion only grows the admin set, so zero rows means the user is
+	// gone, never the last-admin refusal it used to answer (BUG-3826).
 	n, _ := result.RowsAffected()
 	if n == 0 {
-		return ErrLastAdmin
+		return ErrUserNotFound
 	}
 	return nil
 }
@@ -1212,7 +1223,7 @@ func (s *Store) demoteGuardedTx(tx *sql.Tx, userID string) error {
 		return fmt.Errorf("set user role: %w", err)
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
-		return fmt.Errorf("set user role: user not found")
+		return ErrUserNotFound
 	}
 	return nil
 }

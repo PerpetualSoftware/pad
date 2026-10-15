@@ -306,7 +306,7 @@ func TestSearchUsersAggregations(t *testing.T) {
 	alice := createTestUser(t, s, "alice@example.com", "Alice", "password123")
 	bob := createTestUser(t, s, "bob@example.com", "Bob", "password123")
 	carol := createTestUser(t, s, "carol@example.com", "Carol", "password123")
-	if err := s.DisableUser(carol.ID); err != nil {
+	if err := s.DisableUserLeavingCredentialsForTesting(carol.ID); err != nil {
 		t.Fatalf("disable carol: %v", err)
 	}
 

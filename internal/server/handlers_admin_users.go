@@ -390,6 +390,11 @@ func (s *Server) handleAdminGetUserWorkspaces(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// adminUserAfterReadHook, when set by a test, runs in the role-change and
+// disable handlers after they read the user and before they write, so a test
+// can delete the user in between (BUG-3826).
+var adminUserAfterReadHook func(userID string)
+
 // handleAdminUpdateUser updates a user's plan, overrides, or role.
 // PATCH /api/v1/admin/users/{userID}
 func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +411,9 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		writeError(w, http.StatusNotFound, "not_found", "User not found")
 		return
+	}
+	if adminUserAfterReadHook != nil {
+		adminUserAfterReadHook(userID)
 	}
 
 	var input struct {
@@ -437,6 +445,11 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if err := s.store.SetUserRole(userID, *input.Role); err != nil {
 			if errors.Is(err, store.ErrLastAdmin) {
 				writeLastActiveAdmin(w)
+				return
+			}
+			// Deleted since the GetUser above (BUG-3826).
+			if errors.Is(err, store.ErrUserNotFound) {
+				writeError(w, http.StatusNotFound, "not_found", "User not found")
 				return
 			}
 			writeInternalError(w, err)
@@ -663,12 +676,20 @@ func (s *Server) handleAdminDisableUser(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "User not found")
 		return
 	}
+	if adminUserAfterReadHook != nil {
+		adminUserAfterReadHook(userID)
+	}
 	// Every credential, not only sessions, in one transaction (BUG-3349): a
 	// PAT or an MCP grant kept working after a disable. Idempotent, so a
 	// retry after a failure redoes all of it.
 	if err := s.store.DisableUserAndRevokeAccess(userID); err != nil {
 		if errors.Is(err, store.ErrLastAdmin) {
 			writeLastActiveAdmin(w)
+			return
+		}
+		// Deleted since the GetUser above (BUG-3826).
+		if errors.Is(err, store.ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "User not found")
 			return
 		}
 		writeInternalError(w, err)
