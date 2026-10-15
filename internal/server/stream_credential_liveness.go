@@ -1,16 +1,21 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/ory/fosite"
 )
 
 // BUG-3007 — a long-lived connection must stop when the CREDENTIAL that opened
 // it stops being valid.
 //
-// All three long-lived connections on this server revalidate something on a
-// jittered ~60s tick, and none of them asked this question:
+// The three long-lived connections this was written for revalidated something
+// on a jittered ~60s tick, and none of them asked this question (the MCP
+// transport's GET and listen streams, a fourth, ask it since BUG-3837):
 //
 //   - GET /api/v1/events revalidates the connecting user's MEMBERSHIP, which a
 //     sign-out does not change;
@@ -123,6 +128,9 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		}
 		return credentialValid
 
+	case authKindOAuth:
+		return s.oauthLiveness(r.Context(), strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
+
 	case "":
 		// NOTHING TO REVALIDATE, and this branch is explicit rather than a
 		// default so it cannot absorb a future kind by accident.
@@ -140,14 +148,10 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		// authenticated, so a credential was accepted; an accept point that
 		// records the user and not how it established them leaves this
 		// predicate with nothing to re-check and no way to notice. Both MCP
-		// accept points were in exactly that state when this was written — the
-		// PAT one is fixed by recording its kind, and the OAuth one has no
-		// liveness door yet, so it lands here and CLOSES rather than streaming
-		// past a revoked connected app. No MCP request reaches this predicate
-		// today: internal/mcp/dispatch_http_routes.go maps nothing under
-		// /api/v1/events or /api/v1/collab, and the MCP transport's own
-		// long-lived streams (BUG-3835) do not call it yet (BUG-3837), which
-		// is why this is a guard rather than an incident.
+		// accept points were in exactly that state when this was written. Both
+		// now record their kind (the OAuth one since BUG-3837, with its own
+		// door), and an accept point added later without one lands here and
+		// CLOSES rather than streaming past a revoked credential.
 		if currentUser(r) != nil {
 			slog.Warn("stream: a principal was resolved without an auth kind, closing the connection",
 				"path", r.URL.Path)
@@ -182,4 +186,36 @@ func (s *Server) sessionLiveness(token string) credentialLiveness {
 		return credentialInvalid
 	}
 	return credentialValid
+}
+
+// oauthLiveness re-introspects an MCP OAuth access token (BUG-3837). One
+// fosite introspection answers all three ways the credential can end: a
+// revoked token or grant (RevokeOAuthGrant flips every access token in the
+// family to active=0, read back as ErrInactiveToken), a deleted row
+// (ErrNotFound), and expiry (ErrTokenExpired, from the session's ExpiresAt).
+// Introspection writes nothing.
+//
+// fosite wraps a STORAGE failure in ErrRequestUnauthorized too, so the error
+// is classified by its cause, not its outer type: only the three named causes
+// end the stream, and anything else is "could not ask", which keeps it, as
+// the session and PAT doors do on a store error.
+func (s *Server) oauthLiveness(ctx context.Context, token string) credentialLiveness {
+	if token == "" || s.oauthServer == nil {
+		return credentialInvalid
+	}
+	_, tokenUse, err := s.oauthServer.IntrospectToken(ctx, token)
+	switch {
+	case err == nil:
+		if tokenUse != fosite.AccessToken {
+			return credentialInvalid
+		}
+		return credentialValid
+	case errors.Is(err, fosite.ErrInactiveToken),
+		errors.Is(err, fosite.ErrNotFound),
+		errors.Is(err, fosite.ErrTokenExpired):
+		return credentialInvalid
+	default:
+		slog.Warn("stream: oauth liveness check could not complete", "error", err)
+		return credentialUnknown
+	}
 }

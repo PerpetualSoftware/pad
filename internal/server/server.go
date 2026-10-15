@@ -645,6 +645,11 @@ type Server struct {
 	// stream they want to drive — a write after setup is not observed.
 	watchRevalTickOverride atomic.Pointer[chan time.Time]
 
+	// mcpCredentialRevalOverride is a TEST SEAM (zero in production): the
+	// interval of a long-lived MCP stream's credential tick (BUG-3837).
+	// Set before the server serves.
+	mcpCredentialRevalOverride time.Duration
+
 	// In-app tutorials (TASK-3452): the catalog and posters fetched from
 	// getpad.dev on Pad Cloud, and the client tests swap in.
 	tutorials     tutorialsCache
