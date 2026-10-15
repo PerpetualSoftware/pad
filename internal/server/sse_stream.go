@@ -36,6 +36,8 @@ type sseStream struct {
 	mu   sync.Mutex
 	err  error
 	dead chan struct{}
+
+	failedForTesting func(err error) // Server.sseStreamFailedForTesting
 }
 
 // sseFrameWriteTimeout is sseWriteTimeout, or a test's override.
@@ -68,6 +70,8 @@ func (s *Server) openSSEStream(w http.ResponseWriter) (*sseStream, error) {
 		rc:             rc,
 		timeout:        s.sseFrameWriteTimeout(),
 		dead:           make(chan struct{}),
+
+		failedForTesting: s.sseStreamFailedForTesting,
 	}, nil
 }
 
@@ -124,9 +128,13 @@ func (s *sseStream) arm() error {
 
 func (s *sseStream) fail(err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.err == nil {
+	first := s.err == nil
+	if first {
 		s.err = err
 		close(s.dead)
+	}
+	s.mu.Unlock()
+	if first && s.failedForTesting != nil {
+		s.failedForTesting(err)
 	}
 }

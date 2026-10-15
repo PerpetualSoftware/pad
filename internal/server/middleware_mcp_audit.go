@@ -262,7 +262,7 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 		// provides this — reuse rather than redo.
 		ww := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
-		next.ServeHTTP(ww, r)
+		next.ServeHTTP(withFlushError(ww), r) // BUG-3827: chi drops flush errors
 
 		latencyMs := int(time.Since(start) / time.Millisecond)
 
