@@ -100,7 +100,7 @@ func TestWatchVisCache_DeniesAfterUserDisabled(t *testing.T) {
 		t.Fatalf("expected the active owner-member to have full access before disable, got %+v", before)
 	}
 
-	if err := srv.store.DisableUser(user.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(user.ID); err != nil {
 		t.Fatalf("disable user: %v", err)
 	}
 
@@ -175,7 +175,7 @@ func TestWatchEventsStream_StopsDeliveringAfterUserDisabled(t *testing.T) {
 	waitForWatchEvent(t, ch, 3*time.Second) // the pre-disable notification
 
 	// Disable the connected user and wait past a reval tick.
-	if err := srv.store.DisableUser(user.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(user.ID); err != nil {
 		t.Fatalf("DisableUser: %v", err)
 	}
 	time.Sleep(150 * time.Millisecond) // several reval ticks

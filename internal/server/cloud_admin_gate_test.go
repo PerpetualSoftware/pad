@@ -1008,7 +1008,7 @@ func TestCloudAdminGate_DisabledAdminSession_GarbageSecret_RejectedByRequireAuth
 	}
 	beforePlan := target.Plan
 
-	if err := srv.store.DisableUser(admin.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(admin.ID); err != nil {
 		t.Fatalf("disable admin: %v", err)
 	}
 

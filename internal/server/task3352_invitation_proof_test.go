@@ -251,7 +251,7 @@ func TestTASK3352_ConsumeInvitationProofRules(t *testing.T) {
 		t.Errorf("an invitation with an empty expiry verified: %v %v", ok, err)
 	}
 
-	if err := srv.store.DisableUser(b.ID); err != nil {
+	if err := srv.store.DisableUserLeavingCredentialsForTesting(b.ID); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := srv.store.ConsumeInvitationProof(invB.ID, b.ID, invB.Proof); err != nil || ok {

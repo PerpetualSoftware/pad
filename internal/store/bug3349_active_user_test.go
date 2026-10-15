@@ -29,7 +29,7 @@ func activeUserFixture(t *testing.T) (*Store, *models.User, *models.OAuthClient)
 
 func TestBUG3349_NoCredentialIsMintedForADisabledAccount(t *testing.T) {
 	s, u, client := activeUserFixture(t)
-	if err := s.DisableUser(u.ID); err != nil {
+	if err := s.DisableUserLeavingCredentialsForTesting(u.ID); err != nil {
 		t.Fatal(err)
 	}
 	req := func(sig string) models.OAuthRequest {
@@ -238,7 +238,7 @@ func TestBUG3349_DisabledAccountMintsNoInvitationOrShareLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DisableUser(u.ID); err != nil {
+	if err := s.DisableUserLeavingCredentialsForTesting(u.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.CreateInvitation(ws.ID, "invitee@example.com", "owner", u.ID); !errors.Is(err, ErrUserDisabled) {
@@ -258,7 +258,7 @@ func TestBUG3349_EmailVerificationConsumesNothingForADisabledAccount(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DisableUser(u.ID); err != nil {
+	if err := s.DisableUserLeavingCredentialsForTesting(u.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ConsumeEmailVerification(tok); !errors.Is(err, ErrUserDisabled) {
