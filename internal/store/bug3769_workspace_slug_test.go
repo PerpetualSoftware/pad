@@ -46,8 +46,6 @@ func TestBUG3769_EveryDoorSlugifiesTheWorkspaceSlug(t *testing.T) {
 		{models.WorkspaceCreate{Name: "Body Slug", Slug: "Foo Bar"}, "foo-bar"},
 		{models.WorkspaceCreate{Name: "Kept", Slug: "kept-3769"}, "kept-3769"},
 		{models.WorkspaceCreate{Name: "Fallback To Name", Slug: "!!!"}, "fallback-to-name"},
-		{models.WorkspaceCreate{Name: "日本語"}, "workspace"},
-		{models.WorkspaceCreate{Name: "!!!"}, "workspace-2"},
 	} {
 		c.in.OwnerID = owner.ID
 		ws, err := s.CreateWorkspace(c.in)
@@ -59,6 +57,23 @@ func TestBUG3769_EveryDoorSlugifiesTheWorkspaceSlug(t *testing.T) {
 		}
 		if got, err := s.GetWorkspaceBySlug(c.want); err != nil || got == nil || got.ID != ws.ID {
 			t.Errorf("GetWorkspaceBySlug(%q) = %+v, %v; want the created workspace", c.want, got, err)
+		}
+	}
+
+	// Names slugify keeps nothing of fall back to "workspace", and the second
+	// such workspace takes the next suffix. Its own sequence, so it does not
+	// depend on the table's order (hunter r1 on BUG-3769).
+	for i, name := range []string{"日本語", "!!!"} {
+		want := "workspace"
+		if i == 1 {
+			want = "workspace-2"
+		}
+		ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: name, OwnerID: owner.ID})
+		if err != nil {
+			t.Fatalf("create %q: %v", name, err)
+		}
+		if ws.Slug != want {
+			t.Errorf("create name %q = slug %q, want %q", name, ws.Slug, want)
 		}
 	}
 }
