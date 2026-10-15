@@ -144,6 +144,11 @@ func TestTASK3351_UnlinkForgetsTheSubject(t *testing.T) {
 		t.Fatalf("login: %d %s", rr.Code, rr.Body.String())
 	}
 	u, _ := srv.store.GetUserByEmail("u@example.com")
+	// A second sign-in method, or the unlink would be refused as the last
+	// one (BUG-3816) and this test is about the binding, not that rule.
+	if err := srv.store.AddOAuthProvider(u.ID, "github"); err != nil {
+		t.Fatal(err)
+	}
 	if err := srv.store.RemoveOAuthProvider(u.ID, "google"); err != nil {
 		t.Fatal(err)
 	}

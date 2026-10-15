@@ -791,16 +791,33 @@ func (s *Store) AddOAuthProvider(userID, provider string) error {
 	return nil
 }
 
+// ErrLastSignInMethod refuses an unlink that would leave the account with no
+// linked provider and no password (BUG-3816).
+var ErrLastSignInMethod = errors.New("cannot unlink the only sign-in method")
+
 // RemoveOAuthProvider removes a provider from the user's oauth_providers
 // list, and forgets the provider account it was bound to, so a relink may
 // bind a different one (TASK-3351). Under the account lock, so a sign-in
 // that read the link before this commits cannot re-bind afterwards.
+//
+// It refuses with ErrLastSignInMethod when no other provider and no password
+// would remain. The handler checks the same thing, but against the account
+// as it was when the request was admitted: two unlinks of different
+// providers sent at once both passed it, and the second wrote an empty list
+// (BUG-3816). The check that counts is this one, on the locked row.
 func (s *Store) RemoveOAuthProvider(userID, provider string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("remove oauth provider: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.removeOAuthProviderTx(tx, userID, provider); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) removeOAuthProviderTx(tx *sql.Tx, userID, provider string) error {
 	providers, found, err := s.lockUserProvidersTx(tx, userID)
 	if err != nil {
 		return fmt.Errorf("remove oauth provider: %w", err)
@@ -814,13 +831,22 @@ func (s *Store) RemoveOAuthProvider(userID, provider string) error {
 			filtered = append(filtered, p)
 		}
 	}
+	if len(filtered) == 0 && providerListHas(providers, provider) {
+		var passwordSet bool
+		if err := tx.QueryRow(s.q(`SELECT password_set FROM users WHERE id = ?`), userID).Scan(&passwordSet); err != nil {
+			return fmt.Errorf("remove oauth provider: read password: %w", err)
+		}
+		if !passwordSet {
+			return ErrLastSignInMethod
+		}
+	}
 	if err := s.writeUserProvidersTx(tx, userID, filtered); err != nil {
 		return fmt.Errorf("remove oauth provider: %w", err)
 	}
 	if _, err := tx.Exec(s.q(`DELETE FROM user_oauth_identities WHERE user_id = ? AND provider = ?`), userID, provider); err != nil {
 		return fmt.Errorf("remove oauth provider: forget subject: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // ErrLastAdmin refuses a demotion, disable or account deletion that would
