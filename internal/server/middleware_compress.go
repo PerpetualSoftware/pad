@@ -35,13 +35,17 @@ func compressSkips(r *http.Request) bool {
 	}
 	p := r.URL.Path
 	switch {
-	// Routes that bound their own writes: the long-lived streams (SSE and
-	// MCP's streamable HTTP), where an event held in a compressor's window is
-	// an event the client does not get; the collab WebSocket, whose connection
-	// is hijacked and is not an HTTP response body; and an app's attachment
-	// download, covered by the attachments rule below as well.
+	// Routes that bound their own writes: the SSE streams, where an event
+	// held in a compressor's window is an event the client does not get; the
+	// collab WebSocket, whose connection is hijacked and is not an HTTP
+	// response body; and an app's attachment download, covered by the
+	// attachments rule below as well.
 	// boundResponseWrites exempts the same set (BUG-3821).
 	case ownsWriteDeadline(r):
+		return true
+	// MCP's streamable HTTP, for the streams' reason. Bounded by
+	// boundResponseWrites since BUG-3834, so not in ownsWriteDeadline.
+	case isMCPPath(r):
 		return true
 	// Any other upgrade, for the collab WebSocket's reason. Not in
 	// ownsWriteDeadline: a client chooses this header, and it must not opt a

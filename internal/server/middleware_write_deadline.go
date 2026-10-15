@@ -32,7 +32,16 @@ const responseWriteTimeout = 60 * time.Second
 
 // ownsWriteDeadline reports whether a request's route bounds its own writes,
 // so the middleware must leave its connection alone. compressSkips exempts the
-// same routes, from this one predicate, so the two cannot drift.
+// same routes, from this one predicate, so the two cannot drift; it also
+// exempts MCP (isMCPPath), which is bounded here but must not be compressed.
+//
+// MCP is NOT exempt (BUG-3834). Its middleware chain (auth, the per-token
+// rate limiter, the body limit, the scope check) writes refusals before the
+// transport runs, and a keep-alive client that pipelines and stops reading
+// stalled on one of those with no deadline. So the whole route is bounded
+// here, and the transport takes over its own deadline: mcpBoundWrites opens
+// an sseStream, whose deadline calls land on deadlineWriter.SetWriteDeadline
+// and make the deadline the handler's from then on.
 //
 // It decides by PATH only, never by a header the client chooses: an Upgrade
 // header on an ordinary route (a share-link attachment, say) would otherwise
@@ -50,9 +59,8 @@ const responseWriteTimeout = 60 * time.Second
 func ownsWriteDeadline(r *http.Request) bool {
 	p := r.URL.EscapedPath()
 	switch {
-	// SSE (both event endpoints) frames under sseStream (BUG-3637), and MCP's
-	// streamable HTTP under its own bound (BUG-3808).
-	case p == "/api/v1/events" || strings.HasPrefix(p, "/api/v1/events/"), p == "/mcp" || strings.HasPrefix(p, "/mcp/"):
+	// SSE (both event endpoints) frames under sseStream (BUG-3637).
+	case p == "/api/v1/events" || strings.HasPrefix(p, "/api/v1/events/"):
 		return true
 	// The collab WebSocket: the connection is hijacked and is not an HTTP
 	// response body. collab sets its own deadlines.
@@ -65,6 +73,13 @@ func ownsWriteDeadline(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+// isMCPPath reports whether a request is for MCP's streamable HTTP (/mcp and
+// /mcp/chatgpt), by the escaped path, as ownsWriteDeadline reads it.
+func isMCPPath(r *http.Request) bool {
+	p := r.URL.EscapedPath()
+	return p == "/mcp" || strings.HasPrefix(p, "/mcp/")
 }
 
 // writeDeadlineUnsupported logs, once per process, that a response was served
