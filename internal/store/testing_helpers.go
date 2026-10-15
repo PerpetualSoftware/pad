@@ -293,3 +293,16 @@ func (s *Store) SetBeforeMoveLockForTesting(hook func(itemID string)) (restore f
 	s.beforeMoveLock = hook
 	return func() { s.beforeMoveLock = prev }
 }
+
+// SetBeforeItemVersionsReadHookForTesting runs hook at the start of every
+// version-list read (ListItemVersionsPage and the snapshot read), before its
+// query (BUG-3814): the window between a
+// caller's read of the item's body and the version list resolved from it.
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep
+// signal. Set it only while no other request is in flight against this Store.
+func (s *Store) SetBeforeItemVersionsReadHookForTesting(hook func(itemID string)) (restore func()) {
+	prev := s.beforeItemVersionsRead
+	s.beforeItemVersionsRead = hook
+	return func() { s.beforeItemVersionsRead = prev }
+}
