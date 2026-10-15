@@ -239,7 +239,8 @@ type EventBus interface {
 	// a caller exhaust the machine through the other while every
 	// configured limit still read as satisfied. That bound now lives in
 	// internal/server's streamAdmission, which both endpoints acquire from
-	// before subscribing. The per-workspace bound stays here because it is
+	// before subscribing, as the MCP transport's long-lived streams do
+	// (BUG-3835). The per-workspace bound stays here because it is
 	// genuinely workspace-scoped and the other endpoint has no workspace
 	// to count against.
 	//

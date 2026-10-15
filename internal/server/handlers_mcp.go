@@ -242,6 +242,13 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 // the middleware chain writes before this runs are bounded too. The stream's
 // first deadline call reaches deadlineWriter.SetWriteDeadline, after which
 // the deadline is this stream's alone.
+//
+// It also bounds the transport's long-lived streams (BUG-3835): a request
+// mcpLongLivedRequest names (the GET stream, or a listen on a modern
+// protocol version the transport serves) takes a stream admission slot
+// before the transport runs and is refused 429 over the budget, and a
+// response committed as an event stream carries a ': keepalive' comment
+// until its final event or the handler's return.
 func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 	served := mcpServedVersion(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
