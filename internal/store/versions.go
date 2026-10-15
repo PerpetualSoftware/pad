@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -87,7 +89,16 @@ func (s *Store) getLatestVersionRawQ(q rowQueryer, documentID string) (*models.V
 }
 
 func (s *Store) ListVersions(documentID string) ([]models.Version, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.listVersionsQ(s.db, documentID)
+}
+
+// listVersionsQ is ListVersions against a caller-supplied executor, so the
+// snapshot read (BUG-3833) lists the rows inside its own transaction.
+func (s *Store) listVersionsQ(q rowsQueryer, documentID string) ([]models.Version, error) {
+	if s.beforeVersionsRead != nil {
+		s.beforeVersionsRead(documentID)
+	}
+	rows, err := q.Query(s.q(`
 		SELECT id, document_id, content, change_summary, created_by, source, is_diff, created_at
 		FROM versions
 		WHERE document_id = ?
@@ -120,7 +131,64 @@ func (s *Store) ListVersionsResolved(documentID, currentContent string) ([]model
 	if err != nil {
 		return nil, err
 	}
+	resolveVersionChain(currentContent, versions)
+	return versions, nil
+}
 
+// ListVersionsResolvedSnapshot reads the document's body and its versions in
+// one read snapshot, and resolves the versions from that body (BUG-3833, the
+// legacy-documents twin of BUG-3814's ListItemVersionsResolvedSnapshot).
+//
+// A body read separately is wrong whenever a content write lands between the
+// two reads: the write adds a reverse patch against the NEW body while the
+// walk starts from the OLD one, and diff.ApplyPatch does not check a patch's
+// base. A handler that read the document for its workspace check must
+// therefore not pass that document's Content to ListVersionsResolved.
+//
+// The body read carries GetDocument's deleted_at filter, so a document
+// deleted after the handler's check has no versions to show: the result is
+// empty, and the caller answers as for a missing version.
+func (s *Store) ListVersionsResolvedSnapshot(ctx context.Context, documentID string) ([]models.Version, error) {
+	tx, err := s.beginReadSnapshot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin version snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var current string
+	err = tx.QueryRow(s.q(`SELECT content FROM documents WHERE id = ? AND deleted_at IS NULL`), documentID).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	versions, err := s.listVersionsQ(tx, documentID)
+	if err != nil {
+		return nil, err
+	}
+	resolveVersionChain(current, versions)
+	return versions, nil
+}
+
+// GetVersionResolvedSnapshot is GetVersionResolved over one read snapshot
+// (BUG-3833). Returns nil if not found.
+func (s *Store) GetVersionResolvedSnapshot(ctx context.Context, id, documentID string) (*models.Version, error) {
+	versions, err := s.ListVersionsResolvedSnapshot(ctx, documentID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range versions {
+		if versions[i].ID == id {
+			return &versions[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// resolveVersionChain resolves a document's versions, newest first, in place
+// from currentContent.
+func resolveVersionChain(currentContent string, versions []models.Version) {
 	// Resolve diffs: walk from newest to oldest, applying reverse patches.
 	// The newest diff version patches current content → that version's content.
 	// The next older diff patches that result → its content, etc.
@@ -143,7 +211,6 @@ func (s *Store) ListVersionsResolved(documentID, currentContent string) ([]model
 		versions[i].IsDiff = false
 		content = resolved
 	}
-	return versions, nil
 }
 
 func (s *Store) GetVersion(id string) (*models.Version, error) {

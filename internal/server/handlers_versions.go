@@ -17,8 +17,9 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve diffs so API consumers always get full content
-	versions, err := s.store.ListVersionsResolved(doc.ID, doc.Content)
+	// Resolve diffs so API consumers always get full content, from the body
+	// read in the same snapshot as the versions (BUG-3833), not doc.Content.
+	versions, err := s.store.ListVersionsResolvedSnapshot(r.Context(), doc.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -40,8 +41,8 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	versionID := chi.URLParam(r, "versionID")
-	// Resolve diffs to return full content
-	version, err := s.store.GetVersionResolved(versionID, doc.ID, doc.Content)
+	// Resolve diffs to return full content, in one snapshot (BUG-3833).
+	version, err := s.store.GetVersionResolvedSnapshot(r.Context(), versionID, doc.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
