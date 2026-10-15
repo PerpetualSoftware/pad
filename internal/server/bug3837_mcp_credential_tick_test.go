@@ -425,3 +425,53 @@ func TestMCP_BUG3837_UserReadFailureKeepsTheStream(t *testing.T) {
 	}
 	f.assertEnds(t, done, "OAuth grant revoked after the store recovered")
 }
+
+// The OAuth door classifies by the error fosite returns, and fosite's
+// introspection tries the access token, then falls back to reading it as a
+// refresh token. In fosite v0.49.0 the fallback's error is scoped to its
+// else-if (handler/oauth2/introspector.go), so the ACCESS lookup's error is
+// the one returned: a store failure stays "could not ask" even when the
+// fallback answers not found. The r4 decline rests on that (lead ruling), and
+// a fosite bump could flip it silently, so it is pinned against real fosite.
+// The control is the same fallback after a definitive access answer.
+func TestMCP_BUG3837_TransientAccessErrorIsNotReadAsRevocation(t *testing.T) {
+	f := newBug3837Fixture(t, 0)
+	ctx := context.Background()
+	exec := func(q string) {
+		t.Helper()
+		if _, err := f.srv.store.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The fallback reads the token with the strategy fosite uses, and must
+	// find nothing, in both halves.
+	refreshFindsNothing := func(why string) {
+		t.Helper()
+		owner, err := f.srv.oauthServer.GrantOwner(ctx, "refresh_token", f.access)
+		if err != nil || owner != "" {
+			t.Fatalf("instrument (%s): the refresh lookup of the access token = (%q, %v), want not found", why, owner, err)
+		}
+	}
+	if got := f.srv.oauthLiveness(ctx, f.access); got != credentialValid {
+		t.Fatalf("live token = %v, want valid", got)
+	}
+
+	exec(`ALTER TABLE oauth_access_tokens RENAME TO oauth_access_tokens_bug3837`)
+	if _, err := f.srv.store.DB().Exec(`SELECT 1 FROM oauth_access_tokens`); err == nil {
+		t.Fatal("instrument: the access lookup still succeeds with its table renamed")
+	}
+	refreshFindsNothing("access store failing")
+	got := f.srv.oauthLiveness(ctx, f.access)
+	exec(`ALTER TABLE oauth_access_tokens_bug3837 RENAME TO oauth_access_tokens`)
+	if got != credentialUnknown {
+		t.Fatalf("access store failing, refresh fallback not found = %v, want unknown (the stream is kept)", got)
+	}
+
+	// Control: the access row is gone, so the access lookup itself answers
+	// not found, and the same fallback ends the stream.
+	exec(`DELETE FROM oauth_access_tokens`)
+	refreshFindsNothing("access row deleted")
+	if got := f.srv.oauthLiveness(ctx, f.access); got != credentialInvalid {
+		t.Fatalf("access row deleted, refresh fallback not found = %v, want invalid (the stream ends)", got)
+	}
+}
