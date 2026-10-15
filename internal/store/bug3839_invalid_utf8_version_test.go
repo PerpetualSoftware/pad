@@ -244,10 +244,11 @@ func TestBUG3839_DocumentEditOfInvalidUTF8StoresTheFullBody(t *testing.T) {
 // current body carries an invalid byte next to it, as a direct edit or an
 // older release would leave it. ApplyPatch refuses that base, so the remap cannot
 // resolve the row and takes its unresolved branch: the patch text itself is
-// remapped, and the row stays a diff that reads as patch_failed. Before the
+// remapped, and the row stays a diff that reads as patch_failed (lead ruling
+// on BUG-3839 checkpoint 11). Before the
 // refusal the patch applied fuzzily over the invalid byte, and the row was
 // re-diffed from a body it never recorded.
-func TestBUG3839_AttachmentRemapOfInvalidUTF8RemapsThePatchText(t *testing.T) {
+func TestBUG3839_AttachmentRemapOverInvalidUTF8LeavesARowThatReadsPatchFailed(t *testing.T) {
 	oldID, newID := "00000000-0000-0000-0000-0000000000a1", "00000000-0000-0000-0000-0000000000b2"
 	ref := func(id string) string { return "![chart](pad-attachment:" + id + ")" }
 	for _, backend := range contentBackends() {

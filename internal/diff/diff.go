@@ -31,7 +31,7 @@ func CreatePatch(oldText, newText string) string {
 // was not made from and the base holds multi-byte runes (about 1.5% of such
 // pairs in the BUG-3839 measurement). The version walk does exactly that
 // after it skips a row, so that panic is an error here too.
-func ApplyPatch(baseText, patchText string) (result string, err error) {
+func ApplyPatch(baseText, patchText string) (string, error) {
 	if patchText == "" {
 		return baseText, nil
 	}
@@ -45,12 +45,10 @@ func ApplyPatch(baseText, patchText string) (result string, err error) {
 	if err != nil {
 		return "", fmt.Errorf("parse patch: %w", err)
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			result, err = "", fmt.Errorf("apply patch: %v", r)
-		}
-	}()
-	result, applied := dmp.PatchApply(patches, baseText)
+	result, applied, err := patchApply(patches, baseText)
+	if err != nil {
+		return "", err
+	}
 	// Check that all hunks applied
 	for i, ok := range applied {
 		if !ok {
@@ -79,6 +77,17 @@ func patchTextValidUTF8(patchText string) bool {
 		}
 	}
 	return true
+}
+
+// patchApply is go-diff's PatchApply with its panic returned as an error.
+func patchApply(patches []difflib.Patch, base string) (result string, applied []bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result, applied, err = "", nil, fmt.Errorf("go-diff panicked applying the patch: %v", r)
+		}
+	}()
+	result, applied = dmp.PatchApply(patches, base)
+	return result, applied, nil
 }
 
 // IsDiffSmaller returns true if storing a diff would be meaningfully smaller
