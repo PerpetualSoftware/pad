@@ -178,13 +178,17 @@ func TestBUG3821_StalledReaderOfTheJSONExportReleasesItsHandler(t *testing.T) {
 // document in ONE Write, so this also pins the placement: a deadline armed
 // above the compressor is armed once for that Write and expires mid-body.
 // Buffers stay above loopback's 64KB MSS, so a reading client is not slowed by
-// TCP's persist timer instead of by the test. The timeout is 1s, not
-// bug3821Timeout: alongside the whole package's parallel tests, the reader
-// can go unscheduled for longer than 300ms, which cut the body off once in a
-// full run.
+// TCP's persist timer instead of by the test.
+//
+// A reader the scheduler leaves unscheduled for longer than the timeout is a
+// stalled client, and cutting it off is correct, so this test must not share
+// the CPU with the package's parallel tests: it is not parallel, and its
+// timeout is 2s, not bug3821Timeout. Alongside them a 300ms timeout cut the
+// body off in a local full run, and a 1s one in CI after 31s of reading
+// (#2189). The reader records its longest gap between reads, so a cut-off can
+// be told apart from a reader that was itself starved past the timeout.
 func TestBUG3821_SteadyReaderOfALongCompressedBodyCompletes(t *testing.T) {
-	t.Parallel()
-	const timeout = time.Second
+	const timeout = 2 * time.Second
 	srv := testServer(t)
 	const items = 12
 	slug := bigExportWorkspace(t, srv, items)
@@ -212,8 +216,8 @@ func TestBUG3821_SteadyReaderOfALongCompressedBodyCompletes(t *testing.T) {
 		Items []json.RawMessage `json:"items"`
 	}
 	if err := json.NewDecoder(gz).Decode(&export); err != nil {
-		t.Fatalf("after %v of steady reading the body was cut off (write timeout %v): %v",
-			time.Since(start).Round(time.Millisecond), timeout, err)
+		t.Fatalf("after %v of steady reading the body was cut off (write timeout %v, the reader's longest gap between reads %v%s): %v",
+			time.Since(start).Round(time.Millisecond), timeout, slow.maxGap.Round(time.Millisecond), starvedNote(slow.maxGap, timeout), err)
 	}
 	if _, err := io.Copy(io.Discard, gz); err != nil {
 		t.Fatalf("after %v the gzip stream did not end cleanly: %v", time.Since(start).Round(time.Millisecond), err)
@@ -228,11 +232,16 @@ func TestBUG3821_SteadyReaderOfALongCompressedBodyCompletes(t *testing.T) {
 	}
 }
 
-// throttledReader reads at most chunk bytes per call, pausing before each.
+// throttledReader reads at most chunk bytes per call, pausing before each,
+// and records the longest time between the end of one read and the end of
+// the next.
 type throttledReader struct {
 	r     io.Reader
 	chunk int
 	pause time.Duration
+
+	last   time.Time
+	maxGap time.Duration
 }
 
 func (s *throttledReader) Read(p []byte) (int, error) {
@@ -240,7 +249,23 @@ func (s *throttledReader) Read(p []byte) (int, error) {
 	if len(p) > s.chunk {
 		p = p[:s.chunk]
 	}
-	return s.r.Read(p)
+	n, err := s.r.Read(p)
+	now := time.Now()
+	if !s.last.IsZero() && now.Sub(s.last) > s.maxGap {
+		s.maxGap = now.Sub(s.last)
+	}
+	s.last = now
+	return n, err
+}
+
+// starvedNote says when a reader's own longest gap reached the write
+// timeout: the server then saw a client that stopped reading, and the cut-off
+// is the test harness, not the bound.
+func starvedNote(gap, timeout time.Duration) string {
+	if gap >= timeout {
+		return "; the reader itself stalled past the timeout, so the harness was starved"
+	}
+	return ""
 }
 
 // The middleware never clears the deadline it leaves on a connection, because
