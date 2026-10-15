@@ -754,13 +754,15 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	// re-decided UNDER THE LOCK, in the precheck below: they express "only if
 	// still empty", and emptiness was read outside the transaction.
 	//
-	// Residual, stated rather than hidden: a carried value whose only change is
-	// CoerceFields normalising its type (stored `"3"` on a number field
-	// becoming `3`) differs from the stored value and is therefore still in the
-	// patch. That reproduces exactly what the blob write did to such a key, so
-	// it is not a regression — it is the part of the window this fix does not
-	// close, and it closes for good when the stored value is already canonical.
+	// A carried value whose ONLY change is CoerceFields normalising its type
+	// (stored `"3"` on a number field becoming `3`) is not a change this
+	// operation makes, so it is left out of the patch (BUG-3831). It used to
+	// stay in, and the patch was built from the pre-lock read without a seq
+	// guard, so a concurrent edit to that key was overwritten by the coerced
+	// old value. Leaving it out keeps the non-canonical stored value until a
+	// write that names the key re-types it, which is what every other door does.
 	patch := fieldsPatchFromMerge(storedFields, fieldMap)
+	dropCoercionOnlyKeys(patch, storedFields, items.CoerceFields(storedFields, schema), changes)
 
 	var precheck func(tx *sql.Tx, existing *models.Item) error
 	{
@@ -810,7 +812,10 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 					}
 				}
 				for _, k := range autoDateKeys {
-					if cur, ok := locked[k].(string); ok && cur != "" {
+					// ANY value under the lock counts as set, not only a
+					// non-empty string (BUG-3831): a concurrent writer's
+					// non-string value is still theirs to keep.
+					if lockedValueIsSet(locked, k) {
 						delete(patch, k)
 					}
 				}
@@ -1433,6 +1438,38 @@ func requiredErrorsUnsatisfiedBy(errs []string, supplied map[string]any) []strin
 // are semantically equal but decode differently (a number stored as a string,
 // then coerced) compare unequal and stay in the patch — see the call site's
 // note on that residual.
+// dropCoercionOnlyKeys removes from patch every key the caller did not set
+// whose patched value is exactly what CoerceFields makes of the stored value,
+// while differing from the stored value itself: the only change is a type
+// normalisation this operation did not ask for (BUG-3831).
+func dropCoercionOnlyKeys(patch, stored, coercedStored, changes map[string]any) {
+	for k, v := range patch {
+		if _, set := changes[k]; set {
+			continue
+		}
+		old, had := stored[k]
+		if !had || reflect.DeepEqual(old, v) {
+			continue
+		}
+		if cv, ok := coercedStored[k]; ok && reflect.DeepEqual(cv, v) {
+			delete(patch, k)
+		}
+	}
+}
+
+// lockedValueIsSet reports whether key k holds a value under the lock: present,
+// not null, and not the empty string (the "empty" autoPopulateDates fills).
+func lockedValueIsSet(locked map[string]any, k string) bool {
+	v, ok := locked[k]
+	if !ok || v == nil {
+		return false
+	}
+	if s, isString := v.(string); isString && s == "" {
+		return false
+	}
+	return true
+}
+
 func fieldsPatchFromMerge(stored, merged map[string]any) map[string]any {
 	patch := make(map[string]any, len(merged))
 	for k, v := range merged {
