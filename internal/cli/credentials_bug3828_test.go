@@ -24,6 +24,22 @@ func noFlock(t *testing.T) *strings.Builder {
 	})
 }
 
+// countReads counts credentials-file reads, and calls onRead (when set) with
+// the read's 1-based number before it happens.
+func countReads(t *testing.T, onRead func(n int)) *int {
+	orig := readCredentialsFile
+	n := 0
+	readCredentialsFile = func(path string) ([]byte, error) {
+		n++
+		if onRead != nil {
+			onRead(n)
+		}
+		return orig(path)
+	}
+	t.Cleanup(func() { readCredentialsFile = orig })
+	return &n
+}
+
 func shortRereads(t *testing.T, n int, pause time.Duration) {
 	origN, origPause := credentialsEmptyRereads, credentialsEmptyRereadPause
 	credentialsEmptyRereads, credentialsEmptyRereadPause = n, pause
@@ -74,17 +90,25 @@ func TestBUG3828_UnlockedUpdateRereadsAnEmptyFile(t *testing.T) {
 	home := withTempHome(t)
 	path := writeCredsFile(t, home, "")
 	noFlock(t)
-	shortRereads(t, 50, 10*time.Millisecond)
+	shortRereads(t, 5, time.Millisecond)
 
-	go func() {
-		time.Sleep(60 * time.Millisecond)
-		_ = os.WriteFile(path, []byte(twoServers), 0600)
-	}()
+	// The other process's save lands just before the third read: the first
+	// two saw the empty file.
+	reads := countReads(t, func(n int) {
+		if n == 3 {
+			if err := os.WriteFile(path, []byte(twoServers), 0600); err != nil {
+				t.Error(err)
+			}
+		}
+	})
 	if err := UpdateStore(func(s *CredentialStore) error {
 		s.Set("http://c:7777", &Credentials{Token: "tc"})
 		return nil
 	}); err != nil {
 		t.Fatalf("UpdateStore: %v", err)
+	}
+	if *reads != 3 {
+		t.Fatalf("UpdateStore read the file %d times, want 3 (two empty, then the save's)", *reads)
 	}
 	store, err := LoadStore()
 	if err != nil {
@@ -103,21 +127,25 @@ func TestBUG3828_UnlockedReadRereadsThenAnswersEmpty(t *testing.T) {
 	home := withTempHome(t)
 	path := writeCredsFile(t, home, "")
 	noFlock(t)
-	shortRereads(t, 5, 10*time.Millisecond)
+	shortRereads(t, 5, time.Millisecond)
 
-	start := time.Now()
+	reads := countReads(t, nil)
 	store, err := LoadStore()
 	if err != nil || len(store.Credentials) != 0 {
 		t.Fatalf("LoadStore over an empty unlocked file = %+v, %v; want an empty store", store, err)
 	}
-	if d := time.Since(start); d < 5*10*time.Millisecond {
-		t.Errorf("LoadStore answered in %v, before its %d re-reads", d, 5)
+	if *reads != 6 {
+		t.Errorf("LoadStore read the empty file %d times, want 6 (the read and its 5 re-reads)", *reads)
 	}
 
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		_ = os.WriteFile(path, []byte(twoServers), 0600)
-	}()
+	*reads = 0
+	countReads(t, func(n int) {
+		if n == 2 {
+			if err := os.WriteFile(path, []byte(twoServers), 0600); err != nil {
+				t.Error(err)
+			}
+		}
+	})
 	store, err = LoadStore()
 	if err != nil || store.Get("http://a:7777") == nil {
 		t.Errorf("a re-read did not see the file fill: %+v, %v", store, err)
@@ -129,17 +157,17 @@ func TestBUG3828_UnlockedReadRereadsThenAnswersEmpty(t *testing.T) {
 func TestBUG3828_LockedEmptyFileIsEmpty(t *testing.T) {
 	home := withTempHome(t)
 	writeCredsFile(t, home, "")
-	shortRereads(t, 1000, 10*time.Millisecond) // ten seconds, if it re-read
+	shortRereads(t, 5, time.Millisecond)
 
-	start := time.Now()
+	reads := countReads(t, nil)
 	if err := UpdateStore(func(s *CredentialStore) error {
 		s.Set("http://c:7777", &Credentials{Token: "tc"})
 		return nil
 	}); err != nil {
 		t.Fatalf("UpdateStore over an empty locked file: %v", err)
 	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("a locked update of an empty file took %v: it re-read", d)
+	if *reads != 1 {
+		t.Errorf("a locked update read the empty file %d times, want 1: it re-read", *reads)
 	}
 	store, _ := LoadStore()
 	if store.Get("http://c:7777") == nil {

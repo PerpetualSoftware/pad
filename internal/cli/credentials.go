@@ -124,7 +124,7 @@ func LoadStore() (*CredentialStore, error) {
 
 // loadStoreLocked is LoadStore for a caller that holds the credentials lock.
 func loadStoreLocked(path string) (*CredentialStore, error) {
-	data, err := os.ReadFile(path)
+	data, err := readCredentialsFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return newEmptyStore(), nil
@@ -158,7 +158,7 @@ var (
 // cannot save a store built from it over every other server's entry.
 func loadStoreUnlocked(path string) (*CredentialStore, error) {
 	for i := 0; ; i++ {
-		data, err := os.ReadFile(path)
+		data, err := readCredentialsFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return newEmptyStore(), nil
@@ -174,6 +174,10 @@ func loadStoreUnlocked(path string) (*CredentialStore, error) {
 		time.Sleep(credentialsEmptyRereadPause)
 	}
 }
+
+// readCredentialsFile is os.ReadFile, a variable so a test can count the
+// re-reads and change the file between them (BUG-3828).
+var readCredentialsFile = os.ReadFile
 
 // parseStore parses a non-empty credentials file, v1 or v2.
 func parseStore(data []byte) (*CredentialStore, error) {
