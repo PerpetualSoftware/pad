@@ -161,6 +161,16 @@ func (d *deadlineWriter) SetWriteDeadline(deadline time.Time) error {
 	return nil
 }
 
+// WriteHeader arms before forwarding. An ordinary status is buffered until
+// the first Write or net/http's flush after the handler, both of which arm,
+// but an informational one (103 Early Hints, 100 Continue) is written to the
+// socket at once, and a handler that ran longer than the timeout would send
+// it under a deadline that has already passed (codex r12).
+func (d *deadlineWriter) WriteHeader(code int) {
+	_ = d.arm()
+	d.ResponseWriter.WriteHeader(code)
+}
+
 // Write fails rather than writing unbounded when the deadline cannot be set.
 func (d *deadlineWriter) Write(p []byte) (int, error) {
 	if err := d.arm(); err != nil {

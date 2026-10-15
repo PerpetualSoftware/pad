@@ -487,3 +487,24 @@ func TestBUG3821_AHandlersOwnDeadlineIsNotReArmed(t *testing.T) {
 		t.Errorf("the middleware armed nothing before the handler took over: the request was not bounded at all")
 	}
 }
+
+// WriteHeader arms like Write: an informational status goes to the socket at
+// once, so a handler that ran past the timeout must not send it under the
+// deadline armed before it started (codex r12).
+func TestBUG3821_WriteHeaderArms(t *testing.T) {
+	srv := testServer(t)
+	srv.responseWriteTimeoutOverride = time.Hour
+	var before int
+	log := &deadlineLog{ResponseRecorder: httptest.NewRecorder()}
+	h := srv.boundResponseWrites(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		before = len(log.set)
+		w.WriteHeader(http.StatusEarlyHints)
+		if len(log.set) != before+1 {
+			t.Errorf("WriteHeader(103) set %d deadlines, want 1", len(log.set)-before)
+		}
+	}))
+	h.ServeHTTP(log, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil))
+	if before == 0 {
+		t.Fatal("instrument: the middleware armed nothing before the handler ran")
+	}
+}
