@@ -192,6 +192,11 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 	if writeAccountDisabledIf(w, err) {
 		return
 	}
+	if errors.Is(err, store.ErrInvitationWorkspaceDeleted) {
+		// Deleted after the route resolved it (BUG-3817).
+		writeWorkspaceNotFound(w, "Workspace not found")
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return
