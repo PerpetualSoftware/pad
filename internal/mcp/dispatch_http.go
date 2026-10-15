@@ -729,12 +729,11 @@ func buildHTTPRequest(ctx context.Context, method, urlPath string, body []byte, 
 	// BUG-3007, codex round 3: that makes this request a poor fit for the
 	// long-lived-connection liveness predicate, which re-reads the CREDENTIAL
 	// from the request. The inbound /mcp request's `ctxAuthKind` survives into
-	// this context, so a synthesized request built from the MCP PAT accept
-	// point says `api_token` and carries no bearer to re-check — the predicate
-	// would close it on its first tick even though the PAT is fine. Nothing
-	// reaches that today: `routeTable` maps no tool to /api/v1/events,
-	// /api/v1/events/stream or /api/v1/collab, and a request with no auth kind
-	// at all is closed too, so both readings end the same way.
+	// this context, so a synthesized request says `api_token` or (since
+	// BUG-3837) `oauth_access_token`, and carries no bearer to re-check — the
+	// predicate would close it on its first tick even though the credential is
+	// fine. Nothing reaches that today: `routeTable` maps no tool to
+	// /api/v1/events, /api/v1/events/stream or /api/v1/collab.
 	//
 	// The fix when an MCP route DOES become long-lived is to forward the
 	// credential rather than only the principal — not to widen the predicate,

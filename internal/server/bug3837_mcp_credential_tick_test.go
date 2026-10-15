@@ -68,16 +68,6 @@ func newBug3837Fixture(t *testing.T, accessLifespan time.Duration) *bug3837Fixtu
 
 	user, sessionToken := loginTestUser(t, srv)
 	f.user = user
-	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
-	clientID := registerTestClient(t, srv, "https://app.test/cb")
-	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
-		"verifier-bug3837-quick-brown-fox-jumps-over-lazy-dog-12")
-	f.clientID = clientID
-	f.access, _ = tokens["access_token"].(string)
-	f.refresh, _ = tokens["refresh_token"].(string)
-	if f.access == "" || f.refresh == "" {
-		t.Fatalf("missing access or refresh token: %v", tokens)
-	}
 	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "BUG-3837"})
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +75,18 @@ func newBug3837Fixture(t *testing.T, accessLifespan time.Duration) *bug3837Fixtu
 	f.pat, err = srv.store.CreateAPIToken(user.ID, models.APITokenCreate{Name: "bug3837", WorkspaceID: ws.ID}, 30, 0)
 	if err != nil {
 		t.Fatal(err)
+	}
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	// Minted last, so a short lifespan is not spent on the setup above
+	// (hunter r3).
+	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
+		"verifier-bug3837-quick-brown-fox-jumps-over-lazy-dog-12")
+	f.clientID = clientID
+	f.access, _ = tokens["access_token"].(string)
+	f.refresh, _ = tokens["refresh_token"].(string)
+	if f.access == "" || f.refresh == "" {
+		t.Fatalf("missing access or refresh token: %v", tokens)
 	}
 	return f
 }
@@ -307,9 +309,9 @@ func TestMCP_BUG3837_DeletedUserIsNotStillValid(t *testing.T) {
 // The lead's KEEP ruling on rotation (on BUG-3837): a refresh rotation flips
 // the old access token inactive, so a live stream opened with it ends at its
 // next tick, even though the grant is live. Pinned with its three conditions:
-// it ends within one tick of the rotation, it ends between frames (the tick
-// only cancels the context, and the transport sees that between writes), and
-// the rotated-in token opens a fresh stream that stays open.
+// it ends at about the next tick after the rotation, it ends between frames
+// (the tick only cancels the context, and the transport sees that between
+// writes), and the rotated-in token opens a fresh stream that stays open.
 func TestMCP_BUG3837_RefreshRotationEndsTheStreamAndTheNewTokenOpensOne(t *testing.T) {
 	f := newBug3837Fixture(t, 0)
 	// A tick long enough to measure "within one" against, short enough to run.
@@ -330,11 +332,16 @@ func TestMCP_BUG3837_RefreshRotationEndsTheStreamAndTheNewTokenOpensOne(t *testi
 		t.Fatalf("refresh minted no new access token: %v", body)
 	}
 	f.assertEnds(t, done, "access token rotated out by a refresh")
-	// One tick, plus scheduling and one introspection's worth of slack.
-	if took := time.Since(rotated); took > tick+600*time.Millisecond {
-		t.Fatalf("the stream ended %v after the rotation, want within one tick (%v)", took, tick)
+	// The next tick is at most one interval away; the bound is two plus
+	// slack, so it catches the override being ignored (the 60s production
+	// interval), not scheduling noise under -race (hunter r3).
+	if took := time.Since(rotated); took > 2*tick+2*time.Second {
+		t.Fatalf("the stream ended %v after the rotation, want within about one tick (%v)", took, tick)
 	}
 
+	// The transport writes whole frames, one Write each, so these checks hold
+	// as long as ending the stream never writes to it: the tick only cancels
+	// the context. They are red on an end that writes to the stream (M12).
 	frames := rec.Body.String()
 	if n := strings.Count(frames, "event: message\n"); n == 0 {
 		t.Fatal("instrument: the transport wrote no frames before the stream ended")
@@ -352,4 +359,65 @@ func TestMCP_BUG3837_RefreshRotationEndsTheStreamAndTheNewTokenOpensOne(t *testi
 	f.emit.Store(false)
 	fresh := f.open(t, newAccess, false)
 	f.assertStaysOpen(t, fresh, 3)
+}
+
+// The tick runs only on the long-lived doors (where admitMCPStream took a
+// slot). A tool call is an ordinary request: its credential was checked at
+// admission, and it ends with its response, so a revocation mid-call must not
+// cancel it (hunter r3).
+func TestMCP_BUG3837_ToolCallIsNotTicked(t *testing.T) {
+	f := newBug3837Fixture(t, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest("POST", "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+f.pat.Token)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req = req.WithContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.srv.ServeHTTP(newDeadlineRecorder(), req)
+	}()
+	f.assertStaysOpen(t, done, 5)
+	if held := f.srv.admission().heldTotal(); held != 0 {
+		t.Fatalf("instrument: a tool call took a stream slot (%d)", held)
+	}
+	if err := f.srv.store.DeleteAPITokenScoped(f.pat.ID, f.pat.WorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	f.assertStaysOpen(t, done, 20)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tool call did not end with its client")
+	}
+}
+
+// A user re-check that cannot ask (a storage failure reading the user) keeps
+// the stream, as a credential door's store error does. OAuth, because fosite's
+// introspection does not read the users table and the PAT door joins it.
+func TestMCP_BUG3837_UserReadFailureKeepsTheStream(t *testing.T) {
+	f := newBug3837Fixture(t, 0)
+	done := f.open(t, f.access, false)
+	exec := func(q string) {
+		t.Helper()
+		if _, err := f.srv.store.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`ALTER TABLE users RENAME TO users_bug3837`)
+	if _, err := f.srv.store.GetUser(f.user.ID); err == nil {
+		exec(`ALTER TABLE users_bug3837 RENAME TO users`)
+		t.Fatal("instrument: GetUser still succeeds with the users table renamed")
+	}
+	f.assertStaysOpen(t, done, 20)
+	exec(`ALTER TABLE users_bug3837 RENAME TO users`)
+	if err := f.srv.store.RevokeOAuthGrant(<-f.reqID); err != nil {
+		t.Fatal(err)
+	}
+	f.assertEnds(t, done, "OAuth grant revoked after the store recovered")
 }

@@ -61,7 +61,8 @@ const (
 )
 
 // streamCredentialStillValid reports whether a long-lived connection may keep
-// running, and is the only thing the three tick sites call.
+// running. Every tick site calls it: both SSE endpoints, collab, and the MCP
+// streams, which also re-check the user (mcpStreamPrincipalStillValid).
 //
 // It KEEPS the connection on `credentialUnknown`, because a database blip is
 // not a revocation, and ENDS it on `credentialInvalid` and on an unrecognised
