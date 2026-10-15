@@ -142,7 +142,10 @@ func assertPlainStreamRefusal(t *testing.T, resp *http.Response, body []byte) {
 }
 
 // A subscriptions/listen POST over the budget is refused the same way, before
-// the transport runs, so it leaves no session, subscription or goroutine.
+// the transport runs, so it leaves no session, subscription or goroutine. The
+// listen carries a modern Mcp-Protocol-Version header, which mcp-go requires
+// before it serves one: a modern-header listen IS still counted (the lead's
+// r6 condition 2; an always-false header gate turns this red).
 func TestMCP_BUG3835_RefusedListenLeavesNothing(t *testing.T) {
 	f := newMCPStallFixture(t)
 	f.srv.admission().setLimits(0, 1)
@@ -155,10 +158,11 @@ func TestMCP_BUG3835_RefusedListenLeavesNothing(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequest("POST", ts.URL+"/mcp", strings.NewReader(
-		`{"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{}}`))
+		`{"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"`+mcp.ProtocolVersion20260728+`"}}}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+f.token)
+	req.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
 	resp, body := doRefusable(t, req)
 	assertPlainStreamRefusal(t, resp, body)
 	if n := f.registered.Load(); n != 0 {
@@ -205,6 +209,7 @@ func TestMCP_BUG3835_ListenDetectionMatchesMCPGo(t *testing.T) {
 	}
 	// The scan replays the body unchanged to the transport.
 	r := httptest.NewRequest("POST", "/mcp", strings.NewReader(cases[1].body))
+	r.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
 	if !mcpLongLivedRequest(r) {
 		t.Fatal("mcpLongLivedRequest missed the listen")
 	}
@@ -213,6 +218,68 @@ func TestMCP_BUG3835_ListenDetectionMatchesMCPGo(t *testing.T) {
 		t.Fatal("the scanned body was not replayed intact")
 	}
 }
+
+// A POST without a modern Mcp-Protocol-Version header is never a listen
+// mcp-go serves (it answers a legacy-era listen METHOD_NOT_FOUND, and refuses
+// a modern-era POST without the header), so admission does not read its body
+// at all: legacy traffic, which is all of pad's today, pays no second buffer
+// (r6 hunter M1; the lead's r6 condition 1). Through the router too: with the
+// user's budget full, a legacy listen reaches the transport rather than being
+// refused 429.
+func TestMCP_BUG3835_LegacyPOSTIsNotReadForAdmission(t *testing.T) {
+	for _, header := range []string{"", "2025-06-18", "2025-11-25"} {
+		body := &bug3835CountingBody{Reader: strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen"}`)}
+		r := httptest.NewRequest("POST", "/mcp", nil)
+		r.Body = body
+		if header != "" {
+			r.Header.Set(mcp.HeaderProtocolVersion, header)
+		}
+		if mcpLongLivedRequest(r) {
+			t.Errorf("header %q: a legacy POST was counted as a listen", header)
+		}
+		if body.reads != 0 {
+			t.Errorf("header %q: admission read the body %d times", header, body.reads)
+		}
+		if r.Body != io.ReadCloser(body) {
+			t.Errorf("header %q: admission replaced the body", header)
+		}
+	}
+
+	f := newMCPStallFixture(t)
+	f.srv.admission().setLimits(0, 1)
+	release, refusal := f.srv.admission().acquire(f.userID(t))
+	if refusal != admissionRefusalNone {
+		t.Fatal(refusal)
+	}
+	defer release()
+	ts := httptest.NewServer(f.srv)
+	t.Cleanup(ts.Close)
+	req, _ := http.NewRequest("POST", ts.URL+"/mcp", strings.NewReader(
+		`{"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("a legacy listen was held open (or failed): %v", err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		t.Fatalf("a legacy listen was refused by admission: %s", got)
+	}
+	if resp.StatusCode == http.StatusOK && isEventStream(resp.Header.Get("Content-Type")) {
+		t.Fatalf("mcp-go served a legacy-era listen: %d %s", resp.StatusCode, got)
+	}
+}
+
+type bug3835CountingBody struct {
+	io.Reader
+	reads int
+}
+
+func (b *bug3835CountingBody) Read(p []byte) (int, error) { b.reads++; return b.Reader.Read(p) }
+func (b *bug3835CountingBody) Close() error               { return nil }
 
 // An array body is not counted, which is safe only because mcp-go refuses it
 // outright: nothing is served and no stream is held.
@@ -358,6 +425,13 @@ func TestMCP_BUG3835_ToolCallSSEUpgradeEndsWithItsResponse(t *testing.T) {
 	last := frames[len(frames)-1]
 	if !strings.HasPrefix(last, "event: message\ndata: ") || !strings.Contains(last, `"id":2`) {
 		t.Fatalf("the stream's last frame is %q, want the tool call's response", last)
+	}
+	// The writer recognises that frame, exactly as the real transport wrote
+	// it, as the stream's final event. The no-keepalive-after check above
+	// cannot see this: the gap before the handler returns is microseconds
+	// (r6 hunter L4).
+	if !isFinalSSEEvent([]byte(last + "\n\n")) {
+		t.Fatalf("isFinalSSEEvent does not recognise the real transport's response frame %q", last)
 	}
 }
 

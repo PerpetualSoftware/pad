@@ -37,7 +37,9 @@ import (
 //     JSON-RPC ping REQUESTS every client must answer.
 //   - The shared stream admission gate (stream_admission.go), taken at request
 //     entry for the two long-lived doors only: the legacy GET stream and
-//     subscriptions/listen. A tools/call POST that mcp-go upgrades to SSE is
+//     subscriptions/listen. Pad's transport serves only the legacy protocol
+//     versions today, so it refuses every listen at once; the listen door is
+//     counted for when the modern era is served (mcpLongLivedRequest). A tools/call POST that mcp-go upgrades to SSE is
 //     not counted: it upgrades mid-call, and a refusal there would land after
 //     the call's side effects, so the client's retry would repeat them.
 
@@ -196,16 +198,28 @@ func (s *Server) runMCPKeepalive(w *mcpStreamWriter, stop <-chan struct{}) {
 // mcpLongLivedRequest reports whether r opens one of the transport's
 // long-lived streams: the legacy GET stream, or a subscriptions/listen POST.
 //
-// A POST's whole body is read to decide it, and replayed to the transport.
-// Not a fixed-size peek: JSON key order is free, so "method" may follow a
-// large "params", and a peek would let a listen skip the budget. The body is
-// already bounded by limitMCPBody, which runs before this.
+// A listen is served only in the modern protocol era, and mcp-go serves a
+// modern POST only when its Mcp-Protocol-Version header is a modern version
+// that equals the body's _meta version (validateModernRequest); a legacy-era
+// listen is answered METHOD_NOT_FOUND at once. So a POST without a modern
+// header is never a listen, and its body is not read here. Pad serves the
+// legacy versions only today (mcp.ServedProtocolVersions), so no POST pays for
+// this read until the modern era is turned on (r6 hunter M1).
+//
+// When the header is modern, the whole body is read to decide it, and
+// replayed to the transport. Not a fixed-size peek: JSON key order is free,
+// so "method" may follow a large "params", and a peek would let a listen skip
+// the budget. The body is already bounded by limitMCPBody, which runs before
+// this.
 func mcpLongLivedRequest(r *http.Request) bool {
 	switch r.Method {
 	case http.MethodGet:
 		return true
 	case http.MethodPost:
 	default:
+		return false
+	}
+	if !mcp.IsModernProtocol(r.Header.Get(mcp.HeaderProtocolVersion)) {
 		return false
 	}
 	if r.Body == nil || r.Body == http.NoBody {
