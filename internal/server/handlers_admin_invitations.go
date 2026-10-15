@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -66,20 +67,26 @@ func (s *Server) handleAdminResendInvitation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Delete old invitation — abort if it's already gone (accepted or revoked concurrently)
-	if err := s.store.DeleteInvitationAdmin(invID); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Invitation is no longer pending")
-		return
-	}
-
 	caller := currentUser(r)
 	inviterID := old.InvitedBy
 	if caller != nil {
 		inviterID = caller.ID
 	}
 
-	inv, err := s.store.CreateInvitation(old.WorkspaceID, old.Email, old.Role, inviterID)
+	// The revoke and the new invitation are one transaction that re-reads the
+	// workspace's liveness under its lock (BUG-3817): a refused create can no
+	// longer lose the original, and a workspace deleted since the check above
+	// gets no new code.
+	inv, err := s.store.ResendInvitationAdmin(invID, inviterID)
 	if writeAccountDisabledIf(w, err) {
+		return
+	}
+	if errors.Is(err, store.ErrInvitationNotPending) {
+		writeError(w, http.StatusNotFound, "not_found", "Invitation is no longer pending")
+		return
+	}
+	if errors.Is(err, store.ErrInvitationWorkspaceDeleted) {
+		writeError(w, http.StatusNotFound, "not_found", "Pending invitation not found")
 		return
 	}
 	if err != nil {

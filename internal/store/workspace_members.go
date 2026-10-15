@@ -1074,26 +1074,123 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	if models.IsReservedAppEmail(email) {
 		return nil, ErrReservedAppEmail
 	}
+	code, codeHash, proof, proofHash, err := newInvitationSecrets()
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("insert invitation: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	inv, err := s.createInvitationTx(tx, workspaceID, email, role, invitedBy, codeHash, proofHash)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("insert invitation: commit: %w", err)
+	}
+	if createInvitationAfterCommitHook != nil {
+		createInvitationAfterCommitHook(inv.ID)
+	}
+	// Return the plaintext code to the caller (not stored in DB)
+	inv.Code = code
+	inv.Proof = proof
+	return inv, nil
+}
+
+// newInvitationSecrets generates an invitation's join code and its
+// mailbox-only proof, each a random 128-bit secret, with the hashes stored
+// in their place. The plaintexts are returned once and never stored.
+func newInvitationSecrets() (code, codeHash, proof, proofHash string, err error) {
 	// Generate a random 128-bit join code (32 hex chars)
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
-		return nil, fmt.Errorf("generate invitation code: %w", err)
+		return "", "", "", "", fmt.Errorf("generate invitation code: %w", err)
 	}
-	code := hex.EncodeToString(raw)
+	code = hex.EncodeToString(raw)
 
 	// Store SHA-256 hash of the code (plaintext never stored)
 	hash := sha256.Sum256([]byte(code))
-	codeHash := hex.EncodeToString(hash[:])
+	codeHash = hex.EncodeToString(hash[:])
 
 	// The mailbox-only proof (TASK-3352): a second 128-bit secret that only
 	// the invitation EMAIL carries. Hash stored, plaintext returned once.
 	rawProof := make([]byte, 16)
 	if _, err := rand.Read(rawProof); err != nil {
-		return nil, fmt.Errorf("generate invitation proof: %w", err)
+		return "", "", "", "", fmt.Errorf("generate invitation proof: %w", err)
 	}
-	proof := hex.EncodeToString(rawProof)
-	proofHash := invitationProofHash(proof)
+	proof = hex.EncodeToString(rawProof)
+	return code, codeHash, proof, invitationProofHash(proof), nil
+}
 
+// ResendInvitationAdmin replaces a pending invitation with a fresh one (new
+// code, proof and expiry; same workspace, address and role), invited by
+// inviterID. The revoke and the create are one transaction (BUG-3817): a
+// create refused after a separate revoke had committed left the invitee
+// with no invitation at all, and the workspace's liveness is re-read under
+// the lock, so a workspace deleted during the request gets no new code.
+// ErrInvitationNotPending when the invitation was accepted, revoked or
+// replaced first; ErrInvitationWorkspaceDeleted when the workspace is gone;
+// the account-disabled refusal when inviterID cannot invite.
+func (s *Store) ResendInvitationAdmin(invitationID, inviterID string) (*models.WorkspaceInvitation, error) {
+	old, err := s.GetInvitation(invitationID)
+	if err != nil {
+		return nil, err
+	}
+	if old == nil || old.AcceptedAt != nil {
+		return nil, ErrInvitationNotPending
+	}
+	code, codeHash, proof, proofHash, err := newInvitationSecrets()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("resend invitation: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// The workspace lock first, the order createInvitationTx and the other
+	// workspace writers take; then the old row, read again under it, so the
+	// address and role are the ones a concurrent re-invite did not replace.
+	if err := s.acquireWorkspaceSeqLock(tx, old.WorkspaceID); err != nil {
+		return nil, fmt.Errorf("resend invitation: lock: %w", err)
+	}
+	cur, err := getInvitationQ(s, tx, invitationID)
+	if err != nil {
+		return nil, err
+	}
+	if cur == nil || cur.AcceptedAt != nil || cur.WorkspaceID != old.WorkspaceID {
+		return nil, ErrInvitationNotPending
+	}
+	if _, err := tx.Exec(s.q(`DELETE FROM workspace_invitations WHERE id = ? AND accepted_at IS NULL`), invitationID); err != nil {
+		return nil, fmt.Errorf("resend invitation: revoke: %w", err)
+	}
+	inv, err := s.createInvitationTx(tx, cur.WorkspaceID, cur.Email, cur.Role, inviterID, codeHash, proofHash)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("resend invitation: commit: %w", err)
+	}
+	inv.Code = code
+	inv.Proof = proof
+	return inv, nil
+}
+
+// ErrInvitationWorkspaceDeleted refuses an invitation to a workspace that was
+// soft-deleted before the invitation's transaction could see it live
+// (BUG-3817).
+var ErrInvitationWorkspaceDeleted = errors.New("invitation: workspace deleted")
+
+// ErrInvitationNotPending: the invitation a resend names was accepted,
+// revoked or replaced before the resend's transaction reached it.
+var ErrInvitationNotPending = errors.New("invitation: no longer pending")
+
+// createInvitationTx writes a pending invitation with the given hashes and
+// returns it as read back inside tx. The caller commits.
+func (s *Store) createInvitationTx(tx *sql.Tx, workspaceID, email, role, invitedBy, codeHash, proofHash string) (*models.WorkspaceInvitation, error) {
 	id := newID()
 	ts := now()
 	expiresAt := time.Now().UTC().Add(InvitationTTL).Format(time.RFC3339)
@@ -1101,11 +1198,7 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	// An invitation is a credential a disabled inviter cannot mint (BUG-3349,
 	// requireActiveUserTx): the code becomes a membership for whoever redeems
 	// it.
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("insert invitation: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	//
 	// One live invitation per (workspace, address) (BUG-2136): a re-invite
 	// REPLACES the pending one, so a fresh code, role and expiry win and the
 	// old code stops working. The workspace lock serializes two concurrent
@@ -1118,6 +1211,23 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 		if err := s.requireActiveUserTx(tx, invitedBy); err != nil {
 			return nil, err
 		}
+	}
+	// The workspace must still be live, read under a lock a soft delete's
+	// update of the row conflicts with (FOR SHARE against its NO KEY UPDATE),
+	// so an invite that loses the race sees deleted_at instead of minting a
+	// code and an email for a deleted workspace (BUG-3817; the request-time
+	// check is BUG-3104's). Taken after the inviter's row: the users-then-
+	// workspace order DeleteWorkspace uses.
+	live := `SELECT id FROM workspaces WHERE id = ? AND deleted_at IS NULL`
+	if s.dialect.Driver() == DriverPostgres {
+		live += ` FOR SHARE`
+	}
+	var liveID string
+	if err := tx.QueryRow(s.q(live), workspaceID).Scan(&liveID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrInvitationWorkspaceDeleted
+		}
+		return nil, fmt.Errorf("insert invitation: check workspace: %w", err)
 	}
 	if _, err := tx.Exec(s.q(`DELETE FROM workspace_invitations WHERE workspace_id = ? AND email = ? AND accepted_at IS NULL`),
 		workspaceID, strings.ToLower(strings.TrimSpace(email))); err != nil {
@@ -1143,15 +1253,6 @@ func (s *Store) CreateInvitation(workspaceID, email, role, invitedBy string) (*m
 	if inv == nil {
 		return nil, fmt.Errorf("create invitation: row missing inside its own transaction: %w", sql.ErrNoRows)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("insert invitation: commit: %w", err)
-	}
-	if createInvitationAfterCommitHook != nil {
-		createInvitationAfterCommitHook(id)
-	}
-	// Return the plaintext code to the caller (not stored in DB)
-	inv.Code = code
-	inv.Proof = proof
 	return inv, nil
 }
 
