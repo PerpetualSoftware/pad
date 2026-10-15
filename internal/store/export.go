@@ -209,6 +209,22 @@ func (s *Store) beginReadSnapshot(ctx context.Context) (*sql.Tx, error) {
 // writer would land in (BUG-3654).
 var exportAfterCollectionsHook func(slug string)
 
+// importedBodySHA256 is the body_sha256 an imported version row is stored
+// with (BUG-3820): the bundle's value when it is a well-formed hex sha256,
+// otherwise NULL, which the walk reads as "no hash" rather than as a body
+// that mismatches.
+func importedBodySHA256(h string) interface{} {
+	if len(h) != 64 {
+		return nil
+	}
+	for _, c := range h {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return nil
+		}
+	}
+	return h
+}
+
 // ExportWorkspaceQ is ExportWorkspace against a caller-supplied executor, so
 // every section of a bundle can be read inside one transaction (BUG-3072).
 //
@@ -476,7 +492,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	// Item versions
 	versionRows, err := q.Query(s.q(`
 		SELECT v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at,
-		       v.lines_added, v.lines_removed, v.is_create
+		       v.lines_added, v.lines_removed, v.is_create, COALESCE(v.body_sha256, '')
 		FROM item_versions v
 		JOIN items i ON v.item_id = i.id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
@@ -490,7 +506,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		var isDiff, isCreate bool
 		var added, removed sql.NullInt64
 		if err := versionRows.Scan(&ver.ID, &ver.ItemID, &ver.Content, &ver.ChangeSummary, &ver.CreatedBy, &ver.Source, &isDiff, &ver.CreatedAt,
-			&added, &removed, &isCreate); err != nil {
+			&added, &removed, &isCreate, &ver.BodySHA256); err != nil {
 			return nil, fmt.Errorf("scan item version: %w", err)
 		}
 		ver.IsDiff = isDiff
@@ -1573,10 +1589,10 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// stable tie-break instead of all defaulting to 0.
 		_, err := tx.Exec(s.q(`
 			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
-			                           lines_added, lines_removed, is_create, imported)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?), ?, ?, ?, 1)`),
+			                           lines_added, lines_removed, is_create, imported, body_sha256)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?), ?, ?, ?, 1, ?)`),
 			newID(), newItemID, ver.Content, ver.ChangeSummary, ver.CreatedBy, ver.Source, s.dialect.BoolToInt(ver.IsDiff),
-			ver.CreatedAt, newItemID, ver.LinesAdded, ver.LinesRemoved, s.dialect.BoolToInt(ver.IsCreate))
+			ver.CreatedAt, newItemID, ver.LinesAdded, ver.LinesRemoved, s.dialect.BoolToInt(ver.IsCreate), importedBodySHA256(ver.BodySHA256))
 		if err != nil {
 			// Log detail but skip — version history is non-critical.
 			// Migrated from fmt.Printf to slog.Warn alongside the

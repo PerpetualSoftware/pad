@@ -265,11 +265,11 @@ func (f *FencedTx) CreateItem(in FencedItemCreate) (*models.Item, error) {
 		added, removed := diff.LineCounts("", in.Content)
 		if _, err := f.tx.Exec(f.s.q(`
 			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq,
-			                           user_id, lines_added, lines_removed, is_create, via_app)
+			                           user_id, lines_added, lines_removed, is_create, via_app, body_sha256)
 			VALUES (?, ?, ?, '', ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?),
-			        ?, ?, ?, ?, ?)
+			        ?, ?, ?, ?, ?, ?)
 		`), newID(), id, in.Content, actor.Kind, appSource, f.s.dialect.BoolToInt(false), ts, id,
-			actor.UserID, added, removed, f.s.dialect.BoolToInt(true), f.installID); err != nil {
+			actor.UserID, added, removed, f.s.dialect.BoolToInt(true), f.installID, versionBodySHA256(in.Content)); err != nil {
 			return nil, fmt.Errorf("fenced initial version: %w", err)
 		}
 	}

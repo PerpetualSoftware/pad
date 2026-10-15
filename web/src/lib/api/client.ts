@@ -325,6 +325,15 @@ function isSupersededWriteError(err: unknown): err is PadApiError {
  * `{ ref, pending_rows }`. Retrying unchanged gets the same answer; the caller
  * either waits for the edits to be saved or resends with the override.
  */
+/**
+ * True when `err` is the server refusing to diff or restore a version whose
+ * body the history cannot rebuild, or cannot verify (BUG-3815, BUG-3820:
+ * `version_unreconstructable`, 409). Retrying gives the same answer.
+ */
+function isVersionUnreconstructableError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'version_unreconstructable';
+}
+
 function isContentPendingFlushError(err: unknown): err is PadApiError {
 	return err instanceof PadApiError && err.code === 'content_pending_flush';
 }
@@ -3733,6 +3742,7 @@ export {
 	isUpdateConflictError,
 	isSupersededWriteError,
 	isContentPendingFlushError,
+	isVersionUnreconstructableError,
 	isNotFoundError,
 	isConflictOrNotFound
 };

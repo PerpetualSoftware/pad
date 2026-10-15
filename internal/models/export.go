@@ -239,4 +239,7 @@ type ItemVersionExport struct {
 	LinesAdded   *int `json:"lines_added,omitempty"`
 	LinesRemoved *int `json:"lines_removed,omitempty"`
 	IsCreate     bool `json:"is_create,omitempty"`
+	// BUG-3820: the hex sha256 of the body the row stands for. Travels so an
+	// imported chain stays verifiable; a bundle without it imports as NULL.
+	BodySHA256 string `json:"body_sha256,omitempty"`
 }

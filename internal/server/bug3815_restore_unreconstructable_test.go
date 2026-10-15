@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -14,7 +16,9 @@ import (
 // body; it now refuses with 409 version_unreconstructable, and so does the
 // diff (it answered 500). Only the failed row is refused: the walk resolves
 // the rows below it past the failure, as BUG-3655 rules, and those still
-// restore.
+// restore when they verify. Since BUG-3820 a row below a failure verifies only
+// against its body_sha256, so vg carries one; an unhashed row there is
+// unverified and refused (bug3820_unverified_version_test.go).
 
 type bug3815Fixture struct {
 	srv      *Server
@@ -34,7 +38,8 @@ const (
 // Newest first:
 //
 //	vb  a patch whose context is nowhere in the body: fails
-//	vg  a reverse patch against the current body, resolved past vb
+//	vg  a reverse patch against the current body, resolved past vb, with the
+//	    hash of the body it stands for (BUG-3820)
 //	vp  a full snapshot whose text starts like the placeholder
 //
 // testServer is SQLite, so the raw SQL below binds with ?.
@@ -57,22 +62,24 @@ func newBug3815Fixture(t *testing.T) *bug3815Fixture {
 	if _, err := db.Exec(`DELETE FROM item_versions WHERE item_id = ?`, item.ID); err != nil {
 		t.Fatal(err)
 	}
+	goodSum := sha256.Sum256([]byte(bug3815Good))
 	rows := []struct {
 		id, content string
 		isDiff      bool
 		at          string
+		hash        interface{}
 	}{
-		{"vb", "@@ -1,12 +1,12 @@\n-Nowhere text\n+Elsewhere te\n", true, "2026-10-03T00:00:00Z"},
-		{"vg", diff.CreateReversePatch(bug3815Good, bug3815Current), true, "2026-10-02T00:00:00Z"},
-		{"vp", bug3815Lookalike, false, "2026-10-01T00:00:00Z"},
+		{"vb", "@@ -1,12 +1,12 @@\n-Nowhere text\n+Elsewhere te\n", true, "2026-10-03T00:00:00Z", nil},
+		{"vg", diff.CreateReversePatch(bug3815Good, bug3815Current), true, "2026-10-02T00:00:00Z", hex.EncodeToString(goodSum[:])},
+		{"vp", bug3815Lookalike, false, "2026-10-01T00:00:00Z", nil},
 	}
 	for i, r := range rows {
 		isDiff := 0
 		if r.isDiff {
 			isDiff = 1
 		}
-		if _, err := db.Exec(`INSERT INTO item_versions (id, item_id, content, is_diff, created_at, version_seq) VALUES (?, ?, ?, ?, ?, ?)`,
-			r.id, item.ID, r.content, isDiff, r.at, len(rows)-i); err != nil {
+		if _, err := db.Exec(`INSERT INTO item_versions (id, item_id, content, is_diff, created_at, version_seq, body_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.id, item.ID, r.content, isDiff, r.at, len(rows)-i, r.hash); err != nil {
 			t.Fatal(err)
 		}
 	}

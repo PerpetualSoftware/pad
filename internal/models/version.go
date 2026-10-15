@@ -38,12 +38,24 @@ type Version struct {
 	ViaAppName string `json:"via_app_name,omitempty"`
 
 	// Unreconstructable marks a resolved version whose body the reverse-patch
-	// walk could not rebuild: Content then holds a "[patch error: ...]"
-	// placeholder, never a body to restore or diff (BUG-3815). Set only by
-	// the resolving reads, and served so a client can tell the placeholder
-	// from a body; a real body that happens to start with that text is not
-	// one.
-	Unreconstructable bool `json:"unreconstructable,omitempty"`
+	// walk could not rebuild, or could not verify: never a body to restore or
+	// diff (BUG-3815, BUG-3820). Set only by the resolving reads, and served
+	// so a client can tell. UnreconstructableReason says which:
+	//   - "patch_failed": the patch did not apply; Content holds a
+	//     "[patch error: ...]" placeholder.
+	//   - "hash_mismatch": the patch applied, but not to the body its
+	//     body_sha256 records; Content holds the placeholder.
+	//   - "unverified": the row has no body_sha256 and lies below a failed or
+	//     mismatched row, so it was resolved from a body that may not be its
+	//     base. Content holds that best-effort body, which may be wrong.
+	// A real body that happens to start with the placeholder text is not one.
+	Unreconstructable       bool   `json:"unreconstructable,omitempty"`
+	UnreconstructableReason string `json:"unreconstructable_reason,omitempty"`
+
+	// BodySHA256 is the hex sha256 of the body this row stands for, or ""
+	// for a row written before BUG-3820 (or imported without one). Internal:
+	// the walk checks it; it is not served.
+	BodySHA256 string `json:"-"`
 }
 
 // ItemVersionDiff is the change one item version row records (PLAN-2348 U2):

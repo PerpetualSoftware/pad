@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Version, Item, AutosaveRun } from '$lib/types';
-	import { api, isContentPendingFlushError } from '$lib/api/client';
+	import { api, isContentPendingFlushError, isVersionUnreconstructableError } from '$lib/api/client';
 	import { pendingEditsReason } from '$lib/items/contentWrite';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import DiffView from '$lib/components/versions/DiffView.svelte';
@@ -84,6 +84,13 @@
 	// first time the card is expanded.
 	let diffPair = $state<{ before: string; after: string } | null>(null);
 	let resolveError = $state(false);
+	// The server refused the diff because this version's body cannot be
+	// rebuilt or verified from the history (BUG-3820). Not a load failure: it
+	// is the answer. It does NOT hide Restore: the diff also needs the NEXT
+	// newer row, so a verified, restorable version whose neighbour failed is
+	// refused here and restored fine. The restore's own gate decides, and its
+	// refusal shows through 'Restore failed: <message>'.
+	let unreconstructable = $state(false);
 	let resolving = $state(false);
 
 	async function ensureResolved() {
@@ -107,6 +114,7 @@
 		const oldestId = run?.oldest_version_id;
 		resolving = true;
 		resolveError = false;
+		unreconstructable = false;
 		try {
 			const [newest, oldest] = await Promise.all([
 				api.versions.diff(reqWs, reqSlug, version.id),
@@ -119,10 +127,11 @@
 			diffPair = sinceNow
 				? { before: newest.after, after: currentContent }
 				: { before: (oldest ?? newest).before, after: newest.after };
-		} catch {
+		} catch (err) {
 			if (!isSameIdentity()) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-			resolveError = true;
+			if (isVersionUnreconstructableError(err)) unreconstructable = true;
+			else resolveError = true;
 		} finally {
 			resolving = false;
 		}
@@ -264,6 +273,10 @@
 			<div class="diff-container">
 				{#if resolving}
 					<p class="diff-status">Loading changes…</p>
+				{:else if unreconstructable}
+					<p class="diff-status unreconstructable" role="note">
+						This edit's changes can't be shown: the item's history can't be rebuilt or verified at this point.
+					</p>
 				{:else if resolveError}
 					<p class="diff-status">Couldn't load this edit's changes.</p>
 				{:else if diffPair !== null}
