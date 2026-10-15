@@ -1661,7 +1661,7 @@ Pad exposes Prometheus metrics at `/metrics` (unauthenticated). Key metrics:
 | `pad_http_request_duration_seconds` | histogram | Request latency |
 | `pad_http_response_size_bytes` | histogram | Response body sizes |
 | `pad_sse_connections_active` | gauge | Connections on the workspace activity stream (`/api/v1/events`) only |
-| `pad_stream_connections_active` | gauge | Held connections across **both** SSE endpoints — the population the limits bound |
+| `pad_stream_connections_active` | gauge | Held connections across **both** SSE endpoints and MCP's long-lived streams — the population the limits bound |
 | `pad_eventbus_publish_total` | counter | Events HANDED to the bus — attempts, not confirmed publishes. A failed publish is still counted here, and ALSO in `pad_eventbus_publish_failures_total` |
 | `pad_eventbus_publish_failures_total` | counter | Publishes the bus reported as failed, by `outcome`: `closed` (the bus was already shut down, so the event provably went nowhere — expected in small numbers at shutdown) or `unconfirmed` (any other error, usually Redis; the event may have gone out anyway). Each failure is also logged, rate-bounded, with outcome, event type and workspace. **This is the only trace of a lost event**: a lost event leaves no gap that a connected client or a resume can detect, so no resync is triggered, not even on reconnect. Healthy operation reads zero outside shutdown; a non-zero `unconfirmed` rate while the instance is running means Redis is failing publishes (BUG-2732) |
 | `pad_eventbus_subscribers` | gauge | Active event subscribers |
@@ -1777,7 +1777,7 @@ curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
 - [ ] **Database:** PostgreSQL configured with `PAD_DB_DRIVER=postgres`
 - [ ] **Redis:** Connected for multi-instance events, notifications, and session presence (`PAD_REDIS_URL`), on a non-evicting `maxmemory-policy`, single node (not a cluster)
 - [ ] **Redis namespace:** `PAD_REDIS_NAMESPACE` set if this endpoint is shared with another Pad installation
-- [ ] **Streaming limits:** `PAD_SSE_MAX_CONNECTIONS` / `PAD_SSE_MAX_PER_USER` sized for your fleet (both cover *both* SSE endpoints)
+- [ ] **Streaming limits:** `PAD_SSE_MAX_CONNECTIONS` / `PAD_SSE_MAX_PER_USER` sized for your fleet (both cover *both* SSE endpoints and MCP's long-lived streams)
 - [ ] **Collab limit:** `PAD_COLLAB_MAX_PER_USER` sized for how many items a user keeps open at once (one socket per open item pane, per instance)
 - [ ] **Redis alerting:** `pad_redis_up` and `pad_watchevents_sequence_gaps_total` wired to alerts
 - [ ] **Stream-honesty alerting:** `pad_event_resume_gaps_total` alerting on a rate that does NOT settle after a deploy (a step around one is expected — cold replay buffers), and `pad_event_receive_loop_exits_total` read as a rate against a stable subscriber count. See the metrics table above for what each label means

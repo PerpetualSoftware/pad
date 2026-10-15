@@ -23,9 +23,13 @@ import (
 //
 //   - A ': keepalive' comment, at the /events cadence, on any response the
 //     transport commits as 200 text/event-stream. The write goes through the
-//     same bounded writer, so a client that stopped reading now fails a write
-//     within one keepalive plus the write deadline. mcp-go's own heartbeat is
-//     not used: it sends JSON-RPC ping REQUESTS every client must answer.
+//     same bounded writer, so a dead or half-open peer now fails a write
+//     within one keepalive plus the write deadline. A live client that holds
+//     TCP open and stops reading is NOT caught this way with default socket
+//     buffers: a comment per interval takes days to fill them, so no write
+//     blocks (hunter r3; /events is the same). The admission budget below is
+//     what bounds that client. mcp-go's own heartbeat is not used: it sends
+//     JSON-RPC ping REQUESTS every client must answer.
 //   - The shared stream admission gate (stream_admission.go), taken at request
 //     entry for the two long-lived doors only: the legacy GET stream and
 //     subscriptions/listen. A tools/call POST that mcp-go upgrades to SSE is
@@ -48,7 +52,7 @@ type mcpStreamWriter struct {
 
 	mu          sync.Mutex
 	wroteHeader bool
-	ended       bool          // final event written, or the handler returned
+	ended       bool          // final event written, or end() ran after the transport returned
 	committed   chan struct{} // closed when the response is committed as 200 text/event-stream
 }
 
@@ -114,7 +118,10 @@ func (w *mcpStreamWriter) keepalive() bool {
 }
 
 // end stops any further keepalive. Called once the transport returns, before
-// mcpBoundWrites joins the keepalive goroutine and itself returns.
+// mcpBoundWrites joins the keepalive goroutine and itself returns. It is not
+// atomic with that return: a tick that takes mu between the two writes one
+// more comment frame first, which is valid SSE on a response that is ending
+// (Codex r1). Nothing is written after mcpBoundWrites returns.
 func (w *mcpStreamWriter) end() {
 	w.mu.Lock()
 	defer w.mu.Unlock()

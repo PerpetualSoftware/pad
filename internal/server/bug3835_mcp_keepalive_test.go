@@ -42,7 +42,10 @@ func waitHeld(t *testing.T, srv *Server, want int) {
 // An IDLE GET stream whose client stopped reading ends, and frees its slot.
 // Nothing is pumped: only the keepalive writes, so without it no write ever
 // happens and #2182's deadline never fires (the bug). Release on
-// write-deadline death.
+// write-deadline death. The stall is detected only because
+// stalledStreamServer shrinks the send buffer and the keepalive interval;
+// with default buffers a live non-reader is bounded by the budget instead
+// (see mcp_stream_keepalive.go).
 func TestMCP_BUG3835_IdleStalledGETEndsAndReleasesItsSlot(t *testing.T) {
 	f := newMCPStallFixture(t)
 	ts, wf := stalledStreamServer(t, f.srv)
