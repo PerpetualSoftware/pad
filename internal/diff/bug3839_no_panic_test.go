@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // BUG-3839: LineCounts, FormatDiffSummary and Unified are reached by text
@@ -119,7 +120,7 @@ func TestBUG3839_ApplyPatchRefusesInvalidUTF8(t *testing.T) {
 // go-diff panics on VALID text too, when a well-formed patch is applied over
 // a base it was not made from and the base holds multi-byte runes. The version
 // walk does that after skipping a row; ApplyPatch reports it as an error.
-func TestBUG3839_ApplyPatchOverAnotherValidBaseNeverPanics(t *testing.T) {
+func TestBUG3839_ApplyPatchOverAnotherValidBaseNeverPanicsOrMangles(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	pieces := []string{"é", "😀", "À", "\n", "a", "b", " ", "ab", "%", "+"}
 	gen := func() string {
@@ -129,7 +130,7 @@ func TestBUG3839_ApplyPatchOverAnotherValidBaseNeverPanics(t *testing.T) {
 		}
 		return b.String()
 	}
-	reached := 0
+	reached, mangled := 0, 0
 	for i := 0; i < 20000; i++ {
 		a, b, base := gen(), gen(), gen()
 		p := CreatePatch(a, b)
@@ -141,12 +142,23 @@ func TestBUG3839_ApplyPatchOverAnotherValidBaseNeverPanics(t *testing.T) {
 		if bug3839Panics(func() { dmp.PatchApply(patches, base) }) {
 			reached++
 		}
-		if bug3839Panics(func() { _, _ = ApplyPatch(base, p) }) {
+		// Instrument: go-diff returns text that is not valid UTF-8.
+		bug3839Panics(func() {
+			if out, _ := dmp.PatchApply(patches, base); !utf8.ValidString(out) {
+				mangled++
+			}
+		})
+		var got string
+		var applyErr error
+		if bug3839Panics(func() { got, applyErr = ApplyPatch(base, p) }) {
 			t.Fatalf("ApplyPatch(%q, CreatePatch(%q, %q)) panicked", base, a, b)
 		}
+		if applyErr == nil && !utf8.ValidString(got) {
+			t.Fatalf("ApplyPatch(%q, CreatePatch(%q, %q)) returned %q, which is not valid UTF-8", base, a, b, got)
+		}
 	}
-	t.Logf("instrument: %d of 20000 inputs panic go-diff's PatchApply", reached)
-	if reached == 0 {
-		t.Fatal("instrument: no input reached go-diff's PatchApply panic, so a pass shows nothing")
+	t.Logf("instrument: of 20000 inputs, %d panic go-diff's PatchApply and %d make it return invalid UTF-8", reached, mangled)
+	if reached == 0 || mangled == 0 {
+		t.Fatal("instrument: the inputs do not reach both go-diff failures, so a pass shows nothing")
 	}
 }

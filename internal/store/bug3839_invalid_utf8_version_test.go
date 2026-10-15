@@ -325,6 +325,11 @@ func seedExisting(t *testing.T, s *store.Store, pg bool, itemID, body string) (s
 // whenever it skips a row.
 var bug3839Unmade = struct{ from, to, base string }{"a\né+abb😀", "%a+a😀ab", "é😀ab😀+%"}
 
+// bug3839Mangled is the same kind of pair on which go-diff instead succeeds
+// and returns text that is not valid UTF-8 ("\x80"), from valid text (#2200
+// review r2).
+var bug3839Mangled = struct{ from, to, base string }{"b%é😀+a\na%b 😀", "%é", "a \né\n😀"}
+
 // seedDiffVersion replaces the item's history with one unhashed diff row.
 func seedDiffVersion(t *testing.T, s *store.Store, itemID, patch string) {
 	t.Helper()
@@ -347,6 +352,7 @@ func TestBUG3839_ItemHistoryRefusesARowGoDiffCannotApply(t *testing.T) {
 		for _, sh := range []struct{ name, current, patch string }{
 			{"invalid_current", bug3839Long("See the\xe2\x82 notes."), bug3839Patch(t, bug3839Long("See notes."), valid)},
 			{"unmade_base", bug3839Unmade.base, bug3839Patch(t, bug3839Unmade.to, bug3839Unmade.from)},
+			{"mangled_result", bug3839Mangled.base, bug3839Patch(t, bug3839Mangled.to, bug3839Mangled.from)},
 		} {
 			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
 				s := backend.open(t)
@@ -375,6 +381,7 @@ func TestBUG3839_DocumentHistoryRefusesARowGoDiffCannotApply(t *testing.T) {
 		for _, sh := range []struct{ name, current, patch string }{
 			{"invalid_current", bug3839Long("See the\xe2\x82 notes."), bug3839Patch(t, bug3839Long("See notes."), valid)},
 			{"unmade_base", bug3839Unmade.base, bug3839Patch(t, bug3839Unmade.to, bug3839Unmade.from)},
+			{"mangled_result", bug3839Mangled.base, bug3839Patch(t, bug3839Mangled.to, bug3839Mangled.from)},
 		} {
 			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
 				s := backend.open(t)
@@ -417,6 +424,7 @@ func TestBUG3839_ThrottledEditOverARowGoDiffCannotApplyLeavesTheRow(t *testing.T
 		for _, sh := range []struct{ name, current, patch string }{
 			{"invalid_current", bug3839Long("See the\xe2\x82 notes."), bug3839Patch(t, bug3839Long("See notes."), valid)},
 			{"unmade_base", bug3839Unmade.base, bug3839Patch(t, bug3839Unmade.to, bug3839Unmade.from)},
+			{"mangled_result", bug3839Mangled.base, bug3839Patch(t, bug3839Mangled.to, bug3839Mangled.from)},
 		} {
 			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
 				s := backend.open(t)

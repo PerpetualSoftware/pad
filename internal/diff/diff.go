@@ -29,8 +29,12 @@ func CreatePatch(oldText, newText string) string {
 //
 // go-diff also panics on valid text, when a patch is applied over a base it
 // was not made from and the base holds multi-byte runes (about 1.5% of such
-// pairs in the BUG-3839 measurement). The version walk does exactly that
-// after it skips a row, so that panic is an error here too.
+// pairs in the BUG-3839 measurement), or returns text that is not valid
+// UTF-8. The version walk does exactly that after it skips a row, so both
+// are errors here too.
+//
+// An empty patch returns baseText as it is, valid or not: it records a
+// version byte-identical to its base, and go-diff is never reached.
 func ApplyPatch(baseText, patchText string) (string, error) {
 	if patchText == "" {
 		return baseText, nil
@@ -54,6 +58,11 @@ func ApplyPatch(baseText, patchText string) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("patch hunk %d failed to apply", i)
 		}
+	}
+	// Over a base it was not made from, go-diff can also succeed and cut a
+	// rune in half: valid text in, invalid text out. No version recorded that.
+	if !utf8.ValidString(result) {
+		return "", fmt.Errorf("applying the patch produced text that is not valid UTF-8")
 	}
 	return result, nil
 }
