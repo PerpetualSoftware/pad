@@ -86,6 +86,10 @@ func appendVarUint(b []byte, v uint64) []byte {
 	return append(b, byte(v))
 }
 
+// minAwarenessEntryBytes is the smallest encoded entry: a one-byte client ID,
+// a one-byte clock and a zero state length.
+const minAwarenessEntryBytes = 3
+
 // decodeAwarenessFrame parses a whole awareness WebSocket frame: the message
 // type (1), then a length-prefixed update holding a count and, per entry, a
 // client ID, a clock and a length-prefixed JSON state.
@@ -103,7 +107,11 @@ func decodeAwarenessFrame(frame []byte) ([]awarenessEntry, error) {
 	if err != nil {
 		return nil, errAwarenessFrame
 	}
-	if count > uint64(len(update)) { // every entry is at least 3 bytes
+	// The count is the sender's word, and the slice below is preallocated
+	// from it, so it is held to what the bytes can carry: a frame cannot
+	// make the server reserve room for entries it does not contain (BUG-3772:
+	// a 1 MiB frame claiming one entry per byte reserved about 24 MB).
+	if count > uint64(len(update)-j)/minAwarenessEntryBytes {
 		return nil, errAwarenessFrame
 	}
 	out := make([]awarenessEntry, 0, count)
