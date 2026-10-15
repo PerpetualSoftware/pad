@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -70,8 +72,8 @@ func newMCPStallFixture(t *testing.T) *mcpStallFixture {
 
 // openGET opens GET /mcp over a raw connection and waits for the session to
 // register. It returns the connection and a reader positioned after the
-// response head.
-func (f *mcpStallFixture) openGET(t *testing.T, base string, shrink bool) (net.Conn, *bufio.Reader) {
+// response head. A non-nil wf watches this connection for a failed write.
+func (f *mcpStallFixture) openGET(t *testing.T, base string, shrink bool, wf *writeFailures) (net.Conn, *bufio.Reader) {
 	t.Helper()
 	u, err := url.Parse(base)
 	if err != nil {
@@ -82,6 +84,9 @@ func (f *mcpStallFixture) openGET(t *testing.T, base string, shrink bool) (net.C
 		t.Fatalf("dial: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
+	if wf != nil {
+		wf.watch(conn.LocalAddr().String())
+	}
 	if tc, ok := conn.(*net.TCPConn); ok && shrink {
 		_ = tc.SetReadBuffer(4096)
 	}
@@ -133,13 +138,26 @@ func (f *mcpStallFixture) pump(size int, stop <-chan struct{}) {
 	}
 }
 
-func (f *mcpStallFixture) assertUnregisteredWithin(t *testing.T, d time.Duration, why string) {
+// assertUnregistered waits for the server's write to the stalled client to
+// fail on its deadline, then requires the GET stream's session unregistered
+// within stallReleaseMargin. The two phases are timed apart, as
+// assertSlotReleased does (BUG-3824): filling the buffers is the harness and
+// takes as long as the scheduler lets it; the release is the code under test.
+func (f *mcpStallFixture) assertUnregistered(t *testing.T, wf *writeFailures) {
 	t.Helper()
-	deadline := time.Now().Add(d)
+	select {
+	case <-wf.failed:
+	case <-time.After(stallFillCeiling):
+		t.Fatalf("no write to the stalled client failed within %v (write timeout %v): "+
+			"a blocked write or flush pins the GET handler, or the buffers never filled", stallFillCeiling, f.srv.sseWriteTimeoutOverride)
+	}
+	if !errors.Is(wf.err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the first failed write returned %v, want a write deadline overrun", wf.err)
+	}
+	deadline := wf.at.Add(stallReleaseMargin)
 	for f.unregistered.Load() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("the GET stream's session was still registered %v after the client stopped reading (write timeout %v): %s",
-				d, f.srv.sseWriteTimeoutOverride, why)
+			t.Fatalf("the GET stream's session was still registered %v after a write overran its deadline: the handler did not return", stallReleaseMargin)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -154,35 +172,34 @@ func (f *mcpStallFixture) assertUnregisteredWithin(t *testing.T, d time.Duration
 // TestMCP_BUG3808_DeadStreamCancelsTheRequestContext.
 func TestMCP_BUG3808_StalledReaderReleasesTheGETStream(t *testing.T) {
 	for _, c := range []struct {
-		name      string
-		size      int
-		stopAfter time.Duration // 0: keep pumping until the end
+		name       string
+		size       int
+		stopOnFail bool // stop pumping once a write fails
 	}{
-		{"blocked-in-write", 64 << 10, 0},
-		{"blocked-in-flush", 200, 1500 * time.Millisecond},
+		{"blocked-in-write", 64 << 10, false},
+		{"blocked-in-flush", 200, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newMCPStallFixture(t)
-			ts := stalledStreamServer(t, f.srv)
-			f.openGET(t, ts.URL, true)
+			ts, wf := stalledStreamServer(t, f.srv)
+			f.openGET(t, ts.URL, true, wf)
 
 			stop := make(chan struct{})
 			done := make(chan struct{})
 			go func() { defer close(done); f.pump(c.size, stop) }()
+			var stopOnce sync.Once
+			closeStop := func() { stopOnce.Do(func() { close(stop) }) }
 			t.Cleanup(func() {
-				select {
-				case <-stop:
-				default:
-					close(stop)
-				}
+				closeStop()
 				<-done
 			})
-			if c.stopAfter > 0 {
-				time.Sleep(c.stopAfter)
-				close(stop)
-				<-done
+			if c.stopOnFail {
+				go func() {
+					<-wf.failed
+					closeStop()
+				}()
 			}
-			f.assertUnregisteredWithin(t, 5*time.Second, "a blocked write or flush pins the GET handler")
+			f.assertUnregistered(t, wf)
 		})
 	}
 }
@@ -197,7 +214,7 @@ func TestMCP_BUG3808_ReadingClientKeepsTheGETStream(t *testing.T) {
 	f.srv.sseWriteTimeoutOverride = 200 * time.Millisecond
 	ts := httptest.NewServer(f.srv)
 	t.Cleanup(ts.Close)
-	_, br := f.openGET(t, ts.URL, false)
+	_, br := f.openGET(t, ts.URL, false, nil)
 
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -347,13 +364,10 @@ func TestMCP_BUG3808_StalledReaderReleasesAHeaderOnlyDELETE(t *testing.T) {
 		served.Add(1)
 		f.srv.ServeHTTP(w, r)
 	}))
+	wf := &writeFailures{failed: make(chan struct{})}
+	ts.Listener = &writeFailureListener{Listener: ts.Listener, wf: wf} // 4KB send buffer
 	ts.Config.ConnState = func(c net.Conn, st http.ConnState) {
-		switch st {
-		case http.StateNew:
-			if tc, ok := c.(*net.TCPConn); ok {
-				_ = tc.SetWriteBuffer(4096)
-			}
-		case http.StateClosed:
+		if st == http.StateClosed {
 			close(closed)
 		}
 	}
@@ -369,16 +383,28 @@ func TestMCP_BUG3808_StalledReaderReleasesAHeaderOnlyDELETE(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
+	wf.watch(conn.LocalAddr().String())
 	_ = conn.(*net.TCPConn).SetReadBuffer(4096)
 	req := "DELETE /mcp HTTP/1.1\r\nHost: " + u.Host + "\r\nAuthorization: Bearer " + f.token + "\r\n\r\n"
 	const pipelined = 400
 	go func() { _, _ = conn.Write([]byte(strings.Repeat(req, pipelined))) }()
 
+	// Timed in two phases, as assertSlotReleased is (BUG-3824): the buffers
+	// fill as fast as the scheduler serves the requests, then the close is
+	// the code under test.
+	select {
+	case <-wf.failed:
+	case <-time.After(stallFillCeiling):
+		t.Fatalf("no write to the stalled client failed within %v (%d of %d DELETEs served, write timeout %v): the header-only response's write is unbounded",
+			stallFillCeiling, served.Load(), pipelined, f.srv.sseWriteTimeoutOverride)
+	}
+	if !errors.Is(wf.err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the first failed write returned %v, want a write deadline overrun", wf.err)
+	}
 	select {
 	case <-closed:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the connection was still open 5s after its client stopped reading (%d of %d DELETEs served, write timeout %v): the header-only response's write is unbounded",
-			served.Load(), pipelined, f.srv.sseWriteTimeoutOverride)
+	case <-time.After(time.Until(wf.at.Add(stallReleaseMargin))):
+		t.Fatalf("the connection was still open %v after a write overran its deadline", stallReleaseMargin)
 	}
 	// Instrument: the stall came before the client's requests ran out, so the
 	// close is the deadline firing on a blocked write, not the end of input.
