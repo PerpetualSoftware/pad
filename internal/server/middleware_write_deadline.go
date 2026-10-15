@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bufio"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -132,13 +134,37 @@ func (d *deadlineWriter) Write(p []byte) (int, error) {
 	return d.ResponseWriter.Write(p)
 }
 
-// Flush satisfies http.Flusher, which the compressor and streaming handlers
-// type-assert for.
-func (d *deadlineWriter) Flush() {
-	if d.arm() != nil {
-		return
+// FlushError is what http.ResponseController.Flush calls, so a handler that
+// flushes through one learns that the flush failed (the deadline expired on a
+// client that stopped reading) instead of flushing into a dead connection
+// forever. Without it the controller falls back to Flush, which has no error
+// to return.
+func (d *deadlineWriter) FlushError() error {
+	if err := d.arm(); err != nil {
+		return err
 	}
-	_ = d.rc.Flush()
+	return d.rc.Flush()
+}
+
+// Flush satisfies http.Flusher, which the compressor and streaming handlers
+// type-assert for. It has no error return; FlushError carries the error.
+func (d *deadlineWriter) Flush() {
+	_ = d.FlushError()
+}
+
+// Hijack satisfies http.Hijacker, which gorilla/websocket type-asserts for
+// rather than going through http.ResponseController (codex r7). A WebSocket
+// route that is not in ownsWriteDeadline would otherwise fail its upgrade
+// with a 500. net/http clears every deadline on hijack, so the connection
+// handed over carries none of this middleware's; the clear here is the same,
+// kept in case that ever changes (no test can tell the two apart while
+// net/http does it).
+func (d *deadlineWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := d.rc.Hijack()
+	if err == nil {
+		_ = conn.SetWriteDeadline(time.Time{})
+	}
+	return conn, rw, err
 }
 
 // Unwrap lets http.ResponseController and middleware see the writer beneath.

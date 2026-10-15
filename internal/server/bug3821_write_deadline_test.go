@@ -290,13 +290,21 @@ func TestBUG3821_AKeepAliveConnectionStartsItsNextRequestWithNoDeadline(t *testi
 }
 
 // On hijack: whatever the middleware armed is gone, so an upgraded connection
-// can write long after the response timeout.
+// can write long after the response timeout. The route is not exempt, so the
+// handler gets the middleware's writer, and it hijacks by type assertion, as
+// gorilla/websocket does (codex r7).
 func TestBUG3821_AHijackedConnectionCarriesNoDeadline(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	srv.ensureRouter()
 	srv.router.Get("/__bug3821/upgrade", func(w http.ResponseWriter, r *http.Request) {
-		conn, rw, err := http.NewResponseController(w).Hijack()
+		h, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("the response writer (%T) does not implement http.Hijacker", w)
+			http.Error(w, "no hijacker", http.StatusInternalServerError)
+			return
+		}
+		conn, rw, err := h.Hijack()
 		if err != nil {
 			t.Errorf("hijack: %v", err)
 			return
@@ -370,5 +378,45 @@ func TestBUG3821_TheExemptionMatchesTheRoutedPathOnly(t *testing.T) {
 		if got := ownsWriteDeadline(r); got != tc.exempt {
 			t.Errorf("%s %s: ownsWriteDeadline = %v, want %v", tc.method, tc.target, got, tc.exempt)
 		}
+	}
+}
+
+// A handler that flushes through http.ResponseController to a client that has
+// stopped reading gets the flush's error. Without FlushError on the wrapper,
+// the controller falls back to Flush, which swallows it, and a handler that
+// only checks its flushes would flush into the dead connection forever.
+func TestBUG3821_AStalledFlushReturnsAnError(t *testing.T) {
+	// Fails today with or without deadlineWriter.FlushError: chi's wrappers on
+	// both sides of this one (the compressor above it, the logger and metrics
+	// WrapResponseWriter beneath it) have Flush but no FlushError, so the error
+	// is dropped before it reaches the handler or this wrapper. Rook's bug on
+	// those wrappers (the lead, 2026-10-15 ~00:55Z) lifts this skip.
+	t.Skip("blocked on chi's wrappers discarding FlushError (Rook's bug)")
+	t.Parallel()
+	srv := testServer(t)
+	srv.ensureRouter()
+	flushErr := make(chan error, 1)
+	srv.router.Get("/__bug3821/flusher", func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		chunk := []byte(strings.Repeat("x", 1024) + "\n")
+		giveUp := time.Now().Add(10 * time.Second)
+		for time.Now().Before(giveUp) {
+			_, _ = w.Write(chunk) // deliberately unchecked: the flush is under test
+			if err := rc.Flush(); err != nil {
+				flushErr <- err
+				return
+			}
+		}
+		flushErr <- nil
+	})
+	ts, _ := bug3821Server(t, srv, bug3821Timeout, 4096)
+	stallAfterHead(t, ts, "/__bug3821/flusher", "")
+	select {
+	case err := <-flushErr:
+		if err == nil {
+			t.Fatal("every flush to a client that stopped reading succeeded for 10s: the flush error was swallowed")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the flushing handler never returned")
 	}
 }
