@@ -25,6 +25,10 @@ import (
 // because it is genuinely workspace-scoped and the watch stream has no
 // coherent workspace to count against.
 //
+// MCP (BUG-3835): the transport's long-lived streams, GET /mcp and a
+// subscriptions/listen POST, take a slot here too, at request entry
+// (admitMCPStream). A tool call upgraded to SSE mid-call does not.
+//
 // COMPATIBILITY: PAD_SSE_MAX_CONNECTIONS now covers both endpoints, so
 // an operator who tuned it for one is bounding both and may reach the
 // limit sooner. Deliberate — a knob that silently bounded half the
@@ -161,7 +165,8 @@ const streamLimitRetryAfterSeconds = 5
 
 // writeStreamLimitExceeded answers a refused streaming connection.
 //
-// One helper for both endpoints, so the refusal contract cannot drift
+// One helper for every streaming door (both SSE endpoints and MCP's
+// long-lived streams), so the refusal contract cannot drift
 // between them — status, error code, message and Retry-After are the
 // same thing said once.
 func writeStreamLimitExceeded(w http.ResponseWriter) {

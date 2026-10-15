@@ -373,7 +373,7 @@ func serveCmd() *cobra.Command {
 				"per_instance", cfg.SSEMaxConnections,
 				"per_workspace", cfg.SSEMaxPerWorkspace,
 				"per_principal", cfg.SSEMaxPerUser,
-				"per_instance_and_per_principal_cover", "/api/v1/events + /api/v1/events/stream",
+				"per_instance_and_per_principal_cover", "/api/v1/events + /api/v1/events/stream + MCP streams (GET /mcp, subscriptions/listen)",
 				"per_workspace_covers", "/api/v1/events")
 			srv.SetCollabLimits(cfg.CollabMaxPerUser)
 			// Test builds only (TASK-3415): nil in every default build, so

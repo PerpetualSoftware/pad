@@ -104,9 +104,9 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 |----------|---------|-------------|
 | `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
 | `PAD_REDIS_NAMESPACE` | — | Scopes every Redis key and channel to one installation. Set it when two Pad installations share a Redis endpoint. Unset means the historical names; a whitespace-only value is rejected at startup rather than treated as unset. |
-| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across both `/api/v1/events` and `/api/v1/events/stream` |
+| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across `/api/v1/events`, `/api/v1/events/stream` and the MCP transport's long-lived streams (`GET /mcp`, `subscriptions/listen`) |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
-| `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both endpoints, **per instance** |
+| `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both SSE endpoints and MCP's long-lived streams, **per instance** |
 | `PAD_COLLAB_MAX_PER_USER` | `50` | Per-user maximum open collaborative-editing WebSockets (`/api/v1/collab/{itemID}`), **per instance**. See *Collab connection limits* below |
 | `PAD_EVENTS_PUBLISH_EPOCH` | `false` | Phase 2 of the event ID-space migration: publish the `<epoch>\|<id>\|<json>` wire form. **Only set this once every instance runs a binary that accepts it** — see *Event ID-space migration* below. Ignored without Redis. |
 | `PAD_WATCH_HEARTBEAT` | `false` | Phase 2 of half-open detection on the **watch** stream (`/api/v1/events/stream`). Independent of `PAD_EVENTS_HEARTBEAT` — the two buses hold different connections with different fates — and rolled the same way, phase 1 everywhere first. Ignored without Redis. |
@@ -130,6 +130,12 @@ against.
 > (`Stream connection limits`). `/api/v1/events/stream` had no limit at all
 > before this change; if you run many agent sessions per user, check
 > `PAD_SSE_MAX_PER_USER` against your fleet size.
+>
+> **Upgrading (BUG-3835):** the MCP transport's long-lived streams (`GET /mcp`,
+> and `subscriptions/listen` on either MCP mount) now take a slot in the same
+> budget. They had no limit before. A user running many MCP clients alongside
+> agent watch sessions reaches `PAD_SSE_MAX_PER_USER` sooner; over it, the MCP
+> stream is refused with `429 sse_limit_exceeded` before it opens.
 
 A refused connection is `429` with code `sse_limit_exceeded` and a `Retry-After`
 header. The CLI monitor (`pad watch --stream`) treats it like any other non-200
@@ -502,7 +508,7 @@ Alert on these instead:
 | Metric | Meaning |
 |--------|---------|
 | `pad_redis_up` | `0` when the last probe (every 15s) failed. Exported only when Redis is configured — absence means "no Redis", not "down" |
-| `pad_stream_connections_active` | Held streaming connections on this instance, across both SSE endpoints — the population the limits bound |
+| `pad_stream_connections_active` | Held streaming connections on this instance, across both SSE endpoints and MCP's long-lived streams — the population the limits bound |
 | `pad_watchevents_sequence_gaps_total` | This instance missed notifications — a delivery fault |
 | `pad_watchevents_resume_gaps_total` | Resumes this instance could not serve — from a hole, a cold start, an epoch change, or a shared-counter disagreement. Each sends a client `sync_required`. RESUME-TIME ONLY; a subscriber told mid-stream is counted separately, so an alert on this keeps the meaning it had |
 | `pad_watchevents_midstream_resyncs_total` | Watch-stream subscribers told MID-STREAM that they missed notifications, on a connection that stayed open. New in BUG-2730 |

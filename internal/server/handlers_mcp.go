@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -249,6 +250,15 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 			writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
 			return
 		}
+		// The long-lived doors take a stream slot before the transport runs,
+		// so a refusal is a plain 429 and leaves no session state (BUG-3835).
+		release, ok := s.admitMCPStream(stream, r)
+		if !ok {
+			return
+		}
+		if release != nil {
+			defer release()
+		}
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 		go func() {
@@ -258,7 +268,19 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 			case <-ctx.Done():
 			}
 		}()
-		next.ServeHTTP(stream, r.WithContext(ctx))
+		mw := newMCPStreamWriter(stream)
+		stop := make(chan struct{})
+		var keepalives sync.WaitGroup
+		keepalives.Add(1)
+		go func() {
+			defer keepalives.Done()
+			s.runMCPKeepalive(mw, stop)
+		}()
+		next.ServeHTTP(mw, r.WithContext(ctx))
+		// No keepalive may follow the handler's return (BUG-3835).
+		mw.end()
+		close(stop)
+		keepalives.Wait()
 		// A handler that only calls WriteHeader (mcp-go's DELETE) leaves the
 		// response for net/http to commit after it returns, outside every
 		// Write and Flush above, and openSSEStream cleared the deadline. Arm
