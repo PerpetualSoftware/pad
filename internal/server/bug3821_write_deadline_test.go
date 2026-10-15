@@ -390,7 +390,11 @@ func TestBUG3821_TheExemptionMatchesTheRoutedPathOnly(t *testing.T) {
 	}{
 		{"GET", "/api/v1/events?workspace=w", true},
 		{"GET", "/api/v1/events/stream", true},
-		{"POST", "/mcp", true},
+		// Bounded by the middleware since BUG-3834; the transport takes the
+		// deadline over once it runs.
+		{"POST", "/mcp", false},
+		{"GET", "/mcp", false},
+		{"POST", "/mcp/chatgpt", false},
 		{"GET", "/api/v1/collab/0b6f2a8e-1111-2222-3333-444455556666", true},
 		{"GET", appAPIPrefix + "/workspaces/w/attachments/a1/content", true},
 		{"HEAD", appAPIPrefix + "/workspaces/w/attachments/a1/content", true},

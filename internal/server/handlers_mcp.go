@@ -236,6 +236,11 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 //
 // Fails closed, as openSSEStream does: a writer that cannot take a write
 // deadline is not served at all.
+//
+// boundResponseWrites wraps the whole /mcp route (BUG-3834), so the refusals
+// the middleware chain writes before this runs are bounded too. The stream's
+// first deadline call reaches deadlineWriter.SetWriteDeadline, after which
+// the deadline is this stream's alone.
 func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		stream, err := s.openSSEStream(w)
