@@ -195,8 +195,9 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// stops being a hole the predicate cannot see. The OAuth branch
 	// below deliberately records no kind: its credential is an opaque
 	// fosite token whose liveness door does not exist yet, so it fails
-	// closed rather than exempting itself. Neither matters until an MCP
-	// route is long-lived, and none is.
+	// closed rather than exempting itself. The MCP transport's GET and
+	// subscriptions/listen streams ARE long-lived (BUG-3835) but do not yet
+	// run the re-check; wiring it, with an OAuth liveness door, is BUG-3837.
 	ctx = context.WithValue(ctx, ctxAuthKind, authKindAPIToken)
 	// Stash the token's scopes so the in-process MCP dispatcher
 	// (internal/mcp/dispatch_http.go) can enforce per-tool scope

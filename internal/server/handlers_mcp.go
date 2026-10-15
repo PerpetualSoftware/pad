@@ -276,14 +276,21 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 			defer keepalives.Done()
 			s.runMCPKeepalive(mw, stop)
 		}()
-		next.ServeHTTP(mw, r.WithContext(ctx))
-		// The keepalive goroutine is stopped and joined before this handler
-		// returns, so net/http never sees a write after it (BUG-3835). A tick
-		// between the transport's return and end() can still add one comment
-		// frame to a response that is ending, which is valid SSE (Codex r1).
-		mw.end()
-		close(stop)
-		keepalives.Wait()
+		func() {
+			// The keepalive goroutine is stopped and joined before this
+			// handler returns, so net/http never sees a write after it
+			// (BUG-3835). Deferred, so a panicking transport stops it too
+			// (hunter r2): chi's Recoverer swallows the panic and the
+			// connection may be reused. A tick between the transport's return
+			// and end() can still add one comment frame to a response that is
+			// ending, which is valid SSE (Codex r1).
+			defer func() {
+				mw.end()
+				close(stop)
+				keepalives.Wait()
+			}()
+			next.ServeHTTP(mw, r.WithContext(ctx))
+		}()
 		// A handler that only calls WriteHeader (mcp-go's DELETE) leaves the
 		// response for net/http to commit after it returns, outside every
 		// Write and Flush above, and openSSEStream cleared the deadline. Arm

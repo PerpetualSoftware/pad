@@ -143,10 +143,11 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		// accept points were in exactly that state when this was written — the
 		// PAT one is fixed by recording its kind, and the OAuth one has no
 		// liveness door yet, so it lands here and CLOSES rather than streaming
-		// past a revoked connected app. Neither is reachable today (no MCP
-		// route is long-lived: internal/mcp/dispatch_http_routes.go maps
-		// nothing under /api/v1/events or /api/v1/collab), which is why this
-		// is a guard rather than an incident.
+		// past a revoked connected app. No MCP request reaches this predicate
+		// today: internal/mcp/dispatch_http_routes.go maps nothing under
+		// /api/v1/events or /api/v1/collab, and the MCP transport's own
+		// long-lived streams (BUG-3835) do not call it yet (BUG-3837), which
+		// is why this is a guard rather than an incident.
 		if currentUser(r) != nil {
 			slog.Warn("stream: a principal was resolved without an auth kind, closing the connection",
 				"path", r.URL.Path)

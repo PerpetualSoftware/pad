@@ -407,3 +407,32 @@ func TestMCP_BUG3835_KeepaliveOnlyInsideALiveEventStream(t *testing.T) {
 		t.Fatal("a keepalive followed the handler's return")
 	}
 }
+
+// A transport that panics after committing an event stream still stops the
+// keepalive before mcpBoundWrites unwinds (hunter r2): chi's Recoverer
+// swallows the panic, so a keepalive left running would write to a response
+// whose handler has returned.
+func TestMCP_BUG3835_PanickingTransportStopsTheKeepalive(t *testing.T) {
+	srv := testServer(t)
+	srv.sseKeepaliveOverride = time.Millisecond
+	h := srv.mcpBoundWrites(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(10 * time.Millisecond) // let keepalives flow
+		panic(http.ErrAbortHandler)
+	}))
+	rr := newDeadlineRecorder()
+	func() {
+		defer func() { _ = recover() }()
+		h.ServeHTTP(rr, httptest.NewRequest("DELETE", "/mcp", nil))
+	}()
+	if !strings.Contains(rr.Body.String(), ": keepalive") {
+		t.Fatal("instrument: no keepalive was written before the panic")
+	}
+	n := rr.Body.Len()
+	time.Sleep(20 * time.Millisecond)
+	if rr.Body.Len() != n {
+		t.Fatal("a keepalive was written after the panicking handler unwound")
+	}
+}
