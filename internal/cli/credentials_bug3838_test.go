@@ -82,13 +82,16 @@ func TestBUG3838_MemoDoesNotSkipASaveWhoseTruncateKeepsTheMtime(t *testing.T) {
 	reads := countReads(t, func(n int) {
 		if n == 2 {
 			release()
-			// Wait for the write without consuming the save's result.
-			for {
+			// Wait for the write without consuming the save's result, bounded
+			// so a save that failed after the release fails the test instead
+			// of hanging it (hunter r2 on BUG-3838); cleanup reports its error.
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
 				if fi, err := os.Stat(path); err == nil && fi.Size() != 0 {
 					return
 				}
 				time.Sleep(time.Millisecond)
 			}
+			t.Error("the released save never wrote the file")
 		}
 	})
 
