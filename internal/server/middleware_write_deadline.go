@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -116,15 +117,40 @@ func (s *Server) boundResponseWrites(next http.Handler) http.Handler {
 	})
 }
 
-// deadlineWriter re-arms the write deadline before every write and flush.
+// deadlineWriter re-arms the write deadline before every write and flush,
+// until the handler sets one of its own.
 type deadlineWriter struct {
 	http.ResponseWriter
 	rc      *http.ResponseController
 	timeout time.Duration
+
+	// handlerOwned is set once the handler has set its own write deadline.
+	handlerOwned atomic.Bool
 }
 
 func (d *deadlineWriter) arm() error {
+	if d.handlerOwned.Load() {
+		return nil
+	}
 	return d.rc.SetWriteDeadline(time.Now().Add(d.timeout))
+}
+
+// SetWriteDeadline is where a handler's http.ResponseController lands: the
+// controller stops at the first writer that has the method. A handler that
+// sets its own deadline owns it from then on, as it did before this
+// middleware existed, and nothing here re-arms over it. Re-arming would
+// replace a tighter bound with this one (a handler's 200ms became 60s, and
+// its stalled flush blocked for a minute: BUG-3827's chain test), or an
+// absolute one with a rolling one. A handler that clears the deadline has
+// chosen to write unbounded, and that is its call too. The handler is code
+// in this binary, never the client, so this cannot be used to opt a response
+// out of its bound the way a request header could (codex r4).
+func (d *deadlineWriter) SetWriteDeadline(deadline time.Time) error {
+	if err := d.rc.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	d.handlerOwned.Store(true)
+	return nil
 }
 
 // Write fails rather than writing unbounded when the deadline cannot be set.

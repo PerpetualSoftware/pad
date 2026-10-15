@@ -441,3 +441,49 @@ func TestBUG3821_HijackFailsWhenTheDeadlineCannotBeCleared(t *testing.T) {
 		t.Error("the connection whose deadline could not be cleared was not closed")
 	}
 }
+
+// deadlineLog is a writer that records every write deadline set on it.
+type deadlineLog struct {
+	*httptest.ResponseRecorder
+	set []time.Time
+}
+
+func (d *deadlineLog) SetWriteDeadline(t time.Time) error {
+	d.set = append(d.set, t)
+	return nil
+}
+
+// A handler that sets its own write deadline owns it: no later write, flush
+// or the post-handler arm replaces it with the middleware's rolling one
+// (BUG-3827's chain test found its 200ms bound turned into 60s).
+func TestBUG3821_AHandlersOwnDeadlineIsNotReArmed(t *testing.T) {
+	srv := testServer(t)
+	srv.responseWriteTimeoutOverride = time.Hour
+	own := time.Now().Add(200 * time.Millisecond)
+	h := srv.boundResponseWrites(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := http.NewResponseController(w).SetWriteDeadline(own); err != nil {
+			t.Errorf("handler SetWriteDeadline: %v", err)
+		}
+		_, _ = w.Write([]byte("a"))
+		_ = http.NewResponseController(w).Flush()
+		_, _ = w.Write([]byte("b"))
+	}))
+	log := &deadlineLog{ResponseRecorder: httptest.NewRecorder()}
+	h.ServeHTTP(log, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil))
+
+	i := -1
+	for j, d := range log.set {
+		if d.Equal(own) {
+			i = j
+		}
+	}
+	if i < 0 {
+		t.Fatalf("the handler's deadline never reached the connection: %v", log.set)
+	}
+	if after := log.set[i+1:]; len(after) != 0 {
+		t.Errorf("after the handler set its own deadline the middleware set %d more: %v", len(after), after)
+	}
+	if i == 0 {
+		t.Errorf("the middleware armed nothing before the handler took over: the request was not bounded at all")
+	}
+}
