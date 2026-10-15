@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -118,6 +119,10 @@ func TestBUG3825_InvocationSlugSpellingsCollideOnEitherDialect(t *testing.T) {
 		{"string-and-bool", `"true"`, `true`},
 		{"string-and-number", `"100"`, `1e2`},
 		{"number-keeps-its-scale-on-pg", `1.0`, `"1.0"`},
+		// One SQLite REAL, an IEEE binary64, for each pair (codex r3, hunter r3).
+		{"one-double", `0.1`, `0.10000000000000000001`},
+		{"beyond-int64-is-a-real", `1e30`, `1000000000000000000000000000000`},
+		{"one-double-above-2^53", `9007199254740992.0`, `9007199254740993.0`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testStore(t)
@@ -174,5 +179,35 @@ func TestBUG3825_InvocationSlugValuesNeitherIndexEquatesAreKept(t *testing.T) {
 				t.Fatalf("dropped %+v, want both kept", report.DroppedUniqueValues)
 			}
 		})
+	}
+}
+
+// The slot functions against what each database prints or compares. pg is the
+// text Postgres's ->> prints for a jsonb number; sqlite is the value
+// json_extract compares by.
+func TestBUG3825_NumberSlots(t *testing.T) {
+	for _, tc := range []struct{ lit, pg, sqlite string }{
+		{"1", "1", "1"},
+		{"1.0", "1.0", "1"},
+		{"1.50", "1.50", "r:1.5"},
+		{"1e2", "100", "100"},
+		{"1.50e1", "15.0", "15"},
+		{"120e-1", "12.0", "12"},
+		{"1e-2", "0.01", "r:0.01"},
+		{"-1.5", "-1.5", "r:-1.5"},
+		{"-0.0", "0.0", "0"},
+		{"-0", "0", "0"},
+		{"9007199254740993", "9007199254740993", "9007199254740993"},
+		{"9007199254740993.0", "9007199254740993.0", "9007199254740992"},
+		{"9223372036854775808", "9223372036854775808", "r:9.223372036854776e+18"},
+		{"1e400", "1" + strings.Repeat("0", 400), "r:+Inf"},
+		// Beyond the cap the literal stands for itself, and nothing expands.
+		{"1e999999", "1e999999", "r:+Inf"},
+		{"1e-999999", "1e-999999", "0"},
+	} {
+		pg, sqlite := importNumberSlots(tc.lit)
+		if pg != tc.pg || sqlite != tc.sqlite {
+			t.Errorf("%s: pg %q sqlite %q, want pg %q sqlite %q", tc.lit, pg, sqlite, tc.pg, tc.sqlite)
+		}
 	}
 }

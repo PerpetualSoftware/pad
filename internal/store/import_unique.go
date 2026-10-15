@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math/big"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,10 +75,7 @@ func importUniqueValue(key string, v any) (string, []string, bool) {
 		}
 		return text, []string{"pg:" + text, "sqlite:n:" + n}, true
 	case json.Number:
-		pg, value, ok := importNumberSlots(string(t))
-		if !ok {
-			return text, []string{"pg:" + text, "sqlite:s:" + text}, true
-		}
+		pg, value := importNumberSlots(string(t))
 		return text, []string{"pg:" + pg, "sqlite:n:" + value}, true
 	default:
 		// An object or array: both dialects read it as its JSON text.
@@ -86,35 +83,81 @@ func importUniqueValue(key string, v any) (string, []string, bool) {
 	}
 }
 
+// importNumberMaxExp bounds the exponent importNumberSlots will expand into
+// Postgres's numeric text. Beyond it the literal stands for itself: an archive
+// is untrusted, and 1e999999 is ten bytes that would expand to a million
+// digits per item (hunter r3, codex r3).
+const importNumberMaxExp = 1000
+
 // importNumberSlots returns a JSON number literal as each dialect's index
-// reads it, exactly, with no float rounding (codex r2: 2^53+1 must not equal
-// 2^53). value is the number's exact value, which is what SQLite compares (a
-// JSON true is 1). pg is the text Postgres's ->> prints for it: jsonb keeps a
-// number as numeric, whose output keeps the scale written (1.0 stays "1.0",
-// so it equals the string "1.0", hunter r2) and expands an exponent (1e2 is
-// "100", 1.5e1 is "15").
-func importNumberSlots(lit string) (pg, value string, ok bool) {
-	r, ok := new(big.Rat).SetString(lit)
-	if !ok {
-		return "", "", false
-	}
-	mant, exp := lit, 0
-	if i := strings.IndexAny(lit, "eE"); i >= 0 {
-		e, err := strconv.Atoi(lit[i+1:])
-		if err != nil {
-			return "", "", false
+// compares it. Both are computed without big-number arithmetic.
+//
+// sqlite: json_extract returns an integer literal that fits in int64 as an
+// INTEGER, and anything else as a REAL, an IEEE binary64 (codex r3: 0.1 and
+// 0.10000000000000001 are one REAL). SQLite compares INTEGER and REAL by
+// value, so a REAL that is exactly an int64 takes that integer's slot (1 and
+// 1.0 collide), and 2^53 and 2^53+1 stay two integers (codex r2).
+//
+// pg: the text ->> prints. jsonb keeps a number as numeric, whose output keeps
+// the scale written (1.0 stays "1.0", which equals the string "1.0", hunter
+// r2) and expands an exponent (1e2 is "100", 1.50e1 is "15.0").
+func importNumberSlots(lit string) (pg, sqlite string) {
+	return importNumberPGText(lit), importNumberSQLiteValue(lit)
+}
+
+func importNumberSQLiteValue(lit string) string {
+	if !strings.ContainsAny(lit, ".eE") {
+		if n, err := strconv.ParseInt(lit, 10, 64); err == nil {
+			return strconv.FormatInt(n, 10)
 		}
-		mant, exp = lit[:i], e
 	}
-	frac := 0
+	// A range error still returns the value SQLite also lands on: +-Inf, or 0.
+	f, _ := strconv.ParseFloat(lit, 64)
+	if f == math.Trunc(f) && f >= -(1<<63) && f < 1<<63 {
+		return strconv.FormatInt(int64(f), 10)
+	}
+	return "r:" + strconv.FormatFloat(f, 'g', -1, 64)
+}
+
+func importNumberPGText(lit string) string {
+	neg := strings.HasPrefix(lit, "-")
+	mant, exp := strings.TrimPrefix(lit, "-"), 0
+	if i := strings.IndexAny(mant, "eE"); i >= 0 {
+		e, err := strconv.Atoi(mant[i+1:])
+		if err != nil || e > importNumberMaxExp || e < -importNumberMaxExp {
+			return lit
+		}
+		mant, exp = mant[:i], e
+	}
+	intPart, fracPart := mant, ""
 	if i := strings.IndexByte(mant, '.'); i >= 0 {
-		frac = len(mant) - i - 1
+		intPart, fracPart = mant[:i], mant[i+1:]
 	}
-	scale := frac - exp
-	if scale < 0 {
-		scale = 0
+	digits := intPart + fracPart
+	point := len(intPart) + exp // digits before the decimal point
+	var out string
+	switch {
+	case point <= 0:
+		out = "0." + strings.Repeat("0", -point) + digits
+	case point >= len(digits):
+		out = digits + strings.Repeat("0", point-len(digits))
+	default:
+		out = digits[:point] + "." + digits[point:]
 	}
-	return r.FloatString(scale), r.RatString(), true
+	// The integer part prints without leading zeros, and at least "0".
+	whole, frac, hasFrac := strings.Cut(out, ".")
+	whole = strings.TrimLeft(whole, "0")
+	if whole == "" {
+		whole = "0"
+	}
+	out = whole
+	if hasFrac {
+		out += "." + frac
+	}
+	if neg && strings.Trim(digits, "0") != "" {
+		out = "-" + out
+	}
+	return out
 }
 
 // dropImportedUniqueDuplicates removes from fieldsJSON every unique value an
