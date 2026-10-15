@@ -1081,7 +1081,10 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	repair.SetHeader(w)
 	staleBodies.SetHeader(w)
 	setImportCollapsedHeader(w, importReport)
-	writeJSON(w, http.StatusCreated, ws)
+	writeJSON(w, http.StatusCreated, importedWorkspaceResponse{
+		Workspace:           ws,
+		DroppedUniqueValues: importReport.DroppedUniqueValues,
+	})
 }
 
 // writeWorkspaceSlugContended answers 409 when every attempt to mint a

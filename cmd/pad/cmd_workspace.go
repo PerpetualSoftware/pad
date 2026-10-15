@@ -1365,6 +1365,7 @@ Format is detected by file extension. Override workspace name with --name.`,
 				}
 			}
 			fmt.Printf("  All IDs regenerated\n")
+			printImportDrops(os.Stdout, ws.DroppedUniqueValues)
 			if repairNUL {
 				// Report what the consent flag actually did. "Repaired" with no
 				// number is the kind of reassurance an operator cannot check,

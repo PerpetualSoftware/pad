@@ -160,6 +160,17 @@ type NotUniqueDrop struct {
 	Message string `json:"message"`
 }
 
+// ImportUniqueDrop is one unique value a workspace import removed from an
+// item because an item earlier in the archive already held it (BUG-3825).
+// Item and Holder are refs in the NEW workspace; the importer owns all of it,
+// so naming the holder discloses nothing.
+type ImportUniqueDrop struct {
+	Item   string `json:"item"`
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Holder string `json:"holder"`
+}
+
 // RelationTarget is one hydrated `relation` value: the item an ID points at,
 // in the smallest shape a caller needs to RENDER it without a second request
 // (PLAN-2857 U6).

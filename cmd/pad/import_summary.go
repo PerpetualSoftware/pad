@@ -7,12 +7,22 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// importedWorkspace is the bundle import's 201: the workspace plus the
-// additive import_summary (TASK-3612). An older server, and the JSON import
-// path, send no summary.
+// importedWorkspace is an import's 201: the workspace plus the additive
+// import_summary (TASK-3612; an older server, and the JSON import path, send
+// none) and dropped_unique_values (BUG-3825; both paths).
 type importedWorkspace struct {
 	models.Workspace
-	ImportSummary *importSummary `json:"import_summary,omitempty"`
+	ImportSummary       *importSummary            `json:"import_summary,omitempty"`
+	DroppedUniqueValues []models.ImportUniqueDrop `json:"dropped_unique_values,omitempty"`
+}
+
+// printImportDrops prints each unique value the import dropped, one line each
+// in `pad item move`'s `dropped:` shape, led by the item that lost it
+// (BUG-3825). On stdout, as move's are: it is part of what the import did.
+func printImportDrops(w io.Writer, drops []models.ImportUniqueDrop) {
+	for _, d := range drops {
+		fmt.Fprintf(w, "  dropped: %s\n", itemCopyLine(fmt.Sprintf("%s: %s %q is taken by %s", d.Item, d.Key, d.Value, d.Holder)))
+	}
 }
 
 type importSummary struct {

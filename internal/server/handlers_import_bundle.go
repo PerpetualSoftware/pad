@@ -473,16 +473,20 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	setImportCollapsedHeader(w, importReport)
 	report(importStateComplete, ws)
 	writeJSON(w, http.StatusCreated, importedWorkspaceResponse{
-		Workspace:     ws,
-		ImportSummary: s.importSummary(ws, bundled),
+		Workspace:           ws,
+		ImportSummary:       s.importSummary(ws, bundled),
+		DroppedUniqueValues: importReport.DroppedUniqueValues,
 	})
 }
 
-// importedWorkspaceResponse is the bundle import's 201: the workspace, as
-// before, plus an additive import_summary (TASK-3612).
+// importedWorkspaceResponse is an import's 201: the workspace, as before,
+// plus additive members. import_summary (TASK-3612) is sent by the bundle
+// import only. dropped_unique_values (BUG-3825) is sent by both doors when the
+// import dropped a value an earlier item in the archive already held.
 type importedWorkspaceResponse struct {
 	*models.Workspace
-	ImportSummary *importSummary `json:"import_summary,omitempty"`
+	ImportSummary       *importSummary            `json:"import_summary,omitempty"`
+	DroppedUniqueValues []models.ImportUniqueDrop `json:"dropped_unique_values,omitempty"`
 }
 
 // importSummary pairs what the bundle carried with what the new workspace
