@@ -92,6 +92,37 @@ func TestBUG3817_ResendReplacesTheInvitation(t *testing.T) {
 	}
 }
 
+// A resend of an invitation that was accepted is refused, and the accepted
+// row and the membership stay as they were (BUG-3817 r1 M2 condition).
+func TestBUG3817_AResendOfAnAcceptedInvitationIsRefused(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws, admin, old := bug3817Env(t, s)
+	invitee, err := s.CreateUser(models.UserCreate{
+		Email: old.Email, Username: "invitee3817", Name: "Invitee",
+		Password: "correcthorsebattery", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create invitee: %v", err)
+	}
+	if _, _, err := s.AcceptWorkspaceInvitation(old.ID, ws.ID, invitee.ID, old.Role); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+
+	if _, err := s.ResendInvitationAdmin(old.ID, admin.ID); !errors.Is(err, ErrInvitationNotPending) {
+		t.Errorf("resend of an accepted invitation err = %v, want ErrInvitationNotPending", err)
+	}
+	if got := bug3817Pending(t, s, ws.ID); len(got) != 0 {
+		t.Errorf("pending = %v, want none", got)
+	}
+	if got, err := s.GetInvitation(old.ID); err != nil || got == nil || got.AcceptedAt == nil {
+		t.Errorf("accepted invitation after the refused resend = %+v, %v; want it kept, accepted", got, err)
+	}
+	if m, err := s.GetWorkspaceMember(ws.ID, invitee.ID); err != nil || m == nil {
+		t.Errorf("membership after the refused resend = %+v, %v; want it kept", m, err)
+	}
+}
+
 // A create refused after the revoke must not lose the original: the two are
 // one transaction (BUG-3817 item 2). The refusal here is the disabled
 // inviter's (BUG-3349).
@@ -99,7 +130,7 @@ func TestBUG3817_ARefusedResendKeepsTheOriginal(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	ws, admin, old := bug3817Env(t, s)
-	if err := s.DisableUser(admin.ID); err != nil {
+	if err := s.DisableUserAndRevokeAccess(admin.ID); err != nil {
 		t.Fatalf("disable admin: %v", err)
 	}
 
