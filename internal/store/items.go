@@ -6271,6 +6271,7 @@ func (s *Store) ListItemVersionsResolvedPage(itemID, currentContent string, limi
 		if applyErr != nil {
 			versions[i].Content = fmt.Sprintf(patchErrorPrefix+"%v]", applyErr)
 			versions[i].IsDiff = false
+			versions[i].Unreconstructable = true
 			continue
 		}
 		versions[i].Content = resolved
@@ -6324,7 +6325,7 @@ func (s *Store) GetItemVersionDiff(itemID, versionID, currentContent string) (*m
 			continue
 		}
 		v := versions[i]
-		if isPatchError(v.Content) || (i > 0 && isPatchError(versions[i-1].Content)) {
+		if v.Unreconstructable || (i > 0 && versions[i-1].Unreconstructable) {
 			return nil, ErrVersionChainBroken
 		}
 		if v.IsCreate {

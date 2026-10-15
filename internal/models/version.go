@@ -36,6 +36,14 @@ type Version struct {
 	// uninstall. The server fills both on read; no scan sets them.
 	ViaApp     string `json:"via_app,omitempty"`
 	ViaAppName string `json:"via_app_name,omitempty"`
+
+	// Unreconstructable marks a resolved version whose body the reverse-patch
+	// walk could not rebuild: Content then holds a "[patch error: ...]"
+	// placeholder, never a body to restore or diff (BUG-3815). Set only by
+	// the resolving reads, and served so a client can tell the placeholder
+	// from a body; a real body that happens to start with that text is not
+	// one.
+	Unreconstructable bool `json:"unreconstructable,omitempty"`
 }
 
 // ItemVersionDiff is the change one item version row records (PLAN-2348 U2):

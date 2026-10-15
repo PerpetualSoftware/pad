@@ -205,6 +205,10 @@ func (s *Server) handleGetItemVersionDiff(w http.ResponseWriter, r *http.Request
 		return
 	}
 	d, err := s.store.GetItemVersionDiff(item.ID, chi.URLParam(r, "versionID"), item.Content)
+	if errors.Is(err, store.ErrVersionChainBroken) {
+		writeVersionUnreconstructable(w)
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -274,6 +278,13 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	}
 	if targetVersion == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Version not found")
+		return
+	}
+	// A version whose body the history walk could not rebuild carries a
+	// "[patch error: ...]" placeholder in Content. Restoring it would write
+	// that text as the item's body (BUG-3815).
+	if targetVersion.Unreconstructable {
+		writeVersionUnreconstructable(w)
 		return
 	}
 
@@ -587,4 +598,12 @@ func (s *Server) reconcileRestoreCommit(itemID, targetContent string, baselineSe
 			"reconcile restore: ambiguous outcome (contentMatches=%v seqAdvanced=%v boundaryStamped=%v baselineCaptured=%v)",
 			contentMatches, seqAdvanced, bOK, baselineCaptured)
 	}
+}
+
+// writeVersionUnreconstructable refuses a restore or diff of a version whose
+// body the reverse-patch history could not rebuild (BUG-3815). A conflict
+// with the stored history, not a server fault: retrying gives the same answer.
+func writeVersionUnreconstructable(w http.ResponseWriter) {
+	writeError(w, http.StatusConflict, "version_unreconstructable",
+		"This version's content could not be rebuilt from the item's history, so it cannot be restored or compared.")
 }
