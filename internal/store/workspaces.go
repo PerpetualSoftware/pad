@@ -146,9 +146,18 @@ func (s *Store) createWorkspaceQ(q execQueryer, input models.WorkspaceCreate) (*
 	id := newID()
 	ts := now()
 
-	slug := input.Slug
+	// Every door mints through here, so the slug is slugified here, whoever
+	// supplied it (BUG-3769): a create body's slug, an import bundle's, and
+	// an import name override all used to land verbatim, spaces and capitals
+	// included, in a value every URL carries. A name with nothing slugify
+	// keeps (all punctuation, or all non-ASCII) falls back to "workspace",
+	// as roles, items and collections fall back to theirs.
+	slug := slugify(input.Slug)
 	if slug == "" {
 		slug = slugify(input.Name)
+	}
+	if slug == "" {
+		slug = "workspace"
 	}
 
 	settings := input.Settings

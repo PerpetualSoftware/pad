@@ -554,7 +554,8 @@ func resolveImportParent(exportedParentID string, itemMap map[string]string, ins
 
 // ImportWorkspace imports a workspace from an exported data structure.
 // It creates a new workspace with regenerated IDs, remapping all references.
-// If newName is non-empty, it overrides the workspace name and slug.
+// If newName is non-empty, it overrides the workspace name, and the slug is
+// derived from it.
 // source is the creation-surface attribution, derived by the CALLER from
 // the request's auth shape exactly as the create door derives it (BUG-1557,
 // BUG-2809). It is a parameter rather than a field on the export because an
@@ -654,8 +655,10 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	wsName := data.Workspace.Name
 	wsSlug := data.Workspace.Slug
 	if newName != "" {
+		// The override names the copy; its slug derives from that name the
+		// way a create's does (BUG-3769), not from the raw name.
 		wsName = newName
-		wsSlug = newName
+		wsSlug = ""
 	}
 
 	// Run all data inserts in a single transaction for atomicity — INCLUDING
