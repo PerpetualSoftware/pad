@@ -42,16 +42,33 @@ func stalledStreamServer(t *testing.T, srv *Server) (*httptest.Server, *writeFai
 	return ts, wf
 }
 
-// writeFailures records the first write that failed on any connection the
-// server accepted. failed is closed when it happens.
+// writeFailures records the first write that failed on the stalled stream's
+// connection, the one whose client address watch named. A failure on any
+// other connection the server accepted is ignored, so it cannot stand in for
+// the stream's (codex r1). failed is closed when it happens.
 type writeFailures struct {
+	mu     sync.Mutex
+	client string
 	once   sync.Once
 	failed chan struct{}
 	err    error
 	at     time.Time
 }
 
-func (wf *writeFailures) record(err error) {
+// watch names the client address of the connection whose failure counts.
+func (wf *writeFailures) watch(client string) {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	wf.client = client
+}
+
+func (wf *writeFailures) record(remote net.Addr, err error) {
+	wf.mu.Lock()
+	watched := wf.client != "" && remote.String() == wf.client
+	wf.mu.Unlock()
+	if !watched {
+		return
+	}
 	wf.once.Do(func() {
 		wf.err, wf.at = err, time.Now()
 		close(wf.failed)
@@ -84,7 +101,7 @@ type writeFailureConn struct {
 func (c *writeFailureConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
 	if err != nil {
-		c.wf.record(err)
+		c.wf.record(c.RemoteAddr(), err)
 	}
 	return n, err
 }
@@ -92,7 +109,7 @@ func (c *writeFailureConn) Write(p []byte) (int, error) {
 // openStalledStream sends one GET for path over a raw connection, reads the
 // response head, and then never reads again. The connection stays open until
 // the test ends, so a release cannot come from the client going away.
-func openStalledStream(t *testing.T, ts *httptest.Server, path string, header http.Header) {
+func openStalledStream(t *testing.T, ts *httptest.Server, wf *writeFailures, path string, header http.Header) {
 	t.Helper()
 	u, err := url.Parse(ts.URL)
 	if err != nil {
@@ -103,6 +120,7 @@ func openStalledStream(t *testing.T, ts *httptest.Server, path string, header ht
 		t.Fatalf("dial: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
+	wf.watch(conn.LocalAddr().String())
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetReadBuffer(4096)
 	}
@@ -196,7 +214,7 @@ func TestSSE_BUG3637_StalledReaderReleasesItsSlot(t *testing.T) {
 	ts, wf := stalledStreamServer(t, srv)
 	slug := createTestWorkspace(t, ts.URL, "Stalled")
 
-	openStalledStream(t, ts, "/api/v1/events?workspace="+slug, nil)
+	openStalledStream(t, ts, wf, "/api/v1/events?workspace="+slug, nil)
 	if n := srv.events.SubscriberCount(); n != 1 {
 		t.Fatalf("bus subscribers once the stream opened = %d, want 1", n)
 	}
@@ -215,7 +233,7 @@ func TestWatchEvents_BUG3637_StalledReaderReleasesItsSlot(t *testing.T) {
 	_, _, tok, _ := setupWatchTestUser(t, srv)
 	ts, wf := stalledStreamServer(t, srv)
 
-	openStalledStream(t, ts, "/api/v1/events/stream", http.Header{"Authorization": {"Bearer " + tok.Token}})
+	openStalledStream(t, ts, wf, "/api/v1/events/stream", http.Header{"Authorization": {"Bearer " + tok.Token}})
 	assertSlotReleased(t, srv, wf)
 }
 
