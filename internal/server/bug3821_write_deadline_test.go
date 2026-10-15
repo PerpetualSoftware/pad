@@ -342,3 +342,33 @@ func TestBUG3821_ABufferedBodyIsFlushedAfterALongHandler(t *testing.T) {
 		t.Fatalf("body %q (%v), want %q", body, err, "done\n")
 	}
 }
+
+// The predicate reads the escaped path chi routes on. Each exempt route is
+// recognised as written; a decoded spelling of some other route that merely
+// looks like one is not (codex r5: an encoded item ref decoding to an
+// attachment-download path), and neither is a path that only shares a prefix.
+func TestBUG3821_TheExemptionMatchesTheRoutedPathOnly(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		method, target string
+		exempt         bool
+	}{
+		{"GET", "/api/v1/events?workspace=w", true},
+		{"GET", "/api/v1/events/stream", true},
+		{"POST", "/mcp", true},
+		{"GET", "/api/v1/collab/0b6f2a8e-1111-2222-3333-444455556666", true},
+		{"GET", appAPIPrefix + "/workspaces/w/attachments/a1/content", true},
+		{"HEAD", appAPIPrefix + "/workspaces/w/attachments/a1/content", true},
+		// An app item ref whose decoded form looks like the download route.
+		{"GET", appAPIPrefix + "/workspaces/w/items/x%2Fattachments%2Fa1%2Fcontent", false},
+		// Shares the events prefix, is not an events route.
+		{"GET", "/api/v1/events-anything", false},
+		{"GET", "/api/v1/workspaces/w/attachments/a1", false},
+		{"GET", "/api/v1/s/tok/attachments/a1", false},
+	} {
+		r := httptest.NewRequest(tc.method, tc.target, nil)
+		if got := ownsWriteDeadline(r); got != tc.exempt {
+			t.Errorf("%s %s: ownsWriteDeadline = %v, want %v", tc.method, tc.target, got, tc.exempt)
+		}
+	}
+}

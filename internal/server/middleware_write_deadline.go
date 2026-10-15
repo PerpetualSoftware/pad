@@ -37,12 +37,19 @@ const responseWriteTimeout = 60 * time.Second
 // is upgraded loses whatever was armed when the handler hijacks it, because
 // net/http clears every deadline on hijack, so nothing is lost by bounding it
 // until then. compressSkips keeps its own Upgrade case.
+//
+// And the path it reads is the ESCAPED one, the one chi routes on (RawPath
+// when set). The decoded path can disagree with the route: an app item ref of
+// "x%2Fattachments%2Fy%2Fcontent" routes to the items handler as one segment
+// but decodes to a path that looks like the attachment download, which would
+// exempt the items response (codex r5). Escaped, it matches nothing here, so
+// a spelling the predicate does not recognise is bounded, never exempt.
 func ownsWriteDeadline(r *http.Request) bool {
-	p := r.URL.Path
+	p := r.URL.EscapedPath()
 	switch {
 	// SSE (both event endpoints) frames under sseStream (BUG-3637), and MCP's
 	// streamable HTTP under its own bound (BUG-3808).
-	case strings.HasPrefix(p, "/api/v1/events"), p == "/mcp" || strings.HasPrefix(p, "/mcp/"):
+	case p == "/api/v1/events" || strings.HasPrefix(p, "/api/v1/events/"), p == "/mcp" || strings.HasPrefix(p, "/mcp/"):
 		return true
 	// The collab WebSocket: the connection is hijacked and is not an HTTP
 	// response body. collab sets its own deadlines.
