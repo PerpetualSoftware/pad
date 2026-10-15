@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -155,16 +156,22 @@ func (d *deadlineWriter) Flush() {
 // Hijack satisfies http.Hijacker, which gorilla/websocket type-asserts for
 // rather than going through http.ResponseController (codex r7). A WebSocket
 // route that is not in ownsWriteDeadline would otherwise fail its upgrade
-// with a 500. net/http clears every deadline on hijack, so the connection
-// handed over carries none of this middleware's; the clear here is the same,
-// kept in case that ever changes (no test can tell the two apart while
-// net/http does it).
+// with a 500. http.Hijacker's contract leaves any deadline on the connection
+// to the caller, so the write deadline this middleware armed is cleared here
+// before the connection is handed over. (Go's server happens to clear every
+// deadline on hijack today, so no test through it can tell this clear from
+// that one.) A connection whose deadline cannot be cleared would time out
+// under its new owner, so it is closed and the hijack fails (codex r8).
 func (d *deadlineWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	conn, rw, err := d.rc.Hijack()
-	if err == nil {
-		_ = conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return nil, nil, err
 	}
-	return conn, rw, err
+	if err := conn.SetWriteDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("clear the hijacked connection's write deadline: %w", err)
+	}
+	return conn, rw, nil
 }
 
 // Unwrap lets http.ResponseController and middleware see the writer beneath.

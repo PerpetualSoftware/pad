@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -378,5 +379,40 @@ func TestBUG3821_TheExemptionMatchesTheRoutedPathOnly(t *testing.T) {
 		if got := ownsWriteDeadline(r); got != tc.exempt {
 			t.Errorf("%s %s: ownsWriteDeadline = %v, want %v", tc.method, tc.target, got, tc.exempt)
 		}
+	}
+}
+
+// hijackConn is a connection whose write deadline cannot be cleared.
+type hijackConn struct {
+	net.Conn
+	closed bool
+}
+
+func (c *hijackConn) SetWriteDeadline(time.Time) error {
+	return errors.New("set deadline: bad file descriptor")
+}
+func (c *hijackConn) Close() error { c.closed = true; return nil }
+
+type hijackableRecorder struct {
+	*httptest.ResponseRecorder
+	conn *hijackConn
+}
+
+func (h hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return h.conn, bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)), nil
+}
+
+// A hijacked connection whose write deadline cannot be cleared would time out
+// under its new owner, so the hijack fails and the connection is closed
+// rather than handed over with the deadline still on it (codex r8).
+func TestBUG3821_HijackFailsWhenTheDeadlineCannotBeCleared(t *testing.T) {
+	w := hijackableRecorder{ResponseRecorder: httptest.NewRecorder(), conn: &hijackConn{}}
+	d := &deadlineWriter{ResponseWriter: w, rc: http.NewResponseController(w), timeout: time.Second}
+	conn, _, err := d.Hijack()
+	if err == nil || conn != nil {
+		t.Fatalf("Hijack = %v, %v; want an error and no connection", conn, err)
+	}
+	if !w.conn.closed {
+		t.Error("the connection whose deadline could not be cleared was not closed")
 	}
 }
