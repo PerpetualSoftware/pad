@@ -806,7 +806,8 @@ func TestCredentialLiveness_AResolvedPrincipalWithoutAKindFailsClosed(t *testing
 	// is a different animal wearing that branch's coat: somebody accepted a
 	// credential and did not record which, so the predicate has nothing to
 	// re-check and no way to notice. Both MCP accept points were in that state
-	// when this was written.
+	// when this was written; both record their kind now (OAuth since
+	// BUG-3837).
 	//
 	// The counterfactual is TestCredentialLiveness_NoCredentialIsValid above:
 	// same empty kind, no principal, connection KEPT. The two together are what
@@ -942,9 +943,8 @@ func TestMCPBearerAuth_PATPathRecordsTheAPITokenKind(t *testing.T) {
 	// PAT in the Authorization header — so it records `api_token` and the
 	// existing door revalidates it.
 	//
-	// The OAuth branch deliberately records nothing (no liveness door for an
-	// opaque fosite token yet) and is covered by the fail-closed guard in
-	// TestCredentialLiveness_AResolvedPrincipalWithoutAKindFailsClosed.
+	// The OAuth branch records authKindOAuth, whose door re-introspects the
+	// fosite token (BUG-3837, covered by bug3837_mcp_credential_tick_test.go).
 	srv := testServer(t)
 
 	user, err := srv.store.CreateUser(models.UserCreate{

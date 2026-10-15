@@ -276,6 +276,10 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 			case <-ctx.Done():
 			}
 		}()
+		if release != nil {
+			// A long-lived door ends with its credential (BUG-3837).
+			s.startMCPCredentialTick(ctx, r, cancel)
+		}
 		mw := newMCPStreamWriter(stream)
 		stop := make(chan struct{})
 		var keepalives sync.WaitGroup

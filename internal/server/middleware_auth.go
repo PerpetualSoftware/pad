@@ -98,6 +98,7 @@ const (
 	authKindSessionBearer = "session_bearer"
 	authKindSessionCookie = "session_cookie"
 	authKindAPIToken      = "api_token"
+	authKindOAuth         = "oauth_access_token" // MCP OAuth bearer (BUG-3837)
 )
 
 // authKind returns how this request's principal was established, or "" when no

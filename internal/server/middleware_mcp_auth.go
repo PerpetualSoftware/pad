@@ -192,12 +192,10 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// round 2). The credential here IS a PAT in the Authorization
 	// header, so the liveness predicate's existing api_token door
 	// re-checks it verbatim — no new machinery, and this accept point
-	// stops being a hole the predicate cannot see. The OAuth branch
-	// below deliberately records no kind: its credential is an opaque
-	// fosite token whose liveness door does not exist yet, so it fails
-	// closed rather than exempting itself. The MCP transport's GET and
-	// subscriptions/listen streams ARE long-lived (BUG-3835) but do not yet
-	// run the re-check; wiring it, with an OAuth liveness door, is BUG-3837.
+	// stops being a hole the predicate cannot see. The OAuth branch below
+	// records authKindOAuth, whose door re-introspects the fosite token
+	// (BUG-3837). The MCP transport's GET and subscriptions/listen streams
+	// run the re-check on a tick (mcp_stream_credential.go).
 	ctx = context.WithValue(ctx, ctxAuthKind, authKindAPIToken)
 	// Stash the token's scopes so the in-process MCP dispatcher
 	// (internal/mcp/dispatch_http.go) can enforce per-tool scope
@@ -373,6 +371,10 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 
 	ctx := WithCurrentUser(r.Context(), user)
 	ctx = context.WithValue(ctx, ctxIsAPIToken, true)
+	// The auth KIND, so a long-lived MCP stream's credential tick re-checks
+	// this token through its own door (BUG-3837) instead of reaching the
+	// predicate's no-kind branch, which closes a resolved principal.
+	ctx = context.WithValue(ctx, ctxAuthKind, authKindOAuth)
 	// Translate fosite's space-separated scope string into the
 	// JSON-array form the existing scope-policy check expects.
 	// tokenScopeAllows recognizes pad:read / pad:write / pad:admin

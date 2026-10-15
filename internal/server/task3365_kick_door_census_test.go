@@ -38,6 +38,8 @@ import (
 // by construction, and that is a review property, not a tested one.
 // OAuth access-token revocation is out of scope by design: an OAuth
 // credential cannot open any of the three long-lived routes this protects.
+// The MCP transport's streams, which an OAuth token can open, are not kicked
+// either: their credential tick ends them within one interval (BUG-3837).
 
 // kickWatchedStoreMethods change what a live connection may do or whether
 // its credential still holds.
