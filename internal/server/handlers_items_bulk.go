@@ -456,10 +456,6 @@ func bulkStoreError(err error) *bulkOpError {
 	if held, ok := store.AsUniqueFieldHeldError(err); ok {
 		return &bulkOpError{message: held.Error(), code: "conflict"}
 	}
-	var moveConflict *store.UniqueFieldConflictError
-	if errors.As(err, &moveConflict) {
-		return &bulkOpError{message: moveConflict.Error(), code: "conflict"}
-	}
 	return &bulkOpError{message: err.Error()}
 }
 
@@ -868,12 +864,63 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	return updated, nil
 }
 
+// bulkTagAttempts bounds bulkTagUpdate's re-reads. Each one means another
+// write to the same item landed between a read and the write; a row that loses
+// this many times in a row is reported as a conflict rather than retried
+// without end.
+const bulkTagAttempts = 5
+
 // bulkTagUpdate adds (add=true) or removes (add=false) the given tags
 // from the item's tag set, preserving existing order and de-duplicating.
+//
+// The new set is computed from a read, so the write is guarded by that read's
+// seq (BUG-3813): before, it was computed from the handler's pre-lock read and
+// written unguarded, and a tag change landing in between was undone. Adding or
+// removing tags commutes with other edits, so a conflict re-reads the item and
+// applies the same change to it, rather than failing the row.
 func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor, source, actorUserID, batchID string) (*models.Item, *bulkOpError) {
+	cur := item
+	for attempt := 1; ; attempt++ {
+		tagsStr, berr := bulkTagSet(cur.Tags, tags, add)
+		if berr != nil {
+			return nil, berr
+		}
+		seq := cur.Seq
+		updated, err := s.store.UpdateItem(cur.ID, models.ItemUpdate{
+			Tags:           &tagsStr,
+			ExpectedSeq:    &seq,
+			LastModifiedBy: actor,
+			ActorUserID:    actorUserID, // BUG-3372
+			Source:         source,
+		}, store.WithEventBatch(batchID))
+		var conflict *store.UpdateConflictError
+		if errors.As(err, &conflict) {
+			if attempt >= bulkTagAttempts {
+				return nil, &bulkOpError{message: "the item kept changing while its tags were being updated; reload it and try again", code: "conflict"}
+			}
+			fresh, gerr := s.store.GetItem(item.ID)
+			if gerr != nil {
+				return nil, bulkStoreError(gerr)
+			}
+			if fresh == nil {
+				return nil, &bulkOpError{message: "item not found"}
+			}
+			cur = fresh
+			continue
+		}
+		if err != nil {
+			return nil, bulkStoreError(err)
+		}
+		return updated, nil
+	}
+}
+
+// bulkTagSet is the tag set existingJSON becomes once tags are added (add) or
+// removed, as JSON.
+func bulkTagSet(existingJSON string, tags []string, add bool) (string, *bulkOpError) {
 	existing := []string{}
-	if item.Tags != "" && item.Tags != "[]" {
-		_ = json.Unmarshal([]byte(item.Tags), &existing)
+	if existingJSON != "" && existingJSON != "[]" {
+		_ = json.Unmarshal([]byte(existingJSON), &existing)
 	}
 
 	remove := make(map[string]bool)
@@ -904,19 +951,9 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 
 	tagsJSON, err := json.Marshal(result)
 	if err != nil {
-		return nil, &bulkOpError{message: "failed to marshal tags"}
+		return "", &bulkOpError{message: "failed to marshal tags"}
 	}
-	tagsStr := string(tagsJSON)
-	updated, err := s.store.UpdateItem(item.ID, models.ItemUpdate{
-		Tags:           &tagsStr,
-		LastModifiedBy: actor,
-		ActorUserID:    actorUserID, // BUG-3372
-		Source:         source,
-	}, store.WithEventBatch(batchID))
-	if err != nil {
-		return nil, bulkStoreError(err)
-	}
-	return updated, nil
+	return string(tagsJSON), nil
 }
 
 // bulkMoveCollection moves one item into req.Collection, migrating its
@@ -1212,26 +1249,23 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		}
 	}
 
-	// BUG-3812: the uniqueness check above ran on the pool, with no lock;
-	// single move re-checks under the move's lock (BUG-3665) and bulk move now
-	// does the same, before the open-children guard.
-	guardPrecheck := precheck
-	precheck = func(tx *sql.Tx, existing *models.Item) error {
-		if conflicts, err := s.store.UniqueFieldConflictsQ(tx, targetColl.ID, item.ID, targetSchema.Fields, result.Fields); err != nil {
-			return err
-		} else if len(conflicts) > 0 {
-			return &store.UniqueFieldConflictError{Keys: conflicts}
-		}
-		if guardPrecheck != nil {
-			return guardPrecheck(tx, existing)
-		}
-		return nil
-	}
+	// The inputs the payload was built from are re-checked under the lock,
+	// forced or not, exactly as the single move does (BUG-3813). That includes
+	// the target's unique holders, which the check above read on the pool
+	// (BUG-3812).
+	movePrecheck := s.moveInputsUnchanged(item, sourceColl, targetColl, targetSchema.Fields, result.Fields, precheck)
 
 	// BUG-3407: the target schema the moved fields were validated against
 	// (per collection: each item's own move names its target).
-	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), precheck, store.WithEventBatch(batchID), store.WithValidatedSchema(targetColl.Schema))
+	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), movePrecheck, store.WithEventBatch(batchID), store.WithValidatedSchema(targetColl.Schema))
 	if err != nil {
+		if errors.Is(err, errItemChangedDuringMove) {
+			return nil, &bulkOpError{message: "The item or its collections changed while it was being moved; reload it and move it again", code: "conflict"}
+		}
+		var uc *moveUniqueConflictError
+		if errors.As(err, &uc) {
+			return nil, &bulkOpError{message: uc.msg, code: "conflict"}
+		}
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			raw, _ := json.Marshal(details)
 			return nil, &bulkOpError{

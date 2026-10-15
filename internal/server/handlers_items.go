@@ -3509,51 +3509,8 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The payload above was built from reads taken before the move takes its
-	// lock (BUG-3665). Every input to it is re-read under the lock, and a move
-	// whose inputs changed answers 409; the caller re-reads and moves again.
-	// Every move checks this, a forced one included (force skips only the
-	// open-children guard). The inputs, and where each is checked:
-	//   - the item's collection and fields: here (codex r1);
-	//   - the source collection's schema and settings, which the migration
-	//     and the close-state check read: here (codex r2);
-	//   - the target collection's schema and settings, likewise: here (the
-	//     store also re-validates the fields against the target schema under
-	//     the lock, BUG-3407);
-	//   - the target's unique-field holders: re-queried here on the lock's
-	//     transaction.
-	// Without it a write landing in between was overwritten by fields
-	// migrated from the older body, and the move's history and events
-	// described that older body.
-	sameCollection := func(tx *sql.Tx, read *models.Collection) error {
-		cur, err := s.store.GetCollectionQ(tx, read.ID)
-		if err != nil {
-			return err
-		}
-		if cur == nil || cur.Schema != read.Schema || cur.Settings != read.Settings {
-			return errItemChangedDuringMove
-		}
-		return nil
-	}
-	movePrecheck := func(tx *sql.Tx, existing *models.Item) error {
-		if existing.CollectionID != item.CollectionID || existing.Fields != item.Fields {
-			return errItemChangedDuringMove
-		}
-		if err := sameCollection(tx, sourceColl); err != nil {
-			return err
-		}
-		if err := sameCollection(tx, targetColl); err != nil {
-			return err
-		}
-		if conflicts, err := s.store.UniqueFieldConflictsQ(tx, targetColl.ID, item.ID, targetSchema.Fields, result.Fields); err != nil {
-			return err
-		} else if len(conflicts) > 0 {
-			return &moveUniqueConflictError{msg: store.UniqueFieldConflictsMessage(conflicts)}
-		}
-		if guardPrecheck != nil {
-			return guardPrecheck(tx, existing)
-		}
-		return nil
-	}
+	// lock (BUG-3665); moveInputsUnchanged re-checks them, forced or not.
+	movePrecheck := s.moveInputsUnchanged(item, sourceColl, targetColl, targetSchema.Fields, result.Fields, guardPrecheck)
 
 	// Move the item
 	// BUG-3407: the target schema the moved fields were validated against.
@@ -4770,6 +4727,59 @@ func (s *Server) requireRawParentInWorkspace(w http.ResponseWriter, workspaceID 
 // collection its payload was built from, changed between the reads the
 // payload was built from and the move's lock (BUG-3665).
 var errItemChangedDuringMove = errors.New("item changed during move")
+
+// moveInputsUnchanged is a move's under-lock precheck. A move builds its
+// payload from reads taken before it takes its lock (BUG-3665). Every input to
+// it is re-read under the lock, and a move whose inputs changed is refused
+// (errItemChangedDuringMove, or *moveUniqueConflictError); the caller re-reads
+// and moves again. Every move checks this, a forced one included (force skips
+// only the open-children guard, which runs last as guard when non-nil). The
+// inputs:
+//   - the item's collection and fields (codex r1);
+//   - the source collection's schema and settings, which the migration and
+//     the close-state check read (codex r2);
+//   - the target collection's schema and settings, likewise (the store also
+//     re-validates the fields against the target schema under the lock,
+//     BUG-3407);
+//   - the target's unique-field holders, re-queried on the lock's
+//     transaction.
+//
+// Without it a write landing in between was overwritten by fields migrated
+// from the older body, and the move's history and events described that
+// older body. The single move and the bulk move both use it (BUG-3813: the
+// bulk move had none of it).
+func (s *Server) moveInputsUnchanged(item *models.Item, sourceColl, targetColl *models.Collection, targetFields []models.FieldDef, fields map[string]any, guard func(tx *sql.Tx, existing *models.Item) error) func(tx *sql.Tx, existing *models.Item) error {
+	sameCollection := func(tx *sql.Tx, read *models.Collection) error {
+		cur, err := s.store.GetCollectionQ(tx, read.ID)
+		if err != nil {
+			return err
+		}
+		if cur == nil || cur.Schema != read.Schema || cur.Settings != read.Settings {
+			return errItemChangedDuringMove
+		}
+		return nil
+	}
+	return func(tx *sql.Tx, existing *models.Item) error {
+		if existing.CollectionID != item.CollectionID || existing.Fields != item.Fields {
+			return errItemChangedDuringMove
+		}
+		if err := sameCollection(tx, sourceColl); err != nil {
+			return err
+		}
+		if err := sameCollection(tx, targetColl); err != nil {
+			return err
+		}
+		if conflicts, err := s.store.UniqueFieldConflictsQ(tx, targetColl.ID, item.ID, targetFields, fields); err != nil {
+			return err
+		} else if len(conflicts) > 0 {
+			return &moveUniqueConflictError{msg: store.UniqueFieldConflictsMessage(conflicts)}
+		}
+		if guard != nil {
+			return guard(tx, existing)
+		}
+		return nil
+	}
+}
 
 // moveUniqueConflictError is the under-lock re-check of the target's unique
 // fields finding a holder that appeared after the handler's own check.
