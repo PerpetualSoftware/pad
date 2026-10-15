@@ -1032,7 +1032,7 @@ func (m *Metrics) RegisterRedisUp() {
 func (m *Metrics) RegisterStreamConnectionsCollector(total func() int) {
 	m.Registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "pad_stream_connections_active",
-		Help: "Active streaming connections on THIS INSTANCE across both SSE endpoints and the MCP transport's long-lived streams (GET streams on /mcp and /mcp/chatgpt, and subscriptions/listen once the modern protocol era is served) — the population PAD_SSE_MAX_CONNECTIONS bounds. Limits are per instance; sum across replicas for the deployment total.",
+		Help: "Active streaming connections on THIS INSTANCE across both SSE endpoints and the MCP transport's long-lived streams (GET streams on /mcp and /mcp/chatgpt, and subscriptions/listen streams once a modern protocol version is served) — the population PAD_SSE_MAX_CONNECTIONS bounds. Limits are per instance; sum across replicas for the deployment total.",
 	}, func() float64 { return float64(total()) }))
 }
 

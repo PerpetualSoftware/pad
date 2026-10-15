@@ -40,7 +40,7 @@ type mcpStallFixture struct {
 	unregistered atomic.Int32
 }
 
-func newMCPStallFixture(t *testing.T) *mcpStallFixture {
+func newMCPStallFixture(t *testing.T, opts ...mcpgo.StreamableHTTPOption) *mcpStallFixture {
 	t.Helper()
 	f := &mcpStallFixture{srv: testServer(t)}
 	user, err := f.srv.store.CreateUser(models.UserCreate{Email: "mcp-stall@example.com", Name: "Stall", Password: "pw-test-12345"})
@@ -61,10 +61,10 @@ func newMCPStallFixture(t *testing.T) *mcpStallFixture {
 	hooks.AddOnRegisterSession(func(context.Context, mcpgo.ClientSession) { f.registered.Add(1) })
 	hooks.AddOnUnregisterSession(func(context.Context, mcpgo.ClientSession) { f.unregistered.Add(1) })
 	f.mcp = mcpgo.NewMCPServer("bug3808", "1", mcpgo.WithHooks(hooks))
-	transport := mcpgo.NewStreamableHTTPServer(f.mcp,
+	transport := mcpgo.NewStreamableHTTPServer(f.mcp, append([]mcpgo.StreamableHTTPOption{
 		mcpgo.WithEndpointPath("/mcp"),
 		mcpgo.WithDisableLocalhostProtection(true),
-	)
+	}, opts...)...)
 	f.srv.SetCloudMode("test-secret")
 	f.srv.SetMCPTransport(transport, "https://mcp.test.example", "https://app.test.example", nil)
 	return f

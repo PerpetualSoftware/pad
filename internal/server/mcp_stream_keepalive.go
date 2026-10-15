@@ -37,9 +37,10 @@ import (
 //     JSON-RPC ping REQUESTS every client must answer.
 //   - The shared stream admission gate (stream_admission.go), taken at request
 //     entry for the two long-lived doors only: the legacy GET stream and
-//     subscriptions/listen. Pad's transport serves only the legacy protocol
-//     versions today, so it refuses every listen at once; the listen door is
-//     counted for when the modern era is served (mcpLongLivedRequest). A tools/call POST that mcp-go upgrades to SSE is
+//     subscriptions/listen. A listen is looked for only on a POST whose protocol
+//     header is a modern version the transport serves (mcpLongLivedRequest).
+//     Pad's transport serves only the legacy versions today, so no listen is
+//     counted and no POST body is read. A tools/call POST that mcp-go upgrades to SSE is
 //     not counted: it upgrades mid-call, and a refusal there would land after
 //     the call's side effects, so the client's retry would repeat them.
 
@@ -96,8 +97,12 @@ func (w *mcpStreamWriter) Write(p []byte) (int, error) {
 	}
 	n, err := w.stream.Write(p)
 	if err == nil && isFinalSSEEvent(p) {
-		// A JSON-RPC response ends a POST's stream: nothing may follow it,
-		// including a keepalive in the gap before the handler returns.
+		// A JSON-RPC response ends a POST's stream, so no keepalive is
+		// written after it in the gap before the handler returns. Only a
+		// write that STARTS with the response is recognised: a write that
+		// carries a notification first and the response after it (one
+		// buffered replay) is not, and the stream may then get one more
+		// comment before end(), which is valid SSE (r7 hunter L3).
 		w.ended = true
 	}
 	return n, err
@@ -195,23 +200,44 @@ func (s *Server) runMCPKeepalive(w *mcpStreamWriter, stop <-chan struct{}) {
 	}
 }
 
+// mcpProtocolVersions is what mcp-go's StreamableHTTPServer exposes about the
+// protocol versions it serves, and what admission keys the listen door on.
+type mcpProtocolVersions interface {
+	SupportsProtocolVersion(version string) bool
+}
+
+// mcpServedVersion reports whether the transport behind a mount serves
+// version. A transport that does not say (a test stub, a wrapper that does not
+// forward the method) is taken to serve every version, which over-counts and
+// never lets a served listen skip the budget.
+func mcpServedVersion(transport http.Handler) func(string) bool {
+	if v, ok := transport.(mcpProtocolVersions); ok {
+		return v.SupportsProtocolVersion
+	}
+	return func(string) bool { return true }
+}
+
 // mcpLongLivedRequest reports whether r opens one of the transport's
 // long-lived streams: the legacy GET stream, or a subscriptions/listen POST.
+// served reports whether the mount's transport serves a protocol version.
 //
 // A listen is served only in the modern protocol era, and mcp-go serves a
 // modern POST only when its Mcp-Protocol-Version header is a modern version
-// that equals the body's _meta version (validateModernRequest); a legacy-era
-// listen is answered METHOD_NOT_FOUND at once. So a POST without a modern
-// header is never a listen, and its body is not read here. Pad serves the
-// legacy versions only today (mcp.ServedProtocolVersions), so no POST pays for
-// this read until the modern era is turned on (r6 hunter M1).
+// that equals the body's _meta version and that it serves
+// (validateModernRequest); a legacy-era listen is answered METHOD_NOT_FOUND at
+// once, and an unserved version gets its 400. So a POST whose header is not a
+// served modern version is never a listen: its body is not read here, and it
+// reaches mcp-go, whose 400 is what tells a modern client to fall back (r7
+// ruling: a 429 there would keep a probing client from ever falling back).
+// Pad serves the legacy versions only (mcp.ServedProtocolVersions), so today
+// no POST body is read for admission (r6 hunter M1).
 //
 // When the header is modern, the whole body is read to decide it, and
 // replayed to the transport. Not a fixed-size peek: JSON key order is free,
 // so "method" may follow a large "params", and a peek would let a listen skip
 // the budget. The body is already bounded by limitMCPBody, which runs before
 // this.
-func mcpLongLivedRequest(r *http.Request) bool {
+func mcpLongLivedRequest(r *http.Request, served func(string) bool) bool {
 	switch r.Method {
 	case http.MethodGet:
 		return true
@@ -219,7 +245,7 @@ func mcpLongLivedRequest(r *http.Request) bool {
 	default:
 		return false
 	}
-	if !mcp.IsModernProtocol(r.Header.Get(mcp.HeaderProtocolVersion)) {
+	if v := r.Header.Get(mcp.HeaderProtocolVersion); !mcp.IsModernProtocol(v) || !served(v) {
 		return false
 	}
 	if r.Body == nil || r.Body == http.NoBody {
@@ -253,8 +279,8 @@ func jsonRPCHasMethod(body []byte, method string) bool {
 // admitMCPStream takes a stream admission slot for a long-lived MCP request,
 // or answers the refusal. The returned release is nil when nothing was taken.
 // ok is false when the request was refused and must not be served.
-func (s *Server) admitMCPStream(w http.ResponseWriter, r *http.Request) (release func(), ok bool) {
-	if !mcpLongLivedRequest(r) {
+func (s *Server) admitMCPStream(w http.ResponseWriter, r *http.Request, served func(string) bool) (release func(), ok bool) {
+	if !mcpLongLivedRequest(r, served) {
 		return nil, true
 	}
 	principal := streamPrincipal(r, "")

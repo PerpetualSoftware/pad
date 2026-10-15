@@ -104,7 +104,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 |----------|---------|-------------|
 | `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
 | `PAD_REDIS_NAMESPACE` | — | Scopes every Redis key and channel to one installation. Set it when two Pad installations share a Redis endpoint. Unset means the historical names; a whitespace-only value is rejected at startup rather than treated as unset. |
-| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across `/api/v1/events`, `/api/v1/events/stream` and the MCP transport's long-lived streams (GET streams on `/mcp` and `/mcp/chatgpt`, and `subscriptions/listen` streams once the modern MCP protocol era is served; today the transport refuses every listen) |
+| `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across `/api/v1/events`, `/api/v1/events/stream` and the MCP transport's long-lived streams (GET streams on `/mcp` and `/mcp/chatgpt`, and `subscriptions/listen` streams once Pad serves a modern MCP protocol version; it serves the legacy versions only today, so no listen is counted) |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
 | `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both SSE endpoints and MCP's long-lived streams, **per instance** |
 | `PAD_COLLAB_MAX_PER_USER` | `50` | Per-user maximum open collaborative-editing WebSockets (`/api/v1/collab/{itemID}`), **per instance**. See *Collab connection limits* below |
@@ -132,8 +132,8 @@ against.
 > `PAD_SSE_MAX_PER_USER` against your fleet size.
 >
 > **Upgrading (BUG-3835):** the MCP transport's long-lived streams (a GET stream,
-> and `subscriptions/listen` once the modern protocol era is served, on `/mcp` and
-> `/mcp/chatgpt`) now take a slot in the same budget. They had no limit before.
+> and a `subscriptions/listen` once Pad serves a modern protocol version, on
+> `/mcp` and `/mcp/chatgpt`) now take a slot in the same budget. They had no limit before.
 > The per-user bucket is shared with the web UI's live updates (`/api/v1/events`)
 > and agent watch sessions, so a user running many MCP clients reaches
 > `PAD_SSE_MAX_PER_USER` sooner, and once they do their browser tabs are refused

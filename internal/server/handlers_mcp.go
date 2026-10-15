@@ -243,6 +243,7 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 // first deadline call reaches deadlineWriter.SetWriteDeadline, after which
 // the deadline is this stream's alone.
 func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
+	served := mcpServedVersion(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		stream, err := s.openSSEStream(w)
 		if err != nil {
@@ -252,7 +253,7 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 		}
 		// The long-lived doors take a stream slot before the transport runs,
 		// so a refusal is a plain 429 and leaves no session state (BUG-3835).
-		release, ok := s.admitMCPStream(stream, r)
+		release, ok := s.admitMCPStream(stream, r, served)
 		if !ok {
 			return
 		}

@@ -210,7 +210,7 @@ func TestMCP_BUG3835_ListenDetectionMatchesMCPGo(t *testing.T) {
 	// The scan replays the body unchanged to the transport.
 	r := httptest.NewRequest("POST", "/mcp", strings.NewReader(cases[1].body))
 	r.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
-	if !mcpLongLivedRequest(r) {
+	if !mcpLongLivedRequest(r, func(string) bool { return true }) {
 		t.Fatal("mcpLongLivedRequest missed the listen")
 	}
 	replayed, _ := io.ReadAll(r.Body)
@@ -234,7 +234,7 @@ func TestMCP_BUG3835_LegacyPOSTIsNotReadForAdmission(t *testing.T) {
 		if header != "" {
 			r.Header.Set(mcp.HeaderProtocolVersion, header)
 		}
-		if mcpLongLivedRequest(r) {
+		if mcpLongLivedRequest(r, func(string) bool { return true }) {
 			t.Errorf("header %q: a legacy POST was counted as a listen", header)
 		}
 		if body.reads != 0 {
@@ -270,6 +270,101 @@ func TestMCP_BUG3835_LegacyPOSTIsNotReadForAdmission(t *testing.T) {
 	}
 	if resp.StatusCode == http.StatusOK && isEventStream(resp.Header.Get("Content-Type")) {
 		t.Fatalf("mcp-go served a legacy-era listen: %d %s", resp.StatusCode, got)
+	}
+}
+
+// The gate's premise, pinned against mcp-go rather than read from it (r7
+// hunter L2): a listen whose _meta is modern is served ONLY when the header
+// is modern too, so a POST the gate skips is never a held listen. The control
+// shows this fixture's transport does serve a modern listen, so the refusals
+// are about the header and not an unsupported version. A later mcp-go that
+// served a listen on _meta alone would turn this red.
+func TestMCP_BUG3835_ListenWithoutAModernHeaderIsNeverServed(t *testing.T) {
+	f := newMCPStallFixture(t)
+	ts := httptest.NewServer(f.srv)
+	t.Cleanup(ts.Close)
+	// A well-formed modern listen: client identity and capabilities travel in
+	// _meta, and the method is mirrored in Mcp-Method.
+	body := `{"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":{"` +
+		mcp.MetaKeyProtocolVersion + `":"` + mcp.ProtocolVersion20260728 + `",` +
+		`"io.modelcontextprotocol/clientInfo":{"name":"t","version":"0"},` +
+		`"io.modelcontextprotocol/clientCapabilities":{}}}}`
+	listen := func(header string) (*http.Response, context.CancelFunc) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		req, _ := http.NewRequestWithContext(ctx, "POST", ts.URL+"/mcp", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+f.token)
+		req.Header.Set(mcp.HeaderMethod, string(mcp.MethodSubscriptionsListen))
+		if header != "" {
+			req.Header.Set(mcp.HeaderProtocolVersion, header)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			t.Fatalf("header %q: %v", header, err)
+		}
+		return resp, cancel
+	}
+
+	resp, cancel := listen(mcp.ProtocolVersion20260728)
+	served := resp.StatusCode == http.StatusOK && isEventStream(resp.Header.Get("Content-Type"))
+	cancel()
+	resp.Body.Close()
+	if !served {
+		t.Fatalf("instrument: this transport did not serve a modern listen (%d %s)", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+
+	for _, header := range []string{"", "2025-06-18"} {
+		resp, cancel := listen(header)
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		cancel()
+		if resp.StatusCode == http.StatusOK && isEventStream(resp.Header.Get("Content-Type")) {
+			t.Errorf("header %q: mcp-go served a modern-_meta listen the gate does not count: %s", header, got)
+		}
+	}
+}
+
+// A modern header the transport does NOT serve is never a listen either: the
+// body is not read, and at a full budget the request reaches mcp-go, whose
+// unsupported-version 400 is what tells a modern client to fall back. A 429
+// there would leave a probing client retrying forever (the lead's r7 ruling,
+// condition 1). This transport serves the legacy versions only, as pad's does.
+func TestMCP_BUG3835_UnservedModernVersionIsNotCounted(t *testing.T) {
+	body := &bug3835CountingBody{Reader: strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen"}`)}
+	r := httptest.NewRequest("POST", "/mcp", nil)
+	r.Body = body
+	r.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
+	if mcpLongLivedRequest(r, func(string) bool { return false }) || body.reads != 0 {
+		t.Fatalf("an unserved modern version was read (%d reads) or counted", body.reads)
+	}
+
+	f := newMCPStallFixture(t, mcpgo.WithStreamableHTTPProtocolVersions(mcp.LegacyProtocolVersions()...))
+	f.srv.admission().setLimits(0, 1)
+	release, refusal := f.srv.admission().acquire(f.userID(t))
+	if refusal != admissionRefusalNone {
+		t.Fatal(refusal)
+	}
+	defer release()
+	ts := httptest.NewServer(f.srv)
+	t.Cleanup(ts.Close)
+	req, _ := http.NewRequest("POST", ts.URL+"/mcp", strings.NewReader(
+		`{"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":{"`+
+			mcp.MetaKeyProtocolVersion+`":"`+mcp.ProtocolVersion20260728+`"}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+f.token)
+	req.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("an unserved modern listen at a full budget: %d %s, want mcp-go's 400", resp.StatusCode, got)
 	}
 }
 
