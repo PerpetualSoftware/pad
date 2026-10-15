@@ -154,6 +154,13 @@ type Store struct {
 	// must guard against its own nested version reads.
 	beforeItemVersionsRead func(itemID string)
 
+	// beforeVersionsRead is beforeItemVersionsRead for the legacy documents'
+	// versions table (BUG-3833): TEST-ONLY, nil in production. listVersionsQ
+	// calls it before its query; inside ListVersionsResolvedSnapshot that is
+	// after the snapshot's body read. A hook that writes must guard against
+	// its own nested version reads.
+	beforeVersionsRead func(documentID string)
+
 	// beforeRotateRefresh is a TEST-ONLY seam, nil in production. When set,
 	// RotateRefreshToken calls it first, outside any transaction: the window
 	// between fosite validating a refresh token and rotating it, where a
