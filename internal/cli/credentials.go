@@ -167,7 +167,15 @@ func loadStoreLocked(path string) (*CredentialStore, error) {
 // out (BUG-3829). A save that truncates a non-empty file, or writes into an
 // empty one, moves its mtime, so a later empty read of a file a save is
 // rewriting does not match and is re-read again.
+//
+// Only a file whose mtime is emptyConfirmedMinAge older than the confirmation
+// is remembered. A later save is stamped no earlier than the confirmation, so
+// on a filesystem with coarse timestamps it could otherwise land in the same
+// tick and leave the mtime unchanged (Codex r1). A file emptied within the
+// last two seconds just pays the re-read bound on each load until it ages.
 var emptyConfirmed confirmedEmptyFile
+
+const emptyConfirmedMinAge = 2 * time.Second
 
 type confirmedEmptyFile struct {
 	mu   sync.Mutex
@@ -183,6 +191,9 @@ func (c *confirmedEmptyFile) matches(path string, fi fs.FileInfo) bool {
 }
 
 func (c *confirmedEmptyFile) set(path string, fi fs.FileInfo) {
+	if fi != nil && time.Since(fi.ModTime()) < emptyConfirmedMinAge {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.path, c.fi = path, fi

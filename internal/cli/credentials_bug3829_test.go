@@ -89,6 +89,10 @@ func TestBUG3829_GenuinelyEmptyFileWaitsOncePerProcess(t *testing.T) {
 	path := writeCredsFile(t, home, "")
 	resetEmptyConfirmed(t)
 	shortRereads(t, 3, time.Millisecond)
+	aged := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, aged, aged); err != nil {
+		t.Fatal(err)
+	}
 	reads := countReads(t, nil)
 
 	for i := 0; i < 3; i++ {
@@ -111,5 +115,25 @@ func TestBUG3829_GenuinelyEmptyFileWaitsOncePerProcess(t *testing.T) {
 	}
 	if *reads != 4 {
 		t.Errorf("reads after the file changed = %d, want 4 (1+3 re-reads)", *reads)
+	}
+}
+
+// A file emptied within emptyConfirmedMinAge is not remembered: a save in the
+// same timestamp tick could leave its mtime unchanged on a coarse filesystem,
+// and a remembered file would then skip the re-read of that save's truncate.
+func TestBUG3829_RecentlyEmptiedFileIsNotRemembered(t *testing.T) {
+	home := withTempHome(t)
+	writeCredsFile(t, home, "")
+	resetEmptyConfirmed(t)
+	shortRereads(t, 3, time.Millisecond)
+	reads := countReads(t, nil)
+
+	for i := 0; i < 2; i++ {
+		if _, err := LoadStore(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if *reads != 4+4 {
+		t.Errorf("reads over two loads of a just-emptied file = %d, want 8 (1+3 re-reads each)", *reads)
 	}
 }
