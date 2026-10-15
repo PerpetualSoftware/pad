@@ -12,6 +12,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/oauth"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // BUG-3837: a long-lived MCP stream ends with its credential. The transport
@@ -118,10 +119,13 @@ func (f *bug3837Fixture) openRecorded(t *testing.T, scheme, bearer string, liste
 	t.Cleanup(cancel)
 	req := httptest.NewRequest("GET", "/mcp", nil)
 	if listen {
+		// A modern-era listen, the only kind admission counts (BUG-3835 r6).
 		req = httptest.NewRequest("POST", "/mcp",
-			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{}}`))
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"_meta":{"`+
+				mcp.MetaKeyProtocolVersion+`":"`+mcp.ProtocolVersion20260728+`"}}}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
 	}
 	req.Header.Set("Authorization", scheme+" "+bearer)
 	req.RemoteAddr = "192.0.2.1:1234"
