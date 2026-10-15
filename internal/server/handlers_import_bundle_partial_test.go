@@ -97,7 +97,7 @@ func keepPathPartialIsReachable(t *testing.T, driver store.DriverType) {
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "manifest decode") {
 		t.Fatalf("expected the keep path's 400 import_failed, got %d: %s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "kept") || !strings.Contains(rr.Body.String(), `\"Kept\"`) {
+	if !strings.Contains(rr.Body.String(), "kept") || !strings.Contains(rr.Body.String(), `\"kept\"`) {
 		t.Errorf("the response must say the partial workspace was KEPT and name it, got: %s", rr.Body.String())
 	}
 
@@ -112,10 +112,10 @@ func keepPathPartialIsReachable(t *testing.T, driver store.DriverType) {
 	if len(mine) != 1 || mine[0].ID != live.ID {
 		t.Errorf("kept partial workspace is not in its importer's list (%d row(s)); an owner row must be attached on the keep path", len(mine))
 	}
-	if rr := doRequestWithCookie(dest, "GET", "/api/v1/workspaces/Kept/collections", nil, tok); rr.Code != http.StatusOK {
+	if rr := doRequestWithCookie(dest, "GET", "/api/v1/workspaces/kept/collections", nil, tok); rr.Code != http.StatusOK {
 		t.Errorf("importer cannot READ the kept partial workspace: %d %s", rr.Code, rr.Body.String())
 	}
-	if rr := doRequestWithCookie(dest, "DELETE", "/api/v1/workspaces/Kept", nil, tok); rr.Code != http.StatusNoContent {
+	if rr := doRequestWithCookie(dest, "DELETE", "/api/v1/workspaces/kept", nil, tok); rr.Code != http.StatusNoContent {
 		t.Errorf("importer cannot DELETE the kept partial workspace: %d %s", rr.Code, rr.Body.String())
 	}
 }

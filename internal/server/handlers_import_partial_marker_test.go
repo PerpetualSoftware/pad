@@ -71,7 +71,7 @@ func importPartialMarkerKeepPath(t *testing.T, driver store.DriverType) {
 	}
 
 	// The owner reads the note on GET.
-	rr = doRequestWithCookie(dest, "GET", "/api/v1/workspaces/Kept", nil, tok)
+	rr = doRequestWithCookie(dest, "GET", "/api/v1/workspaces/kept", nil, tok)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET: %d %s", rr.Code, rr.Body.String())
 	}
@@ -102,14 +102,14 @@ func importPartialMarkerKeepPath(t *testing.T, driver store.DriverType) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	rr = doRequestWithCookie(dest, "GET", "/api/v1/workspaces/Kept", nil, etok)
+	rr = doRequestWithCookie(dest, "GET", "/api/v1/workspaces/kept", nil, etok)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("editor GET: %d %s", rr.Code, rr.Body.String())
 	}
 	if eg := decodeWorkspace(t, rr.Body.Bytes()); eg.ImportStatus == nil || eg.ImportStatus.Note != "" {
 		t.Errorf("editor GET import_status = %+v, want the status without the note", eg.ImportStatus)
 	}
-	rr = doRequestWithCookie(dest, "PATCH", "/api/v1/workspaces/Kept", map[string]any{"clear_import_status": true}, etok)
+	rr = doRequestWithCookie(dest, "PATCH", "/api/v1/workspaces/kept", map[string]any{"clear_import_status": true}, etok)
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("editor clear: %d, want 403", rr.Code)
 	}
@@ -118,7 +118,7 @@ func importPartialMarkerKeepPath(t *testing.T, driver store.DriverType) {
 	}
 
 	// The owner clears it.
-	rr = doRequestWithCookie(dest, "PATCH", "/api/v1/workspaces/Kept", map[string]any{"clear_import_status": true}, tok)
+	rr = doRequestWithCookie(dest, "PATCH", "/api/v1/workspaces/kept", map[string]any{"clear_import_status": true}, tok)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("owner clear: %d %s", rr.Code, rr.Body.String())
 	}
@@ -141,7 +141,7 @@ func TestImportPartialMarker_OrdinaryPatchKeepsMarker(t *testing.T) {
 	if rr := importAs(dest, "kept", bundle, tok); rr.Code != http.StatusBadRequest {
 		t.Fatalf("import: %d %s", rr.Code, rr.Body.String())
 	}
-	rr := doRequestWithCookie(dest, "PATCH", "/api/v1/workspaces/Kept", map[string]any{"description": "x"}, tok)
+	rr := doRequestWithCookie(dest, "PATCH", "/api/v1/workspaces/kept", map[string]any{"description": "x"}, tok)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("PATCH: %d %s", rr.Code, rr.Body.String())
 	}
@@ -180,8 +180,10 @@ func TestImportPartialMarker_RollbackAndSuccessUnmarked(t *testing.T) {
 	if len(marks) != 0 {
 		t.Errorf("rollback or clean import left a marker: %+v", marks)
 	}
-	if rr := doRequestWithCookie(dest, "GET", "/api/v1/workspaces/Clean", nil, tok); strings.Contains(rr.Body.String(), "import_status") {
-		t.Errorf("a clean import's GET carries import_status: %s", rr.Body.String())
+	// The 200 keeps the absence check honest: a 404 body never carries
+	// import_status either (BUG-3769, when the import name was not the slug).
+	if rr := doRequestWithCookie(dest, "GET", "/api/v1/workspaces/clean", nil, tok); rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), "import_status") {
+		t.Errorf("a clean import's GET = %d, carries import_status or is not found: %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -194,7 +196,7 @@ func TestImportPartialMarker_NotExported(t *testing.T) {
 	if rr := importAs(dest, "kept", bundle, tok); rr.Code != http.StatusBadRequest {
 		t.Fatalf("import: %d %s", rr.Code, rr.Body.String())
 	}
-	rr := doRequestWithCookie(dest, "GET", "/api/v1/workspaces/Kept/export", nil, tok)
+	rr := doRequestWithCookie(dest, "GET", "/api/v1/workspaces/kept/export", nil, tok)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("export: %d %s", rr.Code, rr.Body.String())
 	}
