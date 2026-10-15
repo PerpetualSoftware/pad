@@ -536,6 +536,9 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 	if writeInvalidItemTitle(w, err) {
 		return true
 	}
+	if writeUniqueFieldHeld(w, err) {
+		return true
+	}
 	if writeStoredStateUnreadable(w, err) {
 		return true
 	}
