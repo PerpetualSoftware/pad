@@ -65,13 +65,16 @@ func TestBUG3816_ConcurrentUnlinksKeepASignInMethod(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.RemoveOAuthProvider(id, "github") }()
 
-	// Commit the first only once the second is seen waiting on a lock, so
-	// the pair is concurrent by observation, not by a timer.
+	// Commit the first only once the second is seen waiting on a lock in the
+	// account row's FOR NO KEY UPDATE read, so the pair is concurrent by
+	// observation, not by a timer, and the wait is the unlink's own, not
+	// some other query's (the class codex r1 found in BUG-3817's test).
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var waiting int
 		if err := s.db.QueryRow(`SELECT COUNT(*) FROM pg_stat_activity
-			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			WHERE datname = current_database() AND wait_event_type = 'Lock'
+			AND query LIKE '%FROM users WHERE id = $1 FOR NO KEY UPDATE%'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting > 0 {
