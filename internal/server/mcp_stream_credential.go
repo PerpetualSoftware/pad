@@ -43,6 +43,9 @@ func (s *Server) runMCPCredentialTick(ctx context.Context, r *http.Request, end 
 			return
 		case <-timer.C:
 		}
+		if ctx.Err() != nil {
+			return // the stream already ended; nothing to close
+		}
 		if !s.mcpStreamPrincipalStillValid(r) {
 			slog.Info("MCP: credential invalidated mid-stream, closing", "method", r.Method)
 			end()

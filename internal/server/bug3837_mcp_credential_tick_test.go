@@ -254,3 +254,25 @@ func TestMCP_BUG3837_LowercaseBearerIsReadLikeAdmission(t *testing.T) {
 		f.assertEnds(t, done, "OAuth grant revoked")
 	})
 }
+
+// A deleted user ends the stream, not "could not ask": GetUser reports a
+// missing row as (nil, nil), and the tick reads nil as gone. Driven directly,
+// because deleting a user cascades to its tokens, so the credential door
+// would end the stream first and hide this branch.
+func TestMCP_BUG3837_DeletedUserIsNotStillValid(t *testing.T) {
+	f := newBug3837Fixture(t, 0)
+	if u, err := f.srv.store.GetUser("no-such-user"); err != nil || u != nil {
+		t.Fatalf("GetUser(missing) = %v, %v; want nil, nil (the premise)", u, err)
+	}
+	req := httptest.NewRequest("GET", "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer "+f.pat.Token)
+	ctx := WithCurrentUser(req.Context(), &models.User{ID: "no-such-user"})
+	ctx = context.WithValue(ctx, ctxAuthKind, authKindAPIToken)
+	req = req.WithContext(ctx)
+	if !f.srv.streamCredentialStillValid(req) {
+		t.Fatal("instrument: the PAT itself must still be live")
+	}
+	if f.srv.mcpStreamPrincipalStillValid(req) {
+		t.Fatal("a stream whose user no longer exists is still valid")
+	}
+}
