@@ -239,11 +239,15 @@ func TestBUG3839_DocumentEditOfInvalidUTF8StoresTheFullBody(t *testing.T) {
 }
 
 // planVersionChainRemapTx (attachments.go): an import's attachment remap
-// re-diffs each version against its remapped successor. A body that is not
-// valid UTF-8 reaches it from a stored row: here the item's current body
-// carries an invalid byte next to the attachment ref the newest version's
-// patch does not touch, as a direct edit or an older release would leave it.
-func TestBUG3839_AttachmentRemapOfInvalidUTF8StoresTheFullBody(t *testing.T) {
+// re-diffs each version it can resolve against its remapped successor. Here
+// the newest version's patch restores an attachment ref, and the item's
+// current body carries an invalid byte next to it, as a direct edit or an
+// older release would leave it. ApplyPatch refuses that base, so the remap cannot
+// resolve the row and takes its unresolved branch: the patch text itself is
+// remapped, and the row stays a diff that reads as patch_failed. Before the
+// refusal the patch applied fuzzily over the invalid byte, and the row was
+// re-diffed from a body it never recorded.
+func TestBUG3839_AttachmentRemapOfInvalidUTF8RemapsThePatchText(t *testing.T) {
 	oldID, newID := "00000000-0000-0000-0000-0000000000a1", "00000000-0000-0000-0000-0000000000b2"
 	ref := func(id string) string { return "![chart](pad-attachment:" + id + ")" }
 	for _, backend := range contentBackends() {
@@ -251,39 +255,36 @@ func TestBUG3839_AttachmentRemapOfInvalidUTF8StoresTheFullBody(t *testing.T) {
 			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
 				s := backend.open(t)
 				pg := backend.name == "Postgres"
-				validCurrent := bug3839Long("See " + ref(oldID) + " and the notes.")
-				older := bug3839Long("See " + ref(oldID) + ".")
+				validCurrent := bug3839Long("See the notes.")
+				older := bug3839Long("See " + ref(oldID) + " and the notes.")
 				item, _ := seedItemBody(t, s, pg, validCurrent)
-				if _, err := s.DB().Exec(`DELETE FROM item_versions WHERE item_id = $1`, item.ID); err != nil {
-					t.Fatal(err)
+				patch := bug3839Patch(t, older, validCurrent)
+				if !strings.Contains(patch, oldID) {
+					t.Fatal("instrument: the patch must carry the attachment id, or a remap of its text shows nothing")
 				}
-				if _, err := s.DB().Exec(`INSERT INTO item_versions (id, item_id, content, is_diff, created_at, version_seq) VALUES ('v1', $1, $2, $3, '2026-10-01T00:00:00Z', 1)`,
-					item.ID, bug3839Patch(t, older, validCurrent), true); err != nil {
-					t.Fatal(err)
-				}
-				current := strings.Replace(validCurrent, " and the notes.", sh.bad+" and the notes.", 1)
-				_, seeded := seedExisting(t, s, pg, item.ID, current)
-				if !seeded {
+				seedDiffVersion(t, s, item.ID, patch)
+				current := strings.Replace(validCurrent, " notes.", sh.bad+" notes.", 1)
+				if _, seeded := seedExisting(t, s, pg, item.ID, current); !seeded {
 					return
 				}
 				if err := s.RemapAttachmentReferencesInWorkspace(item.WorkspaceID, map[string]string{oldID: newID}); err != nil {
 					t.Fatal(err)
 				}
+				var stored string
+				var isDiff bool
+				if err := s.DB().QueryRow(`SELECT content, is_diff FROM item_versions WHERE id = 'v1'`).Scan(&stored, &isDiff); err != nil {
+					t.Fatal(err)
+				}
+				if !isDiff || stored != strings.ReplaceAll(patch, oldID, newID) {
+					t.Fatalf("v1 was not left a diff with its patch text remapped: is_diff=%v", isDiff)
+				}
 				vs, err := s.ListItemVersionsResolved(item.ID, strings.ReplaceAll(current, oldID, newID))
 				if err != nil || len(vs) != 1 {
 					t.Fatalf("versions: %d %v", len(vs), err)
 				}
-				if strings.Contains(vs[0].Content, oldID) {
-					t.Fatal("instrument: the remap did not rewrite the version")
+				if !vs[0].Unreconstructable || vs[0].UnreconstructableReason != "patch_failed" {
+					t.Fatalf("v1 reads unreconstructable=%v reason=%q", vs[0].Unreconstructable, vs[0].UnreconstructableReason)
 				}
-				var isDiff bool
-				if err := s.DB().QueryRow(`SELECT is_diff FROM item_versions WHERE id = 'v1'`).Scan(&isDiff); err != nil {
-					t.Fatal(err)
-				}
-				if isDiff && !utf8.ValidString(vs[0].Content) {
-					t.Fatal("a version whose body is not valid UTF-8 was re-stored as a patch")
-				}
-				t.Logf("v1 after remap: is_diff=%v tail %q", isDiff, vs[0].Content[max(0, len(vs[0].Content)-60):])
 			})
 		}
 	}
