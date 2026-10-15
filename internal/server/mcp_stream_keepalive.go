@@ -217,6 +217,23 @@ func mcpServedVersion(transport http.Handler) func(string) bool {
 	return func(string) bool { return true }
 }
 
+// MCPMountServesVersion is the stream admission gate's answer to "does the
+// transport wired for this mount serve version": /mcp/chatgpt when chatgpt is
+// true, /mcp otherwise. It reads the transport the server holds, the one the
+// route is built from, so cmd/pad can check the binding as `pad server` wires
+// it rather than a transport its test constructs (BUG-3835 r8 L2, CONVE-19).
+// An unwired mount serves nothing.
+func (s *Server) MCPMountServesVersion(chatgpt bool, version string) bool {
+	transport := s.mcpTransport
+	if chatgpt {
+		transport = s.chatGPTTransport
+	}
+	if transport == nil {
+		return false
+	}
+	return mcpServedVersion(transport)(version)
+}
+
 // mcpLongLivedRequest reports whether r opens one of the transport's
 // long-lived streams: the legacy GET stream, or a subscriptions/listen POST.
 // served reports whether the mount's transport serves a protocol version.
