@@ -136,23 +136,37 @@ type deadlineWriter struct {
 	mu sync.Mutex
 	// handlerOwned is set once the handler has set its own write deadline.
 	handlerOwned bool
+	// inFlight counts the writes, flushes and WriteHeaders between their arm
+	// and their disarm. Only the last one to return clears the deadline: one
+	// returning while another is still blocked would otherwise leave that one
+	// unbounded (codex r14).
+	inFlight int
 }
 
+// arm sets the deadline for a write about to start. A nil return is paired
+// with exactly one disarm when that write returns.
 func (d *deadlineWriter) arm() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.handlerOwned {
 		return nil
 	}
-	return d.rc.SetWriteDeadline(time.Now().Add(d.timeout))
+	if err := d.rc.SetWriteDeadline(time.Now().Add(d.timeout)); err != nil {
+		return err
+	}
+	d.inFlight++
+	return nil
 }
 
-// disarm clears the deadline once a write has returned, so it bounds only
-// that write and not whatever the handler does next.
+// disarm clears the deadline once the last write in flight has returned, so
+// it bounds only the writes and not whatever the handler does next.
 func (d *deadlineWriter) disarm() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.handlerOwned {
+	if d.inFlight > 0 {
+		d.inFlight--
+	}
+	if d.handlerOwned || d.inFlight > 0 {
 		return
 	}
 	_ = d.rc.SetWriteDeadline(time.Time{})
@@ -184,9 +198,11 @@ func (d *deadlineWriter) SetWriteDeadline(deadline time.Time) error {
 // socket at once, and a handler that ran longer than the timeout would send
 // it under a deadline that has already passed (codex r12).
 func (d *deadlineWriter) WriteHeader(code int) {
-	_ = d.arm()
+	armed := d.arm() == nil
 	d.ResponseWriter.WriteHeader(code)
-	d.disarm()
+	if armed {
+		d.disarm()
+	}
 }
 
 // Write fails rather than writing unbounded when the deadline cannot be set.

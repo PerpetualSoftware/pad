@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -545,7 +546,9 @@ func TestBUG3821_NoDeadlineIsLiveWhileTheHandlerWorks(t *testing.T) {
 func TestBUG3821_AHandlerPauseOverHTTP2DoesNotResetTheStream(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
-	srv.responseWriteTimeoutOverride = 200 * time.Millisecond
+	// 1s, not less: a loaded runner must get the first write and flush out
+	// inside it, or the stream resets for the wrong reason (codex r14).
+	srv.responseWriteTimeoutOverride = time.Second
 	srv.ensureRouter()
 	srv.router.Get("/__bug3821/pause", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("first."))
@@ -570,4 +573,59 @@ func TestBUG3821_AHandlerPauseOverHTTP2DoesNotResetTheStream(t *testing.T) {
 	if err != nil || string(body) != "first.second." {
 		t.Fatalf("body %q, err %v: the stream was reset while the handler paused between writes", body, err)
 	}
+}
+
+// blockingWriteLog records write deadlines like deadlineLog, but its Write
+// blocks until released, so a Flush can return while a Write is in progress.
+type blockingWriteLog struct {
+	*httptest.ResponseRecorder
+	mu      sync.Mutex
+	set     []time.Time
+	writing chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingWriteLog) SetWriteDeadline(t time.Time) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.set = append(b.set, t)
+	return nil
+}
+
+func (b *blockingWriteLog) last() time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.set[len(b.set)-1]
+}
+
+func (b *blockingWriteLog) Write(p []byte) (int, error) {
+	close(b.writing)
+	<-b.release
+	return b.ResponseRecorder.Write(p)
+}
+
+// A write that returns while another is still blocked does not clear the
+// deadline from under it: only the last one in flight clears (codex r14).
+func TestBUG3821_AnOverlappingWriteKeepsItsDeadline(t *testing.T) {
+	srv := testServer(t)
+	srv.responseWriteTimeoutOverride = time.Hour
+	log := &blockingWriteLog{ResponseRecorder: httptest.NewRecorder(), writing: make(chan struct{}), release: make(chan struct{})}
+	h := srv.boundResponseWrites(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wrote := make(chan struct{})
+		go func() {
+			defer close(wrote)
+			_, _ = w.Write([]byte("a"))
+		}()
+		<-log.writing
+		_ = http.NewResponseController(w).Flush()
+		if last := log.last(); !last.After(time.Now()) {
+			t.Errorf("a Flush that returned cleared the deadline (%v) of a Write still in progress", last)
+		}
+		close(log.release)
+		<-wrote
+		if last := log.last(); !last.IsZero() {
+			t.Errorf("the last write to return left a live deadline (%v)", last)
+		}
+	}))
+	h.ServeHTTP(log, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil))
 }
