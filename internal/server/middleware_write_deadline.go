@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -124,12 +123,19 @@ type deadlineWriter struct {
 	rc      *http.ResponseController
 	timeout time.Duration
 
+	// mu orders arm against the handler's SetWriteDeadline, so an arm from
+	// a goroutine that is writing cannot land between the handler's deadline
+	// and its ownership being recorded, and replace it (codex r11). It covers
+	// the deadline update only, never the write.
+	mu sync.Mutex
 	// handlerOwned is set once the handler has set its own write deadline.
-	handlerOwned atomic.Bool
+	handlerOwned bool
 }
 
 func (d *deadlineWriter) arm() error {
-	if d.handlerOwned.Load() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.handlerOwned {
 		return nil
 	}
 	return d.rc.SetWriteDeadline(time.Now().Add(d.timeout))
@@ -146,10 +152,12 @@ func (d *deadlineWriter) arm() error {
 // in this binary, never the client, so this cannot be used to opt a response
 // out of its bound the way a request header could (codex r4).
 func (d *deadlineWriter) SetWriteDeadline(deadline time.Time) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err := d.rc.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
-	d.handlerOwned.Store(true)
+	d.handlerOwned = true
 	return nil
 }
 
