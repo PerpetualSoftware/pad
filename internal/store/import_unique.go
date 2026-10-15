@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,7 +58,10 @@ func importUniqueValue(key string, v any) (string, []string, bool) {
 		if key != importInvocationSlugKey {
 			return s, []string{"s:" + s}, true
 		}
-		return s, []string{"pg:" + s, "sqlite:s:" + s}, true
+		if nk, ok := importNumericText(s); ok {
+			return s, []string{"pg:n:" + nk, "sqlite:s:" + s}, true
+		}
+		return s, []string{"pg:s:" + s, "sqlite:s:" + s}, true
 	}
 	if v == nil || key != importInvocationSlugKey {
 		return "", nil, false
@@ -73,24 +77,25 @@ func importUniqueValue(key string, v any) (string, []string, bool) {
 		if t {
 			n = "1"
 		}
-		return text, []string{"pg:" + text, "sqlite:n:" + n}, true
+		return text, []string{"pg:s:" + text, "sqlite:n:" + n}, true
 	case json.Number:
 		pg, value := importNumberSlots(string(t))
-		return text, []string{"pg:" + pg, "sqlite:n:" + value}, true
+		return text, []string{"pg:n:" + pg, "sqlite:n:" + value}, true
 	default:
-		// An object or array: both dialects read it as its JSON text.
-		return text, []string{"pg:" + text, "sqlite:s:" + text}, true
+		// An object or array, never a valid slug. SQLite reads it as its
+		// compact JSON text, which a string can equal. Postgres prints jsonb's
+		// own rendering ({"a": 1}, keys reordered), which this does not
+		// reproduce, so on Postgres it is compared only with other objects and
+		// arrays, by the decoded value (Go re-encodes maps with sorted keys).
+		// The one miss left: a STRING spelled exactly as jsonb renders an
+		// object, which then fails the import on Postgres as it always did.
+		return text, []string{"pg:o:" + text, "sqlite:s:" + text}, true
 	}
 }
 
-// importNumberMaxExp bounds the exponent importNumberSlots will expand into
-// Postgres's numeric text. Beyond it the literal stands for itself: an archive
-// is untrusted, and 1e999999 is ten bytes that would expand to a million
-// digits per item (hunter r3, codex r3).
-const importNumberMaxExp = 1000
-
 // importNumberSlots returns a JSON number literal as each dialect's index
-// compares it. Both are computed without big-number arithmetic.
+// compares it. Neither expands the number, so the work is linear in the
+// literal however large its exponent (hunter r3, codex r3).
 //
 // sqlite: json_extract returns an integer literal that fits in int64 as an
 // INTEGER, and anything else as a REAL, an IEEE binary64 (codex r3: 0.1 and
@@ -98,11 +103,14 @@ const importNumberMaxExp = 1000
 // value, so a REAL that is exactly an int64 takes that integer's slot (1 and
 // 1.0 collide), and 2^53 and 2^53+1 stay two integers (codex r2).
 //
-// pg: the text ->> prints. jsonb keeps a number as numeric, whose output keeps
-// the scale written (1.0 stays "1.0", which equals the string "1.0", hunter
-// r2) and expands an exponent (1e2 is "100", 1.50e1 is "15.0").
+// pg: ->> prints a jsonb number as numeric text, which keeps the scale
+// written (1.0 prints "1.0", equal to the string "1.0", hunter r2) and
+// expands an exponent (1e2 prints "100"). Two numbers print the same text
+// exactly when they have the same value and the same scale, so the slot is
+// that pair, in a form that does not grow with the exponent (codex r4: a cap
+// on expansion missed 1e1001 against its expanded digits).
 func importNumberSlots(lit string) (pg, sqlite string) {
-	return importNumberPGText(lit), importNumberSQLiteValue(lit)
+	return importNumericKey(lit), importNumberSQLiteValue(lit)
 }
 
 func importNumberSQLiteValue(lit string) string {
@@ -119,13 +127,18 @@ func importNumberSQLiteValue(lit string) string {
 	return "r:" + strconv.FormatFloat(f, 'g', -1, 64)
 }
 
-func importNumberPGText(lit string) string {
+// importNumericKey is the (value, scale) of a JSON number literal as
+// Postgres's numeric holds it: sign, significant digits, the decimal exponent
+// of the first of them, and the scale, max(0, fraction digits - exponent).
+// Zero has no sign. An exponent too large for an int stands for itself;
+// Postgres refuses such a number anyway.
+func importNumericKey(lit string) string {
 	neg := strings.HasPrefix(lit, "-")
 	mant, exp := strings.TrimPrefix(lit, "-"), 0
 	if i := strings.IndexAny(mant, "eE"); i >= 0 {
 		e, err := strconv.Atoi(mant[i+1:])
-		if err != nil || e > importNumberMaxExp || e < -importNumberMaxExp {
-			return lit
+		if err != nil {
+			return "lit:" + lit
 		}
 		mant, exp = mant[:i], e
 	}
@@ -133,32 +146,37 @@ func importNumberPGText(lit string) string {
 	if i := strings.IndexByte(mant, '.'); i >= 0 {
 		intPart, fracPart = mant[:i], mant[i+1:]
 	}
+	scale := len(fracPart) - exp
+	if scale < 0 {
+		scale = 0
+	}
 	digits := intPart + fracPart
-	point := len(intPart) + exp // digits before the decimal point
-	var out string
-	switch {
-	case point <= 0:
-		out = "0." + strings.Repeat("0", -point) + digits
-	case point >= len(digits):
-		out = digits + strings.Repeat("0", point-len(digits))
-	default:
-		out = digits[:point] + "." + digits[point:]
+	lead := len(digits) - len(strings.TrimLeft(digits, "0"))
+	sig := strings.TrimRight(digits[lead:], "0")
+	if sig == "" {
+		return "0|" + strconv.Itoa(scale)
 	}
-	// The integer part prints without leading zeros, and at least "0".
-	whole, frac, hasFrac := strings.Cut(out, ".")
-	whole = strings.TrimLeft(whole, "0")
-	if whole == "" {
-		whole = "0"
+	sign := ""
+	if neg {
+		sign = "-"
 	}
-	out = whole
-	if hasFrac {
-		out += "." + frac
-	}
-	if neg && strings.Trim(digits, "0") != "" {
-		out = "-" + out
-	}
-	return out
+	// The first significant digit sits at 10^(len(intPart)+exp-lead-1).
+	return sign + sig + "|" + strconv.Itoa(len(intPart)+exp-lead-1) + "|" + strconv.Itoa(scale)
 }
+
+// importNumericText reports whether s is a string Postgres's numeric output
+// could print, and if so its importNumericKey, so the string "100" and the
+// number 1e2 share a Postgres slot as their ->> text does.
+func importNumericText(s string) (string, bool) {
+	if !importNumericOutput.MatchString(s) || s == "-0" || strings.HasPrefix(s, "-0.") && strings.Trim(s[3:], "0") == "" {
+		return "", false
+	}
+	return importNumericKey(s), true
+}
+
+// importNumericOutput is numeric's output form: an optional minus, an
+// integer part with no leading zero, an optional fraction, no exponent.
+var importNumericOutput = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?$`)
 
 // dropImportedUniqueDuplicates removes from fieldsJSON every unique value an
 // earlier item of the same collection already claimed, and claims the rest

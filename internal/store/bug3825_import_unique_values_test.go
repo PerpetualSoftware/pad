@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -182,32 +183,106 @@ func TestBUG3825_InvocationSlugValuesNeitherIndexEquatesAreKept(t *testing.T) {
 	}
 }
 
-// The slot functions against what each database prints or compares. pg is the
-// text Postgres's ->> prints for a jsonb number; sqlite is the value
-// json_extract compares by.
-func TestBUG3825_NumberSlots(t *testing.T) {
-	for _, tc := range []struct{ lit, pg, sqlite string }{
-		{"1", "1", "1"},
-		{"1.0", "1.0", "1"},
-		{"1.50", "1.50", "r:1.5"},
-		{"1e2", "100", "100"},
-		{"1.50e1", "15.0", "15"},
-		{"120e-1", "12.0", "12"},
-		{"1e-2", "0.01", "r:0.01"},
-		{"-1.5", "-1.5", "r:-1.5"},
-		{"-0.0", "0.0", "0"},
-		{"-0", "0", "0"},
-		{"9007199254740993", "9007199254740993", "9007199254740993"},
-		{"9007199254740993.0", "9007199254740993.0", "9007199254740992"},
-		{"9223372036854775808", "9223372036854775808", "r:9.223372036854776e+18"},
-		{"1e400", "1" + strings.Repeat("0", 400), "r:+Inf"},
-		// Beyond the cap the literal stands for itself, and nothing expands.
-		{"1e999999", "1e999999", "r:+Inf"},
-		{"1e-999999", "1e-999999", "0"},
-	} {
-		pg, sqlite := importNumberSlots(tc.lit)
-		if pg != tc.pg || sqlite != tc.sqlite {
-			t.Errorf("%s: pg %q sqlite %q, want pg %q sqlite %q", tc.lit, pg, sqlite, tc.pg, tc.sqlite)
+// The slot model against the database itself (hunter r4: SQLite's decimal
+// parser and Postgres's exponent limit are not something to reason about from
+// Go). For every pair of values, the database under test says whether its
+// invocation_slug index would see them as equal: SQLite by json_extract,
+// Postgres by ->>. That dialect's slots must collide exactly when it says so.
+// Equal but not colliding is the import failing on the index; colliding but
+// not equal is a value dropped that the index would have kept.
+func TestBUG3825_SlotsMatchTheDatabase(t *testing.T) {
+	s := testStore(t)
+	prefix := "sqlite:"
+	extract := `json_extract(?, '$.v')`
+	if s.dialect.Driver() == DriverPostgres {
+		prefix = "pg:"
+		extract = `(CAST(? AS jsonb) ->> 'v')`
+	}
+	values := []string{
+		`1`, `1.0`, `"1.0"`, `"1"`, `true`, `"true"`, `false`, `0`,
+		`1e2`, `"100"`, `100`, `1.50e1`, `"15.0"`, `15`, `120e-1`, `"12.0"`,
+		`0.1`, `0.10000000000000000001`, `0.1000000000000000055511151231257827`, `0.10000000000000001`,
+		`0.30000000000000004`, `0.3000000000000000444`, `0.3`,
+		`9007199254740992`, `9007199254740993`, `9007199254740992.0`, `9007199254740993.0`,
+		`1e30`, `1000000000000000000000000000000`,
+		`-0`, `-0.0`, `0.0`, `"0"`, `"-0"`, `"0.0"`,
+		`1e-2`, `"0.01"`, `0.010`, `"0.010"`,
+		`9223372036854775807`, `9223372036854775808`, `-9223372036854775808`, `-9223372036854775809`,
+		`1.7976931348623157e308`, `1e400`, `2e400`, `-1e400`, `1e-400`,
+		`123456789012345678901234567890`, `123456789012345678901234567891`,
+		`1e1000`, `10e999`, `1e1001`, `10e1000`, `"1` + strings.Repeat("0", 1001) + `"`,
+		`{"a":1}`, `"{\"a\":1}"`, `[1]`,
+	}
+	type slotted struct {
+		lit   string
+		slots map[string]bool
+		ok    bool
+	}
+	var vs []slotted
+	for _, lit := range values {
+		var v any
+		dec := json.NewDecoder(strings.NewReader(lit))
+		dec.UseNumber()
+		if err := dec.Decode(&v); err != nil {
+			t.Fatalf("instrument: %s does not decode: %v", lit, err)
+		}
+		_, slots, ok := importUniqueValue("invocation_slug", v)
+		set := map[string]bool{}
+		for _, sl := range slots {
+			if strings.HasPrefix(sl, prefix) {
+				set[sl] = true
+			}
+		}
+		vs = append(vs, slotted{lit, set, ok})
+	}
+	query := s.q(`SELECT ` + extract + ` = ` + extract)
+	checked := 0
+	for i := range vs {
+		for j := i + 1; j < len(vs); j++ {
+			a, b := vs[i], vs[j]
+			var equal sql.NullBool
+			err := s.db.QueryRow(query, `{"v":`+a.lit+`}`, `{"v":`+b.lit+`}`).Scan(&equal)
+			if err != nil {
+				// Postgres refuses a number outside numeric's range. Such a
+				// value cannot be stored, so it cannot collide either.
+				if s.dialect.Driver() == DriverPostgres {
+					continue
+				}
+				t.Fatalf("%s vs %s: %v", a.lit, b.lit, err)
+			}
+			collide := false
+			for sl := range a.slots {
+				if b.slots[sl] {
+					collide = true
+				}
+			}
+			// The documented residual (import_unique.go, the object case): on
+			// Postgres an object and a string are never compared.
+			if prefix == "pg:" && importIsComposite(a.lit) != importIsComposite(b.lit) {
+				continue
+			}
+			if equal.Valid && equal.Bool != collide {
+				t.Errorf("%s vs %s: the database says equal=%v, the %sslots collide=%v", a.lit, b.lit, equal.Bool, prefix, collide)
+			}
+			checked++
 		}
 	}
+	if checked < 1000 {
+		t.Fatalf("instrument: only %d pairs were compared", checked)
+	}
+}
+
+// Neither slot grows with the exponent: an archive is untrusted, and 1e999999
+// is ten bytes (hunter r3, codex r3).
+func TestBUG3825_NumberSlotsDoNotExpand(t *testing.T) {
+	for _, lit := range []string{"1e999999", "1e-999999", "1e999999999999999999999"} {
+		pg, sqlite := importNumberSlots(lit)
+		if len(pg) > 64 || len(sqlite) > 64 {
+			t.Errorf("%s: slots of %d and %d bytes, want them bounded", lit, len(pg), len(sqlite))
+		}
+	}
+}
+
+func importIsComposite(lit string) bool {
+	return strings.HasPrefix(lit, "{") || strings.HasPrefix(lit, "[")
 }
