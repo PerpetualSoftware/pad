@@ -4,6 +4,7 @@ package diff
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -22,15 +23,33 @@ func CreatePatch(oldText, newText string) string {
 }
 
 // ApplyPatch applies a patch to baseText to produce the target text.
-// Returns an error if the patch cannot be applied cleanly.
-func ApplyPatch(baseText, patchText string) (string, error) {
+// Returns an error if the patch cannot be applied cleanly, or if the base or
+// the patch's text is not valid UTF-8: go-diff slices such text at offsets it
+// derives from runes, and panics or builds the wrong text (BUG-3839).
+//
+// go-diff also panics on valid text, when a patch is applied over a base it
+// was not made from and the base holds multi-byte runes (about 1.5% of such
+// pairs in the BUG-3839 measurement). The version walk does exactly that
+// after it skips a row, so that panic is an error here too.
+func ApplyPatch(baseText, patchText string) (result string, err error) {
 	if patchText == "" {
 		return baseText, nil
+	}
+	if !utf8.ValidString(baseText) {
+		return "", fmt.Errorf("base text is not valid UTF-8")
+	}
+	if !patchTextValidUTF8(patchText) {
+		return "", fmt.Errorf("patch text is not valid UTF-8")
 	}
 	patches, err := dmp.PatchFromText(patchText)
 	if err != nil {
 		return "", fmt.Errorf("parse patch: %w", err)
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			result, err = "", fmt.Errorf("apply patch: %v", r)
+		}
+	}()
 	result, applied := dmp.PatchApply(patches, baseText)
 	// Check that all hunks applied
 	for i, ok := range applied {
@@ -39,6 +58,27 @@ func ApplyPatch(baseText, patchText string) (string, error) {
 		}
 	}
 	return result, nil
+}
+
+// patchTextValidUTF8 reports whether every text line of a patch decodes to
+// valid UTF-8. A line is escaped, so "%FF" is the byte 0xFF once parsed; this
+// decodes each line the way PatchFromText does, whose result is unexported.
+func patchTextValidUTF8(patchText string) bool {
+	for _, line := range strings.Split(patchText, "\n") {
+		if line == "" {
+			continue
+		}
+		switch line[0] {
+		case ' ', '-', '+':
+			// PatchFromText ignores the error too: a malformed line decodes
+			// to "", which is valid.
+			text, _ := url.QueryUnescape(strings.ReplaceAll(line[1:], "+", "%2b"))
+			if !utf8.ValidString(text) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // IsDiffSmaller returns true if storing a diff would be meaningfully smaller

@@ -315,3 +315,144 @@ func seedExisting(t *testing.T, s *store.Store, pg bool, itemID, body string) (s
 	}
 	return body, true
 }
+
+// bug3839Unmade is a patch applied over a base it was not made from, valid
+// UTF-8 throughout, on which go-diff's PatchApply panics (found by the
+// BUG-3839 measurement; TestBUG3839_ApplyPatchOverAnotherValidBaseNeverPanics
+// is the population). The version walk applies a patch over another base
+// whenever it skips a row.
+var bug3839Unmade = struct{ from, to, base string }{"a\né+abb😀", "%a+a😀ab", "é😀ab😀+%"}
+
+// seedDiffVersion replaces the item's history with one unhashed diff row.
+func seedDiffVersion(t *testing.T, s *store.Store, itemID, patch string) {
+	t.Helper()
+	if _, err := s.DB().Exec(`DELETE FROM item_versions WHERE item_id = $1`, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO item_versions (id, item_id, content, is_diff, created_at, version_seq) VALUES ('v1', $1, $2, $3, '2026-10-01T00:00:00Z', 1)`,
+		itemID, patch, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// History (ListItemVersionsResolved) over a diff row whose patch go-diff
+// cannot apply: the current body is not valid UTF-8, or (both backends) the
+// patch was made from another base. The row reads as patch_failed instead of
+// panicking the request.
+func TestBUG3839_ItemHistoryRefusesARowGoDiffCannotApply(t *testing.T) {
+	valid := bug3839Long("See the notes.")
+	for _, backend := range contentBackends() {
+		for _, sh := range []struct{ name, current, patch string }{
+			{"invalid_current", bug3839Long("See the\xe2\x82 notes."), bug3839Patch(t, bug3839Long("See notes."), valid)},
+			{"unmade_base", bug3839Unmade.base, bug3839Patch(t, bug3839Unmade.to, bug3839Unmade.from)},
+		} {
+			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
+				s := backend.open(t)
+				pg := backend.name == "Postgres"
+				item, _ := seedItemBody(t, s, pg, valid)
+				seedDiffVersion(t, s, item.ID, sh.patch)
+				if _, seeded := seedExisting(t, s, pg, item.ID, sh.current); !seeded {
+					return
+				}
+				vs, err := s.ListItemVersionsResolved(item.ID, sh.current)
+				if err != nil || len(vs) != 1 {
+					t.Fatalf("versions: %d %v", len(vs), err)
+				}
+				if !vs[0].Unreconstructable || vs[0].UnreconstructableReason != "patch_failed" {
+					t.Fatalf("row reads unreconstructable=%v reason=%q content tail %q", vs[0].Unreconstructable, vs[0].UnreconstructableReason, vs[0].Content[max(0, len(vs[0].Content)-40):])
+				}
+			})
+		}
+	}
+}
+
+// The legacy documents' walk (ListVersionsResolved) over the same rows.
+func TestBUG3839_DocumentHistoryRefusesARowGoDiffCannotApply(t *testing.T) {
+	valid := bug3839Long("See the notes.")
+	for _, backend := range contentBackends() {
+		for _, sh := range []struct{ name, current, patch string }{
+			{"invalid_current", bug3839Long("See the\xe2\x82 notes."), bug3839Patch(t, bug3839Long("See notes."), valid)},
+			{"unmade_base", bug3839Unmade.base, bug3839Patch(t, bug3839Unmade.to, bug3839Unmade.from)},
+		} {
+			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
+				s := backend.open(t)
+				if backend.name == "Postgres" && !utf8.ValidString(sh.current) {
+					return // Postgres cannot hold the body (seedItemBody pins the refusal)
+				}
+				ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "BUG-3839"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				doc, err := s.CreateDocument(ws.ID, models.DocumentCreate{Title: "Doc", Content: valid, CreatedBy: "user", Source: "web"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.DB().Exec(`DELETE FROM versions WHERE document_id = $1`, doc.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.DB().Exec(`INSERT INTO versions (id, document_id, content, is_diff, created_at) VALUES ('dv1', $1, $2, $3, '2026-10-01T00:00:00Z')`,
+					doc.ID, sh.patch, true); err != nil {
+					t.Fatal(err)
+				}
+				vs, err := s.ListVersionsResolved(doc.ID, sh.current)
+				if err != nil || len(vs) != 1 {
+					t.Fatalf("versions: %d %v", len(vs), err)
+				}
+				if !strings.HasPrefix(vs[0].Content, "[patch error: ") {
+					t.Fatalf("row resolved to %q", vs[0].Content[max(0, len(vs[0].Content)-40):])
+				}
+			})
+		}
+	}
+}
+
+// rebaseNewestVersionPatch (items.go) applies the newest version's patch to
+// the stored body before a throttled edit replaces it. When go-diff cannot
+// apply it, the edit lands and the row is left as it was.
+func TestBUG3839_ThrottledEditOverARowGoDiffCannotApplyLeavesTheRow(t *testing.T) {
+	valid := bug3839Long("See the notes.")
+	for _, backend := range contentBackends() {
+		for _, sh := range []struct{ name, current, patch string }{
+			{"invalid_current", bug3839Long("See the\xe2\x82 notes."), bug3839Patch(t, bug3839Long("See notes."), valid)},
+			{"unmade_base", bug3839Unmade.base, bug3839Patch(t, bug3839Unmade.to, bug3839Unmade.from)},
+		} {
+			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
+				s := backend.open(t)
+				pg := backend.name == "Postgres"
+				item, _ := seedItemBody(t, s, pg, valid)
+				write := func(body string) (*models.Item, error) {
+					return s.UpdateItem(item.ID, models.ItemUpdate{Content: &body, LastModifiedBy: "alice", Source: "web"})
+				}
+				// A first edit makes alice's version row, so the next is throttled.
+				if _, err := write(bug3839Long("First draft.")); err != nil {
+					t.Fatal(err)
+				}
+				var vid string
+				if err := s.DB().QueryRow(`SELECT id FROM item_versions WHERE item_id = $1 ORDER BY created_at DESC, version_seq DESC LIMIT 1`, item.ID).Scan(&vid); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.DB().Exec(`UPDATE item_versions SET content = $1, is_diff = $2, body_sha256 = NULL WHERE id = $3`, sh.patch, true, vid); err != nil {
+					t.Fatal(err)
+				}
+				if _, seeded := seedExisting(t, s, pg, item.ID, sh.current); !seeded {
+					return
+				}
+				out, err := write(bug3839Long("Second draft."))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !out.BodyEditedWithoutVersion {
+					t.Fatal("instrument: the second edit must be throttled, so the rebase runs")
+				}
+				var content string
+				var isDiff bool
+				if err := s.DB().QueryRow(`SELECT content, is_diff FROM item_versions WHERE id = $1`, vid).Scan(&content, &isDiff); err != nil {
+					t.Fatal(err)
+				}
+				if content != sh.patch || !isDiff {
+					t.Fatalf("the row was rewritten: is_diff=%v", isDiff)
+				}
+			})
+		}
+	}
+}

@@ -53,7 +53,7 @@ func bug3839Panics(f func()) (panicked bool) {
 	return false
 }
 
-func TestBUG3839_CountersAndUnifiedNeverPanicOnInvalidUTF8(t *testing.T) {
+func TestBUG3839_DiffNeverPanicsOnInvalidUTF8(t *testing.T) {
 	pairs := bug3839Pairs(20000)
 
 	// Instrument: the same inputs reach go-diff's panic. PatchApply is what
@@ -78,10 +78,75 @@ func TestBUG3839_CountersAndUnifiedNeverPanicOnInvalidUTF8(t *testing.T) {
 			"LineCounts":        func() { LineCounts(p[0], p[1]) },
 			"FormatDiffSummary": func() { FormatDiffSummary(p[0], p[1]) },
 			"Unified":           func() { Unified(p[0], p[1], 3) },
+			"ApplyPatch":        func() { _, _ = ApplyPatch(p[0], "@@ -1,3 +1,4 @@\n a"+p[1]+"\n+b\n") },
 		} {
 			if bug3839Panics(f) {
 				t.Fatalf("%s(%q, %q) panicked", name, p[0], p[1])
 			}
 		}
+	}
+}
+
+// ApplyPatch refuses a base or a patch text that is not valid UTF-8 with an
+// error, which the version walk reads as a patch that failed (BUG-3839).
+func TestBUG3839_ApplyPatchRefusesInvalidUTF8(t *testing.T) {
+	valid := CreatePatch("ab", "abb")
+	for _, tc := range []struct{ name, base, patch string }{
+		{"base_fuzz_first", "b\xe2\x82b\xff", "@@ -1,3 +1,4 @@\n ab\n+b\n"},
+		{"base_lone_ff", "ab\xff", valid},
+		{"base_truncated", "ab\xe2\x82", valid},
+		{"patch_raw_byte", "ab", "@@ -1,2 +1,3 @@\n ab\n+\xff\n"},
+		{"patch_escaped_byte", "ab", "@@ -1,2 +1,3 @@\n ab\n+%FF\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var err error
+			if bug3839Panics(func() { _, err = ApplyPatch(tc.base, tc.patch) }) {
+				t.Fatal("ApplyPatch panicked")
+			}
+			if err == nil {
+				t.Fatal("ApplyPatch accepted text that is not valid UTF-8")
+			}
+		})
+	}
+	if got, err := ApplyPatch("ab", valid); err != nil || got != "abb" {
+		t.Fatalf("valid patch: %q %v", got, err)
+	}
+	if got, err := ApplyPatch("a+b", CreatePatch("a+b", "a+b c%")); err != nil || got != "a+b c%" {
+		t.Fatalf("valid patch over + and %%: %q %v", got, err)
+	}
+}
+
+// go-diff panics on VALID text too, when a well-formed patch is applied over
+// a base it was not made from and the base holds multi-byte runes. The version
+// walk does that after skipping a row; ApplyPatch reports it as an error.
+func TestBUG3839_ApplyPatchOverAnotherValidBaseNeverPanics(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+	pieces := []string{"é", "😀", "À", "\n", "a", "b", " ", "ab", "%", "+"}
+	gen := func() string {
+		var b strings.Builder
+		for i, k := 0, r.Intn(14); i < k; i++ {
+			b.WriteString(pieces[r.Intn(len(pieces))])
+		}
+		return b.String()
+	}
+	reached := 0
+	for i := 0; i < 20000; i++ {
+		a, b, base := gen(), gen(), gen()
+		p := CreatePatch(a, b)
+		patches, err := dmp.PatchFromText(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Instrument: go-diff itself panics on this input.
+		if bug3839Panics(func() { dmp.PatchApply(patches, base) }) {
+			reached++
+		}
+		if bug3839Panics(func() { _, _ = ApplyPatch(base, p) }) {
+			t.Fatalf("ApplyPatch(%q, CreatePatch(%q, %q)) panicked", base, a, b)
+		}
+	}
+	t.Logf("instrument: %d of 20000 inputs panic go-diff's PatchApply", reached)
+	if reached == 0 {
+		t.Fatal("instrument: no input reached go-diff's PatchApply panic, so a pass shows nothing")
 	}
 }
