@@ -68,13 +68,13 @@ func bug3821Dial(t *testing.T, ts *httptest.Server, rcvbuf int) net.Conn {
 	return conn
 }
 
-// stallAfterHead sends a GET for path and reads the response head only, then
-// never reads again. The connection stays open, so the handler's return
-// cannot come from the client going away.
-func stallAfterHead(t *testing.T, ts *httptest.Server, path string) {
+// stallAfterHead sends a GET for path, with any extra header lines, and reads
+// the response head only, then never reads again. The connection stays open,
+// so the handler's return cannot come from the client going away.
+func stallAfterHead(t *testing.T, ts *httptest.Server, path, extra string) {
 	t.Helper()
 	conn := bug3821Dial(t, ts, 4096)
-	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n", path)
+	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n%s\r\n", path, extra)
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	br := bufio.NewReaderSize(conn, 16)
 	status, err := br.ReadString('\n')
@@ -124,8 +124,22 @@ func bigExportWorkspace(t *testing.T, srv *Server, n int) string {
 	return slug
 }
 
+// The attachment GET is the unauthenticated share-link shape. A client must not
+// be able to opt it out of the deadline by sending an Upgrade header (codex r4).
 func TestBUG3821_StalledReaderOfAnAttachmentReleasesItsHandler(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct{ name, extra string }{
+		{"plain", ""},
+		{"with an Upgrade header", "Upgrade: websocket\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stalledAttachmentReader(t, tc.extra)
+		})
+	}
+}
+
+func stalledAttachmentReader(t *testing.T, extra string) {
 	srv, slug := testServerWithAttachments(t)
 	raw := make([]byte, 2<<20)
 	if _, err := rand.Read(raw); err != nil {
@@ -143,7 +157,7 @@ func TestBUG3821_StalledReaderOfAnAttachmentReleasesItsHandler(t *testing.T) {
 	}
 	ts, returned := bug3821Server(t, srv, bug3821Timeout, 4096)
 	path := "/api/v1/workspaces/" + slug + "/attachments/" + att.ID
-	stallAfterHead(t, ts, path)
+	stallAfterHead(t, ts, path, extra)
 	awaitReturn(t, returned, path)
 }
 
@@ -153,7 +167,7 @@ func TestBUG3821_StalledReaderOfTheJSONExportReleasesItsHandler(t *testing.T) {
 	slug := bigExportWorkspace(t, srv, 6)
 	ts, returned := bug3821Server(t, srv, bug3821Timeout, 4096)
 	path := "/api/v1/workspaces/" + slug + "/export"
-	stallAfterHead(t, ts, path)
+	stallAfterHead(t, ts, path, "")
 	awaitReturn(t, returned, path)
 }
 
@@ -229,24 +243,58 @@ func (s *throttledReader) Read(p []byte) (int, error) {
 }
 
 // The middleware never clears the deadline it leaves on a connection, because
-// net/http does: after each response (so a keep-alive connection's next
-// request starts with none) and on hijack (so a hijacked connection carries
-// none, whatever was armed before). This holds net/http to both, through the
-// router: a bounded response, a wait past its deadline, then an upgrade on the
-// same connection whose hijacked handler writes only after a second wait past
-// the timeout.
-//
-// It does NOT pin that upgrades are exempt, and nothing can: the hijack clears
-// whatever the middleware armed, so the exemption has no observable effect on
-// a hijacked connection. Upgrades are in ownsWriteDeadline because they are in
-// compressSkips' set, which the predicate serves too (codex r3).
-func TestBUG3821_AConnectionCarriesNoDeadlineIntoItsNextRequestOrAHijack(t *testing.T) {
+// net/http does, after each response and on hijack. The next two tests hold
+// net/http to each clear (codex r4: one test could not tell them apart).
+
+// After a response: a keep-alive connection's next request starts with no
+// deadline. The second request goes to an exempt route the middleware never
+// arms, and writes after the first response's deadline would have expired.
+func TestBUG3821_AKeepAliveConnectionStartsItsNextRequestWithNoDeadline(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	srv.ensureRouter()
 	srv.router.Get("/__bug3821/bounded", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "bounded\n")
 	})
+	srv.router.Get("/api/v1/collab/__bug3821", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "exempt\n")
+	})
+	ts, _ := bug3821Server(t, srv, bug3821Timeout, 1<<20)
+	conn := bug3821Dial(t, ts, 1<<20)
+	br := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	get := func(path string) string {
+		t.Helper()
+		fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: x\r\n\r\n", path)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("GET %s on the reused connection: %v: a write deadline outlived the previous response", path, err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("GET %s body: %v", path, err)
+		}
+		return string(body)
+	}
+	if got := get("/__bug3821/bounded"); got != "bounded\n" {
+		t.Fatalf("first response %q", got)
+	}
+	time.Sleep(2 * bug3821Timeout)
+	if !ownsWriteDeadline(httptest.NewRequest("GET", "/api/v1/collab/__bug3821", nil)) {
+		t.Fatal("the second route is not exempt, so the middleware would arm it and hide a leftover deadline")
+	}
+	if got := get("/api/v1/collab/__bug3821"); got != "exempt\n" {
+		t.Fatalf("second response %q, want %q", got, "exempt\n")
+	}
+}
+
+// On hijack: whatever the middleware armed is gone, so an upgraded connection
+// can write long after the response timeout.
+func TestBUG3821_AHijackedConnectionCarriesNoDeadline(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	srv.ensureRouter()
 	srv.router.Get("/__bug3821/upgrade", func(w http.ResponseWriter, r *http.Request) {
 		conn, rw, err := http.NewResponseController(w).Hijack()
 		if err != nil {
@@ -255,32 +303,18 @@ func TestBUG3821_AConnectionCarriesNoDeadlineIntoItsNextRequestOrAHijack(t *test
 		}
 		defer conn.Close()
 		time.Sleep(2 * bug3821Timeout)
-		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\nhello\n")
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n")
 		if err := rw.Flush(); err != nil {
 			t.Errorf("the hijacked connection's write, %v after the hijack, failed: %v", 2*bug3821Timeout, err)
 		}
 	})
 	ts, _ := bug3821Server(t, srv, bug3821Timeout, 1<<20)
 	conn := bug3821Dial(t, ts, 1<<20)
-	br := bufio.NewReader(conn)
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-
-	fmt.Fprintf(conn, "GET /__bug3821/bounded HTTP/1.1\r\nHost: x\r\n\r\n")
-	resp, err := http.ReadResponse(br, nil)
-	if err != nil {
-		t.Fatalf("first response: %v", err)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-
-	// Let the deadline that response left on the connection expire.
-	time.Sleep(2 * bug3821Timeout)
-
 	fmt.Fprintf(conn, "GET /__bug3821/upgrade HTTP/1.1\r\nHost: x\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n")
-	status, err := br.ReadString('\n')
+	status, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil || !strings.Contains(status, " 101 ") {
-		t.Fatalf("upgrade on a reused connection: status line %q (%v), want 101: "+
-			"a write deadline outlived the previous response or the hijack", status, err)
+		t.Fatalf("status line %q (%v), want 101: the deadline armed before the hijack outlived it", status, err)
 	}
 }
 

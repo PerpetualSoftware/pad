@@ -30,6 +30,13 @@ const responseWriteTimeout = 60 * time.Second
 // ownsWriteDeadline reports whether a request's route bounds its own writes,
 // so the middleware must leave its connection alone. compressSkips exempts the
 // same routes, from this one predicate, so the two cannot drift.
+//
+// It decides by PATH only, never by a header the client chooses: an Upgrade
+// header on an ordinary route (a share-link attachment, say) would otherwise
+// opt that response out of its deadline (codex r4). A connection that really
+// is upgraded loses whatever was armed when the handler hijacks it, because
+// net/http clears every deadline on hijack, so nothing is lost by bounding it
+// until then. compressSkips keeps its own Upgrade case.
 func ownsWriteDeadline(r *http.Request) bool {
 	p := r.URL.Path
 	switch {
@@ -37,9 +44,9 @@ func ownsWriteDeadline(r *http.Request) bool {
 	// streamable HTTP under its own bound (BUG-3808).
 	case strings.HasPrefix(p, "/api/v1/events"), p == "/mcp" || strings.HasPrefix(p, "/mcp/"):
 		return true
-	// The collab WebSocket, and any other upgrade: the connection is hijacked
-	// and is not an HTTP response body. collab sets its own deadlines.
-	case strings.HasPrefix(p, "/api/v1/collab/"), r.Header.Get("Upgrade") != "":
+	// The collab WebSocket: the connection is hijacked and is not an HTTP
+	// response body. collab sets its own deadlines.
+	case strings.HasPrefix(p, "/api/v1/collab/"):
 		return true
 	// An installed app's attachment download sets an ABSOLUTE deadline for the
 	// whole stream (appDownloadAttachment), which a rolling one would
@@ -73,8 +80,9 @@ func (s *Server) responseWriteTimeout() time.Duration {
 // body smaller than net/http's buffer reaches the socket only when the server
 // flushes it after the handler, which may be long after the last Write.
 // net/http clears the deadline after each response and on hijack, so nothing
-// armed here outlives the request (TestBUG3821_AConnectionCarriesNoDeadline-
-// IntoItsNextRequestOrAHijack holds it to that).
+// armed here outlives the request (TestBUG3821_AKeepAliveConnectionStarts-
+// ItsNextRequestWithNoDeadline and TestBUG3821_AHijackedConnectionCarriesNo-
+// Deadline hold it to that).
 func (s *Server) boundResponseWrites(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if ownsWriteDeadline(r) {
