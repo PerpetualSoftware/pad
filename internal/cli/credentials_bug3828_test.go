@@ -193,11 +193,13 @@ func TestBUG3828_UnlockedReadRereadsAcrossASave(t *testing.T) {
 	}
 }
 
-// Under the lock nothing can be mid-save, so empty still means empty: no
-// re-reads, and an update saves.
+// A file that stays empty under the lock is empty, and an update saves over
+// it. Holding the lock does not rule out a save in progress (a writer that
+// waited out the lock saves without it, BUG-3829), so it is re-read first.
 func TestBUG3828_LockedEmptyFileIsEmpty(t *testing.T) {
 	home := withTempHome(t)
 	writeCredsFile(t, home, "")
+	resetEmptyConfirmed(t)
 	shortRereads(t, 5, time.Millisecond)
 
 	reads := countReads(t, nil)
@@ -207,8 +209,8 @@ func TestBUG3828_LockedEmptyFileIsEmpty(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpdateStore over an empty locked file: %v", err)
 	}
-	if *reads != 1 {
-		t.Errorf("a locked update read the empty file %d times, want 1: it re-read", *reads)
+	if *reads != 1+5 {
+		t.Errorf("a locked update read the empty file %d times, want 6 (1 + 5 re-reads)", *reads)
 	}
 	store, _ := LoadStore()
 	if store.Get("http://c:7777") == nil {

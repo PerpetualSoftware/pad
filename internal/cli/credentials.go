@@ -46,6 +46,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -123,19 +124,68 @@ func LoadStore() (*CredentialStore, error) {
 }
 
 // loadStoreLocked is LoadStore for a caller that holds the credentials lock.
+//
+// Holding the lock does not rule out a save in progress: a writer that waited
+// out credentialsLockWait saves without it (BUG-3829), truncating in place
+// before it writes. So an empty file is re-read with loadStoreUnlocked's
+// bound before it is believed. One that stays empty is a genuinely empty
+// file (a crash between a save's truncate and its write leaves one) and
+// loads as an empty store, so login keeps working over it. Residual: an
+// unlocked writer that stalls longer than the re-read bound (about 200ms)
+// between its truncate and its write is still read as empty, and an
+// UpdateStore landing there saves over it.
+//
+// A genuinely empty file pays the bound once per process, not once per load:
+// emptyConfirmed remembers the file state it was confirmed for.
 func loadStoreLocked(path string) (*CredentialStore, error) {
-	data, err := readCredentialsFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
+	for i := 0; ; i++ {
+		data, err := readCredentialsFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return newEmptyStore(), nil
+			}
+			return nil, fmt.Errorf("read credentials: %w", err)
+		}
+		if len(strings.TrimSpace(string(data))) != 0 {
+			return parseStore(data)
+		}
+		fi, serr := os.Stat(path)
+		if serr == nil && emptyConfirmed.matches(path, fi) {
 			return newEmptyStore(), nil
 		}
-		return nil, fmt.Errorf("read credentials: %w", err)
+		if i >= credentialsEmptyRereads {
+			if serr == nil {
+				emptyConfirmed.set(path, fi)
+			}
+			return newEmptyStore(), nil
+		}
+		time.Sleep(credentialsEmptyRereadPause)
 	}
+}
 
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return newEmptyStore(), nil
-	}
-	return parseStore(data)
+// emptyConfirmed is the empty credentials file a locked load already waited
+// out (BUG-3829). A save that truncates a non-empty file, or writes into an
+// empty one, moves its mtime, so a later empty read of a file a save is
+// rewriting does not match and is re-read again.
+var emptyConfirmed confirmedEmptyFile
+
+type confirmedEmptyFile struct {
+	mu   sync.Mutex
+	path string
+	fi   fs.FileInfo
+}
+
+func (c *confirmedEmptyFile) matches(path string, fi fs.FileInfo) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fi != nil && c.path == path && fi.Size() == 0 &&
+		os.SameFile(c.fi, fi) && c.fi.ModTime().Equal(fi.ModTime())
+}
+
+func (c *confirmedEmptyFile) set(path string, fi fs.FileInfo) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.path, c.fi = path, fi
 }
 
 // errCredentialsEmptyUnlocked is loadStoreUnlocked's answer for a file that
@@ -143,7 +193,8 @@ func loadStoreLocked(path string) (*CredentialStore, error) {
 var errCredentialsEmptyUnlocked = errors.New("credentials file is empty and could not be read under the lock; another pad process may be writing it")
 
 // credentialsEmptyRereads and credentialsEmptyRereadPause bound how long a
-// read without the lock waits for an empty credentials file to fill.
+// read waits for an empty credentials file to fill, with the lock or without
+// it (BUG-3828, BUG-3829).
 // Variables so a test can shorten them.
 var (
 	credentialsEmptyRereads     = 10
@@ -286,7 +337,10 @@ func (s *CredentialStore) Delete(serverURL string) {
 // it CREATED the file, so an existing loose-mode file kept its mode with
 // fresh tokens in it (BUG-3648); Save chmods before it truncates. And it
 // writes under the exclusive side of the credentials lock, so LoadStore,
-// which reads under the shared side, never sees the truncated file.
+// which reads under the shared side, never sees the truncated file of a save
+// that took the lock. A save that waited the lock out writes without it, and
+// its truncate can be read; loadStoreLocked re-reads an empty file for that
+// (BUG-3829).
 //
 // Save alone does not stop two processes losing each other's entries; a
 // load-modify-save goes through UpdateStore. Never call Save, LoadStore,
@@ -363,7 +417,9 @@ var credentialsLockWarning io.Writer = os.Stderr
 // withCredentialsLock runs fn with the path of credentials.json while
 // holding credentials.json.lock: exclusive for a write, shared for a read.
 // fn is told whether it holds the lock: a read without it cannot tell an
-// empty file from a save in progress (BUG-3828).
+// empty file from a save in progress (BUG-3828). A read with it can tell only
+// up to a bound, since a writer that waited out the lock saves without it
+// (BUG-3829, loadStoreLocked).
 //
 // The lock sits on top of what os.WriteFile and os.ReadFile did and is never
 // the reason a working command fails (BUG-3649 ruling): when it cannot be
@@ -455,7 +511,9 @@ var errNoCredentialsDir = errors.New("no credentials directory")
 // (BUG-3828): it may be another process's save between its truncate and its
 // write, and saving fn's change over it would wipe every other server's
 // credentials. UpdateStore re-reads it, and if it stays empty refuses with
-// errCredentialsEmptyUnlocked and saves nothing.
+// errCredentialsEmptyUnlocked and saves nothing. With the lock it re-reads
+// too, since a writer that waited out the lock may be mid-save, and then
+// treats one that stays empty as empty (BUG-3829, loadStoreLocked).
 func UpdateStore(fn func(*CredentialStore) error) error {
 	return withCredentialsLock(true, func(path string, locked bool) error {
 		var store *CredentialStore
