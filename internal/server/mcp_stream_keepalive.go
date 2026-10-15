@@ -23,8 +23,13 @@ import (
 //
 //   - A ': keepalive' comment, at the /events cadence, on any response the
 //     transport commits as 200 text/event-stream. The write goes through the
-//     same bounded writer, so a dead or half-open peer now fails a write
-//     within one keepalive plus the write deadline. A live client that holds
+//     same bounded writer, so a stream whose peer is gone now ends within a
+//     keepalive or two once the connection is known dead: after a reset (the
+//     first write after one can still succeed), or once TCP gives up on a
+//     half-open peer (hunter r4). A small
+//     comment never blocks long enough for the write deadline to be the
+//     detector, so that bound is not "one keepalive plus the write deadline"
+//     except in the shrunk-buffer tests. A live client that holds
 //     TCP open and stops reading is NOT caught this way with default socket
 //     buffers: a comment per interval takes days to fill them, so no write
 //     blocks (hunter r3; /events is the same). The admission budget below is

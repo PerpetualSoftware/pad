@@ -418,14 +418,25 @@ func TestMCP_BUG3835_KeepaliveOnlyInsideALiveEventStream(t *testing.T) {
 func TestMCP_BUG3835_PanickingTransportStopsTheKeepalive(t *testing.T) {
 	srv := testServer(t)
 	srv.sseKeepaliveOverride = time.Millisecond
+	rr := newDeadlineRecorder()
 	h := srv.mcpBoundWrites(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		time.Sleep(10 * time.Millisecond) // let keepalives flow
+		// Wait for a keepalive rather than sleeping a fixed time (hunter r4):
+		// the body is read under the writer's mutex, which every keepalive
+		// write takes, so the read neither races nor depends on scheduling.
+		mw := w.(*mcpStreamWriter)
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			mw.mu.Lock()
+			seen := strings.Contains(rr.Body.String(), ": keepalive")
+			mw.mu.Unlock()
+			if seen {
+				break
+			}
+		}
 		panic(http.ErrAbortHandler)
 	}))
-	rr := newDeadlineRecorder()
 	func() {
 		defer func() { _ = recover() }()
 		h.ServeHTTP(rr, httptest.NewRequest("DELETE", "/mcp", nil))
