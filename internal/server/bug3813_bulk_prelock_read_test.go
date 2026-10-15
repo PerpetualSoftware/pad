@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -213,5 +214,49 @@ func TestBUG3813_BulkTagKeepsAConcurrentTagChange(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// #2188 codex r1 Low: the retry is bounded. A concurrent writer that wins
+// every attempt exhausts bulkTagAttempts, and the row fails with conflict
+// rather than retrying without end or writing over the last concurrent set.
+func TestBUG3813_BulkTagGivesUpAfterBulkTagAttempts(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items",
+		map[string]any{"title": "Contended", "tags": []string{"a"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed: %d %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	fired, nested := 0, false
+	restore := srv.store.SetAfterItemPreLockReadHookForTesting(func(id string) {
+		if id != item.ID || nested {
+			return
+		}
+		fired++
+		nested = true // the seam fires for the nested write too
+		concurrent := fmt.Sprintf(`["a","c%d"]`, fired)
+		if _, err := srv.store.UpdateItem(item.ID, models.ItemUpdate{Tags: &concurrent}); err != nil {
+			t.Error(err)
+		}
+		nested = false
+	})
+	resp := bulkRequest(t, srv, slug, map[string]any{"op": "tag", "ids": []string{item.ID}, "tags": []string{"added"}})
+	restore()
+	if fired != bulkTagAttempts {
+		t.Fatalf("the bulk tag made %d attempts, want bulkTagAttempts (%d)", fired, bulkTagAttempts)
+	}
+	if len(resp.Updated) != 0 || len(resp.Failed) != 1 || resp.Failed[0].Code != "conflict" {
+		t.Fatalf("updated=%+v failed=%+v, want one failure with code conflict", resp.Updated, resp.Failed)
+	}
+	got, _ := srv.store.GetItem(item.ID)
+	if got == nil {
+		t.Fatal("the item is gone")
+	}
+	if want := fmt.Sprintf(`["a","c%d"]`, bulkTagAttempts); got.Tags != want {
+		t.Fatalf("tags = %s, want the last concurrent set %s", got.Tags, want)
 	}
 }
