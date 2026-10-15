@@ -117,6 +117,7 @@ func TestBUG3825_InvocationSlugSpellingsCollideOnEitherDialect(t *testing.T) {
 		{"1-and-1.0", `1`, `1.0`},
 		{"string-and-bool", `"true"`, `true`},
 		{"string-and-number", `"100"`, `1e2`},
+		{"number-keeps-its-scale-on-pg", `1.0`, `"1.0"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testStore(t)
@@ -149,5 +150,29 @@ func TestBUG3825_RepeatedUniqueDeclarationIsCheckedOnce(t *testing.T) {
 	}
 	if len(report.DroppedUniqueValues) != 0 {
 		t.Fatalf("dropped %+v, want nothing: no two items share a value", report.DroppedUniqueValues)
+	}
+}
+
+// Values that collide under NEITHER index are both kept (codex r2, hunter r2):
+// 2^53 and 2^53+1 are distinct integers to SQLite and distinct text to
+// Postgres, and so are the number 1.5 and the string "1.50".
+func TestBUG3825_InvocationSlugValuesNeitherIndexEquatesAreKept(t *testing.T) {
+	for _, tc := range []struct{ name, first, second string }{
+		{"beyond-2^53", `9007199254740992`, `9007199254740993`},
+		{"number-and-other-scale-string", `1.5`, `"1.50"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore(t)
+			export := bug3825Export("invocation_slug")
+			export.Items[0].Fields = `{"invocation_slug":` + tc.first + `}`
+			export.Items[1].Fields = `{"invocation_slug":` + tc.second + `}`
+			_, report, err := s.ImportWorkspaceWithReport(export, "Distinct "+tc.name, "", "")
+			if err != nil {
+				t.Fatalf("import: %v", err)
+			}
+			if len(report.DroppedUniqueValues) != 0 {
+				t.Fatalf("dropped %+v, want both kept", report.DroppedUniqueValues)
+			}
+		})
 	}
 }

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -73,19 +75,46 @@ func importUniqueValue(key string, v any) (string, []string, bool) {
 		}
 		return text, []string{"pg:" + text, "sqlite:n:" + n}, true
 	case json.Number:
-		// Numbers compare by value under both rules here. Postgres prints a
-		// jsonb number as written (1.0 stays "1.0"), so this merges more than
-		// its index would; dropping there is harmless.
-		f, err := t.Float64()
-		if err != nil {
+		pg, value, ok := importNumberSlots(string(t))
+		if !ok {
 			return text, []string{"pg:" + text, "sqlite:s:" + text}, true
 		}
-		n := strconv.FormatFloat(f, 'g', -1, 64)
-		return text, []string{"pg:" + n, "sqlite:n:" + n}, true
+		return text, []string{"pg:" + pg, "sqlite:n:" + value}, true
 	default:
 		// An object or array: both dialects read it as its JSON text.
 		return text, []string{"pg:" + text, "sqlite:s:" + text}, true
 	}
+}
+
+// importNumberSlots returns a JSON number literal as each dialect's index
+// reads it, exactly, with no float rounding (codex r2: 2^53+1 must not equal
+// 2^53). value is the number's exact value, which is what SQLite compares (a
+// JSON true is 1). pg is the text Postgres's ->> prints for it: jsonb keeps a
+// number as numeric, whose output keeps the scale written (1.0 stays "1.0",
+// so it equals the string "1.0", hunter r2) and expands an exponent (1e2 is
+// "100", 1.5e1 is "15").
+func importNumberSlots(lit string) (pg, value string, ok bool) {
+	r, ok := new(big.Rat).SetString(lit)
+	if !ok {
+		return "", "", false
+	}
+	mant, exp := lit, 0
+	if i := strings.IndexAny(lit, "eE"); i >= 0 {
+		e, err := strconv.Atoi(lit[i+1:])
+		if err != nil {
+			return "", "", false
+		}
+		mant, exp = lit[:i], e
+	}
+	frac := 0
+	if i := strings.IndexByte(mant, '.'); i >= 0 {
+		frac = len(mant) - i - 1
+	}
+	scale := frac - exp
+	if scale < 0 {
+		scale = 0
+	}
+	return r.FloatString(scale), r.RatString(), true
 }
 
 // dropImportedUniqueDuplicates removes from fieldsJSON every unique value an
