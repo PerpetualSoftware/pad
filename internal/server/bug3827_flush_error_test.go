@@ -64,9 +64,11 @@ func TestBUG3827_AStalledFlushReturnsAnErrorThroughTheChain(t *testing.T) {
 		name        string
 		contentType string
 		header      http.Header
+		encoding    string // the Content-Encoding the response must carry
 	}{
-		{"identity", "", nil},
-		{"gzip", "text/plain", http.Header{"Accept-Encoding": {"gzip"}}},
+		{"identity", "", nil, ""},
+		{"gzip", "text/plain", http.Header{"Accept-Encoding": {"gzip"}}, "gzip"},
+		{"deflate", "text/plain", http.Header{"Accept-Encoding": {"deflate"}}, "deflate"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -80,8 +82,11 @@ func TestBUG3827_AStalledFlushReturnsAnErrorThroughTheChain(t *testing.T) {
 				deadlined := &rearmingWriter{ResponseWriter: w, rc: http.NewResponseController(w)}
 				flush(deadlined, r)
 			})
-			ts := stalledStreamServer(t, srv)
-			openStalledStream(t, ts, "/__bug3827/flusher", tc.header)
+			ts, wf := stalledStreamServer(t, srv)
+			head := openStalledStream(t, ts, wf, "/__bug3827/flusher", tc.header)
+			if enc := head.Get("Content-Encoding"); enc != tc.encoding {
+				t.Fatalf("Content-Encoding %q, want %q: the leg did not go through the encoder it names", enc, tc.encoding)
+			}
 			requireFlushError(t, got)
 		})
 	}
@@ -120,9 +125,9 @@ func TestBUG3827_EventStreamSeesItsFailedFlush(t *testing.T) {
 		default:
 		}
 	}
-	ts := stalledStreamServer(t, srv)
+	ts, wf := stalledStreamServer(t, srv)
 	slug := createTestWorkspace(t, ts.URL, "FlushErr")
-	openStalledStream(t, ts, "/api/v1/events?workspace="+slug, nil)
+	openStalledStream(t, ts, wf, "/api/v1/events?workspace="+slug, nil)
 	select {
 	case err := <-failed:
 		if !errors.Is(err, os.ErrDeadlineExceeded) {
@@ -157,6 +162,6 @@ func TestBUG3827_MCPAuditLogPassesFlushErrors(t *testing.T) {
 	}
 	ts.Start()
 	t.Cleanup(ts.Close)
-	openStalledStream(t, ts, "/mcp", nil)
+	openStalledStream(t, ts, nil, "/mcp", nil)
 	requireFlushError(t, got)
 }
