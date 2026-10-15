@@ -76,7 +76,11 @@ func TestAwarenessRefusesMalformedFrames(t *testing.T) {
 }
 
 // BUG-3772: the entry count is bounded by the bytes that follow it, at three
-// bytes an entry, before anything is allocated from it.
+// bytes an entry, before anything is allocated from it. The accepting half pins
+// the bound as no tighter than the bytes allow. The refusing half is an outcome
+// check only: the parse loop refuses that frame too, so it passes with the
+// bound removed. TestAwarenessLyingCountAllocatesNothingForIt is the
+// regression pin.
 func TestAwarenessCountBoundedByEntryBytes(t *testing.T) {
 	// Exactly as many minimal entries as the bytes hold decodes.
 	const n = 5
