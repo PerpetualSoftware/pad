@@ -171,9 +171,9 @@ func (f *capFixture) do(t *testing.T, rt capRoute) *httptest.ResponseRecorder {
 	case "admin":
 		req.Header.Set("Authorization", "Bearer "+f.adminSession)
 	}
-	rr := httptest.NewRecorder()
+	rr := newMCPRecorder()
 	f.srv.ServeHTTP(rr, req)
-	return rr
+	return rr.ResponseRecorder
 }
 
 // isGateRefusal reports whether rr is the DR-5 gate's answer: exactly
@@ -272,7 +272,7 @@ func (f *capFixture) checkChallenge(t *testing.T, ep config.MCPEndpoints, oauthO
 		req.Host = "evil.example"
 	}
 	req.RemoteAddr = "192.0.2.10:4242"
-	rr := httptest.NewRecorder()
+	rr := newMCPRecorder()
 	f.srv.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("/mcp with no token: status %d, want 401", rr.Code)
@@ -501,9 +501,9 @@ func (f *capFixture) doAs(t *testing.T, rt capRoute, host, remoteAddr string) *h
 	if rt.auth == "member" {
 		req.Header.Set("Authorization", "Bearer "+f.memberPAT)
 	}
-	rr := httptest.NewRecorder()
+	rr := newMCPRecorder()
 	f.srv.ServeHTTP(rr, req)
-	return rr
+	return rr.ResponseRecorder
 }
 
 func is421(rr *httptest.ResponseRecorder) bool {
@@ -576,9 +576,9 @@ func TestMCPCapability_HostAllowlistBehindAProxy(t *testing.T) {
 		if xfh != "" {
 			req.Header.Set("X-Forwarded-Host", xfh)
 		}
-		rr := httptest.NewRecorder()
+		rr := newMCPRecorder()
 		f.srv.ServeHTTP(rr, req)
-		return rr
+		return rr.ResponseRecorder
 	}
 	const trusted, untrusted = "10.0.0.5:40000", "192.0.2.10:4242"
 	admitted := func(rr *httptest.ResponseRecorder) bool { return rr.Code == http.StatusUnauthorized } // then no token

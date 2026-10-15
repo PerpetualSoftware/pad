@@ -37,9 +37,10 @@ func postMCPSizedCounting(srv *Server, path, token string, n int64, chunked bool
 		req.ContentLength = n
 	}
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	// A writer that takes a write deadline: /mcp refuses one that cannot (BUG-3808).
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
-	return rr, body.n
+	return rr.ResponseRecorder, body.n
 }
 
 type mcpBodyCountingReader struct {
@@ -156,7 +157,7 @@ func TestBUG3534_BodyWithinTheLimitArrivesIntact(t *testing.T) {
 			req.ContentLength = -1
 		}
 		req.RemoteAddr = "192.0.2.1:1234"
-		rr := httptest.NewRecorder()
+		rr := newDeadlineRecorder()
 		srv.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK || rr.Body.String() != "mcp" {
 			t.Fatalf("chunked=%v: %d %q, want 200 from the transport", chunked, rr.Code, rr.Body.String())

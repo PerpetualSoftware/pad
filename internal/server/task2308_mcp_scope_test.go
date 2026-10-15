@@ -66,9 +66,10 @@ func postMCPBodyAs(srv *Server, path, token, body, contentType string) *httptest
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	// A writer that takes a write deadline: /mcp refuses one that cannot (BUG-3808).
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
-	return rr
+	return rr.ResponseRecorder
 }
 
 func toolCallBody(tool, action string) string {

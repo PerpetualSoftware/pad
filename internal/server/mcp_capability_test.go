@@ -84,7 +84,7 @@ func TestE2E_HTTPSSelfHostFlow(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+access)
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.0.2.1:1234"
-	rec := httptest.NewRecorder()
+	rec := newDeadlineRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !transport.Called || transport.SeenUserID != user.ID {
 		t.Fatalf("/mcp with the access token: status %d, reached=%v, user %q want %q (body %s)",

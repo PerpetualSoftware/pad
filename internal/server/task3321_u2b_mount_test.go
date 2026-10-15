@@ -39,9 +39,10 @@ func postMCP(srv *Server, path, token string) *httptest.ResponseRecorder {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	// A writer that takes a write deadline: /mcp refuses one that cannot (BUG-3808).
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
-	return rr
+	return rr.ResponseRecorder
 }
 
 func TestU2b_MountRoutesAndBindsTokens(t *testing.T) {

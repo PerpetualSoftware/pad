@@ -305,7 +305,7 @@ func TestMCP_ValidPAT_ReachesTransport(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -432,7 +432,7 @@ func TestMCP_ReadScopedPAT_StashesScopesInContext(t *testing.T) {
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -569,7 +569,7 @@ func TestMCP_OAuthAccessToken_Authenticates(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+access)
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -761,7 +761,7 @@ func TestMCP_PATPath_StillWorks(t *testing.T) {
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -796,7 +796,7 @@ func TestMCP_OAuthScopeReadOnly_StashesPadReadScope(t *testing.T) {
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer "+access)
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -1045,7 +1045,7 @@ func TestE2E_ClaudeDesktopFlow(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+access)
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
+	rr := newDeadlineRecorder()
 	srv.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {

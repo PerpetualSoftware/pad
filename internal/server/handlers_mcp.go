@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -185,7 +187,7 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// It sits AFTER auth, so an unauthenticated body is never read (it is
 	// refused 401 first, as before), and after MCPAuditLog, so a 413 is
 	// audited.
-	r.With(s.requireMCPAvailable, s.requireConfiguredHost, s.MCPBearerAuth, s.countMCPRequest("mcp"), s.MCPAuditLog, s.limitMCPBody, s.MCPInsufficientScope).Mount("/mcp", transport)
+	r.With(s.requireMCPAvailable, s.requireConfiguredHost, s.MCPBearerAuth, s.countMCPRequest("mcp"), s.MCPAuditLog, s.limitMCPBody, s.MCPInsufficientScope).Mount("/mcp", s.mcpBoundWrites(transport))
 
 	// Discovery endpoints — unauthenticated, oauthAvailable-gated. RFC 9728
 	// (protected-resource) and RFC 8414 (auth-server) metadata.
@@ -217,5 +219,46 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// this one carries no gate: "not published" is true on every install.
 	r.HandleFunc("/.well-known/*", func(w http.ResponseWriter, _ *http.Request) {
 		writeWellKnownNotFound(w)
+	})
+}
+
+// mcpBoundWrites serves the MCP transport through the deadline-arming writer
+// the event streams use (BUG-3808, the /mcp sibling of BUG-3637). mcp-go's
+// GET stream, and a POST response it upgrades to SSE, write and flush with no
+// deadline, and the server sets no WriteTimeout, so a client that stops
+// reading pinned the handler in a blocked write. No timeout ends a tool call
+// either, and cancelling a context does not unblock a socket write, so every
+// method is bounded, not only GET.
+//
+// The library leaves its loop on a Write error, and on ctx.Done(). A failed
+// Flush returns no error, so the request's context is cancelled when the
+// stream goes dead, and the loop leaves through ctx.Done().
+//
+// Fails closed, as openSSEStream does: a writer that cannot take a write
+// deadline is not served at all.
+func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stream, err := s.openSSEStream(w)
+		if err != nil {
+			slog.Error("MCP: refusing to serve", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
+			return
+		}
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		go func() {
+			select {
+			case <-stream.Dead():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		next.ServeHTTP(stream, r.WithContext(ctx))
+		// A handler that only calls WriteHeader (mcp-go's DELETE) leaves the
+		// response for net/http to commit after it returns, outside every
+		// Write and Flush above, and openSSEStream cleared the deadline. Arm
+		// one for that last write; net/http clears it once the response is
+		// finished, before the connection serves its next request.
+		_ = stream.arm()
 	})
 }
