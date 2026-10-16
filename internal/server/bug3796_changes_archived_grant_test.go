@@ -31,7 +31,8 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 	owner, _ := srv.store.GetUserByEmail("owner@test.com")
 	tasks, _ := srv.store.GetCollectionBySlug(ws.ID, "tasks")
 	ideas, _ := srv.store.GetCollectionBySlug(ws.ID, "ideas")
-	if tasks == nil || ideas == nil {
+	docs, _ := srv.store.GetCollectionBySlug(ws.ID, "docs")
+	if tasks == nil || ideas == nil || docs == nil {
 		t.Fatal("precondition: startup collections")
 	}
 	mkColl := func(name string) *models.Collection {
@@ -57,8 +58,11 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 	// rows after it are the items below.
 	since := time.Now().Add(-2 * time.Second)
 
+	// The archived grant is the ONLY grant in its collection, so once it is
+	// archived nothing keeps that collection in the caller's visible list:
+	// the case the grant-list swap alone does not fix.
 	archivedGranted := mk(ideas.ID, "Granted idea, then archived")
-	liveGranted := mk(ideas.ID, "Granted idea, still live")
+	liveGranted := mk(docs.ID, "Granted doc, still live")
 	archivedHidden := mk(ideas.ID, "Hidden idea, archived")
 	deletedCollGranted := mk(research.ID, "Granted idea in a deleted collection")
 
@@ -83,6 +87,23 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 			}
 		}
 	}
+	// A restricted member assigned NO collection whose only grant is the
+	// archived item: its visible list is empty, and the store must still run
+	// the query for its grant. (A guest in that position loses the workspace
+	// itself: a 403 before /changes runs.)
+	soloMember, err := srv.store.CreateUser(models.UserCreate{Email: "solo@test.com", Name: "Solo", Password: "correct-horse-battery-staple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, soloMember.ID, "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, soloMember.ID, "specific", []string{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.CreateItemGrant(ws.ID, archivedGranted.ID, soloMember.ID, "view", owner.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := srv.store.DeleteItem(archivedGranted.ID); err != nil {
 		t.Fatal(err)
@@ -101,7 +122,8 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		user *models.User
-	}{{"restricted member", member}, {"guest", guest}} {
+		live bool // holds the live grant too
+	}{{"restricted member", member, true}, {"guest", guest, true}, {"member granted only the archived item", soloMember, false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			cookie, err := srv.store.CreateSession(tc.user.ID, "web-test", "192.0.2.1", "", webSessionTTL)
 			if err != nil {
@@ -120,8 +142,10 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 			if !deleted[archivedGranted.ID] || rows[archivedGranted.ID] == nil {
 				t.Errorf("the archived granted item is missing: in deleted %v, row present %v", deleted[archivedGranted.ID], rows[archivedGranted.ID] != nil)
 			}
-			if r := rows[liveGranted.ID]; r == nil || r.DeletedAt != nil || deleted[liveGranted.ID] {
+			if r := rows[liveGranted.ID]; tc.live && (r == nil || r.DeletedAt != nil || deleted[liveGranted.ID]) {
 				t.Errorf("the live granted item is not a live row (row %v, in deleted %v)", r != nil, deleted[liveGranted.ID])
+			} else if !tc.live && r != nil {
+				t.Error("a caller never granted the live item received it")
 			}
 			if deleted[archivedHidden.ID] || rows[archivedHidden.ID] != nil {
 				t.Error("an archived item the caller was never granted reached it")
@@ -140,10 +164,13 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 				}
 			}
 			slices.Sort(walked)
-			want := []string{archivedGranted.ID, liveGranted.ID}
+			want := []string{archivedGranted.ID}
+			if tc.live {
+				want = append(want, liveGranted.ID)
+			}
 			slices.Sort(want)
 			if !slices.Equal(walked, want) {
-				t.Errorf("limit=1 walk returned %v, want exactly the archived and the live granted item %v", walked, want)
+				t.Errorf("limit=1 walk returned %v, want exactly the caller's granted items %v", walked, want)
 			}
 		})
 	}
