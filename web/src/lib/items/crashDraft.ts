@@ -25,7 +25,7 @@ export interface CrashDraftSource {
 	/** Whether that item holds edits the server may not have. */
 	atRisk: () => boolean;
 	/** Its markdown and the seq/body it was edited from, or null if unavailable. */
-	snapshot: () => { markdown: string; baseSeq: number; baseBody: string } | null;
+	snapshot: () => { markdown: string; baseSeq: number; baseBody: string; baseStale?: boolean } | null;
 	/** Called on every tick before anything else (BUG-3850: the confirmed base). */
 	observe?: () => void;
 	/** True while a confirmed sign-out is discarding: keep nothing then. */
@@ -62,7 +62,7 @@ export function registerCrashDraftKeeper(
 			const snap = source.snapshot();
 			if (!snap || snap.markdown.length > CRASH_DRAFT_MAX_CHARS) return;
 			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown) return;
-			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody })) {
+			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody, stale: snap.baseStale })) {
 				last = { userId, itemId, markdown: snap.markdown, version };
 			}
 			return;

@@ -119,3 +119,21 @@ describe('BUG-3850: onConfirmed', () => {
 		warn.mockRestore();
 	});
 });
+
+// Lead ruling baa63dc3: remote updates alone move remoteDocVersion, so a crash
+// draft can tell its base predates a collaborator's change.
+describe('BUG-3850: remoteDocVersion', () => {
+	it('moves on an update applied from a server message (origin = the provider), never on a local edit', () => {
+		connect();
+		const before = { all: provider.docVersion, remote: provider.remoteDocVersion };
+		doc.getText('t').insert(0, 'local');
+		expect(provider.docVersion).toBe(before.all + 1);
+		expect(provider.remoteDocVersion, 'a local edit').toBe(before.remote);
+		const peer = new Y.Doc();
+		peer.getText('t').insert(0, 'theirs');
+		Y.applyUpdate(doc, Y.encodeStateAsUpdate(peer), provider);
+		expect(provider.docVersion).toBe(before.all + 2);
+		expect(provider.remoteDocVersion, 'a remote apply').toBe(before.remote + 1);
+	});
+});
+

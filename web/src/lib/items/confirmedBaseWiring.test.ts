@@ -34,7 +34,13 @@ describe('BUG-3850: confirmed base wiring in ItemDetail', () => {
 	});
 
 	it('the kept draft carries the confirmed snapshot and its seq', () => {
-		expect(snapshotBody).toContain('return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown };');
+		expect(snapshotBody).toContain("return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, ...(confirmed.remoteAfter ? { baseStale: true } : {}) };");
+	});
+
+	it('the tracker reads the remote-only counter, and restore goes through restoreEdits (lead ruling baa63dc3)', () => {
+		expect(trackerBody).toContain('remoteVersion: () => collabProvider?.remoteDocVersion ?? 0,');
+		const apply = src.slice(src.indexOf('async function applyRefusedDraftChanges('));
+		expect(apply.slice(0, apply.indexOf('\n\t}\n'))).toContain('const edits = restoreEdits(d);');
 	});
 
 	it('the editor refreshes it before every local change (lead ruling c9db9612)', () => {

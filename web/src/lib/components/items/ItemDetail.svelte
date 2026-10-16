@@ -44,7 +44,7 @@
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 	import RefusedRawDraftNotice from './RefusedRawDraftNotice.svelte';
 	import RestoredDraftResult from './RestoredDraftResult.svelte';
-	import { draftEdits } from '$lib/items/draftPatch';
+	import { restoreEdits } from '$lib/items/draftPatch';
 	import { createConfirmedBaseTracker, providerConfirmed, registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR } from '$lib/items/confirmedBase';
 	import { isBodyStale, isSetAside } from '$lib/items/staleBody';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
@@ -5087,7 +5087,9 @@
 		// (codex r1): the draft, the toast and the result belong to this user.
 		const identity = captureIdentity();
 		const stale = () => !item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity);
-		const edits = draftEdits(d.baseBody, d.markdown);
+		// BUG-3850 (lead ruling baa63dc3): a base that predates a remote update
+		// takes the conflict notice, never the patch.
+		const edits = restoreEdits(d);
 		if (edits === null) {
 			refusedDraftConflict = { itemId: reqItemId, savedAt: d.savedAt, base: d.baseBody };
 			return;
@@ -6370,7 +6372,7 @@
 	// server may not have, its markdown is kept every couple of seconds, with
 	// the seq and body it was edited from, so a tab that dies outright (no
 	// unload prompt, no teardown flush) still offers them on the next open.
-	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string } | null {
+	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string; baseStale?: boolean } | null {
 		if (!item) return null;
 		// Whose typing is in the editor (the teardown flush's fence): after an
 		// identity change and before the reload re-stamps it, the text is the
@@ -6388,7 +6390,7 @@
 		// yet: the row, as before.
 		const confirmed = confirmedBase.current();
 		if (!confirmed) return { markdown: md, ...base };
-		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown };
+		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, ...(confirmed.remoteAfter ? { baseStale: true } : {}) };
 	}
 	const confirmedBase = createConfirmedBaseTracker({
 		context: () => {
@@ -6397,6 +6399,7 @@
 		},
 		confirmed: () => providerConfirmed(collabProvider),
 		version: () => collabProvider?.docVersion ?? 0,
+		remoteVersion: () => collabProvider?.remoteDocVersion ?? 0,
 		snapshot: () => (activeCollabContext ? collabFlusher.snapshot(activeCollabContext) : null),
 		seq: () => item?.seq ?? 0,
 	});

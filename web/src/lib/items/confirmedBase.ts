@@ -48,6 +48,8 @@ export interface ConfirmedBaseSource {
 	confirmed: () => boolean;
 	/** Changes whenever the document may have (the provider's docVersion). */
 	version: () => unknown;
+	/** Changes only when a REMOTE update lands (the provider's remoteDocVersion). */
+	remoteVersion: () => unknown;
 	/** The editor's markdown now, or null if unavailable. */
 	snapshot: () => string | null;
 	/** The item's seq now. */
@@ -57,6 +59,12 @@ export interface ConfirmedBaseSource {
 export interface ConfirmedBase {
 	markdown: string;
 	seq: number;
+	/**
+	 * A remote update landed after this snapshot (lead ruling baa63dc3): the
+	 * base may lack a collaborator's text the server holds, and a patch from
+	 * it would send that text again ('A' → 'A C U' over 'A C' gives 'A C U C').
+	 */
+	remoteAfter: boolean;
 }
 
 export interface ConfirmedBaseTracker {
@@ -67,7 +75,7 @@ export interface ConfirmedBaseTracker {
 }
 
 export function createConfirmedBaseTracker(source: ConfirmedBaseSource): ConfirmedBaseTracker {
-	let held: { context: object; version: unknown; base: ConfirmedBase } | null = null;
+	let held: { context: object; version: unknown; remote: unknown; base: { markdown: string; seq: number } } | null = null;
 
 	return {
 		refresh() {
@@ -81,11 +89,12 @@ export function createConfirmedBaseTracker(source: ConfirmedBaseSource): Confirm
 			if (held && held.context === context && held.version === version) return;
 			const markdown = source.snapshot();
 			if (markdown === null) return;
-			held = { context, version, base: { markdown, seq: source.seq() } };
+			held = { context, version, remote: source.remoteVersion(), base: { markdown, seq: source.seq() } };
 		},
 		current() {
 			const context = source.context();
-			return held && context && held.context === context ? held.base : null;
+			if (!held || !context || held.context !== context) return null;
+			return { ...held.base, remoteAfter: source.remoteVersion() !== held.remote };
 		},
 	};
 }

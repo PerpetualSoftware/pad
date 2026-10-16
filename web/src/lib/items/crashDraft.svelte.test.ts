@@ -118,6 +118,18 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'old')).toBeNull();
 	});
 
+	it('BUG-3850: a stale base is kept flagged, in the same write, and read back', () => {
+		const h = harness({ snapshot: () => ({ markdown: 'A C U', baseSeq: 4, baseBody: 'A', baseStale: true }) });
+		h.tick();
+		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'A C U', savedAt: expect.any(Number), baseSeq: 4, baseBody: 'A', baseStale: true });
+	});
+
+	it('BUG-3850: a base that is not stale carries no flag', () => {
+		const h = harness({ snapshot: () => ({ markdown: 'A C U', baseSeq: 4, baseBody: 'A C', baseStale: false }) });
+		h.tick();
+		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'A C U', savedAt: expect.any(Number), baseSeq: 4, baseBody: 'A C' });
+	});
+
 	it('BUG-3850: observe runs on every tick, at risk or not', () => {
 		let n = 0;
 		const h = harness({ observe: () => n++ });

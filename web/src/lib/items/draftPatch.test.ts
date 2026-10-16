@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { draftEdits, applyDraftEdits, MAX_DRAFT_EDITS } from './draftPatch';
+import { draftEdits, applyDraftEdits, restoreEdits, MAX_DRAFT_EDITS } from './draftPatch';
 
 const BASE = ['# Title', '', 'Paragraph one.', '', 'Paragraph two.', '', 'Paragraph three.', ''].join('\n');
 
@@ -132,3 +132,15 @@ describe('a rich draft anchored on the editor snapshot (BUG-3850)', () => {
 		expect(applyDraftEdits(theirs, draftEdits(EDITOR, DRAFT)!)).toBeNull();
 	});
 });
+
+// Lead ruling baa63dc3: a base taken before a remote update is never patched from.
+describe('restoreEdits (BUG-3850)', () => {
+	it('a stale base: no edits, so restore takes the conflict notice; premise: the patch would duplicate', () => {
+		expect(applyDraftEdits('A C', draftEdits('A', 'A C U')!)).toBe('A C U C');
+		expect(restoreEdits({ markdown: 'A C U', baseBody: 'A', baseStale: true })).toBeNull();
+	});
+	it('otherwise the draft edits on its base', () => {
+		expect(restoreEdits({ markdown: 'A C U', baseBody: 'A C' })).toEqual(draftEdits('A C', 'A C U'));
+	});
+});
+

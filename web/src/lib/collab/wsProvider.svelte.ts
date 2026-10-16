@@ -523,6 +523,9 @@ export class CollabProvider {
 			// the version the crash-draft keeper checks before serializing
 			// (TASK-3606). Counted before the echo skip below on purpose.
 			this.docVersion++;
+			// BUG-3850 (lead ruling baa63dc3): remote updates alone, so a
+			// crash draft can tell its base predates a collaborator's change.
+			if (origin === this) this.remoteDocVersion++;
 			// Skip ops that came from us applying a server message —
 			// otherwise we'd echo every remote keystroke back to the
 			// server (which would persist + rebroadcast it again).
@@ -1560,6 +1563,9 @@ export class CollabProvider {
 	 * unchanged document. Not reactive; only compared by the reader.
 	 */
 	docVersion = 0;
+
+	/** Bumped only by updates applied from a server message (BUG-3850). Not reactive. */
+	remoteDocVersion = 0;
 
 	get editsAtRiskOnClose(): boolean {
 		return this.unsentLocalEdits || this.catchUpOwed || this.repairPending;

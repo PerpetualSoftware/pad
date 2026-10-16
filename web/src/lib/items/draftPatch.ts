@@ -123,3 +123,14 @@ export function draftEdits(base: string, draft: string): DraftEdit[] | null {
 	}
 	return null;
 }
+
+/**
+ * The edits a kept draft's restore sends (BUG-3850, lead ruling baa63dc3).
+ * None when a remote update landed after its base was taken: the base may lack
+ * a collaborator's text the server holds, and an anchor is a substring, so a
+ * patch from it would send that text again and report success ('A' → 'A C U'
+ * over a stored 'A C' gives 'A C U C'). The caller shows the conflict notice.
+ */
+export function restoreEdits(d: { markdown: string; baseBody: string; baseStale?: true }): DraftEdit[] | null {
+	return d.baseStale ? null : draftEdits(d.baseBody, d.markdown);
+}

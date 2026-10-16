@@ -31,6 +31,12 @@ export interface RefusedRawDraft {
 	 */
 	baseSeq?: number;
 	baseBody?: string;
+	/**
+	 * A remote update landed after the base was taken (BUG-3850, lead ruling
+	 * baa63dc3): the base may lack a collaborator's text, so restore never
+	 * patches from it; it shows the conflict notice instead.
+	 */
+	baseStale?: true;
 }
 
 const PREFIX = 'pad:refused-raw-draft:';
@@ -61,10 +67,12 @@ export function keepRefusedRawDraft(
 	itemId: string,
 	markdown: string,
 	now = Date.now(),
-	base?: { seq: number; body: string },
+	base?: { seq: number; body: string; stale?: boolean },
 ): boolean {
 	if (!userId || !itemId) return false;
-	const value = JSON.stringify(base ? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body } : { markdown, savedAt: now });
+	const value = JSON.stringify(
+		base ? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body, ...(base.stale ? { baseStale: true } : {}) } : { markdown, savedAt: now },
+	);
 	const s = storage();
 	if (!s) return false;
 	try {
@@ -127,6 +135,7 @@ export function readRefusedRawDraft(userId: string, itemId: string, now = Date.n
 		const out: RefusedRawDraft = { markdown: parsed.markdown, savedAt: parsed.savedAt };
 		if (typeof parsed.baseSeq === 'number') out.baseSeq = parsed.baseSeq;
 		if (typeof parsed.baseBody === 'string') out.baseBody = parsed.baseBody;
+		if (parsed.baseStale === true) out.baseStale = true;
 		return out;
 	} catch {
 		return null;
