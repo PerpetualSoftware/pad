@@ -137,22 +137,29 @@ export interface DraftRestorePlan {
 /**
  * What a restore of a kept draft sends (BUG-3850). A rich draft's base is the
  * editor's snapshot, in the form a flush writes; `rawBaseBody` is the row as
- * stored beside it. While the stored body is still byte-equal to that row, no
- * flush has rewritten it into the editor's form, so the editor-form anchors
- * can miss on a raw-only form (a trailing newline, an autolink's brackets)
- * and the changes anchored on the row are allowed as one retry. Like any
- * editor save, that retry also rewrites the raw-only forms in the hunks it
- * sends to the editor's. Any other stored body: no retry, since only byte
- * equality says the row anchors are still the body's.
+ * stored beside it. The changes anchored on that row are allowed as one retry
+ * only when BOTH hold:
+ *   - the stored body is still byte-equal to the row, so its anchors are the
+ *     body's; and
+ *   - the row is the SAME DOCUMENT as the base (`rawIsSameDocument`: the row
+ *     in the flush's storage form equals the base), so the two differ only in raw-only
+ *     forms (a trailing newline, an autolink's brackets). A row that is ahead
+ *     of the editor (it already holds a collaborator's text the editor had not
+ *     received when the base was taken) is a different document, and a diff
+ *     from it to the draft would delete that text.
+ * Like any editor save, the retry also rewrites the raw-only forms in the
+ * hunks it sends to the editor's.
  */
 export function planDraftRestore(
 	d: { markdown: string; baseBody: string; rawBaseBody?: string },
 	storedBody: string,
+	rawIsSameDocument: boolean,
 ): DraftRestorePlan {
 	const edits = draftEdits(d.baseBody, d.markdown);
+	const raw = d.rawBaseBody;
 	const rawRetry =
-		d.rawBaseBody !== undefined && d.rawBaseBody !== d.baseBody && storedBody === d.rawBaseBody
-			? draftEdits(d.rawBaseBody, d.markdown)
+		raw !== undefined && raw !== d.baseBody && storedBody === raw && rawIsSameDocument
+			? draftEdits(raw, d.markdown)
 			: null;
 	return { edits, rawRetry: rawRetry && rawRetry.length > 0 ? rawRetry : null };
 }

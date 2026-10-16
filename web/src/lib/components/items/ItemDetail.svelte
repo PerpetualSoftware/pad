@@ -5076,8 +5076,10 @@
 		const identity = captureIdentity();
 		const stale = () => !item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity);
 		// BUG-3850: a rich draft is anchored on the editor's snapshot, with one
-		// retry on the raw row while the stored body is still that row.
-		const { edits: primary, rawRetry } = planDraftRestore(d, item.content ?? '');
+		// retry on the raw row while the stored body is still that row and the
+		// row is the same document as the snapshot.
+		const rawIsSameDocument = d.rawBaseBody !== undefined && collabFlusher.storageForm(d.rawBaseBody, wsSlug) === d.baseBody;
+		const { edits: primary, rawRetry } = planDraftRestore(d, item.content ?? '', rawIsSameDocument);
 		let edits = primary;
 		let retried = false;
 		if (edits === null && rawRetry !== null) {

@@ -41,4 +41,9 @@ describe('BUG-3850: confirmed base wiring in ItemDetail', () => {
 	it('the editor refreshes it before every local change (lead ruling c9db9612)', () => {
 		expect(src).toMatch(/const ed = editorInstance;\s*if \(!ed\) return;\s*return registerRefreshBeforeLocalChange\(ed as never, confirmedBase\.refresh\);/);
 	});
+
+	it('restore allows the raw retry only for a row that is the same document as the base', () => {
+		expect(src).toContain("const rawIsSameDocument = d.rawBaseBody !== undefined && collabFlusher.storageForm(d.rawBaseBody, wsSlug) === d.baseBody;");
+		expect(src).toContain("planDraftRestore(d, item.content ?? '', rawIsSameDocument);");
+	});
 });
