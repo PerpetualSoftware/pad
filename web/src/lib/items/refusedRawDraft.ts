@@ -73,24 +73,36 @@ export function keepRefusedRawDraft(
 	// One write carries the text and every base it was taken against (BUG-3850):
 	// a base from one moment and a draft from another is how a false overlap,
 	// or a patch of text that was never the user's, comes back.
-	const value = JSON.stringify(
-		base
-			? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body, ...(base.rawBody !== undefined ? { rawBaseBody: base.rawBody } : {}) }
-			: { markdown, savedAt: now },
-	);
+	const encode = (withRaw: boolean) =>
+		JSON.stringify(
+			base
+				? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body, ...(withRaw && base.rawBody !== undefined ? { rawBaseBody: base.rawBody } : {}) }
+				: { markdown, savedAt: now },
+		);
 	const s = storage();
 	if (!s) return false;
+	const key = keyFor(userId, itemId);
 	try {
-		s.setItem(keyFor(userId, itemId), value);
+		s.setItem(key, encode(true));
 		return true;
 	} catch {
+		// The raw row only enables restore's one retry (BUG-3850), and it makes
+		// the value a third body long: drop it before anyone else's draft.
+		if (base?.rawBody !== undefined) {
+			try {
+				s.setItem(key, encode(false));
+				return true;
+			} catch {
+				// Still full: make room below.
+			}
+		}
 		// Full (TASK-3606): make room from expired drafts and this user's
 		// oldest others, then try once more. Blocked or still full: the save
 		// still goes out; only the recovery is lost.
 		try {
 			sweepExpiredRefusedRawDrafts(now);
 			evictOldestForUser(userId, itemId);
-			s.setItem(keyFor(userId, itemId), value);
+			s.setItem(key, encode(false));
 			return true;
 		} catch {
 			return false;
