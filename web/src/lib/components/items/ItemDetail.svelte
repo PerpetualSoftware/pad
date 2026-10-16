@@ -5164,10 +5164,11 @@
 		if (!shown || !item || refusedDraftBusy) return;
 		// TASK-3856 r2 (codex High): the crash keeper rewrites a draft it kept as
 		// stale when this tab sends, and that write does not refresh the copy
-		// shown here. The stored one decides; a stale one re-renders the notice
-		// without Restore, and nothing is written.
+		// shown here. For a patch restore the stored one decides; a stale one
+		// re-renders the notice without Restore, and nothing is written. A
+		// whole-body restore does not read the base, so it goes ahead (r3).
 		const stored = readRefusedRawDraft(authStore.userId, item.id);
-		if (stored && stored.markdown === shown.markdown && stored.baseStale && !shown.baseStale) {
+		if (stored && stored.markdown === shown.markdown && stored.baseStale && !shown.baseStale && draftAppliesAsPatch(shown, item.seq ?? 0)) {
 			refusedDraft = stored;
 			return;
 		}

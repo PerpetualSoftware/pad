@@ -159,3 +159,27 @@ test('a shown draft rewritten as stale in storage is not patched when Restore is
 	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
 	await ctx.close();
 });
+
+// TASK-3856 r3 (hunter Low): a whole-body restore never reads the base, so a
+// stale rewrite of the shown draft does not stop it, and the first click restores.
+test('a shown draft rewritten as stale on an unchanged item is restored whole on the first click', async ({ browser, fixture, request }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough for a restore flow');
+	test.setTimeout(120_000);
+	const { id, ref, base, key, headers } = await setUp(request, fixture, `TASK-3856 whole ${Date.now()}`);
+	const draft = { markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'), savedAt: Date.now(), baseSeq: base.seq, baseBody: base.content };
+
+	const { ctx, page } = await openWithDraft(browser, fixture, ref, key, draft);
+	const notice = page.getByTestId('refused-raw-draft');
+	await expect(notice, 'premise: the item has not changed').not.toContainText('This item changed');
+	await page.evaluate(([k, v]) => localStorage.setItem(k, v), [key, JSON.stringify({ ...draft, savedAt: draft.savedAt + 1, baseStale: true })] as const);
+	await notice.getByRole('button', { name: 'Restore it' }).click();
+
+	await expect
+		.poll(
+			async () => ((await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string }).content,
+			{ timeout: SYNC_TIMEOUT, message: 'one click restores the kept text' },
+		)
+		.toContain('Paragraph three, mine.');
+	await expect(notice).toHaveCount(0);
+	await ctx.close();
+});
