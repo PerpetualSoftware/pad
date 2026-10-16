@@ -85,6 +85,20 @@ describe('BUG-3850: onConfirmed', () => {
 		expect(calls, 'the doc holds unconfirmed text: no base now').toEqual([]);
 	});
 
+	it('does not fire when an edit made while the socket was closing never went out', async () => {
+		const sock = connect();
+		doc.getText('t').insert(0, 'typed');
+		await vi.advanceTimersByTimeAsync(BARRIER_IDLE_MS);
+		const n = lastBarrier(sock);
+		// CLOSING: the edit is kept as unsent, but a message already received
+		// on this socket (the ack) can still be dispatched.
+		sock.readyState = 2;
+		doc.getText('t').insert(5, ' unsent');
+		sock.control({ type: 'barrier_ack', n, ok: true });
+		expect(provider.editsMayBeMissing, 'premise: the unsent edit is still missing').toBe(true);
+		expect(calls).toEqual([]);
+	});
+
 	it('does not fire on a failed append', async () => {
 		const sock = connect();
 		doc.getText('t').insert(0, 'typed');
