@@ -152,8 +152,10 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 	if visibleIDs != nil {
 		params.CollectionIDs = visibleIDs
 		// For guests with item-level grants, a row in a collection visible only
-		// through item grants must be one of the granted items.
-		fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+		// through item grants must be one of the granted items. The
+		// include-deleted variant, as /items-changes uses (TASK-1354), so an
+		// archived granted item still reaches its grantee (BUG-3796).
+		fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilterIncludeDeletedItems(r, workspaceID)
 		if grantErr != nil {
 			writeInternalError(w, grantErr)
 			return
