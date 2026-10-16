@@ -10,7 +10,7 @@
 // Switching items clears nothing; a draft whose edits did land reads as the
 // stored body on the next open and is cleared there silently ('clear' arm).
 
-import { keepRefusedRawDraft, clearRefusedRawDraft, readRefusedRawDraft } from './refusedRawDraft';
+import { keepRefusedRawDraft, clearRefusedRawDraft, readRefusedRawDraft, flagHeldDraftStale, clearHeldDraftIfConfirmed } from './refusedRawDraft';
 
 /** How often the keeper looks while it is registered. */
 export const CRASH_DRAFT_INTERVAL_MS = 2000;
@@ -72,6 +72,8 @@ export function registerCrashDraftKeeper(
 	type Last = { userId: string; itemId: string; markdown: string; version: unknown; base: string; baseSeq: number; baseBody: string; stale: boolean };
 	let last: Last | null = null;
 	const token = Symbol('crash-draft-keeper');
+	// Stamped on every draft this keeper writes (BUG-3863 two-tab ruling).
+	const id = `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 	const setLast = (next: Last | null) => {
 		last = next;
 		if (next) tracked.set(token, { userId: next.userId, itemId: next.itemId, markdown: next.markdown });
@@ -94,7 +96,7 @@ export function registerCrashDraftKeeper(
 			// markdown as it was and the base stale).
 			const base = JSON.stringify([snap.baseSeq, snap.baseBody, snap.baseStale === true]);
 			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown && last.base === base) return;
-			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody, stale: snap.baseStale })) {
+			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody, stale: snap.baseStale, keeper: id })) {
 				setLast({ userId, itemId, markdown: snap.markdown, version, base, baseSeq: snap.baseSeq, baseBody: snap.baseBody, stale: snap.baseStale === true });
 			}
 			return;
@@ -103,19 +105,26 @@ export function registerCrashDraftKeeper(
 		// confirmed, so the draft goes, unless something newer replaced it.
 		if (last && last.userId === userId && last.itemId === itemId) {
 			clearRefusedRawDraft(userId, itemId, last.markdown);
+			// Another tab may hold a draft of ours; it goes only when it is
+			// exactly what is now confirmed.
+			const confirmed = source.snapshot()?.markdown;
+			if (confirmed !== undefined) clearHeldDraftIfConfirmed(userId, itemId, id, confirmed);
 			setLast(null);
 		}
 	};
 
 	const unsubscribe = source.onSent?.(() => {
 		if (!last || last.stale || last.userId !== source.userId() || last.itemId !== source.itemId()) return;
+		// A held copy of a draft this keeper kept, whatever its text now (the
+		// user may have typed on since another tab held it), is stale too.
+		flagHeldDraftStale(last.userId, last.itemId, id);
 		// Only the draft this keeper wrote (r9 hunter-2): a newer keep by another
 		// producer (keepAtRiskText) is left as it is; this one is done.
 		if (readRefusedRawDraft(last.userId, last.itemId)?.markdown !== last.markdown) {
 			setLast({ ...last, stale: true });
 			return;
 		}
-		if (keepRefusedRawDraft(last.userId, last.itemId, last.markdown, Date.now(), { seq: last.baseSeq, body: last.baseBody, stale: true })) {
+		if (keepRefusedRawDraft(last.userId, last.itemId, last.markdown, Date.now(), { seq: last.baseSeq, body: last.baseBody, stale: true, keeper: id })) {
 			setLast({ ...last, stale: true, base: JSON.stringify([last.baseSeq, last.baseBody, true]) });
 		}
 	});

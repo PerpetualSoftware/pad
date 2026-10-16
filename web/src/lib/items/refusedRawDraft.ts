@@ -46,6 +46,12 @@ export interface RefusedRawDraft {
 	 * the conflict notice instead.
 	 */
 	baseStale?: true;
+	/**
+	 * The crash keeper that kept it (BUG-3863 two-tab ruling): one id per live
+	 * keeper, so a keeper can still flag or confirm its own draft after another
+	 * tab moved it to the held slot. Absent on every other producer's draft.
+	 */
+	keeper?: string;
 }
 
 const PREFIX = 'pad:refused-raw-draft:';
@@ -88,11 +94,13 @@ export function keepRefusedRawDraft(
 	itemId: string,
 	markdown: string,
 	now = Date.now(),
-	base?: { seq: number; body: string; stale?: boolean },
+	base?: { seq: number; body: string; stale?: boolean; keeper?: string },
 ): boolean {
 	if (!usable(userId, itemId)) return false;
 	const value = JSON.stringify(
-		base ? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body, ...(base.stale ? { baseStale: true } : {}) } : { markdown, savedAt: now },
+		base
+			? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body, ...(base.stale ? { baseStale: true } : {}), ...(base.keeper ? { keeper: base.keeper } : {}) }
+			: { markdown, savedAt: now },
 	);
 	return writeSlot(userId, itemId, 'pending', value, now);
 }
@@ -167,6 +175,7 @@ export function readRefusedRawDraft(
 		if (typeof parsed.baseSeq === 'number') out.baseSeq = parsed.baseSeq;
 		if (typeof parsed.baseBody === 'string') out.baseBody = parsed.baseBody;
 		if (parsed.baseStale === true) out.baseStale = true;
+		if (typeof parsed.keeper === 'string' && parsed.keeper) out.keeper = parsed.keeper;
 		return out;
 	} catch {
 		return null;
@@ -310,4 +319,29 @@ export function offerKeptDraft(
 export function resolveKeptDraft(userId: string, itemId: string, markdown: string): void {
 	clearRefusedRawDraft(userId, itemId, markdown, 'held');
 	clearRefusedRawDraft(userId, itemId, markdown);
+}
+
+/*
+ * The two exceptions to "producers never touch the held slot" (BUG-3863,
+ * two-tab ruling). Another tab may hold a draft a keeper in THIS tab kept and
+ * is still tracking, out of the keeper's pending slot. The keeper reaches that
+ * held copy by its id, never by its text: the user may have typed on since.
+ * A draft with another id, or with none (an earlier tab's D, other
+ * producers, entries from before the id existed), is never touched.
+ */
+
+/** This keeper sent: a held draft it kept is now stale, whatever its text. */
+export function flagHeldDraftStale(userId: string, itemId: string, keeper: string, now = Date.now()): void {
+	if (!keeper) return;
+	const held = readRefusedRawDraft(userId, itemId, now, 'held');
+	if (!held || held.keeper !== keeper || held.baseStale) return;
+	writeSlot(userId, itemId, 'held', JSON.stringify({ ...held, baseStale: true }), now);
+}
+
+/** This keeper's edits are confirmed as `body`: a held draft it kept with exactly that text goes. */
+export function clearHeldDraftIfConfirmed(userId: string, itemId: string, keeper: string, body: string): void {
+	if (!keeper) return;
+	const held = readRefusedRawDraft(userId, itemId, Date.now(), 'held');
+	if (!held || held.keeper !== keeper || held.markdown !== body) return;
+	clearRefusedRawDraft(userId, itemId, body, 'held');
 }
