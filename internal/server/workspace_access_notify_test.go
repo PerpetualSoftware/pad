@@ -545,8 +545,9 @@ func TestWorkspaceAccessChanged_ReplayHonoursOptIn(t *testing.T) {
 // consumers.
 func TestWatchEventPayload_ExistingKindsAreByteIdentical(t *testing.T) {
 	srv := testServerWithWatchEvents(t)
+	cache := &watchVisCache{s: srv, slugs: make(map[string]string)}
 	for _, kind := range []string{watchevents.KindStatusChange, watchevents.KindAssignment, watchevents.KindComment, watchevents.KindPush, watchevents.KindAsk} {
-		b, err := json.Marshal(watchEventPayloadFor(srv, watchevents.Notification{
+		b, err := json.Marshal(watchEventPayloadFor(cache, watchevents.Notification{
 			ID: 7, Timestamp: 1700000000, WorkspaceID: "no-such-ws", Kind: kind, AccessChange: "gained",
 			ItemRef: "TASK-1", Actor: "user", ActorName: "Dave", Summary: "open → done",
 		}))
