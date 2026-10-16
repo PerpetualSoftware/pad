@@ -22,6 +22,12 @@
 // 'A C U' over a stored 'A C' restores as 'A C U C'; lead ruling c9db9612 on
 // BUG-3850). Remote changes cost nothing here: the version check makes the
 // first local change after them the only serialization.
+//
+// A base can still be outrun before the next confirmed refresh: by a remote
+// update (remoteAfter, lead ruling baa63dc3) or by this tab's own send, which
+// the server may hold before any barrier says so (sentAfter, lead ruling
+// a6380212). Either makes the kept draft's base stale, and restore then shows
+// the conflict notice rather than patching.
 
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 
@@ -50,6 +56,8 @@ export interface ConfirmedBaseSource {
 	version: () => unknown;
 	/** Changes only when a REMOTE update lands (the provider's remoteDocVersion). */
 	remoteVersion: () => unknown;
+	/** Changes each time this tab SENDS a local update (the provider's localSentVersion). */
+	sentVersion: () => unknown;
 	/** The editor's markdown now, or null if unavailable. */
 	snapshot: () => string | null;
 	/** The item's seq now. */
@@ -65,6 +73,13 @@ export interface ConfirmedBase {
 	 * it would send that text again ('A' → 'A C U' over 'A C' gives 'A C U C').
 	 */
 	remoteAfter: boolean;
+	/**
+	 * This tab sent a local update after this snapshot (lead ruling a6380212):
+	 * the server may already hold text the draft counts as its own change, and
+	 * at the end of the document an anchor that is a substring sends it again
+	 * ('A' → 'A U1 U2' over a stored 'A U1' gives 'A U1 U2 U1').
+	 */
+	sentAfter: boolean;
 }
 
 export interface ConfirmedBaseTracker {
@@ -75,7 +90,7 @@ export interface ConfirmedBaseTracker {
 }
 
 export function createConfirmedBaseTracker(source: ConfirmedBaseSource): ConfirmedBaseTracker {
-	let held: { context: object; version: unknown; remote: unknown; base: { markdown: string; seq: number } } | null = null;
+	let held: { context: object; version: unknown; remote: unknown; sent: unknown; base: { markdown: string; seq: number } } | null = null;
 
 	return {
 		refresh() {
@@ -86,15 +101,21 @@ export function createConfirmedBaseTracker(source: ConfirmedBaseSource): Confirm
 			}
 			if (!source.confirmed()) return;
 			const version = source.version();
-			if (held && held.context === context && held.version === version) return;
+			if (held && held.context === context && held.version === version) {
+				// Confirmed and unchanged: the server holds this very document, so a
+				// send since (a reconnect's catch-up resends what it had) is not one
+				// the base lacks.
+				held.sent = source.sentVersion();
+				return;
+			}
 			const markdown = source.snapshot();
 			if (markdown === null) return;
-			held = { context, version, remote: source.remoteVersion(), base: { markdown, seq: source.seq() } };
+			held = { context, version, remote: source.remoteVersion(), sent: source.sentVersion(), base: { markdown, seq: source.seq() } };
 		},
 		current() {
 			const context = source.context();
 			if (!held || !context || held.context !== context) return null;
-			return { ...held.base, remoteAfter: source.remoteVersion() !== held.remote };
+			return { ...held.base, remoteAfter: source.remoteVersion() !== held.remote, sentAfter: source.sentVersion() !== held.sent };
 		},
 	};
 }

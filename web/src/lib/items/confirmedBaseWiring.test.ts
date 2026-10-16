@@ -38,11 +38,12 @@ describe('BUG-3850: confirmed base wiring in ItemDetail', () => {
 	});
 
 	it('the kept draft carries the confirmed snapshot and its seq', () => {
-		expect(snapshotBody).toContain("return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, ...(confirmed.remoteAfter ? { baseStale: true } : {}) };");
+		expect(snapshotBody).toContain("return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, ...(confirmed.remoteAfter || confirmed.sentAfter ? { baseStale: true } : {}) };");
 	});
 
 	it('the tracker reads the remote-only counter, and restore goes through restoreEdits (lead ruling baa63dc3)', () => {
 		expect(trackerBody).toContain('remoteVersion: () => collabProvider?.remoteDocVersion ?? 0,');
+		expect(trackerBody).toContain('sentVersion: () => collabProvider?.localSentVersion ?? 0,');
 		const apply = src.slice(src.indexOf('async function applyRefusedDraftChanges('));
 		expect(apply.slice(0, apply.indexOf('\n\t}\n'))).toContain('const edits = restoreEdits(d);');
 	});
@@ -53,7 +54,7 @@ describe('BUG-3850: confirmed base wiring in ItemDetail', () => {
 
 	it('the patch restore waits on restoreWaitsForEditor over the provider and the mounted editor, and the notice gets the reason (lead ruling 0337bf77)', () => {
 		expect(src).toContain('restoreWaitsForEditor(collabProvider, !!editorInstance)');
-		expect(src).toMatch(/let restoreBlocked = \$derived\([\s\S]*?!rawMode && draftAppliesAsPatch\(refusedDraft, item\?\.seq \?\? 0\) && restoreWaitsForEditor\(collabProvider, !!editorInstance\)[\s\S]*?\? RESTORE_WAITS_FOR_EDITOR[\s\S]*?: null,/);
+		expect(src).toMatch(/let restoreBlocked = \$derived\([\s\S]*?refusedDraft && !refusedDraft\.baseStale && !rawMode && draftAppliesAsPatch\(refusedDraft, item\?\.seq \?\? 0\) && restoreWaitsForEditor\(collabProvider, !!editorInstance\)[\s\S]*?\? RESTORE_WAITS_FOR_EDITOR[\s\S]*?: null,/);
 		expect(src).toMatch(/if \(draftAppliesAsPatch\(d, item\.seq \?\? 0\)\) \{\s*if \(restoreBlocked\) return;\s*await applyRefusedDraftChanges\(d\);/);
 		expect(src).toContain('restoreBlocked={restoreBlocked}');
 	});

@@ -32,9 +32,10 @@ export interface RefusedRawDraft {
 	baseSeq?: number;
 	baseBody?: string;
 	/**
-	 * A remote update landed after the base was taken (BUG-3850, lead ruling
-	 * baa63dc3): the base may lack a collaborator's text, so restore never
-	 * patches from it; it shows the conflict notice instead.
+	 * The server may hold text the base lacks (BUG-3850, lead rulings baa63dc3
+	 * and a6380212): a remote update or this tab's own send came after it, or
+	 * there was no confirmed snapshot. Restore never patches from it; it shows
+	 * the conflict notice instead.
 	 */
 	baseStale?: true;
 }

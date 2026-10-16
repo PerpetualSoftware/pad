@@ -51,6 +51,8 @@ function setUp(hook: 'before' | 'none') {
 		confirmed: () => state.confirmed,
 		version: () => version,
 		remoteVersion: () => remote,
+		// Sends are not modelled here (two bare Y.Docs); confirmedBaseSent covers them.
+		sentVersion: () => 0,
 		snapshot: () => {
 			state.snapshots++;
 			return me.state.doc.textContent;
@@ -156,7 +158,7 @@ describe('BUG-3850: the base is refreshed before the first local change after a 
 		typeAtEnd(h.me, ' U');
 		h.state.confirmed = false;
 		const base = h.tracker.current()!;
-		expect(base).toEqual({ markdown: 'A C', seq: 1, remoteAfter: false });
+		expect(base).toEqual({ markdown: 'A C', seq: 1, remoteAfter: false, sentAfter: false });
 		expect(applyDraftEdits('A C', restoreEdits({ markdown: h.me.state.doc.textContent, baseBody: base.markdown })!)).toBe('A C U');
 		h.stop();
 	});
@@ -181,7 +183,7 @@ describe('BUG-3850: the base is refreshed before the first local change after a 
 		expect(h.tracker.current()!.remoteAfter).toBe(true);
 		h.state.confirmed = true;
 		h.tracker.refresh();
-		expect(h.tracker.current()).toEqual({ markdown: 'A C', seq: 1, remoteAfter: false });
+		expect(h.tracker.current()).toEqual({ markdown: 'A C', seq: 1, remoteAfter: false, sentAfter: false });
 		h.stop();
 	});
 

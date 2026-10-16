@@ -1567,6 +1567,15 @@ export class CollabProvider {
 	/** Bumped only by updates applied from a server message (BUG-3850). Not reactive. */
 	remoteDocVersion = 0;
 
+	/**
+	 * Moves each time this tab's local updates go out on a socket (BUG-3850,
+	 * lead ruling a6380212): the server may hold them before any barrier says
+	 * so. Not reactive.
+	 */
+	get localSentVersion(): number {
+		return this.localSendSeq;
+	}
+
 	get editsAtRiskOnClose(): boolean {
 		return this.unsentLocalEdits || this.catchUpOwed || this.repairPending;
 	}

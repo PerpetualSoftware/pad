@@ -5,12 +5,13 @@ import { createConfirmedBaseTracker, providerConfirmed, restoreWaitsForEditor } 
 function harness() {
 	const ctxA = {};
 	const ctxB = {};
-	const s = { context: ctxA as object | null, confirmed: true, version: 1, remote: 0, markdown: 'one' as string | null, seq: 5, snapshots: 0 };
+	const s = { context: ctxA as object | null, confirmed: true, version: 1, remote: 0, sent: 0, markdown: 'one' as string | null, seq: 5, snapshots: 0 };
 	const t = createConfirmedBaseTracker({
 		context: () => s.context,
 		confirmed: () => s.confirmed,
 		version: () => s.version,
 		remoteVersion: () => s.remote,
+		sentVersion: () => s.sent,
 		snapshot: () => {
 			s.snapshots++;
 			return s.markdown;
@@ -39,7 +40,7 @@ describe('confirmed base tracker (BUG-3850)', () => {
 	it('takes the snapshot and its seq while confirmed', () => {
 		const h = harness();
 		h.t.refresh();
-		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false });
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false, sentAfter: false });
 	});
 
 	it('never takes a snapshot while edits may be missing; the last confirmed one stands', () => {
@@ -50,7 +51,7 @@ describe('confirmed base tracker (BUG-3850)', () => {
 		h.s.markdown = 'one plus unconfirmed typing';
 		h.s.seq = 6;
 		h.t.refresh();
-		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false });
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false, sentAfter: false });
 		expect(h.s.snapshots).toBe(1);
 	});
 
@@ -72,7 +73,7 @@ describe('confirmed base tracker (BUG-3850)', () => {
 		h.s.seq = 9;
 		h.t.refresh();
 		expect(h.s.snapshots).toBe(2);
-		expect(h.t.current()).toEqual({ markdown: 'two', seq: 9, remoteAfter: false });
+		expect(h.t.current()).toEqual({ markdown: 'two', seq: 9, remoteAfter: false, sentAfter: false });
 	});
 
 	it('the seq is the one at capture, not a later one', () => {
@@ -94,7 +95,7 @@ describe('confirmed base tracker (BUG-3850)', () => {
 		expect(h.t.current()).toBeNull();
 		h.s.confirmed = true;
 		h.t.refresh();
-		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false });
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false, sentAfter: false });
 	});
 
 	it('no context drops the held snapshot', () => {
@@ -112,14 +113,14 @@ describe('confirmed base tracker (BUG-3850)', () => {
 		h.s.version = 2;
 		h.s.markdown = null;
 		h.t.refresh();
-		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false });
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false, sentAfter: false });
 	});
 
 	it('the seq is the one read with the snapshot, not a later one', () => {
 		const h = harness();
 		h.t.refresh();
 		h.s.seq = 8;
-		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false });
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false, sentAfter: false });
 	});
 });
 
@@ -134,3 +135,36 @@ describe('restoreWaitsForEditor (BUG-3850)', () => {
 	});
 });
 
+describe('confirmed base: sends after the snapshot (BUG-3850, lead ruling a6380212)', () => {
+	it('a send after the snapshot reports sentAfter; a confirmed refresh on a moved document clears it', () => {
+		const h = harness();
+		h.t.refresh();
+		h.s.confirmed = false;
+		h.s.version = 2;
+		h.s.sent = 1;
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, remoteAfter: false, sentAfter: true });
+		h.s.confirmed = true;
+		h.s.markdown = 'two';
+		h.t.refresh();
+		expect(h.t.current()).toEqual({ markdown: 'two', seq: 5, remoteAfter: false, sentAfter: false });
+	});
+
+	it('a confirmed refresh with the document unchanged takes the sent count without serializing (a catch-up resend)', () => {
+		const h = harness();
+		h.t.refresh();
+		const snaps = h.s.snapshots;
+		h.s.sent = 3;
+		h.t.refresh();
+		expect(h.s.snapshots).toBe(snaps);
+		expect(h.t.current()!.sentAfter).toBe(false);
+	});
+
+	it('an unconfirmed refresh never takes the sent count', () => {
+		const h = harness();
+		h.t.refresh();
+		h.s.confirmed = false;
+		h.s.sent = 1;
+		h.t.refresh();
+		expect(h.t.current()!.sentAfter).toBe(true);
+	});
+});

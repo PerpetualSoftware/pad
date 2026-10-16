@@ -5062,9 +5062,10 @@
 	// document in that form; the stored row may hold raw-only forms (a
 	// trailing newline, underscore emphasis) the anchors miss. So the patch
 	// restore waits until this tab's editor is mounted and its CURRENT
-	// connection is synced, and says why. Copy is always offered.
+	// connection is synced, and says why. Copy is always offered. A stale base
+	// never patches (r7 hunter-L1), so it goes straight to the conflict notice.
 	let restoreBlocked = $derived(
-		refusedDraft && !rawMode && draftAppliesAsPatch(refusedDraft, item?.seq ?? 0) && restoreWaitsForEditor(collabProvider, !!editorInstance)
+		refusedDraft && !refusedDraft.baseStale && !rawMode && draftAppliesAsPatch(refusedDraft, item?.seq ?? 0) && restoreWaitsForEditor(collabProvider, !!editorInstance)
 			? RESTORE_WAITS_FOR_EDITOR
 			: null,
 	);
@@ -6393,7 +6394,7 @@
 		// notice.
 		const confirmed = confirmedBase.current();
 		if (!confirmed) return { markdown: md, ...base, baseStale: true };
-		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, ...(confirmed.remoteAfter ? { baseStale: true } : {}) };
+		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, ...(confirmed.remoteAfter || confirmed.sentAfter ? { baseStale: true } : {}) };
 	}
 	const confirmedBase = createConfirmedBaseTracker({
 		context: () => {
@@ -6403,6 +6404,7 @@
 		confirmed: () => providerConfirmed(collabProvider),
 		version: () => collabProvider?.docVersion ?? 0,
 		remoteVersion: () => collabProvider?.remoteDocVersion ?? 0,
+		sentVersion: () => collabProvider?.localSentVersion ?? 0,
 		snapshot: () => (activeCollabContext ? collabFlusher.snapshot(activeCollabContext) : null),
 		seq: () => item?.seq ?? 0,
 	});
