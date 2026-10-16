@@ -66,6 +66,8 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 			a2 := item(wsA, tasksA, "A2 local parent")
 			a3 := item(wsA, tasksA, "A3 local child")
 			a4 := item(wsA, tasksA, "A4 foreign child only")
+			a5 := item(wsA, tasksA, "A5 child under a row filed in B")
+			a6 := item(wsA, tasksA, "A6 parent under a row filed in B")
 			b1 := item(wsB, tasksB, "B1 SECRET TITLE")
 
 			// Legitimate rows, through the store's own doors: the controls.
@@ -78,17 +80,21 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 
 			// Malformed rows: workspace A's rows with one endpoint in B.
 			ts := time.Now().UTC().Format(time.RFC3339)
-			plant := func(id, src, tgt, typ string) {
+			plant := func(id, ws, src, tgt, typ string) {
 				t.Helper()
 				if _, err := s.DB().Exec(fmt.Sprintf(
 					`INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_at) VALUES ('%s', '%s', '%s', '%s', '%s', '%s')`,
-					id, wsA, src, tgt, typ, ts)); err != nil {
+					id, ws, src, tgt, typ, ts)); err != nil {
 					t.Fatalf("plant %s: %v", id, err)
 				}
 			}
-			plant("00000000-0000-0000-0000-000000037761", a1.ID, b1.ID, "parent") // A item under a B parent
-			plant("00000000-0000-0000-0000-000000037762", b1.ID, a4.ID, "parent") // a B child under an A item
-			plant("00000000-0000-0000-0000-000000037763", b1.ID, a2.ID, "blocks") // a B blocker of an A item
+			plant("00000000-0000-0000-0000-000000037761", wsA, a1.ID, b1.ID, "parent") // A item under a B parent
+			plant("00000000-0000-0000-0000-000000037762", wsA, b1.ID, a4.ID, "parent") // a B child under an A item
+			plant("00000000-0000-0000-0000-000000037763", wsA, b1.ID, a2.ID, "blocks") // a B blocker of an A item
+			// The other malformed shape: both endpoints in A, the ROW filed in B.
+			// The workspace-scoped readers never see it; the ones reached by an
+			// item id or a parent id must not either.
+			plant("00000000-0000-0000-0000-000000037764", wsB, a5.ID, a6.ID, "parent")
 
 			t.Run("GetParentMap", func(t *testing.T) {
 				m, err := s.GetParentMap(wsA)
@@ -214,6 +220,45 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 				if items[1].HasChildren {
 					t.Error("A4 has_children from a workspace-B child")
 				}
+			})
+
+			t.Run("a row filed in another workspace", func(t *testing.T) {
+				links, err := s.GetItemLinks(a6.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, l := range links {
+					t.Errorf("A6 shows a link filed in workspace B: %q → %q", l.SourceTitle, l.TargetTitle)
+				}
+				p, err := s.GetParentForItem(a5.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if p != nil {
+					t.Errorf("A5's parent comes from a row filed in workspace B: %q", p.TargetTitle)
+				}
+				prog, err := s.GetAllItemProgress(wsA, "tasks", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, pr := range prog {
+					if pr.ItemID == a6.ID && pr.Total != 0 {
+						t.Errorf("A6 counts a child through a row filed in B: total %d", pr.Total)
+					}
+				}
+				items := []models.Item{*a6}
+				s.PopulateHasChildren(items)
+				if items[0].HasChildren {
+					t.Error("A6 has_children through a row filed in B")
+				}
+				got, err := s.ListItems(wsA, models.ItemListParams{ParentLinkID: a6.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, it := range got {
+					t.Errorf("A6 lists %q as a child through a row filed in B", it.Title)
+				}
+				// The controls for these readers are in their own subtests above.
 			})
 
 			t.Run("ListItems parent filter", func(t *testing.T) {
