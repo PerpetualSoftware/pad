@@ -53,7 +53,7 @@ func TestDeleteAccountAtomic_WaitsForAMintHoldingTheOwnerLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	ws, err := s.createWorkspaceQ(tx, models.WorkspaceCreate{Name: "Minting", OwnerID: u.ID})
+	ws, err := s.createWorkspaceQ(tx, models.WorkspaceCreate{Name: "Minting", OwnerID: u.ID}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestDeleteAccountAtomic_DoesNotWaitOnAMintBeforeItsLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	ws, err := s.createWorkspaceQ(tx, models.WorkspaceCreate{Name: "Minting", OwnerID: u.ID})
+	ws, err := s.createWorkspaceQ(tx, models.WorkspaceCreate{Name: "Minting", OwnerID: u.ID}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

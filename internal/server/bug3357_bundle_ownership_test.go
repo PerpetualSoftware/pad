@@ -125,10 +125,10 @@ func TestBUG3357_AttachmentOwnershipSurvivesASlugCollision(t *testing.T) {
 	}, "")
 
 	dest, _ := testServerWithAttachments(t)
-	if rr := postBundle(dest, "OwnerWS", bundle); rr.Code != http.StatusCreated {
+	if rr := postBundle(dest, "ownerws", bundle); rr.Code != http.StatusCreated {
 		t.Fatalf("import: %d %s", rr.Code, rr.Body.String())
 	}
-	ws, err := dest.store.GetWorkspaceBySlug("OwnerWS")
+	ws, err := dest.store.GetWorkspaceBySlug("ownerws")
 	if err != nil || ws == nil {
 		t.Fatalf("imported workspace: %v", err)
 	}

@@ -93,15 +93,15 @@ func keepPathPartialIsReachable(t *testing.T, driver store.DriverType) {
 	dest := attachmentsServerOn(t, driver)
 	u, tok := memberImporter(t, dest)
 
-	rr := importAs(dest, "Kept", bundle, tok)
+	rr := importAs(dest, "kept", bundle, tok)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "manifest decode") {
 		t.Fatalf("expected the keep path's 400 import_failed, got %d: %s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "kept") || !strings.Contains(rr.Body.String(), `\"Kept\"`) {
+	if !strings.Contains(rr.Body.String(), "kept") || !strings.Contains(rr.Body.String(), `\"kept\"`) {
 		t.Errorf("the response must say the partial workspace was KEPT and name it, got: %s", rr.Body.String())
 	}
 
-	live, err := dest.store.GetWorkspaceBySlug("Kept")
+	live, err := dest.store.GetWorkspaceBySlug("kept")
 	if err != nil || live == nil {
 		t.Fatalf("the keep path must keep the workspace (TASK-896): live=%v err=%v", live, err)
 	}
@@ -112,10 +112,10 @@ func keepPathPartialIsReachable(t *testing.T, driver store.DriverType) {
 	if len(mine) != 1 || mine[0].ID != live.ID {
 		t.Errorf("kept partial workspace is not in its importer's list (%d row(s)); an owner row must be attached on the keep path", len(mine))
 	}
-	if rr := doRequestWithCookie(dest, "GET", "/api/v1/workspaces/Kept/collections", nil, tok); rr.Code != http.StatusOK {
+	if rr := doRequestWithCookie(dest, "GET", "/api/v1/workspaces/kept/collections", nil, tok); rr.Code != http.StatusOK {
 		t.Errorf("importer cannot READ the kept partial workspace: %d %s", rr.Code, rr.Body.String())
 	}
-	if rr := doRequestWithCookie(dest, "DELETE", "/api/v1/workspaces/Kept", nil, tok); rr.Code != http.StatusNoContent {
+	if rr := doRequestWithCookie(dest, "DELETE", "/api/v1/workspaces/kept", nil, tok); rr.Code != http.StatusNoContent {
 		t.Errorf("importer cannot DELETE the kept partial workspace: %d %s", rr.Code, rr.Body.String())
 	}
 }
@@ -143,14 +143,14 @@ func keepPathOwnerAddFailureRemoves(t *testing.T, driver store.DriverType) {
 	})
 	t.Cleanup(restore)
 
-	rr := importAs(dest, "Gone", bundle, tok)
+	rr := importAs(dest, "gone", bundle, tok)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "manifest decode") {
 		t.Fatalf("expected 400 import_failed, got %d: %s", rr.Code, rr.Body.String())
 	}
 	if !strings.Contains(rr.Body.String(), "removed") || strings.Contains(rr.Body.String(), "kept") {
 		t.Errorf("the response must say the partial workspace was REMOVED, not kept, got: %s", rr.Body.String())
 	}
-	if live, _ := dest.store.GetWorkspaceBySlug("Gone"); live != nil {
+	if live, _ := dest.store.GetWorkspaceBySlug("gone"); live != nil {
 		t.Errorf("partial workspace is still live after the owner row could not be written")
 	}
 	if husks := restorableHusks(t, dest, u.ID); len(husks) != 0 {
@@ -170,13 +170,13 @@ func keepPathOwnerAddFailureRemoves(t *testing.T, driver store.DriverType) {
 // existence and unconfirmed ownership (codex round 2 on #1386).
 
 func TestImportBundle_KeepPath_UnreadableMembershipSaysUnconfirmed(t *testing.T) {
-	keepPathHelperKeepArm(t, "Unread", func(string, string) (*models.WorkspaceMember, error) {
+	keepPathHelperKeepArm(t, "unread", func(string, string) (*models.WorkspaceMember, error) {
 		return nil, errSimMemberAckLoss
 	})
 }
 
 func TestImportBundle_KeepPath_WrongRoleMembershipSaysUnconfirmed(t *testing.T) {
-	keepPathHelperKeepArm(t, "Viewer", func(workspaceID, userID string) (*models.WorkspaceMember, error) {
+	keepPathHelperKeepArm(t, "viewer", func(workspaceID, userID string) (*models.WorkspaceMember, error) {
 		return &models.WorkspaceMember{WorkspaceID: workspaceID, UserID: userID, Role: "viewer"}, nil
 	})
 }

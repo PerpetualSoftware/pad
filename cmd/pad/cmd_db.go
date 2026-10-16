@@ -654,7 +654,7 @@ Steps:
 				// What this unit does guarantee is the half it can: the
 				// SOURCE is unmarked, so the operator still has a working
 				// database to re-run from.
-				if _, err := dstStore.ImportWorkspace(data, "", "", ""); err != nil {
+				if _, err := migrateImportWorkspace(dstStore, data); err != nil {
 					return fmt.Errorf("import %s: %w (nothing has been marked; the SQLite database is unchanged, "+
 						"but PostgreSQL is now PARTIALLY populated — drop and recreate it before re-running)", ws.Slug, err)
 				}
@@ -1004,4 +1004,13 @@ func preflightNULForMigration(src *store.Store, fromPath string) error {
 	// An earlier version returned a different total than it listed, and a
 	// refusal whose own reason disagrees with its list is worse than either.
 	return fmt.Errorf("%d stored value(s) carry a NUL or invalid UTF-8; nothing was migrated", len(blocking))
+}
+
+// migrateImportWorkspace lands one exported workspace in the destination of
+// `pad db migrate-to-pg`. Empty source: an operator-run copy is not a creation
+// surface. The slug is preserved verbatim (BUG-3769): every other import door
+// canonicalizes it, but this is the same workspace on a new database, and its
+// slug is already in URLs, bookmarks and .pad.toml links.
+func migrateImportWorkspace(dst *store.Store, data *models.WorkspaceExport) (*models.Workspace, error) {
+	return dst.ImportWorkspace(data, "", "", "", store.WithPreservedSlug())
 }

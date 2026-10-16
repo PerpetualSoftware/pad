@@ -100,11 +100,11 @@ func TestBUG3656_KeptPartialImportRemapsReferences_Postgres(t *testing.T) {
 func keptPartialImportRemaps(t *testing.T, driver store.DriverType) {
 	dest := attachmentsServerOn(t, driver)
 	dest.attachmentMaxBytes = 1024 // the golden's blob fits, the added one does not
-	rr := postBundle(dest, "PartialRemap", packInterchangeBundle(t, withOversizedSecondAttachment(t, readInterchangeGolden(t))))
+	rr := postBundle(dest, "partialremap", packInterchangeBundle(t, withOversizedSecondAttachment(t, readInterchangeGolden(t))))
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "exceeds") {
 		t.Fatalf("want the keep path's 400 on the oversized blob, got %d %s", rr.Code, rr.Body.String())
 	}
-	ws, err := dest.store.GetWorkspaceBySlug("PartialRemap")
+	ws, err := dest.store.GetWorkspaceBySlug("partialremap")
 	if err != nil || ws == nil {
 		t.Fatalf("the partial workspace was not kept: %v %v", ws, err)
 	}
@@ -123,11 +123,11 @@ func TestBUG3655_ImportRemapsVersionHistory_Postgres(t *testing.T) {
 
 func importRemapsVersionHistory(t *testing.T, driver store.DriverType) {
 	dest := attachmentsServerOn(t, driver)
-	rr := postBundle(dest, "FullRemap", packInterchangeBundle(t, readInterchangeGolden(t)))
+	rr := postBundle(dest, "fullremap", packInterchangeBundle(t, readInterchangeGolden(t)))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("import: %d %s", rr.Code, rr.Body.String())
 	}
-	ws, err := dest.store.GetWorkspaceBySlug("FullRemap")
+	ws, err := dest.store.GetWorkspaceBySlug("fullremap")
 	if err != nil || ws == nil {
 		t.Fatalf("workspace: %v %v", ws, err)
 	}
@@ -137,11 +137,11 @@ func importRemapsVersionHistory(t *testing.T, driver store.DriverType) {
 func TestBUG3656_RemapFailureIsNotA201(t *testing.T) {
 	dest := attachmentsServerOn(t, store.DriverSQLite)
 	dest.importBundleRemapFault = func() error { return errors.New("injected remap failure") }
-	rr := postBundle(dest, "RemapFails", packInterchangeBundle(t, readInterchangeGolden(t)))
+	rr := postBundle(dest, "remapfails", packInterchangeBundle(t, readInterchangeGolden(t)))
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "attachment reference remap") {
 		t.Fatalf("a failed remap must fail the import, got %d %s", rr.Code, rr.Body.String())
 	}
-	ws, err := dest.store.GetWorkspaceBySlug("RemapFails")
+	ws, err := dest.store.GetWorkspaceBySlug("remapfails")
 	if err != nil || ws == nil {
 		t.Fatalf("the workspace should be kept, as on every keep-path error: %v %v", ws, err)
 	}

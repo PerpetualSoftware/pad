@@ -43,7 +43,7 @@ var limitedMints = []limitedMint{
 		name:    "CreateWorkspace",
 		feature: "workspaces",
 		competitor: func(t *testing.T, s *Store, tx execQueryer, owner string) {
-			if _, err := s.createWorkspaceQ(tx, models.WorkspaceCreate{Name: "competitor", OwnerID: owner}); err != nil {
+			if _, err := s.createWorkspaceQ(tx, models.WorkspaceCreate{Name: "competitor", OwnerID: owner}, false); err != nil {
 				t.Fatalf("competing workspace insert: %v", err)
 			}
 		},
@@ -57,7 +57,7 @@ var limitedMints = []limitedMint{
 		name:    "ImportWorkspace",
 		feature: "workspaces",
 		competitor: func(t *testing.T, s *Store, tx execQueryer, owner string) {
-			if _, err := s.createWorkspaceQ(tx, models.WorkspaceCreate{Name: "competitor", OwnerID: owner}); err != nil {
+			if _, err := s.createWorkspaceQ(tx, models.WorkspaceCreate{Name: "competitor", OwnerID: owner}, false); err != nil {
 				t.Fatalf("competing workspace insert: %v", err)
 			}
 		},
@@ -261,7 +261,7 @@ func TestLimitedMint_CreateAndImportOfOneName_NoLockCycle(t *testing.T) {
 		t.Fatalf("begin import-shaped tx: %v", err)
 	}
 	defer imp.Rollback()
-	if _, err := s.createWorkspaceQ(imp, models.WorkspaceCreate{Name: "same-name", OwnerID: u.ID}); err != nil {
+	if _, err := s.createWorkspaceQ(imp, models.WorkspaceCreate{Name: "same-name", OwnerID: u.ID}, false); err != nil {
 		t.Fatalf("import-shaped insert: %v", err)
 	}
 
