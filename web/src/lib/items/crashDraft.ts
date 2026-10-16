@@ -24,8 +24,14 @@ export interface CrashDraftSource {
 	itemId: () => string | null;
 	/** Whether that item holds edits the server may not have. */
 	atRisk: () => boolean;
-	/** Its markdown and the seq/body it was edited from, or null if unavailable. */
-	snapshot: () => { markdown: string; baseSeq: number; baseBody: string } | null;
+	/**
+	 * Its markdown and the seq/body it was edited from, or null if unavailable.
+	 * `rawBaseBody` is the stored body as read when the base is in the editor's
+	 * serialization rather than the row's (BUG-3850); restore may fall back to it.
+	 */
+	snapshot: () => { markdown: string; baseSeq: number; baseBody: string; rawBaseBody?: string } | null;
+	/** Called on every tick before anything else (BUG-3850: the confirmed base). */
+	observe?: () => void;
 	/** True while a confirmed sign-out is discarding: keep nothing then. */
 	discarding?: () => boolean;
 	/**
@@ -52,6 +58,7 @@ export function registerCrashDraftKeeper(
 	const tick = () => {
 		const userId = source.userId();
 		const itemId = source.itemId();
+		source.observe?.();
 		if (!userId || !itemId || source.discarding?.()) return;
 		if (source.atRisk()) {
 			const version = source.version?.();
@@ -59,7 +66,7 @@ export function registerCrashDraftKeeper(
 			const snap = source.snapshot();
 			if (!snap || snap.markdown.length > CRASH_DRAFT_MAX_CHARS) return;
 			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown) return;
-			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody })) {
+			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody, rawBody: snap.rawBaseBody })) {
 				last = { userId, itemId, markdown: snap.markdown, version };
 			}
 			return;

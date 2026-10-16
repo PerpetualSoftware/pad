@@ -31,6 +31,12 @@ export interface RefusedRawDraft {
 	 */
 	baseSeq?: number;
 	baseBody?: string;
+	/**
+	 * The stored body when the draft was kept, present only when `baseBody` is
+	 * the editor's snapshot rather than that row (BUG-3850). Restore retries
+	 * against it only while the stored body is still byte-equal to it.
+	 */
+	rawBaseBody?: string;
 }
 
 const PREFIX = 'pad:refused-raw-draft:';
@@ -61,10 +67,17 @@ export function keepRefusedRawDraft(
 	itemId: string,
 	markdown: string,
 	now = Date.now(),
-	base?: { seq: number; body: string },
+	base?: { seq: number; body: string; rawBody?: string },
 ): boolean {
 	if (!userId || !itemId) return false;
-	const value = JSON.stringify(base ? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body } : { markdown, savedAt: now });
+	// One write carries the text and every base it was taken against (BUG-3850):
+	// a base from one moment and a draft from another is how a false overlap,
+	// or a patch of text that was never the user's, comes back.
+	const value = JSON.stringify(
+		base
+			? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body, ...(base.rawBody !== undefined ? { rawBaseBody: base.rawBody } : {}) }
+			: { markdown, savedAt: now },
+	);
 	const s = storage();
 	if (!s) return false;
 	try {
@@ -127,6 +140,7 @@ export function readRefusedRawDraft(userId: string, itemId: string, now = Date.n
 		const out: RefusedRawDraft = { markdown: parsed.markdown, savedAt: parsed.savedAt };
 		if (typeof parsed.baseSeq === 'number') out.baseSeq = parsed.baseSeq;
 		if (typeof parsed.baseBody === 'string') out.baseBody = parsed.baseBody;
+		if (typeof parsed.rawBaseBody === 'string') out.rawBaseBody = parsed.rawBaseBody;
 		return out;
 	} catch {
 		return null;

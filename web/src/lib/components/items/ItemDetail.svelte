@@ -45,6 +45,7 @@
 	import RefusedRawDraftNotice from './RefusedRawDraftNotice.svelte';
 	import RestoredDraftResult from './RestoredDraftResult.svelte';
 	import { draftEdits } from '$lib/items/draftPatch';
+	import { createConfirmedBaseTracker } from '$lib/items/confirmedBase';
 	import { isBodyStale, isSetAside } from '$lib/items/staleBody';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -5072,7 +5073,23 @@
 		// (codex r1): the draft, the toast and the result belong to this user.
 		const identity = captureIdentity();
 		const stale = () => !item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity);
-		const edits = draftEdits(d.baseBody, d.markdown);
+		// BUG-3850: a rich draft's base is the editor's snapshot. If the stored
+		// body is still, byte for byte, the row the draft was kept beside, no
+		// flush has rewritten it into the editor's form and the editor-space
+		// anchors can miss on a raw-only form (a trailing newline, an autolink's
+		// brackets); the same changes anchored on that row are then tried once.
+		// Like any editor save, that retry also rewrites the raw-only forms in
+		// the hunks it touches to the editor's.
+		const rawRetry =
+			d.rawBaseBody !== undefined && d.rawBaseBody !== d.baseBody && (item.content ?? '') === d.rawBaseBody
+				? draftEdits(d.rawBaseBody, d.markdown)
+				: null;
+		let edits = draftEdits(d.baseBody, d.markdown);
+		let retried = false;
+		if (edits === null && rawRetry !== null) {
+			edits = rawRetry;
+			retried = true;
+		}
 		if (edits === null) {
 			refusedDraftConflict = { itemId: reqItemId, savedAt: d.savedAt, base: d.baseBody };
 			return;
@@ -5089,7 +5106,16 @@
 			// Stable per draft, so a retry after an unknown outcome is answered,
 			// not applied twice (TASK-3585).
 			const opKey = `restore-${reqItemId}-${d.savedAt}`;
-			const res = await api.items.patch(wsSlug, reqItemId, { edits, expected_seq: d.baseSeq, op_key: opKey });
+			let res: Awaited<ReturnType<typeof api.items.patch>>;
+			try {
+				res = await api.items.patch(wsSlug, reqItemId, { edits, expected_seq: d.baseSeq, op_key: retried ? `${opKey}-raw` : opKey });
+			} catch (e) {
+				// The server refuses a missing anchor without writing anything, so
+				// the raw-anchored retry cannot apply on top of a partial first try.
+				if (retried || rawRetry === null || rawRetry.length === 0 || !(e instanceof PadApiError && (e.code === 'patch_anchor_missing' || e.code === 'patch_anchor_ambiguous'))) throw e;
+				if (stale()) return;
+				res = await api.items.patch(wsSlug, reqItemId, { edits: rawRetry, expected_seq: d.baseSeq, op_key: `${opKey}-raw` });
+			}
 			if (stale()) return;
 			clearRefusedRawDraft(userId, reqItemId, d.markdown);
 			refusedDraft = null;
@@ -6354,7 +6380,7 @@
 	// server may not have, its markdown is kept every couple of seconds, with
 	// the seq and body it was edited from, so a tab that dies outright (no
 	// unload prompt, no teardown flush) still offers them on the next open.
-	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string } | null {
+	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string; rawBaseBody?: string } | null {
 		if (!item) return null;
 		// Whose typing is in the editor (the teardown flush's fence): after an
 		// identity change and before the reload re-stamps it, the text is the
@@ -6366,14 +6392,34 @@
 		const ctx = activeCollabContext;
 		if (!ctx || ctx.retired || ctx.itemId !== item.id) return null;
 		const md = collabFlusher.snapshot(ctx);
-		return md === null ? null : { markdown: md, ...base };
+		if (md === null) return null;
+		// BUG-3850: rich text is anchored on the editor's own last confirmed
+		// snapshot, in the serialization a flush writes, with the row kept
+		// beside it for a retry. No confirmed snapshot yet: the row, as before.
+		const confirmed = confirmedBase.current();
+		if (!confirmed) return { markdown: md, ...base };
+		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, rawBaseBody: base.baseBody };
 	}
+	const confirmedBase = createConfirmedBaseTracker({
+		context: () => {
+			const ctx = activeCollabContext;
+			return ctx && !ctx.retired && item && ctx.itemId === item.id && !rawMode ? ctx : null;
+		},
+		confirmed: () => {
+			const p = collabProvider;
+			return !!p && p.synced && !p.editsMayBeMissing && !p.editsAtRiskOnClose;
+		},
+		version: () => collabProvider?.docVersion ?? 0,
+		snapshot: () => (activeCollabContext ? collabFlusher.snapshot(activeCollabContext) : null),
+		seq: () => item?.seq ?? 0,
+	});
 	$effect(() => {
 		return registerCrashDraftKeeper({
 			userId: () => authStore.userId,
 			itemId: () => item?.id ?? null,
 			atRisk: () => (collabProvider?.editsAtRiskOnClose ?? false) || (rawContentSaver.dirty && !!item),
 			snapshot: crashDraftSnapshot,
+			observe: confirmedBase.refresh,
 			discarding: signOutDiscarding,
 			// Raw mode: its pending string; rich: the doc's update counter.
 			version: () => (rawContentSaver.dirty ? rawContentSaver.pending : `doc:${collabProvider?.docVersion ?? 0}`),
