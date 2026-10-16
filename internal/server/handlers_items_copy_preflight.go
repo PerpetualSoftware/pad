@@ -1444,8 +1444,9 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			// `other != nil` covers liveness (GetItem excludes
 			// soft-deleted rows, so a dead counterpart is not a child).
 			// The workspace guard is the same one the parent_id column
-			// branch applies: item_links carries no workspace predicate
-			// on the far end.
+			// branch applies. GetItemLinks already drops a row whose far
+			// end is outside the row's workspace (BUG-3776), so this
+			// guard is now defence in depth.
 			if legacyChildEdge && other != nil && other.WorkspaceID == sourceWorkspaceID {
 				countedChildren[other.ID] = true
 			}

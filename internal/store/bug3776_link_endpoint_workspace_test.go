@@ -1,0 +1,447 @@
+package store_test
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
+)
+
+// BUG-3776: a link row is scoped by its own workspace_id, but the readers that
+// enrich or count it joined its endpoint items without asking where THEY
+// live. No door writes a cross-workspace row (the link handler refuses a
+// target in another workspace), so one exists only as a legacy or malformed
+// row, which this test plants directly. Each reader must ignore it: a row
+// counts only when both endpoints live in the link row's workspace.
+//
+// Every assertion that a foreign row is absent sits next to a legitimate row
+// in the same reader that must be present, so a reader that returned nothing
+// at all could not pass.
+func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
+	for _, backend := range []struct {
+		name string
+		open func(t *testing.T) *store.Store
+	}{
+		{"SQLite", storetest.NewSQLite},
+		{"Postgres", storetest.NewPostgres}, // skips unless PAD_TEST_POSTGRES_URL is set
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			s := backend.open(t)
+
+			mkWS := func(slug string) (string, string) {
+				t.Helper()
+				ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: slug, Slug: slug})
+				if err != nil {
+					t.Fatalf("CreateWorkspace %s: %v", slug, err)
+				}
+				if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+					t.Fatalf("seed %s: %v", slug, err)
+				}
+				colls, err := s.ListCollections(ws.ID)
+				if err != nil {
+					t.Fatalf("ListCollections: %v", err)
+				}
+				for _, c := range colls {
+					if c.Slug == "tasks" {
+						return ws.ID, c.ID
+					}
+				}
+				t.Fatalf("no tasks collection in %s", slug)
+				return "", ""
+			}
+			wsA, tasksA := mkWS("bug3776-a")
+			wsB, tasksB := mkWS("bug3776-b")
+			item := func(ws, coll, title string) *models.Item {
+				t.Helper()
+				it, err := s.CreateItem(ws, coll, models.ItemCreate{Title: title})
+				if err != nil {
+					t.Fatalf("create %s: %v", title, err)
+				}
+				return it
+			}
+			a1 := item(wsA, tasksA, "A1 foreign parent")
+			a2 := item(wsA, tasksA, "A2 local parent")
+			a3 := item(wsA, tasksA, "A3 local child")
+			a4 := item(wsA, tasksA, "A4 foreign child only")
+			a5 := item(wsA, tasksA, "A5 child under a row filed in B")
+			a6 := item(wsA, tasksA, "A6 parent under a row filed in B")
+			a8 := item(wsA, tasksA, "A8 backlink target")
+			a7, err := s.CreateItem(wsA, tasksA, models.ItemCreate{Title: "A7 backlink source", Content: "Mentions [[A8 backlink target]] in its body."})
+			if err != nil {
+				t.Fatalf("create A7: %v", err)
+			}
+			b1 := item(wsB, tasksB, "B1 SECRET TITLE")
+			b2 := item(wsB, tasksB, "B2 backlink target")
+			a9 := item(wsA, tasksA, "A9 backlink source under B2")
+			a10 := item(wsA, tasksA, "A10 backlink source over B2")
+
+			// Legitimate rows, through the store's own doors: the controls.
+			if _, err := s.SetParentLinkAs(wsA, a3.ID, a2.ID, "user", ""); err != nil {
+				t.Fatalf("legit parent: %v", err)
+			}
+			if _, err := s.CreateItemLink(wsA, models.ItemLinkCreate{TargetID: a1.ID, LinkType: "blocks"}, a3.ID); err != nil {
+				t.Fatalf("legit blocks: %v", err)
+			}
+
+			// Malformed rows: workspace A's rows with one endpoint in B.
+			ts := time.Now().UTC().Format(time.RFC3339)
+			plant := func(id, ws, src, tgt, typ string) {
+				t.Helper()
+				if _, err := s.DB().Exec(fmt.Sprintf(
+					`INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_at) VALUES ('%s', '%s', '%s', '%s', '%s', '%s')`,
+					id, ws, src, tgt, typ, ts)); err != nil {
+					t.Fatalf("plant %s: %v", id, err)
+				}
+			}
+			plant("00000000-0000-0000-0000-000000037761", wsA, a1.ID, b1.ID, "parent") // A item under a B parent
+			plant("00000000-0000-0000-0000-000000037762", wsA, b1.ID, a4.ID, "parent") // a B child under an A item
+			plant("00000000-0000-0000-0000-000000037763", wsA, b1.ID, a2.ID, "blocks") // a B blocker of an A item
+			// The other malformed shape: both endpoints in A, the ROW filed in B.
+			// The workspace-scoped readers never see it; the ones reached by an
+			// item id or a parent id must not either.
+			plant("00000000-0000-0000-0000-000000037764", wsB, a5.ID, a6.ID, "parent")
+			// A backlink is hidden when its source is a child of the target; a
+			// row filed in B must not be what hides it.
+			plant("00000000-0000-0000-0000-000000037765", wsB, a7.ID, a8.ID, "parent")
+			// The same suppression, with the row filed in A and the TARGET in B:
+			// A9 a child of B2, and A10 B2's parent. Both A items mention B2
+			// across workspaces, so B2's backlinks seen from A must keep them.
+			plant("00000000-0000-0000-0000-000000037766", wsA, a9.ID, b2.ID, "parent")
+			plant("00000000-0000-0000-0000-000000037767", wsA, b2.ID, a10.ID, "parent")
+			for i, src := range []*models.Item{a9, a10} {
+				if _, err := s.DB().Exec(fmt.Sprintf(
+					`INSERT INTO item_wiki_links (source_item_id, target_kind, target_workspace_id, target_item_id, target_ref, position) VALUES ('%s', 'workspace_ref', '%s', '%s', 'bug3776-b::TASK-2', %d)`,
+					src.ID, wsB, b2.ID, i)); err != nil {
+					t.Fatalf("plant wiki link from %s: %v", src.Title, err)
+				}
+			}
+
+			t.Run("GetParentMap", func(t *testing.T) {
+				m, err := s.GetParentMap(wsA)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if m[a3.ID] != a2.ID {
+					t.Fatalf("control: A3's parent should be A2, map %v", m)
+				}
+				if p, ok := m[a1.ID]; ok {
+					t.Errorf("A1 maps to a parent in workspace B (%s)", p)
+				}
+				if _, ok := m[b1.ID]; ok {
+					t.Errorf("a workspace-B item is in workspace A's parent map")
+				}
+			})
+
+			t.Run("ListWorkspaceGraphLinks", func(t *testing.T) {
+				links, err := s.ListWorkspaceGraphLinks(wsA)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var control bool
+				for _, l := range links {
+					if l.SourceID == b1.ID || l.TargetID == b1.ID {
+						t.Errorf("graph edge to workspace B: %+v", l)
+					}
+					if l.SourceID == a3.ID && l.TargetID == a2.ID {
+						control = true
+					}
+				}
+				if !control {
+					t.Fatalf("control: the A3→A2 edge is missing from %+v", links)
+				}
+			})
+
+			t.Run("GetBlocksEdges", func(t *testing.T) {
+				edges, err := s.GetBlocksEdges(wsA)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var control bool
+				for _, e := range edges {
+					if e.SourceID == b1.ID {
+						t.Errorf("blocks edge from workspace B surfaces %q", e.SourceTitle)
+					}
+					if e.SourceID == a3.ID && e.TargetID == a1.ID {
+						control = true
+					}
+				}
+				if !control {
+					t.Fatalf("control: the A3 blocks A1 edge is missing from %+v", edges)
+				}
+			})
+
+			t.Run("GetItemLinks", func(t *testing.T) {
+				for _, it := range []*models.Item{a1, a2, a4} {
+					links, err := s.GetItemLinks(it.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, l := range links {
+						if l.SourceID == b1.ID || l.TargetID == b1.ID {
+							t.Errorf("%s: link to workspace B surfaces %q / %q", it.Title, l.SourceTitle, l.TargetTitle)
+						}
+					}
+				}
+				links, err := s.GetItemLinks(a2.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var control bool
+				for _, l := range links {
+					if l.SourceID == a3.ID {
+						control = true
+					}
+				}
+				if !control {
+					t.Fatalf("control: A2's child link from A3 is missing from %+v", links)
+				}
+			})
+
+			t.Run("GetParentForItem", func(t *testing.T) {
+				p, err := s.GetParentForItem(a1.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if p != nil {
+					t.Errorf("A1's parent resolves to workspace B: %q", p.TargetTitle)
+				}
+				p, err = s.GetParentForItem(a3.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if p == nil || p.TargetID != a2.ID {
+					t.Fatalf("control: A3's parent should be A2, got %+v", p)
+				}
+			})
+
+			t.Run("GetAllItemProgress", func(t *testing.T) {
+				prog, err := s.GetAllItemProgress(wsA, "tasks", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := map[string]int{}
+				for _, p := range prog {
+					got[p.ItemID] = p.Total
+				}
+				if got[a2.ID] != 1 {
+					t.Fatalf("control: A2 has one child (A3), progress total %d", got[a2.ID])
+				}
+				total, ok := got[a4.ID]
+				if !ok {
+					t.Fatal("control: A4 is missing from the progress list")
+				}
+				if total != 0 {
+					t.Errorf("A4 counts a workspace-B child: total %d", total)
+				}
+			})
+
+			t.Run("PopulateHasChildren", func(t *testing.T) {
+				items := []models.Item{*a2, *a4}
+				s.PopulateHasChildren(items)
+				if !items[0].HasChildren {
+					t.Fatal("control: A2 has a child")
+				}
+				if items[1].HasChildren {
+					t.Error("A4 has_children from a workspace-B child")
+				}
+			})
+
+			t.Run("a row filed in another workspace", func(t *testing.T) {
+				links, err := s.GetItemLinks(a6.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, l := range links {
+					t.Errorf("A6 shows a link filed in workspace B: %q → %q", l.SourceTitle, l.TargetTitle)
+				}
+				p, err := s.GetParentForItem(a5.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if p != nil {
+					t.Errorf("A5's parent comes from a row filed in workspace B: %q", p.TargetTitle)
+				}
+				prog, err := s.GetAllItemProgress(wsA, "tasks", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, pr := range prog {
+					if pr.ItemID == a6.ID && pr.Total != 0 {
+						t.Errorf("A6 counts a child through a row filed in B: total %d", pr.Total)
+					}
+				}
+				items := []models.Item{*a6}
+				s.PopulateHasChildren(items)
+				if items[0].HasChildren {
+					t.Error("A6 has_children through a row filed in B")
+				}
+				got, err := s.ListItems(wsA, models.ItemListParams{ParentLinkID: a6.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, it := range got {
+					t.Errorf("A6 lists %q as a child through a row filed in B", it.Title)
+				}
+				// The controls for these readers are in their own subtests above.
+			})
+
+			t.Run("child lists and single-item progress", func(t *testing.T) {
+				ids := func(items []models.Item) map[string]bool {
+					m := map[string]bool{}
+					for _, it := range items {
+						m[it.ID] = true
+					}
+					return m
+				}
+				kids, err := s.GetChildItems(a2.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !ids(kids)[a3.ID] {
+					t.Fatalf("control: GetChildItems(A2) should hold A3, got %d", len(kids))
+				}
+				for _, parent := range []*models.Item{a4, a6} {
+					kids, err := s.GetChildItems(parent.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, k := range kids {
+						t.Errorf("GetChildItems(%s) returns %q", parent.Title, k.Title)
+					}
+					listed, err := s.ListChildItems(parent.ID, store.ChildListParams{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, k := range listed {
+						t.Errorf("ListChildItems(%s) returns %q", parent.Title, k.Title)
+					}
+					total, _, err := s.GetItemProgress(parent.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if total != 0 {
+						t.Errorf("GetItemProgress(%s) total %d", parent.Title, total)
+					}
+				}
+				listed, err := s.ListChildItems(a2.ID, store.ChildListParams{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !ids(listed)[a3.ID] {
+					t.Fatal("control: ListChildItems(A2) should hold A3")
+				}
+				if total, _, err := s.GetItemProgress(a2.ID); err != nil || total != 1 {
+					t.Fatalf("control: GetItemProgress(A2) total %d, err %v", total, err)
+				}
+				byParent, err := s.GetChildItemsForParents([]string{a2.ID, a4.ID, a6.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !ids(byParent[a2.ID])[a3.ID] {
+					t.Fatal("control: GetChildItemsForParents should give A2 its child A3")
+				}
+				for _, parent := range []*models.Item{a4, a6} {
+					for _, k := range byParent[parent.ID] {
+						t.Errorf("GetChildItemsForParents gives %s the child %q", parent.Title, k.Title)
+					}
+				}
+			})
+
+			t.Run("backlink suppression", func(t *testing.T) {
+				bls, err := s.GetBacklinks(a8.ID, wsA, 50, 0, store.BacklinksVisibility{Unrestricted: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var seen bool
+				for _, bl := range bls {
+					if bl.SourceItemID == a7.ID {
+						seen = true
+					}
+				}
+				if !seen {
+					t.Errorf("A7's backlink to A8 is hidden by a parent row filed in workspace B (got %d backlinks)", len(bls))
+				}
+				n, err := s.CountBacklinks(a8.ID, wsA, store.BacklinksVisibility{Unrestricted: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n != len(bls) || n == 0 {
+					t.Errorf("CountBacklinks %d, GetBacklinks %d", n, len(bls))
+				}
+
+				// Target in B, row filed in A: each clause of the suppression
+				// is reached by one source (A9 through the child clause, A10
+				// through the parent clause), so dropping either predicate
+				// hides one of them.
+				bls, err = s.GetBacklinks(b2.ID, wsA, 50, 0, store.BacklinksVisibility{Unrestricted: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := map[string]bool{}
+				for _, bl := range bls {
+					got[bl.SourceItemID] = true
+				}
+				for _, src := range []*models.Item{a9, a10} {
+					if !got[src.ID] {
+						t.Errorf("%s's backlink to B2 is hidden by a parent row whose other endpoint is in workspace B (got %d backlinks)", src.Title, len(bls))
+					}
+				}
+				n, err = s.CountBacklinks(b2.ID, wsA, store.BacklinksVisibility{Unrestricted: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n != 2 {
+					t.Errorf("CountBacklinks(B2) from A = %d, want 2", n)
+				}
+			})
+
+			t.Run("ListItems parent filter", func(t *testing.T) {
+				// The filter takes a raw id, so a caller can name an item in
+				// another workspace (BUG-734's note on raw-UUID input).
+				got, err := s.ListItems(wsA, models.ItemListParams{ParentLinkID: b1.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, it := range got {
+					t.Errorf("workspace A lists %q under a workspace-B parent", it.Title)
+				}
+				got, err = s.ListItems(wsA, models.ItemListParams{ParentLinkID: a2.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(got) != 1 || got[0].ID != a3.ID {
+					t.Fatalf("control: A2's children should be [A3], got %d items", len(got))
+				}
+			})
+
+			t.Run("ListItems parent filter with a search term", func(t *testing.T) {
+				// A search term routes ListItems through listItemsFTS, which
+				// carries its own copy of the parent predicate.
+				got, err := s.ListItems(wsA, models.ItemListParams{ParentLinkID: b1.ID, Search: "foreign"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, it := range got {
+					t.Errorf("search lists %q under a workspace-B parent", it.Title)
+				}
+				got, err = s.ListItems(wsA, models.ItemListParams{ParentLinkID: a6.ID, Search: "child"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, it := range got {
+					t.Errorf("search lists %q under A6 through a row filed in B", it.Title)
+				}
+				got, err = s.ListItems(wsA, models.ItemListParams{ParentLinkID: a2.ID, Search: "local"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(got) != 1 || got[0].ID != a3.ID {
+					t.Fatalf("control: searching A2's children for 'local' should give [A3], got %d items", len(got))
+				}
+			})
+		})
+	}
+}
