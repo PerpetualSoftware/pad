@@ -1159,6 +1159,7 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = s.id
 		        AND il.target_id = ?
+		        AND il.workspace_id = s.workspace_id
 		        AND il.link_type IN (` + childTypes + `)
 		  )
 		  AND (s.parent_id IS NULL OR s.parent_id != ?)
@@ -1166,6 +1167,7 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = ?
 		        AND il.target_id = s.id
+		        AND il.workspace_id = s.workspace_id
 		        AND il.link_type IN (` + childTypes + `)
 		  )
 		  AND NOT EXISTS (
@@ -1298,6 +1300,7 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = s.id
 		        AND il.target_id = ?
+		        AND il.workspace_id = s.workspace_id
 		        AND il.link_type IN (` + childTypes + `)
 		  )
 		  AND (s.parent_id IS NULL OR s.parent_id != ?)
@@ -1305,6 +1308,7 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = ?
 		        AND il.target_id = s.id
+		        AND il.workspace_id = s.workspace_id
 		        AND il.link_type IN (` + childTypes + `)
 		  )
 		  AND NOT EXISTS (

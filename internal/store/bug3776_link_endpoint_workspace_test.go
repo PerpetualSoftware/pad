@@ -68,6 +68,11 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 			a4 := item(wsA, tasksA, "A4 foreign child only")
 			a5 := item(wsA, tasksA, "A5 child under a row filed in B")
 			a6 := item(wsA, tasksA, "A6 parent under a row filed in B")
+			a8 := item(wsA, tasksA, "A8 backlink target")
+			a7, err := s.CreateItem(wsA, tasksA, models.ItemCreate{Title: "A7 backlink source", Content: "Mentions [[A8 backlink target]] in its body."})
+			if err != nil {
+				t.Fatalf("create A7: %v", err)
+			}
 			b1 := item(wsB, tasksB, "B1 SECRET TITLE")
 
 			// Legitimate rows, through the store's own doors: the controls.
@@ -95,6 +100,9 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 			// The workspace-scoped readers never see it; the ones reached by an
 			// item id or a parent id must not either.
 			plant("00000000-0000-0000-0000-000000037764", wsB, a5.ID, a6.ID, "parent")
+			// A backlink is hidden when its source is a child of the target; a
+			// row filed in B must not be what hides it.
+			plant("00000000-0000-0000-0000-000000037765", wsB, a7.ID, a8.ID, "parent")
 
 			t.Run("GetParentMap", func(t *testing.T) {
 				m, err := s.GetParentMap(wsA)
@@ -259,6 +267,91 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 					t.Errorf("A6 lists %q as a child through a row filed in B", it.Title)
 				}
 				// The controls for these readers are in their own subtests above.
+			})
+
+			t.Run("child lists and single-item progress", func(t *testing.T) {
+				ids := func(items []models.Item) map[string]bool {
+					m := map[string]bool{}
+					for _, it := range items {
+						m[it.ID] = true
+					}
+					return m
+				}
+				kids, err := s.GetChildItems(a2.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !ids(kids)[a3.ID] {
+					t.Fatalf("control: GetChildItems(A2) should hold A3, got %d", len(kids))
+				}
+				for _, parent := range []*models.Item{a4, a6} {
+					kids, err := s.GetChildItems(parent.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, k := range kids {
+						t.Errorf("GetChildItems(%s) returns %q", parent.Title, k.Title)
+					}
+					listed, err := s.ListChildItems(parent.ID, store.ChildListParams{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, k := range listed {
+						t.Errorf("ListChildItems(%s) returns %q", parent.Title, k.Title)
+					}
+					total, _, err := s.GetItemProgress(parent.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if total != 0 {
+						t.Errorf("GetItemProgress(%s) total %d", parent.Title, total)
+					}
+				}
+				listed, err := s.ListChildItems(a2.ID, store.ChildListParams{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !ids(listed)[a3.ID] {
+					t.Fatal("control: ListChildItems(A2) should hold A3")
+				}
+				if total, _, err := s.GetItemProgress(a2.ID); err != nil || total != 1 {
+					t.Fatalf("control: GetItemProgress(A2) total %d, err %v", total, err)
+				}
+				byParent, err := s.GetChildItemsForParents([]string{a2.ID, a4.ID, a6.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !ids(byParent[a2.ID])[a3.ID] {
+					t.Fatal("control: GetChildItemsForParents should give A2 its child A3")
+				}
+				for _, parent := range []*models.Item{a4, a6} {
+					for _, k := range byParent[parent.ID] {
+						t.Errorf("GetChildItemsForParents gives %s the child %q", parent.Title, k.Title)
+					}
+				}
+			})
+
+			t.Run("backlink suppression", func(t *testing.T) {
+				bls, err := s.GetBacklinks(a8.ID, wsA, 50, 0, store.BacklinksVisibility{Unrestricted: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var seen bool
+				for _, bl := range bls {
+					if bl.SourceItemID == a7.ID {
+						seen = true
+					}
+				}
+				if !seen {
+					t.Errorf("A7's backlink to A8 is hidden by a parent row filed in workspace B (got %d backlinks)", len(bls))
+				}
+				n, err := s.CountBacklinks(a8.ID, wsA, store.BacklinksVisibility{Unrestricted: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n != len(bls) || n == 0 {
+					t.Errorf("CountBacklinks %d, GetBacklinks %d", n, len(bls))
+				}
 			})
 
 			t.Run("ListItems parent filter", func(t *testing.T) {

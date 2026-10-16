@@ -4857,7 +4857,8 @@ func (s *Store) GetItemProgress(parentItemID string) (total int, done int, err e
 		       COUNT(CASE WHEN %s AND NOT %s THEN 1 END)
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
-		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ? AND il.workspace_id = i.workspace_id
+		JOIN items par ON par.id = il.target_id AND par.workspace_id = il.workspace_id
 		WHERE i.deleted_at IS NULL
 	`, abandonedExpr, doneExpr, abandonedExpr, childLinkTypeSQL())), args...).Scan(&total, &done)
 	if err != nil {
@@ -4898,7 +4899,8 @@ func (s *Store) childrenDoneFiltersForParent(parentItemID string) []collectionDo
 		SELECT DISTINCT c.id, c.schema, c.settings
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
-		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ? AND il.workspace_id = i.workspace_id
+		JOIN items par ON par.id = il.target_id AND par.workspace_id = il.workspace_id
 		WHERE i.deleted_at IS NULL
 	`, childLinkTypeSQL())), parentItemID)
 	if err != nil {
@@ -5496,7 +5498,8 @@ func (s *Store) getChildItems(q childQueryer, parentItemID string, includeDelete
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
-		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ? AND il.workspace_id = i.workspace_id
+		JOIN items par ON par.id = il.target_id AND par.workspace_id = il.workspace_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL%s
@@ -5544,7 +5547,8 @@ func (s *Store) ListChildItems(parentItemID string, p ChildListParams) ([]models
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
-		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (` + childLinkTypeSQL() + `) AND il.target_id = ?
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (` + childLinkTypeSQL() + `) AND il.target_id = ? AND il.workspace_id = i.workspace_id
+		JOIN items par ON par.id = il.target_id AND par.workspace_id = il.workspace_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL`
@@ -5624,7 +5628,8 @@ func (s *Store) GetChildItemsForParents(parentIDs []string) (map[string][]models
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
-		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id IN (%s)
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id IN (%s) AND il.workspace_id = i.workspace_id
+		JOIN items par ON par.id = il.target_id AND par.workspace_id = il.workspace_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
