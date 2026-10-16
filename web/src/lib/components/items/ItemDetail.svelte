@@ -44,8 +44,8 @@
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 	import RefusedRawDraftNotice from './RefusedRawDraftNotice.svelte';
 	import RestoredDraftResult from './RestoredDraftResult.svelte';
-	import { draftEdits } from '$lib/items/draftPatch';
-	import { createConfirmedBaseTracker } from '$lib/items/confirmedBase';
+	import { planDraftRestore } from '$lib/items/draftPatch';
+	import { createConfirmedBaseTracker, providerConfirmed } from '$lib/items/confirmedBase';
 	import { isBodyStale, isSetAside } from '$lib/items/staleBody';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -5073,18 +5073,10 @@
 		// (codex r1): the draft, the toast and the result belong to this user.
 		const identity = captureIdentity();
 		const stale = () => !item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity);
-		// BUG-3850: a rich draft's base is the editor's snapshot. If the stored
-		// body is still, byte for byte, the row the draft was kept beside, no
-		// flush has rewritten it into the editor's form and the editor-space
-		// anchors can miss on a raw-only form (a trailing newline, an autolink's
-		// brackets); the same changes anchored on that row are then tried once.
-		// Like any editor save, that retry also rewrites the raw-only forms in
-		// the hunks it touches to the editor's.
-		const rawRetry =
-			d.rawBaseBody !== undefined && d.rawBaseBody !== d.baseBody && (item.content ?? '') === d.rawBaseBody
-				? draftEdits(d.rawBaseBody, d.markdown)
-				: null;
-		let edits = draftEdits(d.baseBody, d.markdown);
+		// BUG-3850: a rich draft is anchored on the editor's snapshot, with one
+		// retry on the raw row while the stored body is still that row.
+		const { edits: primary, rawRetry } = planDraftRestore(d, item.content ?? '');
+		let edits = primary;
 		let retried = false;
 		if (edits === null && rawRetry !== null) {
 			edits = rawRetry;
@@ -5112,7 +5104,7 @@
 			} catch (e) {
 				// The server refuses a missing anchor without writing anything, so
 				// the raw-anchored retry cannot apply on top of a partial first try.
-				if (retried || rawRetry === null || rawRetry.length === 0 || !(e instanceof PadApiError && (e.code === 'patch_anchor_missing' || e.code === 'patch_anchor_ambiguous'))) throw e;
+				if (retried || rawRetry === null || !(e instanceof PadApiError && (e.code === 'patch_anchor_missing' || e.code === 'patch_anchor_ambiguous'))) throw e;
 				if (stale()) return;
 				res = await api.items.patch(wsSlug, reqItemId, { edits: rawRetry, expected_seq: d.baseSeq, op_key: `${opKey}-raw` });
 			}
@@ -6405,10 +6397,7 @@
 			const ctx = activeCollabContext;
 			return ctx && !ctx.retired && item && ctx.itemId === item.id && !rawMode ? ctx : null;
 		},
-		confirmed: () => {
-			const p = collabProvider;
-			return !!p && p.synced && !p.editsMayBeMissing && !p.editsAtRiskOnClose;
-		},
+		confirmed: () => providerConfirmed(collabProvider),
 		version: () => collabProvider?.docVersion ?? 0,
 		snapshot: () => (activeCollabContext ? collabFlusher.snapshot(activeCollabContext) : null),
 		seq: () => item?.seq ?? 0,

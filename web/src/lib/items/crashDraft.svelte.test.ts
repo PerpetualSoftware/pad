@@ -117,4 +117,20 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')?.markdown).toBe('draft');
 		expect(readRefusedRawDraft('u1', 'old')).toBeNull();
 	});
+
+	it('BUG-3850: the raw row is kept beside an editor-snapshot base, in the same write', () => {
+		const h = harness({ snapshot: () => ({ markdown: 'draft', baseSeq: 4, baseBody: 'editor form', rawBaseBody: 'raw form\n' }) });
+		h.tick();
+		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'draft', savedAt: expect.any(Number), baseSeq: 4, baseBody: 'editor form', rawBaseBody: 'raw form\n' });
+	});
+
+	it('BUG-3850: observe runs on every tick, at risk or not', () => {
+		let n = 0;
+		const h = harness({ observe: () => n++ });
+		h.tick();
+		h.s.atRisk = false;
+		h.tick();
+		expect(n).toBe(2);
+	});
 });
+

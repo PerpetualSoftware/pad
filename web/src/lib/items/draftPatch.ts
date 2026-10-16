@@ -123,3 +123,36 @@ export function draftEdits(base: string, draft: string): DraftEdit[] | null {
 	}
 	return null;
 }
+
+export interface DraftRestorePlan {
+	/** The draft's changes anchored on its base, or null if they cannot be. */
+	edits: DraftEdit[] | null;
+	/**
+	 * The same changes anchored on the raw row the draft was kept beside, or
+	 * null when no retry is allowed (BUG-3850).
+	 */
+	rawRetry: DraftEdit[] | null;
+}
+
+/**
+ * What a restore of a kept draft sends (BUG-3850). A rich draft's base is the
+ * editor's snapshot, in the form a flush writes; `rawBaseBody` is the row as
+ * stored beside it. While the stored body is still byte-equal to that row, no
+ * flush has rewritten it into the editor's form, so the editor-form anchors
+ * can miss on a raw-only form (a trailing newline, an autolink's brackets)
+ * and the changes anchored on the row are allowed as one retry. Like any
+ * editor save, that retry also rewrites the raw-only forms in the hunks it
+ * sends to the editor's. Any other stored body: no retry, since only byte
+ * equality says the row anchors are still the body's.
+ */
+export function planDraftRestore(
+	d: { markdown: string; baseBody: string; rawBaseBody?: string },
+	storedBody: string,
+): DraftRestorePlan {
+	const edits = draftEdits(d.baseBody, d.markdown);
+	const rawRetry =
+		d.rawBaseBody !== undefined && d.rawBaseBody !== d.baseBody && storedBody === d.rawBaseBody
+			? draftEdits(d.rawBaseBody, d.markdown)
+			: null;
+	return { edits, rawRetry: rawRetry && rawRetry.length > 0 ? rawRetry : null };
+}

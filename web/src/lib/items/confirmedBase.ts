@@ -14,6 +14,22 @@
 // writes descends from it. It is refreshed on the keeper's tick only in that
 // state and only when the document moved.
 
+/** The provider flags `confirmed` reads; a structural slice of CollabProvider. */
+export interface ConfirmedProviderState {
+	synced: boolean;
+	editsMayBeMissing: boolean;
+	editsAtRiskOnClose: boolean;
+}
+
+/**
+ * True only when the server has every edit this tab made: synced (a partly
+ * replayed document is no base), and nothing unsent, owed, awaiting its
+ * barrier or awaiting a repair.
+ */
+export function providerConfirmed(p: ConfirmedProviderState | null | undefined): boolean {
+	return !!p && p.synced && !p.editsMayBeMissing && !p.editsAtRiskOnClose;
+}
+
 export interface ConfirmedBaseSource {
 	/** The context the snapshot belongs to (an item's collab session), or null. */
 	context: () => object | null;
