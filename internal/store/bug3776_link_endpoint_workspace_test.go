@@ -74,6 +74,9 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 				t.Fatalf("create A7: %v", err)
 			}
 			b1 := item(wsB, tasksB, "B1 SECRET TITLE")
+			b2 := item(wsB, tasksB, "B2 backlink target")
+			a9 := item(wsA, tasksA, "A9 backlink source under B2")
+			a10 := item(wsA, tasksA, "A10 backlink source over B2")
 
 			// Legitimate rows, through the store's own doors: the controls.
 			if _, err := s.SetParentLinkAs(wsA, a3.ID, a2.ID, "user", ""); err != nil {
@@ -103,6 +106,18 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 			// A backlink is hidden when its source is a child of the target; a
 			// row filed in B must not be what hides it.
 			plant("00000000-0000-0000-0000-000000037765", wsB, a7.ID, a8.ID, "parent")
+			// The same suppression, with the row filed in A and the TARGET in B:
+			// A9 a child of B2, and A10 B2's parent. Both A items mention B2
+			// across workspaces, so B2's backlinks seen from A must keep them.
+			plant("00000000-0000-0000-0000-000000037766", wsA, a9.ID, b2.ID, "parent")
+			plant("00000000-0000-0000-0000-000000037767", wsA, b2.ID, a10.ID, "parent")
+			for i, src := range []*models.Item{a9, a10} {
+				if _, err := s.DB().Exec(fmt.Sprintf(
+					`INSERT INTO item_wiki_links (source_item_id, target_kind, target_workspace_id, target_item_id, target_ref, position) VALUES ('%s', 'workspace_ref', '%s', '%s', 'bug3776-b::TASK-2', %d)`,
+					src.ID, wsB, b2.ID, i)); err != nil {
+					t.Fatalf("plant wiki link from %s: %v", src.Title, err)
+				}
+			}
 
 			t.Run("GetParentMap", func(t *testing.T) {
 				m, err := s.GetParentMap(wsA)
@@ -352,6 +367,31 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 				if n != len(bls) || n == 0 {
 					t.Errorf("CountBacklinks %d, GetBacklinks %d", n, len(bls))
 				}
+
+				// Target in B, row filed in A: each clause of the suppression
+				// is reached by one source (A9 through the child clause, A10
+				// through the parent clause), so dropping either predicate
+				// hides one of them.
+				bls, err = s.GetBacklinks(b2.ID, wsA, 50, 0, store.BacklinksVisibility{Unrestricted: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := map[string]bool{}
+				for _, bl := range bls {
+					got[bl.SourceItemID] = true
+				}
+				for _, src := range []*models.Item{a9, a10} {
+					if !got[src.ID] {
+						t.Errorf("%s's backlink to B2 is hidden by a parent row whose other endpoint is in workspace B (got %d backlinks)", src.Title, len(bls))
+					}
+				}
+				n, err = s.CountBacklinks(b2.ID, wsA, store.BacklinksVisibility{Unrestricted: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n != 2 {
+					t.Errorf("CountBacklinks(B2) from A = %d, want 2", n)
+				}
 			})
 
 			t.Run("ListItems parent filter", func(t *testing.T) {
@@ -370,6 +410,32 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 				}
 				if len(got) != 1 || got[0].ID != a3.ID {
 					t.Fatalf("control: A2's children should be [A3], got %d items", len(got))
+				}
+			})
+
+			t.Run("ListItems parent filter with a search term", func(t *testing.T) {
+				// A search term routes ListItems through listItemsFTS, which
+				// carries its own copy of the parent predicate.
+				got, err := s.ListItems(wsA, models.ItemListParams{ParentLinkID: b1.ID, Search: "foreign"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, it := range got {
+					t.Errorf("search lists %q under a workspace-B parent", it.Title)
+				}
+				got, err = s.ListItems(wsA, models.ItemListParams{ParentLinkID: a6.ID, Search: "child"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, it := range got {
+					t.Errorf("search lists %q under A6 through a row filed in B", it.Title)
+				}
+				got, err = s.ListItems(wsA, models.ItemListParams{ParentLinkID: a2.ID, Search: "local"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(got) != 1 || got[0].ID != a3.ID {
+					t.Fatalf("control: searching A2's children for 'local' should give [A3], got %d items", len(got))
 				}
 			})
 		})

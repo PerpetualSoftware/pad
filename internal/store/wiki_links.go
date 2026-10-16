@@ -1153,6 +1153,12 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 	// idx_links_target for O(1) lookups per candidate row; the
 	// items.parent_id checks are straight column comparisons.
 	// TASK-1607 / IDEA-1601.
+	//
+	// A link row suppresses only when BOTH its endpoints live in the
+	// row's own workspace (BUG-3776): s is tied by il.workspace_id =
+	// s.workspace_id, and the other endpoint (the target) by the EXISTS
+	// on items te. Without the second half, a malformed row filed in A
+	// whose target lives in B would hide a real backlink to the B item.
 	childTypes := childLinkTypeSQL()
 	relClause := `
 		  AND NOT EXISTS (
@@ -1161,6 +1167,7 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		        AND il.target_id = ?
 		        AND il.workspace_id = s.workspace_id
 		        AND il.link_type IN (` + childTypes + `)
+		        AND EXISTS (SELECT 1 FROM items te WHERE te.id = il.target_id AND te.workspace_id = il.workspace_id)
 		  )
 		  AND (s.parent_id IS NULL OR s.parent_id != ?)
 		  AND NOT EXISTS (
@@ -1169,6 +1176,7 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		        AND il.target_id = s.id
 		        AND il.workspace_id = s.workspace_id
 		        AND il.link_type IN (` + childTypes + `)
+		        AND EXISTS (SELECT 1 FROM items te WHERE te.id = il.source_id AND te.workspace_id = il.workspace_id)
 		  )
 		  AND NOT EXISTS (
 		      SELECT 1 FROM items t
@@ -1302,6 +1310,7 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 		        AND il.target_id = ?
 		        AND il.workspace_id = s.workspace_id
 		        AND il.link_type IN (` + childTypes + `)
+		        AND EXISTS (SELECT 1 FROM items te WHERE te.id = il.target_id AND te.workspace_id = il.workspace_id)
 		  )
 		  AND (s.parent_id IS NULL OR s.parent_id != ?)
 		  AND NOT EXISTS (
@@ -1310,6 +1319,7 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 		        AND il.target_id = s.id
 		        AND il.workspace_id = s.workspace_id
 		        AND il.link_type IN (` + childTypes + `)
+		        AND EXISTS (SELECT 1 FROM items te WHERE te.id = il.source_id AND te.workspace_id = il.workspace_id)
 		  )
 		  AND NOT EXISTS (
 		      SELECT 1 FROM items t
