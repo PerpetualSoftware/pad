@@ -49,6 +49,13 @@
 		 * sent, and the preview is read again. Absent outside collab mode.
 		 */
 		flushEdits?: () => Promise<'flushed' | 'deduped' | 'failed' | 'skipped'>;
+		/**
+		 * Told when an accept starts and when it settles (BUG-3852). The dialog
+		 * can be closed while the request is in flight, which hands the page
+		 * back; a page whose own form can be edited and saved locks it until
+		 * then, so nothing it writes races the update. Told false on unmount.
+		 */
+		onBusyChange?: (busy: boolean) => void;
 	}
 
 	let {
@@ -61,12 +68,18 @@
 		canEdit,
 		hasUnsavedEdits,
 		onAccepted,
-		flushEdits
+		flushEdits,
+		onBusyChange
 	}: Props = $props();
 
 	let offer = $state<BuiltinStateResponse | null>(null);
 	let open = $state(false);
 	let busy = $state(false);
+	$effect(() => {
+		const b = busy;
+		untrack(() => onBusyChange?.(b));
+	});
+	onDestroy(() => onBusyChange?.(false));
 	let errorMessage = $state<string | null>(null);
 	// Set when the server refused because an open editor holds unflushed
 	// edits: the next Accept may then discard them, and says so.
