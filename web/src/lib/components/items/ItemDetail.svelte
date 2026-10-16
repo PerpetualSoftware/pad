@@ -2903,6 +2903,8 @@
 			// reading "pending" forever. Settle arms an idle flushNow, which
 			// either flushes a real difference or dedupes and stamps.
 			onOpLogCursor: () => settleCollabIfCurrent(ctx),
+			// BUG-3850: the confirmed base, taken before any later keystroke.
+			onConfirmed: () => confirmedBase.refresh(),
 			onForceRefresh: () => {
 				// BUG-3697: no keystroke is accepted that this recovery would
 				// then discard. Frozen in the same task as the capture below.
@@ -6390,7 +6392,7 @@
 		// beside it for a retry. No confirmed snapshot yet: the row, as before.
 		const confirmed = confirmedBase.current();
 		if (!confirmed) return { markdown: md, ...base };
-		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, rawBaseBody: base.baseBody };
+		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, rawBaseBody: confirmed.raw };
 	}
 	const confirmedBase = createConfirmedBaseTracker({
 		context: () => {
@@ -6401,6 +6403,7 @@
 		version: () => collabProvider?.docVersion ?? 0,
 		snapshot: () => (activeCollabContext ? collabFlusher.snapshot(activeCollabContext) : null),
 		seq: () => item?.seq ?? 0,
+		raw: () => item?.content ?? '',
 	});
 	$effect(() => {
 		return registerCrashDraftKeeper({

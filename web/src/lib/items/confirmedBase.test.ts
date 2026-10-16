@@ -5,7 +5,7 @@ import { createConfirmedBaseTracker, providerConfirmed } from './confirmedBase';
 function harness() {
 	const ctxA = {};
 	const ctxB = {};
-	const s = { context: ctxA as object | null, confirmed: true, version: 1, markdown: 'one' as string | null, seq: 5, snapshots: 0 };
+	const s = { context: ctxA as object | null, confirmed: true, version: 1, markdown: 'one' as string | null, seq: 5, raw: 'one\n', snapshots: 0 };
 	const t = createConfirmedBaseTracker({
 		context: () => s.context,
 		confirmed: () => s.confirmed,
@@ -15,6 +15,7 @@ function harness() {
 			return s.markdown;
 		},
 		seq: () => s.seq,
+		raw: () => s.raw,
 	});
 	return { s, t, ctxA, ctxB };
 }
@@ -38,7 +39,7 @@ describe('confirmed base tracker (BUG-3850)', () => {
 	it('takes the snapshot and its seq while confirmed', () => {
 		const h = harness();
 		h.t.refresh();
-		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5 });
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, raw: 'one\n' });
 	});
 
 	it('never takes a snapshot while edits may be missing; the last confirmed one stands', () => {
@@ -49,7 +50,7 @@ describe('confirmed base tracker (BUG-3850)', () => {
 		h.s.markdown = 'one plus unconfirmed typing';
 		h.s.seq = 6;
 		h.t.refresh();
-		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5 });
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, raw: 'one\n' });
 		expect(h.s.snapshots).toBe(1);
 	});
 
@@ -71,7 +72,7 @@ describe('confirmed base tracker (BUG-3850)', () => {
 		h.s.seq = 9;
 		h.t.refresh();
 		expect(h.s.snapshots).toBe(2);
-		expect(h.t.current()).toEqual({ markdown: 'two', seq: 9 });
+		expect(h.t.current()).toEqual({ markdown: 'two', seq: 9, raw: 'one\n' });
 	});
 
 	it('the seq is the one at capture, not a later one', () => {
@@ -93,7 +94,7 @@ describe('confirmed base tracker (BUG-3850)', () => {
 		expect(h.t.current()).toBeNull();
 		h.s.confirmed = true;
 		h.t.refresh();
-		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5 });
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, raw: 'one\n' });
 	});
 
 	it('no context drops the held snapshot', () => {
@@ -111,6 +112,14 @@ describe('confirmed base tracker (BUG-3850)', () => {
 		h.s.version = 2;
 		h.s.markdown = null;
 		h.t.refresh();
-		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5 });
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, raw: 'one\n' });
+	});
+
+	it('the row is the one read with the snapshot, not a later one, so seq and row are one pair', () => {
+		const h = harness();
+		h.t.refresh();
+		h.s.raw = 'a newer row';
+		h.s.seq = 8;
+		expect(h.t.current()).toEqual({ markdown: 'one', seq: 5, raw: 'one\n' });
 	});
 });

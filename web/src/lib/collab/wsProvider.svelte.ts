@@ -267,6 +267,12 @@ export interface CollabProviderOptions {
 	 */
 	onOpLogCursor?: (opLogID: number) => void;
 	/**
+	 * Called the moment a barrier ack confirms every local edit this tab sent
+	 * (BUG-3850): the document is then exactly what the server holds, before
+	 * any later keystroke can join it. Errors are caught and logged.
+	 */
+	onConfirmed?: () => void;
+	/**
 	 * The items.content generation (`item.seq`) this provider's Y.Doc was
 	 * SEEDED from (BUG-2264). Announced to the server as `?content_seq=<seq>`
 	 * on every (re)connect. If it predates the item's most recent version
@@ -446,6 +452,7 @@ export class CollabProvider {
 	private readonly onApplierPatch?: ApplierPatchHandler;
 	private readonly onForceRefresh?: ForceRefreshHandler;
 	private readonly onOpLogCursor?: (opLogID: number) => void;
+	private readonly onConfirmed?: () => void;
 	/**
 	 * items.content generation the Y.Doc was seeded from, announced as
 	 * `?content_seq=` on every (re)connect (BUG-2264). Constant per provider.
@@ -474,6 +481,7 @@ export class CollabProvider {
 		this.onApplierPatch = options.onApplierPatch;
 		this.onForceRefresh = options.onForceRefresh;
 		this.onOpLogCursor = options.onOpLogCursor;
+		this.onConfirmed = options.onConfirmed;
 		this.contentSeq = options.contentSeq ?? 0;
 		// Restore the per-tab cursor BEFORE the first connect. The
 		// `since=<id>` query string is appended in connect() each
@@ -1091,6 +1099,13 @@ export class CollabProvider {
 				if (this.localSendSeq === pending.covers) {
 					this.localSentOnSocket = false;
 					this.repairPending = false;
+					if (!this.editsMayBeMissing) {
+						try {
+							this.onConfirmed?.();
+						} catch (err) {
+							console.warn('collab: onConfirmed handler threw', err);
+						}
+					}
 				}
 				return;
 			}

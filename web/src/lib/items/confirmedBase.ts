@@ -11,8 +11,11 @@
 // awaiting its barrier (editsMayBeMissing, not editsAtRiskOnClose, which
 // leaves the barrier wait out and would let a base swallow just-typed text).
 // Everything in it is in the op-log, so any body a flush or the materializer
-// writes descends from it. It is refreshed on the keeper's tick only in that
-// state and only when the document moved.
+// writes descends from it. It is refreshed on the keeper's tick and on the
+// provider's barrier ack (onConfirmed), only in that state and only when the
+// document moved. The ack refresh matters: a base a tick old lacks text the
+// server holds, and an anchor is a substring, so typing on the last line
+// would send that text again ('A' → 'A T U' over a stored 'A T').
 
 /** The provider flags `confirmed` reads; a structural slice of CollabProvider. */
 export interface ConfirmedProviderState {
@@ -41,11 +44,15 @@ export interface ConfirmedBaseSource {
 	snapshot: () => string | null;
 	/** The item's seq now. */
 	seq: () => number;
+	/** The stored body as this tab last read it, taken with the snapshot. */
+	raw: () => string;
 }
 
 export interface ConfirmedBase {
 	markdown: string;
 	seq: number;
+	/** The row read at the same moment, so seq and row are one pair. */
+	raw: string;
 }
 
 export interface ConfirmedBaseTracker {
@@ -70,7 +77,7 @@ export function createConfirmedBaseTracker(source: ConfirmedBaseSource): Confirm
 			if (held && held.context === context && held.version === version) return;
 			const markdown = source.snapshot();
 			if (markdown === null) return;
-			held = { context, version, base: { markdown, seq: source.seq() } };
+			held = { context, version, base: { markdown, seq: source.seq(), raw: source.raw() } };
 		},
 		current() {
 			const context = source.context();
