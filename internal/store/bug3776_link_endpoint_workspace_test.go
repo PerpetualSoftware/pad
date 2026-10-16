@@ -268,10 +268,20 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				var a6Seen bool
 				for _, pr := range prog {
-					if pr.ItemID == a6.ID && pr.Total != 0 {
+					if pr.ItemID != a6.ID {
+						continue
+					}
+					a6Seen = true
+					if pr.Total != 0 {
 						t.Errorf("A6 counts a child through a row filed in B: total %d", pr.Total)
 					}
+				}
+				// Present first, as the A4 check is (TASK-3857): a reader that
+				// dropped A6's row would otherwise pass the total check above.
+				if !a6Seen {
+					t.Error("A6 is missing from the progress list")
 				}
 				items := []models.Item{*a6}
 				s.PopulateHasChildren(items)
