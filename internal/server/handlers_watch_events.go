@@ -325,7 +325,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 				if !watchStreamDelivers(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, access, n) {
 					continue
 				}
-				if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
+				if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(visCache, n)); err != nil {
 					slog.Debug("watch-events: replay write failed, closing", "user_id", user.ID, "error", err)
 					return
 				}
@@ -415,7 +415,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			if !watchStreamDelivers(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, access, n) {
 				continue
 			}
-			if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
+			if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(visCache, n)); err != nil {
 				slog.Debug("watch-events: notification write failed, closing", "user_id", user.ID, "error", err)
 				return
 			}
@@ -595,10 +595,19 @@ type watchVisCache struct {
 	// staying stuck for the rest of the connection.
 	deny bool
 	m    map[string]watchAccessVisibility
+	// slugs memoises each workspace's slug for the payload's "workspace"
+	// field, so a burst of notifications costs one GetWorkspaceByID per
+	// workspace per tick on this stream instead of one per notification
+	// (BUG-3773). A slug never changes (UpdateWorkspace writes name,
+	// description and settings only), but a workspace can be soft-deleted,
+	// after which the payload carries the raw id; reset() clears the map so
+	// that shows within one reval tick, the same bound visibility already
+	// has. A failed resolve is not stored.
+	slugs map[string]string
 }
 
 func newWatchVisCache(s *Server, r *http.Request, user *models.User) *watchVisCache {
-	c := &watchVisCache{s: s, bearerAuth: isBearerAuth(r), user: user, m: make(map[string]watchAccessVisibility)}
+	c := &watchVisCache{s: s, bearerAuth: isBearerAuth(r), user: user, m: make(map[string]watchAccessVisibility), slugs: make(map[string]string)}
 	c.refreshUser()
 	return c
 }
@@ -621,6 +630,7 @@ func (c *watchVisCache) forWorkspace(workspaceID string) watchAccessVisibility {
 
 func (c *watchVisCache) reset() {
 	c.m = make(map[string]watchAccessVisibility)
+	c.slugs = make(map[string]string)
 	c.refreshUser()
 }
 
@@ -660,6 +670,21 @@ func (c *watchVisCache) refreshUser() {
 	}
 	c.user = fresh
 	c.deny = false
+}
+
+// workspaceSlug resolves a workspace id to its slug, memoised per stream
+// (see slugs). A resolution failure degrades to the raw id, as the payload
+// always did, and is not memoised, so the next notification tries again.
+func (c *watchVisCache) workspaceSlug(workspaceID string) string {
+	if slug, ok := c.slugs[workspaceID]; ok {
+		return slug
+	}
+	ws, err := c.s.store.GetWorkspaceByID(workspaceID)
+	if err != nil || ws == nil {
+		return workspaceID
+	}
+	c.slugs[workspaceID] = ws.Slug
+	return ws.Slug
 }
 
 // loadWatchPredicates returns the caller's active watches as
@@ -851,9 +876,10 @@ func parseWatchPredicate(raw string) (field, value string, ok bool) {
 	return raw[:idx], raw[idx+1:], true
 }
 
-// watchEventPayloadFor resolves a Notification's WorkspaceID to its
-// slug (DOC-2479's payload carries a human-facing "workspace", matching
-// item_ref's human-facing shape rather than an internal UUID). A
+// watchEventPayloadFor builds a Notification's wire payload. Its
+// "workspace" is the slug (DOC-2479's payload carries a human-facing
+// "workspace", matching item_ref's human-facing shape rather than an
+// internal UUID), resolved through the stream's cache (BUG-3773). A
 // resolution failure degrades to the raw ID rather than dropping the
 // event — the caller still gets everything else in the payload.
 //
@@ -866,11 +892,8 @@ func parseWatchPredicate(raw string) (field, value string, ok bool) {
 // with a fallback to the category for actors that have no display name
 // (e.g. a webhook or system-sourced mutation), rather than adding a
 // second field DOC-2479 doesn't specify.
-func watchEventPayloadFor(s *Server, n watchevents.Notification) watchEventPayload {
-	workspaceSlug := n.WorkspaceID
-	if ws, err := s.store.GetWorkspaceByID(n.WorkspaceID); err == nil && ws != nil {
-		workspaceSlug = ws.Slug
-	}
+func watchEventPayloadFor(c *watchVisCache, n watchevents.Notification) watchEventPayload {
+	workspaceSlug := c.workspaceSlug(n.WorkspaceID)
 	actor := n.ActorName
 	if actor == "" {
 		actor = n.Actor
