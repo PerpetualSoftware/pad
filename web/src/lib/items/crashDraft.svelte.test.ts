@@ -1,5 +1,5 @@
 // TASK-3606: crash drafts. jsdom (localStorage), with the interval injected.
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { registerCrashDraftKeeper, CRASH_DRAFT_MAX_CHARS, type CrashDraftSource } from './crashDraft';
 import { readRefusedRawDraft, keepRefusedRawDraft } from './refusedRawDraft';
 
@@ -207,6 +207,23 @@ describe('crash drafts (TASK-3606)', () => {
 		g.tick();
 		fire();
 		expect(readRefusedRawDraft('u1', 'i1'), 'cleared on confirmation: nothing to flag').toBeNull();
+	});
+
+	it('BUG-3850 r9: a send never overwrites a newer draft another producer kept', () => {
+		let fire: () => void = () => {};
+		const h = harness({ onSent: (fn) => ((fire = fn), () => {}) });
+		h.tick();
+		// The session-expiry keeper keeps the editor's newer text, with no base.
+		keepRefusedRawDraft('u1', 'i1', 'draft and more');
+		fire();
+		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'draft and more', savedAt: expect.any(Number) });
+		// And the keeper gives up on it: a later send (every keystroke) does not
+		// even read the store again.
+		const reads = vi.spyOn(Storage.prototype, 'getItem');
+		fire();
+		expect(reads).not.toHaveBeenCalled();
+		reads.mockRestore();
+		expect(readRefusedRawDraft('u1', 'i1')?.markdown).toBe('draft and more');
 	});
 
 	it('BUG-3850 r8: stopping the keeper unsubscribes', () => {

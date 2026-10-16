@@ -10,7 +10,7 @@
 // Switching items clears nothing; a draft whose edits did land reads as the
 // stored body on the next open and is cleared there silently ('clear' arm).
 
-import { keepRefusedRawDraft, clearRefusedRawDraft } from './refusedRawDraft';
+import { keepRefusedRawDraft, clearRefusedRawDraft, readRefusedRawDraft } from './refusedRawDraft';
 
 /** How often the keeper looks while it is registered. */
 export const CRASH_DRAFT_INTERVAL_MS = 2000;
@@ -89,6 +89,12 @@ export function registerCrashDraftKeeper(
 
 	const unsubscribe = source.onSent?.(() => {
 		if (!last || last.stale || last.userId !== source.userId() || last.itemId !== source.itemId()) return;
+		// Only the draft this keeper wrote (r9 hunter-2): a newer keep by another
+		// producer (keepAtRiskText) is left as it is; this one is done.
+		if (readRefusedRawDraft(last.userId, last.itemId)?.markdown !== last.markdown) {
+			last = { ...last, stale: true };
+			return;
+		}
 		if (keepRefusedRawDraft(last.userId, last.itemId, last.markdown, Date.now(), { seq: last.baseSeq, body: last.baseBody, stale: true })) {
 			last = { ...last, stale: true, base: JSON.stringify([last.baseSeq, last.baseBody, true]) };
 		}
