@@ -267,6 +267,18 @@ export interface CollabProviderOptions {
 	 */
 	onOpLogCursor?: (opLogID: number) => void;
 	/**
+	 * Called the moment a barrier ack confirms every local edit this tab sent
+	 * (BUG-3850): the document is then exactly what the server holds, before
+	 * any later keystroke can join it. Errors are caught and logged.
+	 */
+	onConfirmed?: () => void;
+	/**
+	 * Called just BEFORE a local update goes out on the socket (BUG-3850 r8):
+	 * from here on the server may hold it, so a crash draft kept on an older
+	 * base is flagged before the frame leaves. Errors are caught and logged.
+	 */
+	onLocalSend?: () => void;
+	/**
 	 * The items.content generation (`item.seq`) this provider's Y.Doc was
 	 * SEEDED from (BUG-2264). Announced to the server as `?content_seq=<seq>`
 	 * on every (re)connect. If it predates the item's most recent version
@@ -446,6 +458,8 @@ export class CollabProvider {
 	private readonly onApplierPatch?: ApplierPatchHandler;
 	private readonly onForceRefresh?: ForceRefreshHandler;
 	private readonly onOpLogCursor?: (opLogID: number) => void;
+	private readonly onConfirmed?: () => void;
+	private readonly onLocalSend?: () => void;
 	/**
 	 * items.content generation the Y.Doc was seeded from, announced as
 	 * `?content_seq=` on every (re)connect (BUG-2264). Constant per provider.
@@ -474,6 +488,8 @@ export class CollabProvider {
 		this.onApplierPatch = options.onApplierPatch;
 		this.onForceRefresh = options.onForceRefresh;
 		this.onOpLogCursor = options.onOpLogCursor;
+		this.onConfirmed = options.onConfirmed;
+		this.onLocalSend = options.onLocalSend;
 		this.contentSeq = options.contentSeq ?? 0;
 		// Restore the per-tab cursor BEFORE the first connect. The
 		// `since=<id>` query string is appended in connect() each
@@ -515,6 +531,9 @@ export class CollabProvider {
 			// the version the crash-draft keeper checks before serializing
 			// (TASK-3606). Counted before the echo skip below on purpose.
 			this.docVersion++;
+			// BUG-3850 (lead ruling baa63dc3): remote updates alone, so a
+			// crash draft can tell its base predates a collaborator's change.
+			if (origin === this) this.remoteDocVersion++;
 			// Skip ops that came from us applying a server message —
 			// otherwise we'd echo every remote keystroke back to the
 			// server (which would persist + rebroadcast it again).
@@ -1091,6 +1110,13 @@ export class CollabProvider {
 				if (this.localSendSeq === pending.covers) {
 					this.localSentOnSocket = false;
 					this.repairPending = false;
+					if (!this.editsMayBeMissing) {
+						try {
+							this.onConfirmed?.();
+						} catch (err) {
+							console.warn('collab: onConfirmed handler threw', err);
+						}
+					}
 				}
 				return;
 			}
@@ -1546,12 +1572,29 @@ export class CollabProvider {
 	 */
 	docVersion = 0;
 
+	/** Bumped only by updates applied from a server message (BUG-3850). Not reactive. */
+	remoteDocVersion = 0;
+
+	/**
+	 * Moves each time this tab's local updates go out on a socket (BUG-3850,
+	 * lead ruling a6380212): the server may hold them before any barrier says
+	 * so. Not reactive.
+	 */
+	get localSentVersion(): number {
+		return this.localSendSeq;
+	}
+
 	get editsAtRiskOnClose(): boolean {
 		return this.unsentLocalEdits || this.catchUpOwed || this.repairPending;
 	}
 
 	/** A local update is going out on the open socket (BUG-3523). */
 	private markLocalSent(): void {
+		try {
+			this.onLocalSend?.();
+		} catch (err) {
+			console.warn('collab: onLocalSend handler threw', err);
+		}
 		this.localSentOnSocket = true;
 		this.localSendSeq++;
 		clearTimeout(this.barrierTimer);

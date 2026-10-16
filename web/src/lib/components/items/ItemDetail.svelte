@@ -44,7 +44,8 @@
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 	import RefusedRawDraftNotice from './RefusedRawDraftNotice.svelte';
 	import RestoredDraftResult from './RestoredDraftResult.svelte';
-	import { draftEdits } from '$lib/items/draftPatch';
+	import { restoreEdits } from '$lib/items/draftPatch';
+	import { createConfirmedBaseTracker, providerConfirmed, registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR } from '$lib/items/confirmedBase';
 	import { isBodyStale, isSetAside } from '$lib/items/staleBody';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -2902,6 +2903,11 @@
 			// reading "pending" forever. Settle arms an idle flushNow, which
 			// either flushes a real difference or dedupes and stamps.
 			onOpLogCursor: () => settleCollabIfCurrent(ctx),
+			// BUG-3850: the confirmed base, taken before any later keystroke.
+			onConfirmed: () => confirmedBase.refresh(),
+			onLocalSend: () => {
+				for (const fn of localSendListeners) fn();
+			},
 			onForceRefresh: () => {
 				// BUG-3697: no keystroke is accepted that this recovery would
 				// then discard. Frozen in the same task as the capture below.
@@ -5054,6 +5060,19 @@
 		}
 	}
 
+	// BUG-3850 (lead ruling 0337bf77): a rich draft's changes are anchored in
+	// the editor's form, and only an open editor applies a patch to the
+	// document in that form; the stored row may hold raw-only forms (a
+	// trailing newline, underscore emphasis) the anchors miss. So the patch
+	// restore waits until this tab's editor is mounted and its CURRENT
+	// connection is synced, and says why. Copy is always offered. A stale base
+	// never patches (r7 hunter-L1), so it goes straight to the conflict notice.
+	let restoreBlocked = $derived(
+		refusedDraft && !refusedDraft.baseStale && !rawMode && draftAppliesAsPatch(refusedDraft, item?.seq ?? 0) && restoreWaitsForEditor(collabProvider, !!editorInstance)
+			? RESTORE_WAITS_FOR_EDITOR
+			: null,
+	);
+
 	/** A crash draft with its base, on an item someone has saved since. */
 	function draftAppliesAsPatch(d: RefusedRawDraft, seq: number): d is RefusedRawDraft & { baseSeq: number; baseBody: string } {
 		return d.baseSeq !== undefined && d.baseBody !== undefined && seq > d.baseSeq;
@@ -5072,7 +5091,9 @@
 		// (codex r1): the draft, the toast and the result belong to this user.
 		const identity = captureIdentity();
 		const stale = () => !item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity);
-		const edits = draftEdits(d.baseBody, d.markdown);
+		// BUG-3850 (lead ruling baa63dc3): a base that predates a remote update
+		// takes the conflict notice, never the patch.
+		const edits = restoreEdits(d);
 		if (edits === null) {
 			refusedDraftConflict = { itemId: reqItemId, savedAt: d.savedAt, base: d.baseBody };
 			return;
@@ -5146,6 +5167,7 @@
 			return;
 		}
 		if (draftAppliesAsPatch(d, item.seq ?? 0)) {
+			if (restoreBlocked) return;
 			await applyRefusedDraftChanges(d);
 			return;
 		}
@@ -6354,7 +6376,7 @@
 	// server may not have, its markdown is kept every couple of seconds, with
 	// the seq and body it was edited from, so a tab that dies outright (no
 	// unload prompt, no teardown flush) still offers them on the next open.
-	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string } | null {
+	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string; baseStale?: boolean } | null {
 		if (!item) return null;
 		// Whose typing is in the editor (the teardown flush's fence): after an
 		// identity change and before the reload re-stamps it, the text is the
@@ -6366,17 +6388,53 @@
 		const ctx = activeCollabContext;
 		if (!ctx || ctx.retired || ctx.itemId !== item.id) return null;
 		const md = collabFlusher.snapshot(ctx);
-		return md === null ? null : { markdown: md, ...base };
+		if (md === null) return null;
+		// BUG-3850: rich text is anchored on the editor's own last confirmed
+		// snapshot, in the serialization a flush writes. No confirmed snapshot
+		// yet: the row, flagged stale. It was read before the provider's sync,
+		// so this tab cannot say the server holds nothing it lacks (lead ruling
+		// baa63dc3, r5 hunter-L1); such a draft restores through the conflict
+		// notice.
+		const confirmed = confirmedBase.current();
+		if (!confirmed) return { markdown: md, ...base, baseStale: true };
+		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, ...(confirmed.remoteAfter || confirmed.sentAfter ? { baseStale: true } : {}) };
 	}
+	const confirmedBase = createConfirmedBaseTracker({
+		context: () => {
+			const ctx = activeCollabContext;
+			return ctx && !ctx.retired && item && ctx.itemId === item.id && !rawMode ? ctx : null;
+		},
+		confirmed: () => providerConfirmed(collabProvider),
+		version: () => collabProvider?.docVersion ?? 0,
+		remoteVersion: () => collabProvider?.remoteDocVersion ?? 0,
+		sentVersion: () => collabProvider?.localSentVersion ?? 0,
+		snapshot: () => (activeCollabContext ? collabFlusher.snapshot(activeCollabContext) : null),
+		seq: () => item?.seq ?? 0,
+	});
+	// BUG-3850 (lead ruling c9db9612): the base is refreshed before the first
+	// local keystroke after a collaborator's change, while the editor still
+	// holds the document without it.
+	$effect(() => {
+		const ed = editorInstance;
+		if (!ed) return;
+		return registerRefreshBeforeLocalChange(ed as never, confirmedBase.refresh);
+	});
+	// BUG-3850 r8: the provider's pre-send hook reaches the keeper through this.
+	const localSendListeners = new Set<() => void>();
 	$effect(() => {
 		return registerCrashDraftKeeper({
 			userId: () => authStore.userId,
 			itemId: () => item?.id ?? null,
 			atRisk: () => (collabProvider?.editsAtRiskOnClose ?? false) || (rawContentSaver.dirty && !!item),
 			snapshot: crashDraftSnapshot,
+			observe: confirmedBase.refresh,
 			discarding: signOutDiscarding,
 			// Raw mode: its pending string; rich: the doc's update counter.
 			version: () => (rawContentSaver.dirty ? rawContentSaver.pending : `doc:${collabProvider?.docVersion ?? 0}`),
+			onSent: (fn) => {
+				localSendListeners.add(fn);
+				return () => localSendListeners.delete(fn);
+			},
 		});
 	});
 
@@ -7379,6 +7437,7 @@
 					<RefusedRawDraftNotice
 						savedAt={refusedDraft.savedAt}
 						busy={refusedDraftBusy}
+						restoreBlocked={restoreBlocked}
 						newer={refusedDraft.baseSeq !== undefined && (item?.seq ?? 0) > refusedDraft.baseSeq}
 						appliesChanges={draftAppliesAsPatch(refusedDraft, item?.seq ?? 0)}
 						conflict={refusedDraftConflict && refusedDraftConflict.itemId === item?.id && refusedDraftConflict.savedAt === refusedDraft.savedAt && refusedDraftConflict.base === refusedDraft.baseBody

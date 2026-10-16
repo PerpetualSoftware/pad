@@ -26,6 +26,11 @@
 		 * hand. Restore is not offered; Copy leads.
 		 */
 		conflict?: { base: string; draft: string } | null;
+		/**
+		 * Why Restore is not offered yet (BUG-3850): shown, with Restore
+		 * disabled and Copy leading. Null when it can run.
+		 */
+		restoreBlocked?: string | null;
 	}
 
 	let {
@@ -36,10 +41,11 @@
 		ondismiss,
 		newer = false,
 		appliesChanges = false,
-		conflict = null
+		conflict = null,
+		restoreBlocked = null
 	}: Props = $props();
 
-	let copyLeads = $derived(conflict !== null || (newer && !appliesChanges));
+	let copyLeads = $derived(conflict !== null || restoreBlocked !== null || (newer && !appliesChanges));
 
 	let when = $derived(new Date(savedAt).toLocaleString());
 </script>
@@ -65,12 +71,15 @@
 	{:else if newer}
 		<p class="newer">This item changed after these edits were made; restoring replaces the newer version.</p>
 	{/if}
+	{#if restoreBlocked && !conflict}
+		<p data-testid="refused-raw-draft-waiting">{restoreBlocked}</p>
+	{/if}
 	<div class="actions">
 		{#if conflict}
 			<Button variant="primary" size="sm" disabled={busy} onclick={oncopy}>Copy it</Button>
 		{:else if copyLeads}
 			<Button variant="primary" size="sm" disabled={busy} onclick={oncopy}>Copy it</Button>
-			<Button variant="secondary" size="sm" disabled={busy} onclick={onrestore}>Restore it</Button>
+			<Button variant="secondary" size="sm" disabled={busy || restoreBlocked !== null} onclick={onrestore}>Restore it</Button>
 		{:else}
 			<Button variant="primary" size="sm" disabled={busy} onclick={onrestore}>Restore it</Button>
 			<Button variant="secondary" size="sm" disabled={busy} onclick={oncopy}>Copy it</Button>

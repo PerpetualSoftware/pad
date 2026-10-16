@@ -243,3 +243,61 @@ describe('editsMayBeMissing (BUG-3526)', () => {
 		expect(provider.editsMayBeMissing).toBe(true);
 	});
 });
+
+// BUG-3850 r8 (hunter-1): the crash keeper flags its draft from this hook, so it
+// must run BEFORE the frame leaves: after it, a tab that dies leaves a draft
+// that says nothing was sent while the server may hold the text.
+describe('onLocalSend fires before every local send (BUG-3850 r8)', () => {
+	function connectHooked(seen: number[]) {
+		doc = new Y.Doc();
+		provider = new CollabProvider('item-3850', doc, {
+			url: 'ws://test.invalid/api/v1/collab/item-3850',
+			WebSocketImpl: FakeSocket as unknown as typeof WebSocket,
+			onLocalSend: () => seen.push(FakeSocket.all.at(-1)!.sent.length),
+		});
+		const sock = FakeSocket.all.at(-1)!;
+		sock.dispatchEvent(new Event('open'));
+		sock.control({ type: 'op_log_cursor', op_log_id: 1 });
+		return sock;
+	}
+
+	it('a live edit: once, before its frame', () => {
+		const seen: number[] = [];
+		const sock = connectHooked(seen);
+		const before = sock.sent.length;
+		doc.getText('t').insert(0, 'x');
+		expect(seen).toEqual([before]);
+		expect(catchUps(sock), 'the frame went out after the hook').toBe(1);
+	});
+
+	it('offline typing: no hook while nothing goes out; the reconnect catch-up fires it before its frame', async () => {
+		const seen: number[] = [];
+		const first = connectHooked(seen);
+		first.drop();
+		doc.getText('t').insert(0, 'typed offline');
+		expect(seen, 'nothing sent while closed').toEqual([]);
+		const second = await reconnect(first);
+		expect(catchUps(second), 'premise: the catch-up went out').toBe(1);
+		expect(seen.length).toBe(1);
+		const catchUpAt = second.sent.findIndex((f) => typeof f !== 'string' && f[0] === 0 && f[1] === 2);
+		expect(seen[0], 'the hook ran before the catch-up frame was queued').toBeLessThanOrEqual(catchUpAt);
+	});
+
+	it('a throwing hook does not stop the send', () => {
+		doc = new Y.Doc();
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		provider = new CollabProvider('item-3850', doc, {
+			url: 'ws://test.invalid/api/v1/collab/item-3850',
+			WebSocketImpl: FakeSocket as unknown as typeof WebSocket,
+			onLocalSend: () => {
+				throw new Error('boom');
+			},
+		});
+		const sock = FakeSocket.all.at(-1)!;
+		sock.dispatchEvent(new Event('open'));
+		sock.control({ type: 'op_log_cursor', op_log_id: 1 });
+		doc.getText('t').insert(0, 'x');
+		expect(catchUps(sock)).toBe(1);
+		warn.mockRestore();
+	});
+});

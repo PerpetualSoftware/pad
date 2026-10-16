@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { draftEdits, applyDraftEdits, MAX_DRAFT_EDITS } from './draftPatch';
+import { draftEdits, applyDraftEdits, restoreEdits, MAX_DRAFT_EDITS } from './draftPatch';
 
 const BASE = ['# Title', '', 'Paragraph one.', '', 'Paragraph two.', '', 'Paragraph three.', ''].join('\n');
 
@@ -91,3 +91,56 @@ describe('draftEdits', () => {
 		}
 	});
 });
+
+// BUG-3850: a rich crash draft's text is the editor's serialization, and so is
+// the live document an open editor applies a restore patch to (the restore
+// waits for that editor, lead ruling 0337bf77). The raw row a CLI or MCP
+// writer stored need not be: it can end in a newline, or hold a form the
+// editor serializes differently.
+describe('a rich draft anchored on the editor snapshot (BUG-3850)', () => {
+	// As the CLI stores it: a trailing newline and underscore emphasis.
+	const RAW = 'An _emphasised_ word first.\n\nParagraph two.\n\nParagraph three.\n';
+	// As the editor serializes the same document.
+	const EDITOR = 'An *emphasised* word first.\n\nParagraph two.\n\nParagraph three.';
+	const DRAFT = EDITOR.replace('Paragraph three.', 'Paragraph three. Typed offline.');
+	const DRAFT_P1 = EDITOR.replace('first.', 'first. Mine.');
+
+	it('premise: anchored on the raw row, the draft misses the editor-form document (the reported false overlap)', () => {
+		expect(applyDraftEdits(EDITOR, draftEdits(RAW, DRAFT)!)).toBeNull();
+	});
+
+	it('anchored on the snapshot, it applies to the editor-form document, at either end', () => {
+		expect(applyDraftEdits(EDITOR, draftEdits(EDITOR, DRAFT)!)).toBe(DRAFT);
+		expect(applyDraftEdits(EDITOR, draftEdits(EDITOR, DRAFT_P1)!)).toBe(DRAFT_P1);
+	});
+
+	it('why the restore needs the open editor: the snapshot anchors on a raw-only form miss the raw row', () => {
+		expect(applyDraftEdits(RAW, draftEdits(EDITOR, DRAFT_P1)!)).toBeNull();
+	});
+
+	it('a patch and its undo in the open editor: the snapshot lacks the undone line, so only the typing is sent', () => {
+		// The agent's patch landed in the row; its undo is only in the editor (and the op-log).
+		const row = 'Paragraph one.\n\nAn agent line, undone.\n\nParagraph two.';
+		const snapshot = 'Paragraph one.\n\nParagraph two.';
+		const draft = 'Paragraph one.\n\nParagraph two. Mine.';
+		expect(applyDraftEdits(snapshot, draftEdits(row, draft)!), 'premise: the row base conflicts').toBeNull();
+		expect(applyDraftEdits(snapshot, draftEdits(snapshot, draft)!)).toBe(draft);
+	});
+
+	it('control: a genuine concurrent edit of the same line still conflicts', () => {
+		const theirs = EDITOR.replace('Paragraph three.', 'Paragraph three, theirs.');
+		expect(applyDraftEdits(theirs, draftEdits(EDITOR, DRAFT)!)).toBeNull();
+	});
+});
+
+// Lead ruling baa63dc3: a base taken before a remote update is never patched from.
+describe('restoreEdits (BUG-3850)', () => {
+	it('a stale base: no edits, so restore takes the conflict notice; premise: the patch would duplicate', () => {
+		expect(applyDraftEdits('A C', draftEdits('A', 'A C U')!)).toBe('A C U C');
+		expect(restoreEdits({ markdown: 'A C U', baseBody: 'A', baseStale: true })).toBeNull();
+	});
+	it('otherwise the draft edits on its base', () => {
+		expect(restoreEdits({ markdown: 'A C U', baseBody: 'A C' })).toEqual(draftEdits('A C', 'A C U'));
+	});
+});
+

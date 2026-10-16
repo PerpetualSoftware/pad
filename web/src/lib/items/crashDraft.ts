@@ -10,7 +10,7 @@
 // Switching items clears nothing; a draft whose edits did land reads as the
 // stored body on the next open and is cleared there silently ('clear' arm).
 
-import { keepRefusedRawDraft, clearRefusedRawDraft } from './refusedRawDraft';
+import { keepRefusedRawDraft, clearRefusedRawDraft, readRefusedRawDraft } from './refusedRawDraft';
 
 /** How often the keeper looks while it is registered. */
 export const CRASH_DRAFT_INTERVAL_MS = 2000;
@@ -25,7 +25,9 @@ export interface CrashDraftSource {
 	/** Whether that item holds edits the server may not have. */
 	atRisk: () => boolean;
 	/** Its markdown and the seq/body it was edited from, or null if unavailable. */
-	snapshot: () => { markdown: string; baseSeq: number; baseBody: string } | null;
+	snapshot: () => { markdown: string; baseSeq: number; baseBody: string; baseStale?: boolean } | null;
+	/** Called on every tick before anything else (BUG-3850: the confirmed base). */
+	observe?: () => void;
 	/** True while a confirmed sign-out is discarding: keep nothing then. */
 	discarding?: () => boolean;
 	/**
@@ -34,6 +36,13 @@ export interface CrashDraftSource {
 	 * unchanged large document is not re-serialized every tick.
 	 */
 	version?: () => unknown;
+	/**
+	 * Subscribe to "a local update is about to be sent" (BUG-3850 r8 hunter-1).
+	 * The server may hold it from then on, so the draft kept here is rewritten
+	 * flagged stale at once: the next tick may never come, and on a reconnect's
+	 * catch-up it would clear the draft rather than flag it.
+	 */
+	onSent?: (fn: () => void) => () => void;
 }
 
 /**
@@ -47,20 +56,26 @@ export function registerCrashDraftKeeper(
 		return () => clearInterval(t);
 	},
 ): () => void {
-	let last: { userId: string; itemId: string; markdown: string; version: unknown } | null = null;
+	let last: { userId: string; itemId: string; markdown: string; version: unknown; base: string; baseSeq: number; baseBody: string; stale: boolean } | null = null;
 
 	const tick = () => {
 		const userId = source.userId();
 		const itemId = source.itemId();
+		source.observe?.();
 		if (!userId || !itemId || source.discarding?.()) return;
 		if (source.atRisk()) {
 			const version = source.version?.();
 			if (version !== undefined && last && last.userId === userId && last.itemId === itemId && last.version === version) return;
 			const snap = source.snapshot();
 			if (!snap || snap.markdown.length > CRASH_DRAFT_MAX_CHARS) return;
-			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown) return;
-			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody })) {
-				last = { userId, itemId, markdown: snap.markdown, version };
+			// The base is part of what was kept: the same text over a base that
+			// has since moved, or turned stale, is a different draft (BUG-3850
+			// r5: a remote ' C' the user deleted again within one tick leaves the
+			// markdown as it was and the base stale).
+			const base = JSON.stringify([snap.baseSeq, snap.baseBody, snap.baseStale === true]);
+			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown && last.base === base) return;
+			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody, stale: snap.baseStale })) {
+				last = { userId, itemId, markdown: snap.markdown, version, base, baseSeq: snap.baseSeq, baseBody: snap.baseBody, stale: snap.baseStale === true };
 			}
 			return;
 		}
@@ -72,6 +87,21 @@ export function registerCrashDraftKeeper(
 		}
 	};
 
+	const unsubscribe = source.onSent?.(() => {
+		if (!last || last.stale || last.userId !== source.userId() || last.itemId !== source.itemId()) return;
+		// Only the draft this keeper wrote (r9 hunter-2): a newer keep by another
+		// producer (keepAtRiskText) is left as it is; this one is done.
+		if (readRefusedRawDraft(last.userId, last.itemId)?.markdown !== last.markdown) {
+			last = { ...last, stale: true };
+			return;
+		}
+		if (keepRefusedRawDraft(last.userId, last.itemId, last.markdown, Date.now(), { seq: last.baseSeq, body: last.baseBody, stale: true })) {
+			last = { ...last, stale: true, base: JSON.stringify([last.baseSeq, last.baseBody, true]) };
+		}
+	});
 	const stop = schedule(tick, CRASH_DRAFT_INTERVAL_MS);
-	return stop;
+	return () => {
+		stop();
+		unsubscribe?.();
+	};
 }
