@@ -16,6 +16,7 @@
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import BuiltinUpdateNotice from '$lib/components/items/BuiltinUpdateNotice.svelte';
 	import {
 		playbookFieldsPatch,
 		storedFormMismatches,
@@ -55,6 +56,10 @@
 	// arguments and settings show nowhere else.
 	let canEdit = $derived(!!item && workspaceStore.canEditItem(item));
 	let exporting = $state(false);
+	// A built-in update's Accept is in flight (BUG-3852): the form is locked
+	// until it settles, so no edit or Save can race the update.
+	let accepting = $state(false);
+	let locked = $derived(!canEdit || accepting);
 
 	// Scroll position restoration (BUG-1425). Form pages are usually short
 	// enough that scroll position isn't critical, but if the body grows the
@@ -149,6 +154,7 @@
 
 	async function loadItem(ws: string, slugOrRef: string) {
 		loading = true;
+		accepting = false;
 		// Clear the previously-loaded playbook BEFORE the new fetch so a
 		// stale playbook isn't editable under a fresh URL while a 404 is
 		// in flight (Codex round 4 P2). The catch path then leaves item
@@ -275,7 +281,7 @@
 	// re-baselined BEFORE any navigation, so leaving right after a successful
 	// save never asks about changes that were just stored.
 	async function save(close = false) {
-		if (!item || !canEdit) return;
+		if (!item || locked) return;
 		// BUG-3115: refuse a too-long title before sending; the form keeps it.
 		// Only a CHANGED title: save() always re-sends it, and a legacy title
 		// over the limit is grandfathered by the server as long as it is echoed.
@@ -408,9 +414,43 @@
 					type="text"
 					value={title}
 					placeholder="Playbook title"
-					readonly={!canEdit}
+					readonly={locked}
 					oninput={(e) => (title = (e.currentTarget as HTMLInputElement).value)}
 				/>
+				<!-- Built-in update nudge (BUG-3852): the Library's "Update available"
+				     card opens a playbook here, so the review and Accept must live
+				     here too, not only in the item pane. The body is a plain textarea,
+				     so the only edits the server cannot see are this form's own:
+				     Accept refuses while it is dirty or saving. Keyed by item, so a
+				     route change remounts it and a late accept for the previous
+				     playbook reloads nothing. Null-safe props: an accept's reload
+				     clears `item` while the notice's request is still settling, and
+				     it reads itemId after that. -->
+				{#key item.id}{@const shownId = item.id}
+				<BuiltinUpdateNotice
+					{wsSlug}
+					itemId={item?.id ?? ''}
+					itemRef={item?.slug ?? ''}
+					seq={item?.seq ?? 0}
+					currentContent={item?.content ?? ''}
+					currentFields={item?.fields ?? ''}
+					{canEdit}
+					hasUnsavedEdits={() => dirty || saving}
+					onBusyChange={(b) => {
+						if (item?.id === shownId) accepting = b;
+					}}
+					onAccepted={() => {
+						if (item?.id !== shownId) return;
+						// The form is locked while the request runs, so this is
+						// only a backstop: never reload over an edit.
+						if (dirty) {
+							toastStore.show("Updated to Pad's library version. Your unsaved changes are still in the form: reload to see the update.", 'info');
+							return;
+						}
+						void loadItem(wsSlug, ref);
+					}}
+				/>
+				{/key}
 			</div>
 			<div class="header-actions">
 				{#if canEdit}
@@ -429,14 +469,14 @@
 				{#if canEdit}
 					<Button
 						variant="secondary"
-						disabled={saving || !title.trim()}
+						disabled={saving || accepting || !title.trim()}
 						onclick={() => save(true)}
 					>
 						Save and close
 					</Button>
 					<Button
 						variant="primary"
-						disabled={saving || !title.trim()}
+						disabled={saving || accepting || !title.trim()}
 						onclick={() => save()}
 					>
 						{saving ? 'Saving…' : 'Save'}
@@ -454,7 +494,7 @@
 				{/each}
 				<!-- A disabled fieldset disables every control the form renders,
 				     including the argument builder's add and remove buttons. -->
-				<fieldset class="form-fieldset" disabled={!canEdit}>
+				<fieldset class="form-fieldset" disabled={locked}>
 				<PlaybookFormFields
 					{wsSlug}
 					selfItemId={item.id}
@@ -484,7 +524,7 @@
 					id="pbe-body"
 					class="body-textarea"
 					value={bodyContent}
-					readonly={!canEdit}
+					readonly={locked}
 					oninput={(e) => (bodyContent = (e.currentTarget as HTMLTextAreaElement).value)}
 					placeholder="Describe what this playbook does, its arguments, steps, defaults, and stop conditions."
 				></textarea>
