@@ -83,8 +83,13 @@ test('a shown kept draft survives the keeper and a reload, and the newer text is
 	await expect(again.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
 	const notice = again.getByTestId('refused-raw-draft');
 	await expect(notice).toBeVisible({ timeout: SYNC_TIMEOUT });
-	// Restore writes the SHOWN draft as the body: D, not E.
+	// Restore writes the SHOWN draft as the body: D, not E. The dead tab never
+	// flushed its collab row, so the server asks first (BUG-3230's dialog);
+	// restoring deliberately overwrites it.
 	await notice.getByRole('button', { name: 'Restore it' }).click();
+	const ask = again.getByRole('dialog').filter({ hasText: 'Unsaved edits in an open tab' });
+	await expect(ask, 'premise: the dead tab left an unflushed row').toBeVisible({ timeout: SYNC_TIMEOUT });
+	await ask.getByRole('button', { name: 'Overwrite them' }).click();
 	await expect.poll(async () => (await read()).content, { timeout: SYNC_TIMEOUT, message: 'D is what was offered and restored' }).toContain(D);
 	expect((await read()).content).not.toContain('Typed E');
 	await expect.poll(() => slots(again)).toMatchObject({ held: null, pending: expect.stringContaining('Typed E while D is shown.') });

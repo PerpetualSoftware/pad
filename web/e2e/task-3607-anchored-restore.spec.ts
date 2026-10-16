@@ -142,13 +142,16 @@ test('a shown draft rewritten as stale in storage is not patched when Restore is
 	test.setTimeout(120_000);
 	const { id, ref, base, key, headers } = await setUp(request, fixture, `TASK-3856 flipped ${Date.now()}`);
 	await collaboratorWrites(request, fixture, id, headers, base.content.replace('Paragraph one.', 'Paragraph one, theirs.'));
-	const draft = { markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'), savedAt: Date.now(), baseSeq: base.seq, baseBody: base.content };
+	// Kept by a live keeper in another tab (BUG-3863: stamped with its id).
+	const draft = { markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'), savedAt: Date.now(), baseSeq: base.seq, baseBody: base.content, keeper: 'k-other-tab' };
 
 	const { ctx, page } = await openWithDraft(browser, fixture, ref, key, draft);
 	const notice = page.getByTestId('refused-raw-draft');
 	await expect(notice, 'premise: shown as a patch restore').toContainText('restoring applies only your changes');
-	// The keeper's onSent rewrite: same text, same base, flagged stale.
-	await page.evaluate(([k, v]) => localStorage.setItem(k, v), [key, JSON.stringify({ ...draft, savedAt: draft.savedAt + 1, baseStale: true })] as const);
+	// This tab held it (BUG-3863); that keeper's send then flags the held
+	// copy stale by its id: same text, same base.
+	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'premise: the shown draft was held').toBeNull();
+	await page.evaluate(([k, v]) => localStorage.setItem(`${k}:held`, v), [key, JSON.stringify({ ...draft, baseStale: true })] as const);
 	await notice.getByRole('button', { name: 'Restore it' }).click();
 
 	await expect(notice.getByTestId('refused-raw-draft-stale')).toBeVisible();
