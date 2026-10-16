@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -126,6 +129,100 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 			if deleted[deletedCollGranted.ID] || rows[deletedCollGranted.ID] != nil {
 				t.Error("a granted item in a deleted collection reached the caller (BUG-3333)")
 			}
+
+			// Paged one row at a time, the walk delivers the same two rows
+			// (hunter r1 Q1): the window and cursor are over visible rows,
+			// and the archived granted row is one of them.
+			var walked []string
+			for _, p := range bug3791Walk(t, srv, ws.Slug, cookie, since.UnixMilli(), 1, nil) {
+				for _, it := range p.Updated {
+					walked = append(walked, it.ID)
+				}
+			}
+			slices.Sort(walked)
+			want := []string{archivedGranted.ID, liveGranted.ID}
+			slices.Sort(want)
+			if !slices.Equal(walked, want) {
+				t.Errorf("limit=1 walk returned %v, want exactly the archived and the live granted item %v", walked, want)
+			}
 		})
+	}
+}
+
+// A granted item is no longer tested against the visible-collection list
+// (BUG-3796), so for an app request the grant list's own ceiling is the only
+// one that applies to it. The include-deleted variant must keep an archived
+// granted item inside the ceiling and drop one outside it (hunter r1 Q1). Not
+// reachable through a route today (app tokens are refused on /api/v1), so this
+// drives the filter /changes calls, as BUG-3424's test does.
+func TestBUG3796_ArchivedGrantKeepsTheAppCeiling(t *testing.T) {
+	srv := testServer(t)
+	mkUser := func(email, role string) *models.User {
+		u, err := srv.store.CreateUser(models.UserCreate{Email: email, Name: email, Password: "correct-horse-battery-staple", Role: role})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	owner, member := mkUser("owner@example.com", "admin"), mkUser("member@example.com", "member")
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Ceiling 3796", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []struct{ id, role string }{{owner.ID, "owner"}, {member.ID, "editor"}} {
+		if err := srv.store.AddWorkspaceMember(ws.ID, m.id, m.role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	coll := func(name, slug, prefix string) *models.Collection {
+		c, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: name, Slug: slug, Prefix: prefix, Schema: schema})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	inside, outside := coll("Inside", "inside", "INS"), coll("Outside", "outside", "OUT")
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{}); err != nil {
+		t.Fatal(err)
+	}
+	archived := func(c *models.Collection, title string) *models.Item {
+		it, err := srv.store.CreateItem(ws.ID, c.ID, models.ItemCreate{Title: title, Fields: `{"status":"open"}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.store.CreateItemGrant(ws.ID, it.ID, member.ID, "view", owner.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.store.DeleteItem(it.ID); err != nil {
+			t.Fatal(err)
+		}
+		return it
+	}
+	inItem, outItem := archived(inside, "archived, inside the ceiling"), archived(outside, "archived, outside the ceiling")
+
+	filter := func(ac *appContext) []string {
+		t.Helper()
+		r := httptest.NewRequest("GET", "/", nil)
+		ctx := WithCurrentUser(r.Context(), member)
+		if ac != nil {
+			ctx = context.WithValue(ctx, appCtxKey{}, ac)
+		}
+		_, items, err := srv.guestResourceFilterIncludeDeletedItems(r.WithContext(ctx), ws.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return items
+	}
+	// Control: without an app context both archived grants are in the list.
+	if items := filter(nil); !slices.Contains(items, inItem.ID) || !slices.Contains(items, outItem.ID) {
+		t.Fatalf("control: granted items %v; want both archived grants", items)
+	}
+	items := filter(&appContext{WorkspaceID: ws.ID, ReadCeiling: []string{inside.ID}})
+	if slices.Contains(items, outItem.ID) {
+		t.Errorf("an app request's include-deleted grants carry %s, archived outside its ceiling", outItem.ID)
+	}
+	if !slices.Contains(items, inItem.ID) {
+		t.Errorf("an app request's include-deleted grants %v lost %s, archived inside its ceiling", items, inItem.ID)
 	}
 }
