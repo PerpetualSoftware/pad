@@ -273,6 +273,12 @@ export interface CollabProviderOptions {
 	 */
 	onConfirmed?: () => void;
 	/**
+	 * Called just BEFORE a local update goes out on the socket (BUG-3850 r8):
+	 * from here on the server may hold it, so a crash draft kept on an older
+	 * base is flagged before the frame leaves. Errors are caught and logged.
+	 */
+	onLocalSend?: () => void;
+	/**
 	 * The items.content generation (`item.seq`) this provider's Y.Doc was
 	 * SEEDED from (BUG-2264). Announced to the server as `?content_seq=<seq>`
 	 * on every (re)connect. If it predates the item's most recent version
@@ -453,6 +459,7 @@ export class CollabProvider {
 	private readonly onForceRefresh?: ForceRefreshHandler;
 	private readonly onOpLogCursor?: (opLogID: number) => void;
 	private readonly onConfirmed?: () => void;
+	private readonly onLocalSend?: () => void;
 	/**
 	 * items.content generation the Y.Doc was seeded from, announced as
 	 * `?content_seq=` on every (re)connect (BUG-2264). Constant per provider.
@@ -482,6 +489,7 @@ export class CollabProvider {
 		this.onForceRefresh = options.onForceRefresh;
 		this.onOpLogCursor = options.onOpLogCursor;
 		this.onConfirmed = options.onConfirmed;
+		this.onLocalSend = options.onLocalSend;
 		this.contentSeq = options.contentSeq ?? 0;
 		// Restore the per-tab cursor BEFORE the first connect. The
 		// `since=<id>` query string is appended in connect() each
@@ -1582,6 +1590,11 @@ export class CollabProvider {
 
 	/** A local update is going out on the open socket (BUG-3523). */
 	private markLocalSent(): void {
+		try {
+			this.onLocalSend?.();
+		} catch (err) {
+			console.warn('collab: onLocalSend handler threw', err);
+		}
 		this.localSentOnSocket = true;
 		this.localSendSeq++;
 		clearTimeout(this.barrierTimer);

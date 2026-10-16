@@ -176,6 +176,46 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1'), 'skipped: nothing was written after the clear').toBeNull();
 	});
 
+	it('BUG-3850 r8: a send flags the kept draft stale at once, before any tick (a catch-up after offline typing)', () => {
+		let fire: () => void = () => {};
+		const h = harness({ onSent: (fn) => ((fire = fn), () => {}) });
+		h.tick();
+		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'draft', savedAt: expect.any(Number), baseSeq: 7, baseBody: 'base' });
+		fire();
+		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'draft', savedAt: expect.any(Number), baseSeq: 7, baseBody: 'base', baseStale: true });
+	});
+
+	it('BUG-3850 r8: a send rewrites once, and never with no draft, another item, or after the draft was cleared', () => {
+		let fire: () => void = () => {};
+		const h = harness({ onSent: (fn) => ((fire = fn), () => {}) });
+		fire();
+		expect(readRefusedRawDraft('u1', 'i1'), 'no draft kept yet').toBeNull();
+		h.tick();
+		fire();
+		const flagged = localStorage.getItem(localStorage.key(0)!);
+		localStorage.clear();
+		fire();
+		expect(localStorage.length, 'already stale: no second write').toBe(0);
+		expect(flagged).toContain('"baseStale":true');
+		const g = harness({ onSent: (fn) => ((fire = fn), () => {}) });
+		g.tick();
+		g.s.itemId = 'i2';
+		fire();
+		expect(readRefusedRawDraft('u1', 'i1')?.baseStale, 'another item shown: its sends say nothing of this draft').toBeUndefined();
+		g.s.itemId = 'i1';
+		g.s.atRisk = false;
+		g.tick();
+		fire();
+		expect(readRefusedRawDraft('u1', 'i1'), 'cleared on confirmation: nothing to flag').toBeNull();
+	});
+
+	it('BUG-3850 r8: stopping the keeper unsubscribes', () => {
+		let unsubscribed = false;
+		const h = harness({ onSent: () => () => (unsubscribed = true) });
+		h.stop();
+		expect(unsubscribed).toBe(true);
+	});
+
 	it('BUG-3850: observe runs on every tick, at risk or not', () => {
 		let n = 0;
 		const h = harness({ observe: () => n++ });

@@ -36,6 +36,13 @@ export interface CrashDraftSource {
 	 * unchanged large document is not re-serialized every tick.
 	 */
 	version?: () => unknown;
+	/**
+	 * Subscribe to "a local update is about to be sent" (BUG-3850 r8 hunter-1).
+	 * The server may hold it from then on, so the draft kept here is rewritten
+	 * flagged stale at once: the next tick may never come, and on a reconnect's
+	 * catch-up it would clear the draft rather than flag it.
+	 */
+	onSent?: (fn: () => void) => () => void;
 }
 
 /**
@@ -49,7 +56,7 @@ export function registerCrashDraftKeeper(
 		return () => clearInterval(t);
 	},
 ): () => void {
-	let last: { userId: string; itemId: string; markdown: string; version: unknown; base: string } | null = null;
+	let last: { userId: string; itemId: string; markdown: string; version: unknown; base: string; baseSeq: number; baseBody: string; stale: boolean } | null = null;
 
 	const tick = () => {
 		const userId = source.userId();
@@ -68,7 +75,7 @@ export function registerCrashDraftKeeper(
 			const base = JSON.stringify([snap.baseSeq, snap.baseBody, snap.baseStale === true]);
 			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown && last.base === base) return;
 			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody, stale: snap.baseStale })) {
-				last = { userId, itemId, markdown: snap.markdown, version, base };
+				last = { userId, itemId, markdown: snap.markdown, version, base, baseSeq: snap.baseSeq, baseBody: snap.baseBody, stale: snap.baseStale === true };
 			}
 			return;
 		}
@@ -80,6 +87,15 @@ export function registerCrashDraftKeeper(
 		}
 	};
 
+	const unsubscribe = source.onSent?.(() => {
+		if (!last || last.stale || last.userId !== source.userId() || last.itemId !== source.itemId()) return;
+		if (keepRefusedRawDraft(last.userId, last.itemId, last.markdown, Date.now(), { seq: last.baseSeq, body: last.baseBody, stale: true })) {
+			last = { ...last, stale: true, base: JSON.stringify([last.baseSeq, last.baseBody, true]) };
+		}
+	});
 	const stop = schedule(tick, CRASH_DRAFT_INTERVAL_MS);
-	return stop;
+	return () => {
+		stop();
+		unsubscribe?.();
+	};
 }

@@ -24,6 +24,12 @@ describe('BUG-3850: confirmed base wiring in ItemDetail', () => {
 		expect(options).toContain('onConfirmed: () => confirmedBase.refresh(),');
 	});
 
+	it('the provider\'s pre-send hook reaches the crash keeper (BUG-3850 r8)', () => {
+		const options = provider.slice(0, provider.indexOf('\n\t\t});'));
+		expect(options).toMatch(/onLocalSend: \(\) => \{\s*for \(const fn of localSendListeners\) fn\(\);\s*\},/);
+		expect(src).toMatch(/registerCrashDraftKeeper\(\{[\s\S]*?onSent: \(fn\) => \{\s*localSendListeners\.add\(fn\);\s*return \(\) => localSendListeners\.delete\(fn\);\s*\},[\s\S]*?\}\);/);
+	});
+
 	it('the crash keeper refreshes it on every tick', () => {
 		expect(src).toMatch(/registerCrashDraftKeeper\(\{[\s\S]*?observe: confirmedBase\.refresh,[\s\S]*?\}\);/);
 	});

@@ -2905,6 +2905,9 @@
 			onOpLogCursor: () => settleCollabIfCurrent(ctx),
 			// BUG-3850: the confirmed base, taken before any later keystroke.
 			onConfirmed: () => confirmedBase.refresh(),
+			onLocalSend: () => {
+				for (const fn of localSendListeners) fn();
+			},
 			onForceRefresh: () => {
 				// BUG-3697: no keystroke is accepted that this recovery would
 				// then discard. Frozen in the same task as the capture below.
@@ -6416,6 +6419,8 @@
 		if (!ed) return;
 		return registerRefreshBeforeLocalChange(ed as never, confirmedBase.refresh);
 	});
+	// BUG-3850 r8: the provider's pre-send hook reaches the keeper through this.
+	const localSendListeners = new Set<() => void>();
 	$effect(() => {
 		return registerCrashDraftKeeper({
 			userId: () => authStore.userId,
@@ -6426,6 +6431,10 @@
 			discarding: signOutDiscarding,
 			// Raw mode: its pending string; rich: the doc's update counter.
 			version: () => (rawContentSaver.dirty ? rawContentSaver.pending : `doc:${collabProvider?.docVersion ?? 0}`),
+			onSent: (fn) => {
+				localSendListeners.add(fn);
+				return () => localSendListeners.delete(fn);
+			},
 		});
 	});
 
