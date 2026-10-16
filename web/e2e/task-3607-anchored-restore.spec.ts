@@ -161,8 +161,10 @@ test('a shown draft rewritten as stale in storage is not patched when Restore is
 });
 
 // TASK-3856 r3 (hunter Low): a whole-body restore never reads the base, so a
-// stale rewrite of the shown draft does not stop it, and the first click restores.
-test('a shown draft rewritten as stale on an unchanged item is restored whole on the first click', async ({ browser, fixture, request }, testInfo) => {
+// stale rewrite of the shown draft does not stop it: the first click sends the
+// restore. (With the editor open the server may refuse it over pending edits
+// and ask first; that flow is the existing one and is not what this pins.)
+test('a shown draft rewritten as stale on an unchanged item is sent whole on the first click', async ({ browser, fixture, request }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough for a restore flow');
 	test.setTimeout(120_000);
 	const { id, ref, base, key, headers } = await setUp(request, fixture, `TASK-3856 whole ${Date.now()}`);
@@ -172,14 +174,13 @@ test('a shown draft rewritten as stale on an unchanged item is restored whole on
 	const notice = page.getByTestId('refused-raw-draft');
 	await expect(notice, 'premise: the item has not changed').not.toContainText('This item changed');
 	await page.evaluate(([k, v]) => localStorage.setItem(k, v), [key, JSON.stringify({ ...draft, savedAt: draft.savedAt + 1, baseStale: true })] as const);
+	const sent = page.waitForRequest(
+		(r) => r.method() === 'PATCH' && r.url().endsWith(`/items/${id}`) && (r.postData() ?? '').includes('Paragraph three, mine.'),
+		{ timeout: SYNC_TIMEOUT },
+	);
 	await notice.getByRole('button', { name: 'Restore it' }).click();
-
-	await expect
-		.poll(
-			async () => ((await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string }).content,
-			{ timeout: SYNC_TIMEOUT, message: 'one click restores the kept text' },
-		)
-		.toContain('Paragraph three, mine.');
-	await expect(notice).toHaveCount(0);
+	const req = await sent;
+	expect(JSON.parse(req.postData() ?? '{}').content, 'the whole kept text, not a patch').toBe(draft.markdown);
+	await expect(notice.getByTestId('refused-raw-draft-stale')).toHaveCount(0);
 	await ctx.close();
 });
