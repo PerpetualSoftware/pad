@@ -118,31 +118,6 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'old')).toBeNull();
 	});
 
-	it('BUG-3850: a value too large with the raw row is kept without it, before any other draft is evicted', () => {
-		// Recent, so it is not simply expired (the TTL would hide an eviction).
-		keepRefusedRawDraft('u1', 'old', 'old text', Date.now() - 1000);
-		const real = Storage.prototype.setItem;
-		// Only the value carrying the third body does not fit.
-		Storage.prototype.setItem = function (k: string, v: string) {
-			if (v.includes('rawBaseBody')) throw new DOMException('full', 'QuotaExceededError');
-			return real.call(this, k, v);
-		};
-		try {
-			const h = harness({ snapshot: () => ({ markdown: 'draft', baseSeq: 4, baseBody: 'editor form', rawBaseBody: 'raw form\n' }) });
-			h.tick();
-		} finally {
-			Storage.prototype.setItem = real;
-		}
-		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'draft', savedAt: expect.any(Number), baseSeq: 4, baseBody: 'editor form' });
-		expect(readRefusedRawDraft('u1', 'old')?.markdown, "the user's other draft survives").toBe('old text');
-	});
-
-	it('BUG-3850: the raw row is kept beside an editor-snapshot base, in the same write', () => {
-		const h = harness({ snapshot: () => ({ markdown: 'draft', baseSeq: 4, baseBody: 'editor form', rawBaseBody: 'raw form\n' }) });
-		h.tick();
-		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'draft', savedAt: expect.any(Number), baseSeq: 4, baseBody: 'editor form', rawBaseBody: 'raw form\n' });
-	});
-
 	it('BUG-3850: observe runs on every tick, at risk or not', () => {
 		let n = 0;
 		const h = harness({ observe: () => n++ });

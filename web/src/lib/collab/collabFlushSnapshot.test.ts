@@ -37,18 +37,3 @@ describe('collabFlusher.snapshot', () => {
 		expect(make({ isRecovering: () => true }).flusher.snapshot(ctx)).toBeNull();
 	});
 });
-
-// BUG-3850: a raw body in the storage form a flush writes, so restore can ask
-// whether the row a crash draft was kept beside is the same document as its
-// editor-snapshot base.
-describe('collabFlusher.storageForm', () => {
-	it("is the editor's canonical form, then normalized and serialized for the given workspace, the snapshot's pipeline", () => {
-		const { flusher } = make({ canonicalize: (m) => `c(${m})` });
-		expect(flusher.storageForm('raw', 'ws-b')).toBe('s(n(c(raw)),ws-b)');
-	});
-
-	it('null when the editor cannot canonicalize it, or there is no canonicalizer', () => {
-		expect(make({ canonicalize: () => null }).flusher.storageForm('raw', 'ws-b')).toBeNull();
-		expect(make().flusher.storageForm('raw', 'ws-b')).toBeNull();
-	});
-});

@@ -52,15 +52,11 @@ export interface ConfirmedBaseSource {
 	snapshot: () => string | null;
 	/** The item's seq now. */
 	seq: () => number;
-	/** The stored body as this tab last read it, taken with the snapshot. */
-	raw: () => string;
 }
 
 export interface ConfirmedBase {
 	markdown: string;
 	seq: number;
-	/** The row read at the same moment, so seq and row are one pair. */
-	raw: string;
 }
 
 export interface ConfirmedBaseTracker {
@@ -85,7 +81,7 @@ export function createConfirmedBaseTracker(source: ConfirmedBaseSource): Confirm
 			if (held && held.context === context && held.version === version) return;
 			const markdown = source.snapshot();
 			if (markdown === null) return;
-			held = { context, version, base: { markdown, seq: source.seq(), raw: source.raw() } };
+			held = { context, version, base: { markdown, seq: source.seq() } };
 		},
 		current() {
 			const context = source.context();
@@ -121,4 +117,19 @@ export function registerRefreshBeforeLocalChange(editor: BeforeTransactionSource
 	};
 	editor.on('beforeTransaction', handler);
 	return () => editor.off('beforeTransaction', handler);
+}
+
+/** Why a patch restore is not offered yet (BUG-3850, lead ruling 0337bf77). */
+export const RESTORE_WAITS_FOR_EDITOR = 'Restore is available once the editor has connected. You can copy your text now.';
+
+/**
+ * Whether a rich draft's patch restore must wait. Its anchors are in the
+ * editor's form, and the server applies a patch to the document in that form
+ * only through an open editor; with none it matches the stored row, where a
+ * raw-only form makes them miss. So it waits for this tab's editor to be
+ * mounted and for the CURRENT connection to be synced: `state`, not `synced`,
+ * which stays true across a reconnect.
+ */
+export function restoreWaitsForEditor(p: { state: string } | null | undefined, editorMounted: boolean): boolean {
+	return !(p && p.state === 'synced' && editorMounted);
 }

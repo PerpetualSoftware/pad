@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { draftEdits, applyDraftEdits, planDraftRestore, MAX_DRAFT_EDITS } from './draftPatch';
+import { draftEdits, applyDraftEdits, MAX_DRAFT_EDITS } from './draftPatch';
 
 const BASE = ['# Title', '', 'Paragraph one.', '', 'Paragraph two.', '', 'Paragraph three.', ''].join('\n');
 
@@ -93,26 +93,29 @@ describe('draftEdits', () => {
 });
 
 // BUG-3850: a rich crash draft's text is the editor's serialization, and so is
-// any body a flush writes. The raw row a CLI or MCP writer stored need not be:
-// it can end in a newline, or hold a form the editor serializes differently.
-describe('planDraftRestore (BUG-3850)', () => {
-	// As the CLI stores it: a trailing newline and a raw-only autolink.
-	const RAW = 'See <https://example.com> first.\n\nParagraph two.\n\nParagraph three.\n';
-	// As the editor serializes the same document, and so as a flush stores it.
-	const EDITOR = 'See https://example.com first.\n\nParagraph two.\n\nParagraph three.';
+// the live document an open editor applies a restore patch to (the restore
+// waits for that editor, lead ruling 0337bf77). The raw row a CLI or MCP
+// writer stored need not be: it can end in a newline, or hold a form the
+// editor serializes differently.
+describe('a rich draft anchored on the editor snapshot (BUG-3850)', () => {
+	// As the CLI stores it: a trailing newline and underscore emphasis.
+	const RAW = 'An _emphasised_ word first.\n\nParagraph two.\n\nParagraph three.\n';
+	// As the editor serializes the same document.
+	const EDITOR = 'An *emphasised* word first.\n\nParagraph two.\n\nParagraph three.';
 	const DRAFT = EDITOR.replace('Paragraph three.', 'Paragraph three. Typed offline.');
-	// The editor's storage form of a raw body, for this data: what the real
-	// gate (collabFlusher.storageForm) computes with the editor.
-	const sameDocument = (raw: string, base: string) => raw.replace('<https://example.com>', 'https://example.com').replace(/\n$/, '') === base;
+	const DRAFT_P1 = EDITOR.replace('first.', 'first. Mine.');
 
-	it('premise: the draft anchored on the raw row misses the body a flush wrote (the reported false overlap)', () => {
+	it('premise: anchored on the raw row, the draft misses the editor-form document (the reported false overlap)', () => {
 		expect(applyDraftEdits(EDITOR, draftEdits(RAW, DRAFT)!)).toBeNull();
 	});
 
-	it('anchored on the editor snapshot, the draft applies to the flushed body', () => {
-		const plan = planDraftRestore({ markdown: DRAFT, baseBody: EDITOR, rawBaseBody: RAW }, EDITOR, sameDocument(RAW, EDITOR));
-		expect(applyDraftEdits(EDITOR, plan.edits!)).toBe(DRAFT);
-		expect(plan.rawRetry, 'the stored body is no longer the raw row: no retry').toBeNull();
+	it('anchored on the snapshot, it applies to the editor-form document, at either end', () => {
+		expect(applyDraftEdits(EDITOR, draftEdits(EDITOR, DRAFT)!)).toBe(DRAFT);
+		expect(applyDraftEdits(EDITOR, draftEdits(EDITOR, DRAFT_P1)!)).toBe(DRAFT_P1);
+	});
+
+	it('why the restore needs the open editor: the snapshot anchors on a raw-only form miss the raw row', () => {
+		expect(applyDraftEdits(RAW, draftEdits(EDITOR, DRAFT_P1)!)).toBeNull();
 	});
 
 	it('a patch and its undo in the open editor: the snapshot lacks the undone line, so only the typing is sent', () => {
@@ -120,66 +123,12 @@ describe('planDraftRestore (BUG-3850)', () => {
 		const row = 'Paragraph one.\n\nAn agent line, undone.\n\nParagraph two.';
 		const snapshot = 'Paragraph one.\n\nParagraph two.';
 		const draft = 'Paragraph one.\n\nParagraph two. Mine.';
-		const flushed = snapshot;
-		expect(applyDraftEdits(flushed, draftEdits(row, draft)!), 'premise: the row base conflicts').toBeNull();
-		const plan = planDraftRestore({ markdown: draft, baseBody: snapshot, rawBaseBody: row }, flushed, sameDocument(row, snapshot));
-		expect(applyDraftEdits(flushed, plan.edits!)).toBe(draft);
+		expect(applyDraftEdits(snapshot, draftEdits(row, draft)!), 'premise: the row base conflicts').toBeNull();
+		expect(applyDraftEdits(snapshot, draftEdits(snapshot, draft)!)).toBe(draft);
 	});
 
-	it('control: a genuine concurrent edit of the same line still conflicts on the snapshot path', () => {
+	it('control: a genuine concurrent edit of the same line still conflicts', () => {
 		const theirs = EDITOR.replace('Paragraph three.', 'Paragraph three, theirs.');
-		const plan = planDraftRestore({ markdown: DRAFT, baseBody: EDITOR, rawBaseBody: RAW }, theirs, sameDocument(RAW, EDITOR));
-		expect(applyDraftEdits(theirs, plan.edits!)).toBeNull();
-		expect(plan.rawRetry).toBeNull();
-	});
-
-	// Typing in the paragraph that holds the raw-only form puts that form
-	// inside the anchor. (Typing elsewhere needs no retry: an editor anchor is
-	// often a substring of the raw body, 'Paragraph three.' of 'Paragraph three.\n'.)
-	const DRAFT_P1 = EDITOR.replace('first.', 'first. Mine.');
-
-	it('the stored body still byte-equal to the raw row: one retry anchored on it', () => {
-		const plan = planDraftRestore({ markdown: DRAFT_P1, baseBody: EDITOR, rawBaseBody: RAW }, RAW, sameDocument(RAW, EDITOR));
-		expect(applyDraftEdits(RAW, plan.edits!), 'premise: the editor anchors miss the raw body').toBeNull();
-		expect(plan.rawRetry).not.toBeNull();
-	});
-
-	it('the retry rewrites the raw-only forms to the editor\'s, as any editor save would, and nothing more', () => {
-		const plan = planDraftRestore({ markdown: DRAFT_P1, baseBody: EDITOR, rawBaseBody: RAW }, RAW, sameDocument(RAW, EDITOR));
-		const result = applyDraftEdits(RAW, plan.rawRetry!);
-		// Exactly the draft: the autolink and the trailing newline, at the end
-		// the user never touched, take the editor's form; no other text changes.
-		expect(result).toBe(DRAFT_P1);
-		expect(result).toContain('See https://example.com first. Mine.');
-		expect(result!.endsWith('Paragraph three.')).toBe(true);
-	});
-
-	it('no retry unless the stored body is byte-equal to the raw row, even one byte off', () => {
-		for (const stored of [RAW.slice(0, -1), RAW + '\n', RAW.replace('two', 'Two'), EDITOR]) {
-			expect(planDraftRestore({ markdown: DRAFT_P1, baseBody: EDITOR, rawBaseBody: RAW }, stored, sameDocument(RAW, EDITOR)).rawRetry, JSON.stringify(stored)).toBeNull();
-		}
-	});
-
-	it('control: a concurrent edit the client has not seen still conflicts on the retry path', () => {
-		// The pane's row read is stale: the server body moved under the same line.
-		const plan = planDraftRestore({ markdown: DRAFT_P1, baseBody: EDITOR, rawBaseBody: RAW }, RAW, sameDocument(RAW, EDITOR));
-		const server = RAW.replace('first.', 'first, theirs.');
-		expect(applyDraftEdits(server, plan.rawRetry!)).toBeNull();
-	});
-
-	it('no retry when the row is AHEAD of the snapshot: the diff from it would delete a collaborator\'s text', () => {
-		// The row already holds P (another tab's applied patch, flushed and
-		// read over SSE) while this editor had not received P when the base was
-		// taken. The draft lacks P too.
-		const ahead = RAW.replace('Paragraph two.', 'Paragraph two. P from a collaborator.');
-		const plan = planDraftRestore({ markdown: DRAFT_P1, baseBody: EDITOR, rawBaseBody: ahead }, ahead, sameDocument(ahead, EDITOR));
-		expect(plan.rawRetry).toBeNull();
-		// Premise: had it been sent, P would be gone.
-		expect(applyDraftEdits(ahead, draftEdits(ahead, DRAFT_P1)!)).not.toContain('P from a collaborator');
-	});
-
-	it('a draft kept without a raw row (raw mode, older entries) has no retry', () => {
-		expect(planDraftRestore({ markdown: DRAFT, baseBody: RAW }, RAW, false).rawRetry).toBeNull();
-		expect(planDraftRestore({ markdown: DRAFT, baseBody: RAW, rawBaseBody: RAW }, RAW, sameDocument(RAW, RAW)).rawRetry).toBeNull();
+		expect(applyDraftEdits(theirs, draftEdits(EDITOR, DRAFT)!)).toBeNull();
 	});
 });

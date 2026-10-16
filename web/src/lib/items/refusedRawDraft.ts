@@ -31,12 +31,6 @@ export interface RefusedRawDraft {
 	 */
 	baseSeq?: number;
 	baseBody?: string;
-	/**
-	 * The stored body when the draft was kept, present only when `baseBody` is
-	 * the editor's snapshot rather than that row (BUG-3850). Restore retries
-	 * against it only while the stored body is still byte-equal to it.
-	 */
-	rawBaseBody?: string;
 }
 
 const PREFIX = 'pad:refused-raw-draft:';
@@ -67,42 +61,23 @@ export function keepRefusedRawDraft(
 	itemId: string,
 	markdown: string,
 	now = Date.now(),
-	base?: { seq: number; body: string; rawBody?: string },
+	base?: { seq: number; body: string },
 ): boolean {
 	if (!userId || !itemId) return false;
-	// One write carries the text and every base it was taken against (BUG-3850):
-	// a base from one moment and a draft from another is how a false overlap,
-	// or a patch of text that was never the user's, comes back.
-	const encode = (withRaw: boolean) =>
-		JSON.stringify(
-			base
-				? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body, ...(withRaw && base.rawBody !== undefined ? { rawBaseBody: base.rawBody } : {}) }
-				: { markdown, savedAt: now },
-		);
+	const value = JSON.stringify(base ? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body } : { markdown, savedAt: now });
 	const s = storage();
 	if (!s) return false;
-	const key = keyFor(userId, itemId);
 	try {
-		s.setItem(key, encode(true));
+		s.setItem(keyFor(userId, itemId), value);
 		return true;
 	} catch {
-		// The raw row only enables restore's one retry (BUG-3850), and it makes
-		// the value a third body long: drop it before anyone else's draft.
-		if (base?.rawBody !== undefined) {
-			try {
-				s.setItem(key, encode(false));
-				return true;
-			} catch {
-				// Still full: make room below.
-			}
-		}
 		// Full (TASK-3606): make room from expired drafts and this user's
 		// oldest others, then try once more. Blocked or still full: the save
 		// still goes out; only the recovery is lost.
 		try {
 			sweepExpiredRefusedRawDrafts(now);
 			evictOldestForUser(userId, itemId);
-			s.setItem(key, encode(false));
+			s.setItem(keyFor(userId, itemId), value);
 			return true;
 		} catch {
 			return false;
@@ -152,7 +127,6 @@ export function readRefusedRawDraft(userId: string, itemId: string, now = Date.n
 		const out: RefusedRawDraft = { markdown: parsed.markdown, savedAt: parsed.savedAt };
 		if (typeof parsed.baseSeq === 'number') out.baseSeq = parsed.baseSeq;
 		if (typeof parsed.baseBody === 'string') out.baseBody = parsed.baseBody;
-		if (typeof parsed.rawBaseBody === 'string') out.rawBaseBody = parsed.rawBaseBody;
 		return out;
 	} catch {
 		return null;

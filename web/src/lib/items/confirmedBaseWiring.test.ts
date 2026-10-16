@@ -28,22 +28,23 @@ describe('BUG-3850: confirmed base wiring in ItemDetail', () => {
 		expect(src).toMatch(/registerCrashDraftKeeper\(\{[\s\S]*?observe: confirmedBase\.refresh,[\s\S]*?\}\);/);
 	});
 
-	it('the tracker reads the provider through providerConfirmed, never in raw mode, and pairs the row with the snapshot', () => {
+	it('the tracker reads the provider through providerConfirmed, never in raw mode', () => {
 		expect(trackerBody).toContain('confirmed: () => providerConfirmed(collabProvider),');
 		expect(trackerBody).toMatch(/context: \(\) => \{[\s\S]*!rawMode \? ctx : null;/);
-		expect(trackerBody).toContain("raw: () => item?.content ?? '',");
 	});
 
-	it('the kept draft carries the confirmed snapshot, its seq and its row', () => {
-		expect(snapshotBody).toContain('return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, rawBaseBody: confirmed.raw };');
+	it('the kept draft carries the confirmed snapshot and its seq', () => {
+		expect(snapshotBody).toContain('return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown };');
 	});
 
 	it('the editor refreshes it before every local change (lead ruling c9db9612)', () => {
 		expect(src).toMatch(/const ed = editorInstance;\s*if \(!ed\) return;\s*return registerRefreshBeforeLocalChange\(ed as never, confirmedBase\.refresh\);/);
 	});
 
-	it('restore allows the raw retry only for a row that is the same document as the base', () => {
-		expect(src).toContain("const rawIsSameDocument = d.rawBaseBody !== undefined && collabFlusher.storageForm(d.rawBaseBody, wsSlug) === d.baseBody;");
-		expect(src).toContain("planDraftRestore(d, item.content ?? '', rawIsSameDocument);");
+	it('the patch restore waits on restoreWaitsForEditor over the provider and the mounted editor, and the notice gets the reason (lead ruling 0337bf77)', () => {
+		expect(src).toContain('restoreWaitsForEditor(collabProvider, !!editorInstance)');
+		expect(src).toMatch(/let restoreBlocked = \$derived\([\s\S]*?!rawMode && draftAppliesAsPatch\(refusedDraft, item\?\.seq \?\? 0\) && restoreWaitsForEditor\(collabProvider, !!editorInstance\)[\s\S]*?\? RESTORE_WAITS_FOR_EDITOR[\s\S]*?: null,/);
+		expect(src).toMatch(/if \(draftAppliesAsPatch\(d, item\.seq \?\? 0\)\) \{\s*if \(restoreBlocked\) return;\s*await applyRefusedDraftChanges\(d\);/);
+		expect(src).toContain('restoreBlocked={restoreBlocked}');
 	});
 });

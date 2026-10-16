@@ -139,10 +139,6 @@ export interface CollabFlusher {
 	 *  part 2). Null when the editor is unreadable or recovery is in flight
 	 *  (the same gates a flush applies before its serialize). */
 	snapshot(ctx: CollabFlushContext): string | null;
-	/** Any markdown in the storage form a flush writes (BUG-3850): the editor's
-	 *  canonical serialization of it, then the flush's normalize and serialize.
-	 *  Null when the editor cannot canonicalize it. */
-	storageForm(markdown: string, wsSlug: string): string | null;
 	/** Foreground flush the caller awaits; see the implementation (TASK-3462 U3b). */
 	flushAndWait(ctx: CollabFlushContext): Promise<CollabFlushResult>;
 	/** Arm the idle debounce to run `flushNow(ctx, false)` — unless a flush is
@@ -312,11 +308,6 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		return true;
 	}
 
-	function storageForm(markdown: string, wsSlug: string): string | null {
-		const canonical = config.canonicalize?.(markdown) ?? null;
-		return canonical === null ? null : config.serialize(config.normalize(canonical), wsSlug);
-	}
-
 	function snapshot(ctx: CollabFlushContext): string | null {
 		if (config.isRecovering()) return null;
 		const md = config.readEditorMarkdown();
@@ -350,7 +341,6 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		prime,
 		flushNow,
 		snapshot,
-		storageForm,
 		flushAndWait,
 		settle,
 		cancel,

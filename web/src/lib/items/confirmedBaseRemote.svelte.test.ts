@@ -41,7 +41,6 @@ function setUp(hook: 'before' | 'none') {
 			return me.state.doc.textContent;
 		},
 		seq: () => 1,
-		raw: () => 'A',
 	});
 	tracker.refresh();
 	const stop = hook === 'before' ? registerRefreshBeforeLocalChange(me as never, tracker.refresh) : () => {};
@@ -113,19 +112,5 @@ describe('BUG-3850: the base is refreshed before the first local change after a 
 		h.stop();
 		typeAtEnd(h.me, ' U');
 		expect(h.state.snapshots).toBe(before);
-	});
-});
-
-describe('BUG-3850: the same-document gate is live with the real editor', () => {
-	it("a row with a trailing newline canonicalizes to the editor's own form of it; a row ahead does not", async () => {
-		const { canonicalEditorMarkdown } = await import('$lib/collab/canonicalMarkdown');
-		const ed = collabEditor(new Y.Doc());
-		const raw = 'Paragraph one.\n\nParagraph two.\n';
-		ed.commands.setContent(raw);
-		const editorForm = (ed.storage as unknown as { markdown: { getMarkdown(): string } }).markdown.getMarkdown();
-		expect(editorForm, 'premise: the editor drops the trailing newline').toBe('Paragraph one.\n\nParagraph two.');
-		expect(canonicalEditorMarkdown(ed, raw)).toBe(editorForm);
-		expect(canonicalEditorMarkdown(ed, raw.replace('two.', 'two. P'))).not.toBe(editorForm);
-		ed.destroy();
 	});
 });

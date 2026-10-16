@@ -44,8 +44,8 @@
 	import StaleBodyNotice from '$lib/components/common/StaleBodyNotice.svelte';
 	import RefusedRawDraftNotice from './RefusedRawDraftNotice.svelte';
 	import RestoredDraftResult from './RestoredDraftResult.svelte';
-	import { planDraftRestore } from '$lib/items/draftPatch';
-	import { createConfirmedBaseTracker, providerConfirmed, registerRefreshBeforeLocalChange } from '$lib/items/confirmedBase';
+	import { draftEdits } from '$lib/items/draftPatch';
+	import { createConfirmedBaseTracker, providerConfirmed, registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR } from '$lib/items/confirmedBase';
 	import { isBodyStale, isSetAside } from '$lib/items/staleBody';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -5057,6 +5057,18 @@
 		}
 	}
 
+	// BUG-3850 (lead ruling 0337bf77): a rich draft's changes are anchored in
+	// the editor's form, and only an open editor applies a patch to the
+	// document in that form; the stored row may hold raw-only forms (a
+	// trailing newline, underscore emphasis) the anchors miss. So the patch
+	// restore waits until this tab's editor is mounted and its CURRENT
+	// connection is synced, and says why. Copy is always offered.
+	let restoreBlocked = $derived(
+		refusedDraft && !rawMode && draftAppliesAsPatch(refusedDraft, item?.seq ?? 0) && restoreWaitsForEditor(collabProvider, !!editorInstance)
+			? RESTORE_WAITS_FOR_EDITOR
+			: null,
+	);
+
 	/** A crash draft with its base, on an item someone has saved since. */
 	function draftAppliesAsPatch(d: RefusedRawDraft, seq: number): d is RefusedRawDraft & { baseSeq: number; baseBody: string } {
 		return d.baseSeq !== undefined && d.baseBody !== undefined && seq > d.baseSeq;
@@ -5075,17 +5087,7 @@
 		// (codex r1): the draft, the toast and the result belong to this user.
 		const identity = captureIdentity();
 		const stale = () => !item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity);
-		// BUG-3850: a rich draft is anchored on the editor's snapshot, with one
-		// retry on the raw row while the stored body is still that row and the
-		// row is the same document as the snapshot.
-		const rawIsSameDocument = d.rawBaseBody !== undefined && collabFlusher.storageForm(d.rawBaseBody, wsSlug) === d.baseBody;
-		const { edits: primary, rawRetry } = planDraftRestore(d, item.content ?? '', rawIsSameDocument);
-		let edits = primary;
-		let retried = false;
-		if (edits === null && rawRetry !== null) {
-			edits = rawRetry;
-			retried = true;
-		}
+		const edits = draftEdits(d.baseBody, d.markdown);
 		if (edits === null) {
 			refusedDraftConflict = { itemId: reqItemId, savedAt: d.savedAt, base: d.baseBody };
 			return;
@@ -5102,16 +5104,7 @@
 			// Stable per draft, so a retry after an unknown outcome is answered,
 			// not applied twice (TASK-3585).
 			const opKey = `restore-${reqItemId}-${d.savedAt}`;
-			let res: Awaited<ReturnType<typeof api.items.patch>>;
-			try {
-				res = await api.items.patch(wsSlug, reqItemId, { edits, expected_seq: d.baseSeq, op_key: retried ? `${opKey}-raw` : opKey });
-			} catch (e) {
-				// The server refuses a missing anchor without writing anything, so
-				// the raw-anchored retry cannot apply on top of a partial first try.
-				if (retried || rawRetry === null || !(e instanceof PadApiError && (e.code === 'patch_anchor_missing' || e.code === 'patch_anchor_ambiguous'))) throw e;
-				if (stale()) return;
-				res = await api.items.patch(wsSlug, reqItemId, { edits: rawRetry, expected_seq: d.baseSeq, op_key: `${opKey}-raw` });
-			}
+			const res = await api.items.patch(wsSlug, reqItemId, { edits, expected_seq: d.baseSeq, op_key: opKey });
 			if (stale()) return;
 			clearRefusedRawDraft(userId, reqItemId, d.markdown);
 			refusedDraft = null;
@@ -5168,6 +5161,7 @@
 			return;
 		}
 		if (draftAppliesAsPatch(d, item.seq ?? 0)) {
+			if (restoreBlocked) return;
 			await applyRefusedDraftChanges(d);
 			return;
 		}
@@ -6376,7 +6370,7 @@
 	// server may not have, its markdown is kept every couple of seconds, with
 	// the seq and body it was edited from, so a tab that dies outright (no
 	// unload prompt, no teardown flush) still offers them on the next open.
-	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string; rawBaseBody?: string } | null {
+	function crashDraftSnapshot(): { markdown: string; baseSeq: number; baseBody: string } | null {
 		if (!item) return null;
 		// Whose typing is in the editor (the teardown flush's fence): after an
 		// identity change and before the reload re-stamps it, the text is the
@@ -6390,11 +6384,11 @@
 		const md = collabFlusher.snapshot(ctx);
 		if (md === null) return null;
 		// BUG-3850: rich text is anchored on the editor's own last confirmed
-		// snapshot, in the serialization a flush writes, with the row kept
-		// beside it for a retry. No confirmed snapshot yet: the row, as before.
+		// snapshot, in the serialization a flush writes. No confirmed snapshot
+		// yet: the row, as before.
 		const confirmed = confirmedBase.current();
 		if (!confirmed) return { markdown: md, ...base };
-		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, rawBaseBody: confirmed.raw };
+		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown };
 	}
 	const confirmedBase = createConfirmedBaseTracker({
 		context: () => {
@@ -6405,7 +6399,6 @@
 		version: () => collabProvider?.docVersion ?? 0,
 		snapshot: () => (activeCollabContext ? collabFlusher.snapshot(activeCollabContext) : null),
 		seq: () => item?.seq ?? 0,
-		raw: () => item?.content ?? '',
 	});
 	// BUG-3850 (lead ruling c9db9612): the base is refreshed before the first
 	// local keystroke after a collaborator's change, while the editor still
@@ -7427,6 +7420,7 @@
 					<RefusedRawDraftNotice
 						savedAt={refusedDraft.savedAt}
 						busy={refusedDraftBusy}
+						restoreBlocked={restoreBlocked}
 						newer={refusedDraft.baseSeq !== undefined && (item?.seq ?? 0) > refusedDraft.baseSeq}
 						appliesChanges={draftAppliesAsPatch(refusedDraft, item?.seq ?? 0)}
 						conflict={refusedDraftConflict && refusedDraftConflict.itemId === item?.id && refusedDraftConflict.savedAt === refusedDraft.savedAt && refusedDraftConflict.base === refusedDraft.baseBody
