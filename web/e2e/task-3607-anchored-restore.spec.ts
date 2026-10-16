@@ -121,6 +121,7 @@ test('a stale-base draft on a changed item says it cannot be applied and offers 
 	const notice = page.getByTestId('refused-raw-draft');
 	await expect(notice.getByTestId('refused-raw-draft-stale')).toContainText("can't be applied by themselves");
 	await expect(notice).not.toContainText('restoring applies only your changes');
+	await expect(notice.locator('.diff'), 'no diff: its base is the untrusted part').toHaveCount(0);
 	await expect(notice.getByRole('button', { name: 'Restore it' })).toHaveCount(0);
 	await expect(notice.getByRole('button', { name: 'Copy it' })).toBeVisible();
 	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };

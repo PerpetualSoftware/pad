@@ -52,7 +52,9 @@ describe('RefusedRawDraftNotice: the wording and buttons match what Restore does
 
 	it('stale base, seq moved: says the changes cannot be applied, offers only Copy', () => {
 		const p = props({ baseStale: true });
-		render(Notice, { props: p });
+		const { container } = render(Notice, { props: p });
+		// No diff: the base it would be drawn from is the untrusted part.
+		expect(container.querySelector('.diff')).toBeNull();
 		expect(screen.getByTestId('refused-raw-draft-stale').textContent).toContain("can't be applied by themselves");
 		expect(screen.queryByText(/restoring applies only your changes/)).toBeNull();
 		expect(screen.queryByTestId('refused-raw-draft-conflict')).toBeNull();

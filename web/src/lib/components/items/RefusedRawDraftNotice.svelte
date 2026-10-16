@@ -76,8 +76,8 @@
 		</div>
 	{:else if cannotApply}
 		<p class="newer" data-testid="refused-raw-draft-stale">
-			This item changed after these edits were made, and the version you started from isn't known, so your changes
-			can't be applied by themselves. Copy your text and re-apply them by hand.
+			This item changed after these edits were made, and your changes can't be told apart from the newer ones, so
+			they can't be applied by themselves. Copy your text and re-apply them by hand.
 		</p>
 	{:else if newer && appliesChanges}
 		<p class="newer">This item changed after these edits were made; restoring applies only your changes and keeps the newer version.</p>
