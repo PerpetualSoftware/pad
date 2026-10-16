@@ -7440,6 +7440,7 @@
 						restoreBlocked={restoreBlocked}
 						newer={refusedDraft.baseSeq !== undefined && (item?.seq ?? 0) > refusedDraft.baseSeq}
 						appliesChanges={draftAppliesAsPatch(refusedDraft, item?.seq ?? 0)}
+						baseStale={refusedDraft.baseStale === true}
 						conflict={refusedDraftConflict && refusedDraftConflict.itemId === item?.id && refusedDraftConflict.savedAt === refusedDraft.savedAt && refusedDraftConflict.base === refusedDraft.baseBody
 							? { base: refusedDraftConflict.base, draft: refusedDraft.markdown }
 							: null}

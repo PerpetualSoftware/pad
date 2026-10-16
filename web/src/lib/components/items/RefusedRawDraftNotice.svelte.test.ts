@@ -45,3 +45,47 @@ describe('RefusedRawDraftNotice: restore waiting for the editor', () => {
 		expect(screen.getByRole('button', { name: 'Copy it' })).toBeTruthy();
 	});
 });
+
+// TASK-3856: what the notice says matches what Restore would do, per state.
+describe('RefusedRawDraftNotice: the wording and buttons match what Restore does', () => {
+	const names = () => screen.getAllByRole('button').map((b) => b.textContent?.trim());
+
+	it('stale base, seq moved: says the changes cannot be applied, offers only Copy', () => {
+		const p = props({ baseStale: true });
+		render(Notice, { props: p });
+		expect(screen.getByTestId('refused-raw-draft-stale').textContent).toContain("can't be applied by themselves");
+		expect(screen.queryByText(/restoring applies only your changes/)).toBeNull();
+		expect(screen.queryByTestId('refused-raw-draft-conflict')).toBeNull();
+		expect(names()).toEqual(['Copy it', 'Discard']);
+		screen.getByRole('button', { name: 'Copy it' }).click();
+		expect(p.oncopy).toHaveBeenCalledOnce();
+	});
+
+	it('stale base while the editor is not ready: the wait reason is not shown, only Copy', () => {
+		render(Notice, { props: props({ baseStale: true, restoreBlocked: 'wait for the editor' }) });
+		expect(screen.getByTestId('refused-raw-draft-stale')).toBeTruthy();
+		expect(screen.queryByTestId('refused-raw-draft-waiting')).toBeNull();
+		expect(names()).toEqual(['Copy it', 'Discard']);
+	});
+
+	it('not stale, seq moved: promises a patch, Restore leads', () => {
+		render(Notice, { props: props() });
+		expect(screen.getByText(/restoring applies only your changes and keeps the newer version/)).toBeTruthy();
+		expect(screen.queryByTestId('refused-raw-draft-stale')).toBeNull();
+		expect(names()).toEqual(['Restore it', 'Copy it', 'Discard']);
+	});
+
+	it('seq unmoved (whole-body restore): a stale flag changes nothing, Restore leads', () => {
+		render(Notice, { props: props({ newer: false, appliesChanges: false, baseStale: true }) });
+		expect(screen.queryByTestId('refused-raw-draft-stale')).toBeNull();
+		expect(screen.queryByText(/This item changed/)).toBeNull();
+		expect(names()).toEqual(['Restore it', 'Copy it', 'Discard']);
+	});
+
+	it('a conflict shown takes precedence over the stale wording', () => {
+		render(Notice, { props: props({ baseStale: true, conflict: { base: 'a', draft: 'b' } }) });
+		expect(screen.getByTestId('refused-raw-draft-conflict')).toBeTruthy();
+		expect(screen.queryByTestId('refused-raw-draft-stale')).toBeNull();
+		expect(names()).toEqual(['Copy it', 'Discard']);
+	});
+});

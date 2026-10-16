@@ -44,7 +44,7 @@ async function openWithDraft(
 	fixture: Fixture,
 	ref: string,
 	key: string,
-	draft: { markdown: string; savedAt: number; baseSeq: number; baseBody: string },
+	draft: { markdown: string; savedAt: number; baseSeq: number; baseBody: string; baseStale?: true },
 ) {
 	const ctx = await browser.newContext();
 	await ctx.addInitScript(([k, v]) => localStorage.setItem(k, v), [key, JSON.stringify(draft)] as const);
@@ -96,6 +96,35 @@ test('both sides changed the same paragraph: nothing is written and the notice s
 	await expect(notice.getByRole('button', { name: 'Copy it' })).toBeVisible();
 	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
 	expect(stored.content).toContain('Paragraph three, theirs.');
+	expect(stored.content).not.toContain('mine');
+	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	await ctx.close();
+});
+
+// TASK-3856: a draft whose base is flagged stale (a remote update or this tab's
+// own send outran it, or no confirmed snapshot) can never patch, so the notice
+// says so up front and offers no Restore.
+test('a stale-base draft on a changed item says it cannot be applied and offers only Copy', async ({ browser, fixture, request }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough for a restore flow');
+	test.setTimeout(120_000);
+	const { id, ref, base, key, headers } = await setUp(request, fixture, `TASK-3856 stale ${Date.now()}`);
+	await collaboratorWrites(request, fixture, id, headers, base.content.replace('Paragraph one.', 'Paragraph one, theirs.'));
+	const draft = {
+		markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'),
+		savedAt: Date.now(),
+		baseSeq: base.seq,
+		baseBody: base.content,
+		baseStale: true as const,
+	};
+
+	const { ctx, page } = await openWithDraft(browser, fixture, ref, key, draft);
+	const notice = page.getByTestId('refused-raw-draft');
+	await expect(notice.getByTestId('refused-raw-draft-stale')).toContainText("can't be applied by themselves");
+	await expect(notice).not.toContainText('restoring applies only your changes');
+	await expect(notice.getByRole('button', { name: 'Restore it' })).toHaveCount(0);
+	await expect(notice.getByRole('button', { name: 'Copy it' })).toBeVisible();
+	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
+	expect(stored.content).toContain('Paragraph one, theirs.');
 	expect(stored.content).not.toContain('mine');
 	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
 	await ctx.close();
