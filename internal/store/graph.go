@@ -62,8 +62,8 @@ func (s *Store) ListWorkspaceGraphLinks(workspaceID string) ([]GraphLink, error)
 	rows, err := s.db.Query(s.q(`
 		SELECT il.source_id, il.target_id, il.link_type
 		FROM item_links il
-		JOIN items src ON src.id = il.source_id AND src.deleted_at IS NULL
-		JOIN items tgt ON tgt.id = il.target_id AND tgt.deleted_at IS NULL
+		JOIN items src ON src.id = il.source_id AND src.deleted_at IS NULL AND src.workspace_id = il.workspace_id
+		JOIN items tgt ON tgt.id = il.target_id AND tgt.deleted_at IS NULL AND tgt.workspace_id = il.workspace_id
 		JOIN collections sc ON sc.id = src.collection_id AND sc.deleted_at IS NULL
 		JOIN collections tc ON tc.id = tgt.collection_id AND tc.deleted_at IS NULL
 		WHERE il.workspace_id = ?

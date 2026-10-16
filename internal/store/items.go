@@ -1416,7 +1416,7 @@ func (s *Store) listItemsQ(q Queryer, workspaceID string, params models.ItemList
 	// parents upstream, but raw-UUID input bypasses that path. See BUG-734 /
 	// Codex review on PR #259.
 	if params.ParentLinkID != "" {
-		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL JOIN collections pc ON pc.id = p.collection_id AND pc.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL AND p.workspace_id = il.workspace_id AND il.workspace_id = i.workspace_id JOIN collections pc ON pc.id = p.collection_id AND pc.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
 	}
 
@@ -2156,7 +2156,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	// `parent=<UUID>&search=<q>` doesn't silently drop the parent constraint
 	// (and, by extension, the soft-deleted-parent rejection from BUG-734).
 	if params.ParentLinkID != "" {
-		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL JOIN collections pc ON pc.id = p.collection_id AND pc.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
+		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL AND p.workspace_id = il.workspace_id AND il.workspace_id = i.workspace_id JOIN collections pc ON pc.id = p.collection_id AND pc.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
 	}
 
@@ -4125,8 +4125,8 @@ func (s *Store) GetItemLinks(itemID string) ([]models.ItemLink, error) {
 		       s.item_number, t.item_number,
 		       %s, %s
 		FROM item_links l
-		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
-		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
+		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL AND s.workspace_id = l.workspace_id
+		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL AND t.workspace_id = l.workspace_id
 		JOIN collections sc ON sc.id = s.collection_id AND sc.deleted_at IS NULL
 		JOIN collections tc ON tc.id = t.collection_id AND tc.deleted_at IS NULL
 		WHERE l.source_id = ? OR l.target_id = ?
@@ -4694,8 +4694,8 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 		       s.item_number, t.item_number,
 		       %s, %s
 		FROM item_links l
-		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
-		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
+		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL AND s.workspace_id = l.workspace_id
+		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL AND t.workspace_id = l.workspace_id
 		JOIN collections sc ON sc.id = s.collection_id AND sc.deleted_at IS NULL
 		JOIN collections tc ON tc.id = t.collection_id AND tc.deleted_at IS NULL
 		WHERE l.source_id = ? AND l.link_type IN (%s)
@@ -4752,8 +4752,8 @@ func (s *Store) GetParentForItem(itemID string) (*models.ItemLink, error) {
 func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT il.source_id, il.target_id FROM item_links il
-		JOIN items s ON s.id = il.source_id AND s.deleted_at IS NULL
-		JOIN items t ON t.id = il.target_id AND t.deleted_at IS NULL
+		JOIN items s ON s.id = il.source_id AND s.deleted_at IS NULL AND s.workspace_id = il.workspace_id
+		JOIN items t ON t.id = il.target_id AND t.deleted_at IS NULL AND t.workspace_id = il.workspace_id
 		JOIN collections sc ON sc.id = s.collection_id AND sc.deleted_at IS NULL
 		JOIN collections tc ON tc.id = t.collection_id AND tc.deleted_at IS NULL
 		WHERE il.workspace_id = ? AND il.link_type IN (%s)
@@ -4955,7 +4955,7 @@ func (s *Store) childrenDoneFiltersForCollection(workspaceID, collectionSlug str
 		FROM items t
 		JOIN collections c ON c.id = t.collection_id
 		JOIN item_links il ON il.source_id = t.id AND il.link_type IN (%s)
-		JOIN items p ON p.id = il.target_id %s
+		JOIN items p ON p.id = il.target_id AND p.workspace_id = il.workspace_id AND t.workspace_id = il.workspace_id %s
 		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = ?
 		WHERE p.workspace_id = ?
 		  AND t.deleted_at IS NULL
@@ -5181,8 +5181,9 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string, includeAr
 		       COUNT(CASE WHEN t.id IS NOT NULL AND %s AND NOT %s THEN 1 END)
 		FROM items p
 		JOIN collections pc ON pc.id = p.collection_id
-		LEFT JOIN item_links il ON il.link_type IN (%s) AND il.target_id = p.id
+		LEFT JOIN item_links il ON il.link_type IN (%s) AND il.target_id = p.id AND il.workspace_id = p.workspace_id
 		LEFT JOIN items t ON t.id = il.source_id
+		                  AND t.workspace_id = il.workspace_id
 		                  AND t.deleted_at IS NULL
 		                  AND EXISTS (SELECT 1 FROM collections tc WHERE tc.id = t.collection_id AND tc.deleted_at IS NULL)
 		WHERE p.workspace_id = ?
@@ -5688,8 +5689,8 @@ func (s *Store) GetBlocksEdges(workspaceID string) ([]BlocksEdge, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT l.target_id, l.source_id, s.title, s.collection_id, s.fields
 		FROM item_links l
-		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
-		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
+		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL AND s.workspace_id = l.workspace_id
+		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL AND t.workspace_id = l.workspace_id
 		JOIN collections sc ON sc.id = s.collection_id AND sc.deleted_at IS NULL
 		JOIN collections tc ON tc.id = t.collection_id AND tc.deleted_at IS NULL
 		WHERE l.workspace_id = ? AND l.link_type = 'blocks'
@@ -5735,7 +5736,8 @@ func (s *Store) PopulateHasChildren(items []models.Item) {
 	}
 	query := fmt.Sprintf(`
 		SELECT DISTINCT il.target_id FROM item_links il
-		JOIN items child ON child.id = il.source_id AND child.deleted_at IS NULL
+		JOIN items child ON child.id = il.source_id AND child.deleted_at IS NULL AND child.workspace_id = il.workspace_id
+		JOIN items par ON par.id = il.target_id AND par.workspace_id = il.workspace_id
 		JOIN collections cc ON cc.id = child.collection_id AND cc.deleted_at IS NULL
 		WHERE il.link_type IN (%s) AND il.target_id IN (%s)
 	`, childLinkTypeSQL(), strings.Join(placeholders, ","))
