@@ -44,7 +44,7 @@ async function openWithDraft(
 	fixture: Fixture,
 	ref: string,
 	key: string,
-	draft: { markdown: string; savedAt: number; baseSeq: number; baseBody: string },
+	draft: { markdown: string; savedAt: number; baseSeq: number; baseBody: string; baseStale?: true },
 ) {
 	const ctx = await browser.newContext();
 	await ctx.addInitScript(([k, v]) => localStorage.setItem(k, v), [key, JSON.stringify(draft)] as const);
@@ -98,5 +98,89 @@ test('both sides changed the same paragraph: nothing is written and the notice s
 	expect(stored.content).toContain('Paragraph three, theirs.');
 	expect(stored.content).not.toContain('mine');
 	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	await ctx.close();
+});
+
+// TASK-3856: a draft whose base is flagged stale (a remote update or this tab's
+// own send outran it, or no confirmed snapshot) can never patch, so the notice
+// says so up front and offers no Restore.
+test('a stale-base draft on a changed item says it cannot be applied and offers only Copy', async ({ browser, fixture, request }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough for a restore flow');
+	test.setTimeout(120_000);
+	const { id, ref, base, key, headers } = await setUp(request, fixture, `TASK-3856 stale ${Date.now()}`);
+	await collaboratorWrites(request, fixture, id, headers, base.content.replace('Paragraph one.', 'Paragraph one, theirs.'));
+	const draft = {
+		markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'),
+		savedAt: Date.now(),
+		baseSeq: base.seq,
+		baseBody: base.content,
+		baseStale: true as const,
+	};
+
+	const { ctx, page } = await openWithDraft(browser, fixture, ref, key, draft);
+	const notice = page.getByTestId('refused-raw-draft');
+	await expect(notice.getByTestId('refused-raw-draft-stale')).toContainText("can't be applied by themselves");
+	await expect(notice).not.toContainText('restoring applies only your changes');
+	await expect(notice.locator('.diff'), 'no diff: its base is the untrusted part').toHaveCount(0);
+	await expect(notice).toContainText('may not all have reached the server');
+	await expect(notice.getByRole('button', { name: 'Restore it' })).toHaveCount(0);
+	await expect(notice.getByRole('button', { name: 'Copy it' })).toBeVisible();
+	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
+	expect(stored.content).toContain('Paragraph one, theirs.');
+	expect(stored.content).not.toContain('mine');
+	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	await ctx.close();
+});
+
+// TASK-3856 r2 (codex High): the crash keeper rewrites a draft it kept as stale
+// when this tab sends, after the notice may already show it. Restore reads the
+// stored draft first: now stale, the notice re-renders without Restore and
+// nothing is written.
+test('a shown draft rewritten as stale in storage is not patched when Restore is clicked', async ({ browser, fixture, request }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough for a restore flow');
+	test.setTimeout(120_000);
+	const { id, ref, base, key, headers } = await setUp(request, fixture, `TASK-3856 flipped ${Date.now()}`);
+	await collaboratorWrites(request, fixture, id, headers, base.content.replace('Paragraph one.', 'Paragraph one, theirs.'));
+	const draft = { markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'), savedAt: Date.now(), baseSeq: base.seq, baseBody: base.content };
+
+	const { ctx, page } = await openWithDraft(browser, fixture, ref, key, draft);
+	const notice = page.getByTestId('refused-raw-draft');
+	await expect(notice, 'premise: shown as a patch restore').toContainText('restoring applies only your changes');
+	// The keeper's onSent rewrite: same text, same base, flagged stale.
+	await page.evaluate(([k, v]) => localStorage.setItem(k, v), [key, JSON.stringify({ ...draft, savedAt: draft.savedAt + 1, baseStale: true })] as const);
+	await notice.getByRole('button', { name: 'Restore it' }).click();
+
+	await expect(notice.getByTestId('refused-raw-draft-stale')).toBeVisible();
+	await expect(notice.getByRole('button', { name: 'Restore it' })).toHaveCount(0);
+	await expect(page.getByTestId('restored-draft-result')).toHaveCount(0);
+	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
+	expect(stored.content).toContain('Paragraph one, theirs.');
+	expect(stored.content).not.toContain('mine');
+	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	await ctx.close();
+});
+
+// TASK-3856 r3 (hunter Low): a whole-body restore never reads the base, so a
+// stale rewrite of the shown draft does not stop it: the first click sends the
+// restore. (With the editor open the server may refuse it over pending edits
+// and ask first; that flow is the existing one and is not what this pins.)
+test('a shown draft rewritten as stale on an unchanged item is sent whole on the first click', async ({ browser, fixture, request }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough for a restore flow');
+	test.setTimeout(120_000);
+	const { id, ref, base, key, headers } = await setUp(request, fixture, `TASK-3856 whole ${Date.now()}`);
+	const draft = { markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'), savedAt: Date.now(), baseSeq: base.seq, baseBody: base.content };
+
+	const { ctx, page } = await openWithDraft(browser, fixture, ref, key, draft);
+	const notice = page.getByTestId('refused-raw-draft');
+	await expect(notice, 'premise: the item has not changed').not.toContainText('This item changed');
+	await page.evaluate(([k, v]) => localStorage.setItem(k, v), [key, JSON.stringify({ ...draft, savedAt: draft.savedAt + 1, baseStale: true })] as const);
+	const sent = page.waitForRequest(
+		(r) => r.method() === 'PATCH' && r.url().endsWith(`/items/${id}`) && (r.postData() ?? '').includes('Paragraph three, mine.'),
+		{ timeout: SYNC_TIMEOUT },
+	);
+	await notice.getByRole('button', { name: 'Restore it' }).click();
+	const req = await sent;
+	expect(JSON.parse(req.postData() ?? '{}').content, 'the whole kept text, not a patch').toBe(draft.markdown);
+	await expect(notice.getByTestId('refused-raw-draft-stale')).toHaveCount(0);
 	await ctx.close();
 });

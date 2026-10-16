@@ -31,6 +31,12 @@
 		 * disabled and Copy leading. Null when it can run.
 		 */
 		restoreBlocked?: string | null;
+		/**
+		 * The draft's base is not known to be where the user started (BUG-3850
+		 * rulings baa63dc3, a6380212): a patch could not be told apart from the
+		 * newer edits, so Restore is not offered and Copy leads (TASK-3856).
+		 */
+		baseStale?: boolean;
 	}
 
 	let {
@@ -42,9 +48,11 @@
 		newer = false,
 		appliesChanges = false,
 		conflict = null,
-		restoreBlocked = null
+		restoreBlocked = null,
+		baseStale = false
 	}: Props = $props();
 
+	let cannotApply = $derived(conflict === null && newer && appliesChanges && baseStale);
 	let copyLeads = $derived(conflict !== null || restoreBlocked !== null || (newer && !appliesChanges));
 
 	let when = $derived(new Date(savedAt).toLocaleString());
@@ -55,8 +63,8 @@
 	     refused, a session that ended under the item, a tab that died before
 	     the server confirmed (TASK-3606). -->
 	<p>
-		Changes you made here at <time datetime={new Date(savedAt).toISOString()}>{when}</time> did not reach the
-		server. They are kept in this browser.
+		Changes you made here at <time datetime={new Date(savedAt).toISOString()}>{when}</time>
+		{cannotApply ? 'may not all have reached' : 'did not reach'} the server. They are kept in this browser.
 	</p>
 	{#if conflict}
 		<p class="newer" data-testid="refused-raw-draft-conflict">
@@ -66,16 +74,21 @@
 		<div class="diff">
 			<DiffView oldContent={conflict.base} newContent={conflict.draft} oldLabel="When you started" newLabel="Your kept text" />
 		</div>
+	{:else if cannotApply}
+		<p class="newer" data-testid="refused-raw-draft-stale">
+			This item changed after these edits were made, and your changes can't be told apart from the newer ones, so
+			they can't be applied by themselves. Copy your text and re-apply them by hand.
+		</p>
 	{:else if newer && appliesChanges}
 		<p class="newer">This item changed after these edits were made; restoring applies only your changes and keeps the newer version.</p>
 	{:else if newer}
 		<p class="newer">This item changed after these edits were made; restoring replaces the newer version.</p>
 	{/if}
-	{#if restoreBlocked && !conflict}
+	{#if restoreBlocked && !conflict && !cannotApply}
 		<p data-testid="refused-raw-draft-waiting">{restoreBlocked}</p>
 	{/if}
 	<div class="actions">
-		{#if conflict}
+		{#if conflict || cannotApply}
 			<Button variant="primary" size="sm" disabled={busy} onclick={oncopy}>Copy it</Button>
 		{:else if copyLeads}
 			<Button variant="primary" size="sm" disabled={busy} onclick={oncopy}>Copy it</Button>

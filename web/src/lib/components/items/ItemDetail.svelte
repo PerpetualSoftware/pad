@@ -5160,8 +5160,19 @@
 	// A crash draft the item has moved on from goes as a patch of the user's
 	// own changes instead (TASK-3607).
 	async function restoreRefusedDraft() {
-		const d = refusedDraft;
-		if (!d || !item || refusedDraftBusy) return;
+		const shown = refusedDraft;
+		if (!shown || !item || refusedDraftBusy) return;
+		// TASK-3856 r2 (codex High): the crash keeper rewrites a draft it kept as
+		// stale when this tab sends, and that write does not refresh the copy
+		// shown here. For a patch restore the stored one decides; a stale one
+		// re-renders the notice without Restore, and nothing is written. A
+		// whole-body restore does not read the base, so it goes ahead (r3).
+		const stored = readRefusedRawDraft(authStore.userId, item.id);
+		if (stored && stored.markdown === shown.markdown && stored.baseStale && !shown.baseStale && draftAppliesAsPatch(shown, item.seq ?? 0)) {
+			refusedDraft = stored;
+			return;
+		}
+		const d = shown;
 		if (rawMode && rawContentSaver.pending !== null) {
 			toastStore.show('Wait for your current edits to save, then restore.', 'info');
 			return;
@@ -7440,6 +7451,7 @@
 						restoreBlocked={restoreBlocked}
 						newer={refusedDraft.baseSeq !== undefined && (item?.seq ?? 0) > refusedDraft.baseSeq}
 						appliesChanges={draftAppliesAsPatch(refusedDraft, item?.seq ?? 0)}
+						baseStale={refusedDraft.baseStale === true}
 						conflict={refusedDraftConflict && refusedDraftConflict.itemId === item?.id && refusedDraftConflict.savedAt === refusedDraft.savedAt && refusedDraftConflict.base === refusedDraft.baseBody
 							? { base: refusedDraftConflict.base, draft: refusedDraft.markdown }
 							: null}
