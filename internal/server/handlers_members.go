@@ -732,11 +732,23 @@ func (s *Server) handlePreviewInvitation(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// inviter_can_grant false: every accept door would refuse this invitation
+	// with inviter_scope_changed (BUG-3770, BUG-3634), so the page says so
+	// instead of offering an Accept, or a signup, that ends in that refusal.
+	// Reported as found, not hidden, because the code is real and the reason
+	// is one the invitee can act on.
+	canGrant, err := s.store.InviterCanStillGrant(inv.ID, inv.WorkspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"found":          true,
-		"email":          inv.Email,
-		"workspace_name": ws.Name,
-		"has_account":    existingUser != nil,
+		"found":             true,
+		"email":             inv.Email,
+		"workspace_name":    ws.Name,
+		"has_account":       existingUser != nil,
+		"inviter_can_grant": canGrant,
 	})
 }
 

@@ -421,3 +421,49 @@ describe('invalid invitation link (TASK-2251)', () => {
 		expect(document.querySelector('#join-name')).not.toBeNull();
 	});
 });
+
+// BUG-3770: the code is real, but its inviter was removed, demoted or
+// restricted since, so every accept door would refuse it. The page says so
+// instead of offering an Accept or a signup that ends in that refusal.
+describe('invitation whose inviter can no longer grant it (BUG-3770)', () => {
+	const refusedPreview = {
+		found: true,
+		email: 'inv@example.com',
+		has_account: false,
+		workspace_name: 'Acme',
+		inviter_can_grant: false,
+	};
+
+	it('signed in: the inviter-changed state, and no accept card', async () => {
+		mocks.session.mockResolvedValue({ authenticated: true });
+		mocks.preview.mockResolvedValue(refusedPreview);
+		render(JoinPage);
+		await settle();
+		expect(byTestId('join-inviter-changed')?.textContent).toContain('can no longer grant access');
+		expect(byTestId('join-accept')).toBeNull();
+		expect(byTestId('join-invalid')).toBeNull();
+		expect(mocks.accept).not.toHaveBeenCalled();
+	});
+
+	it('signed out: the inviter-changed state, and no sign-in or register form', async () => {
+		mocks.session.mockResolvedValue({ authenticated: false });
+		mocks.preview.mockResolvedValue(refusedPreview);
+		render(JoinPage);
+		await settle();
+		expect(byTestId('join-inviter-changed')).not.toBeNull();
+		expect(document.querySelectorAll('input').length).toBe(0);
+	});
+
+	it('inviter_can_grant true, or absent from an older server, offers the card as before', async () => {
+		for (const preview of [{ ...refusedPreview, inviter_can_grant: true }, { ...refusedPreview, inviter_can_grant: undefined }]) {
+			mocks.session.mockResolvedValue({ authenticated: true });
+			mocks.preview.mockResolvedValue(preview);
+			render(JoinPage);
+			await settle();
+			expect(byTestId('join-inviter-changed')).toBeNull();
+			expect(byTestId('join-accept')).not.toBeNull();
+			cleanup();
+			document.body.innerHTML = '';
+		}
+	});
+});

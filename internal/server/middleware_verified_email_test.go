@@ -328,7 +328,9 @@ func TestVerifiedEmail_InvitationAccept_CarveOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	inv, err := f.srv.store.CreateInvitation(otherWS.ID, f.unv.email, "editor", f.unv.id)
+	// From the admin: an invitee cannot be its own inviter, who must hold
+	// the authority to invite when it is accepted (BUG-3770).
+	inv, err := f.srv.store.CreateInvitation(otherWS.ID, f.unv.email, "editor", admin.ID)
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)
 	}

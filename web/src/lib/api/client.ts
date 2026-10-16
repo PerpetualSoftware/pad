@@ -1388,6 +1388,9 @@ export interface InvitationPreview {
 	email?: string;
 	workspace_name?: string;
 	has_account?: boolean;
+	// false when every accept door would refuse it with inviter_scope_changed
+	// (BUG-3770); absent from older servers, which reads as true.
+	inviter_can_grant?: boolean;
 }
 
 // Module-scope cache for GET /server/capabilities. The response is static

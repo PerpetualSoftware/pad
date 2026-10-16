@@ -150,12 +150,15 @@ func (s *Store) commitWorkspaceMemberTx(tx *sql.Tx) error {
 // it (BUG-2136). The accept is rolled back.
 var ErrInvitationGone = errors.New("invitation no longer pending")
 
-// ErrInviterScopeTooNarrow: the member who sent the invitation is now
-// restricted to specific collections, and an accepted invitation makes a
-// member with access to every collection, more than the inviter holds
-// (BUG-3634). The accept is refused, not narrowed: the invitation carries
-// no scope to narrow to, and a silent downgrade would leave the invitee
-// with access nobody chose. An unrestricted owner can send a new one.
+// ErrInviterScopeTooNarrow: the person who sent the invitation can no
+// longer grant what it grants, read at accept time. They are restricted to
+// specific collections, and an accepted invitation makes a member with
+// access to every collection (BUG-3634); or they are no longer an owner of
+// the workspace, because they were removed, left or were demoted, and only
+// an owner can invite (BUG-3770). The accept is refused, not narrowed: the
+// invitation carries no scope to narrow to, and a silent downgrade would
+// leave the invitee with access nobody chose. An unrestricted owner can
+// send a new one.
 var ErrInviterScopeTooNarrow = errors.New("the inviter can no longer grant this access")
 
 // AcceptWorkspaceInvitation accepts an invitation in one transaction: the
@@ -214,21 +217,41 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 	return added, effectiveRole, nil
 }
 
-// requireInviterScopeTx refuses an accept whose inviter is now a member
-// restricted to specific collections (BUG-3634), read at accept time so a
-// restriction made after the invitation was sent still applies.
+// requireInviterScopeTx refuses an accept whose inviter can no longer grant
+// it (ErrInviterScopeTooNarrow), read at accept time so a change made after
+// the invitation was sent still applies: the inviter must still be a member
+// of the workspace, still an owner (BUG-3770), and not restricted to
+// specific collections (BUG-3634).
 //
 // An instance admin is exempt. visibleCollectionIDs scopes an admin's
 // BEARER requests to their membership, but that bounds what a token can
 // reach, not the admin's authority: from a cookie session the admin can set
 // any member's access to all, including their own and this invitee's. So
-// an admin's invitation never grants more than the admin can grant, and
-// the property this guards (no one grants beyond what they hold) is not at
-// stake. An inviter who is no longer a member, or no recorded inviter, is
-// left as before.
+// an admin's invitation never grants
+// more than the admin can grant, and the property this guards (no one
+// grants beyond what they hold) is not at stake. An invitation with no
+// recorded inviter is left as before.
 func (s *Store) requireInviterScopeTx(tx *sql.Tx, invitationID, workspaceID string) error {
+	return s.inviterCanGrantQ(tx, invitationID, workspaceID, true)
+}
+
+// InviterCanStillGrant reports whether an accept of this invitation would
+// pass the inviter check above, read now and unlocked, so a door that offers
+// an Accept (the join preview, the pending list) offers only one that the
+// accept will not refuse. The accept re-checks under its lock; this is the
+// same predicate, so the two cannot disagree except across a concurrent
+// change.
+func (s *Store) InviterCanStillGrant(invitationID, workspaceID string) (bool, error) {
+	err := s.inviterCanGrantQ(s.db, invitationID, workspaceID, false)
+	if errors.Is(err, ErrInviterScopeTooNarrow) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Store) inviterCanGrantQ(q rowQueryer, invitationID, workspaceID string, lock bool) error {
 	var inviterID, userRole string
-	err := tx.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT i.invited_by, u.role FROM workspace_invitations i
 		JOIN users u ON u.id = i.invited_by
 		WHERE i.id = ?`), invitationID).Scan(&inviterID, &userRole)
@@ -241,23 +264,25 @@ func (s *Store) requireInviterScopeTx(tx *sql.Tx, invitationID, workspaceID stri
 	if userRole == "admin" {
 		return nil
 	}
-	// Share-locked on Postgres, so a restriction of the inviter committing
-	// alongside this accept either lands first and is read here, or waits
-	// for the membership this accept writes and narrows nothing it relies
-	// on (codex round 2). SQLite's single writer orders them already.
-	q := `SELECT collection_access FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
-	if s.dialect.Driver() == DriverPostgres {
-		q += ` FOR SHARE`
+	// Role and scope in ONE share-locked read on Postgres, never upgraded
+	// later in this transaction: a demotion, removal or restriction of the
+	// inviter committing alongside this accept either lands first and is read
+	// here, or waits for the membership this accept writes (codex round 2 of
+	// BUG-3634). A removal that commits first leaves no row, which is the
+	// refusal. SQLite's single writer orders them already.
+	member := `SELECT role, collection_access FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
+	if lock && s.dialect.Driver() == DriverPostgres {
+		member += ` FOR SHARE`
 	}
-	var access string
-	err = tx.QueryRow(s.q(q), workspaceID, inviterID).Scan(&access)
+	var role, access string
+	err = q.QueryRow(s.q(member), workspaceID, inviterID).Scan(&role, &access)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return ErrInviterScopeTooNarrow
 	}
 	if err != nil {
 		return fmt.Errorf("accept workspace invitation: read inviter scope: %w", err)
 	}
-	if access == "specific" {
+	if role != "owner" || access == "specific" {
 		return ErrInviterScopeTooNarrow
 	}
 	return nil

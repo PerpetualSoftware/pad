@@ -251,6 +251,10 @@ func invitedSignupServer(t *testing.T) (*Server, *models.WorkspaceInvitation) {
 	if err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
+	// The inviter must still be an owner when the invitee accepts (BUG-3770).
+	if err := srv.store.AddWorkspaceMember(ws.ID, inviter.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember inviter: %v", err)
+	}
 	inv, err := srv.store.CreateInvitation(ws.ID, "newcomer@example.com", "editor", inviter.ID)
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)

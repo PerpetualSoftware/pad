@@ -27,8 +27,12 @@ type MyInvitation struct {
 
 // ListPendingInvitationsForEmail returns the invitations addressed to email
 // that can still be accepted by userID: not accepted, not expired, to a live
-// workspace (BUG-3104), and to a workspace userID is not already a member of
-// (accepting one of those inserts a duplicate membership).
+// workspace (BUG-3104), to a workspace userID is not already a member of
+// (accepting one of those inserts a duplicate membership), and from an
+// inviter who can still grant it (InviterCanStillGrant: still an owner, not
+// restricted; BUG-3770, BUG-3634), since the accept refuses the rest. Such an
+// invitation is hidden, not deleted: it comes back if the inviter's authority
+// does, which is when the accept would pass again.
 //
 // The caller decides whether email is proven. This method only matches it.
 // Emails are stored lowercased and trimmed on both sides (CreateInvitation,
@@ -76,7 +80,23 @@ func (s *Store) ListPendingInvitationsForEmail(email, userID string) ([]MyInvita
 		}
 		result = append(result, inv)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Closed first, so the per-row reads below do not hold a second
+	// connection alongside an open result set.
+	rows.Close()
+	grantable := result[:0]
+	for _, inv := range result {
+		ok, err := s.InviterCanStillGrant(inv.ID, inv.WorkspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("list pending invitations for email: %w", err)
+		}
+		if ok {
+			grantable = append(grantable, inv)
+		}
+	}
+	return grantable, nil
 }
 
 // GetPendingInvitationForEmail returns the pending invitation id if, and only
