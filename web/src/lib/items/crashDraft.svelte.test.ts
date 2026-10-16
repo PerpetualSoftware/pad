@@ -130,6 +130,52 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'A C U', savedAt: expect.any(Number), baseSeq: 4, baseBody: 'A C' });
 	});
 
+	it('BUG-3850 r5: the same markdown over a base that turned stale is written again, flagged', () => {
+		// A remote ' C' lands and the user deletes it again within one tick: the
+		// document moved (version), the markdown is what was kept, the base is stale.
+		let v = 1;
+		let snap: { markdown: string; baseSeq: number; baseBody: string; baseStale?: boolean } = { markdown: 'A U', baseSeq: 4, baseBody: 'A' };
+		const h = harness({ version: () => v, snapshot: () => snap });
+		h.tick();
+		expect(readRefusedRawDraft('u1', 'i1')?.baseStale).toBeUndefined();
+		v = 2;
+		snap = { markdown: 'A U', baseSeq: 4, baseBody: 'A', baseStale: true };
+		h.tick();
+		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'A U', savedAt: expect.any(Number), baseSeq: 4, baseBody: 'A', baseStale: true });
+	});
+
+	it('BUG-3850 r5: the same markdown over a base body that moved at the same seq is written with that body', () => {
+		let v = 1;
+		let snap = { markdown: 'A U', baseSeq: 4, baseBody: 'A' };
+		const h = harness({ version: () => v, snapshot: () => snap });
+		h.tick();
+		v = 2;
+		snap = { markdown: 'A U', baseSeq: 4, baseBody: 'A U' };
+		h.tick();
+		expect(readRefusedRawDraft('u1', 'i1')).toMatchObject({ markdown: 'A U', baseSeq: 4, baseBody: 'A U' });
+	});
+
+	it('BUG-3850 r5: the same markdown over the same body at a new seq is written with that seq', () => {
+		let v = 1;
+		let snap = { markdown: 'A U', baseSeq: 4, baseBody: 'A' };
+		const h = harness({ version: () => v, snapshot: () => snap });
+		h.tick();
+		v = 2;
+		snap = { markdown: 'A U', baseSeq: 6, baseBody: 'A' };
+		h.tick();
+		expect(readRefusedRawDraft('u1', 'i1')).toMatchObject({ baseSeq: 6 });
+	});
+
+	it('BUG-3850 r5: an unchanged markdown and base still skip the write', () => {
+		const h = harness();
+		h.tick();
+		const first = readRefusedRawDraft('u1', 'i1')?.savedAt;
+		localStorage.clear();
+		h.tick();
+		expect(first).toBeDefined();
+		expect(readRefusedRawDraft('u1', 'i1'), 'skipped: nothing was written after the clear').toBeNull();
+	});
+
 	it('BUG-3850: observe runs on every tick, at risk or not', () => {
 		let n = 0;
 		const h = harness({ observe: () => n++ });

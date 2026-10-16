@@ -33,6 +33,10 @@ describe('BUG-3850: confirmed base wiring in ItemDetail', () => {
 		expect(trackerBody).toMatch(/context: \(\) => \{[\s\S]*!rawMode \? ctx : null;/);
 	});
 
+	it('with no confirmed snapshot, the kept draft falls back to the row flagged stale (r5 hunter-L1)', () => {
+		expect(snapshotBody).toContain('if (!confirmed) return { markdown: md, ...base, baseStale: true };');
+	});
+
 	it('the kept draft carries the confirmed snapshot and its seq', () => {
 		expect(snapshotBody).toContain("return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, ...(confirmed.remoteAfter ? { baseStale: true } : {}) };");
 	});

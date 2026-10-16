@@ -6387,9 +6387,12 @@
 		if (md === null) return null;
 		// BUG-3850: rich text is anchored on the editor's own last confirmed
 		// snapshot, in the serialization a flush writes. No confirmed snapshot
-		// yet: the row, as before.
+		// yet: the row, flagged stale. It was read before the provider's sync,
+		// so this tab cannot say the server holds nothing it lacks (lead ruling
+		// baa63dc3, r5 hunter-L1); such a draft restores through the conflict
+		// notice.
 		const confirmed = confirmedBase.current();
-		if (!confirmed) return { markdown: md, ...base };
+		if (!confirmed) return { markdown: md, ...base, baseStale: true };
 		return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, ...(confirmed.remoteAfter ? { baseStale: true } : {}) };
 	}
 	const confirmedBase = createConfirmedBaseTracker({

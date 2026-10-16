@@ -49,7 +49,7 @@ export function registerCrashDraftKeeper(
 		return () => clearInterval(t);
 	},
 ): () => void {
-	let last: { userId: string; itemId: string; markdown: string; version: unknown } | null = null;
+	let last: { userId: string; itemId: string; markdown: string; version: unknown; base: string } | null = null;
 
 	const tick = () => {
 		const userId = source.userId();
@@ -61,9 +61,14 @@ export function registerCrashDraftKeeper(
 			if (version !== undefined && last && last.userId === userId && last.itemId === itemId && last.version === version) return;
 			const snap = source.snapshot();
 			if (!snap || snap.markdown.length > CRASH_DRAFT_MAX_CHARS) return;
-			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown) return;
+			// The base is part of what was kept: the same text over a base that
+			// has since moved, or turned stale, is a different draft (BUG-3850
+			// r5: a remote ' C' the user deleted again within one tick leaves the
+			// markdown as it was and the base stale).
+			const base = JSON.stringify([snap.baseSeq, snap.baseBody, snap.baseStale === true]);
+			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown && last.base === base) return;
 			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody, stale: snap.baseStale })) {
-				last = { userId, itemId, markdown: snap.markdown, version };
+				last = { userId, itemId, markdown: snap.markdown, version, base };
 			}
 			return;
 		}
