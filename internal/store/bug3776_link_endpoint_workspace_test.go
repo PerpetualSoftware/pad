@@ -229,8 +229,12 @@ func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
 				if got[a2.ID] != 1 {
 					t.Fatalf("control: A2 has one child (A3), progress total %d", got[a2.ID])
 				}
-				if got[a4.ID] != 0 {
-					t.Errorf("A4 counts a workspace-B child: total %d", got[a4.ID])
+				total, ok := got[a4.ID]
+				if !ok {
+					t.Fatal("control: A4 is missing from the progress list")
+				}
+				if total != 0 {
+					t.Errorf("A4 counts a workspace-B child: total %d", total)
 				}
 			})
 
