@@ -37,4 +37,8 @@ describe('BUG-3850: confirmed base wiring in ItemDetail', () => {
 	it('the kept draft carries the confirmed snapshot, its seq and its row', () => {
 		expect(snapshotBody).toContain('return { markdown: md, baseSeq: confirmed.seq, baseBody: confirmed.markdown, rawBaseBody: confirmed.raw };');
 	});
+
+	it('the editor refreshes it before every local change (lead ruling c9db9612)', () => {
+		expect(src).toMatch(/const ed = editorInstance;\s*if \(!ed\) return;\s*return registerRefreshBeforeLocalChange\(ed as never, confirmedBase\.refresh\);/);
+	});
 });

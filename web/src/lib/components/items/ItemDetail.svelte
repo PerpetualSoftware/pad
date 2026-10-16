@@ -45,7 +45,7 @@
 	import RefusedRawDraftNotice from './RefusedRawDraftNotice.svelte';
 	import RestoredDraftResult from './RestoredDraftResult.svelte';
 	import { planDraftRestore } from '$lib/items/draftPatch';
-	import { createConfirmedBaseTracker, providerConfirmed } from '$lib/items/confirmedBase';
+	import { createConfirmedBaseTracker, providerConfirmed, registerRefreshBeforeLocalChange } from '$lib/items/confirmedBase';
 	import { isBodyStale, isSetAside } from '$lib/items/staleBody';
 	import EditorBubbleMenu from '$lib/components/editor/EditorBubbleMenu.svelte';
 	import EditorLinkPopover from '$lib/components/editor/EditorLinkPopover.svelte';
@@ -6404,6 +6404,14 @@
 		snapshot: () => (activeCollabContext ? collabFlusher.snapshot(activeCollabContext) : null),
 		seq: () => item?.seq ?? 0,
 		raw: () => item?.content ?? '',
+	});
+	// BUG-3850 (lead ruling c9db9612): the base is refreshed before the first
+	// local keystroke after a collaborator's change, while the editor still
+	// holds the document without it.
+	$effect(() => {
+		const ed = editorInstance;
+		if (!ed) return;
+		return registerRefreshBeforeLocalChange(ed as never, confirmedBase.refresh);
 	});
 	$effect(() => {
 		return registerCrashDraftKeeper({
