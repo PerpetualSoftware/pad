@@ -55,6 +55,9 @@ describe('RefusedRawDraftNotice: the wording and buttons match what Restore does
 		const { container } = render(Notice, { props: p });
 		// No diff: the base it would be drawn from is the untrusted part.
 		expect(container.querySelector('.diff')).toBeNull();
+		// Some of it may already be on the server (lead ruling on codex r2 Low).
+		expect(screen.getByTestId('refused-raw-draft').textContent).toContain('may not all have reached the server');
+		expect(screen.getByTestId('refused-raw-draft').textContent).not.toContain('did not reach');
 		expect(screen.getByTestId('refused-raw-draft-stale').textContent).toContain("can't be applied by themselves");
 		expect(screen.queryByText(/restoring applies only your changes/)).toBeNull();
 		expect(screen.queryByTestId('refused-raw-draft-conflict')).toBeNull();
@@ -73,6 +76,7 @@ describe('RefusedRawDraftNotice: the wording and buttons match what Restore does
 	it('not stale, seq moved: promises a patch, Restore leads', () => {
 		render(Notice, { props: props() });
 		expect(screen.getByText(/restoring applies only your changes and keeps the newer version/)).toBeTruthy();
+		expect(screen.getByTestId('refused-raw-draft').textContent).toContain('did not reach the server');
 		expect(screen.queryByTestId('refused-raw-draft-stale')).toBeNull();
 		expect(names()).toEqual(['Restore it', 'Copy it', 'Discard']);
 	});

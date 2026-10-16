@@ -5160,8 +5160,18 @@
 	// A crash draft the item has moved on from goes as a patch of the user's
 	// own changes instead (TASK-3607).
 	async function restoreRefusedDraft() {
-		const d = refusedDraft;
-		if (!d || !item || refusedDraftBusy) return;
+		const shown = refusedDraft;
+		if (!shown || !item || refusedDraftBusy) return;
+		// TASK-3856 r2 (codex High): the crash keeper rewrites a draft it kept as
+		// stale when this tab sends, and that write does not refresh the copy
+		// shown here. The stored one decides; a stale one re-renders the notice
+		// without Restore, and nothing is written.
+		const stored = readRefusedRawDraft(authStore.userId, item.id);
+		if (stored && stored.markdown === shown.markdown && stored.baseStale && !shown.baseStale) {
+			refusedDraft = stored;
+			return;
+		}
+		const d = shown;
 		if (rawMode && rawContentSaver.pending !== null) {
 			toastStore.show('Wait for your current edits to save, then restore.', 'info');
 			return;

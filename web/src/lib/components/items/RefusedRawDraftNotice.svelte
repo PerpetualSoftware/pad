@@ -63,8 +63,8 @@
 	     refused, a session that ended under the item, a tab that died before
 	     the server confirmed (TASK-3606). -->
 	<p>
-		Changes you made here at <time datetime={new Date(savedAt).toISOString()}>{when}</time> did not reach the
-		server. They are kept in this browser.
+		Changes you made here at <time datetime={new Date(savedAt).toISOString()}>{when}</time>
+		{cannotApply ? 'may not all have reached' : 'did not reach'} the server. They are kept in this browser.
 	</p>
 	{#if conflict}
 		<p class="newer" data-testid="refused-raw-draft-conflict">
