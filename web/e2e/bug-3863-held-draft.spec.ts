@@ -92,11 +92,14 @@ test('a shown kept draft survives the keeper and a reload, and the newer text is
 	await ask.getByRole('button', { name: 'Overwrite them' }).click();
 	await expect.poll(async () => (await read()).content, { timeout: SYNC_TIMEOUT, message: 'D is what was offered and restored' }).toContain(D);
 	expect((await read()).content).not.toContain('Typed E');
-	await expect.poll(() => slots(again)).toMatchObject({ held: null, pending: expect.stringContaining('Typed E while D is shown.') });
+	// D resolved: the body change re-runs the offer, which holds and shows E
+	// (one draft at a time, never both).
+	await expect.poll(() => slots(again)).toMatchObject({ held: expect.stringContaining('Typed E while D is shown.'), pending: null });
+	await expect(notice).toBeVisible();
 	const afterRestore = await again.context().storageState();
 	await again.context().close();
 
-	// D resolved: the next open offers E.
+	// The next open offers E again, until it is resolved.
 	const third = await (await browser.newContext({ storageState: afterRestore })).newPage();
 	await browserLogin(third);
 	await third.goto(url);
