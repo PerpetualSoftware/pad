@@ -74,7 +74,8 @@ test('a collaborator changed paragraph one, the draft changed paragraph three: R
 			{ timeout: SYNC_TIMEOUT, message: 'the row holds both versions once the editor flushes' },
 		)
 		.toMatch(/Paragraph one, theirs\.[\s\S]*Paragraph three, mine\./);
-	await expect.poll(() => page.evaluate((k) => localStorage.getItem(k), key)).toBeNull();
+	// Both slots (BUG-3863): the shown draft was held when it was offered.
+	await expect.poll(() => page.evaluate((k) => [localStorage.getItem(k), localStorage.getItem(`${k}:held`)], key)).toEqual([null, null]);
 	await ctx.close();
 });
 
@@ -97,7 +98,7 @@ test('both sides changed the same paragraph: nothing is written and the notice s
 	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
 	expect(stored.content).toContain('Paragraph three, theirs.');
 	expect(stored.content).not.toContain('mine');
-	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	expect(await page.evaluate((k) => localStorage.getItem(`${k}:held`), key), 'the draft is kept, held while it is shown (BUG-3863)').not.toBeNull();
 	await ctx.close();
 });
 
@@ -128,7 +129,7 @@ test('a stale-base draft on a changed item says it cannot be applied and offers 
 	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
 	expect(stored.content).toContain('Paragraph one, theirs.');
 	expect(stored.content).not.toContain('mine');
-	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	expect(await page.evaluate((k) => localStorage.getItem(`${k}:held`), key), 'the draft is kept, held while it is shown (BUG-3863)').not.toBeNull();
 	await ctx.close();
 });
 
@@ -141,13 +142,16 @@ test('a shown draft rewritten as stale in storage is not patched when Restore is
 	test.setTimeout(120_000);
 	const { id, ref, base, key, headers } = await setUp(request, fixture, `TASK-3856 flipped ${Date.now()}`);
 	await collaboratorWrites(request, fixture, id, headers, base.content.replace('Paragraph one.', 'Paragraph one, theirs.'));
-	const draft = { markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'), savedAt: Date.now(), baseSeq: base.seq, baseBody: base.content };
+	// Kept by a live keeper in another tab (BUG-3863: stamped with its id).
+	const draft = { markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'), savedAt: Date.now(), baseSeq: base.seq, baseBody: base.content, keeper: 'k-other-tab' };
 
 	const { ctx, page } = await openWithDraft(browser, fixture, ref, key, draft);
 	const notice = page.getByTestId('refused-raw-draft');
 	await expect(notice, 'premise: shown as a patch restore').toContainText('restoring applies only your changes');
-	// The keeper's onSent rewrite: same text, same base, flagged stale.
-	await page.evaluate(([k, v]) => localStorage.setItem(k, v), [key, JSON.stringify({ ...draft, savedAt: draft.savedAt + 1, baseStale: true })] as const);
+	// This tab held it (BUG-3863); that keeper's send then flags the held
+	// copy stale by its id: same text, same base.
+	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'premise: the shown draft was held').toBeNull();
+	await page.evaluate(([k, v]) => localStorage.setItem(`${k}:held`, v), [key, JSON.stringify({ ...draft, baseStale: true })] as const);
 	await notice.getByRole('button', { name: 'Restore it' }).click();
 
 	await expect(notice.getByTestId('refused-raw-draft-stale')).toBeVisible();
@@ -156,7 +160,7 @@ test('a shown draft rewritten as stale in storage is not patched when Restore is
 	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
 	expect(stored.content).toContain('Paragraph one, theirs.');
 	expect(stored.content).not.toContain('mine');
-	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	expect(await page.evaluate((k) => localStorage.getItem(`${k}:held`), key), 'the draft is kept, held while it is shown (BUG-3863)').not.toBeNull();
 	await ctx.close();
 });
 

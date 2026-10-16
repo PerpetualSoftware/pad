@@ -13,14 +13,16 @@
 	import type { PendingEditsReason } from '$lib/stores/pendingEditsDialog.svelte';
 	import { pendingEditsDialog } from '$lib/stores/pendingEditsDialog.svelte';
 	import { registerSignOutGuard, signOutDiscarding } from '$lib/stores/signOutGuard.svelte';
-	import { registerCrashDraftKeeper } from '$lib/items/crashDraft';
+	import { registerCrashDraftKeeper, keeperOwnsDraft } from '$lib/items/crashDraft';
 	import { registerSessionExpiryKeeper } from '$lib/stores/sessionExpiryKeep';
 	import {
 		keepRefusedRawDraft,
 		readRefusedRawDraft,
 		clearRefusedRawDraft,
-		refusedRawDraftOffer,
+		offerKeptDraft,
+		resolveKeptDraft,
 		type RefusedRawDraft,
+		type RefusedRawDraftSlot,
 	} from '$lib/items/refusedRawDraft';
 	import { nextClientWrite } from '$lib/items/clientWrite';
 	import { SaveTracker, type SaveToken } from '$lib/items/saveTracker.svelte';
@@ -5026,6 +5028,9 @@
 	// below; each renders only for the item and draft it names.
 	let refusedDraftConflict = $state<{ itemId: string; savedAt: number; base: string } | null>(null);
 	let restoredDraftResult = $state<{ itemId: string; diff: string } | null>(null);
+	// BUG-3863: the slot the shown draft is stored in. A draft from before
+	// this tab's keeper is held, so newer kept text cannot replace it.
+	let refusedDraftSlot: RefusedRawDraftSlot = 'pending';
 	$effect(() => {
 		const id = item && itemMatchesRef ? item.id : null;
 		const body = item?.content ?? '';
@@ -5035,17 +5040,16 @@
 				refusedDraft = null;
 				return;
 			}
-			const draft = readRefusedRawDraft(userId, id);
-			const offer = refusedRawDraftOffer(draft, body);
-			if (offer === 'clear') clearRefusedRawDraft(userId, id, draft!.markdown);
-			refusedDraft = offer === 'offer' ? draft : null;
+			const shown = offerKeptDraft(userId, id, body, (md) => keeperOwnsDraft(userId, id, md));
+			refusedDraftSlot = shown?.slot ?? 'pending';
+			refusedDraft = shown?.draft ?? null;
 		});
 	});
 
 	function discardRefusedDraft() {
 		const d = refusedDraft;
 		if (!d || !item) return;
-		clearRefusedRawDraft(authStore.userId, item.id, d.markdown);
+		resolveKeptDraft(authStore.userId, item.id, d.markdown);
 		refusedDraft = null;
 	}
 
@@ -5100,7 +5104,7 @@
 		}
 		if (edits.length === 0) {
 			// The draft is its base: none of the user's text is missing.
-			clearRefusedRawDraft(userId, reqItemId, d.markdown);
+			resolveKeptDraft(userId, reqItemId, d.markdown);
 			refusedDraft = null;
 			toastStore.show('Nothing to restore: the kept text has no changes of yours', 'info');
 			return;
@@ -5112,7 +5116,7 @@
 			const opKey = `restore-${reqItemId}-${d.savedAt}`;
 			const res = await api.items.patch(wsSlug, reqItemId, { edits, expected_seq: d.baseSeq, op_key: opKey });
 			if (stale()) return;
-			clearRefusedRawDraft(userId, reqItemId, d.markdown);
+			resolveKeptDraft(userId, reqItemId, d.markdown);
 			refusedDraft = null;
 			restoredDraftResult = { itemId: reqItemId, diff: res.diff };
 			toastStore.show('Applied your kept changes', 'success');
@@ -5167,7 +5171,7 @@
 		// shown here. For a patch restore the stored one decides; a stale one
 		// re-renders the notice without Restore, and nothing is written. A
 		// whole-body restore does not read the base, so it goes ahead (r3).
-		const stored = readRefusedRawDraft(authStore.userId, item.id);
+		const stored = readRefusedRawDraft(authStore.userId, item.id, Date.now(), refusedDraftSlot);
 		if (stored && stored.markdown === shown.markdown && stored.baseStale && !shown.baseStale && draftAppliesAsPatch(shown, item.seq ?? 0)) {
 			refusedDraft = stored;
 			return;
@@ -5205,7 +5209,7 @@
 						...(overwrite ? { overwrite_pending_edits: true } : {}),
 					});
 					if (!item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity)) return;
-					clearRefusedRawDraft(userId, reqItemId, d.markdown);
+					resolveKeptDraft(userId, reqItemId, d.markdown);
 					refusedDraft = null;
 					// BUG-3230 U2: an overwrite that deleted another tab's edits says so.
 					const discarded = prunedEditsNotice(updated);
