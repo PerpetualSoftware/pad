@@ -90,12 +90,14 @@ test.describe('BUG-3852: a built-in playbook update from the Library', () => {
 			await expect(page).toHaveURL(new RegExp(`/${ws}/playbooks/[^/?]+$`));
 			await expect(page.locator('#pbe-body')).toHaveValue(oldBody);
 			await page.locator('button.builtin-badge', { hasText: 'Update available' }).click();
-			await expect(page.getByText("What Pad's library changed")).toBeVisible();
+			const dialog = page.getByRole('dialog');
+			await expect(dialog.getByRole('heading', { level: 2, name: 'Update available' })).toBeVisible();
+			await expect(dialog.getByText('Your copy is unedited')).toBeVisible();
 
 			const accept = page.waitForResponse(
 				(r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/builtin/update'),
 			);
-			await page.getByRole('button', { name: "Accept the library's version" }).click();
+			await dialog.getByRole('button', { name: "Accept the library's version" }).click();
 			const res = await accept;
 			expect(res.status(), await res.text()).toBe(200);
 
