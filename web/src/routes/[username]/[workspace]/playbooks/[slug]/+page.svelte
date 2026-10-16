@@ -16,6 +16,7 @@
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import BuiltinUpdateNotice from '$lib/components/items/BuiltinUpdateNotice.svelte';
 	import {
 		playbookFieldsPatch,
 		storedFormMismatches,
@@ -411,6 +412,29 @@
 					readonly={!canEdit}
 					oninput={(e) => (title = (e.currentTarget as HTMLInputElement).value)}
 				/>
+				<!-- Built-in update nudge (BUG-3852): the Library's "Update available"
+				     card opens a playbook here, so the review and Accept must live
+				     here too, not only in the item pane. The body is a plain textarea,
+				     so the only edits the server cannot see are this form's own:
+				     Accept refuses while it is dirty or saving. Keyed by item, so a
+				     route change remounts it and a late accept for the previous
+				     playbook reloads nothing. -->
+				{#key item.id}{@const shownId = item.id}
+				<BuiltinUpdateNotice
+					{wsSlug}
+					itemId={item.id}
+					itemRef={item.slug}
+					seq={item.seq ?? 0}
+					currentContent={item.content ?? ''}
+					currentFields={item.fields}
+					{canEdit}
+					hasUnsavedEdits={() => dirty || saving}
+					onAccepted={() => {
+						if (item?.id !== shownId || dirty) return;
+						void loadItem(wsSlug, ref);
+					}}
+				/>
+				{/key}
 			</div>
 			<div class="header-actions">
 				{#if canEdit}
