@@ -6651,8 +6651,12 @@ type ItemsModifiedSinceParams struct {
 	// MaxChangesLimit+1.
 	Limit int
 	// CollectionIDs nil means every collection; non-nil restricts to those
-	// (empty: none). With GrantedItemIDs set, a row must also be a granted item
-	// or sit in one of FullCollectionIDs, as guestResourceFilter reports them.
+	// (empty: none). With GrantedItemIDs set, a row is a granted item, or sits
+	// in a collection that is in both CollectionIDs and FullCollectionIDs, as
+	// guestResourceFilterIncludeDeletedItems reports them. A granted item is
+	// not tested against CollectionIDs (BUG-3796): the visible list drops its
+	// collection once the item is archived, and the grant list has already
+	// excluded deleted collections and applied any app ceiling.
 	CollectionIDs     []string
 	FullCollectionIDs []string
 	GrantedItemIDs    []string
@@ -6698,7 +6702,9 @@ type ItemsModifiedSinceParams struct {
 // comparisons rely on ("…20.451Z" sorts BEFORE "…20Z"), so precision is a
 // migration, not a one-line change.
 func (s *Store) ItemsModifiedSince(workspaceID string, p ItemsModifiedSinceParams) ([]models.Item, error) {
-	if p.CollectionIDs != nil && len(p.CollectionIDs) == 0 {
+	// An empty visible list is still a page for a caller holding grants: a
+	// guest whose only grant is an archived item has no visible collection.
+	if p.CollectionIDs != nil && len(p.CollectionIDs) == 0 && len(p.GrantedItemIDs) == 0 {
 		return nil, nil
 	}
 	limit := p.Limit
@@ -6731,24 +6737,27 @@ func (s *Store) ItemsModifiedSince(workspaceID string, p ItemsModifiedSinceParam
 	// Visibility is applied HERE, not after the rows come back (BUG-3791): a
 	// window over hidden rows would let the has-more probe and the cursor count
 	// them, and the cursor would carry a hidden row's position.
-	if p.CollectionIDs != nil {
+	if p.CollectionIDs != nil && len(p.GrantedItemIDs) == 0 {
 		query += " AND i.collection_id IN (" + placeholders(len(p.CollectionIDs)) + ")"
 		for _, id := range p.CollectionIDs {
 			args = append(args, id)
 		}
-		if len(p.GrantedItemIDs) > 0 {
-			query += " AND (i.id IN (" + placeholders(len(p.GrantedItemIDs)) + ")"
-			for _, id := range p.GrantedItemIDs {
+	} else if p.CollectionIDs != nil {
+		query += " AND (i.id IN (" + placeholders(len(p.GrantedItemIDs)) + ")"
+		for _, id := range p.GrantedItemIDs {
+			args = append(args, id)
+		}
+		if len(p.CollectionIDs) > 0 && len(p.FullCollectionIDs) > 0 {
+			query += " OR (i.collection_id IN (" + placeholders(len(p.CollectionIDs)) + ")"
+			for _, id := range p.CollectionIDs {
 				args = append(args, id)
 			}
-			if len(p.FullCollectionIDs) > 0 {
-				query += " OR i.collection_id IN (" + placeholders(len(p.FullCollectionIDs)) + ")"
-				for _, id := range p.FullCollectionIDs {
-					args = append(args, id)
-				}
+			query += " AND i.collection_id IN (" + placeholders(len(p.FullCollectionIDs)) + "))"
+			for _, id := range p.FullCollectionIDs {
+				args = append(args, id)
 			}
-			query += ")"
 		}
+		query += ")"
 	}
 
 	if p.After != nil {
