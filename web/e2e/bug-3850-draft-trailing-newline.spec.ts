@@ -107,7 +107,8 @@ test('a draft typed at the end of a body stored with a trailing newline restores
 	await expect
 		.poll(async () => (await read()).content, { timeout: SYNC_TIMEOUT, message: 'the row holds the typing once the editor flushes' })
 		.toBe(`Paragraph one.\n\nParagraph two.${TYPED}`);
-	await expect.poll(() => again.evaluate((key) => localStorage.getItem(key), key)).toBeNull();
+	// Both slots (BUG-3863): the shown draft was held when it was offered.
+	await expect.poll(() => again.evaluate((key) => [localStorage.getItem(key), localStorage.getItem(`${key}:held`)], key)).toEqual([null, null]);
 	await again.context().close();
 });
 
@@ -253,6 +254,7 @@ test('a patch restore waits for the editor: disabled with the reason while not s
 		.poll(async () => (await read()).content, { timeout: SYNC_TIMEOUT, message: 'the row holds the typing once the editor flushes' })
 		.toContain(`*emphasised* word here.${EM_TYPED}`);
 	expect((await read()).content).toContain('Paragraph one.');
-	await expect.poll(() => again.evaluate((key) => localStorage.getItem(key), key)).toBeNull();
+	// Both slots (BUG-3863): the shown draft was held when it was offered.
+	await expect.poll(() => again.evaluate((key) => [localStorage.getItem(key), localStorage.getItem(`${key}:held`)], key)).toEqual([null, null]);
 	await again.context().close();
 });

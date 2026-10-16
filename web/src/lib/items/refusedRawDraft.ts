@@ -18,6 +18,14 @@
 // never be offered another account's text. Every storage access is guarded,
 // because storage can be blocked (a private window) or full, and a failure
 // here must never break a save.
+//
+// Two slots per user and item (BUG-3863). Every producer writes the PENDING
+// slot. A draft the pane is showing that was kept before this tab's keeper
+// started is moved to the HELD slot, which no producer writes or clears, so
+// newer text kept while the notice is up cannot replace the only stored copy
+// of the text the user has not resolved yet. Only the notice's own Restore,
+// Discard and 'clear' arm remove a held draft; the TTL, the boot sweep and the
+// sign-out purge cover it like any other, since it shares the per-user prefix.
 
 export interface RefusedRawDraft {
 	markdown: string;
@@ -41,6 +49,10 @@ export interface RefusedRawDraft {
 }
 
 const PREFIX = 'pad:refused-raw-draft:';
+const HELD_SUFFIX = ':held';
+
+/** Which of an item's two kept drafts (BUG-3863). */
+export type RefusedRawDraftSlot = 'pending' | 'held';
 
 /**
  * How long kept text is offered (BUG-3571 part 2). Before part 2 a kept draft
@@ -50,8 +62,16 @@ const PREFIX = 'pad:refused-raw-draft:';
  */
 export const REFUSED_RAW_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-function keyFor(userId: string, itemId: string): string {
-	return `${PREFIX}${userId}:${itemId}`;
+function keyFor(userId: string, itemId: string, slot: RefusedRawDraftSlot = 'pending'): string {
+	return `${PREFIX}${userId}:${itemId}${slot === 'held' ? HELD_SUFFIX : ''}`;
+}
+
+/**
+ * An item id that could alias another key is refused (BUG-3863): 'X:held'
+ * would otherwise read and write X's held slot. Real ids are UUIDs.
+ */
+function usable(userId: string, itemId: string): boolean {
+	return !!userId && !!itemId && !itemId.includes(':');
 }
 
 function storage(): Storage | null {
@@ -70,14 +90,18 @@ export function keepRefusedRawDraft(
 	now = Date.now(),
 	base?: { seq: number; body: string; stale?: boolean },
 ): boolean {
-	if (!userId || !itemId) return false;
+	if (!usable(userId, itemId)) return false;
 	const value = JSON.stringify(
 		base ? { markdown, savedAt: now, baseSeq: base.seq, baseBody: base.body, ...(base.stale ? { baseStale: true } : {}) } : { markdown, savedAt: now },
 	);
+	return writeSlot(userId, itemId, 'pending', value, now);
+}
+
+function writeSlot(userId: string, itemId: string, slot: RefusedRawDraftSlot, value: string, now: number): boolean {
 	const s = storage();
 	if (!s) return false;
 	try {
-		s.setItem(keyFor(userId, itemId), value);
+		s.setItem(keyFor(userId, itemId, slot), value);
 		return true;
 	} catch {
 		// Full (TASK-3606): make room from expired drafts and this user's
@@ -86,7 +110,7 @@ export function keepRefusedRawDraft(
 		try {
 			sweepExpiredRefusedRawDrafts(now);
 			evictOldestForUser(userId, itemId);
-			s.setItem(keyFor(userId, itemId), value);
+			s.setItem(keyFor(userId, itemId, slot), value);
 			return true;
 		} catch {
 			return false;
@@ -94,16 +118,17 @@ export function keepRefusedRawDraft(
 	}
 }
 
-/** Remove this user's oldest kept draft other than `keepItemId`'s. */
+/** Remove this user's oldest kept draft other than `keepItemId`'s (either slot). */
 function evictOldestForUser(userId: string, keepItemId: string): void {
 	const s = storage();
 	if (!s) return;
 	const prefix = `${PREFIX}${userId}:`;
+	const keep = [keyFor(userId, keepItemId), keyFor(userId, keepItemId, 'held')];
 	let oldestKey: string | null = null;
 	let oldestAt = Infinity;
 	for (let i = 0; i < s.length; i++) {
 		const k = s.key(i);
-		if (k === null || !k.startsWith(prefix) || k === keyFor(userId, keepItemId)) continue;
+		if (k === null || !k.startsWith(prefix) || keep.includes(k)) continue;
 		try {
 			const at = (JSON.parse(s.getItem(k) ?? '{}') as { savedAt?: number }).savedAt;
 			if (typeof at === 'number' && at < oldestAt) {
@@ -121,16 +146,21 @@ function evictOldestForUser(userId: string, keepItemId: string): void {
  * The kept text for this user and item, or null. A malformed entry reads as
  * none; an expired one (older than the TTL) reads as none and is removed.
  */
-export function readRefusedRawDraft(userId: string, itemId: string, now = Date.now()): RefusedRawDraft | null {
-	if (!userId || !itemId) return null;
+export function readRefusedRawDraft(
+	userId: string,
+	itemId: string,
+	now = Date.now(),
+	slot: RefusedRawDraftSlot = 'pending',
+): RefusedRawDraft | null {
+	if (!usable(userId, itemId)) return null;
 	try {
 		const s = storage();
-		const raw = s?.getItem(keyFor(userId, itemId));
+		const raw = s?.getItem(keyFor(userId, itemId, slot));
 		if (!raw) return null;
 		const parsed = JSON.parse(raw) as Partial<RefusedRawDraft>;
 		if (typeof parsed.markdown !== 'string' || typeof parsed.savedAt !== 'number') return null;
 		if (now - parsed.savedAt > REFUSED_RAW_DRAFT_TTL_MS) {
-			s?.removeItem(keyFor(userId, itemId));
+			s?.removeItem(keyFor(userId, itemId, slot));
 			return null;
 		}
 		const out: RefusedRawDraft = { markdown: parsed.markdown, savedAt: parsed.savedAt };
@@ -148,16 +178,21 @@ export function readRefusedRawDraft(userId: string, itemId: string, now = Date.n
  * text: a later unload may have kept newer text for the same item, and an
  * earlier request's success says nothing about it.
  */
-export function clearRefusedRawDraft(userId: string, itemId: string, onlyIf?: string): void {
-	if (!userId || !itemId) return;
+export function clearRefusedRawDraft(
+	userId: string,
+	itemId: string,
+	onlyIf?: string,
+	slot: RefusedRawDraftSlot = 'pending',
+): void {
+	if (!usable(userId, itemId)) return;
 	try {
 		const s = storage();
 		if (!s) return;
 		if (onlyIf !== undefined) {
-			const current = readRefusedRawDraft(userId, itemId);
+			const current = readRefusedRawDraft(userId, itemId, Date.now(), slot);
 			if (!current || current.markdown !== onlyIf) return;
 		}
-		s.removeItem(keyFor(userId, itemId));
+		s.removeItem(keyFor(userId, itemId, slot));
 	} catch {
 		// Nothing to recover from.
 	}
@@ -225,4 +260,54 @@ export function refusedRawDraftOffer(
 ): 'none' | 'clear' | 'offer' {
 	if (!draft) return 'none';
 	return draft.markdown === storedBody ? 'clear' : 'offer';
+}
+
+/**
+ * The pane's whole offer step for an item it shows (BUG-3863): the draft to
+ * show and the slot it lives in, or null. A held draft comes first. A draft
+ * equal to the stored body is cleared silently from its slot ('clear'). A
+ * pending draft is moved to the held slot before it is shown, unless
+ * `keeperOwns` says it is the text this tab's live crash keeper is tracking:
+ * the keeper is authoritative for its own in-session draft (lead ruling 1), so
+ * that one stays pending. When the held write fails (storage full or blocked)
+ * the draft is shown from pending, as before the held slot existed.
+ */
+export function offerKeptDraft(
+	userId: string,
+	itemId: string,
+	storedBody: string,
+	keeperOwns: (markdown: string) => boolean,
+	now = Date.now(),
+): { draft: RefusedRawDraft; slot: RefusedRawDraftSlot } | null {
+	if (!usable(userId, itemId)) return null;
+	const held = readRefusedRawDraft(userId, itemId, now, 'held');
+	if (held) {
+		if (refusedRawDraftOffer(held, storedBody) === 'offer') {
+			// A pending copy of the same text is a hold a crash cut short.
+			clearRefusedRawDraft(userId, itemId, held.markdown);
+			return { draft: held, slot: 'held' };
+		}
+		clearRefusedRawDraft(userId, itemId, held.markdown, 'held');
+	}
+	const pending = readRefusedRawDraft(userId, itemId, now);
+	const offer = refusedRawDraftOffer(pending, storedBody);
+	if (offer === 'clear') clearRefusedRawDraft(userId, itemId, pending!.markdown);
+	if (offer !== 'offer') return null;
+	const draft = pending!;
+	if (keeperOwns(draft.markdown)) return { draft, slot: 'pending' };
+	// Held first, then the pending copy goes: a crash between the two leaves
+	// both, and the next offer clears the duplicate above.
+	if (!writeSlot(userId, itemId, 'held', JSON.stringify(draft), now)) return { draft, slot: 'pending' };
+	clearRefusedRawDraft(userId, itemId, draft.markdown);
+	return { draft, slot: 'held' };
+}
+
+/**
+ * The user resolved the shown draft `markdown` (Restore landed, Discard, or
+ * nothing to restore): remove it from whichever slot holds it, and only while
+ * it is still that text (BUG-3863, lead condition c).
+ */
+export function resolveKeptDraft(userId: string, itemId: string, markdown: string): void {
+	clearRefusedRawDraft(userId, itemId, markdown, 'held');
+	clearRefusedRawDraft(userId, itemId, markdown);
 }

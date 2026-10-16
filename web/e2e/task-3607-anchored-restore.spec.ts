@@ -74,7 +74,8 @@ test('a collaborator changed paragraph one, the draft changed paragraph three: R
 			{ timeout: SYNC_TIMEOUT, message: 'the row holds both versions once the editor flushes' },
 		)
 		.toMatch(/Paragraph one, theirs\.[\s\S]*Paragraph three, mine\./);
-	await expect.poll(() => page.evaluate((k) => localStorage.getItem(k), key)).toBeNull();
+	// Both slots (BUG-3863): the shown draft was held when it was offered.
+	await expect.poll(() => page.evaluate((k) => [localStorage.getItem(k), localStorage.getItem(`${k}:held`)], key)).toEqual([null, null]);
 	await ctx.close();
 });
 
@@ -97,7 +98,7 @@ test('both sides changed the same paragraph: nothing is written and the notice s
 	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
 	expect(stored.content).toContain('Paragraph three, theirs.');
 	expect(stored.content).not.toContain('mine');
-	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	expect(await page.evaluate((k) => localStorage.getItem(`${k}:held`), key), 'the draft is kept, held while it is shown (BUG-3863)').not.toBeNull();
 	await ctx.close();
 });
 
@@ -128,7 +129,7 @@ test('a stale-base draft on a changed item says it cannot be applied and offers 
 	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
 	expect(stored.content).toContain('Paragraph one, theirs.');
 	expect(stored.content).not.toContain('mine');
-	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	expect(await page.evaluate((k) => localStorage.getItem(`${k}:held`), key), 'the draft is kept, held while it is shown (BUG-3863)').not.toBeNull();
 	await ctx.close();
 });
 
@@ -156,7 +157,7 @@ test('a shown draft rewritten as stale in storage is not patched when Restore is
 	const stored = (await (await request.get(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${id}`, { headers })).json()) as { content: string };
 	expect(stored.content).toContain('Paragraph one, theirs.');
 	expect(stored.content).not.toContain('mine');
-	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'the draft is kept').not.toBeNull();
+	expect(await page.evaluate((k) => localStorage.getItem(`${k}:held`), key), 'the draft is kept, held while it is shown (BUG-3863)').not.toBeNull();
 	await ctx.close();
 });
 

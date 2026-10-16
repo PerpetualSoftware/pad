@@ -17,6 +17,19 @@ export const CRASH_DRAFT_INTERVAL_MS = 2000;
 /** Bodies above this are not kept (6x the largest measured; design note). */
 export const CRASH_DRAFT_MAX_CHARS = 1_000_000;
 
+// What each live keeper last kept (BUG-3863, lead ruling 1). The pane holds a
+// kept draft it shows unless it is one of these: a live keeper's own draft
+// stays where the keeper's stale rewrite and confirm-clear can reach it.
+const tracked = new Map<symbol, { userId: string; itemId: string; markdown: string }>();
+
+/** Whether a live keeper in this tab last kept exactly `markdown` for this user and item. */
+export function keeperOwnsDraft(userId: string, itemId: string, markdown: string): boolean {
+	for (const t of tracked.values()) {
+		if (t.userId === userId && t.itemId === itemId && t.markdown === markdown) return true;
+	}
+	return false;
+}
+
 export interface CrashDraftSource {
 	/** The signed-in user the text belongs to; '' means do nothing. */
 	userId: () => string;
@@ -56,7 +69,14 @@ export function registerCrashDraftKeeper(
 		return () => clearInterval(t);
 	},
 ): () => void {
-	let last: { userId: string; itemId: string; markdown: string; version: unknown; base: string; baseSeq: number; baseBody: string; stale: boolean } | null = null;
+	type Last = { userId: string; itemId: string; markdown: string; version: unknown; base: string; baseSeq: number; baseBody: string; stale: boolean };
+	let last: Last | null = null;
+	const token = Symbol('crash-draft-keeper');
+	const setLast = (next: Last | null) => {
+		last = next;
+		if (next) tracked.set(token, { userId: next.userId, itemId: next.itemId, markdown: next.markdown });
+		else tracked.delete(token);
+	};
 
 	const tick = () => {
 		const userId = source.userId();
@@ -75,7 +95,7 @@ export function registerCrashDraftKeeper(
 			const base = JSON.stringify([snap.baseSeq, snap.baseBody, snap.baseStale === true]);
 			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown && last.base === base) return;
 			if (keepRefusedRawDraft(userId, itemId, snap.markdown, Date.now(), { seq: snap.baseSeq, body: snap.baseBody, stale: snap.baseStale })) {
-				last = { userId, itemId, markdown: snap.markdown, version, base, baseSeq: snap.baseSeq, baseBody: snap.baseBody, stale: snap.baseStale === true };
+				setLast({ userId, itemId, markdown: snap.markdown, version, base, baseSeq: snap.baseSeq, baseBody: snap.baseBody, stale: snap.baseStale === true });
 			}
 			return;
 		}
@@ -83,7 +103,7 @@ export function registerCrashDraftKeeper(
 		// confirmed, so the draft goes, unless something newer replaced it.
 		if (last && last.userId === userId && last.itemId === itemId) {
 			clearRefusedRawDraft(userId, itemId, last.markdown);
-			last = null;
+			setLast(null);
 		}
 	};
 
@@ -92,16 +112,17 @@ export function registerCrashDraftKeeper(
 		// Only the draft this keeper wrote (r9 hunter-2): a newer keep by another
 		// producer (keepAtRiskText) is left as it is; this one is done.
 		if (readRefusedRawDraft(last.userId, last.itemId)?.markdown !== last.markdown) {
-			last = { ...last, stale: true };
+			setLast({ ...last, stale: true });
 			return;
 		}
 		if (keepRefusedRawDraft(last.userId, last.itemId, last.markdown, Date.now(), { seq: last.baseSeq, body: last.baseBody, stale: true })) {
-			last = { ...last, stale: true, base: JSON.stringify([last.baseSeq, last.baseBody, true]) };
+			setLast({ ...last, stale: true, base: JSON.stringify([last.baseSeq, last.baseBody, true]) });
 		}
 	});
 	const stop = schedule(tick, CRASH_DRAFT_INTERVAL_MS);
 	return () => {
 		stop();
 		unsubscribe?.();
+		tracked.delete(token);
 	};
 }

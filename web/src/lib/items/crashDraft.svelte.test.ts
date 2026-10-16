@@ -1,7 +1,14 @@
 // TASK-3606: crash drafts. jsdom (localStorage), with the interval injected.
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { registerCrashDraftKeeper, CRASH_DRAFT_MAX_CHARS, type CrashDraftSource } from './crashDraft';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { registerCrashDraftKeeper, keeperOwnsDraft, CRASH_DRAFT_MAX_CHARS, type CrashDraftSource } from './crashDraft';
 import { readRefusedRawDraft, keepRefusedRawDraft } from './refusedRawDraft';
+
+// Every keeper a test starts is stopped after it, so none stays registered
+// as an owner into the next test (BUG-3863).
+const running: (() => void)[] = [];
+afterEach(() => {
+	for (const stop of running.splice(0)) stop();
+});
 
 function harness(over: Partial<CrashDraftSource> = {}) {
 	const s = { userId: 'u1', itemId: 'i1' as string | null, atRisk: true, markdown: 'draft', baseSeq: 7, baseBody: 'base', discarding: false };
@@ -20,6 +27,7 @@ function harness(over: Partial<CrashDraftSource> = {}) {
 			return () => {};
 		},
 	);
+	running.push(stop);
 	return { s, tick: () => tick(), stop };
 }
 
@@ -243,3 +251,73 @@ describe('crash drafts (TASK-3606)', () => {
 	});
 });
 
+// BUG-3863 (lead ruling 1): the pane holds a shown draft unless a live keeper
+// in this tab last kept exactly that text for that user and item.
+describe('keeper ownership (BUG-3863)', () => {
+	it('owns exactly what it last kept, for that user and item', () => {
+		const h = harness();
+		expect(keeperOwnsDraft('u1', 'i1', 'draft')).toBe(false);
+		h.tick();
+		expect(keeperOwnsDraft('u1', 'i1', 'draft')).toBe(true);
+		expect(keeperOwnsDraft('u1', 'i1', 'other')).toBe(false);
+		expect(keeperOwnsDraft('u2', 'i1', 'draft')).toBe(false);
+		expect(keeperOwnsDraft('u1', 'i2', 'draft')).toBe(false);
+		h.s.markdown = 'draft 2';
+		h.tick();
+		expect(keeperOwnsDraft('u1', 'i1', 'draft')).toBe(false);
+		expect(keeperOwnsDraft('u1', 'i1', 'draft 2')).toBe(true);
+		h.stop();
+	});
+
+	it('gives it up when it clears its draft on confirmation', () => {
+		const h = harness();
+		h.tick();
+		h.s.atRisk = false;
+		h.tick();
+		expect(keeperOwnsDraft('u1', 'i1', 'draft')).toBe(false);
+		h.stop();
+	});
+
+	it('gives it up when stopped: a later pane in this tab holds it', () => {
+		const h = harness();
+		h.tick();
+		h.stop();
+		expect(keeperOwnsDraft('u1', 'i1', 'draft')).toBe(false);
+	});
+
+	it('a failed keep owns nothing', () => {
+		vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+			throw new DOMException('full', 'QuotaExceededError');
+		});
+		const h = harness();
+		h.tick();
+		vi.restoreAllMocks();
+		expect(keeperOwnsDraft('u1', 'i1', 'draft')).toBe(false);
+		h.stop();
+	});
+
+	it('still owns its text after the onSent stale rewrite', () => {
+		let fire: () => void = () => {};
+		const h = harness({ onSent: (fn) => ((fire = fn), () => {}) });
+		h.tick();
+		fire();
+		expect(readRefusedRawDraft('u1', 'i1')?.baseStale).toBe(true);
+		expect(keeperOwnsDraft('u1', 'i1', 'draft')).toBe(true);
+		h.stop();
+	});
+
+	it('two keepers each own their own', () => {
+		const a = harness();
+		const b = harness();
+		b.s.itemId = 'i2';
+		b.s.markdown = 'b';
+		a.tick();
+		b.tick();
+		expect(keeperOwnsDraft('u1', 'i1', 'draft')).toBe(true);
+		expect(keeperOwnsDraft('u1', 'i2', 'b')).toBe(true);
+		a.stop();
+		expect(keeperOwnsDraft('u1', 'i1', 'draft')).toBe(false);
+		expect(keeperOwnsDraft('u1', 'i2', 'b')).toBe(true);
+		b.stop();
+	});
+});

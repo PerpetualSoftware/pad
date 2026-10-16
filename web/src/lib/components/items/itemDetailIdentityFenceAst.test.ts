@@ -88,6 +88,13 @@ const COLLAB_SAVE_CODE =
 	"async ({ ws, itemId, toSave, keepalive }) => { const genAtFlush = loadGeneration; const isForegroundCurrent = (): boolean => !keepalive && !!item && item.id === itemId && genAtFlush === loadGeneration; let saveTok: SaveToken | null = null; if (isForegroundCurrent()) { saveTok = saves.begin(); localLastSaveTime = Date.now(); // Singleton editorStore is owned by the ACTIVE side only: a FROZEN // (peeking) instance stamps its own shadow above but must not touch the // singleton (PLAN-2179 DR-2 / TASK-2181). `saveStatus` is per-instance. if (!peeking) editorStore.setLastSaveTime(Date.now()); } try { // Pass the provider's per-tab op-log cursor (TASK-1319) so the // server can advance the GC watermark when this tab is caught // up to MAX(op-log.id). When the cursor is below MAX (peer ops // not yet applied here) the server leaves the watermark // untouched — the GC sweeper must not delete rows this markdown // doesn't reflect. The cursor reflects the provider tracking // THIS item; if a navigation has already swapped to another // item the foreground flush path bails earlier on dedupe and // this code doesn't run. const opLogCursor = collabProvider && collabProvider.itemID === itemId ? collabProvider.lastOpLogID : undefined; await api.items.flushCollabContent(ws, itemId, toSave, { keepalive, opLogCursor, // BUG-3080: two teardown flushes are both dispatched before // either answers, so only the server can order them — by // this stamp. Deliberately NO expected_seq here: both would // carry the same one, and the older landing first would get // the NEWER refused. clientWrite: nextClientWrite(), }); // Post-await force_refresh check: a force_refresh frame can // arrive WHILE the PATCH is in flight (server already accepted, // items.content already overwritten — the server-side gate // covers the happens-before case where MIN had advanced past // our cursor by the time the request landed). Refuse to record // this flush as authoritative locally — returning 'skipped' // stops the flusher seeding lastFlushedContent from a // known-stale base and skips the saveStatus update. Per Codex // round 10 [P1]. if (forceRefreshInFlight) return 'skipped'; if (isForegroundCurrent()) { localLastSaveTime = Date.now(); localDirty = false; // Singleton editorStore: active side only (PLAN-2179 / TASK-2181) — // a frozen preview's remote-op flush updates only its shadow above. if (!peeking) { editorStore.setLastSaveTime(Date.now()); editorStore.setDirty(false); } if (saveTok) showSaved(saveTok); } return 'flushed'; } catch (e) { // Superseded (BUG-3080): a newer flush of this tab already // landed. Not an error, and not recorded as the last flushed // content either — this body is not what the server holds. // Classified inline rather than by a call: this catch runs after an // await with no fence of its own, and the answer is needed on // every arm, foreground or not. if (e instanceof PadApiError && e.code === 'superseded_write') return 'skipped'; if (isForegroundCurrent()) { toastStore.show('Failed to save content', 'error'); } return 'failed'; } finally { // The force_refresh and superseded returns included (BUG-3044). if (saveTok) saves.settle(saveTok); } }";
 
 /** Top-level `async function` declarations, by name. */
+// BUG-3863: every reviewed hash re-pinned in that change other than
+// applyRefusedDraftChanges and restoreRefusedDraft (notes on their rows)
+// moved only through the coverage closure: the refusedRawDraft import line
+// (offerKeptDraft, resolveKeptDraft and the RefusedRawDraftSlot type in,
+// refusedRawDraftOffer out) and, through that type, the new component-level
+// `let refusedDraftSlot` declaration. Measured by diffing each unit's coverage
+// segments against the previous head; nothing those units run changed.
 const ASYNC_FUNCTIONS: Record<string, Row> = {
 	adoptOrConvergeToLiveCollection: { reviewed: '5a647061f75f', why: 'myGen against loadGeneration before adopting' },
 	reconcileCollectionSegment: { reviewed: '8e609eda4395', why: 'identityHeld after the list fetch; retags and navigates only under it' },
@@ -98,7 +105,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// Re-reviewed for BUG-3473: the index await is skipped when the index is
 	// already ready; it adds no await and commits nothing, and every fence
 	// after the Promise.all is unchanged.
-	loadData: { reviewed: 'beb041bd9108', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
+	loadData: { reviewed: '62c3159ac13c', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	// Re-reviewed for BUG-2836: saveTitle's own lines are unchanged (the diff
 	// touches only a $derived beside titleDraft and the textarea's aria
@@ -152,7 +159,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	updateAssignedUser: { reviewed: '537f55aa5db2', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	updateAgentRole: { reviewed: 'ede58f197154', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	flushRawIfPending: {
-		reviewed: '457a334cbe80',
+		reviewed: 'c413904b1b86',
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag' + SETTLE_NOTE,
 		may: ['saves.settle', 'rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
@@ -194,11 +201,11 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// workspace and index); nothing after the await reads live state anew, and
 	// the fences after it are unchanged.
 	decideRawStale: {
-		reviewed: '929baf56a305',
+		reviewed: '536d05bd73b5',
 		why: 'item id and gen against loadGeneration after the read, after the open-tab canonical forms are computed, and after the dialog, before the base moves or the reload writes',
 	},
 	resolveRawStale: {
-		reviewed: 'de3d4648fa37',
+		reviewed: '2eaedf365d39',
 		why: 'resends only on an outcome decideRawStale fenced; the catch checks item id and gen before its toast; the finally clears this pane\'s own one-question-at-a-time flag',
 		may: ['rawStalePromptOpen'],
 	},
@@ -207,18 +214,18 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		why: 'item id and gen against loadGeneration after the dialog, before answering; the finally clears this pane\'s own one-question-at-a-time flag',
 		may: ['rawPendingPromptOpen'],
 	},
-	copyRefusedDraft: { reviewed: '839b51b59798', why: 'the copied text was captured before the await; the toast after it describes that copy, whichever item is shown', may: ['toastStore.show'] },
+	copyRefusedDraft: { reviewed: '6630af6110df', why: 'the copied text was captured before the await; the toast after it describes that copy, whichever item is shown', may: ['toastStore.show'] },
 	// BUG-3540 (codex): the restore sends the shown row's seq; a conflict refetches (fenced) and keeps the draft.
 	restoreRefusedDraft: {
-		reviewed: 'bc8331b9fb69',
-		why: 'item id, gen against loadGeneration, and the captured identity (codex r1 on TASK-3607) after every await; the finally clears this pane\'s own busy flag; a draft the item moved on from is handed to applyRefusedDraftChanges, awaited last, with nothing committed after it (TASK-3607). Re-reviewed for BUG-3850 (lead ruling 0337bf77): before that hand-off, a synchronous return while restoreBlocked (a $derived read, no await, no write). Re-reviewed for BUG-3850 r7 (lead ruling a6380212): its body is unchanged; restoreBlocked gained a synchronous !refusedDraft.baseStale read, still no await and no write. Re-reviewed for TASK-3856 r2 (lead ruling on the codex High): it first re-reads the stored draft, a synchronous localStorage read, and when that copy has the same markdown and is now baseStale it assigns refusedDraft and returns; no await precedes that write, and nothing after it changed. Re-reviewed for TASK-3856 r3 (hunter Low): that condition also requires draftAppliesAsPatch(shown, item.seq), a pure synchronous read, so a whole-body restore goes ahead; still no await before the write.',
+		reviewed: '9b6f7b78ab75',
+		why: 'item id, gen against loadGeneration, and the captured identity (codex r1 on TASK-3607) after every await; the finally clears this pane\'s own busy flag; a draft the item moved on from is handed to applyRefusedDraftChanges, awaited last, with nothing committed after it (TASK-3607). Re-reviewed for BUG-3850 (lead ruling 0337bf77): before that hand-off, a synchronous return while restoreBlocked (a $derived read, no await, no write). Re-reviewed for BUG-3850 r7 (lead ruling a6380212): its body is unchanged; restoreBlocked gained a synchronous !refusedDraft.baseStale read, still no await and no write. Re-reviewed for TASK-3856 r2 (lead ruling on the codex High): it first re-reads the stored draft, a synchronous localStorage read, and when that copy has the same markdown and is now baseStale it assigns refusedDraft and returns; no await precedes that write, and nothing after it changed. Re-reviewed for TASK-3856 r3 (hunter Low): that condition also requires draftAppliesAsPatch(shown, item.seq), a pure synchronous read, so a whole-body restore goes ahead; still no await before the write. Re-reviewed for BUG-3863: the TASK-3856 guard re-reads the slot the shown draft is stored in (refusedDraftSlot, a plain component-level let, read synchronously before any await), and the success clear calls resolveKeptDraft (both slots, onlyIf-guarded, synchronous) at the same place behind the same fence; no new await.',
 		may: ['refusedDraftBusy'],
 	},
 	// TASK-3607: a crash draft's own changes go as a patch; the conflict and
 	// result states are keyed to the item they were computed for.
 	applyRefusedDraftChanges: {
-		reviewed: '6837c05281dc',
-		why: 'commits before the first await are synchronous (BUG-3850, lead ruling baa63dc3: the edits come from restoreEdits(d), a pure synchronous call before the first await, null for a stale base so it takes the existing conflict branch); after the patch and after the refetch, stale() (item id, gen against loadGeneration, captured identity) before any commit or toast, both catches included (a failed refetch after a landed patch says so, codex r2); the pending-flush branch only drops the raw seed, after the fenced patch await; the finally clears this pane\'s own busy flag',
+		reviewed: 'fabd1318b50f',
+		why: 'commits before the first await are synchronous (BUG-3850, lead ruling baa63dc3: the edits come from restoreEdits(d), a pure synchronous call before the first await, null for a stale base so it takes the existing conflict branch); after the patch and after the refetch, stale() (item id, gen against loadGeneration, captured identity) before any commit or toast, both catches included (a failed refetch after a landed patch says so, codex r2); the pending-flush branch only drops the raw seed, after the fenced patch await; the finally clears this pane\'s own busy flag Re-reviewed for BUG-3863: the two clears of the shown draft (nothing to restore, and after the patch landed) now call resolveKeptDraft, which removes that same text from the held slot and then the pending one, each onlyIf-guarded; synchronous localStorage writes at the same places, behind the same fences; no new await and no new write to component state.',
 		may: ['refusedDraftBusy'],
 	},
 };
@@ -237,9 +244,9 @@ const NESTED: SignedRow[] = [
 		may: ['saves.settle'],
 	},
 	// TASK-3548: the raw save's answer to a refusal re-reads the row before arming the resend.
-	{ body: /sendBase && isContentNotAppliedUnconfirmed\(e\)/, why: 'raw refusal answer (TASK-3548): genAtSave against loadGeneration before the re-read and again after it, before the base moves and the resend is armed', reviewed: '6d2e60d73e0c' },
+	{ body: /sendBase && isContentNotAppliedUnconfirmed\(e\)/, why: 'raw refusal answer (TASK-3548): genAtSave against loadGeneration before the re-read and again after it, before the base moves and the resend is armed', reviewed: 'c233ba75df29' },
 	// BUG-3230 U0: the legacy content save's refusal handler.
-	{ body: /askToOverwritePendingEdits\(reqItem\.id, gen, pendingEditsReason\(e\)\)/, why: 'fallback refusal: switchedAway before the question, and again after it before the resend', reviewed: '8cfc31258469' },
+	{ body: /askToOverwritePendingEdits\(reqItem\.id, gen, pendingEditsReason\(e\)\)/, why: 'fallback refusal: switchedAway before the question, and again after it before the resend', reviewed: 'e434c3658aa8' },
 ];
 
 /** Async functions in the markup. */
@@ -264,16 +271,16 @@ const CONTINUATIONS: SignedRow[] = [
 	},
 	// TASK-3537: re-reviewed; this continuation's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: 'ae1b50ad6010' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'f753df70c934' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'bc8fad55e73a' },
 	// BUG-3473: the background index catch-up on an already-populated index.
-	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: '221838022598' },
+	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: 'fb0c62e64590' },
 	// TASK-2228: loadData issues progress and links together and settles each
 	// into a plain result object; loadData's own myGen checks after each await
 	// fence the use of those results.
-	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: 'c657a09fdd01' },
-	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: '52d54f527519' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: 'c657a09fdd01' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: '52d54f527519' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: '71efa629de24' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: 'eca6b2652f2b' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: '71efa629de24' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: 'eca6b2652f2b' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -289,7 +296,7 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved. Re-reviewed for BUG-3556: the prompt reads the provider getter editsAtRiskOnClose instead of unsentLocalEdits (a read, no await, no write); nothing else moved. Re-reviewed for BUG-3571: one early return when a confirmed sign-out discard is under way (signOutDiscarding(), a module read; no await, no write); nothing else moved', reviewed: '4404c3f437e7',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved. Re-reviewed for BUG-3556: the prompt reads the provider getter editsAtRiskOnClose instead of unsentLocalEdits (a read, no await, no write); nothing else moved. Re-reviewed for BUG-3571: one early return when a confirmed sign-out discard is under way (signOutDiscarding(), a module read; no await, no write); nothing else moved', reviewed: '34e281216270',
 		may: ['teardownFlushed'],
 	},
 	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first. Re-reviewed for BUG-3582: seedMd above it is now computed by toEditorMarkdown, the same value as the inline conversion it replaced; the microtask is unchanged', reviewed: '76af97b065fd' },
@@ -306,22 +313,22 @@ const CONTINUATIONS: SignedRow[] = [
 		call: /^setTimeout\($/,
 		body: /send\(false\)\.catch\(/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: 'b0acb8bd21d9',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '67e4bc15d55e',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
 	// BUG-3230 U0: the fallback save is refused rather than replacing another
 	// tab's unstored edits; the refusal asks, then resends once on overwrite.
-	{ call: /^send\(false\)\.catch\($/, body: /./, why: 'content save refusal: switchedAway before the question, and again after it before the resend', reviewed: '8cfc31258469' },
-	{ call: /return send\(true\); \}\)\.then\($/, body: /^\(sent\) =>/, why: 'content save: switchedAway', reviewed: '3570c2e63bd2' },
-	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: 'd461035e47ec' },
+	{ call: /^send\(false\)\.catch\($/, body: /./, why: 'content save refusal: switchedAway before the question, and again after it before the resend', reviewed: 'e434c3658aa8' },
+	{ call: /return send\(true\); \}\)\.then\($/, body: /^\(sent\) =>/, why: 'content save: switchedAway', reviewed: '2e73214881b5' },
+	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '07c68bce46a9' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: 'setTimeout(…)',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: '720d6c3a6304',
+		reviewed: 'f5e4815c8218',
 		may: ['saves.settle'],
 	},
 	// BUG-3230 U0: the unload save keeps its text in this browser before it goes
@@ -335,7 +342,7 @@ const CONTINUATIONS: SignedRow[] = [
 		in: '{save}',
 		code: "() => { clearRefusedRawDraft(draftUser, reqItemId, markdown); if (item && item.id === reqItemId && genAtSave === loadGeneration && rawContentSaver.pending === markdown) { rawContentSaver.clearPending(); editorStore.setDirty(false); localDirty = false; } }",
 		why: 'raw keepalive save: removes the kept text by the captured user and item, then genAtSave against loadGeneration',
-		reviewed: 'e0f2bbf5c36e',
+		reviewed: 'd49f993c8b73',
 		may: ['clearRefusedRawDraft'],
 	},
 	{
@@ -346,21 +353,21 @@ const CONTINUATIONS: SignedRow[] = [
 		// BUG-3540: a stale-base refusal (update_conflict) is reported like the
 		// pending one; the kept draft stays for the next open.
 		why: 'raw keepalive failure: a superseded answer removes the kept text by the captured user and item; a refusal (pending edits or a stale base, BUG-3540) is reported whichever item is shown',
-		reviewed: '5583efa2c7a0',
+		reviewed: 'fae1933c81a1',
 		may: ['isSupersededWriteError', 'clearRefusedRawDraft', 'isUpdateConflictError', 'isEditsNotStoredRefusal', 'pendingEditsReason', 'toastStore.show'],
 	},
 	// BUG-3540: the save now also carries expected_seq; the base moves only after the fence.
-	{ call: /expected_seq: sendBase\.seq \} : \{\}\), \}\)\.then\($/, body: /^\(updated\) =>/, why: 'raw foreground save: genAtSave against loadGeneration, before the base moves (BUG-3540)', reviewed: '687ad7f42747' },
+	{ call: /expected_seq: sendBase\.seq \} : \{\}\), \}\)\.then\($/, body: /^\(updated\) =>/, why: 'raw foreground save: genAtSave against loadGeneration, before the base moves (BUG-3540)', reviewed: '7e2c143067ac' },
 	// BUG-3230 U0: the answer to a refused raw save arms one resend.
-	{ call: /askToOverwritePendingEdits\(reqItemId, genAtSave, pendingEditsReason\(e\)\)\.then\($/, body: /./, why: 'raw refusal answer: genAtSave against loadGeneration before arming the resend', reviewed: '6d2e60d73e0c' },
-	{ call: /content: item\.content, content_state: item\.content_state \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: 'f484fdd1e977' },
+	{ call: /askToOverwritePendingEdits\(reqItemId, genAtSave, pendingEditsReason\(e\)\)\.then\($/, body: /./, why: 'raw refusal answer: genAtSave against loadGeneration before arming the resend', reviewed: 'c233ba75df29' },
+	{ call: /content: item\.content, content_state: item\.content_state \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '80392aa194de' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: '{save}',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: 'e6aa48cd3f9d',
+		reviewed: '779d1cf6b4ed',
 		may: ['saves.settle'],
 	},
 ];
@@ -373,7 +380,7 @@ const CONTINUATIONS: SignedRow[] = [
  */
 const HELPERS: Record<string, string> = {
 	// TASK-3607: a pure read of the draft and the shown seq.
-	draftAppliesAsPatch: '94b15f31cced',
+	draftAppliesAsPatch: 'bdb55546b6c9',
 	// TASK-2199: read by onForceRefresh; a pure read of the live editor.
 	liveEditorMarkdown: '898dfa3cfe31',
 	// TASK-2232: the editor-markdown shadow's only reader. It drains the
@@ -397,7 +404,7 @@ const HELPERS: Record<string, string> = {
 	// BUG-3540: re-reviewed; body unchanged, re-hashed by a name it reaches (rawContentSaver's save or rawBase); no await or fence moved.
 	// Re-reviewed for BUG-3571: one early return when a confirmed sign-out
 	// discard is under way (signOutDiscarding(), a module read); no await.
-	runTeardownFlush: '393163400e11',
+	runTeardownFlush: '18074bc20367',
 	// BUG-3124 unit B: the cursor-advance settle. Synchronous; arms the flusher's
 	// single timer only for the current, identity-held context.
 	showSaved: '456dd972dcf5',
