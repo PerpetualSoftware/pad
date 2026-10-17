@@ -7,7 +7,12 @@
   "plugins": [
     {
       "name": "pad",
-      "source": "./plugin",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/PerpetualSoftware/pad.git",
+        "path": "plugin",
+        "ref": "v0.18.0"
+      },
       "description": "Talk to your project. Pad is local-first project management for developers and AI agents — this plugin gives Claude Code a conversational Pad skill, typed shortcuts (/pad:status, /pad:capture, /pad:onboard), a /pad-pane side panel, and live item-change notifications."
     }
   ],
