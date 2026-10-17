@@ -13,6 +13,7 @@
 	import Modal from '$lib/components/common/Modal.svelte';
 	import CharacterShortcutsToggle from '$lib/components/common/CharacterShortcutsToggle.svelte';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
+	import { describeTokenScopes } from '$lib/settings/tokenScopes';
 
 	// Profile
 	let profile = $state<User | null>(null);
@@ -79,6 +80,12 @@
 	// Tokens
 	let tokens = $state<APIToken[]>([]);
 	let newTokenName = $state('');
+	// TASK-3866: the access a new key gets. Read and write sends ["*"], the
+	// store's own default, so a key made here is identical to one made with
+	// no scopes. There is no Admin choice: the server grants pad:admin
+	// exactly what write gets.
+	let newTokenAccess = $state<'write' | 'read'>('write');
+	const TOKEN_ACCESS_SCOPES = { write: '["*"]', read: '["read"]' } as const;
 	let createdToken = $state<APITokenWithSecret | null>(null);
 	let tokenCreating = $state(false);
 	// TASK-2193: deleting a token used to fire on the first click and swallow
@@ -413,12 +420,13 @@
 
 		tokenCreating = true;
 		try {
-			const token = await api.auth.tokens.create(newTokenName.trim());
+			const token = await api.auth.tokens.create(newTokenName.trim(), TOKEN_ACCESS_SCOPES[newTokenAccess]);
 			createdToken = token;
 			rotatedFrom = null;
 			tokenCopied = false;
 			tokens = [...tokens, token];
 			newTokenName = '';
+			newTokenAccess = 'write';
 		} catch (err) {
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err);
@@ -978,6 +986,23 @@
 						{tokenCreating ? 'Creating...' : 'Create'}
 					</Button>
 				</div>
+				<fieldset class="token-access" disabled={tokenCreating}>
+					<legend>Access</legend>
+					<label class="token-access-option">
+						<input type="radio" name="token-access" value="write" bind:group={newTokenAccess} />
+						<span>
+							<span class="token-access-label">Read and write</span>
+							<span class="token-access-hint">Everything your role in each workspace allows.</span>
+						</span>
+					</label>
+					<label class="token-access-option">
+						<input type="radio" name="token-access" value="read" bind:group={newTokenAccess} />
+						<span>
+							<span class="token-access-label">Read only</span>
+							<span class="token-access-hint">Can view items and run playbooks. Any change is refused.</span>
+						</span>
+					</label>
+				</fieldset>
 
 				{#if tokenError}
 					<p class="error">{tokenError}</p>
@@ -986,9 +1011,13 @@
 				{#if tokens.length > 0}
 					<div class="token-list">
 						{#each tokens as token (token.id)}
+							{@const access = describeTokenScopes(token.scopes)}
 							<div class="token-row">
 								<div class="token-info">
 									<span class="token-name">{token.name}</span>
+									<span class="token-access-badge" class:none={access.level === 'none'} title={`Stored scopes: ${token.scopes || '(empty)'}`} data-testid="token-access">
+										{access.label}{#if access.legacy}<span class="token-access-note"> (older key, unrestricted)</span>{/if}{#if access.level === 'none'}<span class="token-access-note"> (its access can't be read, so every request is refused; delete it and make a new one)</span>{:else if access.unknown.length > 0}<span class="token-access-note"> (ignores: {access.unknown.map((u) => u || '(empty)').join(', ')})</span>{/if}
+									</span>
 									<span class="token-meta">
 										{token.prefix}... &middot; Created {formatDate(token.created_at)}
 										{#if token.expires_at}
@@ -1184,6 +1213,7 @@
 			<p class="modal-body">
 				It keeps its name, scopes and workspace and gets a new key. The current key stops working immediately, so update every agent, script or MCP connection that uses it.
 			</p>
+			<p class="modal-body">Access stays {describeTokenScopes(tokenToRotate.scopes).label}.</p>
 			{#if tokenRotateError}
 				<p class="modal-error" role="alert">{tokenRotateError}</p>
 			{/if}
@@ -1483,6 +1513,62 @@
 	.token-meta {
 		font-size: 0.75rem;
 		color: var(--text-muted);
+	}
+
+	.token-access {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		margin: var(--space-2) 0 0;
+		padding: 0;
+		border: 0;
+	}
+
+	.token-access legend {
+		font-size: 0.8rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+		margin-bottom: var(--space-1);
+	}
+
+	.token-access-option {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-2);
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+
+	.token-access-option input {
+		margin-top: 3px;
+	}
+
+	.token-access-label {
+		display: block;
+		color: var(--text-primary);
+	}
+
+	.token-access-hint {
+		display: block;
+		font-size: 0.75rem;
+		color: var(--text-muted);
+	}
+
+	.token-access-badge {
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+	}
+
+	.token-access-badge.none {
+		color: var(--accent-red);
+	}
+
+	.token-access-note {
+		color: var(--text-muted);
+	}
+
+	.token-access-badge.none .token-access-note {
+		color: inherit;
 	}
 
 	.empty-text {

@@ -2,9 +2,12 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -85,14 +88,18 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var input models.APITokenCreate
-	if err := decodeJSON(r, &input); err != nil {
+	var req apiTokenCreateRequest
+	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	input := req.APITokenCreate
 
 	if input.Name == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "name is required")
+		return
+	}
+	if !normalizeTokenScopesInput(w, &input, req.RawScopes) {
 		return
 	}
 
@@ -206,14 +213,18 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var input models.APITokenCreate
-	if err := decodeJSON(r, &input); err != nil {
+	var req apiTokenCreateRequest
+	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	input := req.APITokenCreate
 
 	if input.Name == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "name is required")
+		return
+	}
+	if !normalizeTokenScopesInput(w, &input, req.RawScopes) {
 		return
 	}
 
@@ -345,4 +356,77 @@ func setTokenExpiryWarning(w http.ResponseWriter, token *models.APIToken) {
 		w.Header().Set("X-Token-Expires-Soon", fmt.Sprintf("%d days remaining", days))
 		w.Header().Set("X-Token-Expires-At", token.ExpiresAt.Format(time.RFC3339))
 	}
+}
+
+// apiTokenScopeVocabulary is every scope value tokenScopeAllows recognizes
+// (TASK-3866). A key is minted only with these: anything else is stored
+// as written and then refused on every request, so a create that names
+// one would hand back a key that can do nothing.
+var apiTokenScopeVocabulary = []string{"*", "read", "write", "pad:read", "pad:write", "pad:admin"}
+
+// apiTokenCreateRequest is a create body with scopes kept raw, so an
+// explicit "scopes": null can be told apart from an omitted field (Codex
+// r1 on TASK-3866). Decoded into models.APITokenCreate alone, null and
+// absent both arrive as "" and both would mint a full-access key; the
+// shallower RawScopes field takes the "scopes" key from the embedded one.
+type apiTokenCreateRequest struct {
+	models.APITokenCreate
+	RawScopes json.RawMessage `json:"scopes,omitempty"`
+}
+
+// normalizeTokenScopesInput checks a create request's scopes and rewrites
+// them to their compact JSON form, writing a 400 validation_error and
+// returning false when they cannot mint a working key. raw is the request's
+// "scopes" value as sent: only an absent field keeps the store's default,
+// ["*"]. Refused: a JSON null field, a value that is not a string, the
+// empty string and the empty array (the legacy unrestricted forms, which
+// no current caller sends and no new key should carry), a string that is
+// not a JSON array of strings (including "null"), and any value outside
+// the vocabulary.
+func normalizeTokenScopesInput(w http.ResponseWriter, input *models.APITokenCreate, raw json.RawMessage) bool {
+	allowed := strings.Join(apiTokenScopeVocabulary, ", ")
+	input.Scopes = ""
+	if len(raw) == 0 {
+		return true
+	}
+	// Into a pointer, so null is nil however it is spaced.
+	var field *string
+	if err := json.Unmarshal(raw, &field); err != nil || field == nil {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("scopes must be a string holding a JSON array of: %s (got %s); omit scopes for full access", allowed, raw))
+		return false
+	}
+	// "" is the stored legacy unrestricted form, refused for the reason []
+	// is (Codex r2): only an omitted field gets the default.
+	if *field == "" {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("scopes must name at least one of: %s; omit scopes for full access", allowed))
+		return false
+	}
+	input.Scopes = *field
+	var scopes []string
+	if err := json.Unmarshal([]byte(input.Scopes), &scopes); err != nil || scopes == nil {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("scopes must be a JSON array of: %s (got %q)", allowed, input.Scopes))
+		return false
+	}
+	if len(scopes) == 0 {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("scopes must name at least one of: %s; omit scopes for full access", allowed))
+		return false
+	}
+	for _, scope := range scopes {
+		if !slices.Contains(apiTokenScopeVocabulary, scope) {
+			writeError(w, http.StatusBadRequest, "validation_error",
+				fmt.Sprintf("unknown scope %q; allowed values: %s", scope, allowed))
+			return false
+		}
+	}
+	encoded, err := json.Marshal(scopes)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	input.Scopes = string(encoded)
+	return true
 }

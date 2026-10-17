@@ -3158,10 +3158,12 @@ export const api = {
 		},
 		tokens: {
 			list: () => request<APIToken[]>('/auth/tokens'),
-			create: (name: string) =>
+			/** scopes is the JSON-array string the server stores, e.g. '["read"]'
+			 *  (TASK-3866); omitted means full access. */
+			create: (name: string, scopes?: string) =>
 				request<APITokenWithSecret>('/auth/tokens', {
 					method: 'POST',
-					body: JSON.stringify({ name })
+					body: JSON.stringify(scopes ? { name, scopes } : { name })
 				}),
 			delete: (tokenId: string) =>
 				request<void>(`/auth/tokens/${tokenId}`, { method: 'DELETE' }),
