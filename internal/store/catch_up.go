@@ -108,8 +108,10 @@ func capSection(lines []CatchUpLine) CatchUpSection {
 
 // CatchUp reads what happened in workspaceID in (since, until] that viewerID
 // did not do, limited to scope. Bounds are compared at second precision, the
-// precision the source tables store: anything in the same second as since
-// counts as already seen.
+// precision the source tables store, and the lower bound is INCLUSIVE: an
+// event stamped in the same second as since may have happened after the
+// press, so it is shown again rather than risk hiding it. Showing a seen line
+// twice is the safe failure; hiding an unseen one is not.
 func (s *Store) CatchUp(workspaceID, viewerID string, since, until time.Time, scope CatchUpScope) (*CatchUp, error) {
 	out := &CatchUp{
 		Finished:       capSection(nil),
@@ -200,7 +202,7 @@ func (s *Store) catchUpTransitions(workspaceID, viewerID, sinceStr, untilStr str
 		LEFT JOIN activities a ON a.document_id = st.item_id AND a.action IN ('updated', 'moved')
 		     AND a.created_at = st.created_at
 		LEFT JOIN users u ON u.id = a.user_id
-		WHERE st.workspace_id = ? AND st.created_at > ? AND st.created_at <= ?
+		WHERE st.workspace_id = ? AND st.created_at >= ? AND st.created_at <= ?
 		  AND st.collection_id IN (`+strings.Join(ph, ",")+`)
 		  AND i.collection_id = st.collection_id`+scopeSQL+`
 		ORDER BY st.created_at DESC, st.id`), args...)
@@ -306,7 +308,7 @@ func (s *Store) catchUpCreated(workspaceID, viewerID, sinceStr, untilStr string,
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL AND c.is_system = ?
 		LEFT JOIN users u ON u.id = i.created_by_user_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
-		  AND i.created_at > ? AND i.created_at <= ?
+		  AND i.created_at >= ? AND i.created_at <= ?
 		  AND (i.created_by_user_id IS NULL OR i.created_by_user_id <> ?)`+scopeSQL+`
 		ORDER BY i.created_at DESC, i.id`), args...)
 	if err != nil {
@@ -359,7 +361,7 @@ func (s *Store) catchUpComments(workspaceID, viewerID, sinceStr, untilStr string
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
 		LEFT JOIN users u ON u.id = cm.user_id
 		WHERE cm.workspace_id = ? AND cm.deleted_at IS NULL
-		  AND cm.created_at > ? AND cm.created_at <= ?
+		  AND cm.created_at >= ? AND cm.created_at <= ?
 		  AND (cm.user_id IS NULL OR cm.user_id <> ?)
 		  AND (i.created_by_user_id = ? OR i.assigned_user_id = ?)`+scopeSQL+`
 		ORDER BY cm.created_at DESC, cm.id`), args...)
@@ -402,7 +404,7 @@ func (s *Store) catchUpAgents(workspaceID, sinceStr, untilStr string, scope Catc
 		JOIN items i ON i.id = a.document_id AND i.deleted_at IS NULL
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
 		WHERE a.workspace_id = ? AND a.actor = 'agent'
-		  AND a.created_at > ? AND a.created_at <= ?`+scopeSQL+`
+		  AND a.created_at >= ? AND a.created_at <= ?`+scopeSQL+`
 		ORDER BY a.created_at DESC, a.id`), args...)
 	if err != nil {
 		return out, fmt.Errorf("catch-up agents: %w", err)
