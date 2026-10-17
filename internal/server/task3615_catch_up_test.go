@@ -244,11 +244,17 @@ func TestTASK3615_CursorAndCeilingBoundTheWindow(t *testing.T) {
 			t.Fatalf("GET wrote a cursor (found=%v, err=%v)", found, err)
 		}
 
-		// A press in the same second as the event counts it as seen.
+		// A press in the same second as the event does NOT hide it: the
+		// event is stamped to the second and may have come after the press.
 		if _, err := srv.store.MarkCaughtUp(f.alice.ID, f.ws.ID, task3615At.Add(500*time.Millisecond)); err != nil {
 			t.Fatalf("MarkCaughtUp: %v", err)
 		}
-		task3615Want(t, "same-second cursor", f.catchUp(t, f.aliceTok).Finished)
+		task3615Want(t, "same-second cursor", f.catchUp(t, f.aliceTok).Finished, "Bob finished")
+		// A press in the next second does.
+		if _, err := srv.store.MarkCaughtUp(f.alice.ID, f.ws.ID, task3615At.Add(time.Second)); err != nil {
+			t.Fatalf("MarkCaughtUp: %v", err)
+		}
+		task3615Want(t, "next-second cursor", f.catchUp(t, f.aliceTok).Finished)
 
 		// The ceiling: an event 15 days old is out even with no cursor.
 		bobView := f.catchUp(t, f.bobTok)
