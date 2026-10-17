@@ -465,6 +465,13 @@ func (s *Server) accountExportVisibleCollections(ctx context.Context, r *http.Re
 	if f := s.accountExportHooks.visibleColls; f != nil {
 		return f(r, wsID)
 	}
+	// The BUG-3334 fail-closed seam visibleCollectionIDs honours, kept on
+	// this ctx-bound read (BUG-3632 r2).
+	if s.visibleCollectionIDsFault != nil {
+		if err := s.visibleCollectionIDsFault(); err != nil {
+			return nil, err
+		}
+	}
 	return s.visibleCollectionIDsQ(r, s.store.QContext(ctx), wsID)
 }
 
@@ -494,6 +501,12 @@ func (s *Server) accountExportDeadline() time.Duration {
 // connection returned; this is the backstop for whatever is not, and an
 // abandoned read's result is dropped (the channel is buffered, so it never
 // blocks).
+//
+// A read that fails once the deadline has passed is reported as the
+// deadline, whatever the driver's error says: a cancelled read races
+// ctx.Done() here, and the export tells a timeout (503) from a failure (500)
+// by errors.Is, which must not depend on how a driver wraps its cancel error
+// (BUG-3632 r2).
 func withinExportDeadline[T any](ctx context.Context, read func() (T, error)) (T, error) {
 	type result struct {
 		v   T
@@ -506,6 +519,9 @@ func withinExportDeadline[T any](ctx context.Context, read func() (T, error)) (T
 	}()
 	select {
 	case r := <-done:
+		if r.err != nil && ctx.Err() != nil {
+			return r.v, fmt.Errorf("%w: %w", ctx.Err(), r.err)
+		}
 		return r.v, r.err
 	case <-ctx.Done():
 		var zero T

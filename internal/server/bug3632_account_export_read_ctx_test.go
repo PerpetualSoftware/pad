@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -77,5 +78,44 @@ func TestBUG3632_AStalledExportReadIsCancelledAndItsConnectionReturned(t *testin
 				time.Sleep(20 * time.Millisecond)
 			}
 		})
+	}
+}
+
+// BUG-3632 r2: a cancelled read races ctx.Done() inside withinExportDeadline.
+// When the read's own error wins, the export must still see the deadline,
+// whatever the driver's error says, or a timeout answers 500 instead of 503.
+
+// bug3632ExpiredCtx reports its deadline as passed but never closes Done, so
+// withinExportDeadline's select can only take the read's result: the case
+// where the read's error wins the race. A real expired context makes that
+// case a coin toss the read goroutine almost never wins.
+type bug3632ExpiredCtx struct{ context.Context }
+
+func (bug3632ExpiredCtx) Done() <-chan struct{} { return nil }
+func (bug3632ExpiredCtx) Err() error            { return context.DeadlineExceeded }
+
+func TestBUG3632_AReadFailingPastTheDeadlineReportsTheDeadline(t *testing.T) {
+	driverErr := errors.New("interrupted (9)") // wraps no context error
+	_, err := withinExportDeadline(bug3632ExpiredCtx{context.Background()}, func() (int, error) { return 0, driverErr })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a read failing past the deadline returned %v, which does not wrap context.DeadlineExceeded", err)
+	}
+	// Before the deadline a read's error is its own.
+	_, err = withinExportDeadline(context.Background(), func() (int, error) { return 0, driverErr })
+	if !errors.Is(err, driverErr) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a read failing inside the deadline returned %v; want the driver error alone", err)
+	}
+}
+
+// BUG-3632 r2: the ctx-bound preflight access check keeps the BUG-3334
+// fail-closed seam visibleCollectionIDs honours, so a failing access read
+// refuses the export rather than letting it through.
+func TestBUG3632_ExportPreflightFailsClosed(t *testing.T) {
+	srv := testServer(t)
+	tok := bug3626Owner(t, srv)
+	srv.visibleCollectionIDsFault = func() error { return errors.New("bug3632: injected access-read failure") }
+	code, body, _ := bug3626Export(t, srv, tok)
+	if code != 500 {
+		t.Fatalf("a failing preflight access read answered %d, want 500:\n%s", code, body)
 	}
 }

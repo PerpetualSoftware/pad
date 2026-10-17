@@ -12,6 +12,9 @@ import (
 // cancelled and kept its connection. WithContext hands the driver the
 // caller's context instead.
 
+// On SQLite the endless read blocks in the query's first step, the only step
+// modernc interrupts (store.WithContext says why that is enough there).
+
 // bug3632EndlessQuery never returns on its own: an unbounded recursive CTE on
 // SQLite, a long sleep on Postgres.
 func bug3632EndlessQuery(s *Store) string {
@@ -21,14 +24,15 @@ func bug3632EndlessQuery(s *Store) string {
 	return `WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) SELECT MAX(n) FROM r`
 }
 
-// bug3632AwaitIdle waits for the pool to have no connection in use, and
-// fails if one is still held after 3s.
-func bug3632AwaitIdle(t *testing.T, s *Store, what string) {
+// bug3632AwaitIdle waits for the pool to be back to the connections in use
+// before the read, and fails if the read's is still held after 3s.
+func bug3632AwaitIdle(t *testing.T, s *Store, baseline int, what string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
-	for s.db.Stats().InUse != 0 {
+	for s.db.Stats().InUse > baseline {
 		if time.Now().After(deadline) {
-			t.Fatalf("%s: %d connection(s) still in use 3s after the deadline; the read was not cancelled", what, s.db.Stats().InUse)
+			t.Fatalf("%s: %d connection(s) beyond the %d in use before the read are still held 3s after the deadline; the read was not cancelled",
+				what, s.db.Stats().InUse-baseline, baseline)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -69,6 +73,7 @@ func TestBUG3632_WithContextCancelsAReadAtTheDeadline(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 			defer cancel()
+			baseline := s.db.Stats().InUse
 			done := make(chan error, 1)
 			go func() { done <- tc.run(ctx) }()
 			select {
@@ -84,7 +89,7 @@ func TestBUG3632_WithContextCancelsAReadAtTheDeadline(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("the read ran 5s past a 200ms deadline; it was not cancelled")
 			}
-			bug3632AwaitIdle(t, s, tc.name)
+			bug3632AwaitIdle(t, s, baseline, tc.name)
 		})
 	}
 }

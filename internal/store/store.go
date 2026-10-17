@@ -929,6 +929,11 @@ type ContextQueryer interface {
 // a stalled read was never cancelled, and the transaction's own
 // rollback-on-cancel waited for it. Through this wrapper the driver is
 // handed ctx, so the read stops at the deadline and its connection goes back.
+// How far that reaches is the driver's: pgx cancels the statement wherever it
+// is, while modernc SQLite interrupts only the query's first step, and a
+// later rows.Next runs to its end before database/sql closes the rows. A
+// SQLite read is not stalled by a lock in WAL mode, so what remains there is
+// a slow step, not a wait.
 func WithContext(ctx context.Context, q ContextQueryer) Queryer {
 	return ctxQueryer{ctx: ctx, q: q}
 }
