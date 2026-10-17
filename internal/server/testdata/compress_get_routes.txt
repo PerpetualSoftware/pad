@@ -85,6 +85,7 @@ compress /api/v1/workspaces/{slug}/archived-collections
 compress /api/v1/workspaces/{slug}/attachments
 skip /api/v1/workspaces/{slug}/attachments/{attachmentID}
 compress /api/v1/workspaces/{slug}/builtins
+compress /api/v1/workspaces/{slug}/catch-up
 compress /api/v1/workspaces/{slug}/changelog
 compress /api/v1/workspaces/{slug}/changes
 skip /api/v1/workspaces/{slug}/claim-code
