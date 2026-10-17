@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -32,6 +33,26 @@ func recordToolOutcome(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		}
 		return res, err
 	}
+}
+
+// recordJSONRPCError is the OnError hook that records a JSON-RPC error
+// response (BUG-3879 hunter r1 M1). mcp-go refuses an unknown tool, and
+// answers a missing resource or prompt, before the tool-handler middleware
+// is applied, with a JSON-RPC error inside a 200. A tool handler's own Go
+// error reaches this hook too, after recordToolOutcome has recorded it;
+// the sink keeps the first, so the row is unchanged. None of these is a
+// refusal, so every code here audits as error.
+func recordJSONRPCError(ctx context.Context, _ any, _ mcp.MCPMethod, _ any, err error) {
+	code := "jsonrpc_error"
+	switch {
+	case errors.Is(err, server.ErrToolNotFound):
+		code = "tool_not_found"
+	case errors.Is(err, server.ErrResourceNotFound):
+		code = "resource_not_found"
+	case errors.Is(err, server.ErrPromptNotFound):
+		code = "prompt_not_found"
+	}
+	padserver.RecordMCPToolOutcome(ctx, code, "")
 }
 
 // toolErrorCode reads the code and details.reason of a failed result's
