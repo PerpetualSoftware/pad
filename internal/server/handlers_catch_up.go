@@ -188,7 +188,9 @@ func (s *Server) catchUpNeedsYou(r *http.Request, workspaceID, viewerID string, 
 				if _, blocked := blockers[it.ID]; !blocked {
 					continue
 				}
-				if isItemDone(it.Fields, it.CollectionID, ctxMap) {
+				// Reference items (docs) are not open work (PLAN-3535), as
+				// the dashboard's blocked attention, which reads workItems.
+				if isReferenceCollection(it.CollectionID, ctxMap) || isItemDone(it.Fields, it.CollectionID, ctxMap) {
 					continue
 				}
 				if _, dup := what[it.ID]; dup {

@@ -345,10 +345,14 @@ func TestTASK3615_NeedsYouListsBlockedItemsAssignedToYou(t *testing.T) {
 		doneButBlocked := f.create(t, f.bobTok, "tasks", "Assigned, done, link left")
 		f.patch(t, f.bobTok, doneButBlocked, map[string]any{"assigned_user_id": f.alice.ID})
 		f.status(t, f.bobTok, doneButBlocked, "done")
+		// A doc is reference, not open work (PLAN-3535): assigned and
+		// blocked, it is still not something that needs Alice.
+		refDoc := f.create(t, f.bobTok, "docs", "Assigned blocked doc")
+		f.patch(t, f.bobTok, refDoc, map[string]any{"assigned_user_id": f.alice.ID})
 		blocker := f.create(t, f.bobTok, "tasks", "Blocker")
 		doneBlocker := f.create(t, f.bobTok, "tasks", "Done blocker")
 		f.status(t, f.bobTok, doneBlocker, "done")
-		for _, l := range []struct{ src, tgt models.Item }{{blocker, blocked}, {blocker, notMine}, {doneBlocker, freed}, {blocker, doneButBlocked}} {
+		for _, l := range []struct{ src, tgt models.Item }{{blocker, blocked}, {blocker, notMine}, {doneBlocker, freed}, {blocker, doneButBlocked}, {blocker, refDoc}} {
 			if _, err := srv.store.CreateItemLink(f.ws.ID, models.ItemLinkCreate{TargetID: l.tgt.ID, LinkType: "blocks"}, l.src.ID); err != nil {
 				t.Fatalf("CreateItemLink: %v", err)
 			}
