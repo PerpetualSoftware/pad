@@ -68,8 +68,9 @@
 		});
 	}
 
-	// Chip color for an MCP result status. These are transport results
-	// (ok / denied / error), not item statuses, so they map locally
+	// Chip color for an MCP result status. These are call outcomes
+	// (ok / denied / error; a refused tool call is denied even inside a
+	// 200, BUG-3879), not item statuses, so they map locally
 	// rather than through fieldColors.statusColor (TASK-2292).
 	function statusColor(status: string): string {
 		if (status === 'ok') return 'var(--accent-green)';
