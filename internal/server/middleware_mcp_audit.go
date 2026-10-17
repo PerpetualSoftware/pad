@@ -26,14 +26,16 @@ import (
 // the audit row carries the resolved user + token identity stashed on
 // context. Records one row per HTTP request hitting /mcp:
 //
-//   - Successful tool calls (200 OK with a JSON-RPC result envelope).
-//   - Tool calls that the inner handler rejected (200 OK with an error
-//     envelope — JSON-RPC errors are still HTTP 200 per spec).
+//   - Successful tool calls (200 OK with a JSON-RPC result envelope): ok.
+//   - Tool calls that failed or were refused (200 OK with an error
+//     result): denied or error, with the tool's error code as
+//     error_kind. The transport cannot show these, so the tool result
+//     reports them through RecordMCPToolOutcome (BUG-3879).
 //   - Authorization gate misses (401 / 403).
 //   - Server errors (5xx).
 //
 // Writes are async via a buffered channel + worker goroutine. The
-// hot path captures the HTTP-level outcome, builds an MCPAuditEntry,
+// hot path captures the outcome, builds an MCPAuditEntry,
 // and tries a non-blocking channel send; if the buffer is full
 // (DB outage / writer too slow), the entry is dropped and the
 // mcp_audit_dropped_total metric increments. The request never
@@ -262,6 +264,11 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 		// provides this — reuse rather than redo.
 		ww := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
+		// BUG-3879: a failed tool call answers 200, so its outcome
+		// arrives through this sink, not through ww.Status().
+		outcomeCtx, outcome := WithMCPToolOutcomeSink(r.Context())
+		r = r.WithContext(outcomeCtx)
+
 		next.ServeHTTP(withFlushError(ww), r) // BUG-3827: chi drops flush errors
 
 		latencyMs := int(time.Since(start) / time.Millisecond)
@@ -291,6 +298,14 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 		toolName, argsHash, toolNameSource := parseMCPRequestBodyWithSource(snifferBytes)
 
 		status, errorKind := classifyMCPResult(ww.Status())
+		// The transport status wins when it already refused or failed;
+		// only a request the transport let through can carry a tool
+		// failure (BUG-3879).
+		if status == models.MCPAuditResultOK {
+			if toolStatus, toolKind, failed := outcome.Outcome(); failed {
+				status, errorKind = toolStatus, toolKind
+			}
+		}
 
 		entry := models.MCPAuditEntryInput{
 			Timestamp:      start,
@@ -583,17 +598,13 @@ func hashCanonicalJSON(raw json.RawMessage) string {
 
 // classifyMCPResult maps an HTTP status to (audit_status, error_kind).
 //
-// JSON-RPC quirk: tool errors come back as 200 OK with an `error`
-// field in the response body. We CAN'T see that here without
-// snooping the response body too — and the spec for TASK-960 says
-// "every MCP request results in exactly one audit-log row," not
-// "every successful tool call." So we classify on transport-level
-// status, with the understanding that result_status="ok" means
-// "the gate let it through" rather than "the tool succeeded." That's
-// the right granularity for forensics; per-tool success would need
-// the dispatcher to emit its own audit signal post-execution, which
-// is out of scope here (and probably belongs as a separate JSON-RPC
-// success/failure stream).
+// It classifies the TRANSPORT status only. A tool error comes back as
+// 200 OK with an error result in the body, so on its own this function
+// reads every failed tool call as ok. MCPAuditLog therefore overrides an
+// ok with the tool call's own outcome when internal/mcp recorded one
+// (RecordMCPToolOutcome, BUG-3879): result_status="ok" means the tool
+// call succeeded, not merely that the gate let the request through.
+// TASK-960's rule still holds: every MCP request gets exactly one row.
 func classifyMCPResult(httpStatus int) (models.MCPAuditResultStatus, string) {
 	switch {
 	case httpStatus == 0 || httpStatus == http.StatusOK:
@@ -696,7 +707,8 @@ var _ func(http.Handler) http.Handler = (*Server)(nil).MCPAuditLog
 // (currently only "rate_limited" — extend if more denial paths
 // emit through here). Keeping the vocabulary aligned makes the
 // admin UI's status badges render consistently regardless of which
-// emitter wrote the row.
+// emitter wrote the row. Rows from MCPAuditLog can also carry a tool's
+// error code, alone or as "<code>:<reason>" (classifyMCPToolOutcome).
 //
 // latencyStart is the moment the request entered MCPBearerAuth so
 // the audit row carries real latency for denied requests too —
