@@ -193,7 +193,7 @@ func (s *Store) catchUpTransitions(workspaceID, viewerID, sinceStr, untilStr str
 	rows, err := s.db.Query(s.q(`
 		SELECT st.item_id, st.collection_id, st.field_key, st.from_status, st.to_status, st.created_at,
 		       c.prefix, i.item_number, i.title, c.slug,
-		       a.user_id, COALESCE(u.name, ''), COALESCE(a.actor, ''), COALESCE(a.metadata, '')
+		       a.user_id, COALESCE(u.name, ''), COALESCE(a.actor, ''), `+s.activityMetaText("a")+`
 		FROM status_transitions st
 		JOIN items i ON i.id = st.item_id AND i.deleted_at IS NULL
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
@@ -397,7 +397,7 @@ func (s *Store) catchUpAgents(workspaceID, sinceStr, untilStr string, scope Catc
 	scopeSQL, scopeArgs := scope.clause("i")
 	args := append([]any{workspaceID, sinceStr, untilStr}, scopeArgs...)
 	rows, err := s.db.Query(s.q(`
-		SELECT a.action, a.created_at, COALESCE(a.metadata, ''), i.id, c.prefix, i.item_number, i.title, c.slug
+		SELECT a.action, a.created_at, `+s.activityMetaText("a")+`, i.id, c.prefix, i.item_number, i.title, c.slug
 		FROM activities a
 		JOIN items i ON i.id = a.document_id AND i.deleted_at IS NULL
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
@@ -502,6 +502,16 @@ func (s *Store) CatchUpItemLines(workspaceID string, itemIDs []string, what map[
 		}
 	}
 	return capSection(lines), nil
+}
+
+// activityMetaText reads activities.metadata as text on both backends: it is
+// TEXT on SQLite and JSONB on Postgres, where a COALESCE to the empty string
+// would cast that string to JSON and fail the query.
+func (s *Store) activityMetaText(alias string) string {
+	if s.dialect.Driver() == DriverPostgres {
+		return "COALESCE(" + alias + ".metadata::text, '')"
+	}
+	return "COALESCE(" + alias + ".metadata, '')"
 }
 
 func containsFold(list []string, v string) bool {
