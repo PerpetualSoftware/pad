@@ -59,26 +59,39 @@ func TestBUG3879_ToolOutcomeReachesTheAuditRow(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			before := bug3879ItemRows(t, f, tc.user.ID)
-			body := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"pad_item","arguments":` + tc.args + `}}`
-			rr := bug3879Post(t, f, tc.bearer, body)
-			if rr.Code != http.StatusOK {
-				t.Fatalf("tools/call answered %d, want the 200 this bug is about: %.300s", rr.Code, rr.Body.String())
-			}
-			wantIsError := tc.wantStatus != models.MCPAuditResultOK
-			if got := strings.Contains(rr.Body.String(), `"isError":true`); got != wantIsError {
-				t.Fatalf("precondition: isError=%v, want %v: %.500s", got, wantIsError, rr.Body.String())
-			}
-			row := bug3879NextItemRow(t, f, tc.user.ID, before)
-			kind := ""
-			if row.ErrorKind != nil {
-				kind = *row.ErrorKind
-			}
-			if row.ResultStatus != tc.wantStatus || kind != tc.wantKind {
-				t.Fatalf("audit row = (%q, %q), want (%q, %q); response %.300s",
-					row.ResultStatus, kind, tc.wantStatus, tc.wantKind, rr.Body.String())
-			}
+			bug3879Call(t, f, tc.user, tc.bearer, "pad_item", tc.args, tc.wantStatus, tc.wantKind)
 		})
+	}
+	// mcp-go refuses an unknown tool before any tool middleware runs, with a
+	// JSON-RPC error inside a 200 (hunter r1 M1): the OnError hook's row.
+	t.Run("unknown tool", func(t *testing.T) {
+		bug3879Call(t, f, f.member, f.memberPAT, "pad_no_such_tool", `{}`, models.MCPAuditResultError, "tool_not_found")
+	})
+}
+
+// bug3879Call runs one tools/call and checks the one audit row it wrote.
+// A tool failure answers with an error RESULT (isError); a call mcp-go
+// refuses before any tool runs answers with a JSON-RPC error instead.
+func bug3879Call(t *testing.T, f *capFixture, user *models.User, bearer, tool, args string, wantStatus models.MCPAuditResultStatus, wantKind string) {
+	t.Helper()
+	before := bug3879Rows(t, f, user.ID, tool)
+	body := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"` + tool + `","arguments":` + args + `}}`
+	rr := bug3879Post(t, f, bearer, body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("tools/call answered %d, want the 200 this bug is about: %.300s", rr.Code, rr.Body.String())
+	}
+	failed := strings.Contains(rr.Body.String(), `"isError":true`) || strings.Contains(rr.Body.String(), `"error":{"code":`)
+	if wantFailed := wantStatus != models.MCPAuditResultOK; failed != wantFailed {
+		t.Fatalf("precondition: call failed=%v, want %v: %.500s", failed, wantFailed, rr.Body.String())
+	}
+	row := bug3879NextRow(t, f, user.ID, tool, before)
+	kind := ""
+	if row.ErrorKind != nil {
+		kind = *row.ErrorKind
+	}
+	if row.ResultStatus != wantStatus || kind != wantKind {
+		t.Fatalf("audit row = (%q, %q), want (%q, %q); response %.300s",
+			row.ResultStatus, kind, wantStatus, wantKind, rr.Body.String())
 	}
 }
 
@@ -99,8 +112,8 @@ func bug3879Post(t *testing.T, f *capFixture, bearer, body string) *mcpRecorder 
 	return rr
 }
 
-// bug3879ItemRows is the user's pad_item audit rows, newest first.
-func bug3879ItemRows(t *testing.T, f *capFixture, userID string) []models.MCPAuditEntry {
+// bug3879Rows is the user's audit rows for one tool.
+func bug3879Rows(t *testing.T, f *capFixture, userID, tool string) []models.MCPAuditEntry {
 	t.Helper()
 	rows, err := f.store.ListMCPAuditByUser(userID, 100, 0)
 	if err != nil {
@@ -108,18 +121,18 @@ func bug3879ItemRows(t *testing.T, f *capFixture, userID string) []models.MCPAud
 	}
 	var out []models.MCPAuditEntry
 	for _, r := range rows {
-		if r.ToolName == "pad_item" {
+		if r.ToolName == tool {
 			out = append(out, r)
 		}
 	}
 	return out
 }
 
-// bug3879NextItemRow waits for the one pad_item row the call wrote: the
+// bug3879NextRow waits for the one row the call wrote: the
 // writer is asynchronous. The new row is found by id, not by position:
 // two calls in one second tie on timestamp, and the tie-break is the
 // random row id.
-func bug3879NextItemRow(t *testing.T, f *capFixture, userID string, before []models.MCPAuditEntry) models.MCPAuditEntry {
+func bug3879NextRow(t *testing.T, f *capFixture, userID, tool string, before []models.MCPAuditEntry) models.MCPAuditEntry {
 	t.Helper()
 	seen := map[string]bool{}
 	for _, r := range before {
@@ -127,20 +140,20 @@ func bug3879NextItemRow(t *testing.T, f *capFixture, userID string, before []mod
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		rows := bug3879ItemRows(t, f, userID)
+		rows := bug3879Rows(t, f, userID, tool)
 		if len(rows) == len(before)+1 {
 			for _, r := range rows {
 				if !seen[r.ID] {
 					return r
 				}
 			}
-			t.Fatal("one more pad_item row, but every id was already seen")
+			t.Fatal("one more row, but every id was already seen")
 		}
 		if len(rows) > len(before)+1 {
-			t.Fatalf("%d new pad_item rows, want exactly 1", len(rows)-len(before))
+			t.Fatalf("%d new %s rows, want exactly 1", len(rows)-len(before), tool)
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("no pad_item audit row within 5s")
+			t.Fatalf("no %s audit row within 5s", tool)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

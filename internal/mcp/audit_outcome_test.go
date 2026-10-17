@@ -76,6 +76,8 @@ func TestToolOutcome_NewServerRecordsEveryEnding(t *testing.T) {
 		{"succeed", false, "", ""},
 		{"go_error", true, models.MCPAuditResultError, "server_error"},
 		{"panics", true, models.MCPAuditResultError, "server_error"},
+		// Refused by mcp-go before any middleware runs (hunter r1 M1).
+		{"no_such_tool", true, models.MCPAuditResultError, "tool_not_found"},
 	}
 	for _, tc := range cases {
 		ctx, sink := padserver.WithMCPToolOutcomeSink(context.Background())
