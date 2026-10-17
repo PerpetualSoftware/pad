@@ -264,7 +264,7 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 
 		// BUG-3879: a failed tool call answers 200, so its outcome
 		// arrives through this sink, not through ww.Status().
-		outcomeCtx, outcome := withMCPToolOutcomeSink(r.Context())
+		outcomeCtx, outcome := WithMCPToolOutcomeSink(r.Context())
 		r = r.WithContext(outcomeCtx)
 
 		next.ServeHTTP(withFlushError(ww), r) // BUG-3827: chi drops flush errors
@@ -300,7 +300,7 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 		// only a request the transport let through can carry a tool
 		// failure (BUG-3879).
 		if status == models.MCPAuditResultOK {
-			if toolStatus, toolKind, failed := outcome.outcome(); failed {
+			if toolStatus, toolKind, failed := outcome.Outcome(); failed {
 				status, errorKind = toolStatus, toolKind
 			}
 		}
