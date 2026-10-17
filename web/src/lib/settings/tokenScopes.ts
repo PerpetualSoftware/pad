@@ -60,9 +60,8 @@ function parseScopes(raw: string): string[] | null | undefined {
 	return out;
 }
 
-export function describeTokenScopes(raw: string | null | undefined): TokenAccess {
-	if (raw === '' || raw === undefined) return result('write', true);
-	if (raw === null) return result('none');
+export function describeTokenScopes(raw: string): TokenAccess {
+	if (raw === '') return result('write', true);
 	if (raw.replace(GO_SPACE, '') === '["*"]') return result('write');
 
 	const scopes = parseScopes(raw);
