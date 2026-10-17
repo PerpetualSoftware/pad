@@ -2487,6 +2487,12 @@ func (s *Server) setupRouter() {
 					r.Get("/report/layout", s.handleGetReportLayout)
 					r.Put("/report/layout", s.handleSaveReportLayout)
 
+					// Per-user "catch me up" digest and its cursor
+					// (TASK-3615). The GET never writes; only PUT
+					// /me/seen creates or moves the cursor.
+					r.Get("/catch-up", s.handleGetCatchUp)
+					r.Put("/me/seen", s.handleMarkCaughtUp)
+
 					// Project intelligence reads — next/standup/changelog
 					// (PLAN-1888 / TASK-1894). Mirror `pad project
 					// next|standup|changelog` (cmd/pad/main.go) — KEEP IN

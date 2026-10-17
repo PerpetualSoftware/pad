@@ -269,6 +269,43 @@ type activeBlocker struct {
 	status string
 }
 
+// firstActiveBlockers resolves, for every blocked target in the workspace,
+// the FIRST blocker (newest link first) that the caller can see AND that is
+// still non-done. Presence in the map means the target has an active
+// blocker. One GetBlocksEdges query (BUG-2002). Shared by the dashboard's
+// blocked attention and the catch-up digest's needs_you (TASK-3615), so the
+// two can never disagree about what blocks an item.
+func (s *Server) firstActiveBlockers(r *http.Request, workspaceID string, visibleIDs, fullCollIDs, grantedItemIDs []string, ctxMap map[string]doneContext) (map[string]activeBlocker, error) {
+	blocksEdges, err := s.store.GetBlocksEdges(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	firstActiveBlocker := make(map[string]activeBlocker)
+	for _, e := range blocksEdges {
+		if _, resolved := firstActiveBlocker[e.TargetID]; resolved {
+			continue // already picked this target's first active blocker
+		}
+		// Skip blockers from hidden collections or ungrantable items — a
+		// blocker the caller can't see must not influence the target.
+		if !isCollectionVisible(e.SourceCollectionID, visibleIDs) {
+			continue
+		}
+		if !s.isItemVisibleToGuest(r, workspaceID, &models.Item{ID: e.SourceID, CollectionID: e.SourceCollectionID}, fullCollIDs, grantedItemIDs) {
+			continue
+		}
+		if isItemDone(e.SourceFields, e.SourceCollectionID, ctxMap) {
+			continue
+		}
+		firstActiveBlocker[e.TargetID] = activeBlocker{
+			title: e.SourceTitle,
+			// Used only in the human-readable "Reason" string — the terminal
+			// check above owns the actual done-detection.
+			status: extractFieldValue(e.SourceFields, "status"),
+		}
+	}
+	return firstActiveBlocker, nil
+}
+
 // buildDoneContextMap builds a map of collection ID → (schema, settings)
 // for quick lookups during dashboard / lineage traversals.
 func buildDoneContextMap(collections []models.Collection) map[string]doneContext {
@@ -837,32 +874,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// dashboard latency (BUG-2002). Presence in the map == the target has an
 	// active blocker, which also drives the suggested_next blocked-filter
 	// below.
-	blocksEdges, err := s.store.GetBlocksEdges(workspaceID)
+	firstActiveBlocker, err := s.firstActiveBlockers(r, workspaceID, visibleIDs, dashFullCollIDs, dashGrantedItemIDs, ctxMap)
 	if err != nil {
 		return nil, err
-	}
-	firstActiveBlocker := make(map[string]activeBlocker)
-	for _, e := range blocksEdges {
-		if _, resolved := firstActiveBlocker[e.TargetID]; resolved {
-			continue // already picked this target's first active blocker
-		}
-		// Skip blockers from hidden collections or ungrantable items — a
-		// blocker the caller can't see must not influence the target.
-		if !isCollectionVisible(e.SourceCollectionID, visibleIDs) {
-			continue
-		}
-		if !s.isItemVisibleToGuest(r, workspaceID, &models.Item{ID: e.SourceID, CollectionID: e.SourceCollectionID}, dashFullCollIDs, dashGrantedItemIDs) {
-			continue
-		}
-		if isItemDone(e.SourceFields, e.SourceCollectionID, ctxMap) {
-			continue
-		}
-		firstActiveBlocker[e.TargetID] = activeBlocker{
-			title: e.SourceTitle,
-			// Used only in the human-readable "Reason" string — the terminal
-			// check above owns the actual done-detection.
-			status: extractFieldValue(e.SourceFields, "status"),
-		}
 	}
 	for _, item := range workItems {
 		if isItemDone(item.Fields, item.CollectionID, ctxMap) {
