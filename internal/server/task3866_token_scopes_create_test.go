@@ -25,12 +25,22 @@ func TestTASK3866_CreateTokenScopes(t *testing.T) {
 		stored string
 	}{
 		{"omitted keeps the default", nil, `["*"]`},
-		{"JSON null in the body is omitted", json.RawMessage("null"), `["*"]`},
 		{"empty string is omitted", "", `["*"]`},
 		{"read", `["read"]`, `["read"]`},
 		{"wildcard", `["*"]`, `["*"]`},
 		{"padded and mixed are stored compact", `[ "read" , "pad:write" ]`, `["read","pad:write"]`},
 		{"every vocabulary value", `["*","read","write","pad:read","pad:write","pad:admin"]`, `["*","read","write","pad:read","pad:write","pad:admin"]`},
+	}
+	// Not strings: the field itself is null, an array or a number. A JSON
+	// null used to decode as "" and mint a full-access key (Codex r1).
+	refusedRaw := []struct {
+		name   string
+		scopes json.RawMessage
+		named  string
+	}{
+		{"a JSON null field", json.RawMessage(`null`), "got null"},
+		{"an array, not a string", json.RawMessage(`["read"]`), `got ["read"]`},
+		{"a number", json.RawMessage(`1`), "got 1"},
 	}
 	refused := []struct {
 		name, scopes, named string
@@ -70,6 +80,20 @@ func TestTASK3866_CreateTokenScopes(t *testing.T) {
 			}
 		}
 		for _, tc := range refused {
+			rr := doRequestWithBearer(env.srv, "POST", path, env.sessTok,
+				map[string]any{"name": door + "-bad", "scopes": tc.scopes})
+			if rr.Code != http.StatusBadRequest || errorCode(t, rr) != "validation_error" {
+				t.Errorf("%s door, %s: %d %s, want 400 validation_error", door, tc.name, rr.Code, rr.Body.String())
+				continue
+			}
+			if !strings.Contains(rr.Body.String(), jsonEscapedForBody(tc.named)) {
+				t.Errorf("%s door, %s: message does not name %s: %s", door, tc.name, tc.named, rr.Body.String())
+			}
+		}
+	}
+
+	for door, path := range doors {
+		for _, tc := range refusedRaw {
 			rr := doRequestWithBearer(env.srv, "POST", path, env.sessTok,
 				map[string]any{"name": door + "-bad", "scopes": tc.scopes})
 			if rr.Code != http.StatusBadRequest || errorCode(t, rr) != "validation_error" {

@@ -60,7 +60,10 @@ function parseScopes(raw: string): string[] | null | undefined {
 	return out;
 }
 
-export function describeTokenScopes(raw: string): TokenAccess {
+export function describeTokenScopes(raw: unknown): TokenAccess {
+	// The API always sends scopes as a string. Anything else is a value we
+	// cannot read, and a key we cannot read is never shown with access.
+	if (typeof raw !== 'string') return result('none');
 	if (raw === '') return result('write', true);
 	if (raw.replace(GO_SPACE, '') === '["*"]') return result('write');
 

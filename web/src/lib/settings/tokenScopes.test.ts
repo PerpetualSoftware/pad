@@ -26,6 +26,12 @@ describe('describeTokenScopes agrees with the server (TASK-3866)', () => {
 		});
 	}
 
+	it('a missing or non-string value is No access, never full access', () => {
+		for (const raw of [undefined, null, 0, ['*']]) {
+			expect(describeTokenScopes(raw).level).toBe('none');
+		}
+	});
+
 	it('never labels a refused key as having access', () => {
 		for (const raw of ['null', 'not-json', '["docs"]']) {
 			expect(describeTokenScopes(raw).label).toBe('No access');
