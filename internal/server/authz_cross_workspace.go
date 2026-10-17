@@ -235,11 +235,11 @@ func (a CrossWorkspaceAccess) WriteDenied(w http.ResponseWriter) {
 	case CrossWorkspaceLookupFailed:
 		writeInternalError(w, a.Err)
 	case CrossWorkspaceTokenNotAllowed:
-		writeError(w, http.StatusForbidden, "permission_denied",
-			"Token is not authorized for this workspace")
+		writeForbidden(w, "permission_denied",
+			"Token is not authorized for this workspace", forbiddenReasonWorkspaceNotAuthorized)
 	default:
-		writeError(w, http.StatusForbidden, "forbidden",
-			"You do not have access to the requested workspace")
+		writeForbidden(w, "forbidden",
+			"You do not have access to the requested workspace", forbiddenReasonNoAccess)
 	}
 }
 

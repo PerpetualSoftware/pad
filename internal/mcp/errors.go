@@ -56,9 +56,18 @@ const (
 	// CLI: ~/.pad/credentials.json missing or expired; HTTP: 401.
 	ErrAuthRequired ErrorCode = "auth_required"
 
-	// ErrPermissionDenied fires when authentication succeeds but role
-	// is insufficient for the operation. HTTP: 403.
+	// ErrPermissionDenied fires when authentication succeeds but the
+	// operation is refused. HTTP: 403. details.reason names the gate when the
+	// server said which (BUG-3864): role, token_scope, no_access or
+	// workspace_not_authorized. With no reason, the message is the only
+	// account of the cause, and the hint claims none.
 	ErrPermissionDenied ErrorCode = "permission_denied"
+
+	// ErrEmailNotVerified fires when a Cloud account whose email address is
+	// unverified attempts a write (BUG-3864). The server's own code on every
+	// door that enforces it. Not permission_denied: no role, token or grant
+	// fixes it, and retrying never helps until the address is verified.
+	ErrEmailNotVerified ErrorCode = "email_not_verified"
 
 	// ErrItemNotFound fires when an item ref / slug doesn't resolve.
 	// Distinct from ErrNotFound: this code is reserved for the
@@ -534,6 +543,15 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// (cli.WriteTooLargeError), with the server's own code in details.reason.
 	// Before this both transports said server_error for a deliberate cap.
 	"too_large": {},
+	// BUG-3864. Written at the CLI's root for a 403 whose code is forbidden or
+	// permission_denied (cli.WritePermissionDeniedError), with the server's
+	// details.reason, and for email_not_verified. Before this stdio said
+	// server_error for any refusal whose message lacked "forbidden", which
+	// included the token-scope and unverified-email refusals. Both lifts
+	// rebuild the hint from the reason (permissionDeniedPayload), so the two
+	// transports cannot word the same refusal differently.
+	"permission_denied":  {},
+	"email_not_verified": {},
 }
 
 // extractStructuredCLIError scans stderr for the
@@ -586,6 +604,12 @@ func extractStructuredCLIError(stderr string) *CallToolResult {
 	if _, ok := allowedStructuredErrorCodes[env.Error.Code]; !ok {
 		// Unknown code. Don't forward — regex classifier handles it.
 		return nil
+	}
+	switch ErrorCode(env.Error.Code) {
+	case ErrPermissionDenied:
+		return NewErrorResult(permissionDeniedPayload(env.Error.Message, permissionReasonIn(env.Error.Details), ""))
+	case ErrEmailNotVerified:
+		return NewErrorResult(emailNotVerifiedPayload(env.Error.Message))
 	}
 	// Hint is forwarded when the writer set one (BUG-2675, Codex round 2).
 	// Without this the two transports delivered the same CODE and different
@@ -1002,6 +1026,12 @@ func classifyHTTPStatusKind(
 		// open_children on 409) so unknown 403 codes still collapse to
 		// ErrPermissionDenied.
 		upstream403 := extractUpstreamErrorEnvelope(bodyText)
+		switch ErrorCode(upstream403.Code) {
+		case ErrEmailNotVerified:
+			return NewErrorResult(emailNotVerifiedPayload(upstream403.Message))
+		case ErrPermissionDenied:
+			return NewErrorResult(permissionDeniedPayload(bodyMessage, permissionReasonIn(upstream403.Details), route))
+		}
 		if _, allowed := allowedStructuredErrorCodes[upstream403.Code]; allowed {
 			return NewErrorResult(ErrorPayload{
 				Code:    ErrorCode(upstream403.Code),
@@ -1010,11 +1040,7 @@ func classifyHTTPStatusKind(
 				Details: upstream403.Details,
 			})
 		}
-		return NewErrorResult(ErrorPayload{
-			Code:    ErrPermissionDenied,
-			Message: "Permission denied for this operation.",
-			Hint:    permissionHintFor(bodyMessage, route),
-		})
+		return NewErrorResult(permissionDeniedPayload(bodyMessage, permissionReasonIn(upstream403.Details), route))
 	case http.StatusNotFound:
 		// PLAN-3578 step 3: an undo naming a patch this item does not have is
 		// a 404 about the PATCH, not the item; the generic classifier would
@@ -1416,18 +1442,74 @@ func authHintFor(bodyMsg, route string) string {
 	return strings.Join(parts, " ")
 }
 
-// permissionHintFor generates the actionable hint for
-// ErrPermissionDenied. References the route + the inner backend
-// message (which often names the missing role / workspace).
-func permissionHintFor(bodyMsg, route string) string {
-	parts := []string{"Insufficient role for this operation."}
+// The permission_denied hints, by the server's details.reason (BUG-3864).
+// Each says what the caller does next, in the words the web app uses. A
+// reason outside this table, or none, gets permissionUnknownHintPrefix and
+// the server's message instead: the old hint led with "Insufficient role"
+// for every 403, which sent a bot with a read-only token to ask for a role
+// it already had.
+const (
+	PermissionRoleHint       = "Your role in this workspace does not allow this. Ask a workspace owner to change your role."
+	PermissionTokenScopeHint = "This API token's access does not include this action: a 'Read only' token cannot make changes. " +
+		"Create a token with 'Read and write' access under Account settings → API Tokens, and use it instead."
+	PermissionNoAccessHint               = "You do not have access to this workspace or collection. Ask a workspace owner for access."
+	PermissionWorkspaceNotAuthorizedHint = "This connection was not granted access to this workspace. " +
+		"Reconnect and include it, or use a workspace it was granted."
+	permissionUnknownHintPrefix = "The server refused this operation"
+
+	EmailNotVerifiedHint = "Verify your account's email address (the link is in your inbox, and the web app can send a new one). " +
+		"Changes are refused until then."
+)
+
+var permissionReasonHints = map[string]string{
+	"role":                     PermissionRoleHint,
+	"token_scope":              PermissionTokenScopeHint,
+	"no_access":                PermissionNoAccessHint,
+	"workspace_not_authorized": PermissionWorkspaceNotAuthorizedHint,
+}
+
+// permissionReasonIn reads details.reason from an upstream error's details.
+func permissionReasonIn(details json.RawMessage) string {
+	var d struct {
+		Reason string `json:"reason"`
+	}
+	if len(details) == 0 || json.Unmarshal(details, &d) != nil {
+		return ""
+	}
+	return d.Reason
+}
+
+// permissionDeniedPayload is the one permission_denied envelope, for every
+// door that produces one: the remote 403, the remote dispatcher's own scope
+// gate, and the stdio marker. details.reason is forwarded only when it is a
+// reason this build knows, so the field stays a closed vocabulary.
+func permissionDeniedPayload(message, reason, route string) ErrorPayload {
+	p := ErrorPayload{Code: ErrPermissionDenied, Message: message}
+	if p.Message == "" {
+		p.Message = "Permission denied for this operation."
+	}
+	hint, known := permissionReasonHints[reason]
+	if known {
+		p.Details, _ = json.Marshal(map[string]string{"reason": reason})
+	} else {
+		hint = permissionUnknownHintPrefix
+		if message != "" {
+			hint += ": " + strings.TrimRight(message, ".")
+		}
+		hint += "."
+	}
 	if route != "" {
-		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+		hint += fmt.Sprintf(" Route: %s.", route)
 	}
-	if bodyMsg != "" {
-		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	p.Hint = hint
+	return p
+}
+
+func emailNotVerifiedPayload(message string) ErrorPayload {
+	if message == "" {
+		message = "Verify your email address to perform this action."
 	}
-	return strings.Join(parts, " ")
+	return ErrorPayload{Code: ErrEmailNotVerified, Message: message, Hint: EmailNotVerifiedHint}
 }
 
 // CommentHasRepliesHint is the recovery guidance for ErrCommentHasReplies on

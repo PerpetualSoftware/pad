@@ -63,11 +63,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemImport(
 	req, err := d.buildAuthedRequest(ctx, http.MethodPost, urlPath, []byte(artifact), user)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "permission_denied:") {
-			return NewErrorResult(ErrorPayload{
-				Code:    ErrPermissionDenied,
-				Message: cmdKey + ": " + err.Error(),
-				Hint:    "Token scope does not permit this operation. Re-issue with a write scope (POST).",
-			}), nil
+			return NewErrorResult(tokenScopeDeniedPayload(cmdKey, err)), nil
 		}
 		return dispatcherErrorResult(cmdKey, "build request", err), nil
 	}

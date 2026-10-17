@@ -2777,6 +2777,22 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
+// Values of details.reason on a 403, naming which gate refused (BUG-3864).
+// Code and message are unchanged, so the web app and CLI read what they always
+// did; MCP reads the reason to tell a caller what to fix, which used to be
+// "Insufficient role" whatever the cause. A 403 with no reason is any other
+// refusal, and its message is the only account of it.
+const (
+	forbiddenReasonRole                   = "role"
+	forbiddenReasonTokenScope             = "token_scope"
+	forbiddenReasonNoAccess               = "no_access"
+	forbiddenReasonWorkspaceNotAuthorized = "workspace_not_authorized"
+)
+
+func writeForbidden(w http.ResponseWriter, code, message, reason string) {
+	writeError2(w, http.StatusForbidden, code, message, map[string]interface{}{"reason": reason})
+}
+
 // workspaceNotFoundDetails marks a 404 as the WORKSPACE failing to resolve
 // for this caller (a non-member, or a deleted workspace), as opposed to a
 // sub-resource inside a workspace the caller can read (BUG-3069). The two
@@ -3757,7 +3773,13 @@ func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, w
 		return false
 	}
 	if !ok {
-		writeError(w, http.StatusForbidden, "forbidden", "Insufficient permissions")
+		// An editor or owner refused here is outside their collection access,
+		// and a guest holds grants, not a role: neither is fixed by a role change.
+		reason := forbiddenReasonRole
+		if role := workspaceRole(r); role == "guest" || requireRole(r, "editor") {
+			reason = forbiddenReasonNoAccess
+		}
+		writeForbidden(w, "forbidden", "Insufficient permissions", reason)
 		return false
 	}
 	return true

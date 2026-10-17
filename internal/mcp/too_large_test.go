@@ -205,6 +205,9 @@ func TestEveryCLIMarkerCodeIsInTheStdioVocabulary(t *testing.T) {
 		"WritePatchRefusalError": func(w *bytes.Buffer) {
 			cli.WritePatchRefusalError(w, api("patch_anchor_missing"))
 		},
+		"WritePermissionDeniedError": func(w *bytes.Buffer) {
+			cli.WritePermissionDeniedError(w, api("forbidden"))
+		},
 	}
 
 	for name, write := range writers {

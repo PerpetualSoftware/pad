@@ -3014,6 +3014,44 @@ func WriteTooLargeError(w io.Writer, apiErr *APIError) {
 	}
 }
 
+// IsPermissionDenied reports whether err is a server 403 refusing the caller:
+// code forbidden or permission_denied, or an unverified Cloud email
+// (BUG-3864). Other 403 codes (plan_limit_exceeded and the like) have writers
+// of their own, and a marker from this one would replace theirs.
+func IsPermissionDenied(err error) (*APIError, bool) {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
+		return nil, false
+	}
+	switch apiErr.Code {
+	case "forbidden", "permission_denied", "email_not_verified":
+		return apiErr, true
+	}
+	return nil, false
+}
+
+// WritePermissionDeniedError writes the structured marker line for a refused
+// caller (BUG-3864), carrying the server's details.reason, so the stdio MCP
+// transport reports which gate refused instead of inferring permission_denied,
+// or server_error, from the message's wording. No hint: the MCP side builds it
+// from the reason, the same way for both transports.
+func WritePermissionDeniedError(w io.Writer, apiErr *APIError) {
+	code := "permission_denied"
+	if apiErr.Code == "email_not_verified" {
+		code = apiErr.Code
+	}
+	body := map[string]any{"code": code, "message": apiErr.Message}
+	var details struct {
+		Reason string `json:"reason"`
+	}
+	if len(apiErr.Details) > 0 && json.Unmarshal(apiErr.Details, &details) == nil && details.Reason != "" {
+		body["details"] = map[string]any{"reason": details.Reason}
+	}
+	if data, err := json.Marshal(map[string]any{"error": body}); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+}
+
 // WriteRateLimitedError writes the structured marker line for a 429
 // (BUG-3147), so the stdio MCP transport reports rate_limited — with the
 // server's wait — instead of inferring server_error from prose that matches
