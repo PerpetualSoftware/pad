@@ -19,23 +19,26 @@ import (
 
 type mcpToolOutcomeKey struct{}
 
-// mcpToolOutcomeSink holds the failure of the tool call a request carried.
+// MCPToolOutcomeSink holds the failure of the tool call a request carried.
 // Guarded because the tool handler and the middleware that reads the sink
 // are not ordered by anything the sink can see on every transport path.
-type mcpToolOutcomeSink struct {
+type MCPToolOutcomeSink struct {
 	mu     sync.Mutex
 	set    bool
 	status models.MCPAuditResultStatus
 	kind   string
 }
 
-func withMCPToolOutcomeSink(ctx context.Context) (context.Context, *mcpToolOutcomeSink) {
-	sink := &mcpToolOutcomeSink{}
+// WithMCPToolOutcomeSink returns ctx carrying a fresh sink, and the sink.
+// MCPAuditLog is its production caller; it is exported for internal/mcp's
+// tests, which drive the tool-handler middleware without the HTTP stack.
+func WithMCPToolOutcomeSink(ctx context.Context) (context.Context, *MCPToolOutcomeSink) {
+	sink := &MCPToolOutcomeSink{}
 	return context.WithValue(ctx, mcpToolOutcomeKey{}, sink), sink
 }
 
-// outcome reports the recorded failure, if any.
-func (s *mcpToolOutcomeSink) outcome() (models.MCPAuditResultStatus, string, bool) {
+// Outcome reports the recorded failure, if any.
+func (s *MCPToolOutcomeSink) Outcome() (models.MCPAuditResultStatus, string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.status, s.kind, s.set
@@ -51,7 +54,7 @@ func (s *mcpToolOutcomeSink) outcome() (models.MCPAuditResultStatus, string, boo
 // ever sees more, a refusal is kept over a plain error, because the refusal
 // is what the audit log exists to show.
 func RecordMCPToolOutcome(ctx context.Context, code, reason string) {
-	sink, _ := ctx.Value(mcpToolOutcomeKey{}).(*mcpToolOutcomeSink)
+	sink, _ := ctx.Value(mcpToolOutcomeKey{}).(*MCPToolOutcomeSink)
 	if sink == nil {
 		return
 	}
