@@ -2790,9 +2790,11 @@ const (
 )
 
 // roleGateReason is the reason for a refusal by a workspace-role gate. A
-// guest holds grants, not a role, so no role change admits them.
+// guest holds grants, not a role, and a caller with no workspace role at all
+// (a platform admin who is not a member) has none to change: no role change
+// admits either.
 func roleGateReason(r *http.Request) string {
-	if workspaceRole(r) == "guest" {
+	if role := workspaceRole(r); role == "guest" || role == "" {
 		return forbiddenReasonNoAccess
 	}
 	return forbiddenReasonRole

@@ -72,16 +72,27 @@ func TestBUG3864_CrossWorkspaceRefusalsNameTheirGate(t *testing.T) {
 	}
 }
 
-func TestBUG3864_RequireMinRoleSaysRole(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	req = req.WithContext(context.WithValue(req.Context(), ctxWorkspaceRole, "viewer"))
-	rr := httptest.NewRecorder()
-	if requireMinRole(rr, req, "editor") {
-		t.Fatal("a viewer passed requireMinRole(editor)")
-	}
-	code, message, reason := bug3864Refusal(t, rr)
-	if code != "forbidden" || message != "Insufficient permissions" || reason != forbiddenReasonRole {
-		t.Errorf("got %q %q reason %q", code, message, reason)
+// A viewer can be given a higher role. A guest holds grants, not a role, and
+// a caller with no workspace role (a platform admin who is not a member) has
+// no role to change, so neither is told to ask for one.
+func TestBUG3864_RequireMinRoleSaysRoleOnlyWhenARoleCanFixIt(t *testing.T) {
+	for role, want := range map[string]string{
+		"viewer": forbiddenReasonRole,
+		"guest":  forbiddenReasonNoAccess,
+		"":       forbiddenReasonNoAccess,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		if role != "" {
+			req = req.WithContext(context.WithValue(req.Context(), ctxWorkspaceRole, role))
+		}
+		rr := httptest.NewRecorder()
+		if requireMinRole(rr, req, "editor") {
+			t.Fatalf("role %q passed requireMinRole(editor)", role)
+		}
+		code, message, reason := bug3864Refusal(t, rr)
+		if code != "forbidden" || message != "Insufficient permissions" || reason != want {
+			t.Errorf("role %q: got %q %q reason %q, want reason %q", role, code, message, reason, want)
+		}
 	}
 }
 
@@ -122,14 +133,15 @@ func TestBUG3864_InlineRoleGatesSayRoleOrNoAccess(t *testing.T) {
 	viewer, editor, guest := member("viewer@example.com", "viewer"), member("editor@example.com", "editor"), member("guest@example.com", "")
 
 	for _, tc := range []struct {
-		name, token, path, want string
+		name, token, method, path, want string
 	}{
-		{"bulk by a viewer", viewer, "/items/bulk", forbiddenReasonRole},
-		{"bulk by a guest", guest, "/items/bulk", forbiddenReasonNoAccess},
-		{"invite by an editor", editor, "/members/invite", forbiddenReasonRole},
+		{"bulk by a viewer", viewer, http.MethodPost, "/items/bulk", forbiddenReasonRole},
+		{"bulk by a guest", guest, http.MethodPost, "/items/bulk", forbiddenReasonNoAccess},
+		{"invite by an editor", editor, http.MethodPost, "/members/invite", forbiddenReasonRole},
+		{"another member's grants, by a guest", guest, http.MethodGet, "/users/" + owner.ID + "/grants", forbiddenReasonNoAccess},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/"+ws.Slug+tc.path, strings.NewReader(`{}`))
+			req := httptest.NewRequest(tc.method, "/api/v1/workspaces/"+ws.Slug+tc.path, strings.NewReader(`{}`))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer "+tc.token)
 			rr := httptest.NewRecorder()

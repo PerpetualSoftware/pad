@@ -351,7 +351,7 @@ func (s *Server) handleListUserGrants(w http.ResponseWriter, r *http.Request) {
 
 	// Only workspace owners or the user themselves can view grants
 	if !requireRole(r, "owner") && currentUserID(r) != userID {
-		writeForbidden(w, "forbidden", "Insufficient permissions", forbiddenReasonRole)
+		writeForbidden(w, "forbidden", "Insufficient permissions", roleGateReason(r))
 		return
 	}
 

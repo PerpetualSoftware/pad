@@ -922,7 +922,7 @@ func requireMinRole(w http.ResponseWriter, r *http.Request, minRole string) bool
 	if requireRole(r, minRole) {
 		return true
 	}
-	writeForbidden(w, "forbidden", "Insufficient permissions", forbiddenReasonRole)
+	writeForbidden(w, "forbidden", "Insufficient permissions", roleGateReason(r))
 	return false
 }
 
