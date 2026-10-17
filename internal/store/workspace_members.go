@@ -165,7 +165,10 @@ var ErrInviterScopeTooNarrow = errors.New("the inviter can no longer grant this 
 // membership through addWorkspaceMemberTx, then the invitation's accepted_at.
 // An existing membership is an idempotent success (BUG-3281, lead ruling):
 // the invitation is marked accepted and the member keeps their role in either
-// direction, because role changes belong to member management. added reports
+// direction, because role changes belong to member management. That holds
+// even when the inviter can no longer grant the invitation (BUG-3870): it
+// grants nothing to someone already in, so only a non-member is refused with
+// ErrInviterScopeTooNarrow. added reports
 // whether this call created the membership; effectiveRole is the role held.
 //
 // As with AddWorkspaceMember, an error does not prove nothing was written: a
@@ -182,11 +185,26 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 	defer tx.Rollback()
 
 	if err := s.requireInviterScopeTx(tx, invitationID, workspaceID); err != nil {
-		return false, "", err
-	}
-	added, effectiveRole, err = s.addWorkspaceMemberTx(tx, workspaceID, userID, role, resolveMintOptions(opts), true)
-	if err != nil {
-		return false, "", err
+		if !errors.Is(err, ErrInviterScopeTooNarrow) {
+			return false, "", err
+		}
+		// The inviter can no longer grant it, but the invitee is already a
+		// member (BUG-3870): BUG-3281's idempotent success, granting nothing.
+		// This branch never inserts, so it cannot admit anyone past the check
+		// above; a non-member still gets the refusal.
+		heldRole, member, merr := s.inviteeMembershipTx(tx, workspaceID, userID)
+		if merr != nil {
+			return false, "", merr
+		}
+		if !member {
+			return false, "", err
+		}
+		effectiveRole = heldRole
+	} else {
+		added, effectiveRole, err = s.addWorkspaceMemberTx(tx, workspaceID, userID, role, resolveMintOptions(opts), true)
+		if err != nil {
+			return false, "", err
+		}
 	}
 	// The first accept's timestamp stands; a concurrent loser leaves it alone.
 	res, err := tx.Exec(s.q(`UPDATE workspace_invitations SET accepted_at = ? WHERE id = ? AND accepted_at IS NULL`), now(), invitationID)
@@ -215,6 +233,26 @@ func (s *Store) AcceptWorkspaceInvitation(invitationID, workspaceID, userID, rol
 		return added, effectiveRole, fmt.Errorf("accept workspace invitation: %w", err)
 	}
 	return added, effectiveRole, nil
+}
+
+// inviteeMembershipTx reads the accepting user's membership after the inviter
+// check refused (BUG-3870). Share-locked on Postgres, as the inviter read is:
+// a removal of the invitee committing alongside this accept either lands
+// first and is read here as no row (the refusal stands), or waits for this
+// accept to commit and then removes them.
+func (s *Store) inviteeMembershipTx(tx *sql.Tx, workspaceID, userID string) (role string, member bool, err error) {
+	query := `SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		query += ` FOR SHARE`
+	}
+	err = tx.QueryRow(s.q(query), workspaceID, userID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("accept workspace invitation: read invitee membership: %w", err)
+	}
+	return role, true, nil
 }
 
 // requireInviterScopeTx refuses an accept whose inviter can no longer grant
