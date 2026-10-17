@@ -61,6 +61,8 @@ var lifecycleSites = map[string]string{
 	// Dashboard open-work sections.
 	"internal/server/handlers_item_context.go::handleGetItemContext::isItemDone": "exclude: item-context conflicts (PLAN-3598) mirror the dashboard: the subject item checks isReferenceCollection first; a blocker keeps a reference BLOCKER, an explicit link; a closed parent of any collection is an anomaly (the close guard skips only reference children)",
 	"internal/server/handlers_dashboard.go::buildDashboardResponse::isItemDone":  "exclude: overdue, blocked, suggested_next and by_role read workItems; orphaned_task checks isReferenceCollection; the blocker check keeps a reference BLOCKER, an explicit link",
+	"internal/server/handlers_dashboard.go::firstActiveBlockers::isItemDone":     "keep: the done check on a BLOCKER, moved out of buildDashboardResponse (TASK-3615); a reference blocker is an explicit link and still blocks",
+	"internal/server/handlers_catch_up.go::catchUpNeedsYou::isItemDone":          "exclude: needs_you's blocked items skip isReferenceCollection first, as the dashboard's blocked attention reads workItems (TASK-3615)",
 
 	// Close guard.
 	"internal/server/handlers_items_open_children_guard.go::runOpenChildrenGuard::isItemDone": "exclude: a reference child is skipped before the done check",
