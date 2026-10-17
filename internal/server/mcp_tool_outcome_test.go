@@ -16,7 +16,9 @@ func TestClassifyMCPToolOutcome(t *testing.T) {
 		wantKind     string
 	}{
 		{"permission_denied", "", models.MCPAuditResultDenied, "permission_denied"},
-		{"permission_denied", "email_not_verified", models.MCPAuditResultDenied, "permission_denied:email_not_verified"},
+		{"permission_denied", "token_scope", models.MCPAuditResultDenied, "permission_denied:token_scope"},
+		// email_not_verified is its own code (BUG-3864), and a refusal.
+		{"email_not_verified", "", models.MCPAuditResultDenied, "email_not_verified"},
 		{"auth_required", "", models.MCPAuditResultDenied, "auth_required"},
 		{"rate_limited", "", models.MCPAuditResultDenied, "rate_limited"},
 		{"validation_failed", "", models.MCPAuditResultError, "validation_failed"},

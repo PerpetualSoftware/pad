@@ -27,7 +27,7 @@ func TestToolOutcome_RefusalCodesAreDenied(t *testing.T) {
 }
 
 func TestToolErrorCode(t *testing.T) {
-	withReason := NewErrorResult(ErrorPayload{Code: ErrPermissionDenied, Message: "no", Details: json.RawMessage(`{"reason":"email_not_verified"}`)})
+	withReason := NewErrorResult(ErrorPayload{Code: ErrPermissionDenied, Message: "no", Details: json.RawMessage(`{"reason":"token_scope"}`)})
 	listDetails := NewErrorResult(ErrorPayload{Code: ErrOpenChildren, Message: "open", Details: json.RawMessage(`[{"ref":"TASK-1"}]`)})
 	textOnly := NewErrorResult(ErrorPayload{Code: ErrConflict, Message: "c"})
 	textOnly.StructuredContent = nil
@@ -36,7 +36,7 @@ func TestToolErrorCode(t *testing.T) {
 		res               *mcp.CallToolResult
 		wantCode, wantWhy string
 	}{
-		{"structured, with reason", withReason, "permission_denied", "email_not_verified"},
+		{"structured, with reason", withReason, "permission_denied", "token_scope"},
 		{"details that is not an object keeps the code", listDetails, "open_children", ""},
 		{"text rendering only", textOnly, "conflict", ""},
 		{"plain text error", errorResultf("boom"), "", ""},

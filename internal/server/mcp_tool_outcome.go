@@ -76,8 +76,11 @@ var mcpErrorKindToken = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 // onto (audit_status, error_kind). The refusal codes are the ones the
 // dispatcher gives a 401, 403 or 429 (or the pre-dispatch scope and
 // verified-email gates that stand in for them): auth_required,
-// permission_denied and rate_limited are denied, as classifyMCPResult
-// makes an outer 401/403/429. Every other code is an error. error_kind is
+// permission_denied, email_not_verified and rate_limited are denied, as
+// classifyMCPResult makes an outer 401/403/429. email_not_verified is its
+// own code since BUG-3864, not a permission_denied reason. Every other code
+// is an error; the plan and member limits stay errors (BUG-3894 owns that
+// policy). error_kind is
 // the code, plus ":<reason>" when the payload names the gate, so the cause
 // survives rather than flattening to "forbidden".
 func classifyMCPToolOutcome(code, reason string) (models.MCPAuditResultStatus, string) {
@@ -89,7 +92,7 @@ func classifyMCPToolOutcome(code, reason string) (models.MCPAuditResultStatus, s
 		kind += ":" + reason
 	}
 	switch code {
-	case "auth_required", "permission_denied", "rate_limited":
+	case "auth_required", "permission_denied", "email_not_verified", "rate_limited":
 		return models.MCPAuditResultDenied, kind
 	}
 	return models.MCPAuditResultError, kind

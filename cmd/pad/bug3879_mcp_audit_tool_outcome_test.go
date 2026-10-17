@@ -159,3 +159,21 @@ func bug3879NextRow(t *testing.T, f *capFixture, userID, tool string, before []m
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// BUG-3879 r4: since BUG-3864 an unverified email's refused write is its own
+// code, email_not_verified, and it is a refusal like the other gates, so the
+// audit row says denied. The Cloud fixture is the one BUG-3864's own test
+// uses; the remote transport refuses in its gate before the request is built.
+func TestBUG3879_UnverifiedEmailWriteAuditsAsDenied(t *testing.T) {
+	f := newCapFixture(t, cfgHTTP, true, nil, "true")
+	if err := f.store.SeedCollectionsFromTemplate(f.ws.ID, "startup"); err != nil {
+		t.Fatalf("SeedCollectionsFromTemplate: %v", err)
+	}
+	unverified := bug3864User(t, f, "bug3879-unverified@example.com", true)
+	if err := f.store.AddWorkspaceMember(f.ws.ID, unverified.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	tok := bug3864Token(t, f, unverified, `["*"]`)
+	create := `{"action":"create","workspace":"cap-ws","collection":"tasks","title":"BUG-3879 unverified probe"}`
+	bug3879Call(t, f, unverified, tok, "pad_item", create, models.MCPAuditResultDenied, "email_not_verified")
+}
