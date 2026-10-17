@@ -57,6 +57,9 @@ func TestBUG3864_A403ReadsTheSameOnBothTransports(t *testing.T) {
 			}
 			stdio := decodeEnvelope(t, lifted)
 
+			if remote.Error.Hint != stdio.Error.Hint || remote.Error.Code != stdio.Error.Code || string(remote.Error.Details) != string(stdio.Error.Details) {
+				t.Errorf("the transports differ:\n remote %+v\n stdio  %+v", remote.Error, stdio.Error)
+			}
 			for door, env := range map[string]ErrorEnvelope{"remote": remote, "stdio": stdio} {
 				if env.Error.Code != tc.wantCode || reasonOf(t, env) != tc.wantReason || !strings.HasPrefix(env.Error.Hint, tc.wantHint) {
 					t.Errorf("%s: code=%q reason=%q hint=%q, want %q %q hint starting %q",

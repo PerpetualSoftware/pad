@@ -607,7 +607,7 @@ func extractStructuredCLIError(stderr string) *CallToolResult {
 	}
 	switch ErrorCode(env.Error.Code) {
 	case ErrPermissionDenied:
-		return NewErrorResult(permissionDeniedPayload(env.Error.Message, permissionReasonIn(env.Error.Details), ""))
+		return NewErrorResult(permissionDeniedPayload(env.Error.Message, permissionReasonIn(env.Error.Details)))
 	case ErrEmailNotVerified:
 		return NewErrorResult(emailNotVerifiedPayload(env.Error.Message))
 	}
@@ -1030,7 +1030,7 @@ func classifyHTTPStatusKind(
 		case ErrEmailNotVerified:
 			return NewErrorResult(emailNotVerifiedPayload(upstream403.Message))
 		case ErrPermissionDenied:
-			return NewErrorResult(permissionDeniedPayload(bodyMessage, permissionReasonIn(upstream403.Details), route))
+			return NewErrorResult(permissionDeniedPayload(bodyMessage, permissionReasonIn(upstream403.Details)))
 		}
 		if _, allowed := allowedStructuredErrorCodes[upstream403.Code]; allowed {
 			return NewErrorResult(ErrorPayload{
@@ -1040,7 +1040,7 @@ func classifyHTTPStatusKind(
 				Details: upstream403.Details,
 			})
 		}
-		return NewErrorResult(permissionDeniedPayload(bodyMessage, permissionReasonIn(upstream403.Details), route))
+		return NewErrorResult(permissionDeniedPayload(bodyMessage, permissionReasonIn(upstream403.Details)))
 	case http.StatusNotFound:
 		// PLAN-3578 step 3: an undo naming a patch this item does not have is
 		// a 404 about the PATCH, not the item; the generic classifier would
@@ -1482,8 +1482,9 @@ func permissionReasonIn(details json.RawMessage) string {
 // permissionDeniedPayload is the one permission_denied envelope, for every
 // door that produces one: the remote 403, the remote dispatcher's own scope
 // gate, and the stdio marker. details.reason is forwarded only when it is a
-// reason this build knows, so the field stays a closed vocabulary.
-func permissionDeniedPayload(message, reason, route string) ErrorPayload {
+// reason this build knows, so the field stays a closed vocabulary. No route in
+// the hint: stdio has none, and the two transports must say the same thing.
+func permissionDeniedPayload(message, reason string) ErrorPayload {
 	p := ErrorPayload{Code: ErrPermissionDenied, Message: message}
 	if p.Message == "" {
 		p.Message = "Permission denied for this operation."
@@ -1497,9 +1498,6 @@ func permissionDeniedPayload(message, reason, route string) ErrorPayload {
 			hint += ": " + strings.TrimRight(message, ".")
 		}
 		hint += "."
-	}
-	if route != "" {
-		hint += fmt.Sprintf(" Route: %s.", route)
 	}
 	p.Hint = hint
 	return p

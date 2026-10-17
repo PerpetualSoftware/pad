@@ -94,12 +94,16 @@ func TestBUG3864_RefusalsNameTheirCauseOnBothTransports(t *testing.T) {
 		{"guest edit", bug3864Token(t, f, guest, `["*"]`), guestEdit, bug3864Want{mcp.ErrPermissionDenied, "no_access", bug3864HintNoAccess}},
 	}
 	for _, r := range rows {
+		var remote, stdio mcp.ErrorEnvelope
 		t.Run(r.name+"/remote", func(t *testing.T) {
-			bug3864Check(t, bug3864Remote(t, f, r.token, r.op), r.want)
+			remote = bug3864Remote(t, f, r.token, r.op)
+			bug3864Check(t, remote, r.want)
 		})
 		t.Run(r.name+"/stdio", func(t *testing.T) {
-			bug3864Check(t, bug3864Stdio(t, f, r.token, r.op), r.want)
+			stdio = bug3864Stdio(t, f, r.token, r.op)
+			bug3864Check(t, stdio, r.want)
 		})
+		bug3864Same(t, r.name, remote, stdio)
 	}
 	if n := bug3864CountTitled(t, f); n != 0 {
 		t.Errorf("a refused write created %d items", n)
@@ -120,8 +124,10 @@ func TestBUG3864_UnverifiedEmailIsItsOwnCodeOnBothTransports(t *testing.T) {
 	}
 	tok := bug3864Token(t, f, unverified, `["*"]`)
 	want := bug3864Want{mcp.ErrorCode("email_not_verified"), "", bug3864HintEmail}
-	t.Run("remote", func(t *testing.T) { bug3864Check(t, bug3864Remote(t, f, tok, bug3864Create), want) })
-	t.Run("stdio", func(t *testing.T) { bug3864Check(t, bug3864Stdio(t, f, tok, bug3864Create), want) })
+	var remote, stdio mcp.ErrorEnvelope
+	t.Run("remote", func(t *testing.T) { remote = bug3864Remote(t, f, tok, bug3864Create); bug3864Check(t, remote, want) })
+	t.Run("stdio", func(t *testing.T) { stdio = bug3864Stdio(t, f, tok, bug3864Create); bug3864Check(t, stdio, want) })
+	bug3864Same(t, "unverified email", remote, stdio)
 }
 
 func bug3864User(t *testing.T, f *capFixture, email string, unverified bool) *models.User {
@@ -258,4 +264,15 @@ func bug3864TasksID(t *testing.T, f *capFixture) string {
 		t.Fatalf("tasks collection: %v", err)
 	}
 	return c.ID
+}
+
+// bug3864Same: one refusal, one answer. The message may differ (the remote
+// dispatcher refuses some writes before the server sees them), but the code,
+// details and hint an agent acts on may not.
+func bug3864Same(t *testing.T, name string, remote, stdio mcp.ErrorEnvelope) {
+	t.Helper()
+	if remote.Error.Code != stdio.Error.Code || remote.Error.Hint != stdio.Error.Hint || string(remote.Error.Details) != string(stdio.Error.Details) {
+		t.Errorf("%s: the transports differ:\n remote code=%q details=%s hint=%q\n stdio  code=%q details=%s hint=%q", name,
+			remote.Error.Code, remote.Error.Details, remote.Error.Hint, stdio.Error.Code, stdio.Error.Details, stdio.Error.Hint)
+	}
 }

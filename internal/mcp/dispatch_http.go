@@ -592,7 +592,7 @@ func buildRequestErrorResult(cmdKey string, err error) *CallToolResult {
 // mirrors the server's own token-scope gate, so it reports what the server
 // would have (BUG-3864): permission_denied with reason token_scope.
 func tokenScopeDeniedPayload(cmdKey string, err error) ErrorPayload {
-	return permissionDeniedPayload(cmdKey+": "+err.Error(), "token_scope", "")
+	return permissionDeniedPayload(cmdKey+": "+err.Error(), "token_scope")
 }
 
 // errEmailNotVerifiedPrefix tags the build-request error the
