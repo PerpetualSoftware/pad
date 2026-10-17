@@ -598,7 +598,7 @@ func New() *Metrics {
 
 	mcpToolCallsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_mcp_tool_calls_total",
-		Help: "Total number of MCP tool-call requests by user, tool, and outcome status.",
+		Help: "Total number of MCP tool-call requests by user, tool, and outcome status (ok: the call succeeded; denied: refused by auth, scope, role or rate limit; error: any other failure).",
 	}, []string{"user_id", "tool", "status"})
 
 	// Buckets target the latency spread we expect for MCP tool calls:
