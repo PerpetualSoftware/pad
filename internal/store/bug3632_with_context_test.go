@@ -56,6 +56,25 @@ func TestBUG3632_WithContextCancelsAReadAtTheDeadline(t *testing.T) {
 			}
 			return rows.Err()
 		}},
+		// An endless result set iterated row by row (Codex r3): modernc
+		// interrupts only the first step, which returns a row at once here, so
+		// this measures that database/sql closes the rows at the next row
+		// boundary after the deadline, on both dialects.
+		{"pool Query, endless iteration", func(ctx context.Context) error {
+			rows, err := WithContext(ctx, s.db).Query(`WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) SELECT n FROM r`)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			n := 0
+			for rows.Next() {
+				n++
+			}
+			if n == 0 {
+				return errors.New("bug3632: the endless set yielded no row; this row measures nothing")
+			}
+			return rows.Err()
+		}},
 		{"pool QueryRow", func(ctx context.Context) error {
 			var n any
 			return s.QContext(ctx).QueryRow(query).Scan(&n)
