@@ -262,6 +262,11 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 		// provides this — reuse rather than redo.
 		ww := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
+		// BUG-3879: a failed tool call answers 200, so its outcome
+		// arrives through this sink, not through ww.Status().
+		outcomeCtx, outcome := withMCPToolOutcomeSink(r.Context())
+		r = r.WithContext(outcomeCtx)
+
 		next.ServeHTTP(withFlushError(ww), r) // BUG-3827: chi drops flush errors
 
 		latencyMs := int(time.Since(start) / time.Millisecond)
@@ -291,6 +296,14 @@ func (s *Server) MCPAuditLog(next http.Handler) http.Handler {
 		toolName, argsHash, toolNameSource := parseMCPRequestBodyWithSource(snifferBytes)
 
 		status, errorKind := classifyMCPResult(ww.Status())
+		// The transport status wins when it already refused or failed;
+		// only a request the transport let through can carry a tool
+		// failure (BUG-3879).
+		if status == models.MCPAuditResultOK {
+			if toolStatus, toolKind, failed := outcome.outcome(); failed {
+				status, errorKind = toolStatus, toolKind
+			}
+		}
 
 		entry := models.MCPAuditEntryInput{
 			Timestamp:      start,
@@ -583,17 +596,13 @@ func hashCanonicalJSON(raw json.RawMessage) string {
 
 // classifyMCPResult maps an HTTP status to (audit_status, error_kind).
 //
-// JSON-RPC quirk: tool errors come back as 200 OK with an `error`
-// field in the response body. We CAN'T see that here without
-// snooping the response body too — and the spec for TASK-960 says
-// "every MCP request results in exactly one audit-log row," not
-// "every successful tool call." So we classify on transport-level
-// status, with the understanding that result_status="ok" means
-// "the gate let it through" rather than "the tool succeeded." That's
-// the right granularity for forensics; per-tool success would need
-// the dispatcher to emit its own audit signal post-execution, which
-// is out of scope here (and probably belongs as a separate JSON-RPC
-// success/failure stream).
+// It classifies the TRANSPORT status only. A tool error comes back as
+// 200 OK with an error result in the body, so on its own this function
+// reads every failed tool call as ok. MCPAuditLog therefore overrides an
+// ok with the tool call's own outcome when internal/mcp recorded one
+// (RecordMCPToolOutcome, BUG-3879): result_status="ok" means the tool
+// call succeeded, not merely that the gate let the request through.
+// TASK-960's rule still holds: every MCP request gets exactly one row.
 func classifyMCPResult(httpStatus int) (models.MCPAuditResultStatus, string) {
 	switch {
 	case httpStatus == 0 || httpStatus == http.StatusOK:

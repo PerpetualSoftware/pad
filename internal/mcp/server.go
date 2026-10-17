@@ -73,6 +73,11 @@ func NewServer(opts Options) *Server {
 		// CAN serve tools. The list stays empty until TASK-945 wires
 		// in the cmdhelp-derived registry.
 		server.WithToolCapabilities(true),
+		// Tell the /mcp audit log how each tool call ended (BUG-3879).
+		// mcp-go makes the FIRST registered middleware the outermost, so
+		// this sits before WithRecovery: it sees a panic as the error the
+		// recovery turns it into. A no-op over stdio.
+		server.WithToolHandlerMiddleware(recordToolOutcome),
 		// Recover from panics in tool handlers — important once the
 		// shell-out dispatcher (TASK-945) starts running pad
 		// subprocesses with arbitrary client-supplied args.
