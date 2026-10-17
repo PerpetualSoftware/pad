@@ -178,15 +178,37 @@ func TestTASK3615_CatchUpSections(t *testing.T) {
 
 		f.create(t, f.bobTok, "ideas", "Bob's idea")
 
+		// Alice's own item, reopened by Bob: news as a reopen, not as a
+		// creation (only Bob's rows touch its status).
+		bobReopensMine := f.create(t, f.aliceTok, "tasks", "Bob reopened mine")
+		f.status(t, f.bobTok, bobReopensMine, "done")
+		f.status(t, f.bobTok, bobReopensMine, "open")
+
+		// Cancelled is terminal but abandoned: not a finish.
+		cancelled := f.create(t, f.aliceTok, "tasks", "Bob cancelled")
+		f.status(t, f.bobTok, cancelled, "cancelled")
+
+		// Comments that are not Alice's news: her own, alone, on her item;
+		// and Bob's on his own item, which is neither hers nor assigned to her.
+		ownComment := f.create(t, f.aliceTok, "tasks", "Only Alice commented")
+		f.comment(t, f.aliceTok, ownComment, "note to self")
+		bobsOwn := f.create(t, f.bobTok, "tasks", "Bob's own thread")
+		f.comment(t, f.bobTok, bobsOwn, "bob talking to himself")
+
 		f.pin(t, task3615At)
 		if _, err := srv.store.MarkCaughtUp(f.alice.ID, f.ws.ID, task3615At.Add(-time.Hour)); err != nil {
 			t.Fatalf("MarkCaughtUp: %v", err)
 		}
 
 		got := f.catchUp(t, f.aliceTok)
-		task3615Want(t, "finished", got.Finished, "Bob finished", "Bob reopened", "Shared second (bob)")
-		task3615Want(t, "new_and_reopened", got.NewAndReopened, "Bob finished", "Bob's idea", "Bob reopened")
+		task3615Want(t, "finished", got.Finished, "Bob finished", "Bob reopened", "Bob reopened mine", "Shared second (bob)")
+		task3615Want(t, "new_and_reopened", got.NewAndReopened, "Bob finished", "Bob's idea", "Bob reopened", "Bob reopened mine", "Bob's own thread")
 		task3615Want(t, "comments", got.Comments, "Alice's task")
+		for _, l := range got.NewAndReopened.Lines {
+			if l.Title == "Bob reopened mine" && l.What != "reopened" {
+				t.Errorf("%q: what %q, want reopened", l.Title, l.What)
+			}
+		}
 		if !got.Window.HasCursor || got.Window.CappedAtCeiling {
 			t.Errorf("window %+v: want a cursor inside the ceiling", got.Window)
 		}
@@ -234,6 +256,17 @@ func TestTASK3615_CursorAndCeilingBoundTheWindow(t *testing.T) {
 		f.pin(t, time.Now().UTC().Add(-15*24*time.Hour))
 		other := f.user(t, "carol", "editor")
 		task3615Want(t, "past the ceiling", f.catchUp(t, f.session(t, other)).Finished)
+
+		// A cursor older than the ceiling does not reach past it.
+		dave := f.user(t, "dave", "editor")
+		if _, err := srv.store.MarkCaughtUp(dave.ID, f.ws.ID, time.Now().UTC().Add(-20*24*time.Hour)); err != nil {
+			t.Fatalf("MarkCaughtUp: %v", err)
+		}
+		old := f.catchUp(t, f.session(t, dave))
+		task3615Want(t, "old cursor, past the ceiling", old.Finished)
+		if !old.Window.HasCursor || !old.Window.CappedAtCeiling {
+			t.Errorf("old cursor window %+v: want a cursor, capped at the ceiling", old.Window)
+		}
 	})
 }
 
@@ -309,10 +342,13 @@ func TestTASK3615_NeedsYouListsBlockedItemsAssignedToYou(t *testing.T) {
 		notMine := f.create(t, f.bobTok, "tasks", "Blocked, not mine")
 		freed := f.create(t, f.bobTok, "tasks", "Assigned, blocker done")
 		f.patch(t, f.bobTok, freed, map[string]any{"assigned_user_id": f.alice.ID})
+		doneButBlocked := f.create(t, f.bobTok, "tasks", "Assigned, done, link left")
+		f.patch(t, f.bobTok, doneButBlocked, map[string]any{"assigned_user_id": f.alice.ID})
+		f.status(t, f.bobTok, doneButBlocked, "done")
 		blocker := f.create(t, f.bobTok, "tasks", "Blocker")
 		doneBlocker := f.create(t, f.bobTok, "tasks", "Done blocker")
 		f.status(t, f.bobTok, doneBlocker, "done")
-		for _, l := range []struct{ src, tgt models.Item }{{blocker, blocked}, {blocker, notMine}, {doneBlocker, freed}} {
+		for _, l := range []struct{ src, tgt models.Item }{{blocker, blocked}, {blocker, notMine}, {doneBlocker, freed}, {blocker, doneButBlocked}} {
 			if _, err := srv.store.CreateItemLink(f.ws.ID, models.ItemLinkCreate{TargetID: l.tgt.ID, LinkType: "blocks"}, l.src.ID); err != nil {
 				t.Fatalf("CreateItemLink: %v", err)
 			}
@@ -386,4 +422,53 @@ func TestTASK3615_SignedOutIsRefused(t *testing.T) {
 			t.Errorf("%s signed out: %d, want 401 or 403", m, rr.Code)
 		}
 	}
+}
+
+// CatchUpItemLines is the only visibility gate on needs_you's attention-set
+// ids (the decision runner's map is workspace-wide), so it is pinned here
+// directly rather than through a provider.
+func TestTASK3615_NeedsYouLinesAreScoped(t *testing.T) {
+	t.Parallel()
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		f := newTask3615Fixture(t, srv)
+		task := f.create(t, f.bobTok, "tasks", "Visible")
+		idea := f.create(t, f.bobTok, "ideas", "Hidden")
+		what := map[string]string{task.ID: "needs a decision", idea.ID: "needs a decision"}
+		ids := []string{idea.ID, task.ID}
+
+		all, err := srv.store.CatchUpItemLines(f.ws.ID, ids, what, store.CatchUpScope{})
+		if err != nil {
+			t.Fatalf("CatchUpItemLines: %v", err)
+		}
+		task3615Want(t, "unscoped control", all, "Visible", "Hidden")
+		if all.Lines[0].Title != "Hidden" {
+			t.Errorf("order not kept: %v", task3615TitlesInOrder(all))
+		}
+
+		scoped, err := srv.store.CatchUpItemLines(f.ws.ID, ids, what, store.CatchUpScope{CollectionIDs: []string{f.tasksID}})
+		if err != nil {
+			t.Fatalf("CatchUpItemLines: %v", err)
+		}
+		task3615Want(t, "scoped", scoped, "Visible")
+
+		granted, err := srv.store.CatchUpItemLines(f.ws.ID, ids, what, store.CatchUpScope{CollectionIDs: []string{}, ItemIDs: []string{idea.ID}})
+		if err != nil {
+			t.Fatalf("CatchUpItemLines: %v", err)
+		}
+		task3615Want(t, "grant only", granted, "Hidden")
+
+		none, err := srv.store.CatchUpItemLines(f.ws.ID, ids, what, store.CatchUpScope{CollectionIDs: []string{}})
+		if err != nil {
+			t.Fatalf("CatchUpItemLines: %v", err)
+		}
+		task3615Want(t, "sees nothing", none)
+	})
+}
+
+func task3615TitlesInOrder(sec store.CatchUpSection) []string {
+	out := []string{}
+	for _, l := range sec.Lines {
+		out = append(out, l.Title)
+	}
+	return out
 }
