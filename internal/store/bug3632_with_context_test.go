@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -74,6 +75,11 @@ func TestBUG3632_WithContextCancelsAReadAtTheDeadline(t *testing.T) {
 			case err := <-done:
 				if err == nil {
 					t.Fatal("an endless read returned no error; it should fail at the deadline")
+				}
+				// The export reads a timeout by errors.Is, so a driver error
+				// that did not wrap the context's would answer 500, not 503.
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("a read cancelled at the deadline returned %T %v, which does not wrap context.DeadlineExceeded", err, err)
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("the read ran 5s past a 200ms deadline; it was not cancelled")
