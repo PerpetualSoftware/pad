@@ -915,6 +915,45 @@ type Queryer interface {
 // through the same signature the in-transaction path uses.
 func (s *Store) Q() Queryer { return s.db }
 
+// ContextQueryer is an executor that can run a read under a context: both
+// *sql.DB and *sql.Tx are one.
+type ContextQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// WithContext returns q as a Queryer whose every read runs under ctx, so the
+// *Q readers can be bound to a deadline without a Context variant of each
+// (BUG-3632). Query and QueryRow on a *sql.Tx run the driver call under
+// context.Background(), even when the transaction was begun with a context:
+// a stalled read was never cancelled, and the transaction's own
+// rollback-on-cancel waited for it. Through this wrapper the driver is
+// handed ctx, so the read stops at the deadline and its connection goes back.
+// How far that reaches is the driver's: pgx cancels the statement wherever it
+// is, while modernc SQLite interrupts only the query's first step, and a
+// later rows.Next runs to its end before database/sql closes the rows. A
+// SQLite read is not stalled by a lock in WAL mode, so what remains there is
+// a slow step, not a wait.
+func WithContext(ctx context.Context, q ContextQueryer) Queryer {
+	return ctxQueryer{ctx: ctx, q: q}
+}
+
+type ctxQueryer struct {
+	ctx context.Context
+	q   ContextQueryer
+}
+
+func (c ctxQueryer) Query(query string, args ...any) (*sql.Rows, error) {
+	return c.q.QueryContext(c.ctx, query, args...)
+}
+
+func (c ctxQueryer) QueryRow(query string, args ...any) *sql.Row {
+	return c.q.QueryRowContext(c.ctx, query, args...)
+}
+
+// QContext is Q with every read bound to ctx (BUG-3632).
+func (s *Store) QContext(ctx context.Context) Queryer { return WithContext(ctx, s.db) }
+
 // execMulti executes multiple SQL statements by iteratively using
 // database/sql's Exec which processes one statement at a time,
 // then advancing past it using the driver's awareness of statement boundaries.

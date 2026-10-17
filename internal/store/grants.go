@@ -525,6 +525,11 @@ func (s *Store) GuestVisibleCollectionIDsQ(q Queryer, workspaceID, userID string
 		}
 		ids[id] = true
 	}
+	// A read cancelled mid-iteration ends Next() early; without this check
+	// the caller got a truncated list and no error (BUG-3632 r1).
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("guest collection grants: %w", err)
+	}
 
 	// Collections containing items with direct grants (excluding soft-deleted)
 	itemRows, err := q.Query(s.q(`
@@ -544,6 +549,9 @@ func (s *Store) GuestVisibleCollectionIDsQ(q Queryer, workspaceID, userID string
 			return nil, err
 		}
 		ids[id] = true
+	}
+	if err := itemRows.Err(); err != nil {
+		return nil, fmt.Errorf("guest item grant collections: %w", err)
 	}
 
 	result := make([]string, 0, len(ids))
