@@ -340,7 +340,12 @@ func TestTASK3615_AgentsGroupedByName(t *testing.T) {
 		seed(a, `{"agent":"wren"}`)
 		seed(b, `{"agent":"wren"}`)
 		seed(b, `{"agent":"rook"}`)
-		seed(b, `not json`)
+		// Malformed metadata can only exist on SQLite: Postgres's JSONB
+		// refuses it at write time.
+		malformed := srv.store.D().Driver() != store.DriverPostgres
+		if malformed {
+			seed(b, `not json`)
+		}
 		f.pin(t, task3615At)
 
 		got := f.catchUp(t, f.aliceTok).Agents
@@ -355,11 +360,15 @@ func TestTASK3615_AgentsGroupedByName(t *testing.T) {
 		if g := byName["rook"]; g.Changes != 1 || g.Items != 1 {
 			t.Errorf("rook: %+v, want 1 change on 1 item", g)
 		}
-		if g := byName["agent"]; g.Changes != 1 {
-			t.Errorf("malformed metadata: %+v, want one unnamed change", g)
+		wantTotal := 2
+		if malformed {
+			wantTotal = 3
+			if g := byName["agent"]; g.Changes != 1 {
+				t.Errorf("malformed metadata: %+v, want one unnamed change", g)
+			}
 		}
-		if got.Total != 3 {
-			t.Errorf("agents total %d, want 3", got.Total)
+		if got.Total != wantTotal {
+			t.Errorf("agents total %d, want %d", got.Total, wantTotal)
 		}
 	})
 }
