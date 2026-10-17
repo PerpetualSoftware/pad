@@ -38,6 +38,10 @@ func bug3817Env(t *testing.T, s *Store) (ws *models.Workspace, admin *models.Use
 	if err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
+	// The inviter must still be an owner when the invitee accepts (BUG-3770).
+	if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("add owner member: %v", err)
+	}
 	inv, err = s.CreateInvitation(ws.ID, "invitee-3817@example.com", "editor", owner.ID)
 	if err != nil {
 		t.Fatalf("create invitation: %v", err)

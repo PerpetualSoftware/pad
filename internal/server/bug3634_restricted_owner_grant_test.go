@@ -55,14 +55,16 @@ func TestBUG3634_InvitationFromARestrictedInviterJoinsNothing(t *testing.T) {
 		f := newAccessFixture(t, d)
 		co, _, _ := bug3634Restricted(t, f)
 		invitee := mkUser(t, f.srv, "second-account@example.com")
-		if _, err := f.srv.store.CreateInvitation(f.wsID, invitee.Email, "owner", co.ID); err != nil {
+		inv, err := f.srv.store.CreateInvitation(f.wsID, invitee.Email, "owner", co.ID)
+		if err != nil {
 			t.Fatal(err)
 		}
-		ids := myInvitationIDs(t, f, f.token(invitee))
-		if len(ids) != 1 {
-			t.Fatalf("invitee sees %d invitations, want 1", len(ids))
+		// Not offered (BUG-3770): the list hides an invitation the accept
+		// refuses. The id still reaches the door, which refuses it.
+		if ids := myInvitationIDs(t, f, f.token(invitee)); len(ids) != 0 {
+			t.Fatalf("invitee is offered %d invitations, want 0", len(ids))
 		}
-		rr := f.do("POST", "/api/v1/me/invitations/"+ids[0]+"/accept", f.token(invitee), nil)
+		rr := f.do("POST", "/api/v1/me/invitations/"+inv.ID+"/accept", f.token(invitee), nil)
 		if rr.Code == http.StatusOK {
 			t.Errorf("accept of a restricted inviter's invitation: 200 %s", rr.Body.String())
 		}
@@ -74,7 +76,7 @@ func TestBUG3634_InvitationFromARestrictedInviterJoinsNothing(t *testing.T) {
 		if _, err := f.srv.store.CreateInvitation(f.wsID, other.Email, "editor", f.owner.ID); err != nil {
 			t.Fatal(err)
 		}
-		ids = myInvitationIDs(t, f, f.token(other))
+		ids := myInvitationIDs(t, f, f.token(other))
 		rr = f.do("POST", "/api/v1/me/invitations/"+ids[0]+"/accept", f.token(other), nil)
 		f.must(rr, http.StatusOK, "accept an unrestricted owner's invitation")
 	})

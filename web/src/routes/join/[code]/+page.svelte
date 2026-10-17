@@ -31,7 +31,7 @@
 	// same-origin relative path — no open redirect.
 	let oauthRedirectTarget = $derived(validateRedirect(`/join/${code}`));
 	let status = $state<
-		'loading' | 'login' | 'register' | 'confirm' | 'accepting' | 'declining' | 'declined' | 'not-joined' | 'error' | 'setup' | '2fa' | 'invalid'
+		'loading' | 'login' | 'register' | 'confirm' | 'accepting' | 'declining' | 'declined' | 'not-joined' | 'error' | 'setup' | '2fa' | 'invalid' | 'inviter-changed'
 	>('loading');
 	// The invited workspace's name, from the preview, for the accept/decline
 	// card (BUG-2136 U2).
@@ -201,6 +201,15 @@
 		if (!current()) return false;
 		if (preview && !preview.found) {
 			status = 'invalid';
+			return false;
+		}
+		// The code is real, but its inviter can no longer grant it (removed,
+		// demoted, or restricted; BUG-3770, BUG-3634), so every accept door
+		// would refuse it with inviter_scope_changed. Say so up front rather
+		// than offer an Accept or a signup that ends in that refusal. An older
+		// server omits the field, which reads as able.
+		if (preview?.found && preview.inviter_can_grant === false) {
+			status = 'inviter-changed';
 			return false;
 		}
 		if (preview?.found && preview.workspace_name) invitedWorkspaceName = preview.workspace_name;
@@ -512,6 +521,12 @@
 				This invitation link is invalid or has expired.
 			</p>
 			<p class="hint">Ask the person who invited you to send a new one.</p>
+			<a href="/console" class="link">Go to Pad</a>
+		{:else if status === 'inviter-changed'}
+			<p class="subtitle error-text" role="alert" data-testid="join-inviter-changed">
+				The person who invited you can no longer grant access to this workspace.
+			</p>
+			<p class="hint">Ask a workspace owner to invite you again.</p>
 			<a href="/console" class="link">Go to Pad</a>
 		{:else if status === 'error'}
 			<p class="subtitle error-text" role="alert">{errorMsg}</p>

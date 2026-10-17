@@ -13,7 +13,12 @@ func acceptFixture(t *testing.T, s *Store) (wsID, userID, invID string) {
 	t.Helper()
 	ws := createTestWorkspace(t, s, "Accept WS")
 	u := createTestUser(t, s, "invitee@example.com", "Invitee", "pw-invitee-12345")
-	inv, err := s.CreateInvitation(ws.ID, u.Email, "editor", u.ID)
+	// An inviter that can still grant it: an owner of the workspace (BUG-3770).
+	inviter := createTestUser(t, s, "inviter@example.com", "Inviter", "pw-inviter-12345")
+	if err := s.AddWorkspaceMember(ws.ID, inviter.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember inviter: %v", err)
+	}
+	inv, err := s.CreateInvitation(ws.ID, u.Email, "editor", inviter.ID)
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)
 	}
