@@ -95,6 +95,11 @@ func writeRootStructuredError(w io.Writer, err error) {
 	// PLAN-3578: a patch whose anchor no longer matches, or an open item.
 	if apiErr, ok := cli.IsPatchRefusal(err); ok {
 		cli.WritePatchRefusalError(w, apiErr)
+		return
+	}
+	// BUG-3864: a 403 refusing the caller, with the server's details.reason.
+	if apiErr, ok := cli.IsPermissionDenied(err); ok {
+		cli.WritePermissionDeniedError(w, apiErr)
 	}
 }
 

@@ -101,7 +101,7 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 		case errors.As(err, &ae):
 			ae.write(w)
 		case errors.Is(err, store.ErrNotWorkspaceOwner):
-			writeError(w, http.StatusForbidden, "forbidden", "Only a workspace owner can install apps")
+			writeForbidden(w, "forbidden", "Only a workspace owner can install apps", roleGateReason(r))
 		case errors.As(err, &pc):
 			details := map[string]interface{}{}
 			if pc.Field != "" {

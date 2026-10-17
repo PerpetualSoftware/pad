@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -57,13 +56,11 @@ func TestHTTPHandlerDispatcher_VerifiedEmail_BlocksUnverifiedWrite(t *testing.T)
 			msg = tc.Text
 		}
 	}
-	// Surfaced as permission_denied (closed-set code) with the
-	// email_not_verified marker in the message.
-	if !strings.Contains(msg, "permission_denied") {
-		t.Errorf("error envelope missing permission_denied marker: %q", msg)
-	}
-	if !strings.Contains(msg, "email_not_verified") {
-		t.Errorf("error envelope missing email_not_verified marker: %q", msg)
+	// The server's own code for the same refusal (BUG-3864), not
+	// permission_denied: no role or token fixes it.
+	env, ok := res.StructuredContent.(ErrorEnvelope)
+	if !ok || env.Error.Code != ErrEmailNotVerified || env.Error.Hint != EmailNotVerifiedHint {
+		t.Errorf("want code %q with EmailNotVerifiedHint, got %q", ErrEmailNotVerified, msg)
 	}
 }
 

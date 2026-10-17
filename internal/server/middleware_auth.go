@@ -225,7 +225,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 
 		// Enforce token scopes
 		if !tokenScopeAllows(apiToken.Scopes, r.Method, r.URL.Path) {
-			writeError(w, http.StatusForbidden, "forbidden", "Token scope does not permit this action")
+			writeForbidden(w, "forbidden", "Token scope does not permit this action", forbiddenReasonTokenScope)
 			return
 		}
 
@@ -732,8 +732,8 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			// today, but might in a future PAT-with-allow-list world
 			// — doesn't pollute the MCP-specific counter.
 			s.recordMCPAuthzDenial(r, "workspace_not_in_allowlist")
-			writeError(w, http.StatusForbidden, "permission_denied",
-				"Token is not authorized for this workspace")
+			writeForbidden(w, "permission_denied",
+				"Token is not authorized for this workspace", forbiddenReasonWorkspaceNotAuthorized)
 			return
 		}
 
@@ -821,7 +821,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			// non-members hit.
 			if user.Role == "admin" && isBearer {
 				s.recordMCPAuthzDenial(r, "not_a_member")
-				writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
+				writeForbidden(w, "forbidden", "You are not a member of this workspace", forbiddenReasonNoAccess)
 				return
 			}
 			// Not a member — check for guest access via grants
@@ -837,7 +837,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 				// the regular /api/v1 403s would inflate the MCP-
 				// specific counter).
 				s.recordMCPAuthzDenial(r, "not_a_member")
-				writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
+				writeForbidden(w, "forbidden", "You are not a member of this workspace", forbiddenReasonNoAccess)
 				return
 			}
 			ctx = context.WithValue(ctx, ctxWorkspaceRole, "guest")
@@ -922,7 +922,7 @@ func requireMinRole(w http.ResponseWriter, r *http.Request, minRole string) bool
 	if requireRole(r, minRole) {
 		return true
 	}
-	writeError(w, http.StatusForbidden, "forbidden", "Insufficient permissions")
+	writeForbidden(w, "forbidden", "Insufficient permissions", roleGateReason(r))
 	return false
 }
 

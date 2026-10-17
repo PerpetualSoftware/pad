@@ -122,7 +122,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 	// Owner/editor gated. Bulk lane actions are canEdit-only; viewers
 	// and guests (grant-based access) cannot bulk-mutate.
 	if !requireRole(r, "editor") {
-		writeError(w, http.StatusForbidden, "forbidden", "Bulk mutations require editor or owner role")
+		writeForbidden(w, "forbidden", "Bulk mutations require editor or owner role", roleGateReason(r))
 		return
 	}
 

@@ -1738,6 +1738,26 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.100 — BUG-3864. BEHAVIOR bump on the 0.45 grounds; no name, enum
+//     or param shape changed. A refused call names its cause, on BOTH
+//     transports. `permission_denied` gains `details.reason` when the server
+//     says which gate refused (`role`, `token_scope`, `no_access`,
+//     `workspace_not_authorized`), and a hint per reason that says what to
+//     do next. With no reason, or one this build does not know, the hint
+//     leads with the server's message and claims no cause. The old hint led
+//     with "Insufficient role" for every 403, so a bot with a read-only API
+//     token was told to ask for a role. New code `email_not_verified` (the
+//     server's own, on every door that enforces it) replaces the
+//     `permission_denied` the remote gate reported for an unverified Cloud
+//     email. REMOTE: classifyHTTPStatus reads the body's reason, and the
+//     dispatcher's own scope and email gates build the same envelopes.
+//     STDIO: the CLI root writes a structured marker for a 403 coded
+//     forbidden, permission_denied or email_not_verified
+//     (cli.WritePermissionDeniedError); before it, a refusal whose message
+//     lacked "forbidden" (token scope, unverified email) said server_error.
+//     Both lifts build the hint in permissionDeniedPayload. "0.100" follows
+//     "0.99": the version is an opaque dotted string, compared by no code.
+//
 //     0.99 — BUG-3790, starred truncation. ADDITIVE bump on the v0.53
 //     grounds: `pad_item.action=starred` returns at most 300 items, most
 //     recently starred first, and when more exist says `has_more: true`
@@ -2187,7 +2207,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.99"
+const ToolSurfaceVersion = "0.100"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

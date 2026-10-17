@@ -237,7 +237,7 @@ func (s *Server) handleAppUpgradeConfirm(w http.ResponseWriter, r *http.Request)
 		case errors.Is(err, store.ErrPendingManifestChanged):
 			writeError(w, http.StatusConflict, "install_review_mismatch", "This pending upgrade is not the manifest you reviewed; preview it again")
 		case errors.Is(err, store.ErrNotWorkspaceOwner):
-			writeError(w, http.StatusForbidden, "forbidden", "Only a workspace owner can upgrade apps")
+			writeForbidden(w, "forbidden", "Only a workspace owner can upgrade apps", roleGateReason(r))
 		default:
 			s.writeInstallLifecycleError(w, err)
 		}

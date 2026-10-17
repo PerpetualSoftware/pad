@@ -544,22 +544,14 @@ func buildRequestErrorResult(cmdKey string, err error) *CallToolResult {
 	// agents see the same code as a backend 403, not a
 	// generic server_error.
 	if strings.HasPrefix(err.Error(), "permission_denied:") {
-		return NewErrorResult(ErrorPayload{
-			Code:    ErrPermissionDenied,
-			Message: fmt.Sprintf("%s: %s", cmdKey, err.Error()),
-			Hint:    "Token scope does not permit this operation. Re-issue with the required scopes (read for GET; write for POST/PATCH; admin for workspace settings).",
-		})
+		return NewErrorResult(tokenScopeDeniedPayload(cmdKey, err))
 	}
-	// PLAN-1933 DR-4: the RequireVerifiedEmail gate rejected this
-	// write because the cloud user hasn't verified their email.
-	// Surface as permission_denied (the closest closed-set code) so
-	// agents branch consistently with a backend 403.
+	// PLAN-1933 DR-4: the RequireVerifiedEmail gate rejected this write
+	// because the cloud user hasn't verified their email. The server's own
+	// code for the same refusal (BUG-3864), so stdio, which reaches the
+	// server's gate instead of this one, reports the same thing.
 	if strings.HasPrefix(err.Error(), errEmailNotVerifiedPrefix+":") {
-		return NewErrorResult(ErrorPayload{
-			Code:    ErrPermissionDenied,
-			Message: fmt.Sprintf("%s: %s", cmdKey, err.Error()),
-			Hint:    "Verify your email address (check your inbox for the verification link) before creating or editing content.",
-		})
+		return NewErrorResult(emailNotVerifiedPayload(fmt.Sprintf("%s: %s", cmdKey, err.Error())))
 	}
 	return dispatcherErrorResult(cmdKey, "build request", err)
 }
@@ -596,6 +588,13 @@ func buildRequestErrorResult(cmdKey string, err error) *CallToolResult {
 // dispatch_http_project.go's bulk-update path (PATCH issued
 // directly via buildAuthedRequest + ServeHTTP, bypassing
 // executeRequest's previous scope check).
+// tokenScopeDeniedPayload is buildAuthedRequest's scope refusal. That check
+// mirrors the server's own token-scope gate, so it reports what the server
+// would have (BUG-3864): permission_denied with reason token_scope.
+func tokenScopeDeniedPayload(cmdKey string, err error) ErrorPayload {
+	return permissionDeniedPayload(cmdKey+": "+err.Error(), "token_scope")
+}
+
 // errEmailNotVerifiedPrefix tags the build-request error the
 // RequireVerifiedEmail gate returns so executeRequest can map it to a
 // clean permission_denied envelope (mirrors the "permission_denied:"
