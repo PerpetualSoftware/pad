@@ -104,7 +104,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 
 	// Only owners can invite
 	if !requireRole(r, "owner") {
-		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can invite members")
+		writeForbidden(w, "forbidden", "Only workspace owners can invite members", roleGateReason(r))
 		return
 	}
 	// An invitation carries no scope, so the member it makes sees every
@@ -264,7 +264,7 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !requireRole(r, "owner") {
-		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can remove members")
+		writeForbidden(w, "forbidden", "Only workspace owners can remove members", roleGateReason(r))
 		return
 	}
 
@@ -311,7 +311,7 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if !requireRole(r, "owner") {
-		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can change roles")
+		writeForbidden(w, "forbidden", "Only workspace owners can change roles", roleGateReason(r))
 		return
 	}
 
@@ -416,7 +416,7 @@ func (s *Server) handleCancelInvitation(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if !requireRole(r, "owner") {
-		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can cancel invitations")
+		writeForbidden(w, "forbidden", "Only workspace owners can cancel invitations", roleGateReason(r))
 		return
 	}
 
@@ -776,7 +776,7 @@ func (s *Server) handleGetMemberCollectionAccess(w http.ResponseWriter, r *http.
 	// Only workspace owners or the user themselves can view collection access
 	userID := chi.URLParam(r, "userID")
 	if !requireRole(r, "owner") && currentUserID(r) != userID {
-		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can view other members' collection access")
+		writeForbidden(w, "forbidden", "Only workspace owners can view other members' collection access", roleGateReason(r))
 		return
 	}
 	member, err := s.store.GetWorkspaceMember(workspaceID, userID)
@@ -810,7 +810,7 @@ func (s *Server) handleSetMemberCollectionAccess(w http.ResponseWriter, r *http.
 	}
 
 	if !requireRole(r, "owner") {
-		writeError(w, http.StatusForbidden, "forbidden", "Only workspace owners can manage collection access")
+		writeForbidden(w, "forbidden", "Only workspace owners can manage collection access", roleGateReason(r))
 		return
 	}
 

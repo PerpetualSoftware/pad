@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // BUG-3864: the shared 403 gates name which gate refused, in details.reason,
@@ -79,5 +82,61 @@ func TestBUG3864_RequireMinRoleSaysRole(t *testing.T) {
 	code, message, reason := bug3864Refusal(t, rr)
 	if code != "forbidden" || message != "Insufficient permissions" || reason != forbiddenReasonRole {
 		t.Errorf("got %q %q reason %q", code, message, reason)
+	}
+}
+
+// The workspace-role gates that check the role inline rather than through
+// requireMinRole (the lead's Codex round found the bulk endpoint). Driven
+// through the router with real tokens, so the role on context is the one the
+// auth middleware put there. A guest holds grants, not a role.
+func TestBUG3864_InlineRoleGatesSayRoleOrNoAccess(t *testing.T) {
+	srv := testServer(t)
+	owner := mustCreateUser(t, srv, "owner@example.com", "Owner", "")
+	ws := mustCreateOwnedWorkspace(t, srv, "Gated", owner)
+	member := func(email, role string) string {
+		u := mustCreateUser(t, srv, email, email, "")
+		if role != "" {
+			if err := srv.store.AddWorkspaceMember(ws.ID, u.ID, role); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tok, err := srv.store.CreateAPIToken(u.ID, models.APITokenCreate{Name: "t"}, 30, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if role == "" { // a guest: one grant, no membership
+			coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Notes"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			item, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "granted"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := srv.store.CreateItemGrant(ws.ID, item.ID, u.ID, "view", owner.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return tok.Token
+	}
+	viewer, editor, guest := member("viewer@example.com", "viewer"), member("editor@example.com", "editor"), member("guest@example.com", "")
+
+	for _, tc := range []struct {
+		name, token, path, want string
+	}{
+		{"bulk by a viewer", viewer, "/items/bulk", forbiddenReasonRole},
+		{"bulk by a guest", guest, "/items/bulk", forbiddenReasonNoAccess},
+		{"invite by an editor", editor, "/members/invite", forbiddenReasonRole},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/"+ws.Slug+tc.path, strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if _, _, reason := bug3864Refusal(t, rr); reason != tc.want {
+				t.Errorf("reason %q, want %q: %s", reason, tc.want, rr.Body.String())
+			}
+		})
 	}
 }

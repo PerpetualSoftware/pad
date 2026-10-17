@@ -2789,6 +2789,15 @@ const (
 	forbiddenReasonWorkspaceNotAuthorized = "workspace_not_authorized"
 )
 
+// roleGateReason is the reason for a refusal by a workspace-role gate. A
+// guest holds grants, not a role, so no role change admits them.
+func roleGateReason(r *http.Request) string {
+	if workspaceRole(r) == "guest" {
+		return forbiddenReasonNoAccess
+	}
+	return forbiddenReasonRole
+}
+
 func writeForbidden(w http.ResponseWriter, code, message, reason string) {
 	writeError2(w, http.StatusForbidden, code, message, map[string]interface{}{"reason": reason})
 }
@@ -3775,8 +3784,8 @@ func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, w
 	if !ok {
 		// An editor or owner refused here is outside their collection access,
 		// and a guest holds grants, not a role: neither is fixed by a role change.
-		reason := forbiddenReasonRole
-		if role := workspaceRole(r); role == "guest" || requireRole(r, "editor") {
+		reason := roleGateReason(r)
+		if requireRole(r, "editor") {
 			reason = forbiddenReasonNoAccess
 		}
 		writeForbidden(w, "forbidden", "Insufficient permissions", reason)
