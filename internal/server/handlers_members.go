@@ -742,6 +742,20 @@ func (s *Server) handlePreviewInvitation(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, err)
 		return
 	}
+	// Except for the invitee who is already a member (BUG-3870): the accept
+	// is their idempotent success, so the page offers it. Only their own
+	// session learns that; an anonymous code holder, or anyone else signed
+	// in, reads the refusal as before, so no membership leaks before auth.
+	if !canGrant {
+		if u := currentUser(r); u != nil && !u.IsApp() && invitationEmailMatches(u.Email, inv.Email) {
+			member, merr := s.store.IsWorkspaceMember(inv.WorkspaceID, u.ID)
+			if merr != nil {
+				writeInternalError(w, merr)
+				return
+			}
+			canGrant = member
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"found":             true,
