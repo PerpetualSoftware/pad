@@ -377,25 +377,33 @@ type apiTokenCreateRequest struct {
 // normalizeTokenScopesInput checks a create request's scopes and rewrites
 // them to their compact JSON form, writing a 400 validation_error and
 // returning false when they cannot mint a working key. raw is the request's
-// "scopes" value as sent: absent or "" keeps the store's default, ["*"].
-// Refused: a JSON null field, a value that is not a string, a string that
-// is not a JSON array of strings (including "null"), an empty array (the
-// legacy unrestricted form, which no current caller sends and no new key
-// should carry), and any value outside the vocabulary.
+// "scopes" value as sent: only an absent field keeps the store's default,
+// ["*"]. Refused: a JSON null field, a value that is not a string, the
+// empty string and the empty array (the legacy unrestricted forms, which
+// no current caller sends and no new key should carry), a string that is
+// not a JSON array of strings (including "null"), and any value outside
+// the vocabulary.
 func normalizeTokenScopesInput(w http.ResponseWriter, input *models.APITokenCreate, raw json.RawMessage) bool {
 	allowed := strings.Join(apiTokenScopeVocabulary, ", ")
 	input.Scopes = ""
 	if len(raw) == 0 {
 		return true
 	}
-	if err := json.Unmarshal(raw, &input.Scopes); err != nil || string(raw) == "null" {
+	// Into a pointer, so null is nil however it is spaced.
+	var field *string
+	if err := json.Unmarshal(raw, &field); err != nil || field == nil {
 		writeError(w, http.StatusBadRequest, "validation_error",
 			fmt.Sprintf("scopes must be a string holding a JSON array of: %s (got %s); omit scopes for full access", allowed, raw))
 		return false
 	}
-	if input.Scopes == "" {
-		return true
+	// "" is the stored legacy unrestricted form, refused for the reason []
+	// is (Codex r2): only an omitted field gets the default.
+	if *field == "" {
+		writeError(w, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("scopes must name at least one of: %s; omit scopes for full access", allowed))
+		return false
 	}
+	input.Scopes = *field
 	var scopes []string
 	if err := json.Unmarshal([]byte(input.Scopes), &scopes); err != nil || scopes == nil {
 		writeError(w, http.StatusBadRequest, "validation_error",

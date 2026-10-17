@@ -25,7 +25,6 @@ func TestTASK3866_CreateTokenScopes(t *testing.T) {
 		stored string
 	}{
 		{"omitted keeps the default", nil, `["*"]`},
-		{"empty string is omitted", "", `["*"]`},
 		{"read", `["read"]`, `["read"]`},
 		{"wildcard", `["*"]`, `["*"]`},
 		{"padded and mixed are stored compact", `[ "read" , "pad:write" ]`, `["read","pad:write"]`},
@@ -41,6 +40,8 @@ func TestTASK3866_CreateTokenScopes(t *testing.T) {
 		{"a JSON null field", json.RawMessage(`null`), "got null"},
 		{"an array, not a string", json.RawMessage(`["read"]`), `got ["read"]`},
 		{"a number", json.RawMessage(`1`), "got 1"},
+		{"a spaced JSON null field", json.RawMessage(" null "), "got null"},
+		{"an empty string", json.RawMessage(`""`), "omit scopes"},
 	}
 	refused := []struct {
 		name, scopes, named string
