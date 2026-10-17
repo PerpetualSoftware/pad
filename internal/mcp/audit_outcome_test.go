@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,5 +87,30 @@ func TestToolOutcome_NewServerRecordsEveryEnding(t *testing.T) {
 		if failed != tc.wantFailed || status != tc.wantStatus || kind != tc.wantKind {
 			t.Errorf("%s: (%q, %q, failed=%v), want (%q, %q, failed=%v)", tc.tool, status, kind, failed, tc.wantStatus, tc.wantKind, tc.wantFailed)
 		}
+	}
+}
+
+// Lead ruling R2 on BUG-3879: the OnError hook is not scoped to tools/call,
+// so a failed tools/list writes error, not ok. A cursor that is not one
+// mcp-go issued fails the listing with INVALID_PARAMS.
+func TestToolOutcome_AFailedToolsListIsAnError(t *testing.T) {
+	srv := NewServer(Options{Version: "test"})
+	srv.MCP().AddTool(mcp.NewTool("succeed"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return textResult("fine"), nil
+	})
+	ctx, sink := padserver.WithMCPToolOutcomeSink(context.Background())
+	resp := srv.MCP().HandleMessage(ctx, json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"cursor":"not-a-cursor-mcp-go-issued"}}`))
+	raw, _ := json.Marshal(resp)
+	if !json.Valid(raw) || !bytes.Contains(raw, []byte(`"error"`)) {
+		t.Fatalf("precondition: tools/list did not fail: %s", raw)
+	}
+	if status, kind, failed := sink.Outcome(); !failed || status != models.MCPAuditResultError || kind != "jsonrpc_error" {
+		t.Fatalf("failed tools/list audited as (%q, %q, failed=%v), want (error, jsonrpc_error)", status, kind, failed)
+	}
+	// And a tools/list that succeeds stays ok.
+	ctx, sink = padserver.WithMCPToolOutcomeSink(context.Background())
+	srv.MCP().HandleMessage(ctx, json.RawMessage(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	if _, _, failed := sink.Outcome(); failed {
+		t.Fatal("a successful tools/list recorded a failure")
 	}
 }
