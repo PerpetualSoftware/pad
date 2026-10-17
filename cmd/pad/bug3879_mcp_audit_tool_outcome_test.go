@@ -49,9 +49,10 @@ func TestBUG3879_ToolOutcomeReachesTheAuditRow(t *testing.T) {
 		// A write the caller may make stays ok.
 		{"allowed write", f.member, f.memberPAT, create, models.MCPAuditResultOK, ""},
 		// Refused before dispatch, by buildAuthedRequest's token-scope check.
-		{"read-only key writes", f.member, readOnly.Token, create, models.MCPAuditResultDenied, "permission_denied"},
+		// error_kind is code:reason, the reason BUG-3864 puts on the 403.
+		{"read-only key writes", f.member, readOnly.Token, create, models.MCPAuditResultDenied, "permission_denied:token_scope"},
 		// Refused by the inner REST route's role check (an inner 403).
-		{"viewer writes", viewer, viewerPAT.Token, create, models.MCPAuditResultDenied, "permission_denied"},
+		{"viewer writes", viewer, viewerPAT.Token, create, models.MCPAuditResultDenied, "permission_denied:role"},
 		// A failure that is not a refusal is an error, with its code.
 		{"missing item", f.member, f.memberPAT, `{"action":"get","workspace":"cap-ws","ref":"TASK-99999"}`, models.MCPAuditResultError, "item_not_found"},
 		// Refused by the catalog before any dispatch.
