@@ -389,12 +389,16 @@ func (s *Server) accountExportWorkspace(ctx context.Context, r *http.Request, ws
 		return nil, nil, fmt.Errorf("begin snapshot: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Every read below runs under the export's deadline (BUG-3632): the
+	// snapshot was begun with ctx, but a read issued through tx itself would
+	// run under context.Background() and outlive the deadline.
+	q := store.WithContext(ctx, tx)
 
 	var visible []string
 	if f := s.accountExportHooks.visibleColls; f != nil {
 		visible, err = f(r, wsID)
 	} else {
-		visible, err = s.visibleCollectionIDsQ(r, tx, wsID)
+		visible, err = s.visibleCollectionIDsQ(r, q, wsID)
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("access check: %w", err)
@@ -406,7 +410,7 @@ func (s *Server) accountExportWorkspace(ctx context.Context, r *http.Request, ws
 	if f := s.accountExportHooks.listCollections; f != nil {
 		collections, err = f(wsID)
 	} else {
-		collections, err = s.store.ListCollectionsQ(tx, wsID)
+		collections, err = s.store.ListCollectionsQ(q, wsID)
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing collections: %w", err)
@@ -421,7 +425,7 @@ func (s *Server) accountExportWorkspace(ctx context.Context, r *http.Request, ws
 	if f := s.accountExportHooks.listItems; f != nil {
 		items, err = f(wsID, params)
 	} else {
-		items, err = s.store.ListItemsQ(tx, wsID, params)
+		items, err = s.store.ListItemsQ(q, wsID, params)
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("listing items: %w", err)
@@ -436,7 +440,7 @@ func (s *Server) accountExportWorkspace(ctx context.Context, r *http.Request, ws
 		if f := s.accountExportHooks.itemAttribution; f != nil {
 			attr, err = f(ids)
 		} else {
-			attr, err = s.store.ItemsCreatedViaAppQ(tx, ids)
+			attr, err = s.store.ItemsCreatedViaAppQ(q, ids)
 		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading app attribution: %w", err)
@@ -450,18 +454,18 @@ func (s *Server) accountExportWorkspace(ctx context.Context, r *http.Request, ws
 	return collections, items, nil
 }
 
-func (s *Server) accountExportListWorkspaces(userID string) ([]models.Workspace, error) {
+func (s *Server) accountExportListWorkspaces(ctx context.Context, userID string) ([]models.Workspace, error) {
 	if f := s.accountExportHooks.listWorkspaces; f != nil {
 		return f(userID)
 	}
-	return s.store.GetUserWorkspaces(userID)
+	return s.store.GetUserWorkspacesQ(s.store.QContext(ctx), userID)
 }
 
-func (s *Server) accountExportVisibleCollections(r *http.Request, wsID string) ([]string, error) {
+func (s *Server) accountExportVisibleCollections(ctx context.Context, r *http.Request, wsID string) ([]string, error) {
 	if f := s.accountExportHooks.visibleColls; f != nil {
 		return f(r, wsID)
 	}
-	return s.visibleCollectionIDs(r, wsID)
+	return s.visibleCollectionIDsQ(r, s.store.QContext(ctx), wsID)
 }
 
 // refuseAccountExportBeforeBody answers an export that cannot start: no byte
@@ -483,12 +487,13 @@ func (s *Server) accountExportDeadline() time.Duration {
 	return accountExportTimeout
 }
 
-// withinExportDeadline runs one store read under the export's deadline. The
-// store reads take no context, so the read runs on its own goroutine and the
-// export stops waiting when the deadline passes; a stalled query then cannot
-// hold the request open past accountExportTimeout. The abandoned read
-// finishes in the background and its result is dropped (the channel is
-// buffered, so it never blocks).
+// withinExportDeadline runs one export read on its own goroutine and stops
+// waiting when the deadline passes, so nothing can hold the request open past
+// accountExportTimeout. The store reads are themselves bound to the deadline
+// (store.WithContext, BUG-3632), so a stalled query is cancelled and its
+// connection returned; this is the backstop for whatever is not, and an
+// abandoned read's result is dropped (the channel is buffered, so it never
+// blocks).
 func withinExportDeadline[T any](ctx context.Context, read func() (T, error)) (T, error) {
 	type result struct {
 		v   T
@@ -544,7 +549,7 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 	// first ones used to run outside it, so a read held by a lock kept the
 	// request open with nothing bounding it.
 	workspaces, err := withinExportDeadline(ctx, func() ([]models.Workspace, error) {
-		return s.accountExportListWorkspaces(user.ID)
+		return s.accountExportListWorkspaces(ctx, user.ID)
 	})
 	if err != nil {
 		refuseAccountExportBeforeBody(w, user.ID, "listing workspaces", err)
@@ -566,7 +571,7 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		visibleIDs, err := withinExportDeadline(ctx, func() ([]string, error) {
-			return s.accountExportVisibleCollections(r, ws.ID)
+			return s.accountExportVisibleCollections(ctx, r, ws.ID)
 		})
 		if err != nil {
 			refuseAccountExportBeforeBody(w, user.ID, "checking access to "+ws.Slug, err)

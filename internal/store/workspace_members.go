@@ -782,6 +782,12 @@ func (s *Store) GetUserMemberWorkspaces(userID string) ([]models.Workspace, erro
 // GetUserWorkspaces returns all workspaces a user has access to,
 // sorted by the user's custom sort order (then name as tiebreaker).
 func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
+	return s.GetUserWorkspacesQ(s.db, userID)
+}
+
+// GetUserWorkspacesQ is GetUserWorkspaces against a caller-supplied executor
+// (BUG-3632: the account export binds it to its deadline with WithContext).
+func (s *Store) GetUserWorkspacesQ(q Queryer, userID string) ([]models.Workspace, error) {
 	// BUG-1481: include MAX(items.updated_at) so the workspace's
 	// effective UpdatedAt reflects item activity, not just row mtime.
 	// For members with collection_access='specific', restrict MAX to
@@ -791,7 +797,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 	// 'all' (or empty) access see every collection, so the predicate
 	// short-circuits and behaves like an unrestricted MAX. The
 	// visibility rule mirrors VisibleCollectionIDs above.
-	rows, err := s.db.Query(s.q(`
+	rows, err := q.Query(s.q(`
 		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at,
 		       wm.sort_order,
 		       (
@@ -870,7 +876,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 	// on. Otherwise the workspace's UpdatedAt leaks activity timing for
 	// items behind grants the guest doesn't hold. The visible-items
 	// subquery mirrors the WHERE-clause grant logic below.
-	guestRows, err := s.db.Query(s.q(`
+	guestRows, err := q.Query(s.q(`
 		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at,
 		       (
 		           SELECT MAX(i.updated_at) FROM items i
