@@ -106,6 +106,12 @@ test.describe('catch-up card (TASK-3615)', () => {
 			await expect(page).toHaveURL(/\/activity\?since=.+&view=audit$/);
 			await expect(page.getByTestId('activity-since-chip')).toBeVisible();
 			await expect(page.getByRole('button', { name: 'Audit' })).toHaveClass(/selected/);
+			// Clearing the chip drops since from the URL, so a reload stays cleared.
+			await page.getByRole('button', { name: 'Remove the since filter' }).click();
+			await expect(page).not.toHaveURL(/since=/);
+			await page.reload();
+			await expect(page.getByRole('button', { name: 'Audit' })).toBeVisible();
+			await expect(page.getByTestId('activity-since-chip')).toHaveCount(0);
 
 			await page.goto(`/${fixture.adminUsername}/${ws}`);
 			await expect.poll(() => Math.floor(Date.now() / 1000), { timeout: 3000 }).toBeGreaterThan(madeInSecond);

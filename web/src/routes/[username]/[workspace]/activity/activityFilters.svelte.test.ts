@@ -34,6 +34,17 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	},
 }));
 vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
+// goto moves the reactive page.url, as a real navigation does.
+const navs = vi.hoisted(() => [] as Array<{ url: string; opts: Record<string, unknown> }>);
+vi.mock('$app/navigation', async () => {
+	const { page: p } = await import('../../../../test/mocks/reactivePage.svelte');
+	return {
+		goto: vi.fn(async (url: string | URL, opts: Record<string, unknown> = {}) => {
+			navs.push({ url: String(url), opts });
+			p.url = new URL(String(url));
+		}),
+	};
+});
 vi.mock('$lib/stores/workspaceIndexEntry', () => ({ enterWorkspaceIndex: vi.fn(async () => {}) }));
 vi.mock('$lib/services/sse.svelte', () => ({ sseService: { onItemEvent: () => () => {} } }));
 vi.mock('$lib/scroll/restore.svelte', () => ({
@@ -48,6 +59,7 @@ const settle = () => new Promise((r) => setTimeout(r, 20));
 
 beforeEach(() => {
 	calls.params = [];
+	navs.length = 0;
 	try { localStorage.setItem('pad-activity-view', 'audit'); } catch {}
 	page.params = { username: 'dave', workspace: 'ws' };
 	page.url = new URL('http://localhost/dave/ws/activity');
@@ -124,6 +136,47 @@ describe("the catch-up card's See everything link (TASK-3615)", () => {
 		await settle();
 		expect(localStorage.getItem('pad-activity-view')).toBe('audit');
 	});
+
+	for (const how of ['the chip ×', 'Clear filters'] as const) {
+		it(`${how} drops since from the URL: a reload stays cleared, and the same link re-applies (PR B, lead sweep)`, async () => {
+			const link = 'http://localhost/dave/ws/activity?since=2026-10-17T18%3A40%3A00Z&view=audit';
+			page.url = new URL(link);
+			render(ActivityPage);
+			await screen.findByRole('button', { name: 'Load more activity' });
+			await settle();
+			// Control: the link applied.
+			expect(last()).toMatchObject({ since: '2026-10-17T18:40:00Z' });
+
+			if (how === 'the chip ×') await fireEvent.click(screen.getByRole('button', { name: 'Remove the since filter' }));
+			else await fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+			await settle();
+			expect(navs).toHaveLength(1);
+			expect(navs[0].opts).toMatchObject({ replaceState: true });
+			expect(new URL(navs[0].url).searchParams.has('since')).toBe(false);
+			expect(new URL(navs[0].url).searchParams.get('view')).toBe('audit');
+			expect(last()).not.toHaveProperty('since');
+
+			// The same link followed again re-applies the filter.
+			page.url = new URL(link);
+			await settle();
+			expect(last()).toMatchObject({ since: '2026-10-17T18:40:00Z' });
+			expect(screen.getByTestId('activity-since-chip')).toBeTruthy();
+
+			// Clear again, then reload: the cleared URL loads with no chip and no since.
+			await fireEvent.click(screen.getByRole('button', { name: 'Remove the since filter' }));
+			await settle();
+			const cleared = page.url.href;
+			cleanup();
+			calls.params = [];
+			page.url = new URL(cleared);
+			render(ActivityPage);
+			await screen.findByRole('button', { name: 'Load more activity' });
+			await settle();
+			expect(calls.params.length).toBeGreaterThan(0);
+			expect(last()).not.toHaveProperty('since');
+			expect(screen.queryByTestId('activity-since-chip')).toBeNull();
+		});
+	}
 
 	it('a See everything followed on an already-mounted page applies its view too, unpersisted (PR B r1)', async () => {
 		localStorage.setItem('pad-activity-view', 'live');

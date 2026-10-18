@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { collapseReorderBatches, type CollapsedActivity } from '$lib/activity/reorderBatches';
@@ -79,6 +80,19 @@
 	$effect(() => {
 		filterSince = urlSince;
 	});
+	// Clearing since also drops it from the URL, or a reload re-applies the
+	// cleared filter and re-following the same link changes no URL value, so
+	// the effect above never re-runs. A real (replacing) navigation, not the
+	// shallow replaceState: that one leaves page.url, and so urlSince, stale
+	// (TASK-3615 PR B, lead sweep 2026-10-18). This route has no load
+	// function, so the navigation re-fetches nothing.
+	function clearSince() {
+		filterSince = '';
+		if (!page.url.searchParams.has('since')) return;
+		const url = new URL(page.url);
+		url.searchParams.delete('since');
+		void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+	}
 	// Every filter is applied by the server (TASK-2219), so the first load,
 	// Load more and the live head re-read all send the same query.
 	const filters = $derived({ action: filterAction, source: filterSource, actor: filterActor, collection: filterCollection, since: filterSince });
@@ -534,7 +548,7 @@
 				<button
 					class="since-chip-clear"
 					aria-label="Remove the since filter"
-					onclick={() => (filterSince = '')}
+					onclick={clearSince}
 				>
 					×
 				</button>
@@ -549,7 +563,7 @@
 					filterSource = '';
 					filterActor = '';
 					filterCollection = '';
-					filterSince = '';
+					clearSince();
 				}}
 			>
 				Clear filters
