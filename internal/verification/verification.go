@@ -36,10 +36,9 @@ type Lookup int
 const (
 	// LookupFound: exactly one real criterion carries the id.
 	LookupFound Lookup = iota
-	// LookupMissing: no criterion or placeholder carries it.
+	// LookupMissing: no real criterion carries it. A placeholder (an id still
+	// holding skeleton text) is missing too: there is nothing to verify yet.
 	LookupMissing
-	// LookupPlaceholder: the id is still skeleton text.
-	LookupPlaceholder
 	// LookupAmbiguous: the id appears more than once, so a verdict could not
 	// say which text it was about.
 	LookupAmbiguous
@@ -78,8 +77,6 @@ func (c Criteria) Find(id string) (Lookup, string) {
 		return LookupAmbiguous, ""
 	case n == 1:
 		return LookupFound, CriterionHash(c.text[id])
-	case c.placeholder[id]:
-		return LookupPlaceholder, ""
 	default:
 		return LookupMissing, ""
 	}
@@ -125,7 +122,7 @@ func Judge(rows []models.ItemVerification, c Criteria, prs []LinkedPR) {
 		r := &rows[i]
 		lookup, hash := c.Find(r.CriterionID)
 		switch {
-		case lookup == LookupMissing || lookup == LookupPlaceholder:
+		case lookup == LookupMissing:
 			r.State = models.VerificationCriterionRemoved
 		case lookup == LookupAmbiguous || hash != r.CriterionHash:
 			r.State = models.VerificationCriterionChanged

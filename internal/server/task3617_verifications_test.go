@@ -239,12 +239,12 @@ func TestTASK3617_PossiblyStaleFromAMergedPR(t *testing.T) {
 		t.Fatalf("record without rev: %d %s", rr.Code, rr.Body.String())
 	}
 
-	link := func(sha string) {
+	link := func(sha string, mergedAt time.Time) {
 		t.Helper()
 		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+task.Slug, map[string]any{
 			"github_pr": map[string]any{
 				"number": 7, "url": "https://github.com/acme/app/pull/7", "state": "MERGED",
-				"merge_sha": sha, "merged_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+				"merge_sha": sha, "merged_at": mergedAt.UTC().Format(time.RFC3339),
 			},
 		})
 		if rr.Code != http.StatusOK {
@@ -263,7 +263,8 @@ func TestTASK3617_PossiblyStaleFromAMergedPR(t *testing.T) {
 		return out
 	}
 
-	link(merge)
+	later := time.Now().Add(time.Hour)
+	link(merge, later)
 	got := read()
 	h := got["AC-1"].PossiblyStale
 	if h == nil || h.Via != "PR #7" || h.MergedSHA != merge {
@@ -276,9 +277,16 @@ func TestTASK3617_PossiblyStaleFromAMergedPR(t *testing.T) {
 		t.Fatalf("a verdict with no revision is not about code: %+v", got["AC-2"])
 	}
 
-	link(rev)
+	link(rev, later)
 	if got = read(); got["AC-1"].PossiblyStale != nil {
 		t.Fatalf("a PR that merged AT the verdict's revision did not move it: %+v", got["AC-1"].PossiblyStale)
+	}
+
+	// A PR that merged BEFORE the verdict was recorded is code the verifier
+	// already had, whatever its SHA.
+	link(merge, time.Now().Add(-time.Hour))
+	if got = read(); got["AC-1"].PossiblyStale != nil {
+		t.Fatalf("a PR merged before the verdict did not move it: %+v", got["AC-1"].PossiblyStale)
 	}
 
 	// A malformed merge_sha is refused at the PR door, so the hint can only

@@ -99,6 +99,15 @@ func TestTASK3617_VerificationStateFollowsTheCriterion(t *testing.T) {
 			if got = task3617Judge(t, s, wsID, item, true); got["AC-1"].State != models.VerificationCurrent {
 				t.Fatalf("re-wrapping AC-1 must not stale it: %s", got["AC-1"].State)
 			}
+			// Nor is changing the spacing inside it (Parse joins continuation
+			// lines but keeps inner runs of whitespace; the hash collapses them).
+			body = "## Acceptance criteria\n\n- AC-1: the list  shows\tevery open item\n- AC-2: a closed item is hidden\n"
+			if item, err = s.UpdateItem(item.ID, models.ItemUpdate{Content: &body}); err != nil {
+				t.Fatal(err)
+			}
+			if got = task3617Judge(t, s, wsID, item, true); got["AC-1"].State != models.VerificationCurrent {
+				t.Fatalf("re-spacing AC-1 must not stale it: %s", got["AC-1"].State)
+			}
 
 			// Rewording AC-1 stales AC-1 only; deleting AC-2 removes it.
 			body = "## Acceptance criteria\n\n- AC-1: the list shows every open item, newest first\n"
