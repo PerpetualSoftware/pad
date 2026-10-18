@@ -39,15 +39,41 @@ test.describe('TASK-3423: login honours ?redirect= and still refuses off-site ta
 		await expect.poll(() => new URL(page.url()).pathname).toBe(target);
 	});
 
-	for (const evil of ['https://evil.example/x', '//evil.example/x', '/%2fevil.example/x']) {
-		test(`an off-site target (${evil}) stays on this origin`, async ({ page, baseURL }) => {
+	// Each `value` is what validateRedirect receives: the spec URL-encodes it
+	// once, and searchParams decodes it once. The encoded-slash case is a
+	// value that still holds `%2f` after that decode, which a later decode
+	// would turn into `//evil.example`; the guard refuses it by its %2f rule.
+	const offSite = [
+		{ label: 'absolute URL', value: 'https://evil.example/x' },
+		{ label: 'protocol-relative', value: '//evil.example/x' },
+		{ label: 'encoded slash surviving one decode', value: '/%2fevil.example/x' },
+	];
+	// Same origin, and past /login: one poll, so an intermediate URL cannot
+	// satisfy half of it.
+	const landedHere = (url: string, origin: string) => {
+		const at = new URL(url);
+		return at.origin === origin && at.pathname !== '/login' && !at.pathname.includes('evil.example');
+	};
+
+	for (const { label, value } of offSite) {
+		test(`a signed-in visit with an off-site target (${label}) stays on this origin`, async ({ page, baseURL }) => {
 			await browserLogin(page);
-			await page.goto(`/login?redirect=${encodeURIComponent(evil)}`);
-			// It leaves /login for the default landing, on this origin.
-			await expect.poll(() => new URL(page.url()).pathname).not.toBe('/login');
-			const at = new URL(page.url());
-			expect(at.origin).toBe(new URL(baseURL!).origin);
-			expect(at.pathname).not.toContain('evil.example');
+			await page.goto(`/login?redirect=${encodeURIComponent(value)}`);
+			await expect.poll(() => landedHere(page.url(), new URL(baseURL!).origin)).toBe(true);
 		});
 	}
+
+	test('signing in with the form and an off-site target stays on this origin', async ({ browser, baseURL }) => {
+		const ctx = await browser.newContext({ baseURL, storageState: { cookies: [], origins: [] } });
+		const page = await ctx.newPage();
+		try {
+			await page.goto(`/login?redirect=${encodeURIComponent('//evil.example/x')}`);
+			await page.locator('#login-email').fill(ADMIN_EMAIL);
+			await page.locator('#login-password').fill(ADMIN_PASSWORD);
+			await page.locator('form button[type="submit"]').last().click();
+			await expect.poll(() => landedHere(page.url(), new URL(baseURL!).origin)).toBe(true);
+		} finally {
+			await ctx.close();
+		}
+	});
 });
