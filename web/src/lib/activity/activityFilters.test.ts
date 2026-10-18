@@ -56,4 +56,32 @@ describe('since (TASK-3615)', () => {
 			expect(sinceFromUrl(bad)).toBe('');
 		}
 	});
+
+	// Verdicts pasted from Go 1.26 (time.Parse "2006-01-02" then
+	// time.RFC3339, the handler's order), not derived from this code. Every
+	// "refused" row here is one Date.parse accepts or normalises, or a range
+	// edge (TASK-3615 PR B r1).
+	it.each([
+		['2026-02-30', false],
+		['2026-02-29', false],
+		['2026-04-31', false],
+		['1900-02-29', false],
+		['2024-02-29', true],
+		['2000-02-29', true],
+		['0000-02-29', true],
+		['2026-02-28T24:00:00Z', false],
+		['2026-02-28T23:59:60Z', false],
+		['2026-02-28T12:00:00+24:00', true],
+		['2026-02-28T12:00:00+24:60', true],
+		['2026-02-28T12:00:00-24:60', true],
+		['2026-02-28T12:00:00+05:60', true],
+		['2026-02-28T12:00:00+25:00', false],
+		['2026-02-28T12:00:00+24:61', false],
+		['2026-02-28T12:00:00+00:99', false],
+		['0000-01-01T00:00:00Z', true],
+		['9999-12-31T23:59:59Z', true],
+		['2026-02-28T12:00:00.123456789123Z', true]
+	])('sinceFromUrl(%s) matches Go: accepted=%s', (raw, accepted) => {
+		expect(sinceFromUrl(raw)).toBe(accepted ? raw : '');
+	});
 });

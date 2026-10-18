@@ -98,16 +98,34 @@
 	// not persisted: following a link is not choosing a view. A click on the
 	// toggle clears it, and that choice is persisted as before.
 	let viewFromUrl = $state(false);
+	// The `?view=` onMount applied. A later See everything on the mounted
+	// page changes it, and the effect below applies that, as the since effect
+	// does for `?since=` (TASK-3615 PR B r1).
+	let appliedLinkedView: string | null = null;
+	const urlView = $derived(page.url.searchParams.get('view'));
 
 	onMount(() => {
 		const stored = localStorage.getItem('pad-activity-view');
 		if (stored === 'audit' || stored === 'live') view = stored;
 		const linked = page.url.searchParams.get('view');
+		appliedLinkedView = linked;
 		if (linked === 'audit' || linked === 'live') {
 			view = linked;
 			viewFromUrl = true;
 		}
 		viewRestored = true;
+	});
+
+	$effect(() => {
+		const linked = urlView;
+		untrack(() => {
+			if (!viewRestored || linked === appliedLinkedView) return;
+			appliedLinkedView = linked;
+			if (linked === 'audit' || linked === 'live') {
+				view = linked;
+				viewFromUrl = true;
+			}
+		});
 	});
 
 	$effect(() => {

@@ -22,15 +22,33 @@ export interface ActivityFilters {
 	since?: string;
 }
 
-const SINCE_FORM = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2}))?$/;
+const SINCE_FORM =
+	/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2})))?$/;
+
+function daysIn(year: number, month: number): number {
+	if (month === 2) return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 29 : 28;
+	return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
 
 /**
  * The `since` a URL may set, or ''. Anything the server would refuse with
  * 400 invalid_since is dropped here, so a hand-edited link shows the
  * unfiltered feed instead of a load error.
+ *
+ * The ranges are Go's time.Parse ones (go1.26), checked by hand and never
+ * through Date.parse: V8 rolls 2026-02-30 over to March 2 and accepts
+ * T24:00:00, where Go refuses both. Go does accept offsets up to ±24:60
+ * (TASK-3615 PR B r1).
  */
 export function sinceFromUrl(raw: string | null): string {
-	if (!raw || !SINCE_FORM.test(raw) || Number.isNaN(Date.parse(raw))) return '';
+	const m = raw ? SINCE_FORM.exec(raw) : null;
+	if (!raw || !m) return '';
+	const [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+	if (month < 1 || month > 12 || day < 1 || day > daysIn(year, month)) return '';
+	if (m[4] !== undefined) {
+		if (Number(m[4]) > 23 || Number(m[5]) > 59 || Number(m[6]) > 59) return '';
+		if (m[7] !== undefined && (Number(m[7]) > 24 || Number(m[8]) > 60)) return '';
+	}
 	return raw;
 }
 

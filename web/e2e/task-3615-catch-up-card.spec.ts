@@ -89,6 +89,10 @@ test.describe('catch-up card (TASK-3615)', () => {
 			for (const title of ['Catch-up alpha', 'Catch-up beta']) {
 				await ok(await mate.post(`/api/v1/workspaces/${ws}/collections/tasks/items`, { data: { title } }), `create ${title}`);
 			}
+			// The window's floor is inclusive at second precision, so a mark in
+			// the same second as these writes would show them again. Server and
+			// browser share this box's clock (TASK-3615 PR B r1).
+			const madeInSecond = Math.floor(Date.now() / 1000);
 
 			await browserLogin(page);
 			await page.goto(`/${fixture.adminUsername}/${ws}`);
@@ -104,6 +108,7 @@ test.describe('catch-up card (TASK-3615)', () => {
 			await expect(page.getByRole('button', { name: 'Audit' })).toHaveClass(/selected/);
 
 			await page.goto(`/${fixture.adminUsername}/${ws}`);
+			await expect.poll(() => Math.floor(Date.now() / 1000), { timeout: 3000 }).toBeGreaterThan(madeInSecond);
 			await page.getByTestId('catch-up-mark').click();
 			await expect(page.getByTestId('catch-up-caught-up')).toContainText("You're caught up · nothing new since");
 			await expect(page.getByTestId('catch-up-section-new_and_reopened')).toHaveCount(0);

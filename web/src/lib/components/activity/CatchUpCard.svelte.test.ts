@@ -201,6 +201,37 @@ describe('CatchUpCard (TASK-3615)', () => {
 		expect(r.getByTestId('catch-up-caught-up')).toBeTruthy();
 	});
 
+	it('A→B→A: the first A answer, landing last, does not paint over the second (PR B r1)', async () => {
+		const r = render(CatchUpCard, { props: { username: 'dave', wsSlug: 'pad' } });
+		const firstA = await nextGet(0);
+		await r.rerender({ username: 'dave', wsSlug: 'other' });
+		await nextGet(1);
+		await r.rerender({ username: 'dave', wsSlug: 'pad' });
+		const secondA = await nextGet(2);
+		secondA.resolve(digest());
+		await flush();
+		// Control for this leg is the caught-up line here: the second A did
+		// paint, so a busy card below would be the first A's stale answer.
+		expect(r.getByTestId('catch-up-caught-up')).toBeTruthy();
+		firstA.resolve(busy());
+		await flush();
+		expect(r.getByTestId('catch-up-caught-up')).toBeTruthy();
+		expect(r.queryByTestId('catch-up-section-finished')).toBeNull();
+	});
+
+	it('a mark that lands but whose refetch fails keeps the card and says so (PR B r1)', async () => {
+		const r = render(CatchUpCard, { props: { username: 'dave', wsSlug: 'pad' } });
+		(await nextGet(0)).resolve(busy());
+		await flush();
+		await fireEvent.click(r.getByTestId('catch-up-mark'));
+		(await nextGet(1)).reject(new Error('refetch failed'));
+		await flush();
+		expect(marks).toEqual(['pad']);
+		expect(r.getByTestId('catch-up-section-finished')).toBeTruthy();
+		expect(r.getByTestId('catch-up-refresh-error').textContent).toContain('Marked caught up');
+		expect(r.queryByText("Couldn't mark this workspace caught up. Try again.")).toBeNull();
+	});
+
 	it('a section that repeats a ref renders both lines instead of throwing (BUG-3538 class)', async () => {
 		const r = render(CatchUpCard, { props: { username: 'dave', wsSlug: 'pad' } });
 		(await nextGet(0)).resolve(

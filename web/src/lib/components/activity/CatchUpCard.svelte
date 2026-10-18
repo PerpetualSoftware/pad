@@ -16,6 +16,10 @@
 	// throws in production builds and blanks the view (BUG-3538 / TASK-3539).
 	// The lists are replaced whole on every load, so a position key costs
 	// nothing.
+	//
+	// LOAD ORDER: the key alone cannot order loads, since A→B→A returns to a
+	// key an older A load still holds. Each load takes a sequence number and
+	// only the newest may commit (TASK-3615 PR B r1).
 	import { untrack } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -35,6 +39,11 @@
 	let data = $state<CatchUpResponse | null>(null);
 	let marking = $state(false);
 	let markError = $state(false);
+	// The mark landed but the refetch after it failed: the cursor moved, so
+	// "couldn't mark" would be false, and clearing the card would hide that
+	// the press worked.
+	let refreshError = $state(false);
+	let loadSeq = 0;
 
 	function captureIdentity(): number {
 		return authStore.identityEpoch;
@@ -44,16 +53,27 @@
 		return authStore.identityEpoch === captured && key === startedKey;
 	}
 
-	async function load(ws: string, startedKey: string, captured: number) {
+	// A failed load clears the card unless keepOnError (the refetch after a
+	// mark). A superseded one changes nothing.
+	async function load(
+		ws: string,
+		startedKey: string,
+		captured: number,
+		keepOnError = false
+	): Promise<'committed' | 'failed' | 'superseded'> {
+		const seq = ++loadSeq;
+		const committable = () => seq === loadSeq && stillCurrent(captured, startedKey);
 		try {
 			const res = await api.catchUp.get(ws);
-			if (!stillCurrent(captured, startedKey)) return;
+			if (!committable()) return 'superseded';
 			data = res;
+			return 'committed';
 		} catch {
 			// The card is optional: a failed load leaves the home page as it was
 			// and never shows an error over it. The next key change retries.
-			if (!stillCurrent(captured, startedKey)) return;
-			data = null;
+			if (!committable()) return 'superseded';
+			if (!keepOnError) data = null;
+			return 'failed';
 		}
 	}
 
@@ -63,6 +83,7 @@
 		data = null;
 		marking = false;
 		markError = false;
+		refreshError = false;
 		if (!ws || !sessionUserId) return;
 		untrack(() => void load(ws, k, captureIdentity()));
 	});
@@ -73,13 +94,19 @@
 		const ws = wsSlug;
 		marking = true;
 		markError = false;
+		refreshError = false;
 		try {
 			await api.catchUp.markCaughtUp(ws);
-			if (!stillCurrent(captured, startedKey)) return;
-			await load(ws, startedKey, captured);
 		} catch {
+			if (stillCurrent(captured, startedKey)) {
+				markError = true;
+				marking = false;
+			}
+			return;
+		}
+		try {
 			if (!stillCurrent(captured, startedKey)) return;
-			markError = true;
+			if ((await load(ws, startedKey, captured, true)) === 'failed') refreshError = true;
 		} finally {
 			if (stillCurrent(captured, startedKey)) marking = false;
 		}
@@ -170,6 +197,10 @@
 		</header>
 		{#if markError}
 			<p class="mark-error" role="alert">Couldn't mark this workspace caught up. Try again.</p>
+		{:else if refreshError}
+			<p class="mark-error" role="alert" data-testid="catch-up-refresh-error">
+				Marked caught up, but this card couldn't refresh. Reload to see it.
+			</p>
 		{/if}
 
 		{#if needsYouDegraded}

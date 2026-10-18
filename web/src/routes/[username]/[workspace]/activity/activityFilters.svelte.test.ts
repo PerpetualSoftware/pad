@@ -124,4 +124,19 @@ describe("the catch-up card's See everything link (TASK-3615)", () => {
 		await settle();
 		expect(localStorage.getItem('pad-activity-view')).toBe('audit');
 	});
+
+	it('a See everything followed on an already-mounted page applies its view too, unpersisted (PR B r1)', async () => {
+		localStorage.setItem('pad-activity-view', 'live');
+		render(ActivityPage);
+		await screen.findByRole('button', { name: 'Load more activity' });
+		await settle();
+		// Control: mounted in the stored Live view.
+		expect(screen.getByRole('button', { name: 'Audit' }).classList.contains('selected')).toBe(false);
+
+		page.url = new URL('http://localhost/dave/ws/activity?since=2026-10-17T18%3A40%3A00Z&view=audit');
+		await settle();
+		expect(last()).toMatchObject({ since: '2026-10-17T18:40:00Z' });
+		expect(screen.getByRole('button', { name: 'Audit' }).classList.contains('selected')).toBe(true);
+		expect(localStorage.getItem('pad-activity-view')).toBe('live');
+	});
 });
