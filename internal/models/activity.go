@@ -8,6 +8,7 @@ import (
 // Item-level actions (existing)
 var ValidActions = []string{
 	"created", "updated", "archived", "restored", "moved", "read", "searched",
+	"verified", // TASK-3617: a batch of acceptance-criteria verdicts
 }
 
 // Audit action constants for auth/admin events

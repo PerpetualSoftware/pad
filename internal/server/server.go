@@ -2344,6 +2344,11 @@ func (s *Server) setupRouter() {
 						// about the item it names.
 						r.Get("/reminders", s.handleListItemReminders)
 						r.Post("/reminders", s.handleCreateItemReminder)
+						// Verifications (TASK-3617): per-criterion verdicts
+						// on the item that carries the acceptance criteria,
+						// judged against its present text at read time.
+						r.Get("/verifications", s.handleListItemVerifications)
+						r.Post("/verifications", s.handleCreateItemVerifications)
 						// Typed decisions (TASK-3117): the item's latest
 						// answer per question, each marked current or not.
 						// Read-only; evaluation happens off the write path.
