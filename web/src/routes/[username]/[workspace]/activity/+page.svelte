@@ -93,9 +93,9 @@
 	// it a reload, at least stays cleared (PR B r3).
 	function dropFromUrl(name: 'since' | 'view') {
 		if (!page.url.searchParams.has(name)) return;
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		url.searchParams.delete(name);
-		goto(url, { replaceState: true, keepFocus: true, noScroll: true }).catch(() => {
+		goto(url, { replaceState: true, reset: false }).catch(() => {
 			try {
 				replaceState(url, page.state);
 			} catch {
