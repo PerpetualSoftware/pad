@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { goto, replaceState } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { collapseReorderBatches, type CollapsedActivity } from '$lib/activity/reorderBatches';
@@ -19,7 +20,7 @@
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import { loadFailure } from '$lib/api/loadFailure';
 	import EpisodeFeed from '$lib/components/activity/EpisodeFeed.svelte';
-	import { ACTOR_OPTIONS, activityFilterParams, hasActivityFilters, actorBadgeTitle } from '$lib/activity/activityFilters';
+	import { ACTOR_OPTIONS, activityFilterParams, hasActivityFilters, actorBadgeTitle, sinceFromUrl } from '$lib/activity/activityFilters';
 	import type { Activity, Collection, FieldDef } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import ActivityChangeValue from '$lib/components/timeline/ActivityChangeValue.svelte';
@@ -70,9 +71,50 @@
 	let filterSource = $state('');
 	let filterActor = $state('');
 	let filterCollection = $state('');
+	// TASK-3615: the catch-up card's "See everything" opens this page with
+	// ?since=<its window's start>&view=audit. There is no control to SET it
+	// here; the chip below shows it and clears it. Re-read whenever the URL's
+	// value changes, so a second See everything on a mounted page applies.
+	let filterSince = $state('');
+	const urlSince = $derived(sinceFromUrl(page.url.searchParams.get('since')));
+	$effect(() => {
+		filterSince = urlSince;
+	});
+	// A link-set value the user clears or overrides also leaves the URL: both
+	// `since` (chip ×, Clear filters) and `view` (a Live or Audit click). Kept
+	// in the URL, a reload re-applies the dropped value, and re-following the
+	// same link changes no URL value, so the effect that reads it never
+	// re-runs. A real (replacing) navigation, not the shallow replaceState:
+	// that one leaves page.url, and the values derived from it, stale
+	// (TASK-3615 PR B, lead sweep 2026-10-18, r4). This route has no load
+	// function, so the navigation re-fetches nothing. A superseded goto
+	// needs nothing (the newer navigation decides the URL). A rejected one
+	// falls back to the shallow replaceState, so the address bar, and with
+	// it a reload, at least stays cleared (PR B r3).
+	function dropFromUrl(name: 'since' | 'view') {
+		if (!page.url.searchParams.has(name)) return;
+		const url = new URL(page.url);
+		url.searchParams.delete(name);
+		goto(url, { replaceState: true, keepFocus: true, noScroll: true }).catch(() => {
+			try {
+				replaceState(url, page.state);
+			} catch {
+				// The router is not up; nothing else can carry the clear.
+			}
+		});
+	}
+	function clearSince() {
+		filterSince = '';
+		dropFromUrl('since');
+	}
+	function chooseView(v: 'live' | 'audit') {
+		viewFromUrl = false;
+		view = v;
+		dropFromUrl('view');
+	}
 	// Every filter is applied by the server (TASK-2219), so the first load,
 	// Load more and the live head re-read all send the same query.
-	const filters = $derived({ action: filterAction, source: filterSource, actor: filterActor, collection: filterCollection });
+	const filters = $derived({ action: filterAction, source: filterSource, actor: filterActor, collection: filterCollection, since: filterSince });
 	const filtered = $derived(hasActivityFilters(filters));
 
 	// View mode: episode cards (Live) vs the raw audit timeline. Persisted so
@@ -85,17 +127,44 @@
 	// browser on the runtime this repo actually develops on.)
 	let view = $state<'live' | 'audit'>('live');
 	let viewRestored = false;
+	// A `?view=` from a link (TASK-3615) wins over the stored choice, but is
+	// not persisted: following a link is not choosing a view. A click on the
+	// toggle clears it, and that choice is persisted as before.
+	let viewFromUrl = $state(false);
+	// The `?view=` onMount applied. A later See everything on the mounted
+	// page changes it, and the effect below applies that, as the since effect
+	// does for `?since=` (TASK-3615 PR B r1).
+	let appliedLinkedView: string | null = null;
+	const urlView = $derived(page.url.searchParams.get('view'));
 
 	onMount(() => {
 		const stored = localStorage.getItem('pad-activity-view');
 		if (stored === 'audit' || stored === 'live') view = stored;
+		const linked = page.url.searchParams.get('view');
+		appliedLinkedView = linked;
+		if (linked === 'audit' || linked === 'live') {
+			view = linked;
+			viewFromUrl = true;
+		}
 		viewRestored = true;
+	});
+
+	$effect(() => {
+		const linked = urlView;
+		untrack(() => {
+			if (!viewRestored || linked === appliedLinkedView) return;
+			appliedLinkedView = linked;
+			if (linked === 'audit' || linked === 'live') {
+				view = linked;
+				viewFromUrl = true;
+			}
+		});
 	});
 
 	$effect(() => {
 		// Persist only after the restore read, or the SSR default clobbers
 		// the stored choice before onMount can apply it.
-		if (browser && viewRestored) {
+		if (browser && viewRestored && !viewFromUrl) {
 			localStorage.setItem('pad-activity-view', view);
 		}
 	});
@@ -124,6 +193,7 @@
 			filterSource;
 			filterActor;
 			filterCollection;
+			filterSince;
 			// UNTRACKED past the dependencies named above: loadActivities reads
 			// the identity epoch for its fence (TASK-2203), and tracked, that
 			// read would add an identity reload the layout already owns.
@@ -430,14 +500,14 @@
 				<button
 					class="view-segment"
 					class:selected={view === 'live'}
-					onclick={() => (view = 'live')}
+					onclick={() => chooseView('live')}
 				>
 					Live
 				</button>
 				<button
 					class="view-segment"
 					class:selected={view === 'audit'}
-					onclick={() => (view = 'audit')}
+					onclick={() => chooseView('audit')}
 				>
 					Audit
 				</button>
@@ -485,6 +555,19 @@
 			</select>
 		</div>
 
+		{#if filterSince}
+			<span class="since-chip" data-testid="activity-since-chip">
+				Since {new Date(filterSince).toLocaleString()}
+				<button
+					class="since-chip-clear"
+					aria-label="Remove the since filter"
+					onclick={clearSince}
+				>
+					×
+				</button>
+			</span>
+		{/if}
+
 		{#if filtered}
 			<button
 				class="clear-filters"
@@ -493,6 +576,7 @@
 					filterSource = '';
 					filterActor = '';
 					filterCollection = '';
+					clearSince();
 				}}
 			>
 				Clear filters
@@ -707,6 +791,27 @@
 		background: var(--accent-primary);
 		color: white;
 	}
+	.since-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.125rem 0.25rem 0.125rem 0.5rem;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		font-size: 0.8125rem;
+		color: var(--text-secondary);
+	}
+
+	.since-chip-clear {
+		border: none;
+		background: none;
+		color: inherit;
+		cursor: pointer;
+		font-size: 1rem;
+		line-height: 1;
+		padding: 0 0.25rem;
+	}
+
 	.clear-filters {
 		background: none;
 		border: none;

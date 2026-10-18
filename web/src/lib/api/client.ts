@@ -1,5 +1,6 @@
 import type {
 	BuiltinListEntry,
+	CatchUpResponse,
 	BuiltinStateResponse,
 	DecisionSettings,
 	MCPSettings,
@@ -2594,6 +2595,15 @@ export const api = {
 	dashboard: {
 		get: (ws: string) =>
 			request<DashboardResponse>(`/workspaces/${ws}/dashboard`)
+	},
+
+	// ── Catch-up digest (TASK-3615) ──────────────────────────────────────────
+	// `get` never moves the cursor; only `markCaughtUp` does, and it takes no
+	// body because the server stamps the time.
+	catchUp: {
+		get: (ws: string) => request<CatchUpResponse>(`/workspaces/${ws}/catch-up`),
+		markCaughtUp: (ws: string) =>
+			request<{ seen_at: string }>(`/workspaces/${ws}/me/seen`, { method: 'PUT' })
 	},
 
 	// ── Project intelligence: next / standup / changelog (PLAN-1888 / TASK-1894) ──

@@ -27,6 +27,7 @@
 	import { collectionTracksWork } from '$lib/types';
 	import { statusState } from '$lib/collections/childProgress';
 	import PartialImportBanner from '$lib/components/PartialImportBanner.svelte';
+	import CatchUpCard from '$lib/components/activity/CatchUpCard.svelte';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -771,6 +772,9 @@
 				{/if}
 			</section>
 		{/if}
+
+		<!-- Catch-up digest (TASK-3615): above Active Work, per DOC-3616. -->
+		<CatchUpCard {username} {wsSlug} />
 
 		<!-- 3. Active Work -->
 		{#if dashboard.active_items.length > 0}
