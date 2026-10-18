@@ -12,6 +12,9 @@ export interface User {
 	oauth_providers?: string[];
 	totp_enabled?: boolean;
 	password_set?: boolean;
+	// Present only when the account has a Stripe customer (GET /auth/me);
+	// the billing page gates Manage Billing on it (BUG-3898).
+	stripe_customer_id?: string;
 	created_at: string;
 	updated_at: string;
 }
