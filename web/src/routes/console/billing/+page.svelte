@@ -374,7 +374,8 @@
 			{#if !commerceAllowed}
 				<!-- no purchase path in the apps -->
 			{:else if isPro}
-				<a href="/billing/portal" class="secondary-btn">Manage Billing</a>
+				<!-- /billing/ is pad-cloud's, not the SPA's: a full navigation (BUG-3897). -->
+				<a href="/billing/portal" class="secondary-btn" data-sveltekit-reload>Manage Billing</a>
 			{:else if stripeAvailable}
 				<!-- TASK-3603: the outcome first, then who it covers. Copy shown to Dave. -->
 				<p class="pro-pitch">
