@@ -80,20 +80,21 @@
 	$effect(() => {
 		filterSince = urlSince;
 	});
-	// Clearing since also drops it from the URL, or a reload re-applies the
-	// cleared filter and re-following the same link changes no URL value, so
-	// the effect above never re-runs. A real (replacing) navigation, not the
-	// shallow replaceState: that one leaves page.url, and so urlSince, stale
-	// (TASK-3615 PR B, lead sweep 2026-10-18). This route has no load
+	// A link-set value the user clears or overrides also leaves the URL: both
+	// `since` (chip ×, Clear filters) and `view` (a Live or Audit click). Kept
+	// in the URL, a reload re-applies the dropped value, and re-following the
+	// same link changes no URL value, so the effect that reads it never
+	// re-runs. A real (replacing) navigation, not the shallow replaceState:
+	// that one leaves page.url, and the values derived from it, stale
+	// (TASK-3615 PR B, lead sweep 2026-10-18, r4). This route has no load
 	// function, so the navigation re-fetches nothing. A superseded goto
 	// needs nothing (the newer navigation decides the URL). A rejected one
 	// falls back to the shallow replaceState, so the address bar, and with
 	// it a reload, at least stays cleared (PR B r3).
-	function clearSince() {
-		filterSince = '';
-		if (!page.url.searchParams.has('since')) return;
+	function dropFromUrl(name: 'since' | 'view') {
+		if (!page.url.searchParams.has(name)) return;
 		const url = new URL(page.url);
-		url.searchParams.delete('since');
+		url.searchParams.delete(name);
 		goto(url, { replaceState: true, keepFocus: true, noScroll: true }).catch(() => {
 			try {
 				replaceState(url, page.state);
@@ -101,6 +102,15 @@
 				// The router is not up; nothing else can carry the clear.
 			}
 		});
+	}
+	function clearSince() {
+		filterSince = '';
+		dropFromUrl('since');
+	}
+	function chooseView(v: 'live' | 'audit') {
+		viewFromUrl = false;
+		view = v;
+		dropFromUrl('view');
 	}
 	// Every filter is applied by the server (TASK-2219), so the first load,
 	// Load more and the live head re-read all send the same query.
@@ -490,20 +500,14 @@
 				<button
 					class="view-segment"
 					class:selected={view === 'live'}
-					onclick={() => {
-						viewFromUrl = false;
-						view = 'live';
-					}}
+					onclick={() => chooseView('live')}
 				>
 					Live
 				</button>
 				<button
 					class="view-segment"
 					class:selected={view === 'audit'}
-					onclick={() => {
-						viewFromUrl = false;
-						view = 'audit';
-					}}
+					onclick={() => chooseView('audit')}
 				>
 					Audit
 				</button>

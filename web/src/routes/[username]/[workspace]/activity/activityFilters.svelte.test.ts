@@ -200,6 +200,39 @@ describe("the catch-up card's See everything link (TASK-3615)", () => {
 		expect(last()).not.toHaveProperty('since');
 	});
 
+	it('choosing a view drops view from the URL: a reload keeps the choice, and the same link re-applies (PR B r4)', async () => {
+		localStorage.setItem('pad-activity-view', 'live');
+		const link = 'http://localhost/dave/ws/activity?since=2026-10-17T18%3A40%3A00Z&view=audit';
+		page.url = new URL(link);
+		render(ActivityPage);
+		await screen.findByRole('button', { name: 'Load more activity' });
+		await settle();
+		// Control: the link's view applied.
+		expect(screen.getByRole('button', { name: 'Audit' }).classList.contains('selected')).toBe(true);
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Live' }));
+		await settle();
+		expect(navs).toHaveLength(1);
+		expect(navs[0].opts).toMatchObject({ replaceState: true });
+		expect(new URL(navs[0].url).searchParams.has('view')).toBe(false);
+		expect(new URL(navs[0].url).searchParams.get('since')).toBe('2026-10-17T18:40:00Z');
+		expect(localStorage.getItem('pad-activity-view')).toBe('live');
+
+		// Reload: the choice holds, because the URL no longer overrides it.
+		const chosen = page.url.href;
+		cleanup();
+		page.url = new URL(chosen);
+		render(ActivityPage);
+		await screen.findByRole('button', { name: 'Load more activity' });
+		await settle();
+		expect(screen.getByRole('button', { name: 'Live' }).classList.contains('selected')).toBe(true);
+
+		// The same link followed again re-applies its view.
+		page.url = new URL(link);
+		await settle();
+		expect(screen.getByRole('button', { name: 'Audit' }).classList.contains('selected')).toBe(true);
+	});
+
 	it('a See everything followed on an already-mounted page applies its view too, unpersisted (PR B r1)', async () => {
 		localStorage.setItem('pad-activity-view', 'live');
 		render(ActivityPage);
