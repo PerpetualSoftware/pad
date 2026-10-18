@@ -36,12 +36,17 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
 // goto moves the reactive page.url, as a real navigation does.
 const navs = vi.hoisted(() => [] as Array<{ url: string; opts: Record<string, unknown> }>);
+const navMode = vi.hoisted(() => ({ reject: false, shallow: [] as string[] }));
 vi.mock('$app/navigation', async () => {
 	const { page: p } = await import('../../../../test/mocks/reactivePage.svelte');
 	return {
 		goto: vi.fn(async (url: string | URL, opts: Record<string, unknown> = {}) => {
 			navs.push({ url: String(url), opts });
+			if (navMode.reject) throw new Error('navigation failed');
 			p.url = new URL(String(url));
+		}),
+		replaceState: vi.fn((url: string | URL) => {
+			navMode.shallow.push(String(url));
 		}),
 	};
 });
@@ -60,6 +65,8 @@ const settle = () => new Promise((r) => setTimeout(r, 20));
 beforeEach(() => {
 	calls.params = [];
 	navs.length = 0;
+	navMode.reject = false;
+	navMode.shallow = [];
 	try { localStorage.setItem('pad-activity-view', 'audit'); } catch {}
 	page.params = { username: 'dave', workspace: 'ws' };
 	page.url = new URL('http://localhost/dave/ws/activity');
@@ -177,6 +184,21 @@ describe("the catch-up card's See everything link (TASK-3615)", () => {
 			expect(screen.queryByTestId('activity-since-chip')).toBeNull();
 		});
 	}
+
+	it('a clear whose navigation rejects still drops since from the address bar (PR B r3)', async () => {
+		page.url = new URL('http://localhost/dave/ws/activity?since=2026-10-17T18%3A40%3A00Z&view=audit');
+		render(ActivityPage);
+		await screen.findByRole('button', { name: 'Load more activity' });
+		await settle();
+		navMode.reject = true;
+		await fireEvent.click(screen.getByRole('button', { name: 'Remove the since filter' }));
+		await settle();
+		expect(navs).toHaveLength(1);
+		expect(navMode.shallow).toHaveLength(1);
+		expect(new URL(navMode.shallow[0]).searchParams.has('since')).toBe(false);
+		expect(new URL(navMode.shallow[0]).searchParams.get('view')).toBe('audit');
+		expect(last()).not.toHaveProperty('since');
+	});
 
 	it('a See everything followed on an already-mounted page applies its view too, unpersisted (PR B r1)', async () => {
 		localStorage.setItem('pad-activity-view', 'live');

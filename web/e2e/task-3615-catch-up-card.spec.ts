@@ -109,7 +109,12 @@ test.describe('catch-up card (TASK-3615)', () => {
 			// Clearing the chip drops since from the URL, so a reload stays cleared.
 			await page.getByRole('button', { name: 'Remove the since filter' }).click();
 			await expect(page).not.toHaveURL(/since=/);
+			// Assert on the reloaded feed request itself: a chip's absence passes
+			// before a late effect could add it (PR B r3).
+			const reloadedFeed = page.waitForRequest((r) => /\/api\/v1\/workspaces\/[^/]+\/activity(\?|$)/.test(r.url()));
 			await page.reload();
+			expect(new URL((await reloadedFeed).url()).searchParams.has('since')).toBe(false);
+			await expect(page).not.toHaveURL(/since=/);
 			await expect(page.getByRole('button', { name: 'Audit' })).toBeVisible();
 			await expect(page.getByTestId('activity-since-chip')).toHaveCount(0);
 

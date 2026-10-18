@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
+	import { goto, replaceState } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { collapseReorderBatches, type CollapsedActivity } from '$lib/activity/reorderBatches';
@@ -85,13 +85,22 @@
 	// the effect above never re-runs. A real (replacing) navigation, not the
 	// shallow replaceState: that one leaves page.url, and so urlSince, stale
 	// (TASK-3615 PR B, lead sweep 2026-10-18). This route has no load
-	// function, so the navigation re-fetches nothing.
+	// function, so the navigation re-fetches nothing. A superseded goto
+	// needs nothing (the newer navigation decides the URL). A rejected one
+	// falls back to the shallow replaceState, so the address bar, and with
+	// it a reload, at least stays cleared (PR B r3).
 	function clearSince() {
 		filterSince = '';
 		if (!page.url.searchParams.has('since')) return;
 		const url = new URL(page.url);
 		url.searchParams.delete('since');
-		void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+		goto(url, { replaceState: true, keepFocus: true, noScroll: true }).catch(() => {
+			try {
+				replaceState(url, page.state);
+			} catch {
+				// The router is not up; nothing else can carry the clear.
+			}
+		});
 	}
 	// Every filter is applied by the server (TASK-2219), so the first load,
 	// Load more and the live head re-read all send the same query.
