@@ -42,7 +42,10 @@ test.describe('TASK-3590: quick capture keeps your place', () => {
 		await expect(dialog).toBeHidden();
 		await toast.getByRole('button', { name: 'Open' }).click();
 		await expect(page).toHaveURL(/\/tasks\/TASK-\d+/);
-		await expect(page.getByText(`${stamp} stay 2`).first()).toBeVisible();
+		// The URL carries ?new=1, so the item opens with its title in the editor.
+		// Under kit 2 the follow-up goto's focus reset closed the editor at once;
+		// kit 3's reset:false keeps it open (TASK-3423, day-87 ruling, site 3).
+		await expect(page.locator('.title-input')).toHaveValue(`${stamp} stay 2`);
 
 		// Add and open.
 		await page.goto(listUrl);
@@ -52,7 +55,7 @@ test.describe('TASK-3590: quick capture keeps your place', () => {
 		await input.press('ControlOrMeta+Enter');
 		await expect(dialog).toBeHidden();
 		await expect(page).toHaveURL(/\/tasks\/TASK-\d+/);
-		await expect(page.getByText(`${stamp} open`).first()).toBeVisible();
+		await expect(page.locator('.title-input')).toHaveValue(`${stamp} open`);
 	});
 
 	test('mobile sheet: Add stays open for the next capture; Add and open navigates', async ({ page, fixture }, testInfo) => {
@@ -80,6 +83,6 @@ test.describe('TASK-3590: quick capture keeps your place', () => {
 		await title.fill(`${stamp} open`);
 		await sheet.getByRole('button', { name: 'Add and open' }).click();
 		await expect(page).toHaveURL(/\/tasks\/TASK-\d+/);
-		await expect(page.getByText(`${stamp} open`).first()).toBeVisible();
+		await expect(page.locator('.title-input')).toHaveValue(`${stamp} open`);
 	});
 });
