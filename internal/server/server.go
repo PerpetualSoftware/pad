@@ -586,6 +586,13 @@ type Server struct {
 	// keep door could not be driven by a test.
 	importBundleAfterMintHook func()
 
+	// verificationBeforeInsertHook is a TEST SEAM (always nil in production,
+	// TASK-3617 r1): handleCreateItemVerifications calls it with the attempt
+	// number just before each insert, so a test can move the item between
+	// the criteria read and the write and drive the retry, which has no
+	// natural trigger on SQLite.
+	verificationBeforeInsertHook func(attempt int)
+
 	// importBundleRemapFault is a TEST SEAM (always nil in production,
 	// BUG-3656): when non-nil, importBundle's final reference remap returns
 	// its error instead of running. The remap is one store transaction with

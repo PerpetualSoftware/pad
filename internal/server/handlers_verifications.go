@@ -179,6 +179,9 @@ func (s *Server) handleCreateItemVerifications(w http.ResponseWriter, r *http.Re
 			return
 		}
 
+		if s.verificationBeforeInsertHook != nil {
+			s.verificationBeforeInsertHook(attempt)
+		}
 		var err error
 		stored, err = s.store.InsertItemVerifications(workspaceID, item.ID, item.Seq, rows)
 		if err == nil {
@@ -201,6 +204,16 @@ func (s *Server) handleCreateItemVerifications(w http.ResponseWriter, r *http.Re
 			}
 			if fresh == nil {
 				writeError(w, http.StatusNotFound, "not_found", "Item not found")
+				return
+			}
+			// The write that moved the item may have moved it out of the
+			// caller's reach (another collection, a revoked grant), so the
+			// doors are re-run on the version about to be written (TASK-3617
+			// r1). A check on the first read authorizes only that read.
+			if !s.requireItemVisible(w, r, workspaceID, fresh) {
+				return
+			}
+			if !s.requireEditPermission(w, r, workspaceID, fresh.ID, fresh.CollectionID) {
 				return
 			}
 			item = fresh

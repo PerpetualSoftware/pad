@@ -23,7 +23,9 @@ type task3617List struct {
 }
 
 func task3617Path(slug string, item models.Item) string {
-	return "/api/v1/workspaces/" + slug + "/items/" + item.Slug + "/verifications"
+	// By ref, not slug: a retitle re-slugs the item, and the retry tests
+	// retitle it.
+	return "/api/v1/workspaces/" + slug + "/items/" + item.Ref + "/verifications"
 }
 
 func TestTASK3617_RecordAndRead(t *testing.T) {
@@ -297,4 +299,106 @@ func TestTASK3617_PossiblyStaleFromAMergedPR(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("malformed merge_sha: %d %s, want 400", rr.Code, rr.Body.String())
 	}
+}
+
+// TASK-3617 r1: the retry when the item moves between the criteria read and
+// the write. One move retries and lands, against the new seq. An item that
+// keeps moving is a 409. A move that also takes the item out of the caller's
+// reach is refused on the retry, not written: the first read's checks
+// authorized only that read.
+func TestTASK3617_RetryOnAMovedItem(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	spec := createItem(t, srv, slug, "docs", map[string]any{"title": "Spec", "content": task3617Body})
+	body := map[string]any{"results": []any{map[string]any{"criterion": "AC-1", "verdict": "pass"}}}
+
+	bump := func(t *testing.T, it models.Item) {
+		t.Helper()
+		title := "Spec " + time.Now().Format(time.RFC3339Nano)
+		if _, err := srv.store.UpdateItem(it.ID, models.ItemUpdate{Title: &title}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var attempts []int
+	srv.verificationBeforeInsertHook = func(attempt int) {
+		attempts = append(attempts, attempt)
+		if attempt == 0 {
+			bump(t, spec)
+		}
+	}
+	rr := doRequest(srv, "POST", task3617Path(slug, spec), body)
+	if rr.Code != http.StatusCreated || len(attempts) != 2 {
+		t.Fatalf("one move: %d after %v attempts, want 201 after [0 1]: %s", rr.Code, attempts, rr.Body.String())
+	}
+	fresh, err := srv.store.GetItem(spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := srv.store.ListItemVerifications(fresh.WorkspaceID, spec.ID, false)
+	if err != nil || len(rows) != 1 || rows[0].SpecSeq != fresh.Seq {
+		t.Fatalf("the retried row must carry the seq it was written against (%d): %+v %v", fresh.Seq, rows, err)
+	}
+
+	srv.verificationBeforeInsertHook = func(int) { bump(t, spec) }
+	if rr := doRequest(srv, "POST", task3617Path(slug, spec), body); rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "item_changed") {
+		t.Fatalf("an item that keeps moving: %d %s, want 409 item_changed", rr.Code, rr.Body.String())
+	}
+	srv.verificationBeforeInsertHook = nil
+	if rows, _ := srv.store.ListItemVerifications(fresh.WorkspaceID, spec.ID, false); len(rows) != 1 {
+		t.Fatalf("the 409 must store nothing: %d rows", len(rows))
+	}
+}
+
+func TestTASK3617_RetryRechecksAccess(t *testing.T) {
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		slug := createWSWithCollections(t, srv)
+		ws, err := srv.store.GetWorkspaceBySlug(slug)
+		if err != nil || ws == nil {
+			t.Fatalf("GetWorkspaceBySlug: %v", err)
+		}
+		spec := createItem(t, srv, slug, "docs", map[string]any{"title": "Spec", "content": task3617Body})
+		granter, err := srv.store.CreateUser(models.UserCreate{Email: "granter-3617r@example.com", Name: "Granter", Username: "granter-3617r", Password: "pw-test-12345"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		guest, err := srv.store.CreateUser(models.UserCreate{Email: "guest-3617r@example.com", Name: "Guest", Username: "guest-3617r", Password: "pw-test-12345"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		grant, err := srv.store.CreateItemGrant(ws.ID, spec.ID, guest.ID, "edit", granter.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := srv.store.CreateSession(guest.ID, "go-test", "192.0.2.1", "go-test", 24*time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Between the read and the write, the grant is revoked and the item
+		// moves on.
+		srv.verificationBeforeInsertHook = func(attempt int) {
+			if attempt != 0 {
+				return
+			}
+			if err := srv.store.DeleteItemGrant(grant.ID, ws.ID); err != nil {
+				t.Error(err)
+			}
+			title := "Spec, revised"
+			if _, err := srv.store.UpdateItem(spec.ID, models.ItemUpdate{Title: &title}); err != nil {
+				t.Error(err)
+			}
+		}
+		rr := doAuthedJSON(srv, "POST", task3617Path(slug, spec), map[string]any{
+			"results": []any{map[string]any{"criterion": "AC-1", "verdict": "pass"}},
+		}, token)
+		srv.verificationBeforeInsertHook = nil
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("a retry after the grant was revoked: %d %s, want 404", rr.Code, rr.Body.String())
+		}
+		if rows, _ := srv.store.ListItemVerifications(ws.ID, spec.ID, false); len(rows) != 0 {
+			t.Fatalf("the refused retry stored %d rows", len(rows))
+		}
+	})
 }

@@ -91,8 +91,14 @@ func (s *Store) InsertItemVerifications(workspaceID, itemID string, specSeq int6
 			return nil, fmt.Errorf("insert item verification %s: %w", r.CriterionID, err)
 		}
 		if n == 0 {
-			// The target passed its check above in this transaction, so the
-			// row that failed is the via item's.
+			// Either predicate can be the one that failed. The check above
+			// does not pin the item: on Postgres (READ COMMITTED) a writer
+			// can commit a new seq between it and this INSERT (TASK-3617 r1).
+			// Re-check the target first, so a moved item retries and a gone
+			// one is a 404; only when it still holds is the via item at fault.
+			if err := s.checkVerificationTargetTx(tx, workspaceID, itemID, specSeq); err != nil {
+				return nil, err
+			}
 			return nil, ErrVerificationViaGone
 		}
 		out = append(out, r)
