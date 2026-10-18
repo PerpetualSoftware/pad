@@ -9,6 +9,7 @@
 	import { page } from '$app/state';
 	import { onMount, onDestroy } from 'svelte';
 	import { readUpgradeResume, clearUpgradeResume, type UpgradeResume } from '$lib/billing/upgradeResume';
+	import { portalErrorMessage } from '$lib/billing/portalError';
 
 	interface PlanLimits {
 		workspaces: number;
@@ -158,13 +159,53 @@
 	// does not re-enter the polling branch. replaceState keeps the back button
 	// pointing at the pre-checkout page rather than an artifact URL.
 	function clearCheckoutQuery() {
+		clearQueryParam('checkout');
+	}
+
+	function clearQueryParam(name: string) {
 		if (typeof window === 'undefined') return;
 		const url = new URL(window.location.href);
-		if (url.searchParams.has('checkout')) {
-			url.searchParams.delete('checkout');
+		if (url.searchParams.has(name)) {
+			url.searchParams.delete(name);
 			history.replaceState(history.state, '', url.toString());
 		}
 	}
+
+	// Whether a Pro account has a Stripe customer to manage (BUG-3898). Only
+	// GET /auth/me carries stripe_customer_id. A plan granted by an admin has
+	// none, and the portal can only refuse it, so the page says so instead.
+	// 'unknown' (not read yet, or the read failed) keeps the button: the
+	// portal answers any refusal with ?portal_error=, which this page shows.
+	// A customer with no live subscription still gets the portal, for its
+	// invoices (BUG-3898 R2).
+	let billingAccount = $state<'unknown' | 'yes' | 'none'>('unknown');
+
+	async function loadBillingAccount() {
+		try {
+			const me = await api.auth.me();
+			if (destroyed) return;
+			billingAccount = me.stripe_customer_id ? 'yes' : 'none';
+		} catch {
+			// Leave it unknown: the button stays, and a refusal comes back
+			// as a portal_error.
+		}
+	}
+
+	// Read once the account is Pro, whether it was at mount or became Pro
+	// during the visit (a checkout return confirmed by polling; BUG-3898 r1).
+	// One read per visit: a paid plan stores its customer before its plan
+	// (pad-cloud's handleCheckoutCompleted), so a Pro account read without
+	// one is a granted plan.
+	let billingAccountRequested = false;
+	$effect(() => {
+		if (commerceAllowed && isPro && !billingAccountRequested) {
+			billingAccountRequested = true;
+			loadBillingAccount();
+		}
+	});
+
+	// A refused portal request comes back as ?portal_error=<code> (BUG-3898).
+	let portalErrorText = $state<string | null>(null);
 
 	async function pollForUpgrade() {
 		try {
@@ -272,6 +313,13 @@
 		// unread: its banners talk about a payment and link support about one
 		// (PLAN-3291 DR-3, codex r1 on TASK-3293).
 		const checkoutParam = page.url.searchParams.get('checkout');
+		// A portal refusal is a web state too (BUG-3898): dropped unread in
+		// the app, like a checkout return.
+		const portalErrorParam = page.url.searchParams.get('portal_error');
+		if (portalErrorParam !== null) {
+			if (authStore.commerceAllowed) portalErrorText = portalErrorMessage(portalErrorParam);
+			clearQueryParam('portal_error');
+		}
 		if (!authStore.commerceAllowed) {
 			if (checkoutParam) clearCheckoutQuery();
 		} else if (checkoutParam === 'success') {
@@ -339,6 +387,12 @@
 		</div>
 	{/if}
 
+	{#if portalErrorText}
+		<div class="upgrade-banner portal-error" role="alert">
+			<span>{portalErrorText}</span>
+		</div>
+	{/if}
+
 	<section class="card">
 		<h2 class="card-title">Current Plan</h2>
 		<div class="card-body">
@@ -373,8 +427,12 @@
 
 			{#if !commerceAllowed}
 				<!-- no purchase path in the apps -->
+			{:else if isPro && billingAccount === 'none'}
+				<!-- BUG-3898: a granted plan has no Stripe customer, so nothing to manage. -->
+				<p class="granted-note">Your plan was granted to your account, so there is no billing to manage.</p>
 			{:else if isPro}
-				<a href="/billing/portal" class="secondary-btn">Manage Billing</a>
+				<!-- /billing/ is pad-cloud's, not the SPA's: a full navigation (BUG-3897). -->
+				<a href="/billing/portal" class="secondary-btn" data-sveltekit-reload>Manage Billing</a>
 			{:else if stripeAvailable}
 				<!-- TASK-3603: the outcome first, then who it covers. Copy shown to Dave. -->
 				<p class="pro-pitch">
@@ -767,6 +825,13 @@
 		color: var(--text-secondary);
 	}
 
+	/* BUG-3898: a refused portal request, back from pad-cloud. */
+	.upgrade-banner.portal-error {
+		background: color-mix(in srgb, var(--accent-yellow, #eab308) 12%, transparent);
+		border-color: color-mix(in srgb, var(--accent-yellow, #eab308) 35%, transparent);
+		color: var(--text-primary);
+	}
+
 	.upgrade-banner a {
 		color: var(--accent-blue);
 		text-decoration: underline;
@@ -817,6 +882,12 @@
 		font-weight: 600;
 		color: var(--text-primary);
 	}
+	.granted-note {
+		margin: 0;
+		font-size: 0.9rem;
+		color: var(--text-secondary);
+	}
+
 	.pro-covers {
 		margin: 0 0 var(--space-3);
 		color: var(--text-secondary);
