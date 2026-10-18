@@ -43,10 +43,17 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 	// since=YYYY-MM-DD restricts to activity on or after that date. Applied
 	// in the store query so LIMIT counts post-filter rows. Backs
 	// `pad project activity --since` and the pad_project.activity MCP action.
+	// An RFC3339 instant is accepted too (TASK-3615): the catch-up card's
+	// "See everything" carries its exact window. The store normalises it to
+	// UTC at second precision, so a fraction rounds the floor down and an
+	// offset is converted, never read as a UTC wall time.
 	if sinceStr := r.URL.Query().Get("since"); sinceStr != "" {
 		parsed, err := time.Parse("2006-01-02", sinceStr)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_since", "`since` must be a date in YYYY-MM-DD format")
+			parsed, err = time.Parse(time.RFC3339, sinceStr)
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_since", "`since` must be a date in YYYY-MM-DD format or an RFC3339 timestamp")
 			return
 		}
 		params.Since = parsed

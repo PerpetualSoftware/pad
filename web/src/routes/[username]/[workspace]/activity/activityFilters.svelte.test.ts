@@ -87,3 +87,41 @@ describe('Activity filters reach the server (TASK-2219)', () => {
 		expect(screen.getAllByText('Dana, via CLI').length).toBeGreaterThan(0);
 	});
 });
+
+describe("the catch-up card's See everything link (TASK-3615)", () => {
+	it('?since= reaches the request, shows as a chip, and the chip clears it', async () => {
+		page.url = new URL('http://localhost/dave/ws/activity?since=2026-10-17T18%3A40%3A00Z&view=audit');
+		render(ActivityPage);
+		await screen.findByRole('button', { name: 'Load more activity' });
+		await settle();
+		expect(last()).toMatchObject({ since: '2026-10-17T18:40:00Z' });
+		expect(screen.getByTestId('activity-since-chip')).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Remove the since filter' }));
+		await settle();
+		expect(last()).not.toHaveProperty('since');
+		expect(screen.queryByTestId('activity-since-chip')).toBeNull();
+	});
+
+	it('a ?since= the server would refuse is dropped, so the feed loads unfiltered', async () => {
+		page.url = new URL('http://localhost/dave/ws/activity?since=yesterday');
+		render(ActivityPage);
+		await screen.findByRole('button', { name: 'Load more activity' });
+		expect(last()).not.toHaveProperty('since');
+		expect(screen.queryByTestId('activity-since-chip')).toBeNull();
+	});
+
+	it('?view=audit opens Audit without overwriting the stored choice; a click is still persisted', async () => {
+		localStorage.setItem('pad-activity-view', 'live');
+		page.url = new URL('http://localhost/dave/ws/activity?view=audit');
+		render(ActivityPage);
+		await screen.findByRole('button', { name: 'Load more activity' });
+		await settle();
+		expect(screen.getByRole('button', { name: 'Audit' }).classList.contains('selected')).toBe(true);
+		expect(localStorage.getItem('pad-activity-view')).toBe('live');
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Audit' }));
+		await settle();
+		expect(localStorage.getItem('pad-activity-view')).toBe('audit');
+	});
+});

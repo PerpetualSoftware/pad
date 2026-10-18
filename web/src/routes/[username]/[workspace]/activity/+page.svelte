@@ -19,7 +19,7 @@
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import { loadFailure } from '$lib/api/loadFailure';
 	import EpisodeFeed from '$lib/components/activity/EpisodeFeed.svelte';
-	import { ACTOR_OPTIONS, activityFilterParams, hasActivityFilters, actorBadgeTitle } from '$lib/activity/activityFilters';
+	import { ACTOR_OPTIONS, activityFilterParams, hasActivityFilters, actorBadgeTitle, sinceFromUrl } from '$lib/activity/activityFilters';
 	import type { Activity, Collection, FieldDef } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import ActivityChangeValue from '$lib/components/timeline/ActivityChangeValue.svelte';
@@ -70,9 +70,18 @@
 	let filterSource = $state('');
 	let filterActor = $state('');
 	let filterCollection = $state('');
+	// TASK-3615: the catch-up card's "See everything" opens this page with
+	// ?since=<its window's start>&view=audit. There is no control to SET it
+	// here; the chip below shows it and clears it. Re-read whenever the URL's
+	// value changes, so a second See everything on a mounted page applies.
+	let filterSince = $state('');
+	const urlSince = $derived(sinceFromUrl(page.url.searchParams.get('since')));
+	$effect(() => {
+		filterSince = urlSince;
+	});
 	// Every filter is applied by the server (TASK-2219), so the first load,
 	// Load more and the live head re-read all send the same query.
-	const filters = $derived({ action: filterAction, source: filterSource, actor: filterActor, collection: filterCollection });
+	const filters = $derived({ action: filterAction, source: filterSource, actor: filterActor, collection: filterCollection, since: filterSince });
 	const filtered = $derived(hasActivityFilters(filters));
 
 	// View mode: episode cards (Live) vs the raw audit timeline. Persisted so
@@ -85,17 +94,26 @@
 	// browser on the runtime this repo actually develops on.)
 	let view = $state<'live' | 'audit'>('live');
 	let viewRestored = false;
+	// A `?view=` from a link (TASK-3615) wins over the stored choice, but is
+	// not persisted: following a link is not choosing a view. A click on the
+	// toggle clears it, and that choice is persisted as before.
+	let viewFromUrl = $state(false);
 
 	onMount(() => {
 		const stored = localStorage.getItem('pad-activity-view');
 		if (stored === 'audit' || stored === 'live') view = stored;
+		const linked = page.url.searchParams.get('view');
+		if (linked === 'audit' || linked === 'live') {
+			view = linked;
+			viewFromUrl = true;
+		}
 		viewRestored = true;
 	});
 
 	$effect(() => {
 		// Persist only after the restore read, or the SSR default clobbers
 		// the stored choice before onMount can apply it.
-		if (browser && viewRestored) {
+		if (browser && viewRestored && !viewFromUrl) {
 			localStorage.setItem('pad-activity-view', view);
 		}
 	});
@@ -124,6 +142,7 @@
 			filterSource;
 			filterActor;
 			filterCollection;
+			filterSince;
 			// UNTRACKED past the dependencies named above: loadActivities reads
 			// the identity epoch for its fence (TASK-2203), and tracked, that
 			// read would add an identity reload the layout already owns.
@@ -430,14 +449,20 @@
 				<button
 					class="view-segment"
 					class:selected={view === 'live'}
-					onclick={() => (view = 'live')}
+					onclick={() => {
+						viewFromUrl = false;
+						view = 'live';
+					}}
 				>
 					Live
 				</button>
 				<button
 					class="view-segment"
 					class:selected={view === 'audit'}
-					onclick={() => (view = 'audit')}
+					onclick={() => {
+						viewFromUrl = false;
+						view = 'audit';
+					}}
 				>
 					Audit
 				</button>
@@ -485,6 +510,19 @@
 			</select>
 		</div>
 
+		{#if filterSince}
+			<span class="since-chip" data-testid="activity-since-chip">
+				Since {new Date(filterSince).toLocaleString()}
+				<button
+					class="since-chip-clear"
+					aria-label="Remove the since filter"
+					onclick={() => (filterSince = '')}
+				>
+					×
+				</button>
+			</span>
+		{/if}
+
 		{#if filtered}
 			<button
 				class="clear-filters"
@@ -493,6 +531,7 @@
 					filterSource = '';
 					filterActor = '';
 					filterCollection = '';
+					filterSince = '';
 				}}
 			>
 				Clear filters
@@ -707,6 +746,27 @@
 		background: var(--accent-primary);
 		color: white;
 	}
+	.since-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.125rem 0.25rem 0.125rem 0.5rem;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		font-size: 0.8125rem;
+		color: var(--text-secondary);
+	}
+
+	.since-chip-clear {
+		border: none;
+		background: none;
+		color: inherit;
+		cursor: pointer;
+		font-size: 1rem;
+		line-height: 1;
+		padding: 0 0.25rem;
+	}
+
 	.clear-filters {
 		background: none;
 		border: none;

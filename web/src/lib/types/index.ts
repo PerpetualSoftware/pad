@@ -1925,6 +1925,45 @@ export interface DashboardSuggestion {
 	reason: string;
 }
 
+/** One line of the catch-up digest (TASK-3615; GET /workspaces/{ws}/catch-up). */
+export interface CatchUpLine {
+	ref: string;
+	title: string;
+	collection: string;
+	what: string;
+	actor?: string;
+	agent?: string;
+	at?: string;
+}
+
+/** A catch-up section: at most 5 lines, and the total the lines were cut from. */
+export interface CatchUpSection {
+	total: number;
+	lines: CatchUpLine[];
+}
+
+export interface CatchUpAgentGroup {
+	agent: string;
+	changes: number;
+	items: number;
+	lines: CatchUpLine[];
+}
+
+/**
+ * The caller's "catch me up" digest. The window runs from
+ * max(cursor, now - 14 days) to now; `has_cursor` is false until the first
+ * Mark caught up, and the GET never writes one.
+ */
+export interface CatchUpResponse {
+	window: { since: string; until: string; has_cursor: boolean; capped_at_ceiling: boolean };
+	needs_you: CatchUpSection;
+	finished: CatchUpSection;
+	new_and_reopened: CatchUpSection;
+	comments: CatchUpSection;
+	agents: { total: number; groups: CatchUpAgentGroup[] };
+	degraded?: string[];
+}
+
 export interface DashboardResponse {
 	summary: {
 		total_items: number;

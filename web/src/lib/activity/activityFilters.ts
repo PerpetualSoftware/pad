@@ -14,6 +14,24 @@ export interface ActivityFilters {
 	actor: string;
 	/** A collection slug, or ''. */
 	collection: string;
+	/**
+	 * A lower bound on the feed, or '' / absent (TASK-3615). Set from the
+	 * catch-up card's "See everything" link, which carries its window's exact
+	 * RFC3339 start; the server also takes a bare YYYY-MM-DD.
+	 */
+	since?: string;
+}
+
+const SINCE_FORM = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2}))?$/;
+
+/**
+ * The `since` a URL may set, or ''. Anything the server would refuse with
+ * 400 invalid_since is dropped here, so a hand-edited link shows the
+ * unfiltered feed instead of a load error.
+ */
+export function sinceFromUrl(raw: string | null): string {
+	if (!raw || !SINCE_FORM.test(raw) || Number.isNaN(Date.parse(raw))) return '';
+	return raw;
 }
 
 export const ACTOR_OPTIONS: { value: string; label: string }[] = [
@@ -28,11 +46,12 @@ export function activityFilterParams(f: ActivityFilters): Record<string, string>
 	if (f.source) params.source = f.source;
 	if (f.actor) params.actor = f.actor;
 	if (f.collection) params.collection = f.collection;
+	if (f.since) params.since = f.since;
 	return params;
 }
 
 export function hasActivityFilters(f: ActivityFilters): boolean {
-	return !!(f.action || f.source || f.actor || f.collection);
+	return !!(f.action || f.source || f.actor || f.collection || f.since);
 }
 
 /**
