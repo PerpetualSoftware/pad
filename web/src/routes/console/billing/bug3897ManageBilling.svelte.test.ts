@@ -9,7 +9,8 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, screen } from '@testing-library/svelte';
 
 vi.mock('$lib/api/client', () => ({
-	api: { billing: { createCheckoutSession: vi.fn() } },
+	// A paying customer, so the BUG-3898 gate keeps the link.
+	api: { auth: { me: async () => ({ id: 'u', stripe_customer_id: 'cus_1' }) }, billing: { createCheckoutSession: vi.fn() } },
 	withRequestDeadline: (fn: (signal: AbortSignal) => unknown) => fn(new AbortController().signal),
 	BillingCheckoutError: class extends Error {}
 }));

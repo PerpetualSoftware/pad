@@ -20,6 +20,10 @@ const m = vi.hoisted(() => ({
 	url: 'http://localhost/console/billing'
 }));
 
+// Reactive, so a plan that changes during the visit reaches the page's
+// $derived isPro the way authStore.load() does.
+const plan = $state({ value: 'pro' });
+
 vi.mock('$lib/api/client', () => ({
 	api: { auth: { me: m.me }, billing: { createCheckoutSession: vi.fn() } },
 	withRequestDeadline: (fn: (signal: AbortSignal) => unknown) => fn(new AbortController().signal),
@@ -28,7 +32,7 @@ vi.mock('$lib/api/client', () => ({
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		get user() {
-			return { plan: 'pro' };
+			return { plan: plan.value };
 		},
 		cloudMode: true,
 		billingAvailable: true,
@@ -59,13 +63,18 @@ beforeEach(() => {
 	m.me.mockReset();
 	m.commerce = true;
 	m.url = 'http://localhost/console/billing';
+	plan.value = 'pro';
 	replaced = [];
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async () => new Response(JSON.stringify({ free: {}, pro: {} }), { status: 200 }))
 	);
-	vi.spyOn(history, 'replaceState').mockImplementation((_s, _t, url) => {
+	// Recorded AND applied, so the URL really changes, as in a browser
+	// (hunter r1 L4: a recording-only mock left it unchanged).
+	const realReplace = history.replaceState.bind(history);
+	vi.spyOn(history, 'replaceState').mockImplementation((s, t, url) => {
 		replaced.push(String(url));
+		realReplace(s, t, url);
 	});
 });
 
@@ -124,7 +133,8 @@ describe('BUG-3898: ?portal_error= from pad-cloud', () => {
 		render(BillingPage);
 		await settle();
 		expect(screen.getByRole('alert').textContent?.trim()).toBe(PORTAL_ERROR_MESSAGES.stripe_error);
-		expect(replaced.some((u) => !u.includes('portal_error'))).toBe(true);
+		expect(replaced.length).toBeGreaterThan(0);
+		expect(window.location.search).toBe('');
 	});
 
 	it('an unknown code shows the generic message, never the code', async () => {
@@ -142,6 +152,31 @@ describe('BUG-3898: ?portal_error= from pad-cloud', () => {
 		render(BillingPage);
 		await settle();
 		expect(screen.queryByRole('alert')).toBeNull();
-		expect(replaced.some((u) => !u.includes('portal_error'))).toBe(true);
+		expect(window.location.search).toBe('');
+	});
+
+	it('a portal_error alongside a checkout return: both are read, both are cleared', async () => {
+		m.me.mockResolvedValue({ id: 'u', stripe_customer_id: 'cus_1' });
+		openAt('http://localhost/console/billing?checkout=cancelled&portal_error=origin');
+		render(BillingPage);
+		await settle();
+		expect(screen.getByRole('alert').textContent?.trim()).toBe(PORTAL_ERROR_MESSAGES.origin);
+		expect(screen.getByText(/without completing checkout/)).toBeTruthy();
+		expect(window.location.search).toBe('');
+	});
+});
+
+describe('BUG-3898 r1: a plan that becomes Pro during the visit', () => {
+	it('is read for a customer then, not only at mount', async () => {
+		plan.value = 'free';
+		m.me.mockResolvedValue({ id: 'u' });
+		render(BillingPage);
+		await settle();
+		expect(m.me).not.toHaveBeenCalled();
+		plan.value = 'pro';
+		await settle();
+		expect(m.me).toHaveBeenCalledTimes(1);
+		expect(screen.getByText(GRANTED)).toBeTruthy();
+		expect(screen.queryByRole('link', { name: 'Manage Billing' })).toBeNull();
 	});
 });

@@ -191,6 +191,19 @@
 		}
 	}
 
+	// Read once the account is Pro, whether it was at mount or became Pro
+	// during the visit (a checkout return confirmed by polling; BUG-3898 r1).
+	// One read per visit: a paid plan stores its customer before its plan
+	// (pad-cloud's handleCheckoutCompleted), so a Pro account read without
+	// one is a granted plan.
+	let billingAccountRequested = false;
+	$effect(() => {
+		if (commerceAllowed && isPro && !billingAccountRequested) {
+			billingAccountRequested = true;
+			loadBillingAccount();
+		}
+	});
+
 	// A refused portal request comes back as ?portal_error=<code> (BUG-3898).
 	let portalErrorText = $state<string | null>(null);
 
@@ -307,7 +320,6 @@
 			if (authStore.commerceAllowed) portalErrorText = portalErrorMessage(portalErrorParam);
 			clearQueryParam('portal_error');
 		}
-		if (authStore.commerceAllowed && isPro) loadBillingAccount();
 		if (!authStore.commerceAllowed) {
 			if (checkoutParam) clearCheckoutQuery();
 		} else if (checkoutParam === 'success') {
