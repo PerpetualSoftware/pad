@@ -80,7 +80,12 @@ describe('since (TASK-3615)', () => {
 		['2026-02-28T12:00:00+00:99', false],
 		['0000-01-01T00:00:00Z', true],
 		['9999-12-31T23:59:59Z', true],
-		['2026-02-28T12:00:00.123456789123Z', true]
+		['2026-02-28T12:00:00.123456789123Z', true],
+		// Go parses these; the handler refuses a UTC year past 9999 (PR B r5).
+		['9999-12-31T23:59:59-01:00', false],
+		['9999-12-30T23:30:00-24:60', false],
+		['9999-12-31T22:59:59-01:00', true],
+		['9999-12-31T23:59:59+01:00', true]
 	])('sinceFromUrl(%s) matches Go: accepted=%s', (raw, accepted) => {
 		expect(sinceFromUrl(raw)).toBe(accepted ? raw : '');
 	});

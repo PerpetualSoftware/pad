@@ -52,7 +52,10 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			parsed, err = time.Parse(time.RFC3339, sinceStr)
 		}
-		if err != nil {
+		// The store compares the cutoff as RFC3339 text, so a UTC instant past
+		// year 9999 ("10000-…") would sort below every row and open the window
+		// to everything. An offset can carry 9999-12-31 there (TASK-3615 PR B r5).
+		if err != nil || parsed.UTC().Year() > 9999 {
 			writeError(w, http.StatusBadRequest, "invalid_since", "`since` must be a date in YYYY-MM-DD format or an RFC3339 timestamp")
 			return
 		}

@@ -80,4 +80,18 @@ func TestTASK3615_ActivitySinceAcceptsRFC3339(t *testing.T) {
 			t.Fatalf("code %d body %s", code, body)
 		}
 	})
+
+	// An offset can carry the UTC instant into year 10000, whose cutoff text
+	// "10000-…" sorts below every row, so the window would open to everything
+	// (PR B r5). The control is the same wall time one hour earlier, which
+	// stays in 9999 and is accepted.
+	t.Run("a since whose UTC instant passes year 9999 is refused 400 invalid_since", func(t *testing.T) {
+		code, body := feed(t, "9999-12-31T23:59:59-01:00")
+		if code != http.StatusBadRequest || !strings.Contains(body, "invalid_since") {
+			t.Fatalf("code %d body %s", code, body)
+		}
+		if code, got := feed(t, "9999-12-31T22:59:59-01:00"); code != http.StatusOK || got != "" {
+			t.Fatalf("control: code %d, got %q, want 200 with no rows", code, got)
+		}
+	})
 }

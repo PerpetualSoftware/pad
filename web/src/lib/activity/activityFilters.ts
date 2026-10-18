@@ -23,7 +23,7 @@ export interface ActivityFilters {
 }
 
 const SINCE_FORM =
-	/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2})))?$/;
+	/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2})))?$/;
 
 function daysIn(year: number, month: number): number {
 	if (month === 2) return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 29 : 28;
@@ -38,7 +38,8 @@ function daysIn(year: number, month: number): number {
  * The ranges are Go's time.Parse ones (go1.26), checked by hand and never
  * through Date.parse: V8 rolls 2026-02-30 over to March 2 and accepts
  * T24:00:00, where Go refuses both. Go does accept offsets up to ±24:60
- * (TASK-3615 PR B r1).
+ * (TASK-3615 PR B r1). The server also refuses an instant whose UTC year
+ * passes 9999, which an offset can reach from 9999-12-30 or -31 (PR B r5).
  */
 export function sinceFromUrl(raw: string | null): string {
 	const m = raw ? SINCE_FORM.exec(raw) : null;
@@ -47,7 +48,13 @@ export function sinceFromUrl(raw: string | null): string {
 	if (month < 1 || month > 12 || day < 1 || day > daysIn(year, month)) return '';
 	if (m[4] !== undefined) {
 		if (Number(m[4]) > 23 || Number(m[5]) > 59 || Number(m[6]) > 59) return '';
-		if (m[7] !== undefined && (Number(m[7]) > 24 || Number(m[8]) > 60)) return '';
+		if (m[7] !== undefined) {
+			const [oh, om] = [Number(m[8]), Number(m[9])];
+			if (oh > 24 || om > 60) return '';
+			// UTC = local − offset, so a negative offset moves the instant later.
+			const utcMinutes = Number(m[4]) * 60 + Number(m[5]) - (m[7] === '+' ? 1 : -1) * (oh * 60 + om);
+			if (year === 9999 && month === 12 && day + Math.floor(utcMinutes / 1440) > 31) return '';
+		}
 	}
 	return raw;
 }
