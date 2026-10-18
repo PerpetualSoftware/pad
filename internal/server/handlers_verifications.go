@@ -113,18 +113,25 @@ func (s *Server) handleCreateItemVerifications(w http.ResponseWriter, r *http.Re
 	// The via item resolves in THIS workspace and must be visible to the
 	// caller. Missing and invisible are one answer, so the write is not an
 	// existence oracle for items the caller cannot see.
-	var via *models.Item
-	if in.Via != "" {
+	// resolveVia resolves the via item in THIS workspace and requires it to
+	// be visible to the caller. Missing and invisible are one answer, so the
+	// write is not an existence oracle for items the caller cannot see. It
+	// runs again on every retry: a check on the first read authorizes only
+	// that read (TASK-3617 r1 F1 for the item, r2 L1 for via).
+	resolveVia := func() (*models.Item, bool) {
+		if in.Via == "" {
+			return nil, true
+		}
 		v, err := s.store.ResolveItem(workspaceID, in.Via)
 		if err != nil {
 			writeInternalError(w, err)
-			return
+			return nil, false
 		}
 		if v != nil {
 			visible, err := s.itemVisibleTo(r, workspaceID, v)
 			if err != nil {
 				writeInternalError(w, err)
-				return
+				return nil, false
 			}
 			if !visible {
 				v = nil
@@ -132,9 +139,13 @@ func (s *Server) handleCreateItemVerifications(w http.ResponseWriter, r *http.Re
 		}
 		if v == nil {
 			writeError2(w, http.StatusBadRequest, "unknown_via", "via does not name an item in this workspace", map[string]interface{}{"via": in.Via})
-			return
+			return nil, false
 		}
-		via = v
+		return v, true
+	}
+	via, ok := resolveVia()
+	if !ok {
+		return
 	}
 
 	runID := in.RunID
@@ -214,6 +225,9 @@ func (s *Server) handleCreateItemVerifications(w http.ResponseWriter, r *http.Re
 				return
 			}
 			if !s.requireEditPermission(w, r, workspaceID, fresh.ID, fresh.CollectionID) {
+				return
+			}
+			if via, ok = resolveVia(); !ok {
 				return
 			}
 			item = fresh

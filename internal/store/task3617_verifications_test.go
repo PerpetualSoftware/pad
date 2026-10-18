@@ -138,8 +138,16 @@ func TestTASK3617_VerificationStateFollowsTheCriterion(t *testing.T) {
 				t.Fatalf("history has %d rows, want 3", len(hist))
 			}
 			verification.Judge(hist, verification.Index(acceptance.Parse(body)), nil)
-			if hist[0].State != models.VerificationCriterionChanged || hist[2].State != models.VerificationCurrent {
-				t.Fatalf("history states: %s, %s, %s", hist[0].State, hist[1].State, hist[2].State)
+			// By criterion and verdict, not position: the first batch's two
+			// rows share a created_at, so their order is by random id.
+			states := map[string]string{}
+			for _, h := range hist {
+				states[h.CriterionID+"/"+h.Verdict+"/"+h.CriterionHash[:8]] = h.State
+			}
+			oldAC1 := "AC-1/pass/" + verification.CriterionHash("the list shows every open item")[:8]
+			newAC1 := "AC-1/pass/" + verification.CriterionHash("the list shows every open item, newest first")[:8]
+			if states[oldAC1] != models.VerificationCriterionChanged || states["AC-2/fail/"+verification.CriterionHash("a closed item is hidden")[:8]] != models.VerificationCriterionRemoved || states[newAC1] != models.VerificationCurrent {
+				t.Fatalf("history states: %v", states)
 			}
 			latest, err := s.ListItemVerifications(wsID, item.ID, true)
 			if err != nil {

@@ -402,3 +402,61 @@ func TestTASK3617_RetryRechecksAccess(t *testing.T) {
 		}
 	})
 }
+
+// TASK-3617 r2 L1: the same re-check for via. The guest can see the task on
+// the first read; between that read and the write the task's grant is
+// revoked and the spec moves. The retry must resolve via again and refuse,
+// not store a reference to an item the caller can no longer see.
+func TestTASK3617_RetryRechecksVia(t *testing.T) {
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		slug := createWSWithCollections(t, srv)
+		ws, err := srv.store.GetWorkspaceBySlug(slug)
+		if err != nil || ws == nil {
+			t.Fatalf("GetWorkspaceBySlug: %v", err)
+		}
+		spec := createItem(t, srv, slug, "docs", map[string]any{"title": "Spec", "content": task3617Body})
+		task := createItem(t, srv, slug, "tasks", map[string]any{"title": "Did it", "fields": `{"status":"open"}`})
+		granter, err := srv.store.CreateUser(models.UserCreate{Email: "granter-3617v@example.com", Name: "Granter", Username: "granter-3617v", Password: "pw-test-12345"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		guest, err := srv.store.CreateUser(models.UserCreate{Email: "guest-3617v@example.com", Name: "Guest", Username: "guest-3617v", Password: "pw-test-12345"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.store.CreateItemGrant(ws.ID, spec.ID, guest.ID, "edit", granter.ID); err != nil {
+			t.Fatal(err)
+		}
+		taskGrant, err := srv.store.CreateItemGrant(ws.ID, task.ID, guest.ID, "view", granter.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := srv.store.CreateSession(guest.ID, "go-test", "192.0.2.1", "go-test", 24*time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		srv.verificationBeforeInsertHook = func(attempt int) {
+			if attempt != 0 {
+				return
+			}
+			if err := srv.store.DeleteItemGrant(taskGrant.ID, ws.ID); err != nil {
+				t.Error(err)
+			}
+			title := "Spec, revised"
+			if _, err := srv.store.UpdateItem(spec.ID, models.ItemUpdate{Title: &title}); err != nil {
+				t.Error(err)
+			}
+		}
+		rr := doAuthedJSON(srv, "POST", task3617Path(slug, spec), map[string]any{
+			"via": task.Ref, "results": []any{map[string]any{"criterion": "AC-1", "verdict": "pass"}},
+		}, token)
+		srv.verificationBeforeInsertHook = nil
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "unknown_via") {
+			t.Fatalf("a retry after the via grant was revoked: %d %s, want 400 unknown_via", rr.Code, rr.Body.String())
+		}
+		if rows, _ := srv.store.ListItemVerifications(ws.ID, spec.ID, false); len(rows) != 0 {
+			t.Fatalf("the refused retry stored %d rows", len(rows))
+		}
+	})
+}
