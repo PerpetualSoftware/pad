@@ -73,6 +73,11 @@ func NewServer(opts Options) *Server {
 		// CAN serve tools. The list stays empty until TASK-945 wires
 		// in the cmdhelp-derived registry.
 		server.WithToolCapabilities(true),
+		// Tell the /mcp audit log how each tool call ended (BUG-3879).
+		// mcp-go makes the FIRST registered middleware the outermost, so
+		// this sits before WithRecovery: it sees a panic as the error the
+		// recovery turns it into. A no-op over stdio.
+		server.WithToolHandlerMiddleware(recordToolOutcome),
 		// Recover from panics in tool handlers — important once the
 		// shell-out dispatcher (TASK-945) starts running pad
 		// subprocesses with arbitrary client-supplied args.
@@ -90,10 +95,17 @@ func NewServer(opts Options) *Server {
 		// advertises the same string.
 		server.WithInstructions(instructions),
 	}
+	// WithHooks replaces rather than adds, so every hook goes on one value.
+	hooks := &server.Hooks{}
 	if opts.Clients != nil {
 		// BUG-2772: record each session's declared client at initialize.
-		options = append(options, server.WithHooks(opts.Clients.hooks()))
+		hooks = opts.Clients.hooks()
 	}
+	// BUG-3879: a JSON-RPC error answered before any tool handler runs
+	// (an unknown tool, a missing resource or prompt) reaches the audit
+	// log here, since the tool-handler middleware never sees it.
+	hooks.AddOnError(recordJSONRPCError)
+	options = append(options, server.WithHooks(hooks))
 	mcp := server.NewMCPServer(ServerName, version, options...)
 	return &Server{mcp: mcp, debug: opts.Debug}
 }
