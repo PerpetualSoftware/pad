@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 
 /**
  * The single mobile breakpoint for the whole app (px). Viewports whose width

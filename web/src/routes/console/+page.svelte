@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -32,12 +32,11 @@
 		// state derived from the URL.
 		if (browser && page.url.searchParams.get('openCreate') === '1') {
 			uiStore.openCreateWorkspace();
-			const cleaned = new URL(page.url);
+			const cleaned = new URL(page.url.href);
 			cleaned.searchParams.delete('openCreate');
 			void goto(cleaned.pathname + cleaned.search + cleaned.hash, {
 				replaceState: true,
-				noScroll: true,
-				keepFocus: true,
+				reset: false,
 			});
 		}
 

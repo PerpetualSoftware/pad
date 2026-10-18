@@ -24,4 +24,6 @@ export function replaceState(_url: string | URL, _state: unknown): void {}
 export function beforeNavigate(_fn: unknown): void {}
 export function afterNavigate(_fn: unknown): void {}
 export function onNavigate(_fn: unknown): void {}
+// SvelteKit 3 (TASK-3423): PaneHost keeps its scroll per history entry with it.
+export function snapshot<T>(_options: { id?: string; capture: () => T; restore: (value: T) => void; reset?: () => void }): void {}
 export function disableScrollHandling(): void {}

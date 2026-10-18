@@ -43,6 +43,17 @@ export interface PaneMintSettleConfig {
 	 * refs traversed mid-burst are dropped, which is the coalescing itself.
 	 */
 	onSettle: (ref: string | null) => void;
+	/**
+	 * When it returns true at the moment a settle would apply, the settle is
+	 * re-armed for another `settleMs` instead (TASK-3423). Wire it to "a
+	 * navigation is in flight": SvelteKit 3 resolves a `goto` to its
+	 * `afterNavigate` across tasks, so a drill fired inside the window can
+	 * still be in flight when the timer fires, and applying then would mint
+	 * the popped-to ref the drill is replacing. The in-flight navigation's
+	 * own `onNavigate` cancels the re-armed settle; one that never completes
+	 * (cancelled) leaves it to fire with the ref the URL still holds.
+	 */
+	deferWhile?: () => boolean;
 }
 
 export interface PaneMintSettle {
@@ -78,10 +89,17 @@ export function createPaneMintSettle(config: PaneMintSettleConfig): PaneMintSett
 			config.onSettle(ref);
 			return;
 		}
-		timer = setTimeout(() => {
-			timer = undefined;
-			config.onSettle(ref);
-		}, settleMs);
+		const arm = () => {
+			timer = setTimeout(() => {
+				timer = undefined;
+				if (config.deferWhile?.()) {
+					arm();
+					return;
+				}
+				config.onSettle(ref);
+			}, settleMs);
+		};
+		arm();
 	}
 
 	return { onNavigate, cancel };

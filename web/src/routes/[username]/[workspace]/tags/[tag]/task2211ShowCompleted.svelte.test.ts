@@ -11,7 +11,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 
 vi.mock('$app/state', async () => ({ page: (await import('../../../../../test/mocks/reactivePage.svelte')).page }));
-vi.mock('$app/environment', () => ({ browser: true }));
+vi.mock('$app/env', () => ({ browser: true }));
 vi.mock('$lib/api/client', () => ({ api: {} }));
 vi.mock('$lib/stores/localIndex.svelte', async () => ({
 	localIndex: (await import('../../../../../test/mocks/indexedPageStores.svelte')).localIndex

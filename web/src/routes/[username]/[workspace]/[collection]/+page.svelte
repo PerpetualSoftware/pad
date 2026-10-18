@@ -2,7 +2,7 @@
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { page, navigating } from '$app/state';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, isConflictOrNotFound } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
@@ -296,6 +296,8 @@
 		onSettle: (ref) => {
 			paneMintRef = ref;
 		},
+		// A drill still in flight when the window ends applies itself (TASK-3423).
+		deferWhile: () => navigating.type !== null,
 	});
 	afterNavigate((nav) => {
 		const samePathname =
@@ -651,8 +653,7 @@
 		// instead of go(-1)). PLAN-2154 R13. Harmless no-op when no pane is open.
 		goto(newUrl, {
 			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 			state: currentPaneState(),
 		});
 	}
@@ -710,7 +711,6 @@
 		getOpenItemRef: () => openItemRef,
 		cancelFollow: () => cancelPaneFollow(),
 		focusPaneRegion: () => paneHostEl?.focusPaneRegion(),
-		getPaneScrollTop: () => paneHostEl?.getPaneScrollTop() ?? null,
 		captureReturnFocus,
 		setBypassNavGuard: (bypass) => {
 			bypassNavGuard = bypass;
@@ -839,7 +839,7 @@
 	let skipUrlQueryValue: string | null = null;
 
 	function loadUrlFilters() {
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		const skipQuery = skipUrlQueryValue;
 		skipUrlQueryValue = null;
 		const filters: Record<string, string> = {};
@@ -960,13 +960,12 @@
 		// string means only the previous session's own query is suppressed.
 		skipUrlQueryValue = page.url.searchParams.get('q');
 		if (browser) {
-			const url = new URL(page.url);
+			const url = new URL(page.url.href);
 			if (url.searchParams.has('q')) {
 				url.searchParams.delete('q');
 				void goto(url.pathname + url.search, {
 					replaceState: true,
-					noScroll: true,
-					keepFocus: true,
+					reset: false,
 					// PRESERVED (codex round 2 [P2]). Omitting it lets SvelteKit
 					// default the history state to `{}`, losing `paneDepth` and
 					// `paneOwned` — after which closing a drilled pane takes the
@@ -1186,10 +1185,20 @@
 	// position to keep: a handoff was applied for this very navigation, or —
 	// pane-to-pane, where the column never switched — the list is rendered.
 	// Otherwise (still loading, nothing anchored) the saved offset is the only
-	// position there is, so it restores (codex r1). SvelteKit calls
-	// `snapshot.restore` synchronously after these callbacks, so the skip is
-	// released in a microtask. Entering the page from elsewhere (a different
-	// pathname — the Back from Expand to full page) always restores.
+	// position there is, so it restores (codex r1). The skip belongs to the
+	// navigation that armed it: that navigation's own `snapshot.restore`
+	// consumes it, and the NEXT navigation releases whatever is left (an entry
+	// with no saved snapshot is never restored, so nothing would consume it).
+	// It used to be released in a microtask, which assumed SvelteKit restores
+	// synchronously after these callbacks; kit 3 restores after an `await`, so
+	// the microtask released it first and the saved offset jumped the list
+	// (TASK-3423). Entering the page from elsewhere (a different pathname —
+	// the Back from Expand to full page) always restores.
+	let releaseRestoreSkip: (() => void) | null = null;
+	beforeNavigate(() => {
+		releaseRestoreSkip?.();
+		releaseRestoreSkip = null;
+	});
 	afterNavigate((nav) => {
 		const handedOff = !!nav.to && handoffHref === nav.to.url.href;
 		handoffHref = null;
@@ -1199,7 +1208,7 @@
 		const toPane = nav.to.url.searchParams.has('item');
 		const paneToPane = fromPane && toPane && !loading && viewMode !== 'board';
 		if (!handedOff && !paneToPane) return;
-		queueMicrotask(scrollRestoration.skipNextRestore());
+		releaseRestoreSkip = scrollRestoration.skipNextRestore();
 	});
 
 	// Reflect the collection name in the browser tab; clear any stale item ref.

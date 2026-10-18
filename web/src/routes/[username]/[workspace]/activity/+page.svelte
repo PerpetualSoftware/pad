@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto, replaceState } from '$app/navigation';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { collapseReorderBatches, type CollapsedActivity } from '$lib/activity/reorderBatches';
 	import { api } from '$lib/api/client';
@@ -93,9 +93,9 @@
 	// it a reload, at least stays cleared (PR B r3).
 	function dropFromUrl(name: 'since' | 'view') {
 		if (!page.url.searchParams.has(name)) return;
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		url.searchParams.delete(name);
-		goto(url, { replaceState: true, keepFocus: true, noScroll: true }).catch(() => {
+		goto(url, { replaceState: true, reset: false }).catch(() => {
 			try {
 				replaceState(url, page.state);
 			} catch {

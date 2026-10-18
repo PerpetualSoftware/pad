@@ -22,9 +22,9 @@
 // pane-follow, the list-row focus-return target, the unsaved-draft leave guard)
 // stays in the host and is handed in as a small set of injected callbacks.
 
-import { goto, afterNavigate, replaceState } from '$app/navigation';
+import { goto, afterNavigate } from '$app/navigation';
 import { page } from '$app/state';
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { itemUrlId, type Item, type PaneTarget } from '$lib/types';
 import {
 	readPaneState,
@@ -32,7 +32,6 @@ import {
 	planLateralOpen,
 	planPaneClose,
 	type ResolvedPaneState,
-	type PaneHistoryState,
 } from '$lib/collections/paneController';
 import { resolvePaneTarget } from '$lib/collections/paneTarget';
 
@@ -58,12 +57,6 @@ export interface PaneControllerDeps {
 	 * `{#key itemSlug}` remount destroys the just-activated control (R1).
 	 */
 	focusPaneRegion: () => void;
-	/**
-	 * The pane's current scroll offset, or null with no pane (BUG-2182). Read
-	 * just before a forward drill and saved into the entry being left, so Back
-	 * can restore it. Optional: a host without a pane has nothing to report.
-	 */
-	getPaneScrollTop?: () => number | null;
 	/**
 	 * Capture the element that opened the pane, so an eventual close can return
 	 * focus to it (list-row fallback; collection page only). Called ONLY on a
@@ -232,7 +225,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	function openItemPaneByRef(targetRef: string) {
 		if (paneNavInFlight()) return;
 		controllerActionSeq++;
-		const url = new URL(page.url);
+		const url = new URL(page.url.href);
 		const alreadyOpen = url.searchParams.has('item');
 		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
 		// row re-click on an open pane) keeps the ORIGINAL trigger as the
@@ -259,12 +252,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 				// own popstate (Codex review).
 				if (!page.url.searchParams.has('item')) return false;
 				if (currentPaneState().paneDepth !== 0) return false;
-				const u = new URL(page.url);
+				const u = new URL(page.url.href);
 				u.searchParams.set('item', targetRef);
 				goto(`${u.pathname}${u.search}`, {
 					replaceState: true,
-					noScroll: true,
-					keepFocus: true,
+					reset: false,
 					state: resetState,
 				});
 				return true;
@@ -274,8 +266,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		url.searchParams.set('item', targetRef);
 		goto(`${url.pathname}${url.search}`, {
 			replaceState: plan.kind === 'replace',
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 			state: plan.state,
 		});
 	}
@@ -302,23 +293,13 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		deps.cancelFollow();
 		const plan = planPaneDrill(deps.getOpenItemRef(), target, currentPaneState());
 		if (plan.kind === 'noop') return;
-		// BUG-2182: remember where the reader was in THIS item before leaving it,
-		// merged into the current entry's state through SvelteKit's own shallow
-		// routing (never a raw history.replaceState, which would clobber Kit's
-		// sveltekit:* keys). Only for a push: a capped drill REPLACES the entry,
-		// and the entry it would be saved on is the one being overwritten.
-		if (plan.kind === 'push') {
-			const top = deps.getPaneScrollTop?.() ?? null;
-			if (top !== null && top > 0) {
-				replaceState('', { ...(page.state as PaneHistoryState), paneScrollTop: top });
-			}
-		}
-		const url = new URL(page.url);
+		// BUG-2182: where the reader was in THIS item is captured by PaneHost's
+		// snapshot() when this drill leaves the entry (TASK-3423).
+		const url = new URL(page.url.href);
 		url.searchParams.set('item', target);
 		goto(`${url.pathname}${url.search}`, {
 			replaceState: plan.kind === 'replace',
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 			state: plan.state,
 		});
 		// Focus per hop (R1): pull focus into the stable pane region NOW, before
@@ -409,8 +390,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		deps.setBypassNavGuard(true);
 		void goto(url, {
 			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			reset: false,
 			state: { paneDepth: 0, paneOwned: false },
 		}).finally(() => {
 			deps.setBypassNavGuard(false);
@@ -430,12 +410,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		if (plan.kind === 'replace-delete') {
 			// Cold-loaded base with no drills: drop `?item=` in place. No pre-pane
 			// history entry to unwind to.
-			const url = new URL(page.url);
+			const url = new URL(page.url.href);
 			url.searchParams.delete('item');
 			goto(`${url.pathname}${url.search}`, {
 				replaceState: true,
-				noScroll: true,
-				keepFocus: true,
+				reset: false,
 			});
 			return;
 		}
@@ -462,12 +441,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 			// elsewhere leaves it armed (R14 fence-on-continuation).
 			if (!page.url.searchParams.has('item')) return false;
 			if (currentPaneState().paneDepth !== 0) return false;
-			const u = new URL(page.url);
+			const u = new URL(page.url.href);
 			u.searchParams.delete('item');
 			goto(`${u.pathname}${u.search}`, {
 				replaceState: true,
-				noScroll: true,
-				keepFocus: true,
+				reset: false,
 			});
 			return true;
 		});

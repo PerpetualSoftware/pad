@@ -1,4 +1,4 @@
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 
 /**
  * Single-character keyboard shortcuts (BUG-3465, WCAG 2.1.4).
