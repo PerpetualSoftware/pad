@@ -332,7 +332,9 @@ func (s *Server) judgeVerifications(r *http.Request, workspaceID string, item *m
 	for i := range rows {
 		rows[i].ViaRef = viaRefs[rows[i].ViaItemID]
 	}
-	verification.Judge(rows, verification.Index(acceptance.Parse(item.Content)), prs)
+	crit := verification.Index(acceptance.Parse(item.Content))
+	verification.Judge(rows, crit, prs)
+	verification.SortByCriteria(rows, crit)
 	return rows, nil
 }
 

@@ -129,6 +129,7 @@ compress /api/v1/workspaces/{slug}/items/{itemSlug}/share-links
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/star
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/tasks
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/timeline
+compress /api/v1/workspaces/{slug}/items/{itemSlug}/verifications
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/versions
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/versions/{versionID}
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/versions/{versionID}/diff

@@ -13,6 +13,7 @@ package verification
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -153,6 +154,32 @@ func Latest(rows []models.ItemVerification) []models.ItemVerification {
 		}
 	}
 	return out
+}
+
+// SortByCriteria orders rows the way a reader reads the spec: by the
+// criterion's position in the body, then oldest first within a criterion.
+// Rows whose criterion is no longer in the body come last, by id, then time.
+// One batch shares a created_at, so without this its rows would come back in
+// id order, which is random.
+func SortByCriteria(rows []models.ItemVerification, c Criteria) {
+	pos := map[string]int{}
+	for i, id := range c.ids {
+		pos[id] = i
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		pa, oka := pos[a.CriterionID]
+		pb, okb := pos[b.CriterionID]
+		switch {
+		case oka != okb:
+			return oka
+		case oka && pa != pb:
+			return pa < pb
+		case !oka && a.CriterionID != b.CriterionID:
+			return a.CriterionID < b.CriterionID
+		}
+		return newer(b, a)
+	})
 }
 
 // newer orders rows by created_at, then id, the same tiebreak the store's
