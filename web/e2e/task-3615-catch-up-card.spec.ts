@@ -29,13 +29,22 @@ async function ok(resp: Awaited<ReturnType<APIRequestContext['get']>>, what: str
 async function teammate(fixture: SuiteFixture, request: APIRequestContext, ws: string): Promise<APIRequestContext> {
 	const username = `catchup${Date.now()}`;
 	const email = `${username}@example.com`;
-	await ok(
-		await request.post('/api/v1/auth/register', {
-			headers: authJson(fixture),
-			data: { email, username, name: 'Catch-up Teammate', password: PASSWORD },
-		}),
-		'register teammate'
-	);
+	// Account creation is platform administration: the admin's SESSION, not
+	// its API token, which is refused 403 session_required (BUG-3361).
+	const admin = await pwRequest.newContext({
+		baseURL: fixture.baseURL,
+		extraHTTPHeaders: { Authorization: `Bearer ${fixture.adminSessionToken}` },
+	});
+	try {
+		await ok(
+			await admin.post('/api/v1/auth/register', {
+				data: { email, username, name: 'Catch-up Teammate', password: PASSWORD },
+			}),
+			'register teammate'
+		);
+	} finally {
+		await admin.dispose();
+	}
 	const session = await pwRequest.newContext({ baseURL: fixture.baseURL });
 	let token = '';
 	try {
