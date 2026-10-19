@@ -1012,16 +1012,32 @@ func (s *Store) TouchUserActivity(ctx context.Context, userID string) {
 // comment authored, attachment uploaded. See handlers_documents.go's
 // logActivityWithMetaReturningID and handlers_attachments.go's upload handler.
 //
+// first reports that this call recorded the user's FIRST write ever
+// (TASK-3926, the funnel's first-write metric). It is decided by a
+// conditional UPDATE on last_write_at IS NULL, so of any number of concurrent
+// first writes exactly one sees a row count of 1, on SQLite and PostgreSQL
+// alike. A failed statement reports false: a missed count, never a double one.
+//
 // Silent no-op on empty userID so callers don't have to guard.
-func (s *Store) TouchUserWrite(ctx context.Context, userID string) {
+func (s *Store) TouchUserWrite(ctx context.Context, userID string) (first bool) {
 	if userID == "" {
-		return
+		return false
 	}
 	ts := now()
+	res, err := s.db.ExecContext(ctx, s.q(`
+		UPDATE users SET last_write_at = ?
+		WHERE id = ? AND last_write_at IS NULL
+	`), ts, userID)
+	if err == nil {
+		if n, nerr := res.RowsAffected(); nerr == nil && n == 1 {
+			return true
+		}
+	}
 	s.db.ExecContext(ctx, s.q(`
 		UPDATE users SET last_write_at = ?
 		WHERE id = ? AND (last_write_at IS NULL OR last_write_at < ?)
 	`), ts, userID, throttleTime(ts))
+	return false
 }
 
 // throttleTime returns a timestamp 5 minutes before the given RFC3339 time string.

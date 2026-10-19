@@ -162,7 +162,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	// A committed comment is a user write (PLAN-1542 / TASK-1543). Done after
 	// the commit rather than inside the activity helper, so a failed comment
 	// is not counted as one.
-	s.store.TouchUserWrite(r.Context(), currentUserID(r))
+	s.touchUserWrite(r, writeKindComment)
 
 	// Publish SSE event
 	s.publishCommentEvent(sseCommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, actor, source)
@@ -442,7 +442,7 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	s.store.TouchUserWrite(r.Context(), currentUserID(r))
+	s.touchUserWrite(r, writeKindComment)
 
 	// Resolve the item's collection slug for SSE filtering
 	replyCollSlug := ""
