@@ -305,6 +305,17 @@ func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 	if p, ok := flags[it.ID][AttentionNeedsHuman]; !ok || p != 0.9 {
 		t.Fatalf("a pending re-ask dropped the answer it will replace: %v", flags[it.ID])
 	}
+	// A claimed job, its evaluation in flight, is still pending.
+	claimed, err := fx.s.ClaimDecisionJobs("in-flight", 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.ClaimedBy != "in-flight" {
+		t.Fatalf("precondition: the attention job is not claimed (claimed %v, row %+v)", claimed, j)
+	}
+	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold); flags[it.ID] == nil {
+		t.Fatal("a re-ask in flight dropped the answer it will replace")
+	}
 
 	// No job owed: nothing will replace the moved answer, so it goes.
 	if _, err := fx.s.DB().Exec(`DELETE FROM decision_jobs WHERE item_id = ?`, it.ID); err != nil {
@@ -330,6 +341,48 @@ func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 	flags, _, _ = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
 	if p := flags[it.ID][AttentionNeedsHuman]; p != 0.3 {
 		t.Fatalf("after the re-ask, needs_human = %v, want the new 0.3", p)
+	}
+}
+
+// Rewording ONE question of a set drops that key's answer and keeps the
+// others'. The production attention set has one question since TASK-3915,
+// so the set here adds a second one to keep the per-key rule exercised.
+func TestWorkspaceFlags_RewordingOneQuestionKeepsTheOthers(t *testing.T) {
+	fx := newAttentionFixture(t)
+	two := AttentionSet()
+	two.Questions["probe"] = Noul("i", "t", "f")
+	reg := NewRegistry()
+	if err := reg.Register(two); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(fx.s, fx.r.provider, reg)
+	fx.set("probe", 0.9)
+	it := fx.item(t, fx.tasks.ID, "open")
+	if _, err := r.RunOnce(context.Background(), "two", 50, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if flags, _, _ := r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); len(flags[it.ID]) != 2 {
+		t.Fatalf("precondition: both answers flagged, got %v", flags[it.ID])
+	}
+
+	reworded := AttentionSet()
+	reworded.Questions["probe"] = Noul("i", "t", "f")
+	q := reworded.Questions[AttentionNeedsHuman]
+	q.Instructions += " (reworded)"
+	reworded.Questions[AttentionNeedsHuman] = q
+	reg2 := NewRegistry()
+	if err := reg2.Register(reworded); err != nil {
+		t.Fatal(err)
+	}
+	flags, _, err := NewRunner(fx.s, fx.r.provider, reg2).WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := flags[it.ID][AttentionNeedsHuman]; ok {
+		t.Error("an answer to the old wording was returned for the reworded question")
+	}
+	if _, ok := flags[it.ID]["probe"]; !ok {
+		t.Error("an unchanged question's answer was dropped along with the reworded one")
 	}
 }
 

@@ -96,9 +96,10 @@ func NoulValue(d models.ItemDecision) (p float64, ok bool) {
 // ProductionRegistry returns a registry holding every question set the
 // server ships. ConventionsCommentsSet is defined but NOT shipped: it was
 // retired in TASK-3924 (42% of all provider calls on 10-17 for 7 chip-level
-// answers; IDEA-3906's trail). Its stored rows read as stale questions. A registration error is a programming error in a set defined
-// in this package, and a test (TestProductionRegistryRegisters) holds it to
-// none.
+// answers; IDEA-3906's trail). Its stored rows read as stale questions.
+//
+// A registration error is a programming error in a set defined in this
+// package, and a test (TestProductionRegistryRegisters) holds it to none.
 func ProductionRegistry() (*Registry, error) {
 	reg := NewRegistry()
 	if err := reg.Register(AttentionSet()); err != nil {
