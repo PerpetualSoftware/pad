@@ -609,7 +609,7 @@ Pad can ask a small classification model typed questions about your items, such 
 - `pad playbook match -- "<text>"` (`pad_playbook action=match` over MCP) picks the active playbook that free text asks for. It answers `404 decision_provider_unavailable` with no provider, so callers fall back to slug or trigger routing.
 - `GET /workspaces/{ws}/items/{slug}/decisions` lists an item's latest answers.
 
-Answers are computed **asynchronously**. Creating, updating, restoring or moving an item, and creating, editing or deleting a comment on it, queues a job, and a server tick makes the provider call, so no write ever waits on the network. Only open items in non-system collections are asked about: a job owed for a closed item is dropped at the tick without a call.
+Answers are computed **asynchronously**. Creating, updating, restoring or moving an item, and creating, editing or deleting a comment on it, queues a job, and a server tick makes the provider call, so no write ever waits on the network. A re-ask within an hour of the item's last evaluation for a question set waits until that hour is up, so a burst of edits and comments costs at most one call an hour per set, not one per write. Only open items in non-system collections are asked about: a job owed for a closed item is dropped at the tick without a call.
 
 **Configure** (later sources win, per field): the config file, then the instance-admin setting (**Console → Admin → Settings**), then the environment.
 

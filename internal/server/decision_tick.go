@@ -28,7 +28,9 @@ import (
 
 const (
 	// defaultDecisionTickInterval bounds how stale a decision is after a
-	// write: at most one interval plus the provider's latency. Decisions are
+	// write whose job is claimable: at most one interval plus the provider's
+	// latency. A re-ask inside its debounce window (decision.ReaskDebounce,
+	// TASK-3916) waits for the window first. Decisions are
 	// advisory reads, not alarms, so a few seconds is well inside what a
 	// reader would notice, and an idle tick costs one indexed scan of an
 	// empty table.

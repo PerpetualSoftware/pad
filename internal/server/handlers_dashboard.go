@@ -902,9 +902,12 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// is the dependency graph's alone (section e). The text-derived blocked
 	// flag was retired in TASK-3915 (IDEA-3906; the measurements are on that
 	// idea's trail).
-	// Only CURRENT answers at or above the threshold come back — the same
-	// currency rule the item page applies — so the checks below need no
-	// threshold of their own beyond naming which key they read.
+	// Answers at or above the threshold come back when they are CURRENT (the
+	// item page's currency rule), or when the item has moved on but its
+	// re-ask is still pending: a job owed with no recorded failure, for an
+	// item the set still applies to (TASK-3915). With the re-ask debounced
+	// (TASK-3916) that pending window can last up to an hour. So the checks
+	// below need no threshold of their own beyond naming which key they read.
 	if nouls, failing, nerr := s.decisionRunner().WorkspaceFlags(workspaceID, decision.AttentionSetName, decision.AttentionThreshold); nerr != nil {
 		markDegraded("attention.decisions", nerr)
 	} else {

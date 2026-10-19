@@ -1,0 +1,12 @@
+-- Migration 150: decision_jobs.not_before (TASK-3916, IDEA-3906 half B).
+--
+-- The re-ask debounce. A job whose not_before is in the future is owed but
+-- not yet claimable. The enqueue computes it in Go from the item's latest
+-- evaluation for the set plus the set's window (store.SetDecisionDebounce:
+-- 1h for the item-level sets, 0 for a per-comment one), so a burst of edits
+-- and comments costs at most one provider call an hour per set rather than one per write.
+-- NULL means claimable now: a first evaluation, a window already past, or a
+-- set with no window. Fixed-width decisionTime TEXT, the same format and the
+-- same TEXT comparison as lease_expires_at. Never backfilled: a row written
+-- before this migration is claimable now, as it was.
+ALTER TABLE decision_jobs ADD COLUMN not_before TEXT;
