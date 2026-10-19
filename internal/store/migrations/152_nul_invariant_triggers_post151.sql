@@ -11,7 +11,7 @@
 -- the next table rebuild. The predicate, the marker and the SQLite-only scope
 -- are 084's; its header carries the measurements.
 
-CREATE TRIGGER IF NOT EXISTS pad_nul151_item_verifications_agent_name_ins
+CREATE TRIGGER IF NOT EXISTS pad_nul152_item_verifications_agent_name_ins
 BEFORE INSERT ON item_verifications
 FOR EACH ROW WHEN NEW.agent_name IS NOT NULL AND (
 			instr(NEW.agent_name, char(0)) > 0
@@ -20,7 +20,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_verifications.agent_name must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul151_item_verifications_agent_name_upd
+CREATE TRIGGER IF NOT EXISTS pad_nul152_item_verifications_agent_name_upd
 BEFORE UPDATE OF agent_name ON item_verifications
 FOR EACH ROW WHEN NEW.agent_name IS NOT NULL AND (
 			instr(NEW.agent_name, char(0)) > 0
@@ -29,7 +29,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_verifications.agent_name must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul151_item_verifications_created_by_ins
+CREATE TRIGGER IF NOT EXISTS pad_nul152_item_verifications_created_by_ins
 BEFORE INSERT ON item_verifications
 FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
 			instr(NEW.created_by, char(0)) > 0
@@ -38,7 +38,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_verifications.created_by must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul151_item_verifications_created_by_upd
+CREATE TRIGGER IF NOT EXISTS pad_nul152_item_verifications_created_by_upd
 BEFORE UPDATE OF created_by ON item_verifications
 FOR EACH ROW WHEN NEW.created_by IS NOT NULL AND (
 			instr(NEW.created_by, char(0)) > 0
@@ -47,7 +47,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_verifications.created_by must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul151_item_verifications_evidence_ins
+CREATE TRIGGER IF NOT EXISTS pad_nul152_item_verifications_evidence_ins
 BEFORE INSERT ON item_verifications
 FOR EACH ROW WHEN NEW.evidence IS NOT NULL AND (
 			instr(NEW.evidence, char(0)) > 0
@@ -56,7 +56,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_verifications.evidence must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul151_item_verifications_evidence_upd
+CREATE TRIGGER IF NOT EXISTS pad_nul152_item_verifications_evidence_upd
 BEFORE UPDATE OF evidence ON item_verifications
 FOR EACH ROW WHEN NEW.evidence IS NOT NULL AND (
 			instr(NEW.evidence, char(0)) > 0
@@ -65,7 +65,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_verifications.evidence must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul151_item_verifications_evidence_url_ins
+CREATE TRIGGER IF NOT EXISTS pad_nul152_item_verifications_evidence_url_ins
 BEFORE INSERT ON item_verifications
 FOR EACH ROW WHEN NEW.evidence_url IS NOT NULL AND (
 			instr(NEW.evidence_url, char(0)) > 0
@@ -74,7 +74,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: item_verifications.evidence_url must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul151_item_verifications_evidence_url_upd
+CREATE TRIGGER IF NOT EXISTS pad_nul152_item_verifications_evidence_url_upd
 BEFORE UPDATE OF evidence_url ON item_verifications
 FOR EACH ROW WHEN NEW.evidence_url IS NOT NULL AND (
 			instr(NEW.evidence_url, char(0)) > 0

@@ -328,7 +328,7 @@ var nulTriggerMigrations = []string{
 	"133_nul_invariant_triggers_post132.sql",
 	"138_nul_invariant_triggers_post137.sql",
 	"140_nul_invariant_triggers_post139.sql",
-	"151_nul_invariant_triggers_post150.sql",
+	"152_nul_invariant_triggers_post151.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -350,11 +350,11 @@ var nulColumnTriggerFile = map[string]string{
 	"idempotency_keys.key":       "140_nul_invariant_triggers_post139.sql",
 	"idempotency_keys.response":  "140_nul_invariant_triggers_post139.sql",
 	"idempotency_keys.base_body": "140_nul_invariant_triggers_post139.sql",
-	// 150 introduced the table (TASK-3617).
-	"item_verifications.evidence":     "151_nul_invariant_triggers_post150.sql",
-	"item_verifications.evidence_url": "151_nul_invariant_triggers_post150.sql",
-	"item_verifications.created_by":   "151_nul_invariant_triggers_post150.sql",
-	"item_verifications.agent_name":   "151_nul_invariant_triggers_post150.sql",
+	// 151 introduced the table (TASK-3617).
+	"item_verifications.evidence":     "152_nul_invariant_triggers_post151.sql",
+	"item_verifications.evidence_url": "152_nul_invariant_triggers_post151.sql",
+	"item_verifications.created_by":   "152_nul_invariant_triggers_post151.sql",
+	"item_verifications.agent_name":   "152_nul_invariant_triggers_post151.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -437,7 +437,7 @@ var nulExcluded = map[string]string{
 	"item_patches.created_at":                "server timestamp from now() (PLAN-3578 step 3)",
 	"workspace_read_cursors.user_id":         "the authenticated user's server-minted UUID (TASK-3615, migration 149)",
 	"workspace_read_cursors.workspace_id":    "server-minted workspace UUID from the resolved request (TASK-3615)",
-	"item_verifications.id":                  "server-minted verification UUID (TASK-3617, migration 150)",
+	"item_verifications.id":                  "server-minted verification UUID (TASK-3617, migration 151)",
 	"item_verifications.workspace_id":        "server-minted workspace UUID from the resolved item (TASK-3617)",
 	"item_verifications.item_id":             "server-minted item UUID, a foreign key to items(id) (TASK-3617)",
 	"item_verifications.criterion_id":        "refused unless it is a non-placeholder AC-[0-9]+ id that acceptance.Parse finds in the item's body (TASK-3617)",

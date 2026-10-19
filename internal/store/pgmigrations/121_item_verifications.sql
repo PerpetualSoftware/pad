@@ -1,5 +1,5 @@
 -- Verification evidence tied to a revision (TASK-3617) — Postgres mirror of
--- internal/store/migrations/150_item_verifications.sql. See the SQLite
+-- internal/store/migrations/151_item_verifications.sql. See the SQLite
 -- migration for the rationale (why a table, why criterion_hash and not
 -- spec_seq, why via_item_id is SET NULL).
 --

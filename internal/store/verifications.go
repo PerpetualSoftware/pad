@@ -15,7 +15,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// Verification evidence tied to a revision (TASK-3617). Migration 150 says
+// Verification evidence tied to a revision (TASK-3617). Migration 151 says
 // why this is a table and why freshness keys on the criterion's hash. The
 // store persists and lists rows; internal/verification judges them.
 

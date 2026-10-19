@@ -1,4 +1,4 @@
--- Migration 150: verification evidence tied to a revision (TASK-3617; the
+-- Migration 151: verification evidence tied to a revision (TASK-3617; the
 -- design note and its day-92 rulings are on that item's trail).
 --
 -- One row is one verdict on one acceptance criterion of the item that CARRIES
