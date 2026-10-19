@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -239,5 +241,148 @@ func TestWriteClientLabel(t *testing.T) {
 	}
 	if got := signupClient(httptest.NewRequest("POST", "/", nil)); got != "web" {
 		t.Errorf("signupClient(no UA) = %q", got)
+	}
+}
+
+// testCSRFToken is the double-submit pair doRequestWithCookie sends.
+const testCSRFToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func authedReq(method, path string, body *bytes.Buffer, contentType, cookie string, headers map[string]string) *http.Request {
+	if body == nil {
+		body = &bytes.Buffer{}
+	}
+	req := httptest.NewRequest(method, path, body)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: cookie})
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: testCSRFToken})
+	req.Header.Set("X-CSRF-Token", testCSRFToken)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return req
+}
+
+// funnelOwner bootstraps an owner with a workspace and a seeded item and
+// parent comment, written through the store so the account has not written.
+func funnelOwner(t *testing.T, srv *Server) (cookie string, ws models.Workspace, item *models.Item, parent *models.Comment) {
+	t.Helper()
+	cookie = bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Funnel"}, cookie)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	parseJSON(t, rr, &ws)
+	coll, err := srv.store.GetCollectionBySlug(ws.ID, "tasks")
+	if err != nil || coll == nil {
+		t.Fatalf("collection: %v", err)
+	}
+	item, err = srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Seeded", CreatedBy: "user"})
+	if err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	owner, err := srv.store.GetUserByEmail("owner@test.com")
+	if err != nil || owner == nil {
+		t.Fatalf("owner: %v", err)
+	}
+	parent, err = srv.store.CreateComment(ws.ID, item.ID, owner.ID, models.CommentCreate{Body: "parent", CreatedBy: "user"})
+	if err != nil {
+		t.Fatalf("seed comment: %v", err)
+	}
+	return cookie, ws, item, parent
+}
+
+// Every call site, through its handler, as the account's first write: the
+// reply route, the attachment upload, and an item create by an agent.
+func TestFirstWriteMetricEachCallSite(t *testing.T) {
+	t.Run("reply", func(t *testing.T) {
+		srv := testServer(t)
+		m := metrics.New()
+		srv.SetMetrics(m)
+		cookie, ws, _, parent := funnelOwner(t, srv)
+		rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/comments/"+parent.ID+"/replies", map[string]any{"body": "reply"}, cookie)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("reply: %d %s", rr.Code, rr.Body.String())
+		}
+		if got, total := firstWrites(t, m, "comment", "web"), totalFirstWrites(t, m); got != 1 || total != 1 {
+			t.Fatalf("reply as first write: comment/web = %v, total = %v, want 1 and 1", got, total)
+		}
+	})
+	t.Run("attachment", func(t *testing.T) {
+		srv, _ := testServerWithAttachments(t)
+		m := metrics.New()
+		srv.SetMetrics(m)
+		cookie, ws, _, _ := funnelOwner(t, srv)
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		part, _ := mw.CreateFormFile("file", "pixel.png")
+		part.Write(realPNG())
+		mw.Close()
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, authedReq("POST", "/api/v1/workspaces/"+ws.Slug+"/attachments", &buf, mw.FormDataContentType(), cookie, nil))
+		if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+			t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+		}
+		if got, total := firstWrites(t, m, "attachment", "web"), totalFirstWrites(t, m); got != 1 || total != 1 {
+			t.Fatalf("upload as first write: attachment/web = %v, total = %v, want 1 and 1", got, total)
+		}
+	})
+	t.Run("item by an agent", func(t *testing.T) {
+		srv := testServer(t)
+		m := metrics.New()
+		srv.SetMetrics(m)
+		cookie, ws, _, _ := funnelOwner(t, srv)
+		body := bytes.NewBufferString(`{"title":"From the agent"}`)
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, authedReq("POST", "/api/v1/workspaces/"+ws.Slug+"/collections/tasks/items", body, "application/json", cookie, map[string]string{"X-Pad-Agent": "claude-code"}))
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
+		}
+		if got, total := firstWrites(t, m, "item", "agent"), totalFirstWrites(t, m); got != 1 || total != 1 {
+			t.Fatalf("agent item as first write: item/agent = %v, total = %v, want 1 and 1", got, total)
+		}
+	})
+}
+
+// A workspace restore records the write but is not an item write, so as an
+// account's first write it is not counted (TASK-3926 r1).
+func TestFirstWriteMetricSkipsWorkspaceRestore(t *testing.T) {
+	srv := testServer(t)
+	m := metrics.New()
+	srv.SetMetrics(m)
+	cookie, ws, _, _ := funnelOwner(t, srv)
+	rr := doRequestWithCookie(srv, "DELETE", "/api/v1/workspaces/"+ws.Slug, nil, cookie)
+	if rr.Code >= 300 {
+		t.Fatalf("archive workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	owner, _ := srv.store.GetUserByEmail("owner@test.com")
+	// Deleting a workspace does not go through the write helper, so the
+	// restore below is the account's first write.
+	if owner.LastWriteAt != "" {
+		t.Fatalf("precondition: the account already wrote (last_write_at=%q)", owner.LastWriteAt)
+	}
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/restore", nil, cookie)
+	if rr.Code >= 300 {
+		t.Fatalf("restore workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	if total := totalFirstWrites(t, m); total != 0 {
+		t.Fatalf("a workspace restore counted %v first writes, want 0", total)
+	}
+	after, _ := srv.store.GetUserByEmail("owner@test.com")
+	if after.LastWriteAt == "" {
+		t.Fatal("the restore no longer records the write (last_write_at still empty)")
+	}
+}
+
+// The bootstrap admin is not a signup.
+func TestSignupMetricSkipsBootstrap(t *testing.T) {
+	srv := testServer(t)
+	m := metrics.New()
+	srv.SetMetrics(m)
+	bootstrapFirstUser(t, srv, "admin@pad.test", "Admin")
+	if web, app := signups(t, m, "web"), signups(t, m, "app"); web != 0 || app != 0 {
+		t.Fatalf("bootstrap counted as a signup: web = %v app = %v", web, app)
 	}
 }
