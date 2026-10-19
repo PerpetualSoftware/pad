@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -26,16 +27,45 @@ func TestAttentionSet_QuestionsAreTheEvalsVerbatim(t *testing.T) {
 			TrueDesc:     "the next step requires a human's decision, approval, sign-off, credentials, money, an external relationship, or hardware the agent cannot reach",
 			FalseDesc:    "the next step is implementable by an engineer or AI agent from the description alone",
 		},
+		// The three staged questions (TASK-3921), also pinned as literals.
+		"effort": {
+			Kind:         KindScore,
+			Instructions: "How much effort does it take the human owner to supply what this work item is waiting on, or to do its next step?",
+			Levels: []string{
+				"a yes/no or one-line answer",
+				"a short reply, or minutes at a computer",
+				"up to an hour",
+				"research, or hours of work",
+			},
+		},
+		"effort_medium": {
+			Kind:         KindChoice,
+			Instructions: "Where does the human owner have to be to supply what this work item is waiting on?",
+			Options: map[string]string{
+				"desk":         "at a computer: writing, reading, a review or a setting",
+				"device":       "at a particular device, account or piece of hardware, such as a phone, a test device or a console",
+				"other_person": "it needs another person's answer or action",
+				"unclear":      "the text does not say",
+			},
+		},
+		"high_stakes": {
+			Kind:         KindNoul,
+			Instructions: "Getting this work item wrong would be costly: it touches money, security, credentials, legal matters or a release date.",
+			TrueDesc:     "the work involves payments, secrets or access, a legal or compliance obligation, or a date someone is counting on",
+			FalseDesc:    "an ordinary change that is easy to correct afterwards",
+		},
 	}
-	got := AttentionSet().Questions
+	set := AttentionSet()
+	got := set.Questions
 	for key, w := range want {
 		g, ok := got[key]
 		if !ok {
 			t.Errorf("question %q missing from the attention set", key)
 			continue
 		}
-		if g.Kind != w.Kind || g.Instructions != w.Instructions || g.TrueDesc != w.TrueDesc || g.FalseDesc != w.FalseDesc {
-			t.Errorf("question %q differs from the eval's text:\n got %+v\nwant %+v", key, g, w)
+		if g.Kind != w.Kind || g.Instructions != w.Instructions || g.TrueDesc != w.TrueDesc || g.FalseDesc != w.FalseDesc ||
+			!reflect.DeepEqual(g.Levels, w.Levels) || !reflect.DeepEqual(g.Options, w.Options) {
+			t.Errorf("question %q differs from its pinned text:\n got %+v\nwant %+v", key, g, w)
 		}
 	}
 	// TASK-3915 / TASK-3924 retired the other two: the graph owns blocked,
@@ -45,8 +75,15 @@ func TestAttentionSet_QuestionsAreTheEvalsVerbatim(t *testing.T) {
 			t.Errorf("retired question %q is still asked", retired)
 		}
 	}
-	if len(got) != 1 {
-		t.Errorf("attention set has %d questions, want 1", len(got))
+	if len(got) != 4 {
+		t.Errorf("attention set has %d questions, want 4", len(got))
+	}
+	// The three staged keys, and only they, are unsurfaced.
+	if len(set.Unsurfaced) != 3 || !set.Unsurfaced["effort"] || !set.Unsurfaced["effort_medium"] || !set.Unsurfaced["high_stakes"] || set.Unsurfaced["needs_human_decision"] {
+		t.Errorf("Unsurfaced = %v, want exactly effort, effort_medium, high_stakes", set.Unsurfaced)
+	}
+	if set.MaxPerCall != 0 {
+		t.Errorf("MaxPerCall = %d; the set must go in one call", set.MaxPerCall)
 	}
 }
 
@@ -105,8 +142,19 @@ func newAttentionFixture(t *testing.T) *attentionFixture {
 		fx.mu.Lock()
 		defer fx.mu.Unlock()
 		out := map[string]any{}
-		for key := range req.Questions {
-			out[key] = map[string]any{"type": "noul", "noul": fx.answers[key]}
+		for key, q := range req.Questions {
+			// Answer each question as ITS kind (the set mixes all three since
+			// TASK-3921); the provider refuses a mismatched answer.
+			switch q.Type {
+			case string(KindScore):
+				out[key] = map[string]any{"type": "score", "score": 1, "confidence": 0.9,
+					"probabilities": map[string]float64{"1": 1}}
+			case string(KindChoice):
+				out[key] = map[string]any{"type": "choice", "choice": "desk", "confidence": 0.9,
+					"probabilities": map[string]float64{"desk": 1}}
+			default:
+				out[key] = map[string]any{"type": "noul", "noul": fx.answers[key]}
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -125,6 +173,7 @@ func newAttentionFixture(t *testing.T) *attentionFixture {
 	// tick; the re-ask debounce (TASK-3916) has its own tests, which this
 	// would otherwise make every write-then-tick here wait an hour for.
 	fx.s.SetDecisionDebounce(nil)
+	fx.r.backfillPoll = time.Millisecond // the backfill's drain wait polls fast
 	return fx
 }
 
@@ -337,8 +386,15 @@ func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.LastError != "" {
 		t.Fatalf("precondition: the comment owes a clean job, got %+v", j)
 	}
-	if ds, _ := fx.r.Decisions(it.ID); len(ds) != 1 || ds[0].Current {
-		t.Fatalf("precondition: the item page must read the moved answer as NOT current, got %+v", ds)
+	// The item page returns every key's row (four since TASK-3921), none current.
+	ds, _ := fx.r.Decisions(it.ID)
+	if len(ds) != len(AttentionSet().Questions) {
+		t.Fatalf("precondition: want a row per attention question, got %d", len(ds))
+	}
+	for _, d := range ds {
+		if d.Current {
+			t.Fatalf("precondition: the item page must read the moved answer as NOT current, got %+v", d)
+		}
 	}
 	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
 	if err != nil {
@@ -387,8 +443,8 @@ func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 }
 
 // Rewording ONE question of a set drops that key's answer and keeps the
-// others'. The production attention set has one question since TASK-3915,
-// so the set here adds a second one to keep the per-key rule exercised.
+// others'. The production attention set has several questions, so the
+// set here adds one more Noul that this test rewords.
 func TestWorkspaceFlags_RewordingOneQuestionKeepsTheOthers(t *testing.T) {
 	fx := newAttentionFixture(t)
 	two := AttentionSet()

@@ -41,6 +41,14 @@ type QuestionSet struct {
 	// with every answer, so renaming one orphans its history.
 	Questions map[string]Question
 
+	// Unsurfaced names question keys that are asked and stored but that no
+	// surfacing read acts on yet (TASK-3921: staged before their reader).
+	// WorkspaceFlags, SurfacedDecisions (counters included) and
+	// ItemReadDecisions (item show, its --agent projection and MCP item get)
+	// skip them; Decisions, and the decisions endpoint that reads it, still
+	// return the rows.
+	Unsurfaced map[string]bool
+
 	// Eligible, when set, narrows the set to items whose CURRENT state it
 	// accepts. It is checked by the runner at evaluation time, never by the
 	// store's resolver: the resolver runs inside the write transaction and
@@ -372,6 +380,13 @@ type Runner struct {
 	// (TASK-3119: the per-write spend must be visible before any Cloud
 	// rollout). The server wires it to its metrics.
 	usage func(set string, u Usage)
+
+	// backfillChunk overrides effortBackfillChunk when positive, and
+	// beforeBackfillChunk, when set, runs before each chunk is owed (chunk
+	// index from 0) and may fail the backfill there. Both are TEST-ONLY seams.
+	backfillChunk       int
+	backfillPoll        time.Duration
+	beforeBackfillChunk func(ctx context.Context, chunk int) error
 
 	// logger receives the per-evaluation spend line; nil means slog.Default().
 	// A field rather than the global so a test can read its own lines.
@@ -762,6 +777,49 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 	return rows, err
 }
 
+// SetBackfillSeams sets the effort backfill's chunk size and its
+// before-each-chunk hook. Test affordance only (the server's tests live in
+// another package).
+func (r *Runner) SetBackfillSeams(chunk int, hook func(ctx context.Context, chunk int) error) {
+	if r == nil {
+		return
+	}
+	if chunk > 0 {
+		r.backfillChunk = chunk
+	}
+	r.beforeBackfillChunk = hook
+}
+
+// SetBackfillPacing sets how many items one backfill chunk owes (the tick's
+// per-pass limit) and how often the backfill re-checks that the chunk drained
+// (the tick interval). Non-positive values keep the defaults.
+func (r *Runner) SetBackfillPacing(chunk int, poll time.Duration) {
+	if r == nil {
+		return
+	}
+	r.backfillChunk = chunk
+	r.backfillPoll = poll
+}
+
+// ItemReadDecisions is Decisions without the staged keys (TASK-3921): what the
+// item read, the CLI --agent projection and MCP item get carry. The raw
+// Decisions stays behind the decisions endpoint, which shows staged data.
+func (r *Runner) ItemReadDecisions(itemID string) ([]models.ItemDecision, error) {
+	rows, err := r.Decisions(itemID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]models.ItemDecision, 0, len(rows))
+	for _, d := range rows {
+		qs, _ := r.registry.Get(d.QuestionSet)
+		if qs.Unsurfaced[d.QuestionKey] { // the one filter line
+			continue
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
 // SurfacedDecisions is the item's latest answers that its set would surface
 // (TASK-3618, for the item brief): the question is current and the answer
 // reaches the set's Threshold, by the same row test WorkspaceFlags applies.
@@ -781,6 +839,10 @@ func (r *Runner) SurfacedDecisions(itemID string) (surfaced []models.ItemDecisio
 	surfaced = []models.ItemDecision{}
 	for i, d := range rows {
 		qs, _ := r.registry.Get(d.QuestionSet)
+		// A staged key (TASK-3921) is not surfaced and not counted.
+		if qs.Unsurfaced[d.QuestionKey] {
+			continue
+		}
 		switch _, v := surfacing(d, qhashes[i], qs.Threshold); v {
 		case Surfaced:
 			surfaced = append(surfaced, d)

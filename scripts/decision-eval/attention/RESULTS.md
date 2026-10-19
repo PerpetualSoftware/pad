@@ -68,3 +68,44 @@ results-decision.json) and `items/<ref>.json` + `items/<ref>.comments.json`
 from `pad item show|comments --format json`. `-dry` builds every state without
 calling the provider, and must reproduce the day-73 AUC of 0.939 from the
 recorded probabilities.
+
+## TASK-3957 and TASK-3921 (2026-10-19)
+
+The same 140 items and labels, with the dump rebuilt from the day-73
+results-decision.json and the live items. `-dry` reproduces 0.939, and every
+run had 0 errors. r1 excludes the same 2 positives as above (closed with no
+logged terminal transition). Model `jev-1.13.0`. Only needs_human_decision is
+scored. Each run prints the question keys it sends (`questions per call=`).
+
+- TASK-3957: the ONE-question call after TASK-3915 (`blocked` and
+  `waiting_on_external` retired), run at e432d0f5b.
+- TASK-3921: the FOUR-question call, adding the staged effort, effort_medium
+  and high_stakes.
+- `titlebody` is unchanged: it sends the day-73 pair (needs_human_decision +
+  `blocked`) and remains the model-drift control.
+- `titlebody-live` (new) sends the live set on the same {title, body} state, so
+  it measures the call shape without the production state. The TASK-3921 gate
+  is needs_human_decision within .02 of 0.939 there.
+
+| mode | questions per call | AUC | P / R at 0.5 | P / R at 0.7 |
+|---|---|---|---|---|
+| titlebody (drift control) | 2 (day-73 pair) | 0.934 | 0.927 / 0.729 | 0.919 / 0.486 |
+| production, TASK-3957 | 1 | 0.871 | 0.917 / 0.314 | 0.818 / 0.129 |
+| r1, TASK-3957 | 1 | 0.853 | 0.794 / 0.735 | 0.791 / 0.500 |
+| titlebody-live, TASK-3921 (gate) | 4 | 0.936 | 0.944 / 0.729 | 0.944 / 0.486 |
+| production, TASK-3921 | 4 | 0.865 | 0.923 / 0.343 | 0.800 / 0.114 |
+| r1, TASK-3921 | 4 | 0.856 | 0.810 / 0.750 | 0.775 / 0.456 |
+
+Reading:
+
+- No model drift: the control gives 0.934, against 0.935 on 09-22.
+- The gate passes. titlebody-live gives 0.936, 0.003 below 0.939, and is not
+  measurably different from the two-question control.
+- Adding the three staged questions does not move needs_human_decision on the
+  production or replayed state: production went 0.871 to 0.865 and r1 went
+  0.853 to 0.856.
+- r1 is 0.03 below its 09-22 figure (0.885, three questions) under both the one-
+  and four-question calls, so it predates this change. These runs cannot say
+  whether the TASK-3915 call shape or another runner change since 09-22
+  opened it. Production compares only within this table, because its
+  states are live and have moved since 09-22.

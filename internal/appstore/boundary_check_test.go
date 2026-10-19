@@ -71,6 +71,7 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"outboxRowCap":               "reads in-memory config; no SQL",
 	"outboxClaimableRowCap":      "reads in-memory config; no SQL",
 	"enqueueDecisionJobsTx":      "INSERT ... ON CONFLICT DO UPDATE on decision_jobs for the item it is given; no-op without a provider. Reads MAX(item_decisions.evaluated_at) for the item when its set has a debounce window (TASK-3916)",
+	"owedDecisionJobTx":          "INSERT ... ON CONFLICT DO UPDATE on decision_jobs for the item and set it is given (the per-set body of enqueueDecisionJobsTx, TASK-3921); reads MAX(item_decisions.evaluated_at) for the item when the set has a debounce window",
 	"decisionSetResolver":        "loads an in-memory pointer; no SQL",
 	"decisionDebounceFunc":       "loads an in-memory pointer; no SQL (TASK-3916)",
 	"createActivityQ":            "INSERT INTO activities on the executor it is given (the fence's tx)",
@@ -116,6 +117,9 @@ var reviewedStoreFuncs = map[string]string{
 var allowedFuncValues = map[string]map[string]string{
 	"(*github.com/PerpetualSoftware/pad/internal/store.Store).enqueueDecisionJobsTx": {
 		"resolve":  "the store's DecisionSetResolver; production installs decision.Registry.SetsFor, an in-memory lookup that runs no SQL",
+		"debounce": "the store's DecisionDebounce (TASK-3916), passed to decisionWindowFor; production installs decision.Runner.debounceFor, a registry lookup that runs no SQL",
+	},
+	"(*github.com/PerpetualSoftware/pad/internal/store.Store).owedDecisionJobTx": {
 		"debounce": "the store's DecisionDebounce (TASK-3916), passed to decisionWindowFor; production installs decision.Runner.debounceFor, a registry lookup that runs no SQL",
 	},
 	"github.com/PerpetualSoftware/pad/internal/store.decisionWindowFor": {
