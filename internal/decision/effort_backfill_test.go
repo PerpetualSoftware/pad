@@ -509,7 +509,10 @@ func TestEffortBackfill_CancelStopsBetweenChunksAndWritesNoMarker(t *testing.T) 
 // A chunk whose WRITE fails in the store, not in the test hook, must stop the
 // run before the marker. The hook only breaks the table: the error has to come
 // back through OweDecisionJobs, which is the path the other failure tests
-// never reach (they fail the hook itself).
+// never reach (they fail the hook itself). It breaks the table before the LAST
+// chunk on purpose: after any earlier chunk, the drain wait that follows reads
+// the same table and fails too, which would keep the marker unwritten even if
+// the chunk's own error were ignored (mutant M6, TASK-3921).
 func TestEffortBackfill_StoreFailureMidRunWritesNoMarker(t *testing.T) {
 	fx := newAttentionFixture(t)
 	for i := 0; i < 3; i++ {
@@ -520,7 +523,7 @@ func TestEffortBackfill_StoreFailureMidRunWritesNoMarker(t *testing.T) {
 	fx.r.backfillChunk = 1
 	fx.holdDrained(t) // chunk k+1 waits for chunk k's jobs to be taken
 	fx.r.beforeBackfillChunk = func(_ context.Context, chunk int) error {
-		if chunk == 1 {
+		if chunk == 2 {
 			if _, err := fx.s.DB().Exec(`ALTER TABLE decision_jobs RENAME TO decision_jobs_gone`); err != nil {
 				t.Fatal(err)
 			}
