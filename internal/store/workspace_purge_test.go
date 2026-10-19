@@ -38,6 +38,9 @@ var wsChildTables = []string{
 	// item_needs_snoozes (TASK-3918) has no line in purgeWorkspaceChildDeletes:
 	// its FKs to items and workspaces cascade. Listed so the purge tests prove it.
 	"item_needs_snoozes",
+	// comment_mentions (TASK-3917): same, its FKs to comments, items and
+	// workspaces cascade.
+	"comment_mentions",
 	// event_outbox has NO foreign key to workspaces (TASK-2658 — an outbox row
 	// must outlive its subject), so nothing deletes it on the purge's behalf.
 	// It holds full item content and comment bodies, so an omission here keeps
@@ -93,6 +96,8 @@ func seedFullWorkspace(t *testing.T, s *Store, u *models.User, name string) seed
 		commentID, item1.ID, ws.ID, "hi", ts, ts)
 	s.mustExec(t, `INSERT INTO comment_reactions (id, comment_id, emoji, created_at) VALUES (?, ?, ?, ?)`,
 		newID(), commentID, "👍", ts)
+	s.mustExec(t, `INSERT INTO comment_mentions (comment_id, user_id, item_id, workspace_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+		commentID, u.ID, item1.ID, ws.ID, ts)
 
 	// item_versions / item_links / item_stars / item_yjs_updates /
 	// item_wiki_links / item_collection_moves / item_grants / status_transitions

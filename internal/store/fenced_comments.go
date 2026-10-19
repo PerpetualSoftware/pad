@@ -116,6 +116,9 @@ func (f *FencedTx) CreateComment(in FencedCommentCreate) (*models.Comment, error
 	); err != nil {
 		return nil, fmt.Errorf("fenced comment insert: %w", err)
 	}
+	if err := f.s.reindexCommentMentionsTx(f.tx, id, f.workspaceID, in.ItemID, in.Body, true); err != nil {
+		return nil, err
+	}
 	created, err := f.s.getCommentQ(f.tx, id)
 	if err != nil {
 		return nil, err
@@ -179,6 +182,9 @@ func (f *FencedTx) UpdateComment(itemID, commentID, body string, actor FencedAct
 	}
 	if _, err := f.tx.Exec(f.s.q(`UPDATE comments SET body = ?, updated_at = ? WHERE id = ?`), body, now(), commentID); err != nil {
 		return nil, fmt.Errorf("fenced comment update: %w", err)
+	}
+	if err := f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, body, true); err != nil {
+		return nil, err
 	}
 	updated, err := f.s.getCommentQ(f.tx, commentID)
 	if err != nil {
@@ -262,6 +268,9 @@ func (f *FencedTx) DeleteComment(itemID, commentID string, actor FencedActor) er
 		}
 		if _, err := f.tx.Exec(f.s.q(`UPDATE comments SET body = '', deleted_at = ? WHERE id = ?`), now(), commentID); err != nil {
 			return fmt.Errorf("fenced comment delete: tombstone: %w", err)
+		}
+		if err := f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, "", false); err != nil {
+			return err
 		}
 	} else {
 		if _, err := f.tx.Exec(f.s.q(`DELETE FROM comments WHERE id = ?`), commentID); err != nil {
