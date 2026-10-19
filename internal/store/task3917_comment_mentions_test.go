@@ -430,6 +430,9 @@ func TestCommentMentions_CopyAndImportNotIndexed(t *testing.T) {
 	wantMentions(t, s, newID, "edit of an imported comment")
 
 	// The backfill skips imported comments and indexes the native one.
+	if _, err := s.db.Exec(s.q(`UPDATE comments SET created_at = '2003-03-03T00:00:00Z' WHERE id = ?`), live.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.db.Exec(`DELETE FROM comment_mentions`); err != nil {
 		t.Fatal(err)
 	}
