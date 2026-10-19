@@ -55,6 +55,9 @@ func TestTASK3919_AwaitsHumanRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if models.CollectionAwaitsHumanJSON(up.Settings) {
+				t.Fatalf("the update returned settings still asking: %s", up.Settings)
+			}
 			got, err = s.GetCollection(coll.ID)
 			if err != nil {
 				t.Fatal(err)
