@@ -1121,6 +1121,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logAuditEventForUser(models.ActionRegister, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
+	// A self-serve or invited signup, now signed in and kept: every rollback
+	// is above. The admin-created branch returned earlier and is not a
+	// signup; OAuth signups are counted by pad-cloud (TASK-3926).
+	s.recordSignup(r, "email")
 
 	// Auto-create default workspace in cloud mode
 	created := s.autoCreateWorkspace(user)

@@ -1,6 +1,8 @@
 package store
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -521,5 +523,60 @@ func insertWithPlanAndDate(t *testing.T, s *Store, email, plan string, createdAt
 		id, email, "u_"+id, "Test "+id, "x", "member", plan, ts, ts)
 	if err != nil {
 		t.Fatalf("insert user with plan=%s: %v", plan, err)
+	}
+}
+
+// TASK-3926: TouchUserWrite reports the user's FIRST write exactly once,
+// sequentially and under concurrent first writes. Runs on SQLite, and on
+// PostgreSQL under make test-pg (testStore picks the backend).
+func TestTouchUserWriteReportsFirstOnce(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+
+	if s.TouchUserWrite(ctx, "") {
+		t.Fatal("an empty user id reported a first write")
+	}
+
+	u := createTestUser(t, s, "first@example.com", "First", "password123")
+	if !s.TouchUserWrite(ctx, u.ID) {
+		t.Fatal("the first write was not reported as first")
+	}
+	if s.TouchUserWrite(ctx, u.ID) {
+		t.Fatal("a second write was reported as first")
+	}
+	// Past the throttle window the throttled update runs again, and it is
+	// still not a first write.
+	old := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	if _, err := s.db.Exec(s.q(`UPDATE users SET last_write_at = ? WHERE id = ?`), old, u.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	if s.TouchUserWrite(ctx, u.ID) {
+		t.Fatal("a write past the throttle window was reported as first")
+	}
+	var lw string
+	if err := s.db.QueryRow(s.q(`SELECT last_write_at FROM users WHERE id = ?`), u.ID).Scan(&lw); err != nil || lw == old {
+		t.Fatalf("the throttled update did not run past the window (last_write_at=%q err=%v)", lw, err)
+	}
+
+	// Concurrent first writes: exactly one wins.
+	v := createTestUser(t, s, "race@example.com", "Race", "password123")
+	const n = 8
+	var wg sync.WaitGroup
+	var firsts atomic.Int32
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if s.TouchUserWrite(ctx, v.ID) {
+				firsts.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := firsts.Load(); got != 1 {
+		t.Fatalf("%d of %d concurrent first writes reported first, want exactly 1", got, n)
 	}
 }

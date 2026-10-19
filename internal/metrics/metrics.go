@@ -539,7 +539,28 @@ type Metrics struct {
 	OAuthFlowDuration          *prometheus.HistogramVec
 	OAuthTokenRevocationsTotal *prometheus.CounterVec
 	OAuthTokenTTLSeconds       prometheus.Histogram
+
+	// The app funnel's server half (TASK-3926, PLAN-3908 phase 1; installs
+	// come from the store consoles, never from client events). SignupsTotal
+	// counts email registrations that sign the new user in (self-serve and
+	// invited; not admin-created, and not OAuth, which pad-cloud counts as
+	// pad_cloud_oauth_signups_total). FirstWritesTotal counts a human
+	// account's first write within its first 30 days, by what it wrote and
+	// from which client, and FirstWriteAgeSeconds is how long after signup
+	// that first write came. Fixed label sets only: no ids, emails or slugs.
+	SignupsTotal         *prometheus.CounterVec   // method, client
+	FirstWritesTotal     *prometheus.CounterVec   // kind, client
+	FirstWriteAgeSeconds *prometheus.HistogramVec // client
 }
+
+// Label values for the funnel series (TASK-3926). SignupClients is the
+// client set on pad_signups_total; WriteClients adds the two that can only
+// write (a CLI or API token, and an agent).
+var (
+	SignupClients   = []string{"app", "web"}
+	WriteClients    = []string{"app", "web", "cli", "agent"}
+	FirstWriteKinds = []string{"item", "comment", "attachment"}
+)
 
 // New creates a new Metrics instance with a custom registry and registers
 // all application metrics plus Go runtime and process collectors.
@@ -714,6 +735,30 @@ func New() *Metrics {
 		Name: "pad_decision_tokens_total",
 		Help: "Decision-provider tokens by question set and direction (input, output).",
 	}, []string{"set", "direction"})
+
+	signupsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_signups_total",
+		Help: "Registrations that signed the new user in, by method (email) and client (app|web). OAuth signups are counted by pad-cloud (TASK-3926).",
+	}, []string{"method", "client"})
+	firstWritesTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pad_first_writes_total",
+		Help: "A human account's first write, within 30 days of signup, by kind (item|comment|attachment) and client (app|web|cli|agent) (TASK-3926).",
+	}, []string{"kind", "client"})
+	firstWriteAgeSeconds := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "pad_first_write_age_seconds",
+		Help:    "Seconds from signup to a human account's first write, within 30 days, by client (TASK-3926).",
+		Buckets: []float64{60, 300, 3600, 86400, 604800, 2592000},
+	}, []string{"client"})
+	// Present at 0 from start, so rate() and increase() see the first one.
+	for _, client := range SignupClients {
+		signupsTotal.WithLabelValues("email", client)
+	}
+	for _, client := range WriteClients {
+		for _, kind := range FirstWriteKinds {
+			firstWritesTotal.WithLabelValues(kind, client)
+		}
+		firstWriteAgeSeconds.WithLabelValues(client)
+	}
 
 	oauthResourceMissingTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pad_oauth_resource_missing_total",
@@ -931,6 +976,9 @@ func New() *Metrics {
 		oauthFlowsTotal,
 		oauthResourceMissingTotal,
 		planWritesTotal,
+		signupsTotal,
+		firstWritesTotal,
+		firstWriteAgeSeconds,
 		decisionCallsTotal,
 		decisionTokensTotal,
 		oauthFlowDuration,
@@ -996,6 +1044,9 @@ func New() *Metrics {
 		DecisionTokensTotal:          decisionTokensTotal,
 		OAuthFlowDuration:            oauthFlowDuration,
 		OAuthTokenRevocationsTotal:   oauthTokenRevocationsTotal,
+		SignupsTotal:                 signupsTotal,
+		FirstWritesTotal:             firstWritesTotal,
+		FirstWriteAgeSeconds:         firstWriteAgeSeconds,
 		OAuthTokenTTLSeconds:         oauthTokenTTLSeconds,
 	}
 }

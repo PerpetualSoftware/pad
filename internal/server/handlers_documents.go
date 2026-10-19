@@ -492,13 +492,21 @@ func (s *Server) activityForRequest(workspaceID, documentID, action string, r *h
 }
 
 func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action string, r *http.Request, metadata string) (string, error) {
-	uid := currentUserID(r)
 	id, err := s.store.CreateActivityDebounced(s.activityForRequest(workspaceID, documentID, action, r, metadata))
 	// Bump last_write_at on the actor. Every action that flows through this
-	// helper (created/updated/archived/restored/moved/commented) is a write.
+	// helper (created/updated/archived/restored/moved/reordered) is a write.
 	// PLAN-1542 / TASK-1543. TouchUserWrite is throttled + no-ops on empty
-	// userID, so we can call unconditionally.
-	s.store.TouchUserWrite(r.Context(), uid)
+	// userID, so we can call unconditionally. On the funnel (TASK-3926) an
+	// item action is kind=item (comments and attachments touch from their own
+	// handlers). The one caller with no item, a workspace restore, still
+	// records the write but is never counted as an item: if it is an
+	// account's first write, that first write goes uncounted (r1, Codex and
+	// the hunter).
+	if documentID == "" {
+		s.store.TouchUserWrite(r.Context(), currentUserID(r))
+	} else {
+		s.touchUserWrite(r, writeKindItem)
+	}
 	return id, err
 }
 
