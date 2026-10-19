@@ -43,8 +43,10 @@ type QuestionSet struct {
 
 	// Unsurfaced names question keys that are asked and stored but that no
 	// surfacing read acts on yet (TASK-3921: staged before their reader).
-	// WorkspaceFlags and SurfacedDecisions skip them entirely, counters
-	// included; Decisions and the decisions endpoint still return the rows.
+	// WorkspaceFlags, SurfacedDecisions (counters included) and
+	// ItemReadDecisions (item show, its --agent projection and MCP item get)
+	// skip them; Decisions, and the decisions endpoint that reads it, still
+	// return the rows.
 	Unsurfaced map[string]bool
 
 	// Eligible, when set, narrows the set to items whose CURRENT state it
