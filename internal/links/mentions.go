@@ -163,7 +163,9 @@ func badMentionFollower(content string, end int) bool {
 // ("@alice_bob" no, "@alice_" yes); "." plus an ASCII letter or digit rejects.
 // Known limits, by decision (TASK-3917 r1, r2): "end.@alice" is read as an
 // email and skipped; "@alice.Thanks" (no space after the period) is rejected,
-// indistinguishable from "@alice.smith"; "-@alice" is skipped; usernames under
+// indistinguishable from "@alice.smith"; "-@alice" is skipped; "@alice" directly
+// followed by a CJK (or any non-ASCII) letter is not indexed, since that rule
+// keeps "@josé" from indexing "jos"; usernames under
 // 3 characters (legacy) never match; HTML such as <code>@alice</code> is not
 // parsed as code. It only parses: resolving a name to a user is the store's job.
 // (TASK-3917, IDEA-3906)
