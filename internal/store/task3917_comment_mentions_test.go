@@ -353,8 +353,11 @@ func funcBody(src, name string) string {
 // callsReindex reports whether the top-level decl name in src CALLS the
 // helper. Lines that are // comments are ignored: a doc comment naming the
 // helper (including the doc comment of the NEXT decl, which funcBody's span
-// includes) is not a call. A prose-triggered false red is accepted: it fails
-// safe and the message names the decl (TASK-3917 r2 F5).
+// includes) is not a call (TASK-3917 r2 F5). It is a text match, so the helper
+// named in a trailing // comment, a /* */ comment or a string literal still
+// reads as a call: that direction fails OPEN (a decl that lacks the call
+// passes), accepted because it needs the helper's exact name with "(" written
+// beside code that does not call it (TASK-3917 r3 F4).
 func callsReindex(src, name string) bool {
 	var code []string
 	for _, line := range strings.Split(funcBody(src, name), "\n") {
@@ -366,23 +369,23 @@ func callsReindex(src, name string) bool {
 	return strings.Contains(strings.Join(code, "\n"), "reindexCommentMentionsTx(")
 }
 
-// The INDEXED check ignores comment lines. The scratch source holds a func
-// that lacks the call but names the helper in its own doc comment, one whose
-// next decl's doc comment names it, and a control that really calls it.
+// The INDEXED check ignores comment lines. Each leg is isolated, so each fails
+// alone if the filter goes: innerComment names the helper only in a comment
+// inside its body (the decl after it has no doc); nextDoc's span holds only the
+// following decl's doc comment naming the helper; real is the control.
 func TestCommentMentions_GuardIgnoresCommentLines(t *testing.T) {
 	src := "package store\n\n" +
-		"// lacksCall used to call reindexCommentMentionsTx(tx) here.\n" +
-		"func (s *Store) lacksCall() {\n\t// reindexCommentMentionsTx( is mentioned in prose\n}\n\n" +
-		"// leaky: its own doc names reindexCommentMentionsTx( too.\n" +
-		"func (s *Store) leaky() {\n}\n\n" +
+		"func (s *Store) innerComment() {\n\t// reindexCommentMentionsTx( is mentioned in prose\n}\n\n" +
+		"func (s *Store) sep() {\n}\n\n" +
+		"func (s *Store) nextDoc() {\n}\n\n" +
+		"// docd's doc names reindexCommentMentionsTx( too.\n" +
+		"func (s *Store) docd() {\n}\n\n" +
 		"func (s *Store) real() {\n\ts.reindexCommentMentionsTx(tx, 1)\n}\n"
-	if callsReindex(src, "lacksCall") {
-		t.Error("a comment naming the helper was read as a call (lacksCall)")
+	if callsReindex(src, "innerComment") {
+		t.Error("a comment inside the body was read as a call (innerComment)")
 	}
-	// lacksCall's span runs to the next decl, so leaky's doc comment sits
-	// inside it as well as inside leaky's own span's start.
-	if callsReindex(src, "leaky") {
-		t.Error("the next decl's doc comment was read as a call (leaky)")
+	if callsReindex(src, "nextDoc") {
+		t.Error("the next decl's doc comment was read as a call (nextDoc)")
 	}
 	if !callsReindex(src, "real") {
 		t.Error("a real call was not seen (control)")

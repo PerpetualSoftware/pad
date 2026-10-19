@@ -64,20 +64,43 @@ func emailLocalByte(b byte) bool {
 	return strings.IndexByte("._%+-", b) >= 0
 }
 
+// urlScan answers "is the non-space run ending at this @ a URL" in O(1) per
+// match. Matches arrive in increasing order, so advance walks each byte once
+// and an ExtractMentions call stays linear in the body (TASK-3917 r3: a
+// backward scan per match made "/@a" repeated quadratic).
+type urlScan struct {
+	pos      int // bytes before pos have been scanned
+	runStart int // start of the current non-space run
+	scheme   int // start of the last "://" seen, or -1
+}
+
+func (u *urlScan) advance(content string, at int) {
+	for ; u.pos < at; u.pos++ {
+		switch {
+		case isSpaceByte(content[u.pos]):
+			u.runStart = u.pos + 1
+		case content[u.pos] == ':' && strings.HasPrefix(content[u.pos:], "://"):
+			u.scheme = u.pos
+		}
+	}
+}
+
+// inURL reports whether the non-space run before the "@" at content[at]
+// contains "://" or starts with "www.". advance(content, at) must have run.
+func (u *urlScan) inURL(content string, at int) bool {
+	return (u.scheme >= u.runStart && u.scheme+3 <= at) ||
+		strings.HasPrefix(content[u.runStart:at], "www.")
+}
+
 // badMentionPrefix reports whether the byte before the "@" at content[at]
 // makes it a non-mention (an email local part, a path, a URL).
-func badMentionPrefix(content string, at int) bool {
+func badMentionPrefix(content string, at int, u *urlScan) bool {
 	c := content[at-1]
 	switch c {
 	case '\\':
 		return true
 	case '/':
-		start := at
-		for start > 0 && !isSpaceByte(content[start-1]) {
-			start--
-		}
-		run := content[start:at]
-		return strings.Contains(run, "://") || strings.HasPrefix(run, "www.")
+		return u.inURL(content, at)
 	case '_':
 		// Italics ("_@alice_"): the "_" opens the word.
 		return !(at-1 == 0 || isSpaceByte(content[at-2]))
@@ -137,12 +160,14 @@ func ExtractMentions(content string) []string {
 
 	seen := map[string]bool{}
 	var out []string
+	u := urlScan{scheme: -1}
 	for _, m := range mentionPattern.FindAllStringSubmatchIndex(content, -1) {
 		at := m[0]
+		u.advance(content, at)
 		if isInRanges(at, fenced) || isInRanges(at, inline) {
 			continue
 		}
-		if at > 0 && badMentionPrefix(content, at) {
+		if at > 0 && badMentionPrefix(content, at, &u) {
 			continue
 		}
 		if badMentionFollower(content, m[1]) {

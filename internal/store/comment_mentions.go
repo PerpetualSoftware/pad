@@ -13,8 +13,8 @@ import (
 //
 // live is false for a tombstone (and for any caller that knows the comment is
 // gone): every row for the comment is deleted. Otherwise the body's
-// @-mentions are parsed (links.ExtractMentions), resolved to human users in
-// ONE query over LOWER(username), and DIFFED against the stored rows: rows no
+// @-mentions are parsed (links.ExtractMentions), resolved to human users
+// over LOWER(username) in chunks, and DIFFED against the stored rows: rows no
 // longer mentioned are deleted, new ones inserted, and a mention that
 // survives an edit keeps its original created_at.
 //

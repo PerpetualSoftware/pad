@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseMentions(t *testing.T) {
@@ -51,6 +52,11 @@ func TestParseMentions(t *testing.T) {
 		{"www url rejected", "www.x.social/@alice", nil},
 		{"italics prefix", "_@alice_", []string{"alice"}},
 		{"underscore prefix mid-word rejected", "foo_@alice", nil},
+		{"url in an earlier run does not taint a later slash", "https://x.social/a and b/@alice", []string{"alice"}},
+		{"url run with path then slash rejected", "https://x.social/a/@alice", nil},
+		{"url then space then mention", "see https://x.social/a @alice", []string{"alice"}},
+		{"www in an earlier run does not taint", "www.x.social z/@alice", []string{"alice"}},
+		{"scheme earlier in the same run", "go:x://h/p/@alice", nil},
 		{"hyphen prefix rejected (documented limit)", "-@alice", nil},
 		{"period at end", "thanks @alice.", []string{"alice"}},
 		{"apostrophe", "@alice's turn", []string{"alice"}},
@@ -63,5 +69,17 @@ func TestParseMentions(t *testing.T) {
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: ExtractMentions(%q) = %v, want %v", c.name, c.in, got, c.want)
 		}
+	}
+}
+
+// ExtractMentions stays linear in the body: a backward scan per "@" made
+// "/@a" repeated quadratic (TASK-3917 r3 F1; 240 KB took ~10 s). The bound is
+// ~60x the linear cost, so only a superlinear walk can trip it.
+func TestExtractMentionsLinearOnSlashRuns(t *testing.T) {
+	body := strings.Repeat("/@a", 100000)
+	start := time.Now()
+	ExtractMentions(body)
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("ExtractMentions on %d bytes took %v; a per-match backward scan is back", len(body), d)
 	}
 }
