@@ -508,6 +508,12 @@ export interface CollectionSettings {
 	 * Read it through collectionTracksWork, never directly.
 	 */
 	tracks_work?: boolean;
+	/**
+	 * true: the collection's items are asks of a person (IDEA-3906), routed to
+	 * their assignee's needs-you list. Absent means false. Read it through
+	 * collectionAwaitsHuman.
+	 */
+	awaits_human?: boolean;
 }
 
 export interface Collection {
@@ -3036,6 +3042,18 @@ export function collectionTracksWork(collection: Pick<Collection, 'settings'>): 
 		return JSON.parse(collection.settings || '{}')?.tracks_work !== false;
 	} catch {
 		return true;
+	}
+}
+
+/**
+ * Whether a collection's items are asks of a person (IDEA-3906). Absent or
+ * unparseable settings mean false, as the server reads them.
+ */
+export function collectionAwaitsHuman(collection: Pick<Collection, 'settings'>): boolean {
+	try {
+		return JSON.parse(collection.settings || '{}')?.awaits_human === true;
+	} catch {
+		return false;
 	}
 }
 

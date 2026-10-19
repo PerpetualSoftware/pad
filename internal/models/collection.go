@@ -87,6 +87,10 @@ type CollectionSettings struct {
 	// its items leave progress, close blocking, Insights and open-work
 	// counts. nil (absent) means work. Read it through CollectionTracksWork.
 	TracksWork *bool `json:"tracks_work,omitempty"`
+	// settings.awaits_human (IDEA-3906) is deliberately NOT a field here:
+	// read it through CollectionAwaitsHumanJSON, which reads the one key, so
+	// a stored non-boolean (an import is not validated) cannot fail this
+	// struct's Unmarshal and turn every other setting into its default.
 }
 
 type Collection struct {
@@ -183,6 +187,10 @@ type CollectionCreate struct {
 	// overriding the same key inside Settings. Nil: the settings' own value,
 	// else the default (DefaultTracksWork).
 	TracksWork *bool `json:"tracks_work,omitempty"`
+	// AwaitsHuman, when non-nil, sets settings.awaits_human (IDEA-3906),
+	// overriding the same key inside Settings. Nil: the settings' own value,
+	// else absent (false).
+	AwaitsHuman *bool `json:"awaits_human,omitempty"`
 	// Source is how the collection was created ('web' | 'cli' | 'mcp'), set by
 	// the server from the request's auth shape, never from the body (BUG-3447).
 	// Empty leaves the column's '' (provenance unknown, never agent).
@@ -225,8 +233,12 @@ type CollectionUpdate struct {
 	// supplied) settings under its own read, so a client can flip it without
 	// a read-modify-write of the whole blob. An older server ignores the
 	// member, so a caller that must know it landed checks the response.
-	TracksWork *bool            `json:"tracks_work,omitempty"`
-	Migrations []FieldMigration `json:"migrations,omitempty"`
+	TracksWork *bool `json:"tracks_work,omitempty"`
+	// AwaitsHuman, when non-nil, sets settings.awaits_human and nothing else
+	// in settings (IDEA-3906), merged under the store's own read exactly like
+	// TracksWork above.
+	AwaitsHuman *bool            `json:"awaits_human,omitempty"`
+	Migrations  []FieldMigration `json:"migrations,omitempty"`
 	// ExpectedUpdatedAt, when non-empty, opts into optimistic-concurrency
 	// control (BUG-2265, mirroring the item pattern from IDEA-1480): the
 	// store re-reads the row's updated_at under the workspace write lock and

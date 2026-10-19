@@ -107,54 +107,17 @@ func WithTracksWorkDefault(settingsJSON, schemaJSON string, isSystem bool) strin
 // mentioned", never "reset to work". A new value that does set the key wins.
 // Anything that does not parse as an object is returned unchanged.
 func CarryTracksWork(newSettingsJSON, storedSettingsJSON string) string {
-	var stored map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(storedSettingsJSON), &stored); err != nil {
-		return newSettingsJSON
-	}
-	v, ok := stored["tracks_work"]
-	if !ok {
-		return newSettingsJSON
-	}
-	raw := strings.TrimSpace(newSettingsJSON)
-	if raw == "" {
-		raw = "{}"
-	}
-	var next map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &next); err != nil || next == nil {
-		return newSettingsJSON
-	}
-	if _, has := next["tracks_work"]; has {
-		return newSettingsJSON
-	}
-	next["tracks_work"] = v
-	out, err := json.Marshal(next)
-	if err != nil {
-		return newSettingsJSON
-	}
-	return string(out)
+	return carryBoolSetting(newSettingsJSON, storedSettingsJSON, "tracks_work")
 }
 
 // ValidateTracksWorkSetting refuses a `tracks_work` that is present but not a
 // JSON boolean. An absent key is fine (it means work on create, "unchanged"
 // on update).
 func ValidateTracksWorkSetting(settingsJSON string) error {
-	raw := strings.TrimSpace(settingsJSON)
-	if raw == "" {
-		return nil
+	if !boolSettingValid(settingsJSON, "tracks_work") {
+		return errTracksWorkNotBool
 	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return nil // the settings-shape check owns that error
-	}
-	v, ok := m["tracks_work"]
-	if !ok {
-		return nil
-	}
-	switch strings.TrimSpace(string(v)) {
-	case "true", "false":
-		return nil
-	}
-	return errTracksWorkNotBool
+	return nil
 }
 
 var errTracksWorkNotBool = errors.New("settings.tracks_work must be true or false")
@@ -163,22 +126,5 @@ var errTracksWorkNotBool = errors.New("settings.tracks_work must be true or fals
 // key unchanged. Settings that do not parse as an object are an error: the
 // caller asked for a value it cannot store.
 func SetTracksWork(settingsJSON string, v bool) (string, error) {
-	raw := strings.TrimSpace(settingsJSON)
-	if raw == "" {
-		raw = "{}"
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
-		return "", errors.New("the collection's settings are not a JSON object; tracks_work cannot be set")
-	}
-	if v {
-		m["tracks_work"] = json.RawMessage("true")
-	} else {
-		m["tracks_work"] = json.RawMessage("false")
-	}
-	out, err := json.Marshal(m)
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
+	return setBoolSetting(settingsJSON, "tracks_work", v)
 }

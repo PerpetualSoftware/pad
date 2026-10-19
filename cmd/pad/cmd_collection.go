@@ -159,6 +159,7 @@ func collectionsCreateCmd() *cobra.Command {
 		defaultView string
 		boardGroup  string
 		tracksWork  string
+		awaitsHuman string
 	)
 
 	cmd := &cobra.Command{
@@ -191,6 +192,7 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 		Example: `  pad collection create "Bugs" --fields "status:select:new,triaged,fixing,resolved;severity:select:low,medium,high,critical;component:text"
   pad collection create "Decisions" --icon "⚖️" --fields "status:select:proposed,accepted,rejected;impact:select:low,medium,high"
   pad collection create "Reviews" --fields "status:select:open,done;reviewer:relation:people"
+  pad collection create "Asks" --awaits-human --fields "status:select:open,done"
   pad collection create "Marketing" --schema '{"fields":[{"key":"status","label":"Status","type":"select","options":["idea","drafting","review","published","archived"],"terminal_options":["published","archived"],"default":"idea","required":true}]}'
   pad collection create "Marketing" --schema @./marketing-schema.json
   cat schema.json | pad collection create "Marketing" --schema -`,
@@ -236,10 +238,25 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 				}
 				input.TracksWork = &v
 			}
+			// --awaits-human (IDEA-3906). Unset means absent, which reads false.
+			var wantAwaitsHuman *bool
+			if cmd.Flags().Changed("awaits-human") {
+				v, err := parseAwaitsHumanFlag(awaitsHuman)
+				if err != nil {
+					return err
+				}
+				input.AwaitsHuman = &v
+				wantAwaitsHuman = &v
+			}
 
 			coll, err := client.CreateCollection(ws, input)
 			if err != nil {
 				return err
+			}
+			// An older server ignores the member and answers 201, so a
+			// requested true would be reported as done without this check.
+			if wantAwaitsHuman != nil && models.CollectionAwaitsHumanJSON(coll.Settings) != *wantAwaitsHuman {
+				return fmt.Errorf("the server did not apply --awaits-human=%v; it may predate IDEA-3906 (awaits_human collections); collection %s was created without it", *wantAwaitsHuman, coll.Slug)
 			}
 
 			if formatFlag == "json" {
@@ -263,6 +280,8 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 	cmd.Flags().StringVar(&defaultView, "default-view", "board", "default view type: list, board, table")
 	cmd.Flags().StringVar(&boardGroup, "board-group-by", "status", "field to group by in board view")
 	cmd.Flags().StringVar(&tracksWork, "tracks-work", "", "true: items count as work (progress, parent completion, Insights); false: reference material. Default: work when the done field can finish")
+	cmd.Flags().StringVar(&awaitsHuman, "awaits-human", "", "true: the collection's items are asks of a person, routed to their assignee's needs-you list; false: an ordinary collection. Default: false")
+	cmd.Flags().Lookup("awaits-human").NoOptDefVal = "true"
 
 	return cmd
 }
@@ -293,6 +312,7 @@ func collectionsUpdateCmd() *cobra.Command {
 		schemaInput string
 		sortOrder   int
 		tracksWork  string
+		awaitsHuman string
 	)
 
 	cmd := &cobra.Command{
@@ -316,7 +336,9 @@ issue-ID equivalent for collections themselves.`,
 		Example: `  pad collection update tasks --name Issues --icon 🎯
   pad collection update conventions --description "Updated rules"
   pad collection update bugs --schema @./new-bug-schema.json
-  pad collection update tasks --fields "status:select:open,doing,done;priority:select:high,medium,low"`,
+  pad collection update tasks --fields "status:select:open,doing,done;priority:select:high,medium,low"
+  pad collection update human-tasks --awaits-human
+  pad collection update human-tasks --awaits-human=false`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -352,6 +374,16 @@ issue-ID equivalent for collections themselves.`,
 				input.TracksWork = &v
 				wantTracksWork = &v
 			}
+			// --awaits-human (IDEA-3906), merged the same way.
+			var wantAwaitsHuman *bool
+			if cmd.Flags().Changed("awaits-human") {
+				v, err := parseAwaitsHumanFlag(awaitsHuman)
+				if err != nil {
+					return err
+				}
+				input.AwaitsHuman = &v
+				wantAwaitsHuman = &v
+			}
 
 			// Schema is only resolved when the user passed --schema or --fields.
 			// Calling the helper with both empty returns "{}" which would wipe
@@ -371,6 +403,9 @@ issue-ID equivalent for collections themselves.`,
 			// An older server ignores the member and answers 200 (PLAN-3535).
 			if wantTracksWork != nil && models.CollectionTracksWorkJSON(updated.Settings) != *wantTracksWork {
 				return fmt.Errorf("the server did not apply --tracks-work=%v; it may predate PLAN-3535 (reference collections)", *wantTracksWork)
+			}
+			if wantAwaitsHuman != nil && models.CollectionAwaitsHumanJSON(updated.Settings) != *wantAwaitsHuman {
+				return fmt.Errorf("the server did not apply --awaits-human=%v; it may predate IDEA-3906 (awaits_human collections)", *wantAwaitsHuman)
 			}
 			warnOrphanedValues(updated)
 
@@ -395,6 +430,8 @@ issue-ID equivalent for collections themselves.`,
 	cmd.Flags().StringVar(&schemaInput, "schema", "", "replacement CollectionSchema JSON: inline, @path, or - for stdin")
 	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "new sort order (lower = appears first)")
 	cmd.Flags().StringVar(&tracksWork, "tracks-work", "", "true: items count as work (progress, parent completion, Insights); false: the collection is reference material")
+	cmd.Flags().StringVar(&awaitsHuman, "awaits-human", "", "true: the collection's items are asks of a person, routed to their assignee's needs-you list; false: an ordinary collection")
+	cmd.Flags().Lookup("awaits-human").NoOptDefVal = "true"
 
 	return cmd
 }
@@ -618,4 +655,20 @@ func parseTracksWorkFlag(v string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("--tracks-work must be true or false, got %q", v)
+}
+
+// parseAwaitsHumanFlag reads --awaits-human (IDEA-3906). A string flag with
+// a bare-flag default of true, so `--awaits-human` sets it and
+// `--awaits-human=false` clears it. Not on MCP: its stdio transport emits a
+// string flag as two tokens (`--awaits-human false`), which this shape would
+// read as true plus a stray argument, so wiring it there needs a different
+// flag shape first.
+func parseAwaitsHumanFlag(v string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "yes":
+		return true, nil
+	case "false", "no":
+		return false, nil
+	}
+	return false, fmt.Errorf("--awaits-human must be true or false, got %q", v)
 }
