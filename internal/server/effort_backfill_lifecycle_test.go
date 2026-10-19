@@ -164,8 +164,11 @@ func TestEffortBackfill_NoStartAfterStop(t *testing.T) {
 	}
 }
 
-// F2: disabling decisions mid-backfill cancels it: no job is owed (rows
-// counted, not just the marker) and no marker is written.
+// F2: disabling decisions while a backfill is parked before its first chunk
+// cancels it: no job is owed (rows counted, not just the marker) and no
+// marker is written. A chunk already inside OweDecisionJobs when the disable
+// lands may still commit (lead ruling bdce2116, docs only); this test does
+// not cover that window.
 func TestEffortBackfill_DisableCancelsARunningBackfill(t *testing.T) {
 	g := newBackfillRig(t)
 	g.start(t)
