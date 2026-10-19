@@ -87,10 +87,10 @@ type CollectionSettings struct {
 	// its items leave progress, close blocking, Insights and open-work
 	// counts. nil (absent) means work. Read it through CollectionTracksWork.
 	TracksWork *bool `json:"tracks_work,omitempty"`
-	// AwaitsHuman marks a collection whose items are asks of a person
-	// (IDEA-3906): the needs-you router treats an open, assigned item in it
-	// as "asked". Absent means false. Read it through CollectionAwaitsHuman.
-	AwaitsHuman bool `json:"awaits_human,omitempty"`
+	// settings.awaits_human (IDEA-3906) is deliberately NOT a field here:
+	// read it through CollectionAwaitsHumanJSON, which reads the one key, so
+	// a stored non-boolean (an import is not validated) cannot fail this
+	// struct's Unmarshal and turn every other setting into its default.
 }
 
 type Collection struct {

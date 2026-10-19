@@ -14,6 +14,14 @@ func TestAwaitsHuman_ReadCarrySetValidate(t *testing.T) {
 		}
 	}
 
+	// A stray non-boolean (an import is not validated) reads as false and
+	// leaves every other setting readable: tracks_work keeps its stored false.
+	stray := `{"tracks_work":false,"awaits_human":"yes"}`
+	if CollectionAwaitsHumanJSON(stray) || CollectionTracksWorkJSON(stray) {
+		t.Errorf("a stray awaits_human broke the settings read: awaits %v, work %v",
+			CollectionAwaitsHumanJSON(stray), CollectionTracksWorkJSON(stray))
+	}
+
 	stored := `{"awaits_human":true,"layout":"list"}`
 	if got := CarryAwaitsHuman(`{"layout":"board"}`, stored); !CollectionAwaitsHumanJSON(got) {
 		t.Errorf("a write without the key dropped the stored true: %s", got)

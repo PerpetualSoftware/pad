@@ -640,8 +640,10 @@ func parseTracksWorkFlag(v string) (bool, error) {
 
 // parseAwaitsHumanFlag reads --awaits-human (IDEA-3906). A string flag with
 // a bare-flag default of true, so `--awaits-human` sets it and
-// `--awaits-human=false` survives the MCP stdio transport, which emits a
-// bool flag only when it is true.
+// `--awaits-human=false` clears it. Not on MCP: its stdio transport emits a
+// string flag as two tokens (`--awaits-human false`), which this shape would
+// read as true plus a stray argument, so wiring it there needs a different
+// flag shape first.
 func parseAwaitsHumanFlag(v string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "true", "yes":

@@ -10,29 +10,22 @@ import (
 // (a human-tasks or asks collection). The needs-you router treats an open,
 // assigned item in such a collection as rule 1 "asked".
 //
-// Stored as CollectionSettings.AwaitsHuman (JSON `awaits_human`). ABSENT means
-// false, so every existing collection, an API writer that never sends the key,
+// Stored as the settings key `awaits_human`. ABSENT means false, so every existing collection, an API writer that never sends the key,
 // and a client/server skew all read as an ordinary collection. No migration
 // marks existing collections (IDEA-3906 A3, default: set per workspace).
-// Stored, carried and validated exactly like tracks_work (tracks_work.go).
+// Stored, carried and validated exactly like tracks_work (tracks_work.go),
+// but it is not a CollectionSettings field: it is read on its own, so a
+// stored non-boolean reads as false here and breaks no other setting.
 
-// CollectionAwaitsHuman reports whether a collection's items are asks of a
-// person.
-func CollectionAwaitsHuman(settings CollectionSettings) bool {
-	return settings.AwaitsHuman
-}
-
-// CollectionAwaitsHumanJSON is CollectionAwaitsHuman over the stored settings
-// JSON. Unparseable settings read as false.
+// CollectionAwaitsHumanJSON reports whether a collection's items are asks of
+// a person, from the stored settings JSON. Anything but a JSON true reads as
+// false, unparseable settings included.
 func CollectionAwaitsHumanJSON(settingsJSON string) bool {
-	if strings.TrimSpace(settingsJSON) == "" {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(settingsJSON), &m); err != nil {
 		return false
 	}
-	var s CollectionSettings
-	if err := json.Unmarshal([]byte(settingsJSON), &s); err != nil {
-		return false
-	}
-	return CollectionAwaitsHuman(s)
+	return strings.TrimSpace(string(m["awaits_human"])) == "true"
 }
 
 // CarryAwaitsHuman returns newSettingsJSON with the stored `awaits_human`
