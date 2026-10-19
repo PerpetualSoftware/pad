@@ -89,6 +89,13 @@ func (s *Store) createCollectionTx(tx *sql.Tx, workspaceID string, input models.
 		settings = set
 	}
 	settings = models.WithTracksWorkDefault(settings, schema, input.IsSystem)
+	if input.AwaitsHuman != nil {
+		set, err := models.SetAwaitsHuman(settings, *input.AwaitsHuman)
+		if err != nil {
+			return "", err
+		}
+		settings = set
+	}
 	// Traits default to "{}" (declares nothing), which is correct for every
 	// ordinary collection — kernel traits are opt-in and absence is never an
 	// error. The column is NOT NULL, so the empty case must be a real object.
@@ -525,6 +532,26 @@ func (s *Store) ListCollectionsQ(q Queryer, workspaceID string) ([]models.Collec
 	return result, nil
 }
 
+// applyCollectionSettingFlags merges an update's dedicated setting flags
+// (tracks_work, awaits_human) into settings, leaving every other key as is.
+func applyCollectionSettingFlags(settings string, input models.CollectionUpdate) (string, error) {
+	if input.TracksWork != nil {
+		set, err := models.SetTracksWork(settings, *input.TracksWork)
+		if err != nil {
+			return "", err
+		}
+		settings = set
+	}
+	if input.AwaitsHuman != nil {
+		set, err := models.SetAwaitsHuman(settings, *input.AwaitsHuman)
+		if err != nil {
+			return "", err
+		}
+		settings = set
+	}
+	return settings, nil
+}
+
 func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*models.Collection, error) {
 	existing, err := s.GetCollection(id)
 	if err != nil {
@@ -741,19 +768,18 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		// A settings write that does not mention tracks_work keeps the stored
 		// value: clients rebuild settings wholesale, and one that predates the
 		// key would otherwise reset a reference collection to work.
+		// awaits_human (IDEA-3906) is carried the same way.
 		settings = models.CarryTracksWork(settings, lockedSettings.String)
-		if input.TracksWork != nil {
-			set, err := models.SetTracksWork(settings, *input.TracksWork)
-			if err != nil {
-				return nil, err
-			}
-			settings = set
+		settings = models.CarryAwaitsHuman(settings, lockedSettings.String)
+		set, err := applyCollectionSettingFlags(settings, input)
+		if err != nil {
+			return nil, err
 		}
 		sets = append(sets, "settings = ?")
-		args = append(args, settings)
-	} else if input.TracksWork != nil {
-		// Only the flag: merge it into the stored settings.
-		set, err := models.SetTracksWork(lockedSettings.String, *input.TracksWork)
+		args = append(args, set)
+	} else if input.TracksWork != nil || input.AwaitsHuman != nil {
+		// Only the flags: merge them into the stored settings.
+		set, err := applyCollectionSettingFlags(lockedSettings.String, input)
 		if err != nil {
 			return nil, err
 		}

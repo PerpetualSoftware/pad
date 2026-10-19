@@ -15,6 +15,7 @@ export interface CollectionSettingsForm {
 	listSortBy: string;
 	quickActions: QuickAction[];
 	tracksWork: boolean;
+	awaitsHuman: boolean;
 }
 
 export function buildCollectionSettings(
@@ -28,7 +29,10 @@ export function buildCollectionSettings(
 		board_group_by: form.boardGroupBy || undefined,
 		list_group_by: form.listGroupBy || undefined,
 		list_sort_by: form.listSortBy || undefined,
-		tracks_work: form.tracksWork
+		tracks_work: form.tracksWork,
+		// Written false too: the server carries a stored key across a write
+		// that omits it, so omitting it could never turn the setting off.
+		awaits_human: form.awaitsHuman
 	};
 	if (form.quickActions.length > 0) out.quick_actions = form.quickActions;
 	else delete out.quick_actions;

@@ -11,6 +11,7 @@ const form = (over: Partial<CollectionSettingsForm> = {}): CollectionSettingsFor
 	listSortBy: '',
 	quickActions: [],
 	tracksWork: true,
+	awaitsHuman: false,
 	...over
 });
 
@@ -28,6 +29,13 @@ describe('buildCollectionSettings (PLAN-3535)', () => {
 	it('writes the toggle, false included', () => {
 		expect(buildCollectionSettings({ settings: '{}' }, form({ tracksWork: false })).tracks_work).toBe(false);
 		expect(buildCollectionSettings({ settings: '{"tracks_work":false}' }, form({ tracksWork: true })).tracks_work).toBe(true);
+	});
+
+	it('writes awaits_human, false included, so a stored true can be turned off (IDEA-3906)', () => {
+		expect(buildCollectionSettings({ settings: '{}' }, form({ awaitsHuman: true })).awaits_human).toBe(true);
+		const off = buildCollectionSettings({ settings: '{"awaits_human":true}' }, form({ awaitsHuman: false }));
+		expect('awaits_human' in off).toBe(true);
+		expect(off.awaits_human).toBe(false);
 	});
 
 	it('removes quick actions the form cleared, and keeps the ones it has', () => {

@@ -5,7 +5,7 @@
 	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Collection, CollectionUpdate, FieldDef, FieldMigration, QuickAction } from '$lib/types';
-	import { parseSchema, parseSettings, collectionTracksWork } from '$lib/types';
+	import { parseSchema, parseSettings, collectionTracksWork, collectionAwaitsHuman } from '$lib/types';
 	import { schemaRenderRepairs } from '$lib/types';
 	import { buildCollectionSettings } from '$lib/collections/collectionSettingsSave';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
@@ -328,6 +328,8 @@
 	let listSortBy = $state('');
 	// PLAN-3535: whether the collection's items count as work.
 	let tracksWork = $state(true);
+	// IDEA-3906: whether the collection's items are asks of a person.
+	let awaitsHuman = $state(false);
 
 	// Which field drives backend done-detection for this collection.
 	// Mirrors the DoneFieldKey() resolution in internal/models/terminal.go:
@@ -521,6 +523,7 @@
 			listGroupBy = s.list_group_by || '';
 			listSortBy = s.list_sort_by || '';
 			tracksWork = collectionTracksWork(collection);
+			awaitsHuman = collectionAwaitsHuman(collection);
 
 			// Sync quick actions
 			quickActions = (s.quick_actions ?? []).map((a) => ({
@@ -863,7 +866,8 @@
 				listGroupBy,
 				listSortBy,
 				quickActions: savedActions,
-				tracksWork
+				tracksWork,
+				awaitsHuman
 			});
 
 			const data: CollectionUpdate = {
@@ -1131,13 +1135,23 @@
 							{sortableFieldKeys}
 						/>
 						<div class="form-group">
-							<label class="tracks-work">
+							<label class="setting-toggle">
 								<input type="checkbox" bind:checked={tracksWork} />
 								<span>Track as work</span>
 							</label>
 							<p class="form-hint">
 								Items count toward parent progress, block a parent from closing while open, and appear in Insights.
 								Turn off for reference material such as docs; their items still show in the sidebar and search.
+							</p>
+						</div>
+						<div class="form-group">
+							<label class="setting-toggle">
+								<input type="checkbox" bind:checked={awaitsHuman} />
+								<span>Items are asks of a person</span>
+							</label>
+							<p class="form-hint">
+								An open item here that is assigned to someone appears in that person's needs-you list.
+								Use it for a human-tasks or asks collection.
 							</p>
 						</div>
 					</div>
@@ -1395,7 +1409,7 @@
 		gap: var(--space-1);
 	}
 
-	.tracks-work {
+	.setting-toggle {
 		display: flex;
 		align-items: center;
 		gap: var(--space-2, 0.5em);
