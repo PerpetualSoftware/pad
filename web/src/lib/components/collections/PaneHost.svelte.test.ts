@@ -134,6 +134,10 @@ beforeEach(async () => {
 	};
 	localStorage.removeItem('pad-pane-width');
 
+	await mountHost();
+});
+
+async function mountHost() {
 	render(PaneHost, {
 		props: {
 			openItemRef: 'TASK-1',
@@ -150,7 +154,7 @@ beforeEach(async () => {
 	});
 	await tick();
 	flushSync();
-});
+}
 
 afterEach(() => {
 	cleanup();
@@ -255,5 +259,35 @@ describe('PaneHost divider — drag resize (TASK-2430)', () => {
 		await tick();
 		flushSync();
 		expect(paneWidth()).toBe(600);
+	});
+});
+
+describe('PaneHost divider — the pane widens to 90% (TASK-3971)', () => {
+	// The 2000px container less the 6px divider leaves 1994px usable; 90% of
+	// that is 1794.6, which aria-valuenow rounds to 1795.
+	async function dragTo(x: number) {
+		const d = divider();
+		d.dispatchEvent(pointer('pointerdown', 1600));
+		d.dispatchEvent(pointer('pointermove', x));
+		d.dispatchEvent(pointer('pointerup', x));
+		await tick();
+		flushSync();
+	}
+
+	it('a drag to 85% holds, well past the old 720px ceiling, and persists', async () => {
+		await dragTo(300); // pane.right (2000) - 300 = 1700
+		expect(paneWidth()).toBe(1700);
+		expect(Number(divider().getAttribute('aria-valuemax'))).toBe(1795);
+		expect(localStorage.getItem('pad-pane-width')).toBe('1700');
+
+		cleanup();
+		await mountHost();
+		expect(paneWidth(), 'the stored width comes back on the next mount').toBe(1700);
+	});
+
+	it('a drag past 90% stops at 90%, so the list keeps 10%', async () => {
+		await dragTo(20);
+		expect(paneWidth()).toBe(1795);
+		expect(Number(localStorage.getItem('pad-pane-width'))).toBeCloseTo(1994 * 0.9);
 	});
 });

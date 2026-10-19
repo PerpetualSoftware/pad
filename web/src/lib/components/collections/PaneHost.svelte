@@ -315,13 +315,16 @@
 	// (the `pad-topbar` pattern).
 	const PANE_WIDTH_KEY = 'pad-pane-width';
 	const PANE_WIDTH_MIN = 360; // mirrors the CSS clamp() floor
-	const PANE_WIDTH_MAX = 720; // generous ceiling (CSS clamp maxed at 640)
+	// Ceiling only while the container is unmeasurable; once it is measured the
+	// pane may take up to PANE_MAX_FRACTION of the usable width.
+	const PANE_WIDTH_MAX = 720;
 	const PANE_WIDTH_DEFAULT = 460;
 	const PANE_DIVIDER_WIDTH = 6; // keep in sync with .pane-divider flex-basis
-	// Keep at least this much room for the list column so a wide drag (or a
-	// stored width carried over from a bigger screen) can never crush the
-	// list to nothing.
-	const LIST_MIN_WIDTH = 360;
+	// The pane can widen to 90% of the usable width, so reading a long item
+	// can take nearly the whole screen (TASK-3971). The list keeps the other
+	// 10%, so a wide drag (or a stored width carried over from a bigger
+	// screen) still never crushes it to nothing.
+	const PANE_MAX_FRACTION = 0.9;
 
 	// Min/max pane width for the CURRENT container. Measures the ACTUAL
 	// flex-row container (`.collection-page` — which spans `.main-content`,
@@ -331,12 +334,11 @@
 	// viewport as a loose upper bound; the ResizeObserver below refits once
 	// the real container is measurable (Codex round 1 P2).
 	//
-	// When the container is too narrow to honor BOTH the pane floor and the
-	// list floor (e.g. a ~800px viewport with the sidebar expanded), the fixed
-	// 360px floors would force the list down to ~140px. In that regime both
-	// floors relax to 40% of the usable width so neither column is crushed —
-	// the pane can shrink below PANE_WIDTH_MIN and the list keeps ≥40% (Codex
-	// round 2 P2).
+	// When the container is too narrow for the 360px pane floor to leave the
+	// list a fair share (e.g. a ~800px viewport with the sidebar expanded), the
+	// floor relaxes to 40% of the usable width, so the pane can shrink below
+	// PANE_WIDTH_MIN (Codex round 2 P2). The ceiling is always 90% of the usable
+	// width, which is above that floor at every container size.
 	function paneBounds(): { min: number; max: number } {
 		let containerW = 0;
 		const container = paneEl?.parentElement ?? null;
@@ -344,10 +346,8 @@
 		else if (browser) containerW = window.innerWidth;
 		if (containerW <= 0) return { min: PANE_WIDTH_MIN, max: PANE_WIDTH_MAX };
 		const usable = containerW - PANE_DIVIDER_WIDTH;
-		const listFloor = Math.min(LIST_MIN_WIDTH, usable * 0.4);
 		const paneFloor = Math.min(PANE_WIDTH_MIN, usable * 0.4);
-		const max = Math.max(paneFloor, Math.min(PANE_WIDTH_MAX, usable - listFloor));
-		return { min: paneFloor, max };
+		return { min: paneFloor, max: usable * PANE_MAX_FRACTION };
 	}
 	function clampPaneWidth(px: number): number {
 		const { min, max } = paneBounds();
