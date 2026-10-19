@@ -35,6 +35,9 @@ var wsChildTables = []string{
 	"workspace_invitations", "custom_templates", "api_tokens", "share_links",
 	"oauth_connection_workspaces", "user_report_layouts",
 	"member_collection_access", "workspace_members", "attachments", "activities",
+	// item_needs_snoozes (TASK-3918) has no line in purgeWorkspaceChildDeletes:
+	// its FKs to items and workspaces cascade. Listed so the purge tests prove it.
+	"item_needs_snoozes",
 	// event_outbox has NO foreign key to workspaces (TASK-2658 — an outbox row
 	// must outlive its subject), so nothing deletes it on the purge's behalf.
 	// It holds full item content and comment bodies, so an omission here keeps
@@ -99,6 +102,8 @@ func seedFullWorkspace(t *testing.T, s *Store, u *models.User, name string) seed
 		newID(), ws.ID, item1.ID, item2.ID, ts)
 	s.mustExec(t, `INSERT INTO item_stars (user_id, item_id, created_at) VALUES (?, ?, ?)`,
 		u.ID, item1.ID, ts)
+	s.mustExec(t, `INSERT INTO item_needs_snoozes (user_id, item_id, workspace_id, kind, created_at) VALUES (?, ?, ?, ?, ?)`,
+		u.ID, item1.ID, ws.ID, "dismiss", ts)
 	s.mustExec(t, `INSERT INTO item_yjs_updates (item_id, update_data, schema_version, created_at) VALUES (?, ?, ?, ?)`,
 		item1.ID, []byte{1, 2, 3}, "v1", ts)
 	s.mustExec(t, `INSERT INTO item_wiki_links (source_item_id, target_kind, position) VALUES (?, ?, ?)`,

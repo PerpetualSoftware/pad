@@ -601,3 +601,48 @@ func TestMigratedRemedyReadsTheMarkerIndependently(t *testing.T) {
 		t.Errorf("the remedy does not name the destination: %q", committed)
 	}
 }
+
+// TestMigratedDatabaseRefusesNeedsSnoozeWrites names item_needs_snoozes
+// (TASK-3918) through the store's own write path. The per-verb and
+// structural legs above iterate MigratedRefusalTables itself, so a table
+// dropped from the list drops out of what they check too; this leg does not
+// read the list, so dropping the entry turns it red.
+func TestMigratedDatabaseRefusesNeedsSnoozeWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marked.db")
+	s, err := New(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	ws := createTestWorkspace(t, s, "Marked")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Task A", "")
+	u, err := s.CreateUser(models.UserCreate{Email: "snoozer@test.com", Name: "S", Password: "correct-horse-battery-staple"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := s.SnoozeNeedsItem(u.ID, ws.ID, item.ID, models.NeedsSnoozeDismiss, time.Time{}, nil); err != nil {
+		t.Fatalf("seed snooze: %v", err)
+	}
+
+	tx, err := s.BeginSnapshot()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := s.MarkMigratedTx(tx, "postgres://pg.example/pad"); err != nil {
+		t.Fatalf("MarkMigratedTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if _, err := s.SnoozeNeedsItem(u.ID, ws.ID, item.ID, models.NeedsSnoozeDefer, time.Now().Add(time.Hour), nil); err == nil || !strings.Contains(err.Error(), MigratedMarker) {
+		t.Errorf("a snooze write on a migrated database: err = %v, want the migration guard", err)
+	}
+	if _, err := s.UnsnoozeNeedsItem(u.ID, item.ID); err == nil || !strings.Contains(err.Error(), MigratedMarker) {
+		t.Errorf("an unsnooze on a migrated database: err = %v, want the migration guard", err)
+	}
+	if sn, err := s.GetNeedsSnooze(u.ID, item.ID, time.Now()); err != nil || sn == nil || sn.Kind != models.NeedsSnoozeDismiss {
+		t.Errorf("the seeded snooze did not survive the refused writes: %+v, %v", sn, err)
+	}
+}
