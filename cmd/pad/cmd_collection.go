@@ -159,6 +159,7 @@ func collectionsCreateCmd() *cobra.Command {
 		defaultView string
 		boardGroup  string
 		tracksWork  string
+		awaitsHuman string
 	)
 
 	cmd := &cobra.Command{
@@ -191,6 +192,7 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 		Example: `  pad collection create "Bugs" --fields "status:select:new,triaged,fixing,resolved;severity:select:low,medium,high,critical;component:text"
   pad collection create "Decisions" --icon "⚖️" --fields "status:select:proposed,accepted,rejected;impact:select:low,medium,high"
   pad collection create "Reviews" --fields "status:select:open,done;reviewer:relation:people"
+  pad collection create "Asks" --awaits-human --fields "status:select:open,done"
   pad collection create "Marketing" --schema '{"fields":[{"key":"status","label":"Status","type":"select","options":["idea","drafting","review","published","archived"],"terminal_options":["published","archived"],"default":"idea","required":true}]}'
   pad collection create "Marketing" --schema @./marketing-schema.json
   cat schema.json | pad collection create "Marketing" --schema -`,
@@ -236,10 +238,25 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 				}
 				input.TracksWork = &v
 			}
+			// --awaits-human (IDEA-3906). Unset means absent, which reads false.
+			var wantAwaitsHuman *bool
+			if cmd.Flags().Changed("awaits-human") {
+				v, err := parseAwaitsHumanFlag(awaitsHuman)
+				if err != nil {
+					return err
+				}
+				input.AwaitsHuman = &v
+				wantAwaitsHuman = &v
+			}
 
 			coll, err := client.CreateCollection(ws, input)
 			if err != nil {
 				return err
+			}
+			// An older server ignores the member and answers 201, so a
+			// requested true would be reported as done without this check.
+			if wantAwaitsHuman != nil && models.CollectionAwaitsHumanJSON(coll.Settings) != *wantAwaitsHuman {
+				return fmt.Errorf("the server did not apply --awaits-human=%v; it may predate IDEA-3906 (awaits_human collections); collection %s was created without it", *wantAwaitsHuman, coll.Slug)
 			}
 
 			if formatFlag == "json" {
@@ -263,6 +280,8 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 	cmd.Flags().StringVar(&defaultView, "default-view", "board", "default view type: list, board, table")
 	cmd.Flags().StringVar(&boardGroup, "board-group-by", "status", "field to group by in board view")
 	cmd.Flags().StringVar(&tracksWork, "tracks-work", "", "true: items count as work (progress, parent completion, Insights); false: reference material. Default: work when the done field can finish")
+	cmd.Flags().StringVar(&awaitsHuman, "awaits-human", "", "true: the collection's items are asks of a person, routed to their assignee's needs-you list; false: an ordinary collection. Default: false")
+	cmd.Flags().Lookup("awaits-human").NoOptDefVal = "true"
 
 	return cmd
 }
