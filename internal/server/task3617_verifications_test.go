@@ -97,6 +97,10 @@ func TestTASK3617_Refusals(t *testing.T) {
 	slug := createWSWithCollections(t, srv)
 	spec := createItem(t, srv, slug, "docs", map[string]any{"title": "Spec", "content": task3617Body})
 	dup := createItem(t, srv, slug, "docs", map[string]any{"title": "Dup", "content": "## Acceptance criteria\n\n- AC-1: one\n- AC-1: two\n"})
+	// One real criterion and one placeholder under the same id (lead spot
+	// mutant at d2fb671, TASK-3617): the id names two lines, so a verdict
+	// could not say which it was about.
+	halfDup := createItem(t, srv, slug, "docs", map[string]any{"title": "Half dup", "content": "## Acceptance criteria\n\n- AC-1: one\n- AC-1: ...\n"})
 
 	ok := map[string]any{"criterion": "AC-1", "verdict": "pass"}
 	for _, tc := range []struct {
@@ -108,6 +112,7 @@ func TestTASK3617_Refusals(t *testing.T) {
 		{"placeholder", spec, map[string]any{"results": []any{ok, map[string]any{"criterion": "AC-3", "verdict": "pass"}}}, "unknown_criterion"},
 		{"missing criterion", spec, map[string]any{"results": []any{ok, map[string]any{"criterion": "AC-9", "verdict": "pass"}}}, "unknown_criterion"},
 		{"duplicate id in the body", dup, map[string]any{"results": []any{ok}}, "unknown_criterion"},
+		{"id that is both a criterion and a placeholder", halfDup, map[string]any{"results": []any{ok}}, "unknown_criterion"},
 		{"bad verdict", spec, map[string]any{"results": []any{map[string]any{"criterion": "AC-1", "verdict": "yes"}}}, "validation_error"},
 		{"repeated criterion", spec, map[string]any{"results": []any{ok, ok}}, "validation_error"},
 		{"no results", spec, map[string]any{"results": []any{}}, "validation_error"},
@@ -122,7 +127,7 @@ func TestTASK3617_Refusals(t *testing.T) {
 			t.Errorf("%s: %d %s, want 400 %s", tc.name, rr.Code, rr.Body.String(), tc.code)
 		}
 	}
-	for _, it := range []models.Item{spec, dup} {
+	for _, it := range []models.Item{spec, dup, halfDup} {
 		rows, err := srv.store.ListItemVerifications(it.WorkspaceID, it.ID, false)
 		if err != nil {
 			t.Fatal(err)
