@@ -92,6 +92,22 @@ func (u *urlScan) inURL(content string, at int) bool {
 		strings.HasPrefix(content[u.runStart:at], "www.")
 }
 
+// rangeCursor answers "is pos inside one of these ranges" for positions that
+// arrive in increasing order, walking the sorted, disjoint ranges once per
+// call rather than once per match (TASK-3917 r4: isInRanges per match made a
+// body of many code spans and then many mentions quadratic).
+type rangeCursor struct {
+	ranges [][2]int
+	i      int
+}
+
+func (c *rangeCursor) contains(pos int) bool {
+	for c.i < len(c.ranges) && c.ranges[c.i][1] <= pos {
+		c.i++
+	}
+	return c.i < len(c.ranges) && pos >= c.ranges[c.i][0]
+}
+
 // badMentionPrefix reports whether the byte before the "@" at content[at]
 // makes it a non-mention (an email local part, a path, a URL).
 func badMentionPrefix(content string, at int, u *urlScan) bool {
@@ -161,10 +177,11 @@ func ExtractMentions(content string) []string {
 	seen := map[string]bool{}
 	var out []string
 	u := urlScan{scheme: -1}
+	fc, ic := rangeCursor{ranges: fenced}, rangeCursor{ranges: inline}
 	for _, m := range mentionPattern.FindAllStringSubmatchIndex(content, -1) {
 		at := m[0]
 		u.advance(content, at)
-		if isInRanges(at, fenced) || isInRanges(at, inline) {
+		if fc.contains(at) || ic.contains(at) {
 			continue
 		}
 		if at > 0 && badMentionPrefix(content, at, &u) {

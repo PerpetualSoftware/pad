@@ -57,6 +57,8 @@ func TestParseMentions(t *testing.T) {
 		{"url then space then mention", "see https://x.social/a @alice", []string{"alice"}},
 		{"www in an earlier run does not taint", "www.x.social z/@alice", []string{"alice"}},
 		{"scheme earlier in the same run", "go:x://h/p/@alice", nil},
+		{"mentions between and after code spans", "`a` @alice `@bob` @carol\n```\n@dave\n```\n@erin", []string{"alice", "carol", "erin"}},
+		{"mention at a code span edge", "`x`@alice", []string{"alice"}},
 		{"hyphen prefix rejected (documented limit)", "-@alice", nil},
 		{"period at end", "thanks @alice.", []string{"alice"}},
 		{"apostrophe", "@alice's turn", []string{"alice"}},
@@ -81,5 +83,17 @@ func TestExtractMentionsLinearOnSlashRuns(t *testing.T) {
 	ExtractMentions(body)
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("ExtractMentions on %d bytes took %v; a per-match backward scan is back", len(body), d)
+	}
+}
+
+// The code-range check walks the spans once per call, not once per match: a
+// body of many inline code spans followed by many mentions was quadratic
+// (TASK-3917 r4; 360 KB took ~1.1 s, so a 2 MiB comment body ~40 s).
+func TestExtractMentionsLinearAfterCodeSpans(t *testing.T) {
+	body := strings.Repeat("`a` ", 160000) + strings.Repeat("@aaa ", 160000)
+	start := time.Now()
+	ExtractMentions(body)
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("ExtractMentions on %d bytes took %v; a per-match range scan is back", len(body), d)
 	}
 }
