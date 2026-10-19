@@ -428,3 +428,44 @@ func TestEffortBackfill_CancelStopsBetweenChunksAndWritesNoMarker(t *testing.T) 
 		t.Fatal("marker written by a cancelled run")
 	}
 }
+
+// A chunk whose WRITE fails in the store, not in the test hook, must stop the
+// run before the marker. The hook only breaks the table: the error has to come
+// back through OweDecisionJobs, which is the path the other failure tests
+// never reach (they fail the hook itself).
+func TestEffortBackfill_StoreFailureMidRunWritesNoMarker(t *testing.T) {
+	fx := newAttentionFixture(t)
+	for i := 0; i < 3; i++ {
+		it := fx.item(t, fx.tasks.ID, "open")
+		fx.seedAnswers(t, it, time.Now().Add(-3*time.Hour), AttentionNeedsHuman)
+	}
+	fx.clearJobs(t)
+	fx.r.backfillChunk = 1
+	fx.r.beforeBackfillChunk = func(_ context.Context, chunk int) error {
+		if chunk == 1 {
+			if _, err := fx.s.DB().Exec(`ALTER TABLE decision_jobs RENAME TO decision_jobs_gone`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return nil
+	}
+	if _, err := fx.r.BackfillEffort(context.Background()); err == nil {
+		t.Fatal("a failed chunk write returned no error")
+	}
+	if fx.marker(t) != "" {
+		t.Fatal("marker written although a chunk's jobs were never owed")
+	}
+	if _, err := fx.s.DB().Exec(`ALTER TABLE decision_jobs_gone RENAME TO decision_jobs`); err != nil {
+		t.Fatal(err)
+	}
+	fx.r.beforeBackfillChunk = nil
+	if _, err := fx.r.BackfillEffort(context.Background()); err != nil {
+		t.Fatalf("re-run: %v", err)
+	}
+	if fx.marker(t) == "" {
+		t.Fatal("re-run after the store recovered wrote no marker")
+	}
+	if got := fx.jobItems(t); len(got) != 3 {
+		t.Fatalf("re-run owed %d items; want 3", len(got))
+	}
+}
