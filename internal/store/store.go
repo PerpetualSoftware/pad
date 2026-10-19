@@ -94,6 +94,9 @@ type Store struct {
 	// item (TASK-3117). Empty until the server installs a resolver, which it
 	// does only when a decision provider is configured; see decisions.go.
 	decisionSets decisionSetsPtr
+	// decisionDebounce is the per-set re-ask window (TASK-3916), installed
+	// by the decision runner beside decisionSets. Nil means no set waits.
+	decisionDebounce decisionDebouncePtr
 
 	// outboxRowCapOverride and outboxClaimBudgetOverride are TEST-ONLY seams,
 	// zero in production. They lower MaxOutboxPayloadBytes and

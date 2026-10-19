@@ -147,13 +147,31 @@ func TestDecisions_TickEvaluatesAndReadReportsCurrency(t *testing.T) {
 	}
 
 	// A comment through the API: the stored answer is no longer current, and
-	// the next tick re-evaluates.
+	// the re-ask is DEBOUNCED (TASK-3916): owed, with not_before an hour after
+	// the evaluation, and not taken by a tick inside that hour. Once the
+	// window has passed (aged here in the row), the next tick re-evaluates.
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/comments", map[string]string{"body": "new facts"})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("comment: %d %s", rr.Code, rr.Body.String())
 	}
 	if b := getDecisions(t, srv, slug, item.Slug); b.Decisions[0].Current {
 		t.Fatal("answer computed before the comment still reads as current")
+	}
+	j, _ := srv.store.GetDecisionJob(item.ID, "triage")
+	if j == nil || j.NotBefore == "" {
+		t.Fatalf("the comment's re-ask is not debounced through the server's wiring: %+v", j)
+	}
+	for i := 0; i < 3; i++ {
+		select {
+		case tick <- time.Now():
+		case <-time.After(time.Second):
+		}
+	}
+	if n := p.count(); n != 1 {
+		t.Fatalf("a tick inside the window re-asked (calls = %d, want 1)", n)
+	}
+	if _, err := srv.store.DB().Exec(`UPDATE decision_jobs SET not_before = NULL WHERE item_id = '` + item.ID + `'`); err != nil {
+		t.Fatal(err)
 	}
 	runTickUntil(func() bool { return p.count() == 2 })
 	runTickUntil(func() bool {

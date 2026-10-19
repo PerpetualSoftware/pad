@@ -121,7 +121,49 @@ func newAttentionFixture(t *testing.T) *attentionFixture {
 	}
 	fx.r = NewRunner(fx.s, p, reg)
 	fx.r.Install(fx.s)
+	// These tests are about currency and eligibility, and re-ask on the next
+	// tick; the re-ask debounce (TASK-3916) has its own tests, which this
+	// would otherwise make every write-then-tick here wait an hour for.
+	fx.s.SetDecisionDebounce(nil)
 	return fx
+}
+
+// Install installs the re-ask window beside the resolver (TASK-3916):
+// ReaskDebounce for the item-level sets the production registry ships, none
+// for a set not registered, and a nil runner removes it.
+func TestInstall_DebouncesTheItemLevelSets(t *testing.T) {
+	fx := newAttentionFixture(t)
+	fx.r.Install(fx.s) // the fixture turned it off; put the production wiring back
+	it := fx.item(t, fx.tasks.ID, "open")
+	fx.tick(t)
+	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "more"}); err != nil {
+		t.Fatal(err)
+	}
+	j, err := fx.s.GetDecisionJob(it.ID, AttentionSetName)
+	if err != nil || j == nil || j.NotBefore == "" {
+		t.Fatalf("attention re-ask is not debounced: %+v %v", j, err)
+	}
+	if d := fx.r.debounceFor(ConventionsSetName); d != ReaskDebounce {
+		t.Errorf("conventions window = %v, want %v", d, ReaskDebounce)
+	}
+	if d := fx.r.debounceFor("not-registered"); d != 0 {
+		t.Errorf("an unregistered set has window %v, want none", d)
+	}
+	per := ConventionsCommentsSet()
+	reg := NewRegistry()
+	if err := reg.Register(per); err != nil {
+		t.Fatal(err)
+	}
+	if d := NewRunner(fx.s, fx.r.provider, reg).debounceFor(per.Name); d != 0 {
+		t.Errorf("a PerComment set has window %v, want none", d)
+	}
+
+	var nilRunner *Runner
+	nilRunner.Install(fx.s)
+	other := fx.item(t, fx.tasks.ID, "open")
+	if j, _ := fx.s.GetDecisionJob(other.ID, AttentionSetName); j != nil {
+		t.Fatalf("a nil runner left the resolver installed: %+v", j)
+	}
 }
 
 func (fx *attentionFixture) set(key string, p float64) {

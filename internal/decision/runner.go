@@ -432,9 +432,27 @@ func (r *Runner) Provider() Provider {
 func (r *Runner) Install(s *store.Store) {
 	if r == nil {
 		s.SetDecisionSetResolver(nil)
+		s.SetDecisionDebounce(nil)
 		return
 	}
 	s.SetDecisionSetResolver(r.registry.SetsFor)
+	s.SetDecisionDebounce(r.debounceFor)
+}
+
+// ReaskDebounce is how long after an item's latest evaluation for a set a new
+// write's re-ask waits (TASK-3916; the 1h window was accepted for IDEA-3906,
+// whose trail carries the measured saving). A first evaluation never waits.
+const ReaskDebounce = time.Hour
+
+// debounceFor is the window the store applies per set: ReaskDebounce for an
+// item-level set, none for a PerComment one, whose calls are one per comment
+// and which a debounce cannot merge, and none for a set not registered.
+func (r *Runner) debounceFor(setName string) time.Duration {
+	qs, ok := r.registry.Get(setName)
+	if !ok || qs.PerComment {
+		return 0
+	}
+	return ReaskDebounce
 }
 
 // ErrItemGone reports that the item no longer exists or is soft-deleted: the
