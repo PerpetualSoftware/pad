@@ -81,6 +81,10 @@ const ConventionsCommentsSetName = "conventions_comments"
 // ConventionsCommentsSet returns the `conventions_comments` question set:
 // ConventionsSet's questions, asked about each of the item's recent comments
 // with the item's title and collection for context (BuildCommentState).
+//
+// NOT registered in production since TASK-3924 (see ProductionRegistry). It
+// stays defined, with the PerComment machinery, because tests exercise that
+// machinery through it and the conventions eval gates use its state builder.
 func ConventionsCommentsSet() QuestionSet {
 	return QuestionSet{
 		Name:       ConventionsCommentsSetName,

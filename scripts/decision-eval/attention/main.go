@@ -37,6 +37,18 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// The day-73 eval asked two questions in one call. The `blocked` one was
+// retired from the production set in TASK-3915 (the dependency graph owns
+// blocked), so the titlebody control carries its text here, verbatim, to keep
+// re-running the day-73 shape.
+const day73Blocked = "blocked"
+
+var day73BlockedQuestion = decision.Noul(
+	"The item's text says the work is currently blocked on something outside the item itself.",
+	"an explicit dependency, wait, or blocker is named",
+	"no blocker is stated; the work can start",
+)
+
 type member struct {
 	Ref    string  `json:"ref"`
 	Truth  bool    `json:"truth"`
@@ -91,7 +103,7 @@ func main() {
 	if *mode == "titlebody" {
 		questions = map[string]decision.Question{
 			decision.AttentionNeedsHuman: all[decision.AttentionNeedsHuman],
-			decision.AttentionBlocked:    all[decision.AttentionBlocked],
+			day73Blocked:                 day73BlockedQuestion,
 		}
 	} else if *mode != "production" && *mode != "nostatus" && *mode != "nostatus-notrail" && *mode != "r0" && *mode != "r1" {
 		fmt.Fprintln(os.Stderr, "unknown -mode", *mode)

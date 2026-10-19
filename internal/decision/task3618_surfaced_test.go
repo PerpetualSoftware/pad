@@ -1,8 +1,10 @@
 package decision
 
 import (
+	"context"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -18,29 +20,33 @@ func surfacedKeys(ds []models.ItemDecision) []string {
 
 // TASK-3618: SurfacedDecisions keeps exactly the answers WorkspaceFlags would
 // flag, on both sides of the threshold (AT it is surfaced), and counts the
-// rest as below threshold.
+// rest as below threshold. One item answers AT the threshold, the other just
+// under it (the set has one question since TASK-3915).
 func TestTASK3618_SurfacedDecisionsThresholdBothSides(t *testing.T) {
 	fx := newAttentionFixture(t)
-	fx.set(AttentionNeedsHuman, 0.9)
-	fx.set(AttentionBlocked, AttentionThreshold)
-	fx.set(AttentionWaitingExternal, AttentionThreshold-0.01)
-	it := fx.item(t, fx.tasks.ID, "open")
+	fx.set(AttentionNeedsHuman, AttentionThreshold)
+	at := fx.item(t, fx.tasks.ID, "open")
+	fx.tick(t)
+	fx.set(AttentionNeedsHuman, AttentionThreshold-0.01)
+	under := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
 
-	got, below, staleQ, err := fx.r.SurfacedDecisions(it.ID)
+	got, below, staleQ, err := fx.r.SurfacedDecisions(at.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if keys := surfacedKeys(got); len(keys) != 2 || keys[0] != AttentionBlocked || keys[1] != AttentionNeedsHuman {
-		t.Fatalf("surfaced = %v, want [blocked needs_human_decision]", keys)
+	if keys := surfacedKeys(got); len(keys) != 1 || keys[0] != AttentionNeedsHuman || !got[0].Current {
+		t.Fatalf("at the threshold: surfaced = %+v, want needs_human_decision, current", got)
 	}
-	if below != 1 || staleQ != 0 {
-		t.Fatalf("below=%d staleQuestion=%d, want 1 and 0", below, staleQ)
+	if below != 0 || staleQ != 0 {
+		t.Fatalf("at the threshold: below=%d staleQuestion=%d, want 0 and 0", below, staleQ)
 	}
-	for _, d := range got {
-		if !d.Current {
-			t.Fatalf("fresh answer %s not current", d.QuestionKey)
-		}
+	got, below, staleQ, err = fx.r.SurfacedDecisions(under.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 || below != 1 || staleQ != 0 {
+		t.Fatalf("under the threshold: surfaced=%v below=%d staleQuestion=%d, want none, 1, 0", surfacedKeys(got), below, staleQ)
 	}
 
 	// The dashboard's read agrees row for row: one predicate, two callers.
@@ -48,24 +54,23 @@ func TestTASK3618_SurfacedDecisionsThresholdBothSides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var flagged []string
-	for k := range flags[it.ID] {
-		flagged = append(flagged, k)
-	}
-	sort.Strings(flagged)
-	if len(flagged) != 2 || flagged[0] != AttentionBlocked || flagged[1] != AttentionNeedsHuman {
-		t.Fatalf("WorkspaceFlags = %v, disagrees with SurfacedDecisions", flagged)
+	if _, ok := flags[at.ID][AttentionNeedsHuman]; !ok || len(flags) != 1 {
+		t.Fatalf("WorkspaceFlags = %v, disagrees with SurfacedDecisions", flags)
 	}
 }
 
 // An above-threshold answer whose ITEM has moved on stays in the brief with
-// current=false, where WorkspaceFlags drops it; a below-threshold one stays
-// out either way.
+// current=false. The dashboard keeps it too while the re-ask is pending
+// (TASK-3915), and drops it when no job is owed; the brief keeps it either
+// way.
 func TestTASK3618_SurfacedKeepsAnAnswerWhoseItemMovedOn(t *testing.T) {
 	fx := newAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
 	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "new facts"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.s.DB().Exec(`DELETE FROM decision_jobs WHERE item_id = ?`, it.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,11 +81,64 @@ func TestTASK3618_SurfacedKeepsAnAnswerWhoseItemMovedOn(t *testing.T) {
 	if len(got) != 1 || got[0].QuestionKey != AttentionNeedsHuman || got[0].Current {
 		t.Fatalf("surfaced = %+v, want needs_human_decision with current=false", got)
 	}
-	if below != 2 {
-		t.Fatalf("below = %d, want 2 (blocked 0.2, waiting 0.1)", below)
+	if below != 0 {
+		t.Fatalf("below = %d, want 0", below)
 	}
 	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold); len(flags[it.ID]) != 0 {
-		t.Fatalf("precondition: the dashboard drops the moved-on answer, got %v", flags[it.ID])
+		t.Fatalf("precondition: with no job owed the dashboard drops the moved-on answer, got %v", flags[it.ID])
+	}
+}
+
+// Answers stored under the attention set's RETIRED keys (TASK-3915 /
+// TASK-3924) are neither surfaced nor flagged, and the brief counts them as
+// stale questions: no migration removes the rows, and none is needed. The
+// rows are written by a runner whose registry still asks the old questions,
+// which is exactly what the database holds from before the change.
+func TestTASK3915_RetiredAttentionKeysReadAsStaleQuestions(t *testing.T) {
+	fx := newAttentionFixture(t)
+	old := AttentionSet()
+	old.Questions["blocked"] = Noul(
+		"The item's text says the work is currently blocked on something outside the item itself.",
+		"an explicit dependency, wait, or blocker is named",
+		"no blocker is stated; the work can start",
+	)
+	old.Questions["waiting_on_external"] = Noul(
+		"The next step on this work item is an action by someone outside this workspace.",
+		"the item is waiting on a person, team, vendor, or service outside the workspace to act",
+		"the next step is an action by the workspace's own people or agents",
+	)
+	oldReg := NewRegistry()
+	if err := oldReg.Register(old); err != nil {
+		t.Fatal(err)
+	}
+	fx.set("blocked", 0.95)
+	fx.set("waiting_on_external", 0.95)
+	it := fx.item(t, fx.tasks.ID, "open")
+	rOld := NewRunner(fx.s, fx.r.provider, oldReg)
+	if _, err := rOld.RunOnce(context.Background(), "old", 50, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	// Control: the old registry surfaces all three.
+	if got, _, _, _ := rOld.SurfacedDecisions(it.ID); len(got) != 3 {
+		t.Fatalf("control: the old registry surfaced %v, want all three keys", surfacedKeys(got))
+	}
+
+	got, below, staleQ, err := fx.r.SurfacedDecisions(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys := surfacedKeys(got); len(keys) != 1 || keys[0] != AttentionNeedsHuman {
+		t.Fatalf("surfaced = %v, want only needs_human_decision", keys)
+	}
+	if below != 0 || staleQ != 2 {
+		t.Fatalf("below=%d staleQuestion=%d, want 0 and 2 (blocked, waiting_on_external)", below, staleQ)
+	}
+	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flags[it.ID]) != 1 {
+		t.Fatalf("WorkspaceFlags = %v, want needs_human_decision only", flags[it.ID])
 	}
 }
 
@@ -105,8 +163,8 @@ func TestTASK3618_RewordedQuestionCountsAsStaleQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 0 || below != 2 || staleQ != 1 {
-		t.Fatalf("surfaced=%v below=%d staleQuestion=%d, want none, 2, 1", surfacedKeys(got), below, staleQ)
+	if len(got) != 0 || below != 0 || staleQ != 1 {
+		t.Fatalf("surfaced=%v below=%d staleQuestion=%d, want none, 0, 1", surfacedKeys(got), below, staleQ)
 	}
 	// Counterfactual: the unchanged registry surfaces that same 0.9 row.
 	if got, _, staleQ, _ := fx.r.SurfacedDecisions(it.ID); len(got) != 1 || staleQ != 0 {
@@ -117,9 +175,8 @@ func TestTASK3618_RewordedQuestionCountsAsStaleQuestion(t *testing.T) {
 // Every production set that surfaces answers carries its threshold.
 func TestTASK3618_ProductionSetsCarryTheirThreshold(t *testing.T) {
 	want := map[string]float64{
-		AttentionSetName:           AttentionThreshold,
-		ConventionsSetName:         ConventionThreshold,
-		ConventionsCommentsSetName: ConventionThreshold,
+		AttentionSetName:   AttentionThreshold,
+		ConventionsSetName: ConventionThreshold,
 	}
 	reg, err := ProductionRegistry()
 	if err != nil {
