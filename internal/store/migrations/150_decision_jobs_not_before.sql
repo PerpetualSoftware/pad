@@ -4,7 +4,7 @@
 -- not yet claimable. The enqueue computes it in Go from the item's latest
 -- evaluation for the set plus the set's window (store.SetDecisionDebounce:
 -- 1h for the item-level sets, 0 for a per-comment one), so a burst of edits
--- and comments costs one provider call an hour rather than one per write.
+-- and comments costs at most one provider call an hour rather than one per write.
 -- NULL means claimable now: a first evaluation, a window already past, or a
 -- set with no window. Fixed-width decisionTime TEXT, the same format and the
 -- same TEXT comparison as lease_expires_at. Never backfilled: a row written
