@@ -248,6 +248,11 @@ func TestCommentMentions_IndexLifecycle(t *testing.T) {
 	wantMentions(t, s, fc.ID, "fenced tombstone clears")
 }
 
+// Guard limits, by decision (TASK-3917 r2): the census matches SQL text in Go
+// source, so it does not see a table named with a schema (public.comments) or
+// a statement assembled from string pieces; the INDEXED check ignores // comment
+// lines only.
+//
 // commentWriteSite classifies one top-level declaration that writes comments.
 // n is the number of comment-writing statements it holds: a new statement in
 // an already classified func changes the count and fails the guard until it is
@@ -345,6 +350,45 @@ func funcBody(src, name string) string {
 	return ""
 }
 
+// callsReindex reports whether the top-level decl name in src CALLS the
+// helper. Lines that are // comments are ignored: a doc comment naming the
+// helper (including the doc comment of the NEXT decl, which funcBody's span
+// includes) is not a call. A prose-triggered false red is accepted: it fails
+// safe and the message names the decl (TASK-3917 r2 F5).
+func callsReindex(src, name string) bool {
+	var code []string
+	for _, line := range strings.Split(funcBody(src, name), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		code = append(code, line)
+	}
+	return strings.Contains(strings.Join(code, "\n"), "reindexCommentMentionsTx(")
+}
+
+// The INDEXED check ignores comment lines. The scratch source holds a func
+// that lacks the call but names the helper in its own doc comment, one whose
+// next decl's doc comment names it, and a control that really calls it.
+func TestCommentMentions_GuardIgnoresCommentLines(t *testing.T) {
+	src := "package store\n\n" +
+		"// lacksCall used to call reindexCommentMentionsTx(tx) here.\n" +
+		"func (s *Store) lacksCall() {\n\t// reindexCommentMentionsTx( is mentioned in prose\n}\n\n" +
+		"// leaky: its own doc names reindexCommentMentionsTx( too.\n" +
+		"func (s *Store) leaky() {\n}\n\n" +
+		"func (s *Store) real() {\n\ts.reindexCommentMentionsTx(tx, 1)\n}\n"
+	if callsReindex(src, "lacksCall") {
+		t.Error("a comment naming the helper was read as a call (lacksCall)")
+	}
+	// lacksCall's span runs to the next decl, so leaky's doc comment sits
+	// inside it as well as inside leaky's own span's start.
+	if callsReindex(src, "leaky") {
+		t.Error("the next decl's doc comment was read as a call (leaky)")
+	}
+	if !callsReindex(src, "real") {
+		t.Error("a real call was not seen (control)")
+	}
+}
+
 func TestCommentMentions_InsertSiteGuard(t *testing.T) {
 	files := readNonTestGo(t)
 	got := commentWriteCensus(t, files)
@@ -364,7 +408,7 @@ func TestCommentMentions_InsertSiteGuard(t *testing.T) {
 		}
 		if strings.HasPrefix(site.class, "INDEXED") {
 			path, name, _ := strings.Cut(k, ":")
-			if !strings.Contains(funcBody(files[path], name), "reindexCommentMentionsTx(") {
+			if !callsReindex(files[path], name) {
 				t.Errorf("%s is classified INDEXED but never calls reindexCommentMentionsTx(", k)
 			}
 		}
@@ -487,6 +531,27 @@ func TestCommentMentions_CopyAndImportNotIndexed(t *testing.T) {
 	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM comment_mentions WHERE workspace_id = ?`, f.dst.wsID); n != 0 {
 		t.Fatalf("copy carried %d mentions", n)
 	}
+}
+
+// Unresolvable names that sort early must not evict a real user: the cap
+// applies to RESOLVED mentions (TASK-3917 r2 F4).
+func TestCommentMentions_CapAfterResolution(t *testing.T) {
+	f := task3408Fixture(t, "inst-capres")
+	s := f.s
+	author := mentionUser(t, s, "author")
+	real := mentionUser(t, s, "zed")
+	col := createTestCollection(t, s, f.ws.ID, "CapRes")
+	item := createTestItem(t, s, f.ws.ID, col.ID, "Thread", "")
+	var body strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&body, "@aaa%03d ", i) // no such users; sort before "zed"
+	}
+	body.WriteString("@zed")
+	c, err := s.CreateComment(f.ws.ID, item.ID, author.ID, models.CommentCreate{Body: body.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMentions(t, s, c.ID, "real user behind 60 unresolvable names", real)
 }
 
 func TestCommentMentions_CapPerComment(t *testing.T) {

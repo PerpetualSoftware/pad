@@ -26,7 +26,8 @@ const commentMentionsBackfilledFlag = "comment_mentions_backfilled"
 // a pass never writes rows from a stale snapshot over a concurrent edit.
 // Ids only are held in memory. Imported comments are skipped (imported = 0),
 // as at import and on edit: TASK-3917 lead ruling bb0c9fc6. A failed comment
-// is logged with its id and counted.
+// is logged with its id and counted. Names resolve against the users that
+// exist now: for a legacy row the backfill IS the write-time resolution.
 //
 // The marker is written only after a full pass with no failed comment, so an
 // interrupted or partly failed run is retried at the next boot. A second run

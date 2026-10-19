@@ -35,8 +35,14 @@ import (
 // lead ruling bb0c9fc6). Accepted cost (TASK-3917 lead ruling, day 20): a
 // mention a local user ADDS while editing an imported comment is not indexed
 // either. A comment mentioning more than
-// links.MaxMentionsPerComment distinct names indexes only the first that many
-// in sorted order. Usernames shorter than 3 characters (legacy) are never
+// links.MaxMentionsPerComment distinct RESOLVED names indexes only the first
+// that many in sorted order (names that resolve to no user do not count; at
+// most links.MaxMentionCandidates parsed names are tried, in chunks).
+// `pad db migrate` (SQLite to PG) goes through ImportWorkspace, so every
+// migrated comment is imported = 1 and is never indexed (users are not
+// migrated either, migrated.go). The backfill resolves against the users that
+// exist NOW: for a legacy row the backfill IS its write-time resolution
+// (TASK-3917 r2). Usernames shorter than 3 characters (legacy) are never
 // matched, and "end.@alice" reads as an email and is skipped.
 //
 // Every writer of comments.body or deleted_at calls this (the site guard in
@@ -46,22 +52,27 @@ func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, ite
 	var names []string
 	if live {
 		names = links.ExtractMentions(body)
-		if len(names) > links.MaxMentionsPerComment {
-			names = names[:links.MaxMentionsPerComment]
+		if len(names) > links.MaxMentionCandidates {
+			names = names[:links.MaxMentionCandidates]
 		}
 	}
 
+	// Resolve in chunks (bounded IN-list), in sorted name order, and stop at
+	// MaxMentionsPerComment RESOLVED users: unresolvable names that sort early
+	// cannot evict real ones (TASK-3917 r2).
 	want := map[string]bool{} // user ids the body resolves to
-	if len(names) > 0 {
-		ph := strings.TrimSuffix(strings.Repeat("?,", len(names)), ",")
-		args := make([]any, len(names))
-		for i, n := range names {
-			args[i] = n
+	resolved := 0
+	for i := 0; i < len(names) && resolved < links.MaxMentionsPerComment; i += links.MentionResolveChunk {
+		chunk := names[i:min(i+links.MentionResolveChunk, len(names))]
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, len(chunk))
+		for j, n := range chunk {
+			args[j] = n
 		}
 		// On Postgres the rows are locked FOR KEY SHARE so a concurrent
 		// eraseUserTx cannot delete a user between this read and the insert
 		// below (an FK violation otherwise).
-		resolveQ := `SELECT id FROM users WHERE kind = 'human' AND LOWER(username) IN (` + ph + `)`
+		resolveQ := `SELECT id, LOWER(username) FROM users WHERE kind = 'human' AND LOWER(username) IN (` + ph + `)`
 		if s.dialect.Driver() == DriverPostgres {
 			resolveQ += ` FOR KEY SHARE`
 		}
@@ -69,19 +80,31 @@ func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, ite
 		if err != nil {
 			return fmt.Errorf("resolve comment mentions: %w", err)
 		}
+		byName := map[string][]string{}
 		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
+			var id, name string
+			if err := rows.Scan(&id, &name); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan comment mention user: %w", err)
 			}
-			want[id] = true
+			byName[name] = append(byName[name], id)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
 			return fmt.Errorf("resolve comment mentions: %w", err)
 		}
 		rows.Close()
+		for _, n := range chunk {
+			if resolved >= links.MaxMentionsPerComment {
+				break
+			}
+			if ids := byName[n]; len(ids) > 0 {
+				for _, id := range ids {
+					want[id] = true
+				}
+				resolved++
+			}
+		}
 	}
 
 	have := map[string]bool{}
