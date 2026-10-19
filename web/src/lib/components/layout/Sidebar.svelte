@@ -935,12 +935,23 @@
 			<PlanLimitPrompt scope="new-item-quick-add" />
 			<div class="quick-add-actions">
 				<span class="quick-add-hint">Enter to add · {modKeyLabel('Enter')} to add and open · Esc to close</span>
-				<button
-					class="quick-add-btn"
-					type="button"
-					disabled={!quickAddTitle.trim() || quickAddSubmitting}
-					onclick={() => submitQuickAdd()}
-				>Add</button>
+				<!-- Every key path has a button too (TASK-3972), in the mobile
+				     capture sheet's order: Cancel, Add and open, Add. -->
+				<div class="quick-add-buttons">
+					<button class="quick-add-btn secondary quick-add-cancel" type="button" onclick={cancelQuickAdd}>Cancel</button>
+					<button
+						class="quick-add-btn secondary quick-add-open"
+						type="button"
+						disabled={!quickAddTitle.trim() || quickAddSubmitting}
+						onclick={() => submitQuickAdd(true)}
+					>Add and open</button>
+					<button
+						class="quick-add-btn quick-add-submit"
+						type="button"
+						disabled={!quickAddTitle.trim() || quickAddSubmitting}
+						onclick={() => submitQuickAdd()}
+					>Add</button>
+				</div>
 			</div>
 		</div>
 	{/if}
@@ -1280,6 +1291,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		gap: var(--space-3);
 	}
 	.quick-add-hint {
 		font-size: 0.75em;
@@ -1306,6 +1318,20 @@
 	.quick-add-btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+	.quick-add-buttons {
+		display: flex;
+		gap: var(--space-2);
+		flex-shrink: 0;
+	}
+	.quick-add-btn.secondary {
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--text-primary);
+	}
+	.quick-add-btn.secondary:hover:not(:disabled) {
+		filter: none;
+		background: var(--bg-hover);
 	}
 	.quick-add-header {
 		position: relative;

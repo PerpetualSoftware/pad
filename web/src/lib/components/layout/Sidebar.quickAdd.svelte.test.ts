@@ -113,7 +113,7 @@ describe('Sidebar quick-add — an in-flight create belongs to ONE opening of th
 		await type('second title');
 		await tick();
 		expect(input().readOnly, 'the new opening inherited the old one\'s busy state').toBe(false);
-		const create = document.querySelector<HTMLButtonElement>('.quick-add-btn');
+		const create = document.querySelector<HTMLButtonElement>('.quick-add-submit');
 		expect(create?.disabled, 'Create is disabled until an unrelated request settles').toBe(false);
 	});
 });
