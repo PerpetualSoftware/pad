@@ -30,6 +30,12 @@ func TestParseMentions(t *testing.T) {
 		{"fenced", "```\n@alice\n```\n@bob", []string{"bob"}},
 		{"inline code", "`@alice` and @bob", []string{"bob"}},
 		{"leading hyphen run", "@-alice", nil},
+		{"after slash", "see /@alice and x/@bob", nil},
+		{"after backslash", `C:\@alice`, nil},
+		{"underscore follower", "@alice_bot", nil},
+		{"dot letter follower", "@alice.dev and @bob.2", nil},
+		{"dot then space", "ping @alice. ok", []string{"alice"}},
+		{"non-ascii follower", "@aliceé", nil},
 	}
 	for _, c := range cases {
 		got := ExtractMentions(c.in)

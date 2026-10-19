@@ -1432,18 +1432,18 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err := stampAttachmentRefsTx(tx, s, ws.ID, cm.Body); err != nil {
 			return nil, err
 		}
-		newCommentID := newID()
 		_, err := tx.Exec(s.q(`
 			INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at, imported)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`),
-			newCommentID, newItemID, ws.ID, cm.Author, cm.Body, cm.CreatedBy, cm.Source,
+			newID(), newItemID, ws.ID, cm.Author, cm.Body, cm.CreatedBy, cm.Source,
 			cm.CreatedAt, cm.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import comment: %w", err)
 		}
-		if err := s.reindexCommentMentionsTx(tx, newCommentID, ws.ID, newItemID, cm.Body, true); err != nil {
-			return nil, err
-		}
+		// No comment_mentions rows for imported comments (TASK-3917 lead
+		// ruling bb0c9fc6): history would stay open for good, and a bundle's
+		// @handles name SOURCE-instance users that could bind to a different
+		// local user. Matches needsOthersComment (needs_snooze.go, #2231 r1).
 	}
 
 	// Import item links

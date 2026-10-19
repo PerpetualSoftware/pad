@@ -24,13 +24,31 @@ import (
 // indexed, an unknown name is skipped, and disabled users and self-mentions
 // are indexed as-is: eligibility belongs to whoever routes on the index.
 //
+// ts is the created_at of NEW rows: the comment's created_at on create and
+// in the backfill, the edit time on an edit (kept rows are unchanged).
+// Pass "" with live=false.
+//
+// Known limits, by decision (TASK-3917 r1): imported comments are NEVER
+// indexed, by import, by the backfill (imported = 0) or by an edit of an
+// imported comment (the reindex covers the whole body, so unedited
+// source-instance handles would bind): the caller skips the helper (TASK-3917
+// lead ruling bb0c9fc6). Accepted cost (TASK-3917 lead ruling, day 20): a
+// mention a local user ADDS while editing an imported comment is not indexed
+// either. A comment mentioning more than
+// links.MaxMentionsPerComment distinct names indexes only the first that many
+// in sorted order. Usernames shorter than 3 characters (legacy) are never
+// matched, and "end.@alice" reads as an email and is skipped.
+//
 // Every writer of comments.body or deleted_at calls this (the site guard in
 // task3917_comment_mentions_test.go classifies each one); hard deletes and
 // reaps rely on the comment_id ON DELETE CASCADE.
-func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, itemID, body string, live bool) error {
+func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, itemID, body string, live bool, ts string) error {
 	var names []string
 	if live {
 		names = links.ExtractMentions(body)
+		if len(names) > links.MaxMentionsPerComment {
+			names = names[:links.MaxMentionsPerComment]
+		}
 	}
 
 	want := map[string]bool{} // user ids the body resolves to
@@ -40,7 +58,14 @@ func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, ite
 		for i, n := range names {
 			args[i] = n
 		}
-		rows, err := tx.Query(s.q(`SELECT id FROM users WHERE kind = 'human' AND LOWER(username) IN (`+ph+`)`), args...)
+		// On Postgres the rows are locked FOR KEY SHARE so a concurrent
+		// eraseUserTx cannot delete a user between this read and the insert
+		// below (an FK violation otherwise).
+		resolveQ := `SELECT id FROM users WHERE kind = 'human' AND LOWER(username) IN (` + ph + `)`
+		if s.dialect.Driver() == DriverPostgres {
+			resolveQ += ` FOR KEY SHARE`
+		}
+		rows, err := tx.Query(s.q(resolveQ), args...)
 		if err != nil {
 			return fmt.Errorf("resolve comment mentions: %w", err)
 		}
@@ -86,7 +111,6 @@ func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, ite
 			return fmt.Errorf("delete comment mention: %w", err)
 		}
 	}
-	ts := now()
 	for id := range want {
 		if have[id] {
 			continue

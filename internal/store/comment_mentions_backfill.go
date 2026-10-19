@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 )
 
 // BackfillCommentMentionsResult reports one BackfillCommentMentions pass.
@@ -23,7 +24,9 @@ const commentMentionsBackfilledFlag = "comment_mentions_backfilled"
 // whose body contains "@" and reindexes each in its own transaction that
 // RE-READS the body (FOR NO KEY UPDATE on Postgres, UpdateComment's lock), so
 // a pass never writes rows from a stale snapshot over a concurrent edit.
-// Ids only are held in memory.
+// Ids only are held in memory. Imported comments are skipped (imported = 0),
+// as at import and on edit: TASK-3917 lead ruling bb0c9fc6. A failed comment
+// is logged with its id and counted.
 //
 // The marker is written only after a full pass with no failed comment, so an
 // interrupted or partly failed run is retried at the next boot. A second run
@@ -42,7 +45,7 @@ func (s *Store) BackfillCommentMentions() (*BackfillCommentMentionsResult, error
 		return nil, fmt.Errorf("probe comment mentions backfill marker: %w", err)
 	}
 
-	rows, err := s.db.Query(s.q(`SELECT id FROM comments WHERE deleted_at IS NULL AND body LIKE '%@%'`))
+	rows, err := s.db.Query(s.q(`SELECT id FROM comments WHERE deleted_at IS NULL AND imported = 0 AND body LIKE '%@%'`))
 	if err != nil {
 		return nil, fmt.Errorf("scan comments for mentions backfill: %w", err)
 	}
@@ -65,6 +68,7 @@ func (s *Store) BackfillCommentMentions() (*BackfillCommentMentionsResult, error
 		result.CommentsScanned++
 		if err := s.backfillCommentMentionsOne(id); err != nil {
 			result.Errors++
+			slog.Warn("comment mentions backfill: comment failed", "comment_id", id, "error", err)
 		}
 	}
 	if result.Errors > 0 {
@@ -87,19 +91,22 @@ func (s *Store) backfillCommentMentionsOne(id string) error {
 	}
 	defer tx.Rollback()
 
-	q := `SELECT workspace_id, item_id, body, CASE WHEN deleted_at IS NULL THEN 1 ELSE 0 END FROM comments WHERE id = ?`
+	q := `SELECT workspace_id, item_id, body, CASE WHEN deleted_at IS NULL THEN 1 ELSE 0 END, created_at, imported FROM comments WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		q += ` FOR NO KEY UPDATE`
 	}
-	var workspaceID, itemID, body string
-	var live int
-	if err := tx.QueryRow(s.q(q), id).Scan(&workspaceID, &itemID, &body, &live); err != nil {
+	var workspaceID, itemID, body, createdAt string
+	var live, imported int
+	if err := tx.QueryRow(s.q(q), id).Scan(&workspaceID, &itemID, &body, &live, &createdAt, &imported); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil // deleted since the scan
 		}
 		return err
 	}
-	if err := s.reindexCommentMentionsTx(tx, id, workspaceID, itemID, body, live == 1); err != nil {
+	if imported == 1 {
+		return nil // never indexed (TASK-3917 lead ruling bb0c9fc6)
+	}
+	if err := s.reindexCommentMentionsTx(tx, id, workspaceID, itemID, body, live == 1, createdAt); err != nil {
 		return err
 	}
 	return tx.Commit()
