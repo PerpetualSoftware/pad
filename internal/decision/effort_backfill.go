@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // The one-shot effort backfill (TASK-3921, IDEA-3906 B4a).
@@ -26,8 +27,14 @@ import (
 // candidate was owed.
 const EffortBackfillSetting = "effort_decisions_backfilled"
 
-// effortBackfillChunk is how many items one OweDecisionJobs call covers.
-const effortBackfillChunk = 500
+// effortBackfillChunk is how many items one OweDecisionJobs call covers: one
+// tick pass (the server's defaultDecisionTickLimit, which wires the live value
+// through SetBackfillPacing).
+const effortBackfillChunk = 20
+
+// effortBackfillPoll is how often the backfill re-checks that its last chunk
+// drained: the tick interval (the server wires the live value).
+const effortBackfillPoll = 5 * time.Second
 
 // EffortBackfillCandidates returns the items the backfill would owe a job
 // for, grouped by workspace in workspace order: live, answered for
@@ -92,6 +99,20 @@ func (r *Runner) CountEffortBackfill(ctx context.Context) (int, error) {
 // marker. owed is the number of jobs owed by this call (0 when the marker was
 // already set). A nil runner does nothing.
 //
+// PACING (lead ruling on TASK-3921, r3 M1). Claims run oldest-enqueued first
+// and evaluation is sequential, so owing every candidate at once would put a
+// live edit's re-ask behind the whole backlog. The backfill therefore owes one
+// tick pass of items (backfillChunk) and owes the next only once THAT chunk's
+// own jobs have drained, where drained means none of the chunk's items has a
+// job ClaimDecisionJobs could take right now (CountClaimableDecisionJobs: the
+// same predicate). It does NOT gate on total queue depth, which would starve
+// the backfill under live load. A job held by the re-ask debounce (not_before
+// ahead, up to ~1h) cannot be claimed yet and must not stall the run; a
+// claimed, answered or deleted job is drained. Live jobs owed meanwhile queue
+// behind at most one chunk. The wait polls at the tick interval and honours
+// ctx; a cancel in it returns ctx.Err() with no marker. The marker is written
+// after the LAST chunk is owed, without waiting for it to drain.
+//
 // ctx is checked before each candidate read and before each chunk. A cancel
 // that lands before a chunk returns ctx.Err() with no marker, so the next run
 // redoes the work. A cancel that lands after the last chunk may still write
@@ -117,12 +138,18 @@ func (r *Runner) BackfillEffort(ctx context.Context) (owed int, err error) {
 		chunk = effortBackfillChunk
 	}
 	n := 0
+	var prev []string // the previous chunk's items, awaiting drain
 	for _, ws := range order {
 		ids := byWS[ws]
 		for start := 0; start < len(ids); start += chunk {
 			end := start + chunk
 			if end > len(ids) {
 				end = len(ids)
+			}
+			if prev != nil {
+				if err := r.waitChunkDrained(ctx, prev); err != nil {
+					return owed, err
+				}
 			}
 			if r.beforeBackfillChunk != nil {
 				if err := r.beforeBackfillChunk(ctx, n); err != nil {
@@ -137,6 +164,7 @@ func (r *Runner) BackfillEffort(ctx context.Context) (owed int, err error) {
 				return owed, err
 			}
 			owed += end - start
+			prev = ids[start:end]
 			n++
 		}
 	}
@@ -150,4 +178,31 @@ func (r *Runner) BackfillEffort(ctx context.Context) (owed int, err error) {
 	}
 	l.Info("effort backfill: owed attention jobs for items with no effort answer", "owed", owed)
 	return owed, nil
+}
+
+// waitChunkDrained blocks until none of ids has a job claimable now (see
+// BackfillEffort), polling at backfillPoll. The check runs first, so an
+// already-drained chunk costs one query.
+func (r *Runner) waitChunkDrained(ctx context.Context, ids []string) error {
+	poll := r.backfillPoll
+	if poll <= 0 {
+		poll = effortBackfillPoll
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		claimable, err := r.store.CountClaimableDecisionJobs(AttentionSetName, ids, time.Now())
+		if err != nil {
+			return err
+		}
+		if claimable == 0 { // THE DRAIN-WAIT LINE: mutate to skip the wait
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
 }

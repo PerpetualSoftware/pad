@@ -173,6 +173,7 @@ func newAttentionFixture(t *testing.T) *attentionFixture {
 	// tick; the re-ask debounce (TASK-3916) has its own tests, which this
 	// would otherwise make every write-then-tick here wait an hour for.
 	fx.s.SetDecisionDebounce(nil)
+	fx.r.backfillPoll = time.Millisecond // the backfill's drain wait polls fast
 	return fx
 }
 

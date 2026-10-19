@@ -85,6 +85,20 @@ func (s *Server) reconfigureDecisionsLocked() error {
 		provider = nil
 	}
 	runner := decision.NewRunner(s.store, provider, sets)
+	if runner != nil {
+		// Pace the effort backfill by one tick pass (TASK-3921): the tick's
+		// own per-pass limit and interval, defaults when not yet started.
+		s.decisionTick.mu.Lock()
+		chunk, poll := s.decisionTick.limit, s.decisionTick.interval
+		s.decisionTick.mu.Unlock()
+		if chunk == 0 {
+			chunk = defaultDecisionTickLimit
+		}
+		if poll == 0 {
+			poll = defaultDecisionTickInterval
+		}
+		runner.SetBackfillPacing(chunk, poll)
+	}
 	if runner != nil && s.decisionSettings.backfillHook != nil {
 		runner.SetBackfillSeams(s.decisionSettings.backfillChunk, s.decisionSettings.backfillHook)
 	}

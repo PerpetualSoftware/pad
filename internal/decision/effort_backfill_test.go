@@ -76,6 +76,62 @@ func (fx *attentionFixture) marker(t *testing.T) string {
 	return v
 }
 
+// holdDrained plays a tick that claims every job as it appears: it marks each
+// decision_jobs row claimed under a far lease (rows stay, so tests still count
+// them) until the test ends. A multi-chunk backfill needs it, since each chunk
+// waits for the previous one's jobs to be taken.
+func (fx *attentionFixture) holdDrained(t *testing.T) {
+	t.Helper()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		far := time.Now().Add(time.Hour).UTC().Format(evalTimeFormat)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Millisecond):
+				_, _ = fx.s.DB().Exec(`UPDATE decision_jobs SET claimed_by = 'test', lease_expires_at = ? WHERE claimed_by IS NULL`, far)
+			}
+		}
+	}()
+	t.Cleanup(func() { close(stop); <-done })
+}
+
+// seedCandidates makes n open items answered for needs_human_decision only and
+// clears the jobs their creation owed.
+func (fx *attentionFixture) seedCandidates(t *testing.T, n int) []string {
+	t.Helper()
+	var ids []string
+	for i := 0; i < n; i++ {
+		it := fx.item(t, fx.tasks.ID, "open")
+		fx.seedAnswers(t, it, time.Now().Add(-3*time.Hour), AttentionNeedsHuman)
+		ids = append(ids, it.ID)
+	}
+	fx.clearJobs(t)
+	return ids
+}
+
+// waitJobs polls until at least n decision_jobs rows exist.
+func (fx *attentionFixture) waitJobs(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var c int
+		if err := fx.s.DB().QueryRow(`SELECT COUNT(*) FROM decision_jobs`).Scan(&c); err != nil {
+			t.Fatal(err)
+		}
+		if c >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never saw %d decision_jobs rows", n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 var allAttentionKeys = []string{AttentionNeedsHuman, AttentionEffort, AttentionEffortMedium, AttentionHighStakes}
 
 func TestEffortBackfill_RunsOnceAndSkipsUnasked(t *testing.T) {
@@ -161,6 +217,7 @@ func TestEffortBackfill_FailingSecondChunkThenRerun(t *testing.T) {
 	}
 	fx.clearJobs(t)
 	fx.r.backfillChunk = 1
+	fx.holdDrained(t) // chunk k+1 waits for chunk k's jobs to be taken
 	boom := errors.New("crash")
 	fx.r.beforeBackfillChunk = func(_ context.Context, chunk int) error {
 		if chunk == 1 {
@@ -319,9 +376,28 @@ func TestEffortBackfillDryRunOnFile(t *testing.T) {
 	if err := refuseLiveDatabase(path, os.Getenv("HOME")); err != nil {
 		t.Fatalf("%v", err)
 	}
-	s, err := store.New(path)
+	// Open a private COPY, never the named file: store.New migrates what it
+	// opens. The copy lives under GOTMPDIR (disk), not /tmp (RAM tmpfs).
+	dir := t.TempDir()
+	if g := os.Getenv("GOTMPDIR"); g != "" {
+		d, err := os.MkdirTemp(g, "effort-dryrun-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(d) })
+		dir = d
+	}
+	copyPath := filepath.Join(dir, "copy.db")
+	src, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("open %s: %v", path, err)
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(copyPath, src, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.New(copyPath)
+	if err != nil {
+		t.Fatalf("open %s: %v", copyPath, err)
 	}
 	defer s.Close()
 	reg, err := ProductionRegistry()
@@ -411,6 +487,7 @@ func TestEffortBackfill_CancelStopsBetweenChunksAndWritesNoMarker(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fx.r.backfillChunk = 1
+	fx.holdDrained(t) // chunk k+1 waits for chunk k's jobs to be taken
 	fx.r.beforeBackfillChunk = func(_ context.Context, chunk int) error {
 		if chunk == 1 {
 			cancel() // lands inside the hook; the chunk-boundary check must see it
@@ -441,6 +518,7 @@ func TestEffortBackfill_StoreFailureMidRunWritesNoMarker(t *testing.T) {
 	}
 	fx.clearJobs(t)
 	fx.r.backfillChunk = 1
+	fx.holdDrained(t) // chunk k+1 waits for chunk k's jobs to be taken
 	fx.r.beforeBackfillChunk = func(_ context.Context, chunk int) error {
 		if chunk == 1 {
 			if _, err := fx.s.DB().Exec(`ALTER TABLE decision_jobs RENAME TO decision_jobs_gone`); err != nil {
@@ -467,5 +545,112 @@ func TestEffortBackfill_StoreFailureMidRunWritesNoMarker(t *testing.T) {
 	}
 	if got := fx.jobItems(t); len(got) != 3 {
 		t.Fatalf("re-run owed %d items; want 3", len(got))
+	}
+}
+
+// Pacing (TASK-3921 r3 M1). The drain wait is ONE condition, marked
+// "THE DRAIN-WAIT LINE" in waitChunkDrained (effort_backfill.go); making it
+// return at once makes the next two tests go red.
+
+// A live job owed after chunk 1 is claimed before chunk 2's jobs are owed.
+func TestEffortBackfill_LiveReaskInterleavesWithChunks(t *testing.T) {
+	fx := newAttentionFixture(t)
+	fx.seedCandidates(t, 3)
+	fx.r.backfillChunk = 1
+	done := make(chan error, 1)
+	go func() { _, err := fx.r.BackfillEffort(context.Background()); done <- err }()
+
+	fx.waitJobs(t, 1) // chunk 0 is owed and (nobody claims yet) waiting
+	// A normal write (a new item owes its job): it queues behind chunk 0.
+	live := fx.item(t, fx.tasks.ID, "open")
+	// Now a tick: claim one job per pass, oldest first, recording the order.
+	var order []string
+	deadline := time.Now().Add(10 * time.Second)
+	for len(order) < 4 {
+		if time.Now().After(deadline) {
+			t.Fatalf("claimed only %v", order)
+		}
+		js, err := fx.s.ClaimDecisionJobs("test", 1, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, j := range js {
+			order = append(order, j.ItemID)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if order[1] != live.ID {
+		t.Fatalf("claim order %v: the live re-ask (%s) must come right after chunk 0, before chunk 1's job", order, live.ID)
+	}
+}
+
+// With chunk 0's jobs left claimable, chunk 1 is not owed; a cancel in the
+// wait returns ctx.Err() with no chunk-1 job and no marker.
+func TestEffortBackfill_HoldsNextChunkUntilDrainedThenCancelWritesNoMarker(t *testing.T) {
+	fx := newAttentionFixture(t)
+	fx.seedCandidates(t, 3)
+	fx.r.backfillChunk = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type res struct {
+		owed int
+		err  error
+	}
+	done := make(chan res, 1)
+	go func() { o, err := fx.r.BackfillEffort(ctx); done <- res{o, err} }()
+	fx.waitJobs(t, 1)
+	time.Sleep(100 * time.Millisecond) // ~100 polls at 1ms
+	if got := fx.jobItems(t); len(got) != 1 {
+		t.Fatalf("jobs while chunk 0 is undrained = %v; want only chunk 0's", got)
+	}
+	cancel()
+	r := <-done
+	if !errors.Is(r.err, context.Canceled) || r.owed != 1 {
+		t.Fatalf("owed=%d err=%v; want 1 and context.Canceled", r.owed, r.err)
+	}
+	if got := fx.jobItems(t); len(got) != 1 {
+		t.Fatalf("jobs after the cancel = %v", got)
+	}
+	if fx.marker(t) != "" {
+		t.Fatal("marker written by a run cancelled in the drain wait")
+	}
+}
+
+// A chunk whose jobs are ALL debounced (not_before ahead) cannot be claimed and
+// so must not hold the next chunk; the run completes and marks.
+func TestEffortBackfill_DebouncedChunkDoesNotHoldTheNext(t *testing.T) {
+	fx := newAttentionFixture(t)
+	fx.seedCandidates(t, 3)
+	fx.r.backfillChunk = 1
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := fx.r.BackfillEffort(ctx); done <- err }()
+	// Debounce every job as it appears (an item evaluated minutes ago).
+	future := time.Now().Add(time.Hour).UTC().Format(evalTimeFormat)
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Millisecond):
+				_, _ = fx.s.DB().Exec(`UPDATE decision_jobs SET not_before = ? WHERE not_before IS NULL`, future)
+			}
+		}
+	}()
+	err := <-done
+	close(stop)
+	if err != nil {
+		t.Fatalf("a debounced chunk held the backfill: %v", err)
+	}
+	if got := fx.jobItems(t); len(got) != 3 {
+		t.Fatalf("jobs = %v; want all three owed", got)
+	}
+	if fx.marker(t) == "" {
+		t.Fatal("marker not written")
 	}
 }

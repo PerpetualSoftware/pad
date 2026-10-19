@@ -383,6 +383,7 @@ type Runner struct {
 	// beforeBackfillChunk, when set, runs before each chunk is owed (chunk
 	// index from 0) and may fail the backfill there. Both are TEST-ONLY seams.
 	backfillChunk       int
+	backfillPoll        time.Duration
 	beforeBackfillChunk func(ctx context.Context, chunk int) error
 
 	// logger receives the per-evaluation spend line; nil means slog.Default().
@@ -781,8 +782,21 @@ func (r *Runner) SetBackfillSeams(chunk int, hook func(ctx context.Context, chun
 	if r == nil {
 		return
 	}
-	r.backfillChunk = chunk
+	if chunk > 0 {
+		r.backfillChunk = chunk
+	}
 	r.beforeBackfillChunk = hook
+}
+
+// SetBackfillPacing sets how many items one backfill chunk owes (the tick's
+// per-pass limit) and how often the backfill re-checks that the chunk drained
+// (the tick interval). Non-positive values keep the defaults.
+func (r *Runner) SetBackfillPacing(chunk int, poll time.Duration) {
+	if r == nil {
+		return
+	}
+	r.backfillChunk = chunk
+	r.backfillPoll = poll
 }
 
 // ItemReadDecisions is Decisions without the staged keys (TASK-3921): what the

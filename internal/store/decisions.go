@@ -377,6 +377,41 @@ func (s *Store) ClaimDecisionJobs(runner string, limit int, lease time.Duration)
 	return claimed, nil
 }
 
+// CountClaimableDecisionJobs counts the set's jobs for itemIDs that
+// ClaimDecisionJobs could take RIGHT NOW at `now`: the very decisionJobClaimable
+// predicate, so the two cannot drift. A job that is claimed (lease live), held
+// by the re-ask debounce (not_before ahead), held by a soft-deleted workspace,
+// answered or deleted is not counted. The effort backfill uses it to tell
+// whether its last chunk has drained (TASK-3921).
+func (s *Store) CountClaimableDecisionJobs(set string, itemIDs []string, now time.Time) (int, error) {
+	nowS := decisionTime(now)
+	total := 0
+	for start := 0; start < len(itemIDs); start += oweDecisionChunk {
+		end := start + oweDecisionChunk
+		if end > len(itemIDs) {
+			end = len(itemIDs)
+		}
+		part := itemIDs[start:end]
+		args := make([]any, 0, len(part)+3)
+		args = append(args, set)
+		marks := make([]string, len(part))
+		for i, id := range part {
+			marks[i] = "?"
+			args = append(args, id)
+		}
+		args = append(args, nowS, nowS)
+		var n int
+		if err := s.db.QueryRow(s.q(`
+			SELECT COUNT(*) FROM decision_jobs
+			WHERE question_set = ? AND item_id IN (`+strings.Join(marks, ",")+`)
+			  AND `+decisionJobClaimable), args...).Scan(&n); err != nil {
+			return 0, fmt.Errorf("count claimable decision jobs: %w", err)
+		}
+		total += n
+	}
+	return total, nil
+}
+
 // CompleteDecisionJob retires a claimed job.
 //
 // The job is deleted only if its generation is still the one claimed. If a
