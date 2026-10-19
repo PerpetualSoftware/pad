@@ -142,6 +142,9 @@ var migratedRefusalTables = []string{
 	"attachments",
 	"item_stars",
 	"watches",
+	// A person's needs-you dismissals and deferrals (TASK-3918), the same
+	// class as item_stars: per-user workspace state the bundle does not carry.
+	"item_needs_snoozes",
 	"comment_reactions",
 	"views",
 	"agent_roles",

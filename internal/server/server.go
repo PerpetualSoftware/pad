@@ -2326,6 +2326,10 @@ func (s *Server) setupRouter() {
 						// pipeline. `pad watch <ref>` / `pad watch remove <ref>`.
 						r.Post("/watch", s.handleCreateWatch)
 						r.Delete("/watch", s.handleDeleteWatch)
+						// Needs-you snooze (TASK-3918): the caller's own
+						// dismiss/defer, so viewers and guests may too.
+						r.Put("/needs/snooze", s.handleSnoozeNeedsItem)
+						r.Delete("/needs/snooze", s.handleUnsnoozeNeedsItem)
 						// Push (IDEA-2544 Phase 1): transient, self-addressed
 						// human→harness dispatch over the SAME watch-events
 						// bus/stream — no durable row, see handlePushToItem's
