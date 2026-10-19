@@ -20,7 +20,8 @@ import (
 
 // allowedAppCommentWrite is DOC-3371 §4's allowed-writes table for comment
 // writes: the comment (and, on a delete, its reactions), the "commented"
-// activity, the event and the decision job. No attachment row is written: an
+// activity, the event and the decision job, and (TASK-3917) the comment's
+// own comment_mentions rows. No attachment row is written: an
 // app comment's references are checked, not stamped (store.checkItemAttachmentRefs).
 // On SQLite the FTS5 shadow tables of comments_fts are observed by name.
 func allowedAppCommentWrite(w storetest.Write) bool {
@@ -29,6 +30,11 @@ func allowedAppCommentWrite(w storetest.Write) bool {
 		return true
 	case "comment_reactions":
 		return w.Op == "DELETE"
+	case "comment_mentions":
+		// The derived @-mention index of the comment's own body (TASK-3917):
+		// rows leave with a hard-deleted comment (the FK cascade, seen on
+		// Postgres) and are diffed in by the write itself.
+		return w.Op == "DELETE" || w.Op == "INSERT"
 	}
 	return strings.HasPrefix(w.Table, "comments_fts_")
 }
