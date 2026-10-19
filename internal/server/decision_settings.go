@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -46,6 +47,9 @@ type decisionSettingsState struct {
 	mu   sync.Mutex
 	file decision.Config
 	sets *decision.Registry
+
+	// backfilling is the single-flight latch of the effort backfill.
+	backfilling atomic.Bool
 }
 
 // SetDecisionBase records the config-file source and the question-set
@@ -90,8 +94,34 @@ func (s *Server) reconfigureDecisionsLocked() error {
 	s.SetDecisionRunner(runner)
 	if runner != nil {
 		s.StartDecisionTick()
+		s.startEffortBackfill(runner)
 	}
 	return err
+}
+
+// startEffortBackfill runs the one-shot effort backfill (TASK-3921) off the
+// caller's path. It sits here, not at boot, so it covers a provider the admin
+// enables LATER as well as one configured at startup; the marker makes every
+// call after the first complete one a cheap read. Single-flight: a second
+// reconfigure while one runs does nothing, and a failed run is retried by the
+// next reconfigure or restart (no marker is written). It makes no provider
+// call; it only owes jobs, which the tick answers under the debounce.
+func (s *Server) startEffortBackfill(runner *decision.Runner) {
+	s.decisionTick.mu.Lock()
+	stopped := s.decisionTick.stopped
+	s.decisionTick.mu.Unlock()
+	if stopped || !s.decisionSettings.backfilling.CompareAndSwap(false, true) {
+		return
+	}
+	s.bg.Add(1)
+	go func() {
+		defer s.bg.Done()
+		defer s.decisionSettings.backfilling.Store(false)
+		defer s.recoverSweeper("effort-backfill")
+		if _, err := runner.BackfillEffort(); err != nil {
+			slog.Error("effort backfill failed; it will be retried on the next restart or settings change", "error", err)
+		}
+	}()
 }
 
 // resolveDecisionConfigLocked returns the resolved config, the origin of each

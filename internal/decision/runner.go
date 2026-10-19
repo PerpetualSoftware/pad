@@ -41,6 +41,12 @@ type QuestionSet struct {
 	// with every answer, so renaming one orphans its history.
 	Questions map[string]Question
 
+	// Unsurfaced names question keys that are asked and stored but that no
+	// surfacing read acts on yet (TASK-3921: staged before their reader).
+	// WorkspaceFlags and SurfacedDecisions skip them entirely, counters
+	// included; Decisions and the decisions endpoint still return the rows.
+	Unsurfaced map[string]bool
+
 	// Eligible, when set, narrows the set to items whose CURRENT state it
 	// accepts. It is checked by the runner at evaluation time, never by the
 	// store's resolver: the resolver runs inside the write transaction and
@@ -372,6 +378,12 @@ type Runner struct {
 	// (TASK-3119: the per-write spend must be visible before any Cloud
 	// rollout). The server wires it to its metrics.
 	usage func(set string, u Usage)
+
+	// backfillChunk overrides effortBackfillChunk when positive, and
+	// beforeBackfillChunk, when set, runs before each chunk is owed (chunk
+	// index from 0) and may fail the backfill there. Both are TEST-ONLY seams.
+	backfillChunk       int
+	beforeBackfillChunk func(chunk int) error
 
 	// logger receives the per-evaluation spend line; nil means slog.Default().
 	// A field rather than the global so a test can read its own lines.
@@ -781,6 +793,10 @@ func (r *Runner) SurfacedDecisions(itemID string) (surfaced []models.ItemDecisio
 	surfaced = []models.ItemDecision{}
 	for i, d := range rows {
 		qs, _ := r.registry.Get(d.QuestionSet)
+		// A staged key (TASK-3921) is not surfaced and not counted.
+		if qs.Unsurfaced[d.QuestionKey] {
+			continue
+		}
 		switch _, v := surfacing(d, qhashes[i], qs.Threshold); v {
 		case Surfaced:
 			surfaced = append(surfaced, d)

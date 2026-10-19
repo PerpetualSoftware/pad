@@ -13,9 +13,11 @@
 //	-mode nostatus-notrail  ...and minus recent_trail (ablation)
 //	-mode r1 / r0     production builder over the item REPLAYED to its last
 //	                  open moment / its filing (replay.go)
-//	-mode titlebody   state = {"title","body"[:5000 runes]} with the same two
-//	                  eval questions — the day-73 shape, re-run today, as the
-//	                  control that separates model drift from state shape.
+//	-mode titlebody   state = {"title","body"[:5000 runes]} with the live
+//	                  attention set (TASK-3921: it used to send the day-73 pair,
+//	                  needs_human_decision + blocked) — the control that
+//	                  separates model drift from state shape, in today's call
+//	                  shape.
 //
 // The key is read from PAD_TYPESAFE_API_KEY or TYPESAFE_API_KEY and is never
 // printed or written.
@@ -35,18 +37,6 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
-)
-
-// The day-73 eval asked two questions in one call. The `blocked` one was
-// retired from the production set in TASK-3915 (the dependency graph owns
-// blocked), so the titlebody control carries its text here, verbatim, to keep
-// re-running the day-73 shape.
-const day73Blocked = "blocked"
-
-var day73BlockedQuestion = decision.Noul(
-	"The item's text says the work is currently blocked on something outside the item itself.",
-	"an explicit dependency, wait, or blocker is named",
-	"no blocker is stated; the work can start",
 )
 
 type member struct {
@@ -98,14 +88,11 @@ func main() {
 	var pop []member
 	mustRead(filepath.Join(*dump, "population.json"), &pop)
 
-	all := decision.AttentionSet().Questions
-	questions := all
-	if *mode == "titlebody" {
-		questions = map[string]decision.Question{
-			decision.AttentionNeedsHuman: all[decision.AttentionNeedsHuman],
-			day73Blocked:                 day73BlockedQuestion,
-		}
-	} else if *mode != "production" && *mode != "nostatus" && *mode != "nostatus-notrail" && *mode != "r0" && *mode != "r1" {
+	// Every mode sends the LIVE attention set (four questions since TASK-3921)
+	// in one call, titlebody included, so the control measures the call shape
+	// production sends. Only needs_human_decision is scored below.
+	questions := decision.AttentionSet().Questions
+	if *mode != "titlebody" && *mode != "production" && *mode != "nostatus" && *mode != "nostatus-notrail" && *mode != "r0" && *mode != "r1" {
 		fmt.Fprintln(os.Stderr, "unknown -mode", *mode)
 		os.Exit(2)
 	}

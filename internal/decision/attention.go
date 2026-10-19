@@ -8,9 +8,11 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// The `attention` question set (PLAN-3114 unit 3, TASK-3118): one Noul over
+// The `attention` question set (PLAN-3114 unit 3, TASK-3118): four questions over
 // an open item and its recent trail, read by the dashboard's attention
 // section and shown as a chip on the item page.
+// One of the four, needs_human_decision, is read by both; the other three are
+// staged (below).
 //
 // The instruction and criteria of needs_human_decision are carried VERBATIM
 // from the day-73 eval (eval2.py, section D), which measured it at AUC 0.939
@@ -26,6 +28,15 @@ import (
 // answers stay in item_decisions and read as stale questions, since no
 // registered question carries their keys.
 //
+// THREE MORE QUESTIONS are STAGED here (TASK-3921, IDEA-3906 half B4a):
+// effort, effort_medium and high_stakes. They ride the same call as
+// needs_human_decision, so the cost is output tokens, not a second request.
+// Nothing READS them yet: their reader is TASK-3959 (B4b), so the set lists
+// them in Unsurfaced and no flag, chip or brief entry is made from them. Their
+// answers are stored, and the item's decisions list returns them. The read
+// rule that belongs to their reader, not to the set: an effort_medium answer
+// whose top probability is under .5 means "unclear".
+//
 // The eval's state was {title, body}; the runner sends the richer
 // BuildItemState (collection, fields, and the recent trail as well), so the
 // eval figure is evidence about the question, not a measurement of this
@@ -34,6 +45,11 @@ const (
 	AttentionSetName = "attention"
 
 	AttentionNeedsHuman = "needs_human_decision"
+
+	// Staged before their reader (TASK-3959); see the header.
+	AttentionEffort       = "effort"
+	AttentionEffortMedium = "effort_medium"
+	AttentionHighStakes   = "high_stakes"
 
 	// AttentionThreshold is the Noul probability at or above which the
 	// dashboard surfaces an item. 0.7 sits between the eval's 0.5 operating
@@ -52,6 +68,34 @@ func AttentionSet() QuestionSet {
 				"the next step requires a human's decision, approval, sign-off, credentials, money, an external relationship, or hardware the agent cannot reach",
 				"the next step is implementable by an engineer or AI agent from the description alone",
 			),
+			AttentionEffort: Score(
+				"How much effort does it take the human owner to supply what this work item is waiting on, or to do its next step?",
+				[]string{
+					"a yes/no or one-line answer",
+					"a short reply, or minutes at a computer",
+					"up to an hour",
+					"research, or hours of work",
+				},
+			),
+			AttentionEffortMedium: Choice(
+				"Where does the human owner have to be to supply what this work item is waiting on?",
+				map[string]string{
+					"desk":         "at a computer: writing, reading, a review or a setting",
+					"device":       "at a particular device, account or piece of hardware, such as a phone, a test device or a console",
+					"other_person": "it needs another person's answer or action",
+					"unclear":      "the text does not say",
+				},
+			),
+			AttentionHighStakes: Noul(
+				"Getting this work item wrong would be costly: it touches money, security, credentials, legal matters or a release date.",
+				"the work involves payments, secrets or access, a legal or compliance obligation, or a date someone is counting on",
+				"an ordinary change that is easy to correct afterwards",
+			),
+		},
+		Unsurfaced: map[string]bool{
+			AttentionEffort:       true,
+			AttentionEffortMedium: true,
+			AttentionHighStakes:   true,
 		},
 		Eligible:  attentionEligible,
 		Threshold: AttentionThreshold,
@@ -171,6 +215,10 @@ func (r *Runner) WorkspaceFlags(workspaceID, setName string, threshold float64) 
 	byItem := make(map[string][]candidate)
 	var order []string
 	for _, d := range rows {
+		// A staged key (TASK-3921) makes no flag and no state read.
+		if qs.Unsurfaced[d.QuestionKey] {
+			continue
+		}
 		p, v := surfacing(d, qhashNow[d.QuestionKey], threshold)
 		if v != Surfaced {
 			continue

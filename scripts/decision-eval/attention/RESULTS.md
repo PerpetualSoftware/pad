@@ -68,3 +68,18 @@ results-decision.json) and `items/<ref>.json` + `items/<ref>.comments.json`
 from `pad item show|comments --format json`. `-dry` builds every state without
 calling the provider, and must reproduce the day-73 AUC of 0.939 from the
 recorded probabilities.
+
+## TASK-3921 rows (pending)
+
+The `attention` set now asks four questions in one call: needs_human_decision
+plus the staged effort, effort_medium and high_stakes. Every mode here sends the
+live set, and `titlebody` too (it used to send the day-73 pair, needs_human_decision
+and `blocked`, so its numbers above are for that two-question call). The summary
+still scores needs_human_decision only. The rows for the four-question call are
+PENDING: to be filled in from a paid run of `production`, `r1` and `titlebody`.
+
+| mode | needs_human_decision AUC | notes |
+| --- | --- | --- |
+| production | pending | |
+| r1 | pending | |
+| titlebody | pending | |

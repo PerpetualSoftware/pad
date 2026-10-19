@@ -21,7 +21,7 @@ func surfacedKeys(ds []models.ItemDecision) []string {
 // TASK-3618: SurfacedDecisions keeps exactly the answers WorkspaceFlags would
 // flag, on both sides of the threshold (AT it is surfaced), and counts the
 // rest as below threshold. One item answers AT the threshold, the other just
-// under it (the set has one question since TASK-3915).
+// under it (needs_human_decision is the one surfaced question since TASK-3921; the other three are staged).
 func TestTASK3618_SurfacedDecisionsThresholdBothSides(t *testing.T) {
 	fx := newAttentionFixture(t)
 	fx.set(AttentionNeedsHuman, AttentionThreshold)

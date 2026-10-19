@@ -263,8 +263,9 @@ func TestDashboardAttention_ItemMadeTerminalBySchemaEditIsNotSurfaced(t *testing
 	// answer is still stored, and none is current. (Before the edit they
 	// were — the dashboard precondition above is that leg.)
 	b := getDecisions(t, srv, slug, it.Slug)
-	if len(b.Decisions) != 1 {
-		t.Fatalf("decisions = %d rows, want the 1 stored answer", len(b.Decisions))
+	// One row per attention question (four since TASK-3921), staged keys included.
+	if want := len(decision.AttentionSet().Questions); len(b.Decisions) != want {
+		t.Fatalf("decisions = %d rows, want the %d stored answers", len(b.Decisions), want)
 	}
 	for _, d := range b.Decisions {
 		if d.Current {

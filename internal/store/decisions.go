@@ -172,27 +172,111 @@ func (s *Store) enqueueDecisionJobsTx(tx *sql.Tx, workspaceID, itemID, collectio
 	now := time.Now()
 	ts := decisionTime(now)
 	for _, set := range sets {
-		notBefore := ""
-		if window := decisionWindowFor(debounce, set); window > 0 {
-			var err error
-			if notBefore, err = decisionNotBefore(tx.QueryRow(s.q(latestDecisionEvaluationSQL), itemID, set), window, now); err != nil {
-				return fmt.Errorf("enqueue decision job %s/%s: %w", itemID, set, err)
-			}
-		}
-		if _, err := tx.Exec(s.q(`
-			INSERT INTO decision_jobs (item_id, workspace_id, question_set, generation, enqueued_at, attempts, not_before)
-			VALUES (?, ?, ?, 1, ?, 0, ?)
-			ON CONFLICT (item_id, question_set) DO UPDATE SET
-				generation = decision_jobs.generation + 1,
-				attempts   = 0,
-				last_error = NULL,
-				not_before = COALESCE(decision_jobs.not_before, excluded.not_before)`),
-			itemID, workspaceID, set, ts, nullableText(notBefore),
-		); err != nil {
-			return fmt.Errorf("enqueue decision job %s/%s: %w", itemID, set, err)
+		if err := s.owedDecisionJobTx(tx, workspaceID, itemID, set, debounce, now, ts); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// owedDecisionJobTx is the per-(item, set) body of enqueueDecisionJobsTx,
+// shared with OweDecisionJobs so the backfill and the write doors cannot
+// drift: same upsert, same coalescing, same debounce.
+func (s *Store) owedDecisionJobTx(tx *sql.Tx, workspaceID, itemID, set string, debounce DecisionDebounce, now time.Time, ts string) error {
+	notBefore := ""
+	if window := decisionWindowFor(debounce, set); window > 0 {
+		var err error
+		if notBefore, err = decisionNotBefore(tx.QueryRow(s.q(latestDecisionEvaluationSQL), itemID, set), window, now); err != nil {
+			return fmt.Errorf("enqueue decision job %s/%s: %w", itemID, set, err)
+		}
+	}
+	if _, err := tx.Exec(s.q(`
+		INSERT INTO decision_jobs (item_id, workspace_id, question_set, generation, enqueued_at, attempts, not_before)
+		VALUES (?, ?, ?, 1, ?, 0, ?)
+		ON CONFLICT (item_id, question_set) DO UPDATE SET
+			generation = decision_jobs.generation + 1,
+			attempts   = 0,
+			last_error = NULL,
+			not_before = COALESCE(decision_jobs.not_before, excluded.not_before)`),
+		itemID, workspaceID, set, ts, nullableText(notBefore),
+	); err != nil {
+		return fmt.Errorf("enqueue decision job %s/%s: %w", itemID, set, err)
+	}
+	return nil
+}
+
+// oweDecisionChunk bounds the items one OweDecisionJobs transaction covers.
+const oweDecisionChunk = 500
+
+// OweDecisionJobs makes the one question set owed for each item, in chunked
+// transactions, under the installed debounce (an item evaluated inside the
+// window gets a future not_before, exactly as a write would give it). It does
+// not consult the set resolver or any eligibility: the caller has decided.
+// Re-owing an item that already has a job bumps its generation and keeps one
+// row. Used by the one-shot effort backfill (TASK-3921).
+func (s *Store) OweDecisionJobs(workspaceID, set string, itemIDs []string) error {
+	debounce := s.decisionDebounceFunc()
+	for start := 0; start < len(itemIDs); start += oweDecisionChunk {
+		end := start + oweDecisionChunk
+		if end > len(itemIDs) {
+			end = len(itemIDs)
+		}
+		if err := s.oweDecisionChunk(workspaceID, set, itemIDs[start:end], debounce); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) oweDecisionChunk(workspaceID, set string, itemIDs []string, debounce DecisionDebounce) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+	now := time.Now()
+	ts := decisionTime(now)
+	for _, id := range itemIDs {
+		if err := s.owedDecisionJobTx(tx, workspaceID, id, set, debounce, now, ts); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// DecisionBackfillCandidate is one live item the backfill may owe a job for.
+type DecisionBackfillCandidate struct {
+	ItemID      string
+	WorkspaceID string
+}
+
+// ItemsMissingDecisionKey lists the live items that have a stored answer for
+// withKey in the set (in any state or hash) and NONE for missingKey: the items
+// the set has been asked about before the question missingKey existed. The
+// caller filters by the set's current eligibility. Ordered for stable chunks.
+func (s *Store) ItemsMissingDecisionKey(set, withKey, missingKey string) ([]DecisionBackfillCandidate, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT i.workspace_id, i.id
+		FROM items i
+		WHERE i.deleted_at IS NULL
+		  AND EXISTS (SELECT 1 FROM item_decisions d
+		              WHERE d.item_id = i.id AND d.question_set = ? AND d.question_key = ?)
+		  AND NOT EXISTS (SELECT 1 FROM item_decisions e
+		              WHERE e.item_id = i.id AND e.question_set = ? AND e.question_key = ?)
+		ORDER BY i.workspace_id, i.id`), set, withKey, set, missingKey)
+	if err != nil {
+		return nil, fmt.Errorf("list decision backfill candidates: %w", err)
+	}
+	defer rows.Close()
+	var out []DecisionBackfillCandidate
+	for rows.Next() {
+		var c DecisionBackfillCandidate
+		if err := rows.Scan(&c.WorkspaceID, &c.ItemID); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // enqueueDecisionJobsForItemTx is the comment door's form: a comment knows its

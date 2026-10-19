@@ -574,3 +574,53 @@ func (p *countingProvider) Ask(_ context.Context, _ any, qs map[string]decision.
 	}
 	return out, decision.Usage{}, nil
 }
+
+// TASK-3921, from the consuming side (CONVE-19): the effort backfill must run
+// when an admin enables the provider AFTER boot, not only at boot. Boot with no
+// provider, seed an item the attention set has answered for needs_human_decision
+// but never for effort, enable a provider through the admin endpoint, and see
+// the job owed and the marker set. A boot-only hook never runs here, so this
+// fails against one.
+func TestConfigureDecisions_BackfillsOnLaterEnable(t *testing.T) {
+	clearDecisionEnv(t)
+	srv, token := decisionSettingsServer(t)
+	if srv.decisionRunner() != nil {
+		t.Fatal("precondition: a runner is attached at boot")
+	}
+	ws, coll := decisionSettingsWorkspace(t, srv)
+	item, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Pick a vendor", Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.InsertItemDecisions(ws.ID, []models.ItemDecision{{
+		ItemID: item.ID, QuestionSet: decision.AttentionSetName, QuestionKey: decision.AttentionNeedsHuman, Kind: "noul",
+		Answer: []byte(`{"type":"noul","noul":0.9}`), Provider: "fake", Model: "m",
+		StateHash: "h", QuestionHash: "q", ItemSeq: 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := srv.store.GetDecisionJob(item.ID, decision.AttentionSetName); j != nil {
+		t.Fatal("precondition: a job is owed with decisions off")
+	}
+	if _, code, body := putDecisionSettings(t, srv, token, map[string]interface{}{"enabled": true, "api_key": decisionTestKey}); code != http.StatusOK {
+		t.Fatalf("enable: %d %s", code, body)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		j, err := srv.store.GetDecisionJob(item.ID, decision.AttentionSetName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		marker, err := srv.store.GetPlatformSetting(decision.EffortBackfillSetting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if j != nil && marker != "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after enabling: job owed = %v, marker = %q; the backfill did not run on a later enable", j != nil, marker)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

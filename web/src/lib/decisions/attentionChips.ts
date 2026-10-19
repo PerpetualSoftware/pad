@@ -8,7 +8,12 @@ import type { ItemDecision } from '$lib/types';
 export const ATTENTION_SET = 'attention';
 export const ATTENTION_THRESHOLD = 0.7;
 
-// The set asks one question since TASK-3915 / TASK-3924 retired `blocked`
+// Only a key with a LABEL becomes a chip (TASK-3921). The set also asks
+// effort, effort_medium and high_stakes, staged before their reader
+// (TASK-3959); the last is a Noul, and without this rule it would render as a
+// raw-key chip. The server's brief and dashboard skip them the same way.
+//
+// The set asked one question after TASK-3915 / TASK-3924 retired `blocked`
 // (the dependency graph owns it) and `waiting_on_external`. Their stored
 // answers come back with current: false, so they never become chips.
 const LABELS: Record<string, string> = {
@@ -35,9 +40,11 @@ export function attentionChips(decisions: readonly ItemDecision[] | null | undef
 		if (d.question_set !== ATTENTION_SET || d.kind !== 'noul' || !d.current) continue;
 		const p = d.answer?.noul;
 		if (typeof p !== 'number' || !Number.isFinite(p)) continue;
+		const label = LABELS[d.question_key];
+		if (label === undefined) continue;
 		chips.push({
 			key: d.question_key,
-			label: LABELS[d.question_key] ?? d.question_key,
+			label,
 			percent: Math.round(p * 100),
 			flagged: p >= ATTENTION_THRESHOLD,
 		});
