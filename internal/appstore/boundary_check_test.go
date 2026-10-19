@@ -84,6 +84,7 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"lockCommentForDeleteTx":              "reads the comment's ancestor chain and locks it root first (FOR UPDATE on Postgres); writes nothing",
 	"lockCommentRowTx":                    "reads one comment row (FOR UPDATE on Postgres); writes nothing",
 	"reapTombstonesTx":                    "DELETE FROM comments for emptied tombstones up the chain from the id it is given; FencedTx.DeleteComment first proves every comment on that chain is on the same companion item",
+	"reindexCommentMentionsTx":            "DELETE FROM and INSERT INTO comment_mentions WHERE comment_id = the comment it is given, only; reads users by username (kind = human) and comment_mentions; on the tx it is handed (TASK-3917)",
 	"emitRefOnlyDeletionWithProjectionTx": "INSERT INTO event_outbox (through writeOutboxTx) for the deleted comment",
 	// U10d (TASK-3411): the same emitters, recording the fence's install as
 	// the event's actor in the app-projection block.
