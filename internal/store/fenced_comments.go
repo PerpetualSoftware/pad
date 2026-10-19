@@ -188,6 +188,8 @@ func (f *FencedTx) UpdateComment(itemID, commentID, body string, actor FencedAct
 	// This skip is unreachable today: lockOwnComment requires user_id and
 	// via_app to match the actor, and imported rows carry neither, so an
 	// imported comment never gets here (TASK-3917 r2 F6, no test by design).
+	// A change that gives imported rows a user_id or via_app reopens this path
+	// and owes it a test.
 	// Accepted cost (TASK-3917 lead ruling, day 20): a mention a local user ADDS while editing an imported comment is not indexed either.
 	if !imported {
 		if err := f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, body, true, editTS); err != nil {
