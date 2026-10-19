@@ -4,7 +4,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -159,4 +165,56 @@ func (s *Store) ListItemVerifications(workspaceID, itemID string, latestOnly boo
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+var verificationCriterionRe = regexp.MustCompile(`^AC-[0-9]+$`)
+
+// verificationImportable checks a bundle's verification row against every
+// rule a live write enforces, and returns its created_at in the fixed-width
+// form the latest-row ordering compares as text. A bundle is not necessarily
+// one this server wrote, so the check runs on every row, and it runs BEFORE
+// the insert because a refused statement on Postgres takes the whole import
+// with it. NUL and invalid UTF-8 are refused here for the same reason:
+// Postgres rejects them natively, and the SQLite trigger would abort too.
+func verificationImportable(v models.VerificationExport) (string, bool) {
+	if !verificationCriterionRe.MatchString(v.CriterionID) || !models.ValidVerdict(v.Verdict) || v.SpecSeq < 0 {
+		return "", false
+	}
+	if len(v.CriterionHash) != 64 || !isLowerHex(v.CriterionHash) {
+		return "", false
+	}
+	if v.CodeRevision != "" && !models.IsFullCommitSHA(v.CodeRevision) {
+		return "", false
+	}
+	if _, err := uuid.Parse(v.RunID); err != nil {
+		return "", false
+	}
+	if len(v.Evidence) > 2048 || len(v.EvidenceURL) > 2048 || len(v.CreatedBy) > 256 || len(v.AgentName) > 256 {
+		return "", false
+	}
+	for _, s := range []string{v.Evidence, v.EvidenceURL, v.CreatedBy, v.AgentName} {
+		if strings.ContainsRune(s, 0) || !utf8.ValidString(s) {
+			return "", false
+		}
+	}
+	if v.EvidenceURL != "" {
+		u, err := url.Parse(v.EvidenceURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return "", false
+		}
+	}
+	t, err := time.Parse(time.RFC3339Nano, v.CreatedAt)
+	if err != nil {
+		return "", false
+	}
+	return decisionTime(t), true
+}
+
+func isLowerHex(s string) bool {
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }

@@ -254,7 +254,7 @@ func fetchGitHubPRByNumber(repo string, number int) (*GitHubPR, error) {
 		Repo:      repo,
 		UpdatedAt: raw.UpdatedAt,
 		MergeSHA:  raw.Merge.sha(),
-		MergedAt:  raw.MergedAt,
+		MergedAt:  ghMergedAt(raw.MergedAt),
 	}, nil
 }
 

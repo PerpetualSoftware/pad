@@ -18,6 +18,34 @@ type WorkspaceExport struct {
 	// pending reminder, and "silently" is the part that matters: nothing in
 	// the destination would show that anything was dropped.
 	Reminders []ReminderExport `json:"reminders,omitempty"`
+	// Verifications round-trip too (TASK-3617 r4). They are user-written
+	// evidence (a verdict, its evidence, the revisions it was about) that
+	// nothing can rebuild, unlike typed decisions, which a provider
+	// regenerates. Without them a SQLite->Postgres migration drops every one.
+	// Additive and omitempty, like reminders, so the format version holds.
+	Verifications []VerificationExport `json:"verifications,omitempty"`
+}
+
+// VerificationExport is one acceptance-criterion verdict in a workspace
+// bundle. Everything is carried VERBATIM, including the criterion hash, the
+// spec and code revisions and created_at, so a verdict reads the same state
+// after the move as before it: freshness is judged against the criterion's
+// text, which moves with the item. The verifier's user id does not travel
+// (user ids are per instance); created_by and agent_name do.
+type VerificationExport struct {
+	ItemID        string `json:"item_id"`
+	CriterionID   string `json:"criterion"`
+	CriterionHash string `json:"criterion_hash"`
+	SpecSeq       int64  `json:"spec_seq"`
+	CodeRevision  string `json:"code_revision,omitempty"`
+	Verdict       string `json:"verdict"`
+	Evidence      string `json:"evidence,omitempty"`
+	EvidenceURL   string `json:"evidence_url,omitempty"`
+	ViaItemID     string `json:"via_item_id,omitempty"`
+	RunID         string `json:"run_id"`
+	CreatedBy     string `json:"created_by,omitempty"`
+	AgentName     string `json:"agent_name,omitempty"`
+	CreatedAt     string `json:"created_at"`
 }
 
 // ReminderExport is one item reminder in a workspace bundle.

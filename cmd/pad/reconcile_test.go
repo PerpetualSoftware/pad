@@ -172,3 +172,13 @@ func TestTASK3617_MergeFieldsRoundTripAndTriggerRefresh(t *testing.T) {
 		t.Fatal("an up-to-date PR must not be refreshed")
 	}
 }
+
+// TASK-3617 r4 Q2: a zero mergedAt is "not merged", never stored as a merge.
+func TestTASK3617_ZeroMergedAtIsNotAMerge(t *testing.T) {
+	if got := ghMergedAt("0001-01-01T00:00:00Z"); got != "" {
+		t.Fatalf("zero time stored as %q", got)
+	}
+	if got := ghMergedAt("2026-04-02T15:00:00Z"); got != "2026-04-02T15:00:00Z" {
+		t.Fatalf("a real merge time was altered: %q", got)
+	}
+}

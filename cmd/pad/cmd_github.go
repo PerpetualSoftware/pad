@@ -49,6 +49,17 @@ func (m *ghMergeCommit) sha() string {
 	return m.OID
 }
 
+// ghMergedAt is gh's mergedAt, with Go's zero time read as "not merged".
+// gh prints null for an open PR today (measured on #2008); a client that
+// serialises an unset time.Time prints 0001-01-01T00:00:00Z instead, and
+// storing that would claim a merge that never happened (TASK-3617 r4 Q2).
+func ghMergedAt(s string) string {
+	if strings.HasPrefix(s, "0001-01-01") {
+		return ""
+	}
+	return s
+}
+
 func githubCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "github",
@@ -143,7 +154,7 @@ func fetchGitHubPR() (*GitHubPR, error) {
 		Repo:      repo,
 		UpdatedAt: raw.UpdatedAt,
 		MergeSHA:  raw.Merge.sha(),
-		MergedAt:  raw.MergedAt,
+		MergedAt:  ghMergedAt(raw.MergedAt),
 	}, nil
 }
 
