@@ -92,9 +92,11 @@ func (r *Runner) CountEffortBackfill(ctx context.Context) (int, error) {
 // marker. owed is the number of jobs owed by this call (0 when the marker was
 // already set). A nil runner does nothing.
 //
-// ctx is checked before each candidate read and before each chunk; once it is
-// cancelled the call returns ctx.Err() and NEVER writes the marker, so the run
-// is redone by the next one.
+// ctx is checked before each candidate read and before each chunk. A cancel
+// that lands before a chunk returns ctx.Err() with no marker, so the next run
+// redoes the work. A cancel that lands after the last chunk may still write
+// the marker, which is correct: the marker means every candidate was ENQUEUED,
+// not answered (lead ruling on TASK-3921, mutant M5).
 func (r *Runner) BackfillEffort(ctx context.Context) (owed int, err error) {
 	if r == nil {
 		return 0, nil
@@ -137,9 +139,6 @@ func (r *Runner) BackfillEffort(ctx context.Context) (owed int, err error) {
 			owed += end - start
 			n++
 		}
-	}
-	if err := ctx.Err(); err != nil {
-		return owed, err
 	}
 	// ONLY NOW: every chunk was owed.
 	if err := r.store.SetPlatformSetting(EffortBackfillSetting, "1"); err != nil {

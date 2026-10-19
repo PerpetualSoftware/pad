@@ -107,8 +107,10 @@ func (s *Server) reconfigureDecisionsLocked() error {
 	return err
 }
 
-// cancelEffortBackfill cancels a running effort backfill. Its marker is never
-// written on cancel, so the next run redoes it.
+// cancelEffortBackfill cancels a running effort backfill. A run cancelled
+// before its last chunk writes no marker, so the next run redoes it; one
+// cancelled after it may still mark, which is true, since every candidate was
+// enqueued.
 func (s *Server) cancelEffortBackfill() {
 	s.decisionTick.mu.Lock()
 	defer s.decisionTick.mu.Unlock()
@@ -122,9 +124,9 @@ func (s *Server) cancelEffortBackfill() {
 // caller's path. It sits here, not at boot, so it covers a provider the admin
 // enables LATER as well as one configured at startup; the marker makes every
 // call after the first complete one a cheap read. A new start cancels the run
-// before it (reconfigure builds a new runner every time), and a failed or
-// cancelled run is retried by the next reconfigure or restart (no marker is
-// written). It makes no provider call; it only owes jobs, which the tick
+// before it (reconfigure builds a new runner every time), and a failed run,
+// or one cancelled before its last chunk, writes no marker and is retried by
+// the next reconfigure or restart. It makes no provider call; it only owes jobs, which the tick
 // answers under the debounce. The stopped check and bg.Add share one hold of
 // decisionTick.mu, so Stop() either precedes both (nothing starts) or follows
 // both (bg.Wait drains it and stopDecisionTick cancels it).
