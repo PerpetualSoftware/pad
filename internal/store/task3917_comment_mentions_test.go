@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/links"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -80,6 +82,38 @@ func TestCommentMentions_IndexLifecycle(t *testing.T) {
 	// alice and bob resolve; ghost-nobody is unknown; the bot is an app
 	// principal; me@alice.example is an email.
 	wantMentions(t, s, c.ID, "create", alice, bob)
+	// New rows carry the comment's own created_at, not a fresh now().
+	commentCol := func(id, col string) string {
+		var v string
+		if err := s.db.QueryRow(s.q(`SELECT `+col+` FROM comments WHERE id = ?`), id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if _, err := s.db.Exec(s.q(`UPDATE comments SET created_at = '2002-02-02T00:00:00Z' WHERE id = ?`), c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM comment_mentions WHERE comment_id = ?`), c.ID); err != nil {
+		t.Fatal(err)
+	}
+	// (the backfill door is pinned in the backfill test; here a create is
+	// compared against its own comment row)
+	c1b, err := s.CreateComment(f.ws.ID, item.ID, author.ID, models.CommentCreate{Body: "@alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := mentionRows(t, s, c1b.ID)[alice.ID], commentCol(c1b.ID, "created_at"); got != want {
+		t.Fatalf("create: mention created_at %q, comment created_at %q", got, want)
+	}
+	if _, err := s.UpdateComment(c.ID, "@alice @bob"); err != nil {
+		t.Fatal(err)
+	}
+	wantMentions(t, s, c.ID, "reseed", alice, bob)
+	for _, u := range []*models.User{alice, bob} {
+		if got, want := mentionRows(t, s, c.ID)[u.ID], commentCol(c.ID, "updated_at"); got != want {
+			t.Fatalf("edit: new mention created_at %q, edit time %q", got, want)
+		}
+	}
 
 	// Edit: drop bob, keep alice. alice's row keeps its created_at.
 	before := mentionRows(t, s, c.ID)[alice.ID]
@@ -100,6 +134,9 @@ func TestCommentMentions_IndexLifecycle(t *testing.T) {
 	}
 	wantMentions(t, s, c.ID, "edit add", alice, bob)
 
+	if err := s.DeleteComment(c1b.ID); err != nil {
+		t.Fatal(err)
+	}
 	// A reply keeps the tombstone path: delete the parent while a reply stands.
 	reply, err := s.CreateComment(f.ws.ID, item.ID, author.ID, models.CommentCreate{Body: "re @bob", ParentID: c.ID})
 	if err != nil {
@@ -211,81 +248,130 @@ func TestCommentMentions_IndexLifecycle(t *testing.T) {
 	wantMentions(t, s, fc.ID, "fenced tombstone clears")
 }
 
-// classification of every statement that writes comments.
-var commentWriteSites = map[string]string{
-	"comments.go:createCommentTx":                         "INDEXED: insert",
-	"comments.go:UpdateComment":                           "INDEXED: edit",
-	"comments.go:DeleteComment":                           "INDEXED: tombstone; the hard DELETE cascades on comment_id",
-	"comments.go:reapTombstonesTx":                        "CASCADE: deletes emptied tombstones, which have no rows (the tombstone write already cleared them)",
-	"fenced_comments.go:CreateComment":                    "INDEXED: an app's insert",
-	"fenced_comments.go:UpdateComment":                    "INDEXED: an app's edit",
-	"fenced_comments.go:DeleteComment":                    "INDEXED: an app's tombstone; the hard DELETE cascades on comment_id",
-	"export.go:importWorkspace":                           "INDEXED: restore/import, under the new comment id",
-	"attachments.go:RemapAttachmentReferencesInWorkspace": "BYPASS: rewrites only pad-attachment ids inside the body; it cannot add or remove an @-mention",
-	"users.go:eraseUserTx":                                "BYPASS: nulls comments.user_id (the author); mentions are keyed on the MENTIONED user, whose rows cascade when the user row goes",
+// commentWriteSite classifies one top-level declaration that writes comments.
+// n is the number of comment-writing statements it holds: a new statement in
+// an already classified func changes the count and fails the guard until it is
+// classified here.
+type commentWriteSite struct {
+	class string
+	n     int
 }
 
-var commentWriteRe = regexp.MustCompile("(?i)(INSERT INTO comments\\b|UPDATE comments\\b|DELETE FROM comments\\b)")
+// Keys are "<path from the repo root>:<enclosing top-level decl>".
+var commentWriteSites = map[string]commentWriteSite{
+	"internal/store/comments.go:createCommentTx":                         {"INDEXED: insert", 1},
+	"internal/store/comments.go:UpdateComment":                           {"INDEXED: edit (skips imported comments by ruling)", 1},
+	"internal/store/comments.go:DeleteComment":                           {"INDEXED: tombstone; the hard DELETE cascades on comment_id", 2},
+	"internal/store/comments.go:reapTombstonesTx":                        {"CASCADE: deletes emptied tombstones, which have no rows (the tombstone write already cleared them)", 1},
+	"internal/store/fenced_comments.go:CreateComment":                    {"INDEXED: an app's insert", 1},
+	"internal/store/fenced_comments.go:UpdateComment":                    {"INDEXED: an app's edit (skips imported comments by ruling)", 1},
+	"internal/store/fenced_comments.go:DeleteComment":                    {"INDEXED: an app's tombstone; the hard DELETE cascades on comment_id", 2},
+	"internal/store/export.go:importWorkspace":                           {"BYPASS: imported history is never indexed; matches needsOthersComment (needs_snooze.go) and #2231 r1, TASK-3917 lead ruling bb0c9fc6: a bundle's @handles name SOURCE-instance users", 1},
+	"internal/store/attachments.go:RemapAttachmentReferencesInWorkspace": {"BYPASS: rewrites only pad-attachment ids inside the body; it cannot add or remove an @-mention", 1},
+	"internal/store/users.go:eraseUserTx":                                {"BYPASS: nulls comments.user_id (the author); mentions are keyed on the MENTIONED user, whose rows cascade when the user row goes", 1},
+	"internal/store/workspace_purge.go:purgeWorkspaceChildDeletes":       {"CASCADE: DELETE FROM comments in the purge table; the comment_id FK removes the rows", 1},
+	"internal/store/workspace_purge.go:purgeWorkspaceDataOnce":           {"BYPASS: 'detach comment parents' only nulls parent_id", 1},
+}
 
-// A var-table entry rather than a func: classified by the table's file.
-var commentWriteTableSites = map[string]string{
-	"workspace_purge.go": "CASCADE: DELETE FROM comments in the purge table; the comment_id FK removes the rows (and 'detach comment parents' only nulls parent_id)",
+var (
+	commentWriteRe = regexp.MustCompile(`(?is)(?:INSERT|REPLACE)\s+(?:OR\s+\w+\s+)?INTO\s+comments\b|UPDATE\s+(?:ONLY\s+)?comments\b|DELETE\s+FROM\s+comments\b`)
+	topDeclRe      = regexp.MustCompile(`(?m)^(?:func (?:\([^)]*\) )?(\w+)|var (\w+)|const (\w+)|type (\w+))`)
+)
+
+// commentWriteCensus returns key -> count of comment-writing statements for
+// the given Go source files (key = path:enclosing top-level declaration).
+func commentWriteCensus(t *testing.T, files map[string]string) map[string]int {
+	t.Helper()
+	got := map[string]int{}
+	for path, src := range files {
+		decls := topDeclRe.FindAllStringSubmatchIndex(src, -1)
+		for _, m := range commentWriteRe.FindAllStringIndex(src, -1) {
+			name := "(top level)"
+			for _, d := range decls {
+				if d[0] > m[0] {
+					break
+				}
+				for g := 1; g <= 4; g++ {
+					if d[2*g] >= 0 {
+						name = src[d[2*g]:d[2*g+1]]
+					}
+				}
+			}
+			got[path+":"+name]++
+		}
+	}
+	return got
+}
+
+func readNonTestGo(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, root := range []string{"../../internal", "../../cmd"} {
+		if err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+				return nil
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel("../..", p)
+			out[filepath.ToSlash(rel)] = string(b)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
+}
+
+// funcBody returns the source of the top-level decl named name in src.
+func funcBody(src, name string) string {
+	decls := topDeclRe.FindAllStringSubmatchIndex(src, -1)
+	for i, d := range decls {
+		for g := 1; g <= 4; g++ {
+			if d[2*g] >= 0 && src[d[2*g]:d[2*g+1]] == name {
+				end := len(src)
+				if i+1 < len(decls) {
+					end = decls[i+1][0]
+				}
+				return src[d[0]:end]
+			}
+		}
+	}
+	return ""
 }
 
 func TestCommentMentions_InsertSiteGuard(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	files := readNonTestGo(t)
+	got := commentWriteCensus(t, files)
+	var keys []string
+	for k := range got {
+		keys = append(keys, k)
 	}
-	funcRe := regexp.MustCompile(`(?m)^func (?:\([^)]*\) )?(\w+)`)
-	seen := map[string]bool{}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
+	sort.Strings(keys)
+	for _, k := range keys {
+		site, ok := commentWriteSites[k]
+		if !ok {
+			t.Errorf("%s writes comments (%d statement(s)) and is not classified in commentWriteSites: decide INDEXED, CASCADE or BYPASS with a reason, with the statement count (TASK-3917)", k, got[k])
 			continue
 		}
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
+		if got[k] != site.n {
+			t.Errorf("%s holds %d comment-writing statements, classified for %d: classify the new statement (INDEXED must reindex it) and update the count (TASK-3917)", k, got[k], site.n)
 		}
-		src := string(b)
-		funcs := funcRe.FindAllStringSubmatchIndex(src, -1)
-		for _, m := range commentWriteRe.FindAllStringIndex(src, -1) {
-			// Enclosing func: the last declaration before the match.
-			name, start, end := "", 0, len(src)
-			for i, fm := range funcs {
-				if fm[0] > m[0] {
-					break
-				}
-				name, start = src[fm[2]:fm[3]], fm[0]
-				end = len(src)
-				if i+1 < len(funcs) {
-					end = funcs[i+1][0]
-				}
-			}
-			if _, ok := commentWriteTableSites[f]; ok {
-				seen[f] = true
-				continue
-			}
-			key := f + ":" + name
-			class, ok := commentWriteSites[key]
-			if !ok {
-				t.Errorf("%s writes comments (%s) and is not classified in commentWriteSites: decide INDEXED, CASCADE or BYPASS with a reason (TASK-3917)", key, src[m[0]:m[1]])
-				continue
-			}
-			seen[key] = true
-			if strings.HasPrefix(class, "INDEXED") && !strings.Contains(src[start:end], "reindexCommentMentionsTx(") {
-				t.Errorf("%s is classified INDEXED but never calls reindexCommentMentionsTx(", key)
+		if strings.HasPrefix(site.class, "INDEXED") {
+			path, name, _ := strings.Cut(k, ":")
+			if !strings.Contains(funcBody(files[path], name), "reindexCommentMentionsTx(") {
+				t.Errorf("%s is classified INDEXED but never calls reindexCommentMentionsTx(", k)
 			}
 		}
 	}
 	var stale []string
 	for k := range commentWriteSites {
-		if !seen[k] {
-			stale = append(stale, k)
-		}
-	}
-	for k := range commentWriteTableSites {
-		if !seen[k] {
+		if _, ok := got[k]; !ok {
 			stale = append(stale, k)
 		}
 	}
@@ -293,31 +379,30 @@ func TestCommentMentions_InsertSiteGuard(t *testing.T) {
 	if len(stale) > 0 {
 		t.Errorf("stale classifications (no write site found): %v", stale)
 	}
+}
 
-	// No other package inserts comments behind the store's back.
-	for _, dir := range []string{"../appstore", "../../cmd"} {
-		_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
-				return nil
-			}
-			b, _ := os.ReadFile(p)
-			if regexp.MustCompile(`(?i)INSERT INTO comments\b`).Match(b) {
-				t.Errorf("%s inserts into comments outside internal/store", p)
-			}
-			return nil
-		})
+// The guard itself: its regex and census see spaced, newline-split and
+// lower-case statements, in a scratch file standing in for a store file.
+func TestCommentMentions_GuardSeesVariants(t *testing.T) {
+	src := "package store\n\nfunc (s *Store) sneaky() {\n\ttx.Exec(`insert  into\n comments (id) VALUES (1)`)\n\ttx.Exec(`REPLACE INTO comments (id) VALUES (1)`)\n\ttx.Exec(`update only comments SET x = 1`)\n\ttx.Exec(`delete\nfrom comments`)\n}\n"
+	got := commentWriteCensus(t, map[string]string{"internal/store/scratch.go": src})
+	if got["internal/store/scratch.go:sneaky"] != 4 {
+		t.Fatalf("census = %v, want 4 statements in sneaky", got)
 	}
 }
 
-func TestCommentMentions_CopyAndImportIndexed(t *testing.T) {
+func TestCommentMentions_CopyAndImportNotIndexed(t *testing.T) {
 	s := testStore(t)
 	alice := mentionUser(t, s, "alice")
 	ws := createTestWorkspace(t, s, "MentionSrc")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
 	item := createTestItem(t, s, ws.ID, col.ID, "T", "")
-	if _, err := s.CreateComment(ws.ID, item.ID, alice.ID, models.CommentCreate{Body: "cc @alice @nobody-here"}); err != nil {
+	live, err := s.CreateComment(ws.ID, item.ID, alice.ID, models.CommentCreate{Body: "cc @alice @nobody-here"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	// CONTROL: a native comment with the same resolvable handle IS indexed.
+	wantMentions(t, s, live.ID, "native control", alice)
 	data, err := s.ExportWorkspace(ws.Slug)
 	if err != nil || len(data.Comments) != 1 {
 		t.Fatalf("export: %v (%d comments)", err, len(data.Comments))
@@ -327,22 +412,42 @@ func TestCommentMentions_CopyAndImportIndexed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var newID string
-	if err := s.db.QueryRow(s.q(`SELECT id FROM comments WHERE workspace_id = ?`), dst.ID).Scan(&newID); err != nil {
+	if err := s.db.QueryRow(s.q(`SELECT id FROM comments WHERE workspace_id = ? AND imported = 1`), dst.ID).Scan(&newID); err != nil {
 		t.Fatal(err)
 	}
-	wantMentions(t, s, newID, "import", alice)
+	// Imported comments are never indexed (TASK-3917 lead ruling bb0c9fc6).
+	wantMentions(t, s, newID, "import")
+	if n := mentionCount(t, s, `workspace_id = ?`, dst.ID); n != 0 {
+		t.Fatalf("import wrote %d mention rows", n)
+	}
 
-	// Backfill rebuilds from bodies, sets the marker, and a second run is a no-op.
+	// Editing an imported comment does not index it either (the reindex
+	// covers the whole body, so the unedited source handles would bind).
+	bob := mentionUser(t, s, "bob")
+	if _, err := s.UpdateComment(newID, "cc @alice and now @bob"); err != nil {
+		t.Fatal(err)
+	}
+	wantMentions(t, s, newID, "edit of an imported comment")
+
+	// The backfill skips imported comments and indexes the native one.
 	if _, err := s.db.Exec(`DELETE FROM comment_mentions`); err != nil {
 		t.Fatal(err)
 	}
 	res, err := s.BackfillCommentMentions()
-	if err != nil || res.Skipped || res.CommentsScanned != 2 {
-		t.Fatalf("backfill = %+v, %v; want a real pass over 2 comments", res, err)
+	if err != nil || res.Skipped || res.CommentsScanned != 1 {
+		t.Fatalf("backfill = %+v, %v; want a real pass over the 1 native comment", res, err)
 	}
-	if n := mentionCount(t, s, `user_id = ?`, alice.ID); n != 2 {
-		t.Fatalf("backfill rebuilt %d rows, want 2", n)
+	wantMentions(t, s, newID, "backfill of an imported comment")
+	wantMentions(t, s, live.ID, "backfill of the native comment", alice)
+	// A backfilled row carries the comment's created_at.
+	var cat string
+	if err := s.db.QueryRow(s.q(`SELECT created_at FROM comments WHERE id = ?`), live.ID).Scan(&cat); err != nil {
+		t.Fatal(err)
 	}
+	if got := mentionRows(t, s, live.ID)[alice.ID]; got != cat {
+		t.Fatalf("backfilled created_at %q, comment %q", got, cat)
+	}
+	_ = bob
 	var marker string
 	if err := s.db.QueryRow(s.q(`SELECT value FROM platform_settings WHERE key = ?`), commentMentionsBackfilledFlag).Scan(&marker); err != nil || marker != "1" {
 		t.Fatalf("marker = %q, %v", marker, err)
@@ -378,5 +483,27 @@ func TestCommentMentions_CopyAndImportIndexed(t *testing.T) {
 	}
 	if n := task3394Count(t, f.s, `SELECT COUNT(*) FROM comment_mentions WHERE workspace_id = ?`, f.dst.wsID); n != 0 {
 		t.Fatalf("copy carried %d mentions", n)
+	}
+}
+
+func TestCommentMentions_CapPerComment(t *testing.T) {
+	f := task3408Fixture(t, "inst-cap")
+	s := f.s
+	author := mentionUser(t, s, "author")
+	col := createTestCollection(t, s, f.ws.ID, "Cap")
+	item := createTestItem(t, s, f.ws.ID, col.ID, "Thread", "")
+	var body strings.Builder
+	n := links.MaxMentionsPerComment + 1
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("user%03d", i)
+		mentionUser(t, s, name)
+		body.WriteString("@" + name + " ")
+	}
+	c, err := s.CreateComment(f.ws.ID, item.ID, author.ID, models.CommentCreate{Body: body.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(mentionRows(t, s, c.ID)); got != links.MaxMentionsPerComment {
+		t.Fatalf("%d mentions indexed for %d distinct resolvable names, want the cap %d", got, n, links.MaxMentionsPerComment)
 	}
 }

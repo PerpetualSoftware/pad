@@ -23,6 +23,11 @@ const (
 	MentionMaxLen = 39
 )
 
+// MaxMentionsPerComment caps the distinct names the store resolves for one
+// comment, bounding the IN-list a hostile body could grow. Names past the cap
+// (in sorted order) are not indexed. ExtractMentions itself is uncapped.
+const MaxMentionsPerComment = 50
+
 // isMentionShape reports whether name (already lowercased) has the shape of a
 // valid username.
 func isMentionShape(name string) bool {
@@ -33,6 +38,10 @@ func isMentionShape(name string) bool {
 		return false
 	}
 	return true
+}
+
+func isASCIIAlnum(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
 }
 
 // emailLocalByte reports whether b can sit in an email local part, so an "@"
@@ -49,7 +58,10 @@ func emailLocalByte(b byte) bool {
 // deduplicated and sorted. Mentions inside fenced or inline code and the
 // domain half of an email address are skipped. A trailing hyphen on the run
 // ("@alice-") is punctuation and is trimmed; any other malformed run is
-// dropped. It only parses: resolving a name to a user is the store's job.
+// dropped. A match preceded by "/" or "\" (a path or URL) is skipped.
+// Known limits, by decision (TASK-3917 r1): "end.@alice" is read as an email
+// and skipped; usernames under 3 characters (legacy) never match; HTML such as
+// <code>@alice</code> is not parsed as code. It only parses: resolving a name to a user is the store's job.
 // (TASK-3917, IDEA-3906)
 func ExtractMentions(content string) []string {
 	if content == "" || !strings.Contains(content, "@") {
@@ -65,8 +77,19 @@ func ExtractMentions(content string) []string {
 		if isInRanges(at, fenced) || isInRanges(at, inline) {
 			continue
 		}
-		if at > 0 && emailLocalByte(content[at-1]) {
+		if at > 0 && (emailLocalByte(content[at-1]) || content[at-1] == '/' || content[at-1] == '\\') {
 			continue
+		}
+		// A run followed by "_", by "." plus an ASCII letter or digit (a
+		// domain or file name), or by a non-ASCII byte is not a handle.
+		if end := m[1]; end < len(content) {
+			c := content[end]
+			if c == '_' || c >= 0x80 {
+				continue
+			}
+			if c == '.' && end+1 < len(content) && isASCIIAlnum(content[end+1]) {
+				continue
+			}
 		}
 		name := strings.ToLower(strings.TrimRight(content[m[2]:m[3]], "-"))
 		if !isMentionShape(name) || seen[name] {
