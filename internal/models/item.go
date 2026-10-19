@@ -703,6 +703,8 @@ type ItemPullRequestMetadata struct {
 	Title     string `json:"title"`
 	State     string `json:"state"`
 	UpdatedAt string `json:"updated_at,omitempty"`
+	MergeSHA  string `json:"merge_sha,omitempty"`
+	MergedAt  string `json:"merged_at,omitempty"`
 }
 
 type ItemImplementationNote struct {
@@ -732,6 +734,12 @@ type ItemGitHubPR struct {
 	Branch    string `json:"branch,omitempty"`
 	Repo      string `json:"repo,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
+	// MergeSHA and MergedAt are set once the PR has merged (TASK-3617): the
+	// merge commit's full SHA and the RFC3339 merge time, as gh reports them.
+	// A verification recorded at an older code revision is flagged
+	// possibly_stale by them.
+	MergeSHA string `json:"merge_sha,omitempty"`
+	MergedAt string `json:"merged_at,omitempty"`
 }
 
 // ValidateGitHubPR refuses a PR object that would not render as a link: it
@@ -747,7 +755,28 @@ func ValidateGitHubPR(pr *ItemGitHubPR) error {
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		return fmt.Errorf("github_pr.url must be an absolute http(s) URL, got %q", pr.URL)
 	}
+	if pr.MergeSHA != "" && !IsFullCommitSHA(pr.MergeSHA) {
+		return fmt.Errorf("github_pr.merge_sha must be a full 40-hex commit SHA, got %q", pr.MergeSHA)
+	}
+	if pr.MergedAt != "" {
+		if _, err := time.Parse(time.RFC3339, pr.MergedAt); err != nil {
+			return fmt.Errorf("github_pr.merged_at must be an RFC3339 time, got %q", pr.MergedAt)
+		}
+	}
 	return nil
+}
+
+// IsFullCommitSHA reports whether s is a full 40-hex lowercase commit SHA.
+func IsFullCommitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 type githubPRFields struct {
@@ -758,6 +787,8 @@ type githubPRFields struct {
 	Branch    string `json:"branch"`
 	Repo      string `json:"repo"`
 	UpdatedAt string `json:"updated_at"`
+	MergeSHA  string `json:"merge_sha"`
+	MergedAt  string `json:"merged_at"`
 }
 
 type conventionFields struct {
@@ -804,6 +835,8 @@ func ExtractItemCodeContext(fieldsJSON string) *ItemCodeContext {
 			Title:     githubPR.Title,
 			State:     githubPR.State,
 			UpdatedAt: githubPR.UpdatedAt,
+			MergeSHA:  githubPR.MergeSHA,
+			MergedAt:  githubPR.MergedAt,
 		}
 	}
 

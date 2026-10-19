@@ -293,6 +293,15 @@ var nulColumns = []nulColumn{
 	{"idempotency_keys", "key", classText},
 	{"idempotency_keys", "response", classJSON},
 	{"idempotency_keys", "base_body", classText},
+	// TASK-3617: a verification's evidence and evidence_url are the request
+	// body's text (capped, and the URL parsed, but neither refuses a NUL on
+	// its own). created_by and agent_name are the attribution the server
+	// stamps from the request's agent header, the same shape as the
+	// created_by columns above.
+	{"item_verifications", "evidence", classText},
+	{"item_verifications", "evidence_url", classText},
+	{"item_verifications", "created_by", classText},
+	{"item_verifications", "agent_name", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -319,6 +328,7 @@ var nulTriggerMigrations = []string{
 	"133_nul_invariant_triggers_post132.sql",
 	"138_nul_invariant_triggers_post137.sql",
 	"140_nul_invariant_triggers_post139.sql",
+	"152_nul_invariant_triggers_post151.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -340,6 +350,11 @@ var nulColumnTriggerFile = map[string]string{
 	"idempotency_keys.key":       "140_nul_invariant_triggers_post139.sql",
 	"idempotency_keys.response":  "140_nul_invariant_triggers_post139.sql",
 	"idempotency_keys.base_body": "140_nul_invariant_triggers_post139.sql",
+	// 151 introduced the table (TASK-3617).
+	"item_verifications.evidence":     "152_nul_invariant_triggers_post151.sql",
+	"item_verifications.evidence_url": "152_nul_invariant_triggers_post151.sql",
+	"item_verifications.created_by":   "152_nul_invariant_triggers_post151.sql",
+	"item_verifications.agent_name":   "152_nul_invariant_triggers_post151.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -422,6 +437,17 @@ var nulExcluded = map[string]string{
 	"item_patches.created_at":                "server timestamp from now() (PLAN-3578 step 3)",
 	"workspace_read_cursors.user_id":         "the authenticated user's server-minted UUID (TASK-3615, migration 149)",
 	"workspace_read_cursors.workspace_id":    "server-minted workspace UUID from the resolved request (TASK-3615)",
+	"item_verifications.id":                  "server-minted verification UUID (TASK-3617, migration 151)",
+	"item_verifications.workspace_id":        "server-minted workspace UUID from the resolved item (TASK-3617)",
+	"item_verifications.item_id":             "server-minted item UUID, a foreign key to items(id) (TASK-3617)",
+	"item_verifications.criterion_id":        "refused unless it is a non-placeholder AC-[0-9]+ id that acceptance.Parse finds in the item's body (TASK-3617)",
+	"item_verifications.criterion_hash":      "server-computed sha256 hex of the criterion's parsed text (TASK-3617)",
+	"item_verifications.code_revision":       "refused unless it is empty or 40 lowercase hex digits (TASK-3617)",
+	"item_verifications.verdict":             "fixed enum pass | fail | cant_tell, refused otherwise (TASK-3617)",
+	"item_verifications.via_item_id":         "server-minted item UUID resolved from the request's via ref, a foreign key to items(id) (TASK-3617)",
+	"item_verifications.run_id":              "server-minted UUID, or the request's run_id refused unless it parses as a UUID (TASK-3617)",
+	"item_verifications.user_id":             "the authenticated user's server-minted UUID, or empty before setup (TASK-3617)",
+	"item_verifications.created_at":          "server timestamp from now() in the fixed-width decisionTime format (TASK-3617)",
 	"workspace_read_cursors.seen_at":         "server timestamp from now() in the fixed-width decisionTime format (TASK-3615); never from a request",
 	"item_needs_snoozes.user_id":             "the authenticated user's server-minted UUID (TASK-3918, migration 153)",
 	"item_needs_snoozes.item_id":             "server-minted item UUID from the resolved, visibility-checked item (TASK-3918)",

@@ -161,8 +161,8 @@ func (r *NULScanReport) ByColumn() map[string]int {
 // bug's trail.
 //
 // COST, stated because an operator should not be surprised by it: one
-// unindexed scan per protected column — 142 of them today (27 JSON-classed,
-// 115 text), measured from NULProtectedColumns rather than counted by hand.
+// unindexed scan per protected column — 146 of them today (27 JSON-classed,
+// 119 text), measured from NULProtectedColumns rather than counted by hand.
 // There is no index that would help, since the predicate is a substring search
 // over the value. That is cheap next to the migration it guards, which reads
 // every row of every table anyway.

@@ -134,6 +134,8 @@ var migratedRefusalTables = []string{
 	"item_versions",
 	"versions",
 	"item_reminders",
+	// TASK-3617 r4: carried since VerificationExport.
+	"item_verifications",
 
 	// Workspace-scoped user state the bundle does NOT carry. item_stars and
 	// watches are the sharpest: their loss in a migration is already silent

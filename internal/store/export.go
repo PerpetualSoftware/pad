@@ -489,6 +489,32 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		return nil, err
 	}
 
+	// Verifications (TASK-3617 r4), for the items this bundle carries, on the
+	// same rule as reminders above: a verdict whose item is absent could only
+	// be discarded on import.
+	verRows, err := q.Query(s.q(`
+		SELECT v.item_id, v.criterion_id, v.criterion_hash, v.spec_seq, v.code_revision, v.verdict,
+		       v.evidence, v.evidence_url, COALESCE(v.via_item_id, ''), v.run_id, v.created_by, v.agent_name, v.created_at
+		FROM item_verifications v
+		JOIN items i ON i.id = v.item_id AND i.workspace_id = v.workspace_id
+		WHERE v.workspace_id = ? AND i.deleted_at IS NULL
+		ORDER BY v.created_at, v.id`), ws.ID)
+	if err != nil {
+		return nil, fmt.Errorf("export verifications: %w", err)
+	}
+	defer verRows.Close()
+	for verRows.Next() {
+		var v models.VerificationExport
+		if err := verRows.Scan(&v.ItemID, &v.CriterionID, &v.CriterionHash, &v.SpecSeq, &v.CodeRevision, &v.Verdict,
+			&v.Evidence, &v.EvidenceURL, &v.ViaItemID, &v.RunID, &v.CreatedBy, &v.AgentName, &v.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan verification: %w", err)
+		}
+		export.Verifications = append(export.Verifications, v)
+	}
+	if err := verRows.Err(); err != nil {
+		return nil, err
+	}
+
 	// Item versions
 	versionRows, err := q.Query(s.q(`
 		SELECT v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at,
@@ -1549,6 +1575,43 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 				"workspace_id", ws.ID, "item_id", newItemID, "error", err)
 			continue
 		}
+	}
+
+	// Import verifications (TASK-3617 r4), keeping every value verbatim but
+	// remapping the item and via ids. Each row is CHECKED BEFORE its insert,
+	// never skipped on a failed one: on Postgres a failed statement aborts the
+	// transaction and loses the whole import (BUG-2884, recorded on the
+	// reminders loop above). A row that fails the check, or whose item did
+	// not import, is dropped and counted rather than failing the import.
+	verDropped := 0
+	for _, v := range data.Verifications {
+		newItemID := itemMap[v.ItemID]
+		if !insertedItems[newItemID] {
+			verDropped++
+			continue
+		}
+		createdAt, ok := verificationImportable(v)
+		if !ok {
+			verDropped++
+			continue
+		}
+		var via any
+		if v.ViaItemID != "" && insertedItems[itemMap[v.ViaItemID]] {
+			via = itemMap[v.ViaItemID]
+		}
+		if _, err := tx.Exec(s.q(`
+			INSERT INTO item_verifications
+				(id, workspace_id, item_id, criterion_id, criterion_hash, spec_seq, code_revision,
+				 verdict, evidence, evidence_url, via_item_id, run_id, created_by, user_id, agent_name, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`),
+			newID(), ws.ID, newItemID, v.CriterionID, v.CriterionHash, v.SpecSeq, v.CodeRevision,
+			v.Verdict, v.Evidence, v.EvidenceURL, via, v.RunID, v.CreatedBy, v.AgentName, createdAt); err != nil {
+			return nil, fmt.Errorf("import verification: %w", err)
+		}
+	}
+	if verDropped > 0 {
+		slog.Warn("workspace import: dropped verifications", "workspace_id", ws.ID, "dropped", verDropped,
+			"of", len(data.Verifications))
 	}
 
 	// Import set-aside edits (BUG-3244), so the imported item keeps them and

@@ -32,6 +32,8 @@ func TestMigratedTablesCoversTheExport(t *testing.T) {
 		"ItemLinks":    "item_links",
 		"ItemVersions": "item_versions",
 		"Reminders":    "item_reminders",
+		// TASK-3617 r4.
+		"Verifications": "item_verifications",
 	}
 
 	migrated := MigratedTables()

@@ -35,12 +35,14 @@ type reconcileResult struct {
 }
 
 type livePRPayload struct {
-	Number    int    `json:"number"`
-	URL       string `json:"url"`
-	Title     string `json:"title"`
-	State     string `json:"state"`
-	HeadRef   string `json:"headRefName"`
-	UpdatedAt string `json:"updatedAt"`
+	Number    int            `json:"number"`
+	URL       string         `json:"url"`
+	Title     string         `json:"title"`
+	State     string         `json:"state"`
+	HeadRef   string         `json:"headRefName"`
+	UpdatedAt string         `json:"updatedAt"`
+	Merge     *ghMergeCommit `json:"mergeCommit"`
+	MergedAt  string         `json:"mergedAt"`
 }
 
 func reconcileCmd() *cobra.Command {
@@ -233,7 +235,7 @@ func fetchGitHubPRByNumber(repo string, number int) (*GitHubPR, error) {
 		return nil, fmt.Errorf("GitHub CLI (gh) not found. Install it from https://cli.github.com/")
 	}
 
-	out, err := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number), "--repo", repo, "--json", "number,url,title,state,headRefName,updatedAt").Output()
+	out, err := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number), "--repo", repo, "--json", ghPRJSONFields).Output()
 	if err != nil {
 		return nil, fmt.Errorf("fetch PR #%d from %s: %w", number, repo, err)
 	}
@@ -251,6 +253,8 @@ func fetchGitHubPRByNumber(repo string, number int) (*GitHubPR, error) {
 		Branch:    raw.HeadRef,
 		Repo:      repo,
 		UpdatedAt: raw.UpdatedAt,
+		MergeSHA:  raw.Merge.sha(),
+		MergedAt:  ghMergedAt(raw.MergedAt),
 	}, nil
 }
 
@@ -382,7 +386,7 @@ func needsPRMetadataRefresh(item *models.Item, livePR *GitHubPR) bool {
 	if stored.URL != livePR.URL || stored.Title != livePR.Title || stored.State != livePR.State || stored.Branch != livePR.Branch || stored.Repo != livePR.Repo {
 		return true
 	}
-	return stored.UpdatedAt != livePR.UpdatedAt
+	return stored.UpdatedAt != livePR.UpdatedAt || stored.MergeSHA != livePR.MergeSHA || stored.MergedAt != livePR.MergedAt
 }
 
 // gitHubPRFieldPatch returns the one-key field patch that refreshes an item's
@@ -406,6 +410,8 @@ func gitHubPRUpdate(livePR *GitHubPR) models.ItemUpdate {
 		Branch:    livePR.Branch,
 		Repo:      livePR.Repo,
 		UpdatedAt: livePR.UpdatedAt,
+		MergeSHA:  livePR.MergeSHA,
+		MergedAt:  livePR.MergedAt,
 	}}
 }
 

@@ -40,5 +40,10 @@ func MigratedTables() map[string]bool {
 		// alternative is a table the migration copies and the preflight does
 		// not know about, which is the exact gap this list exists to close.
 		"item_reminders": true,
+		// item_verifications joined the export in TASK-3617 r4. Unlike
+		// reminders it DOES carry caller text (evidence, evidence_url, the
+		// attribution), which is why four of its columns are NUL-protected;
+		// the preflight scans them before a migration copies the table.
+		"item_verifications": true,
 	}
 }

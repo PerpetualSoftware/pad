@@ -29,6 +29,35 @@ type GitHubPR struct {
 	Branch    string `json:"branch"`
 	Repo      string `json:"repo"`
 	UpdatedAt string `json:"updated_at"`
+	// Set once the PR has merged (TASK-3617).
+	MergeSHA string `json:"merge_sha,omitempty"`
+	MergedAt string `json:"merged_at,omitempty"`
+}
+
+// ghPRJSONFields is the field list both gh pr view calls ask for.
+const ghPRJSONFields = "number,url,title,state,headRefName,updatedAt,mergeCommit,mergedAt"
+
+// ghMergeCommit is gh's mergeCommit object; null until the PR merges.
+type ghMergeCommit struct {
+	OID string `json:"oid"`
+}
+
+func (m *ghMergeCommit) sha() string {
+	if m == nil {
+		return ""
+	}
+	return m.OID
+}
+
+// ghMergedAt is gh's mergedAt, with Go's zero time read as "not merged".
+// gh prints null for an open PR today (measured on #2008); a client that
+// serialises an unset time.Time prints 0001-01-01T00:00:00Z instead, and
+// storing that would claim a merge that never happened (TASK-3617 r4 Q2).
+func ghMergedAt(s string) string {
+	if strings.HasPrefix(s, "0001-01-01") {
+		return ""
+	}
+	return s
 }
 
 func githubCmd() *cobra.Command {
@@ -91,18 +120,20 @@ func fetchGitHubPR() (*GitHubPR, error) {
 		return nil, fmt.Errorf("GitHub CLI (gh) not found. Install it from https://cli.github.com/")
 	}
 
-	out, err := exec.Command("gh", "pr", "view", "--json", "number,url,title,state,headRefName,updatedAt").Output()
+	out, err := exec.Command("gh", "pr", "view", "--json", ghPRJSONFields).Output()
 	if err != nil {
 		return nil, fmt.Errorf("no pull request found for the current branch. Create one with: gh pr create")
 	}
 
 	var raw struct {
-		Number    int    `json:"number"`
-		URL       string `json:"url"`
-		Title     string `json:"title"`
-		State     string `json:"state"`
-		Branch    string `json:"headRefName"`
-		UpdatedAt string `json:"updatedAt"`
+		Number    int            `json:"number"`
+		URL       string         `json:"url"`
+		Title     string         `json:"title"`
+		State     string         `json:"state"`
+		Branch    string         `json:"headRefName"`
+		UpdatedAt string         `json:"updatedAt"`
+		Merge     *ghMergeCommit `json:"mergeCommit"`
+		MergedAt  string         `json:"mergedAt"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse gh output: %w", err)
@@ -122,6 +153,8 @@ func fetchGitHubPR() (*GitHubPR, error) {
 		Branch:    raw.Branch,
 		Repo:      repo,
 		UpdatedAt: raw.UpdatedAt,
+		MergeSHA:  raw.Merge.sha(),
+		MergedAt:  ghMergedAt(raw.MergedAt),
 	}, nil
 }
 
@@ -425,6 +458,8 @@ func extractPRFromItem(item *models.Item) *GitHubPR {
 		Branch:    item.CodeContext.Branch,
 		Repo:      item.CodeContext.Repo,
 		UpdatedAt: pr.UpdatedAt,
+		MergeSHA:  pr.MergeSHA,
+		MergedAt:  pr.MergedAt,
 	}
 }
 

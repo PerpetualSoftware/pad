@@ -586,6 +586,13 @@ type Server struct {
 	// keep door could not be driven by a test.
 	importBundleAfterMintHook func()
 
+	// verificationBeforeInsertHook is a TEST SEAM (always nil in production,
+	// TASK-3617 r1): handleCreateItemVerifications calls it with the attempt
+	// number just before each insert, so a test can move the item between
+	// the criteria read and the write and drive the retry, which has no
+	// natural trigger on SQLite.
+	verificationBeforeInsertHook func(attempt int)
+
 	// importBundleRemapFault is a TEST SEAM (always nil in production,
 	// BUG-3656): when non-nil, importBundle's final reference remap returns
 	// its error instead of running. The remap is one store transaction with
@@ -2344,6 +2351,11 @@ func (s *Server) setupRouter() {
 						// about the item it names.
 						r.Get("/reminders", s.handleListItemReminders)
 						r.Post("/reminders", s.handleCreateItemReminder)
+						// Verifications (TASK-3617): per-criterion verdicts
+						// on the item that carries the acceptance criteria,
+						// judged against its present text at read time.
+						r.Get("/verifications", s.handleListItemVerifications)
+						r.Post("/verifications", s.handleCreateItemVerifications)
 						// Typed decisions (TASK-3117): the item's latest
 						// answer per question, each marked current or not.
 						// Read-only; evaluation happens off the write path.
