@@ -59,6 +59,7 @@ func TestParseMentions(t *testing.T) {
 		{"scheme earlier in the same run", "go:x://h/p/@alice", nil},
 		{"mentions between and after code spans", "`a` @alice `@bob` @carol\n```\n@dave\n```\n@erin", []string{"alice", "carol", "erin"}},
 		{"mention at a code span edge", "`x`@alice", []string{"alice"}},
+		{"cursor skips several spans at once", "`a` `b` `c` @alice", []string{"alice"}},
 		{"hyphen prefix rejected (documented limit)", "-@alice", nil},
 		{"period at end", "thanks @alice.", []string{"alice"}},
 		{"apostrophe", "@alice's turn", []string{"alice"}},
