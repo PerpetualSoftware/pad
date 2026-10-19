@@ -50,6 +50,7 @@ func TestParseMentions(t *testing.T) {
 		{"https url rejected", "https://x.social/@alice", nil},
 		{"www url rejected", "www.x.social/@alice", nil},
 		{"italics prefix", "_@alice_", []string{"alice"}},
+		{"underscore prefix mid-word rejected", "foo_@alice", nil},
 		{"hyphen prefix rejected (documented limit)", "-@alice", nil},
 		{"period at end", "thanks @alice.", []string{"alice"}},
 		{"apostrophe", "@alice's turn", []string{"alice"}},
