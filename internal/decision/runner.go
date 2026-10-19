@@ -751,9 +751,10 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 // whose answer does not reach it, staleQuestion for an answer to a question
 // no longer asked as it was.
 //
-// Unlike WorkspaceFlags, an answer whose ITEM has moved on is kept, with
-// Current false: an agent about to work the item is better told that a
-// surfaced answer may be out of date than not told at all.
+// An answer whose ITEM has moved on is kept, with Current false: an agent
+// about to work the item is better told that a surfaced answer may be out of
+// date than not told at all. WorkspaceFlags keeps such an answer only while
+// its re-ask is pending (TASK-3915); the brief keeps it regardless.
 func (r *Runner) SurfacedDecisions(itemID string) (surfaced []models.ItemDecision, belowThreshold, staleQuestion int, err error) {
 	rows, qhashes, err := r.decisionsNow(itemID)
 	if err != nil {

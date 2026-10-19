@@ -39,7 +39,7 @@ func (p *attentionStub) Ask(_ context.Context, state any, qs map[string]decision
 			return 0.69
 		case key == decision.AttentionNeedsHuman && strings.Contains(s, "HUMAN-EDGE"):
 			return decision.AttentionThreshold
-		case key == decision.AttentionBlocked && strings.Contains(s, "TEXT-BLOCKED"):
+		case key == retiredBlockedKey && strings.Contains(s, "TEXT-BLOCKED"):
 			return 0.85
 		}
 		return 0.1
@@ -49,6 +49,26 @@ func (p *attentionStub) Ask(_ context.Context, state any, qs map[string]decision
 		out[k] = decision.Answer{Kind: decision.KindNoul, Noul: score(k)}
 	}
 	return out, decision.Usage{}, nil
+}
+
+// retiredBlockedKey is the attention set's text-derived `blocked` Noul,
+// retired in TASK-3915. withRetiredBlocked rebuilds a registry that still
+// asks it, the shape every server ran before that change.
+const retiredBlockedKey = "blocked"
+
+func withRetiredBlocked(t *testing.T) *decision.Registry {
+	t.Helper()
+	old := decision.AttentionSet()
+	old.Questions[retiredBlockedKey] = decision.Noul(
+		"The item's text says the work is currently blocked on something outside the item itself.",
+		"an explicit dependency, wait, or blocker is named",
+		"no blocker is stated; the work can start",
+	)
+	reg := decision.NewRegistry()
+	if err := reg.Register(old); err != nil {
+		t.Fatal(err)
+	}
+	return reg
 }
 
 func attachAttentionRunner(t *testing.T, srv *Server) *attentionStub {
@@ -109,14 +129,18 @@ func TestDashboardAttention_NeedsHumanAtThreshold(t *testing.T) {
 	}
 }
 
-// The graph stays primary: an item it already flags gets no second, text-
-// derived "blocked" entry (which would also collide on the web's
-// `${type}:${item_slug}` key). An item only the text flags does get one,
-// with a reason distinguishable from the graph's.
-func TestDashboardAttention_TextBlockedJoinsOnlyWhenGraphIsSilent(t *testing.T) {
+// TASK-3915: "blocked" on the dashboard is the dependency graph's alone. The
+// runner here still ASKS the retired text-derived question and its answer
+// for both items is 0.85, so WorkspaceFlags hands the dashboard a blocked
+// flag (the control below proves it). What keeps it off the dashboard is the
+// handler, not the stale-question filter: production stores no such
+// question, and that filter would hide the row by itself, which is why this
+// test cannot use the production registry.
+func TestDashboard_NoTextDerivedBlocked(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
-	attachAttentionRunner(t, srv)
+	reg := withRetiredBlocked(t)
+	srv.SetDecisionRunner(decision.NewRunner(srv.store, &attentionStub{}, reg))
 	slug := createWSWithCollections(t, srv)
 	blocker := createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "Upstream", "fields": `{"status":"open"}`})
 	both := createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "Graph and TEXT-BLOCKED", "fields": `{"status":"open"}`})
@@ -124,20 +148,25 @@ func TestDashboardAttention_TextBlockedJoinsOnlyWhenGraphIsSilent(t *testing.T) 
 	createBlocksLink(t, srv, slug, blocker.Slug, both.ID)
 	runDecisionTick(t, srv)
 
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags, _, err := srv.decisionRunner().WorkspaceFlags(ws.ID, decision.AttentionSetName, decision.AttentionThreshold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := flags[textOnly.ID][retiredBlockedKey]; !ok {
+		t.Fatalf("control: the runner does not flag the text-only item as blocked, so the dashboard leg proves nothing: %v", flags)
+	}
+
 	resp := getDashboard(t, srv, slug)
 	b := filterAttention(attentionFor(resp, both.Ref), "blocked")
 	if len(b) != 1 || !strings.HasPrefix(b[0].Reason, "Blocked by Upstream") {
 		t.Fatalf("graph-blocked item: blocked entries = %+v, want exactly the graph's", b)
 	}
-	if n := len(filterAttention(attentionFor(resp, blocker.Ref), "blocked")); n != 0 {
-		t.Errorf("an item whose blocked answer is 0.1 (below threshold) was surfaced as blocked")
-	}
-	tb := filterAttention(attentionFor(resp, textOnly.Ref), "blocked")
-	if len(tb) != 1 {
-		t.Fatalf("text-only blocked item: %d blocked entries, want 1", len(tb))
-	}
-	if strings.HasPrefix(tb[0].Reason, "Blocked by") || !strings.Contains(tb[0].Reason, "85%") {
-		t.Errorf("text-derived reason %q is not distinguishable from the graph's or omits the probability", tb[0].Reason)
+	if tb := filterAttention(attentionFor(resp, textOnly.Ref), "blocked"); len(tb) != 0 {
+		t.Fatalf("a text-derived blocked entry reached the dashboard: %+v", tb)
 	}
 }
 
@@ -234,8 +263,8 @@ func TestDashboardAttention_ItemMadeTerminalBySchemaEditIsNotSurfaced(t *testing
 	// answer is still stored, and none is current. (Before the edit they
 	// were — the dashboard precondition above is that leg.)
 	b := getDecisions(t, srv, slug, it.Slug)
-	if len(b.Decisions) != 3 {
-		t.Fatalf("decisions = %d rows, want the 3 stored answers", len(b.Decisions))
+	if len(b.Decisions) != 1 {
+		t.Fatalf("decisions = %d rows, want the 1 stored answer", len(b.Decisions))
 	}
 	for _, d := range b.Decisions {
 		if d.Current {

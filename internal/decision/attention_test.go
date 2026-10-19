@@ -26,12 +26,6 @@ func TestAttentionSet_QuestionsAreTheEvalsVerbatim(t *testing.T) {
 			TrueDesc:     "the next step requires a human's decision, approval, sign-off, credentials, money, an external relationship, or hardware the agent cannot reach",
 			FalseDesc:    "the next step is implementable by an engineer or AI agent from the description alone",
 		},
-		"blocked": {
-			Kind:         KindNoul,
-			Instructions: "The item's text says the work is currently blocked on something outside the item itself.",
-			TrueDesc:     "an explicit dependency, wait, or blocker is named",
-			FalseDesc:    "no blocker is stated; the work can start",
-		},
 	}
 	got := AttentionSet().Questions
 	for key, w := range want {
@@ -44,11 +38,15 @@ func TestAttentionSet_QuestionsAreTheEvalsVerbatim(t *testing.T) {
 			t.Errorf("question %q differs from the eval's text:\n got %+v\nwant %+v", key, g, w)
 		}
 	}
-	if _, ok := got[AttentionWaitingExternal]; !ok {
-		t.Errorf("waiting_on_external missing")
+	// TASK-3915 / TASK-3924 retired the other two: the graph owns blocked,
+	// and waiting_on_external flagged nothing.
+	for _, retired := range []string{"blocked", "waiting_on_external"} {
+		if _, ok := got[retired]; ok {
+			t.Errorf("retired question %q is still asked", retired)
+		}
 	}
-	if len(got) != 3 {
-		t.Errorf("attention set has %d questions, want 3", len(got))
+	if len(got) != 1 {
+		t.Errorf("attention set has %d questions, want 1", len(got))
 	}
 }
 
@@ -63,10 +61,13 @@ func TestProductionRegistryRegisters(t *testing.T) {
 	if _, ok := reg.Get(ConventionsSetName); !ok {
 		t.Fatal("conventions set not registered")
 	}
-	// TASK-3119 adds `conventions` beside `attention`, and U2b its comment
-	// subject.
-	if sets := reg.SetsFor("tasks"); len(sets) != 3 || sets[0] != AttentionSetName || sets[1] != ConventionsSetName || sets[2] != ConventionsCommentsSetName {
-		t.Fatalf("SetsFor(tasks) = %v, want [attention conventions conventions_comments]", sets)
+	// TASK-3119 adds `conventions` beside `attention`. Its comment subject
+	// (U2b) is defined but no longer shipped (TASK-3924).
+	if sets := reg.SetsFor("tasks"); len(sets) != 2 || sets[0] != AttentionSetName || sets[1] != ConventionsSetName {
+		t.Fatalf("SetsFor(tasks) = %v, want [attention conventions]", sets)
+	}
+	if _, ok := reg.Get(ConventionsCommentsSetName); ok {
+		t.Fatal("the retired conventions_comments set is still registered")
 	}
 }
 
@@ -88,7 +89,7 @@ const statusSchema = `{"fields":[{"key":"status","type":"select","options":["ope
 func newAttentionFixture(t *testing.T) *attentionFixture {
 	t.Helper()
 	fx := &attentionFixture{answers: map[string]float64{
-		AttentionNeedsHuman: 0.9, AttentionBlocked: 0.2, AttentionWaitingExternal: 0.1,
+		AttentionNeedsHuman: 0.9,
 	}}
 	fx.s = storetest.NewSQLite(t)
 	var err error
@@ -235,8 +236,8 @@ func TestWorkspaceFlags_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
 	if _, ok := n2[it.ID][AttentionNeedsHuman]; ok {
 		t.Error("an answer to the old wording was returned for the reworded question")
 	}
-	if _, ok := n2[it.ID][AttentionBlocked]; !ok {
-		t.Error("an unchanged question's answer was dropped along with the reworded one")
+	if _, ok := nouls[it.ID][AttentionNeedsHuman]; !ok {
+		t.Error("counterfactual: the registry as shipped no longer returns the answer, so the reworded leg proves nothing")
 	}
 
 	if err := fx.s.DeleteItem(it.ID); err != nil {
@@ -270,11 +271,13 @@ func TestWorkspaceFlags_NilRunner(t *testing.T) {
 	}
 }
 
-// An answer computed before the item's latest change is NOT current, and is
-// not returned — the dashboard applies the item page's currency rule. The
-// counterfactual legs: the same answer IS returned before the change, and is
-// returned again once the tick has re-asked about the new state.
-func TestWorkspaceFlags_AnswerFromAnEarlierStateIsNotReturned(t *testing.T) {
+// An answer computed before the item's latest change is kept while its re-ask
+// is PENDING (TASK-3915): the change owes a job with no recorded failure, and
+// the set still applies. The legs: the fresh answer is flagged; after a
+// comment it is still flagged while the job is owed; with the job row removed
+// (nothing coming to replace it) it is dropped; and once the tick has re-asked,
+// the NEW answer is what counts (0.3, below the threshold, so no flag).
+func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 	fx := newAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
@@ -285,11 +288,37 @@ func TestWorkspaceFlags_AnswerFromAnEarlierStateIsNotReturned(t *testing.T) {
 	if _, ok := flags[it.ID][AttentionNeedsHuman]; !ok {
 		t.Fatalf("precondition: the fresh 0.9 answer is not flagged: %v", flags)
 	}
-	if _, ok := flags[it.ID][AttentionBlocked]; ok {
-		t.Fatal("a 0.2 answer was returned above a 0.7 threshold")
-	}
 
 	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "Dave decided: vendor B"}); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.LastError != "" {
+		t.Fatalf("precondition: the comment owes a clean job, got %+v", j)
+	}
+	if ds, _ := fx.r.Decisions(it.ID); len(ds) != 1 || ds[0].Current {
+		t.Fatalf("precondition: the item page must read the moved answer as NOT current, got %+v", ds)
+	}
+	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := flags[it.ID][AttentionNeedsHuman]; !ok || p != 0.9 {
+		t.Fatalf("a pending re-ask dropped the answer it will replace: %v", flags[it.ID])
+	}
+	// A claimed job, its evaluation in flight, is still pending.
+	claimed, err := fx.s.ClaimDecisionJobs("in-flight", 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.ClaimedBy != "in-flight" {
+		t.Fatalf("precondition: the attention job is not claimed (claimed %v, row %+v)", claimed, j)
+	}
+	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold); flags[it.ID] == nil {
+		t.Fatal("a re-ask in flight dropped the answer it will replace")
+	}
+
+	// No job owed: nothing will replace the moved answer, so it goes.
+	if _, err := fx.s.DB().Exec(`DELETE FROM decision_jobs WHERE item_id = ?`, it.ID); err != nil {
 		t.Fatal(err)
 	}
 	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
@@ -297,12 +326,113 @@ func TestWorkspaceFlags_AnswerFromAnEarlierStateIsNotReturned(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := flags[it.ID]; ok {
-		t.Fatalf("an answer from before the latest comment was returned as current: %v", flags[it.ID])
+		t.Fatalf("a moved answer with no job owed was returned: %v", flags[it.ID])
 	}
 
+	fx.set(AttentionNeedsHuman, 0.3)
+	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "and the PO is signed"}); err != nil {
+		t.Fatal(err)
+	}
 	fx.tick(t)
 	flags, _, _ = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
-	if _, ok := flags[it.ID][AttentionNeedsHuman]; !ok {
-		t.Fatal("after the tick re-asked, the current answer is not returned")
+	if _, ok := flags[it.ID]; ok {
+		t.Fatalf("after the re-ask answered 0.3, the old 0.9 still flags: %v", flags[it.ID])
+	}
+	flags, _, _ = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
+	if p := flags[it.ID][AttentionNeedsHuman]; p != 0.3 {
+		t.Fatalf("after the re-ask, needs_human = %v, want the new 0.3", p)
+	}
+}
+
+// Rewording ONE question of a set drops that key's answer and keeps the
+// others'. The production attention set has one question since TASK-3915,
+// so the set here adds a second one to keep the per-key rule exercised.
+func TestWorkspaceFlags_RewordingOneQuestionKeepsTheOthers(t *testing.T) {
+	fx := newAttentionFixture(t)
+	two := AttentionSet()
+	two.Questions["probe"] = Noul("i", "t", "f")
+	reg := NewRegistry()
+	if err := reg.Register(two); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(fx.s, fx.r.provider, reg)
+	fx.set("probe", 0.9)
+	it := fx.item(t, fx.tasks.ID, "open")
+	if _, err := r.RunOnce(context.Background(), "two", 50, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if flags, _, _ := r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); len(flags[it.ID]) != 2 {
+		t.Fatalf("precondition: both answers flagged, got %v", flags[it.ID])
+	}
+
+	reworded := AttentionSet()
+	reworded.Questions["probe"] = Noul("i", "t", "f")
+	q := reworded.Questions[AttentionNeedsHuman]
+	q.Instructions += " (reworded)"
+	reworded.Questions[AttentionNeedsHuman] = q
+	reg2 := NewRegistry()
+	if err := reg2.Register(reworded); err != nil {
+		t.Fatal(err)
+	}
+	flags, _, err := NewRunner(fx.s, fx.r.provider, reg2).WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := flags[it.ID][AttentionNeedsHuman]; ok {
+		t.Error("an answer to the old wording was returned for the reworded question")
+	}
+	if _, ok := flags[it.ID]["probe"]; !ok {
+		t.Error("an unchanged question's answer was dropped along with the reworded one")
+	}
+}
+
+// A pending answer is NOT kept once the job has failed: a provider outage
+// must not hold a stale flag up for as long as it lasts. failing reports it.
+func TestWorkspaceFlags_FailedPendingDropped(t *testing.T) {
+	fx := newAttentionFixture(t)
+	it := fx.item(t, fx.tasks.ID, "open")
+	fx.tick(t)
+	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "Dave decided: vendor B"}); err != nil {
+		t.Fatal(err)
+	}
+	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold); flags[it.ID] == nil {
+		t.Fatal("precondition: the pending answer is not kept before the failure")
+	}
+	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"detail":"upstream down"}`, http.StatusServiceUnavailable)
+	})
+	fx.tick(t)
+	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.LastError == "" {
+		t.Fatalf("precondition: the failed attempt is not recorded on the job: %+v", j)
+	}
+	flags, failing, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	if err != nil || !failing {
+		t.Fatalf("failing=%v err=%v, want failing", failing, err)
+	}
+	if _, ok := flags[it.ID]; ok {
+		t.Fatalf("a moved answer whose re-ask failed was returned: %v", flags[it.ID])
+	}
+}
+
+// A pending answer is NOT kept for an item the set no longer applies to:
+// closing the item owes a job too, but a done item has no next step to wait
+// on, and the dashboard must drop it at once rather than after the tick.
+func TestWorkspaceFlags_TerminalPendingDropped(t *testing.T) {
+	fx := newAttentionFixture(t)
+	it := fx.item(t, fx.tasks.ID, "open")
+	fx.tick(t)
+	done := `{"status":"done"}`
+	if _, err := fx.s.UpdateItem(it.ID, models.ItemUpdate{Fields: &done}); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.LastError != "" {
+		t.Fatalf("precondition: closing the item owes a clean job, got %+v", j)
+	}
+	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := flags[it.ID]; ok {
+		t.Fatalf("a closed item's pending answer was returned: %v", flags[it.ID])
 	}
 }

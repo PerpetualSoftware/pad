@@ -898,10 +898,10 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 
 	// (f) Content-aware attention (TASK-3118): the `attention` question
 	// set's latest answers. Nil runner (no provider) => no rows, no section,
-	// byte-identical to before. The dependency graph stays the primary
-	// source for "blocked": the text-derived signal is added only for an
-	// item the graph did not already flag, which also keeps the web's
-	// `${type}:${item_slug}` attention key unique.
+	// byte-identical to before. Only needs_human comes from here: "blocked"
+	// is the dependency graph's alone (section e). The text-derived blocked
+	// flag was retired in TASK-3915 (IDEA-3906; the measurements are on that
+	// idea's trail).
 	// Only CURRENT answers at or above the threshold come back — the same
 	// currency rule the item page applies — so the checks below need no
 	// threshold of their own beyond naming which key they read.
@@ -928,19 +928,6 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 						ItemTitle:  item.Title,
 						Collection: item.CollectionSlug,
 						Reason:     "Waiting on a human decision (" + attentionPercent(p) + " likely)",
-					})
-				}
-				if _, graphBlocked := firstActiveBlocker[item.ID]; graphBlocked {
-					continue
-				}
-				if p, ok := answers[decision.AttentionBlocked]; ok {
-					resp.Attention = append(resp.Attention, DashboardAttention{
-						Type:       "blocked",
-						ItemSlug:   item.Slug,
-						ItemRef:    item.Ref,
-						ItemTitle:  item.Title,
-						Collection: item.CollectionSlug,
-						Reason:     "Its text says it is blocked (" + attentionPercent(p) + " likely)",
 					})
 				}
 			}

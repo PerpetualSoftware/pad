@@ -34,7 +34,6 @@ const auth = vi.hoisted(() => {
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: auth }));
 
 import DecisionChips from './DecisionChips.svelte';
-import { commentChipsStore } from '$lib/decisions/commentChips.svelte';
 
 function answer(key: string, noul: number): ItemDecision {
 	return {
@@ -59,33 +58,20 @@ afterEach(() => {
 });
 
 describe('DecisionChips', () => {
-	it('TASK-3119 U2b: publishes the comment cards\' chips from its read, and clears them when the item goes', async () => {
+	it('TASK-3924: a conventions_comments row (the retired per-comment set) paints no chip', async () => {
 		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
 		flushSync();
 		pending.get('a')!({
 			ref: 'A-1',
-			decisions: [{ ...answer('conv:CONVE-2@c-1', 0.96), question_set: 'conventions_comments' }],
+			decisions: [
+				{ ...answer('conv:CONVE-2@c-1', 0.96), question_set: 'conventions_comments' },
+				// Control: an item-level conventions row in the same response does paint.
+				{ ...answer('conv:CONVE-9', 0.96), question_set: 'conventions' },
+			],
 		});
 		await settle();
-		expect(commentChipsStore.chipsFor('A', 'c-1').map((c) => c.label)).toEqual(['Possibly breaks CONVE-2']);
-		unmount(cmp);
-		cmp = null;
-		flushSync();
-		expect(commentChipsStore.chipsFor('A', 'c-1')).toEqual([]);
-	});
-
-	it('TASK-3119 U2b: a response that lands after the item went does not repopulate its comment chips', async () => {
-		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'late', itemId: 'L' } });
-		flushSync();
-		unmount(cmp);
-		cmp = null;
-		flushSync();
-		pending.get('late')!({
-			ref: 'L-1',
-			decisions: [{ ...answer('conv:CONVE-2@c-1', 0.96), question_set: 'conventions_comments' }],
-		});
-		await settle();
-		expect(commentChipsStore.chipsFor('L', 'c-1')).toEqual([]);
+		const labels = [...document.querySelectorAll('.decision-chip-label')].map((e) => e.textContent);
+		expect(labels).toEqual(['Possibly breaks CONVE-9']);
 	});
 
 	it('renders nothing when the item has no answers', async () => {
@@ -103,13 +89,13 @@ describe('DecisionChips', () => {
 		props.itemRef = 'b';
 		props.itemId = 'B';
 		flushSync();
-		pending.get('b')!({ ref: 'B-1', decisions: [answer('blocked', 0.8)] });
+		pending.get('b')!({ ref: 'B-1', decisions: [answer('needs_human_decision', 0.8)] });
 		await settle();
-		// The counterfactual: A answers LAST, with a chip B does not have.
+		// The counterfactual: A answers LAST, with a value B does not have.
 		pending.get('a')!({ ref: 'A-1', decisions: [answer('needs_human_decision', 0.95)] });
 		await settle();
-		const labels = [...document.querySelectorAll('.decision-chip-label')].map((e) => e.textContent);
-		expect(labels).toEqual(['Blocked']);
+		const values = [...document.querySelectorAll('.decision-chip-value')].map((e) => e.textContent);
+		expect(values).toEqual(['80%']);
 		expect(document.querySelector('.decision-chip.flagged')).not.toBeNull();
 	});
 

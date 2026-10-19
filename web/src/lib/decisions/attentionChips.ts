@@ -8,12 +8,13 @@ import type { ItemDecision } from '$lib/types';
 export const ATTENTION_SET = 'attention';
 export const ATTENTION_THRESHOLD = 0.7;
 
+// The set asks one question since TASK-3915 / TASK-3924 retired `blocked`
+// (the dependency graph owns it) and `waiting_on_external`. Their stored
+// answers come back with current: false, so they never become chips.
 const LABELS: Record<string, string> = {
 	needs_human_decision: 'Needs a human',
-	blocked: 'Blocked',
-	waiting_on_external: 'Waiting on external',
 };
-const ORDER = ['needs_human_decision', 'blocked', 'waiting_on_external'];
+const ORDER = ['needs_human_decision'];
 
 export interface AttentionChip {
 	key: string;
