@@ -70,8 +70,9 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"workspaceHasInstalledAppTx": "reads app_installs (does the workspace have an install not uninstalled)",
 	"outboxRowCap":               "reads in-memory config; no SQL",
 	"outboxClaimableRowCap":      "reads in-memory config; no SQL",
-	"enqueueDecisionJobsTx":      "INSERT ... ON CONFLICT DO UPDATE on decision_jobs for the item it is given; no-op without a provider",
+	"enqueueDecisionJobsTx":      "INSERT ... ON CONFLICT DO UPDATE on decision_jobs for the item it is given; no-op without a provider. Reads MAX(item_decisions.evaluated_at) for the item when its set has a debounce window (TASK-3916)",
 	"decisionSetResolver":        "loads an in-memory pointer; no SQL",
+	"decisionDebounceFunc":       "loads an in-memory pointer; no SQL (TASK-3916)",
 	"createActivityQ":            "INSERT INTO activities on the executor it is given (the fence's tx)",
 	"recentDebounceCandidateQ":   "reads activities",
 	// U2b (TASK-3391).
@@ -114,7 +115,11 @@ var reviewedStoreFuncs = map[string]string{
 // func-value rule is never loosened globally; a new case gets its own entry.
 var allowedFuncValues = map[string]map[string]string{
 	"(*github.com/PerpetualSoftware/pad/internal/store.Store).enqueueDecisionJobsTx": {
-		"resolve": "the store's DecisionSetResolver; production installs decision.Registry.SetsFor, an in-memory lookup that runs no SQL",
+		"resolve":  "the store's DecisionSetResolver; production installs decision.Registry.SetsFor, an in-memory lookup that runs no SQL",
+		"debounce": "the store's DecisionDebounce (TASK-3916), passed to decisionWindowFor; production installs decision.Runner.debounceFor, a registry lookup that runs no SQL",
+	},
+	"github.com/PerpetualSoftware/pad/internal/store.decisionWindowFor": {
+		"debounce": "the store's DecisionDebounce (TASK-3916); production installs decision.Runner.debounceFor, a registry lookup that runs no SQL",
 	},
 	"github.com/PerpetualSoftware/pad/internal/store.collapseChanges": {
 		"isLossySummary": "a closure defined in the same body and never reassigned; the walk inspects its body",

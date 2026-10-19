@@ -71,29 +71,38 @@ func (s *Store) SetDecisionDebounce(d DecisionDebounce) {
 	s.decisionDebounce.Store(&d)
 }
 
-func (s *Store) decisionWindow(questionSet string) time.Duration {
+func (s *Store) decisionDebounceFunc() DecisionDebounce {
 	p := s.decisionDebounce.Load()
 	if p == nil {
-		return 0
+		return nil
 	}
-	return (*p)(questionSet)
+	return *p
 }
 
-// decisionNotBefore is the not_before a job for (item, set) gets: the item's
-// latest evaluation for the set plus the set's window, or "" (NULL, claimable
-// now) when the set has no window, the item has never been evaluated for it
-// (a first evaluation is never delayed), or the window has already passed.
-// The arithmetic is in Go, on decisionTime TEXT, so SQLite and Postgres agree.
-func (s *Store) decisionNotBefore(q queryRower, itemID, questionSet string, now time.Time) (string, error) {
-	window := s.decisionWindow(questionSet)
-	if window <= 0 {
-		return "", nil
+// decisionWindowFor is debounce(set), or zero when no debounce is installed.
+func decisionWindowFor(debounce DecisionDebounce, questionSet string) time.Duration {
+	if debounce == nil {
+		return 0
 	}
+	return debounce(questionSet)
+}
+
+// latestDecisionEvaluationSQL reads the item's latest evaluation for a set;
+// bind item_id, question_set. Run on the caller's own handle (a tx or the db)
+// and passed to decisionNotBefore as the row.
+const latestDecisionEvaluationSQL = `
+		SELECT MAX(evaluated_at) FROM item_decisions WHERE item_id = ? AND question_set = ?`
+
+// decisionNotBefore is the not_before a job gets, from the row of
+// latestDecisionEvaluationSQL: that evaluation plus window, or "" (NULL,
+// claimable now) when the window is zero, the item has never been evaluated
+// for the set (a first evaluation is never delayed), or the window has
+// already passed. The arithmetic is in Go, on decisionTime TEXT, so SQLite
+// and Postgres agree. A caller with no window skips the read entirely.
+func decisionNotBefore(latest *sql.Row, window time.Duration, now time.Time) (string, error) {
 	var last sql.NullString
-	if err := q.QueryRow(s.q(`
-		SELECT MAX(evaluated_at) FROM item_decisions WHERE item_id = ? AND question_set = ?`),
-		itemID, questionSet).Scan(&last); err != nil {
-		return "", fmt.Errorf("read latest evaluation %s/%s: %w", itemID, questionSet, err)
+	if err := latest.Scan(&last); err != nil {
+		return "", fmt.Errorf("read latest evaluation: %w", err)
 	}
 	if !last.Valid || last.String == "" {
 		return "", nil
@@ -108,12 +117,6 @@ func (s *Store) decisionNotBefore(q queryRower, itemID, questionSet string, now 
 		return "", nil
 	}
 	return decisionTime(nb), nil
-}
-
-// queryRower is the one method decisionNotBefore needs, met by *sql.DB and
-// *sql.Tx alike.
-type queryRower interface {
-	QueryRow(query string, args ...any) *sql.Row
 }
 
 func nullableText(s string) any {
@@ -165,12 +168,16 @@ func (s *Store) enqueueDecisionJobsTx(tx *sql.Tx, workspaceID, itemID, collectio
 	if len(sets) == 0 {
 		return nil
 	}
+	debounce := s.decisionDebounceFunc()
 	now := time.Now()
 	ts := decisionTime(now)
 	for _, set := range sets {
-		notBefore, err := s.decisionNotBefore(tx, itemID, set, now)
-		if err != nil {
-			return fmt.Errorf("enqueue decision job: %w", err)
+		notBefore := ""
+		if window := decisionWindowFor(debounce, set); window > 0 {
+			var err error
+			if notBefore, err = decisionNotBefore(tx.QueryRow(s.q(latestDecisionEvaluationSQL), itemID, set), window, now); err != nil {
+				return fmt.Errorf("enqueue decision job %s/%s: %w", itemID, set, err)
+			}
 		}
 		if _, err := tx.Exec(s.q(`
 			INSERT INTO decision_jobs (item_id, workspace_id, question_set, generation, enqueued_at, attempts, not_before)
@@ -310,9 +317,11 @@ func (s *Store) CompleteDecisionJob(j DecisionJob) error {
 	if n, _ := res.RowsAffected(); n == 1 {
 		return nil
 	}
-	notBefore, err := s.decisionNotBefore(s.db, j.ItemID, j.QuestionSet, time.Now())
-	if err != nil {
-		return err
+	notBefore := ""
+	if window := decisionWindowFor(s.decisionDebounceFunc(), j.QuestionSet); window > 0 {
+		if notBefore, err = decisionNotBefore(s.db.QueryRow(s.q(latestDecisionEvaluationSQL), j.ItemID, j.QuestionSet), window, time.Now()); err != nil {
+			return fmt.Errorf("debounce superseded decision job %s/%s: %w", j.ItemID, j.QuestionSet, err)
+		}
 	}
 	if notBefore != "" {
 		if _, err := s.db.Exec(s.q(`
