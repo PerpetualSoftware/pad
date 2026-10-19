@@ -1287,8 +1287,12 @@
 	.quick-add-input::placeholder {
 		color: var(--text-muted);
 	}
+	/* Wraps on a narrow screen (TASK-3972 r1): the buttons drop below the
+	   hint, and then onto two rows themselves, rather than run past the
+	   dialog's edge. */
 	.quick-add-actions {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--space-3);
@@ -1305,7 +1309,9 @@
 	.quick-add-btn {
 		padding: var(--space-2) var(--space-4);
 		background: var(--accent-blue);
-		border: none;
+		/* Transparent, so Add is as tall as the bordered buttons beside it,
+		   even alone on its own row when the footer wraps. */
+		border: 1px solid transparent;
 		border-radius: var(--radius);
 		color: #fff;
 		font-size: 0.85em;
@@ -1321,8 +1327,13 @@
 	}
 	.quick-add-buttons {
 		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 		gap: var(--space-2);
-		flex-shrink: 0;
+		margin-left: auto;
+	}
+	.quick-add-buttons .quick-add-btn {
+		white-space: nowrap;
 	}
 	.quick-add-btn.secondary {
 		background: transparent;
