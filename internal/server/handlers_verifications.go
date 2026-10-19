@@ -110,9 +110,6 @@ func (s *Server) handleCreateItemVerifications(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// The via item resolves in THIS workspace and must be visible to the
-	// caller. Missing and invisible are one answer, so the write is not an
-	// existence oracle for items the caller cannot see.
 	// resolveVia resolves the via item in THIS workspace and requires it to
 	// be visible to the caller. Missing and invisible are one answer, so the
 	// write is not an existence oracle for items the caller cannot see. It
