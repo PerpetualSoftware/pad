@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // mentionPattern finds an "@" followed by a run of name characters. The shape
@@ -23,10 +25,18 @@ const (
 	MentionMaxLen = 39
 )
 
-// MaxMentionsPerComment caps the distinct names the store resolves for one
-// comment, bounding the IN-list a hostile body could grow. Names past the cap
-// (in sorted order) are not indexed. ExtractMentions itself is uncapped.
+// MaxMentionsPerComment caps the RESOLVED mentions the store indexes for one
+// comment. The cap applies after resolution, in sorted name order, so names
+// that resolve to no user cannot evict real ones. ExtractMentions is uncapped.
 const MaxMentionsPerComment = 50
+
+// MaxMentionCandidates bounds the parsed names the store will even try to
+// resolve for one comment (in sorted order); the store resolves them in
+// chunks of MentionResolveChunk. Names past it are not indexed.
+const (
+	MaxMentionCandidates = 500
+	MentionResolveChunk  = 50
+)
 
 // isMentionShape reports whether name (already lowercased) has the shape of a
 // valid username.
@@ -54,14 +64,69 @@ func emailLocalByte(b byte) bool {
 	return strings.IndexByte("._%+-", b) >= 0
 }
 
+// badMentionPrefix reports whether the byte before the "@" at content[at]
+// makes it a non-mention (an email local part, a path, a URL).
+func badMentionPrefix(content string, at int) bool {
+	c := content[at-1]
+	switch c {
+	case '\\':
+		return true
+	case '/':
+		start := at
+		for start > 0 && !isSpaceByte(content[start-1]) {
+			start--
+		}
+		run := content[start:at]
+		return strings.Contains(run, "://") || strings.HasPrefix(run, "www.")
+	case '_':
+		// Italics ("_@alice_"): the "_" opens the word.
+		return !(at-1 == 0 || isSpaceByte(content[at-2]))
+	}
+	return emailLocalByte(c)
+}
+
+func isSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\v' || b == '\f'
+}
+
+// badMentionFollower reports whether what follows a run ending at content[end]
+// shows it is not a handle (part of a longer word, a domain or a file name).
+func badMentionFollower(content string, end int) bool {
+	if end >= len(content) {
+		return false
+	}
+	c := content[end]
+	switch {
+	case c >= 0x80:
+		r, _ := utf8.DecodeRuneInString(content[end:])
+		return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r)
+	case c == '_':
+		return end+1 < len(content) && isASCIIAlnum(content[end+1])
+	case c == '.':
+		return end+1 < len(content) && isASCIIAlnum(content[end+1])
+	}
+	return false
+}
+
 // ExtractMentions returns the usernames a comment body @-mentions: lowercased,
 // deduplicated and sorted. Mentions inside fenced or inline code and the
 // domain half of an email address are skipped. A trailing hyphen on the run
 // ("@alice-") is punctuation and is trimmed; any other malformed run is
-// dropped. A match preceded by "/" or "\" (a path or URL) is skipped.
-// Known limits, by decision (TASK-3917 r1): "end.@alice" is read as an email
-// and skipped; usernames under 3 characters (legacy) never match; HTML such as
-// <code>@alice</code> is not parsed as code. It only parses: resolving a name to a user is the store's job.
+// dropped. A match preceded by "\", or by "/" inside a URL (the non-space run
+// before the "@" contains "://" or starts with "www."), is skipped; any other
+// "/" is a separator ("cc @alice/@bob" yields both). A "_" prefix is allowed
+// only at the start or after whitespace (italics: "_@alice_").
+// A name ends at the first rune that cannot continue a handle: a following
+// ASCII letter or digit is part of the run, a following non-ASCII letter,
+// digit or combining mark rejects the run, any other rune (NBSP, curly
+// apostrophe, ellipsis, dash, emoji, fullwidth punctuation) terminates it. A
+// following "_" rejects only when an ASCII letter or digit follows it
+// ("@alice_bob" no, "@alice_" yes); "." plus an ASCII letter or digit rejects.
+// Known limits, by decision (TASK-3917 r1, r2): "end.@alice" is read as an
+// email and skipped; "@alice.Thanks" (no space after the period) is rejected,
+// indistinguishable from "@alice.smith"; "-@alice" is skipped; usernames under
+// 3 characters (legacy) never match; HTML such as <code>@alice</code> is not
+// parsed as code. It only parses: resolving a name to a user is the store's job.
 // (TASK-3917, IDEA-3906)
 func ExtractMentions(content string) []string {
 	if content == "" || !strings.Contains(content, "@") {
@@ -77,19 +142,11 @@ func ExtractMentions(content string) []string {
 		if isInRanges(at, fenced) || isInRanges(at, inline) {
 			continue
 		}
-		if at > 0 && (emailLocalByte(content[at-1]) || content[at-1] == '/' || content[at-1] == '\\') {
+		if at > 0 && badMentionPrefix(content, at) {
 			continue
 		}
-		// A run followed by "_", by "." plus an ASCII letter or digit (a
-		// domain or file name), or by a non-ASCII byte is not a handle.
-		if end := m[1]; end < len(content) {
-			c := content[end]
-			if c == '_' || c >= 0x80 {
-				continue
-			}
-			if c == '.' && end+1 < len(content) && isASCIIAlnum(content[end+1]) {
-				continue
-			}
+		if badMentionFollower(content, m[1]) {
+			continue
 		}
 		name := strings.ToLower(strings.TrimRight(content[m[2]:m[3]], "-"))
 		if !isMentionShape(name) || seen[name] {
