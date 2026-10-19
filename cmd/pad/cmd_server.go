@@ -226,6 +226,15 @@ func serveCmd() *cobra.Command {
 					"items_scanned", rb.ItemsScanned)
 			}
 
+			// comment_mentions for comments written before the table existed
+			// (TASK-3917). Non-fatal: a missing index row means a missed
+			// mention routing, not a broken database.
+			if mb, err := s.BackfillCommentMentions(); err != nil {
+				slog.Warn("comment-mention backfill failed; non-fatal", "error", err)
+			} else if !mb.Skipped {
+				slog.Info("Comment-mention backfill complete", "comments_scanned", mb.CommentsScanned)
+			}
+
 			// Classify op-log rows written before migration 091 (BUG-3124), so
 			// content_state stops reporting SyncStep1 frames and byte-identical
 			// re-sends as a pending edit. Non-fatal: until it finishes, an

@@ -93,7 +93,7 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 // table nobody considered from one that was considered and excluded:
 //
 //   - DERIVED-FROM-CONTENT (status_transitions, item_wiki_links,
-//     item_relation_links, activities, event_outbox): written as a consequence
+//     item_relation_links, comment_mentions (TASK-3917), activities, event_outbox): written as a consequence
 //     of a protected write, which aborts first. A trigger here would only
 //     produce a second error for one act.
 //   - FTS SHADOW (items_fts*, comments_fts*, documents_fts*, 15 tables): FTS5
