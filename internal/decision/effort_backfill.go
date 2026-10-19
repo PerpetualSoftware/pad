@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 )
@@ -33,7 +34,7 @@ const effortBackfillChunk = 500
 // needs_human_decision, never answered for effort (any state or hash), and
 // eligible for the attention set as it applies NOW (the runner's own rule,
 // appliesNow). It owes nothing and calls no provider; it is the dry run.
-func (r *Runner) EffortBackfillCandidates() (map[string][]string, []string, error) {
+func (r *Runner) EffortBackfillCandidates(ctx context.Context) (map[string][]string, []string, error) {
 	if r == nil {
 		return nil, nil, nil
 	}
@@ -48,6 +49,9 @@ func (r *Runner) EffortBackfillCandidates() (map[string][]string, []string, erro
 	byWS := map[string][]string{}
 	var order []string
 	for _, c := range cands {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		item, err := r.store.GetItem(c.ItemID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decision: read item %s: %w", c.ItemID, err)
@@ -72,8 +76,8 @@ func (r *Runner) EffortBackfillCandidates() (map[string][]string, []string, erro
 
 // CountEffortBackfill is the dry run: how many jobs BackfillEffort would owe
 // now. It ignores the marker and writes nothing.
-func (r *Runner) CountEffortBackfill() (int, error) {
-	byWS, _, err := r.EffortBackfillCandidates()
+func (r *Runner) CountEffortBackfill(ctx context.Context) (int, error) {
+	byWS, _, err := r.EffortBackfillCandidates(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -87,7 +91,11 @@ func (r *Runner) CountEffortBackfill() (int, error) {
 // BackfillEffort owes the attention set to every candidate, then writes the
 // marker. owed is the number of jobs owed by this call (0 when the marker was
 // already set). A nil runner does nothing.
-func (r *Runner) BackfillEffort() (owed int, err error) {
+//
+// ctx is checked before each candidate read and before each chunk; once it is
+// cancelled the call returns ctx.Err() and NEVER writes the marker, so the run
+// is redone by the next one.
+func (r *Runner) BackfillEffort(ctx context.Context) (owed int, err error) {
 	if r == nil {
 		return 0, nil
 	}
@@ -98,7 +106,7 @@ func (r *Runner) BackfillEffort() (owed int, err error) {
 	if done != "" {
 		return 0, nil
 	}
-	byWS, order, err := r.EffortBackfillCandidates()
+	byWS, order, err := r.EffortBackfillCandidates(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -115,9 +123,13 @@ func (r *Runner) BackfillEffort() (owed int, err error) {
 				end = len(ids)
 			}
 			if r.beforeBackfillChunk != nil {
-				if err := r.beforeBackfillChunk(n); err != nil {
+				if err := r.beforeBackfillChunk(ctx, n); err != nil {
 					return owed, err
 				}
+			}
+			// The chunk-boundary cancel check (single line on purpose).
+			if err := ctx.Err(); err != nil {
+				return owed, err
 			}
 			if err := r.store.OweDecisionJobs(ws, AttentionSetName, ids[start:end]); err != nil {
 				return owed, err
@@ -125,6 +137,9 @@ func (r *Runner) BackfillEffort() (owed int, err error) {
 			owed += end - start
 			n++
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return owed, err
 	}
 	// ONLY NOW: every chunk was owed.
 	if err := r.store.SetPlatformSetting(EffortBackfillSetting, "1"); err != nil {

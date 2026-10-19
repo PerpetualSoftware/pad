@@ -383,7 +383,7 @@ type Runner struct {
 	// beforeBackfillChunk, when set, runs before each chunk is owed (chunk
 	// index from 0) and may fail the backfill there. Both are TEST-ONLY seams.
 	backfillChunk       int
-	beforeBackfillChunk func(chunk int) error
+	beforeBackfillChunk func(ctx context.Context, chunk int) error
 
 	// logger receives the per-evaluation spend line; nil means slog.Default().
 	// A field rather than the global so a test can read its own lines.
@@ -772,6 +772,36 @@ func storedAnswerOf(a Answer) storedAnswer {
 func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 	rows, _, err := r.decisionsNow(itemID)
 	return rows, err
+}
+
+// SetBackfillSeams sets the effort backfill's chunk size and its
+// before-each-chunk hook. Test affordance only (the server's tests live in
+// another package).
+func (r *Runner) SetBackfillSeams(chunk int, hook func(ctx context.Context, chunk int) error) {
+	if r == nil {
+		return
+	}
+	r.backfillChunk = chunk
+	r.beforeBackfillChunk = hook
+}
+
+// ItemReadDecisions is Decisions without the staged keys (TASK-3921): what the
+// item read, the CLI --agent projection and MCP item get carry. The raw
+// Decisions stays behind the decisions endpoint, which shows staged data.
+func (r *Runner) ItemReadDecisions(itemID string) ([]models.ItemDecision, error) {
+	rows, err := r.Decisions(itemID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]models.ItemDecision, 0, len(rows))
+	for _, d := range rows {
+		qs, _ := r.registry.Get(d.QuestionSet)
+		if qs.Unsurfaced[d.QuestionKey] { // the one filter line
+			continue
+		}
+		out = append(out, d)
+	}
+	return out, nil
 }
 
 // SurfacedDecisions is the item's latest answers that its set would surface

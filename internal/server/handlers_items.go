@@ -1304,7 +1304,7 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	// failure here is logged and the member omitted rather than failing the
 	// item read: decisions are advisory, and an item that cannot be fetched
 	// because a secondary read failed is a worse answer than one without them.
-	if decisions, derr := s.decisionRunner().Decisions(item.ID); derr != nil {
+	if decisions, derr := s.decisionRunner().ItemReadDecisions(item.ID); derr != nil {
 		slog.Warn("item read: decisions unavailable", "item_id", item.ID, "error", derr)
 	} else if len(decisions) > 0 {
 		item.Decisions = decisions

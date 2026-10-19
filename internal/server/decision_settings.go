@@ -1,12 +1,12 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -48,8 +48,10 @@ type decisionSettingsState struct {
 	file decision.Config
 	sets *decision.Registry
 
-	// backfilling is the single-flight latch of the effort backfill.
-	backfilling atomic.Bool
+	// backfillChunk and backfillHook are TEST-ONLY seams applied to every
+	// runner a reconfigure builds (see Runner.SetBackfillSeams).
+	backfillChunk int
+	backfillHook  func(ctx context.Context, chunk int) error
 }
 
 // SetDecisionBase records the config-file source and the question-set
@@ -83,6 +85,9 @@ func (s *Server) reconfigureDecisionsLocked() error {
 		provider = nil
 	}
 	runner := decision.NewRunner(s.store, provider, sets)
+	if runner != nil && s.decisionSettings.backfillHook != nil {
+		runner.SetBackfillSeams(s.decisionSettings.backfillChunk, s.decisionSettings.backfillHook)
+	}
 	if runner != nil && s.metrics != nil {
 		m := s.metrics
 		runner.SetUsageObserver(func(set string, u decision.Usage) {
@@ -91,6 +96,9 @@ func (s *Server) reconfigureDecisionsLocked() error {
 			m.DecisionTokensTotal.WithLabelValues(set, "output").Add(float64(u.OutputTokens))
 		})
 	}
+	// A running backfill belongs to the OLD runner and its provider: cancel it
+	// first, then start a new one only for a non-nil runner.
+	s.cancelEffortBackfill()
 	s.SetDecisionRunner(runner)
 	if runner != nil {
 		s.StartDecisionTick()
@@ -99,26 +107,54 @@ func (s *Server) reconfigureDecisionsLocked() error {
 	return err
 }
 
+// cancelEffortBackfill cancels a running effort backfill. Its marker is never
+// written on cancel, so the next run redoes it.
+func (s *Server) cancelEffortBackfill() {
+	s.decisionTick.mu.Lock()
+	defer s.decisionTick.mu.Unlock()
+	if s.decisionTick.backfillCancel != nil {
+		s.decisionTick.backfillCancel()
+		s.decisionTick.backfillCancel = nil
+	}
+}
+
 // startEffortBackfill runs the one-shot effort backfill (TASK-3921) off the
 // caller's path. It sits here, not at boot, so it covers a provider the admin
 // enables LATER as well as one configured at startup; the marker makes every
-// call after the first complete one a cheap read. Single-flight: a second
-// reconfigure while one runs does nothing, and a failed run is retried by the
-// next reconfigure or restart (no marker is written). It makes no provider
-// call; it only owes jobs, which the tick answers under the debounce.
+// call after the first complete one a cheap read. A new start cancels the run
+// before it (reconfigure builds a new runner every time), and a failed or
+// cancelled run is retried by the next reconfigure or restart (no marker is
+// written). It makes no provider call; it only owes jobs, which the tick
+// answers under the debounce. The stopped check and bg.Add share one hold of
+// decisionTick.mu, so Stop() either precedes both (nothing starts) or follows
+// both (bg.Wait drains it and stopDecisionTick cancels it).
 func (s *Server) startEffortBackfill(runner *decision.Runner) {
 	s.decisionTick.mu.Lock()
-	stopped := s.decisionTick.stopped
-	s.decisionTick.mu.Unlock()
-	if stopped || !s.decisionSettings.backfilling.CompareAndSwap(false, true) {
+	if s.decisionTick.stopped || runner == nil {
+		s.decisionTick.mu.Unlock()
 		return
 	}
+	if s.decisionTick.backfillCancel != nil {
+		s.decisionTick.backfillCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.decisionTick.backfillCancel = cancel
+	s.decisionTick.backfillGen++
+	gen := s.decisionTick.backfillGen
 	s.bg.Add(1)
+	s.decisionTick.mu.Unlock()
 	go func() {
 		defer s.bg.Done()
-		defer s.decisionSettings.backfilling.Store(false)
+		defer func() {
+			cancel()
+			s.decisionTick.mu.Lock()
+			if s.decisionTick.backfillGen == gen {
+				s.decisionTick.backfillCancel = nil
+			}
+			s.decisionTick.mu.Unlock()
+		}()
 		defer s.recoverSweeper("effort-backfill")
-		if _, err := runner.BackfillEffort(); err != nil {
+		if _, err := runner.BackfillEffort(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("effort backfill failed; it will be retried on the next restart or settings change", "error", err)
 		}
 	}()

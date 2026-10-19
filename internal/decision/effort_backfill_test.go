@@ -1,9 +1,13 @@
 package decision
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,7 +103,7 @@ func TestEffortBackfill_RunsOnceAndSkipsUnasked(t *testing.T) {
 	fx.clearJobs(t)
 
 	// The dry run counts and writes nothing.
-	n, err := fx.r.CountEffortBackfill()
+	n, err := fx.r.CountEffortBackfill(context.Background())
 	if err != nil || n != 1 {
 		t.Fatalf("dry run = %d, %v; want 1", n, err)
 	}
@@ -107,7 +111,7 @@ func TestEffortBackfill_RunsOnceAndSkipsUnasked(t *testing.T) {
 		t.Fatalf("the dry run wrote: jobs %v marker %q", got, fx.marker(t))
 	}
 
-	owed, err := fx.r.BackfillEffort()
+	owed, err := fx.r.BackfillEffort(context.Background())
 	if err != nil || owed != 1 {
 		t.Fatalf("BackfillEffort = %d, %v; want 1", owed, err)
 	}
@@ -121,7 +125,7 @@ func TestEffortBackfill_RunsOnceAndSkipsUnasked(t *testing.T) {
 	// Second run: the marker stops it, even with a's job gone and a still a
 	// candidate (it has no effort answer yet).
 	fx.clearJobs(t)
-	owed, err = fx.r.BackfillEffort()
+	owed, err = fx.r.BackfillEffort(context.Background())
 	if err != nil || owed != 0 {
 		t.Fatalf("second run = %d, %v; want 0", owed, err)
 	}
@@ -136,8 +140,8 @@ func TestEffortBackfill_FailureLeavesNoMarker(t *testing.T) {
 	fx.seedAnswers(t, a, time.Now().Add(-3*time.Hour), AttentionNeedsHuman)
 	fx.clearJobs(t)
 	boom := errors.New("boom")
-	fx.r.beforeBackfillChunk = func(int) error { return boom }
-	if _, err := fx.r.BackfillEffort(); !errors.Is(err, boom) {
+	fx.r.beforeBackfillChunk = func(context.Context, int) error { return boom }
+	if _, err := fx.r.BackfillEffort(context.Background()); !errors.Is(err, boom) {
 		t.Fatalf("err = %v; want the injected failure", err)
 	}
 	if fx.marker(t) != "" {
@@ -158,13 +162,13 @@ func TestEffortBackfill_FailingSecondChunkThenRerun(t *testing.T) {
 	fx.clearJobs(t)
 	fx.r.backfillChunk = 1
 	boom := errors.New("crash")
-	fx.r.beforeBackfillChunk = func(chunk int) error {
+	fx.r.beforeBackfillChunk = func(_ context.Context, chunk int) error {
 		if chunk == 1 {
 			return boom
 		}
 		return nil
 	}
-	if _, err := fx.r.BackfillEffort(); !errors.Is(err, boom) {
+	if _, err := fx.r.BackfillEffort(context.Background()); !errors.Is(err, boom) {
 		t.Fatalf("err = %v; want the injected failure", err)
 	}
 	if fx.marker(t) != "" {
@@ -175,7 +179,7 @@ func TestEffortBackfill_FailingSecondChunkThenRerun(t *testing.T) {
 	}
 
 	fx.r.beforeBackfillChunk = nil
-	owed, err := fx.r.BackfillEffort()
+	owed, err := fx.r.BackfillEffort(context.Background())
 	if err != nil || owed != 3 {
 		t.Fatalf("re-run = %d, %v; want 3", owed, err)
 	}
@@ -204,7 +208,7 @@ func TestEffortBackfill_RespectsDebounce(t *testing.T) {
 	fx.seedAnswers(t, recent, time.Now().Add(-10*time.Minute), AttentionNeedsHuman)
 	fx.seedAnswers(t, old, time.Now().Add(-2*time.Hour), AttentionNeedsHuman)
 	fx.clearJobs(t)
-	if owed, err := fx.r.BackfillEffort(); err != nil || owed != 2 {
+	if owed, err := fx.r.BackfillEffort(context.Background()); err != nil || owed != 2 {
 		t.Fatalf("BackfillEffort = %d, %v", owed, err)
 	}
 	jr, err := fx.s.GetDecisionJob(recent.ID, AttentionSetName)
@@ -229,7 +233,7 @@ func TestEffortBackfill_NoCallsOnlyJobs(t *testing.T) {
 	fx.seedAnswers(t, a, time.Now().Add(-3*time.Hour), AttentionNeedsHuman)
 	fx.clearJobs(t)
 	before := len(fx.f.requests)
-	if _, err := fx.r.BackfillEffort(); err != nil {
+	if _, err := fx.r.BackfillEffort(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(fx.f.requests) - before; got != 0 {
@@ -312,6 +316,9 @@ func TestEffortBackfillDryRunOnFile(t *testing.T) {
 	if path == "" {
 		t.Skip("set PAD_EFFORT_DRYRUN_DB to a COPY of a pad database")
 	}
+	if err := refuseLiveDatabase(path, os.Getenv("HOME")); err != nil {
+		t.Fatalf("%v", err)
+	}
 	s, err := store.New(path)
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
@@ -323,7 +330,7 @@ func TestEffortBackfillDryRunOnFile(t *testing.T) {
 	}
 	// The provider is never called; the runner only needs one to exist.
 	r := NewRunner(s, newTypesafe("unused", "unused"), reg)
-	byWS, order, err := r.EffortBackfillCandidates()
+	byWS, order, err := r.EffortBackfillCandidates(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,4 +340,91 @@ func TestEffortBackfillDryRunOnFile(t *testing.T) {
 		total += len(byWS[ws])
 	}
 	t.Logf("EFFORT BACKFILL WOULD OWE %d JOBS", total)
+}
+
+// refuseLiveDatabase guards the dry run: store.New MIGRATES the file it opens,
+// so a live database must never be pointed at. A -wal or -shm sibling means it
+// is open (or was not closed cleanly), and anything under $HOME/.pad is the
+// real data directory.
+func refuseLiveDatabase(path, home string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	recipe := fmt.Sprintf("take a copy first: sqlite3 'file:%s?mode=ro' \".backup '<copy>'\"", abs)
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(abs + suffix); err == nil {
+			return fmt.Errorf("refusing %s: %s%s exists, so it looks live; %s", abs, abs, suffix, recipe)
+		}
+	}
+	if home != "" {
+		padDir := filepath.Join(filepath.Clean(home), ".pad") + string(filepath.Separator)
+		if strings.HasPrefix(abs, padDir) {
+			return fmt.Errorf("refusing %s: it is under %s; %s", abs, padDir, recipe)
+		}
+	}
+	return nil
+}
+
+func TestRefuseLiveDatabase(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "copy.db")
+	if err := os.WriteFile(db, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := refuseLiveDatabase(db, dir+"-other"); err != nil {
+		t.Fatalf("a clean copy was refused: %v", err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sib := db + suffix
+		if err := os.WriteFile(sib, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := refuseLiveDatabase(db, dir+"-other"); err == nil || !strings.Contains(err.Error(), ".backup") {
+			t.Errorf("a %s sibling was not refused with the recipe: %v", suffix, err)
+		}
+		os.Remove(sib)
+	}
+	home := t.TempDir()
+	padDB := filepath.Join(home, ".pad", "pad.db")
+	if err := refuseLiveDatabase(padDB, home); err == nil {
+		t.Error("a path under $HOME/.pad was not refused")
+	}
+}
+
+// A cancel between chunks stops the run with ctx.Err(), owes nothing more and
+// never writes the marker; a pre-cancelled context reads no candidate either.
+func TestEffortBackfill_CancelStopsBetweenChunksAndWritesNoMarker(t *testing.T) {
+	fx := newAttentionFixture(t)
+	for i := 0; i < 3; i++ {
+		it := fx.item(t, fx.tasks.ID, "open")
+		fx.seedAnswers(t, it, time.Now().Add(-3*time.Hour), AttentionNeedsHuman)
+	}
+	fx.clearJobs(t)
+
+	dead, cancelDead := context.WithCancel(context.Background())
+	cancelDead()
+	if _, _, err := fx.r.EffortBackfillCandidates(dead); !errors.Is(err, context.Canceled) {
+		t.Fatalf("candidate read on a cancelled ctx: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fx.r.backfillChunk = 1
+	fx.r.beforeBackfillChunk = func(_ context.Context, chunk int) error {
+		if chunk == 1 {
+			cancel() // lands inside the hook; the chunk-boundary check must see it
+		}
+		return nil
+	}
+	owed, err := fx.r.BackfillEffort(ctx)
+	if !errors.Is(err, context.Canceled) || owed != 1 {
+		t.Fatalf("owed=%d err=%v; want 1 and context.Canceled", owed, err)
+	}
+	if got := fx.jobItems(t); len(got) != 1 {
+		t.Fatalf("jobs after cancel = %v; want only the first chunk's", got)
+	}
+	if fx.marker(t) != "" {
+		t.Fatal("marker written by a cancelled run")
+	}
 }
