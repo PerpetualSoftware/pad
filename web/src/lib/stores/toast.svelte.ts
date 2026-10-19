@@ -33,6 +33,13 @@ const DEFAULT_DURATION = 3000;
  * duration; an explicit duration still wins.
  */
 export const ERROR_DURATION = 10000;
+/**
+ * A toast that offers something to do (an action button or a link) lingers as
+ * long as an error (TASK-3973): at 3s the "Open" on a quick-add confirmation
+ * was gone before a person could reach it. Applied when the caller passes no
+ * duration; an explicit duration still wins.
+ */
+export const ACTIONABLE_DURATION = ERROR_DURATION;
 
 /**
  * Test-surface kill switch for CROSS-ACTOR notification toasts (BUG-2334).
@@ -110,7 +117,8 @@ function show(
 	action?: ToastAction,
 	opts: ShowOptions = {},
 ): string {
-	duration ??= type === 'error' ? ERROR_DURATION : DEFAULT_DURATION;
+	duration ??=
+		type === 'error' ? ERROR_DURATION : action || link ? ACTIONABLE_DURATION : DEFAULT_DURATION;
 	const id = generateId();
 	const toast: Toast = { id, message, type, duration, link, action };
 
