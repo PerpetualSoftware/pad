@@ -387,3 +387,32 @@ func TestNeedsMarkersForItems(t *testing.T) {
 		t.Fatalf("quiet item marker %+v", got[other.ID])
 	}
 }
+
+// A restricted scope with BOTH a collection list and an item grant returns the
+// visible items and never the hidden one, even though the hidden item matches
+// every candidate source (it is flagged and it carries an open mention).
+func TestNeedsCandidateItems_RestrictedScopeHidesItem(t *testing.T) {
+	f := newMentionFixture(t)
+	ask, err := f.s.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Asks", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visibleByColl := createTestItem(t, f.s, f.ws.ID, ask.ID, "visible by collection", "")
+	granted := createTestItem(t, f.s, f.ws.ID, f.col.ID, "visible by grant", "")
+	// f.item sits in f.col, is not granted, and has an open mention.
+	hidden := f.item
+	p := NeedsCandidateParams{AwaitsCollectionIDs: []string{ask.ID}, FlaggedItemIDs: []string{granted.ID, hidden.ID}}
+	f.comment(t, f.author, "@alice look")
+
+	got, err := f.s.NeedsCandidateItems(f.ws.ID, CatchUpScope{CollectionIDs: []string{ask.ID}, ItemIDs: []string{granted.ID}}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, it := range got {
+		have[it.ID] = true
+	}
+	if !have[visibleByColl.ID] || !have[granted.ID] || have[hidden.ID] || len(got) != 2 {
+		t.Fatalf("restricted scope returned %v; want %s and %s, not the hidden %s", have, visibleByColl.ID, granted.ID, hidden.ID)
+	}
+}
