@@ -2,6 +2,7 @@ package links
 
 import (
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -75,26 +76,53 @@ func TestParseMentions(t *testing.T) {
 	}
 }
 
-// ExtractMentions stays linear in the body: a backward scan per "@" made
-// "/@a" repeated quadratic (TASK-3917 r3 F1; 240 KB took ~10 s). The bound is
-// ~60x the linear cost, so only a superlinear walk can trip it.
-func TestExtractMentionsLinearOnSlashRuns(t *testing.T) {
-	body := strings.Repeat("/@a", 100000)
-	start := time.Now()
-	ExtractMentions(body)
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("ExtractMentions on %d bytes took %v; a per-match backward scan is back", len(body), d)
+// assertMentionsLinear times ExtractMentions on body(n) and body(4n), best of
+// five each, and fails if 4x the input costs 8x the time or more: about 4x
+// when linear, about 16x when quadratic. A slow runner (-race, a loaded box)
+// slows both sizes alike, so the ratio does not depend on its speed, which a
+// 3 s absolute bound did (BUG-3995). The one absolute check is a 30 s per-run
+// backstop, about 16x the slowest linear run measured (-race, 4n): it caps how
+// long a regressed scan runs before failing, at a few minutes for the test.
+func assertMentionsLinear(t *testing.T, n int, body func(int) string, regression string) {
+	t.Helper()
+	timeIt := func(n int) time.Duration {
+		b := body(n)
+		best := time.Duration(0)
+		for i := 0; i < 5; i++ {
+			runtime.GC() // a collection left over from the last run is not this run's cost
+			start := time.Now()
+			ExtractMentions(b)
+			d := time.Since(start)
+			if d > 30*time.Second {
+				t.Fatalf("n=%d: one run took %v; %s", n, d, regression)
+			}
+			if best == 0 || d < best {
+				best = d
+			}
+		}
+		return best
 	}
+	small, large := timeIt(n), timeIt(4*n)
+	ratio := float64(large) / float64(small)
+	t.Logf("n=%d: %v; n=%d: %v; ratio %.1f", n, small, 4*n, large, ratio)
+	if ratio >= 8 {
+		t.Fatalf("4x the input took %.1fx the time (%v -> %v); %s", ratio, small, large, regression)
+	}
+}
+
+// ExtractMentions stays linear in the body: a backward scan per "@" made
+// "/@a" repeated quadratic (TASK-3917 r3 F1; 240 KB took ~10 s).
+func TestExtractMentionsLinearOnSlashRuns(t *testing.T) {
+	assertMentionsLinear(t, 40000, func(n int) string {
+		return strings.Repeat("/@a", n)
+	}, "a per-match backward scan is back")
 }
 
 // The code-range check walks the spans once per call, not once per match: a
 // body of many inline code spans followed by many mentions was quadratic
 // (TASK-3917 r4; 360 KB took ~1.1 s, so a 2 MiB comment body ~40 s).
 func TestExtractMentionsLinearAfterCodeSpans(t *testing.T) {
-	body := strings.Repeat("`a` ", 160000) + strings.Repeat("@aaa ", 160000)
-	start := time.Now()
-	ExtractMentions(body)
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("ExtractMentions on %d bytes took %v; a per-match range scan is back", len(body), d)
-	}
+	assertMentionsLinear(t, 40000, func(n int) string {
+		return strings.Repeat("`a` ", n) + strings.Repeat("@aaa ", n)
+	}, "a per-match range scan is back")
 }
