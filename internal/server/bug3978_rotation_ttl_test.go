@@ -153,3 +153,33 @@ func TestBUG3978_LegacyRowRotatesToTheWebTTL(t *testing.T) {
 		t.Fatalf("a legacy session rotated to slide %v, expiring in %v; want 7 days for both", renewTTL, expiresIn)
 	}
 }
+
+// A web session with a 30-day window (a browser bootstrap from /setup mints
+// one with cliSessionTTL) keeps 30 days through a rotation, and so do its
+// session and CSRF cookies, as createAuthSession sets them (BUG-3978 r1).
+func TestBUG3978_LongWebSessionKeepsItsCookies(t *testing.T) {
+	t.Parallel()
+	srv, u, _ := oauthOnlyCloud(t)
+	web, err := srv.store.CreateSession(u.ID, "web", "198.51.100.7", "", cliSessionTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName(srv.secureCookies), Value: web})
+	rr := httptest.NewRecorder()
+	if _, ok := srv.rotateSessionsAfterCredentialChange(rr, req, u); !ok {
+		t.Fatal("rotation failed")
+	}
+	expiresIn, renewTTL, kind := onlySession(t, srv, u.ID)
+	if kind != "web" || renewTTL != cliSessionTTL || !near(expiresIn, cliSessionTTL) {
+		t.Fatalf("rotated 30-day web session: kind %q, slide %v, expires in %v; want web, 30 days, 30 days", kind, renewTTL, expiresIn)
+	}
+	want := int(cliSessionTTL.Seconds())
+	got := map[string]int{}
+	for _, c := range rr.Result().Cookies() {
+		got[c.Name] = c.MaxAge
+	}
+	if got[sessionCookieName(srv.secureCookies)] != want || got[csrfCookieName(srv.secureCookies)] != want {
+		t.Fatalf("cookie MaxAge: session %d, csrf %d; want %d for both", got[sessionCookieName(srv.secureCookies)], got[csrfCookieName(srv.secureCookies)], want)
+	}
+}

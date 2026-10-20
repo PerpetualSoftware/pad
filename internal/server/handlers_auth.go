@@ -392,12 +392,14 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 		Name:     sessionCookieName(s.secureCookies),
 		Value:    token,
 		Path:     "/",
-		MaxAge:   int(webSessionTTL.Seconds()),
+		MaxAge:   int(ttl.Seconds()),
 		HttpOnly: true,
 		Secure:   s.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
-	setCSRFCookie(w, int(webSessionTTL.Seconds()), s.secureCookies)
+	// The cookies carry the session's window, as createAuthSession sets them:
+	// a 30-day web session (a bootstrap from /setup) keeps 30-day cookies.
+	setCSRFCookie(w, int(ttl.Seconds()), s.secureCookies)
 	return token, true
 }
 
