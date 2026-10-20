@@ -96,17 +96,20 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 // BUG-3958's bookkeeping rows; the lists here are examples:
 //
 //   - DERIVED-FROM-CONTENT (status_transitions, item_wiki_links,
-//     item_relation_links, comment_mentions (TASK-3917), activities, event_outbox): written as a consequence
-//     of a protected write, which aborts first. A trigger here would only
-//     produce a second error for one act.
+//     item_relation_links, comment_mentions (TASK-3917), item_patches,
+//     member_collection_access): written as a consequence of a protected
+//     write, which aborts first. A trigger here would only produce a second
+//     error for one act. (activities used to be here; it is refused, see
+//     below. Two of these also have a startup backfill, noted in
+//     migratedExcludedTables.)
 //   - FTS SHADOW (items_fts*, comments_fts*, documents_fts*, 15 tables): FTS5
 //     internals, reached only behind a base-table write that has already
 //     aborted.
 //   - AUTH / PLATFORM / BOOKKEEPING (users, sessions, api_tokens, oauth_*,
 //     password_reset_tokens, email_verification_tokens, email_optouts,
 //     cli_auth_sessions, platform_settings, stripe_processed_events,
-//     mcp_audit_log, share_link_views, member_collection_access,
-//     schema_migrations): the command's own help says these are NOT migrated
+//     mcp_audit_log, share_link_views, event_outbox, schema_migrations): the
+//     command's own help says these are NOT migrated
 //     and the operator is told to run `pad auth setup` against the new
 //     database. Refusing them would claim a loss the migration never promised
 //     to prevent.
@@ -198,11 +201,15 @@ var migratedRefusalTables = []string{
 // (BUG-3958: workspace_read_cursors and app_installs were never classified).
 var migratedExcludedTables = map[string]string{
 	// DERIVED-FROM-CONTENT: written only inside a protected table's write.
+	// Also written by BackfillStatusTransitions (status_transitions_backfill.go:192),
+	// which runs only at server start (cmd/pad/cmd_server.go:313). Same as above.
 	"status_transitions":  "derived",
 	"item_wiki_links":     "derived",
 	"item_relation_links": "derived",
-	"comment_mentions":    "derived",
-	"event_outbox":        "derived",
+	// Also written by BackfillCommentMentions (comment_mentions_backfill.go:110),
+	// which runs only at server start (cmd/pad/cmd_server.go:232), after
+	// store.New, and store.New refuses a migrated file. Recomputable.
+	"comment_mentions": "derived",
 	// Written only with an item update (updateItemWithParentLinkOnce) and
 	// deleted in the purge's transaction after protected deletes (BUG-3958).
 	"item_patches": "derived",
@@ -247,14 +254,19 @@ var migratedExcludedTables = map[string]string{
 	"idempotency_keys":          "bookkeeping",
 	"webhook_deliveries":        "bookkeeping",
 	"workspace_import_status":   "bookkeeping",
-	"sqlite_sequence":           "bookkeeping",
+	// Dispatch state: rows are enqueued with protected writes, but they are
+	// marked, failed, pruned and scrubbed on their own (event_outbox.go:978,
+	// 1026, 1800, 1829, 1849). A lost mark means a re-delivery, not lost
+	// content. It was listed as derived; BUG-3958 r2 corrected that.
+	"event_outbox":    "bookkeeping",
+	"sqlite_sequence": "bookkeeping",
 
 	// The marker table, which the migration itself writes.
 	migratedMarkerTable: "marker",
 }
 
-// migratedFTSBases are the FTS5 tables; each has five shadow tables named
-// <base>_config, _data, _docsize and _idx (and the base itself). Named rather
+// migratedFTSBases are the FTS5 tables. Each is external-content, so besides
+// the base it has four shadow tables: <base>_config, _data, _docsize and _idx. Named rather
 // than matched by suffix, so an ordinary table that happens to end in _fts_data
 // is still classified by hand (BUG-3958 r1).
 var migratedFTSBases = []string{"items_fts", "comments_fts", "documents_fts"}
