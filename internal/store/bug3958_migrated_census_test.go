@@ -88,6 +88,8 @@ func TestIsFTSShadowTable(t *testing.T) {
 	for n, want := range map[string]bool{
 		"items_fts": true, "items_fts_data": true, "comments_fts_idx": true, "documents_fts_docsize": true,
 		"items_fts_config": true, "items": false, "fts_items": false, "items_ftsx": false, "_fts": false,
+		// BUG-3958 r1: a non-FTS table that merely ends like a shadow table.
+		"user_fts_data": false, "items_fts_content": false,
 	} {
 		if got := isFTSShadowTable(n); got != want {
 			t.Errorf("isFTSShadowTable(%q) = %v, want %v", n, got, want)

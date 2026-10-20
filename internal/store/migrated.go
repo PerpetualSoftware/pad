@@ -168,6 +168,11 @@ var migratedRefusalTables = []string{
 	"app_item_actions",
 	// - adoptLegacyWorkspace writes origin keys without touching items.
 	"item_builtin_origin",
+	// The activity feed. It used to be excluded as derived, but CreateActivity
+	// writes on its own connection (activities.go:67), and the connected-apps
+	// handlers log OAuth connection changes, which are not refused
+	// (handlers_connected_apps.go:239, :287). BUG-3958 r1.
+	"activities",
 	"comment_reactions",
 	"views",
 	"agent_roles",
@@ -197,11 +202,16 @@ var migratedExcludedTables = map[string]string{
 	"item_wiki_links":     "derived",
 	"item_relation_links": "derived",
 	"comment_mentions":    "derived",
-	"activities":          "derived",
 	"event_outbox":        "derived",
 	// Written only with an item update (updateItemWithParentLinkOnce) and
 	// deleted in the purge's transaction after protected deletes (BUG-3958).
 	"item_patches": "derived",
+	// Every writer first writes a refused table in the same transaction:
+	// setMemberCollectionAccessTx updates workspace_members
+	// (workspace_members.go:667), and UpgradeAppInstall updates app_installs
+	// (app_upgrade.go:206) before its access writes (:252, :310). It was
+	// listed as auth; BUG-3958 r1 corrected that.
+	"member_collection_access": "derived",
 
 	// AUTH / PLATFORM: not migrated; the operator re-runs auth setup.
 	"users":                       "auth",
@@ -221,7 +231,6 @@ var migratedExcludedTables = map[string]string{
 	"email_verification_tokens":   "auth",
 	"email_optouts":               "auth",
 	"cli_auth_sessions":           "auth",
-	"member_collection_access":    "auth",
 	"platform_settings":           "platform",
 	"stripe_processed_events":     "platform",
 
@@ -244,14 +253,22 @@ var migratedExcludedTables = map[string]string{
 	migratedMarkerTable: "marker",
 }
 
-// isFTSShadowTable reports an FTS5 table or one of its shadow tables
-// (items_fts, items_fts_data, ...). They are reached only behind a base-table
-// write that has already aborted.
+// migratedFTSBases are the FTS5 tables; each has five shadow tables named
+// <base>_config, _data, _docsize and _idx (and the base itself). Named rather
+// than matched by suffix, so an ordinary table that happens to end in _fts_data
+// is still classified by hand (BUG-3958 r1).
+var migratedFTSBases = []string{"items_fts", "comments_fts", "documents_fts"}
+
+// isFTSShadowTable reports an FTS5 table or one of its shadow tables. They are
+// reached only behind a base-table write that has already aborted.
 func isFTSShadowTable(name string) bool {
-	base, _, _ := strings.Cut(name, "_fts")
-	return base != "" && base != name && (strings.HasSuffix(name, "_fts") ||
-		strings.HasSuffix(name, "_fts_config") || strings.HasSuffix(name, "_fts_data") ||
-		strings.HasSuffix(name, "_fts_docsize") || strings.HasSuffix(name, "_fts_idx"))
+	for _, base := range migratedFTSBases {
+		switch name {
+		case base, base + "_config", base + "_data", base + "_docsize", base + "_idx":
+			return true
+		}
+	}
+	return false
 }
 
 // MigratedRefusalTables returns the population, sorted, for the guard test and
