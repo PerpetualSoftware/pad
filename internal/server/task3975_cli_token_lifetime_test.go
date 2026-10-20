@@ -105,3 +105,40 @@ func TestTASK3975_RotationKeepsParentCap(t *testing.T) {
 	within(t, "rotated created_at", info.CreatedAt, time.Now().Add(-85*24*time.Hour), time.Minute)
 	within(t, "rotated expiry", sessionExpiry(t, srv, rotated), time.Now().Add(5*24*time.Hour), time.Minute)
 }
+
+// TASK-3975 r2: only a browser session approves. A CLI token that could
+// approve would mint its own successor with a fresh 90-day cap, and a chain
+// of them would never expire. An 85-day-old CLI bearer is refused and mints
+// nothing.
+func TestTASK3975_CLIBearerCannotApprove(t *testing.T) {
+	t.Parallel()
+	srv, u, _ := oauthOnlyCloud(t)
+	cli, err := srv.store.CreateSession(u.ID, "cli-browser-auth", "198.51.100.7", "", 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ageAllSessions(t, srv, u.ID, 85*24*time.Hour)
+	countSessions := func() int {
+		var n int
+		if err := srv.store.DB().QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = ?`, u.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := countSessions()
+	pending, err := srv.store.CreateCLIAuthSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := doRequestWithBearer(srv, "POST", "/api/v1/auth/cli/sessions/"+pending.Code+"/approve", cli, nil)
+	if rr.Code != http.StatusForbidden || errorCode(t, rr) != "session_required" {
+		t.Fatalf("approve with a CLI bearer: %d %s, want 403 session_required", rr.Code, rr.Body.String())
+	}
+	if after := countSessions(); after != before {
+		t.Fatalf("a refused approval left %d sessions, want %d", after, before)
+	}
+	got, err := srv.store.GetCLIAuthSession(pending.Code)
+	if err != nil || got == nil || got.Status != "pending" || got.Token != "" {
+		t.Fatalf("the CLI auth session after a refused approval: %+v %v, want pending with no token", got, err)
+	}
+}

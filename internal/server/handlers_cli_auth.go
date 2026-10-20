@@ -195,6 +195,15 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to approve a CLI session")
 		return
 	}
+	// Only a browser session approves (TASK-3975 r2). The token minted here
+	// starts its own 90-day cap, so a CLI token that could approve could mint
+	// its own successor, and a chain of them would never expire. The web
+	// client approves on its cookie; nothing else calls this.
+	if approver.Kind != store.SessionKindWeb {
+		writeError(w, http.StatusForbidden, "session_required",
+			"Approving a CLI sign-in requires a browser session")
+		return
+	}
 	// Fenced on the approver's credential epoch as this request was admitted
 	// (BUG-3382): a claim or reset since then makes the approval mint nothing.
 	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, "cli-browser-auth", clientIP(r), "", 30*24*time.Hour, time.Time{})
