@@ -78,6 +78,27 @@ func (s *Store) enqueueAssignedNotificationTx(tx *sql.Tx, item *models.Item, toU
 	}})
 }
 
+// commentRecipients collects who a comment concerns, first kind wins. It is a
+// type rather than a closure so the appstore boundary walk can resolve it.
+type commentRecipients struct {
+	order []string
+	kinds map[string]string
+}
+
+// add records user under kind unless they are the actor, empty, or already in.
+func (r *commentRecipients) add(user, kind, actorUserID string) {
+	if user == "" || user == actorUserID {
+		return
+	}
+	if r.kinds == nil {
+		r.kinds = map[string]string{}
+	}
+	if _, seen := r.kinds[user]; !seen {
+		r.order = append(r.order, user)
+		r.kinds[user] = kind
+	}
+}
+
 // enqueueCommentNotificationsTx tells the people a new comment concerns: the
 // item's assignee and creator ("comment"), and the author of the comment it
 // replies to ("reply"). The author is never told about their own comment. A
@@ -91,31 +112,21 @@ func (s *Store) enqueueCommentNotificationsTx(tx *sql.Tx, c *models.Comment, act
 	}
 	// The parent's author is added first, so a person who is also the assignee
 	// keeps the "reply" and gets no second row.
-	kinds := map[string]string{}
-	var order []string
-	add := func(user, kind string) {
-		if user == "" || user == actorUserID {
-			return
-		}
-		if _, seen := kinds[user]; !seen {
-			order = append(order, user)
-			kinds[user] = kind
-		}
-	}
+	var to commentRecipients
 	if c.ParentID != "" {
 		var parentAuthor sql.NullString
 		err := tx.QueryRow(s.q(`SELECT user_id FROM comments WHERE id = ?`), c.ParentID).Scan(&parentAuthor)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("read parent comment author: %w", err)
 		}
-		add(parentAuthor.String, notifyReply)
+		to.add(parentAuthor.String, notifyReply, actorUserID)
 	}
-	add(assigned.String, notifyComment)
-	add(creator.String, notifyComment)
-	facts := make([]notifyFact, 0, len(order))
-	for _, u := range order {
+	to.add(assigned.String, notifyComment, actorUserID)
+	to.add(creator.String, notifyComment, actorUserID)
+	facts := make([]notifyFact, 0, len(to.order))
+	for _, u := range to.order {
 		facts = append(facts, notifyFact{
-			UserID: u, WorkspaceID: c.WorkspaceID, ItemID: c.ItemID, CommentID: c.ID, Kind: kinds[u],
+			UserID: u, WorkspaceID: c.WorkspaceID, ItemID: c.ItemID, CommentID: c.ID, Kind: to.kinds[u],
 			ActorUserID: actorUserID, ActorIsAgent: actorIsAgent,
 			DedupeKey: "comment:" + c.ID,
 		})
