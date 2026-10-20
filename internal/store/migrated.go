@@ -203,12 +203,20 @@ var migratedExcludedTables = map[string]string{
 	// DERIVED-FROM-CONTENT: written only inside a protected table's write.
 	// Also written by BackfillStatusTransitions (status_transitions_backfill.go:192),
 	// which runs only at server start (cmd/pad/cmd_server.go:313). Same as above.
-	"status_transitions":  "derived",
-	"item_wiki_links":     "derived",
+	"status_transitions": "derived",
+	// Also written by BackfillWikiLinks (wiki_links_backfill.go:192), at
+	// server start only (cmd/pad/cmd_server.go:197). Same as below.
+	"item_wiki_links": "derived",
+	// Also written by BackfillRelationLinks (relation_links_backfill.go:279),
+	// at server start only (cmd/pad/cmd_server.go:217). And
+	// MigrateItemFieldValues reindexes it (collections.go:1028) even when no
+	// item matched its migration, so that write can run alone; it recomputes
+	// from unchanged item fields, so nothing is lost.
 	"item_relation_links": "derived",
-	// Also written by BackfillCommentMentions (comment_mentions_backfill.go:110),
+	// Also written by BackfillCommentMentions, via reindexCommentMentionsTx
+	// (comment_mentions_backfill.go:110 -> comment_mentions.go:133, :142),
 	// which runs only at server start (cmd/pad/cmd_server.go:232), after
-	// store.New, and store.New refuses a migrated file. Recomputable.
+	// store.New, which refuses a migrated file (store.go:469). Recomputable.
 	"comment_mentions": "derived",
 	// Written only with an item update (updateItemWithParentLinkOnce) and
 	// deleted in the purge's transaction after protected deletes (BUG-3958).
