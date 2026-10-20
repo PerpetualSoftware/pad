@@ -160,13 +160,6 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// BUG-3861: an unknown role reached the invitations CHECK constraint and
-	// answered 500. Checked after every refusal the door already gave, so the
-	// only answer that changes is that 500.
-	if !requireKnownWorkspaceRole(w, input.Role) {
-		return
-	}
-
 	// Check if user with this email already exists
 	existingUser, err := s.store.GetUserByEmail(input.Email)
 	if err != nil {
@@ -192,6 +185,14 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "conflict", "User is already a member of this workspace")
 			return
 		}
+	}
+
+	// BUG-3861: an unknown role reached the invitations CHECK constraint and
+	// answered 500. It is checked after every refusal this handler makes, so
+	// those answers are unchanged; CreateInvitation's own refusals (a disabled
+	// inviter, a workspace deleted mid-request) now lose to the 400.
+	if !requireKnownWorkspaceRole(w, input.Role) {
+		return
 	}
 
 	// Create (or, for a re-invite, replace) the pending invitation.

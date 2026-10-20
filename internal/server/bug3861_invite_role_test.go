@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -73,9 +74,9 @@ func TestBUG3861_InviteRoleMustBeKnown(t *testing.T) {
 	})
 }
 
-// The role check runs after every refusal the invite door already gave, so a
-// bad role changes only the answer that used to be a 500. In the setup window
-// (no users, no auth) the door still answers BUG-3544's 409, not the 400.
+// The role check runs after every refusal the invite handler makes, so a bad
+// role changes none of their answers. In the setup window (no users, no auth)
+// the door still answers BUG-3544's 409 setup_required, not the 400.
 func TestBUG3861_SetupWindowRefusalPrecedesRoleCheck(t *testing.T) {
 	srv := testServer(t)
 	if n, err := srv.store.UserCount(); err != nil || n != 0 {
@@ -84,7 +85,21 @@ func TestBUG3861_SetupWindowRefusalPrecedesRoleCheck(t *testing.T) {
 	slug := createWSWithCollections(t, srv)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/members/invite",
 		map[string]any{"email": "alex@example.com", "role": "admin"})
-	if rr.Code != http.StatusConflict {
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"setup_required"`) {
 		t.Fatalf("status %d, want 409 setup_required ahead of the role check. Body: %s", rr.Code, rr.Body.String())
 	}
+}
+
+// The last refusal the handler makes before the role check: inviting an
+// existing member answers 409 conflict whatever the role says.
+func TestBUG3861_AlreadyMemberRefusalPrecedesRoleCheck(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newAccessFixture(t, d)
+		f.member("ed@example.com", "editor")
+		rr := f.do("POST", "/api/v1/workspaces/"+f.wsSlug+"/members/invite", f.ownerTok,
+			map[string]any{"email": "ed@example.com", "role": "admin"})
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "already a member") {
+			t.Fatalf("status %d, want 409 already-a-member ahead of the role check. Body: %s", rr.Code, rr.Body.String())
+		}
+	})
 }
