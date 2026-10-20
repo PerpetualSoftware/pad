@@ -1,7 +1,10 @@
 // TASK-2202 — errors linger, and a toast someone is reading or reaching for
 // does not vanish under them. Fake timers, so durations are exact.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { toastStore, ERROR_DURATION } from './toast.svelte';
+import { toastStore, ERROR_DURATION, ACTIONABLE_DURATION } from './toast.svelte';
+import { announceCaptured } from '$lib/items/quickCapture';
+
+vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 
 const present = (id: string) => toastStore.toasts.some((t) => t.id === id);
 
@@ -33,6 +36,41 @@ describe('toast durations (TASK-2202)', () => {
 		expect(present(brief)).toBe(false);
 		vi.advanceTimersByTime(1000);
 		expect(present(ok)).toBe(false);
+	});
+});
+
+describe('toasts that offer something to do linger (TASK-3973)', () => {
+	const act = { label: 'Undo', onAction: () => {} };
+
+	it('a toast with an action and no duration stays for ACTIONABLE_DURATION', () => {
+		expect(ACTIONABLE_DURATION).toBeGreaterThanOrEqual(8000);
+		const id = toastStore.show('Archived 3 items', 'success', undefined, undefined, act);
+		vi.advanceTimersByTime(ACTIONABLE_DURATION - 1);
+		expect(present(id)).toBe(true);
+		vi.advanceTimersByTime(1);
+		expect(present(id)).toBe(false);
+	});
+
+	it('a toast with only a link stays for ACTIONABLE_DURATION', () => {
+		const id = toastStore.show('Imported DOC-4', 'info', undefined, '/w/docs/doc-4');
+		vi.advanceTimersByTime(ACTIONABLE_DURATION - 1);
+		expect(present(id)).toBe(true);
+		vi.advanceTimersByTime(1);
+		expect(present(id)).toBe(false);
+	});
+
+	it('an explicit duration still wins over the actionable default', () => {
+		const id = toastStore.show('Archived', 'success', 2000, '/w/x', act);
+		vi.advanceTimersByTime(2000);
+		expect(present(id)).toBe(false);
+	});
+
+	it("quick add's Open toast survives 9s", () => {
+		announceCaptured({ title: 'Buy milk', collection_prefix: 'TASK', item_number: 12 }, '/w/tasks/task-12');
+		const toast = toastStore.toasts.find((t) => t.message === 'Added TASK-12');
+		expect(toast?.action?.label).toBe('Open');
+		vi.advanceTimersByTime(9000);
+		expect(present(toast!.id), 'still up at 9s').toBe(true);
 	});
 });
 
