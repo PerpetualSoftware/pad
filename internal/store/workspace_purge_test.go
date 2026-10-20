@@ -41,6 +41,9 @@ var wsChildTables = []string{
 	// comment_mentions (TASK-3917): same, its FKs to comments, items and
 	// workspaces cascade.
 	"comment_mentions",
+	// user_notifications (TASK-3937): its workspace_id cascades; item_id and
+	// comment_id carry no FK, so the cascade is the only thing that clears it.
+	"user_notifications",
 	// event_outbox has NO foreign key to workspaces (TASK-2658 — an outbox row
 	// must outlive its subject), so nothing deletes it on the purge's behalf.
 	// It holds full item content and comment bodies, so an omission here keeps
@@ -98,6 +101,8 @@ func seedFullWorkspace(t *testing.T, s *Store, u *models.User, name string) seed
 		newID(), commentID, "👍", ts)
 	s.mustExec(t, `INSERT INTO comment_mentions (comment_id, user_id, item_id, workspace_id, created_at) VALUES (?, ?, ?, ?, ?)`,
 		commentID, u.ID, item1.ID, ws.ID, ts)
+	s.mustExec(t, `INSERT INTO user_notifications (id, user_id, workspace_id, item_id, comment_id, kind, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		newID(), u.ID, ws.ID, item1.ID, commentID, "comment", "comment:"+commentID, ts)
 
 	// item_versions / item_links / item_stars / item_yjs_updates /
 	// item_wiki_links / item_collection_moves / item_grants / status_transitions

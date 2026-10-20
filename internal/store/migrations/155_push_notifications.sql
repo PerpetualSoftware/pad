@@ -10,14 +10,17 @@
 -- user who has at least one device, on the transaction of the write that
 -- caused it. dedupe_key makes the enqueue idempotent per (user, key). item_id
 -- and comment_id carry no foreign key: the dispatcher skips a row whose
--- subject is gone, and retention removes the rest. workspace_id cascades, so a
--- purged workspace leaves no queue behind.
+-- subject is gone, and retention removes the rest. Retention is NOT in this
+-- migration: the 7-day sweep lands with the dispatcher (TASK-3939), and until
+-- then nothing deletes a queue row. workspace_id cascades, so a purged
+-- workspace leaves no queue behind. actor_user_id is indexed because deleting
+-- a user runs its ON DELETE SET NULL against this table.
 --
 -- user_notification_settings: a person's recipient-side filters. No row means
 -- the defaults. The dispatcher applies them; the enqueue does not.
 --
 -- workspace_read_cursors (149) stays separate: it must exist for every user,
--- with or without a device, and this queue is deleted after 7 days.
+-- with or without a device, and this queue is to be deleted after 7 days.
 CREATE TABLE IF NOT EXISTS push_devices (
     id            TEXT PRIMARY KEY,
     user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -56,6 +59,7 @@ CREATE TABLE IF NOT EXISTS user_notifications (
 CREATE INDEX IF NOT EXISTS idx_user_notifications_state ON user_notifications(push_state, created_at);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_sent ON user_notifications(user_id, sent_at);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_workspace ON user_notifications(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_actor ON user_notifications(actor_user_id);
 
 CREATE TABLE IF NOT EXISTS user_notification_settings (
     user_id                 TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

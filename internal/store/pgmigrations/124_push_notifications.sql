@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS user_notifications (
 CREATE INDEX IF NOT EXISTS idx_user_notifications_state ON user_notifications(push_state, created_at);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_sent ON user_notifications(user_id, sent_at);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_workspace ON user_notifications(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_actor ON user_notifications(actor_user_id);
 
 CREATE TABLE IF NOT EXISTS user_notification_settings (
     user_id                 TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
