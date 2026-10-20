@@ -377,7 +377,7 @@ PNG anywhere is an export of one of them, never a hand-edited copy.
 | File | What it is | Use it for |
 |---|---|---|
 | `pad-mark.svg` | The mark, full colour, no background | Headers, the README, any lockup at about 20px and up |
-| `pad-mark-small.svg` | Pixel-aligned at 16px: 4px tiles, 2px gaps | Favicons at 16 and 32px; scale by whole multiples only |
+| `pad-mark-small.svg` | Pixel-aligned at 16px: 4px tiles, 1px gaps, 1px inset (the favicon tile's grid) | Favicons at 16, 32 and 48px, and `icon.svg`; scale by whole multiples only |
 | `pad-favicon-tile.svg` | The small mark on a dark tile | Places that need a solid backing: PWA maskable, Windows tiles |
 | `pad-app-icon.svg` | The mark on a solid dark tile (`#0a0b16`), full-bleed | iOS AppIcon and `apple-touch-icon` (iOS masks it; no transparency) |
 | `pad-app-icon-shaped.svg` | The same tile, transparent outside its rounded shape | PWA `icon-192/512`, Android legacy launcher, in-app logos (iOS `PadIcon`, Android `pad_logo`), video lockups, OG and store art |
@@ -404,8 +404,14 @@ PNG anywhere is an export of one of them, never a hand-edited copy.
 
 - On light and dark backgrounds alike, use `pad-mark.svg` as is. No
   outline, shadow or glow anywhere, the app icon included.
-- Below 20px, use `pad-mark-small.svg`. The full mark's 38/200 gaps blur
-  into one block at 16px; the small variant's wider gaps keep the grid.
+- Below 20px, use `pad-mark-small.svg`. Drawn at 16px, the full mark's
+  38/200 gaps come out under one pixel wide, and at 1x density they render
+  as smeared half-tones in both Chromium and WebKit. The small variant
+  snaps every edge to a pixel, so its gaps stay crisp. Its gaps were 2px
+  (gap/tile 0.50) at first; TASK-3974 tightened them to 1px with a 1px
+  inset (0.25, near the master's 0.19), the grid `pad-favicon-tile.svg`
+  already used. That reads as the same mark as the full one and stays
+  crisp at 1x, 2x and 3x (the TASK-3974 comparison renders).
   A 2x2 simplification was tried and dropped: it loses the identity
   (TASK-3514 mockups).
 - The lockup is the mark followed by the lowercase wordmark `pad` (section
