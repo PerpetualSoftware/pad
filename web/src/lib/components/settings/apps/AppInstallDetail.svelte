@@ -171,7 +171,11 @@
 			<dd>
 				<span class="mono">{install.webhook.url}</span>
 				<span class="hook-status">
-					{install.webhook.status === 'awaiting_secret' ? 'waiting for an install code' : install.webhook.status}
+					{install.webhook.status === 'awaiting_secret'
+						? 'waiting for an install code'
+						: install.webhook.status === 'paused'
+							? 'paused while the app is disabled'
+							: install.webhook.status}
 				</span>
 				{#if install.webhook.notice}
 					<p class="hint">{install.webhook.notice}</p>

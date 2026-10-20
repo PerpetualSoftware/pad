@@ -9,7 +9,7 @@
 		type LimitTiers
 	} from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api/client';
-	import type { DecisionSettings, DecisionSettingsInput, MCPSettings } from '$lib/types';
+	import type { AppsSettings, DecisionSettings, DecisionSettingsInput, MCPSettings } from '$lib/types';
 
 	// Plan limits
 	let limits = $state<LimitTiers | null>(null);
@@ -104,6 +104,37 @@
 
 	const mcpAuthLabel = (methods: string[]) =>
 		methods.includes('oauth') ? 'OAuth and API tokens' : methods.includes('pat') ? 'API tokens only' : 'None';
+
+	// Apps (TASK-3980 item 1): the switch the Apps tab's off-state points at.
+	// Same draft-then-Save shape as MCP above; on Cloud it is read-only.
+	let apps = $state<AppsSettings | null>(null);
+	let appsLoadError = $state('');
+	let savingApps = $state(false);
+	let appsDraft = $state(false);
+	let appsStatus = $state<{ message: string; type: 'saved' | 'error' } | null>(null);
+
+	async function loadApps() {
+		try {
+			apps = await api.admin.getAppsSettings();
+			appsDraft = apps.enabled;
+		} catch (e) {
+			appsLoadError = e instanceof Error ? e.message : 'Failed to load';
+		}
+	}
+
+	async function setAppsEnabled(enabled: boolean) {
+		savingApps = true;
+		appsStatus = null;
+		try {
+			apps = await api.admin.updateAppsSettings(enabled);
+			appsDraft = apps.enabled;
+			appsStatus = { message: 'Saved', type: 'saved' };
+		} catch (e) {
+			appsStatus = { message: e instanceof Error ? e.message : 'Failed to save', type: 'error' };
+		} finally {
+			savingApps = false;
+		}
+	}
 
 	async function loadDecision() {
 		try {
@@ -240,6 +271,7 @@
 		loadSettings();
 		loadDecision();
 		loadMcp();
+		loadApps();
 	});
 </script>
 
@@ -622,6 +654,63 @@
 							</button>
 							{#if mcpStatus}
 								<span class="save-msg" class:error-msg={mcpStatus.type === 'error'}>{mcpStatus.message}</span>
+							{/if}
+						</div>
+					{/if}
+				{/if}
+			</div>
+		</section>
+
+		<section class="section" data-testid="apps-section">
+			<h2 class="section-title">Apps</h2>
+			<p class="section-desc">
+				Lets workspace owners install apps that connect other tools to a workspace. Off by default on a
+				self-hosted install.
+			</p>
+
+			<div class="email-card">
+				{#if appsLoadError}
+					<p class="save-msg error-msg">Could not load: {appsLoadError}</p>
+				{:else if !apps}
+					<p class="save-msg">Loading…</p>
+				{:else}
+					<label class="toggle-row">
+						<input
+							type="checkbox"
+							data-testid="apps-enabled"
+							checked={appsDraft}
+							disabled={apps.cloud || savingApps}
+							onchange={(e) => (appsDraft = e.currentTarget.checked)}
+						/>
+						<span>Enable apps</span>
+						{#if apps.cloud}
+							<span class="env-note">managed by the operator</span>
+						{/if}
+					</label>
+
+					<p class="mcp-state" data-testid="apps-state" data-state={apps.available ? 'on' : apps.enabled ? 'blocked' : 'off'}>
+						{#if apps.available}
+							<span class="mcp-dot on" aria-hidden="true"></span>On: workspace owners can install apps.
+						{:else if apps.enabled}
+							<span class="mcp-dot blocked" aria-hidden="true"></span>On, but blocked: apps sign in through this
+							server's OAuth, which needs an https public origin (see MCP above).
+						{:else}
+							<span class="mcp-dot" aria-hidden="true"></span>Off: workspaces cannot install apps.
+						{/if}
+					</p>
+
+					{#if !apps.cloud}
+						<div class="edit-actions">
+							<button
+								class="btn primary"
+								data-testid="apps-save"
+								disabled={savingApps || appsDraft === apps.enabled}
+								onclick={() => setAppsEnabled(appsDraft)}
+							>
+								{savingApps ? 'Saving...' : 'Save Apps Settings'}
+							</button>
+							{#if appsStatus}
+								<span class="save-msg" class:error-msg={appsStatus.type === 'error'}>{appsStatus.message}</span>
 							{/if}
 						</div>
 					{/if}

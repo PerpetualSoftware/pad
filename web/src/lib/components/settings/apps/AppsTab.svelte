@@ -75,8 +75,8 @@
 				{#if list.cloud}
 					Apps are not available here right now.
 				{:else}
-					A server admin has to enable apps before a workspace can install them. Ask your admin to turn them on in the
-					admin settings.
+					A server admin has to enable apps before a workspace can install them. Ask your admin to turn them on under
+					Console → Admin → Settings → Apps.
 				{/if}
 			</p>
 		</div>

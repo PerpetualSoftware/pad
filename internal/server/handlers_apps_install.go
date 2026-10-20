@@ -49,11 +49,6 @@ const appArtifactMaxBytes = defaultImportArtifactMaxBytes
 // appNotReviewedNotice is shown with every app on every surface (Dave Q3).
 const appNotReviewedNotice = "Not reviewed by Pad. You are installing code published at this origin."
 
-// appDeferredNotice explains declared webhook events and item actions that
-// this server does not provision yet (A5/A6). They are stored with the
-// install and activated when supported, without a reinstall.
-const appDeferredNotice = "Webhook events and item actions will activate when this server supports them; they are recorded with the install now."
-
 // appPreview is what the owner reviews before consenting (§2 step 4).
 type appPreview struct {
 	PendingID       string                   `json:"pending_id"`
@@ -76,7 +71,6 @@ type appPreview struct {
 	Events          []appmanifest.Event      `json:"events"`
 	WebhookURL      string                   `json:"webhook_url,omitempty"`
 	ItemActions     []appmanifest.ItemAction `json:"item_actions"`
-	DeferredNotice  string                   `json:"deferred_notice,omitempty"`
 	Artifacts       []appPreviewArtifact     `json:"artifacts"`
 	ConfigSchema    json.RawMessage          `json:"config_schema,omitempty"`
 	RedirectURIs    []string                 `json:"redirect_uris"`
@@ -404,9 +398,6 @@ func (s *Server) buildAppPreviewQ(q store.Queryer, r *http.Request, workspaceID 
 		ReadsSystem: "The app can read this workspace's Conventions and Playbooks.",
 		Events:      m.Events, WebhookURL: m.WebhookURL, ItemActions: m.ItemActions,
 		ConfigSchema: m.ConfigSchema, RedirectURIs: m.RedirectURIs, Docs: m.Docs,
-	}
-	if len(m.Events) > 0 || len(m.ItemActions) > 0 {
-		p.DeferredNotice = appDeferredNotice
 	}
 
 	// Conflict check (§2 step 5, L6).

@@ -164,6 +164,7 @@ func (e *appsEnv) pendingRows(t *testing.T) int {
 }
 
 func TestAppInstallPreview_StagesAndPreviews(t *testing.T) {
+	t.Parallel()
 	e := newAppsEnv(t)
 	rr := e.preview(t)
 	if rr.Code != http.StatusOK {
@@ -174,8 +175,13 @@ func TestAppInstallPreview_StagesAndPreviews(t *testing.T) {
 	if p.ReviewedByPad || !strings.Contains(p.Notice, "Not reviewed by Pad") {
 		t.Errorf("not-reviewed notice missing: %+v", p.Notice)
 	}
-	if p.Origin != e.origin() || p.ServiceAccess != "write" || p.DelegatedAccess != "read" || p.DeferredNotice == "" {
+	if p.Origin != e.origin() || p.ServiceAccess != "write" || p.DelegatedAccess != "read" {
 		t.Errorf("preview header: %+v", p)
+	}
+	// Events and item actions are live, so the consent screen no longer
+	// says they will activate later (TASK-3980 item 2).
+	if strings.Contains(rr.Body.String(), "deferred_notice") {
+		t.Errorf("preview still carries deferred_notice: %s", rr.Body.String())
 	}
 	if len(p.Collections) != 1 || p.Collections[0].Adopt {
 		t.Errorf("collections: %+v", p.Collections)

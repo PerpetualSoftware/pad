@@ -191,7 +191,6 @@
 					<li class="hint">None.</li>
 				{/if}
 			</ul>
-			{#if preview.deferred_notice}<p class="hint">{preview.deferred_notice}</p>{/if}
 
 			<h4>Playbooks and conventions it adds ({preview.artifacts.length})</h4>
 			<p class="hint">Each lands as a draft. Nothing runs until you activate it.</p>

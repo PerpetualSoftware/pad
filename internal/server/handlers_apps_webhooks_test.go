@@ -112,6 +112,27 @@ func TestAppWebhook_HeldUntilRedeem(t *testing.T) {
 	}
 }
 
+// TestAppWebhook_PausedWhileDisabled: Disable stops delivery (app_delivery
+// sends only for an active install), so the owner's view must say paused,
+// not active, and Enable must bring active back (TASK-3980 item 4).
+func TestAppWebhook_PausedWhileDisabled(t *testing.T) {
+	t.Parallel()
+	u := newUpgradeEnv(t)
+	u.issueAndRedeem(t)
+	if got := u.getInstall(t); got.Webhook == nil || got.Webhook.Status != "active" {
+		t.Fatalf("before disable: %+v", got.Webhook)
+	}
+	for _, step := range []struct{ verb, want string }{{"disable", "paused"}, {"enable", "active"}} {
+		rr := doRequestWithCookie(u.srv, "POST", "/api/v1/workspaces/"+u.ws+"/apps/"+u.installID+"/"+step.verb, nil, u.token)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", step.verb, rr.Code, rr.Body.String())
+		}
+		if got := u.getInstall(t); got.Webhook == nil || got.Webhook.Status != step.want {
+			t.Fatalf("after %s: %+v, want status %q", step.verb, got.Webhook, step.want)
+		}
+	}
+}
+
 func TestAppWebhook_NoEventsNoHook(t *testing.T) {
 	e := newProvisionEnv(t)
 	m := e.manifest(t)
