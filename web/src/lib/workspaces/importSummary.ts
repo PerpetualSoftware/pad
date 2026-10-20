@@ -46,8 +46,10 @@ export function describeImportSummary(summary: ImportSummary): ImportSummaryText
 // TASK-3842: the unique values an import dropped (BUG-3825), one line each in
 // the CLI's `  dropped: <item>: <key> "<value>" is taken by <holder>` shape.
 // The toast renders line breaks, so a server-supplied string must not carry
-// one: the value is quoted as the CLI's %q quotes it, and a control character
-// anywhere else is escaped.
+// one: the value is JSON-quoted (JSON.stringify escapes every control
+// character), and a control character anywhere else is escaped. JSON quoting
+// matches the CLI's %q for ASCII but not always beyond it: %q escapes
+// non-printable runes such as U+2028, which JSON.stringify leaves as-is.
 
 /** Lines shown before the rest are counted as "and N more". */
 export const DROP_LINES_SHOWN = 10;
