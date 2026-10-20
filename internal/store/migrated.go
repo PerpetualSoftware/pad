@@ -90,7 +90,7 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 // also contains `*_new` rebuild temporaries that are not tables in the end
 // state.
 //
-// The four groups deliberately left OUT, with reasons, so a reader can tell a
+// The five groups deliberately left OUT, with reasons, so a reader can tell a
 // table nobody considered from one that was considered and excluded. The
 // tables themselves are listed in migratedExcludedTables, which also carries
 // BUG-3958's bookkeeping rows; the lists here are examples:
@@ -119,8 +119,10 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 //     after the operator signs in again; the queue is delivery state, not a
 //     person's data: a lost row is one push not sent. (Its dispatcher and
 //     7-day sweep land with TASK-3939; until then nothing reads or deletes
-//     it.) user_notification_settings
-//     is the exception: a person's choices are state, so it is refused below.
+//     it.) Both are excluded as "push-delivery" in migratedExcludedTables,
+//     which TestMigratedEveryLiveTableIsClassified holds complete.
+//     user_notification_settings is the exception: a person's choices are
+//     state, so it is refused below.
 //   - The marker table itself, which the migration writes.
 //
 // Group 3 below — workspace user state the BUNDLE does not carry — is in on a
