@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -106,6 +107,12 @@ func boolSettingValid(settingsJSON, key string) bool {
 	return false
 }
 
+// ErrSettingsNotObject is wrapped by SetTracksWork and SetAwaitsHuman when the
+// settings they merge into do not parse as a JSON object, so a handler can
+// answer the caller 400 instead of 500 (BUG-3976). A full settings write
+// replaces such a row; a typed member alone does not rewrite the rest.
+var ErrSettingsNotObject = errors.New("the collection's settings are not a JSON object")
+
 // setBoolSetting returns settingsJSON with key set to v and every other key
 // unchanged.
 func setBoolSetting(settingsJSON, key string, v bool) (string, error) {
@@ -115,7 +122,7 @@ func setBoolSetting(settingsJSON, key string, v bool) (string, error) {
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
-		return "", errors.New("the collection's settings are not a JSON object; " + key + " cannot be set")
+		return "", fmt.Errorf("%w; %s cannot be set", ErrSettingsNotObject, key)
 	}
 	if v {
 		m[key] = json.RawMessage("true")
