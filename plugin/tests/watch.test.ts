@@ -3,6 +3,8 @@ import { expect, mock, test } from 'claude-code/testing'
 // TASK-3513: live item events start from the mod, only for a session that has
 // consented (PLAN-2613's `pad session should-arm`), and an unarmed session runs
 // nothing and shows nothing. These tests stand in for the CLI and the stream.
+// TASK-3970: none of it runs at session start; the session's first use of Pad
+// (a pad command, a Pad MCP tool, the pane) starts it.
 
 type Opts = { armed?: boolean; noCli?: boolean; chunks?: { stream: string; text: string }[]; gate?: Promise<void>; holdSubmit?: boolean }
 
@@ -12,6 +14,11 @@ function stubs(on: any, opts: Opts = {}) {
   const submitted: string[] = []
   const shown: string[] = []
   const stream = { closed: false, release: () => {} }
+  const atCall: string[][] = [] // the CLI calls already made when each tool call ran
+  on('tool.call', () => {
+    atCall.push(runs.map((r) => r.argv.join(' ')))
+    return { result: { stdout: '', stderr: '' }, text: '' }
+  })
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
   on('session.end', () => ({ sessionId: 's1' }))
   on('command.register', () => ({ value: undefined }))
@@ -51,15 +58,82 @@ function stubs(on: any, opts: Opts = {}) {
     if (!opts.holdSubmit) return { text: e.text }
     return new Promise((r) => { held.release = () => r({ text: e.text }) })
   })
-  return { runs, spawns, submitted, shown, stream, held }
+  return { runs, spawns, submitted, shown, stream, held, atCall }
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 30))
 
-test('an unarmed session registers its presence and starts and shows nothing', async ($, on) => {
+// The session's first use of Pad: a pad command through Bash.
+const usePad = ($: any, command = 'pad bootstrap --format json') => $.tool.call({ tool: 'Bash', command })
+
+test('session start runs nothing: no process, no stream, no timer (TASK-3970)', async ($, on) => {
+  // No mock.clock here: the test's own clock hooks record every timer asked for.
+  const timers: string[] = []
+  on('clock.every', ($: any, e: any) => { timers.push('every ' + e.ms); return new Promise(() => {}) })
+  on('clock.after', ($: any, e: any) => { timers.push('after ' + e.ms); return new Promise(() => {}) })
+  const s = stubs(on, { armed: true })
+  await $.session.start({ cwd: '/work/demo' })
+  await settle()
+  expect(s.runs).toEqual([])
+  expect(s.spawns).toEqual([])
+  expect(timers).toEqual([])
+  expect(s.shown).toEqual([])
+})
+
+test('a Bash command that is not pad wakes nothing', async ($, on) => {
+  mock.clock(on)
+  const s = stubs(on, { armed: true })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($, 'ls -la && git status')
+  await usePad($, 'cat ~/.padrc; echo spad')
+  await settle()
+  expect(s.runs).toEqual([])
+  expect(s.spawns).toEqual([])
+})
+
+test('the first pad use wakes the session once; later ones run nothing more', async ($, on) => {
   mock.clock(on)
   const s = stubs(on, { armed: false })
   await $.session.start({ cwd: '/work/demo' })
+  await usePad($, 'cd /work/demo && pad item list tasks')
+  await settle()
+  await usePad($, '~/.local/bin/pad project next')
+  await settle()
+  const pad = s.runs.filter((r) => r.argv[0] === 'pad').map((r) => r.argv.join(' '))
+  expect(pad).toEqual(['pad session register', 'pad session should-arm'])
+})
+
+test('presence is recorded before the first pad command runs: its worker id rides on that call', async ($, on) => {
+  mock.clock(on)
+  let release = () => {}
+  const gate = new Promise<void>((r) => { release = r })
+  const s = stubs(on, { armed: false, gate })
+  await $.session.start({ cwd: '/work/demo' })
+  const call = usePad($, 'pad item claim TASK-5')
+  await settle()
+  // The call ran after register, and while should-arm was still held open by
+  // the gate: it waits for presence, never for the arm check.
+  expect(s.atCall.length).toBe(1)
+  expect(s.atCall[0]).toContain('pad session register')
+  release()
+  await call
+})
+
+test('a Pad MCP tool call wakes the session too', async ($, on) => {
+  mock.clock(on)
+  const s = stubs(on, { armed: true })
+  await $.session.start({ cwd: '/work/demo' })
+  await $.tool.call({ tool: 'mcp__pad__pad_item', action: 'list' } as any)
+  await settle()
+  expect(s.runs.map((r) => r.argv.join(' '))).toContain('pad session should-arm')
+  expect(s.spawns.length).toBe(1)
+})
+
+test('an unarmed session, once it uses pad, registers its presence and starts and shows nothing', async ($, on) => {
+  mock.clock(on)
+  const s = stubs(on, { armed: false })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
   await settle()
   expect(s.runs.map((r) => r.argv.join(' '))).toContain('pad session register')
   expect(s.runs.map((r) => r.argv.join(' '))).toContain('pad session should-arm')
@@ -72,6 +146,7 @@ test('without the pad CLI nothing starts and nothing shows', async ($, on) => {
   mock.clock(on)
   const s = stubs(on, { noCli: true })
   await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
   await settle()
   expect(s.spawns).toEqual([])
   expect(s.shown).toEqual([])
@@ -81,6 +156,7 @@ test('the CLI calls name the harness session, which Claude Code does not export 
   mock.clock(on)
   const s = stubs(on, { armed: true })
   await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
   await settle()
   const pad = s.runs.filter((r) => r.argv[0] === 'pad')
   expect(pad.length).toBe(2)
@@ -99,6 +175,7 @@ test('an armed session starts the gated wrapper and relays its lines, one messag
     ],
   })
   await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
   await settle()
   expect(s.spawns.length).toBe(1)
   expect(s.spawns[0].argv[0]).toMatch(/\/scripts\/pad-monitor\.sh$/)
@@ -113,6 +190,7 @@ test('the stream survives /clear and /resume', async ($, on) => {
   const clock = mock.clock(on)
   const s = stubs(on, { armed: true })
   await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
   await settle()
   await $.session.end({ reason: 'clear' })
   await $.session.end({ reason: 'resume' })
@@ -128,6 +206,7 @@ test('any other end stops the stream: nothing after it is relayed', async ($, on
   const clock = mock.clock(on)
   const s = stubs(on, { armed: true })
   await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
   await settle()
   await $.session.end({ reason: 'prompt_input_exit' })
   s.stream.release()
@@ -144,6 +223,7 @@ test('a session that ends while the CLI is still answering starts nothing', asyn
   const gate = new Promise<void>((r) => { release = r })
   const s = stubs(on, { armed: true, gate })
   await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
   await $.session.end({ reason: 'prompt_input_exit' })
   release()
   await settle()
@@ -154,6 +234,7 @@ test('lines read after the session ended are not relayed by a flush already wait
   const clock = mock.clock(on)
   const s = stubs(on, { armed: true, holdSubmit: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
   await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
   await settle()
   await clock.advance(1500)
   await settle()
@@ -171,6 +252,7 @@ test('a line arriving mid-burst joins it: the burst ends after quiet, not after 
   const clock = mock.clock(on)
   const s = stubs(on, { armed: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
   await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
   await settle()
   await clock.advance(1000)
   s.stream.release() // 'late line', 1s into the burst

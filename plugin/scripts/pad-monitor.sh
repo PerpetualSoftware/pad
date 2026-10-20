@@ -2,8 +2,9 @@
 # pad-monitor.sh — the gated push/watch stream wrapper (PLAN-2613 S3).
 #
 # Two callers run THIS script: the plugin mod (plugin/hooks/register.js),
-# which starts it at session start only when `pad session should-arm`
-# already said yes (TASK-3513: an unarmed session runs and shows nothing),
+# which starts it on the session's first use of Pad (TASK-3970: never at
+# session start) only when `pad session should-arm` already said yes
+# (TASK-3513: an unarmed session runs and shows nothing),
 # and the on-skill-invoke:connect monitor, the explicit /pad:connect path
 # and the path where mods do not load. It is the mechanism behind D1's rule
 # — "no consent → no monitor process, no stream, nothing listening":

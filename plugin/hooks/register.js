@@ -1028,6 +1028,12 @@ function draw($, e) {
 // no notice. /pad:connect keeps its own on-skill-invoke monitor, which is also
 // the path where mods do not load; pad-monitor.sh's lockfile keeps the two from
 // streaming twice in one session.
+//
+// Nothing of this runs at session start (TASK-3970): a session that never
+// touches Pad never runs the CLI, never opens a socket and never starts a
+// timer. Presence and the arm check run on the session's first use of Pad
+// instead (wake): the first `pad` command or Pad MCP tool call, or opening the
+// pane. A .pad.toml push.auto_arm opt-in is therefore read then, not at start.
 
 const WATCH_BURST_MS = 1500 // a burst ends after this much quiet, and goes to Claude as one message
 const WATCH_BURST_MAX_MS = 10000 // a stream that never goes quiet still flushes this often
@@ -1076,8 +1082,29 @@ async function flushWatch($) {
   }
 }
 
+let woken = null // wake's promise for this session (reset by an end that stops the stream)
+
+// The session's first use of Pad: presence, then the arm check (startWatch).
+// Once per session, so later pad commands run nothing extra. Resolves once
+// presence is recorded, not when the arm check answers: `pad session register`
+// mints the worker id the CLI sends on every call (leases key on it), so the
+// tool.call hook waits for it before the first pad command runs.
+function wake($) {
+  if (woken) return woken
+  let registered = () => {}
+  woken = new Promise((r) => { registered = r })
+  startWatch($, registered).catch(() => {}).finally(registered)
+  return woken
+}
+
+// A Bash command that runs the pad CLI, or a call of a Pad MCP tool.
+function usesPad(e) {
+  if (e.tool === 'Bash') return /(^|[\s;&|(`$/])pad(\s|$)/.test(String(e.command || ''))
+  return /^mcp__.*pad.*__pad_/i.test(String(e.tool || ''))
+}
+
 // Silent by construction: every failure here leaves the session as it was.
-async function startWatch($) {
+async function startWatch($, registered = () => {}) {
   if (watch) return
   const epoch = watchEpoch
   const pid = await sessionPid($)
@@ -1085,6 +1112,7 @@ async function startWatch($) {
   // Presence is a fact about the session, kept whether or not it consents
   // (TASK-2767): `pad session list` reads it back.
   try { await $.process.run(['pad', 'session', 'register'], { env, timeoutMs: 10000 }) } catch {}
+  registered()
   let armed = false
   try {
     armed = (await $.process.run(['pad', 'session', 'should-arm'], { env, timeoutMs: 10000 })).exitCode === 0
@@ -1130,6 +1158,7 @@ async function startWatch($) {
 }
 
 function stopWatch() {
+  woken = null
   watchEpoch++
   const it = watch
   watch = null
@@ -1141,6 +1170,23 @@ function stopWatch() {
   if (it) {
     try { it.return() } catch {}
   }
+}
+
+// The pane's auto-refresh. It runs only while the pane is open (TASK-3970):
+// a closed pane leaves no timer behind.
+let refresh = null
+
+function startRefresh($) {
+  if (refresh) return
+  refresh = $.clock.every(5000, () => {
+    if (!open || !settings.refreshSec || busy || mode || view === 'find' || view === 'settings') return
+    if (!loadedAt || Date.now() - Date.parse(loadedAt) >= settings.refreshSec * 1000) load($)
+  })
+}
+
+function stopRefresh() {
+  if (refresh) refresh.cancel()
+  refresh = null
 }
 
 // ---------------------------------------------------------------- hooks
@@ -1156,15 +1202,12 @@ export function register(on) {
       const panes = await $.ui.panes()
       if (panes.some((p) => p.id === PANE)) {
         open = true
+        startRefresh($)
         load($)
+        wake($)
       }
     } catch {}
-    $.clock.every(5000, () => {
-      if (!open || !settings.refreshSec || busy || mode || view === 'find' || view === 'settings') return
-      if (!loadedAt || Date.now() - Date.parse(loadedAt) >= settings.refreshSec * 1000) load($)
-    })
-    // Not awaited: the first prompt never waits on the CLI.
-    startWatch($).catch(() => {})
+    // Nothing else (TASK-3970): no CLI, no stream, no timer. See wake.
     return next(e)
   })
 
@@ -1180,6 +1223,7 @@ export function register(on) {
     if (open) {
       await $.ui.close({ id: PANE })
       open = false
+      stopRefresh()
       return {}
     }
     view = settings.startView
@@ -1190,7 +1234,9 @@ export function register(on) {
     // The command runs while its own text is still in the prompt, and a pane only
     // takes the keys from an empty prompt: ask again once the prompt has cleared.
     $.clock.after(150, () => { if (open) $.ui.open(OPEN_ARGS) })
+    startRefresh($)
     load($)
+    wake($)
     return {}
   })
 
@@ -1206,6 +1252,7 @@ export function register(on) {
       return { value: undefined }
     }
     open = false
+    stopRefresh()
     return next(e)
   })
 
@@ -1250,6 +1297,10 @@ export function register(on) {
 
   // Keep an open pane fresh when Claude changes Pad, through the CLI or MCP.
   on('tool.call', async ($, e, next) => {
+    // The first pad command runs after presence is recorded (see wake).
+    if (usesPad(e)) {
+      try { await wake($) } catch {}
+    }
     const result = await next(e)
     // Never let the pane's refresh disturb the tool call it watched.
     try {

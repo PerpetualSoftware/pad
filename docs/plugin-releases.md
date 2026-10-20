@@ -33,3 +33,15 @@ Once the pin lands, an install from the marketplace is on the last stable releas
 - **Every session:** export `CLAUDE_CODE_PLUGIN_DIRS=/path/to/pad/plugin` in your shell profile. It is `--plugin-dir`'s environment form: the plugin loads in place as `pad@inline` and takes precedence over the installed `pad@pad`. Unset it to return to the stable install.
 
 Adding your checkout as a local marketplace does **not** track your working tree: that checkout's own `marketplace.json` is pinned too, so it installs the tag.
+
+## Installs stuck on 0.3.x
+
+Before BUG-3463, the plugin's manifest pinned `version: 0.3.3`. An install made then is recorded at that version string, and auto-update has been seen to leave it there after the pin was dropped. On 2026-10-19, one machine was still on 0.3.3, installed 2026-09-01, so every session started its old always-on monitor and opened with `Monitor "Pad item events…" ended without producing output` (TASK-3970). One command moves it forward:
+
+```bash
+claude plugin update pad@pad
+```
+
+`claude plugin list` shows the installed version. A version that is a commit (`d8dedc09b904-…`) follows the marketplace pin; `0.3.3` does not. We have not yet found a way to move such an install from the marketplace side.
+
+Since TASK-3970 the plugin does nothing at session start: no CLI call, no monitor, no timer. Presence registration and the arm check run on the session's first use of Pad (a `pad` command, a Pad MCP tool, or opening the pane).

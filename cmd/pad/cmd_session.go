@@ -104,8 +104,8 @@ var errNotArmed = fmt.Errorf("not armed")
 
 // sessionRegisterCmd records the CURRENT session in the local session
 // registry (~/.pad/sessions/<session_pid>.json — see
-// internal/cli/session_registry.go). The plugin monitor runs it on start;
-// other harnesses call it from their own session-start hook.
+// internal/cli/session_registry.go). The plugin runs it on the session's
+// first use of Pad (TASK-3970); other harnesses call it from their own hook.
 func sessionRegisterCmd() *cobra.Command {
 	var agent string
 	cmd := &cobra.Command{
