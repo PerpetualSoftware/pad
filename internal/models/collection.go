@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -278,7 +279,7 @@ func (c *CollectionCreate) UnmarshalJSON(data []byte) error {
 	if settingsStr, err := flexJSONToString(aux.Settings, '{', ErrInvalidSettingsType); err != nil {
 		return err
 	} else if settingsStr != nil {
-		c.Settings = *settingsStr
+		c.Settings = *settingsSentinel(settingsStr)
 	}
 
 	// `traits` gets the same both-shapes treatment as `settings`: the field
@@ -291,6 +292,18 @@ func (c *CollectionCreate) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// settingsSentinel maps a whitespace-only settings string to the "" sentinel.
+// flexJSONToString passes such a string through untrimmed, and the store
+// would refuse it as not an object; a client that sends it means "" (BUG-3985).
+// Settings only: the helper's other fields are BUG-3992.
+func settingsSentinel(s *string) *string {
+	if s != nil && *s != "" && strings.TrimSpace(*s) == "" {
+		empty := ""
+		return &empty
+	}
+	return s
 }
 
 // UnmarshalJSON for CollectionUpdate accepts `settings` either as the
@@ -317,7 +330,7 @@ func (u *CollectionUpdate) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
-	u.Settings = settingsStr
+	u.Settings = settingsSentinel(settingsStr)
 
 	// Absent `traits` stays nil, which UpdateCollection reads as "leave the
 	// declarations alone" — the case for every client that predates traits.

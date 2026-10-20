@@ -1,38 +1,68 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// BUG-3985: the HTTP decoder lets a whitespace-only settings string through
-// (flexJSONToString keeps an empty inner string as the "" sentinel, and it
-// trims before that test but passes the untrimmed value on). The store doors
-// now refuse it, so neither create nor update stores it.
-func TestBUG3985_WhitespaceSettingsRefusedOverHTTP(t *testing.T) {
+// BUG-3985: flexJSONToString passes a whitespace-only settings string through
+// untrimmed. A PATCH with one used to store it verbatim (not JSON). The
+// collection decoders now read it as the "" sentinel, so create and update
+// answer exactly as "" does.
+
+// storedObject decodes stored settings, failing if they are not an object.
+func storedObject(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
+		t.Fatalf("stored settings %q are not a JSON object", raw)
+	}
+	return m
+}
+
+// The "" sentinel on PATCH replaces the settings with {} and carries the
+// typed members (PLAN-3535, IDEA-3906). Whitespace-only settings must do the
+// same.
+func TestBUG3985_WhitespaceSettingsOnPatchActAsEmpty(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newBUG3976Fixture(t, d)
-		c := f.corruptCollection("Things", `{"layout":"balanced"}`)
-		before := f.storedSettings(c.ID)
+		const seed = `{"layout":"balanced","tracks_work":true,"awaits_human":true}`
+		want := map[string]any{"tracks_work": true, "awaits_human": true}
 
-		for _, raw := range []string{" ", "\t\n "} {
-			rr := f.do("POST", f.base, f.ownerTok, map[string]any{"name": "Ws", "settings": raw})
-			if code, msg := errorEnvelope(t, rr.Body.Bytes()); rr.Code != http.StatusBadRequest || code != "validation_error" || msg != models.ErrSettingsNotObject.Error() {
-				t.Errorf("create, settings %q: got %d %s", raw, rr.Code, rr.Body.String())
+		for i, raw := range []string{"", " ", "\t\n "} {
+			c := f.corruptCollection("Things "+string(rune('a'+i)), seed)
+			rr := f.do("PATCH", f.base+"/"+c.Slug, f.ownerTok, map[string]any{"settings": raw})
+			if rr.Code != http.StatusOK {
+				t.Errorf("PATCH settings %q: got %d %s, want 200", raw, rr.Code, rr.Body.String())
+				continue
 			}
-			if got, _ := f.srv.store.GetCollectionBySlug(f.wsID, "ws"); got != nil {
-				t.Errorf("create, settings %q: a collection was created", raw)
+			if got := storedObject(t, f.storedSettings(c.ID)); !reflect.DeepEqual(got, want) {
+				t.Errorf("PATCH settings %q: stored %v, want %v", raw, got, want)
 			}
+		}
+	})
+}
 
-			rr = f.do("PATCH", f.base+"/"+c.Slug, f.ownerTok, map[string]any{"settings": raw})
-			if code, msg := errorEnvelope(t, rr.Body.Bytes()); rr.Code != http.StatusBadRequest || code != "validation_error" || msg != models.ErrSettingsNotObject.Error() {
-				t.Errorf("update, settings %q: got %d %s", raw, rr.Code, rr.Body.String())
+// Create keeps its repair: whitespace-only settings land as an object.
+func TestBUG3985_WhitespaceSettingsOnCreateActAsEmpty(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, d store.DriverType) {
+		f := newBUG3976Fixture(t, d)
+		for i, raw := range []string{"", " ", "\t\n "} {
+			name := "Ws " + string(rune('a'+i))
+			rr := f.do("POST", f.base, f.ownerTok, map[string]any{"name": name, "settings": raw})
+			if rr.Code != http.StatusCreated {
+				t.Errorf("create, settings %q: got %d %s, want 201", raw, rr.Code, rr.Body.String())
+				continue
 			}
-			if got := f.storedSettings(c.ID); got != before {
-				t.Errorf("update, settings %q: stored settings changed to %q, was %q", raw, got, before)
+			var c models.Collection
+			parseJSON(t, rr, &c)
+			if got := storedObject(t, f.storedSettings(c.ID)); !reflect.DeepEqual(got, map[string]any{"tracks_work": false}) {
+				t.Errorf("create, settings %q: stored %v, want only the tracks_work default", raw, got)
 			}
 		}
 	})
