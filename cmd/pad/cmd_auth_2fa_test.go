@@ -408,6 +408,39 @@ func TestTASK403_DisableAgainstAnOlderServerAsksForThePassword(t *testing.T) {
 	}
 }
 
+// BUG-3882: a disable answered 200 with no replacement token has still
+// revoked this CLI's session, so it fails rather than exiting 0 signed out.
+func TestBUG3882_DisableFailsWhenTheServerSendsNoNewSession(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "u1", "totp_enabled": true, "password_set": true})
+		case "/api/v1/auth/2fa/disable":
+			_ = json.NewEncoder(w).Encode(map[string]any{"enabled": false})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+	c := cli.NewClientFromURL(ts.URL)
+	c.SetAuthToken("padsess_old")
+	var out bytes.Buffer
+	err := runTwoFactorDisable(c, bufio.NewReader(strings.NewReader("pw\n")), &out, func(string) error {
+		t.Fatal("saveToken called with no token to save")
+		return nil
+	})
+	if err == nil {
+		t.Fatalf("disable returned nil with no new session, so the command exits 0 signed out:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "pad auth login") {
+		t.Fatalf("err = %v, want a pointer at 'pad auth login'", err)
+	}
+	if !strings.Contains(out.String(), "2FA is off") {
+		t.Fatalf("the disable did not reach the server's reply, so this is not the no-token branch:\n%s", out.String())
+	}
+}
+
 func ioPipe() (*io.PipeReader, *io.PipeWriter) { return io.Pipe() }
 
 // codeTypingWriter stands in for the user at setup's prompt: each time the
