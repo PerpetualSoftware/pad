@@ -1440,6 +1440,10 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err != nil {
 			return nil, fmt.Errorf("import comment: %w", err)
 		}
+		// No comment_mentions rows for imported comments (TASK-3917 lead
+		// ruling bb0c9fc6): history would stay open for good, and a bundle's
+		// @handles name SOURCE-instance users that could bind to a different
+		// local user. Matches needsOthersComment (needs_snooze.go, #2231 r1).
 	}
 
 	// Import item links

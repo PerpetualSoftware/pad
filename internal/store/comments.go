@@ -164,6 +164,9 @@ func (s *Store) createCommentTx(tx *sql.Tx, workspaceID, itemID, userID string, 
 	if err != nil {
 		return "", fmt.Errorf("insert comment: %w", err)
 	}
+	if err := s.reindexCommentMentionsTx(tx, id, workspaceID, itemID, input.Body, true, ts); err != nil {
+		return "", err
+	}
 
 	// The choke point (SPEC-3 / TASK-2658): comment.created commits with the
 	// comment it describes. Read back in-tx so the payload is the stored row
@@ -197,15 +200,15 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	}
 	defer tx.Rollback()
 
-	var workspaceID, bodyBefore string
-	var deleted int
-	lockQ := `SELECT workspace_id, body, CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM comments WHERE id = ?`
+	var workspaceID, itemIDOfComment, bodyBefore string
+	var deleted, importedComment int
+	lockQ := `SELECT workspace_id, item_id, body, CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, imported FROM comments WHERE id = ?`
 	if s.dialect.Driver() == DriverPostgres {
 		// A tombstoning delete holds this row FOR UPDATE; waiting on it
 		// here means the check below sees the tombstone it commits.
 		lockQ += ` FOR NO KEY UPDATE`
 	}
-	if err := tx.QueryRow(s.q(lockQ), id).Scan(&workspaceID, &bodyBefore, &deleted); err != nil {
+	if err := tx.QueryRow(s.q(lockQ), id).Scan(&workspaceID, &itemIDOfComment, &bodyBefore, &deleted, &importedComment); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
 		}
@@ -226,6 +229,15 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return nil, sql.ErrNoRows
+	}
+	// An imported comment is never indexed, edited or not: the reindex
+	// covers the whole body, so its unedited source-instance @handles would
+	// bind to local users (TASK-3917 lead ruling bb0c9fc6).
+	// Accepted cost (TASK-3917 lead ruling, day 20): a mention a local user ADDS while editing an imported comment is not indexed either.
+	if importedComment == 0 {
+		if err := s.reindexCommentMentionsTx(tx, id, workspaceID, itemIDOfComment, body, true, ts); err != nil {
+			return nil, err
+		}
 	}
 
 	// Two gates, and the second one is the real no-op gate.
@@ -516,6 +528,9 @@ func (s *Store) DeleteComment(id string) error {
 		}
 		if _, err := tx.Exec(s.q(`UPDATE comments SET body = '', deleted_at = ? WHERE id = ?`), now(), id); err != nil {
 			return fmt.Errorf("delete comment: tombstone: %w", err)
+		}
+		if err := s.reindexCommentMentionsTx(tx, id, target.workspaceID, target.itemID, "", false, ""); err != nil {
+			return err
 		}
 	} else {
 		if _, err := tx.Exec(s.q(`DELETE FROM comments WHERE id = ?`), id); err != nil {

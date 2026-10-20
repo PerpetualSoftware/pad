@@ -116,6 +116,9 @@ func (f *FencedTx) CreateComment(in FencedCommentCreate) (*models.Comment, error
 	); err != nil {
 		return nil, fmt.Errorf("fenced comment insert: %w", err)
 	}
+	if err := f.s.reindexCommentMentionsTx(f.tx, id, f.workspaceID, in.ItemID, in.Body, true, ts); err != nil {
+		return nil, err
+	}
 	created, err := f.s.getCommentQ(f.tx, id)
 	if err != nil {
 		return nil, err
@@ -134,24 +137,24 @@ func (f *FencedTx) CreateComment(in FencedCommentCreate) (*models.Comment, error
 // that item and was written by this install as this user. The item binding is
 // checked BEFORE authorship, so a comment on another item is "not found",
 // never "not yours".
-func (f *FencedTx) lockOwnComment(itemID, commentID string, actor FencedActor) (body string, deleted bool, err error) {
-	q := `SELECT body, COALESCE(user_id, ''), COALESCE(via_app, ''), CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END
+func (f *FencedTx) lockOwnComment(itemID, commentID string, actor FencedActor) (body string, deleted, imported bool, err error) {
+	q := `SELECT body, COALESCE(user_id, ''), COALESCE(via_app, ''), CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, imported
 		FROM comments WHERE id = ? AND item_id = ? AND workspace_id = ?`
 	if f.s.dialect.Driver() == DriverPostgres {
 		q += ` FOR NO KEY UPDATE`
 	}
 	var userID, viaApp string
-	var del int
-	switch err := f.tx.QueryRow(f.s.q(q), commentID, itemID, f.workspaceID).Scan(&body, &userID, &viaApp, &del); {
+	var del, imp int
+	switch err := f.tx.QueryRow(f.s.q(q), commentID, itemID, f.workspaceID).Scan(&body, &userID, &viaApp, &del, &imp); {
 	case errors.Is(err, sql.ErrNoRows):
-		return "", false, ErrAppCommentNotFound
+		return "", false, false, ErrAppCommentNotFound
 	case err != nil:
-		return "", false, fmt.Errorf("fenced comment: read: %w", err)
+		return "", false, false, fmt.Errorf("fenced comment: read: %w", err)
 	}
 	if userID != actor.UserID || viaApp != f.installID {
-		return "", false, ErrAppNotCommentAuthor
+		return "", false, false, ErrAppNotCommentAuthor
 	}
-	return body, del == 1, nil
+	return body, del == 1, imp == 1, nil
 }
 
 // UpdateComment replaces the body of a comment this install wrote as this
@@ -167,7 +170,7 @@ func (f *FencedTx) UpdateComment(itemID, commentID, body string, actor FencedAct
 	if _, err := f.requireCompanionItem(itemID); err != nil {
 		return nil, err
 	}
-	before, deleted, err := f.lockOwnComment(itemID, commentID, actor)
+	before, deleted, imported, err := f.lockOwnComment(itemID, commentID, actor)
 	if err != nil {
 		return nil, err
 	}
@@ -177,8 +180,21 @@ func (f *FencedTx) UpdateComment(itemID, commentID, body string, actor FencedAct
 	if err := f.checkItemAttachmentRefs(itemID, body); err != nil {
 		return nil, err
 	}
-	if _, err := f.tx.Exec(f.s.q(`UPDATE comments SET body = ?, updated_at = ? WHERE id = ?`), body, now(), commentID); err != nil {
+	editTS := now()
+	if _, err := f.tx.Exec(f.s.q(`UPDATE comments SET body = ?, updated_at = ? WHERE id = ?`), body, editTS, commentID); err != nil {
 		return nil, fmt.Errorf("fenced comment update: %w", err)
+	}
+	// Imported comments are never indexed (TASK-3917 lead ruling bb0c9fc6).
+	// This skip is unreachable today: lockOwnComment requires user_id and
+	// via_app to match the actor, and imported rows carry neither, so an
+	// imported comment never gets here (TASK-3917 r2 F6, no test by design).
+	// A change that gives imported rows a user_id or via_app reopens this path
+	// and owes it a test.
+	// Accepted cost (TASK-3917 lead ruling, day 20): a mention a local user ADDS while editing an imported comment is not indexed either.
+	if !imported {
+		if err := f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, body, true, editTS); err != nil {
+			return nil, err
+		}
 	}
 	updated, err := f.s.getCommentQ(f.tx, commentID)
 	if err != nil {
@@ -229,7 +245,7 @@ func (f *FencedTx) DeleteComment(itemID, commentID string, actor FencedActor) er
 	if target == nil || target.itemID != itemID || target.workspaceID != f.workspaceID {
 		return ErrAppCommentNotFound
 	}
-	if _, _, err := f.lockOwnComment(itemID, commentID, actor); err != nil {
+	if _, _, _, err := f.lockOwnComment(itemID, commentID, actor); err != nil {
 		return err
 	}
 	if target.deleted {
@@ -262,6 +278,9 @@ func (f *FencedTx) DeleteComment(itemID, commentID string, actor FencedActor) er
 		}
 		if _, err := f.tx.Exec(f.s.q(`UPDATE comments SET body = '', deleted_at = ? WHERE id = ?`), now(), commentID); err != nil {
 			return fmt.Errorf("fenced comment delete: tombstone: %w", err)
+		}
+		if err := f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, "", false, ""); err != nil {
+			return err
 		}
 	} else {
 		if _, err := f.tx.Exec(f.s.q(`DELETE FROM comments WHERE id = ?`), commentID); err != nil {
