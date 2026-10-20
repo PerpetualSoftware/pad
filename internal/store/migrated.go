@@ -83,27 +83,33 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 // ONE LIST, TWO CONSUMERS: the renderer below and the guard test that compares
 // it against the live schema. The INSTRUMENT that generated it is stated so a
 // reviewer can attack the instrument rather than the rows (CONVE-35): the
-// live schema's table list read from sqlite_master on a fresh store.New — 68
-// tables — partitioned by whether models.WorkspaceExport carries the table's
-// contents. The live schema rather than the migration text, because the latter
+// live schema's table list read from sqlite_master on a fresh store.New,
+// partitioned by whether models.WorkspaceExport carries the table's contents.
+// (It was 68 tables when written; BUG-3958's census measured 91. The count is
+// not pinned: TestMigratedEveryLiveTableIsClassified checks the partition.) The live schema rather than the migration text, because the latter
 // also contains `*_new` rebuild temporaries that are not tables in the end
 // state.
 //
 // The four groups deliberately left OUT, with reasons, so a reader can tell a
-// table nobody considered from one that was considered and excluded:
+// table nobody considered from one that was considered and excluded. The
+// tables themselves are listed in migratedExcludedTables, which also carries
+// BUG-3958's bookkeeping rows; the lists here are examples:
 //
 //   - DERIVED-FROM-CONTENT (status_transitions, item_wiki_links,
-//     item_relation_links, comment_mentions (TASK-3917), activities, event_outbox): written as a consequence
-//     of a protected write, which aborts first. A trigger here would only
-//     produce a second error for one act.
+//     item_relation_links, comment_mentions (TASK-3917), item_patches,
+//     member_collection_access): written as a consequence of a protected
+//     write, which aborts first. A trigger here would only produce a second
+//     error for one act. (activities used to be here; it is refused, see
+//     below. Two of these also have a startup backfill, noted in
+//     migratedExcludedTables.)
 //   - FTS SHADOW (items_fts*, comments_fts*, documents_fts*, 15 tables): FTS5
 //     internals, reached only behind a base-table write that has already
 //     aborted.
 //   - AUTH / PLATFORM / BOOKKEEPING (users, sessions, api_tokens, oauth_*,
 //     password_reset_tokens, email_verification_tokens, email_optouts,
 //     cli_auth_sessions, platform_settings, stripe_processed_events,
-//     mcp_audit_log, share_link_views, member_collection_access,
-//     schema_migrations): the command's own help says these are NOT migrated
+//     mcp_audit_log, share_link_views, event_outbox, schema_migrations): the
+//     command's own help says these are NOT migrated
 //     and the operator is told to run `pad auth setup` against the new
 //     database. Refusing them would claim a loss the migration never promised
 //     to prevent.
@@ -147,6 +153,29 @@ var migratedRefusalTables = []string{
 	// A person's needs-you dismissals and deferrals (TASK-3918), the same
 	// class as item_stars: per-user workspace state the bundle does not carry.
 	"item_needs_snoozes",
+	// A person's "mark caught up" cursor per workspace (TASK-3615 PR A),
+	// the same class: the bundle does not carry it (BUG-3958).
+	"workspace_read_cursors",
+	// One row per app installed in a workspace: consent, manifest, state and
+	// the uninstall tombstone, written directly by install, upgrade and
+	// disable. Found by BUG-3958's census.
+	"app_installs",
+	// The four below also ride protected writes, but each has a writer of
+	// its own that does not, so a write to the old file loses something
+	// (BUG-3958, lead-ruled):
+	// - the decision runner claims, completes and releases jobs alone;
+	"decision_jobs",
+	// - its answers are written by InsertItemDecisions alone;
+	"item_decisions",
+	// - EnsureAppItemActions rewrites the registry in its own transaction;
+	"app_item_actions",
+	// - adoptLegacyWorkspace writes origin keys without touching items.
+	"item_builtin_origin",
+	// The activity feed. It used to be excluded as derived, but CreateActivity
+	// writes on its own connection (activities.go:67), and the connected-apps
+	// handlers log OAuth connection changes, which are not refused
+	// (handlers_connected_apps.go:239, :287). BUG-3958 r1.
+	"activities",
 	"comment_reactions",
 	"views",
 	"agent_roles",
@@ -162,6 +191,104 @@ var migratedRefusalTables = []string{
 	"workspace_invitations",
 	"item_collection_moves",
 	"item_workspace_moves",
+}
+
+// migratedExcludedTables is every live table deliberately NOT refused, keyed to
+// the group (documented above migratedRefusalTables) that excludes it. With
+// migratedRefusalTables and isFTSShadowTable it partitions the live schema:
+// TestMigratedEveryLiveTableIsClassified fails on a table in neither, so a new
+// table is classified when it is added rather than found missing later
+// (BUG-3958: workspace_read_cursors and app_installs were never classified).
+var migratedExcludedTables = map[string]string{
+	// DERIVED-FROM-CONTENT: written only inside a protected table's write.
+	// Also written by BackfillStatusTransitions (status_transitions_backfill.go:192),
+	// which runs only at server start (cmd/pad/cmd_server.go:313). Same as above.
+	"status_transitions": "derived",
+	// Also written by BackfillWikiLinks (wiki_links_backfill.go:192), at
+	// server start only (cmd/pad/cmd_server.go:197). Same as below.
+	"item_wiki_links": "derived",
+	// Also written by BackfillRelationLinks (relation_links_backfill.go:279),
+	// at server start only (cmd/pad/cmd_server.go:217). And
+	// MigrateItemFieldValues reindexes it (collections.go:1028) even when no
+	// item matched its migration, so that write can run alone; it recomputes
+	// from unchanged item fields, so nothing is lost.
+	"item_relation_links": "derived",
+	// Also written by BackfillCommentMentions, via reindexCommentMentionsTx
+	// (comment_mentions_backfill.go:110 -> comment_mentions.go:133, :142),
+	// which runs only at server start (cmd/pad/cmd_server.go:232), after
+	// store.New, which refuses a migrated file (store.go:469). Recomputable.
+	"comment_mentions": "derived",
+	// Written only with an item update (updateItemWithParentLinkOnce) and
+	// deleted in the purge's transaction after protected deletes (BUG-3958).
+	"item_patches": "derived",
+	// Every writer first writes a refused table in the same transaction:
+	// setMemberCollectionAccessTx updates workspace_members
+	// (workspace_members.go:667), and UpgradeAppInstall updates app_installs
+	// (app_upgrade.go:206) before its access writes (:252, :310). It was
+	// listed as auth; BUG-3958 r1 corrected that.
+	"member_collection_access": "derived",
+
+	// AUTH / PLATFORM: not migrated; the operator re-runs auth setup.
+	"users":                       "auth",
+	"sessions":                    "auth",
+	"api_tokens":                  "auth",
+	"oauth_access_tokens":         "auth",
+	"oauth_authorization_codes":   "auth",
+	"oauth_clients":               "auth",
+	"oauth_connections":           "auth",
+	"oauth_connection_workspaces": "auth",
+	"oauth_pkce_requests":         "auth",
+	"oauth_refresh_tokens":        "auth",
+	"oauth_revoked_grants":        "auth",
+	"user_oauth_identities":       "auth",
+	"app_token_bindings":          "auth",
+	"password_reset_tokens":       "auth",
+	"email_verification_tokens":   "auth",
+	"email_optouts":               "auth",
+	"cli_auth_sessions":           "auth",
+	"platform_settings":           "platform",
+	"stripe_processed_events":     "platform",
+
+	// BOOKKEEPING: short-lived, lease or retry rows, or instance-local
+	// records, none of which a migration promises to carry (BUG-3958).
+	"schema_migrations":         "bookkeeping",
+	"mcp_audit_log":             "bookkeeping",
+	"share_link_views":          "bookkeeping",
+	"app_install_pending":       "bookkeeping",
+	"app_install_pending_blobs": "bookkeeping",
+	"app_install_codes":         "bookkeeping",
+	"app_context_codes":         "bookkeeping",
+	"app_delivery_inflight":     "bookkeeping",
+	"idempotency_keys":          "bookkeeping",
+	"webhook_deliveries":        "bookkeeping",
+	"workspace_import_status":   "bookkeeping",
+	// Dispatch state: rows are enqueued with protected writes, but they are
+	// marked, failed, pruned and scrubbed on their own (event_outbox.go:978,
+	// 1026, 1800, 1829, 1849). A lost mark means a re-delivery, not lost
+	// content. It was listed as derived; BUG-3958 r2 corrected that.
+	"event_outbox":    "bookkeeping",
+	"sqlite_sequence": "bookkeeping",
+
+	// The marker table, which the migration itself writes.
+	migratedMarkerTable: "marker",
+}
+
+// migratedFTSBases are the FTS5 tables. Each is external-content, so besides
+// the base it has four shadow tables: <base>_config, _data, _docsize and _idx. Named rather
+// than matched by suffix, so an ordinary table that happens to end in _fts_data
+// is still classified by hand (BUG-3958 r1).
+var migratedFTSBases = []string{"items_fts", "comments_fts", "documents_fts"}
+
+// isFTSShadowTable reports an FTS5 table or one of its shadow tables. They are
+// reached only behind a base-table write that has already aborted.
+func isFTSShadowTable(name string) bool {
+	for _, base := range migratedFTSBases {
+		switch name {
+		case base, base + "_config", base + "_data", base + "_docsize", base + "_idx":
+			return true
+		}
+	}
+	return false
 }
 
 // MigratedRefusalTables returns the population, sorted, for the guard test and
