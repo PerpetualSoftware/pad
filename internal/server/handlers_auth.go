@@ -364,9 +364,17 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 	if info.Kind == store.SessionKindCLI {
 		device = "cli"
 	}
+	// The replacement keeps the replaced session's own sliding window too
+	// (BUG-3978): a rotation changes no session's lifetime, so a 30-day CLI
+	// token stays 30 days and nothing is lengthened. A legacy row with no
+	// window falls back to the web TTL, as every rotation did before.
+	ttl := info.RenewTTL
+	if ttl <= 0 {
+		ttl = webSessionTTL
+	}
 	// Fenced on the epoch of the user the caller passes, which is the
 	// credential state this rotation follows (BUG-3382).
-	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, device, clientIP(r), r.UserAgent(), webSessionTTL, info.CreatedAt)
+	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, device, clientIP(r), r.UserAgent(), ttl, info.CreatedAt)
 	if errors.Is(err, store.ErrUserDisabled) {
 		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
 		return "", false
@@ -384,12 +392,14 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 		Name:     sessionCookieName(s.secureCookies),
 		Value:    token,
 		Path:     "/",
-		MaxAge:   int(webSessionTTL.Seconds()),
+		MaxAge:   int(ttl.Seconds()),
 		HttpOnly: true,
 		Secure:   s.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
-	setCSRFCookie(w, int(webSessionTTL.Seconds()), s.secureCookies)
+	// The cookies carry the session's window, as createAuthSession sets them:
+	// a 30-day web session (a bootstrap from /setup) keeps 30-day cookies.
+	setCSRFCookie(w, int(ttl.Seconds()), s.secureCookies)
 	return token, true
 }
 
