@@ -11,7 +11,7 @@ import (
 )
 
 // BUG-3976: a typed tracks_work / awaits_human member merges into the stored
-// settings, and stored settings that are not a JSON object (import, a hand
+// settings, and stored settings that are not a JSON object (a hand
 // edit, an old row) made that write answer 500. It now answers a typed 400,
 // changes nothing, and a full settings write still repairs the row.
 
@@ -41,7 +41,7 @@ func newBUG3976Fixture(t *testing.T, d store.DriverType) *bug3976Fixture {
 }
 
 // corruptCollection creates a collection and overwrites its stored settings
-// with raw, as an import or a hand edit would.
+// with raw, as a hand edit would (import repairs such values to {}).
 func (f *bug3976Fixture) corruptCollection(name, raw string) models.Collection {
 	f.t.Helper()
 	rr := f.do("POST", f.base, f.ownerTok, map[string]any{"name": name})

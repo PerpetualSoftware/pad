@@ -113,6 +113,22 @@ func boolSettingValid(settingsJSON, key string) bool {
 // replaces such a row; a typed member alone does not rewrite the rest.
 var ErrSettingsNotObject = errors.New("the collection's settings are not a JSON object")
 
+// CheckSettingsObject refuses a settings value that is not a JSON object,
+// wrapping ErrSettingsNotObject. "" is the empty sentinel the store writes as
+// "{}", so it passes. The HTTP decoder already refuses the rest (IDEA-1488);
+// this is the same rule at the store doors, for Go callers that never pass
+// through it (BUG-3985).
+func CheckSettingsObject(settingsJSON string) error {
+	if settingsJSON == "" {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(settingsJSON), &m); err != nil || m == nil {
+		return ErrSettingsNotObject
+	}
+	return nil
+}
+
 // setBoolSetting returns settingsJSON with key set to v and every other key
 // unchanged.
 func setBoolSetting(settingsJSON, key string, v bool) (string, error) {
