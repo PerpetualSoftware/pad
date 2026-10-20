@@ -34,7 +34,8 @@ vi.mock('$lib/api/client', () => ({ api, isPlanLimitError: () => false, planLimi
 vi.mock('$app/navigation', () => ({ goto }));
 const toastShow = vi.hoisted(() => vi.fn());
 vi.mock('$lib/stores/toast.svelte', () => ({
-	toastStore: { show: toastShow, dismiss: vi.fn(), get toasts() { return []; } }
+	toastStore: { show: toastShow, dismiss: vi.fn(), get toasts() { return []; } },
+	ERROR_DURATION: 8000
 }));
 
 import CreateWorkspaceModal from './CreateWorkspaceModal.svelte';
@@ -279,5 +280,32 @@ describe('BUG-3475: the import dialog shows where an import is', () => {
 		await settle();
 		expect(container.querySelector('[role="alert"]')).toBeNull();
 		expect(container.textContent).not.toContain('Nothing was kept');
+	});
+});
+
+describe('TASK-3842: the import says which unique values it dropped', () => {
+	async function importResolvingWith(body: unknown) {
+		api.workspaces.importBundle.mockResolvedValue(body);
+		const { container } = render(CreateWorkspaceModal, { props: {} });
+		await attachBundle(container);
+		btn(container, /^Import Workspace$/).click();
+		await vi.waitFor(() =>
+			expect(goto, `toasts: ${JSON.stringify(toastShow.mock.calls)}`).toHaveBeenCalledWith('/alice/imported')
+		);
+	}
+	const dropToasts = () => toastShow.mock.calls.filter((c) => String(c[0]).includes('dropped:'));
+
+	it("toasts each drop in the CLI's shape", async () => {
+		await importResolvingWith({
+			...WS,
+			dropped_unique_values: [{ item: 'TASK-4', key: 'email', value: 'a@x.io', holder: 'TASK-9' }]
+		});
+		expect(dropToasts()).toHaveLength(1);
+		expect(dropToasts()[0][0]).toContain('dropped: TASK-4: email "a@x.io" is taken by TASK-9');
+	});
+
+	it('a clean import shows no drop toast', async () => {
+		await importResolvingWith(WS);
+		expect(dropToasts()).toHaveLength(0);
 	});
 });

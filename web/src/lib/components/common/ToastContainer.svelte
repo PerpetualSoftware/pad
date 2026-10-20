@@ -176,6 +176,8 @@
 		flex: 1;
 		min-width: 0;
 		line-height: 1.4;
+		/* A multi-line message keeps its lines (TASK-3842's dropped values). */
+		white-space: pre-line;
 	}
 
 	.toast-action {

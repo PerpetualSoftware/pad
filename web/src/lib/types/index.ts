@@ -288,6 +288,18 @@ export interface ImportSummary {
 	imported: ImportCounts;
 }
 
+/** One unique value an import dropped because another item already held it
+ *  (BUG-3825). Sent on the import's 201 as `dropped_unique_values`. Mirrors
+ *  `models.ImportUniqueDrop`. */
+export interface ImportUniqueDrop {
+	/** The imported item that lost the value. */
+	item: string;
+	key: string;
+	value: string;
+	/** The item that holds it. */
+	holder: string;
+}
+
 export interface Workspace {
 	id: string;
 	name: string;
