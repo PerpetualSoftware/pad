@@ -91,7 +91,8 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, needsMaxLimit)
 	}
-	asOf := time.Now().UTC().Truncate(time.Second)
+	now := time.Now().UTC().Truncate(time.Second)
+	asOf := now
 	var after *needs.Key
 	if tok := q.Get("cursor"); tok != "" {
 		c, err := needs.DecodeCursor(tok, sortBy, view, wsSlug)
@@ -101,6 +102,9 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 		}
 		k := c.Key()
 		after, asOf = &k, c.At()
+		if asOf.After(now) {
+			asOf = now // a forged future marker is clamped, never trusted
+		}
 	}
 
 	admitted, err := s.needsAdmittedWorkspaces(r, user)
@@ -379,7 +383,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 				return nil, false, err
 			}
 			for _, d := range latest {
-				if d.QuestionKey != decision.AttentionNeedsHuman {
+				if d.QuestionKey != decision.AttentionNeedsHuman || !flaggedSet[d.ItemID] {
 					continue
 				}
 				if t, perr := time.Parse("2006-01-02T15:04:05.000000000Z", d.EvaluatedAt); perr == nil {
@@ -465,11 +469,13 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		for _, m := range mentions[it.ID] {
 			c.Mentions = append(c.Mentions, needs.Mention{UserID: m.UserID, CommentID: m.CommentID, By: m.By, At: m.At})
 		}
-		if t, ok := flaggedAt[it.ID]; ok {
-			c.NeedsHuman = &t
-		} else if flaggedSet[it.ID] {
-			t := it.UpdatedAt
-			c.NeedsHuman = &t
+		if flaggedSet[it.ID] {
+			if t, ok := flaggedAt[it.ID]; ok {
+				c.NeedsHuman = &t
+			} else {
+				t := it.UpdatedAt
+				c.NeedsHuman = &t
+			}
 		}
 		rt, ok := needs.Resolve(c, owners, elig)
 		if elig.err != nil {

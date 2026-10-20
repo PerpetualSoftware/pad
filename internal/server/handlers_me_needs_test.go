@@ -915,3 +915,58 @@ func TestNeedsMe_MentionedRowIsPerCaller(t *testing.T) {
 		}
 	})
 }
+
+// A needs_human row that did not surface (below threshold) must not touch a
+// candidate that reached the list another way, even when the workspace has a
+// truly flagged item (which is what makes the decision rows get read at all).
+func TestNeedsMe_UnsurfacedNeedsHumanRowIgnored(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		attachAttentionRunner(t, srv)
+		f.item(ws, asks, "flagged HUMAN-HIGH", nil, nfxDay(0))
+		mine := f.item(ws, asks, "mine HUMAN-LOW", alice, nfxDay(1))
+		runDecisionTick(t, srv)
+
+		resp := f.need(alice, "")
+		wantTitles(t, "alice", resp.Rows, "mine HUMAN-LOW")
+		r := resp.Rows[0]
+		if r.NeedsHuman != nil {
+			t.Fatalf("an unsurfaced needs_human row set NeedsHuman: %+v", r.NeedsHuman)
+		}
+		for _, b := range r.Because {
+			if b.Kind == needs.BecauseNeedsHuman {
+				t.Fatalf("because carries needs_human: %+v", r.Because)
+			}
+		}
+		if !r.WaitingSince.Equal(mine.CreatedAt) && !r.WaitingSince.Equal(nfxDay(1)) {
+			t.Fatalf("WaitingSince %v, want its own claim time", r.WaitingSince)
+		}
+	})
+}
+
+// A forged as_of in the future is clamped to now: a defer still in force is
+// still hiding its item.
+func TestNeedsMe_ForgedFutureAsOfClamped(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		it := f.item(ws, asks, "deferred", alice, nfxDay(1))
+		f.item(ws, asks, "visible", alice, nfxDay(2))
+		if _, err := srv.store.SnoozeNeedsItem(alice.ID, ws.ID, it.ID, models.NeedsSnoozeDefer, time.Now().Add(72*time.Hour), nil); err != nil {
+			t.Fatal(err)
+		}
+		row := &needs.Row{ItemID: "x", WaitingSince: nfxDay(0), Item: needs.ItemInfo{CreatedAt: nfxDay(0)}}
+		tok := needs.NewCursor(needs.SortAge, "active", "", time.Now().Add(10*365*24*time.Hour), row).Encode()
+		resp := f.need(alice, "?cursor="+tok)
+		if resp.Hidden != 1 {
+			t.Fatalf("forged as_of un-hid a live defer: hidden %d rows %v", resp.Hidden, titles(resp.Rows))
+		}
+	})
+}
