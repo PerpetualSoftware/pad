@@ -41,18 +41,18 @@ Publish the manifest at:
 
 `base_url` must be a bare `https` origin: no path, query, fragment or credentials, and the default port is dropped. The normalized origin is the app's identity. The manifest you serve must name the same origin it was fetched from.
 
-Validation is strict. An unknown key anywhere in the manifest is refused rather than ignored, as is a misspelled key inside a collection schema. Pad reports the first failure with the JSON path that caused it (`422 invalid_manifest`, `details.path`).
+Validation is strict. An unknown key in the manifest, or inside a collection schema, is refused rather than ignored. (`config_schema` is free-form JSON and is not checked this way.) Pad reports the first failure with the JSON path that caused it (`422 invalid_manifest`, `details.path`).
 
 ### Field reference
 
 | Field | Required | Description |
 |---|---|---|
-| `id` | yes | `publisher/name`, lower case: letters, digits, `.`, `_`, `-`, each part up to 64 characters. |
+| `id` | yes | `publisher/name`. Each part is 1 to 64 characters of `a-z`, `0-9`, `.`, `_` and `-`, starting with a letter or digit. |
 | `version` | yes | A semantic version, e.g. `1.0.0`. |
 | `min_contract` | yes | `{"apps": 1, "events": 1}`. Each value must be between 1 and the contract this server speaks, which is 1. |
-| `title` | yes | The app's name. Up to 2000 characters. Also the bot's display name. |
-| `publisher` | yes | Who publishes the app. Up to 2000 characters. |
-| `description` | no | Up to 2000 characters. |
+| `title` | yes | The app's name. Up to 2000 bytes. Also the bot's display name. |
+| `publisher` | yes | Who publishes the app. Up to 2000 bytes. |
+| `description` | no | Up to 2000 bytes. |
 | `homepage` | no | An `https` URL on `base_url`'s origin. |
 | `base_url` | yes | The app's `https` origin. |
 | `redirect_uris` | yes | 1 to 16 `https` URLs on `base_url`'s origin. Used for the delegated sign-in. |
@@ -71,8 +71,8 @@ Every URL field (`homepage`, `redirect_uris`, `webhook_url`, `docs`, artifact `u
 | Field | Description |
 |---|---|
 | `key` | A lower-case key (`^[a-z][a-z0-9_-]{0,63}$`). `events` and `item_actions` refer to a collection by this key. |
-| `slug` | The collection's slug in the workspace (lower case, digits and `-`, at least 2 characters). Unique within the pack. Some slugs are reserved by Pad and refused. |
-| `name` | Display name, up to 200 characters. |
+| `slug` | The collection's slug in the workspace: 2 to 64 characters of `a-z`, `0-9` and `-`, not starting or ending with `-`. Unique within the pack. Some slugs are reserved by Pad and refused (`422 invalid_manifest`). |
+| `name` | Display name, up to 200 bytes. |
 | `schema` | A Pad collection schema, `{"fields": [...]}`. Required. |
 
 If the workspace already has a collection with that slug that the app did not create, the install is refused with `409 collection_conflict`. If it was created by an earlier install of the same origin that has since been uninstalled, it is adopted. If that install is still installed or disabled, the install is refused (`409 app_already_installed`).
@@ -86,7 +86,7 @@ item.created   item.updated   item.status_changed   item.deleted   item.restored
 comment.created   comment.updated   comment.deleted
 ```
 
-**`item_actions`**. Each entry is `{"key", "label", "collections", "path"}`. `label` is required and at most 80 characters. `collections` lists companion collection keys. `path` is an absolute path on your origin (starts with a single `/`, no scheme or host, no backslash or control character, up to 1024 characters).
+**`item_actions`**. Each entry is `{"key", "label", "collections", "path"}`. `label` is required and at most 80 bytes. `collections` lists companion collection keys. `path` is an absolute path on your origin (starts with a single `/`, no scheme or host, no backslash or control character, up to 1024 bytes).
 
 ### Minimal manifest
 
@@ -207,7 +207,7 @@ All owner routes are under `/api/v1/workspaces/{ws}/apps` and are owner-only. Th
 
    A staged preview expires (`expires_at`). `GET /apps/install/pending/{pendingID}` re-reads it and `DELETE` discards it. Preview failures include `502 manifest_fetch_failed`, `422 invalid_manifest`, `422 artifact_hash_mismatch`, `422 invalid_artifact`, `409 collection_conflict` and `429 pending_install_limit`.
 
-2. **Confirm.** `POST /apps/install/pending/{pendingID}/confirm` with `{"manifest_sha256": "<hash from the preview>"}`. Pad re-normalizes the staged bytes and compares them with what the owner reviewed; if the workspace changed in a way that alters the result, it refuses with `409 install_review_stale` and writes nothing. On success (`201`) it provisions everything in one transaction and answers:
+2. **Confirm.** `POST /apps/install/pending/{pendingID}/confirm` with `{"manifest_sha256": "<hash from the preview>"}`. A `manifest_sha256` that is not the staged manifest's is refused with `409 install_review_mismatch`. Pad then re-normalizes the staged bytes and compares them with what the owner reviewed; if the workspace changed in a way that alters the result, it refuses with `409 install_review_stale` and writes nothing. On success (`201`) it provisions everything in one transaction and answers:
 
    ```json
    {
@@ -242,7 +242,7 @@ All owner routes are under `/api/v1/workspaces/{ws}/apps` and are owner-only. Th
 - `webhook_secret` is present only when the manifest declares a webhook.
 - `workspace_id` is the `{ws}` in every workspace-scoped app route. The app API addresses a workspace by its ID, never its slug.
 - Every refusal (unknown, used, expired, install disabled) is the same `400 invalid_install_code`.
-- The route is rate limited per address and per install. Redeeming again with a new code replaces both secrets, so the old ones stop working.
+- The route is rate limited to 10 a minute per address and 5 a minute per install (`429`). Redeeming again with a new code replaces both secrets, so the old ones stop working.
 
 ### App side: get a token
 
@@ -313,7 +313,7 @@ Base: `https://<pad-origin>/api/app/v1`. Bodies and responses are JSON. Workspac
 - **Collections**: `{"collections": [...]}`. Each collection is `{slug, name, icon, is_system, schema: {fields: [{key, type, label, options?, required, default?}]}}`. Relation fields are left out of the schema.
 - **Items**: `{id, collection, title, content, fields, etag, created_at, updated_at, created_by_display, via_app}`. `fields` contains only the collection's declared non-relation keys. Pad does not expose slugs, refs, parents, assignees or other internals.
 - **Listing items**: `?limit=` (1 to 200, default 50) and `?offset=`; the answer is `{"items": [...], "has_more": bool, "next_offset": n}`.
-- **Comments**: `{"comments": [{id, item_id, body, author_display, author_kind, parent_comment_id, created_at, updated_at, edited, deleted}]}`. `author_kind` is `app` (an app's bot), `agent` or `user`.
+- **Comments**: `{"comments": [{id, item_id, body, author_display, author_kind, parent_comment_id, created_at, updated_at, edited, deleted}]}`. `author_kind` is `app` when an app's bot wrote the comment, `agent` when an agent did, and `user` otherwise, including a person acting through a delegated token.
 
 ### Writes
 
