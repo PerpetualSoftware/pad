@@ -187,6 +187,14 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// BUG-3861: an unknown role reached the invitations CHECK constraint and
+	// answered 500. It is checked after every refusal this handler makes, so
+	// those answers are unchanged; CreateInvitation's own refusals (a disabled
+	// inviter, a workspace deleted mid-request) now lose to the 400.
+	if !requireKnownWorkspaceRole(w, input.Role) {
+		return
+	}
+
 	// Create (or, for a re-invite, replace) the pending invitation.
 	inv, err := s.store.CreateInvitation(workspaceID, input.Email, input.Role, inviterID)
 	if writeAccountDisabledIf(w, err) {
@@ -331,10 +339,7 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 	}
 	// BUG-3355: an unknown role used to reach the column's CHECK constraint
 	// and come back as a misleading 404 "Member not found".
-	switch input.Role {
-	case "owner", "editor", "viewer":
-	default:
-		writeError(w, http.StatusBadRequest, "bad_request", "role must be owner, editor or viewer")
+	if !requireKnownWorkspaceRole(w, input.Role) {
 		return
 	}
 
@@ -920,4 +925,17 @@ func (s *Server) requireCallerCanSetCollectionAccess(w http.ResponseWriter, r *h
 		}
 	}
 	return true
+}
+
+// requireKnownWorkspaceRole answers 400 and returns false unless role is one
+// the workspace_members and workspace_invitations CHECK constraints accept.
+// Both doors that take a role from the caller (invite and role change) call
+// it, so neither reaches the constraint (BUG-3355, BUG-3861).
+func requireKnownWorkspaceRole(w http.ResponseWriter, role string) bool {
+	switch role {
+	case "owner", "editor", "viewer":
+		return true
+	}
+	writeError(w, http.StatusBadRequest, "bad_request", "role must be owner, editor or viewer")
+	return false
 }
