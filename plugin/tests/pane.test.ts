@@ -290,3 +290,16 @@ test('copy link points at the server this pane talks to, not always Pad Cloud (B
   expect(copied).toEqual(['http://pad.lan:7777/-/r/demo/TASK-7'])
   await ui.unmount()
 })
+
+// Hunter r4 (TASK-3970): an open pane refreshes after a Pad MCP edit whatever
+// the server is called, as the wake matcher does.
+test('an open pane reloads after a Pad MCP edit under any server name', async ($, on) => {
+  const { calls } = stubs(on)
+  await $.session.start({ cwd: '/work/demo' })
+  await $.command.run({ command: 'pad-pane', args: '' })
+  await settle()
+  const before = calls.length
+  await $.tool.call({ tool: 'mcp__work-tracker__pad_item', action: 'update' } as any)
+  await settle()
+  expect(calls.length).toBeGreaterThan(before)
+})

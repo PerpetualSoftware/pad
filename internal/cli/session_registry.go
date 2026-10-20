@@ -7,10 +7,11 @@ package cli
 // the OWNER pid (the agent harness's session process, see SessionOwner),
 // carrying the agent name the session declared. `pad session register`
 // writes it; `pad session list` reads it with a liveness verdict per row;
-// `pad session prune` removes the ones it can see are dead. The plugin monitor registers
-// on start, so any Claude Code session with the plugin has a record from
-// its first second; any other harness calls register from its own
-// session-start hook with PAD_SESSION_PID / PAD_AGENT set.
+// `pad session prune` removes the ones it can see are dead. The plugin registers
+// a Claude Code session on its first use of Pad (a pad command, a Pad MCP
+// tool, the pane), never at session start (TASK-3970), so a session that
+// never touches Pad has no record; any other harness calls register from its
+// own hook with PAD_SESSION_PID / PAD_AGENT set.
 //
 // WHAT IT ANSWERS. "Which of my sessions on this machine are alive right
 // now, and which agent is each one running as?" — a local, deterministic
