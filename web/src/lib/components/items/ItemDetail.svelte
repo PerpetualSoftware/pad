@@ -6829,8 +6829,14 @@
 
 		<!-- Meta info -->
 		<div class="meta-info">
-			<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
-			{#if item.via_app_name}
+			{#if item.created_by === 'agent' && item.via_app_name}
+				<!-- TASK-3980: an app's bot wrote this; name the app, not the
+				     generic "agent" that created_by stores. -->
+				<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by <bdi title={viaAppTitle(item.via_app_name)}>{item.via_app_name}</bdi></span>
+			{:else}
+				<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
+			{/if}
+			{#if item.via_app_name && item.created_by !== 'agent'}
 				<!-- SPEC-6 U9c: the app the item was created through; a quiet
 				     secondary label, never a second author. -->
 				<span class="meta-via-app" title={viaAppTitle(item.via_app_name)}>via <bdi>{item.via_app_name}</bdi></span>

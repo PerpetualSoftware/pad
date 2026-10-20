@@ -20,6 +20,7 @@ vi.mock('$lib/api/client', () => ({
 	api: {
 		admin: {
 			getDecisionSettings: vi.fn(() => new Promise(() => {})),
+			getAppsSettings: vi.fn(() => new Promise(() => {})),
 			getMCPSettings: () => getMCP(),
 			updateMCPSettings: (enabled: boolean) => putMCP(enabled)
 		}

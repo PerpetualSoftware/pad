@@ -41,8 +41,9 @@ type appWebhookSubscription struct {
 // AppWebhookStatus says what an install's hook is doing, for the owner.
 type AppWebhookStatus struct {
 	URL string `json:"url"`
-	// Status is "awaiting_secret" (held: no redeem has handed the app its
-	// signing secret yet) or "active" (deliverable while the install is).
+	// Status is "paused" (the install is not active, so nothing delivers;
+	// TASK-3980), else "awaiting_secret" (held: no redeem has handed the app
+	// its signing secret yet) or "active" (deliverable).
 	Status string `json:"status"`
 	// Dropped counts deliveries given up undelivered after
 	// appWebhookDropAfter (TASK-3408 U10c).
@@ -52,6 +53,7 @@ type AppWebhookStatus struct {
 const (
 	AppWebhookAwaitingSecret = "awaiting_secret"
 	AppWebhookActive         = "active"
+	AppWebhookPaused         = "paused"
 )
 
 func newAppWebhookSecret() (string, error) {
@@ -177,10 +179,12 @@ func (s *Store) holdAppWebhookTx(tx *sql.Tx, installID string) error {
 // GetAppWebhookStatus reports an install's hook for the owner; nil when the
 // install has none.
 func (s *Store) GetAppWebhookStatus(installID string) (*AppWebhookStatus, error) {
-	var url string
+	var url, state string
 	var delivered sql.NullString
 	var dropped int64
-	err := s.db.QueryRow(s.q(`SELECT url, secret_delivered_at, dropped_count FROM webhooks WHERE app_install_id = ?`), installID).Scan(&url, &delivered, &dropped)
+	err := s.db.QueryRow(s.q(`SELECT w.url, w.secret_delivered_at, w.dropped_count, i.state
+		FROM webhooks w JOIN app_installs i ON i.id = w.app_install_id
+		WHERE w.app_install_id = ?`), installID).Scan(&url, &delivered, &dropped, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -188,7 +192,12 @@ func (s *Store) GetAppWebhookStatus(installID string) (*AppWebhookStatus, error)
 		return nil, fmt.Errorf("app webhook status: %w", err)
 	}
 	st := &AppWebhookStatus{URL: url, Status: AppWebhookAwaitingSecret, Dropped: dropped}
-	if delivered.Valid && delivered.String != "" {
+	switch {
+	case state != "active":
+		// Derived from the install, not stored: Disable pauses delivery
+		// without touching the hook row (TASK-3980 item 4).
+		st.Status = AppWebhookPaused
+	case delivered.Valid && delivered.String != "":
 		st.Status = AppWebhookActive
 	}
 	return st, nil

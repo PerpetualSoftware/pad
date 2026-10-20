@@ -21,7 +21,7 @@ import (
 //        the actions offered on an item, for the item pane's button;
 //   POST /api/v1/workspaces/{ws}/items/{ref}/app-actions/{installID}/{actionKey}
 //        mints a context code for the caller and answers {url};
-//   POST /api/app/v1/workspaces/{ws}/context/redeem {code}
+//   POST /api/app/v1/context/redeem {code}
 //        the app redeems it with its service token and receives the item.
 //
 // Mint and redeem refuse with ONE 404 body for every reason, so neither is
@@ -201,7 +201,7 @@ type AppContextRedeemed struct {
 	Item      AppItem `json:"item"`
 }
 
-// appRedeemContext: POST /api/app/v1/workspaces/{ws}/context/redeem.
+// appRedeemContext: POST /api/app/v1/context/redeem.
 func (s *Server) appRedeemContext(w http.ResponseWriter, r *http.Request) {
 	ac := appContextFrom(r)
 	var in struct {

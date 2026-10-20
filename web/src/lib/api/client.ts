@@ -3,6 +3,7 @@ import type {
 	CatchUpResponse,
 	BuiltinStateResponse,
 	DecisionSettings,
+	AppsSettings,
 	MCPSettings,
 	DecisionSettingsInput,
 	Workspace,
@@ -3625,6 +3626,11 @@ export const api = {
 		getMCPSettings: () => request<MCPSettings>('/admin/mcp'),
 		updateMCPSettings: (enabled: boolean) =>
 			request<MCPSettings>('/admin/mcp', { method: 'PUT', body: JSON.stringify({ enabled }) }),
+		// Apps (TASK-3980). PUT sends only `enabled`, so private_origins
+		// stay as stored; 403 managed_by_operator on Pad Cloud.
+		getAppsSettings: () => request<AppsSettings>('/admin/apps'),
+		updateAppsSettings: (enabled: boolean) =>
+			request<AppsSettings>('/admin/apps', { method: 'PUT', body: JSON.stringify({ enabled }) }),
 		// Decision provider (TASK-3121). The response never carries the API
 		// key — only whether one is set. api_key is write-only.
 		getDecisionSettings: () => request<DecisionSettings>('/admin/decision-provider'),

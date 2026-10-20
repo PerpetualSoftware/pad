@@ -2784,8 +2784,9 @@ export type AppInstallState = 'active' | 'disabling' | 'inactive' | 'uninstallin
 /** An install's webhook as its owner sees it (U10a/U10c). */
 export interface AppWebhookStatus {
 	url: string;
-	/** awaiting_secret: held until the app redeems a new install code. */
-	status: 'awaiting_secret' | 'active' | string;
+	/** awaiting_secret: held until the app redeems a new install code.
+	 *  paused: the install is disabled, so nothing delivers (TASK-3980). */
+	status: 'awaiting_secret' | 'active' | 'paused' | string;
 	notice?: string;
 	/** Deliveries dropped undelivered after 24 h. */
 	undelivered_dropped: number;
@@ -2892,7 +2893,6 @@ export interface AppInstallPreview {
 	events: AppManifestEvent[];
 	webhook_url?: string;
 	item_actions: AppManifestItemAction[];
-	deferred_notice?: string;
 	artifacts: AppPreviewArtifact[];
 	redirect_uris: string[];
 	docs?: string;
@@ -3264,6 +3264,16 @@ export interface ResolvedItemIdentity {
 
 // Decision provider settings (TASK-3121) — GET/PUT /admin/decision-provider.
 // The API key is never returned, masked or otherwise: only api_key_set.
+// Apps (SPEC-6; TASK-3980 item 1): GET/PUT /api/v1/admin/apps. `available`
+// is `enabled` plus the https OAuth issuer apps need; on Cloud the PUT is
+// operator-managed.
+export interface AppsSettings {
+	enabled: boolean;
+	available: boolean;
+	https_issuer: boolean;
+	cloud: boolean;
+}
+
 // MCP over HTTP (PLAN-2310 DR-2 / DR-7): GET/PUT /api/v1/admin/mcp.
 export interface MCPSettings {
 	enabled: boolean;
