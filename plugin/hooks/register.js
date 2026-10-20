@@ -1097,11 +1097,14 @@ function wake($) {
   return woken
 }
 
-// A Bash command that runs the pad CLI, or a call of a Pad MCP tool. Wide on
-// purpose: a false positive only wakes early; a miss runs that first pad call
-// unregistered (hunter r1 F1: `bash -c "pad ..."`).
+// A Bash command that runs the pad CLI, or a call of a Pad MCP tool. `pad` as
+// a whole word: not inside a longer name (`padd`, `.padrc`, `pad-monitor.sh`),
+// whatever stands around it otherwise (a quote, `\`, `$(`, `;`, a path). Wide
+// on purpose: a false positive (`cd ~/pad`) only wakes early, while a miss
+// runs that first pad call unregistered. Rounds r1 and r2 each found a missed
+// shape; the shapes are tabled in watch.test.ts rather than listed here.
 function usesPad(e) {
-  if (e.tool === 'Bash') return /(^|[\s;&|(`$/'"=])pad(\s|$)/.test(String(e.command || ''))
+  if (e.tool === 'Bash') return /(^|[^\w.-])pad($|[^\w.-])/.test(String(e.command || ''))
   return /^mcp__.*pad.*__pad_/i.test(String(e.tool || ''))
 }
 
