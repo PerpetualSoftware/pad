@@ -747,6 +747,11 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	if err := s.emitReminderEventTx(tx, r, item); err != nil {
 		return nil, fmt.Errorf("emit reminder event %s: %w", id, err)
 	}
+	// TASK-3937: after the arbiter's UPDATE, so a pass that lost the row
+	// writes nothing.
+	if err := s.enqueueReminderNotificationTx(tx, r, item); err != nil {
+		return nil, fmt.Errorf("enqueue reminder notification %s: %w", id, err)
+	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("fire reminder %s: %w", id, err)
