@@ -12,6 +12,13 @@ import (
 // CALLER's transaction, so a notification commits with the write that caused
 // it or not at all. The settings a recipient has chosen are the dispatcher's
 // to apply, not the enqueue's.
+//
+// A row is written ONLY for a user with at least one push_devices row (the
+// EXISTS in enqueueNotificationsTx), so until device registration lands
+// (TASK-3938) the enqueue writes nothing. dedupe_key's ON CONFLICT makes it
+// idempotent per (user, key). Migration 155's header predates this file and
+// calls the enqueue owed: merged migrations are immutable, so this comment,
+// not that one, is the current description.
 
 const (
 	notifyAssigned = "assigned"
