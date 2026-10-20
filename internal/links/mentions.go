@@ -94,8 +94,9 @@ func (u *urlScan) inURL(content string, at int) bool {
 
 // rangeCursor answers "is pos inside one of these ranges" for positions that
 // arrive in increasing order, walking the sorted, disjoint ranges once per
-// call rather than once per match (TASK-3917 r4: isInRanges per match made a
-// body of many code spans and then many mentions quadratic).
+// call rather than once per match (TASK-3917 r4: a scan of every range per
+// match made a body of many code spans and then many mentions quadratic).
+// ExtractWikiLinks uses it too (BUG-3968).
 type rangeCursor struct {
 	ranges [][2]int
 	i      int
