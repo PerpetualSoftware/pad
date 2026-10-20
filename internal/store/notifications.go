@@ -19,6 +19,15 @@ import (
 // idempotent per (user, key). Migration 155's header predates this file and
 // calls the enqueue owed: merged migrations are immutable, so this comment,
 // not that one, is the current description.
+//
+// Recipients are NOT access-checked here. Removing a member leaves them an
+// item's created_by and possibly its assignee, so a row can be written for
+// someone who can no longer see the item. The dispatcher (TASK-3939) is to
+// re-check current membership and item visibility at send and skip the row:
+// that is the privacy gate.
+//
+// Nothing here enqueues the 'mention' kind: @mention notifications are
+// TASK-3946's, built from the comment_mentions index.
 
 const (
 	notifyAssigned = "assigned"
