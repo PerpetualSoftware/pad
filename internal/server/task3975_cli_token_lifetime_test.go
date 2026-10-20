@@ -90,7 +90,13 @@ func TestTASK3975_CLITokenFromOldSessionStillCannotConfirmDelete(t *testing.T) {
 // A credential-change rotation REPLACES the session, so it keeps the
 // replaced session's cap (it must not extend a stolen session's life).
 func TestTASK3975_RotationKeepsParentCap(t *testing.T) {
-	srv, u, token := oauthOnlyCloud(t)
+	srv, u, _ := oauthOnlyCloud(t)
+	// A 7-day web session, so the 90-day cap (5 days away) binds rather than
+	// the session's own window, which a rotation keeps (BUG-3978).
+	token, err := srv.store.CreateSession(u.ID, "web", "198.51.100.7", "", webSessionTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ageAllSessions(t, srv, u.ID, 85*24*time.Hour)
 	req := httptest.NewRequest("POST", "/api/v1/auth/totp/enable", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName(srv.secureCookies), Value: token})
