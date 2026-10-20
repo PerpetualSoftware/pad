@@ -78,9 +78,11 @@ func TestParseMentions(t *testing.T) {
 
 // assertMentionsLinear times ExtractMentions on body(n) and body(4n), best of
 // five each, and fails if 4x the input costs 8x the time or more: about 4x
-// when linear, about 16x when quadratic. Relative, not an absolute bound, so a
-// slow runner (-race, a loaded box) cannot fail it (BUG-3995). A 30 s per-run
-// backstop stops a regressed scan from running the suite for minutes.
+// when linear, about 16x when quadratic. A slow runner (-race, a loaded box)
+// slows both sizes alike, so the ratio does not depend on its speed, which a
+// 3 s absolute bound did (BUG-3995). The one absolute check is a 30 s per-run
+// backstop, about 16x the slowest linear run measured (-race, 4n): it caps how
+// long a regressed scan runs before failing, at a few minutes for the test.
 func assertMentionsLinear(t *testing.T, n int, body func(int) string, regression string) {
 	t.Helper()
 	timeIt := func(n int) time.Duration {
