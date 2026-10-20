@@ -74,6 +74,9 @@ func (s *Store) createCollectionTx(tx *sql.Tx, workspaceID string, input models.
 	if schema == "" {
 		schema = `{"fields":[]}`
 	}
+	if err := models.CheckSettingsObject(input.Settings); err != nil {
+		return "", err
+	}
 	settings := input.Settings
 	if settings == "" {
 		settings = "{}"
@@ -761,6 +764,9 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		// written verbatim. Postgres rejects `""` at JSONB type-validation;
 		// SQLite would silently store invalid JSON. Same boundary
 		// normalization as ImportWorkspace.
+		if err := models.CheckSettingsObject(*input.Settings); err != nil {
+			return nil, err
+		}
 		settings := *input.Settings
 		if settings == "" {
 			settings = "{}"
