@@ -274,6 +274,36 @@ func (e *needsEligibility) Eligible(userID, collectionID, itemID string) bool {
 	return v != nil && (v.unrestricted || v.collections[collectionID] || v.items[itemID])
 }
 
+// callerVisibleDecidedItems returns the ids of the items holding an attention
+// decision row that fall inside the caller's scope.
+func (s *Server) callerVisibleDecidedItems(workspaceID string, scope store.CatchUpScope) ([]string, error) {
+	latest, err := s.store.LatestWorkspaceDecisions(workspaceID, decision.AttentionSetName)
+	if err != nil {
+		return nil, err
+	}
+	var decided []string
+	seen := map[string]bool{}
+	for _, d := range latest {
+		if !seen[d.ItemID] {
+			seen[d.ItemID] = true
+			decided = append(decided, d.ItemID)
+		}
+	}
+	if len(decided) == 0 {
+		return nil, nil
+	}
+	// The candidate read applies the scope in SQL; what it returns is visible.
+	items, err := s.store.NeedsCandidateItems(workspaceID, scope, store.NeedsCandidateParams{FlaggedItemIDs: decided})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.ID
+	}
+	return out, nil
+}
+
 // needsForWorkspace runs the router for one admitted workspace and returns the
 // rows routed to the caller, held ones included (the caller splits the views).
 // Order matters for what is read: visibility first (in the candidate SQL), then
@@ -323,7 +353,13 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 	var flaggedIDs []string
 	flaggedAt := map[string]time.Time{}
 	flaggedSet := map[string]bool{}
-	flags, _, ferr := s.decisionRunner().WorkspaceFlags(ws.ID, decision.AttentionSetName, decision.AttentionThreshold)
+	// Only items the caller can see are evaluated: an error caused by a hidden
+	// item must not set degraded, which would leak one bit about it.
+	visibleDecided, derr := s.callerVisibleDecidedItems(ws.ID, scope)
+	if derr != nil {
+		return nil, false, derr
+	}
+	flags, _, ferr := s.decisionRunner().WorkspaceFlagsForItems(ws.ID, decision.AttentionSetName, decision.AttentionThreshold, visibleDecided)
 	if ferr != nil {
 		slog.Error("needs: attention decisions failed; workspace degraded", "workspace_id", ws.ID, "error", ferr)
 		degraded = true
@@ -440,7 +476,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 			return nil, false, elig.err
 		}
 		if ok && rt.Includes(user.ID) {
-			routed[it.ID] = rt
+			routed[it.ID] = rt.For(user.ID)
 			kept = append(kept, it)
 		}
 	}

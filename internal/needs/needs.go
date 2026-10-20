@@ -87,6 +87,21 @@ type Routing struct {
 	Why          Why
 	Because      []Because
 	WaitingSince time.Time
+
+	// byUser holds, for the mentioned rule, each routed person's own view: the
+	// row for one person is computed from that person's mentions only.
+	byUser map[string]Routing
+}
+
+// For returns the routing as the given user sees it. Under the mentioned rule
+// that is built from the user's own mentions alone, so nothing of another
+// person's mention (its time, author or comment id) reaches them. Under the
+// other rules the routing is the same for every routed person.
+func (r Routing) For(userID string) Routing {
+	if v, ok := r.byUser[userID]; ok {
+		return v
+	}
+	return r
 }
 
 // Includes reports whether the user is among the routed people.
@@ -132,12 +147,34 @@ func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
 				r.People = append(r.People, m.UserID)
 			}
 		}
-		r.Rule, claim = RuleMentioned, ms[0].At
-		for _, m := range ms {
-			r.Because = append(r.Because, Because{Kind: BecauseMention, At: m.At, By: m.By, CommentID: m.CommentID})
+		r.Rule = RuleMentioned
+		r.byUser = map[string]Routing{}
+		for _, uid := range r.People {
+			own := Routing{Rule: RuleMentioned, People: r.People}
+			var first *Mention
+			for i := range ms {
+				m := ms[i]
+				if m.UserID != uid {
+					continue
+				}
+				own.Because = append(own.Because, Because{Kind: BecauseMention, At: m.At, By: m.By, CommentID: m.CommentID})
+				if first == nil || m.At.Before(first.At) {
+					first = &ms[i]
+				}
+			}
+			at := first.At
+			own.Why = Why{Text: "You were @-mentioned and have not replied.", By: first.By, At: &at, CommentID: first.CommentID}
+			own.WaitingSince = first.At
+			r.byUser[uid] = own
 		}
-		at := ms[0].At
-		r.Why = Why{Text: "You were @-mentioned and have not replied.", By: ms[0].By, At: &at, CommentID: ms[0].CommentID}
+		// The shared claim is the earliest mention of anyone; a row never
+		// shows it, only each person's own (see For).
+		claim = ms[0].At
+		for _, m := range ms {
+			if m.At.Before(claim) {
+				claim = m.At
+			}
+		}
 	case ok(c.AssigneeUserID):
 		r.Rule, r.People, claim = RuleAssigned, []string{c.AssigneeUserID}, c.AssignedAt
 		r.Why = Why{Text: "It is assigned to you."}
@@ -153,18 +190,25 @@ func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
 		r.Rule, claim = RuleAdminFallback, c.CreatedAt
 		r.Why = Why{Text: "Nobody else can take it, so it falls to the workspace owners."}
 	}
-	r.Why.Rule = r.Rule
-	if c.NeedsHuman != nil {
-		r.Because = append(r.Because, Because{Kind: BecauseNeedsHuman, At: *c.NeedsHuman})
-		if c.NeedsHuman.Before(claim) {
-			claim = *c.NeedsHuman
+	finish := func(x *Routing, claim time.Time) {
+		x.Why.Rule = x.Rule
+		if c.NeedsHuman != nil {
+			x.Because = append(x.Because, Because{Kind: BecauseNeedsHuman, At: *c.NeedsHuman})
+			if c.NeedsHuman.Before(claim) {
+				claim = *c.NeedsHuman
+			}
+		}
+		x.WaitingSince = claim
+		if x.Why.At == nil {
+			at := claim
+			x.Why.At = &at
 		}
 	}
-	r.WaitingSince = claim
-	if r.Why.At == nil {
-		at := claim
-		r.Why.At = &at
+	for uid, own := range r.byUser {
+		finish(&own, own.WaitingSince)
+		r.byUser[uid] = own
 	}
+	finish(&r, claim)
 	return r, true
 }
 

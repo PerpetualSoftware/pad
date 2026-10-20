@@ -639,6 +639,46 @@ func TestNeedsMe_DegradedOnlyOnProviderError(t *testing.T) {
 	})
 }
 
+// Codex r1 P2: the attention read evaluates only items the caller can see, so
+// an item whose state cannot be built, hidden from the caller, sets no bit on
+// their response; the same failure on a visible item does degrade.
+func TestNeedsMe_DegradedNotLeakedByHiddenItemFailure(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		open, hidden := f.collection(ws, "Open asks", true), f.collection(ws, "Hidden tasks", false)
+		if err := srv.store.SetMemberCollectionAccess(ws.ID, alice.ID, "specific", []string{open.ID}); err != nil {
+			t.Fatal(err)
+		}
+		f.item(ws, open, "visible ask", alice, nfxDay(1))
+		attachAttentionRunner(t, srv) // answers HUMAN-HIGH titles above the threshold
+		hid := f.item(ws, hidden, "HUMAN-HIGH hidden", nil, nfxDay(2))
+		vis := f.item(ws, open, "HUMAN-HIGH visible", nil, nfxDay(3))
+		runDecisionTick(t, srv)
+
+		corrupt := func(id string) {
+			t.Helper()
+			if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET fields = '[1]' WHERE id = '%s'`, id)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The hidden item's state can no longer be built: alice learns nothing.
+		corrupt(hid.ID)
+		resp := f.need(alice, "")
+		if len(resp.Degraded) != 0 {
+			t.Fatalf("a failure on an item alice cannot see set degraded: %v", resp.Degraded)
+		}
+		// The same failure on an item alice can see degrades the workspace.
+		corrupt(vis.ID)
+		resp = f.need(alice, "")
+		if len(resp.Degraded) != 1 || resp.Degraded[0] != ws.Slug {
+			t.Fatalf("degraded = %v, want [%s]", resp.Degraded, ws.Slug)
+		}
+	})
+}
+
 func TestNeedsMe_RoutingRulesAndWaitingSince(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
@@ -832,6 +872,46 @@ func TestNeedsMe_SnoozeLostAccess(t *testing.T) {
 		var resp needsResponse
 		if err := json.Unmarshal(after, &resp); err != nil || resp.Hidden != 0 || resp.Total != 0 {
 			t.Fatalf("hidden/total count it: %+v %v", resp, err)
+		}
+	})
+}
+
+// Hunter r1 F1 end to end: with two open mentions on one item, each person's
+// row carries only their own mention.
+func TestNeedsMe_MentionedRowIsPerCaller(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice, bob, carol := f.user("owner"), f.user("alice"), f.user("bob"), f.user("carol")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		f.member(ws, bob, "editor")
+		f.member(ws, carol, "editor")
+		tasks := f.collection(ws, "Tasks", false)
+		it := f.item(ws, tasks, "shared", nil, nfxDay(0))
+		at := func(c *models.Comment, day int) string {
+			if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE comment_mentions SET created_at = '%s' WHERE comment_id = '%s'`,
+				nfxDay(day).UTC().Format("2006-01-02T15:04:05Z"), c.ID)); err != nil {
+				t.Fatal(err)
+			}
+			return c.ID
+		}
+		bc := at(f.comment(ws, it, carol, "@bob-nx first"), 1)
+		ac := at(f.comment(ws, it, owner, "@alice-nx later"), 5)
+		resp := f.need(alice, "")
+		wantTitles(t, "alice", resp.Rows, "shared")
+		r := resp.Rows[0]
+		if !r.WaitingSince.Equal(nfxDay(5)) || r.Why.CommentID != ac || r.Why.By == "" || len(r.Because) != 1 || r.Because[0].CommentID != ac {
+			t.Fatalf("alice's row = %+v because %+v", r.Why, r.Because)
+		}
+		// The marker is the item's own comment state (every other-author comment id),
+		// not a routing claim; the routing fields must carry no trace of bob's.
+		raw, _ := json.Marshal([]any{r.Why, r.Because, r.WaitingSince})
+		if strings.Contains(string(raw), bc) || strings.Contains(string(raw), "arol") {
+			t.Fatalf("alice's row leaks bob's mention: %s", raw)
+		}
+		b := f.need(bob, "").Rows[0]
+		if !b.WaitingSince.Equal(nfxDay(1)) || b.Why.CommentID != bc {
+			t.Fatalf("bob's row = %+v", b.Why)
 		}
 	})
 }

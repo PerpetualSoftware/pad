@@ -54,6 +54,8 @@ func TestResolve_Order(t *testing.T) {
 			if got.Rule != tc.wantRule || strings.Join(got.People, ",") != strings.Join(tc.want, ",") {
 				t.Fatalf("rule %q people %v, want %q %v", got.Rule, got.People, tc.wantRule, tc.want)
 			}
+			// The row a person gets is theirs alone: read the first routed person's.
+			got = got.For(tc.want[0])
 			if !got.WaitingSince.Equal(tc.waiting) {
 				t.Fatalf("WaitingSince %v, want %v", got.WaitingSince, tc.waiting)
 			}
@@ -80,10 +82,42 @@ func TestResolve_Order(t *testing.T) {
 			t.Fatalf("because = %+v", got.Because)
 		}
 		m, _ := Resolve(Candidate{Mentions: []Mention{mention("u-men", 1)}}, nil, fakeElig{"u-men": true})
+		m = m.For("u-men")
 		if m.Why.By != "Commenter-u-men" || m.Why.CommentID != "c-u-men" || m.Because[0].Kind != BecauseMention {
 			t.Fatalf("mention why/because = %+v %+v", m.Why, m.Because)
 		}
 	})
+}
+
+// Hunter r1 F1: a mentioned person's row is computed from their own mentions
+// only; another person's mention must not reach it.
+func TestResolve_MentionedRowIsPerPerson(t *testing.T) {
+	t0 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	day := 24 * time.Hour
+	flagged := t0.Add(90 * day)
+	c := Candidate{CreatedAt: t0, NeedsHuman: &flagged, Mentions: []Mention{
+		{UserID: "bob", CommentID: "c-bob", By: "Y", At: t0.Add(1 * day)},
+		{UserID: "alice", CommentID: "c-alice", By: "X", At: t0.Add(5 * day)},
+	}}
+	rt, ok := Resolve(c, nil, fakeElig{"alice": true, "bob": true})
+	if !ok || !rt.Includes("alice") || !rt.Includes("bob") {
+		t.Fatalf("routing = %+v ok=%v", rt, ok)
+	}
+	a := rt.For("alice")
+	if !a.WaitingSince.Equal(t0.Add(5*day)) || a.Why.By != "X" || a.Why.CommentID != "c-alice" || !a.Why.At.Equal(t0.Add(5*day)) {
+		t.Fatalf("alice's why/waiting = %+v %v", a.Why, a.WaitingSince)
+	}
+	if len(a.Because) != 2 || a.Because[0].CommentID != "c-alice" || a.Because[0].By != "X" || a.Because[1].Kind != BecauseNeedsHuman {
+		t.Fatalf("alice's because = %+v", a.Because)
+	}
+	for _, b := range a.Because {
+		if b.By == "Y" || b.CommentID == "c-bob" {
+			t.Fatalf("alice's row carries bob's mention: %+v", b)
+		}
+	}
+	if b := rt.For("bob"); !b.WaitingSince.Equal(t0.Add(day)) || b.Why.By != "Y" {
+		t.Fatalf("bob's row = %+v %v", b.Why, b.WaitingSince)
+	}
 }
 
 func TestCursor(t *testing.T) {
