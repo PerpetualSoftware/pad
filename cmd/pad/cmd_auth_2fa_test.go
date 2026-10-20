@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -284,6 +285,36 @@ func TestTASK403_DisableWithPassword(t *testing.T) {
 	}
 	if _, err := f.clientWith(oldTok).GetAccountSecurity(); err == nil {
 		t.Fatal("the old session still works after the rotation, so the saved token was never needed: this test proves nothing")
+	}
+}
+
+// BUG-3882: the disable revokes this CLI's session before the save runs, so a
+// failed save leaves the CLI signed out and must fail the command rather than
+// warn and exit 0.
+func TestBUG3882_DisableFailsWhenTheNewSessionCannotBeSaved(t *testing.T) {
+	f := newTwoFAFixture(t)
+	u := f.passwordUser(t, "disable-save@example.com")
+	client, oldTok := f.session(t, u)
+	enable(t, client)
+
+	var out bytes.Buffer
+	err := runTwoFactorDisable(client, bufio.NewReader(strings.NewReader(twoFAPassword+"\n")), &out, func(string) error {
+		return errors.New("disk full")
+	})
+	if err == nil {
+		t.Fatalf("disable returned nil after the save failed, so the command exits 0 on a dead session:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "disk full") || !strings.Contains(err.Error(), "pad auth login") {
+		t.Fatalf("err = %v, want the save failure and a pointer at 'pad auth login'", err)
+	}
+	if !strings.Contains(out.String(), "saving the new one failed") {
+		t.Fatalf("the warning is gone:\n%s", out.String())
+	}
+	if f.totpEnabled(t, u.ID) {
+		t.Fatal("2FA still on, so this is not the post-disable save failure")
+	}
+	if _, err := f.clientWith(oldTok).GetAccountSecurity(); err == nil {
+		t.Fatal("the old session still works, so the CLI is not actually signed out: this test proves nothing")
 	}
 }
 
