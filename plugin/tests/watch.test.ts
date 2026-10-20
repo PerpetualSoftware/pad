@@ -119,6 +119,20 @@ test('presence is recorded before the first pad command runs: its worker id ride
   await call
 })
 
+test('pad run through a shell string or after an assignment wakes the session too', async ($, on) => {
+  mock.clock(on)
+  const s = stubs(on, { armed: false })
+  await $.session.start({ cwd: '/work/demo' })
+  const commands = [`bash -c "pad item list"`, `sh -c 'pad project next'`, `PAD_AGENT=x pad bootstrap`, `X="$(pad auth whoami)"`]
+  for (const command of commands) {
+    await usePad($, command)
+    await settle()
+    // an end that stops the stream resets wake, so each command is a first use
+    await $.session.end({ reason: 'prompt_input_exit' })
+  }
+  expect(s.runs.filter((r) => r.argv.join(' ') === 'pad session register').length).toBe(commands.length)
+})
+
 test('a Pad MCP tool call wakes the session too', async ($, on) => {
   mock.clock(on)
   const s = stubs(on, { armed: true })

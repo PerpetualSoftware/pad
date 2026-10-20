@@ -1097,9 +1097,11 @@ function wake($) {
   return woken
 }
 
-// A Bash command that runs the pad CLI, or a call of a Pad MCP tool.
+// A Bash command that runs the pad CLI, or a call of a Pad MCP tool. Wide on
+// purpose: a false positive only wakes early; a miss runs that first pad call
+// unregistered (hunter r1 F1: `bash -c "pad ..."`).
 function usesPad(e) {
-  if (e.tool === 'Bash') return /(^|[\s;&|(`$/])pad(\s|$)/.test(String(e.command || ''))
+  if (e.tool === 'Bash') return /(^|[\s;&|(`$/'"=])pad(\s|$)/.test(String(e.command || ''))
   return /^mcp__.*pad.*__pad_/i.test(String(e.tool || ''))
 }
 
