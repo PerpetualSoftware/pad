@@ -184,6 +184,24 @@ func ProductionRegistry() (*Registry, error) {
 // failing reports that some owed job in the set has a recorded failure — the
 // provider erroring. A nil runner returns nothing, not an error.
 func (r *Runner) WorkspaceFlags(workspaceID, setName string, threshold float64) (flags map[string]map[string]float64, failing bool, err error) {
+	return r.workspaceFlags(workspaceID, setName, threshold, nil)
+}
+
+// WorkspaceFlagsForItems is [Runner.WorkspaceFlags] restricted to the given
+// items: the decision rows of any other item are dropped BEFORE its state is
+// read, so an item the caller may not see can neither be evaluated nor make
+// the call fail (TASK-3920: an error from a hidden item would leak one bit).
+// An empty id list evaluates nothing.
+func (r *Runner) WorkspaceFlagsForItems(workspaceID, setName string, threshold float64, itemIDs []string) (flags map[string]map[string]float64, failing bool, err error) {
+	only := make(map[string]bool, len(itemIDs))
+	for _, id := range itemIDs {
+		only[id] = true
+	}
+	return r.workspaceFlags(workspaceID, setName, threshold, only)
+}
+
+// workspaceFlags implements both; a nil only evaluates every item.
+func (r *Runner) workspaceFlags(workspaceID, setName string, threshold float64, only map[string]bool) (flags map[string]map[string]float64, failing bool, err error) {
 	if r == nil {
 		return nil, false, nil
 	}
@@ -215,6 +233,9 @@ func (r *Runner) WorkspaceFlags(workspaceID, setName string, threshold float64) 
 	byItem := make(map[string][]candidate)
 	var order []string
 	for _, d := range rows {
+		if only != nil && !only[d.ItemID] {
+			continue
+		}
 		// A staged key (TASK-3921) makes no flag and no state read.
 		if qs.Unsurfaced[d.QuestionKey] {
 			continue

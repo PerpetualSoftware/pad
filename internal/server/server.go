@@ -38,6 +38,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/needs"
 	"github.com/PerpetualSoftware/pad/internal/oauth"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/textguard"
@@ -122,6 +123,9 @@ type Server struct {
 	// deterministic. TestVisibleCollectionIDsFaultIsNilInProduction holds New
 	// to leaving it nil. Same synchronisation rule as afterItemPreRead.
 	visibleCollectionIDsFault func() error
+	// needsScorers are the importance and simplicity scorers GET /me/needs
+	// runs per workspace (TASK-3920). None ship yet: TASK-3959 registers them.
+	needsScorers []needs.Scorer
 	// itemDoorAfterRowsHook is a TEST-ONLY seam, nil in production: the item
 	// doors (/items-index, /items-changes) call it right after their row
 	// query, so a test can commit a write between the rows and the access
@@ -2089,6 +2093,9 @@ func (s *Server) setupRouter() {
 			// One-time UI suggestions the caller dismissed (TASK-3452), and
 			// the in-app tutorial catalog, Pad Cloud only (404 self-hosted;
 			// the client links out to getpad.dev/learn). Web client only.
+			// The cross-workspace needs-you inbox (TASK-3920): outside the
+			// /{slug} subrouter, so the handler admits each workspace itself.
+			r.Get("/me/needs", s.handleMeNeeds)
 			r.Get("/me/ui-dismissals", s.handleListUIDismissals)
 			r.Put("/me/ui-dismissals/{key}", s.handleDismissUI)
 			r.Get("/tutorials", s.handleListTutorials)

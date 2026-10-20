@@ -82,6 +82,7 @@ var lifecycleSites = map[string]string{
 	"internal/server/handlers_graph.go::handleGetWorkspaceGraph::isItemDone":            "keep: the graph renders every item, done or not, and only colours by state",
 	"internal/server/handlers_reminders.go::collectPendingRemindersBounded::isItemDone": "keep: a reminder is the user's own instruction, on any item",
 	"internal/store/item_stars.go::isTerminalWithContext::IsTerminalItem":               "keep: starred items are the user's own picks",
+	"internal/server/handlers_me_needs.go::needsForWorkspace::IsTerminalItem":           "keep: an @mention is a real ask of a person in any non-system collection, reference collections included (TASK-3920, lead ruling Q2); only a terminal item is dropped",
 }
 
 func TestPLAN3535_LifecycleHelperCallSitesAreClassified(t *testing.T) {
