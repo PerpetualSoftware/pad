@@ -45,22 +45,39 @@ export function describeImportSummary(summary: ImportSummary): ImportSummaryText
 
 // TASK-3842: the unique values an import dropped (BUG-3825), one line each in
 // the CLI's `  dropped: <item>: <key> "<value>" is taken by <holder>` shape.
-// The toast renders line breaks, so a server-supplied string must not carry
-// one: the value is JSON-quoted (JSON.stringify escapes every control
-// character), and a control character anywhere else is escaped. JSON quoting
-// matches the CLI's %q for ASCII but not always beyond it: %q escapes
-// non-printable runes such as U+2028, which JSON.stringify leaves as-is.
+// The toast renders line breaks, so a server-supplied string must not be
+// able to break, reorder or hide the text around it. Every field, the value
+// included, has its control, format and line/paragraph separator characters
+// (Cc, Cf, Zl, Zp: newlines, U+0085, bidi overrides such as U+202E, U+2028,
+// zero-width U+200B) replaced with \uXXXX. Each RAW field is first clipped to
+// FIELD_CHARS code points, so a cut can never split an escape; the value is
+// then JSON-quoted and escaped after that, because JSON.stringify leaves Cf,
+// Zl and Zp as they are.
 
 /** Lines shown before the rest are counted as "and N more". */
 export const DROP_LINES_SHOWN = 10;
 
-function escapeControls(s: string): string {
-	// eslint-disable-next-line no-control-regex
-	return s.replace(/[\u0000-\u001f\u007f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+/** Code points kept of each raw field before it is clipped with "…". */
+export const FIELD_CHARS = 120;
+
+const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+function escapeUnsafe(s: string): string {
+	// A match outside the BMP is a surrogate pair; each half is escaped.
+	return s.replace(UNSAFE, (c) =>
+		Array.from({ length: c.length }, (_, i) => `\\u${c.charCodeAt(i).toString(16).padStart(4, '0')}`).join('')
+	);
 }
 
+function clip(s: string): string {
+	const chars = Array.from(s);
+	return chars.length > FIELD_CHARS ? chars.slice(0, FIELD_CHARS).join('') + '…' : s;
+}
+
+const field = (s: string) => escapeUnsafe(clip(s));
+
 export function importDropLine(d: ImportUniqueDrop): string {
-	return `dropped: ${escapeControls(d.item)}: ${escapeControls(d.key)} ${JSON.stringify(d.value)} is taken by ${escapeControls(d.holder)}`;
+	return `dropped: ${field(d.item)}: ${field(d.key)} ${escapeUnsafe(JSON.stringify(clip(d.value)))} is taken by ${field(d.holder)}`;
 }
 
 /**
