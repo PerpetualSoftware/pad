@@ -105,7 +105,11 @@ func TestDefaultNotificationSettings(t *testing.T) {
 	}
 }
 
-// Kills: removing either ON DELETE CASCADE or the actor's SET NULL.
+// Kills: removing push_devices.session_id's cascade, user_notifications'
+// user_id cascade, user_notification_settings' cascade, or the actor's SET
+// NULL. NOT push_devices.user_id's cascade: DeleteAccountAtomic deletes the
+// user's sessions first, so the device is already gone by the session path.
+// TestPushDevices_UserCascade isolates that one.
 func TestPushTables_Cascades(t *testing.T) {
 	t.Parallel()
 	f := newNotifyFixture(t)
@@ -143,6 +147,26 @@ func TestPushTables_Cascades(t *testing.T) {
 		if n := f.s.countRows(t, `SELECT COUNT(*) FROM `+tbl+` WHERE user_id = ?`, b.ID); n != 0 {
 			t.Errorf("%s kept %d rows for a deleted user", tbl, n)
 		}
+	}
+}
+
+// Kills: dropping push_devices.user_id's cascade. In every real path a
+// user's own sessions go first and take the device with them, so the test
+// binds the device to ANOTHER user's session: deleting the device's user then
+// leaves the session standing, and only the user_id cascade can clear the row.
+func TestPushDevices_UserCascade(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	owner, host := notifyUser(t, s, "owner@example.com"), notifyUser(t, s, "host@example.com")
+	sess := addDevice(t, s, host.ID)
+	s.mustExec(t, `UPDATE push_devices SET user_id = ? WHERE session_id = ?`, owner.ID, sess)
+
+	s.mustExec(t, `DELETE FROM users WHERE id = ?`, owner.ID)
+	if n := s.countRows(t, `SELECT COUNT(*) FROM sessions WHERE id = ?`, sess); n != 1 {
+		t.Fatalf("the host's session went too (%d rows), so the session path could have cleared the device", n)
+	}
+	if n := s.countRows(t, `SELECT COUNT(*) FROM push_devices WHERE session_id = ?`, sess); n != 0 {
+		t.Fatalf("device survived its user: %d", n)
 	}
 }
 

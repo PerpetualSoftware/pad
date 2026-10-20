@@ -1,8 +1,8 @@
 package models
 
 // NotificationSettings are a person's recipient-side push filters (TASK-3937).
-// The dispatcher applies them; the enqueue does not, so changing one never
-// rewrites the queue.
+// The dispatcher (TASK-3939) is to apply them; the enqueue does not, so
+// changing one never rewrites the queue.
 type NotificationSettings struct {
 	PushEnabled          bool `json:"push_enabled"`
 	NotifyAssigned       bool `json:"notify_assigned"`

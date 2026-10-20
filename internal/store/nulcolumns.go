@@ -450,7 +450,7 @@ var nulExcluded = map[string]string{
 	"user_notifications.dedupe_key":          "server-built from a fixed kind and server-minted ids and timestamps (TASK-3937)",
 	"user_notifications.created_at":          "server timestamp from now() (TASK-3937)",
 	"user_notifications.push_state":          "fixed server constant, a CHECK constraint (TASK-3937)",
-	"user_notifications.skip_reason":         "fixed server constant set by the dispatcher (TASK-3937)",
+	"user_notifications.skip_reason":         "fixed server constant set by the dispatcher (TASK-3939)",
 	"user_notifications.claim_token":         "server-minted UUID (TASK-3937)",
 	"user_notifications.claimed_at":          "server timestamp from now() (TASK-3937)",
 	"user_notifications.sent_at":             "server timestamp from now() (TASK-3937)",

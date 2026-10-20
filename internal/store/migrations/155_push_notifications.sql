@@ -17,7 +17,8 @@
 -- a user runs its ON DELETE SET NULL against this table.
 --
 -- user_notification_settings: a person's recipient-side filters. No row means
--- the defaults. The dispatcher applies them; the enqueue does not.
+-- the defaults. The dispatcher (TASK-3939) is to apply them; the enqueue
+-- does not.
 --
 -- workspace_read_cursors (149) stays separate: it must exist for every user,
 -- with or without a device, and this queue is to be deleted after 7 days.

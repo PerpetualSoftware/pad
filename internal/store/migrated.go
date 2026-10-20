@@ -116,8 +116,10 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 //   - PUSH DELIVERY STATE (push_devices, user_notifications; TASK-3937):
 //     a device row is bound to the session that registered it, and the
 //     migration does not carry sessions, so every device is re-registered
-//     after the operator signs in again; the queue is transient (pushed or
-//     skipped within minutes, deleted after 7 days). user_notification_settings
+//     after the operator signs in again; the queue is delivery state, not a
+//     person's data: a lost row is one push not sent. (Its dispatcher and
+//     7-day sweep land with TASK-3939; until then nothing reads or deletes
+//     it.) user_notification_settings
 //     is the exception: a person's choices are state, so it is refused below.
 //   - The marker table itself, which the migration writes.
 //
