@@ -60,13 +60,13 @@ func setupTokenAuthEnv(t *testing.T) *tokenAuthEnv {
 	}
 
 	pat, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
-		Name: "the-pat", WorkspaceID: ws.ID,
+		Name: "the-pat",
 	}, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateAPIToken: %v", err)
 	}
 	spare, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
-		Name: "spare", WorkspaceID: ws.ID,
+		Name: "spare",
 	}, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateAPIToken (spare): %v", err)

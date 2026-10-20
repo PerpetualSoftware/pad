@@ -79,7 +79,8 @@ const allowedWorkspacesExtraKey = "allowed_workspaces"
 // matter to callers:
 //
 //   - nil — no allow-list set. Either a non-OAuth session (PAT auth
-//     never goes through this code path) or a pre-TASK-952 token
+//     never goes through this code path; a workspace-pinned PAT gets its
+//     one-slug list from the server, BUG-3982) or a pre-TASK-952 token
 //     issued before the consent UI shipped. Callers should treat
 //     this as "no token-level workspace constraint" and rely on the
 //     standard membership gate.

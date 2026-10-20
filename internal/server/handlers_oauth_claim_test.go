@@ -80,8 +80,7 @@ func newClaimTestEnv(t *testing.T) *claimTestEnv {
 		t.Fatalf("AddWorkspaceMember: %v", err)
 	}
 	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
-		Name:        "claim-test-pat",
-		WorkspaceID: ws.ID,
+		Name: "claim-test-pat",
 	}, 30, 0)
 	if err != nil {
 		t.Fatalf("CreateAPIToken: %v", err)
@@ -146,12 +145,12 @@ func TestHandleOAuthClaim_ClaimSecretDisabled412(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Disabled WS", OwnerID: user.ID})
+	_, err = srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Disabled WS", OwnerID: user.ID})
 	if err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
 	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
-		Name: "d", WorkspaceID: ws.ID,
+		Name: "d",
 	}, 30, 0)
 	if err != nil {
 		t.Fatalf("CreateAPIToken: %v", err)

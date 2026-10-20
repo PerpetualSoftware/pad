@@ -1617,39 +1617,50 @@ func TestWorkspaceAllowList_LiveMembershipRevocation(t *testing.T) {
 	}
 }
 
-// TestWorkspaceAllowList_PATPathUnaffected regresses the PAT auth
-// path: a Personal Access Token doesn't carry a workspace allow-
-// list (the consent UI is OAuth-only), so its requests must NOT
-// hit the gate. PATs that hit /api/v1/workspaces/<slug>/* should
-// continue to work the same as they did pre-TASK-953.
+// TestWorkspaceAllowList_PATPathUnaffected pins what a PAT is and is not
+// subject to. An UNPINNED PAT carries no consent allow-list (the consent UI is
+// OAuth-only), so it reaches every workspace its user belongs to, as before
+// TASK-953. A PAT minted with a workspace_id is PINNED to it (BUG-3982): it
+// used to be waved through to any workspace its user belonged to, which this
+// test once asserted as "unaffected"; it is now refused outside its workspace.
 func TestWorkspaceAllowList_PATPathUnaffected(t *testing.T) {
 	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	user := mustCreateUserForTest(t, srv, "pat-no-gate@example.com")
 	mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "owner")
 
-	// Workspace-scoped PAT (the Y2025 model — workspace required for the
-	// FK but the user is the auth principal).
 	wsForToken, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Token WS"})
 	if err != nil {
 		t.Fatalf("CreateWorkspace (token holder): %v", err)
 	}
-	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
-		Name: "pat-no-gate", WorkspaceID: wsForToken.ID,
-	}, 30, 0)
+	call := func(tok string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/v1/workspaces/alpha/", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.RemoteAddr = "192.0.2.1:1234"
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// Unpinned: not gate-rejected on alpha.
+	unpinned, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{Name: "pat-no-gate"}, 30, 0)
 	if err != nil {
 		t.Fatalf("CreateAPIToken: %v", err)
 	}
+	if rr := call(unpinned.Token); rr.Code == http.StatusForbidden {
+		t.Errorf("an unpinned PAT must NOT be subject to a workspace gate; got 403 (body: %s)", rr.Body.String())
+	}
 
-	// PAT against /api/v1/workspaces/alpha must not be gate-rejected.
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/alpha/", nil)
-	req.Header.Set("Authorization", "Bearer "+tok.Token)
-	req.RemoteAddr = "192.0.2.1:1234"
-	rr := httptest.NewRecorder()
-	srv.ServeHTTP(rr, req)
-
-	if rr.Code == http.StatusForbidden {
-		t.Errorf("PAT path must NOT be subject to the OAuth allow-list gate; got 403 (body: %s)", rr.Body.String())
+	// Pinned to another workspace: refused on alpha, with the pin reason.
+	pinned, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
+		Name: "pat-pinned", WorkspaceID: wsForToken.ID,
+	}, 30, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken (pinned): %v", err)
+	}
+	rr := call(pinned.Token)
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "token_workspace_pinned") {
+		t.Errorf("a PAT pinned to another workspace must be refused token_workspace_pinned on alpha; got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 }
 

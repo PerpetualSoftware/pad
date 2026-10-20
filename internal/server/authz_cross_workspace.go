@@ -165,6 +165,11 @@ type CrossWorkspaceAccess struct {
 	// trusting its doc comment — see that method. Unexported and never
 	// serialized; nothing outside this file sets it.
 	collectionScoped bool
+
+	// pin is the caller's token pin, when it has one (BUG-3982), so
+	// WriteDenied names the token's workspace. Stamped with
+	// collectionScoped, on the way out of authorizeCrossWorkspace.
+	pin *tokenPin
 }
 
 // WorkspaceID is a nil-safe accessor for the resolved workspace's ID.
@@ -235,8 +240,7 @@ func (a CrossWorkspaceAccess) WriteDenied(w http.ResponseWriter) {
 	case CrossWorkspaceLookupFailed:
 		writeInternalError(w, a.Err)
 	case CrossWorkspaceTokenNotAllowed:
-		writeForbidden(w, "permission_denied",
-			"Token is not authorized for this workspace", forbiddenReasonWorkspaceNotAuthorized)
+		writeTokenWorkspaceDeniedFor(w, a.pin)
 	default:
 		writeForbidden(w, "forbidden",
 			"You do not have access to the requested workspace", forbiddenReasonNoAccess)
@@ -522,6 +526,8 @@ func (s *Server) authorizeCrossWorkspace(r *http.Request, workspaceSlugOrID stri
 	// exists to close.
 	verdict := func(a CrossWorkspaceAccess) CrossWorkspaceAccess {
 		a.collectionScoped = scope.collectionID != ""
+		// The token's workspace pin, so a refusal can say so (BUG-3982).
+		a.pin = tokenPinFrom(r.Context())
 		return a
 	}
 	// An installed app never reaches across workspaces (SPEC-6 §4, U6a): no

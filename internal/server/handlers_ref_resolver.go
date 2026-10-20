@@ -70,6 +70,13 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// A workspace-pinned token resolves refs in its own workspace only
+	// (BUG-3982); anywhere else is the resolver's ordinary 404.
+	if pin := tokenPinFrom(r.Context()); pin != nil && pin.ID != ws.ID {
+		s.refResolverNotFound(w, r)
+		return
+	}
+
 	// 3. Resolve the ref within the workspace. parseRefForRedirect
 	//    canonicalizes the prefix to uppercase so it lines up with
 	//    GetItemByRef's exact-prefix path; refs whose prefix this parser

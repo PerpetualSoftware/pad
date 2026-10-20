@@ -1403,7 +1403,7 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 // case-insensitive).
 //
 // `allowedWorkspaceSlugs` is the OAuth/MCP token's workspace allow-
-// list (TASK-952). A nil slice means "no token-level gate" (PAT or
+// list (TASK-952). A nil slice means "no token-level gate" (unpinned PAT or
 // pre-consent token, allow all enumerated workspaces). A slice
 // containing "*" is wildcard consent (allow all). Otherwise only
 // workspaces whose slug appears in the list contribute source rows
@@ -1497,8 +1497,8 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 			// Same-ws backlinks are GetBacklinks's responsibility.
 			continue
 		}
-		// Token allow-list gate. PAT auth / no-token shapes pass
-		// allowAll=true. Wildcard ("*") consent passes wildcard=true.
+		// Token allow-list gate. Unpinned PAT / no-token shapes pass
+		// allowAll=true (a pinned PAT carries [its slug], BUG-3982). Wildcard ("*") consent passes wildcard=true.
 		// Otherwise the source workspace's slug must be explicitly
 		// allowed.
 		if !allowAll && !wildcard && !allowSet[ws.Slug] {

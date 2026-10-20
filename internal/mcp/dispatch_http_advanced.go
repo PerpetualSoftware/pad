@@ -759,7 +759,8 @@ func hasFieldChanges(input map[string]any) bool {
 // The lister already encodes the right policy via the OAuth-token
 // allow-list (internal/mcp/dispatch_http_lister.go):
 //
-//   - PAT auth (no allow-list)        → all of the user's workspaces
+//   - Unpinned PAT auth (no allow-list) → all of the user's workspaces
+//     (a pinned PAT carries [its slug], BUG-3982)
 //   - Wildcard token (`["*"]`)        → all of the user's workspaces
 //   - Specific allow-list             → intersection with the user's
 //     memberships

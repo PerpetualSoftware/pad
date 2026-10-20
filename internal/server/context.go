@@ -142,8 +142,9 @@ func TokenScopeAllows(scopesJSON, method, path string) bool {
 // running the standard membership check.
 //
 // nil clears any previously set allow-list — distinct from setting
-// an empty slice, which would deny every workspace. PAT auth never
-// calls this; the helper exists for the OAuth path only.
+// an empty slice, which would deny every workspace. Called for OAuth
+// consent scoping, and for a user-owned PAT pinned to a workspace, whose
+// allow-list is the one slug (BUG-3982).
 //
 // Exported so the in-process MCP dispatcher can forward the same
 // allow-list onto synthesized requests via Apply, matching the
@@ -198,8 +199,8 @@ func MCPTokenIdentityFromContext(ctx context.Context) (kind, ref string) {
 // allow-list, or nil if none was attached. Three return shapes
 // matter to callers:
 //
-//   - nil — no allow-list set (PAT auth, or pre-TASK-952 OAuth
-//     tokens). Caller should NOT apply any token-level gate; rely
+//   - nil — no allow-list set (an unpinned PAT, a session, or pre-TASK-952
+//     OAuth tokens; a workspace-pinned PAT carries [its slug], BUG-3982). Caller should NOT apply any token-level gate; rely
 //     on standard membership checks.
 //   - []string{"*"} — wildcard. Caller should not apply per-slug
 //     gating; standard membership applies.
@@ -227,7 +228,7 @@ func TokenAllowedWorkspacesFromContext(ctx context.Context) []string {
 //
 // Return contract mirrors TokenAllowedWorkspacesFromContext:
 //
-//   - nil allow-list (PAT / pre-consent / local stdio) → nil set → NO filter.
+//   - nil allow-list (unpinned PAT / pre-consent / local stdio) → nil set → NO filter.
 //   - wildcard ["*"] → nil set → NO filter.
 //   - explicit ["a","b"] → set{a,b}; caller MUST drop any workspace whose
 //     slug is not a key, even one the user is a member of.

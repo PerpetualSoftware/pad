@@ -169,6 +169,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A workspace-pinned token streams its own workspace only (BUG-3982).
+	// After the membership gates above, so the refusal confirms nothing a
+	// 404 would have hidden.
+	if pin := tokenPinFrom(r.Context()); pin != nil && pin.ID != ws.ID {
+		writeTokenWorkspaceDenied(w, r)
+		return
+	}
+
 	// Verify streaming support
 	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
