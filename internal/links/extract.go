@@ -472,25 +472,6 @@ func isBlankLineAt(content string, pos, n int) bool {
 	return true // EOF with only whitespace counts as blank
 }
 
-// isInRanges returns true if `pos` falls inside any half-open
-// `[start, end)` interval in `ranges`. `ranges` must be sorted by
-// start (which both fencedCodeRanges and inlineCodeRanges produce
-// naturally by their forward scan). O(log N) binary search would
-// be tighter but ranges per item are bounded enough (most bodies
-// have under 20 code spans) that linear scan is fine and easier
-// to audit.
-func isInRanges(pos int, ranges [][2]int) bool {
-	for _, r := range ranges {
-		if pos < r[0] {
-			return false
-		}
-		if pos < r[1] {
-			return true
-		}
-	}
-	return false
-}
-
 // ExtractWikiLinks scans `content` for [[...]] occurrences OUTSIDE
 // any fenced or inline code region, parses each into a WikiLinkRef,
 // and returns them in source order.
@@ -515,11 +496,15 @@ func ExtractWikiLinks(content string) []WikiLinkRef {
 	inline := inlineCodeRanges(content, fenced)
 
 	var out []WikiLinkRef
+	// Matches arrive in increasing order and both range lists are sorted and
+	// disjoint, so one cursor per list walks them once per call (BUG-3968: a
+	// scan per match made many code spans then many links quadratic).
+	fc, ic := rangeCursor{ranges: fenced}, rangeCursor{ranges: inline}
 	matches := wikiLinkPattern.FindAllStringSubmatchIndex(content, -1)
 	for _, m := range matches {
 		// m[0]=start of [[, m[1]=end of ]], m[2]=start of body, m[3]=end of body
 		linkStart := m[0]
-		if isInRanges(linkStart, fenced) || isInRanges(linkStart, inline) {
+		if fc.contains(linkStart) || ic.contains(linkStart) {
 			continue
 		}
 		body := content[m[2]:m[3]]
