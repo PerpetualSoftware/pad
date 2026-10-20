@@ -134,11 +134,6 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 	if input.Role == "" {
 		input.Role = "editor"
 	}
-	// BUG-3861: an unknown role reached the invitations CHECK constraint and
-	// answered 500.
-	if !requireKnownWorkspaceRole(w, input.Role) {
-		return
-	}
 
 	// Enforce member count limit (workspace-scoped)
 	if !s.enforcePlanLimit(w, r, workspaceID, "members_per_workspace") {
@@ -162,6 +157,13 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
+		return
+	}
+
+	// BUG-3861: an unknown role reached the invitations CHECK constraint and
+	// answered 500. Checked after every refusal the door already gave, so the
+	// only answer that changes is that 500.
+	if !requireKnownWorkspaceRole(w, input.Role) {
 		return
 	}
 

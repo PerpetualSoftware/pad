@@ -72,3 +72,19 @@ func TestBUG3861_InviteRoleMustBeKnown(t *testing.T) {
 		}
 	})
 }
+
+// The role check runs after every refusal the invite door already gave, so a
+// bad role changes only the answer that used to be a 500. In the setup window
+// (no users, no auth) the door still answers BUG-3544's 409, not the 400.
+func TestBUG3861_SetupWindowRefusalPrecedesRoleCheck(t *testing.T) {
+	srv := testServer(t)
+	if n, err := srv.store.UserCount(); err != nil || n != 0 {
+		t.Fatalf("premise: a fresh install has no users; count=%d err=%v", n, err)
+	}
+	slug := createWSWithCollections(t, srv)
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/members/invite",
+		map[string]any{"email": "alex@example.com", "role": "admin"})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409 setup_required ahead of the role check. Body: %s", rr.Code, rr.Body.String())
+	}
+}
