@@ -25,9 +25,9 @@ Neither token works on the normal `/api/v1` API, and no session or personal acce
 
 ## Prerequisites on the Pad server
 
-- **An admin must enable Apps.** On a self-hosted server it is off by default. An instance admin turns it on in **Console → Admin → Settings → Apps** (or `PUT /api/v1/admin/apps {"enabled": true}`). Until then every app route answers `404`.
+- **An admin must enable Apps.** On a self-hosted server it is off by default. An instance admin turns it on in **Console → Admin → Settings → Apps** (or `PUT /api/v1/admin/apps {"enabled": true}`). Until then the app API and the workspace's app routes answer `404`, except the workspace's apps list (`GET /api/v1/workspaces/{ws}/apps`), which answers `200` with `available: false`.
 - **The server needs an `https` public origin and an OAuth server.** Apps are available on a self-hosted server only when Apps is enabled and the server's OAuth issuer is `https`, because every app credential is an OAuth token. `GET /api/v1/admin/apps` reports `available` and `https_issuer`.
-- **Apps do not depend on the MCP setting.** The OAuth endpoints an installed app uses are served for install clients even when MCP is off.
+- **Apps do not depend on the MCP setting.** `/oauth/authorize`, its consent step and `/oauth/token` are served for install clients even when MCP is off. Other OAuth endpoints (dynamic registration, revocation, introspection, the discovery document) still follow the MCP setting.
 - **Pad Cloud is operator-managed.** Apps are always available on Pad Cloud, and the admin settings cannot be changed there (`403 managed_by_operator`).
 - **Private destinations.** Pad fetches your manifest and posts your webhooks from the server, and refuses private addresses. A self-hosted admin can allow specific private origins with `private_origins` (each entry has an `origin`, an `allowed` list of addresses or CIDRs, and `fetch` / `webhook` flags). On Pad Cloud no private destination is reachable. This matters mainly for local development.
 
@@ -205,7 +205,7 @@ All owner routes are under `/api/v1/workspaces/{ws}/apps` and are owner-only. Th
    - `collections` (each with `adopt` set if an earlier install's collection will be reused), `events`, `webhook_url`, `item_actions`, `redirect_uris`, `config_schema`, `docs`;
    - `artifacts`, each with the raw file, the normalized item Pad would store, and a `changes` list of anything the importer dropped or altered.
 
-   A staged preview expires (`expires_at`). `GET /apps/install/pending/{pendingID}` re-reads it and `DELETE` discards it. Preview failures include `502 manifest_fetch_failed`, `422 invalid_manifest`, `422 artifact_hash_mismatch`, `422 invalid_artifact`, `409 collection_conflict` and `429 pending_install_limit`.
+   A staged preview expires (`expires_at`). `GET /apps/install/pending/{pendingID}` re-reads it and `DELETE` discards it. Preview failures include `400 invalid_base_url`, `502 manifest_fetch_failed`, `422 invalid_manifest`, `502 artifact_fetch_failed`, `422 artifact_hash_mismatch`, `422 invalid_artifact`, `422 artifact_destination_missing` (the workspace has no collection that accepts an artifact's kind), `409 collection_conflict` and `429 pending_install_limit`.
 
 2. **Confirm.** `POST /apps/install/pending/{pendingID}/confirm` with `{"manifest_sha256": "<hash from the preview>"}`. A `manifest_sha256` that is not the staged manifest's is refused with `409 install_review_mismatch`. Pad then re-normalizes the staged bytes and compares them with what the owner reviewed; if the workspace changed in a way that alters the result, it refuses with `409 install_review_stale` and writes nothing. On success (`201`) it provisions everything in one transaction and answers:
 
@@ -246,7 +246,7 @@ All owner routes are under `/api/v1/workspaces/{ws}/apps` and are owner-only. Th
 
 ### App side: get a token
 
-Discover the token endpoint from Pad's OAuth metadata at `/.well-known/oauth-authorization-server` rather than hard-coding it. Then request a service token:
+The token endpoint is `{pad-origin}/oauth/token`. Do not discover it from `/.well-known/oauth-authorization-server`: a self-hosted server serves that document only when its OAuth is on for MCP clients, and the document describes MCP clients, not app install clients. Request a service token:
 
 ```
 POST {token_endpoint}
@@ -278,7 +278,7 @@ The person must be a human member of the workspace. A delegated request is re-ch
 
 ### Revocation
 
-Tokens are checked against live state on every request, and the response is re-validated before it is sent. Disabling, rotating or uninstalling the app invalidates its tokens immediately; see [Lifecycle](#lifecycle). An invalid token gets `401` with `WWW-Authenticate: Bearer error="invalid_token"`.
+Tokens are checked against live state on every request. A read's response is also re-validated before it is sent, a write re-checks its authority before it commits, and a download re-checks before its first byte. Disabling, rotating or uninstalling the app invalidates its tokens immediately; see [Lifecycle](#lifecycle). An invalid token gets `401` with `WWW-Authenticate: Bearer error="invalid_token"`.
 
 ## App API reference
 
@@ -341,6 +341,8 @@ The owner sees the webhook's status, and so can the app's operator:
 | `awaiting_secret` | The webhook exists but the app has not yet redeemed an install code that hands it the signing secret. Nothing is delivered. The owner is told to issue a new install code. |
 | `active` | The app holds the secret and the install is active. Events are delivered. |
 | `paused` | The install is not active (for example disabled). Nothing is delivered. |
+
+`paused` takes precedence: a disabled install's hook reads `paused` even if it is also waiting for a secret, and no held notice is shown. Enabling the install restores the status the hook had: `active` if the app had already redeemed its secret, or `awaiting_secret` with its notice if it had not. Disabling does not take the secret away; only a rotate does.
 
 Status is reported with `undelivered_dropped`, a count of deliveries dropped after 24 hours (below).
 
