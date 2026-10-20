@@ -113,6 +113,12 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 //     and the operator is told to run `pad auth setup` against the new
 //     database. Refusing them would claim a loss the migration never promised
 //     to prevent.
+//   - PUSH DELIVERY STATE (push_devices, user_notifications; TASK-3937):
+//     a device row is bound to the session that registered it, and the
+//     migration does not carry sessions, so every device is re-registered
+//     after the operator signs in again; the queue is transient (pushed or
+//     skipped within minutes, deleted after 7 days). user_notification_settings
+//     is the exception: a person's choices are state, so it is refused below.
 //   - The marker table itself, which the migration writes.
 //
 // Group 3 below — workspace user state the BUNDLE does not carry — is in on a
@@ -176,6 +182,8 @@ var migratedRefusalTables = []string{
 	// handlers log OAuth connection changes, which are not refused
 	// (handlers_connected_apps.go:239, :287). BUG-3958 r1.
 	"activities",
+	// A person's push settings (TASK-3937): choices, not delivery state.
+	"user_notification_settings",
 	"comment_reactions",
 	"views",
 	"agent_roles",
@@ -268,6 +276,12 @@ var migratedExcludedTables = map[string]string{
 	// content. It was listed as derived; BUG-3958 r2 corrected that.
 	"event_outbox":    "bookkeeping",
 	"sqlite_sequence": "bookkeeping",
+
+	// PUSH DELIVERY STATE (TASK-3937): a device row is bound to a session the
+	// migration does not carry, so it is re-registered after sign-in; a queue
+	// row lost is one push not sent. user_notification_settings is refused.
+	"push_devices":       "push-delivery",
+	"user_notifications": "push-delivery",
 
 	// The marker table, which the migration itself writes.
 	migratedMarkerTable: "marker",

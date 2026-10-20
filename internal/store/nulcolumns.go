@@ -302,6 +302,11 @@ var nulColumns = []nulColumn{
 	{"item_verifications", "evidence_url", classText},
 	{"item_verifications", "created_by", classText},
 	{"item_verifications", "agent_name", classText},
+
+	// push_devices (TASK-3937): all three arrive in a registration request body.
+	{"push_devices", "connection_id", classText},
+	{"push_devices", "token", classText},
+	{"push_devices", "app_version", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -329,6 +334,7 @@ var nulTriggerMigrations = []string{
 	"138_nul_invariant_triggers_post137.sql",
 	"140_nul_invariant_triggers_post139.sql",
 	"152_nul_invariant_triggers_post151.sql",
+	"156_nul_invariant_triggers_post155.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -355,6 +361,10 @@ var nulColumnTriggerFile = map[string]string{
 	"item_verifications.evidence_url": "152_nul_invariant_triggers_post151.sql",
 	"item_verifications.created_by":   "152_nul_invariant_triggers_post151.sql",
 	"item_verifications.agent_name":   "152_nul_invariant_triggers_post151.sql",
+	// 155 introduced the table (TASK-3937).
+	"push_devices.connection_id": "156_nul_invariant_triggers_post155.sql",
+	"push_devices.token":         "156_nul_invariant_triggers_post155.sql",
+	"push_devices.app_version":   "156_nul_invariant_triggers_post155.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -424,6 +434,28 @@ func NULProtectedColumns() []nulColumn {
 // on an unlisted column are to fail on every known exclusion or to ignore the
 // class entirely.
 var nulExcluded = map[string]string{
+	"push_devices.id":                        "server-minted device UUID (TASK-3937, migration 155)",
+	"push_devices.user_id":                   "the authenticated user's server-minted UUID (TASK-3937)",
+	"push_devices.session_id":                "server-minted session id read from the authenticated session (TASK-3937)",
+	"push_devices.platform":                  "fixed enum ios | android, a CHECK constraint (TASK-3937)",
+	"push_devices.created_at":                "server timestamp from now() (TASK-3937)",
+	"push_devices.updated_at":                "server timestamp from now() (TASK-3937)",
+	"user_notifications.id":                  "server-minted notification UUID (TASK-3937, migration 155)",
+	"user_notifications.user_id":             "server-minted user UUID read from items and comments rows (TASK-3937)",
+	"user_notifications.workspace_id":        "server-minted workspace UUID from the written row (TASK-3937)",
+	"user_notifications.item_id":             "server-minted item UUID from the written row (TASK-3937)",
+	"user_notifications.comment_id":          "server-minted comment UUID from the written row (TASK-3937)",
+	"user_notifications.kind":                "fixed server constant, a CHECK constraint (TASK-3937)",
+	"user_notifications.actor_user_id":       "server-minted user UUID of the authenticated writer (TASK-3937)",
+	"user_notifications.dedupe_key":          "server-built from a fixed kind and server-minted ids and timestamps (TASK-3937)",
+	"user_notifications.created_at":          "server timestamp from now() (TASK-3937)",
+	"user_notifications.push_state":          "fixed server constant, a CHECK constraint (TASK-3937)",
+	"user_notifications.skip_reason":         "fixed server constant set by the dispatcher (TASK-3937)",
+	"user_notifications.claim_token":         "server-minted UUID (TASK-3937)",
+	"user_notifications.claimed_at":          "server timestamp from now() (TASK-3937)",
+	"user_notifications.sent_at":             "server timestamp from now() (TASK-3937)",
+	"user_notification_settings.user_id":     "the authenticated user's server-minted UUID (TASK-3937, migration 155)",
+	"user_notification_settings.updated_at":  "server timestamp from now() (TASK-3937)",
 	"workspace_import_status.workspace_id":   "server-minted workspace UUID, a foreign key to workspaces(id) (TASK-896, migration 131)",
 	"workspace_import_status.status":         "fixed server constant store.ImportStatusPartial (TASK-896); never from a request or a bundle",
 	"workspace_import_status.note":           "composed by the server from a fixed category, a fixed detail and a server-minted correlation id (TASK-896, lead ruling): never request bytes, paths or driver text",
