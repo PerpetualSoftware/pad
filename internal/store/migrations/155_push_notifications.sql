@@ -1,16 +1,18 @@
 -- Migration 155: push notifications (TASK-3937, PLAN-3908 phase 2 unit 1).
 --
--- push_devices: one row per signed-in app session that registered a push
--- token. Every token is an FCM registration token (iOS routes through FCM),
+-- push_devices: one row per signed-in app session that registers a push
+-- token (the register endpoint lands with TASK-3938; nothing writes this
+-- table yet). Every token is an FCM registration token (iOS routes through FCM),
 -- so there is no environment column: FCM picks the APNs gateway itself.
 -- platform stays because the FCM payload differs per platform. The row dies
 -- with its session or its user.
 --
--- user_notifications: the per-event push queue. A row is written ONLY for a
--- user who has at least one device, on the transaction of the write that
--- caused it. dedupe_key makes the enqueue idempotent per (user, key). item_id
--- and comment_id carry no foreign key: the dispatcher skips a row whose
--- subject is gone, and retention removes the rest. Retention is NOT in this
+-- user_notifications: the per-event push queue. Nothing writes it yet: the
+-- enqueue is TASK-3937 part B, and it is to write a row ONLY for a user who
+-- has at least one device, on the transaction of the write that caused it.
+-- dedupe_key is what makes that enqueue idempotent per (user, key). item_id
+-- and comment_id carry no foreign key: the dispatcher is to skip a row whose
+-- subject is gone, and retention to remove the rest. Retention is NOT in this
 -- migration: the 7-day sweep lands with the dispatcher (TASK-3939), and until
 -- then nothing deletes a queue row. workspace_id cascades, so a purged
 -- workspace leaves no queue behind. actor_user_id is indexed because deleting
@@ -18,7 +20,7 @@
 --
 -- user_notification_settings: a person's recipient-side filters. No row means
 -- the defaults. The dispatcher (TASK-3939) is to apply them; the enqueue
--- does not.
+-- (part B) is not to.
 --
 -- workspace_read_cursors (149) stays separate: it must exist for every user,
 -- with or without a device, and this queue is to be deleted after 7 days.

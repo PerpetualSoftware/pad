@@ -114,9 +114,9 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 //     database. Refusing them would claim a loss the migration never promised
 //     to prevent.
 //   - PUSH DELIVERY STATE (push_devices, user_notifications; TASK-3937):
-//     a device row is bound to the session that registered it, and the
-//     migration does not carry sessions, so every device is re-registered
-//     after the operator signs in again; the queue is delivery state, not a
+//     a device row is bound to the session that registers it (TASK-3938),
+//     and the migration does not carry sessions, so every device is to
+//     re-register after the operator signs in again; the queue is delivery state, not a
 //     person's data: a lost row is one push not sent. (Its dispatcher and
 //     7-day sweep land with TASK-3939; until then nothing reads or deletes
 //     it.) Both are excluded as "push-delivery" in migratedExcludedTables,
@@ -282,8 +282,8 @@ var migratedExcludedTables = map[string]string{
 	"sqlite_sequence": "bookkeeping",
 
 	// PUSH DELIVERY STATE (TASK-3937): a device row is bound to a session the
-	// migration does not carry, so it is re-registered after sign-in; a queue
-	// row lost is one push not sent. user_notification_settings is refused.
+	// migration does not carry, so it is to re-register after sign-in
+	// (TASK-3938); a queue row lost is one push not sent. user_notification_settings is refused.
 	"push_devices":       "push-delivery",
 	"user_notifications": "push-delivery",
 
