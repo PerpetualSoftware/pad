@@ -935,12 +935,23 @@
 			<PlanLimitPrompt scope="new-item-quick-add" />
 			<div class="quick-add-actions">
 				<span class="quick-add-hint">Enter to add · {modKeyLabel('Enter')} to add and open · Esc to close</span>
-				<button
-					class="quick-add-btn"
-					type="button"
-					disabled={!quickAddTitle.trim() || quickAddSubmitting}
-					onclick={() => submitQuickAdd()}
-				>Add</button>
+				<!-- Every key path has a button too (TASK-3972), in the mobile
+				     capture sheet's order: Cancel, Add and open, Add. -->
+				<div class="quick-add-buttons">
+					<button class="quick-add-btn secondary quick-add-cancel" type="button" onclick={cancelQuickAdd}>Cancel</button>
+					<button
+						class="quick-add-btn secondary quick-add-open"
+						type="button"
+						disabled={!quickAddTitle.trim() || quickAddSubmitting}
+						onclick={() => submitQuickAdd(true)}
+					>Add and open</button>
+					<button
+						class="quick-add-btn quick-add-submit"
+						type="button"
+						disabled={!quickAddTitle.trim() || quickAddSubmitting}
+						onclick={() => submitQuickAdd()}
+					>Add</button>
+				</div>
 			</div>
 		</div>
 	{/if}
@@ -1276,10 +1287,15 @@
 	.quick-add-input::placeholder {
 		color: var(--text-muted);
 	}
+	/* Wraps on a narrow screen (TASK-3972 r1): the buttons drop below the
+	   hint, and then onto two rows themselves, rather than run past the
+	   dialog's edge. */
 	.quick-add-actions {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		justify-content: space-between;
+		gap: var(--space-3);
 	}
 	.quick-add-hint {
 		font-size: 0.75em;
@@ -1293,7 +1309,9 @@
 	.quick-add-btn {
 		padding: var(--space-2) var(--space-4);
 		background: var(--accent-blue);
-		border: none;
+		/* Transparent, so Add is as tall as the bordered buttons beside it,
+		   even alone on its own row when the footer wraps. */
+		border: 1px solid transparent;
 		border-radius: var(--radius);
 		color: #fff;
 		font-size: 0.85em;
@@ -1306,6 +1324,25 @@
 	.quick-add-btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+	.quick-add-buttons {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: var(--space-2);
+		margin-left: auto;
+	}
+	.quick-add-buttons .quick-add-btn {
+		white-space: nowrap;
+	}
+	.quick-add-btn.secondary {
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--text-primary);
+	}
+	.quick-add-btn.secondary:hover:not(:disabled) {
+		filter: none;
+		background: var(--bg-hover);
 	}
 	.quick-add-header {
 		position: relative;

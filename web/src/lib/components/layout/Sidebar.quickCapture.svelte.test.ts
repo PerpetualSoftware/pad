@@ -100,10 +100,43 @@ describe('Sidebar quick-add keeps your place (TASK-3590)', () => {
 		render(Sidebar);
 		await open();
 		await fireEvent.input(input(), { target: { value: 'by button' } });
-		await fireEvent.click(document.querySelector<HTMLButtonElement>('.quick-add-btn')!);
+		await fireEvent.click(document.querySelector<HTMLButtonElement>('.quick-add-submit')!);
 		await settle();
 		expect(api.items.create).toHaveBeenCalledTimes(1);
 		expect(goto).not.toHaveBeenCalled();
+	});
+
+	it('the Add and open button adds and opens the new item (TASK-3972)', async () => {
+		render(Sidebar);
+		await open();
+		await fireEvent.input(input(), { target: { value: 'open by button' } });
+		await fireEvent.click(document.querySelector<HTMLButtonElement>('.quick-add-open')!);
+		await settle();
+		expect(api.items.create).toHaveBeenCalledTimes(1);
+		expect(goto).toHaveBeenCalledWith('/u/ws/tasks/TASK-1?new=1');
+		expect(document.querySelector('.quick-add-modal'), 'add and open left the dialog up').toBeNull();
+	});
+
+	it('the Cancel button closes the dialog without creating anything (TASK-3972)', async () => {
+		render(Sidebar);
+		await open();
+		await fireEvent.input(input(), { target: { value: 'never mind' } });
+		await fireEvent.click(document.querySelector<HTMLButtonElement>('.quick-add-cancel')!);
+		await settle();
+		expect(document.querySelector('.quick-add-modal'), 'Cancel left the dialog up').toBeNull();
+		expect(api.items.create).not.toHaveBeenCalled();
+		await open();
+		expect(input().value, 'the cancelled text came back on reopen').toBe('');
+	});
+
+	it('Add and open is disabled until there is a title, like Add (TASK-3972)', async () => {
+		render(Sidebar);
+		await open();
+		const openBtn = () => document.querySelector<HTMLButtonElement>('.quick-add-open')!;
+		expect(openBtn().disabled).toBe(true);
+		expect(document.querySelector<HTMLButtonElement>('.quick-add-cancel')!.disabled).toBe(false);
+		await fireEvent.input(input(), { target: { value: 'x' } });
+		expect(openBtn().disabled).toBe(false);
 	});
 
 	for (const mod of ['ctrlKey', 'metaKey'] as const) {
