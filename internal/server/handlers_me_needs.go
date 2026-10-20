@@ -45,12 +45,10 @@ type needsResponse struct {
 	Degraded []string `json:"degraded,omitempty"`
 }
 
-// writeEmptyNeeds is the one answer for a ?workspace= that is unknown, not
-// admitted, or token-excluded, so the three are indistinguishable. It is
-// exactly what a known workspace with nothing waiting returns.
-func writeEmptyNeeds(w http.ResponseWriter) {
-	writeJSON(w, http.StatusOK, needsResponse{Rows: []*needs.Row{}, Workspaces: []needsWorkspaceCount{}})
-}
+// An unknown, not admitted or token-excluded ?workspace= needs no special
+// case: it leaves no admitted workspace, so the pipeline below answers the
+// same empty 200 as a known workspace with nothing waiting, byte for byte
+// (rows [], total 0, hidden 0, workspaces [], no degraded).
 
 // handleMeNeeds lists, across every workspace the caller belongs to or has a
 // grant in, the open items that need THIS person, oldest-waiting first.

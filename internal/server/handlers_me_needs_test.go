@@ -38,7 +38,6 @@ func needsBackends(t *testing.T, fn func(t *testing.T, srv *Server)) {
 type nfx struct {
 	t   *testing.T
 	srv *Server
-	n   int
 }
 
 func newNfx(t *testing.T, srv *Server) *nfx { return &nfx{t: t, srv: srv} }
