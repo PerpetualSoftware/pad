@@ -1088,7 +1088,9 @@ let woken = null // wake's promise for this session (reset by an end that stops 
 // Once per session, so later pad commands run nothing extra. Resolves once
 // presence is recorded, not when the arm check answers: `pad session register`
 // mints the worker id the CLI sends on every call (leases key on it), so the
-// tool.call hook waits for it before the first pad command runs.
+// tool.call hook waits for it before the first pad command runs. A register
+// that fails is not retried in this session: it stays unregistered, as it
+// did when start-time registration failed.
 function wake($) {
   if (woken) return woken
   let registered = () => {}
@@ -1107,7 +1109,7 @@ function usesPad(e) {
   if (e.tool === 'Bash') return /(^|[^\w.-])pad($|[^\w.-])/.test(String(e.command || ''))
   // Any server name: Pad's tools are pad_* whatever the person called the server
   // (Codex r3: `.*pad.*` in the server part missed a server named otherwise).
-  return /^mcp__.+__pad_[a-z_]+$/i.test(String(e.tool || ''))
+  return /^mcp__.+__pad_[a-z0-9_]+$/i.test(String(e.tool || ''))
 }
 
 // Silent by construction: every failure here leaves the session as it was.
@@ -1313,7 +1315,7 @@ export function register(on) {
     try {
       if (!open || busy || mode) return result
       const viaCli = e.tool === 'Bash' && /\bpad\s+(item|project|collection)\b/.test(String(e.command || ''))
-      const viaMcp = /^mcp__.*pad.*__pad_(item|project|collection)$/i.test(String(e.tool || ''))
+      const viaMcp = /^mcp__.+__pad_(item|project|collection)$/i.test(String(e.tool || ''))
       if (viaCli || viaMcp) load($).catch(() => {})
     } catch {}
     return result
