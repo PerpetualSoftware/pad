@@ -194,12 +194,17 @@ func runTwoFactorDisable(client *cli.Client, in *bufio.Reader, out io.Writer, sa
 
 	green := color.New(color.FgGreen).SprintFunc()
 	fmt.Fprintf(out, "%s 2FA is off. Your other sessions were signed out.\n", green("✓"))
+	// The old session is already revoked, so a reply without a replacement,
+	// or a failed save of one, leaves this CLI signed out. That is a failure
+	// for any script that runs next, not a hint it can read past on exit 0
+	// (BUG-3882).
 	if resp.Token == "" {
 		fmt.Fprintln(out, "Run 'pad auth login' to sign this CLI in again.")
-		return nil
+		return fmt.Errorf("2FA is off, but this CLI is now signed out: the server sent no new session; run 'pad auth login'")
 	}
 	if err := saveToken(resp.Token); err != nil {
 		fmt.Fprintf(out, "This CLI's session was replaced, and saving the new one failed (%v).\nRun 'pad auth login' to sign in again.\n", err)
+		return fmt.Errorf("2FA is off, but this CLI is now signed out: saving its new session failed (%w); run 'pad auth login'", err)
 	}
 	return nil
 }
