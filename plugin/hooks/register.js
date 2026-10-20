@@ -1,9 +1,11 @@
 // The Pad pane inside Claude Code (IDEA-3477; folded into the pad plugin by TASK-3486).
 //
 // One command, /pad-pane, opens a pane on the linked workspace. Nothing else:
-// no blocking, no band, no changes to what Claude sees. Until you run the
-// command, the mod only listens for Claude touching Pad so an open pane stays
-// fresh.
+// no blocking, no band, no changes to what Claude sees. Session start runs
+// nothing (TASK-3970); after a plugin reload it only picks back up a pane that
+// was already open. Otherwise the mod listens for Claude touching Pad: the
+// first touch wakes the session (presence, live events; see wake), and an
+// open pane stays fresh.
 //
 // Views: Now (n), Next (x), Browse (b), Find (f), Activity (a), Settings (g).
 // Item view: status (s), comment (c), work on it (w), copy ref (y), open in
