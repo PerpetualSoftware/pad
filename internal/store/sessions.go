@@ -25,6 +25,9 @@ type SessionInfo struct {
 	// rotation (CreateSessionIssuedAt) carries it over rather than restarting
 	// it (BUG-3336).
 	CreatedAt time.Time
+	// RenewTTL is the session's sliding window (renew_ttl_seconds); zero for a
+	// legacy row that never slides. A rotation keeps it (BUG-3978).
+	RenewTTL time.Duration
 }
 
 // Session kinds (BUG-3350). A CLI session is a bearer credential only; a web
@@ -162,9 +165,10 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	tokenHash := hex.EncodeToString(hash[:])
 
 	var userID, expiresAt, ipAddress, uaHash, createdAt, kind string
+	var renewSeconds int64
 	err := s.db.QueryRow(s.q(`
-		SELECT user_id, expires_at, ip_address, ua_hash, created_at, kind FROM sessions WHERE token_hash = ?
-	`), tokenHash).Scan(&userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind)
+		SELECT user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds FROM sessions WHERE token_hash = ?
+	`), tokenHash).Scan(&userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -193,6 +197,7 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 		UAHash:    uaHash,
 		CreatedAt: parseTime(createdAt),
 		Kind:      kind,
+		RenewTTL:  time.Duration(renewSeconds) * time.Second,
 	}, nil
 }
 
