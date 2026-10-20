@@ -1105,7 +1105,9 @@ function wake($) {
 // shape; the shapes are tabled in watch.test.ts rather than listed here.
 function usesPad(e) {
   if (e.tool === 'Bash') return /(^|[^\w.-])pad($|[^\w.-])/.test(String(e.command || ''))
-  return /^mcp__.*pad.*__pad_/i.test(String(e.tool || ''))
+  // Any server name: Pad's tools are pad_* whatever the person called the server
+  // (Codex r3: `.*pad.*` in the server part missed a server named otherwise).
+  return /^mcp__.+__pad_[a-z_]+$/i.test(String(e.tool || ''))
 }
 
 // Silent by construction: every failure here leaves the session as it was.

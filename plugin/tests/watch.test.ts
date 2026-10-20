@@ -114,7 +114,7 @@ const RUNS_PAD = [
   'pad bootstrap', 'pad', '  pad item list', 'cd /w && pad item list', 'ls; pad project next', 'a || pad x', 'a | pad x',
   'bash -c "pad item list"', `sh -c 'pad project next'`, 'bash -c "pad"', `sh -c 'pad'`, 'echo $(pad)', 'X="$(pad auth whoami)"',
   'echo `pad auth whoami`', 'pad;ls', 'pad&&ls', '\\pad item list', 'PAD_AGENT=x pad bootstrap', '~/.local/bin/pad project next',
-  '/usr/local/bin/pad item show TASK-5', 'env pad bootstrap', 'time pad x', '(pad x)', '{ pad x; }', 'pad\titem list',
+  '/usr/local/bin/pad item show TASK-5', './pad item list', '../bin/pad x', 'env pad bootstrap', 'time pad x', '(pad x)', '{ pad x; }', 'pad\titem list',
 ]
 const NOT_PAD = ['ls -la && git status', 'cat ~/.padrc', 'echo spad', 'padd --version', 'ls pad-monitor.sh', 'grep -r ipad .', 'cat notepad.txt', 'echo pad_x']
 
@@ -141,6 +141,27 @@ test('a command that does not run pad wakes nothing', async ($, on) => {
   for (const command of NOT_PAD) await usePad($, command)
   await settle()
   expect(s.runs).toEqual([])
+})
+
+// Pad MCP tools under any server name, and tools that are not Pad's.
+const PAD_MCP = ['mcp__pad__pad_item', 'mcp__claude_ai_Pad__pad_project', 'mcp__plugin_pad_pad__pad_search', 'mcp__work-tracker__pad_collection']
+const NOT_PAD_MCP = ['mcp__pad__other', 'mcp__ipad__notes', 'mcp__github__create_issue', 'mcp__notepad__pad']
+
+test('a Pad MCP tool under any server name wakes the session; other tools do not', async ($, on) => {
+  mock.clock(on)
+  const s = stubs(on, { armed: false })
+  await $.session.start({ cwd: '/work/demo' })
+  for (const tool of NOT_PAD_MCP) await $.tool.call({ tool } as any)
+  await settle()
+  expect(s.runs).toEqual([])
+  for (const tool of PAD_MCP) {
+    const before = s.atCall.length
+    await $.tool.call({ tool } as any)
+    await settle()
+    expect([tool, s.atCall[before].includes('pad session register')]).toEqual([tool, true])
+    await $.session.end({ reason: 'prompt_input_exit' })
+    s.runs.length = 0
+  }
 })
 
 test('a Pad MCP tool call wakes the session too', async ($, on) => {
