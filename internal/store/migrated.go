@@ -83,14 +83,17 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 // ONE LIST, TWO CONSUMERS: the renderer below and the guard test that compares
 // it against the live schema. The INSTRUMENT that generated it is stated so a
 // reviewer can attack the instrument rather than the rows (CONVE-35): the
-// live schema's table list read from sqlite_master on a fresh store.New — 68
-// tables — partitioned by whether models.WorkspaceExport carries the table's
-// contents. The live schema rather than the migration text, because the latter
+// live schema's table list read from sqlite_master on a fresh store.New,
+// partitioned by whether models.WorkspaceExport carries the table's contents.
+// (It was 68 tables when written; BUG-3958's census measured 91. The count is
+// not pinned: TestMigratedEveryLiveTableIsClassified checks the partition.) The live schema rather than the migration text, because the latter
 // also contains `*_new` rebuild temporaries that are not tables in the end
 // state.
 //
 // The four groups deliberately left OUT, with reasons, so a reader can tell a
-// table nobody considered from one that was considered and excluded:
+// table nobody considered from one that was considered and excluded. The
+// tables themselves are listed in migratedExcludedTables, which also carries
+// BUG-3958's bookkeeping rows; the lists here are examples:
 //
 //   - DERIVED-FROM-CONTENT (status_transitions, item_wiki_links,
 //     item_relation_links, comment_mentions (TASK-3917), activities, event_outbox): written as a consequence
@@ -147,6 +150,24 @@ var migratedRefusalTables = []string{
 	// A person's needs-you dismissals and deferrals (TASK-3918), the same
 	// class as item_stars: per-user workspace state the bundle does not carry.
 	"item_needs_snoozes",
+	// A person's "mark caught up" cursor per workspace (TASK-3615 PR A),
+	// the same class: the bundle does not carry it (BUG-3958).
+	"workspace_read_cursors",
+	// One row per app installed in a workspace: consent, manifest, state and
+	// the uninstall tombstone, written directly by install, upgrade and
+	// disable. Found by BUG-3958's census.
+	"app_installs",
+	// The four below also ride protected writes, but each has a writer of
+	// its own that does not, so a write to the old file loses something
+	// (BUG-3958, lead-ruled):
+	// - the decision runner claims, completes and releases jobs alone;
+	"decision_jobs",
+	// - its answers are written by InsertItemDecisions alone;
+	"item_decisions",
+	// - EnsureAppItemActions rewrites the registry in its own transaction;
+	"app_item_actions",
+	// - adoptLegacyWorkspace writes origin keys without touching items.
+	"item_builtin_origin",
 	"comment_reactions",
 	"views",
 	"agent_roles",
@@ -162,6 +183,75 @@ var migratedRefusalTables = []string{
 	"workspace_invitations",
 	"item_collection_moves",
 	"item_workspace_moves",
+}
+
+// migratedExcludedTables is every live table deliberately NOT refused, keyed to
+// the group (documented above migratedRefusalTables) that excludes it. With
+// migratedRefusalTables and isFTSShadowTable it partitions the live schema:
+// TestMigratedEveryLiveTableIsClassified fails on a table in neither, so a new
+// table is classified when it is added rather than found missing later
+// (BUG-3958: workspace_read_cursors and app_installs were never classified).
+var migratedExcludedTables = map[string]string{
+	// DERIVED-FROM-CONTENT: written only inside a protected table's write.
+	"status_transitions":  "derived",
+	"item_wiki_links":     "derived",
+	"item_relation_links": "derived",
+	"comment_mentions":    "derived",
+	"activities":          "derived",
+	"event_outbox":        "derived",
+	// Written only with an item update (updateItemWithParentLinkOnce) and
+	// deleted in the purge's transaction after protected deletes (BUG-3958).
+	"item_patches": "derived",
+
+	// AUTH / PLATFORM: not migrated; the operator re-runs auth setup.
+	"users":                       "auth",
+	"sessions":                    "auth",
+	"api_tokens":                  "auth",
+	"oauth_access_tokens":         "auth",
+	"oauth_authorization_codes":   "auth",
+	"oauth_clients":               "auth",
+	"oauth_connections":           "auth",
+	"oauth_connection_workspaces": "auth",
+	"oauth_pkce_requests":         "auth",
+	"oauth_refresh_tokens":        "auth",
+	"oauth_revoked_grants":        "auth",
+	"user_oauth_identities":       "auth",
+	"app_token_bindings":          "auth",
+	"password_reset_tokens":       "auth",
+	"email_verification_tokens":   "auth",
+	"email_optouts":               "auth",
+	"cli_auth_sessions":           "auth",
+	"member_collection_access":    "auth",
+	"platform_settings":           "platform",
+	"stripe_processed_events":     "platform",
+
+	// BOOKKEEPING: short-lived, lease or retry rows, or instance-local
+	// records, none of which a migration promises to carry (BUG-3958).
+	"schema_migrations":         "bookkeeping",
+	"mcp_audit_log":             "bookkeeping",
+	"share_link_views":          "bookkeeping",
+	"app_install_pending":       "bookkeeping",
+	"app_install_pending_blobs": "bookkeeping",
+	"app_install_codes":         "bookkeeping",
+	"app_context_codes":         "bookkeeping",
+	"app_delivery_inflight":     "bookkeeping",
+	"idempotency_keys":          "bookkeeping",
+	"webhook_deliveries":        "bookkeeping",
+	"workspace_import_status":   "bookkeeping",
+	"sqlite_sequence":           "bookkeeping",
+
+	// The marker table, which the migration itself writes.
+	migratedMarkerTable: "marker",
+}
+
+// isFTSShadowTable reports an FTS5 table or one of its shadow tables
+// (items_fts, items_fts_data, ...). They are reached only behind a base-table
+// write that has already aborted.
+func isFTSShadowTable(name string) bool {
+	base, _, _ := strings.Cut(name, "_fts")
+	return base != "" && base != name && (strings.HasSuffix(name, "_fts") ||
+		strings.HasSuffix(name, "_fts_config") || strings.HasSuffix(name, "_fts_data") ||
+		strings.HasSuffix(name, "_fts_docsize") || strings.HasSuffix(name, "_fts_idx"))
 }
 
 // MigratedRefusalTables returns the population, sorted, for the guard test and
