@@ -91,6 +91,9 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"emitItemEventAsInstallTx":        "INSERT INTO event_outbox (through writeOutboxTx) for the item it is given; sets the block's actor_via_app",
 	"emitItemUpdateEventsAsInstallTx": "INSERT INTO event_outbox for the item it is given (status_changed and/or updated); sets the block's actor_via_app",
 	"emitCommentEventAsInstallTx":     "INSERT INTO event_outbox (through writeOutboxTx) for the comment it is given; sets the block's actor_via_app",
+	// TASK-3937: the push queue, written at the tail of the fenced comment create.
+	"enqueueCommentNotificationsTx": "reads the comment's item (assignee, creator) and its parent comment's author, then enqueueNotificationsTx for the comment it is given",
+	"enqueueNotificationsTx":        "INSERT INTO user_notifications ... ON CONFLICT (user_id, dedupe_key) DO NOTHING, only for a user with a row in push_devices; on the tx it is handed",
 	// BUG-3653 part B: the storage cap on an app upload. BeginFenced takes the
 	// lock first when the spec sets StorageLimit; CheckStorageLimit reads.
 	"lockStorageLimitTx":     "reads workspaces.owner_id, then acquirePlanLimitLock; writes nothing",

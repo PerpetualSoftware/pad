@@ -658,6 +658,13 @@ func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID str
 	if err := s.enqueueDecisionJobsTx(tx, item.WorkspaceID, item.ID, item.CollectionID); err != nil {
 		return nil, err
 	}
+	// TASK-3937: an item created with an assignee tells them, here rather
+	// than in tryCreateItem so a cross-workspace copy is covered too.
+	if input.AssignedUserID != nil {
+		if err := s.enqueueAssignedNotificationTx(tx, item, *input.AssignedUserID, input.ActorUserID, item.CreatedBy == "agent"); err != nil {
+			return nil, err
+		}
+	}
 	// TASK-3585: the caller's last word inside this transaction.
 	if input.AfterWriteTx != nil {
 		if err := input.AfterWriteTx(tx, item); err != nil {
@@ -3571,6 +3578,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// cannot disagree about what happened.
 	if err := s.emitItemUpdateEventsTx(tx, existing, updated, mutSignal.StatusChanged, mutSignal.FromStatus, doneKey, opt.batchID, hierarchyChanged); err != nil {
 		return nil, err
+	}
+	// TASK-3937: tell a new assignee, on this transaction. Self-assignment
+	// notifies nobody; an empty actor (a system writer) is not the assignee.
+	if mutSignal.AssignmentChanged {
+		if err := s.enqueueAssignedNotificationTx(tx, updated, mutSignal.ToAssignedUserID, input.ActorUserID, updated.LastModifiedBy == "agent"); err != nil {
+			return nil, err
+		}
 	}
 	// Enqueued on EVERY update, including ones that change nothing a
 	// question can see: whether the state changed is the runner's state-hash

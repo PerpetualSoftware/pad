@@ -380,6 +380,16 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, c
 		{"delete provider bindings", `DELETE FROM user_oauth_identities WHERE user_id = ?`, []any{userID}},
 		{"delete sessions", `DELETE FROM sessions WHERE user_id = ?`, []any{userID}},
 		{"delete api tokens", `DELETE FROM api_tokens WHERE user_id = ?`, []any{userID}},
+		// The old owner's registered devices would otherwise receive the new
+		// person's pushes, and their queued pushes describe items the new
+		// person was never told about (TASK-3937). The sessions delete above
+		// already removes devices through push_devices.session_id ON DELETE
+		// CASCADE; this explicit delete is belt-and-braces over that cascade,
+		// naming the intent and surviving a future change to the FK. The
+		// claim test asserts the outcome, not which line did the work.
+		{"delete push devices", `DELETE FROM push_devices WHERE user_id = ?`, []any{userID}},
+		{"delete queued notifications", `DELETE FROM user_notifications WHERE user_id = ?`, []any{userID}},
+		{"delete notification settings", `DELETE FROM user_notification_settings WHERE user_id = ?`, []any{userID}},
 		// Every grant the account held is recorded as revoked, so a refresh
 		// or code exchange that validated before the claim mints nothing
 		// after it (BUG-3678). The connection rows, read before the delete

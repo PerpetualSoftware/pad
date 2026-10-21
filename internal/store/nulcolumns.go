@@ -436,11 +436,11 @@ func NULProtectedColumns() []nulColumn {
 // class entirely.
 //
 // The push_devices and user_notifications reasons (TASK-3937) state the
-// CONTRACT their writers must keep, and none of those writers exists yet: the
-// device register endpoint is TASK-3938, the enqueue is TASK-3937 part B, and
-// the dispatcher's claim and send columns are TASK-3939. Each names the unit
-// that owes it. user_notification_settings is written today, by
-// PutNotificationSettings.
+// CONTRACT their writers must keep, and each names the unit that owns the
+// writer: the enqueue (TASK-3937 part B, notifications.go) writes the queue
+// columns tagged part B; the device register endpoint (TASK-3938) and the
+// dispatcher's claim and send columns (TASK-3939) do not exist yet.
+// user_notification_settings is written by PutNotificationSettings.
 var nulExcluded = map[string]string{
 	"push_devices.id":                        "server-minted device UUID (TASK-3938, migration 155)",
 	"push_devices.user_id":                   "the authenticated user's server-minted UUID (TASK-3938)",

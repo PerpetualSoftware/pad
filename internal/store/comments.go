@@ -183,6 +183,10 @@ func (s *Store) createCommentTx(tx *sql.Tx, workspaceID, itemID, userID string, 
 	if err := s.enqueueDecisionJobsForItemTx(tx, itemID); err != nil {
 		return "", err
 	}
+	// TASK-3937: at the tail, after every other in-tx step.
+	if err := s.enqueueCommentNotificationsTx(tx, created, userID, createdBy == "agent"); err != nil {
+		return "", err
+	}
 	return id, nil
 }
 

@@ -117,7 +117,8 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 //     a device row is bound to the session that registers it (TASK-3938),
 //     and the migration does not carry sessions, so every device is to
 //     re-register after the operator signs in again; the queue is delivery state, not a
-//     person's data: a lost row is one push not sent. (Its dispatcher and
+//     person's data: a lost row is one push not sent. The enqueue
+//     (notifications.go) writes it, gated on a registered device. (Its dispatcher and
 //     7-day sweep land with TASK-3939; until then nothing reads or deletes
 //     it.) Both are excluded as "push-delivery" in migratedExcludedTables,
 //     which TestMigratedEveryLiveTableIsClassified holds complete.

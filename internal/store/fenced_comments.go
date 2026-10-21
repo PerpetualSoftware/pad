@@ -129,6 +129,10 @@ func (f *FencedTx) CreateComment(in FencedCommentCreate) (*models.Comment, error
 	if err := f.s.enqueueDecisionJobsForItemTx(f.tx, in.ItemID); err != nil {
 		return nil, err
 	}
+	// TASK-3937: at the tail, after every other in-tx step.
+	if err := f.s.enqueueCommentNotificationsTx(f.tx, created, in.Actor.UserID, in.Actor.Kind == "agent"); err != nil {
+		return nil, err
+	}
 	return created, nil
 }
 
