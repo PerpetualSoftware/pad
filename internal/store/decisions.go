@@ -7,8 +7,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
 
 // Typed-decision storage and its job queue (PLAN-3114 unit 2, TASK-3117).
@@ -538,11 +540,22 @@ func (s *Store) releaseSupersededDecisionJob(j DecisionJob) error {
 // response body, and this column is diagnostics, not a log.
 const maxDecisionErrorBytes = 1024
 
+// truncateDecisionError makes a failure message safe to record: valid UTF-8,
+// NUL-free and at most maxDecisionErrorBytes. A provider's response body is
+// arbitrary bytes, and a byte cut can land inside a multi-byte rune; Postgres
+// TEXT refuses invalid UTF-8 (SQLSTATE 22021) and the NUL guard refuses a NUL,
+// and either way the UPDATE fails, so the failure goes unrecorded (BUG-4018).
+// Sanitise first, then cut at a rune start. Short clean ASCII is unchanged.
 func truncateDecisionError(s string) string {
+	s = strings.ToValidUTF8(textguard.Repair(s, false), textguard.Replacement)
 	if len(s) <= maxDecisionErrorBytes {
 		return s
 	}
-	return s[:maxDecisionErrorBytes]
+	cut := maxDecisionErrorBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // DecisionJobState is a test/diagnostic read of one job row.

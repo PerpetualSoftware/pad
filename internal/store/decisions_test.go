@@ -2,8 +2,10 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -414,5 +416,73 @@ func TestDecisionJobs_RestoreEnqueues(t *testing.T) {
 	}
 	if j := mustJob(t, s, item.ID, "triage"); j.Generation != 1 {
 		t.Fatalf("after restore, generation = %d; want 1", j.Generation)
+	}
+}
+
+// failOneAttentionJob owes, claims and fails one attention job with this
+// message, and returns the job's stored state (BUG-4018).
+func failOneAttentionJob(t *testing.T, s *Store, wsID, itemID, msg string) *DecisionJobState {
+	t.Helper()
+	if err := s.OweDecisionJobs(wsID, "attention", []string{itemID}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimDecisionJobs("r", 10, time.Hour)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %d, %v", len(claimed), err)
+	}
+	if err := s.FailDecisionJob(claimed[0], errors.New(msg), time.Hour); err != nil {
+		t.Fatalf("FailDecisionJob must record the failure, got: %v", err)
+	}
+	return mustJob(t, s, itemID, "attention")
+}
+
+// A failure message is arbitrary provider bytes. Whatever it holds, the
+// failure is recorded: attempts counted, the set reads as failing, and the
+// job is no longer owed (BUG-4018; Postgres TEXT refuses invalid UTF-8).
+func TestFailDecisionJob_RecordsAnyMessage(t *testing.T) {
+	cases := []struct {
+		name, msg string
+		want      func(string) bool
+	}{
+		{"straddle 2-byte", strings.Repeat("a", 1023) + "é" + "tail", func(g string) bool { return g == strings.Repeat("a", 1023) }},
+		{"straddle 3-byte", strings.Repeat("a", 1022) + "€" + "tail", func(g string) bool { return g == strings.Repeat("a", 1022) }},
+		{"invalid utf8", "bad \xff\xfe bytes", func(g string) bool { return g == "bad \uFFFD bytes" }},
+		{"nul", "has \x00 nul", func(g string) bool { return g == "has \uFFFD nul" }},
+		{"short ascii", "provider 503", func(g string) bool { return g == "provider 503" }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, ws, col := decisionFixture(t)
+			s.SetDecisionSetResolver(func(string) []string { return nil })
+			item := createTestItem(t, s, ws.ID, col.ID, "Fail", "")
+			j := failOneAttentionJob(t, s, ws.ID, item.ID, c.msg)
+			if !utf8.ValidString(j.LastError) || len(j.LastError) > maxDecisionErrorBytes || strings.ContainsRune(j.LastError, 0) {
+				t.Fatalf("last_error not clean: len=%d valid=%v", len(j.LastError), utf8.ValidString(j.LastError))
+			}
+			if !c.want(j.LastError) {
+				t.Fatalf("last_error = %q", j.LastError)
+			}
+			if j.Attempts != 1 {
+				t.Fatalf("attempts = %d, want 1", j.Attempts)
+			}
+			if failing, err := s.DecisionJobsFailing(ws.ID, "attention"); err != nil || !failing {
+				t.Fatalf("DecisionJobsFailing = %v, %v; want true", failing, err)
+			}
+			if got, err := s.OwedDecisionJobs(ws.ID, []string{item.ID}, "attention"); err != nil || got[item.ID] {
+				t.Fatalf("a failed job still reads as owed: %v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestTruncateDecisionError_Boundary(t *testing.T) {
+	for _, r := range []string{"é", "€", "😀"} {
+		for pad := 1018; pad <= 1024; pad++ {
+			in := strings.Repeat("a", pad) + r + r
+			got := truncateDecisionError(in)
+			if !utf8.ValidString(got) || len(got) > maxDecisionErrorBytes || !strings.HasPrefix(in, got) {
+				t.Fatalf("pad=%d rune=%q: len=%d valid=%v", pad, r, len(got), utf8.ValidString(got))
+			}
+		}
 	}
 }
