@@ -83,6 +83,7 @@ var lifecycleSites = map[string]string{
 	"internal/server/handlers_reminders.go::collectPendingRemindersBounded::isItemDone": "keep: a reminder is the user's own instruction, on any item",
 	"internal/store/item_stars.go::isTerminalWithContext::IsTerminalItem":               "keep: starred items are the user's own picks",
 	"internal/server/handlers_me_needs.go::needsForWorkspace::IsTerminalItem":           "keep: an @mention is a real ask of a person in any non-system collection, reference collections included (TASK-3920, lead ruling Q2); only a terminal item is dropped",
+	"internal/server/needs_scorers.go::isOpen::IsTerminalItem":                          "keep: the importance scorer counts what an item BLOCKS over explicit blocks links, as the dashboard keeps a reference blocker; an explicit link names held-up work in any collection, and only a terminal item is left out (TASK-3959)",
 }
 
 func TestPLAN3535_LifecycleHelperCallSitesAreClassified(t *testing.T) {
