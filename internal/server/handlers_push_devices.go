@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/notify"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -32,6 +33,13 @@ var pushConnectionIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 // accepts connections.
 func (s *Server) SetPushGateway(url string) {
 	s.pushGatewayURL = url
+}
+
+// SetPushGatewayClient sets the client the push dispatcher sends through
+// (TASK-3939). Called once at startup, before the server accepts connections.
+// Nothing starts a dispatcher from it yet.
+func (s *Server) SetPushGatewayClient(g *notify.Gateway) {
+	s.pushGateway = g
 }
 
 // pushAvailable reports whether this server can send pushes.

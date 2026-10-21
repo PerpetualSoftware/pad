@@ -36,6 +36,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/logging"
 	mcpserver "github.com/PerpetualSoftware/pad/internal/mcp"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
+	"github.com/PerpetualSoftware/pad/internal/notify"
 	"github.com/PerpetualSoftware/pad/internal/redisdial"
 	"github.com/PerpetualSoftware/pad/internal/redisns"
 	"github.com/PerpetualSoftware/pad/internal/server"
@@ -975,6 +976,13 @@ func serveCmd() *cobra.Command {
 			bypassSetupToken := bypassEnv == "true" || bypassEnv == "1"
 			srv.SetBypassSetupToken(bypassSetupToken && !cfg.IsCloudServer())
 			srv.SetPushGateway(cfg.PushGatewayURL)
+			if cfg.PushGatewayURL != "" {
+				pushSecret := resolvePushGatewaySecret(cfg)
+				if pushSecret == "" {
+					return fmt.Errorf("PAD_PUSH_GATEWAY_URL is set but none of PAD_PUSH_GATEWAY_SECRET, PAD_CLOUD_OUTBOUND_SECRET or PAD_CLOUD_SECRET supplies a usable secret")
+				}
+				srv.SetPushGatewayClient(notify.NewGateway(cfg.PushGatewayURL, pushSecret))
+			}
 			if userCount, ucErr := s.UserCount(); ucErr != nil {
 				slog.Warn("could not check user count for bootstrap token wiring", "error", ucErr)
 			} else if userCount > 0 {
@@ -1518,4 +1526,17 @@ func bootPlanBackfill(s *store.Store, cloud bool) error {
 		slog.Warn("failed to set self-hosted plans", "error", err)
 	}
 	return nil
+}
+
+// resolvePushGatewaySecret is the secret to send the push gateway: the
+// explicit PAD_PUSH_GATEWAY_SECRET, else what pad already sends pad-cloud
+// (PAD_CLOUD_OUTBOUND_SECRET, else the last PAD_CLOUD_SECRET entry). Empty
+// when none is set; startup refuses that while a gateway URL is configured.
+// Lives here so internal/config does not import internal/billing.
+func resolvePushGatewaySecret(c *config.Config) string {
+	explicit := c.PushGatewaySecret
+	if strings.TrimSpace(explicit) == "" {
+		explicit = c.CloudOutboundSecret
+	}
+	return billing.ResolveOutboundSecret(explicit, c.CloudSecret)
 }

@@ -91,8 +91,12 @@ type Config struct {
 	// empty means this server offers no push and the device routes answer 404
 	// push_unavailable.
 	PushGatewayURL string `toml:"push_gateway_url"`
-	MCPPublicURL   string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
-	AuthServerURL  string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
+	// PushGatewaySecret is the X-Cloud-Secret sent to the push gateway
+	// (PAD_PUSH_GATEWAY_SECRET, TASK-3939). Empty falls back to the cloud
+	// outbound secret: see resolvePushGatewaySecret in cmd/pad.
+	PushGatewaySecret string `toml:"push_gateway_secret"`
+	MCPPublicURL      string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
+	AuthServerURL     string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
 	// OpenAIAppsChallenge is the domain-verification token OpenAI's plugin
 	// dashboard issues, served verbatim at /.well-known/openai-apps-challenge
 	// on cloud (TASK-3321 G4). Validated in ResolveMCPEndpoints.
@@ -456,6 +460,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_PUSH_GATEWAY_URL"); v != "" {
 		cfg.PushGatewayURL = v
+	}
+	if v := os.Getenv("PAD_PUSH_GATEWAY_SECRET"); v != "" {
+		cfg.PushGatewaySecret = v
 	}
 	if v := os.Getenv("PAD_MCP_PUBLIC_URL"); v != "" {
 		cfg.MCPPublicURL = v
