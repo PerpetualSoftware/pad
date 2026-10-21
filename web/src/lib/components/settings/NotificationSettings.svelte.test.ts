@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/svelte';
 
 /**
@@ -106,15 +106,62 @@ describe('NotificationSettings', () => {
 		expect(screen.queryByRole('alert')).toBeNull();
 	});
 
-	it('locks every toggle while a save is in flight', async () => {
+	it('marks every toggle aria-disabled while a save is in flight, and a second toggle sends no PUT and snaps back', async () => {
 		await shown();
 		state.hold = { release: () => {} };
 		await fireEvent.click(box('notify_assigned'));
-		await waitFor(() => expect(box('notify_replies').disabled).toBe(true));
+		await waitFor(() => expect(box('notify_replies').getAttribute('aria-disabled')).toBe('true'));
+		const stored = box('notify_replies').checked;
 		await fireEvent.click(box('notify_replies'));
 		expect(state.puts).toHaveLength(1);
+		expect(box('notify_replies').checked).toBe(stored);
 		state.hold.release();
-		await waitFor(() => expect(box('notify_replies').disabled).toBe(false));
+		await waitFor(() => expect(box('notify_replies').getAttribute('aria-disabled')).toBe('false'));
+	});
+
+	it('keeps focus on the toggled input across a pending save', async () => {
+		await shown();
+		state.hold = { release: () => {} };
+		box('notify_assigned').focus();
+		await fireEvent.click(box('notify_assigned'));
+		await waitFor(() => expect(box('notify_assigned').getAttribute('aria-disabled')).toBe('true'));
+		expect(document.activeElement).toBe(box('notify_assigned'));
+		state.hold.release();
+		await waitFor(() => expect(box('notify_assigned').getAttribute('aria-disabled')).toBe('false'));
+		expect(document.activeElement).toBe(box('notify_assigned'));
+	});
+
+	describe('#notifications deep link', () => {
+		let section: HTMLElement;
+		let spy: ReturnType<typeof vi.fn>;
+		beforeEach(() => {
+			section = document.createElement('section');
+			section.id = 'notifications';
+			spy = vi.fn();
+			section.scrollIntoView = spy;
+			document.body.appendChild(section);
+		});
+		afterEach(() => {
+			section.remove();
+			history.replaceState(null, '', location.pathname);
+		});
+
+		it('scrolls the section into view exactly once when the hash matches, not again on retry', async () => {
+			history.replaceState(null, '', '#notifications');
+			state.failGet = true;
+			render(NotificationSettings);
+			await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Load refused'));
+			state.failGet = false;
+			await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+			await waitFor(() => expect(screen.getAllByRole('checkbox')).toHaveLength(7));
+			expect(spy).toHaveBeenCalledTimes(1);
+		});
+
+		it('never scrolls without the hash', async () => {
+			history.replaceState(null, '', '#other');
+			await shown();
+			expect(spy).not.toHaveBeenCalled();
+		});
 	});
 
 	it('a failed load shows the error and Retry, with no toggles; Retry loads', async () => {
@@ -131,7 +178,7 @@ describe('NotificationSettings', () => {
 		state.server.push_enabled = false;
 		await shown();
 		expect(screen.getByText('Push is off, so nothing is sent to your devices.')).toBeInTheDocument();
-		for (const k of KEYS) expect(box(k).disabled).toBe(false);
+		for (const k of KEYS) expect(box(k).getAttribute('aria-disabled')).not.toBe('true');
 	});
 
 	it('with push on there is no off note', async () => {

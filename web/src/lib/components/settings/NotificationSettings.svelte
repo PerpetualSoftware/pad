@@ -42,8 +42,16 @@
 		}
 	}
 
-	async function toggle(key: keyof NotificationSettings, checked: boolean) {
-		if (!settings || saving) return;
+	async function toggle(key: keyof NotificationSettings, input: HTMLInputElement) {
+		if (!settings) return;
+		// aria-disabled does not block activation, so the guard lives here. The
+		// box has already flipped in the DOM and `checked` is one-way, so put it
+		// back to the stored value.
+		if (saving) {
+			input.checked = settings[key];
+			return;
+		}
+		const checked = input.checked;
 		const before = settings;
 		const next = {} as NotificationSettings;
 		for (const row of ROWS) next[row.key] = row.key === key ? checked : before[row.key];
@@ -63,7 +71,14 @@
 		}
 	}
 
-	onMount(load);
+	onMount(() => {
+		// The page renders this section after its own load, so the browser has
+		// already resolved the hash by the time the target exists. Scroll once.
+		if (location.hash === '#notifications') {
+			document.getElementById('notifications')?.scrollIntoView();
+		}
+		load();
+	});
 </script>
 
 <p class="lead">
@@ -84,9 +99,9 @@
 					id="{id}-{row.key}"
 					type="checkbox"
 					checked={settings[row.key]}
-					disabled={saving}
+					aria-disabled={saving}
 					aria-describedby={row.hint ? `${id}-${row.key}-hint` : undefined}
-					onchange={(e) => toggle(row.key, e.currentTarget.checked)}
+					onchange={(e) => toggle(row.key, e.currentTarget)}
 				/>
 				<div>
 					<label for="{id}-{row.key}">{row.label}</label>
