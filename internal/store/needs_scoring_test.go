@@ -31,6 +31,19 @@ func TestNeedsScoringItems(t *testing.T) {
 	if other, err := s.NeedsScoringItems("no-such-workspace", []string{short.ID}); err != nil || len(other) != 0 {
 		t.Fatalf("another workspace's id read an item: %v %v", other, err)
 	}
+
+	// items.content is nullable. A NULL body reads as empty and does not fail
+	// the chunk it is in (TASK-3959 r1).
+	if _, err := s.db.Exec(s.q(`UPDATE items SET content = NULL WHERE id = ?`), short.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.NeedsScoringItems(ws.ID, []string{short.ID, long.ID})
+	if err != nil {
+		t.Fatalf("a NULL content failed the read: %v", err)
+	}
+	if len(got) != 2 || got[short.ID].ContentRunes != 0 || got[long.ID].ContentRunes != 700 {
+		t.Fatalf("scoring items with a NULL body = %+v", got)
+	}
 }
 
 func TestLatestDecisionsForItems(t *testing.T) {
@@ -56,7 +69,7 @@ func TestLatestDecisionsForItems(t *testing.T) {
 	put(other, "attention", "effort", "o", now)
 	put(a, "triage", "effort", "t", now)
 
-	got, err := s.LatestDecisionsForItems([]string{a.ID, b.ID}, "attention")
+	got, err := s.LatestDecisionsForItems(ws.ID, []string{a.ID, b.ID}, "attention")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +80,18 @@ func TestLatestDecisionsForItems(t *testing.T) {
 		if d.QuestionKey == "effort" && d.QuestionHash != "new" {
 			t.Fatalf("effort answer %q is not the newest", d.QuestionHash)
 		}
+	}
+
+	// Scoped through the item's own workspace: the same ids under another
+	// workspace read nothing (TASK-3959 r1).
+	if cross, err := s.LatestDecisionsForItems("no-such-workspace", []string{a.ID, b.ID}, "attention"); err != nil || len(cross) != 0 {
+		t.Fatalf("another workspace read decisions: %v %v", cross, err)
+	}
+	if err := s.DeleteItem(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.LatestDecisionsForItems(ws.ID, []string{a.ID, b.ID}, "attention"); err != nil || got[b.ID] != nil || len(got[a.ID]) != 2 {
+		t.Fatalf("a deleted item's decisions were read: %+v %v", got, err)
 	}
 }
 
@@ -93,12 +118,23 @@ func TestOwedDecisionJobs(t *testing.T) {
 			}
 		}
 	}
-	got, err := s.OwedDecisionJobs([]string{owed.ID, failed.ID, none.ID, wrongSet.ID}, "attention")
+	got, err := s.OwedDecisionJobs(ws.ID, []string{owed.ID, failed.ID, none.ID, wrongSet.ID}, "attention")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got[owed.ID] || got[failed.ID] || got[none.ID] || got[wrongSet.ID] || len(got) != 1 {
 		t.Fatalf("owed = %v: want only the item with an unfailed attention job", got)
+	}
+
+	// Scoped through the item's own workspace and liveness (TASK-3959 r1).
+	if cross, err := s.OwedDecisionJobs("no-such-workspace", []string{owed.ID}, "attention"); err != nil || len(cross) != 0 {
+		t.Fatalf("another workspace read an owed job: %v %v", cross, err)
+	}
+	if err := s.DeleteItem(owed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.OwedDecisionJobs(ws.ID, []string{owed.ID}, "attention"); err != nil || len(got) != 0 {
+		t.Fatalf("a deleted item's job read as owed: %v %v", got, err)
 	}
 }
 
@@ -119,9 +155,25 @@ func TestNeedsScoringReads_ChunkOverTheInLimit(t *testing.T) {
 	if err != nil || len(items) != n {
 		t.Fatalf("items: %d of %d, %v", len(items), n, err)
 	}
-	owed, err := s.OwedDecisionJobs(ids, "attention")
+	owed, err := s.OwedDecisionJobs(ws.ID, ids, "attention")
 	if err != nil || len(owed) != n {
 		t.Fatalf("owed: %d of %d, %v", len(owed), n, err)
+	}
+	ds := make([]models.ItemDecision, n)
+	at := decisionTime(time.Now())
+	for i, id := range ids {
+		ds[i] = models.ItemDecision{
+			ItemID: id, QuestionSet: "attention", QuestionKey: "effort", Kind: "noul",
+			Answer: []byte(`{"type":"noul","noul":0.5}`), Provider: "fake", Model: "m",
+			StateHash: "s", QuestionHash: "q", ItemSeq: 1, EvaluatedAt: at,
+		}
+	}
+	if err := s.InsertItemDecisions(ws.ID, ds); err != nil {
+		t.Fatal(err)
+	}
+	decs, err := s.LatestDecisionsForItems(ws.ID, ids, "attention")
+	if err != nil || len(decs) != n {
+		t.Fatalf("decisions: %d of %d, %v", len(decs), n, err)
 	}
 }
 
