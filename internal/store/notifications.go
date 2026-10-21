@@ -137,7 +137,8 @@ func (r *commentRecipients) add(user, kind, actorUserID string) {
 // enqueueCommentNotificationsTx tells the people a new comment concerns: the
 // item's assignee and creator ("comment"), and the author of the comment it
 // replies to ("reply"). The author is never told about their own comment. A
-// person who is both a reply target and an assignee gets the one "reply".
+// person who is both a reply target and an assignee gets the one "reply",
+// unless they are also mentioned (below).
 // A tombstoned parent still names its author; the dispatcher filters later.
 //
 // mentioned is the users the comment's body newly indexed (TASK-3946). Those

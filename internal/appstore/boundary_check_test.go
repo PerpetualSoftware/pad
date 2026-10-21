@@ -56,7 +56,7 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"checkLimitOn":             "reads plan, settings and counts",
 	"featureCountOn":           "reads a count",
 	"resolveLimitQ":            "reads workspace owner, user plan and platform settings",
-	"GetUserQ":                 "reads the user row",
+	"GetUserQ":                 "reads the user row and decrypts its TOTP secret in memory",
 	"GetPlatformSettingQ":      "reads platform_settings",
 	"decryptUserTOTP":          "decrypts a field in memory; no SQL",
 	"decrypt":                  "decrypts in memory; no SQL",
