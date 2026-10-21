@@ -125,12 +125,8 @@ func TestTOTPEncryptionRoundTrip(t *testing.T) {
 	}
 
 	// Read it back — should be decrypted automatically
-	fetched, err := s.GetUser(u.ID)
-	if err != nil {
-		t.Fatalf("get user: %v", err)
-	}
-	if fetched.TOTPSecret != secret {
-		t.Errorf("expected %q, got %q", secret, fetched.TOTPSecret)
+	if got := storedTOTPSecret(t, s, u.ID); got != secret {
+		t.Errorf("expected %q, got %q", secret, got)
 	}
 
 	// Verify the raw value in DB is encrypted

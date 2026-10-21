@@ -22,7 +22,7 @@ func TestTOTPSetupAndEnable(t *testing.T) {
 	if user.TOTPEnabled {
 		t.Error("TOTP should be disabled initially")
 	}
-	if user.TOTPSecret != "" {
+	if storedTOTPSecret(t, s, u.ID) != "" {
 		t.Error("TOTP secret should be empty initially")
 	}
 
@@ -33,8 +33,8 @@ func TestTOTPSetupAndEnable(t *testing.T) {
 	}
 
 	user, _ = s.GetUser(u.ID)
-	if user.TOTPSecret != "JBSWY3DPEHPK3PXP" {
-		t.Errorf("expected secret to be stored, got %q", user.TOTPSecret)
+	if got := storedTOTPSecret(t, s, u.ID); got != "JBSWY3DPEHPK3PXP" {
+		t.Errorf("expected secret to be stored, got %q", got)
 	}
 	if user.TOTPEnabled {
 		t.Error("TOTP should still be disabled after setting secret")
@@ -100,7 +100,7 @@ func TestTOTPDisable(t *testing.T) {
 	if user.TOTPEnabled {
 		t.Error("TOTP should be disabled")
 	}
-	if user.TOTPSecret != "" {
+	if storedTOTPSecret(t, s, u.ID) != "" {
 		t.Error("TOTP secret should be cleared")
 	}
 	if user.RecoveryCodes != "" {

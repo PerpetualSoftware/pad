@@ -812,8 +812,5 @@ func (s *Store) GetUserByStripeCustomerID(customerID string) (*models.User, erro
 	if err != nil {
 		return nil, fmt.Errorf("get user by stripe customer id: %w", err)
 	}
-	if err := s.decryptUserTOTP(u); err != nil {
-		return nil, err
-	}
 	return u, nil
 }
