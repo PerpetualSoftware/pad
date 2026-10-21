@@ -34,6 +34,15 @@ GO-2026-6612  net/http HTTP/2 flow-control refund (go1.26.9)
 GO-2026-6613  net/http server CONNECT desync (go1.26.9)
 GO-2026-6617  net/http HTTP/2 HPACK race (go1.26.9)
 #
+# ── Go stdlib: 1, until nixpkgs ships go 1.26.10 (2026-10-21) ──────────
+# GO-2026-6809 (crypto/x509), fixed in go1.26.10. The release binaries and
+# images build with go1.26.10 (go.mod toolchain line, TASK-4007), so they
+# are clean. Only this Nix artifact lags, built by nixos-26.05's go, which
+# predates 1.26.10 (the 1.26.9 block above is still open). Remove this
+# entry when the nixpkgs input ships go 1.26.10; vulnscan.sh then fails if
+# it reappears.
+GO-2026-6809  crypto/x509 (go1.26.10)
+#
 # ── Precision artifacts of the stripped binary (1) ───────────────────────
 # nix/package.nix builds with ldflags "-s -w", which strips the symbols
 # govulncheck needs to prune its call graph, so on this artifact it
