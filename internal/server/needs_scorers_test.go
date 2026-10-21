@@ -905,29 +905,22 @@ func TestNeedsYouSort_CursorFieldsAreChecked(t *testing.T) {
 		if rr := f.get(alice, "?sort=importance&cursor="+base().Encode()); rr.Code != http.StatusOK {
 			t.Fatalf("the base cursor must be valid: %d %s", rr.Code, rr.Body.String())
 		}
-		huge := time.Date(2300, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
 		for name, mut := range map[string]func(*needs.Cursor){
-			"v":                func(c *needs.Cursor) { c.V = 2 },
-			"sort":             func(c *needs.Cursor) { c.Sort = needs.SortSimplicity },
-			"view":             func(c *needs.Cursor) { c.View = "hidden" },
-			"ws":               func(c *needs.Cursor) { c.WS = "other" },
-			"as_of zero":       func(c *needs.Cursor) { c.AsOf = 0 },
-			"as_of negative":   func(c *needs.Cursor) { c.AsOf = -5 },
-			"key zero":         func(c *needs.Cursor) { c.Waiting = 0 },
-			"key negative":     func(c *needs.Cursor) { c.Waiting = -1 },
-			"key far future":   func(c *needs.Cursor) { c.Waiting = huge },
-			"created zero":     func(c *needs.Cursor) { c.CreatedAt = 0 },
-			"created negative": func(c *needs.Cursor) { c.CreatedAt = -1 },
-			"created far":      func(c *needs.Cursor) { c.CreatedAt = huge },
-			"item_id empty":    func(c *needs.Cursor) { c.ItemID = "" },
-			"item_id shape":    func(c *needs.Cursor) { c.ItemID = "a b;--" },
-			"item_id long":     func(c *needs.Cursor) { c.ItemID = strings.Repeat("a", 65) },
-			"score high":       func(c *needs.Cursor) { c.Score = &over },
-			"score low":        func(c *needs.Cursor) { c.Score = &under },
-			"score missing":    func(c *needs.Cursor) { c.Score = nil },
-			"score2 high":      func(c *needs.Cursor) { c.Score2 = &over },
-			"score2 low":       func(c *needs.Cursor) { c.Score2 = &under },
-			"score2 missing":   func(c *needs.Cursor) { c.Score2 = nil },
+			"v":              func(c *needs.Cursor) { c.V = 2 },
+			"sort":           func(c *needs.Cursor) { c.Sort = needs.SortSimplicity },
+			"view":           func(c *needs.Cursor) { c.View = "hidden" },
+			"ws":             func(c *needs.Cursor) { c.WS = "other" },
+			"as_of zero":     func(c *needs.Cursor) { c.AsOf = 0 },
+			"as_of negative": func(c *needs.Cursor) { c.AsOf = -5 },
+			"item_id empty":  func(c *needs.Cursor) { c.ItemID = "" },
+			"item_id shape":  func(c *needs.Cursor) { c.ItemID = "a b;--" },
+			"item_id long":   func(c *needs.Cursor) { c.ItemID = strings.Repeat("a", 65) },
+			"score high":     func(c *needs.Cursor) { c.Score = &over },
+			"score low":      func(c *needs.Cursor) { c.Score = &under },
+			"score missing":  func(c *needs.Cursor) { c.Score = nil },
+			"score2 high":    func(c *needs.Cursor) { c.Score2 = &over },
+			"score2 low":     func(c *needs.Cursor) { c.Score2 = &under },
+			"score2 missing": func(c *needs.Cursor) { c.Score2 = nil },
 		} {
 			c := base()
 			mut(&c)
@@ -940,6 +933,31 @@ func TestNeedsYouSort_CursorFieldsAreChecked(t *testing.T) {
 		for _, tok := range []string{"!!", "e30", "bm90LWpzb24"} {
 			if rr := f.get(alice, "?sort=importance&cursor="+tok); rr.Code != http.StatusBadRequest {
 				t.Errorf("token %q: %d", tok, rr.Code)
+			}
+		}
+		// An age cursor carrying either score was not minted by this server.
+		for name, mut := range map[string]func(*needs.Cursor){
+			"age with score":  func(c *needs.Cursor) { c.Score2 = nil },
+			"age with score2": func(c *needs.Cursor) { c.Score = nil },
+		} {
+			c := base()
+			c.Sort = needs.SortAge
+			mut(&c)
+			rr := f.get(alice, "?sort=age&cursor="+c.Encode())
+			if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_cursor") {
+				t.Errorf("%s: %d %s", name, rr.Code, rr.Body.String())
+			}
+		}
+		// key and created_at are positions, not checked: any int64 is an instant a
+		// key can hold (a pre-1970 date is negative), so such a cursor is followed.
+		for name, mut := range map[string]func(*needs.Cursor){
+			"key negative":     func(c *needs.Cursor) { c.Waiting = -1 },
+			"created negative": func(c *needs.Cursor) { c.CreatedAt = -1 },
+		} {
+			c := base()
+			mut(&c)
+			if rr := f.get(alice, "?sort=importance&cursor="+c.Encode()); rr.Code != http.StatusOK {
+				t.Errorf("%s: %d %s (a key time is never refused)", name, rr.Code, rr.Body.String())
 			}
 		}
 	})
@@ -974,4 +992,65 @@ func TestNeedsYouSort_FutureAsOfIsClamped(t *testing.T) {
 	if now, future := score(time.Now()), score(time.Now().AddDate(1, 0, 0)); now != 28 || future != 28 {
 		t.Fatalf("at now %d, far-future as_of %d: want 28 and 28 (the future marker is clamped to now)", now, future)
 	}
+}
+
+// Every cursor the server mints is one it follows (TASK-3959 part 2 r2): a
+// boundary row whose created_at, and so its asked waiting_since, is pre-1970,
+// unparseable (a zero time) or past 2262 pages through under every sort, with
+// no row repeated or missed. Before r2 the first two minted a cursor that the
+// range check refused, and a time outside int64 nanoseconds did not
+// round-trip, so the age sort's position drifted.
+func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		raw := map[string]string{
+			"pre-1970": "1950-06-01T00:00:00Z",
+			"zero":     "",
+			"far":      "3000-01-01T00:00:00Z",
+			"zero-b":   "not a date",
+		}
+		scores := map[string][2]int{}
+		i := 0
+		for _, title := range []string{"pre-1970", "zero", "far", "zero-b", "plain-a", "plain-b"} {
+			it := f.item(ws, asks, title, alice, nfxDay(i+1))
+			if v, ok := raw[title]; ok {
+				if _, err := srv.store.DB().Exec(`UPDATE items SET created_at = ? WHERE id = ?`, v, it.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			scores[title] = [2]int{50, 50} // one tie, so every boundary falls inside it
+			i++
+		}
+		srv.needsScorers = []needs.Scorer{&scoreStub{name: "importance", scores: scores}}
+		for _, sortBy := range []string{needs.SortAge, needs.SortImportance, needs.SortSimplicity} {
+			full := titles(f.need(alice, "?sort="+sortBy).Rows)
+			if len(full) != 6 {
+				t.Fatalf("%s: %d rows %v, want 6", sortBy, len(full), full)
+			}
+			for _, limit := range []int{1, 2} {
+				var got []string
+				q := fmt.Sprintf("?sort=%s&limit=%d", sortBy, limit)
+				for page := 0; page < 20; page++ {
+					rr := f.get(alice, q)
+					if rr.Code != http.StatusOK {
+						t.Fatalf("%s limit %d page %d: %d %s (a cursor the server minted was refused)", sortBy, limit, page, rr.Code, rr.Body.String())
+					}
+					var resp needsResponse
+					parseJSON(t, rr, &resp)
+					got = append(got, titles(resp.Rows)...)
+					if resp.NextCursor == "" {
+						break
+					}
+					q = fmt.Sprintf("?sort=%s&limit=%d&cursor=%s", sortBy, limit, resp.NextCursor)
+				}
+				if strings.Join(got, ",") != strings.Join(full, ",") {
+					t.Fatalf("%s limit %d: pages %v, single page %v (a row was repeated or missed)", sortBy, limit, got, full)
+				}
+			}
+		}
+	})
 }

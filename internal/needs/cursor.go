@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
 	"time"
 )
 
@@ -41,9 +42,29 @@ const NoScore = -1
 // KeyOf is the row's age key.
 func KeyOf(r *Row) Key { return KeyFor(SortAge, r) }
 
+// The instants a cursor can carry: Unix nanoseconds in int64, about 1677 to
+// 2262. A key time outside them (a zero time from an unparseable stored date,
+// or a far-future one) is clamped to the nearer end, so the sort and the cursor
+// see the same instant and the cursor round-trips exactly (TASK-3959 part 2 r2).
+// Clamped times tie and the tie falls through to created, then the item id.
+var (
+	keyTimeMin = time.Unix(0, math.MinInt64).UTC()
+	keyTimeMax = time.Unix(0, math.MaxInt64).UTC()
+)
+
+func clampKeyTime(t time.Time) time.Time {
+	if t.Before(keyTimeMin) {
+		return keyTimeMin
+	}
+	if t.After(keyTimeMax) {
+		return keyTimeMax
+	}
+	return t
+}
+
 // KeyFor is the row's key under a sort.
 func KeyFor(sort string, r *Row) Key {
-	k := Key{Sort: sort, Waiting: r.WaitingSince, Created: r.Item.CreatedAt, ItemID: r.ItemID}
+	k := Key{Sort: sort, Waiting: clampKeyTime(r.WaitingSince), Created: clampKeyTime(r.Item.CreatedAt), ItemID: r.ItemID}
 	val := func(s *Score) int {
 		if s == nil {
 			return NoScore
@@ -80,10 +101,6 @@ func (a Key) Less(b Key) bool {
 }
 
 const cursorVersion = 1
-
-// cursorTimeMax bounds the key and created_at timestamps: the year 2200, in
-// Unix nanoseconds, far past any real item and inside int64.
-var cursorTimeMax = time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
 
 // validCursorItemID accepts the store's ids (UUIDs) and nothing that could not
 // be one: 1 to 64 characters of letters, digits and hyphens.
@@ -160,11 +177,14 @@ func DecodeCursor(token, sort, view, ws string) (Cursor, error) {
 	if err != nil || json.Unmarshal(b, &c) != nil {
 		return Cursor{}, ErrInvalidCursor
 	}
-	// v, sort, view and ws must equal this request's; as_of must be positive
-	// (a future one is clamped by the handler, not refused); key and created_at
-	// must be positive and before cursorTimeMax; item_id must look like an id.
+	// A check may refuse only what this server could never mint. v, sort, view
+	// and ws must equal this request's; as_of must be positive, since it is the
+	// server's own clock (a future one is clamped by the handler, not refused);
+	// item_id must look like a store id. key and created_at are NOT checked:
+	// every int64 is an instant a key can hold, a pre-1970 date included
+	// (TASK-3959 part 2 r2).
 	if c.V != cursorVersion || c.Sort != sort || c.View != view || c.WS != ws || c.AsOf <= 0 ||
-		c.Waiting <= 0 || c.Waiting > cursorTimeMax || c.CreatedAt <= 0 || c.CreatedAt > cursorTimeMax || !validCursorItemID(c.ItemID) {
+		!validCursorItemID(c.ItemID) {
 		return Cursor{}, ErrInvalidCursor
 	}
 	// A score sort's cursor must carry both scores in range; an age cursor
