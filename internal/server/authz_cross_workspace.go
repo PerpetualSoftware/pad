@@ -550,6 +550,14 @@ func (s *Server) authorizeCrossWorkspaceInner(r *http.Request, workspaceSlugOrID
 	if workspaceSlugOrID == "" {
 		return crossWorkspaceDeny(CrossWorkspaceWorkspaceNotFound, nil, "", nil)
 	}
+	// A workspace-pinned token naming any other target is refused before
+	// the name is resolved (BUG-3982), so a target that does not exist, one
+	// the user is not in, and one they are in get the same refusal. The
+	// allow-list check below, which reports only after the role check,
+	// still covers OAuth tokens.
+	if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, workspaceSlugOrID) {
+		return crossWorkspaceDeny(CrossWorkspaceTokenNotAllowed, nil, "", nil)
+	}
 
 	user := currentUser(r)
 	isBearer := isBearerAuth(r)

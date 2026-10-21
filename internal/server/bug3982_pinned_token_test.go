@@ -535,19 +535,44 @@ func TestBUG3982_SlugDoorsRefuseIdenticallyBeforeResolution(t *testing.T) {
 		{"member", f.bSlug},
 		{"member by id", f.bID},
 	}
+	items, err := f.srv.store.ListItems(f.wsID, models.ItemListParams{})
+	if err != nil || len(items) == 0 {
+		t.Fatalf("A items: %v %d", err, len(items))
+	}
+	copyPath := "/api/v1/workspaces/" + f.wsSlug + "/items/" + items[0].Slug + "/copy"
+	get := func(path func(string) string) func(string) *httptest.ResponseRecorder {
+		return func(ref string) *httptest.ResponseRecorder { return f.do("GET", path(ref), f.pinned, nil) }
+	}
+	copyTo := func(path string) func(string) *httptest.ResponseRecorder {
+		return func(ref string) *httptest.ResponseRecorder {
+			return f.do("POST", path, f.pinned, map[string]any{"target_workspace": ref, "target_collection": "tasks"})
+		}
+	}
 	doors := []struct {
 		name string
-		path func(ref string) string
+		call func(ref string) *httptest.ResponseRecorder
+		// resolver404: the /-/r/ resolver answers its ordinary 404, not the
+		// pin's 403, and the bytes must still not vary.
+		resolver404 bool
 	}{
-		{"REST", func(ref string) string { return "/api/v1/workspaces/" + ref + "/items" }},
-		{"SSE", func(ref string) string { return "/api/v1/events?workspace=" + ref }},
-		{"search", func(ref string) string { return "/api/v1/search?q=zebrafish&workspace=" + ref }},
+		{"REST", get(func(ref string) string { return "/api/v1/workspaces/" + ref + "/items" }), false},
+		{"SSE", get(func(ref string) string { return "/api/v1/events?workspace=" + ref }), false},
+		{"search", get(func(ref string) string { return "/api/v1/search?q=zebrafish&workspace=" + ref }), false},
+		{"copy target", copyTo(copyPath), false},
+		{"copy preflight target", copyTo(copyPath + "/preflight"), false},
+		{"ref resolver", get(func(ref string) string { return "/-/r/" + ref + "/TASK-1" }), true},
 	}
 	for _, d := range doors {
 		var first string
 		for _, r := range refs {
-			rr := f.do("GET", d.path(r.ref), f.pinned, nil)
-			f.mustBePinDenial(rr, d.name+" "+r.what)
+			rr := d.call(r.ref)
+			if d.resolver404 {
+				if rr.Code != http.StatusNotFound {
+					t.Fatalf("%s %s: %d %s, want the resolver's 404", d.name, r.what, rr.Code, rr.Body.String())
+				}
+			} else {
+				f.mustBePinDenial(rr, d.name+" "+r.what)
+			}
 			if first == "" {
 				first = rr.Body.String()
 			} else if rr.Body.String() != first {
@@ -662,5 +687,38 @@ func TestBUG3982_SSEComparesThePinByID(t *testing.T) {
 	// after the pin compare.
 	if rr := sse(&tokenPin{ID: f.bID, Slug: f.bSlug}, 5*time.Second); !strings.Contains(rr.Body.String(), "Streaming not supported") {
 		t.Fatalf("control: a pin for B streaming B did not pass the gates: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// The /-/r/ resolver compares the pin by resolved ID behind the by-name
+// check, shaped like TestBUG3982_SSEComparesThePinByID: a pin whose slug names
+// B while its ID is A's passes the by-name check, and only the ID compare
+// turns it away.
+func TestBUG3982_RefResolverComparesThePinByID(t *testing.T) {
+	f := newPinFixture(t, store.DriverSQLite)
+	items, err := f.srv.store.ListItems(f.bID, models.ItemListParams{})
+	if err != nil || len(items) == 0 {
+		t.Fatalf("B items: %v %d", err, len(items))
+	}
+	if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE users SET username = ? WHERE id = ?`), "pin-owner-3982", f.owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	ref := items[0].CollectionPrefix + "-" + itoa(*items[0].ItemNumber)
+	r := chi.NewRouter()
+	r.Get("/-/r/{workspace}/{ref}", f.srv.handleResolveCrossWorkspaceRef)
+	resolve := func(pin *tokenPin) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/-/r/"+f.bSlug+"/"+ref, nil)
+		req = req.WithContext(context.WithValue(WithCurrentUser(req.Context(), f.owner), ctxTokenPin, pin))
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		return rr
+	}
+	if rr := resolve(&tokenPin{ID: f.wsID, Slug: f.bSlug}); rr.Code != http.StatusNotFound {
+		t.Fatalf("a pin for A's ID, naming B's slug, resolving in B: %d %s, want 404", rr.Code, rr.Body.String())
+	}
+	// Control: the pin's own ID is redirected.
+	if rr := resolve(&tokenPin{ID: f.bID, Slug: f.bSlug}); rr.Code != http.StatusFound {
+		t.Fatalf("control: a pin for B resolving in B: %d %s, want 302", rr.Code, rr.Body.String())
 	}
 }
