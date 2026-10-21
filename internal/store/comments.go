@@ -191,11 +191,32 @@ func (s *Store) createCommentTx(tx *sql.Tx, workspaceID, itemID, userID string, 
 	return id, nil
 }
 
-// UpdateComment replaces a comment's body and bumps updated_at. The
+// UpdateComment edits a comment as its own author. Production does not use
+// it: the edit handler calls UpdateCommentAs with the request's actor, so a
+// mention an admin adds is attributed to the admin (TASK-3946 ruling
+// e6a86278). It remains for tests.
+func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
+	return s.updateComment(id, body, nil)
+}
+
+// CommentEditor is who made an edit, for attributing the mentions it adds.
+type CommentEditor struct {
+	UserID  string
+	IsAgent bool
+}
+
+// UpdateCommentAs replaces a comment's body and bumps updated_at. The
 // comments_fts_update trigger re-indexes the new body. Returns
 // sql.ErrNoRows when no live comment matches. Permission (author or
-// admin) is enforced by the handler, not here.
-func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
+// admin) is enforced by the handler, not here. editor is who made the
+// edit: a mention it adds is from them, and they are never told about
+// mentioning themselves.
+func (s *Store) UpdateCommentAs(id, body string, editor CommentEditor) (*models.Comment, error) {
+	return s.updateComment(id, body, &editor)
+}
+
+// updateComment is UpdateComment/UpdateCommentAs; a nil editor is the author.
+func (s *Store) updateComment(id, body string, editor *CommentEditor) (*models.Comment, error) {
 	ts := now()
 	// Transactional for the same BUG-2415 reason as CreateComment: the
 	// new body and its pad-attachment: reference stamp commit together.
@@ -282,7 +303,11 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 		return nil, err
 	}
 	// TASK-3946: users the edit newly mentioned, at the tail.
-	if err := s.enqueueMentionNotificationsTx(tx, out, mentioned); err != nil {
+	by := CommentEditor{UserID: out.UserID, IsAgent: out.CreatedBy == "agent"}
+	if editor != nil {
+		by = *editor
+	}
+	if err := s.enqueueMentionNotificationsTx(tx, out, mentioned, by.UserID, by.IsAgent); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

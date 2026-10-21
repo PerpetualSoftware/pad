@@ -197,9 +197,10 @@ func mentionDedupeKey(commentID, userID string) string {
 }
 
 // enqueueMentionNotificationsTx tells the users an EDIT newly mentioned. The
-// actor is the comment's author: an edit does not carry who made it to the
-// store (Store.UpdateComment), and the author is who a mention is from. The
-// author is never told about mentioning themselves.
+// actor is the EDITOR, who wrote the mention: an admin adding @bob to Alice's
+// comment is the admin mentioning bob, and an admin adding @alice notifies
+// Alice (TASK-3946 ruling e6a86278). The editor is never told about
+// mentioning themselves.
 //
 // Mention wins (TASK-3946 lead ruling f0fc5933): when the mention row is
 // actually written, the same user's still-pending comment/reply row for this
@@ -208,16 +209,16 @@ func mentionDedupeKey(commentID, userID string) string {
 // sent, skipped or expired stays, and the mention is written anyway. A
 // mention that writes nothing (no device, an existing mention row under the
 // dedupe key, or a user who cannot see the item) deletes nothing.
-func (s *Store) enqueueMentionNotificationsTx(tx *sql.Tx, c *models.Comment, added []string) error {
+func (s *Store) enqueueMentionNotificationsTx(tx *sql.Tx, c *models.Comment, added []string, actorUserID string, actorIsAgent bool) error {
 	visible, err := s.mentionRecipientsTx(tx, c, added)
 	if err != nil || len(visible) == 0 {
 		return err
 	}
 	var to commentRecipients
 	for _, u := range visible {
-		to.add(u, notifyMention, c.UserID)
+		to.add(u, notifyMention, actorUserID)
 	}
-	facts := to.facts(c, c.UserID, c.CreatedBy == "agent")
+	facts := to.facts(c, actorUserID, actorIsAgent)
 	wrote, err := s.enqueueNotificationsCountTx(tx, facts)
 	if err != nil {
 		return err

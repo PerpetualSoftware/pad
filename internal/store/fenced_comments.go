@@ -207,7 +207,7 @@ func (f *FencedTx) UpdateComment(itemID, commentID, body string, actor FencedAct
 		return nil, err
 	}
 	// TASK-3946: users the edit newly mentioned.
-	if err := f.s.enqueueMentionNotificationsTx(f.tx, updated, mentioned); err != nil {
+	if err := f.s.enqueueMentionNotificationsTx(f.tx, updated, mentioned, actor.UserID, actor.Kind == "agent"); err != nil {
 		return nil, err
 	}
 	if body != before {
