@@ -2,3 +2,4 @@
 # One per line: <go|npm|action> <name>@<version>  <reason>
 # The reason is required. Remove a line once its version has aged past the
 # threshold. See cmd/depages/README.md.
+npm markdown-it@14.3.3  security fix: GHSA-vfgh-jcmw-g37q and GHSA-gfr2-rv44-r23c, high, npm audit gate (TASK-4007); remove once aged past 7 days
