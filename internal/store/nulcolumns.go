@@ -529,7 +529,7 @@ var nulExcluded = map[string]string{
 	"decision_jobs.claimed_by":               "runner id minted by the server's decision tick, never request-derived",
 	"items.lease_worker_id":                  "request-derived, but written only after models.ValidWorkerID accepts it (\"wk_\" + 32 lowercase hex, enforced in store.leaseOurs before any SQL), so it cannot hold a NUL (TASK-3613, migration 142)",
 	"items.lease_user_id":                    "the authenticated caller's server-generated user id, set only by ClaimItemLease from the session; never request-derived (BUG-3341, migration 104)",
-	"decision_jobs.last_error":               "Go error string, server-composed",
+	"decision_jobs.last_error":               "may embed the provider response body (it stores cause.Error()), so NOT server-composed; NUL-free because truncateDecisionError sanitises it through textguard.Repair before the write (BUG-4018)",
 	"decision_jobs.not_before":               "server timestamp, decisionTime of an evaluated_at plus a server-installed window (TASK-3916, migration 150)",
 	"item_decisions.answer":                  "json.Marshal of decision.Answer: a NUL anywhere in it is written as the six-byte escape, never a raw byte, and the column is TEXT on both dialects so no jsonb parser decodes it (migration 090)",
 	"item_relation_links.source_field_key":   "only written by replaceRelationLinks, as a field definition's key value read from collections.schema in the same transaction; that column's classJSON trigger checks every decoded value; migration 088 states the derivation (BUG-3108 writer list)",
