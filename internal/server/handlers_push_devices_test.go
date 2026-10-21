@@ -546,12 +546,24 @@ func TestNotificationSettings_Auth(t *testing.T) {
 		if rr := rawReq(srv, "PUT", path, free.Token, "", allSettings); rr.Code != http.StatusOK {
 			t.Errorf("an unpinned PAT PUT: %d %s, want 200", rr.Code, rr.Body.String())
 		}
-		if rr := rawReq(srv, "GET", path, pinned.Token, "", ""); rr.Code != http.StatusForbidden {
-			t.Errorf("a pinned PAT GET: %d %s, want 403", rr.Code, rr.Body.String())
+		// BUG-3982's shape, so a consumer keyed on the reason sees one refusal.
+		wantPinned := func(what string, rr *httptest.ResponseRecorder) {
+			t.Helper()
+			var body struct {
+				Error struct {
+					Code    string `json:"code"`
+					Details struct {
+						Reason string `json:"reason"`
+					} `json:"details"`
+				} `json:"error"`
+			}
+			_ = json.Unmarshal(rr.Body.Bytes(), &body)
+			if rr.Code != http.StatusForbidden || body.Error.Code != "permission_denied" || body.Error.Details.Reason != "token_workspace_pinned" {
+				t.Errorf("a pinned PAT %s: %d %s, want 403 permission_denied reason token_workspace_pinned", what, rr.Code, rr.Body.String())
+			}
 		}
-		if rr := rawReq(srv, "PUT", path, pinned.Token, "", strings.Replace(allSettings, `"push_enabled":true`, `"push_enabled":false`, 1)); rr.Code != http.StatusForbidden {
-			t.Errorf("a pinned PAT PUT: %d %s, want 403", rr.Code, rr.Body.String())
-		}
+		wantPinned("GET", rawReq(srv, "GET", path, pinned.Token, "", ""))
+		wantPinned("PUT", rawReq(srv, "PUT", path, pinned.Token, "", strings.Replace(allSettings, `"push_enabled":true`, `"push_enabled":false`, 1)))
 		if got := settingsJSON(t, rawReq(srv, "GET", path, e.token, "", "")); !got.PushEnabled {
 			t.Error("a refused pinned PUT changed the settings")
 		}

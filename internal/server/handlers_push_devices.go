@@ -201,9 +201,14 @@ func (s *Server) notificationSettingsUser(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusForbidden, "forbidden", "Notification settings belong to a person, not an app")
 		return nil
 	}
+	// BUG-3982's shape (403 permission_denied, reason token_workspace_pinned),
+	// so one consumer check covers every pinned-token door; #2266 owns the
+	// shared helper and the token_workspace detail.
 	if authKind(r) == authKindAPIToken && tokenWorkspaceID(r) != "" {
-		writeError(w, http.StatusForbidden, "workspace_token_not_allowed",
-			"A token bound to one workspace cannot read or change account notification settings")
+		writeError2(w, http.StatusForbidden, "permission_denied",
+			"A token bound to one workspace cannot read or change account notification settings. "+
+				"Mint an unscoped token (pad token create --name <name>) to use them.",
+			map[string]interface{}{"reason": "token_workspace_pinned"})
 		return nil
 	}
 	return user
