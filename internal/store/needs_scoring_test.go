@@ -138,7 +138,8 @@ func TestOwedDecisionJobs(t *testing.T) {
 	}
 }
 
-// More ids than one IN list takes are read in chunks, and every one answers.
+// More ids than one IN list takes: results from every chunk are merged, and
+// every id answers.
 func TestNeedsScoringReads_ChunkOverTheInLimit(t *testing.T) {
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return nil })
@@ -177,10 +178,49 @@ func TestNeedsScoringReads_ChunkOverTheInLimit(t *testing.T) {
 	}
 }
 
-func TestGetBlocksEdges_CarriesTheTarget(t *testing.T) {
+// An id given twice, with the copies a chunk apart, answers once.
+func TestLatestDecisionsForItems_DuplicateIDsAcrossChunks(t *testing.T) {
 	s, ws, col := decisionFixture(t)
-	src := createTestItem(t, s, ws.ID, col.ID, "Blocker", "")
-	tgt := createTestItem(t, s, ws.ID, col.ID, "Blocked", "")
+	s.SetDecisionSetResolver(func(string) []string { return nil })
+	a := createTestItem(t, s, ws.ID, col.ID, "A", "")
+	if err := s.OweDecisionJobs(ws.ID, "attention", []string{a.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertItemDecisions(ws.ID, []models.ItemDecision{{
+		ItemID: a.ID, QuestionSet: "attention", QuestionKey: "effort", Kind: "noul",
+		Answer: []byte(`{"type":"noul","noul":0.5}`), Provider: "fake", Model: "m",
+		StateHash: "s", QuestionHash: "q", ItemSeq: 1, EvaluatedAt: decisionTime(time.Now()),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, needsChunk+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("filler-%d", i)
+	}
+	ids[0], ids[needsChunk] = a.ID, a.ID
+	got, err := s.LatestDecisionsForItems(ws.ID, ids, "attention")
+	if err != nil || len(got) != 1 || len(got[a.ID]) != 1 {
+		t.Fatalf("decisions = %v, %v; want exactly one answer for the repeated id", got, err)
+	}
+	if items, err := s.NeedsScoringItems(ws.ID, ids); err != nil || len(items) != 1 {
+		t.Fatalf("items = %v, %v", items, err)
+	}
+	if owed, err := s.OwedDecisionJobs(ws.ID, ids, "attention"); err != nil || len(owed) != 1 {
+		t.Fatalf("owed = %v, %v", owed, err)
+	}
+}
+
+func TestGetBlocksEdges_CarriesTheTarget(t *testing.T) {
+	s, ws, srcCol := decisionFixture(t)
+	tgtCol := createTestCollection(t, s, ws.ID, "Bugs")
+	src := createTestItem(t, s, ws.ID, srcCol.ID, "Blocker", "")
+	tgt := createTestItem(t, s, ws.ID, tgtCol.ID, "Blocked", "")
+	srcFields, tgtFields := `{"status":"open","who":"source"}`, `{"status":"done","who":"target"}`
+	for id, f := range map[string]string{src.ID: srcFields, tgt.ID: tgtFields} {
+		if _, err := s.db.Exec(s.q(`UPDATE items SET fields = ? WHERE id = ?`), f, id); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: tgt.ID, LinkType: "blocks"}, src.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +228,11 @@ func TestGetBlocksEdges_CarriesTheTarget(t *testing.T) {
 	if err != nil || len(es) != 1 {
 		t.Fatalf("edges %v %v", es, err)
 	}
-	if es[0].TargetCollectionID != col.ID || es[0].TargetFields != tgt.Fields {
-		t.Fatalf("target = %q %q, want %q %q", es[0].TargetCollectionID, es[0].TargetFields, col.ID, tgt.Fields)
+	e := es[0]
+	if e.SourceCollectionID != srcCol.ID || e.SourceFields != srcFields {
+		t.Fatalf("source = %q %q, want %q %q", e.SourceCollectionID, e.SourceFields, srcCol.ID, srcFields)
+	}
+	if e.TargetCollectionID != tgtCol.ID || e.TargetFields != tgtFields {
+		t.Fatalf("target = %q %q, want %q %q", e.TargetCollectionID, e.TargetFields, tgtCol.ID, tgtFields)
 	}
 }

@@ -10,6 +10,21 @@ import (
 // (TASK-3959, IDEA-3906 B4b). All are read-only, take the ids the router
 // already admitted, and are chunked like the router's other batch reads.
 
+// dedupeIDs drops repeated ids, keeping first-seen order, so a repeat landing
+// in a later chunk cannot append the same row twice.
+func dedupeIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 // NeedsScoringItem is what the scorers read of one item: where it lives, its
 // fields (priority, dates, status), and the length of its body in characters.
 type NeedsScoringItem struct {
@@ -24,7 +39,7 @@ type NeedsScoringItem struct {
 // NULL content (the column is nullable) counts as empty.
 func (s *Store) NeedsScoringItems(workspaceID string, ids []string) (map[string]NeedsScoringItem, error) {
 	out := map[string]NeedsScoringItem{}
-	for _, chunk := range chunkStrings(ids, needsChunk) {
+	for _, chunk := range chunkStrings(dedupeIDs(ids), needsChunk) {
 		args := []any{workspaceID}
 		for _, id := range chunk {
 			args = append(args, id)
@@ -60,7 +75,7 @@ func (s *Store) NeedsScoringItems(workspaceID string, ids []string) (map[string]
 // item's own workspace_id, so an id from another workspace returns nothing.
 func (s *Store) LatestDecisionsForItems(workspaceID string, ids []string, questionSet string) (map[string][]models.ItemDecision, error) {
 	out := map[string][]models.ItemDecision{}
-	for _, chunk := range chunkStrings(ids, needsChunk) {
+	for _, chunk := range chunkStrings(dedupeIDs(ids), needsChunk) {
 		args := []any{workspaceID, questionSet}
 		for _, id := range chunk {
 			args = append(args, id)
@@ -98,7 +113,7 @@ func (s *Store) LatestDecisionsForItems(workspaceID string, ids []string, questi
 // workspaceID are read, scoped through the item's own workspace_id.
 func (s *Store) OwedDecisionJobs(workspaceID string, ids []string, questionSet string) (map[string]bool, error) {
 	out := map[string]bool{}
-	for _, chunk := range chunkStrings(ids, needsChunk) {
+	for _, chunk := range chunkStrings(dedupeIDs(ids), needsChunk) {
 		args := []any{workspaceID, questionSet}
 		for _, id := range chunk {
 			args = append(args, id)
