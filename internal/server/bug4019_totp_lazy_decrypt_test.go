@@ -2,7 +2,10 @@ package server
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -46,6 +49,14 @@ func bug4019Key(t *testing.T) []byte {
 func bug4019Placeholder() string {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		return "$1"
+	}
+	return "?"
+}
+
+// bug4019Placeholder2 is the second bind parameter, for two-parameter statements.
+func bug4019Placeholder2() string {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		return "$2"
 	}
 	return "?"
 }
@@ -272,6 +283,53 @@ func TestBUG4019_EmptyStoredSecretRefusesACodeComputedFromEmpty(t *testing.T) {
 	}
 	if len(warns) != 1 || !strings.Contains(warns[0], u.ID) {
 		t.Fatalf("%d warnings naming the user, want exactly 1:\n%s", len(warns), logs.String())
+	}
+}
+
+// T5b: an enabled row whose stored value is non-empty but DECRYPTS to "" (a
+// hand-sealed empty plaintext; encrypt never emits one) also refuses a code
+// computed from "". Without the decrypted-empty guard, "" would be verified
+// against and ConsumeTOTPStep would match it (BUG-4019, pre-GO mutant).
+func TestBUG4019_SealedEmptySecretRefusesACodeComputedFromEmpty(t *testing.T) {
+	srv := bug4019Server(t)
+	key := bug4019Key(t)
+	srv.store.SetEncryptionKey(key)
+	u, err := srv.store.CreateUser(models.UserCreate{Email: "t5b-4019@example.com", Name: "FiveB", Password: "pw-test-12345"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.SetTOTPSecret(u.ID, bug4019Secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.EnableTOTP(u.ID, bug4019Secret, "x"); err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	sealed := "enc:" + base64.StdEncoding.EncodeToString(gcm.Seal(nonce, nonce, nil, nil))
+	if _, err := srv.store.DB().Exec(`UPDATE users SET totp_secret = `+bug4019Placeholder()+` WHERE id = `+bug4019Placeholder2(), sealed, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	emptyCode, err := totp.GenerateCode("", time.Now())
+	if err != nil {
+		t.Fatalf("precondition: a code is computable from an empty secret: %v", err)
+	}
+	code, body, token, _ := bug4019Login(srv, u.ID, map[string]any{"code": emptyCode})
+	if code != http.StatusUnauthorized || token != "" {
+		t.Fatalf("login with a code computed from \"\" over a sealed empty secret: %d %s, want 401 and no token", code, body)
+	}
+	if n := bug4019Sessions(t, srv, u.ID); n != 0 {
+		t.Fatalf("%d sessions minted", n)
 	}
 }
 

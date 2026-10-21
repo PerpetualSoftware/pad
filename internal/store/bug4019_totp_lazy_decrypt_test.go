@@ -1,7 +1,10 @@
 package store
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"testing"
 
@@ -160,4 +163,38 @@ func TestBUG4019_TOTPSecretForVerify(t *testing.T) {
 	if _, err := s.TOTPSecretForVerify(u.ID); !errors.Is(err, ErrNoTOTPSecret) {
 		t.Fatalf("empty stored secret: %v, want ErrNoTOTPSecret", err)
 	}
+
+	// A stored value that is non-empty but DECRYPTS to "" passes the stored==""
+	// check and must be stopped by the decrypted=="" one. encrypt never emits
+	// such a value, so it is sealed here by hand (BUG-4019, pre-GO mutant).
+	sealed := bug4019SealEmpty(t, key)
+	if got, err := s.decrypt(sealed); err != nil || got != "" {
+		t.Fatalf("precondition: the sealed value must decrypt to \"\": %q, %v", got, err)
+	}
+	if _, err := s.db.Exec(s.q(`UPDATE users SET totp_secret = ? WHERE id = ?`), sealed, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TOTPSecretForVerify(u.ID); !errors.Is(err, ErrNoTOTPSecret) {
+		t.Fatalf("stored secret that decrypts to empty: %v, want ErrNoTOTPSecret", err)
+	}
+}
+
+// bug4019SealEmpty seals "" with AES-256-GCM under key in the store's
+// enc:base64(nonce||ciphertext) format, independently of Store.encrypt, which
+// returns "" for an empty plaintext rather than sealing it.
+func bug4019SealEmpty(t *testing.T, key []byte) string {
+	t.Helper()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	return "enc:" + base64.StdEncoding.EncodeToString(gcm.Seal(nonce, nonce, nil, nil))
 }
