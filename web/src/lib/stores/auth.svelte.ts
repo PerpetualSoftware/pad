@@ -217,6 +217,9 @@ export const authStore = {
 	// before the session loads) so reset/invite flows keep their normal copy
 	// unless the server explicitly says email is off. The /forgot-password
 	// page swaps to host-recovery guidance when this is false.
+	// pushAvailable gates the Notifications settings section. The server sends
+	// it only to signed-in callers; absent means off (TASK-3940).
+	get pushAvailable() { return session?.push_available ?? false; },
 	get emailConfigured() { return session?.email_configured ?? true; },
 	// emailVerified is false ONLY for a Pad Cloud self-serve signup that hasn't
 	// confirmed its email yet (PLAN-1933 DR-3 / TASK-1940). Defaults to TRUE

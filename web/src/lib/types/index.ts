@@ -3409,6 +3409,20 @@ export interface TutorialsResponse {
 /** One-time UI suggestions the user dismissed (models.UIDismissalKeys). */
 export type UIDismissalKey = 'tutorials.console' | 'tutorials.launchpad';
 
+/**
+ * The caller's push notification settings (models.NotificationSettings).
+ * PUT replaces all seven; the server refuses a body missing or adding a key.
+ */
+export interface NotificationSettings {
+	push_enabled: boolean;
+	notify_assigned: boolean;
+	notify_comments: boolean;
+	notify_replies: boolean;
+	notify_reminders: boolean;
+	notify_mentions: boolean;
+	include_agent_activity: boolean;
+}
+
 export interface UIDismissalsResponse {
 	dismissed: UIDismissalKey[];
 }

@@ -104,6 +104,7 @@ import type {
 	TutorialsResponse,
 	UIDismissalKey,
 	UIDismissalsResponse,
+	NotificationSettings,
 	ImportOutcome,
 	ArchivedCollection,
 	CollectionFieldUsage
@@ -1290,6 +1291,10 @@ export interface AuthSession {
 	// replace "we emailed you a link" with host-recovery guidance, since no
 	// email can actually be sent. Absent on older servers — treat as true.
 	email_configured?: boolean;
+	// push_available is true when this server can deliver push notifications
+	// (a gateway is configured). Sent only to signed-in callers (TASK-3938);
+	// absent means off, so the Notifications settings section stays hidden.
+	push_available?: boolean;
 	// account_disabled is true when the request's credential belongs to a
 	// disabled account (BUG-3349): authenticated is false, and the sign-in
 	// page explains why instead of offering a sign-in that cannot work.
@@ -2776,6 +2781,17 @@ export const api = {
 		list: () => request<UIDismissalsResponse>('/me/ui-dismissals'),
 		dismiss: (key: UIDismissalKey) =>
 			request<UIDismissalsResponse>(`/me/ui-dismissals/${encodeURIComponent(key)}`, { method: 'PUT' })
+	},
+
+	// Which events send the caller a push notification (TASK-3940). PUT is a
+	// full replace: the server refuses a body that omits or adds a key.
+	notificationSettings: {
+		get: () => request<NotificationSettings>('/me/notification-settings'),
+		put: (settings: NotificationSettings) =>
+			request<NotificationSettings>('/me/notification-settings', {
+				method: 'PUT',
+				body: JSON.stringify(settings)
+			})
 	},
 
 	activity: {
