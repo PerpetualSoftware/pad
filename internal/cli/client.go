@@ -289,11 +289,30 @@ func itemListPage(h http.Header) ItemListPage {
 	return p
 }
 
-// ListAllItems is ListItems for a caller that needs every matching row (a
-// report): it follows the server's next-offset until has-more is false
-// (BUG-3704). params' limit and offset are its own. A server older than
-// BUG-3704 sends no paging state and lists everything in one response.
-func (c *Client) ListAllItems(wsSlug string, params url.Values) ([]models.Item, error) {
+// maxListPages bounds how many pages a ListAll* call reads. It is a runaway
+// guard against a server that reports has-more forever, not a size policy:
+// at the server's 1000 rows per page it is about a million rows. A var so a
+// test can use a small cap (BUG-4024).
+var maxListPages = 1000
+
+// SetMaxListPages replaces the page cap and returns a func that restores it.
+// It is a test hook: the production cap is not configurable.
+func SetMaxListPages(n int) (restore func()) {
+	prev := maxListPages
+	maxListPages = n
+	return func() { maxListPages = prev }
+}
+
+// listAllPages is the one pager behind every ListAll* method (BUG-3704,
+// BUG-3793, BUG-4024). It reads from startOffset, follows the server's
+// next-offset until has-more is false, and keeps the FIRST page's
+// UndeclaredKeys (a filter warning is a property of the query, and the first
+// response is where it is raised). A server older than BUG-3704 sends no
+// paging state, so one response is everything. A has-more whose next-offset
+// does not advance, or a list longer than maxListPages, is an error: handing
+// back a short list as though it were the whole one is this bug's own class.
+// params' limit and offset are the pager's own.
+func listAllPages(params url.Values, startOffset int, fetch func(url.Values) ([]models.Item, ItemListPage, error)) ([]models.Item, ItemListPage, error) {
 	q := url.Values{}
 	for k, v := range params {
 		q[k] = v
@@ -301,46 +320,64 @@ func (c *Client) ListAllItems(wsSlug string, params url.Values) ([]models.Item, 
 	q.Del("limit")
 	q.Del("offset")
 	var all []models.Item
-	for offset := 0; ; {
+	var first ItemListPage
+	offset := startOffset
+	for pages := 1; ; pages++ {
 		if offset > 0 {
 			q.Set("offset", strconv.Itoa(offset))
 		}
-		items, page, err := c.ListItemsReport(wsSlug, q)
+		items, page, err := fetch(q)
 		if err != nil {
-			return nil, err
+			return nil, ItemListPage{}, err
+		}
+		if pages == 1 {
+			first = ItemListPage{UndeclaredKeys: page.UndeclaredKeys}
 		}
 		all = append(all, items...)
-		if !page.HasMore || page.NextOffset <= offset {
-			return all, nil
+		if !page.HasMore {
+			first.Known = page.Known
+			return all, first, nil
+		}
+		if page.NextOffset <= offset {
+			return nil, ItemListPage{}, fmt.Errorf("the server reported more items (X-Pad-Has-More) but its next offset %d does not advance past %d; stopped after %d items rather than return a partial list", page.NextOffset, offset, len(all))
+		}
+		if pages >= maxListPages {
+			return nil, ItemListPage{}, fmt.Errorf("the list is longer than the %d-page cap (%d items read, server still reports X-Pad-Has-More); narrow the filter or pass --limit", maxListPages, len(all))
 		}
 		offset = page.NextOffset
 	}
 }
 
+// ListAllItems is ListItems for a caller that needs every matching row (a
+// report): it follows the server's next-offset until has-more is false
+// (BUG-3704). params' limit and offset are its own. A server older than
+// BUG-3704 sends no paging state and lists everything in one response.
+func (c *Client) ListAllItems(wsSlug string, params url.Values) ([]models.Item, error) {
+	items, _, err := c.ListAllItemsReport(wsSlug, params, 0)
+	return items, err
+}
+
+// ListAllItemsReport is ListAllItems from startOffset, also returning the
+// first page's UndeclaredKeys (BUG-4024).
+func (c *Client) ListAllItemsReport(wsSlug string, params url.Values, startOffset int) ([]models.Item, ItemListPage, error) {
+	return listAllPages(params, startOffset, func(q url.Values) ([]models.Item, ItemListPage, error) {
+		return c.ListItemsReport(wsSlug, q)
+	})
+}
+
 // ListAllCollectionItems is ListAllItems for one collection: it follows the
 // server's next-offset until has-more is false (BUG-3793).
 func (c *Client) ListAllCollectionItems(wsSlug, collSlug string, params url.Values) ([]models.Item, error) {
-	q := url.Values{}
-	for k, v := range params {
-		q[k] = v
-	}
-	q.Del("limit")
-	q.Del("offset")
-	var all []models.Item
-	for offset := 0; ; {
-		if offset > 0 {
-			q.Set("offset", strconv.Itoa(offset))
-		}
-		items, page, err := c.ListCollectionItemsReport(wsSlug, collSlug, q)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, items...)
-		if !page.HasMore || page.NextOffset <= offset {
-			return all, nil
-		}
-		offset = page.NextOffset
-	}
+	items, _, err := c.ListAllCollectionItemsReport(wsSlug, collSlug, params, 0)
+	return items, err
+}
+
+// ListAllCollectionItemsReport is ListAllCollectionItems from startOffset,
+// also returning the first page's UndeclaredKeys (BUG-4024).
+func (c *Client) ListAllCollectionItemsReport(wsSlug, collSlug string, params url.Values, startOffset int) ([]models.Item, ItemListPage, error) {
+	return listAllPages(params, startOffset, func(q url.Values) ([]models.Item, ItemListPage, error) {
+		return c.ListCollectionItemsReport(wsSlug, collSlug, q)
+	})
 }
 
 // ListItemsReport is ListItems plus what the response says besides its rows
