@@ -80,7 +80,8 @@ var ErrNoTOTPSecret = errors.New("no TOTP secret to verify against")
 
 // TOTPSecretForVerify returns the plaintext TOTP secret of a user whose 2FA is
 // enabled, for the second-factor check and nothing else. It is the only reader
-// that decrypts the column, so a secret that will not decrypt (an operator key
+// that returns the plaintext (EnableTOTP and ConsumeTOTPStep decrypt the column
+// only to compare it), so a secret that will not decrypt (an operator key
 // change) fails this check alone, not every read of the user row (BUG-4019).
 // A decrypt failure is a wrapped error (the caller fails closed); no row, 2FA
 // off or an empty secret is ErrNoTOTPSecret.

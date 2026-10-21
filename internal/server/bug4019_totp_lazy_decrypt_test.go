@@ -142,13 +142,18 @@ func TestBUG4019_LoginCodeOnAnUndecryptableSecretFailsClosedAndLogsOnce(t *testi
 	if n := bug4019Sessions(t, srv, u.ID); n != 0 {
 		t.Fatalf("%d sessions minted for the user", n)
 	}
+	// Every ERROR record counts, not only ours: the failure is logged once,
+	// not once here and again by a generic 500 writer (BUG-4019 r1). The one
+	// exclusion is the request logger's per-request line, which every 5xx gets
+	// and which carries no error (the secret-material check below still reads
+	// the whole log).
 	var records []string
 	for _, line := range strings.Split(logs.String(), "\n") {
-		if strings.Contains(line, "level=ERROR") && strings.Contains(line, "load totp secret for second factor") {
+		if strings.Contains(line, "level=ERROR") && !strings.Contains(line, `msg="http request"`) {
 			records = append(records, line)
 		}
 	}
-	if len(records) != 1 {
+	if len(records) != 1 || !strings.Contains(records[0], "load totp secret for second factor") {
 		t.Fatalf("%d slog error records, want exactly 1:\n%s", len(records), logs.String())
 	}
 	if !strings.Contains(records[0], u.ID) {

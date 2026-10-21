@@ -364,8 +364,10 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 // gets the same six tries an hour as a stolen challenge.
 //
 // The TOTP secret is not on user: it is loaded by TOTPSecretForVerify after the
-// limiter charge (BUG-4019). A secret that will not decrypt answers 500 and
-// logs once; a recovery code still works, since it does not need the secret.
+// limiter charge (BUG-4019). A secret that will not decrypt answers a TOTP code
+// with 500 and logs once. A request carrying only a recovery code still works,
+// since that branch does not need the secret; one carrying both is answered by
+// the TOTP branch first, so it gets the 500.
 // answered is true when it already wrote the response (rate limited, or a store
 // error); the caller then returns. A false verified with answered false is a
 // wrong, replayed or missing code.
@@ -379,15 +381,16 @@ func (s *Server) checkSecondFactor(w http.ResponseWriter, user *models.User, att
 				return false, true
 			}
 		}
-		// The secret is read here, after the limiter charge, and nowhere else:
+		// This is the check's one read of the secret, after the limiter charge:
 		// a user row no longer carries it, so a secret that will not decrypt
 		// fails this check alone (BUG-4019). No secret means this branch cannot
 		// verify (the recovery branch below still can); any other error fails
-		// closed, and is logged without secret material.
+		// closed, and is logged once, without secret material. writeError, not
+		// writeInternalError, which would log the same error a second time.
 		secret, err := s.store.TOTPSecretForVerify(user.ID)
 		if err != nil && !errors.Is(err, store.ErrNoTOTPSecret) {
 			slog.Error("load totp secret for second factor", "user_id", user.ID, "error", err)
-			writeInternalError(w, err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
 			return false, true
 		}
 		if err == nil {

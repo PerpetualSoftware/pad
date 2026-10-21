@@ -75,21 +75,56 @@ func TestBUG4019_ReadsOfAnUndecryptableUserSucceed(t *testing.T) {
 	if _, err := s.GetBacklinks(item.ID, ws.ID, 10, 0, BacklinksVisibility{Unrestricted: true}); err != nil {
 		t.Fatalf("backlinks read: %v", err)
 	}
+	// The Stripe lookup must MATCH the undecryptable row, or it never reads it
+	// (BUG-4019 r1: a lookup of an unknown customer passed at the base too).
+	if err := s.SetUserStripeCustomerID(bad.ID, "cus_bug4019"); err != nil {
+		t.Fatalf("SetUserStripeCustomerID: %v", err)
+	}
 	for name, get := range map[string]func() (*models.User, error){
 		"GetUser":         func() (*models.User, error) { return s.GetUser(bad.ID) },
 		"GetUserByEmail":  func() (*models.User, error) { return s.GetUserByEmail(bad.Email) },
 		"GetUserByName":   func() (*models.User, error) { return s.GetUserByUsername(bad.Username) },
 		"ValidatePasswd":  func() (*models.User, error) { return s.ValidatePassword(bad.Email, "password-1234") },
-		"GetUserByStripe": func() (*models.User, error) { return s.GetUserByStripeCustomerID("none") },
+		"GetUserByStripe": func() (*models.User, error) { return s.GetUserByStripeCustomerID("cus_bug4019") },
 	} {
 		u, err := get()
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if name != "GetUserByStripe" && (u == nil || !u.TOTPEnabled) {
+		if u == nil || u.ID != bad.ID || !u.TOTPEnabled {
 			t.Fatalf("%s: user %v, want the enabled row", name, u)
 		}
 	}
+
+	// The list reads were best-effort before, so they never failed; this pins
+	// that they still return the row, with its 2FA flag, rather than drop it.
+	all, err := s.ListUsers()
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if !bug4019HasEnabled(all, bad.ID) {
+		t.Fatalf("ListUsers: the undecryptable user is missing or not 2FA-enabled")
+	}
+	found, err := s.SearchUsers(AdminUserSearchParams{Query: bad.Email})
+	if err != nil {
+		t.Fatalf("SearchUsers: %v", err)
+	}
+	var searched []models.User
+	for _, e := range found.Users {
+		searched = append(searched, e.User)
+	}
+	if !bug4019HasEnabled(searched, bad.ID) {
+		t.Fatalf("SearchUsers: the undecryptable user is missing or not 2FA-enabled")
+	}
+}
+
+func bug4019HasEnabled(users []models.User, id string) bool {
+	for _, u := range users {
+		if u.ID == id {
+			return u.TOTPEnabled
+		}
+	}
+	return false
 }
 
 func TestBUG4019_TOTPSecretForVerify(t *testing.T) {
