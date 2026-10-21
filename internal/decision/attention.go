@@ -31,11 +31,13 @@ import (
 // THREE MORE QUESTIONS are STAGED here (TASK-3921, IDEA-3906 half B4a):
 // effort, effort_medium and high_stakes. They ride the same call as
 // needs_human_decision, so the cost is output tokens, not a second request.
-// Nothing READS them yet: their reader is TASK-3959 (B4b), so the set lists
-// them in Unsurfaced and no flag, chip or brief entry is made from them. Their
-// answers are stored, and the item's decisions list returns them. The read
-// rule that belongs to their reader, not to the set: an effort_medium answer
-// whose top probability is under .5 means "unclear".
+// Their reader is TASK-3959 (B4b): the needs-you scorers read effort and
+// effort_medium (effort_read.go), so the set lists all three in Unsurfaced and
+// no flag, chip or brief entry is made from them. high_stakes is read by
+// nothing yet (its labelled eval is TASK-4011). Their answers are stored, and
+// the item's decisions list returns them. The read rule that belongs to their
+// reader, not to the set: an effort_medium answer whose top probability is
+// under .5 means "unclear" (EffortMediumMinProb).
 //
 // The eval's state was {title, body}; the runner sends the richer
 // BuildItemState (collection, fields, and the recent trail as well), so the

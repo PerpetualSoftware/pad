@@ -124,8 +124,13 @@ type Server struct {
 	// to leaving it nil. Same synchronisation rule as afterItemPreRead.
 	visibleCollectionIDsFault func() error
 	// needsScorers are the importance and simplicity scorers GET /me/needs
-	// runs per workspace (TASK-3920). None ship yet: TASK-3959 registers them.
+	// runs per workspace (TASK-3920). New registers the two real ones
+	// (TASK-3959); tests replace the slice.
 	needsScorers []needs.Scorer
+	// needsMemoLoad is a TEST-ONLY seam, nil in production: the scorers' shared
+	// memo calls it with the name of each batch read it actually performs, so a
+	// test can hold a request to one read of each kind (TASK-3959).
+	needsMemoLoad func(read string)
 	// itemDoorAfterRowsHook is a TEST-ONLY seam, nil in production: the item
 	// doors (/items-index, /items-changes) call it right after their row
 	// query, so a test can commit a write between the rows and the access
@@ -825,13 +830,15 @@ func New(s *store.Store) *Server {
 			"A leaked admin token can then administer the instance; prefer a CLI session (`pad auth login`). " +
 			"Ignored in cloud mode.")
 	}
-	return &Server{
+	srv := &Server{
 		store:                 s,
 		rateLimiters:          rl,
 		storageInfoCache:      newStorageInfoCache(storageInfoTTL),
 		clientWrites:          newClientWriteMarks(),
 		adminAPITokensAllowed: adminTokens,
 	}
+	srv.needsScorers = srv.newNeedsScorers()
+	return srv
 }
 
 // adminAcceptsAPITokens reports whether platform administration accepts an

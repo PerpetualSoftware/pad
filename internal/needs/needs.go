@@ -235,6 +235,10 @@ type Score struct {
 type Viewer struct {
 	UserID       string
 	AuthIsBearer bool
+	// Now is the clock a scorer measures age and deadlines against: the
+	// request's as_of, so every page of one listing scores at one instant.
+	// The zero value means the wall clock.
+	Now time.Time
 }
 
 // Scope is what the viewer may see in one workspace, in the shape the stores
@@ -247,9 +251,10 @@ type Scope struct {
 	ItemIDs       []string
 }
 
-// Scorer fills a score on rows (TASK-3959 registers the real ones). It is
-// called once per workspace, after visibility, routing and snooze and before
-// sort and pagination, and must not call a provider synchronously. degraded
+// Scorer fills a score on rows (the importance and simplicity scorers of
+// TASK-3959 are the registered ones). It is called once per workspace, after
+// visibility, routing and snooze and before sort and pagination, and must not
+// call a provider synchronously. degraded
 // reports that its source failed and the scores came back partial or empty:
 // the server flags that workspace only.
 type Scorer interface {
