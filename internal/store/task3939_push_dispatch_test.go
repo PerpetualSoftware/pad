@@ -794,6 +794,13 @@ func TestClaimNotifications_LimitIsClamped(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("limit -1 claimed %d rows, want 1", len(got))
 	}
+	got, err = claimRows(f.s, "tok", 0, at(10*time.Second), at(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("limit 0 claimed %d rows, want 1", len(got))
+	}
 	got, err = claimRows(f.s, "tok", 10*maxNotificationClaim, at(10*time.Second), at(time.Minute))
 	if err != nil {
 		t.Fatal(err)
