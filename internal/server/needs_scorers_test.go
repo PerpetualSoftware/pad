@@ -22,11 +22,21 @@ func edge(src, tgt, coll string) store.BlocksEdge {
 	return store.BlocksEdge{SourceID: src, TargetID: tgt, TargetCollectionID: coll, TargetFields: `{"status":"open"}`}
 }
 
+// colls are collections with the open/done schema, so isOpen can judge a
+// target; a target whose collection is missing is not open (fail closed).
+func colls(ids ...string) []models.Collection {
+	out := make([]models.Collection, len(ids))
+	for i, id := range ids {
+		out[i] = models.Collection{ID: id, Schema: nfxSchema}
+	}
+	return out
+}
+
 func allSee() scopeSet { return newScopeSet(needs.Scope{Unrestricted: true}) }
 
 func TestNeedsYouSignals_FanoutCycleTerminates(t *testing.T) {
 	// A blocks B, B blocks A, A blocks C: two items, and the cycle ends.
-	g := newBlocksGraph([]store.BlocksEdge{edge("A", "B", "c"), edge("B", "A", "c"), edge("A", "C", "c")}, nil)
+	g := newBlocksGraph([]store.BlocksEdge{edge("A", "B", "c"), edge("B", "A", "c"), edge("A", "C", "c")}, colls("c"))
 	if n := g.fanout("A", allSee()); n != 2 {
 		t.Fatalf("fan-out of A = %d, want 2 (B and C; A never counts itself)", n)
 	}
@@ -35,7 +45,7 @@ func TestNeedsYouSignals_FanoutCycleTerminates(t *testing.T) {
 	for i := 0; i < 9; i++ {
 		chain = append(chain, edge(fmt.Sprint("n", i), fmt.Sprint("n", i+1), "c"))
 	}
-	if n := newBlocksGraph(chain, nil).fanout("n0", allSee()); n != fanoutDepth {
+	if n := newBlocksGraph(chain, colls("c")).fanout("n0", allSee()); n != fanoutDepth {
 		t.Fatalf("chain fan-out = %d, want the depth cap %d", n, fanoutDepth)
 	}
 	// A star of 150 stops at 99.
@@ -43,7 +53,7 @@ func TestNeedsYouSignals_FanoutCycleTerminates(t *testing.T) {
 	for i := 0; i < 150; i++ {
 		star = append(star, edge("hub", fmt.Sprint("s", i), "c"))
 	}
-	if n := newBlocksGraph(star, nil).fanout("hub", allSee()); n != fanoutCap {
+	if n := newBlocksGraph(star, colls("c")).fanout("hub", allSee()); n != fanoutCap {
 		t.Fatalf("star fan-out = %d, want the cap %d", n, fanoutCap)
 	}
 	// The blocks component follows: 0 -> 0, and the cap saturates at 1.
@@ -57,7 +67,6 @@ func TestNeedsYouSignals_FanoutCycleTerminates(t *testing.T) {
 }
 
 func TestNeedsYouSignals_FanoutSkipsHidden(t *testing.T) {
-	done := models.Collection{ID: "cdone", Schema: nfxSchema}
 	edges := []store.BlocksEdge{
 		edge("A", "B", "hiddenColl"), edge("B", "C", "seenColl"), // C is behind a hidden B
 		edge("A", "D", "seenColl"), edge("D", "E", "seenColl"), // E behind D, all seen
@@ -70,7 +79,7 @@ func TestNeedsYouSignals_FanoutSkipsHidden(t *testing.T) {
 			edges[i].TargetFields = `{"status":"done"}`
 		}
 	}
-	g := newBlocksGraph(edges, []models.Collection{done})
+	g := newBlocksGraph(edges, colls("cdone", "hiddenColl", "seenColl", "otherColl"))
 	restricted := newScopeSet(needs.Scope{CollectionIDs: []string{"seenColl", "cdone"}, ItemIDs: []string{"G"}})
 	// Counted: D, E, G. Not: B (hidden), C (behind B), T (terminal), F (behind T).
 	if n := g.fanout("A", restricted); n != 3 {
@@ -79,6 +88,73 @@ func TestNeedsYouSignals_FanoutSkipsHidden(t *testing.T) {
 	// Unrestricted sees B and C too; the terminal item and what only it blocks stay out.
 	if n := g.fanout("A", allSee()); n != 5 {
 		t.Fatalf("unrestricted fan-out = %d, want 5 (B C D E G and not T or F)", n)
+	}
+}
+
+// Every form of scope that does not grant anything fails closed: nothing is
+// counted, whatever the graph holds.
+func TestNeedsYouSignals_FanoutFailsClosed(t *testing.T) {
+	g := newBlocksGraph([]store.BlocksEdge{edge("A", "B", "c"), edge("B", "C", "c")}, colls("c"))
+	for name, sc := range map[string]needs.Scope{
+		"both lists nil":                  {},
+		"both lists empty":                {CollectionIDs: []string{}, ItemIDs: []string{}},
+		"items only, none of the targets": {ItemIDs: []string{"Z"}},
+	} {
+		if n := g.fanout("A", newScopeSet(sc)); n != 0 {
+			t.Errorf("%s: fan-out = %d, want 0", name, n)
+		}
+	}
+	// A node visible only by an item grant is walked THROUGH to a visible child.
+	g = newBlocksGraph([]store.BlocksEdge{edge("A", "B", "hidden"), edge("B", "C", "seen")}, colls("hidden", "seen"))
+	sc := newScopeSet(needs.Scope{CollectionIDs: []string{"seen"}, ItemIDs: []string{"B"}})
+	if n := g.fanout("A", sc); n != 2 {
+		t.Errorf("item-grant node: fan-out = %d, want 2 (B by grant, and C through it)", n)
+	}
+}
+
+// A target whose collection is not known is neither counted nor expanded.
+func TestNeedsYouSignals_FanoutUnknownCollectionFailsClosed(t *testing.T) {
+	g := newBlocksGraph([]store.BlocksEdge{edge("A", "B", "ghost"), edge("B", "C", "c")}, colls("c"))
+	if n := g.fanout("A", allSee()); n != 0 {
+		t.Fatalf("fan-out = %d, want 0 (B's collection is unknown, so B and C stay out)", n)
+	}
+}
+
+// D agrees with the dashboard's server-local day (overdueToday), not the UTC day.
+func TestNeedsYouSignals_DeadlineUsesServerLocalDay(t *testing.T) {
+	old := time.Local
+	t.Cleanup(func() { time.Local = old })
+	time.Local = time.FixedZone("UTC-8", -8*3600)
+	// 03:00 UTC on the 11th is 19:00 on the 10th locally.
+	now := time.Date(2026, 3, 11, 3, 0, 0, 0, time.UTC)
+	if overdueToday(now.In(time.Local)) != "2026-03-10" {
+		t.Fatal("fixture: local day should be the 10th")
+	}
+	if d, why := deadlinePart(`{"due_date":"2026-03-10"}`, now); d != 1 || why != whyDueToday {
+		t.Errorf("due the local day: %v %q, want 1 %q (the UTC day would call it overdue)", d, why, whyDueToday)
+	}
+	if d, why := deadlinePart(`{"due_date":"2026-03-09"}`, now); d != 1 || why != whyOverdue {
+		t.Errorf("due the day before: %v %q, want 1 %q", d, why, whyOverdue)
+	}
+	if d, why := deadlinePart(`{"due_date":"2026-03-11"}`, now); why != whyDueSoon || d != 1-1.0/14 {
+		t.Errorf("due the next local day: %v %q, want %v %q", d, why, 1-1.0/14, whyDueSoon)
+	}
+}
+
+// H is a probability: a stored value outside [0,1] cannot push importance past its bounds.
+func TestNeedsYouSignals_NeedsHumanProbabilityClamped(t *testing.T) {
+	r := &needs.Row{WaitingSince: nfxT0}
+	qh := map[string]string{decision.AttentionNeedsHuman: "h"}
+	ans := func(p string) []models.ItemDecision {
+		return []models.ItemDecision{{QuestionKey: decision.AttentionNeedsHuman, Kind: "noul", QuestionHash: "h", Answer: json.RawMessage(`{"type":"noul","noul":` + p + `}`)}}
+	}
+	base := importanceOf(r, store.NeedsScoringItem{}, 0, ans("1"), qh, nfxT0).Value
+	if got := importanceOf(r, store.NeedsScoringItem{}, 0, ans("7"), qh, nfxT0).Value; got != base {
+		t.Errorf("probability 7 scored %d, want the value for 1 (%d)", got, base)
+	}
+	low := importanceOf(r, store.NeedsScoringItem{}, 0, ans("0"), qh, nfxT0).Value
+	if got := importanceOf(r, store.NeedsScoringItem{}, 0, ans("-4"), qh, nfxT0).Value; got != low {
+		t.Errorf("probability -4 scored %d, want the value for 0 (%d)", got, low)
 	}
 }
 
@@ -315,4 +391,75 @@ func TestNeedsYouSignals_VocabularyIsDocumented(t *testing.T) {
 			t.Errorf("Why string %q is not listed in docs/api.md", w)
 		}
 	}
+}
+
+// Through the router (team CONVE-19): a restricted member's score is built from
+// what that member may see. The row blocks an item they cannot see; the hidden
+// item must add nothing, and the same viewer with full access scores higher.
+func TestNeedsYouSignals_RestrictedViewerScoreHasNoHiddenBlocks(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice, guest := f.user("owner"), f.user("alice"), f.user("guest")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		asks, hidden := f.collection(ws, "Asks", true), f.collection(ws, "Hidden tasks", false)
+		row := f.item(ws, asks, "blocking ask", alice, nfxDay(1))
+		secret := f.item(ws, hidden, "secret work", nil, nfxDay(2))
+		grantRow := f.item(ws, asks, "blocking ask for the guest", nil, nfxDay(1))
+		f.forceAssign(grantRow, guest)
+		for _, id := range []string{row.ID, grantRow.ID} {
+			if _, err := srv.store.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: secret.ID, LinkType: "blocks", CreatedBy: "user"}, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		token := func(u *models.User) string {
+			tok, err := srv.store.CreateAPIToken(u.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return tok.Token
+		}
+		score := func(bearer string) *needs.Score {
+			rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs", bearer, nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("%d %s", rr.Code, rr.Body.String())
+			}
+			var resp needsResponse
+			parseJSON(t, rr, &resp)
+			if len(resp.Rows) != 1 || resp.Rows[0].Importance == nil {
+				t.Fatalf("rows %+v", resp.Rows)
+			}
+			return resp.Rows[0].Importance
+		}
+		hasBlocks := func(s *needs.Score) bool {
+			for _, w := range s.Why {
+				if w == whyBlocksWork {
+					return true
+				}
+			}
+			return false
+		}
+		aliceTok := token(alice)
+		// Control: with access to every collection the blocked item counts.
+		full := score(aliceTok)
+		if !hasBlocks(full) {
+			t.Fatalf("control: an unrestricted viewer should see the blocks part: %+v", full)
+		}
+		// Restricted to the asks collection alone, the hidden item vanishes.
+		if err := srv.store.SetMemberCollectionAccess(ws.ID, alice.ID, "specific", []string{asks.ID}); err != nil {
+			t.Fatal(err)
+		}
+		restricted := score(aliceTok)
+		if hasBlocks(restricted) || restricted.Value >= full.Value {
+			t.Fatalf("collection-restricted: %+v leaks the hidden blocked item (control %+v)", restricted, full)
+		}
+		// Only an item grant on the row: the same.
+		if _, err := srv.store.CreateItemGrant(ws.ID, grantRow.ID, guest.ID, "view", owner.ID); err != nil {
+			t.Fatal(err)
+		}
+		granted := score(token(guest))
+		if hasBlocks(granted) || granted.Value != restricted.Value {
+			t.Fatalf("item-grant-only: %+v, want the restricted score %+v", granted, restricted)
+		}
+	})
 }

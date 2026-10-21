@@ -174,12 +174,12 @@ func (m *needsMemo) blocks() (*blocksGraph, error) {
 // answers returns the latest attention answers of the rows' items, the owed
 // jobs, and the question hashes as the set asks them now. All three are nil
 // without a runner: no provider, no answers worth trusting.
-func (m *needsMemo) answers(rows []*needs.Row) (decs map[string][]models.ItemDecision, owed map[string]bool, qh map[string]string, err error) {
+func (m *needsMemo) answers(ctx context.Context, rows []*needs.Row) (decs map[string][]models.ItemDecision, owed map[string]bool, qh map[string]string, err error) {
 	if m.runner == nil {
 		return nil, nil, nil, nil
 	}
 	if qh, err = memoLoad(m, "question_hashes", &m.qhash, func() (map[string]string, error) {
-		return m.runner.CurrentQuestionHashes(context.Background(), m.wsID, decision.AttentionSetName)
+		return m.runner.CurrentQuestionHashes(ctx, m.wsID, decision.AttentionSetName)
 	}); err != nil {
 		return
 	}
@@ -239,7 +239,7 @@ func (sc *importanceScorer) Score(ctx context.Context, v needs.Viewer, scope nee
 	if err != nil {
 		return true, err
 	}
-	decs, _, qh, err := m.answers(rows)
+	decs, _, qh, err := m.answers(ctx, rows)
 	if err != nil {
 		return true, err
 	}
@@ -284,8 +284,8 @@ func importanceOf(r *needs.Row, it store.NeedsScoringItem, blocked int, decs []m
 		why = append(why, whyAsked)
 	} else if d, ok := currentAnswer(decs, qh, decision.AttentionNeedsHuman); ok {
 		if pr, ok := decision.NoulValue(d); ok {
-			h = pr
-			if pr >= decision.AttentionThreshold {
+			h = math.Max(0, math.Min(1, pr))
+			if h >= decision.AttentionThreshold {
 				why = append(why, whyNeedsHuman)
 			}
 		}
@@ -295,9 +295,11 @@ func importanceOf(r *needs.Row, it store.NeedsScoringItem, blocked int, decs []m
 }
 
 // deadlinePart is D: 1 when overdue or due today, falling to 0 over 14 days,
-// 0 with no date. The earliest of due_date and end_date counts.
+// 0 with no date. The earliest of due_date and end_date counts. "Today" is the
+// server-local calendar day, the one the dashboard's overdue rule uses
+// (overdueToday), so a row reads overdue here exactly when the dashboard says so.
 func deadlinePart(fieldsJSON string, now time.Time) (float64, string) {
-	today := now.UTC().Truncate(24 * time.Hour)
+	today, _ := time.Parse("2006-01-02", overdueToday(now.In(time.Local)))
 	best, found := time.Time{}, false
 	for _, key := range overdueDateFields {
 		v := extractFieldValue(fieldsJSON, key)
@@ -376,7 +378,9 @@ func (g *blocksGraph) isOpen(e store.BlocksEdge) bool {
 	}
 	var fields map[string]any
 	_ = json.Unmarshal([]byte(e.TargetFields), &fields)
-	open := true
+	// A target whose collection is not in the map cannot be judged terminal or
+	// not, so it fails closed: neither counted nor walked through.
+	open := false
 	if c := g.colls[e.TargetCollectionID]; c != nil {
 		var schema models.CollectionSchema
 		_ = models.UnmarshalItemFieldSchema([]byte(c.Schema), &schema)
@@ -438,7 +442,7 @@ func (sc *simplicityScorer) Score(ctx context.Context, _ needs.Viewer, scope nee
 	if err != nil {
 		return true, err
 	}
-	decs, owed, qh, err := m.answers(rows)
+	decs, owed, qh, err := m.answers(ctx, rows)
 	if err != nil {
 		return true, err
 	}
