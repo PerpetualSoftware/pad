@@ -996,10 +996,12 @@ func TestNeedsYouSort_FutureAsOfIsClamped(t *testing.T) {
 
 // Every cursor the server mints is one it follows (TASK-3959 part 2 r2): a
 // boundary row whose created_at, and so its asked waiting_since, is pre-1970,
-// unparseable (a zero time) or past 2262 pages through under every sort, with
-// no row repeated or missed. Before r2 the first two minted a cursor that the
-// range check refused, and a time outside int64 nanoseconds did not
-// round-trip, so the age sort's position drifted.
+// unparseable (a zero time) or past 2262 pages through, with no row repeated
+// or missed. What each sort proves differs. Every cursor carries the key
+// times, so under ALL three sorts a check that refused them would 400 page 2
+// (the r1 check did). Only sort=age ORDERS by them, so only age proves the
+// clamp: a time outside int64 nanoseconds wrapped in UnixNano, and the cursor
+// named a different instant from the row's key.
 func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
@@ -1018,7 +1020,9 @@ func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
 		for _, title := range []string{"pre-1970", "zero", "far", "zero-b", "plain-a", "plain-b"} {
 			it := f.item(ws, asks, title, alice, nfxDay(i+1))
 			if v, ok := raw[title]; ok {
-				if _, err := srv.store.DB().Exec(`UPDATE items SET created_at = ? WHERE id = ?`, v, it.ID); err != nil {
+				// Literal SQL, as setCreated: the raw *sql.DB does not rewrite ?
+				// placeholders for Postgres. The values are this test's constants.
+				if _, err := srv.store.DB().Exec(fmt.Sprintf("UPDATE items SET created_at = '%s' WHERE id = '%s'", v, it.ID)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1031,13 +1035,15 @@ func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
 			if len(full) != 6 {
 				t.Fatalf("%s: %d rows %v, want 6", sortBy, len(full), full)
 			}
+		limits:
 			for _, limit := range []int{1, 2} {
 				var got []string
 				q := fmt.Sprintf("?sort=%s&limit=%d", sortBy, limit)
 				for page := 0; page < 20; page++ {
 					rr := f.get(alice, q)
 					if rr.Code != http.StatusOK {
-						t.Fatalf("%s limit %d page %d: %d %s (a cursor the server minted was refused)", sortBy, limit, page, rr.Code, rr.Body.String())
+						t.Errorf("%s limit %d page %d: %d %s (a cursor the server minted was refused)", sortBy, limit, page, rr.Code, rr.Body.String())
+						continue limits
 					}
 					var resp needsResponse
 					parseJSON(t, rr, &resp)
@@ -1048,7 +1054,7 @@ func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
 					q = fmt.Sprintf("?sort=%s&limit=%d&cursor=%s", sortBy, limit, resp.NextCursor)
 				}
 				if strings.Join(got, ",") != strings.Join(full, ",") {
-					t.Fatalf("%s limit %d: pages %v, single page %v (a row was repeated or missed)", sortBy, limit, got, full)
+					t.Errorf("%s limit %d: pages %v, single page %v (a row was repeated or missed)", sortBy, limit, got, full)
 				}
 			}
 		}
