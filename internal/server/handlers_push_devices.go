@@ -43,7 +43,8 @@ func (s *Server) pushAvailable() bool {
 // bearer, and returns that session. Everything else is refused 403
 // session_required: an API token, an OAuth bearer (also when a cookie rides
 // along, which requestSessionInfo alone would fall through to), an app
-// principal. No credential is a 401.
+// principal. No credential is a 401. A workspace-pinned API token never
+// reaches here: the auth middleware's BUG-3982 gate refuses it first.
 func (s *Server) requirePushSession(w http.ResponseWriter, r *http.Request) *store.SessionInfo {
 	if appContextFrom(r) != nil {
 		writeError(w, http.StatusForbidden, "session_required", "Push devices are registered by a signed-in session")

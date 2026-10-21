@@ -185,6 +185,23 @@ func TestPushDevices_PATRejected(t *testing.T) {
 			return r.WithContext(ctx)
 		})
 		assert403("app token", app)
+		// A workspace-pinned PAT is refused earlier, by the BUG-3982 gate, and
+		// gets that gate's bytes rather than session_required.
+		ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Pinned", OwnerID: e.user.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pinned, err := srv.store.CreateAPIToken(e.user.ID, models.APITokenCreate{Name: "pinned", WorkspaceID: ws.ID}, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := httptest.NewRecorder()
+		writeTokenWorkspaceDeniedFor(want, &tokenPin{ID: ws.ID, Slug: ws.Slug})
+		for _, m := range []string{"PUT", "DELETE"} {
+			if rr := rawReq(srv, m, "/api/v1/me/push-devices/c1", pinned.Token, "", pushBody("t1")); rr.Code != want.Code || rr.Body.String() != want.Body.String() {
+				t.Errorf("a pinned PAT %s: %d %s, want the BUG-3982 refusal %d %s", m, rr.Code, rr.Body.String(), want.Code, want.Body.String())
+			}
+		}
 		if got := e.devices(); len(got) != 0 {
 			t.Fatalf("a refused request registered %v", got)
 		}
