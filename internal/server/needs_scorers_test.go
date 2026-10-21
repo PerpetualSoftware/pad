@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -218,6 +219,8 @@ func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
 		{name: "D 14 days", prio: "low", item: due("2026-03-24"), part: D, want: 0, value: 11}, // .1125
 		{name: "D 15 days", prio: "low", item: due("2026-03-25"), part: D, want: 0},
 		{name: "D none", prio: "low", part: D, want: 0, value: 11},
+		// A date too short to parse is not overdue by the dashboard's string rule either.
+		{name: "D short date", prio: "low", item: due("2026-3-5"), part: D, want: 0, value: 11},
 		// The earlier of due_date and end_date counts, whichever key holds it.
 		{name: "D end_date earlier", prio: "low", item: store.NeedsScoringItem{Fields: `{"due_date":"2026-03-17","end_date":"2026-03-12"}`}, part: D, want: 12.0 / 14},
 		{name: "D due_date earlier", prio: "low", item: store.NeedsScoringItem{Fields: `{"due_date":"2026-03-12","end_date":"2026-03-17"}`}, part: D, want: 12.0 / 14},
@@ -284,6 +287,22 @@ func TestNeedsYouSignals_NeedsHumanProbabilityClamped(t *testing.T) {
 	low := importanceOf(r, store.NeedsScoringItem{}, 0, ans("0"), qh, nfxT0).Value
 	if got := importanceOf(r, store.NeedsScoringItem{}, 0, ans("-4"), qh, nfxT0).Value; got != low {
 		t.Errorf("probability -4 scored %d, want the value for 0 (%d)", got, low)
+	}
+}
+
+// "judged to need a human" is given from the attention threshold up, not below it.
+func TestNeedsYouSignals_NeedsHumanWhyAtThreshold(t *testing.T) {
+	r := &needs.Row{WaitingSince: nfxT0}
+	qh := map[string]string{decision.AttentionNeedsHuman: "h"}
+	for _, c := range []struct {
+		p    float64
+		want bool
+	}{{decision.AttentionThreshold, true}, {decision.AttentionThreshold - 0.01, false}, {1, true}} {
+		decs := []models.ItemDecision{{QuestionKey: decision.AttentionNeedsHuman, Kind: "noul", QuestionHash: "h", Answer: json.RawMessage(fmt.Sprintf(`{"type":"noul","noul":%v}`, c.p))}}
+		why := importanceOf(r, store.NeedsScoringItem{}, 0, decs, qh, nfxT0).Why
+		if got := slices.Contains(why, whyNeedsHuman); got != c.want {
+			t.Errorf("probability %v: Why %v, want %q present = %v", c.p, why, whyNeedsHuman, c.want)
+		}
 	}
 }
 
@@ -387,9 +406,11 @@ func TestNeedsYouSignals_HintTable(t *testing.T) {
 	}
 	// A current effort answer whose level cannot be read (here 7, outside 0-3)
 	// is no answer: the heuristic, with no hint.
-	s = simplicityOf(row, store.NeedsScoringItem{ContentRunes: 3000}, []models.ItemDecision{effortAnswer(`{"7":0.9}`, "qe"), mediumAnswer("device", 0.9, "qm")}, qh, false)
-	if s.Hint != "" || s.Value != 33 || strings.Join(s.Why, "|") != whyEstimated {
-		t.Fatalf("unreadable effort: %+v, want the heuristic (level 2)", s)
+	for _, probs := range []string{`{"7":0.9}`, `{"-1":0.9}`, `{"x":0.9}`} {
+		s = simplicityOf(row, store.NeedsScoringItem{ContentRunes: 3000}, []models.ItemDecision{effortAnswer(probs, "qe"), mediumAnswer("device", 0.9, "qm")}, qh, false)
+		if s.Hint != "" || s.Value != 33 || strings.Join(s.Why, "|") != whyEstimated {
+			t.Fatalf("unreadable effort %s: %+v, want the heuristic (level 2)", probs, s)
+		}
 	}
 	// An owed job adds the refreshing note, over the answer it still uses.
 	s = simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(1), "qe")}, qh, true)
@@ -512,6 +533,25 @@ func TestNeedsYouSignals_BindingThroughServeHTTP(t *testing.T) {
 	}
 	if resp.Rows[0].Simplicity.Value != 100 || resp.Rows[0].Simplicity.Hint != "" {
 		t.Fatalf("simplicity %+v", resp.Rows[0].Simplicity)
+	}
+	if !resp.Rows[0].WaitingSince.Equal(nfxDay(1)) {
+		t.Fatalf("waiting_since %v, want %v", resp.Rows[0].WaitingSince, nfxDay(1))
+	}
+	// Page 1 scores at the wall clock: medium .125 + asked .10 + age (years, capped) .10 = .325 -> 33.
+	if v := resp.Rows[0].Importance.Value; v != 33 {
+		t.Fatalf("page-1 importance %d, want 33", v)
+	}
+	// A later page scores at the cursor's as_of, one week after waiting_since:
+	// age .5, so .125 + .10 + .05 = .275 -> 28.
+	cur := needs.NewCursor(needs.SortAge, needsViewActive, "", nfxDay(8), &needs.Row{ItemID: "0", WaitingSince: nfxDay(0), Item: needs.ItemInfo{CreatedAt: nfxDay(0)}}).Encode()
+	rr = doRequestWithBearer(srv, "GET", "/api/v1/me/needs?cursor="+cur, tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	resp = needsResponse{}
+	parseJSON(t, rr, &resp)
+	if len(resp.Rows) != 1 || resp.Rows[0].Importance == nil || resp.Rows[0].Importance.Value != 28 {
+		t.Fatalf("cursor page rows %+v, want importance 28 at as_of %v", resp.Rows, nfxDay(8))
 	}
 }
 

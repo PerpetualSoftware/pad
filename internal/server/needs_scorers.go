@@ -155,6 +155,8 @@ func (m *needsMemo) itemsFor(rows []*needs.Row) (map[string]store.NeedsScoringIt
 	})
 }
 
+// blocks is the workspace's blocks graph, built once. Like every memo read it
+// runs under m.mu, which both scorers' Score methods hold for their whole call.
 func (m *needsMemo) blocks() (*blocksGraph, error) {
 	if m.graph != nil || m.graphE != nil {
 		return m.graph, m.graphE
