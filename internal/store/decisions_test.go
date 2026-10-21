@@ -506,6 +506,15 @@ func TestTruncateDecisionError_Boundary(t *testing.T) {
 	if got := truncateDecisionError(exact); got != exact {
 		t.Fatalf("exact-limit ASCII changed: len=%d", len(got))
 	}
+	// Plain ASCII just over the limit: every case above carries a rune of
+	// width >= 2, so without these a limit check off by one byte would pass
+	// (BUG-4018 r2).
+	for _, n := range []int{maxDecisionErrorBytes + 1, 2000} {
+		over := strings.Repeat("a", n)
+		if got := truncateDecisionError(over); got != over[:maxDecisionErrorBytes] {
+			t.Fatalf("%d ASCII bytes: got len=%d, want exactly %d", n, len(got), maxDecisionErrorBytes)
+		}
+	}
 }
 
 // Sanitising can grow a message (NUL or an invalid byte becomes a 3-byte
