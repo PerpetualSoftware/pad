@@ -43,7 +43,7 @@ func bug4019Key(t *testing.T) []byte {
 	return k
 }
 
-func bug4019Placeholder(srv *Server) string {
+func bug4019Placeholder() string {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		return "$1"
 	}
@@ -53,7 +53,7 @@ func bug4019Placeholder(srv *Server) string {
 func bug4019Sessions(t *testing.T, srv *Server, userID string) int {
 	t.Helper()
 	var n int
-	if err := srv.store.DB().QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = `+bug4019Placeholder(srv), userID).Scan(&n); err != nil {
+	if err := srv.store.DB().QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id = `+bug4019Placeholder(), userID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -87,7 +87,7 @@ func bug4019Corrupt(t *testing.T, srv *Server, email string) (*models.User, stri
 		t.Fatal(err)
 	}
 	var stored string
-	if err := srv.store.DB().QueryRow(`SELECT totp_secret FROM users WHERE id = `+bug4019Placeholder(srv), u.ID).Scan(&stored); err != nil {
+	if err := srv.store.DB().QueryRow(`SELECT totp_secret FROM users WHERE id = `+bug4019Placeholder(), u.ID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored == "" || stored == bug4019Secret {
@@ -124,7 +124,7 @@ func (b *bug4019LogBuf) String() string {
 	return b.buf.String()
 }
 
-// T2: a TOTP code on an undecryptable secret mints no session, answers 5xx,
+// T2: a TOTP code on an undecryptable secret mints no session, answers 500,
 // logs exactly one record naming the user, and the log carries no secret.
 func TestBUG4019_LoginCodeOnAnUndecryptableSecretFailsClosedAndLogsOnce(t *testing.T) {
 	srv := bug4019Server(t)
@@ -136,15 +136,15 @@ func TestBUG4019_LoginCodeOnAnUndecryptableSecretFailsClosedAndLogsOnce(t *testi
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	code, body, token, cookie := bug4019Login(srv, u.ID, map[string]any{"code": validTOTPCode(t, bug4019Secret)})
-	if code < 500 || token != "" || cookie {
-		t.Fatalf("login verify: %d token=%q cookie=%v body=%s, want 5xx and no session", code, token, cookie, body)
+	if code != http.StatusInternalServerError || token != "" || cookie {
+		t.Fatalf("login verify: %d token=%q cookie=%v body=%s, want 500 and no session", code, token, cookie, body)
 	}
 	if n := bug4019Sessions(t, srv, u.ID); n != 0 {
 		t.Fatalf("%d sessions minted for the user", n)
 	}
 	// Every ERROR record counts, not only ours: the failure is logged once,
 	// not once here and again by a generic 500 writer (BUG-4019 r1). The one
-	// exclusion is the request logger's per-request line, which every 5xx gets
+	// exclusion is the request logger's per-request line, which every 500 gets
 	// and which carries no error (the secret-material check below still reads
 	// the whole log).
 	var records []string
@@ -200,8 +200,8 @@ func TestBUG4019_DisableAndDeleteDoorsRefuseOnAnUndecryptableSecret(t *testing.T
 		userID, secret, tok := passwordlessTOTPUser(t, srv, "t4a-4019@example.com")
 		srv.store.SetEncryptionKey(bug4019Key(t))
 		rr := doRequestWithCookie(srv, "POST", "/api/v1/auth/2fa/disable", map[string]any{"code": validTOTPCode(t, secret)}, tok)
-		if rr.Code < 500 {
-			t.Fatalf("disable: %d %s, want 5xx", rr.Code, rr.Body.String())
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("disable: %d %s, want 500", rr.Code, rr.Body.String())
 		}
 		if !bug4019Enabled(t, srv, userID) {
 			t.Fatal("2FA was disabled on a code that could not be checked")
@@ -218,8 +218,8 @@ func TestBUG4019_DisableAndDeleteDoorsRefuseOnAnUndecryptableSecret(t *testing.T
 			"password":  "correct-horse-battery-staple",
 			"totp_code": validTOTPCode(t, secret),
 		}, tok)
-		if rr.Code < 500 {
-			t.Fatalf("delete: %d %s, want 5xx", rr.Code, rr.Body.String())
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("delete: %d %s, want 500", rr.Code, rr.Body.String())
 		}
 		u, err := srv.store.GetUser(userID)
 		if err != nil || u == nil {
@@ -231,7 +231,8 @@ func TestBUG4019_DisableAndDeleteDoorsRefuseOnAnUndecryptableSecret(t *testing.T
 	})
 }
 
-// T5: an enabled row whose stored secret is ” refuses a code computed from "".
+// T5: an enabled row whose stored secret is "" refuses a code computed from "",
+// and logs one warning naming the user (BUG-4019 r2).
 func TestBUG4019_EmptyStoredSecretRefusesACodeComputedFromEmpty(t *testing.T) {
 	srv := bug4019Server(t)
 	u, err := srv.store.CreateUser(models.UserCreate{Email: "t5-4019@example.com", Name: "Five", Password: "pw-test-12345"})
@@ -244,19 +245,33 @@ func TestBUG4019_EmptyStoredSecretRefusesACodeComputedFromEmpty(t *testing.T) {
 	if err := srv.store.EnableTOTP(u.ID, bug4019Secret, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := srv.store.DB().Exec(`UPDATE users SET totp_secret = '' WHERE id = `+bug4019Placeholder(srv), u.ID); err != nil {
+	if _, err := srv.store.DB().Exec(`UPDATE users SET totp_secret = '' WHERE id = `+bug4019Placeholder(), u.ID); err != nil {
 		t.Fatal(err)
 	}
 	emptyCode, err := totp.GenerateCode("", time.Now())
 	if err != nil {
 		t.Fatalf("precondition: a code is computable from an empty secret: %v", err)
 	}
+	logs := &bug4019LogBuf{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	code, body, token, _ := bug4019Login(srv, u.ID, map[string]any{"code": emptyCode})
 	if code != http.StatusUnauthorized || token != "" {
 		t.Fatalf("login with a code computed from \"\": %d %s, want 401 and no token", code, body)
 	}
 	if n := bug4019Sessions(t, srv, u.ID); n != 0 {
 		t.Fatalf("%d sessions minted", n)
+	}
+	var warns []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "totp enabled but no secret to verify against") {
+			warns = append(warns, line)
+		}
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], u.ID) {
+		t.Fatalf("%d warnings naming the user, want exactly 1:\n%s", len(warns), logs.String())
 	}
 }
 

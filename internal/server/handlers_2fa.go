@@ -393,6 +393,12 @@ func (s *Server) checkSecondFactor(w http.ResponseWriter, user *models.User, att
 			writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
 			return false, true
 		}
+		// 2FA on with no secret behind it (an emptied column) cannot verify a
+		// code, so the user is held to recovery codes; say so to the operator,
+		// with the user id only (BUG-4019 r2).
+		if err != nil && user.TOTPEnabled {
+			slog.Warn("totp enabled but no secret to verify against", "user_id", user.ID)
+		}
 		if err == nil {
 			// Capture the clock ONCE so validation and step derivation agree on the
 			// window. totp.Validate reads its own time.Now(); if a boundary crosses
