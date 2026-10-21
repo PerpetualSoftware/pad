@@ -335,3 +335,16 @@ func (s *Store) SetBeforeVersionsReadHookForTesting(hook func(documentID string)
 	s.beforeVersionsRead = hook
 	return func() { s.beforeVersionsRead = prev }
 }
+
+// SetRotateFaultHookForTesting makes RotateUserSessions fail its transaction
+// with hook's error, after the writes and before the commit, for the lifetime
+// of the returned restore function. It exists to prove the fail-closed
+// fallback: a failed rotation must revoke every session (TASK-3938).
+//
+// Production code MUST NOT call this. The "ForTesting" suffix is the grep
+// signal. Set it only while no other request is in flight against this Store.
+func (s *Store) SetRotateFaultHookForTesting(hook func() error) (restore func()) {
+	prev := s.rotateFault
+	s.rotateFault = hook
+	return func() { s.rotateFault = prev }
+}

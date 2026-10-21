@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -15,6 +16,9 @@ import (
 // SessionInfo holds the result of session validation, including the
 // authenticated user and session binding metadata for IP/UA verification.
 type SessionInfo struct {
+	// ID is the session row's id (sessions.id), what rows that live and die
+	// with the session (push_devices) reference. Never the token.
+	ID        string
 	User      *models.User
 	IPAddress string
 	UAHash    string
@@ -90,10 +94,31 @@ func (s *Store) CreateSessionFenced(userID string, epoch int64, deviceInfo, ipAd
 }
 
 func (s *Store) createSession(userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
+	// Only for an account that is not disabled, decided under the users row
+	// (BUG-3349, requireActiveUserTx): a request admitted before a disable,
+	// minting after it, would otherwise leave a session its revoke never saw.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("insert session: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	plaintext, _, err := s.createSessionTx(tx, userID, epoch, deviceInfo, ipAddress, userAgent, ttl, issuedAt)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("insert session: commit: %w", err)
+	}
+	return plaintext, nil
+}
+
+// createSessionTx is createSession's body on a caller-owned transaction: it
+// returns the plaintext token and the new row's id, and commits nothing.
+func (s *Store) createSessionTx(tx *sql.Tx, userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, string, error) {
 	// Generate 32 random bytes → hex → prefix
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate session token: %w", err)
+		return "", "", fmt.Errorf("generate session token: %w", err)
 	}
 	plaintext := "padsess_" + hex.EncodeToString(raw)
 
@@ -118,19 +143,11 @@ func (s *Store) createSession(userID string, epoch int64, deviceInfo, ipAddress,
 	}
 	expiresAt := expires.Format(time.RFC3339)
 
-	// Only for an account that is not disabled, decided under the users row
-	// (BUG-3349, requireActiveUserTx): a request admitted before a disable,
-	// minting after it, would otherwise leave a session its revoke never saw.
-	tx, err := s.db.Begin()
-	if err != nil {
-		return "", fmt.Errorf("insert session: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	if err := s.requireActiveUserTx(tx, userID); err != nil {
 		if errors.Is(err, ErrUserDisabled) {
-			return "", err
+			return "", "", err
 		}
-		return "", fmt.Errorf("insert session: %w", err)
+		return "", "", fmt.Errorf("insert session: %w", err)
 	}
 	// The epoch is read under requireActiveUserTx's lock (FOR SHARE on
 	// Postgres; SQLite serializes writers), which a credential change's
@@ -138,23 +155,78 @@ func (s *Store) createSession(userID string, epoch int64, deviceInfo, ipAddress,
 	if epoch >= 0 {
 		var current int64
 		if err := tx.QueryRow(s.q(`SELECT credential_epoch FROM users WHERE id = ?`), userID).Scan(&current); err != nil {
-			return "", fmt.Errorf("insert session: read credential epoch: %w", err)
+			return "", "", fmt.Errorf("insert session: read credential epoch: %w", err)
 		}
 		if current != epoch {
-			return "", ErrCredentialsChanged
+			return "", "", ErrCredentialsChanged
 		}
 	}
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds, kind)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts, int64(ttl/time.Second), SessionKindFor(deviceInfo)); err != nil {
-		return "", fmt.Errorf("insert session: %w", err)
+		return "", "", fmt.Errorf("insert session: %w", err)
+	}
+	return plaintext, id, nil
+}
+
+// RotateUserSessions is a credential change's session rotation (password
+// change, 2FA disable, provider unlink) as ONE transaction: it mints the
+// replacement session (the same epoch fence and active-user check as
+// CreateSessionFenced), moves the push devices bound to oldSessionID, the
+// caller's own session, onto it, then deletes every other session of the
+// user. A device on any OTHER session dies with that session (the cascade):
+// the change exists to cut off stolen sessions, and their push tokens go with
+// them (TASK-3938). An empty oldSessionID rebinds nothing.
+//
+// It fails closed. When the transaction fails for any reason, every session
+// of the user is revoked as DeleteUserSessions always did, and the original
+// error is returned: the caller answers 500 and the user signs in again,
+// where a half-rotated state would leave the sessions the change meant to cut
+// off. ErrUserDisabled and ErrCredentialsChanged get the same revoke-all.
+func (s *Store) RotateUserSessions(userID string, epoch int64, oldSessionID, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
+	token, err := s.rotateUserSessions(userID, epoch, oldSessionID, deviceInfo, ipAddress, userAgent, ttl, issuedAt)
+	if err == nil {
+		return token, nil
+	}
+	if delErr := s.DeleteUserSessions(userID); delErr != nil {
+		slog.Error("failed to revoke sessions after a failed rotation",
+			"user_id", userID, "rotation_error", err, "error", delErr)
+	}
+	return "", err
+}
+
+func (s *Store) rotateUserSessions(userID string, epoch int64, oldSessionID, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
+	if epoch < 0 {
+		return "", fmt.Errorf("rotate sessions: negative credential epoch %d", epoch)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("rotate sessions: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	token, replacementID, err := s.createSessionTx(tx, userID, epoch, deviceInfo, ipAddress, userAgent, ttl, issuedAt)
+	if err != nil {
+		return "", err
+	}
+	if oldSessionID != "" {
+		if _, err := tx.Exec(s.q(`UPDATE push_devices SET session_id = ? WHERE session_id = ? AND user_id = ?`),
+			replacementID, oldSessionID, userID); err != nil {
+			return "", fmt.Errorf("rotate sessions: rebind push devices: %w", err)
+		}
+	}
+	if _, err := tx.Exec(s.q(`DELETE FROM sessions WHERE user_id = ? AND id <> ?`), userID, replacementID); err != nil {
+		return "", fmt.Errorf("rotate sessions: delete other sessions: %w", err)
+	}
+	if s.rotateFault != nil {
+		if err := s.rotateFault(); err != nil {
+			return "", fmt.Errorf("rotate sessions: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("insert session: commit: %w", err)
+		return "", fmt.Errorf("rotate sessions: commit: %w", err)
 	}
-
-	return plaintext, nil
+	return token, nil
 }
 
 // ValidateSession hashes the provided token, looks it up, checks expiry,
@@ -164,11 +236,11 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
-	var userID, expiresAt, ipAddress, uaHash, createdAt, kind string
+	var sessionID, userID, expiresAt, ipAddress, uaHash, createdAt, kind string
 	var renewSeconds int64
 	err := s.db.QueryRow(s.q(`
-		SELECT user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds FROM sessions WHERE token_hash = ?
-	`), tokenHash).Scan(&userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds)
+		SELECT id, user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds FROM sessions WHERE token_hash = ?
+	`), tokenHash).Scan(&sessionID, &userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -192,6 +264,7 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 	}
 
 	return &SessionInfo{
+		ID:        sessionID,
 		User:      user,
 		IPAddress: ipAddress,
 		UAHash:    uaHash,

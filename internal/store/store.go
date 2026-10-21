@@ -170,6 +170,11 @@ type Store struct {
 	// revoke or a second refresh can land (BUG-3678).
 	beforeRotateRefresh func(requestID string)
 
+	// rotateFault is a TEST-ONLY seam, nil in production. When set,
+	// RotateUserSessions calls it after its writes and before its COMMIT; a
+	// non-nil return fails the transaction (TASK-3938).
+	rotateFault func() error
+
 	// afterItemRestoreOrMoveCommit is a TEST-ONLY seam, nil in production.
 	// restoreItemOnce and MoveItemWithPreCheck call it right after their
 	// COMMIT and before they return. It exists for BUG-2717: both used to
