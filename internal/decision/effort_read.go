@@ -48,8 +48,11 @@ func ChoiceValue(d models.ItemDecision) (choice string, prob float64, ok bool) {
 }
 
 // CurrentQuestionHashes returns, per question key, the fingerprint of the
-// question as the set asks it in the workspace now. A stored answer is current
-// only while its question_hash equals this. A nil runner returns nothing.
+// question as the set asks it in the workspace now. A matching question_hash
+// says only that the QUESTION is unchanged. Unlike the runner's own currency
+// rule, it does not check the state hash, so an answer can be one item edit
+// behind. The needs scorers accept that (TASK-3959 ruling 99c2bcfe, item 3)
+// and say "being refreshed" while a job is owed. A nil runner returns nothing.
 func (r *Runner) CurrentQuestionHashes(ctx context.Context, workspaceID, setName string) (map[string]string, error) {
 	if r == nil {
 		return nil, nil

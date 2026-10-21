@@ -20,7 +20,8 @@ type NeedsScoringItem struct {
 }
 
 // NeedsScoringItems returns the scoring facts of the live items among ids in
-// the workspace. length() counts characters on SQLite and Postgres alike.
+// the workspace. length() counts characters on SQLite and Postgres alike; a
+// NULL content (the column is nullable) counts as empty.
 func (s *Store) NeedsScoringItems(workspaceID string, ids []string) (map[string]NeedsScoringItem, error) {
 	out := map[string]NeedsScoringItem{}
 	for _, chunk := range chunkStrings(ids, needsChunk) {
@@ -29,7 +30,7 @@ func (s *Store) NeedsScoringItems(workspaceID string, ids []string) (map[string]
 			args = append(args, id)
 		}
 		rows, err := s.db.Query(s.q(`
-			SELECT i.id, i.collection_id, i.fields, length(i.content)
+			SELECT i.id, i.collection_id, i.fields, COALESCE(length(i.content), 0)
 			FROM items i
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND i.id IN (`+placeholders(len(chunk))+`)`), args...)
 		if err != nil {
@@ -55,11 +56,12 @@ func (s *Store) NeedsScoringItems(workspaceID string, ids []string) (map[string]
 // LatestDecisionsForItems returns, per item, the newest answer for each
 // question key of one set: LatestWorkspaceDecisions restricted to the given
 // items, so a caller that holds a list of ids does not read the whole
-// workspace. Soft-deleted items are left out.
-func (s *Store) LatestDecisionsForItems(ids []string, questionSet string) (map[string][]models.ItemDecision, error) {
+// workspace. Only live items of workspaceID are read, scoped through the
+// item's own workspace_id, so an id from another workspace returns nothing.
+func (s *Store) LatestDecisionsForItems(workspaceID string, ids []string, questionSet string) (map[string][]models.ItemDecision, error) {
 	out := map[string][]models.ItemDecision{}
 	for _, chunk := range chunkStrings(ids, needsChunk) {
-		args := []any{questionSet}
+		args := []any{workspaceID, questionSet}
 		for _, id := range chunk {
 			args = append(args, id)
 		}
@@ -67,7 +69,7 @@ func (s *Store) LatestDecisionsForItems(ids []string, questionSet string) (map[s
 			SELECT d.id, d.item_id, d.question_set, d.question_key, d.kind, d.answer, d.confidence,
 			       d.provider, d.model, d.state_hash, d.question_hash, d.item_seq, d.state_truncated, d.evaluated_at
 			FROM item_decisions d
-			JOIN items i ON i.id = d.item_id AND i.deleted_at IS NULL
+			JOIN items i ON i.id = d.item_id AND i.workspace_id = ? AND i.deleted_at IS NULL
 			WHERE d.question_set = ? AND d.item_id IN (`+placeholders(len(chunk))+`)
 			  AND NOT EXISTS (
 				SELECT 1 FROM item_decisions n
@@ -92,18 +94,20 @@ func (s *Store) LatestDecisionsForItems(ids []string, questionSet string) (map[s
 
 // OwedDecisionJobs returns the set of items among ids that have a job owed
 // for the question set and not failed: the same "owed" the dashboard flags
-// use (a job carrying a recorded failure is not coming).
-func (s *Store) OwedDecisionJobs(ids []string, questionSet string) (map[string]bool, error) {
+// use (a job carrying a recorded failure is not coming). Only live items of
+// workspaceID are read, scoped through the item's own workspace_id.
+func (s *Store) OwedDecisionJobs(workspaceID string, ids []string, questionSet string) (map[string]bool, error) {
 	out := map[string]bool{}
 	for _, chunk := range chunkStrings(ids, needsChunk) {
-		args := []any{questionSet}
+		args := []any{workspaceID, questionSet}
 		for _, id := range chunk {
 			args = append(args, id)
 		}
 		rows, err := s.db.Query(s.q(`
-			SELECT item_id FROM decision_jobs
-			WHERE question_set = ? AND (last_error IS NULL OR last_error = '')
-			  AND item_id IN (`+placeholders(len(chunk))+`)`), args...)
+			SELECT j.item_id FROM decision_jobs j
+			JOIN items i ON i.id = j.item_id AND i.workspace_id = ? AND i.deleted_at IS NULL
+			WHERE j.question_set = ? AND (j.last_error IS NULL OR j.last_error = '')
+			  AND j.item_id IN (`+placeholders(len(chunk))+`)`), args...)
 		if err != nil {
 			return nil, fmt.Errorf("owed decision jobs: %w", err)
 		}
