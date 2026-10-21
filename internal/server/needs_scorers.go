@@ -208,7 +208,7 @@ func currentAnswer(decs []models.ItemDecision, qh map[string]string, key string)
 // newNeedsScorers is the pair New registers. The runner is read per call, not
 // here: it is attached after New (SetDecisionRunner).
 func (s *Server) newNeedsScorers() []needs.Scorer {
-	return []needs.Scorer{&importanceScorer{s}, &simplicityScorer{s}}
+	return []needs.Scorer{&importanceScorer{s: s}, &simplicityScorer{s}}
 }
 
 func nowOr(v needs.Viewer) time.Time {
@@ -220,7 +220,12 @@ func nowOr(v needs.Viewer) time.Time {
 
 // ---- importance ----
 
-type importanceScorer struct{ s *Server }
+// loc is the calendar the deadline part reads "today" in; nil means time.Local,
+// the dashboard's own (overdueToday). A field so a test needs no global.
+type importanceScorer struct {
+	s   *Server
+	loc *time.Location
+}
 
 func (*importanceScorer) Name() string { return "importance" }
 
@@ -246,12 +251,24 @@ func (sc *importanceScorer) Score(ctx context.Context, v needs.Viewer, scope nee
 	now := nowOr(v)
 	vis := newScopeSet(scope)
 	for _, r := range rows {
-		r.Importance = importanceOf(r, items[r.ItemID], g.fanout(r.ItemID, vis), decs[r.ItemID], qh, now)
+		r.Importance = importanceIn(sc.loc, r, items[r.ItemID], g.fanout(r.ItemID, vis), decs[r.ItemID], qh, now)
 	}
 	return false, nil
 }
 
 func importanceOf(r *needs.Row, it store.NeedsScoringItem, blocked int, decs []models.ItemDecision, qh map[string]string, now time.Time) *needs.Score {
+	return importanceIn(nil, r, it, blocked, decs, qh, now)
+}
+
+// importanceParts are the unweighted inputs, each in [0,1].
+type importanceParts struct{ p, b, d, s, h, a float64 }
+
+func importanceIn(loc *time.Location, r *needs.Row, it store.NeedsScoringItem, blocked int, decs []models.ItemDecision, qh map[string]string, now time.Time) *needs.Score {
+	sc, _ := importanceDetail(loc, r, it, blocked, decs, qh, now)
+	return sc
+}
+
+func importanceDetail(loc *time.Location, r *needs.Row, it store.NeedsScoringItem, blocked int, decs []models.ItemDecision, qh map[string]string, now time.Time) (*needs.Score, importanceParts) {
 	var why []string
 	p := 0.5
 	switch strings.ToLower(r.Item.Priority) {
@@ -266,7 +283,7 @@ func importanceOf(r *needs.Row, it store.NeedsScoringItem, blocked int, decs []m
 	if blocked > 0 {
 		why = append(why, whyBlocksWork)
 	}
-	d, dwhy := deadlinePart(it.Fields, now)
+	d, dwhy := deadlinePart(it.Fields, now, loc)
 	if dwhy != "" {
 		why = append(why, dwhy)
 	}
@@ -291,15 +308,27 @@ func importanceOf(r *needs.Row, it store.NeedsScoringItem, blocked int, decs []m
 		}
 	}
 	val := wPriority*p + wBlocks*b + wDeadline*d + wStakes*stakesPart + wHuman*h + wAge*a
-	return &needs.Score{Value: int(math.Round(100 * val)), Why: why}
+	// Snap before rounding: the weighted sum is a float, and a value that is
+	// exactly x.5 mathematically must not land either side by summation order.
+	v100 := math.Round(100*val*1e9) / 1e9
+	return &needs.Score{Value: int(math.Round(v100)), Why: why}, importanceParts{p, b, d, stakesPart, h, a}
 }
 
 // deadlinePart is D: 1 when overdue or due today, falling to 0 over 14 days,
-// 0 with no date. The earliest of due_date and end_date counts. "Today" is the
-// server-local calendar day, the one the dashboard's overdue rule uses
-// (overdueToday), so a row reads overdue here exactly when the dashboard says so.
-func deadlinePart(fieldsJSON string, now time.Time) (float64, string) {
-	today, _ := time.Parse("2006-01-02", overdueToday(now.In(time.Local)))
+// 0 with no date. "Overdue" is decided by the dashboard's own itemOverdue over
+// the server-local day (overdueToday), so the two agree for every stored value,
+// timestamps and malformed dates included. Date parsing only separates "due
+// today" from the slope among rows that are not overdue; the earliest of
+// due_date and end_date counts. A nil loc is time.Local.
+func deadlinePart(fieldsJSON string, now time.Time, loc *time.Location) (float64, string) {
+	if loc == nil {
+		loc = time.Local
+	}
+	todayStr := overdueToday(now.In(loc))
+	if _, _, ok := itemOverdue(fieldsJSON, todayStr); ok {
+		return 1, whyOverdue
+	}
+	today, _ := time.Parse("2006-01-02", todayStr)
 	best, found := time.Time{}, false
 	for _, key := range overdueDateFields {
 		v := extractFieldValue(fieldsJSON, key)
@@ -319,9 +348,7 @@ func deadlinePart(fieldsJSON string, now time.Time) (float64, string) {
 	}
 	days := best.Sub(today).Hours() / 24
 	switch {
-	case days < 0:
-		return 1, whyOverdue
-	case days == 0:
+	case days <= 0:
 		return 1, whyDueToday
 	case days < 14:
 		return 1 - days/14, whyDueSoon

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -122,22 +123,144 @@ func TestNeedsYouSignals_FanoutUnknownCollectionFailsClosed(t *testing.T) {
 
 // D agrees with the dashboard's server-local day (overdueToday), not the UTC day.
 func TestNeedsYouSignals_DeadlineUsesServerLocalDay(t *testing.T) {
-	old := time.Local
-	t.Cleanup(func() { time.Local = old })
-	time.Local = time.FixedZone("UTC-8", -8*3600)
+	loc := time.FixedZone("UTC-8", -8*3600)
 	// 03:00 UTC on the 11th is 19:00 on the 10th locally.
 	now := time.Date(2026, 3, 11, 3, 0, 0, 0, time.UTC)
-	if overdueToday(now.In(time.Local)) != "2026-03-10" {
+	if overdueToday(now.In(loc)) != "2026-03-10" {
 		t.Fatal("fixture: local day should be the 10th")
 	}
-	if d, why := deadlinePart(`{"due_date":"2026-03-10"}`, now); d != 1 || why != whyDueToday {
+	if d, why := deadlinePart(`{"due_date":"2026-03-10"}`, now, loc); d != 1 || why != whyDueToday {
 		t.Errorf("due the local day: %v %q, want 1 %q (the UTC day would call it overdue)", d, why, whyDueToday)
 	}
-	if d, why := deadlinePart(`{"due_date":"2026-03-09"}`, now); d != 1 || why != whyOverdue {
+	if d, why := deadlinePart(`{"due_date":"2026-03-09"}`, now, loc); d != 1 || why != whyOverdue {
 		t.Errorf("due the day before: %v %q, want 1 %q", d, why, whyOverdue)
 	}
-	if d, why := deadlinePart(`{"due_date":"2026-03-11"}`, now); why != whyDueSoon || d != 1-1.0/14 {
+	if d, why := deadlinePart(`{"due_date":"2026-03-11"}`, now, loc); why != whyDueSoon || d != 1-1.0/14 {
 		t.Errorf("due the next local day: %v %q, want %v %q", d, why, 1-1.0/14, whyDueSoon)
+	}
+}
+
+// The scorer's overdue verdict is the dashboard's, for every stored shape.
+func TestNeedsYouSignals_DeadlineOverdueMatchesDashboard(t *testing.T) {
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	today := overdueToday(now.In(time.UTC))
+	for _, v := range []string{
+		"2026-03-10T09:30:00Z", // timestamped today: not overdue by string order
+		"2026-03-10T00:00:00Z",
+		"2026-02-30", // malformed: string-orders before today, so overdue
+		"2026-03-09",
+		"2026-03-10",
+		"2026-03-11T08:00:00Z",
+	} {
+		fields := `{"due_date":"` + v + `"}`
+		_, _, dash := itemOverdue(fields, today)
+		d, why := deadlinePart(fields, now, time.UTC)
+		if got := why == whyOverdue; got != dash {
+			t.Errorf("%s: scorer overdue=%v, dashboard=%v", v, got, dash)
+		}
+		if dash && d != 1 {
+			t.Errorf("%s: overdue D = %v, want 1", v, d)
+		}
+	}
+	if _, why := deadlinePart(`{"due_date":"2026-03-10T09:30:00Z"}`, now, time.UTC); why != whyDueToday {
+		t.Errorf("timestamp dated today: %q, want %q", why, whyDueToday)
+	}
+}
+
+// Every input's exact contribution (hand-computed in the comments). The parts
+// are the unweighted inputs; the values are round(100 * weighted sum), chosen
+// away from .5 boundaries.
+func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	day := func(n float64) time.Time { return now.Add(-time.Duration(n * 24 * float64(time.Hour))) }
+	qh := map[string]string{decision.AttentionNeedsHuman: "h"}
+	ans := func(p string) []models.ItemDecision {
+		return []models.ItemDecision{{QuestionKey: decision.AttentionNeedsHuman, Kind: "noul", QuestionHash: "h", Answer: json.RawMessage(`{"type":"noul","noul":` + p + `}`)}}
+	}
+	due := func(d string) store.NeedsScoringItem {
+		return store.NeedsScoringItem{Fields: `{"due_date":"` + d + `"}`}
+	}
+	const eps = 1e-12
+	b1 := 1 / math.Log2(17) // one blocked item: log2(2)/log2(17)
+	type row struct {
+		name    string
+		prio    string
+		waited  float64
+		item    store.NeedsScoringItem
+		blocked int
+		decs    []models.ItemDecision
+		asked   bool
+		part    func(importanceParts) float64
+		want    float64 // the part
+		value   int     // 0 = not pinned for this row
+	}
+	P := func(p importanceParts) float64 { return p.p }
+	B := func(p importanceParts) float64 { return p.b }
+	D := func(p importanceParts) float64 { return p.d }
+	A := func(p importanceParts) float64 { return p.a }
+	H := func(p importanceParts) float64 { return p.h }
+	S := func(p importanceParts) float64 { return p.s }
+	rows := []row{
+		// Value = round(100*(.25P + .10H(.5) + .10A)), others 0.
+		{name: "P critical", prio: "critical", part: P, want: 1, value: 30},           // .25+.05 = .30
+		{name: "P high", prio: "high", waited: 3.5, part: P, want: .75, value: 26},    // .1875+.05+.025 = .2625
+		{name: "P medium", prio: "medium", waited: 3.5, part: P, want: .5, value: 20}, // .125+.05+.025 = .20
+		{name: "P unset", prio: "", waited: 3.5, part: P, want: .5, value: 20},        // same as medium
+		{name: "P low", prio: "low", waited: 3.5, part: P, want: .25, value: 14},      // .0625+.05+.025 = .1375
+		// D on a low-priority row: .0625 + .05 + .20D.
+		{name: "D overdue", prio: "low", item: due("2026-03-09"), part: D, want: 1, value: 31}, // .3125
+		{name: "D today", prio: "low", item: due("2026-03-10"), part: D, want: 1, value: 31},
+		{name: "D 1 day", prio: "low", item: due("2026-03-11"), part: D, want: 13.0 / 14},      // .1125+.2*13/14
+		{name: "D 7 days", prio: "low", item: due("2026-03-17"), part: D, want: .5, value: 21}, // .1125+.10 = .2125
+		{name: "D 13 days", prio: "low", item: due("2026-03-23"), part: D, want: 1.0 / 14},
+		{name: "D 14 days", prio: "low", item: due("2026-03-24"), part: D, want: 0, value: 11}, // .1125
+		{name: "D 15 days", prio: "low", item: due("2026-03-25"), part: D, want: 0},
+		{name: "D none", prio: "low", part: D, want: 0, value: 11},
+		// A: .1125 + .10A.
+		{name: "A 0 days", prio: "low", waited: 0, part: A, want: 0, value: 11},
+		{name: "A 7 days", prio: "low", waited: 7, part: A, want: .5, value: 16},  // .1625
+		{name: "A 14 days", prio: "low", waited: 14, part: A, want: 1, value: 21}, // .2125
+		{name: "A 30 days", prio: "low", waited: 30, part: A, want: 1, value: 21},
+		// H: .0625 + .10H.
+		{name: "H no answer", prio: "low", part: H, want: .5, value: 11},                   // .1125
+		{name: "H answer .8", prio: "low", decs: ans("0.8"), part: H, want: .8, value: 14}, // .1425
+		{name: "H asked", prio: "low", asked: true, part: H, want: 1, value: 16},           // .1625
+		// B: .1125 + .20B.
+		{name: "B none", prio: "low", part: B, want: 0, value: 11},
+		{name: "B one", prio: "low", blocked: 1, part: B, want: b1, value: 16}, // .1125+.2*.24465 = .16143
+		// S is held at zero.
+		{name: "S", prio: "low", part: S, want: 0},
+	}
+	for _, c := range rows {
+		r := &needs.Row{WaitingSince: day(c.waited)}
+		r.Item.Priority = c.prio
+		if c.asked {
+			r.Why.Rule = needs.RuleAsked
+		}
+		sc, parts := importanceDetail(time.UTC, r, c.item, c.blocked, c.decs, qh, now)
+		if got := c.part(parts); math.Abs(got-c.want) > eps {
+			t.Errorf("%s: part = %v, want %v", c.name, got, c.want)
+		}
+		if c.value != 0 && sc.Value != c.value {
+			t.Errorf("%s: importance = %d, want %d", c.name, sc.Value, c.value)
+		}
+	}
+}
+
+// A weighted sum that is exactly .325 rounds up whatever order it was summed in.
+func TestNeedsYouSignals_ImportanceRoundingSnapped(t *testing.T) {
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	// high .1875 + H .05 + A (12.25 days / 14 = .875) .0875 = .325 -> 32.5 -> 33.
+	r := &needs.Row{WaitingSince: now.Add(-294 * time.Hour)}
+	r.Item.Priority = "high"
+	if got := importanceIn(time.UTC, r, store.NeedsScoringItem{}, 0, nil, nil, now).Value; got != 33 {
+		t.Errorf("exactly .325 scored %d, want 33", got)
+	}
+	// unset priority .125 + H .05 + A (7 days / 14 = .5) .05 = .225 -> 22.5 -> 23;
+	// summed as floats this is 22.499999999999996 without the snap.
+	r = &needs.Row{WaitingSince: now.Add(-7 * 24 * time.Hour)}
+	if got := importanceIn(time.UTC, r, store.NeedsScoringItem{}, 0, nil, nil, now).Value; got != 23 {
+		t.Errorf("exactly .225 scored %d, want 23", got)
 	}
 }
 
@@ -461,5 +584,18 @@ func TestNeedsYouSignals_RestrictedViewerScoreHasNoHiddenBlocks(t *testing.T) {
 		if hasBlocks(granted) || granted.Value != restricted.Value {
 			t.Fatalf("item-grant-only: %+v, want the restricted score %+v", granted, restricted)
 		}
+		// Exactness: each restricted score is the one the same viewer gets once the
+		// hidden blocked item does not exist at all, so no contribution too small
+		// to move the rounded value can have leaked either.
+		if err := srv.store.DeleteItem(secret.ID); err != nil {
+			t.Fatal(err)
+		}
+		same := func(name string, before, after *needs.Score) {
+			if before.Value != after.Value || fmt.Sprint(before.Why) != fmt.Sprint(after.Why) {
+				t.Fatalf("%s: %+v differs from the score once the hidden item is gone %+v", name, before, after)
+			}
+		}
+		same("collection-restricted", restricted, score(aliceTok))
+		same("item-grant-only", granted, score(token(guest)))
 	})
 }
