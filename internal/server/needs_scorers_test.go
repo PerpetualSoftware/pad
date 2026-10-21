@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -219,8 +220,10 @@ func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
 		{name: "D 14 days", prio: "low", item: due("2026-03-24"), part: D, want: 0, value: 11}, // .1125
 		{name: "D 15 days", prio: "low", item: due("2026-03-25"), part: D, want: 0},
 		{name: "D none", prio: "low", part: D, want: 0, value: 11},
-		// A date too short to parse is not overdue by the dashboard's string rule either.
+		// A date too short to parse follows the dashboard's string rule: "2026-3-5"
+		// sorts after today, so not overdue; "2026-02" sorts before it, so overdue.
 		{name: "D short date", prio: "low", item: due("2026-3-5"), part: D, want: 0, value: 11},
+		{name: "D short date overdue", prio: "low", item: due("2026-02"), part: D, want: 1, value: 31},
 		// The earlier of due_date and end_date counts, whichever key holds it.
 		{name: "D end_date earlier", prio: "low", item: store.NeedsScoringItem{Fields: `{"due_date":"2026-03-17","end_date":"2026-03-12"}`}, part: D, want: 12.0 / 14},
 		{name: "D due_date earlier", prio: "low", item: store.NeedsScoringItem{Fields: `{"due_date":"2026-03-12","end_date":"2026-03-17"}`}, part: D, want: 12.0 / 14},
@@ -389,6 +392,10 @@ func TestNeedsYouSignals_HintTable(t *testing.T) {
 		t.Fatalf("argmax: %+v, want value 0 and hint research", s)
 	}
 
+	// No effort_medium answer at all: the level's phrase alone.
+	if s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(2), "qe")}, qh, false); s.Hint != "under an hour" || s.Value != 33 {
+		t.Fatalf("no medium: %+v", s)
+	}
 	// An unsure medium (top probability under .5) adds nothing.
 	s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(1), "qe"), mediumAnswer("device", 0.49, "qm")}, qh, false)
 	if s.Hint != "5 min" {
@@ -675,4 +682,26 @@ func TestNeedsYouSignals_RestrictedViewerScoreHasNoHiddenBlocks(t *testing.T) {
 		same("collection-restricted", restricted, score(aliceTok))
 		same("item-grant-only", granted, score(token(guest)))
 	})
+}
+
+// A batch read that fails leaves the rows unscored and says so: each real
+// scorer reports degraded with the error, and sets no score from partial data.
+func TestNeedsYouSignals_ReadFailureDegrades(t *testing.T) {
+	srv := testServer(t)
+	if err := srv.store.DB().Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, sc := range srv.needsScorers {
+		rows := []*needs.Row{{ItemID: "item-1", WorkspaceID: "ws-1"}}
+		deg, err := sc.Score(context.Background(), needs.Viewer{UserID: "u", Now: nfxT0}, needs.Scope{WorkspaceID: "ws-1", Unrestricted: true, CollectionIDs: []string{}, ItemIDs: []string{}}, rows)
+		if !deg || err == nil {
+			t.Errorf("%s: degraded %v err %v, want true and an error", sc.Name(), deg, err)
+		}
+		if rows[0].Importance != nil || rows[0].Simplicity != nil {
+			t.Errorf("%s: scored from a failed read: %+v %+v", sc.Name(), rows[0].Importance, rows[0].Simplicity)
+		}
+	}
+	if len(srv.needsScorers) != 2 {
+		t.Fatalf("%d scorers registered, want 2", len(srv.needsScorers))
+	}
 }
