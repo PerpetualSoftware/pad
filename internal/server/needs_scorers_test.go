@@ -886,3 +886,92 @@ func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
 		t.Fatalf("stale answer with a refresh owed: %+v, want 22 with %q", h, whyNeedsHuman)
 	}
 }
+
+// Every decoded cursor field is checked: a row per field, each a 400
+// invalid_cursor. as_of's far-future case is deliberately absent: it is
+// clamped, not refused (TestNeedsYouSort_FutureAsOfIsClamped).
+func TestNeedsYouSort_CursorFieldsAreChecked(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		f.item(ws, f.collection(ws, "Asks", true), "row", alice, nfxDay(1))
+		one, hundred, over, under := 1, 100, 101, -2
+		base := func() needs.Cursor {
+			return needs.Cursor{V: 1, Sort: needs.SortImportance, View: "active", WS: "", AsOf: time.Now().UnixNano(),
+				Waiting: nfxDay(0).UnixNano(), CreatedAt: nfxDay(0).UnixNano(), ItemID: "item-1", Score: &one, Score2: &hundred}
+		}
+		if rr := f.get(alice, "?sort=importance&cursor="+base().Encode()); rr.Code != http.StatusOK {
+			t.Fatalf("the base cursor must be valid: %d %s", rr.Code, rr.Body.String())
+		}
+		huge := time.Date(2300, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
+		for name, mut := range map[string]func(*needs.Cursor){
+			"v":                func(c *needs.Cursor) { c.V = 2 },
+			"sort":             func(c *needs.Cursor) { c.Sort = needs.SortSimplicity },
+			"view":             func(c *needs.Cursor) { c.View = "hidden" },
+			"ws":               func(c *needs.Cursor) { c.WS = "other" },
+			"as_of zero":       func(c *needs.Cursor) { c.AsOf = 0 },
+			"as_of negative":   func(c *needs.Cursor) { c.AsOf = -5 },
+			"key zero":         func(c *needs.Cursor) { c.Waiting = 0 },
+			"key negative":     func(c *needs.Cursor) { c.Waiting = -1 },
+			"key far future":   func(c *needs.Cursor) { c.Waiting = huge },
+			"created zero":     func(c *needs.Cursor) { c.CreatedAt = 0 },
+			"created negative": func(c *needs.Cursor) { c.CreatedAt = -1 },
+			"created far":      func(c *needs.Cursor) { c.CreatedAt = huge },
+			"item_id empty":    func(c *needs.Cursor) { c.ItemID = "" },
+			"item_id shape":    func(c *needs.Cursor) { c.ItemID = "a b;--" },
+			"item_id long":     func(c *needs.Cursor) { c.ItemID = strings.Repeat("a", 65) },
+			"score high":       func(c *needs.Cursor) { c.Score = &over },
+			"score low":        func(c *needs.Cursor) { c.Score = &under },
+			"score missing":    func(c *needs.Cursor) { c.Score = nil },
+			"score2 high":      func(c *needs.Cursor) { c.Score2 = &over },
+			"score2 low":       func(c *needs.Cursor) { c.Score2 = &under },
+			"score2 missing":   func(c *needs.Cursor) { c.Score2 = nil },
+		} {
+			c := base()
+			mut(&c)
+			rr := f.get(alice, "?sort=importance&cursor="+c.Encode())
+			if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_cursor") {
+				t.Errorf("%s: %d %s", name, rr.Code, rr.Body.String())
+			}
+		}
+		// A token that is not base64 JSON at all.
+		for _, tok := range []string{"!!", "e30", "bm90LWpzb24"} {
+			if rr := f.get(alice, "?sort=importance&cursor="+tok); rr.Code != http.StatusBadRequest {
+				t.Errorf("token %q: %d", tok, rr.Code)
+			}
+		}
+	})
+}
+
+// A cursor's as_of in the far future is clamped to now, not trusted: the page
+// scores as of now, never later (docs/api.md: "an as_of later than the
+// server's now is clamped to now").
+func TestNeedsYouSort_FutureAsOfIsClamped(t *testing.T) {
+	srv := testServer(t)
+	f := newNfx(t, srv)
+	owner, alice := f.user("owner"), f.user("alice")
+	ws := f.workspace("One", owner)
+	f.member(ws, alice, "editor")
+	f.item(ws, f.collection(ws, "Asks", true), "Is this OK?", alice, time.Now().AddDate(0, 0, -7).UTC().Truncate(time.Second))
+	tok, err := srv.store.CreateAPIToken(alice.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	score := func(asOf time.Time) int {
+		cur := needs.NewCursor(needs.SortAge, needsViewActive, "", asOf, &needs.Row{ItemID: "0", WaitingSince: nfxDay(0), Item: needs.ItemInfo{CreatedAt: nfxDay(0)}}).Encode()
+		rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs?cursor="+cur, tok.Token, nil)
+		var resp needsResponse
+		parseJSON(t, rr, &resp)
+		if rr.Code != http.StatusOK || len(resp.Rows) != 1 || resp.Rows[0].Importance == nil {
+			t.Fatalf("%d %s", rr.Code, rr.Body.String())
+		}
+		return resp.Rows[0].Importance.Value
+	}
+	// Waiting a week at now: age .5, so .125 + .10 + .05 = .275 -> 28. A year
+	// ahead, unclamped, age would cap at 1 and the score would be 33.
+	if now, future := score(time.Now()), score(time.Now().AddDate(1, 0, 0)); now != 28 || future != 28 {
+		t.Fatalf("at now %d, far-future as_of %d: want 28 and 28 (the future marker is clamped to now)", now, future)
+	}
+}

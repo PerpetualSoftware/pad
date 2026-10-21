@@ -81,6 +81,24 @@ func (a Key) Less(b Key) bool {
 
 const cursorVersion = 1
 
+// cursorTimeMax bounds the key and created_at timestamps: the year 2200, in
+// Unix nanoseconds, far past any real item and inside int64.
+var cursorTimeMax = time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
+
+// validCursorItemID accepts the store's ids (UUIDs) and nothing that could not
+// be one: 1 to 64 characters of letters, digits and hyphens.
+func validCursorItemID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // ErrInvalidCursor is any cursor the server will not follow: malformed, from
 // another version, or minted for a different sort, view or workspace filter.
 var ErrInvalidCursor = errors.New("invalid cursor")
@@ -142,7 +160,11 @@ func DecodeCursor(token, sort, view, ws string) (Cursor, error) {
 	if err != nil || json.Unmarshal(b, &c) != nil {
 		return Cursor{}, ErrInvalidCursor
 	}
-	if c.V != cursorVersion || c.Sort != sort || c.View != view || c.WS != ws || c.ItemID == "" || c.AsOf <= 0 {
+	// v, sort, view and ws must equal this request's; as_of must be positive
+	// (a future one is clamped by the handler, not refused); key and created_at
+	// must be positive and before cursorTimeMax; item_id must look like an id.
+	if c.V != cursorVersion || c.Sort != sort || c.View != view || c.WS != ws || c.AsOf <= 0 ||
+		c.Waiting <= 0 || c.Waiting > cursorTimeMax || c.CreatedAt <= 0 || c.CreatedAt > cursorTimeMax || !validCursorItemID(c.ItemID) {
 		return Cursor{}, ErrInvalidCursor
 	}
 	// A score sort's cursor must carry both scores in range; an age cursor
