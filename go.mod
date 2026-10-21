@@ -17,7 +17,10 @@ go 1.26.5
 // Raised to go1.26.9 (2026-10-08) for twelve more standard-library advisories
 // in net/http and html/template (GO-2026-6603, GO-2026-6600, GO-2026-6599 and
 // others), fixed in 1.26.9, which turned govulncheck red on every PR the same way.
-toolchain go1.26.9
+//
+// Raised to go1.26.10 (2026-10-21) for GO-2026-6809 (crypto/x509), fixed in
+// 1.26.10, which turned govulncheck red the same way again (TASK-4007).
+toolchain go1.26.10
 
 require (
 	github.com/BurntSushi/toml v1.6.0

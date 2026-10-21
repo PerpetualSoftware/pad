@@ -44,7 +44,7 @@
 		"cookie": "^2.0.1",
 		"linkify-it": "^5.0.2",
 		"lodash-es": "^4.18.1",
-		"markdown-it": "^14.3.0",
+		"markdown-it": "^14.3.3",
 		"layercake": {
 			"typescript": "$typescript"
 		}
