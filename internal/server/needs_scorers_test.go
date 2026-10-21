@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -519,32 +520,146 @@ func TestNeedsYouSignals_MemoReadsOncePerRequest(t *testing.T) {
 	})
 }
 
+// scoreStub scores by title, so a test can plant ties.
+type scoreStub struct {
+	name   string
+	scores map[string][2]int // title -> importance, simplicity
+}
+
+func (s *scoreStub) Name() string { return s.name }
+func (s *scoreStub) Score(_ context.Context, _ needs.Viewer, _ needs.Scope, rows []*needs.Row) (bool, error) {
+	for _, r := range rows {
+		if sc, ok := s.scores[r.Item.Title]; ok {
+			r.Importance, r.Simplicity = &needs.Score{Value: sc[0]}, &needs.Score{Value: sc[1]}
+		}
+	}
+	return false, nil
+}
+
+func TestNeedsYouSort_CursorStableAcrossPages(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		scores := map[string][2]int{}
+		// Deliberate ties on the primary score, on both, and one unscored row.
+		for i, sc := range [][2]int{{80, 10}, {80, 10}, {80, 40}, {50, 100}, {50, 100}, {50, 100}, {20, 0}, {100, 100}, {-1, -1}} {
+			title := fmt.Sprintf("row-%d", i)
+			f.item(ws, asks, title, alice, nfxDay(i+1))
+			if sc[0] >= 0 {
+				scores[title] = sc
+			}
+		}
+		srv.needsScorers = []needs.Scorer{&scoreStub{name: "importance", scores: scores}}
+		for _, sortBy := range []string{needs.SortImportance, needs.SortSimplicity} {
+			full := titles(f.need(alice, "?sort="+sortBy).Rows)
+			if len(full) != 9 || full[len(full)-1] != "row-8" {
+				t.Fatalf("%s: order %v (the unscored row sorts last)", sortBy, full)
+			}
+			for _, limit := range []int{2, 3} {
+				var got []string
+				q := fmt.Sprintf("?sort=%s&limit=%d", sortBy, limit)
+				for page := 0; page < 20; page++ {
+					resp := f.need(alice, q)
+					got = append(got, titles(resp.Rows)...)
+					if resp.NextCursor == "" {
+						break
+					}
+					q = fmt.Sprintf("?sort=%s&limit=%d&cursor=%s", sortBy, limit, resp.NextCursor)
+				}
+				if strings.Join(got, ",") != strings.Join(full, ",") {
+					t.Fatalf("%s limit %d: pages %v, single page %v (a row was repeated or missed)", sortBy, limit, got, full)
+				}
+			}
+		}
+		// Importance order proper: 100, 80/40, the two 80/10 (any order: ties break by
+		// item id), the three 50/100, 20, then the unscored row.
+		got := titles(f.need(alice, "?sort=importance").Rows)
+		group := func(lo, hi int) string {
+			g := append([]string{}, got[lo:hi]...)
+			sort.Strings(g)
+			return strings.Join(g, ",")
+		}
+		if got[0] != "row-7" || got[1] != "row-2" || group(2, 4) != "row-0,row-1" || group(4, 7) != "row-3,row-4,row-5" || got[7] != "row-6" || got[8] != "row-8" {
+			t.Fatalf("importance order %v", got)
+		}
+
+		// A malformed cursor, one minted for another sort, and one with a missing or
+		// out-of-range score are refused. (A validly encoded cursor with in-range
+		// scores is followed: it carries a position, not authority.)
+		page := f.need(alice, "?sort=importance&limit=2")
+		age := f.need(alice, "?limit=2")
+		two, three := 20, 30
+		noScore := needs.Cursor{V: 1, Sort: needs.SortImportance, WS: "", View: "active", AsOf: time.Now().UnixNano(), ItemID: "x"}
+		wild := noScore
+		wild.Score, wild.Score2 = &two, &three
+		*wild.Score = 500
+		for name, tok := range map[string]string{
+			"another sort": age.NextCursor,
+			"no score":     noScore.Encode(),
+			"score range":  wild.Encode(),
+			"tampered":     page.NextCursor + "x",
+		} {
+			rr := f.get(alice, "?sort=importance&cursor="+tok)
+			if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_cursor") {
+				t.Errorf("%s cursor: %d %s", name, rr.Code, rr.Body.String())
+			}
+		}
+		if rr := f.get(alice, "?sort=bogus"); rr.Code != http.StatusBadRequest {
+			t.Errorf("unknown sort: %d", rr.Code)
+		}
+	})
+}
+
 // Through a real server.New and the router (team CONVE-19): the scorers New
-// registers fill both scores on /me/needs.
+// registers fill both scores, and sort=importance and simplicity order by them.
 func TestNeedsYouSignals_BindingThroughServeHTTP(t *testing.T) {
-	srv := testServer(t)
-	f := newNfx(t, srv)
-	owner, alice := f.user("owner"), f.user("alice")
-	ws := f.workspace("One", owner)
-	f.member(ws, alice, "editor")
-	asks := f.collection(ws, "Asks", true)
-	f.item(ws, asks, "Is this OK?", alice, nfxDay(1))
-	tok, err := srv.store.CreateAPIToken(alice.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs", tok.Token, nil)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("%d %s", rr.Code, rr.Body.String())
-	}
-	var resp needsResponse
-	parseJSON(t, rr, &resp)
-	if len(resp.Rows) != 1 || resp.Rows[0].Importance == nil || resp.Rows[0].Simplicity == nil || len(resp.Degraded) != 0 {
-		t.Fatalf("rows %+v degraded %v (the scorers New registers must fill both scores)", resp.Rows, resp.Degraded)
-	}
-	if resp.Rows[0].Simplicity.Value != 100 || resp.Rows[0].Simplicity.Hint != "" {
-		t.Fatalf("simplicity %+v", resp.Rows[0].Simplicity)
-	}
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		// The two orders differ: importance runs deep, medium, shallow; simplicity
+		// runs medium, shallow (both 100, importance breaks the tie), deep (33).
+		deep := f.item(ws, asks, "Deep and urgent", alice, nfxDay(1))
+		f.item(ws, asks, "Is this OK?", alice, nfxDay(2))
+		shallow := f.item(ws, asks, "Is that fine?", alice, nfxDay(3))
+		for _, u := range []struct{ id, fields string }{
+			{deep.ID, `{"status":"open","priority":"critical"}`},
+			{shallow.ID, `{"status":"open","priority":"low"}`},
+		} {
+			if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET fields = '%s' WHERE id = '%s'`, u.fields, u.id)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET content = '%s' WHERE id = '%s'`, strings.Repeat("x", 3000), deep.ID)); err != nil {
+			t.Fatal(err)
+		}
+		tok, err := srv.store.CreateAPIToken(alice.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for sortBy, want := range map[string]string{
+			"importance": "Deep and urgent,Is this OK?,Is that fine?",
+			"simplicity": "Is this OK?,Is that fine?,Deep and urgent",
+		} {
+			rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs?sort="+sortBy, tok.Token, nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("%s: %d %s", sortBy, rr.Code, rr.Body.String())
+			}
+			var resp needsResponse
+			parseJSON(t, rr, &resp)
+			if len(resp.Rows) != 3 || resp.Rows[0].Importance == nil || resp.Rows[0].Simplicity == nil || len(resp.Degraded) != 0 {
+				t.Fatalf("%s: rows %+v degraded %v (the scorers New registers must fill both scores)", sortBy, resp.Rows, resp.Degraded)
+			}
+			if got := strings.Join(titles(resp.Rows), ","); got != want {
+				t.Fatalf("%s: order %s, want %s", sortBy, got, want)
+			}
+		}
+	})
 }
 
 // Through the router: a request with a cursor scores at the cursor's as_of,
@@ -771,4 +886,178 @@ func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
 	if h := rows[2].Importance; h.Value != 22 || !slices.Contains(h.Why, whyNeedsHuman) {
 		t.Fatalf("stale answer with a refresh owed: %+v, want 22 with %q", h, whyNeedsHuman)
 	}
+}
+
+// Every decoded cursor field is checked: a row per field, each a 400
+// invalid_cursor. as_of's far-future case is deliberately absent: it is
+// clamped, not refused (TestNeedsYouSort_FutureAsOfIsClamped).
+func TestNeedsYouSort_CursorFieldsAreChecked(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		f.item(ws, f.collection(ws, "Asks", true), "row", alice, nfxDay(1))
+		one, hundred, over, under := 1, 100, 101, -2
+		base := func() needs.Cursor {
+			return needs.Cursor{V: 1, Sort: needs.SortImportance, View: "active", WS: "", AsOf: time.Now().UnixNano(),
+				Waiting: nfxDay(0).UnixNano(), CreatedAt: nfxDay(0).UnixNano(), ItemID: "item-1", Score: &one, Score2: &hundred}
+		}
+		if rr := f.get(alice, "?sort=importance&cursor="+base().Encode()); rr.Code != http.StatusOK {
+			t.Fatalf("the base cursor must be valid: %d %s", rr.Code, rr.Body.String())
+		}
+		for name, mut := range map[string]func(*needs.Cursor){
+			"v":              func(c *needs.Cursor) { c.V = 2 },
+			"sort":           func(c *needs.Cursor) { c.Sort = needs.SortSimplicity },
+			"view":           func(c *needs.Cursor) { c.View = "hidden" },
+			"ws":             func(c *needs.Cursor) { c.WS = "other" },
+			"as_of zero":     func(c *needs.Cursor) { c.AsOf = 0 },
+			"as_of negative": func(c *needs.Cursor) { c.AsOf = -5 },
+			"item_id empty":  func(c *needs.Cursor) { c.ItemID = "" },
+			"item_id shape":  func(c *needs.Cursor) { c.ItemID = "a b;--" },
+			"item_id long":   func(c *needs.Cursor) { c.ItemID = strings.Repeat("a", 65) },
+			"score high":     func(c *needs.Cursor) { c.Score = &over },
+			"score low":      func(c *needs.Cursor) { c.Score = &under },
+			"score missing":  func(c *needs.Cursor) { c.Score = nil },
+			"score2 high":    func(c *needs.Cursor) { c.Score2 = &over },
+			"score2 low":     func(c *needs.Cursor) { c.Score2 = &under },
+			"score2 missing": func(c *needs.Cursor) { c.Score2 = nil },
+		} {
+			c := base()
+			mut(&c)
+			rr := f.get(alice, "?sort=importance&cursor="+c.Encode())
+			if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_cursor") {
+				t.Errorf("%s: %d %s", name, rr.Code, rr.Body.String())
+			}
+		}
+		// A token that is not base64 JSON at all.
+		for _, tok := range []string{"!!", "e30", "bm90LWpzb24"} {
+			if rr := f.get(alice, "?sort=importance&cursor="+tok); rr.Code != http.StatusBadRequest {
+				t.Errorf("token %q: %d", tok, rr.Code)
+			}
+		}
+		// An age cursor carrying either score was not minted by this server.
+		for name, mut := range map[string]func(*needs.Cursor){
+			"age with score":  func(c *needs.Cursor) { c.Score2 = nil },
+			"age with score2": func(c *needs.Cursor) { c.Score = nil },
+		} {
+			c := base()
+			c.Sort = needs.SortAge
+			mut(&c)
+			rr := f.get(alice, "?sort=age&cursor="+c.Encode())
+			if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_cursor") {
+				t.Errorf("%s: %d %s", name, rr.Code, rr.Body.String())
+			}
+		}
+		// key and created_at are positions, not checked: any int64 is an instant a
+		// key can hold (a pre-1970 date is negative), so such a cursor is followed.
+		for name, mut := range map[string]func(*needs.Cursor){
+			"key negative":     func(c *needs.Cursor) { c.Waiting = -1 },
+			"created negative": func(c *needs.Cursor) { c.CreatedAt = -1 },
+		} {
+			c := base()
+			mut(&c)
+			if rr := f.get(alice, "?sort=importance&cursor="+c.Encode()); rr.Code != http.StatusOK {
+				t.Errorf("%s: %d %s (a key time is never refused)", name, rr.Code, rr.Body.String())
+			}
+		}
+	})
+}
+
+// A cursor's as_of in the far future is clamped to now, not trusted: the page
+// scores as of now, never later (docs/api.md: "an as_of later than the
+// server's now is clamped to now").
+func TestNeedsYouSort_FutureAsOfIsClamped(t *testing.T) {
+	srv := testServer(t)
+	f := newNfx(t, srv)
+	owner, alice := f.user("owner"), f.user("alice")
+	ws := f.workspace("One", owner)
+	f.member(ws, alice, "editor")
+	f.item(ws, f.collection(ws, "Asks", true), "Is this OK?", alice, time.Now().AddDate(0, 0, -7).UTC().Truncate(time.Second))
+	tok, err := srv.store.CreateAPIToken(alice.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	score := func(asOf time.Time) int {
+		cur := needs.NewCursor(needs.SortAge, needsViewActive, "", asOf, &needs.Row{ItemID: "0", WaitingSince: nfxDay(0), Item: needs.ItemInfo{CreatedAt: nfxDay(0)}}).Encode()
+		rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs?cursor="+cur, tok.Token, nil)
+		var resp needsResponse
+		parseJSON(t, rr, &resp)
+		if rr.Code != http.StatusOK || len(resp.Rows) != 1 || resp.Rows[0].Importance == nil {
+			t.Fatalf("%d %s", rr.Code, rr.Body.String())
+		}
+		return resp.Rows[0].Importance.Value
+	}
+	// Waiting a week at now: age .5, so .125 + .10 + .05 = .275 -> 28. A year
+	// ahead, unclamped, age would cap at 1 and the score would be 33.
+	if now, future := score(time.Now()), score(time.Now().AddDate(1, 0, 0)); now != 28 || future != 28 {
+		t.Fatalf("at now %d, far-future as_of %d: want 28 and 28 (the future marker is clamped to now)", now, future)
+	}
+}
+
+// Every cursor the server mints is one it follows (TASK-3959 part 2 r2): a
+// boundary row whose created_at, and so its asked waiting_since, is pre-1970,
+// unparseable (a zero time) or past 2262 pages through, with no row repeated
+// or missed. What each sort proves differs. Every cursor carries the key
+// times, so under ALL three sorts a check that refused them would 400 page 2
+// (the r1 check did). Only sort=age ORDERS by them, so only age proves the
+// clamp: a time outside int64 nanoseconds wrapped in UnixNano, and the cursor
+// named a different instant from the row's key.
+func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		raw := map[string]string{
+			"pre-1970": "1950-06-01T00:00:00Z",
+			"zero":     "",
+			"far":      "3000-01-01T00:00:00Z",
+			"zero-b":   "not a date",
+		}
+		scores := map[string][2]int{}
+		i := 0
+		for _, title := range []string{"pre-1970", "zero", "far", "zero-b", "plain-a", "plain-b"} {
+			it := f.item(ws, asks, title, alice, nfxDay(i+1))
+			if v, ok := raw[title]; ok {
+				// Literal SQL, as setCreated: the raw *sql.DB does not rewrite ?
+				// placeholders for Postgres. The values are this test's constants.
+				if _, err := srv.store.DB().Exec(fmt.Sprintf("UPDATE items SET created_at = '%s' WHERE id = '%s'", v, it.ID)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			scores[title] = [2]int{50, 50} // one tie, so every boundary falls inside it
+			i++
+		}
+		srv.needsScorers = []needs.Scorer{&scoreStub{name: "importance", scores: scores}}
+		for _, sortBy := range []string{needs.SortAge, needs.SortImportance, needs.SortSimplicity} {
+			full := titles(f.need(alice, "?sort="+sortBy).Rows)
+			if len(full) != 6 {
+				t.Fatalf("%s: %d rows %v, want 6", sortBy, len(full), full)
+			}
+		limits:
+			for _, limit := range []int{1, 2} {
+				var got []string
+				q := fmt.Sprintf("?sort=%s&limit=%d", sortBy, limit)
+				for page := 0; page < 20; page++ {
+					rr := f.get(alice, q)
+					if rr.Code != http.StatusOK {
+						t.Errorf("%s limit %d page %d: %d %s (a cursor the server minted was refused)", sortBy, limit, page, rr.Code, rr.Body.String())
+						continue limits
+					}
+					var resp needsResponse
+					parseJSON(t, rr, &resp)
+					got = append(got, titles(resp.Rows)...)
+					if resp.NextCursor == "" {
+						break
+					}
+					q = fmt.Sprintf("?sort=%s&limit=%d&cursor=%s", sortBy, limit, resp.NextCursor)
+				}
+				if strings.Join(got, ",") != strings.Join(full, ",") {
+					t.Errorf("%s limit %d: pages %v, single page %v (a row was repeated or missed)", sortBy, limit, got, full)
+				}
+			}
+		}
+	})
 }

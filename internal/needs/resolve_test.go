@@ -138,7 +138,7 @@ func TestCursor(t *testing.T) {
 			t.Fatalf("%q accepted", bad)
 		}
 	}
-	a, b := Key{asOf, asOf, "a"}, Key{asOf, asOf, "b"}
+	a, b := Key{Waiting: asOf, Created: asOf, ItemID: "a"}, Key{Waiting: asOf, Created: asOf, ItemID: "b"}
 	if !a.Less(b) || b.Less(a) || a.Less(a) {
 		t.Fatal("ties must break by item id")
 	}
