@@ -116,7 +116,8 @@ func (f *FencedTx) CreateComment(in FencedCommentCreate) (*models.Comment, error
 	); err != nil {
 		return nil, fmt.Errorf("fenced comment insert: %w", err)
 	}
-	if err := f.s.reindexCommentMentionsTx(f.tx, id, f.workspaceID, in.ItemID, in.Body, true, ts); err != nil {
+	mentioned, err := f.s.reindexCommentMentionsTx(f.tx, id, f.workspaceID, in.ItemID, in.Body, true, ts)
+	if err != nil {
 		return nil, err
 	}
 	created, err := f.s.getCommentQ(f.tx, id)
@@ -130,7 +131,7 @@ func (f *FencedTx) CreateComment(in FencedCommentCreate) (*models.Comment, error
 		return nil, err
 	}
 	// TASK-3937: at the tail, after every other in-tx step.
-	if err := f.s.enqueueCommentNotificationsTx(f.tx, created, in.Actor.UserID, in.Actor.Kind == "agent"); err != nil {
+	if err := f.s.enqueueCommentNotificationsTx(f.tx, created, mentioned, in.Actor.UserID, in.Actor.Kind == "agent"); err != nil {
 		return nil, err
 	}
 	return created, nil
@@ -195,13 +196,18 @@ func (f *FencedTx) UpdateComment(itemID, commentID, body string, actor FencedAct
 	// A change that gives imported rows a user_id or via_app reopens this path
 	// and owes it a test.
 	// Accepted cost (TASK-3917 lead ruling, day 20): a mention a local user ADDS while editing an imported comment is not indexed either.
+	var mentioned []string
 	if !imported {
-		if err := f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, body, true, editTS); err != nil {
+		if mentioned, err = f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, body, true, editTS); err != nil {
 			return nil, err
 		}
 	}
 	updated, err := f.s.getCommentQ(f.tx, commentID)
 	if err != nil {
+		return nil, err
+	}
+	// TASK-3946: users the edit newly mentioned.
+	if err := f.s.enqueueMentionNotificationsTx(f.tx, updated, mentioned); err != nil {
 		return nil, err
 	}
 	if body != before {
@@ -283,7 +289,7 @@ func (f *FencedTx) DeleteComment(itemID, commentID string, actor FencedActor) er
 		if _, err := f.tx.Exec(f.s.q(`UPDATE comments SET body = '', deleted_at = ? WHERE id = ?`), now(), commentID); err != nil {
 			return fmt.Errorf("fenced comment delete: tombstone: %w", err)
 		}
-		if err := f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, "", false, ""); err != nil {
+		if _, err := f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, "", false, ""); err != nil {
 			return err
 		}
 	} else {

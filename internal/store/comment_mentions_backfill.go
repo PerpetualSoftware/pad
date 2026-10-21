@@ -107,7 +107,8 @@ func (s *Store) backfillCommentMentionsOne(id string) error {
 	if imported == 1 {
 		return nil // never indexed (TASK-3917 lead ruling bb0c9fc6)
 	}
-	if err := s.reindexCommentMentionsTx(tx, id, workspaceID, itemID, body, live == 1, createdAt); err != nil {
+	// The added list is discarded: a backfill notifies nobody (TASK-3946).
+	if _, err := s.reindexCommentMentionsTx(tx, id, workspaceID, itemID, body, live == 1, createdAt); err != nil {
 		return err
 	}
 	return tx.Commit()
