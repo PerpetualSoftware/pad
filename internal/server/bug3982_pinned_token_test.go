@@ -221,24 +221,88 @@ func TestBUG3982_CrossWorkspaceCopyRefused(t *testing.T) {
 	f.must(f.do("POST", path, f.ownerTok, body), http.StatusCreated, "unpinned copy A to B")
 }
 
-// Every global route the router registers, public ones included, refuses a
-// pinned token unless pinnedTokenRouteAllowed lists it.
+// pinnedAllowedGlobalRoutes is every route outside /workspaces/{slug}/ that a
+// pinned token may use, written out by hand (method + chi pattern) rather than
+// derived from pinnedTokenRouteAllowed. Each one either confines itself to the
+// pin (the workspace list, search, events, collab, the token doors, the needs
+// inbox), reads nothing of the caller's (pre-auth flows, health, libraries,
+// share links), or only says who the token is. A route the gate admits that is
+// not here fails the walk below; that is how import-status was found.
+var pinnedAllowedGlobalRoutes = map[string]bool{
+	"DELETE /api/v1/auth/tokens/{tokenID}":             true,
+	"GET /api/v1/auth/check-username":                  true,
+	"GET /api/v1/auth/cli/sessions/{code}":             true,
+	"GET /api/v1/auth/me":                              true,
+	"GET /api/v1/auth/session":                         true,
+	"GET /api/v1/auth/tokens":                          true,
+	"GET /api/v1/collab/{itemID}":                      true,
+	"GET /api/v1/convention-library":                   true,
+	"GET /api/v1/events":                               true,
+	"GET /api/v1/health":                               true,
+	"GET /api/v1/health/live":                          true,
+	"GET /api/v1/health/ready":                         true,
+	"GET /api/v1/invitations/{code}/preview":           true,
+	"GET /api/v1/library/entry":                        true,
+	"GET /api/v1/mcp/tool-surface":                     true,
+	"GET /api/v1/me/needs":                             true,
+	"GET /api/v1/plan-limits":                          true,
+	"GET /api/v1/playbook-library":                     true,
+	"GET /api/v1/s/{token}":                            true,
+	"GET /api/v1/s/{token}/attachments/{attachmentID}": true,
+	"GET /api/v1/search":                               true,
+	"GET /api/v1/server/capabilities":                  true,
+	"GET /api/v1/templates":                            true,
+	"GET /api/v1/workspaces":                           true,
+	"POST /api/v1/auth/2fa/login-verify":               true,
+	"POST /api/v1/auth/bootstrap":                      true,
+	"POST /api/v1/auth/cli/sessions":                   true,
+	"POST /api/v1/auth/forgot-password":                true,
+	"POST /api/v1/auth/local-reset":                    true,
+	"POST /api/v1/auth/login":                          true,
+	"POST /api/v1/auth/logout":                         true,
+	"POST /api/v1/auth/register":                       true,
+	"POST /api/v1/auth/resend-verification":            true,
+	"POST /api/v1/auth/reset-password":                 true,
+	"POST /api/v1/auth/verify-email":                   true,
+}
+
+// pinConfinedRoute reports whether chi pattern route sits inside the
+// /workspaces/{slug} subrouter, where RequireWorkspaceAccess holds the pin.
+// Restore is registered beside it, not in it.
+func pinConfinedRoute(route string) bool {
+	rest, ok := strings.CutPrefix(route, "/api/v1/workspaces/{slug}")
+	return ok && (rest == "" || strings.HasPrefix(rest, "/")) && rest != "/restore"
+}
+
+// Every route the router registers, public ones included, either sits inside
+// the pin-confined workspace subrouter, is in pinnedAllowedGlobalRoutes, or
+// refuses a pinned token. Both directions are checked: an admitted route must
+// be expected, and a refused one must refuse.
 func TestBUG3982_EveryGlobalRouteRefusesAPinnedPAT(t *testing.T) {
 	f := newPinFixture(t, store.DriverSQLite)
 	f.srv.ensureRouter()
 	param := regexp.MustCompile(`\{[^}]*\}`)
-	checked := 0
+	checked, admitted := 0, map[string]bool{}
 	err := chi.Walk(f.srv.router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if !strings.HasPrefix(route, "/api/v1/") {
 			return nil
 		}
+		route = strings.TrimSuffix(route, "/")
 		path := strings.TrimSuffix(param.ReplaceAllString(route, "x"), "/*")
 		path = strings.ReplaceAll(path, "*", "x")
+		key := method + " " + route
 		if pinnedTokenRouteAllowed(httptest.NewRequest(method, path, nil)) {
+			if !pinConfinedRoute(route) && !pinnedAllowedGlobalRoutes[key] {
+				t.Errorf("a pinned token is admitted to %s, which is outside the workspace subrouter and not in pinnedAllowedGlobalRoutes", key)
+			}
+			admitted[key] = true
 			return nil
 		}
+		if pinnedAllowedGlobalRoutes[key] {
+			t.Errorf("%s is expected open to a pinned token but the gate refuses it", key)
+		}
 		checked++
-		f.mustBePinDenial(f.do(method, path, f.pinned, nil), method+" "+route)
+		f.mustBePinDenial(f.do(method, path, f.pinned, nil), key)
 		return nil
 	})
 	if err != nil {
@@ -246,6 +310,11 @@ func TestBUG3982_EveryGlobalRouteRefusesAPinnedPAT(t *testing.T) {
 	}
 	if checked < 50 {
 		t.Fatalf("only %d global routes were checked; the walk is not seeing the router", checked)
+	}
+	for key := range pinnedAllowedGlobalRoutes {
+		if !admitted[key] {
+			t.Errorf("pinnedAllowedGlobalRoutes lists %s, which the router no longer registers or the gate refuses", key)
+		}
 	}
 }
 
@@ -258,6 +327,7 @@ func TestBUG3982_NamedGlobalRoutesRefuseAPinnedPAT(t *testing.T) {
 		{"POST", "/api/v1/workspaces"},
 		{"POST", "/api/v1/workspaces/import"},
 		{"GET", "/api/v1/workspaces/deleted"},
+		{"GET", "/api/v1/workspaces/import-status?key=abcdefgh"},
 		{"PUT", "/api/v1/workspaces/reorder"},
 		{"POST", "/api/v1/workspaces/" + f.bSlug + "/restore"},
 		{"GET", "/api/v1/auth/export"},

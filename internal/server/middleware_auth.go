@@ -439,9 +439,11 @@ var legacyTokenRoutes = map[string]string{
 }
 
 // legacyWorkspaceSegmentsRefused are the names under /api/v1/workspaces/ that
-// are global routes, not a workspace slug.
+// are global routes, not a workspace slug. import-status reads the caller's
+// import outcomes in any workspace, so a pinned token must not reach it
+// (BUG-3982).
 var legacyWorkspaceSegmentsRefused = map[string]bool{
-	"reorder": true, "import": true, "deleted": true,
+	"reorder": true, "import": true, "import-status": true, "deleted": true,
 }
 
 // legacyTokenRouteAllowed reports whether a user-less legacy workspace token
