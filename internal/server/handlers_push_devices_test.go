@@ -592,9 +592,10 @@ func TestNotificationSettings_Auth(t *testing.T) {
 	})
 }
 
-// push_available is a JSON bool on /auth/session, true only with a gateway,
-// and is NOT on the pre-auth setup state. Kills: a string or number, an
-// omitted false, leaking it pre-auth.
+// push_available is a JSON bool on /auth/session for a SIGNED-IN caller, true
+// only with a gateway, and is absent for an anonymous caller and on the
+// pre-auth setup state. Kills: a string or number, an omitted false, emitting
+// it to an anonymous caller.
 func TestPushDevices_Session_PushAvailable_IsJSONBool(t *testing.T) {
 	for _, gateway := range []bool{false, true} {
 		srv := testServer(t)
@@ -609,20 +610,22 @@ func TestPushDevices_Session_PushAvailable_IsJSONBool(t *testing.T) {
 			t.Errorf("gateway=%v: setup state carries push_available", gateway)
 		}
 		tok := bootstrapFirstUser(t, srv, "pa@example.com", "PA")
-		for name, rr := range map[string]*httptest.ResponseRecorder{
-			"authenticated": rawReq(srv, "GET", "/api/v1/auth/session", tok, "", ""),
-			"anonymous":     doRequest(srv, "GET", "/api/v1/auth/session", nil),
-		} {
-			var raw map[string]json.RawMessage
-			parseJSON(t, rr, &raw)
-			got, ok := raw["push_available"]
-			want := "false"
-			if gateway {
-				want = "true"
-			}
-			if !ok || !bytes.Equal(bytes.TrimSpace(got), []byte(want)) {
-				t.Errorf("gateway=%v %s: push_available = %s (present %v), want JSON %s", gateway, name, got, ok, want)
-			}
+		var raw map[string]json.RawMessage
+		parseJSON(t, rawReq(srv, "GET", "/api/v1/auth/session", tok, "", ""), &raw)
+		got, ok := raw["push_available"]
+		want := "false"
+		if gateway {
+			want = "true"
+		}
+		if !ok || !bytes.Equal(bytes.TrimSpace(got), []byte(want)) {
+			t.Errorf("gateway=%v signed in: push_available = %s (present %v), want JSON %s", gateway, got, ok, want)
+		}
+		// After setup, an anonymous caller still gets the session payload, but
+		// not the gateway configuration (ruling b878d7f8).
+		var anon map[string]json.RawMessage
+		parseJSON(t, doRequest(srv, "GET", "/api/v1/auth/session", nil), &anon)
+		if v, ok := anon["push_available"]; ok {
+			t.Errorf("gateway=%v anonymous: carries push_available = %s, want it absent", gateway, v)
 		}
 	}
 }

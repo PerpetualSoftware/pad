@@ -219,12 +219,13 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		"version": s.version,
 	}
 	s.addBillingFields(payload)
-	// push_available: whether this server can send pushes (TASK-3938). A JSON
-	// bool, on the session payload only: the app reads it by type once signed
-	// in, and the pre-auth setup-state does not carry deployment config.
-	payload["push_available"] = s.pushAvailable()
 	if authenticated {
 		payload["user"] = sessionUserPayload(user)
+		// push_available: whether this server can send pushes (TASK-3938). A
+		// JSON bool for a SIGNED-IN caller only: the app reads it by type with
+		// its session, and whether a gateway exists is server configuration an
+		// anonymous caller does not need (absent reads as off).
+		payload["push_available"] = s.pushAvailable()
 	}
 	return payload
 }
