@@ -185,8 +185,9 @@ func (s *Server) handleDeletePushDevice(w http.ResponseWriter, r *http.Request) 
 
 // notificationSettingsUser admits the caller for the account-level settings
 // routes: any authenticated person, a PAT included. An app principal is
-// refused, and so is a PAT pinned to one workspace, since these settings are
-// the account's and not any workspace's (BUG-3982).
+// refused. A PAT pinned to one workspace never reaches here: these routes are
+// not in pinnedTokenExtraRoute, so the auth middleware's BUG-3982 gate refuses
+// it first, and that gate is the one owner of the refusal.
 func (s *Server) notificationSettingsUser(w http.ResponseWriter, r *http.Request) *models.User {
 	if appContextFrom(r) != nil {
 		writeError(w, http.StatusForbidden, "forbidden", "Notification settings belong to a person, not an app")
@@ -199,16 +200,6 @@ func (s *Server) notificationSettingsUser(w http.ResponseWriter, r *http.Request
 	}
 	if user.IsApp() {
 		writeError(w, http.StatusForbidden, "forbidden", "Notification settings belong to a person, not an app")
-		return nil
-	}
-	// BUG-3982's shape (403 permission_denied, reason token_workspace_pinned),
-	// so one consumer check covers every pinned-token door; #2266 owns the
-	// shared helper and the token_workspace detail.
-	if authKind(r) == authKindAPIToken && tokenWorkspaceID(r) != "" {
-		writeError2(w, http.StatusForbidden, "permission_denied",
-			"A token bound to one workspace cannot read or change account notification settings. "+
-				"Mint an unscoped token (pad token create --name <name>) to use them.",
-			map[string]interface{}{"reason": "token_workspace_pinned"})
 		return nil
 	}
 	return user

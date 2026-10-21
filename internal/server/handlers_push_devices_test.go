@@ -522,8 +522,9 @@ func TestNotificationSettings_DefaultsAndUnknownKey400(t *testing.T) {
 }
 
 // Any authenticated user may use the settings, a PAT included; an app
-// principal and a workspace-pinned PAT may not. Kills: dropping the pinned
-// refusal, or gating the settings on the session kind.
+// principal and a workspace-pinned PAT may not, the latter refused by the
+// BUG-3982 gate. Kills: admitting these routes to a pinned token, or gating
+// the settings on the session kind.
 func TestNotificationSettings_Auth(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		e := newPushEnv(t, srv, false)
@@ -546,20 +547,15 @@ func TestNotificationSettings_Auth(t *testing.T) {
 		if rr := rawReq(srv, "PUT", path, free.Token, "", allSettings); rr.Code != http.StatusOK {
 			t.Errorf("an unpinned PAT PUT: %d %s, want 200", rr.Code, rr.Body.String())
 		}
-		// BUG-3982's shape, so a consumer keyed on the reason sees one refusal.
+		// The refusal is BUG-3982's gate's, byte for byte, so a consumer keyed
+		// on it sees one answer at every pinned-token door. Kills: listing these
+		// routes in pinnedTokenExtraRoute.
+		want := httptest.NewRecorder()
+		writeTokenWorkspaceDeniedFor(want, &tokenPin{ID: ws.ID, Slug: ws.Slug})
 		wantPinned := func(what string, rr *httptest.ResponseRecorder) {
 			t.Helper()
-			var body struct {
-				Error struct {
-					Code    string `json:"code"`
-					Details struct {
-						Reason string `json:"reason"`
-					} `json:"details"`
-				} `json:"error"`
-			}
-			_ = json.Unmarshal(rr.Body.Bytes(), &body)
-			if rr.Code != http.StatusForbidden || body.Error.Code != "permission_denied" || body.Error.Details.Reason != "token_workspace_pinned" {
-				t.Errorf("a pinned PAT %s: %d %s, want 403 permission_denied reason token_workspace_pinned", what, rr.Code, rr.Body.String())
+			if rr.Code != want.Code || rr.Body.String() != want.Body.String() {
+				t.Errorf("a pinned PAT %s: %d %s, want the BUG-3982 refusal %d %s", what, rr.Code, rr.Body.String(), want.Code, want.Body.String())
 			}
 		}
 		wantPinned("GET", rawReq(srv, "GET", path, pinned.Token, "", ""))
