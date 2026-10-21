@@ -21,8 +21,10 @@ import (
 )
 
 // BUG-4019: a TOTP secret that will not decrypt (an operator key change) fails
-// the second-factor check and nothing else. These tests pin each door that
-// reads a secret, on SQLite and, under make test-pg, on Postgres.
+// only the 2FA paths (the second-factor check, and enabling over it), never an
+// ordinary read of the user; TOTPSecretForVerify is the only reader that
+// returns the plaintext. These tests pin each door that reads a secret, on
+// SQLite and, under make test-pg, on Postgres.
 
 const bug4019Secret = "JBSWY3DPEHPK3PXP"
 
