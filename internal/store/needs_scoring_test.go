@@ -1,0 +1,142 @@
+package store
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// TASK-3959: the batch reads behind the needs scorers. Both backends via
+// testStore.
+
+func TestNeedsScoringItems(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	short := createTestItem(t, s, ws.ID, col.ID, "Short", "héllo")
+	long := createTestItem(t, s, ws.ID, col.ID, "Long", strings.Repeat("é", 700))
+	gone := createTestItem(t, s, ws.ID, col.ID, "Gone", "x")
+	if err := s.DeleteItem(gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.NeedsScoringItems(ws.ID, []string{short.ID, long.ID, gone.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[short.ID].ContentRunes != 5 || got[long.ID].ContentRunes != 700 || got[short.ID].CollectionID != col.ID {
+		t.Fatalf("scoring items = %+v (characters, not bytes; the deleted item left out)", got)
+	}
+	if other, err := s.NeedsScoringItems("no-such-workspace", []string{short.ID}); err != nil || len(other) != 0 {
+		t.Fatalf("another workspace's id read an item: %v %v", other, err)
+	}
+}
+
+func TestLatestDecisionsForItems(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	a := createTestItem(t, s, ws.ID, col.ID, "A", "")
+	b := createTestItem(t, s, ws.ID, col.ID, "B", "")
+	other := createTestItem(t, s, ws.ID, col.ID, "Other", "")
+	put := func(item *models.Item, set, key, hash string, at time.Time) {
+		t.Helper()
+		if err := s.InsertItemDecisions(ws.ID, []models.ItemDecision{{
+			ItemID: item.ID, QuestionSet: set, QuestionKey: key, Kind: "noul",
+			Answer: []byte(`{"type":"noul","noul":0.5}`), Provider: "fake", Model: "m",
+			StateHash: "s-" + hash, QuestionHash: hash, ItemSeq: 1, EvaluatedAt: decisionTime(at),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	put(a, "attention", "effort", "old", now.Add(-time.Hour))
+	put(a, "attention", "effort", "new", now)
+	put(a, "attention", "effort_medium", "m", now)
+	put(b, "attention", "effort", "b", now)
+	put(other, "attention", "effort", "o", now)
+	put(a, "triage", "effort", "t", now)
+
+	got, err := s.LatestDecisionsForItems([]string{a.ID, b.ID}, "attention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || len(got[a.ID]) != 2 || len(got[b.ID]) != 1 || got[other.ID] != nil {
+		t.Fatalf("decisions = %+v (two items, one set)", got)
+	}
+	for _, d := range got[a.ID] {
+		if d.QuestionKey == "effort" && d.QuestionHash != "new" {
+			t.Fatalf("effort answer %q is not the newest", d.QuestionHash)
+		}
+	}
+}
+
+func TestOwedDecisionJobs(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	s.SetDecisionSetResolver(func(string) []string { return nil })
+	owed := createTestItem(t, s, ws.ID, col.ID, "Owed", "")
+	failed := createTestItem(t, s, ws.ID, col.ID, "Failed", "")
+	none := createTestItem(t, s, ws.ID, col.ID, "None", "")
+	wrongSet := createTestItem(t, s, ws.ID, col.ID, "Wrong set", "")
+	for _, id := range []string{owed.ID, failed.ID} {
+		if err := s.OweDecisionJobs(ws.ID, "attention", []string{id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.OweDecisionJobs(ws.ID, "triage", []string{wrongSet.ID}); err != nil {
+		t.Fatal(err)
+	}
+	claimed := claimN(t, s)
+	for _, j := range claimed {
+		if j.ItemID == failed.ID {
+			if err := s.FailDecisionJob(j, errors.New("provider down"), time.Hour); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	got, err := s.OwedDecisionJobs([]string{owed.ID, failed.ID, none.ID, wrongSet.ID}, "attention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[owed.ID] || got[failed.ID] || got[none.ID] || got[wrongSet.ID] || len(got) != 1 {
+		t.Fatalf("owed = %v: want only the item with an unfailed attention job", got)
+	}
+}
+
+// More ids than one IN list takes are read in chunks, and every one answers.
+func TestNeedsScoringReads_ChunkOverTheInLimit(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	s.SetDecisionSetResolver(func(string) []string { return nil })
+	n := needsChunk + 25
+	ids := make([]string, n)
+	for i := range ids {
+		it := createTestItem(t, s, ws.ID, col.ID, fmt.Sprintf("Item %d", i), "")
+		ids[i] = it.ID
+	}
+	if err := s.OweDecisionJobs(ws.ID, "attention", ids); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.NeedsScoringItems(ws.ID, ids)
+	if err != nil || len(items) != n {
+		t.Fatalf("items: %d of %d, %v", len(items), n, err)
+	}
+	owed, err := s.OwedDecisionJobs(ids, "attention")
+	if err != nil || len(owed) != n {
+		t.Fatalf("owed: %d of %d, %v", len(owed), n, err)
+	}
+}
+
+func TestGetBlocksEdges_CarriesTheTarget(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	src := createTestItem(t, s, ws.ID, col.ID, "Blocker", "")
+	tgt := createTestItem(t, s, ws.ID, col.ID, "Blocked", "")
+	if _, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: tgt.ID, LinkType: "blocks"}, src.ID); err != nil {
+		t.Fatal(err)
+	}
+	es, err := s.GetBlocksEdges(ws.ID)
+	if err != nil || len(es) != 1 {
+		t.Fatalf("edges %v %v", es, err)
+	}
+	if es[0].TargetCollectionID != col.ID || es[0].TargetFields != tgt.Fields {
+		t.Fatalf("target = %q %q, want %q %q", es[0].TargetCollectionID, es[0].TargetFields, col.ID, tgt.Fields)
+	}
+}
