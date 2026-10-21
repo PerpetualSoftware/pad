@@ -266,7 +266,7 @@ func TestBUG4019_EmptyStoredSecretRefusesACodeComputedFromEmpty(t *testing.T) {
 	}
 	var warns []string
 	for _, line := range strings.Split(logs.String(), "\n") {
-		if strings.Contains(line, "level=WARN") && strings.Contains(line, "totp enabled but no secret to verify against") {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "no totp secret to verify a code against") {
 			warns = append(warns, line)
 		}
 	}

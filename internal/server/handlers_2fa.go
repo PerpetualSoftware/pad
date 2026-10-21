@@ -395,9 +395,12 @@ func (s *Server) checkSecondFactor(w http.ResponseWriter, user *models.User, att
 		}
 		// 2FA on with no secret behind it (an emptied column) cannot verify a
 		// code, so the user is held to recovery codes; say so to the operator,
-		// with the user id only (BUG-4019 r2).
+		// with the user id only (BUG-4019 r2). user.TOTPEnabled is the request's
+		// snapshot, and a disable landing since then also reads as no secret, so
+		// the message claims only what is true now: there was nothing to verify
+		// against (BUG-4019 r3).
 		if err != nil && user.TOTPEnabled {
-			slog.Warn("totp enabled but no secret to verify against", "user_id", user.ID)
+			slog.Warn("no totp secret to verify a code against", "user_id", user.ID)
 		}
 		if err == nil {
 			// Capture the clock ONCE so validation and step derivation agree on the
