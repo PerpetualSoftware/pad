@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -90,6 +92,15 @@ func idPlaceholders(ids []string) (string, []any) {
 	return strings.TrimSuffix(strings.Repeat("?,", len(ids)), ","), args
 }
 
+// Claim is the outcome of one ClaimPendingNotifications call: the rows it
+// claimed and the per-claim token that now holds them. Token is what
+// MarkNotificationsSent, MarkNotificationsSkipped and ReleaseNotifications
+// take.
+type Claim struct {
+	Token string
+	Rows  []Notification
+}
+
 // notificationIDChunk bounds the ids in one IN list.
 const notificationIDChunk = 500
 
@@ -100,14 +111,19 @@ const notificationIDChunk = 500
 // availability predicate, so two claimers get disjoint sets. Oldest first.
 //
 // The result is ONLY the rows this call claimed: a subset of this call's
-// candidate ids, stamped with this call's claim_token and claimed_at. It never
-// exceeds limit and never includes a row the token already held from an
-// earlier call, so the contract holds even when a token is reused across
-// calls (TASK-3939 r1-H1). A held row whose lease lapsed is a candidate again
-// and is returned with claimed_at refreshed.
-func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff, leaseCutoff time.Time) ([]Notification, error) {
+// candidate ids. It never exceeds limit and never includes a row the token
+// already held from an earlier call (TASK-3939 r1-H1). A held row whose lease
+// lapsed is a candidate again and is returned with claimed_at refreshed.
+//
+// Each call stamps its OWN claim token: the caller's token plus a per-call
+// random nonce, returned as Claim.Token. Mark, skip and release take that
+// token, never the caller's. Reusing a caller token across calls, even in the
+// same second (claimed_at has second precision), is therefore safe by
+// construction: two such calls can never read back each other's rows
+// (TASK-3939 r2-F1).
+func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff, leaseCutoff time.Time) (Claim, error) {
 	if token == "" {
-		return nil, errEmptyClaimToken
+		return Claim{}, errEmptyClaimToken
 	}
 	settle, lease := cutoffTS(settleCutoff), cutoffTS(leaseCutoff)
 	rows, err := s.db.Query(s.q(`
@@ -118,38 +134,43 @@ func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff,
 		ORDER BY created_at, id
 		LIMIT ?`), settle, lease, limit)
 	if err != nil {
-		return nil, fmt.Errorf("claim notifications: select candidates: %w", err)
+		return Claim{}, fmt.Errorf("claim notifications: select candidates: %w", err)
 	}
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("claim notifications: scan candidate: %w", err)
+			return Claim{}, fmt.Errorf("claim notifications: scan candidate: %w", err)
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, fmt.Errorf("claim notifications: candidates: %w", err)
+		return Claim{}, fmt.Errorf("claim notifications: candidates: %w", err)
 	}
 	rows.Close()
 	if len(ids) == 0 {
-		return nil, nil
+		return Claim{}, nil
 	}
 	return s.claimNotificationIDs(token, ids, settle, lease, now())
 }
 
 // claimNotificationIDs is the ARBITER: one conditional UPDATE per candidate,
 // each carrying its own availability predicate, stamped with ts; it then reads
-// back the candidates that now carry this token AND ts. Split out so a test
+// back the candidates that now carry this call's claim token AND ts. Split out so a test
 // can hand it a stale candidate list (a row another claimer took since the
 // select) and a fixed ts, which the public entry point's own select would
 // already have filtered.
-func (s *Store) claimNotificationIDs(token string, ids []string, settle, lease, ts string) ([]Notification, error) {
+func (s *Store) claimNotificationIDs(callerToken string, ids []string, settle, lease, ts string) (Claim, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return Claim{}, fmt.Errorf("claim notifications: nonce: %w", err)
+	}
+	token := callerToken + "." + hex.EncodeToString(nonce[:])
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("claim notifications: %w", err)
+		return Claim{}, fmt.Errorf("claim notifications: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, id := range ids {
@@ -160,11 +181,11 @@ func (s *Store) claimNotificationIDs(token string, ids []string, settle, lease, 
 			  AND push_state = 'pending'
 			  AND created_at <= ?
 			  AND (claimed_at IS NULL OR claimed_at < ?)`), token, ts, id, settle, lease); err != nil {
-			return nil, fmt.Errorf("claim notification %s: %w", id, err)
+			return Claim{}, fmt.Errorf("claim notification %s: %w", id, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("claim notifications: %w", err)
+		return Claim{}, fmt.Errorf("claim notifications: %w", err)
 	}
 
 	ph, idArgs := idPlaceholders(ids)
@@ -174,18 +195,21 @@ func (s *Store) claimNotificationIDs(token string, ids []string, settle, lease, 
 		WHERE id IN (`+ph+`) AND claim_token = ? AND claimed_at = ? AND push_state = 'pending'
 		ORDER BY created_at, id`), args...)
 	if err != nil {
-		return nil, fmt.Errorf("claim notifications: read back: %w", err)
+		return Claim{}, fmt.Errorf("claim notifications: read back: %w", err)
 	}
 	defer out.Close()
 	var claimed []Notification
 	for out.Next() {
 		n, err := s.scanNotification(out)
 		if err != nil {
-			return nil, fmt.Errorf("claim notifications: scan: %w", err)
+			return Claim{}, fmt.Errorf("claim notifications: scan: %w", err)
 		}
 		claimed = append(claimed, n)
 	}
-	return claimed, out.Err()
+	if err := out.Err(); err != nil {
+		return Claim{}, fmt.Errorf("claim notifications: read back: %w", err)
+	}
+	return Claim{Token: token, Rows: claimed}, nil
 }
 
 // ExpireStaleNotifications turns pending rows created before createdCutoff
@@ -235,8 +259,8 @@ func (s *Store) settleNotifications(token string, ids []string, set string, setA
 	return total, nil
 }
 
-// MarkNotificationsSent records ids as pushed. A row not (or no longer)
-// pending under token is left alone.
+// MarkNotificationsSent records ids as pushed. token is Claim.Token. A row not
+// (or no longer) pending under it is left alone.
 func (s *Store) MarkNotificationsSent(token string, ids []string) (int64, error) {
 	return s.settleNotifications(token, ids, `push_state = 'sent', sent_at = ?`, now())
 }

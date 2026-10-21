@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -285,29 +286,34 @@ func serveWith(t *testing.T, secret string, h http.HandlerFunc) *Gateway {
 	return NewGateway(srv.URL, secret)
 }
 
-// Kills (TASK-3939 r1-H3): closing a non-200 body without draining it. The
-// handler writes a body bigger than the transport buffers, then records
-// whether its full write completed; a client that closes early aborts it.
+// Kills (TASK-3939 r1-H3, r2-F2): closing a non-200 body without draining it.
+// Loopback buffers hide an early close from the server, so this asserts the
+// observable effect instead: two requests through ONE transport, and the
+// second must be served on the first's connection. A body closed unread makes
+// the transport drop the connection.
 func TestGateway_Non200BodyIsDrained(t *testing.T) {
-	var completed atomic.Bool
-	done := make(chan struct{})
-	g := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		defer close(done)
+	body := strings.Repeat("x", 256<<10) // under maxResponseBytes
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		chunk := []byte(strings.Repeat("x", 64<<10))
-		for i := 0; i < 8; i++ {
-			if _, err := w.Write(chunk); err != nil {
-				return
-			}
-			w.(http.Flusher).Flush()
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	tr := &http.Transport{}
+	t.Cleanup(tr.CloseIdleConnections)
+	g := NewGateway(srv.URL, testSecret)
+	g.HTTP = &http.Client{Transport: tr}
+
+	var reused []bool
+	for i := 0; i < 2; i++ {
+		trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+			reused = append(reused, info.Reused)
+		}}
+		ctx := httptrace.WithClientTrace(context.Background(), trace)
+		if _, err := g.Send(ctx, twoMsgs()); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("request %d: err = %v", i, err)
 		}
-		completed.Store(true)
-	})
-	if _, err := g.Send(context.Background(), twoMsgs()); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("err = %v", err)
 	}
-	<-done
-	if !completed.Load() {
-		t.Fatal("body was closed before it was consumed")
+	if len(reused) != 2 || reused[0] || !reused[1] {
+		t.Fatalf("GotConnInfo.Reused = %v, want [false true]: the second request did not reuse the connection", reused)
 	}
 }
