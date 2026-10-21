@@ -396,6 +396,10 @@ func TestNeedsYouSignals_HintTable(t *testing.T) {
 	if s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(2), "qe")}, qh, false); s.Hint != "under an hour" || s.Value != 33 {
 		t.Fatalf("no medium: %+v", s)
 	}
+	// EffortMediumMinProb is inclusive: exactly .5 adds the suffix.
+	if s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(1), "qe"), mediumAnswer("device", decision.EffortMediumMinProb, "qm")}, qh, false); s.Hint != "5 min, needs a device" {
+		t.Fatalf("medium at exactly .5: hint %q", s.Hint)
+	}
 	// An unsure medium (top probability under .5) adds nothing.
 	s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(1), "qe"), mediumAnswer("device", 0.49, "qm")}, qh, false)
 	if s.Hint != "5 min" {
@@ -505,7 +509,7 @@ func TestNeedsYouSignals_MemoReadsOncePerRequest(t *testing.T) {
 				t.Fatalf("round %d: rows %+v", round, resp.Rows)
 			}
 			for _, ws := range []*models.Workspace{w1, w2} {
-				for _, read := range []string{"items", "blocks_edges", "collections", "question_hashes", "decisions", "owed_jobs"} {
+				for _, read := range []string{"items", "blocks_edges", "collections", "question_hashes", "decisions", "owed_jobs", "attention_current"} {
 					if n := loads[ws.ID+":"+read]; n != round {
 						t.Errorf("round %d: %s read %d times, want %d (once per request, never cached across them)", round, read, n, round)
 					}
@@ -703,5 +707,59 @@ func TestNeedsYouSignals_ReadFailureDegrades(t *testing.T) {
 	}
 	if len(srv.needsScorers) != 2 {
 		t.Fatalf("%d scorers registered, want 2", len(srv.needsScorers))
+	}
+}
+
+// H and "judged to need a human" read needs_human through the inbox's own flag
+// rule, which wants the answer current by item state as well as question: an
+// answer of .9 to the question as asked now, but on an edited item (state hash
+// moved, no refresh owed), weighs nothing, while the same answer on the item as
+// it stands counts and says so.
+func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
+	srv := testServer(t)
+	f := newNfx(t, srv)
+	owner := f.user("owner")
+	ws := f.workspace("One", owner)
+	tasks := f.collection(ws, "Tasks", false)
+	current := f.item(ws, tasks, "Pick a vendor", nil, nfxDay(1))
+	stale := f.item(ws, tasks, "Pick a host", nil, nfxDay(1))
+	attachAttentionRunner(t, srv) // after the items: no job is queued for either
+	runner := srv.decisionRunner()
+	qh, err := runner.CurrentQuestionHashes(context.Background(), ws.ID, decision.AttentionSetName)
+	if err != nil || qh[decision.AttentionNeedsHuman] == "" {
+		t.Fatalf("question hashes %v %v", qh, err)
+	}
+	_, st, err := runner.State(current.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := func(it *models.Item, stateHash string) models.ItemDecision {
+		return models.ItemDecision{ItemID: it.ID, QuestionSet: decision.AttentionSetName, QuestionKey: decision.AttentionNeedsHuman, Kind: "noul",
+			Answer: json.RawMessage(`{"type":"noul","noul":0.9}`), Provider: "stub", Model: "stub-1",
+			StateHash: stateHash, QuestionHash: qh[decision.AttentionNeedsHuman], ItemSeq: 1}
+	}
+	if err := srv.store.InsertItemDecisions(ws.ID, []models.ItemDecision{answer(current, st.Hash), answer(stale, "an-older-state")}); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := srv.store.GetDecisionJob(stale.ID, decision.AttentionSetName); err != nil || job != nil {
+		t.Fatalf("a job is owed for the stale item (%+v, %v): the flag rule would hold its answer", job, err)
+	}
+	now := time.Now()
+	row := func(it *models.Item) *needs.Row {
+		return &needs.Row{ItemID: it.ID, WorkspaceID: ws.ID, WaitingSince: now, Why: needs.Why{Rule: needs.RuleMentioned}}
+	}
+	rows := []*needs.Row{row(current), row(stale)}
+	deg, err := (&importanceScorer{s: srv, loc: time.UTC}).Score(context.Background(), needs.Viewer{UserID: owner.ID, Now: now},
+		needs.Scope{WorkspaceID: ws.ID, Unrestricted: true, CollectionIDs: []string{}, ItemIDs: []string{}}, rows)
+	if deg || err != nil {
+		t.Fatalf("degraded %v err %v", deg, err)
+	}
+	// Control, current: medium .125 + H .9 -> .09 = .215 -> 22, and the Why.
+	if c := rows[0].Importance; c.Value != 22 || !slices.Contains(c.Why, whyNeedsHuman) {
+		t.Fatalf("current answer: %+v, want 22 with %q", c, whyNeedsHuman)
+	}
+	// Stale: H is the no-answer .5, so .125 + .05 = .175 -> 18, and no Why.
+	if s := rows[1].Importance; s.Value != 18 || slices.Contains(s.Why, whyNeedsHuman) {
+		t.Fatalf("stale answer: %+v, want 18 without %q", s, whyNeedsHuman)
 	}
 }

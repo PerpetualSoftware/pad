@@ -101,6 +101,7 @@ type needsMemo struct {
 	decs   memoSlot[map[string][]models.ItemDecision]
 	owed   memoSlot[map[string]bool]
 	qhash  memoSlot[map[string]string]
+	human  memoSlot[map[string]map[string]float64]
 	graph  *blocksGraph
 	graphE error
 }
@@ -199,6 +200,37 @@ func (m *needsMemo) answers(ctx context.Context, rows []*needs.Row) (decs map[st
 	return
 }
 
+// humanCurrent is the inbox's own verdict on which of the rows' attention
+// answers are current: the flag path (WorkspaceFlagsForItems) at threshold 0
+// returns every answer current by question hash AND item state, or held while
+// its refresh is owed, by item and key. H and "judged to need a human" read
+// needs_human only through it, so they agree with whether the router counts
+// the item as flagged. Its failing bit is not read. Nil without a runner.
+func (m *needsMemo) humanCurrent(rows []*needs.Row) (map[string]map[string]float64, error) {
+	if m.runner == nil {
+		return nil, nil
+	}
+	return memoLoad(m, "attention_current", &m.human, func() (map[string]map[string]float64, error) {
+		cur, _, err := m.runner.WorkspaceFlagsForItems(m.wsID, decision.AttentionSetName, 0, rowIDs(rows))
+		return cur, err
+	})
+}
+
+// withCurrentHuman is decs without the needs_human answer unless the flag path
+// still holds it current (cur, from humanCurrent). It copies; decs is shared.
+func withCurrentHuman(decs []models.ItemDecision, cur map[string]float64) []models.ItemDecision {
+	if _, ok := cur[decision.AttentionNeedsHuman]; ok {
+		return decs
+	}
+	out := make([]models.ItemDecision, 0, len(decs))
+	for _, d := range decs {
+		if d.QuestionKey != decision.AttentionNeedsHuman {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // currentAnswer is the item's latest answer for a question key, if it answers
 // the question as asked now.
 func currentAnswer(decs []models.ItemDecision, qh map[string]string, key string) (models.ItemDecision, bool) {
@@ -253,10 +285,14 @@ func (sc *importanceScorer) Score(ctx context.Context, v needs.Viewer, scope nee
 	if err != nil {
 		return true, err
 	}
+	hc, err := m.humanCurrent(rows)
+	if err != nil {
+		return true, err
+	}
 	now := nowOr(v)
 	vis := newScopeSet(scope)
 	for _, r := range rows {
-		r.Importance = importanceIn(sc.loc, r, items[r.ItemID], g.fanout(r.ItemID, vis), decs[r.ItemID], qh, now)
+		r.Importance = importanceIn(sc.loc, r, items[r.ItemID], g.fanout(r.ItemID, vis), withCurrentHuman(decs[r.ItemID], hc[r.ItemID]), qh, now)
 	}
 	return false, nil
 }
