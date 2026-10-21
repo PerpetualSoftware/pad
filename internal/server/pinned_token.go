@@ -55,8 +55,9 @@ func (s *Server) withTokenPin(ctx context.Context, t *models.APIToken) (context.
 
 // pinnedTokenExtraRoutes are the non-workspace routes a pinned token may use
 // beyond what a legacy workspace token may (BUG-3982): the account doors that
-// show who the token is and let its owner list and revoke tokens (revoking is
-// the incident path), the pre-auth flows a stale bearer must not break, and
+// show who the token is and let it list and revoke the tokens pinned to its
+// own workspace (revoking is the incident path; the handlers narrow both to
+// that set), the pre-auth flows a stale bearer must not break, and
 // the caller's own to-do feed, which already filters to the pinned workspace.
 func pinnedTokenExtraRoute(method, path string) bool {
 	switch path {

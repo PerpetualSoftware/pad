@@ -182,6 +182,9 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 // --- User-scoped token endpoints ---
 
 // handleListUserTokens returns all API tokens owned by the authenticated user.
+// A workspace-pinned token sees only the tokens pinned to its own workspace,
+// itself included (BUG-3982): the names and pins of the user's other tokens are
+// facts about other workspaces.
 func (s *Server) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
 	userID := currentUserID(r)
 	if userID == "" {
@@ -193,6 +196,15 @@ func (s *Server) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	if pin := tokenPinFrom(r.Context()); pin != nil {
+		visible := make([]models.APIToken, 0, len(tokens))
+		for _, t := range tokens {
+			if t.WorkspaceID == pin.ID {
+				visible = append(visible, t)
+			}
+		}
+		tokens = visible
 	}
 	if tokens == nil {
 		tokens = []models.APIToken{}
@@ -272,6 +284,8 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteUserToken revokes an API token, verifying it belongs to the user.
+// A workspace-pinned token may revoke only the tokens it can list (BUG-3982):
+// any other id is the same 404 as a missing one.
 func (s *Server) handleDeleteUserToken(w http.ResponseWriter, r *http.Request) {
 	userID := currentUserID(r)
 	if userID == "" {
@@ -280,7 +294,13 @@ func (s *Server) handleDeleteUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenID := chi.URLParam(r, "tokenID")
-	if err := s.store.DeleteUserAPIToken(tokenID, userID); err != nil {
+	var err error
+	if pin := tokenPinFrom(r.Context()); pin != nil {
+		err = s.store.DeleteUserAPITokenInWorkspace(tokenID, userID, pin.ID)
+	} else {
+		err = s.store.DeleteUserAPIToken(tokenID, userID)
+	}
+	if err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Token not found")
 			return

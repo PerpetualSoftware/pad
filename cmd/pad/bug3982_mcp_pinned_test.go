@@ -80,3 +80,30 @@ func TestBUG3982_MCPToolsConfinedToPin(t *testing.T) {
 		t.Fatalf("pinned PAT, pad_workspace list: isError=%v %.400s, want %s only", isErr, text, f.ws.Slug)
 	}
 }
+
+// A tool that maps to a global route (pad_workspace create is POST
+// /api/v1/workspaces) meets the route gate too: the dispatcher's synthesized
+// request goes through the full router with the pin on its context.
+func TestBUG3982_MCPGlobalRouteToolRefusedForPin(t *testing.T) {
+	f := newCapFixture(t, cfgHTTP, false, nil, "true")
+	tok, err := f.store.CreateAPIToken(f.member.ID, models.APITokenCreate{Name: "pinned", WorkspaceID: f.ws.ID}, 30, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	isErr, text := f.mcpToolText(t, tok.Token, "pad_workspace", `{"action":"create","name":"Pinned Made This","slug":"pinned-made-this"}`)
+	if !isErr || !strings.Contains(text, "limited to workspace") {
+		t.Fatalf("pinned PAT, pad_workspace create: isError=%v %.400s, want a refusal naming the pin", isErr, text)
+	}
+	if ws, err := f.store.GetWorkspaceBySlug("pinned-made-this"); err != nil || ws != nil {
+		t.Fatalf("pinned PAT's refused create left a workspace: %v, %v", ws, err)
+	}
+
+	// Control: the unpinned PAT creates through the same tool.
+	if isErr, text := f.mcpToolText(t, f.memberPAT, "pad_workspace", `{"action":"create","name":"Unpinned Made This","slug":"unpinned-made-this"}`); isErr {
+		t.Fatalf("control: unpinned PAT, pad_workspace create: %.400s", text)
+	}
+	if ws, err := f.store.GetWorkspaceBySlug("unpinned-made-this"); err != nil || ws == nil {
+		t.Fatalf("control: unpinned PAT's create left no workspace: %v, %v", ws, err)
+	}
+}

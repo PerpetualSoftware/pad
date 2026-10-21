@@ -298,6 +298,69 @@ func TestBUG3982_AccountDoorsStayOpen(t *testing.T) {
 	f.must(f.do("DELETE", "/api/v1/auth/tokens/"+pinnedID, f.pinned, nil), http.StatusNoContent, "DELETE own token")
 }
 
+// The token doors a pinned token keeps are narrowed to the tokens pinned to its
+// own workspace: it lists only those, and revoking any other id is the 404 a
+// missing id gets, so the doors say nothing about the user's other tokens.
+func TestBUG3982_TokenDoorsNarrowToThePin(t *testing.T) {
+	f := newPinFixture(t, store.DriverSQLite)
+	mint := func(u *models.User, name, wsID string) string {
+		t.Helper()
+		tok, err := f.srv.store.CreateAPIToken(u.ID, models.APITokenCreate{Name: name, WorkspaceID: wsID}, 0, 0)
+		if err != nil {
+			t.Fatalf("mint %s: %v", name, err)
+		}
+		return tok.ID
+	}
+	siblingID := mint(f.owner, "pinned-A-2", f.wsID)
+	pinnedBID := mint(f.owner, "pinned-B", f.bID)
+	unpinnedID := mint(f.owner, "unpinned", "")
+	// Another member's token pinned to the same workspace: same pin, not the
+	// caller's, so it is neither listed nor revocable.
+	other := mkUser(t, f.srv, "other@example.com")
+	if err := f.srv.store.AddWorkspaceMember(f.wsID, other.ID, "editor"); err != nil {
+		t.Fatalf("add other to A: %v", err)
+	}
+	otherID := mint(other, "other-pinned-A", f.wsID)
+
+	names := func(tok string) map[string]bool {
+		t.Helper()
+		rr := f.do("GET", "/api/v1/auth/tokens", tok, nil)
+		f.must(rr, http.StatusOK, "GET /auth/tokens")
+		var toks []models.APIToken
+		parseJSON(t, rr, &toks)
+		out := map[string]bool{}
+		for _, tk := range toks {
+			out[tk.Name] = true
+		}
+		return out
+	}
+	if got := names(f.pinned); len(got) != 2 || !got["pinned-A"] || !got["pinned-A-2"] {
+		t.Fatalf("pinned token lists %v, want exactly pinned-A and pinned-A-2", got)
+	}
+	// Control: the unpinned PAT still lists every token of its user.
+	if got := names(f.ownerTok); !got["pinned-B"] || !got["unpinned"] || !got["pinned-A"] {
+		t.Fatalf("unpinned PAT lists %v, want all of the owner's tokens", got)
+	}
+
+	missing := f.do("DELETE", "/api/v1/auth/tokens/no-such-token", f.pinned, nil)
+	f.must(missing, http.StatusNotFound, "DELETE a missing id")
+	for name, id := range map[string]string{"pinned-B": pinnedBID, "unpinned": unpinnedID, "other-pinned-A": otherID} {
+		rr := f.do("DELETE", "/api/v1/auth/tokens/"+id, f.pinned, nil)
+		if rr.Code != http.StatusNotFound || rr.Body.String() != missing.Body.String() {
+			t.Fatalf("pinned DELETE %s: %d %s, want the missing-id 404 %s", name, rr.Code, rr.Body.String(), missing.Body.String())
+		}
+	}
+	if got := names(f.ownerTok); !got["pinned-B"] || !got["unpinned"] {
+		t.Fatalf("a refused revoke deleted a token anyway: owner now lists %v", got)
+	}
+	if tk, err := f.srv.store.ListUserAPITokens(other.ID); err != nil || len(tk) != 1 {
+		t.Fatalf("other member's pinned token after the refused revoke: %v, %v", tk, err)
+	}
+	f.must(f.do("DELETE", "/api/v1/auth/tokens/"+siblingID, f.pinned, nil), http.StatusNoContent, "DELETE a sibling pinned to A")
+	// Control: the unpinned PAT still revokes a token pinned elsewhere.
+	f.must(f.do("DELETE", "/api/v1/auth/tokens/"+pinnedBID, f.ownerTok, nil), http.StatusNoContent, "unpinned DELETE pinned-B")
+}
+
 func TestBUG3982_DeletedPinFailsClosed(t *testing.T) {
 	f := newPinFixture(t, store.DriverSQLite)
 	if err := f.srv.store.DeleteWorkspace(f.wsSlug); err != nil {
