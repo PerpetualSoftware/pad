@@ -56,7 +56,7 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	"checkLimitOn":             "reads plan, settings and counts",
 	"featureCountOn":           "reads a count",
 	"resolveLimitQ":            "reads workspace owner, user plan and platform settings",
-	"GetUserQ":                 "reads the user row",
+	"GetUserQ":                 "reads the user row and decrypts its TOTP secret in memory",
 	"GetPlatformSettingQ":      "reads platform_settings",
 	"decryptUserTOTP":          "decrypts a field in memory; no SQL",
 	"decrypt":                  "decrypts in memory; no SQL",
@@ -94,6 +94,15 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 	// TASK-3937: the push queue, written at the tail of the fenced comment create.
 	"enqueueCommentNotificationsTx": "reads the comment's item (assignee, creator) and its parent comment's author, then enqueueNotificationsTx for the comment it is given",
 	"enqueueNotificationsTx":        "INSERT INTO user_notifications ... ON CONFLICT (user_id, dedupe_key) DO NOTHING, only for a user with a row in push_devices; on the tx it is handed",
+	// TASK-3946: @mention notifications, at the fenced comment create and edit.
+	"enqueueNotificationsCountTx":          "the body of enqueueNotificationsTx, also reporting which facts wrote a row (RowsAffected); writes only that INSERT, on the tx it is handed",
+	"enqueueMentionNotificationsTx":        "mentionRecipientsTx, then enqueueNotificationsCountTx for the comment it is given; for each written mention, DELETE FROM user_notifications WHERE comment_id = that comment AND user_id = that user AND kind IN ('comment','reply') AND push_state = 'pending'; on the tx it is handed",
+	"mentionRecipientsTx":                  "reads the item's collection_id, then GetUserQ and ResolveBacklinksVisibilityQ per mentioned user, on the tx it is handed",
+	"ResolveBacklinksVisibilityQ":          "reads; GetUserQ, GetWorkspaceMemberQ, the GuestVisibleResources*Q grant reads and GetMemberCollectionAccessQ on the Queryer it is handed (here, the fence's tx)",
+	"GetWorkspaceMemberQ":                  "reads the workspace_members row",
+	"GetMemberCollectionAccessQ":           "reads member_collection_access",
+	"GuestVisibleResourcesQ":               "reads collection_grants and item_grants (live rows)",
+	"GuestVisibleResourcesIncludeDeletedQ": "reads collection_grants and item_grants (soft-deleted items included); reachable statically, mentionRecipientsTx passes includeDeletedItems=false",
 	// BUG-3653 part B: the storage cap on an app upload. BeginFenced takes the
 	// lock first when the spec sets StorageLimit; CheckStorageLimit reads.
 	"lockStorageLimitTx":     "reads workspaces.owner_id, then acquirePlanLimitLock; writes nothing",

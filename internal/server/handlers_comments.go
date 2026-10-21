@@ -289,7 +289,12 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := s.store.UpdateComment(commentID, body)
+	// The editor, not the author, is who a mention the edit adds is from
+	// (TASK-3946): an admin may edit another user's comment.
+	editActor, _ := actorFromRequest(r)
+	updated, err := s.store.UpdateCommentAs(commentID, body, store.CommentEditor{
+		UserID: currentUserID(r), IsAgent: editActor == "agent",
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrCommentDeleted) {
 			writeCommentDeleted(w, commentID)

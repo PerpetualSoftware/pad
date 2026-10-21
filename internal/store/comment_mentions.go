@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/links"
@@ -48,7 +49,12 @@ import (
 // Every writer of comments.body or deleted_at calls this (the site guard in
 // task3917_comment_mentions_test.go classifies each one); hard deletes and
 // reaps rely on the comment_id ON DELETE CASCADE.
-func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, itemID, body string, live bool, ts string) error {
+//
+// It returns the users it NEWLY indexed, sorted. A create or edit enqueues a
+// 'mention' notification for them (TASK-3946); the tombstone and backfill
+// callers discard the list, so the enqueue lives at the call sites and never
+// here.
+func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, itemID, body string, live bool, ts string) ([]string, error) {
 	var names []string
 	if live {
 		names = links.ExtractMentions(body)
@@ -78,20 +84,20 @@ func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, ite
 		}
 		rows, err := tx.Query(s.q(resolveQ), args...)
 		if err != nil {
-			return fmt.Errorf("resolve comment mentions: %w", err)
+			return nil, fmt.Errorf("resolve comment mentions: %w", err)
 		}
 		byName := map[string][]string{}
 		for rows.Next() {
 			var id, name string
 			if err := rows.Scan(&id, &name); err != nil {
 				rows.Close()
-				return fmt.Errorf("scan comment mention user: %w", err)
+				return nil, fmt.Errorf("scan comment mention user: %w", err)
 			}
 			byName[name] = append(byName[name], id)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
-			return fmt.Errorf("resolve comment mentions: %w", err)
+			return nil, fmt.Errorf("resolve comment mentions: %w", err)
 		}
 		rows.Close()
 		for _, n := range chunk {
@@ -110,19 +116,19 @@ func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, ite
 	have := map[string]bool{}
 	rows, err := tx.Query(s.q(`SELECT user_id FROM comment_mentions WHERE comment_id = ?`), commentID)
 	if err != nil {
-		return fmt.Errorf("read comment mentions: %w", err)
+		return nil, fmt.Errorf("read comment mentions: %w", err)
 	}
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return fmt.Errorf("scan comment mention: %w", err)
+			return nil, fmt.Errorf("scan comment mention: %w", err)
 		}
 		have[id] = true
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return fmt.Errorf("read comment mentions: %w", err)
+		return nil, fmt.Errorf("read comment mentions: %w", err)
 	}
 	rows.Close()
 
@@ -131,20 +137,30 @@ func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, ite
 			continue
 		}
 		if _, err := tx.Exec(s.q(`DELETE FROM comment_mentions WHERE comment_id = ? AND user_id = ?`), commentID, id); err != nil {
-			return fmt.Errorf("delete comment mention: %w", err)
+			return nil, fmt.Errorf("delete comment mention: %w", err)
 		}
 	}
+	var added []string
 	for id := range want {
 		if have[id] {
 			continue
 		}
-		if _, err := tx.Exec(s.q(`
+		res, err := tx.Exec(s.q(`
 			INSERT INTO comment_mentions (comment_id, user_id, item_id, workspace_id, created_at)
 			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT (comment_id, user_id) DO NOTHING`),
-			commentID, id, itemID, workspaceID, ts); err != nil {
-			return fmt.Errorf("insert comment mention: %w", err)
+			commentID, id, itemID, workspaceID, ts)
+		if err != nil {
+			return nil, fmt.Errorf("insert comment mention: %w", err)
+		}
+		// Only a row this call wrote is new: a conflict means it was
+		// already indexed, and its mention was owed then.
+		if n, err := res.RowsAffected(); err != nil {
+			return nil, fmt.Errorf("insert comment mention: %w", err)
+		} else if n == 1 {
+			added = append(added, id)
 		}
 	}
-	return nil
+	sort.Strings(added)
+	return added, nil
 }
