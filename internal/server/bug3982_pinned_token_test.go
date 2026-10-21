@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -632,5 +633,34 @@ func TestBUG3982_InvitationPreviewTreatsAForeignPinAsSignedOut(t *testing.T) {
 	}
 	if !bug3870PreviewCanGrant(t, f.accessFixture, inv.Code, f.token(member)) {
 		t.Error("control: preview with an unpinned PAT: inviter_can_grant false, want the member's answer")
+	}
+}
+
+// SSE compares the pin by resolved ID behind the by-name check, so the stream
+// does not rest on slugs being unique either. Simulated as in
+// TestBUG3982_WorkspaceAccessComparesThePinByID: a pin whose slug names B while
+// its ID is A's passes the by-name check, and only the ID compare refuses it.
+func TestBUG3982_SSEComparesThePinByID(t *testing.T) {
+	f := newPinFixture(t, store.DriverSQLite)
+	f.srv.SetEventBus(events.New())
+	sse := func(pin *tokenPin, timeout time.Duration) *httptest.ResponseRecorder {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		req := httptest.NewRequest("GET", "/api/v1/events?workspace="+f.bSlug, nil).WithContext(ctx)
+		req = req.WithContext(context.WithValue(WithCurrentUser(req.Context(), f.owner), ctxTokenPin, pin))
+		rr := httptest.NewRecorder()
+		f.srv.handleSSE(rr, req)
+		return rr
+	}
+	rr := sse(&tokenPin{ID: f.wsID, Slug: f.bSlug}, 5*time.Second)
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "token_workspace_pinned") {
+		t.Fatalf("a pin for A's ID, naming B's slug, streaming B: %d %s, want 403 token_workspace_pinned", rr.Code, rr.Body.String())
+	}
+	// Control: the pin's own ID passes every gate. The recorder cannot
+	// stream, so the handler stops at its streaming check, the step right
+	// after the pin compare.
+	if rr := sse(&tokenPin{ID: f.bID, Slug: f.bSlug}, 5*time.Second); !strings.Contains(rr.Body.String(), "Streaming not supported") {
+		t.Fatalf("control: a pin for B streaming B did not pass the gates: %d %s", rr.Code, rr.Body.String())
 	}
 }
