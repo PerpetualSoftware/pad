@@ -475,14 +475,86 @@ func TestFailDecisionJob_RecordsAnyMessage(t *testing.T) {
 	}
 }
 
+// lastRuneStartAtOrBelow returns the largest rune start <= limit in a string
+// built as pad ASCII bytes followed by n runes of width w. Computed from the
+// construction, not from the function under test.
+func lastRuneStartAtOrBelow(pad, w, n, limit int) int {
+	best := 0
+	for k := 0; k <= n; k++ {
+		if p := pad + k*w; p <= limit {
+			best = p
+		}
+	}
+	return best
+}
+
 func TestTruncateDecisionError_Boundary(t *testing.T) {
 	for _, r := range []string{"é", "€", "😀"} {
-		for pad := 1018; pad <= 1024; pad++ {
+		w := len(r)
+		for pad := 1010; pad <= 1024; pad++ {
 			in := strings.Repeat("a", pad) + r + r
-			got := truncateDecisionError(in)
-			if !utf8.ValidString(got) || len(got) > maxDecisionErrorBytes || !strings.HasPrefix(in, got) {
-				t.Fatalf("pad=%d rune=%q: len=%d valid=%v", pad, r, len(got), utf8.ValidString(got))
+			want := in
+			if len(in) > maxDecisionErrorBytes {
+				want = in[:lastRuneStartAtOrBelow(pad, w, 2, maxDecisionErrorBytes)]
+			}
+			if got := truncateDecisionError(in); got != want {
+				t.Fatalf("pad=%d rune=%q: len(got)=%d len(want)=%d", pad, r, len(got), len(want))
 			}
 		}
+	}
+	exact := strings.Repeat("a", maxDecisionErrorBytes)
+	if got := truncateDecisionError(exact); got != exact {
+		t.Fatalf("exact-limit ASCII changed: len=%d", len(got))
+	}
+}
+
+// Sanitising can grow a message (NUL or an invalid byte becomes a 3-byte
+// U+FFFD), so it must run BEFORE the cut or the stored value can exceed the
+// limit (BUG-4018).
+func TestFailDecisionJob_SanitiseBeforeCut(t *testing.T) {
+	interleaved := strings.Repeat("a\xff", 400)
+	cases := []struct {
+		name, msg, want string
+		pre             func(t *testing.T)
+	}{
+		{
+			name: "under limit raw, over after sanitise",
+			msg:  interleaved,
+			want: strings.Repeat("a\uFFFD", 256), // 256*4 = 1024
+			pre: func(t *testing.T) {
+				if len(interleaved) >= maxDecisionErrorBytes || len(strings.ToValidUTF8(interleaved, "\uFFFD")) <= maxDecisionErrorBytes {
+					t.Fatal("precondition: raw < 1024 and sanitised > 1024")
+				}
+			},
+		},
+		{"nul straddling the boundary", strings.Repeat("a", 1023) + "\x00tail", strings.Repeat("a", 1023), nil},
+		{"nul just below the boundary", strings.Repeat("a", 1022) + "\x00tail", strings.Repeat("a", 1022), nil},
+		{"4-byte rune straddling", strings.Repeat("a", 1022) + "😀tail", strings.Repeat("a", 1022), nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.pre != nil {
+				c.pre(t)
+			}
+			s, ws, col := decisionFixture(t)
+			s.SetDecisionSetResolver(func(string) []string { return nil })
+			item := createTestItem(t, s, ws.ID, col.ID, "Fail", "")
+			j := failOneAttentionJob(t, s, ws.ID, item.ID, c.msg)
+			if !utf8.ValidString(j.LastError) || strings.ContainsRune(j.LastError, 0) || len(j.LastError) > maxDecisionErrorBytes {
+				t.Fatalf("last_error not clean: len=%d valid=%v", len(j.LastError), utf8.ValidString(j.LastError))
+			}
+			if j.LastError != c.want {
+				t.Fatalf("last_error len=%d, want len=%d", len(j.LastError), len(c.want))
+			}
+			if j.Attempts != 1 {
+				t.Fatalf("attempts = %d, want 1", j.Attempts)
+			}
+			if failing, err := s.DecisionJobsFailing(ws.ID, "attention"); err != nil || !failing {
+				t.Fatalf("DecisionJobsFailing = %v, %v; want true", failing, err)
+			}
+			if got, err := s.OwedDecisionJobs(ws.ID, []string{item.ID}, "attention"); err != nil || got[item.ID] {
+				t.Fatalf("a failed job still reads as owed: %v %v", got, err)
+			}
+		})
 	}
 }
