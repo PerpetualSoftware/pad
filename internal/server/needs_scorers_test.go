@@ -616,49 +616,50 @@ func TestNeedsYouSort_CursorStableAcrossPages(t *testing.T) {
 // Through a real server.New and the router (team CONVE-19): the scorers New
 // registers fill both scores, and sort=importance and simplicity order by them.
 func TestNeedsYouSignals_BindingThroughServeHTTP(t *testing.T) {
-	srv := testServer(t)
-	f := newNfx(t, srv)
-	owner, alice := f.user("owner"), f.user("alice")
-	ws := f.workspace("One", owner)
-	f.member(ws, alice, "editor")
-	asks := f.collection(ws, "Asks", true)
-	// The two orders differ: importance runs deep, medium, shallow; simplicity
-	// runs medium, shallow (both 100, importance breaks the tie), deep (33).
-	deep := f.item(ws, asks, "Deep and urgent", alice, nfxDay(1))
-	f.item(ws, asks, "Is this OK?", alice, nfxDay(2))
-	shallow := f.item(ws, asks, "Is that fine?", alice, nfxDay(3))
-	for _, u := range []struct{ id, fields string }{
-		{deep.ID, `{"status":"open","priority":"critical"}`},
-		{shallow.ID, `{"status":"open","priority":"low"}`},
-	} {
-		if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET fields = '%s' WHERE id = '%s'`, u.fields, u.id)); err != nil {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		// The two orders differ: importance runs deep, medium, shallow; simplicity
+		// runs medium, shallow (both 100, importance breaks the tie), deep (33).
+		deep := f.item(ws, asks, "Deep and urgent", alice, nfxDay(1))
+		f.item(ws, asks, "Is this OK?", alice, nfxDay(2))
+		shallow := f.item(ws, asks, "Is that fine?", alice, nfxDay(3))
+		for _, u := range []struct{ id, fields string }{
+			{deep.ID, `{"status":"open","priority":"critical"}`},
+			{shallow.ID, `{"status":"open","priority":"low"}`},
+		} {
+			if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET fields = '%s' WHERE id = '%s'`, u.fields, u.id)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET content = '%s' WHERE id = '%s'`, strings.Repeat("x", 3000), deep.ID)); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET content = '%s' WHERE id = '%s'`, strings.Repeat("x", 3000), deep.ID)); err != nil {
-		t.Fatal(err)
-	}
-	tok, err := srv.store.CreateAPIToken(alice.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for sortBy, want := range map[string]string{
-		"importance": "Deep and urgent,Is this OK?,Is that fine?",
-		"simplicity": "Is this OK?,Is that fine?,Deep and urgent",
-	} {
-		rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs?sort="+sortBy, tok.Token, nil)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("%s: %d %s", sortBy, rr.Code, rr.Body.String())
+		tok, err := srv.store.CreateAPIToken(alice.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
+		if err != nil {
+			t.Fatal(err)
 		}
-		var resp needsResponse
-		parseJSON(t, rr, &resp)
-		if len(resp.Rows) != 3 || resp.Rows[0].Importance == nil || resp.Rows[0].Simplicity == nil || len(resp.Degraded) != 0 {
-			t.Fatalf("%s: rows %+v degraded %v (the scorers New registers must fill both scores)", sortBy, resp.Rows, resp.Degraded)
+		for sortBy, want := range map[string]string{
+			"importance": "Deep and urgent,Is this OK?,Is that fine?",
+			"simplicity": "Is this OK?,Is that fine?,Deep and urgent",
+		} {
+			rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs?sort="+sortBy, tok.Token, nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("%s: %d %s", sortBy, rr.Code, rr.Body.String())
+			}
+			var resp needsResponse
+			parseJSON(t, rr, &resp)
+			if len(resp.Rows) != 3 || resp.Rows[0].Importance == nil || resp.Rows[0].Simplicity == nil || len(resp.Degraded) != 0 {
+				t.Fatalf("%s: rows %+v degraded %v (the scorers New registers must fill both scores)", sortBy, resp.Rows, resp.Degraded)
+			}
+			if got := strings.Join(titles(resp.Rows), ","); got != want {
+				t.Fatalf("%s: order %s, want %s", sortBy, got, want)
+			}
 		}
-		if got := strings.Join(titles(resp.Rows), ","); got != want {
-			t.Fatalf("%s: order %s, want %s", sortBy, got, want)
-		}
-	}
+	})
 }
 
 // Through the router: a request with a cursor scores at the cursor's as_of,
