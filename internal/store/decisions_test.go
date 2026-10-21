@@ -506,9 +506,10 @@ func TestTruncateDecisionError_Boundary(t *testing.T) {
 	if got := truncateDecisionError(exact); got != exact {
 		t.Fatalf("exact-limit ASCII changed: len=%d", len(got))
 	}
-	// Plain ASCII just over the limit: every case above carries a rune of
-	// width >= 2, so without these a limit check off by one byte would pass
-	// (BUG-4018 r2).
+	// Plain ASCII just over the limit pins the limit check directly: a check
+	// off by one byte (len(s) <= max+1) returns all 1025 bytes here. The
+	// rune cases above catch it too, at pad 1021 with a 2-byte rune (1025
+	// bytes), but only as a side effect of their own cut (BUG-4018 r2).
 	for _, n := range []int{maxDecisionErrorBytes + 1, 2000} {
 		over := strings.Repeat("a", n)
 		if got := truncateDecisionError(over); got != over[:maxDecisionErrorBytes] {
