@@ -777,9 +777,10 @@ func TestClaimNotifications_SameTokenSameSecondIsDisjoint(t *testing.T) {
 	}
 }
 
-// Kills (TASK-3939 r4-L3): an unclamped limit. A negative LIMIT is unbounded
-// on SQLite (every pending row is claimed) and an error on Postgres; a limit
-// above the gateway batch claims more rows than one Send can carry.
+// Kills (TASK-3939 r4-L3, r5-M1): an unguarded limit. A negative LIMIT is
+// unbounded on SQLite (every pending row is claimed) and an error on Postgres;
+// a limit <= 0 promoted to 1 leases a row nobody asked for; a limit above the
+// gateway batch claims more rows than one Send can carry.
 func TestClaimNotifications_LimitIsClamped(t *testing.T) {
 	t.Parallel()
 	f := newNotifyFixture(t)
@@ -787,21 +788,26 @@ func TestClaimNotifications_LimitIsClamped(t *testing.T) {
 	for i := 0; i < maxNotificationClaim+2; i++ {
 		f.seedNotif(t, u.ID, ago(30*time.Second))
 	}
-	got, err := claimRows(f.s, "tok", -1, at(10*time.Second), at(time.Minute))
-	if err != nil {
-		t.Fatal(err)
+	claimed := func() (n int) {
+		t.Helper()
+		if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM user_notifications WHERE claimed_at IS NOT NULL OR claim_token <> ''`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
 	}
-	if len(got) != 1 {
-		t.Fatalf("limit -1 claimed %d rows, want 1", len(got))
+	for _, limit := range []int{0, -1} {
+		c, err := f.s.ClaimPendingNotifications("tok", limit, at(10*time.Second), at(time.Minute))
+		if err != nil {
+			t.Fatalf("limit %d: %v", limit, err)
+		}
+		if len(c.Rows) != 0 {
+			t.Fatalf("limit %d claimed %d rows, want 0", limit, len(c.Rows))
+		}
+		if n := claimed(); n != 0 {
+			t.Fatalf("limit %d wrote %d rows, want none touched", limit, n)
+		}
 	}
-	got, err = claimRows(f.s, "tok", 0, at(10*time.Second), at(time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("limit 0 claimed %d rows, want 1", len(got))
-	}
-	got, err = claimRows(f.s, "tok", 10*maxNotificationClaim, at(10*time.Second), at(time.Minute))
+	got, err := claimRows(f.s, "tok", 10*maxNotificationClaim, at(10*time.Second), at(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
