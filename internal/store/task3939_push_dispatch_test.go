@@ -1,0 +1,592 @@
+package store
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+)
+
+// These tests run on SQLite, and on Postgres too under `make test-pg`
+// (testStore switches on PAD_TEST_POSTGRES_URL).
+
+func ago(d time.Duration) string   { return time.Now().UTC().Add(-d).Format(time.RFC3339) }
+func at(d time.Duration) time.Time { return time.Now().UTC().Add(-d) }
+
+// seedNotif inserts a pending queue row for userID created at createdAt.
+func (f notifyFixture) seedNotif(t *testing.T, userID, createdAt string) string {
+	t.Helper()
+	id := newID()
+	f.s.mustExec(t, `INSERT INTO user_notifications (id, user_id, workspace_id, item_id, kind, dedupe_key, created_at)
+		VALUES (?, ?, ?, ?, 'comment', ?, ?)`, id, userID, f.ws.ID, f.item.ID, "k-"+id, createdAt)
+	return id
+}
+
+func (f notifyFixture) notifRow(t *testing.T, id string) (state, reason, token string, attempts int) {
+	t.Helper()
+	if err := f.s.db.QueryRow(f.s.q(`SELECT push_state, skip_reason, claim_token, attempts FROM user_notifications WHERE id = ?`), id).
+		Scan(&state, &reason, &token, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func ids(ns []Notification) map[string]bool {
+	m := map[string]bool{}
+	for _, n := range ns {
+		m[n.ID] = true
+	}
+	return m
+}
+
+// deviceAt registers a device for userID with its own session. ttl is the
+// session's remaining life (negative: already expired).
+func deviceAt(t *testing.T, s *Store, userID, token, createdAt string, ttl time.Duration) (deviceID, sessionID string) {
+	t.Helper()
+	plain, err := s.CreateSession(userID, "ios", "", "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha256.Sum256([]byte(plain))
+	if err := s.db.QueryRow(s.q(`SELECT id FROM sessions WHERE token_hash = ?`), hex.EncodeToString(h[:])).Scan(&sessionID); err != nil {
+		t.Fatal(err)
+	}
+	s.mustExec(t, `UPDATE sessions SET expires_at = ? WHERE id = ?`, time.Now().UTC().Add(ttl).Format(time.RFC3339), sessionID)
+	deviceID = newID()
+	s.mustExec(t, `INSERT INTO push_devices (id, user_id, session_id, connection_id, platform, token, app_version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'android', ?, '1', ?, ?)`, deviceID, userID, sessionID, "conn-"+deviceID, token, createdAt, createdAt)
+	return
+}
+
+func deviceIDs(ds []PushDevice) []string {
+	out := make([]string, len(ds))
+	for i, d := range ds {
+		out[i] = d.ID
+	}
+	return out
+}
+
+func wantIDs(t *testing.T, what string, got []PushDevice, want ...string) {
+	t.Helper()
+	g := deviceIDs(got)
+	if fmt.Sprint(g) != fmt.Sprint(want) && !(len(g) == 0 && len(want) == 0) {
+		t.Fatalf("%s: devices = %v, want %v", what, g, want)
+	}
+}
+
+// Kills: dropping the settle predicate (the fresh row is claimed); dropping the
+// state predicate (the sent row is claimed); ignoring limit.
+func TestClaimNotifications_SettleStateAndLimit(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	fresh := f.seedNotif(t, u.ID, ago(5*time.Second))
+	old1 := f.seedNotif(t, u.ID, ago(30*time.Second))
+	old2 := f.seedNotif(t, u.ID, ago(40*time.Second))
+	sent := f.seedNotif(t, u.ID, ago(50*time.Second))
+	f.s.mustExec(t, `UPDATE user_notifications SET push_state = 'sent' WHERE id = ?`, sent)
+
+	got, err := f.s.ClaimPendingNotifications("tok", 1, at(10*time.Second), at(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != old2 {
+		t.Fatalf("limit 1 claimed %v, want oldest pending %s", ids(got), old2)
+	}
+	got, err = f.s.ClaimPendingNotifications("tok", 10, at(10*time.Second), at(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "tok" holds old2 already (fresh claim, not reclaimable by anyone, itself
+	// included, until the lease lapses); it now also takes old1.
+	m := ids(got)
+	if !m[old1] || m[fresh] || m[sent] {
+		t.Fatalf("claimed %v, want old1 and neither the fresh nor the sent row", m)
+	}
+	if got[0].UserID != u.ID || got[0].WorkspaceID != f.ws.ID || got[0].ItemID != f.item.ID || got[0].Kind != "comment" || got[0].PushState != "pending" {
+		t.Fatalf("row not read back whole: %+v", got[0])
+	}
+}
+
+// Kills: dropping the lease predicate from the candidate select or from the
+// claim UPDATE (a live claim is taken over); `<` flipped (a lapsed claim is
+// never reclaimed).
+func TestClaimNotifications_DisjointClaimers_Lease(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	var all []string
+	for i := 0; i < 6; i++ {
+		all = append(all, f.seedNotif(t, u.ID, ago(time.Duration(60+i)*time.Second)))
+	}
+	settle, lease := at(10*time.Second), at(time.Minute)
+	x, err := f.s.ClaimPendingNotifications("X", 4, settle, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	y, err := f.s.ClaimPendingNotifications("Y", 10, settle, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(x) != 4 || len(y) != 2 {
+		t.Fatalf("X got %d, Y got %d, want 4 and 2", len(x), len(y))
+	}
+	for id := range ids(x) {
+		if ids(y)[id] {
+			t.Fatalf("%s claimed by both", id)
+		}
+	}
+	// Fresh claims are not reclaimable.
+	if z, _ := f.s.ClaimPendingNotifications("Z", 10, settle, lease); len(z) != 0 {
+		t.Fatalf("Z took %d rows under a live lease", len(z))
+	}
+	// A lapsed lease is: with the cutoff an hour ahead, X's rows are stale.
+	z, err := f.s.ClaimPendingNotifications("Z", 10, settle, at(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(z) != 6 {
+		t.Fatalf("Z reclaimed %d of 6 lapsed rows", len(z))
+	}
+	_ = all
+}
+
+// The claim UPDATE is the arbiter: a candidate list gone stale (another
+// claimer took the row in between) must not steal it. Kills: dropping the
+// lease predicate from the UPDATE alone.
+func TestClaimNotifications_StaleCandidateDoesNotSteal(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	id := f.seedNotif(t, u.ID, ago(time.Minute))
+	// Another claimer already holds it, freshly.
+	f.s.mustExec(t, `UPDATE user_notifications SET claim_token = 'OTHER', claimed_at = ? WHERE id = ?`, now(), id)
+	if err := f.s.claimNotificationIDs("MINE", []string{id}, ago(10*time.Second), ago(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// A candidate that has since been settled, or is younger than the settle
+	// cutoff, is not claimed either. Kills: dropping the UPDATE's state or
+	// settle predicate.
+	sentID := f.seedNotif(t, u.ID, ago(time.Minute))
+	f.s.mustExec(t, `UPDATE user_notifications SET push_state = 'sent' WHERE id = ?`, sentID)
+	freshID := f.seedNotif(t, u.ID, ago(2*time.Second))
+	if err := f.s.claimNotificationIDs("MINE", []string{sentID, freshID}, ago(10*time.Second), ago(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{sentID, freshID} {
+		if _, _, tok, _ := f.notifRow(t, id); tok != "" {
+			t.Fatalf("stale candidate %s was claimed by %q", id, tok)
+		}
+	}
+	// And through the real path: a claimer sees nothing.
+	if got, _ := f.s.ClaimPendingNotifications("MINE", 10, at(10*time.Second), at(time.Minute)); len(got) != 0 {
+		t.Fatalf("claimed a held row: %v", ids(got))
+	}
+	if _, _, tok, _ := f.notifRow(t, id); tok != "OTHER" {
+		t.Fatalf("claim_token = %q", tok)
+	}
+}
+
+// Kills: dropping `claim_token = ?` from the settle (a stale claimer stamps
+// the new holder's row); dropping `push_state = 'pending'` (sent -> skipped).
+func TestMarkNotifications_StaleClaimerIsNoOp(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	id := f.seedNotif(t, u.ID, ago(time.Minute))
+	settle := at(10 * time.Second)
+	if got, _ := f.s.ClaimPendingNotifications("X", 10, settle, at(time.Minute)); len(got) != 1 {
+		t.Fatal("X claimed nothing")
+	}
+	// X's lease lapses; Z takes the row.
+	if got, _ := f.s.ClaimPendingNotifications("Z", 10, settle, at(-time.Hour)); len(got) != 1 {
+		t.Fatal("Z did not reclaim")
+	}
+	for name, mark := range map[string]func() (int64, error){
+		"sent":     func() (int64, error) { return f.s.MarkNotificationsSent("X", []string{id}) },
+		"skipped":  func() (int64, error) { return f.s.MarkNotificationsSkipped("X", []string{id}, "stale") },
+		"released": func() (int64, error) { return f.s.ReleaseNotifications("X", []string{id}) },
+	} {
+		n, err := mark()
+		if err != nil || n != 0 {
+			t.Fatalf("stale X %s: n=%d err=%v, want a no-op", name, n, err)
+		}
+	}
+	state, _, tok, attempts := f.notifRow(t, id)
+	if state != "pending" || tok != "Z" || attempts != 0 {
+		t.Fatalf("row = %s/%s/%d after stale marks", state, tok, attempts)
+	}
+	if n, err := f.s.MarkNotificationsSent("Z", []string{id}); err != nil || n != 1 {
+		t.Fatalf("Z mark sent: %d %v", n, err)
+	}
+	// Settled rows stay settled.
+	if n, _ := f.s.MarkNotificationsSkipped("Z", []string{id}, "late"); n != 0 {
+		t.Fatal("a sent row was re-skipped")
+	}
+	state, reason, _, _ := f.notifRow(t, id)
+	if state != "sent" || reason != "" {
+		t.Fatalf("row = %s/%q", state, reason)
+	}
+	var sentAt string
+	f.s.db.QueryRow(f.s.q(`SELECT COALESCE(sent_at,'') FROM user_notifications WHERE id = ?`), id).Scan(&sentAt)
+	if sentAt == "" {
+		t.Fatal("sent_at not stamped")
+	}
+}
+
+// Kills: dropping the empty-token guard (an empty token matches every
+// unclaimed row).
+func TestNotifications_EmptyClaimTokenRefused(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	id := f.seedNotif(t, u.ID, ago(time.Minute))
+	if _, err := f.s.ClaimPendingNotifications("", 10, at(10*time.Second), at(time.Minute)); err == nil {
+		t.Error("claim with an empty token succeeded")
+	}
+	if n, err := f.s.MarkNotificationsSent("", []string{id}); err == nil || n != 0 {
+		t.Errorf("sent with an empty token: %d %v", n, err)
+	}
+	if n, err := f.s.MarkNotificationsSkipped("", []string{id}, "x"); err == nil || n != 0 {
+		t.Errorf("skipped with an empty token: %d %v", n, err)
+	}
+	if n, err := f.s.ReleaseNotifications("", []string{id}); err == nil || n != 0 {
+		t.Errorf("release with an empty token: %d %v", n, err)
+	}
+	if state, _, _, _ := f.notifRow(t, id); state != "pending" {
+		t.Fatalf("state = %s", state)
+	}
+}
+
+func TestMarkNotificationsSkipped_RecordsReason(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	a, b := f.seedNotif(t, u.ID, ago(time.Minute)), f.seedNotif(t, u.ID, ago(time.Minute))
+	f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute))
+	if n, err := f.s.MarkNotificationsSkipped("X", []string{a}, "not_member"); err != nil || n != 1 {
+		t.Fatalf("%d %v", n, err)
+	}
+	if state, reason, _, _ := f.notifRow(t, a); state != "skipped" || reason != "not_member" {
+		t.Fatalf("a = %s/%s", state, reason)
+	}
+	if state, _, _, _ := f.notifRow(t, b); state != "pending" {
+		t.Fatalf("b = %s, want untouched", state)
+	}
+}
+
+// Kills: attempts not incremented; the cap changed (5 -> 6 or 4); the skip not
+// in the same statement as the fifth release; the claim not cleared.
+func TestReleaseNotifications_SkipsAtFive(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	id := f.seedNotif(t, u.ID, ago(time.Minute))
+	for attempt := 1; attempt <= MaxNotificationAttempts; attempt++ {
+		got, err := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute))
+		if err != nil || len(got) != 1 {
+			t.Fatalf("attempt %d: claim %v %v", attempt, ids(got), err)
+		}
+		if n, err := f.s.ReleaseNotifications("X", []string{id}); err != nil || n != 1 {
+			t.Fatalf("attempt %d: release %d %v", attempt, n, err)
+		}
+		state, reason, tok, attempts := f.notifRow(t, id)
+		if attempts != attempt || tok != "" {
+			t.Fatalf("attempt %d: attempts=%d token=%q", attempt, attempts, tok)
+		}
+		if attempt < MaxNotificationAttempts && (state != "pending" || reason != "") {
+			t.Fatalf("attempt %d: %s/%q, want pending", attempt, state, reason)
+		}
+		if attempt == MaxNotificationAttempts && (state != "skipped" || reason != "gateway_failed") {
+			t.Fatalf("attempt %d: %s/%q, want skipped/gateway_failed", attempt, state, reason)
+		}
+	}
+	if got, _ := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute)); len(got) != 0 {
+		t.Fatal("a gateway_failed row was claimed again")
+	}
+}
+
+// Kills: dropping the createdCutoff predicate; dropping the lease exclusion (a
+// live claim expired under its claimer); dropping the pending predicate.
+func TestExpireStaleNotifications(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	old := f.seedNotif(t, u.ID, ago(2*time.Hour))
+	recent := f.seedNotif(t, u.ID, ago(30*time.Minute))
+	heldOld := f.seedNotif(t, u.ID, ago(2*time.Hour))
+	lapsedOld := f.seedNotif(t, u.ID, ago(2*time.Hour))
+	sentOld := f.seedNotif(t, u.ID, ago(2*time.Hour))
+	f.s.mustExec(t, `UPDATE user_notifications SET claim_token = 'H', claimed_at = ? WHERE id = ?`, now(), heldOld)
+	f.s.mustExec(t, `UPDATE user_notifications SET claim_token = 'L', claimed_at = ? WHERE id = ?`, ago(10*time.Minute), lapsedOld)
+	f.s.mustExec(t, `UPDATE user_notifications SET push_state = 'sent' WHERE id = ?`, sentOld)
+
+	n, err := f.s.ExpireStaleNotifications(at(time.Hour), at(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("expired %d, want 2 (old and lapsedOld)", n)
+	}
+	for id, want := range map[string]string{old: "expired", lapsedOld: "expired", recent: "pending", heldOld: "pending", sentOld: "sent"} {
+		if state, _, _, _ := f.notifRow(t, id); state != want {
+			t.Errorf("row %s = %s, want %s", id, state, want)
+		}
+	}
+}
+
+// Kills: dropping the `sent` predicate; dropping `user_id`; dropping `>=`.
+func TestCountNotificationsSentSince(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	a, b := notifyUser(t, f.s, "a@example.com"), notifyUser(t, f.s, "b@example.com")
+	mk := func(user, state string, sentAgo time.Duration) {
+		id := f.seedNotif(t, user, ago(3*time.Hour))
+		f.s.mustExec(t, `UPDATE user_notifications SET push_state = ?, sent_at = ? WHERE id = ?`, state, ago(sentAgo), id)
+	}
+	mk(a.ID, "sent", 10*time.Minute)
+	mk(a.ID, "sent", 59*time.Minute)
+	mk(a.ID, "sent", 2*time.Hour)      // outside the window
+	mk(a.ID, "skipped", 5*time.Minute) // not a push
+	mk(b.ID, "sent", 5*time.Minute)    // someone else
+	got, err := f.s.CountNotificationsSentSince(a.ID, at(time.Hour))
+	if err != nil || got != 2 {
+		t.Fatalf("count = %d, %v, want 2", got, err)
+	}
+}
+
+// Kills: dropping the pending guard (an old pending row is deleted); dropping
+// the created_at predicate (a young settled row is deleted).
+func TestPruneNotifications(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	week := 7 * 24 * time.Hour
+	oldState := map[string]string{}
+	for _, st := range []string{"sent", "skipped", "expired", "pending"} {
+		id := f.seedNotif(t, u.ID, ago(week+time.Hour))
+		f.s.mustExec(t, `UPDATE user_notifications SET push_state = ? WHERE id = ?`, st, id)
+		oldState[st] = id
+	}
+	young := f.seedNotif(t, u.ID, ago(week-time.Hour))
+	f.s.mustExec(t, `UPDATE user_notifications SET push_state = 'sent' WHERE id = ?`, young)
+	youngPending := f.seedNotif(t, u.ID, ago(time.Minute))
+
+	n, err := f.s.PruneNotifications(at(week))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("pruned %d, want the 3 settled rows older than 7 days", n)
+	}
+	exists := func(id string) bool {
+		return f.s.countRows(t, `SELECT COUNT(*) FROM user_notifications WHERE id = ?`, id) == 1
+	}
+	for _, st := range []string{"sent", "skipped", "expired"} {
+		if exists(oldState[st]) {
+			t.Errorf("old %s row survived", st)
+		}
+	}
+	if !exists(oldState["pending"]) || !exists(young) || !exists(youngPending) {
+		t.Error("pruned a pending row, or a row younger than the cutoff")
+	}
+}
+
+// Every guard in the device query has a leg that goes red without it.
+func TestLivePushDevices(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	a, b := notifyUser(t, s, "a@example.com"), notifyUser(t, s, "b@example.com")
+	now := time.Now().UTC()
+	if got, err := s.LivePushDevices(a.ID, now); err != nil || len(got) != 0 {
+		t.Fatalf("no devices: %v %v", got, err)
+	}
+	stamp := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
+
+	// Earliest first, ties by id; other users' devices excluded.
+	d3, _ := deviceAt(t, s, a.ID, "t3", stamp(-time.Minute), time.Hour)
+	d1, _ := deviceAt(t, s, a.ID, "t1", stamp(-3*time.Hour), time.Hour)
+	d2, _ := deviceAt(t, s, a.ID, "t2", stamp(-2*time.Hour), time.Hour)
+	deviceAt(t, s, b.ID, "tb", stamp(-5*time.Hour), time.Hour)
+	got, err := s.LivePushDevices(a.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIDs(t, "ordering", got, d1, d2, d3)
+	if got[0].Token != "t1" || got[0].ConnectionID == "" || got[0].Platform != "android" {
+		t.Fatalf("device not read whole: %+v", got[0])
+	}
+
+	// An expired session: no longer live. Kills: dropping s.expires_at.
+	dx, _ := deviceAt(t, s, a.ID, "tx", stamp(-4*time.Hour), -time.Minute)
+	got, _ = s.LivePushDevices(a.ID, now)
+	wantIDs(t, "expired session", got, d1, d2, d3)
+	_ = dx
+
+	// A session whose user_id differs from the device's. Kills: dropping
+	// s.user_id = d.user_id.
+	dm, sm := deviceAt(t, s, a.ID, "tm", stamp(-6*time.Hour), time.Hour)
+	s.mustExec(t, `UPDATE sessions SET user_id = ? WHERE id = ?`, b.ID, sm)
+	got, _ = s.LivePushDevices(a.ID, now)
+	wantIDs(t, "session user mismatch", got, d1, d2, d3)
+	_ = dm
+
+	// A shared token: A's older device, B's newer registration of the same
+	// token. Only the newer holder gets it. Kills: dropping the clause.
+	dShared, _ := deviceAt(t, s, a.ID, "shared", stamp(-10*time.Hour), time.Hour)
+	dSharedB, _ := deviceAt(t, s, b.ID, "shared", stamp(-9*time.Hour), time.Hour)
+	got, _ = s.LivePushDevices(a.ID, now)
+	wantIDs(t, "shared token, A older", got, d1, d2, d3)
+	gotB, _ := s.LivePushDevices(b.ID, now)
+	if !containsDevice(gotB, dSharedB) {
+		t.Fatalf("B lost the shared token it owns: %v", deviceIDs(gotB))
+	}
+	_ = dShared
+
+	// The newer registrant's session expired: the older holder gets the token
+	// back. Kills: dropping s2.expires_at.
+	s.mustExec(t, `UPDATE sessions SET expires_at = ? WHERE id = (SELECT session_id FROM push_devices WHERE id = ?)`, stamp(-time.Minute), dSharedB)
+	got, _ = s.LivePushDevices(a.ID, now)
+	if !containsDevice(got, dShared) {
+		t.Fatalf("A did not get the token back when B's session expired: %v", deviceIDs(got))
+	}
+	// ...and again if B's session belongs to someone else. Kills: dropping
+	// s2.user_id = d2.user_id.
+	s.mustExec(t, `UPDATE sessions SET expires_at = ?, user_id = ? WHERE id = (SELECT session_id FROM push_devices WHERE id = ?)`,
+		stamp(time.Hour), a.ID, dSharedB)
+	got, _ = s.LivePushDevices(a.ID, now)
+	if !containsDevice(got, dShared) {
+		t.Fatalf("A lost the token to a device whose session is not B's: %v", deviceIDs(got))
+	}
+
+	// A tie on created_at goes to the larger id, for exactly one of the two.
+	tieA, _ := deviceAt(t, s, a.ID, "tie", stamp(-time.Hour), time.Hour)
+	tieB, _ := deviceAt(t, s, b.ID, "tie", stamp(-time.Hour), time.Hour)
+	gotA, _ := s.LivePushDevices(a.ID, now)
+	gotB2, _ := s.LivePushDevices(b.ID, now)
+	ownsA, ownsB := containsDevice(gotA, tieA), containsDevice(gotB2, tieB)
+	if ownsA == ownsB {
+		t.Fatalf("tie: A owns=%v B owns=%v, want exactly one", ownsA, ownsB)
+	}
+	if want := tieB > tieA; ownsB != want {
+		t.Fatalf("tie went to the smaller id")
+	}
+}
+
+func containsDevice(ds []PushDevice, id string) bool {
+	for _, d := range ds {
+		if d.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDeletePushDeviceByID(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	a := notifyUser(t, s, "a@example.com")
+	d1, _ := deviceAt(t, s, a.ID, "t1", ago(time.Hour), time.Hour)
+	d2, _ := deviceAt(t, s, a.ID, "t2", ago(time.Hour), time.Hour)
+	if err := s.DeletePushDeviceByID(d1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeletePushDeviceByID("missing"); err != nil {
+		t.Fatalf("absent id errored: %v", err)
+	}
+	got, _ := s.LivePushDevices(a.ID, time.Now())
+	wantIDs(t, "after delete", got, d2)
+}
+
+// Kills: dropping `user_id = ?` (another user reads the row).
+func TestGetNotificationForUser(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	a, b := notifyUser(t, f.s, "a@example.com"), notifyUser(t, f.s, "b@example.com")
+	id := f.seedNotif(t, a.ID, ago(time.Minute))
+	n, err := f.s.GetNotificationForUser(a.ID, id)
+	if err != nil || n.ID != id || n.UserID != a.ID || n.ItemID != f.item.ID || n.Kind != "comment" || n.PushState != "pending" {
+		t.Fatalf("%+v %v", n, err)
+	}
+	if _, err := f.s.GetNotificationForUser(b.ID, id); !errors.Is(err, ErrNotificationNotFound) {
+		t.Fatalf("other user: %v", err)
+	}
+	if _, err := f.s.GetNotificationForUser(a.ID, "missing"); !errors.Is(err, ErrNotificationNotFound) {
+		t.Fatalf("missing: %v", err)
+	}
+}
+
+// Kills: dropping `i.deleted_at IS NULL`; dropping `c.deleted_at IS NULL`;
+// turning the join into one that ignores the collection.
+func TestNotificationSubject(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	item, err := f.s.NotificationSubject(f.item.ID)
+	if err != nil || item.ID != f.item.ID {
+		t.Fatalf("live: %v %v", item, err)
+	}
+	if _, err := f.s.NotificationSubject("missing"); !errors.Is(err, ErrNotificationSubjectGone) {
+		t.Fatalf("missing: %v", err)
+	}
+	gone := createTestItem(t, f.s, f.ws.ID, f.coll.ID, "Gone", "")
+	if err := f.s.DeleteItem(gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.NotificationSubject(gone.ID); !errors.Is(err, ErrNotificationSubjectGone) {
+		t.Fatalf("soft-deleted item: %v", err)
+	}
+	coll2 := createTestCollection(t, f.s, f.ws.ID, "Archived")
+	inArchived := createTestItem(t, f.s, f.ws.ID, coll2.ID, "Inside", "")
+	if err := f.s.DeleteCollection(coll2.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.NotificationSubject(inArchived.ID); !errors.Is(err, ErrNotificationSubjectGone) {
+		t.Fatalf("archived collection: %v", err)
+	}
+}
+
+// A claimer that settled a row and then claims again reads back only the new
+// claim, not its own sent row (the token stays on a settled row).
+// Kills: dropping `push_state = 'pending'` from the read-back.
+func TestClaimNotifications_ReadBackExcludesSettled(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	first := f.seedNotif(t, u.ID, ago(2*time.Minute))
+	settle, lease := at(10*time.Second), at(time.Minute)
+	if got, _ := f.s.ClaimPendingNotifications("X", 10, settle, lease); len(got) != 1 {
+		t.Fatal("first claim")
+	}
+	if _, err := f.s.MarkNotificationsSent("X", []string{first}); err != nil {
+		t.Fatal(err)
+	}
+	second := f.seedNotif(t, u.ID, ago(time.Minute))
+	got, err := f.s.ClaimPendingNotifications("X", 10, settle, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != second {
+		t.Fatalf("second claim read back %v, want only %s", ids(got), second)
+	}
+}
+
+// Held rows must not crowd the limit: the candidate select skips them, so a
+// free younger row is still claimed. Kills: dropping the lease predicate from
+// the candidate select alone.
+func TestClaimNotifications_HeldRowsDoNotCrowdLimit(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	held := f.seedNotif(t, u.ID, ago(5*time.Minute))
+	free := f.seedNotif(t, u.ID, ago(time.Minute))
+	f.s.mustExec(t, `UPDATE user_notifications SET claim_token = 'OTHER', claimed_at = ? WHERE id = ?`, now(), held)
+	got, err := f.s.ClaimPendingNotifications("X", 1, at(10*time.Second), at(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != free {
+		t.Fatalf("claimed %v, want only %s", ids(got), free)
+	}
+}

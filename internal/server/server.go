@@ -39,6 +39,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/needs"
+	"github.com/PerpetualSoftware/pad/internal/notify"
 	"github.com/PerpetualSoftware/pad/internal/oauth"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/textguard"
@@ -569,6 +570,9 @@ type Server struct {
 	// pushGatewayURL is PAD_PUSH_GATEWAY_URL (TASK-3938); empty means this
 	// server offers no push. Set once at startup by SetPushGateway.
 	pushGatewayURL string
+	// pushGateway is the client behind pushGatewayURL (TASK-3939); nil when
+	// push is not configured.
+	pushGateway *notify.Gateway
 
 	// restoreAckFault is a TEST SEAM (always nil in production). When non-nil,
 	// handleRestoreItemVersion's collab commit closure invokes it AFTER the restore
