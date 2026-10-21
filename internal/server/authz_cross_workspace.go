@@ -576,6 +576,11 @@ func (s *Server) authorizeCrossWorkspaceInner(r *http.Request, workspaceSlugOrID
 	if ws == nil {
 		return crossWorkspaceDeny(CrossWorkspaceWorkspaceNotFound, nil, "", nil)
 	}
+	// The pin compared by resolved ID too, so the by-name check above does
+	// not rest on slugs being unique (BUG-3982).
+	if pin := tokenPinFrom(r.Context()); pin != nil && pin.ID != ws.ID {
+		return crossWorkspaceDeny(CrossWorkspaceTokenNotAllowed, nil, "", nil)
+	}
 
 	// 3. Role in the TARGET workspace, computed fresh. Never
 	//    workspaceRole(r) — that is workspace A's answer.

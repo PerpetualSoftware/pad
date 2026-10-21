@@ -722,3 +722,43 @@ func TestBUG3982_RefResolverComparesThePinByID(t *testing.T) {
 		t.Fatalf("control: a pin for B resolving in B: %d %s, want 302", rr.Code, rr.Body.String())
 	}
 }
+
+// pinnedReq is a request as the owner carrying pin, with no allow-list, so a
+// by-ID test reaches the resolved-ID compare and nothing else can refuse it.
+func (f *pinFixture) pinnedReq(pin *tokenPin) *http.Request {
+	req := httptest.NewRequest("GET", "/", nil)
+	return req.WithContext(context.WithValue(WithCurrentUser(req.Context(), f.owner), ctxTokenPin, pin))
+}
+
+// Cross-workspace authorization compares the pin by resolved ID behind its
+// by-name check: a pin whose slug names B while its ID is A's passes the
+// by-name check, and only the ID compare refuses the target.
+func TestBUG3982_CrossWorkspaceComparesThePinByID(t *testing.T) {
+	f := newPinFixture(t, store.DriverSQLite)
+	scope := CrossWorkspaceWorkspaceOnlyScope()
+	if a := f.srv.authorizeCrossWorkspace(f.pinnedReq(&tokenPin{ID: f.wsID, Slug: f.bSlug}), f.bSlug, scope, false); a.Reason != CrossWorkspaceTokenNotAllowed {
+		t.Fatalf("a pin for A's ID, naming B's slug, targeting B: reason %q, want %q", a.Reason, CrossWorkspaceTokenNotAllowed)
+	}
+	// Control: the pin's own ID is allowed.
+	if a := f.srv.authorizeCrossWorkspace(f.pinnedReq(&tokenPin{ID: f.bID, Slug: f.bSlug}), f.bSlug, scope, false); a.Reason != CrossWorkspaceAllowed {
+		t.Fatalf("control: a pin for B targeting B: reason %q, want allowed", a.Reason)
+	}
+}
+
+// Collab compares the pin by resolved ID behind the allow-list: with no
+// allow-list on the request, only the ID compare refuses an item in B to a
+// pin for A's ID that names B's slug.
+func TestBUG3982_CollabComparesThePinByID(t *testing.T) {
+	f := newPinFixture(t, store.DriverSQLite)
+	items, err := f.srv.store.ListItems(f.bID, models.ItemListParams{})
+	if err != nil || len(items) == 0 {
+		t.Fatalf("B items: %v %d", err, len(items))
+	}
+	if _, err := f.srv.authorizeCollabAccess(f.pinnedReq(&tokenPin{ID: f.wsID, Slug: f.bSlug}), &items[0]); err == nil || !strings.Contains(err.Error(), "limited to workspace") {
+		t.Fatalf("a pin for A's ID, naming B's slug, on a B item: err %v, want the pin refusal", err)
+	}
+	// Control: the pin's own ID is admitted.
+	if _, err := f.srv.authorizeCollabAccess(f.pinnedReq(&tokenPin{ID: f.bID, Slug: f.bSlug}), &items[0]); err != nil {
+		t.Fatalf("control: a pin for B on a B item: %v", err)
+	}
+}
