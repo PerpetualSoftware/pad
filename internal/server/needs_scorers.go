@@ -184,12 +184,12 @@ func (m *needsMemo) answers(rows []*needs.Row) (decs map[string][]models.ItemDec
 		return
 	}
 	if decs, err = memoLoad(m, "decisions", &m.decs, func() (map[string][]models.ItemDecision, error) {
-		return m.s.store.LatestDecisionsForItems(rowIDs(rows), decision.AttentionSetName)
+		return m.s.store.LatestDecisionsForItems(m.wsID, rowIDs(rows), decision.AttentionSetName)
 	}); err != nil {
 		return
 	}
 	owed, err = memoLoad(m, "owed_jobs", &m.owed, func() (map[string]bool, error) {
-		return m.s.store.OwedDecisionJobs(rowIDs(rows), decision.AttentionSetName)
+		return m.s.store.OwedDecisionJobs(m.wsID, rowIDs(rows), decision.AttentionSetName)
 	})
 	return
 }
