@@ -42,11 +42,11 @@ func TestBUG3336_APITokenCannotDeleteTheAccount(t *testing.T) {
 		srv := testServer(t)
 		srv.cloudMode = cloud
 		id, _ := bootstrapAccountDeleteUser(t, srv, "")
-		ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Owned", OwnerID: id})
+		_, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Owned", OwnerID: id})
 		if err != nil {
 			t.Fatal(err)
 		}
-		pat, err := srv.store.CreateAPIToken(id, models.APITokenCreate{Name: "leaked", WorkspaceID: ws.ID}, 0, 0)
+		pat, err := srv.store.CreateAPIToken(id, models.APITokenCreate{Name: "leaked"}, 0, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -191,11 +191,11 @@ func TestBUG3336_CLIApprovalDoesNotMintAFreshSignIn(t *testing.T) {
 	}
 	stillThere(t, srv, u.ID)
 
-	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Owned", OwnerID: u.ID})
+	_, err = srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Owned", OwnerID: u.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pat, err := srv.store.CreateAPIToken(u.ID, models.APITokenCreate{Name: "leaked", WorkspaceID: ws.ID}, 0, 0)
+	pat, err := srv.store.CreateAPIToken(u.ID, models.APITokenCreate{Name: "leaked"}, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,11 +252,11 @@ func TestBUG3336_SessionMintingDoorsRefuseAPIToken(t *testing.T) {
 	srv := testServer(t)
 	srv.cloudMode = true
 	id, sess := bootstrapAccountDeleteUser(t, srv, "")
-	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Owned", OwnerID: id})
+	_, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Owned", OwnerID: id})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pat, err := srv.store.CreateAPIToken(id, models.APITokenCreate{Name: "leaked", WorkspaceID: ws.ID}, 0, 0)
+	pat, err := srv.store.CreateAPIToken(id, models.APITokenCreate{Name: "leaked"}, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

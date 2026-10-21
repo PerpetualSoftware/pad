@@ -185,8 +185,9 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 
 // needsAdmittedWorkspaces is the workspaces the caller may be shown needs from:
 // memberships and guest workspaces, narrowed to a token's consent allow-list
-// and, for a token bound to one workspace, to that workspace alone (stricter
-// than search, which ignores the binding for a user-bound token; BUG-3982).
+// and, for a token bound to one workspace, to that workspace alone. Since
+// BUG-3982 every door confines a pinned user token that way; this ID filter
+// predates it and is kept.
 func (s *Server) needsAdmittedWorkspaces(r *http.Request, user *models.User) ([]models.Workspace, error) {
 	member, err := s.store.GetUserWorkspaces(user.ID)
 	if err != nil {

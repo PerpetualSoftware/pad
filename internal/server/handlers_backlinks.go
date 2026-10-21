@@ -161,8 +161,9 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 		if user != nil {
 			// Propagate the OAuth/MCP token's workspace allow-list
 			// (TASK-952) into the cross-ws enumeration. nil → no
-			// token gate (PAT or pre-consent token, allow all
-			// enumerated workspaces); a slice gates each source
+			// token gate (unpinned PAT or pre-consent token, allow all
+			// enumerated workspaces; a pinned PAT carries [its slug],
+			// BUG-3982); a slice gates each source
 			// workspace by slug. Without this, an MCP token
 			// consented for workspace A could leak backlinks from
 			// workspace B that the user has independent access to.

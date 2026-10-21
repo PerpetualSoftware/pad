@@ -21,8 +21,9 @@ import (
 
 // filterWorkspacesByTokenAllowlist returns the subset of wss the request's
 // OAuth consent allow-list permits, or wss unchanged when no per-slug gate
-// applies (nil/wildcard allow-list — PAT auth, web session, local stdio, or
-// wildcard consent). Shared by the workspace-global reads that sit outside
+// applies (nil/wildcard allow-list — an unpinned PAT, web session, local stdio, or
+// wildcard consent). A workspace-pinned PAT carries the one-slug allow-list
+// (BUG-3982). Shared by the workspace-global reads that sit outside
 // the /{slug} subrouter (list, deleted-list, search fan-out) and therefore
 // never pass through RequireWorkspaceAccess's allow-list gate. See BUG-2102.
 func filterWorkspacesByTokenAllowlist(ctx context.Context, wss []models.Workspace) []models.Workspace {
@@ -323,7 +324,7 @@ func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request)
 		// route is workspace-global, so RequireWorkspaceAccess never checks the
 		// token allow-list here. Skip a workspace outside it silently, the same
 		// answer an unknown or non-member slug gets, so the response still says
-		// nothing about which slugs exist. No-op for web session / PAT auth.
+		// nothing about which slugs exist. No-op for web session / unpinned PAT auth.
 		if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
 			continue
 		}
@@ -813,7 +814,8 @@ func (s *Server) handleRestoreWorkspace(w http.ResponseWriter, r *http.Request) 
 	// consent-scoped token must not restore a workspace outside its
 	// allow-list, even one the user owns. Return the same 404 as
 	// "not restorable" so the token can't probe which slugs exist.
-	// nil/wildcard allow-list (PAT / web session) → no gate.
+	// nil/wildcard allow-list (unpinned PAT / web session) → no gate. A pinned
+	// PAT is refused earlier, by the route gate (BUG-3982).
 	if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
 		writeError(w, http.StatusNotFound, "not_found", "No restorable workspace found")
 		return

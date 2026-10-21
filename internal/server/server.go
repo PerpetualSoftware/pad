@@ -2816,6 +2816,7 @@ const (
 	forbiddenReasonTokenScope             = "token_scope"
 	forbiddenReasonNoAccess               = "no_access"
 	forbiddenReasonWorkspaceNotAuthorized = "workspace_not_authorized"
+	forbiddenReasonTokenWorkspacePinned   = "token_workspace_pinned"
 )
 
 // roleGateReason is the reason for a refusal by a workspace-role gate. A

@@ -74,10 +74,8 @@ export default async function globalSetup(config: FullConfig) {
 	}
 	const csrfHeader = { 'X-CSRF-Token': csrfCookie.value };
 
-	// Seed the workspace FIRST. The api_tokens table requires a
-	// non-null workspace_id, so the token must be scoped to something.
-	// `startup` is the default template and seeds tasks/ideas/plans/docs
-	// collections so the dashboard has content.
+	// Seed the workspace. `startup` is the default template and seeds
+	// tasks/ideas/plans/docs collections so the dashboard has content.
 	const workspaces = await api.post('/api/v1/workspaces', {
 		headers: csrfHeader,
 		data: { name: WORKSPACE_NAME, slug: WORKSPACE_SLUG, template: 'startup' }
@@ -96,12 +94,14 @@ export default async function globalSetup(config: FullConfig) {
 	}
 	const resolvedSlug = workspace.slug;
 
-	// Mint an API token scoped to the admin + workspace. Sessions are
-	// UA-bound; tokens aren't — the browser can auth with this token
-	// regardless of its UA.
+	// Mint an API token for the admin. Sessions are UA-bound; tokens
+	// aren't — the browser can auth with this token regardless of its UA.
+	// It is NOT pinned to the workspace: a pinned token is confined to it
+	// and refused the global routes the UI calls on every page (workspace
+	// tabs, the push stream, account export, workspace create; BUG-3982).
 	const tokenResp = await api.post('/api/v1/auth/tokens', {
 		headers: csrfHeader,
-		data: { name: 'e2e-suite', workspace_id: workspace.id, expires_in: 1 }
+		data: { name: 'e2e-suite', expires_in: 1 }
 	});
 	if (!tokenResp.ok()) {
 		throw new Error(`token create failed (${tokenResp.status()}): ${await tokenResp.text()}`);

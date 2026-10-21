@@ -288,6 +288,22 @@ func (s *Store) DeleteUserAPIToken(id, userID string) error {
 	return nil
 }
 
+// DeleteUserAPITokenInWorkspace removes a user's API token by ID only when it
+// is pinned to workspaceID (BUG-3982): the revoke a workspace-pinned token may
+// do. Returns sql.ErrNoRows when no token matches all three, so a token of the
+// user's pinned elsewhere or unpinned reads exactly like a missing one.
+func (s *Store) DeleteUserAPITokenInWorkspace(id, userID, workspaceID string) error {
+	result, err := s.db.Exec(s.q("DELETE FROM api_tokens WHERE id = ? AND user_id = ? AND workspace_id = ?"), id, userID, workspaceID)
+	if err != nil {
+		return fmt.Errorf("delete user api token in workspace: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // ValidateToken hashes the provided plaintext token, looks it up in the
 // database, checks expiry, and updates last_used_at. Returns nil if the
 // token is invalid or expired.

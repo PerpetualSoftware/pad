@@ -534,6 +534,14 @@ type statusError struct {
 
 func (e *statusError) Error() string { return e.message }
 
+// tokenWorkspaceStatusError is the collab twin of writeTokenWorkspaceDeniedFor.
+func tokenWorkspaceStatusError(pin *tokenPin) *statusError {
+	msg, details := tokenWorkspaceDenial(pin)
+	sErr := newStatusError(http.StatusForbidden, "permission_denied", msg)
+	sErr.details = details
+	return sErr
+}
+
 func newStatusError(code int, kind, message string) *statusError {
 	return &statusError{code: code, kind: kind, message: message}
 }
@@ -603,8 +611,11 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 	// OAuth token allow-list gate.
 	if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
 		s.recordMCPAuthzDenial(r, "workspace_not_in_allowlist")
-		return collabAccess{}, newStatusError(http.StatusForbidden, "permission_denied",
-			"Token is not authorized for this workspace")
+		return collabAccess{}, tokenWorkspaceStatusError(tokenPinFrom(r.Context()))
+	}
+	// A pinned token's workspace is compared by ID too (BUG-3982).
+	if pin := tokenPinFrom(r.Context()); pin != nil && pin.ID != ws.ID {
+		return collabAccess{}, tokenWorkspaceStatusError(pin)
 	}
 
 	// Fresh-install escape hatch. No users yet → no auth at all, so

@@ -55,6 +55,14 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// A workspace-pinned token resolves refs in its own workspace only
+	// (BUG-3982), decided before the name is resolved; anywhere else is the
+	// resolver's ordinary 404.
+	if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, workspaceSlug) {
+		s.refResolverNotFound(w, r)
+		return
+	}
+
 	// 2. Resolve the workspace. Uses currentUser(r) so the ACL is
 	//    consistent: members + guests with grants see the workspace;
 	//    everyone else gets nil (→ 404).
@@ -66,6 +74,13 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 		return
 	}
 	if ws == nil {
+		s.refResolverNotFound(w, r)
+		return
+	}
+
+	// The pin compared by resolved ID too, so the check above does not rest
+	// on slugs being unique (BUG-3982).
+	if pin := tokenPinFrom(r.Context()); pin != nil && pin.ID != ws.ID {
 		s.refResolverNotFound(w, r)
 		return
 	}

@@ -89,6 +89,16 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// cannot read contributes nothing; the answer is an empty result, never a
 	// 403, so a slug's existence is not confirmed (the BUG-2102 shape).
 	if params.Workspace != "" {
+		// A workspace-pinned token naming any other workspace is refused
+		// (BUG-3982), BEFORE the slug is resolved, so the answer is the same
+		// for a workspace that exists and one that does not. This is the one
+		// search refusal that is a 403: the caller can fix it, and it learns
+		// nothing about the workspace it named. An unscoped search narrows to
+		// the pin silently, through the allow-list.
+		if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, params.Workspace) {
+			writeTokenWorkspaceDenied(w, r)
+			return
+		}
 		ws, err := s.store.GetWorkspaceBySlug(params.Workspace)
 		if err != nil {
 			writeInternalError(w, err)

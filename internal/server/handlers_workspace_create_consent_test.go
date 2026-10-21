@@ -90,7 +90,7 @@ func newConsentEnv(t *testing.T, mayCreate bool) *consentEnv {
 		t.Fatalf("AddWorkspaceMember: %v", err)
 	}
 	tok, err := srv.store.CreateAPIToken(user.ID, models.APITokenCreate{
-		Name: "consent-test-pat", WorkspaceID: home.ID,
+		Name: "consent-test-pat",
 	}, 30, 0)
 	if err != nil {
 		t.Fatalf("CreateAPIToken: %v", err)

@@ -133,15 +133,14 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 		return
 	}
 
-	// Resolve the user. Workspace-scope binding (apiToken.WorkspaceID)
-	// is intentionally NOT pinned here for user-owned PATs — the
-	// downstream RequireWorkspaceAccess middleware (when handlers
-	// run in-process via HTTPHandlerDispatcher) checks
-	// GetWorkspaceMember instead, matching the v0.2 design where
-	// a PAT grants access to whichever workspace its owning user
-	// belongs to. TASK-953 introduces a per-token allowed_workspaces[]
-	// allow-list which IS enforced here once it lands; for now,
-	// membership is the gate.
+	// Resolve the user. A PAT minted with a workspace_id is confined to that
+	// workspace (BUG-3982): withTokenPin, below, stashes the pin and the
+	// one-slug allow-list [workspace], and the in-process dispatcher carries
+	// both onto its synthesized requests, so tools and resources meet the same
+	// gates as REST. An unpinned PAT reaches the workspaces its owning user
+	// belongs to: RequireWorkspaceAccess checks GetWorkspaceMember. An OAuth
+	// token's per-token allowed_workspaces[] (TASK-953) is enforced on the
+	// OAuth branch.
 	if apiToken.UserID == "" {
 		// Legacy workspace-scoped tokens (no user_id) predate the
 		// user-token refactor. They still authenticate the existing
@@ -210,6 +209,12 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// independent of every other gate above and below — even calls
 	// that the inner handler later rejects produce a row.
 	ctx = WithMCPTokenIdentity(ctx, "pat", apiToken.ID)
+	// The workspace pin, when the PAT has one (BUG-3982).
+	ctx, err = s.withTokenPin(ctx, apiToken)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Token validation failed.")
+		return
+	}
 
 	// Surface near-expiry warning headers the same way TokenAuth
 	// does (middleware_auth.go:125). MCP clients can read them,

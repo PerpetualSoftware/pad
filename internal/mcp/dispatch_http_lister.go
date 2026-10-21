@@ -27,7 +27,8 @@ import (
 // app gets ONLY those workspaces; leaking other slugs in error
 // envelopes would be a scope violation.
 //
-// nil allow-list (PAT auth, or pre-TASK-952 OAuth tokens) → return
+// nil allow-list (an unpinned PAT, or pre-TASK-952 OAuth tokens; a
+// workspace-pinned PAT carries [its slug], BUG-3982) → return
 // all the user's workspaces, matching pre-TASK-977 behaviour.
 // Wildcard `["*"]` → same as nil (the user explicitly granted any
 // workspace).
@@ -90,8 +91,9 @@ func (a realStoreAdapter) GetUserWorkspaces(userID string) ([]storeWorkspace, er
 //     /mcp shouldn't reach a tool dispatch in the first place
 //     (MCPBearerAuth 401s before that), but a defensive empty
 //     list keeps the helper safe to call from error paths.
-//   - PAT auth (allow-list nil) → return all of the user's
-//     workspaces. PATs don't have a workspace allow-list at all.
+//   - Unpinned PAT auth (allow-list nil) → return all of the user's
+//     workspaces. A PAT pinned to a workspace (BUG-3982) carries the
+//     one-slug allow-list and is handled as a specific list below.
 //   - Wildcard allow-list (`["*"]`) → return all of the user's
 //     workspaces. The user explicitly granted "any."
 //   - Specific allow-list (`["foo", "bar"]`) → intersect with the

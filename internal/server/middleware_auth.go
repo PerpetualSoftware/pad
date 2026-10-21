@@ -21,6 +21,9 @@ type contextKey string
 const (
 	// ctxTokenWorkspaceID is set when a valid API token is present.
 	ctxTokenWorkspaceID contextKey = "token_workspace_id"
+	// ctxTokenPin is set when a USER-owned API token carries a workspace_id
+	// (BUG-3982): the token is confined to that workspace. See tokenPin.
+	ctxTokenPin contextKey = "token_pin"
 	// ctxCurrentUser is set when an authenticated user is resolved.
 	ctxCurrentUser contextKey = "current_user"
 	// ctxWorkspaceRole is set by RequireWorkspaceAccess with the user's role.
@@ -47,8 +50,9 @@ const (
 	// allow-list set at consent time (TASK-952). Either a list of
 	// slugs or `["*"]` (wildcard). Read by RequireWorkspaceAccess to
 	// reject requests against workspaces the user didn't include in
-	// the consent (TASK-953). nil → no token-level workspace
-	// constraint (PAT auth, or pre-TASK-952 OAuth tokens).
+	// the consent (TASK-953), or the one slug a user-owned PAT is pinned
+	// to (BUG-3982). nil → no token-level workspace constraint (an
+	// unpinned PAT, or pre-TASK-952 OAuth tokens).
 	ctxTokenAllowedWorkspaces contextKey = "token_allowed_workspaces"
 	// ctxMCPTokenKind / ctxMCPTokenRef carry the bearer's identity for
 	// MCP audit logging (TASK-960). Stashed by MCPBearerAuth so the
@@ -267,6 +271,14 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, ctxTokenWorkspaceID, apiToken.WorkspaceID)
 		}
 
+		// A user-owned token minted with a workspace_id is confined to it
+		// (BUG-3982).
+		ctx, err = s.withTokenPin(ctx, apiToken)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Token validation failed")
+			return
+		}
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -427,9 +439,11 @@ var legacyTokenRoutes = map[string]string{
 }
 
 // legacyWorkspaceSegmentsRefused are the names under /api/v1/workspaces/ that
-// are global routes, not a workspace slug.
+// are global routes, not a workspace slug. import-status reads the caller's
+// import outcomes in any workspace, so a pinned token must not reach it
+// (BUG-3982).
 var legacyWorkspaceSegmentsRefused = map[string]bool{
-	"reorder": true, "import": true, "deleted": true,
+	"reorder": true, "import": true, "import-status": true, "deleted": true,
 }
 
 // legacyTokenRouteAllowed reports whether a user-less legacy workspace token
@@ -485,6 +499,15 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 		// out, and the session check that says why, stay open.
 		if user := currentUser(r); user != nil && user.IsDisabled() && !disabledAccountPathAllowed(r) {
 			writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
+			return
+		}
+
+		// A workspace-pinned API token reaches only its workspace's routes and
+		// the account doors that are not workspace-global (BUG-3982). Placed
+		// before the public exemption, because /auth/export and /auth/me
+		// writes live under /api/v1/auth/.
+		if tokenPinFrom(r.Context()) != nil && !pinnedTokenRouteAllowed(r) {
+			writeTokenWorkspaceDenied(w, r)
 			return
 		}
 
@@ -695,6 +718,15 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 
+		// A workspace-pinned token naming any other workspace is refused
+		// before the name is resolved, so the refusal is the same whether
+		// that workspace exists, and whether the user belongs to it
+		// (BUG-3982).
+		if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, slugOrID) {
+			writeTokenWorkspaceDenied(w, r)
+			return
+		}
+
 		// Resolve workspace: supports both UUID and slug.
 		ws, err := s.resolveWorkspace(slugOrID, currentUser(r))
 		if err != nil {
@@ -714,8 +746,9 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 		// member of it — the user explicitly chose not to grant the
 		// app that access.
 		//
-		// nil → no token-level constraint (PAT auth, or pre-TASK-952
-		// OAuth tokens that predate the consent UI). Wildcard `["*"]`
+		// nil → no token-level constraint (an unpinned PAT, or pre-TASK-952
+		// OAuth tokens that predate the consent UI). A user-owned PAT
+		// pinned to a workspace carries [that slug] (BUG-3982). Wildcard `["*"]`
 		// → grant access to any membership the user has. Else: the
 		// resolved workspace's slug MUST appear in the list.
 		//
@@ -732,8 +765,13 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			// today, but might in a future PAT-with-allow-list world
 			// — doesn't pollute the MCP-specific counter.
 			s.recordMCPAuthzDenial(r, "workspace_not_in_allowlist")
-			writeForbidden(w, "permission_denied",
-				"Token is not authorized for this workspace", forbiddenReasonWorkspaceNotAuthorized)
+			writeTokenWorkspaceDenied(w, r)
+			return
+		}
+		// A pinned token's workspace is compared by ID as well, so the check
+		// does not rest on slugs being unique (BUG-3982).
+		if pin := tokenPinFrom(r.Context()); pin != nil && pin.ID != ws.ID {
+			writeTokenWorkspaceDenied(w, r)
 			return
 		}
 

@@ -218,8 +218,9 @@ func (f *HTTPResourceFetcher) fetchWorkspaceList(ctx context.Context, user *mode
 	// Honor the OAuth token's consent allow-list: the /api/v1/workspaces
 	// handler returns every membership, so — unlike per-workspace routes —
 	// nothing scopes it to the workspaces the token was granted. Filter here
-	// with the canonical set builder (nil/wildcard → no filter, so PAT auth
-	// and local stdio are unaffected; a specific allow-list → intersect) so
+	// with the canonical set builder (nil/wildcard → no filter, so an
+	// unpinned PAT and local stdio are unaffected, while a pinned PAT carries
+	// the one-slug list, BUG-3982; a specific allow-list → intersect) so
 	// this resource can't enumerate the slugs of workspaces the user never
 	// consented to expose.
 	allowSet := server.TokenAllowedWorkspaceSet(ctx)

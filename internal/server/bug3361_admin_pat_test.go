@@ -34,11 +34,11 @@ func newAdminPATFixture(t *testing.T) adminPATFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Admin WS", OwnerID: admin.ID})
+	_, err = srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Admin WS", OwnerID: admin.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	pat, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{Name: "admin-pat", WorkspaceID: ws.ID}, 0, 0)
+	pat, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{Name: "admin-pat"}, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
