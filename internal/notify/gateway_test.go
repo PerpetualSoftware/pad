@@ -292,7 +292,8 @@ func serveWith(t *testing.T, secret string, h http.HandlerFunc) *Gateway {
 // second must be served on the first's connection. A body closed unread makes
 // the transport drop the connection.
 func TestGateway_Non200BodyIsDrained(t *testing.T) {
-	body := strings.Repeat("x", 256<<10) // under maxResponseBytes
+	// Under the cap, so the bounded drain reaches EOF (TASK-3939 r3-L1).
+	body := strings.Repeat("x", maxResponseBytes/4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(body))
