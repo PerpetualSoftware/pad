@@ -23,8 +23,8 @@ import (
 //
 // Recipients are NOT access-checked here. Removing a member leaves them an
 // item's created_by and possibly its assignee, so a row can be written for
-// someone who can no longer see the item. The dispatcher (TASK-3939) is to
-// re-check current membership and item visibility at send and skip the row:
+// someone who can no longer see the item. The dispatcher (TASK-3939) does
+// re-check current membership and item visibility at send and skips the row:
 // that is the privacy gate.
 //
 // @mention notifications (TASK-3946) are built from the users
