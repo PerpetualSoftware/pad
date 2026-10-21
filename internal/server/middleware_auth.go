@@ -718,6 +718,15 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 
+		// A workspace-pinned token naming any other workspace is refused
+		// before the name is resolved, so the refusal is the same whether
+		// that workspace exists, and whether the user belongs to it
+		// (BUG-3982).
+		if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, slugOrID) {
+			writeTokenWorkspaceDenied(w, r)
+			return
+		}
+
 		// Resolve workspace: supports both UUID and slug.
 		ws, err := s.resolveWorkspace(slugOrID, currentUser(r))
 		if err != nil {

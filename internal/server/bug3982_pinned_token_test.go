@@ -225,9 +225,12 @@ func TestBUG3982_CrossWorkspaceCopyRefused(t *testing.T) {
 // pinned token may use, written out by hand (method + chi pattern) rather than
 // derived from pinnedTokenRouteAllowed. Each one either confines itself to the
 // pin (the workspace list, search, events, collab, the token doors, the needs
-// inbox), reads nothing of the caller's (pre-auth flows, health, libraries,
-// share links), or only says who the token is. A route the gate admits that is
-// not here fails the walk below; that is how import-status was found.
+// inbox), reads nothing of the caller's (pre-auth flows, health, libraries),
+// reads the caller only through signedInFor, which treats a foreign pin as
+// signed out (share links, the invitation preview), or only says who the
+// token is. A route added here that reads the caller must go through
+// signedInFor. A route the gate admits that is not here fails the walk below;
+// that is how import-status was found.
 var pinnedAllowedGlobalRoutes = map[string]bool{
 	"DELETE /api/v1/auth/tokens/{tokenID}":             true,
 	"GET /api/v1/auth/check-username":                  true,
@@ -506,5 +509,128 @@ func TestBUG3982_WorkspaceAccessComparesThePinByID(t *testing.T) {
 	r.ServeHTTP(rr, req.WithContext(ctx))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("control: a pin for B on B: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// On every slug-addressed door the pin is checked before the name is resolved
+// (BUG-3982 r4): a workspace that does not exist, one the user is not in, and
+// one the user is in all get byte-identical refusals, so a pinned token learns
+// nothing about which slugs exist or which workspaces its user belongs to.
+func TestBUG3982_SlugDoorsRefuseIdenticallyBeforeResolution(t *testing.T) {
+	f := newPinFixture(t, store.DriverSQLite)
+	f.srv.SetEventBus(events.New())
+	stranger := mkUser(t, f.srv, "stranger@example.com")
+	c, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Stranger WS", Slug: "stranger-ws", OwnerID: stranger.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := f.srv.store.AddWorkspaceMember(c.ID, stranger.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	refs := []struct{ what, ref string }{
+		{"nonexistent", "no-such-workspace"},
+		{"non-member", c.Slug},
+		{"non-member by id", c.ID},
+		{"member", f.bSlug},
+		{"member by id", f.bID},
+	}
+	doors := []struct {
+		name string
+		path func(ref string) string
+	}{
+		{"REST", func(ref string) string { return "/api/v1/workspaces/" + ref + "/items" }},
+		{"SSE", func(ref string) string { return "/api/v1/events?workspace=" + ref }},
+		{"search", func(ref string) string { return "/api/v1/search?q=zebrafish&workspace=" + ref }},
+	}
+	for _, d := range doors {
+		var first string
+		for _, r := range refs {
+			rr := f.do("GET", d.path(r.ref), f.pinned, nil)
+			f.mustBePinDenial(rr, d.name+" "+r.what)
+			if first == "" {
+				first = rr.Body.String()
+			} else if rr.Body.String() != first {
+				t.Errorf("%s: the %s refusal differs from the nonexistent one:\n%s\nvs\n%s", d.name, r.what, rr.Body.String(), first)
+			}
+		}
+	}
+	// Control: the unpinned PAT still gets each door's own answer for a
+	// workspace it is not in.
+	rr := f.do("GET", "/api/v1/workspaces/"+c.Slug+"/items", f.ownerTok, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("control: unpinned PAT on a non-member workspace: %d %s, want 404", rr.Code, rr.Body.String())
+	}
+}
+
+// An email-restricted share link reads the caller; a token pinned to another
+// workspace counts as signed out there, so its user's address unlocks nothing
+// outside the pin (BUG-3982 r4).
+func TestBUG3982_ShareLinkTreatsAForeignPinAsSignedOut(t *testing.T) {
+	f := newPinFixture(t, store.DriverSQLite)
+	share := func(ws string) string {
+		t.Helper()
+		rr := f.do("POST", "/api/v1/workspaces/"+ws+"/collections/tasks/items", f.ownerTok, map[string]any{"title": "Shared in " + ws})
+		f.must(rr, http.StatusCreated, "item in "+ws)
+		var it models.Item
+		parseJSON(t, rr, &it)
+		rr = f.do("POST", "/api/v1/workspaces/"+ws+"/items/"+it.Slug+"/share-links", f.ownerTok,
+			map[string]any{"restrict_to_email": f.owner.Email})
+		f.must(rr, http.StatusCreated, "restricted share link in "+ws)
+		var link struct {
+			Token string `json:"token"`
+		}
+		parseJSON(t, rr, &link)
+		return link.Token
+	}
+	resolve := func(tok, code string) (int, bool) {
+		t.Helper()
+		rr := f.do("GET", "/api/v1/s/"+code, tok, nil)
+		var body struct {
+			RequireAuth bool `json:"require_auth"`
+		}
+		_ = json.Unmarshal(rr.Body.Bytes(), &body)
+		return rr.Code, body.RequireAuth
+	}
+	inB, inA := share(f.bSlug), share(f.wsSlug)
+	if code, gate := resolve(f.pinned, inB); code != http.StatusOK || !gate {
+		t.Fatalf("token pinned to A on B's restricted link: %d require_auth=%v, want the signed-out gate", code, gate)
+	}
+	if code, gate := resolve(f.pinned, inA); code != http.StatusOK || gate {
+		t.Fatalf("token pinned to A on A's restricted link: %d require_auth=%v, want the content", code, gate)
+	}
+	if code, gate := resolve(f.ownerTok, inB); code != http.StatusOK || gate {
+		t.Fatalf("control: unpinned PAT on B's restricted link: %d require_auth=%v, want the content", code, gate)
+	}
+}
+
+// The invitation preview tells an invitee who is already a member that the
+// accept will work (BUG-3870). A token pinned to another workspace counts as
+// signed out there, so it reads the refusal everyone else reads (BUG-3982 r4).
+func TestBUG3982_InvitationPreviewTreatsAForeignPinAsSignedOut(t *testing.T) {
+	f := newPinFixture(t, store.DriverSQLite)
+	email := "member-3982@example.com"
+	member := mkUser(t, f.srv, email)
+	for _, ws := range []string{f.wsID, f.bID} {
+		if err := f.srv.store.AddWorkspaceMember(ws, member.ID, "viewer"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inv := bug3770Inviter(t, f.accessFixture, email, bug3770Losses[0].lose) // an invitation into A
+	pin := func(wsID string) string {
+		t.Helper()
+		tok, err := f.srv.store.CreateAPIToken(member.ID, models.APITokenCreate{Name: "pin-" + wsID, WorkspaceID: wsID}, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok.Token
+	}
+	if bug3870PreviewCanGrant(t, f.accessFixture, inv.Code, pin(f.bID)) {
+		t.Error("preview with a token pinned to B, for an invitation into A: inviter_can_grant true, so it learned the A membership")
+	}
+	if !bug3870PreviewCanGrant(t, f.accessFixture, inv.Code, pin(f.wsID)) {
+		t.Error("control: preview with a token pinned to A: inviter_can_grant false, want the member's answer")
+	}
+	if !bug3870PreviewCanGrant(t, f.accessFixture, inv.Code, f.token(member)) {
+		t.Error("control: preview with an unpinned PAT: inviter_can_grant false, want the member's answer")
 	}
 }

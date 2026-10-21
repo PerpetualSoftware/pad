@@ -517,7 +517,9 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 	// Auth check first — prevent unauthenticated callers from probing
 	// passwords (which burns bcrypt CPU) before being rejected by the gate.
 	if link.RequireAuth {
-		user := currentUser(r)
+		// A token pinned to another workspace counts as signed out here
+		// (BUG-3982).
+		user := signedInFor(r, link.WorkspaceID)
 		if user == nil {
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"require_auth": true,
@@ -605,7 +607,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 	// Atomically record the view and enforce max_views
 	fingerprint := clientIP(r)
 	userID := ""
-	if user := currentUser(r); user != nil {
+	if user := signedInFor(r, link.WorkspaceID); user != nil {
 		userID = user.ID
 	}
 	allowed, err := s.store.RecordShareLinkView(link.ID, fingerprint, userID, link.MaxViews)

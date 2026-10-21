@@ -81,6 +81,15 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A workspace-pinned token streams its own workspace only (BUG-3982),
+	// refused before the name is resolved so the answer is the same for a
+	// workspace that does not exist, one the user is not in, and one they
+	// are in.
+	if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, slug) {
+		writeTokenWorkspaceDenied(w, r)
+		return
+	}
+
 	ws, err := s.resolveWorkspace(slug, currentUser(r))
 	if err != nil {
 		writeInternalError(w, err)
@@ -169,9 +178,8 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A workspace-pinned token streams its own workspace only (BUG-3982).
-	// After the membership gates above, so the refusal confirms nothing a
-	// 404 would have hidden.
+	// The pin compared by resolved ID too, so the check above does not rest
+	// on slugs being unique (BUG-3982).
 	if pin := tokenPinFrom(r.Context()); pin != nil && pin.ID != ws.ID {
 		writeTokenWorkspaceDenied(w, r)
 		return

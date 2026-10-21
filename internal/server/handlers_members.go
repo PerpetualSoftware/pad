@@ -752,7 +752,9 @@ func (s *Server) handlePreviewInvitation(w http.ResponseWriter, r *http.Request)
 	// session learns that; an anonymous code holder, or anyone else signed
 	// in, reads the refusal as before, so no membership leaks before auth.
 	if !canGrant {
-		if u := currentUser(r); u != nil && !u.IsApp() && invitationEmailMatches(u.Email, inv.Email) {
+		// A token pinned to another workspace counts as signed out here
+		// (BUG-3982), so it reads the refusal too.
+		if u := signedInFor(r, inv.WorkspaceID); u != nil && !u.IsApp() && invitationEmailMatches(u.Email, inv.Email) {
 			member, merr := s.store.IsWorkspaceMember(inv.WorkspaceID, u.ID)
 			if merr != nil {
 				writeInternalError(w, merr)

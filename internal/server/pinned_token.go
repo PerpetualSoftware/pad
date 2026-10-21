@@ -53,6 +53,27 @@ func (s *Server) withTokenPin(ctx context.Context, t *models.APIToken) (context.
 	return WithTokenAllowedWorkspaces(ctx, []string{ws.Slug}), nil
 }
 
+// pinAdmitsWorkspaceRef reports whether a pinned token may address the
+// workspace named ref (a slug or an ID, as a request carries it), decided
+// BEFORE ref is resolved (BUG-3982 r4): a slug that does not exist, one the
+// user is not a member of, and one the user is a member of all get the same
+// refusal, so the pin answers nothing about existence or membership. A pin
+// whose workspace is gone admits nothing.
+func pinAdmitsWorkspaceRef(pin *tokenPin, ref string) bool {
+	return pin.Slug != "" && (ref == pin.Slug || ref == pin.ID)
+}
+
+// signedInFor is currentUser for a public route that reads the caller about a
+// resource in workspaceID (a share link, an invitation). A token pinned to
+// another workspace is anonymous there (BUG-3982 r4), so its user's identity
+// unlocks nothing and says nothing outside the pin.
+func signedInFor(r *http.Request, workspaceID string) *models.User {
+	if pin := tokenPinFrom(r.Context()); pin != nil && pin.ID != workspaceID {
+		return nil
+	}
+	return currentUser(r)
+}
+
 // pinnedTokenExtraRoutes are the non-workspace routes a pinned token may use
 // beyond what a legacy workspace token may (BUG-3982): the account doors that
 // show who the token is and let it list and revoke the tokens pinned to its

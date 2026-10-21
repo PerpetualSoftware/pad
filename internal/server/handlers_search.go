@@ -95,7 +95,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// search refusal that is a 403: the caller can fix it, and it learns
 		// nothing about the workspace it named. An unscoped search narrows to
 		// the pin silently, through the allow-list.
-		if pin := tokenPinFrom(r.Context()); pin != nil && pin.Slug != params.Workspace {
+		if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, params.Workspace) {
 			writeTokenWorkspaceDenied(w, r)
 			return
 		}
