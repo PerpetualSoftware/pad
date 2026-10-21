@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -166,6 +167,48 @@ func TestPushDevices_Cap20_EvictsOldest(t *testing.T) {
 		t.Fatalf("a replace at the cap left %d devices", len(got))
 	} else if _, ok := got["tok-00"]; !ok {
 		t.Fatal("a replace at the cap evicted another device")
+	}
+}
+
+// Concurrent registers at 19 of 20 devices must not overshoot the cap. Without
+// the Postgres user-row lock every transaction counts 19 and inserts, leaving
+// 19+N rows. SQLite serializes writers, so there it only proves no call fails
+// with a constraint error.
+func TestPushDevices_Cap20_ConcurrentRegisters(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	const workers, rounds = 12, 5
+	for r := 0; r < rounds; r++ {
+		u := notifyUser(t, s, fmt.Sprintf("race-%d@example.com", r))
+		for i := 0; i < MaxPushDevicesPerUser-1; i++ {
+			sid, _ := pushSession(t, s, u.ID)
+			register(t, s, u.ID, sid, fmt.Sprintf("seed-%d-%02d", r, i))
+		}
+		sessions := make([]string, workers)
+		for i := range sessions {
+			sessions[i], _ = pushSession(t, s, u.ID)
+		}
+		start := make(chan struct{})
+		errs := make([]error, workers)
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				_, errs[i] = s.RegisterPushDevice(u.ID, sessions[i], "conn-race", "android", fmt.Sprintf("race-%d-%02d", r, i), "1.0")
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Errorf("round %d worker %d: %v", r, i, err)
+			}
+		}
+		if got := deviceTokens(t, s, u.ID); len(got) != MaxPushDevicesPerUser {
+			t.Fatalf("round %d: %d devices after %d concurrent registers, want exactly %d", r, len(got), workers, MaxPushDevicesPerUser)
+		}
 	}
 }
 
