@@ -149,6 +149,9 @@ func rowIDs(rows []*needs.Row) []string {
 	return ids
 }
 
+// itemsFor reads the rows' items once and returns that read to every later
+// caller, whatever rows it passes: every scorer sharing a memo must pass the
+// same row slice (the handler does). The same holds for answers.
 func (m *needsMemo) itemsFor(rows []*needs.Row) (map[string]store.NeedsScoringItem, error) {
 	return memoLoad(m, "items", &m.items, func() (map[string]store.NeedsScoringItem, error) {
 		return m.s.store.NeedsScoringItems(m.wsID, rowIDs(rows))
