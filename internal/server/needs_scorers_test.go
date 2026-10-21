@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -519,8 +520,99 @@ func TestNeedsYouSignals_MemoReadsOncePerRequest(t *testing.T) {
 	})
 }
 
+// scoreStub scores by title, so a test can plant ties.
+type scoreStub struct {
+	name   string
+	scores map[string][2]int // title -> importance, simplicity
+}
+
+func (s *scoreStub) Name() string { return s.name }
+func (s *scoreStub) Score(_ context.Context, _ needs.Viewer, _ needs.Scope, rows []*needs.Row) (bool, error) {
+	for _, r := range rows {
+		if sc, ok := s.scores[r.Item.Title]; ok {
+			r.Importance, r.Simplicity = &needs.Score{Value: sc[0]}, &needs.Score{Value: sc[1]}
+		}
+	}
+	return false, nil
+}
+
+func TestNeedsYouSort_CursorStableAcrossPages(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		scores := map[string][2]int{}
+		// Deliberate ties on the primary score, on both, and one unscored row.
+		for i, sc := range [][2]int{{80, 10}, {80, 10}, {80, 40}, {50, 100}, {50, 100}, {50, 100}, {20, 0}, {100, 100}, {-1, -1}} {
+			title := fmt.Sprintf("row-%d", i)
+			f.item(ws, asks, title, alice, nfxDay(i+1))
+			if sc[0] >= 0 {
+				scores[title] = sc
+			}
+		}
+		srv.needsScorers = []needs.Scorer{&scoreStub{name: "importance", scores: scores}}
+		for _, sortBy := range []string{needs.SortImportance, needs.SortSimplicity} {
+			full := titles(f.need(alice, "?sort="+sortBy).Rows)
+			if len(full) != 9 || full[len(full)-1] != "row-8" {
+				t.Fatalf("%s: order %v (the unscored row sorts last)", sortBy, full)
+			}
+			for _, limit := range []int{2, 3} {
+				var got []string
+				q := fmt.Sprintf("?sort=%s&limit=%d", sortBy, limit)
+				for page := 0; page < 20; page++ {
+					resp := f.need(alice, q)
+					got = append(got, titles(resp.Rows)...)
+					if resp.NextCursor == "" {
+						break
+					}
+					q = fmt.Sprintf("?sort=%s&limit=%d&cursor=%s", sortBy, limit, resp.NextCursor)
+				}
+				if strings.Join(got, ",") != strings.Join(full, ",") {
+					t.Fatalf("%s limit %d: pages %v, single page %v (a row was repeated or missed)", sortBy, limit, got, full)
+				}
+			}
+		}
+		// Importance order proper: 100, 80/40, the two 80/10 (any order: ties break by
+		// item id), the three 50/100, 20, then the unscored row.
+		got := titles(f.need(alice, "?sort=importance").Rows)
+		group := func(lo, hi int) string {
+			g := append([]string{}, got[lo:hi]...)
+			sort.Strings(g)
+			return strings.Join(g, ",")
+		}
+		if got[0] != "row-7" || got[1] != "row-2" || group(2, 4) != "row-0,row-1" || group(4, 7) != "row-3,row-4,row-5" || got[7] != "row-6" || got[8] != "row-8" {
+			t.Fatalf("importance order %v", got)
+		}
+
+		// A cursor this server did not mint, or minted for another sort, is refused.
+		page := f.need(alice, "?sort=importance&limit=2")
+		age := f.need(alice, "?limit=2")
+		two, three := 20, 30
+		noScore := needs.Cursor{V: 1, Sort: needs.SortImportance, WS: "", View: "active", AsOf: time.Now().UnixNano(), ItemID: "x"}
+		wild := noScore
+		wild.Score, wild.Score2 = &two, &three
+		*wild.Score = 500
+		for name, tok := range map[string]string{
+			"another sort": age.NextCursor,
+			"no score":     noScore.Encode(),
+			"score range":  wild.Encode(),
+			"tampered":     page.NextCursor + "x",
+		} {
+			rr := f.get(alice, "?sort=importance&cursor="+tok)
+			if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_cursor") {
+				t.Errorf("%s cursor: %d %s", name, rr.Code, rr.Body.String())
+			}
+		}
+		if rr := f.get(alice, "?sort=bogus"); rr.Code != http.StatusBadRequest {
+			t.Errorf("unknown sort: %d", rr.Code)
+		}
+	})
+}
+
 // Through a real server.New and the router (team CONVE-19): the scorers New
-// registers fill both scores on /me/needs.
+// registers fill both scores, and sort=importance and simplicity order by them.
 func TestNeedsYouSignals_BindingThroughServeHTTP(t *testing.T) {
 	srv := testServer(t)
 	f := newNfx(t, srv)
@@ -528,22 +620,31 @@ func TestNeedsYouSignals_BindingThroughServeHTTP(t *testing.T) {
 	ws := f.workspace("One", owner)
 	f.member(ws, alice, "editor")
 	asks := f.collection(ws, "Asks", true)
-	f.item(ws, asks, "Is this OK?", alice, nfxDay(1))
+	low := f.item(ws, asks, "A long question to settle", alice, nfxDay(1))
+	urgent := f.item(ws, asks, "Is this OK?", alice, nfxDay(2))
+	if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET fields = '{"status":"open","priority":"critical"}' WHERE id = '%s'`, urgent.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET content = '%s' WHERE id = '%s'`, strings.Repeat("x", 3000), low.ID)); err != nil {
+		t.Fatal(err)
+	}
 	tok, err := srv.store.CreateAPIToken(alice.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs", tok.Token, nil)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("%d %s", rr.Code, rr.Body.String())
-	}
-	var resp needsResponse
-	parseJSON(t, rr, &resp)
-	if len(resp.Rows) != 1 || resp.Rows[0].Importance == nil || resp.Rows[0].Simplicity == nil || len(resp.Degraded) != 0 {
-		t.Fatalf("rows %+v degraded %v (the scorers New registers must fill both scores)", resp.Rows, resp.Degraded)
-	}
-	if resp.Rows[0].Simplicity.Value != 100 || resp.Rows[0].Simplicity.Hint != "" {
-		t.Fatalf("simplicity %+v", resp.Rows[0].Simplicity)
+	for sortBy, want := range map[string]string{"importance": "Is this OK?", "simplicity": "Is this OK?"} {
+		rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs?sort="+sortBy, tok.Token, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", sortBy, rr.Code, rr.Body.String())
+		}
+		var resp needsResponse
+		parseJSON(t, rr, &resp)
+		if len(resp.Rows) != 2 || resp.Rows[0].Importance == nil || resp.Rows[0].Simplicity == nil || len(resp.Degraded) != 0 {
+			t.Fatalf("%s: rows %+v degraded %v (the scorers New registers must fill both scores)", sortBy, resp.Rows, resp.Degraded)
+		}
+		if resp.Rows[0].Item.Title != want || resp.Rows[0].Importance.Value <= resp.Rows[1].Importance.Value {
+			t.Fatalf("%s: order %v", sortBy, titles(resp.Rows))
+		}
 	}
 }
 

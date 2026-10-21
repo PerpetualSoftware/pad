@@ -7,22 +7,69 @@ import (
 	"time"
 )
 
-// SortAge is the only sort so far: oldest-waiting first.
-const SortAge = "age"
+// The sorts. SortAge is oldest-waiting first; SortImportance and
+// SortSimplicity order by the scorers' values, highest first (TASK-3959).
+const (
+	SortAge        = "age"
+	SortImportance = "importance"
+	SortSimplicity = "simplicity"
+)
 
-// Key is a row's place in the total order (waiting since, created, item id),
-// ascending. The item id makes it total.
-type Key struct {
-	Waiting time.Time
-	Created time.Time
-	ItemID  string
+// ValidSort reports whether s names a sort.
+func ValidSort(s string) bool {
+	return s == SortAge || s == SortImportance || s == SortSimplicity
 }
 
-// KeyOf is the row's sort key.
-func KeyOf(r *Row) Key { return Key{r.WaitingSince, r.Item.CreatedAt, r.ItemID} }
+// Key is a row's place in the total order of one sort. Age orders by (waiting
+// since, created, item id) ascending. The score sorts order by the primary
+// score then the secondary, both descending (importance: importance then
+// simplicity; simplicity: the mirror), then item id ascending. A row a scorer
+// left without a score keys at NoScore and so sorts after every scored row.
+// The item id makes every order total.
+type Key struct {
+	Sort      string
+	Waiting   time.Time
+	Created   time.Time
+	ItemID    string
+	Primary   int
+	Secondary int
+}
 
-// Less reports whether a sorts before b.
+// NoScore is the key value of a row with no score.
+const NoScore = -1
+
+// KeyOf is the row's age key.
+func KeyOf(r *Row) Key { return KeyFor(SortAge, r) }
+
+// KeyFor is the row's key under a sort.
+func KeyFor(sort string, r *Row) Key {
+	k := Key{Sort: sort, Waiting: r.WaitingSince, Created: r.Item.CreatedAt, ItemID: r.ItemID}
+	val := func(s *Score) int {
+		if s == nil {
+			return NoScore
+		}
+		return s.Value
+	}
+	switch sort {
+	case SortImportance:
+		k.Primary, k.Secondary = val(r.Importance), val(r.Simplicity)
+	case SortSimplicity:
+		k.Primary, k.Secondary = val(r.Simplicity), val(r.Importance)
+	}
+	return k
+}
+
+// Less reports whether a sorts before b. Both keys come from one sort.
 func (a Key) Less(b Key) bool {
+	if a.Sort == SortImportance || a.Sort == SortSimplicity {
+		if a.Primary != b.Primary {
+			return a.Primary > b.Primary
+		}
+		if a.Secondary != b.Secondary {
+			return a.Secondary > b.Secondary
+		}
+		return a.ItemID < b.ItemID
+	}
 	if !a.Waiting.Equal(b.Waiting) {
 		return a.Waiting.Before(b.Waiting)
 	}
@@ -52,13 +99,21 @@ type Cursor struct {
 	Waiting   int64  `json:"key"`
 	CreatedAt int64  `json:"created_at"`
 	ItemID    string `json:"item_id"`
+	// Score and Score2 are the key's primary and secondary score under the
+	// score sorts, and absent under age, so an age cursor is unchanged.
+	Score  *int `json:"score,omitempty"`
+	Score2 *int `json:"score2,omitempty"`
 }
 
 // NewCursor mints the cursor after row r.
 func NewCursor(sort, view, ws string, asOf time.Time, r *Row) Cursor {
-	k := KeyOf(r)
-	return Cursor{V: cursorVersion, Sort: sort, View: view, WS: ws, AsOf: asOf.UnixNano(),
+	k := KeyFor(sort, r)
+	c := Cursor{V: cursorVersion, Sort: sort, View: view, WS: ws, AsOf: asOf.UnixNano(),
 		Waiting: k.Waiting.UnixNano(), CreatedAt: k.Created.UnixNano(), ItemID: k.ItemID}
+	if sort != SortAge {
+		c.Score, c.Score2 = &k.Primary, &k.Secondary
+	}
+	return c
 }
 
 // Encode is the opaque token form.
@@ -69,7 +124,11 @@ func (c Cursor) Encode() string {
 
 // Key is the position the cursor names.
 func (c Cursor) Key() Key {
-	return Key{time.Unix(0, c.Waiting).UTC(), time.Unix(0, c.CreatedAt).UTC(), c.ItemID}
+	k := Key{Sort: c.Sort, Waiting: time.Unix(0, c.Waiting).UTC(), Created: time.Unix(0, c.CreatedAt).UTC(), ItemID: c.ItemID}
+	if c.Score != nil && c.Score2 != nil {
+		k.Primary, k.Secondary = *c.Score, *c.Score2
+	}
+	return k
 }
 
 // At is the as_of time.
@@ -84,6 +143,15 @@ func DecodeCursor(token, sort, view, ws string) (Cursor, error) {
 		return Cursor{}, ErrInvalidCursor
 	}
 	if c.V != cursorVersion || c.Sort != sort || c.View != view || c.WS != ws || c.ItemID == "" || c.AsOf <= 0 {
+		return Cursor{}, ErrInvalidCursor
+	}
+	// A score sort's cursor must carry both scores in range; an age cursor
+	// must carry neither. Anything else was not minted by this server.
+	if sort == SortAge {
+		if c.Score != nil || c.Score2 != nil {
+			return Cursor{}, ErrInvalidCursor
+		}
+	} else if c.Score == nil || c.Score2 == nil || *c.Score < NoScore || *c.Score > 100 || *c.Score2 < NoScore || *c.Score2 > 100 {
 		return Cursor{}, ErrInvalidCursor
 	}
 	return c, nil

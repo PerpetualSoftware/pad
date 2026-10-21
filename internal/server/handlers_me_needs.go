@@ -53,7 +53,7 @@ type needsResponse struct {
 // handleMeNeeds lists, across every workspace the caller belongs to or has a
 // grant in, the open items that need THIS person, oldest-waiting first.
 //
-//	GET /me/needs?sort=age&workspace=&view=active|hidden&limit=50&cursor=
+//	GET /me/needs?sort=age|importance|simplicity&workspace=&view=active|hidden&limit=50&cursor=
 func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 	// An app principal has its own door; refused before anything else, since
 	// app contexts also set a current user.
@@ -71,8 +71,8 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 	if sortBy == "" {
 		sortBy = needs.SortAge
 	}
-	if sortBy != needs.SortAge {
-		writeError(w, http.StatusBadRequest, "validation_error", "sort must be age")
+	if !needs.ValidSort(sortBy) {
+		writeError(w, http.StatusBadRequest, "validation_error", "sort must be age, importance or simplicity")
 		return
 	}
 	if view == "" {
@@ -161,9 +161,9 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(resp.Workspaces, func(a, b int) bool { return resp.Workspaces[a].Slug < resp.Workspaces[b].Slug })
 	resp.Total = len(inView)
 
-	sort.Slice(inView, func(a, b int) bool { return needs.KeyOf(inView[a]).Less(needs.KeyOf(inView[b])) })
+	sort.Slice(inView, func(a, b int) bool { return needs.KeyFor(sortBy, inView[a]).Less(needs.KeyFor(sortBy, inView[b])) })
 	if after != nil {
-		i := sort.Search(len(inView), func(i int) bool { return after.Less(needs.KeyOf(inView[i])) })
+		i := sort.Search(len(inView), func(i int) bool { return after.Less(needs.KeyFor(sortBy, inView[i])) })
 		inView = inView[i:]
 	}
 	more := len(inView) > limit

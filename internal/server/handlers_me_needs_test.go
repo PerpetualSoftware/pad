@@ -483,7 +483,7 @@ func TestNeedsMe_PaginationTotalOrder(t *testing.T) {
 		if strings.Join(got, ",") != strings.Join(want, ",") || pages != 3 {
 			t.Fatalf("pages %d, order\n got %v\nwant %v", pages, got, want)
 		}
-		for _, bad := range []string{"?cursor=garbage", "?cursor=" + cursor + "&view=hidden", "?limit=0", "?limit=x", "?sort=importance", "?view=other"} {
+		for _, bad := range []string{"?cursor=garbage", "?cursor=" + cursor + "&view=hidden", "?limit=0", "?limit=x", "?sort=bogus", "?view=other"} {
 			rr := f.get(alice, bad)
 			if rr.Code != http.StatusBadRequest {
 				t.Fatalf("%s: %d, want 400", bad, rr.Code)
