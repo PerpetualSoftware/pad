@@ -481,7 +481,8 @@ func (sc *simplicityScorer) Score(ctx context.Context, _ needs.Viewer, scope nee
 
 // simplicityOf is (3 - effort)/3 of 100. Effort is the level the stored effort
 // answer picked (argmax, so the value and the hint cannot disagree), when that
-// answer is to the question as asked now; otherwise a heuristic on the text.
+// answer is to the question as asked now and its level reads as 0-3; otherwise
+// a heuristic on the text.
 // "Current" is the question hash only, not the item's state: an answer one edit
 // behind is used, and a job owed for the item says so in Why.
 func simplicityOf(r *needs.Row, it store.NeedsScoringItem, decs []models.ItemDecision, qh map[string]string, refreshing bool) *needs.Score {

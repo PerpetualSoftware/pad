@@ -207,6 +207,8 @@ func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
 		{name: "P medium", prio: "medium", waited: 3.5, part: P, want: .5, value: 20}, // .125+.05+.025 = .20
 		{name: "P unset", prio: "", waited: 3.5, part: P, want: .5, value: 20},        // same as medium
 		{name: "P low", prio: "low", waited: 3.5, part: P, want: .25, value: 14},      // .0625+.05+.025 = .1375
+		{name: "P HIGH", prio: "HIGH", waited: 3.5, part: P, want: .75, value: 26},    // the match ignores case
+		{name: "P Critical", prio: "Critical", part: P, want: 1, value: 30},
 		// D on a low-priority row: .0625 + .05 + .20D.
 		{name: "D overdue", prio: "low", item: due("2026-03-09"), part: D, want: 1, value: 31}, // .3125
 		{name: "D today", prio: "low", item: due("2026-03-10"), part: D, want: 1, value: 31},
@@ -216,6 +218,10 @@ func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
 		{name: "D 14 days", prio: "low", item: due("2026-03-24"), part: D, want: 0, value: 11}, // .1125
 		{name: "D 15 days", prio: "low", item: due("2026-03-25"), part: D, want: 0},
 		{name: "D none", prio: "low", part: D, want: 0, value: 11},
+		// The earlier of due_date and end_date counts, whichever key holds it.
+		{name: "D end_date earlier", prio: "low", item: store.NeedsScoringItem{Fields: `{"due_date":"2026-03-17","end_date":"2026-03-12"}`}, part: D, want: 12.0 / 14},
+		{name: "D due_date earlier", prio: "low", item: store.NeedsScoringItem{Fields: `{"due_date":"2026-03-12","end_date":"2026-03-17"}`}, part: D, want: 12.0 / 14},
+		{name: "D end_date only", prio: "low", item: store.NeedsScoringItem{Fields: `{"end_date":"2026-03-17"}`}, part: D, want: .5, value: 21},
 		// A: .1125 + .10A.
 		{name: "A 0 days", prio: "low", waited: 0, part: A, want: 0, value: 11},
 		{name: "A 7 days", prio: "low", waited: 7, part: A, want: .5, value: 16},  // .1625
@@ -378,6 +384,12 @@ func TestNeedsYouSignals_HintTable(t *testing.T) {
 	s = simplicityOf(row, store.NeedsScoringItem{ContentRunes: 3000}, []models.ItemDecision{effortAnswer(level(0), "old")}, qh, false)
 	if s.Hint != "" || s.Value != 33 || strings.Join(s.Why, "|") != whyEstimated {
 		t.Fatalf("stale effort: %+v, want the heuristic (level 2)", s)
+	}
+	// A current effort answer whose level cannot be read (here 7, outside 0-3)
+	// is no answer: the heuristic, with no hint.
+	s = simplicityOf(row, store.NeedsScoringItem{ContentRunes: 3000}, []models.ItemDecision{effortAnswer(`{"7":0.9}`, "qe"), mediumAnswer("device", 0.9, "qm")}, qh, false)
+	if s.Hint != "" || s.Value != 33 || strings.Join(s.Why, "|") != whyEstimated {
+		t.Fatalf("unreadable effort: %+v, want the heuristic (level 2)", s)
 	}
 	// An owed job adds the refreshing note, over the answer it still uses.
 	s = simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(1), "qe")}, qh, true)
