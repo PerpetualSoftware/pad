@@ -12,8 +12,6 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-
-	"github.com/PerpetualSoftware/pad/internal/billing"
 )
 
 const (
@@ -95,7 +93,7 @@ type Config struct {
 	PushGatewayURL string `toml:"push_gateway_url"`
 	// PushGatewaySecret is the X-Cloud-Secret sent to the push gateway
 	// (PAD_PUSH_GATEWAY_SECRET, TASK-3939). Empty falls back to the cloud
-	// outbound secret: see ResolvePushGatewaySecret.
+	// outbound secret: see resolvePushGatewaySecret in cmd/pad.
 	PushGatewaySecret string `toml:"push_gateway_secret"`
 	MCPPublicURL      string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
 	AuthServerURL     string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
@@ -892,16 +890,4 @@ func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
 
 func (c *Config) LogFile() string {
 	return filepath.Join(c.DataDir, "logs", "server.log")
-}
-
-// ResolvePushGatewaySecret is the secret to send the push gateway: the explicit
-// PAD_PUSH_GATEWAY_SECRET, else what pad already sends pad-cloud
-// (PAD_CLOUD_OUTBOUND_SECRET, else the last PAD_CLOUD_SECRET entry). Empty
-// when none is set; startup refuses that while a gateway URL is configured.
-func (c *Config) ResolvePushGatewaySecret() string {
-	explicit := c.PushGatewaySecret
-	if strings.TrimSpace(explicit) == "" {
-		explicit = c.CloudOutboundSecret
-	}
-	return billing.ResolveOutboundSecret(explicit, c.CloudSecret)
 }

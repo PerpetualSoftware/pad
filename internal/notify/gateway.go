@@ -120,7 +120,11 @@ func (g *Gateway) Send(ctx context.Context, msgs []Message) ([]Result, error) {
 		}
 		return nil, fmt.Errorf("%w: transport error", ErrUnavailable)
 	}
-	defer resp.Body.Close()
+	// Drain what is left (bounded) so the connection can be reused (TASK-3939 r1-H3).
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
+		resp.Body.Close()
+	}()
 	switch {
 	case resp.StatusCode == http.StatusBadRequest:
 		return nil, ErrBadRequest

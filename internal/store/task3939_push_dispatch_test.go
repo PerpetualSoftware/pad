@@ -100,10 +100,11 @@ func TestClaimNotifications_SettleStateAndLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	// "tok" holds old2 already (fresh claim, not reclaimable by anyone, itself
-	// included, until the lease lapses); it now also takes old1.
+	// included, until the lease lapses). This call returns ONLY what it
+	// claimed: old1, not the already-held old2 (TASK-3939 r1-H1).
 	m := ids(got)
-	if !m[old1] || m[fresh] || m[sent] {
-		t.Fatalf("claimed %v, want old1 and neither the fresh nor the sent row", m)
+	if len(got) != 1 || !m[old1] || m[old2] || m[fresh] || m[sent] {
+		t.Fatalf("claimed %v, want exactly old1", m)
 	}
 	if got[0].UserID != u.ID || got[0].WorkspaceID != f.ws.ID || got[0].ItemID != f.item.ID || got[0].Kind != "comment" || got[0].PushState != "pending" {
 		t.Fatalf("row not read back whole: %+v", got[0])
@@ -163,8 +164,8 @@ func TestClaimNotifications_StaleCandidateDoesNotSteal(t *testing.T) {
 	id := f.seedNotif(t, u.ID, ago(time.Minute))
 	// Another claimer already holds it, freshly.
 	f.s.mustExec(t, `UPDATE user_notifications SET claim_token = 'OTHER', claimed_at = ? WHERE id = ?`, now(), id)
-	if err := f.s.claimNotificationIDs("MINE", []string{id}, ago(10*time.Second), ago(time.Minute)); err != nil {
-		t.Fatal(err)
+	if got, err := f.s.claimNotificationIDs("MINE", []string{id}, ago(10*time.Second), ago(time.Minute), now()); err != nil || len(got) != 0 {
+		t.Fatalf("stole a held row: %v, %v", ids(got), err)
 	}
 	// A candidate that has since been settled, or is younger than the settle
 	// cutoff, is not claimed either. Kills: dropping the UPDATE's state or
@@ -172,8 +173,8 @@ func TestClaimNotifications_StaleCandidateDoesNotSteal(t *testing.T) {
 	sentID := f.seedNotif(t, u.ID, ago(time.Minute))
 	f.s.mustExec(t, `UPDATE user_notifications SET push_state = 'sent' WHERE id = ?`, sentID)
 	freshID := f.seedNotif(t, u.ID, ago(2*time.Second))
-	if err := f.s.claimNotificationIDs("MINE", []string{sentID, freshID}, ago(10*time.Second), ago(time.Minute)); err != nil {
-		t.Fatal(err)
+	if got, err := f.s.claimNotificationIDs("MINE", []string{sentID, freshID}, ago(10*time.Second), ago(time.Minute), now()); err != nil || len(got) != 0 {
+		t.Fatalf("claimed a stale candidate: %v, %v", ids(got), err)
 	}
 	for _, id := range []string{sentID, freshID} {
 		if _, _, tok, _ := f.notifRow(t, id); tok != "" {
@@ -621,4 +622,85 @@ func TestLivePushDevices_SharedTokenTieGoesToHigherID(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Kills (TASK-3939 r1-H1): dropping the id predicate from the read-back (a row
+// the reused token holds comes back though this call never claimed it; the
+// fixed ts makes the claimed_at predicate unable to tell them apart); dropping
+// the claimed_at predicate (a stale candidate the same token holds under a
+// fresh lease comes back).
+func TestClaimNotifications_ReusedTokenReturnsOnlyThisCallsRows(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	held := f.seedNotif(t, u.ID, ago(time.Minute))
+	cand := f.seedNotif(t, u.ID, ago(50*time.Second))
+	const ts = "2030-01-01T00:00:00Z"
+	// Held by the same token, fresh lease, stamped with the SAME ts as the call.
+	f.s.mustExec(t, `UPDATE user_notifications SET claim_token = 'tok', claimed_at = ? WHERE id = ?`, ts, held)
+	got, err := f.s.claimNotificationIDs("tok", []string{cand}, ago(10*time.Second), ago(time.Minute), ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != cand {
+		t.Fatalf("got %v, want only %s", ids(got), cand)
+	}
+	// A stale candidate the token holds under a fresh, older lease is not
+	// reclaimed by the UPDATE, and must not be read back either.
+	stale := f.seedNotif(t, u.ID, ago(55*time.Second))
+	f.s.mustExec(t, `UPDATE user_notifications SET claim_token = 'tok', claimed_at = ? WHERE id = ?`, ago(5*time.Second), stale)
+	got, err = f.s.claimNotificationIDs("tok", []string{stale}, ago(10*time.Second), ago(time.Minute), now())
+	if err != nil || len(got) != 0 {
+		t.Fatalf("stale candidate read back: %v, %v", ids(got), err)
+	}
+}
+
+// (a) a reused token already holds a row under a fresh lease: the next call
+// neither returns it nor counts it toward limit. (b) more held rows plus new
+// candidates than limit: at most limit, only this call's rows. (c) a held row
+// whose lease lapsed IS reclaimable by the same token, claimed_at refreshed.
+func TestClaimNotifications_ReusedToken(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	settle, lease := at(10*time.Second), at(time.Minute)
+
+	h1 := f.seedNotif(t, u.ID, ago(5*time.Minute))
+	h2 := f.seedNotif(t, u.ID, ago(4*time.Minute))
+	first, err := f.s.ClaimPendingNotifications("tok", 2, settle, lease)
+	if err != nil || len(first) != 2 {
+		t.Fatalf("first claim: %v, %v", ids(first), err)
+	}
+	n1 := f.seedNotif(t, u.ID, ago(3*time.Minute))
+	n2 := f.seedNotif(t, u.ID, ago(2*time.Minute))
+	n3 := f.seedNotif(t, u.ID, ago(time.Minute))
+
+	// (a)
+	got, err := f.s.ClaimPendingNotifications("tok", 1, settle, lease)
+	if err != nil || len(got) != 1 || got[0].ID != n1 {
+		t.Fatalf("(a) got %v, %v, want only %s", ids(got), err, n1)
+	}
+	// (b) two held (h1,h2) plus n1 held now, n2,n3 new, limit 1.
+	got, err = f.s.ClaimPendingNotifications("tok", 1, settle, lease)
+	if err != nil || len(got) != 1 || got[0].ID != n2 {
+		t.Fatalf("(b) got %v, %v, want only %s", ids(got), err, n2)
+	}
+	got, err = f.s.ClaimPendingNotifications("tok", 5, settle, lease)
+	if err != nil || len(got) != 1 || got[0].ID != n3 {
+		t.Fatalf("(b) got %v, %v, want only %s", ids(got), err, n3)
+	}
+	// (c) lapse h1's lease: the same token reclaims it, claimed_at refreshed.
+	f.s.mustExec(t, `UPDATE user_notifications SET claimed_at = ? WHERE id = ?`, ago(time.Hour), h1)
+	got, err = f.s.ClaimPendingNotifications("tok", 5, settle, lease)
+	if err != nil || len(got) != 1 || got[0].ID != h1 {
+		t.Fatalf("(c) got %v, %v, want only %s", ids(got), err, h1)
+	}
+	var claimedAt string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT claimed_at FROM user_notifications WHERE id = ?`), h1).Scan(&claimedAt); err != nil {
+		t.Fatal(err)
+	}
+	if claimedAt < ago(time.Minute) {
+		t.Fatalf("(c) claimed_at not refreshed: %s", claimedAt)
+	}
+	_ = h2
 }

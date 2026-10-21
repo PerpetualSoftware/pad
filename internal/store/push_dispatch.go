@@ -97,8 +97,14 @@ const notificationIDChunk = 500
 // at least as old as settleCutoff (so a burst settles before it is pushed) and
 // not held by a live claim (claimed_at older than leaseCutoff, or never).
 // Each candidate is claimed by its own conditional UPDATE carrying the same
-// availability predicate, so two claimers get disjoint sets; the rows are then
-// read back by token. Oldest first.
+// availability predicate, so two claimers get disjoint sets. Oldest first.
+//
+// The result is ONLY the rows this call claimed: a subset of this call's
+// candidate ids, stamped with this call's claim_token and claimed_at. It never
+// exceeds limit and never includes a row the token already held from an
+// earlier call, so the contract holds even when a token is reused across
+// calls (TASK-3939 r1-H1). A held row whose lease lapsed is a candidate again
+// and is returned with claimed_at refreshed.
 func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff, leaseCutoff time.Time) ([]Notification, error) {
 	if token == "" {
 		return nil, errEmptyClaimToken
@@ -131,15 +137,42 @@ func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff,
 	if len(ids) == 0 {
 		return nil, nil
 	}
+	return s.claimNotificationIDs(token, ids, settle, lease, now())
+}
 
-	if err := s.claimNotificationIDs(token, ids, settle, lease); err != nil {
-		return nil, err
+// claimNotificationIDs is the ARBITER: one conditional UPDATE per candidate,
+// each carrying its own availability predicate, stamped with ts; it then reads
+// back the candidates that now carry this token AND ts. Split out so a test
+// can hand it a stale candidate list (a row another claimer took since the
+// select) and a fixed ts, which the public entry point's own select would
+// already have filtered.
+func (s *Store) claimNotificationIDs(token string, ids []string, settle, lease, ts string) ([]Notification, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("claim notifications: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, id := range ids {
+		if _, err := tx.Exec(s.q(`
+			UPDATE user_notifications
+			SET claim_token = ?, claimed_at = ?
+			WHERE id = ?
+			  AND push_state = 'pending'
+			  AND created_at <= ?
+			  AND (claimed_at IS NULL OR claimed_at < ?)`), token, ts, id, settle, lease); err != nil {
+			return nil, fmt.Errorf("claim notification %s: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("claim notifications: %w", err)
 	}
 
+	ph, idArgs := idPlaceholders(ids)
+	args := append(idArgs, token, ts)
 	out, err := s.db.Query(s.q(`SELECT `+notificationColumns+`
 		FROM user_notifications
-		WHERE claim_token = ? AND push_state = 'pending'
-		ORDER BY created_at, id`), token)
+		WHERE id IN (`+ph+`) AND claim_token = ? AND claimed_at = ? AND push_state = 'pending'
+		ORDER BY created_at, id`), args...)
 	if err != nil {
 		return nil, fmt.Errorf("claim notifications: read back: %w", err)
 	}
@@ -153,34 +186,6 @@ func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff,
 		claimed = append(claimed, n)
 	}
 	return claimed, out.Err()
-}
-
-// claimNotificationIDs is the ARBITER: one conditional UPDATE per candidate,
-// each carrying its own availability predicate. Split out so a test can hand
-// it a stale candidate list (a row another claimer took since the select),
-// which the public entry point's own select would already have filtered.
-func (s *Store) claimNotificationIDs(token string, ids []string, settle, lease string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("claim notifications: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	ts := now()
-	for _, id := range ids {
-		if _, err := tx.Exec(s.q(`
-			UPDATE user_notifications
-			SET claim_token = ?, claimed_at = ?
-			WHERE id = ?
-			  AND push_state = 'pending'
-			  AND created_at <= ?
-			  AND (claimed_at IS NULL OR claimed_at < ?)`), token, ts, id, settle, lease); err != nil {
-			return fmt.Errorf("claim notification %s: %w", id, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("claim notifications: %w", err)
-	}
-	return nil
 }
 
 // ExpireStaleNotifications turns pending rows created before createdCutoff

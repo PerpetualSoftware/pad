@@ -284,3 +284,30 @@ func serveWith(t *testing.T, secret string, h http.HandlerFunc) *Gateway {
 	t.Cleanup(srv.Close)
 	return NewGateway(srv.URL, secret)
 }
+
+// Kills (TASK-3939 r1-H3): closing a non-200 body without draining it. The
+// handler writes a body bigger than the transport buffers, then records
+// whether its full write completed; a client that closes early aborts it.
+func TestGateway_Non200BodyIsDrained(t *testing.T) {
+	var completed atomic.Bool
+	done := make(chan struct{})
+	g := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		chunk := []byte(strings.Repeat("x", 64<<10))
+		for i := 0; i < 8; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+		}
+		completed.Store(true)
+	})
+	if _, err := g.Send(context.Background(), twoMsgs()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+	<-done
+	if !completed.Load() {
+		t.Fatal("body was closed before it was consumed")
+	}
+}
