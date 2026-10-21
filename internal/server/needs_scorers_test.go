@@ -534,6 +534,31 @@ func TestNeedsYouSignals_BindingThroughServeHTTP(t *testing.T) {
 	if resp.Rows[0].Simplicity.Value != 100 || resp.Rows[0].Simplicity.Hint != "" {
 		t.Fatalf("simplicity %+v", resp.Rows[0].Simplicity)
 	}
+}
+
+// Through the router: a request with a cursor scores at the cursor's as_of,
+// not the wall clock, so every page measures age and deadlines from one moment.
+func TestNeedsYouSignals_CursorPageScoresAtAsOf(t *testing.T) {
+	srv := testServer(t)
+	f := newNfx(t, srv)
+	owner, alice := f.user("owner"), f.user("alice")
+	ws := f.workspace("One", owner)
+	f.member(ws, alice, "editor")
+	asks := f.collection(ws, "Asks", true)
+	f.item(ws, asks, "Is this OK?", alice, nfxDay(1))
+	tok, err := srv.store.CreateAPIToken(alice.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	var resp needsResponse
+	parseJSON(t, rr, &resp)
+	if len(resp.Rows) != 1 || resp.Rows[0].Importance == nil {
+		t.Fatalf("rows %+v", resp.Rows)
+	}
 	if !resp.Rows[0].WaitingSince.Equal(nfxDay(1)) {
 		t.Fatalf("waiting_since %v, want %v", resp.Rows[0].WaitingSince, nfxDay(1))
 	}
