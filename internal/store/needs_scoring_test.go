@@ -1,8 +1,10 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -228,11 +230,17 @@ func TestGetBlocksEdges_CarriesTheTarget(t *testing.T) {
 	if err != nil || len(es) != 1 {
 		t.Fatalf("edges %v %v", es, err)
 	}
+	// Fields compare as JSON, not as text: Postgres stores them as JSONB and
+	// normalises key order and spacing (TASK-3959, caught by make test-pg).
+	sameJSON := func(got, want string) bool {
+		var g, w map[string]any
+		return json.Unmarshal([]byte(got), &g) == nil && json.Unmarshal([]byte(want), &w) == nil && reflect.DeepEqual(g, w)
+	}
 	e := es[0]
-	if e.SourceCollectionID != srcCol.ID || e.SourceFields != srcFields {
+	if e.SourceCollectionID != srcCol.ID || !sameJSON(e.SourceFields, srcFields) {
 		t.Fatalf("source = %q %q, want %q %q", e.SourceCollectionID, e.SourceFields, srcCol.ID, srcFields)
 	}
-	if e.TargetCollectionID != tgtCol.ID || e.TargetFields != tgtFields {
+	if e.TargetCollectionID != tgtCol.ID || !sameJSON(e.TargetFields, tgtFields) {
 		t.Fatalf("target = %q %q, want %q %q", e.TargetCollectionID, e.TargetFields, tgtCol.ID, tgtFields)
 	}
 }
