@@ -586,7 +586,9 @@ func TestNeedsYouSort_CursorStableAcrossPages(t *testing.T) {
 			t.Fatalf("importance order %v", got)
 		}
 
-		// A cursor this server did not mint, or minted for another sort, is refused.
+		// A malformed cursor, one minted for another sort, and one with a missing or
+		// out-of-range score are refused. (A validly encoded cursor with in-range
+		// scores is followed: it carries a position, not authority.)
 		page := f.need(alice, "?sort=importance&limit=2")
 		age := f.need(alice, "?limit=2")
 		two, three := 20, 30
@@ -620,30 +622,41 @@ func TestNeedsYouSignals_BindingThroughServeHTTP(t *testing.T) {
 	ws := f.workspace("One", owner)
 	f.member(ws, alice, "editor")
 	asks := f.collection(ws, "Asks", true)
-	low := f.item(ws, asks, "A long question to settle", alice, nfxDay(1))
-	urgent := f.item(ws, asks, "Is this OK?", alice, nfxDay(2))
-	if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET fields = '{"status":"open","priority":"critical"}' WHERE id = '%s'`, urgent.ID)); err != nil {
-		t.Fatal(err)
+	// The two orders differ: importance runs deep, medium, shallow; simplicity
+	// runs medium, shallow (both 100, importance breaks the tie), deep (33).
+	deep := f.item(ws, asks, "Deep and urgent", alice, nfxDay(1))
+	f.item(ws, asks, "Is this OK?", alice, nfxDay(2))
+	shallow := f.item(ws, asks, "Is that fine?", alice, nfxDay(3))
+	for _, u := range []struct{ id, fields string }{
+		{deep.ID, `{"status":"open","priority":"critical"}`},
+		{shallow.ID, `{"status":"open","priority":"low"}`},
+	} {
+		if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET fields = '%s' WHERE id = '%s'`, u.fields, u.id)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET content = '%s' WHERE id = '%s'`, strings.Repeat("x", 3000), low.ID)); err != nil {
+	if _, err := srv.store.DB().Exec(fmt.Sprintf(`UPDATE items SET content = '%s' WHERE id = '%s'`, strings.Repeat("x", 3000), deep.ID)); err != nil {
 		t.Fatal(err)
 	}
 	tok, err := srv.store.CreateAPIToken(alice.ID, models.APITokenCreate{Name: "pat"}, 30, 365)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for sortBy, want := range map[string]string{"importance": "Is this OK?", "simplicity": "Is this OK?"} {
+	for sortBy, want := range map[string]string{
+		"importance": "Deep and urgent,Is this OK?,Is that fine?",
+		"simplicity": "Is this OK?,Is that fine?,Deep and urgent",
+	} {
 		rr := doRequestWithBearer(srv, "GET", "/api/v1/me/needs?sort="+sortBy, tok.Token, nil)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("%s: %d %s", sortBy, rr.Code, rr.Body.String())
 		}
 		var resp needsResponse
 		parseJSON(t, rr, &resp)
-		if len(resp.Rows) != 2 || resp.Rows[0].Importance == nil || resp.Rows[0].Simplicity == nil || len(resp.Degraded) != 0 {
+		if len(resp.Rows) != 3 || resp.Rows[0].Importance == nil || resp.Rows[0].Simplicity == nil || len(resp.Degraded) != 0 {
 			t.Fatalf("%s: rows %+v degraded %v (the scorers New registers must fill both scores)", sortBy, resp.Rows, resp.Degraded)
 		}
-		if resp.Rows[0].Item.Title != want || resp.Rows[0].Importance.Value <= resp.Rows[1].Importance.Value {
-			t.Fatalf("%s: order %v", sortBy, titles(resp.Rows))
+		if got := strings.Join(titles(resp.Rows), ","); got != want {
+			t.Fatalf("%s: order %s, want %s", sortBy, got, want)
 		}
 	}
 }

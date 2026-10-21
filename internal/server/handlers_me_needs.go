@@ -51,7 +51,8 @@ type needsResponse struct {
 // (rows [], total 0, hidden 0, workspaces [], no degraded).
 
 // handleMeNeeds lists, across every workspace the caller belongs to or has a
-// grant in, the open items that need THIS person, oldest-waiting first.
+// grant in, the open items that need THIS person: oldest-waiting first by default, or by importance
+// or simplicity (highest first, the other score breaking ties).
 //
 //	GET /me/needs?sort=age|importance|simplicity&workspace=&view=active|hidden&limit=50&cursor=
 func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
