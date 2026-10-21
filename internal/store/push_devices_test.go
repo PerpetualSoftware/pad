@@ -177,17 +177,42 @@ func TestPushDevices_Cap20_EvictsOldest(t *testing.T) {
 func TestPushDevices_Cap20_ConcurrentRegisters(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
-	const workers, rounds = 12, 5
+	const workers, rounds = 16, 4
+	u := notifyUser(t, s, "race@example.com")
+	seedSessions := make([]string, MaxPushDevicesPerUser-1)
+	for i := range seedSessions {
+		seedSessions[i], _ = pushSession(t, s, u.ID)
+	}
+	sessions := make([]string, workers)
+	for i := range sessions {
+		sessions[i], _ = pushSession(t, s, u.ID)
+	}
+	if s.dialect.Driver() == DriverPostgres {
+		// Widen the count-to-insert window so the race is not left to
+		// scheduler luck: each insert dwells 40ms. It is enabled only around
+		// the concurrent step, so seeding stays fast. The database is this
+		// test's own clone.
+		s.mustExec(t, `CREATE FUNCTION push_devices_slow() RETURNS trigger AS $$ BEGIN PERFORM pg_sleep(0.04); RETURN NEW; END $$ LANGUAGE plpgsql`)
+		s.mustExec(t, `CREATE TRIGGER push_devices_slow BEFORE INSERT ON push_devices FOR EACH ROW EXECUTE FUNCTION push_devices_slow()`)
+		s.mustExec(t, `ALTER TABLE push_devices DISABLE TRIGGER push_devices_slow`)
+	}
+	slow := func(on bool) {
+		if s.dialect.Driver() != DriverPostgres {
+			return
+		}
+		verb := "DISABLE"
+		if on {
+			verb = "ENABLE"
+		}
+		s.mustExec(t, `ALTER TABLE push_devices `+verb+` TRIGGER push_devices_slow`)
+	}
 	for r := 0; r < rounds; r++ {
-		u := notifyUser(t, s, fmt.Sprintf("race-%d@example.com", r))
-		for i := 0; i < MaxPushDevicesPerUser-1; i++ {
-			sid, _ := pushSession(t, s, u.ID)
+		// Back to 19 devices, one per seed session.
+		s.mustExec(t, `DELETE FROM push_devices WHERE user_id = ?`, u.ID)
+		for i, sid := range seedSessions {
 			register(t, s, u.ID, sid, fmt.Sprintf("seed-%d-%02d", r, i))
 		}
-		sessions := make([]string, workers)
-		for i := range sessions {
-			sessions[i], _ = pushSession(t, s, u.ID)
-		}
+		slow(true)
 		start := make(chan struct{})
 		errs := make([]error, workers)
 		var wg sync.WaitGroup
@@ -201,6 +226,7 @@ func TestPushDevices_Cap20_ConcurrentRegisters(t *testing.T) {
 		}
 		close(start)
 		wg.Wait()
+		slow(false)
 		for i, err := range errs {
 			if err != nil {
 				t.Errorf("round %d worker %d: %v", r, i, err)
