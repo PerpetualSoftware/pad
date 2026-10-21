@@ -714,7 +714,8 @@ func TestNeedsYouSignals_ReadFailureDegrades(t *testing.T) {
 // rule, which wants the answer current by item state as well as question: an
 // answer of .9 to the question as asked now, but on an edited item (state hash
 // moved, no refresh owed), weighs nothing, while the same answer on the item as
-// it stands counts and says so.
+// it stands counts and says so. A stale answer whose refresh is owed is held,
+// as the flag rule holds it.
 func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
 	srv := testServer(t)
 	f := newNfx(t, srv)
@@ -723,6 +724,7 @@ func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
 	tasks := f.collection(ws, "Tasks", false)
 	current := f.item(ws, tasks, "Pick a vendor", nil, nfxDay(1))
 	stale := f.item(ws, tasks, "Pick a host", nil, nfxDay(1))
+	held := f.item(ws, tasks, "Pick a region", nil, nfxDay(1))
 	attachAttentionRunner(t, srv) // after the items: no job is queued for either
 	runner := srv.decisionRunner()
 	qh, err := runner.CurrentQuestionHashes(context.Background(), ws.ID, decision.AttentionSetName)
@@ -738,17 +740,20 @@ func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
 			Answer: json.RawMessage(`{"type":"noul","noul":0.9}`), Provider: "stub", Model: "stub-1",
 			StateHash: stateHash, QuestionHash: qh[decision.AttentionNeedsHuman], ItemSeq: 1}
 	}
-	if err := srv.store.InsertItemDecisions(ws.ID, []models.ItemDecision{answer(current, st.Hash), answer(stale, "an-older-state")}); err != nil {
+	if err := srv.store.InsertItemDecisions(ws.ID, []models.ItemDecision{answer(current, st.Hash), answer(stale, "an-older-state"), answer(held, "an-older-state")}); err != nil {
 		t.Fatal(err)
 	}
 	if job, err := srv.store.GetDecisionJob(stale.ID, decision.AttentionSetName); err != nil || job != nil {
 		t.Fatalf("a job is owed for the stale item (%+v, %v): the flag rule would hold its answer", job, err)
 	}
+	if err := srv.store.OweDecisionJobs(ws.ID, decision.AttentionSetName, []string{held.ID}); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now()
 	row := func(it *models.Item) *needs.Row {
 		return &needs.Row{ItemID: it.ID, WorkspaceID: ws.ID, WaitingSince: now, Why: needs.Why{Rule: needs.RuleMentioned}}
 	}
-	rows := []*needs.Row{row(current), row(stale)}
+	rows := []*needs.Row{row(current), row(stale), row(held)}
 	deg, err := (&importanceScorer{s: srv, loc: time.UTC}).Score(context.Background(), needs.Viewer{UserID: owner.ID, Now: now},
 		needs.Scope{WorkspaceID: ws.ID, Unrestricted: true, CollectionIDs: []string{}, ItemIDs: []string{}}, rows)
 	if deg || err != nil {
@@ -761,5 +766,9 @@ func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
 	// Stale: H is the no-answer .5, so .125 + .05 = .175 -> 18, and no Why.
 	if s := rows[1].Importance; s.Value != 18 || slices.Contains(s.Why, whyNeedsHuman) {
 		t.Fatalf("stale answer: %+v, want 18 without %q", s, whyNeedsHuman)
+	}
+	// Stale but owed a refresh: held, like the current one.
+	if h := rows[2].Importance; h.Value != 22 || !slices.Contains(h.Why, whyNeedsHuman) {
+		t.Fatalf("stale answer with a refresh owed: %+v, want 22 with %q", h, whyNeedsHuman)
 	}
 }

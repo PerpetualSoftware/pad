@@ -343,6 +343,8 @@ func importanceDetail(loc *time.Location, r *needs.Row, it store.NeedsScoringIte
 	} else if d, ok := currentAnswer(decs, qh, decision.AttentionNeedsHuman); ok {
 		if pr, ok := decision.NoulValue(d); ok {
 			h = math.Max(0, math.Min(1, pr))
+			// The router's own threshold (handlers_me_needs.go), so the Why
+			// agrees with whether the item is flagged.
 			if h >= decision.AttentionThreshold {
 				why = append(why, whyNeedsHuman)
 			}
