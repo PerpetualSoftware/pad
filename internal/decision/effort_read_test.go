@@ -2,6 +2,7 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -70,5 +71,32 @@ func TestCurrentQuestionHashes_NilRunner(t *testing.T) {
 	got, err := r.CurrentQuestionHashes(context.Background(), "ws", AttentionSetName)
 	if err != nil || got != nil {
 		t.Fatalf("a nil runner = (%v, %v), want (nil, nil)", got, err)
+	}
+}
+
+// TASK-3959 1a r3: the hashes the reader reports are the ones the runner
+// stamps on a stored answer, read back from the store rather than recomputed.
+func TestCurrentQuestionHashes_MatchWhatTheRunnerStamps(t *testing.T) {
+	fx := newAttentionFixture(t)
+	it := fx.item(t, fx.tasks.ID, "open")
+	fx.tick(t)
+	stored, err := fx.s.LatestItemDecisions(it.ID)
+	if err != nil || len(stored) == 0 {
+		t.Fatalf("precondition: no stored answers: %v %v", stored, err)
+	}
+	got, err := fx.r.CurrentQuestionHashes(context.Background(), fx.ws.ID, AttentionSetName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(stored) {
+		t.Fatalf("hashes for %d keys, runner stored %d", len(got), len(stored))
+	}
+	for _, d := range stored {
+		if d.QuestionHash == "" || got[d.QuestionKey] != d.QuestionHash {
+			t.Errorf("key %q: reader %q, runner stamped %q", d.QuestionKey, got[d.QuestionKey], d.QuestionHash)
+		}
+	}
+	if _, err := fx.r.CurrentQuestionHashes(context.Background(), fx.ws.ID, "no-such-set"); !errors.Is(err, ErrUnknownSet) {
+		t.Fatalf("unknown set error = %v, want ErrUnknownSet", err)
 	}
 }
