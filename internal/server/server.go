@@ -561,6 +561,10 @@ type Server struct {
 	// public exposure should leave it off and use the logs-token path.
 	bypassSetupToken bool
 
+	// pushGatewayURL is PAD_PUSH_GATEWAY_URL (TASK-3938); empty means this
+	// server offers no push. Set once at startup by SetPushGateway.
+	pushGatewayURL string
+
 	// restoreAckFault is a TEST SEAM (always nil in production). When non-nil,
 	// handleRestoreItemVersion's collab commit closure invokes it AFTER the restore
 	// transaction has durably committed; a non-nil return simulates a Postgres commit
@@ -2096,6 +2100,12 @@ func (s *Server) setupRouter() {
 			// The cross-workspace needs-you inbox (TASK-3920): outside the
 			// /{slug} subrouter, so the handler admits each workspace itself.
 			r.Get("/me/needs", s.handleMeNeeds)
+			// Push device registration (session-only) and the account's push
+			// settings (TASK-3938).
+			r.Put("/me/push-devices/{connection_id}", s.handlePutPushDevice)
+			r.Delete("/me/push-devices/{connection_id}", s.handleDeletePushDevice)
+			r.Get("/me/notification-settings", s.handleGetNotificationSettings)
+			r.Put("/me/notification-settings", s.handlePutNotificationSettings)
 			r.Get("/me/ui-dismissals", s.handleListUIDismissals)
 			r.Put("/me/ui-dismissals/{key}", s.handleDismissUI)
 			r.Get("/tutorials", s.handleListTutorials)
