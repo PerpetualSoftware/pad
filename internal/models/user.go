@@ -15,7 +15,6 @@ type User struct {
 	PasswordHash     string `json:"-"`    // Never serialized
 	Role             string `json:"role"` // "admin" or "member"
 	AvatarURL        string `json:"avatar_url,omitempty"`
-	TOTPSecret       string `json:"-"` // Never serialized
 	TOTPEnabled      bool   `json:"totp_enabled"`
 	RecoveryCodes    string `json:"-"`    // Never serialized
 	Plan             string `json:"plan"` // "free", "pro", or "self-hosted"

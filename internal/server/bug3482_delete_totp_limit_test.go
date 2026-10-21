@@ -64,15 +64,11 @@ func TestDeleteAccount_BUG3482_TOTPCodeIsSingleUse(t *testing.T) {
 	userID, token := bootstrapAccountDeleteUser(t, srv, "")
 	secret := enableTOTPForDeleteUser(t, srv, userID)
 	code := validTOTPCode(t, secret)
-	u, err := srv.store.GetUser(userID)
-	if err != nil || u == nil {
-		t.Fatalf("GetUser: %v", err)
-	}
 	step, ok := deriveTOTPStep(code, secret, time.Now().UTC())
 	if !ok {
 		t.Fatal("precondition: the minted code derives a step")
 	}
-	if claimed, err := srv.store.ConsumeTOTPStep(userID, u.TOTPSecret, step); err != nil || !claimed {
+	if claimed, err := srv.store.ConsumeTOTPStep(userID, secret, step); err != nil || !claimed {
 		t.Fatalf("precondition: claim the step (%v, %v)", claimed, err)
 	}
 	rr := deleteAccountReq(srv, map[string]interface{}{

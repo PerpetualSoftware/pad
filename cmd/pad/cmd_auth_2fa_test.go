@@ -213,7 +213,7 @@ func TestTASK403_SetupWhenAlreadyOnRefusesAndKeepsTheSecret(t *testing.T) {
 	u := f.passwordUser(t, "already@example.com")
 	client, _ := f.session(t, u)
 	enable(t, client)
-	before, _ := f.store.GetUser(u.ID)
+	before, _ := f.store.TOTPSecretForVerify(u.ID)
 
 	var out bytes.Buffer
 	err := runTwoFactorSetup(client, bufio.NewReader(strings.NewReader("")), &out)
@@ -223,8 +223,8 @@ func TestTASK403_SetupWhenAlreadyOnRefusesAndKeepsTheSecret(t *testing.T) {
 	if strings.Contains(out.String(), "otpauth://") {
 		t.Fatalf("a new secret was shown for an account that has 2FA on:\n%s", out.String())
 	}
-	after, _ := f.store.GetUser(u.ID)
-	if after.TOTPSecret != before.TOTPSecret {
+	after, _ := f.store.TOTPSecretForVerify(u.ID)
+	if after != before || after == "" {
 		t.Fatal("the stored secret changed")
 	}
 }

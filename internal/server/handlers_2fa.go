@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/pquerna/otp/totp"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 const (
@@ -224,12 +226,7 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 				"This account has no password: enter a code from your authenticator app, or a recovery code, to disable 2FA")
 			return
 		}
-		full, err := s.store.GetUser(user.ID)
-		if err != nil || full == nil {
-			writeInternalError(w, fmt.Errorf("load user for 2fa disable: %w", err))
-			return
-		}
-		verified, answered := s.checkSecondFactor(w, full, "user:"+full.ID, input.Code, input.RecoveryCode)
+		verified, answered := s.checkSecondFactor(w, user, "user:"+user.ID, input.Code, input.RecoveryCode)
 		if answered {
 			return
 		}
@@ -366,10 +363,14 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 // (hashed), a door behind a session passes "user:"+id, so a stolen session
 // gets the same six tries an hour as a stolen challenge.
 //
-// user must be loaded from the store (it carries the TOTP secret). answered is
-// true when it already wrote the response (rate limited, or a store error);
-// the caller then returns. A false verified with answered false is a wrong,
-// replayed or missing code.
+// The TOTP secret is not on user: it is loaded by TOTPSecretForVerify after the
+// limiter charge (BUG-4019). A secret that will not decrypt answers a TOTP code
+// with 500 and logs once. A request carrying only a recovery code still works,
+// since that branch does not need the secret; one carrying both is answered by
+// the TOTP branch first, so it gets the 500.
+// answered is true when it already wrote the response (rate limited, or a store
+// error); the caller then returns. A false verified with answered false is a
+// wrong, replayed or missing code.
 func (s *Server) checkSecondFactor(w http.ResponseWriter, user *models.User, attemptKey, code, recoveryCode string) (verified, answered bool) {
 	// Try TOTP code first
 	if code != "" {
@@ -380,33 +381,56 @@ func (s *Server) checkSecondFactor(w http.ResponseWriter, user *models.User, att
 				return false, true
 			}
 		}
-		// Capture the clock ONCE so validation and step derivation agree on the
-		// window. totp.Validate reads its own time.Now(); if a boundary crosses
-		// between it and deriveTOTPStep, a code valid under one clock could
-		// derive to a step outside the other's ±1 window and be spuriously
-		// rejected. ValidateCustom with the same `now` + the opts Validate bakes
-		// in (period 30, skew 1, SHA1, 6 digits) closes that race.
-		now := time.Now().UTC()
-		valid, _ := totp.ValidateCustom(code, user.TOTPSecret, now, totp.ValidateOpts{
-			Period:    totpPeriod,
-			Skew:      1,
-			Digits:    otp.DigitsSix,
-			Algorithm: otp.AlgorithmSHA1,
-		})
-		if valid {
-			// Single-use enforcement (BUG-2054): a valid TOTP code is otherwise
-			// replayable within its ~30s window (plus skew). Derive the step
-			// the code actually matched and atomically claim it; a step already
-			// consumed means this is a replay, so leave verified=false and let
-			// it fall through to the same invalid-code response (no replay
-			// signal is leaked to the caller).
-			if step, ok := deriveTOTPStep(code, user.TOTPSecret, now); ok {
-				consumed, err := s.store.ConsumeTOTPStep(user.ID, user.TOTPSecret, step)
-				if err != nil {
-					writeInternalError(w, err)
-					return false, true
+		// This is the check's one read of the secret, after the limiter charge:
+		// a user row no longer carries it, so a secret that will not decrypt
+		// fails this check alone (BUG-4019). No secret means this branch cannot
+		// verify (the recovery branch below still can); any other error fails
+		// closed, and is logged once, without secret material. writeError, not
+		// writeInternalError, which would log the same error a second time.
+		secret, err := s.store.TOTPSecretForVerify(user.ID)
+		if err != nil && !errors.Is(err, store.ErrNoTOTPSecret) {
+			slog.Error("load totp secret for second factor", "user_id", user.ID, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
+			return false, true
+		}
+		// 2FA on with no secret behind it (an emptied column) cannot verify a
+		// code, so the user is held to recovery codes; say so to the operator,
+		// with the user id only (BUG-4019 r2). user.TOTPEnabled is the request's
+		// snapshot, and a disable landing since then also reads as no secret, so
+		// the message claims only what is true now: there was nothing to verify
+		// against (BUG-4019 r3).
+		if err != nil && user.TOTPEnabled {
+			slog.Warn("no totp secret to verify a code against", "user_id", user.ID)
+		}
+		if err == nil {
+			// Capture the clock ONCE so validation and step derivation agree on the
+			// window. totp.Validate reads its own time.Now(); if a boundary crosses
+			// between it and deriveTOTPStep, a code valid under one clock could
+			// derive to a step outside the other's ±1 window and be spuriously
+			// rejected. ValidateCustom with the same `now` + the opts Validate bakes
+			// in (period 30, skew 1, SHA1, 6 digits) closes that race.
+			now := time.Now().UTC()
+			valid, _ := totp.ValidateCustom(code, secret, now, totp.ValidateOpts{
+				Period:    totpPeriod,
+				Skew:      1,
+				Digits:    otp.DigitsSix,
+				Algorithm: otp.AlgorithmSHA1,
+			})
+			if valid {
+				// Single-use enforcement (BUG-2054): a valid TOTP code is otherwise
+				// replayable within its ~30s window (plus skew). Derive the step
+				// the code actually matched and atomically claim it; a step already
+				// consumed means this is a replay, so leave verified=false and let
+				// it fall through to the same invalid-code response (no replay
+				// signal is leaked to the caller).
+				if step, ok := deriveTOTPStep(code, secret, now); ok {
+					consumed, err := s.store.ConsumeTOTPStep(user.ID, secret, step)
+					if err != nil {
+						writeInternalError(w, err)
+						return false, true
+					}
+					verified = consumed
 				}
-				verified = consumed
 			}
 		}
 	}
