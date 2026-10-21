@@ -104,6 +104,12 @@ type Claim struct {
 // notificationIDChunk bounds the ids in one IN list.
 const notificationIDChunk = 500
 
+// maxNotificationClaim caps one claim at the gateway's batch size
+// (notify.MaxBatch; the store test pins the two together). A claim's limit is
+// clamped to 1..maxNotificationClaim: SQLite reads a negative LIMIT as
+// unbounded, and the read-back IN list is not chunked (TASK-3939 r4-L3).
+const maxNotificationClaim = 100
+
 // ClaimPendingNotifications claims up to limit pending rows for token: rows
 // at least as old as settleCutoff (so a burst settles before it is pushed) and
 // not held by a live claim (claimed_at older than leaseCutoff, or never).
@@ -125,6 +131,7 @@ func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff,
 	if token == "" {
 		return Claim{}, errEmptyClaimToken
 	}
+	limit = min(max(limit, 1), maxNotificationClaim)
 	settle, lease := cutoffTS(settleCutoff), cutoffTS(leaseCutoff)
 	rows, err := s.db.Query(s.q(`
 		SELECT id FROM user_notifications

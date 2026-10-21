@@ -225,8 +225,11 @@ func TestBody_FixedAndContentFree(t *testing.T) {
 	}
 }
 
-// No error and no log line, on any failure path, carries the secret or a
-// token. Distinctive sentinels make a leak unmistakable.
+// A pin, not a kill (TASK-3939 r4-L5): Send logs nothing and puts no response
+// body in its errors today, so this passes by construction. It guards the
+// invariant against a future change: no error and no log line, on any failure
+// path, carries the secret or a token. Distinctive sentinels make a leak
+// unmistakable.
 func TestGateway_NoSecretOrTokenInErrorsOrLogs(t *testing.T) {
 	const secret, tokA, tokB = "SENTINEL-SECRET-7f3a91", "SENTINEL-TOKEN-A-55d2", "SENTINEL-TOKEN-B-9c04"
 	var logs bytes.Buffer

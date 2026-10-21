@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/notify"
 )
 
 // These tests run on SQLite, and on Postgres too under `make test-pg`
@@ -772,5 +774,39 @@ func TestClaimNotifications_SameTokenSameSecondIsDisjoint(t *testing.T) {
 	c2, _ := f.s.ClaimPendingNotifications("tok", 1, at(10*time.Second), at(time.Minute))
 	if c1.Token == c2.Token || len(c1.Rows) != 1 || len(c2.Rows) != 1 || c1.Rows[0].ID == c2.Rows[0].ID {
 		t.Fatalf("calls shared a claim: %q %v / %q %v (rows %s %s)", c1.Token, ids(c1.Rows), c2.Token, ids(c2.Rows), c, d)
+	}
+}
+
+// Kills (TASK-3939 r4-L3): an unclamped limit. A negative LIMIT is unbounded
+// on SQLite (every pending row is claimed) and an error on Postgres; a limit
+// above the gateway batch claims more rows than one Send can carry.
+func TestClaimNotifications_LimitIsClamped(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "a@example.com")
+	for i := 0; i < maxNotificationClaim+2; i++ {
+		f.seedNotif(t, u.ID, ago(30*time.Second))
+	}
+	got, err := claimRows(f.s, "tok", -1, at(10*time.Second), at(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("limit -1 claimed %d rows, want 1", len(got))
+	}
+	got, err = claimRows(f.s, "tok", 10*maxNotificationClaim, at(10*time.Second), at(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != maxNotificationClaim {
+		t.Fatalf("limit %d claimed %d rows, want %d", 10*maxNotificationClaim, len(got), maxNotificationClaim)
+	}
+}
+
+// A pin, not a behaviour test: the claim cap must stay the gateway's batch
+// size, so one claim always fits one Send.
+func TestMaxNotificationClaimIsGatewayBatch(t *testing.T) {
+	if maxNotificationClaim != notify.MaxBatch {
+		t.Fatalf("maxNotificationClaim = %d, notify.MaxBatch = %d", maxNotificationClaim, notify.MaxBatch)
 	}
 }
