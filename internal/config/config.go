@@ -86,8 +86,13 @@ type Config struct {
 	// production, set them to the canonical public URLs so the
 	// metadata document matches the cert and the URL agents paste into
 	// Claude Desktop.
-	MCPPublicURL  string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
-	AuthServerURL string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
+	// PushGatewayURL is where the push dispatcher sends notifications
+	// (PAD_PUSH_GATEWAY_URL, TASK-3938). Non-empty means push is configured;
+	// empty means this server offers no push and the device routes answer 404
+	// push_unavailable.
+	PushGatewayURL string `toml:"push_gateway_url"`
+	MCPPublicURL   string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
+	AuthServerURL  string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
 	// OpenAIAppsChallenge is the domain-verification token OpenAI's plugin
 	// dashboard issues, served verbatim at /.well-known/openai-apps-challenge
 	// on cloud (TASK-3321 G4). Validated in ResolveMCPEndpoints.
@@ -448,6 +453,9 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("PAD_CLOUD_OUTBOUND_SECRET"); v != "" {
 		cfg.CloudOutboundSecret = v
+	}
+	if v := os.Getenv("PAD_PUSH_GATEWAY_URL"); v != "" {
+		cfg.PushGatewayURL = v
 	}
 	if v := os.Getenv("PAD_MCP_PUBLIC_URL"); v != "" {
 		cfg.MCPPublicURL = v

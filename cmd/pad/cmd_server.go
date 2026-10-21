@@ -974,6 +974,7 @@ func serveCmd() *cobra.Command {
 			bypassEnv := os.Getenv("PAD_BYPASS_SETUP_TOKEN")
 			bypassSetupToken := bypassEnv == "true" || bypassEnv == "1"
 			srv.SetBypassSetupToken(bypassSetupToken && !cfg.IsCloudServer())
+			srv.SetPushGateway(cfg.PushGatewayURL)
 			if userCount, ucErr := s.UserCount(); ucErr != nil {
 				slog.Warn("could not check user count for bootstrap token wiring", "error", ucErr)
 			} else if userCount > 0 {
