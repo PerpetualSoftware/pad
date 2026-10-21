@@ -1,11 +1,13 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -220,4 +222,65 @@ func TestBody_FixedAndContentFree(t *testing.T) {
 	if BatchID(0) != "m0" || BatchID(99) != "m99" {
 		t.Error("batch ids")
 	}
+}
+
+// No error and no log line, on any failure path, carries the secret or a
+// token. Distinctive sentinels make a leak unmistakable.
+func TestGateway_NoSecretOrTokenInErrorsOrLogs(t *testing.T) {
+	const secret, tokA, tokB = "SENTINEL-SECRET-7f3a91", "SENTINEL-TOKEN-A-55d2", "SENTINEL-TOKEN-B-9c04"
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	a, _ := NewMessage("m0", "android", tokA, KindAssigned, "n1", "c1", 1)
+	b, _ := NewMessage("m1", "ios", tokB, KindMention, "n2", "c2", 1)
+	msgs := []Message{a, b}
+	echo := secret + " " + tokA + " " + tokB // a hostile gateway echoing everything
+
+	var errs []string
+	run := func(name string, g *Gateway) {
+		res, err := g.Send(context.Background(), msgs)
+		if err != nil {
+			errs = append(errs, err.Error())
+		}
+		for _, r := range res {
+			errs = append(errs, r.ID+" "+r.Status)
+		}
+		_ = name
+	}
+	status := func(code int) *Gateway {
+		return serveWith(t, secret, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+			io.WriteString(w, echo)
+		})
+	}
+	run("403", status(403))
+	run("503", status(503))
+	run("400", status(400))
+	run("bad results body", serveWith(t, secret, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, echo) }))
+	run("redirect", serveWith(t, secret, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/"+echo, http.StatusFound)
+	}))
+	dead := httptest.NewServer(http.NotFoundHandler())
+	url := dead.URL + "/" + secret + "/" + tokA
+	dead.Close()
+	run("transport error", NewGateway(url, secret))
+
+	if len(errs) < 6 {
+		t.Fatalf("collected %d outputs, want one per path", len(errs))
+	}
+	all := strings.Join(errs, "\n") + "\n" + logs.String()
+	for _, leak := range []string{secret, tokA, tokB} {
+		if strings.Contains(all, leak) {
+			t.Fatalf("%q leaked into errors or logs:\n%s", leak, all)
+		}
+	}
+}
+
+func serveWith(t *testing.T, secret string, h http.HandlerFunc) *Gateway {
+	t.Helper()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return NewGateway(srv.URL, secret)
 }

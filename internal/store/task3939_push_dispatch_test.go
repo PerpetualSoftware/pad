@@ -590,3 +590,35 @@ func TestClaimNotifications_HeldRowsDoNotCrowdLimit(t *testing.T) {
 		t.Fatalf("claimed %v, want only %s", ids(got), free)
 	}
 }
+
+// A shared token whose two rows carry the SAME created_at goes to the higher
+// id, in both directions, and to exactly one user.
+// Kills: dropping the tie-break (neither owns it), or flipping `>` (the lower
+// id owns it).
+func TestLivePushDevices_SharedTokenTieGoesToHigherID(t *testing.T) {
+	t.Parallel()
+	for _, aHigher := range []bool{true, false} {
+		t.Run(fmt.Sprintf("A higher id=%v", aHigher), func(t *testing.T) {
+			s := testStore(t)
+			a, b := notifyUser(t, s, "a@example.com"), notifyUser(t, s, "b@example.com")
+			stamp := ago(time.Hour)
+			da, _ := deviceAt(t, s, a.ID, "tie", stamp, time.Hour)
+			db, _ := deviceAt(t, s, b.ID, "tie", stamp, time.Hour)
+			lo, hi := "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+			idA, idB := lo, hi
+			if aHigher {
+				idA, idB = hi, lo
+			}
+			s.mustExec(t, `UPDATE push_devices SET id = ? WHERE id = ?`, idA, da)
+			s.mustExec(t, `UPDATE push_devices SET id = ? WHERE id = ?`, idB, db)
+			gotA, err := s.LivePushDevices(a.ID, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotB, _ := s.LivePushDevices(b.ID, time.Now())
+			if ownsA, ownsB := containsDevice(gotA, idA), containsDevice(gotB, idB); ownsA != aHigher || ownsB != !aHigher {
+				t.Fatalf("A owns=%v B owns=%v, want the higher id (A higher=%v) only", ownsA, ownsB, aHigher)
+			}
+		})
+	}
+}
