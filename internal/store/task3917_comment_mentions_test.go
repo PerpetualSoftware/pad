@@ -265,7 +265,7 @@ type commentWriteSite struct {
 // Keys are "<path from the repo root>:<enclosing top-level decl>".
 var commentWriteSites = map[string]commentWriteSite{
 	"internal/store/comments.go:createCommentTx":                         {"INDEXED: insert", 1},
-	"internal/store/comments.go:UpdateComment":                           {"INDEXED: edit (skips imported comments by ruling)", 1},
+	"internal/store/comments.go:updateComment":                           {"INDEXED: edit, behind UpdateComment and UpdateCommentAs (skips imported comments by ruling)", 1},
 	"internal/store/comments.go:DeleteComment":                           {"INDEXED: tombstone; the hard DELETE cascades on comment_id", 2},
 	"internal/store/comments.go:reapTombstonesTx":                        {"CASCADE: deletes emptied tombstones, which have no rows (the tombstone write already cleared them)", 1},
 	"internal/store/fenced_comments.go:CreateComment":                    {"INDEXED: an app's insert", 1},
