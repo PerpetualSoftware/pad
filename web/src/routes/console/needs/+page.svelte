@@ -26,6 +26,9 @@
 	let degraded = $state<string[]>([]);
 	let nextCursor = $state('');
 	let loading = $state(true);
+	// A quiet refetch is in flight. It shows "Loading…" only when there are no
+	// rows to keep on screen (H-F1: the empty text never shows with a cursor).
+	let refetching = $state(false);
 	let loadingMore = $state(false);
 	let loadError = $state('');
 	let actionError = $state('');
@@ -60,17 +63,27 @@
 	function requestRefetch() {
 		if (refetchedFor >= actionsDone) return;
 		refetchedFor = actionsDone;
-		void load(sort, view);
+		void load(sort, view, true);
 	}
 
-	async function load(s: NeedsSort, v: NeedsView) {
+	// `quiet` is used ONLY by requestRefetch (TASK-3923 r5): an automatic
+	// correction must not look like a page reload. It leaves `loading`, the
+	// errors and the rendered list alone until its response lands (through the
+	// ticket guard, as any load), and a FAILED quiet load changes nothing on
+	// screen. Mount, sort and view toggles and Try again are not quiet.
+	async function load(s: NeedsSort, v: NeedsView, quiet = false) {
 		const mine = ++ticket;
 		const startedAt = actionsDone;
 		let stale = false;
-		loading = true;
 		loadingMore = false;
-		loadError = '';
-		actionError = '';
+		if (quiet) {
+			refetching = true;
+		} else {
+			refetching = false;
+			loading = true;
+			loadError = '';
+			actionError = '';
+		}
 		try {
 			const res = await api.needs.list({ sort: s, view: v });
 			if (mine !== ticket) return;
@@ -81,8 +94,14 @@
 			workspaces = res.workspaces ?? [];
 			degraded = res.degraded ?? [];
 			nextCursor = res.next_cursor ?? '';
+			loadError = '';
 		} catch (e) {
 			if (mine !== ticket) return;
+			if (quiet) {
+				// Keep the rows, counts, cursor and degraded list exactly as they are.
+				console.warn('needs: background refresh failed');
+				return;
+			}
 			// Nothing from the previous view survives next to the error. `hidden`
 			// does: it counts everything this person hid, whatever the sort or
 			// view, so it is still true, and 0 would be a false "Hidden (0)".
@@ -93,7 +112,10 @@
 			nextCursor = '';
 			loadError = e instanceof Error ? e.message : 'Failed to load';
 		} finally {
-			if (mine === ticket) loading = false;
+			if (mine === ticket) {
+				loading = false;
+				refetching = false;
+			}
 		}
 		// THE CLASS FIX (TASK-3923 r3): a response whose request started before
 		// the latest completed dismiss/defer/restore was served by a state that may
@@ -272,7 +294,7 @@
 {/if}
 {#if actionError}<p class="error" role="alert" data-testid="needs-action-error">{actionError}</p>{/if}
 
-{#if loading}
+{#if loading || (refetching && rows.length === 0)}
 	<p class="muted">Loading…</p>
 {:else if loadError}
 	<p class="error" role="alert">{loadError}</p>

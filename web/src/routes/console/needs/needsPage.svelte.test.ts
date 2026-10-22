@@ -218,7 +218,7 @@ describe('needs page: dismiss', () => {
 		await click(btn('Dismiss'));
 		expect(refs()).toEqual(['TASK-1']);
 		expect(host.querySelector('[data-testid="needs-action-error"]')?.textContent).toContain('boom');
-		expect(btn(/^Hidden/).textContent).toContain('(0)');
+		expect(btn(/^Hidden/).textContent).toBe(before.hid);
 		expect(groupCounts()).toEqual([['WS alpha', '1']]);
 	});
 });
@@ -912,5 +912,118 @@ describe('needs page: r4 (empty state vs the cursor; a settle that did not apply
 			expect(refs()).toEqual(['TASK-5']);
 			expect(empty()).toBeNull();
 		});
+	});
+});
+
+describe('needs page: r5 (a quiet automatic refetch)', () => {
+	const deferred = () => {
+		let resolve!: (v: unknown) => void;
+		let reject!: (e: unknown) => void;
+		const promise = new Promise((res, rej) => {
+			resolve = res;
+			reject = rej;
+		});
+		return { promise, resolve, reject };
+	};
+	const inRow = (ref: string) => host.querySelector(`[data-ref="${ref}"]`)! as HTMLElement;
+	const actionErr = () => host.querySelector('[data-testid="needs-action-error"]');
+	const heading = () => host.querySelector('h1')?.textContent ?? '';
+	const alerts = () => [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent?.trim());
+
+	// Rows 1, 3, 5 with a cursor. A Load more is in flight when TASK-1's dismiss
+	// completes, so the Load more lands stale and requests ONE quiet refetch,
+	// which stays pending (`refetch`). Returns it, with the PUTs for further use.
+	async function pendingRefetch() {
+		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3'), row('a', 'TASK-5')], { total: 5, hidden: 0, next_cursor: 'c1' }));
+		const more = deferred();
+		list.mockImplementationOnce(() => more.promise);
+		await click(btn('Load more'));
+		snooze.mockResolvedValueOnce({});
+		await click(btn('Dismiss', inRow('TASK-1')));
+		const refetch = deferred();
+		list.mockImplementationOnce(() => refetch.promise);
+		more.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-7')], { total: 5, next_cursor: 'c2' }));
+		await settle();
+		expect(list).toHaveBeenCalledTimes(3);
+		expect(list).toHaveBeenLastCalledWith({ sort: 'age', view: 'active' });
+		return refetch;
+	}
+
+	it('a quiet refetch shows no Loading over the list and does not close an open defer menu', async () => {
+		const refetch = await pendingRefetch();
+		expect(host.textContent).not.toContain('Loading');
+		expect(refs()).toEqual(['TASK-3', 'TASK-5', 'TASK-7']);
+		await click(btn('Defer', inRow('TASK-3')));
+		expect(btn('Defer', inRow('TASK-3')).getAttribute('aria-expanded')).toBe('true');
+		refetch.resolve(resp([row('a', 'TASK-3'), row('a', 'TASK-5'), row('a', 'TASK-7')], { total: 3, hidden: 1 }));
+		await settle();
+		expect(refs()).toEqual(['TASK-3', 'TASK-5', 'TASK-7']);
+		expect(heading()).toContain('3');
+		expect(host.textContent).not.toContain('Loading');
+		// Still the same open menu after the response landed.
+		expect(btn('Defer', inRow('TASK-3')).getAttribute('aria-expanded')).toBe('true');
+	});
+
+	it('a quiet refetch does not clear an action error', async () => {
+		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3'), row('a', 'TASK-5')], { total: 5, next_cursor: 'c1' }));
+		const more = deferred();
+		list.mockImplementationOnce(() => more.promise);
+		await click(btn('Load more'));
+		const putA = deferred();
+		snooze.mockImplementationOnce(() => putA.promise);
+		await click(btn('Dismiss', inRow('TASK-1')));
+		snooze.mockRejectedValueOnce(new Error('B failed'));
+		await click(btn('Dismiss', inRow('TASK-3')));
+		expect(actionErr()?.textContent).toContain('B failed');
+		putA.resolve({});
+		await settle();
+		const refetch = deferred();
+		list.mockImplementationOnce(() => refetch.promise);
+		more.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-7')], { total: 5 }));
+		await settle();
+		expect(list).toHaveBeenCalledTimes(3);
+		expect(actionErr()?.textContent).toContain('B failed');
+		refetch.resolve(resp([row('a', 'TASK-3'), row('a', 'TASK-5')], { total: 2, hidden: 1 }));
+		await settle();
+		expect(refs()).toEqual(['TASK-3', 'TASK-5']);
+		expect(actionErr()?.textContent).toContain('B failed');
+	});
+
+	it('a FAILED quiet refetch keeps the list and counts and sets neither loadError nor actionError', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const refetch = await pendingRefetch();
+		const before = { refs: refs(), counts: groupCounts(), head: heading(), hid: btn(/^Hidden/).textContent, cursor: !!btn('Load more') };
+		refetch.reject(new Error('boom'));
+		await settle();
+		expect(refs()).toEqual(before.refs);
+		expect(groupCounts()).toEqual(before.counts);
+		expect(heading()).toBe(before.head);
+		expect(before.cursor).toBe(true);
+		expect(btn('Load more')).toBeTruthy();
+		expect(btn(/^Hidden/).textContent).toBe(before.hid);
+		expect(alerts()).toEqual([]);
+		expect(actionErr()).toBeNull();
+		expect(host.textContent).not.toContain('boom');
+		expect(host.textContent).not.toContain('Loading');
+		expect(list).toHaveBeenCalledTimes(3);
+		expect(warn).toHaveBeenCalledTimes(1);
+		warn.mockRestore();
+	});
+
+	it('a user-initiated toggle still shows Loading and clears the errors', async () => {
+		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+		snooze.mockRejectedValueOnce(new Error('nope'));
+		await click(btn('Dismiss', inRow('TASK-1')));
+		expect(actionErr()?.textContent).toContain('nope');
+		const next = deferred();
+		list.mockImplementationOnce(() => next.promise);
+		await click(btn('Importance'));
+		expect(host.textContent).toContain('Loading');
+		expect(refs()).toEqual([]);
+		expect(actionErr()).toBeNull();
+		next.resolve(resp([row('a', 'TASK-3')]));
+		await settle();
+		expect(refs()).toEqual(['TASK-3']);
+		expect(host.textContent).not.toContain('Loading');
 	});
 });
