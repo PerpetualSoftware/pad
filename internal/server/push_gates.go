@@ -181,7 +181,7 @@ func kindEnabled(set models.NotificationSettings, n store.Notification) (reason 
 	return ""
 }
 
-// deviceGate is G7/G8: the user's live devices (the newest live registrant
+// deviceGate is G7/G8: the user's live devices (the latest live registration
 // owns a shared token, an expired or revoked session is no device), and the
 // row must not predate the earliest of them. No live device is a skip too.
 func deviceGate(n store.Notification, devs []store.PushDevice) string {

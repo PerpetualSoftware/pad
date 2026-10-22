@@ -327,13 +327,16 @@ func (s *Store) PruneNotifications(olderThan time.Time) (int64, error) {
 }
 
 // LivePushDevices returns userID's devices a push may go to at now, earliest
-// registered first (ties by id), so element 0 is the earliest live device.
+// created first (ties by id), so element 0 is the earliest-created live device.
 //
 // A device is live when the session that registered it still exists, belongs
 // to the same user, and has not expired. And when another user holds the same
 // token (push_devices is unique on (user_id, token), not on token), only the
 // newest LIVE registrant owns it: A's notification never goes to a phone B
-// has since signed into. A tie on created_at goes to the larger id.
+// has since signed into. "Newest" is the latest registration (updated_at, which
+// every register refreshes), not created_at, which a same-user re-register keeps
+// (TASK-4027): otherwise the previous user would keep a phone the first user
+// has reclaimed. A tie on updated_at goes to the larger id.
 func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, error) {
 	ts := cutoffTS(at)
 	rows, err := s.db.Query(s.q(`
@@ -345,7 +348,7 @@ func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, erro
 		    SELECT 1 FROM push_devices d2
 		    JOIN sessions s2 ON s2.id = d2.session_id AND s2.user_id = d2.user_id AND s2.expires_at >= ?
 		    WHERE d2.token = d.token AND d2.user_id <> d.user_id
-		      AND (d2.created_at > d.created_at OR (d2.created_at = d.created_at AND d2.id > d.id)))
+		      AND (d2.updated_at > d.updated_at OR (d2.updated_at = d.updated_at AND d2.id > d.id)))
 		ORDER BY d.created_at, d.id`), ts, userID, ts)
 	if err != nil {
 		return nil, fmt.Errorf("live push devices: %w", err)
