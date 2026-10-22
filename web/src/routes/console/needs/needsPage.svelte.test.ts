@@ -517,13 +517,16 @@ describe('needs page: r1 fixes', () => {
 			const toHidden = deferred();
 			list.mockImplementationOnce(() => toHidden.promise);
 			await click(btn(/^Hidden/));
-			put.resolve({});
-			await settle();
+			// The PUT completing while the destination load is in flight takes the
+			// H-F2 refetch (the stale load is then superseded and writes nothing).
 			list.mockImplementationOnce(() =>
 				Promise.resolve(resp([row('a', 'TASK-1', { snooze: { kind: 'dismiss' } })], { hidden: 1 }))
 			);
+			put.resolve({});
+			await settle();
 			toHidden.resolve(resp([], { hidden: 0 }));
 			await settle();
+			expect(list).toHaveBeenCalledTimes(3);
 			expect(lastCall()).toEqual({ sort: 'age', view: 'hidden' });
 			expect(refs()).toEqual(['TASK-1']);
 			expect(groupCounts()).toEqual([['WS a', '1']]);
@@ -576,8 +579,6 @@ describe('needs page: r1 fixes', () => {
 			const more = deferred();
 			list.mockImplementationOnce(() => more.promise);
 			await click(btn('Load more'));
-			put.resolve({});
-			await settle();
 			list.mockImplementationOnce(() =>
 				Promise.resolve(
 					resp(
@@ -586,6 +587,8 @@ describe('needs page: r1 fixes', () => {
 					)
 				)
 			);
+			put.resolve({});
+			await settle();
 			more.resolve(resp([row('a', 'TASK-8', { snooze: { kind: 'dismiss' } })], { hidden: 1 }));
 			await settle();
 			expect(lastCall()).toEqual({ sort: 'age', view: 'hidden' });
@@ -705,6 +708,209 @@ describe('needs page: r1 fixes', () => {
 			menus[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 			await settle();
 			expect(host.querySelectorAll('.defer-menu').length).toBe(0);
+		});
+	});
+});
+
+describe('needs page: r4 (empty state vs the cursor; a settle that did not apply)', () => {
+	const deferred = () => {
+		let resolve!: (v: unknown) => void;
+		const promise = new Promise((r) => (resolve = r));
+		return { promise, resolve };
+	};
+	const heading = () => host.querySelector('h1')?.textContent ?? '';
+	const hiddenN = () => btn(/^Hidden/).textContent ?? '';
+	const empty = () => host.querySelector('[data-testid="needs-empty"]');
+	const never = () => new Promise(() => {});
+	const inRow = (ref: string) => host.querySelector(`[data-ref="${ref}"]`)! as HTMLElement;
+	const held = (extra: Record<string, unknown> = {}) => ({ snooze: { kind: 'dismiss' }, ...extra });
+	// A mock that fails instead of hanging if something keeps asking.
+	const bounded = (after: number, make: () => unknown) => {
+		let n = 0;
+		list.mockImplementation(() => (++n > after ? never() : Promise.resolve(make())));
+	};
+	async function drain() {
+		for (let i = 0; i < 5; i++) await settle();
+	}
+
+	describe('H-F1: the empty state needs no rows AND no cursor', () => {
+		it('dismissing every loaded row with a cursor set reloads page 1; the empty text never shows', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { total: 4, next_cursor: 'c1' }));
+			snooze.mockResolvedValue({});
+			await click(btn('Dismiss', inRow('TASK-1')));
+			expect(empty()).toBeNull();
+			const reload = deferred();
+			list.mockImplementationOnce(() => reload.promise);
+			await click(btn('Dismiss', inRow('TASK-3')));
+			// In flight: a loading state, not the empty text.
+			expect(empty()).toBeNull();
+			expect(host.textContent).toContain('Loading');
+			expect(list).toHaveBeenCalledTimes(2);
+			expect(list).toHaveBeenLastCalledWith({ sort: 'age', view: 'active' });
+			reload.resolve(resp([row('a', 'TASK-5'), row('a', 'TASK-6')], { total: 2, hidden: 2 }));
+			await drain();
+			expect(list).toHaveBeenCalledTimes(2);
+			expect(empty()).toBeNull();
+			expect(refs()).toEqual(['TASK-5', 'TASK-6']);
+			expect(groupCounts()).toEqual([['WS a', '2']]);
+			expect(heading()).toContain('2');
+			expect(hiddenN()).toContain('(2)');
+		});
+
+		it('with NO cursor, dismissing the last row shows the empty text and issues no reload', async () => {
+			await mountWith(resp([row('a', 'TASK-1')]));
+			snooze.mockResolvedValue({});
+			await click(btn('Dismiss', inRow('TASK-1')));
+			await drain();
+			expect(list).toHaveBeenCalledTimes(1);
+			expect(empty()?.textContent).toContain('Nothing needs you');
+		});
+
+		it('hidden view mirror: restoring every loaded row with a cursor set reloads page 1, Load more stays reachable', async () => {
+			await mountWith(resp([row('a', 'TASK-3')], { hidden: 2 }));
+			list.mockResolvedValueOnce(
+				resp([row('a', 'TASK-7', held()), row('a', 'TASK-8', held())], { hidden: 3, next_cursor: 'h1' })
+			);
+			await click(btn(/^Hidden/));
+			restore.mockResolvedValue({});
+			await click(btn('Restore', inRow('TASK-7')));
+			const reload = deferred();
+			list.mockImplementationOnce(() => reload.promise);
+			await click(btn('Restore', inRow('TASK-8')));
+			expect(empty()).toBeNull();
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(list).toHaveBeenLastCalledWith({ sort: 'age', view: 'hidden' });
+			reload.resolve(resp([row('a', 'TASK-9', held())], { hidden: 1 }));
+			await drain();
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(empty()).toBeNull();
+			expect(refs()).toEqual(['TASK-9']);
+			expect(groupCounts()).toEqual([['WS a', '1']]);
+			expect(heading()).toContain('1');
+		});
+	});
+
+	describe('H-F2 (population row 9): a list that started and landed while the PUT was in flight', () => {
+		it('dismiss X, toggle to Hidden, the hidden list resolves BEFORE the PUT (lacking X): the refetch shows X and Hidden (1) is right', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', inRow('TASK-1')));
+			list.mockResolvedValueOnce(resp([], { hidden: 0 }));
+			await click(btn(/^Hidden/));
+			expect(refs()).toEqual([]);
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-1', held())], { hidden: 1 }));
+			put.resolve({});
+			await drain();
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(list).toHaveBeenLastCalledWith({ sort: 'age', view: 'hidden' });
+			expect(refs()).toEqual(['TASK-1']);
+			expect(groupCounts()).toEqual([['WS a', '1']]);
+			expect(heading()).toContain('1');
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-3')], { hidden: 1 }));
+			await click(btn(/^Back to needs you/));
+			expect(refs()).toEqual(['TASK-3']);
+			expect(hiddenN()).toContain('(1)');
+		});
+
+		it('Restore mirror: the active list resolves BEFORE the restore PUT (lacking the row): the refetch shows it', async () => {
+			await mountWith(resp([row('a', 'TASK-3')], { hidden: 2 }));
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-7', held()), row('a', 'TASK-8', held())], { hidden: 2 }));
+			await click(btn(/^Hidden/));
+			const put = deferred();
+			restore.mockImplementationOnce(() => put.promise);
+			await click(btn('Restore', inRow('TASK-7')));
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-3')], { hidden: 2 }));
+			await click(btn(/^Back to needs you/));
+			expect(refs()).toEqual(['TASK-3']);
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-3'), row('a', 'TASK-7')], { hidden: 1 }));
+			put.resolve({});
+			await drain();
+			expect(list).toHaveBeenCalledTimes(4);
+			expect(list).toHaveBeenLastCalledWith({ sort: 'age', view: 'active' });
+			expect(refs()).toEqual(['TASK-3', 'TASK-7']);
+			expect(groupCounts()).toEqual([['WS a', '2']]);
+			expect(heading()).toContain('2');
+			expect(hiddenN()).toContain('(1)');
+		});
+	});
+
+	describe('(a) extended: one action completion yields at most one refetch', () => {
+		it('(i) the r3 accept-time path alone', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', inRow('TASK-1')));
+			const reload = deferred();
+			list.mockImplementationOnce(() => reload.promise);
+			await click(btn('Importance'));
+			put.resolve({});
+			await settle();
+			expect(list).toHaveBeenCalledTimes(2);
+			bounded(5, () => resp([row('a', 'TASK-3')], { hidden: 1 }));
+			reload.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			await drain();
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(refs()).toEqual(['TASK-3']);
+		});
+
+		it('(ii) the H-F2 path alone', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', inRow('TASK-1')));
+			list.mockResolvedValueOnce(resp([], { hidden: 0 }));
+			await click(btn(/^Hidden/));
+			bounded(5, () => resp([row('a', 'TASK-1', held())], { hidden: 1 }));
+			put.resolve({});
+			await drain();
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(refs()).toEqual(['TASK-1']);
+		});
+
+		it('(iii) both: a stale response lands while the H-F2 refetch is pending; still one refetch', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', inRow('TASK-1')));
+			const toHidden = deferred();
+			list.mockImplementationOnce(() => toHidden.promise);
+			await click(btn(/^Hidden/));
+			const refetch = deferred();
+			list.mockImplementationOnce(() => refetch.promise);
+			put.resolve({});
+			await settle();
+			expect(list).toHaveBeenCalledTimes(3);
+			bounded(0, () => resp([]));
+			toHidden.resolve(resp([], { hidden: 0 }));
+			await drain();
+			expect(list).toHaveBeenCalledTimes(3);
+			refetch.resolve(resp([row('a', 'TASK-1', held())], { hidden: 1 }));
+			await drain();
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(refs()).toEqual(['TASK-1']);
+		});
+
+		it('(iv) H-F1 together with the r3 path: a stale page filtered to nothing with a cursor refetches once', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { total: 3, next_cursor: 'c1' }));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', inRow('TASK-1')));
+			const reload = deferred();
+			list.mockImplementationOnce(() => reload.promise);
+			await click(btn('Importance'));
+			put.resolve({});
+			await settle();
+			// Settled with TASK-3 left: no refetch yet.
+			expect(list).toHaveBeenCalledTimes(2);
+			bounded(5, () => resp([row('a', 'TASK-5')], { total: 1, hidden: 1 }));
+			// The stale page holds only the dismissed row and a cursor: the display
+			// filter empties it, so both H-F1 and r3 want a refetch.
+			reload.resolve(resp([row('a', 'TASK-1')], { total: 3, next_cursor: 'c2' }));
+			await drain();
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(refs()).toEqual(['TASK-5']);
+			expect(empty()).toBeNull();
 		});
 	});
 });

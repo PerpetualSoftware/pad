@@ -50,6 +50,19 @@
 		return rs.filter((r) => (m.get(keyOf(r)) ?? 0) <= startedAt);
 	}
 
+	// AT MOST ONE refetch per completed action (TASK-3923 r4). Three paths want
+	// one: a stale response accepted (r3), an action that completed without
+	// settling the current rows (H-F2), and a settle that emptied the rows while
+	// a cursor remains (H-F1). They all go through here; `refetchedFor` records
+	// the actionsDone a refetch was issued for, so whichever fires first wins.
+	// A refetch starts after the action completed, so it is never stale itself.
+	let refetchedFor = -1;
+	function requestRefetch() {
+		if (refetchedFor >= actionsDone) return;
+		refetchedFor = actionsDone;
+		void load(sort, view);
+	}
+
 	async function load(s: NeedsSort, v: NeedsView) {
 		const mine = ++ticket;
 		const startedAt = actionsDone;
@@ -91,7 +104,11 @@
 		// startedAt is the current actionsDone), so it cannot trigger another
 		// unless a NEW action completes meanwhile. It goes through the ticket
 		// guard like any load: a later sort or view change supersedes it.
-		if (stale) void load(s, v);
+		if (stale) {
+			requestRefetch();
+			// Filtered down to nothing with pages left: page 1 is the next work.
+			if (rows.length === 0 && nextCursor) requestRefetch();
+		}
 	}
 
 	async function loadMore() {
@@ -120,7 +137,7 @@
 		// pagination. That is acceptable: it only happens when an action completed
 		// during the Load more request, which is rare, and the reload's rows and
 		// counts are authoritative.
-		if (stale) void load(sort, v);
+		if (stale) requestRefetch();
 	}
 
 	// The one effect: refetch whenever the sort or the view changes.
@@ -160,7 +177,17 @@
 			if (openMenu === k) openMenu = '';
 			// Counts belong to the list that showed the row; a list loaded since
 			// (a quick sort or view change) never counted it as ours to adjust.
-			if (view === from && rows.some((r) => keyOf(r) === k)) settle(row, from === 'active' ? 1 : -1);
+			if (view === from && rows.some((r) => keyOf(r) === k)) {
+				settle(row, from === 'active' ? 1 : -1);
+				// H-F1: every loaded row is gone but the cursor says more waits. The
+				// server now excludes the held rows, so page 1 is the next work.
+				if (rows.length === 0 && nextCursor) requestRefetch();
+			} else {
+				// H-F2: the current rows were not settled (another view, or a list
+				// that started and landed while this call was in flight and so was
+				// accepted as fresh). Ask the server again.
+				requestRefetch();
+			}
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : 'That did not go through';
 		} finally {
@@ -250,7 +277,7 @@
 {:else if loadError}
 	<p class="error" role="alert">{loadError}</p>
 	<Button onclick={() => load(sort, view)}>Try again</Button>
-{:else if groups.length === 0}
+{:else if groups.length === 0 && !nextCursor}
 	<p class="muted" data-testid="needs-empty">
 		{view === 'hidden' ? 'Nothing is hidden.' : 'Nothing needs you right now.'}
 	</p>
