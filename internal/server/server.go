@@ -2122,6 +2122,8 @@ func (s *Server) setupRouter() {
 			r.Delete("/me/push-devices/{connection_id}", s.handleDeletePushDevice)
 			r.Get("/me/notification-settings", s.handleGetNotificationSettings)
 			r.Put("/me/notification-settings", s.handlePutNotificationSettings)
+			// What a push's id resolves to (TASK-3939 B2b).
+			r.Get("/me/notifications/{id}", s.handleGetMyNotification)
 			r.Get("/me/ui-dismissals", s.handleListUIDismissals)
 			r.Put("/me/ui-dismissals/{key}", s.handleDismissUI)
 			r.Get("/tutorials", s.handleListTutorials)

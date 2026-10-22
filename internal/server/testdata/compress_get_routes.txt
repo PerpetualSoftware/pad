@@ -57,6 +57,7 @@ compress /api/v1/mcp/tool-surface
 compress /api/v1/me/invitations
 compress /api/v1/me/needs
 compress /api/v1/me/notification-settings
+compress /api/v1/me/notifications/{id}
 compress /api/v1/me/ui-dismissals
 compress /api/v1/me/workspace-tabs/
 skip /api/v1/oauth/clients/{id}/public-info
