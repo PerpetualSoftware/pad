@@ -14,11 +14,14 @@ import (
 // returns.
 const notificationExcerptRunes = 140
 
-// writeNotificationNotFound is the ONLY way GET /me/notifications/{id} says
-// no. A missing id, another user's row, an app principal and every denial of
-// the shared notificationAccess gate (not a member, workspace or item gone,
-// not visible, comment tombstoned, no longer assigned) answer these exact
-// bytes, so the endpoint cannot be used to learn which of them it was.
+// writeNotificationNotFound is the ONLY way the HANDLER of GET
+// /me/notifications/{id} says no. A missing id, another user's row and every
+// denial of the shared notificationAccess gate (not a member, workspace or item
+// gone, not visible, comment tombstoned, no longer assigned) answer these exact
+// bytes, so the endpoint cannot be used to learn which of them it was. A
+// disabled account (403) and an app token (401) are refused earlier, by the
+// middleware, with one answer for every id; a store failure is a 500, an
+// operational error and not a denial.
 func writeNotificationNotFound(w http.ResponseWriter) {
 	writeError(w, http.StatusNotFound, "not_found", "Notification not found")
 }

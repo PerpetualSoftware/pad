@@ -34,20 +34,6 @@ func (f *pdx) bobSession() string {
 	return plain
 }
 
-// directNotif calls the handler as user, with or without an app context, for
-// the principals the session door cannot authenticate.
-func directNotif(srv *Server, user *models.User, app bool, id string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest("GET", "/api/v1/me/notifications/"+id, nil)
-	req = req.WithContext(withChiCtx(req, newChiCtx(map[string]string{"id": id})))
-	req = req.WithContext(WithCurrentUser(req.Context(), user))
-	if app {
-		req = req.WithContext(withAppContextForTest(req, &appContext{Access: "read"}))
-	}
-	rr := httptest.NewRecorder()
-	srv.handleGetMyNotification(rr, req)
-	return rr
-}
-
 // sameBytes fails unless a and b are the same response: status, every header,
 // and the body byte for byte.
 func sameBytes(t *testing.T, what string, a, b *httptest.ResponseRecorder) {
@@ -75,18 +61,22 @@ func TestNotificationEnrichment_GateDenialsAreOneIndistinguishable404(t *testing
 				if c.setup != nil {
 					c.setup(f, id)
 				}
-				get := func(id string) *httptest.ResponseRecorder {
-					// A disabled user or an app has no session to ask with.
-					if c.reason == skipUserDisabled {
-						return directNotif(srv, f.bob, false, id)
-					}
-					return getNotif(srv, tok, id)
+				// Every case goes through the real router with bob's real
+				// session, so a middleware refusal (a disabled account is
+				// refused 403 before the handler) is what the comparison sees.
+				missing := getNotif(srv, tok, "no-such-notification")
+				wantMissing := http.StatusNotFound
+				if c.name == "user_disabled" || c.name == "user_reason_wins_over_membership" {
+					wantMissing = http.StatusForbidden
 				}
-				missing := get("no-such-notification")
-				if missing.Code != http.StatusNotFound {
-					t.Fatalf("missing id: %d %s", missing.Code, missing.Body.String())
+				if c.name == "app_principal" {
+					// A user of kind app has no session door: 401 for every id.
+					wantMissing = http.StatusUnauthorized
 				}
-				rr := get(id)
+				if missing.Code != wantMissing {
+					t.Fatalf("missing id: %d %s, want %d", missing.Code, missing.Body.String(), wantMissing)
+				}
+				rr := getNotif(srv, tok, id)
 				if denied[c.reason] {
 					sameBytes(t, c.reason, rr, missing)
 					return
@@ -119,8 +109,8 @@ func TestNotificationEnrichment_SettingsNeverGovernRead(t *testing.T) {
 	})
 }
 
-// Another user's row, an app principal and a missing id are the same bytes.
-func TestNotificationEnrichment_OtherUsersAndAppsGetTheMissingIdBytes(t *testing.T) {
+// Another user's row and a missing id are the same bytes.
+func TestNotificationEnrichment_OtherUsersGetTheMissingIdBytes(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)
 		id := f.row("comment")
@@ -135,8 +125,6 @@ func TestNotificationEnrichment_OtherUsersAndAppsGetTheMissingIdBytes(t *testing
 		if rr := getNotif(srv, f.bobSession(), id); rr.Code != http.StatusOK {
 			t.Fatalf("control: %d %s", rr.Code, rr.Body.String())
 		}
-		sameBytes(t, "an app principal", directNotif(srv, f.bob, true, id), directNotif(srv, f.bob, true, "no-such-notification"))
-		sameBytes(t, "an app principal vs a person's missing id", directNotif(srv, f.bob, true, id), directNotif(srv, f.bob, false, "no-such-notification"))
 	})
 }
 
@@ -361,4 +349,50 @@ func TestPushDispatch_RealMentionEnqueueThroughTheDispatcher(t *testing.T) {
 			}
 		})
 	})
+}
+
+// A disabled account is refused by RequireAuth before the handler, for every
+// id. Through the real router, with the user's own live session, a REAL
+// notification id and an unknown id answer the same bytes (403
+// account_disabled): the refusal cannot tell them apart.
+func TestNotificationEnrichment_DisabledUserGetsOneRefusalForEveryId(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		tok := f.bobSession()
+		id := f.row("comment")
+		if rr := getNotif(srv, tok, id); rr.Code != http.StatusOK {
+			t.Fatalf("control: %d %s", rr.Code, rr.Body.String())
+		}
+		f.exec(`UPDATE users SET disabled_at = ? WHERE id = ?`, f.ts(time.Minute), f.bob.ID)
+		real, unknown := getNotif(srv, tok, id), getNotif(srv, tok, "no-such-notification")
+		if real.Code != http.StatusForbidden || !strings.Contains(real.Body.String(), "account_disabled") {
+			t.Fatalf("disabled, real id: %d %s, want 403 account_disabled", real.Code, real.Body.String())
+		}
+		sameBytes(t, "a disabled user's real id", real, unknown)
+		if strings.Contains(real.Body.String(), "SECRET") {
+			t.Fatalf("refusal leaks content: %s", real.Body.String())
+		}
+	})
+}
+
+// An installed app authenticates with a padapp_ token, which opens the
+// /api/app/v1 router only. Presented to this account-level route the token is
+// not a credential at all: whatever the answer, a REAL notification id (a row
+// of the app's bot) and an unknown id get identical bytes, and no content.
+func TestNotificationEnrichment_AppTokenGetsOneAnswerForEveryId(t *testing.T) {
+	f := appAPIFixture(t, "read")
+	id := "n-app-real"
+	if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`INSERT INTO user_notifications
+		(id, user_id, workspace_id, item_id, kind, actor_user_id, dedupe_key, created_at)
+		VALUES (?, ?, ?, ?, 'assigned', ?, ?, ?)`),
+		id, f.in.bot.ID, f.ws.ID, f.item.ID, f.in.bot.ID, "k-"+id, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	real := appGet(f.srv, "/api/v1/me/notifications/"+id, f.token)
+	unknown := appGet(f.srv, "/api/v1/me/notifications/no-such-notification", f.token)
+	if real.Code == http.StatusOK {
+		t.Fatalf("an app token resolved a notification: %s", real.Body.String())
+	}
+	sameBytes(t, "an app token's real id", real, unknown)
+	t.Logf("app token on /api/v1/me/notifications/{id}: %d %s", real.Code, real.Body.String())
 }
