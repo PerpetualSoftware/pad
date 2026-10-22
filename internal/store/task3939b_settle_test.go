@@ -38,9 +38,19 @@ func TestRecordNotificationsSent_IsByIDForPendingAndExpiredOnly(t *testing.T) {
 		t.Fatalf("RecordNotificationsSent = %d, %v; want 2 (the reclaimed and the expired row)", n, err)
 	}
 	for _, c := range []struct{ id, state string }{{reclaimed, "sent"}, {expired, "sent"}, {skipped, "skipped"}} {
-		state, _, tok, _ := f.notifRow(t, c.id)
+		state, _, tok, attempts := f.notifRow(t, c.id)
 		if state != c.state || (c.state == "sent" && tok != "") {
 			t.Fatalf("row %s = %s/%q, want %s with the claim cleared", c.id, state, tok, c.state)
+		}
+		if attempts != 0 {
+			t.Fatalf("row %s has %d attempts: a delivery is not a failed attempt", c.id, attempts)
+		}
+		var sentAt string
+		if err := f.s.db.QueryRow(f.s.q(`SELECT COALESCE(sent_at, '') FROM user_notifications WHERE id = ?`), c.id).Scan(&sentAt); err != nil {
+			t.Fatal(err)
+		}
+		if (sentAt != "") != (c.state == "sent") {
+			t.Fatalf("row %s (%s) has sent_at %q", c.id, c.state, sentAt)
 		}
 	}
 	// The reclaimer's own token-guarded settle is now a no-op.
@@ -119,5 +129,29 @@ func TestClaimNotificationErrorCarriesNoRowID(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), id) {
 		t.Fatalf("claim error carries the row id: %v", err)
+	}
+}
+
+// Kills: RecordNotificationsSent or HeldNotifications handling only the first
+// notificationIDChunk ids of a longer list.
+func TestNotificationSettles_CoverMoreIDsThanOneChunk(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "chunk@example.com")
+	ids := make([]string, notificationIDChunk*2+7)
+	for i := range ids {
+		ids[i] = f.seedNotif(t, u.ID, ago(time.Minute))
+	}
+	f.s.mustExec(t, `UPDATE user_notifications SET claim_token = 'L.n', claimed_at = ? WHERE user_id = ?`, ago(time.Second), u.ID)
+	held, err := f.s.HeldNotifications("L.n", ids)
+	if err != nil || len(held) != len(ids) {
+		t.Fatalf("held %d of %d ids, %v", len(held), len(ids), err)
+	}
+	if n, err := f.s.RecordNotificationsSent(ids); err != nil || n != int64(len(ids)) {
+		t.Fatalf("recorded %d of %d ids, %v", n, len(ids), err)
+	}
+	last := ids[len(ids)-1]
+	if state, _, _, _ := f.notifRow(t, last); state != "sent" {
+		t.Fatalf("the last id is %s, want sent", state)
 	}
 }
