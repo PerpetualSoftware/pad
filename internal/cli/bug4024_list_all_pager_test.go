@@ -67,6 +67,24 @@ func TestBUG4024_PagerStartsAtTheGivenOffset(t *testing.T) {
 	}
 }
 
+// A negative start offset (`--offset -5`) is sent as no offset, so the server
+// reads from 0, as it does for any bad offset. The pager must count from 0
+// too, or its contiguity check refuses the server's correct next offset.
+func TestBUG4024_PagerTreatsANegativeStartOffsetAsZero(t *testing.T) {
+	ts, offsets := pagerServer(t, 7, 3, nil)
+	c := NewClientFromURL(ts.URL)
+	got, _, err := c.ListAllItemsReport("ws", url.Values{}, -5)
+	if err != nil {
+		t.Fatalf("start offset -5: %v", err)
+	}
+	if len(got) != 7 || got[0].ID != "it-0" {
+		t.Fatalf("got %d items starting at %v, want 7 starting at it-0", len(got), got)
+	}
+	if fmt.Sprint(*offsets) != "[ 3 6]" {
+		t.Fatalf("offsets asked %q, want [ 3 6]", *offsets)
+	}
+}
+
 func TestBUG4024_PagerKeepsTheFirstPagesUndeclaredKeys(t *testing.T) {
 	ts, _ := pagerServer(t, 7, 3, func(w http.ResponseWriter, from, _ int) {
 		if from == 0 {

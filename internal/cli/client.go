@@ -315,7 +315,8 @@ func SetMaxListPages(n int) (restore func()) {
 // offset+len(items) (BUG-4024). An empty has-more page, a next-offset that
 // skips rows never returned, or one that falls short is an error, as is a
 // list longer than maxListPages: handing back a short list as though it were
-// the whole one is this bug's own class.
+// the whole one is this bug's own class. A negative startOffset reads from 0,
+// as the server reads any bad offset.
 // params' limit and offset are the pager's own.
 func listAllPages(params url.Values, startOffset int, fetch func(url.Values) ([]models.Item, ItemListPage, error)) ([]models.Item, ItemListPage, error) {
 	q := url.Values{}
@@ -326,7 +327,9 @@ func listAllPages(params url.Values, startOffset int, fetch func(url.Values) ([]
 	q.Del("offset")
 	var all []models.Item
 	var first ItemListPage
-	offset := startOffset
+	// A negative offset is sent as none, and the server reads none as 0, so
+	// the contiguity check must count from 0 as well.
+	offset := max(startOffset, 0)
 	for pages := 1; ; pages++ {
 		if offset > 0 {
 			q.Set("offset", strconv.Itoa(offset))
