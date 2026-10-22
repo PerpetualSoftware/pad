@@ -17,10 +17,10 @@ import (
 // The push dispatcher (TASK-3939 part B1): claims settled user_notifications
 // rows, runs every privacy gate (push_gates.go) on each, groups the survivors
 // per (user, item), sends one content-free push per live device, and settles
-// the rows. StartPushDispatch is NOT called
-// from cmd/pad yet. Part B2a adds the 30/h cap and the summary push, the retry
-// matrix (which results retry, skip or delete a device), and the expire and
-// retention sweeps.
+// the rows. Part B2a added the 30/h cap and the summary push, the retry matrix
+// (which results retry, skip or delete a device), and the expire and retention
+// sweeps. Server startup (cmd/pad configurePush, TASK-3939 B2c) calls
+// StartPushDispatch when PAD_PUSH_GATEWAY_URL is set, with the default timings.
 //
 // LEASE INVARIANT (r6-Q1): lease >= sendTimeout + leaseMargin. A claim is
 // stamped with second precision (up to 1s behind the real clock), and a Send
@@ -246,6 +246,14 @@ func (s *Server) StartPushDispatch() {
 			}
 		}
 	}()
+}
+
+// PushDispatchRunning reports whether the dispatch loop has been started and
+// not stopped. Read-only; startup's wiring test reads it (TASK-3939 B2c).
+func (s *Server) PushDispatchRunning() bool {
+	s.pushDispatch.mu.Lock()
+	defer s.pushDispatch.mu.Unlock()
+	return s.pushDispatch.running
 }
 
 // stopPushDispatch signals the loop to exit. Safe when it never started.

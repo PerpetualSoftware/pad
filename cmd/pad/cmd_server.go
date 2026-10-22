@@ -975,13 +975,8 @@ func serveCmd() *cobra.Command {
 			bypassEnv := os.Getenv("PAD_BYPASS_SETUP_TOKEN")
 			bypassSetupToken := bypassEnv == "true" || bypassEnv == "1"
 			srv.SetBypassSetupToken(bypassSetupToken && !cfg.IsCloudServer())
-			srv.SetPushGateway(cfg.PushGatewayURL)
-			if cfg.PushGatewayURL != "" {
-				pushSecret := resolvePushGatewaySecret(cfg)
-				if pushSecret == "" {
-					return fmt.Errorf("PAD_PUSH_GATEWAY_URL is set but none of PAD_PUSH_GATEWAY_SECRET, PAD_CLOUD_OUTBOUND_SECRET or PAD_CLOUD_SECRET supplies a usable secret")
-				}
-				srv.SetPushGatewayClient(notify.NewGateway(cfg.PushGatewayURL, pushSecret))
+			if err := configurePush(srv, cfg); err != nil {
+				return err
 			}
 			if userCount, ucErr := s.UserCount(); ucErr != nil {
 				slog.Warn("could not check user count for bootstrap token wiring", "error", ucErr)
@@ -1525,6 +1520,28 @@ func bootPlanBackfill(s *store.Store, cloud bool) error {
 	} else if err != nil {
 		slog.Warn("failed to set self-hosted plans", "error", err)
 	}
+	return nil
+}
+
+// configurePush wires the push gateway from cfg and, when one is configured,
+// starts the push dispatcher (TASK-3939 B2c). A gateway URL with no usable
+// secret is refused before anything starts. With no URL the server offers no
+// push and no dispatcher runs: no new device can register. Rows are still
+// queued for devices registered while a gateway was configured; they stay
+// pending, and once a gateway is configured again the dispatcher expires any
+// past the expiry age instead of sending them. Shutdown stops the dispatcher
+// with the server's other background loops.
+func configurePush(srv *server.Server, cfg *config.Config) error {
+	srv.SetPushGateway(cfg.PushGatewayURL)
+	if cfg.PushGatewayURL == "" {
+		return nil
+	}
+	pushSecret := resolvePushGatewaySecret(cfg)
+	if pushSecret == "" {
+		return fmt.Errorf("PAD_PUSH_GATEWAY_URL is set but none of PAD_PUSH_GATEWAY_SECRET, PAD_CLOUD_OUTBOUND_SECRET or PAD_CLOUD_SECRET supplies a usable secret")
+	}
+	srv.SetPushGatewayClient(notify.NewGateway(cfg.PushGatewayURL, pushSecret))
+	srv.StartPushDispatch()
 	return nil
 }
 
