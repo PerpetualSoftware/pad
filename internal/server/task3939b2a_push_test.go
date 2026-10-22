@@ -412,6 +412,30 @@ func TestPushDispatch_GatewayFailuresWarnOncePerTickWithoutSecrets(t *testing.T)
 	})
 }
 
+// A tick that stops at the deadline after an unavailable chunk still warns
+// once for it (TASK-3939 B2a codex r3).
+func TestPushDispatch_UnavailableThenDeadlineStillWarns(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		clk := f.clock(time.Now())
+		calls := 0
+		f.fake.fn = func(context.Context, []notify.Message) ([]notify.Result, error) {
+			calls++
+			clk.advance(time.Hour) // the next chunk finds no time left
+			return nil, fmt.Errorf("%w: boom", notify.ErrUnavailable)
+		}
+		manyUnits(f)
+		logs := pdCaptureLogs(t)
+		f.tick()
+		if calls != 1 {
+			t.Fatalf("%d sends, want 1: the second chunk must stop at the deadline", calls)
+		}
+		if c := strings.Count(logs.String(), "gateway unavailable"); c != 1 {
+			t.Fatalf("%d unavailable warnings, want 1: %q", c, logs.String())
+		}
+	})
+}
+
 // --- expire and retention ---
 
 func TestPushDispatch_ExpiresPendingOlderThanAnHour(t *testing.T) {

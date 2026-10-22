@@ -402,7 +402,7 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 		}
 		if ctx.Err() != nil || deadline.Sub(s.pushNow()) < cfg.sendTimeout {
 			s.unclaim(claim.Token, unitRowIDs(append(chunk, units...)))
-			return
+			break // still emit this tick's warnings for chunks already sent
 		}
 		s.sendChunk(ctx, sender, claim.Token, chunk, deadline, &warn)
 	}
