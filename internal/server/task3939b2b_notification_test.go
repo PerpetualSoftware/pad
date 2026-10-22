@@ -1,0 +1,364 @@
+package server
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/notify"
+	"github.com/PerpetualSoftware/pad/internal/store"
+)
+
+// TASK-3939 part B2b: the real-enqueue mention leg and the enrichment endpoint
+// GET /me/notifications/{id}.
+
+// getNotif asks for notification id as the holder of session token tok.
+func getNotif(srv *Server, tok, id string) *httptest.ResponseRecorder {
+	return doRequestWithCookie(srv, "GET", "/api/v1/me/notifications/"+id, nil, tok)
+}
+
+// bobSession is a live session for bob; the plaintext is the cookie value.
+func (f *pdx) bobSession() string {
+	f.t.Helper()
+	plain, err := f.srv.store.CreateSession(f.bob.ID, "web", "", "", time.Hour)
+	must(f.t, err)
+	return plain
+}
+
+// directNotif calls the handler as user, with or without an app context, for
+// the principals the session door cannot authenticate.
+func directNotif(srv *Server, user *models.User, app bool, id string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("GET", "/api/v1/me/notifications/"+id, nil)
+	req = req.WithContext(withChiCtx(req, newChiCtx(map[string]string{"id": id})))
+	req = req.WithContext(WithCurrentUser(req.Context(), user))
+	if app {
+		req = req.WithContext(withAppContextForTest(req, &appContext{Access: "read"}))
+	}
+	rr := httptest.NewRecorder()
+	srv.handleGetMyNotification(rr, req)
+	return rr
+}
+
+// sameBytes fails unless a and b are the same response: status, every header,
+// and the body byte for byte.
+func sameBytes(t *testing.T, what string, a, b *httptest.ResponseRecorder) {
+	t.Helper()
+	if a.Code != b.Code || !reflect.DeepEqual(a.Header(), b.Header()) || !bytes.Equal(a.Body.Bytes(), b.Body.Bytes()) {
+		t.Fatalf("%s differs from a missing id:\n got  %d %v %q\n want %d %v %q",
+			what, a.Code, a.Header(), a.Body.String(), b.Code, b.Header(), b.Body.String())
+	}
+}
+
+// Every denial of the shared gate answers the bytes a missing id answers, and
+// every other row (settings off, no device, the controls) resolves: a setting
+// governs the push, never read access.
+func TestNotificationEnrichment_GateDenialsAreOneIndistinguishable404(t *testing.T) {
+	denied := map[string]bool{
+		skipNotMember: true, skipItemGone: true, skipWorkspaceGone: true, skipNotVisible: true,
+		skipNoLongerAssign: true, skipCommentGone: true, skipUserDisabled: true,
+	}
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		for _, c := range gateCases() {
+			t.Run(c.name, func(t *testing.T) {
+				f := newPdx(t, srv)
+				tok := f.bobSession()
+				id := f.row(c.kind, c.row...)
+				if c.setup != nil {
+					c.setup(f, id)
+				}
+				get := func(id string) *httptest.ResponseRecorder {
+					// A disabled user or an app has no session to ask with.
+					if c.reason == skipUserDisabled {
+						return directNotif(srv, f.bob, false, id)
+					}
+					return getNotif(srv, tok, id)
+				}
+				missing := get("no-such-notification")
+				if missing.Code != http.StatusNotFound {
+					t.Fatalf("missing id: %d %s", missing.Code, missing.Body.String())
+				}
+				rr := get(id)
+				if denied[c.reason] {
+					sameBytes(t, c.reason, rr, missing)
+					return
+				}
+				if rr.Code != http.StatusOK {
+					t.Fatalf("reason %q must still resolve: %d %s", c.reason, rr.Code, rr.Body.String())
+				}
+			})
+		}
+	})
+}
+
+// A notification setting that is off governs the push only. The endpoint must
+// not consult it: an already delivered push still resolves.
+func TestNotificationEnrichment_SettingsNeverGovernRead(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		tok := f.bobSession()
+		id := f.row("comment")
+		f.settings(func(s *models.NotificationSettings) {
+			s.PushEnabled, s.NotifyComments, s.NotifyAssigned, s.NotifyMentions = false, false, false, false
+		})
+		if rr := getNotif(srv, tok, id); rr.Code != http.StatusOK {
+			t.Fatalf("settings off: %d %s, want 200", rr.Code, rr.Body.String())
+		}
+		agent := f.row("comment", func(o *rowOpt) { o.agent = true })
+		if rr := getNotif(srv, tok, agent); rr.Code != http.StatusOK {
+			t.Fatalf("agent activity off: %d %s, want 200", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// Another user's row, an app principal and a missing id are the same bytes.
+func TestNotificationEnrichment_OtherUsersAndAppsGetTheMissingIdBytes(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		id := f.row("comment")
+		ownerTok, err := srv.store.CreateSession(f.owner.ID, "web", "", "", time.Hour)
+		must(t, err)
+		missing := getNotif(srv, ownerTok, "no-such-notification")
+		if missing.Code != http.StatusNotFound {
+			t.Fatalf("missing: %d", missing.Code)
+		}
+		sameBytes(t, "another user's row", getNotif(srv, ownerTok, id), missing)
+		// Control: the recipient reads it.
+		if rr := getNotif(srv, f.bobSession(), id); rr.Code != http.StatusOK {
+			t.Fatalf("control: %d %s", rr.Code, rr.Body.String())
+		}
+		sameBytes(t, "an app principal", directNotif(srv, f.bob, true, id), directNotif(srv, f.bob, true, "no-such-notification"))
+		sameBytes(t, "an app principal vs a person's missing id", directNotif(srv, f.bob, true, id), directNotif(srv, f.bob, false, "no-such-notification"))
+	})
+}
+
+// A tombstoned comment's text never reaches the response, in any form.
+func TestNotificationEnrichment_TombstonedCommentTextNeverLeaks(t *testing.T) {
+	f := newPdx(t, testServer(t))
+	tok := f.bobSession()
+	id := f.row("comment")
+	if rr := getNotif(f.srv, tok, id); !strings.Contains(rr.Body.String(), "SECRET-COMMENT") {
+		t.Fatalf("control: the live comment's excerpt is missing: %d %s", rr.Code, rr.Body.String())
+	}
+	f.exec(`UPDATE comments SET deleted_at = ? WHERE id = ?`, f.ts(time.Minute), f.comment.ID)
+	rr := getNotif(f.srv, tok, id)
+	if rr.Code != http.StatusNotFound || strings.Contains(rr.Body.String(), "SECRET") {
+		t.Fatalf("tombstoned: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+type notifBody struct {
+	ID        string            `json:"id"`
+	Kind      string            `json:"kind"`
+	Workspace map[string]string `json:"workspace"`
+	Item      map[string]string `json:"item"`
+	ActorName string            `json:"actor_name"`
+	Excerpt   string            `json:"excerpt"`
+	Path      string            `json:"path"`
+}
+
+func TestNotificationEnrichment_ShapeForEachKind(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		for _, kind := range []string{"comment", "reply", "mention", "assigned", "reminder"} {
+			t.Run(kind, func(t *testing.T) {
+				f := newPdx(t, srv)
+				id := f.row(kind)
+				rr := getNotif(srv, f.bobSession(), id)
+				if rr.Code != http.StatusOK {
+					t.Fatalf("%d %s", rr.Code, rr.Body.String())
+				}
+				var b notifBody
+				if err := json.Unmarshal(rr.Body.Bytes(), &b); err != nil {
+					t.Fatal(err)
+				}
+				wantExcerpt := ""
+				if kind == "comment" || kind == "reply" || kind == "mention" {
+					wantExcerpt = "SECRET-COMMENT"
+				}
+				if b.ID != id || b.Kind != kind || b.Workspace["slug"] != f.ws.Slug || b.Workspace["name"] != f.ws.Name ||
+					b.Item["title"] != "SECRET-ITEM-TITLE" || b.Item["ref"] == "" ||
+					b.ActorName != "owner" || b.Excerpt != wantExcerpt {
+					t.Fatalf("body = %+v", b)
+				}
+				want := "/" + f.owner.Username + "/" + f.ws.Slug + "/tasks/" + f.item.Slug
+				if b.Path != want {
+					t.Fatalf("path = %q, want %q", b.Path, want)
+				}
+			})
+		}
+	})
+}
+
+// The path is a route of the web app: one leading slash and the four segments
+// of web/src/routes/[username]/[workspace]/[collection]/[slug].
+func TestNotificationEnrichment_PathMatchesTheWebRouteTree(t *testing.T) {
+	if _, err := os.Stat("../../web/src/routes/[username]/[workspace]/[collection]/[slug]/+page.svelte"); err != nil {
+		t.Fatalf("the web route the path targets is gone: %v", err)
+	}
+	f := newPdx(t, testServer(t))
+	var b notifBody
+	rr := getNotif(f.srv, f.bobSession(), f.row("assigned"))
+	if err := json.Unmarshal(rr.Body.Bytes(), &b); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(b.Path, "/") || strings.HasPrefix(b.Path, "//") {
+		t.Fatalf("path %q must start with a single slash", b.Path)
+	}
+	segs := strings.Split(strings.TrimPrefix(b.Path, "/"), "/")
+	if len(segs) != 4 {
+		t.Fatalf("path %q has %d segments, want [username]/[workspace]/[collection]/[slug]", b.Path, len(segs))
+	}
+	for _, s := range segs {
+		if s == "" {
+			t.Fatalf("path %q has an empty segment", b.Path)
+		}
+	}
+}
+
+func TestNotificationEnrichment_ExcerptCollapsesWhitespaceAndKeeps140Runes(t *testing.T) {
+	f := newPdx(t, testServer(t))
+	body := "  first\n\n\tsecond   third " + strings.Repeat("é", 300)
+	cm, err := f.srv.store.CreateComment(f.ws.ID, f.item.ID, f.owner.ID, models.CommentCreate{Body: body, Author: "Owner", CreatedBy: "user", Source: "web"})
+	must(t, err)
+	id := f.row("comment", func(o *rowOpt) { o.comment = cm.ID })
+	var b notifBody
+	rr := getNotif(f.srv, f.bobSession(), id)
+	if err := json.Unmarshal(rr.Body.Bytes(), &b); err != nil {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	want := "first second third " + strings.Repeat("é", 140-len("first second third "))
+	if b.Excerpt != want || utf8.RuneCountInString(b.Excerpt) != 140 {
+		t.Fatalf("excerpt = %q (%d runes), want %q", b.Excerpt, utf8.RuneCountInString(b.Excerpt), want)
+	}
+	// A short body is whole, and exactly 140 runes is not cut.
+	if got := notificationExcerpt(strings.Repeat("x", 140)); len(got) != 140 {
+		t.Fatalf("140 runes cut to %d", len(got))
+	}
+}
+
+func TestNotificationEnrichment_Unauthenticated401(t *testing.T) {
+	f := newPdx(t, testServer(t))
+	rr := doRequest(f.srv, "GET", "/api/v1/me/notifications/"+f.row("comment"), nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("%d %s, want 401", rr.Code, rr.Body.String())
+	}
+}
+
+// A token pinned to one workspace is refused: this is an account-level route.
+func TestNotificationEnrichment_PinnedTokenRefused(t *testing.T) {
+	f := newPinFixture(t, store.DriverSQLite)
+	f.mustBePinDenial(f.do("GET", "/api/v1/me/notifications/anything", f.pinned, nil), "pinned GET /me/notifications/{id}")
+	// Control: the unpinned token reaches the handler, which has no such row.
+	f.must(f.do("GET", "/api/v1/me/notifications/anything", f.ownerTok, nil), http.StatusNotFound, "unpinned GET /me/notifications/{id}")
+}
+
+// The mention leg runs the REAL enqueue: a comment @-mentioning bob is written
+// through the store, and nothing seeds a row by hand. The dispatcher then
+// pushes it as a mention.
+func TestPushDispatch_RealMentionEnqueueThroughTheDispatcher(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		mention := func(f *pdx, who ...*models.User) *models.Comment {
+			t.Helper()
+			var tags []string
+			for _, u := range who {
+				tags = append(tags, "@"+u.Username)
+			}
+			cm, err := srv.store.CreateComment(f.ws.ID, f.item.ID, f.owner.ID,
+				models.CommentCreate{Body: "ping " + strings.Join(tags, " "), Author: "Owner", CreatedBy: "user", Source: "web"})
+			must(t, err)
+			return cm
+		}
+		rowsFor := func(f *pdx, u *models.User, kind string) []string {
+			t.Helper()
+			rows, err := srv.store.DB().Query(srv.store.D().Rebind(
+				`SELECT id FROM user_notifications WHERE user_id = ? AND kind = ?`), u.ID, kind)
+			must(t, err)
+			defer rows.Close()
+			var ids []string
+			for rows.Next() {
+				var id string
+				must(t, rows.Scan(&id))
+				ids = append(ids, id)
+			}
+			return ids
+		}
+		age := func(f *pdx) { f.exec(`UPDATE user_notifications SET created_at = ?`, f.ts(2*time.Minute)) }
+
+		t.Run("pushed_as_a_mention", func(t *testing.T) {
+			f := newPdx(t, srv)
+			f.device(f.bob, "tok-bob-second-"+fmt.Sprint(f.n), 4*time.Hour)
+			mention(f, f.bob)
+			ids := rowsFor(f, f.bob, "mention")
+			if len(ids) != 1 {
+				t.Fatalf("mention rows for bob = %v, want one from the real enqueue", ids)
+			}
+			if c := rowsFor(f, f.bob, "comment"); len(c) != 0 {
+				t.Fatalf("bob also has a comment row %v: a mention supersedes it", c)
+			}
+			age(f)
+			f.tick()
+			if st := f.state(ids[0]); st.State != "sent" {
+				t.Fatalf("mention row = %s/%q, want sent", st.State, st.Reason)
+			}
+			msgs := f.fake.all()
+			if len(msgs) != 2 {
+				t.Fatalf("%d messages, want one per device", len(msgs))
+			}
+			cids := map[string]bool{}
+			for _, m := range msgs {
+				if m.Data.Kind != notify.KindMention || m.Data.NID != ids[0] || m.Body != "You were mentioned" {
+					t.Fatalf("message = %+v, want a mention with nid %s", m, ids[0])
+				}
+				cids[m.Data.CID] = true
+			}
+			if len(cids) != 2 {
+				t.Fatalf("connection ids = %v, want one per device", cids)
+			}
+		})
+
+		t.Run("tombstoned_before_the_tick_is_comment_gone", func(t *testing.T) {
+			f := newPdx(t, srv)
+			cm := mention(f, f.bob)
+			ids := rowsFor(f, f.bob, "mention")
+			if len(ids) != 1 {
+				t.Fatalf("mention rows = %v", ids)
+			}
+			age(f)
+			f.exec(`UPDATE comments SET deleted_at = ? WHERE id = ?`, f.ts(time.Second), cm.ID)
+			f.tick()
+			if st := f.state(ids[0]); st.State != "skipped" || st.Reason != skipCommentGone {
+				t.Fatalf("mention row = %s/%q, want skipped/comment_gone", st.State, st.Reason)
+			}
+			if n := f.fake.callCount(); n != 0 {
+				t.Fatalf("gateway called %d times for a tombstoned mention", n)
+			}
+		})
+
+		t.Run("no_row_for_an_invisible_user_or_the_author", func(t *testing.T) {
+			f := newPdx(t, srv)
+			carol := f.user("carol")
+			must(t, srv.store.AddWorkspaceMember(f.ws.ID, carol.ID, "editor"))
+			f.device(carol, "tok-carol-"+fmt.Sprint(f.n), 5*time.Hour)
+			f.device(f.owner, "tok-owner-"+fmt.Sprint(f.n), 5*time.Hour)
+			must(t, srv.store.SetMemberCollectionAccess(f.ws.ID, carol.ID, "specific", []string{}))
+			mention(f, f.bob, carol, f.owner)
+			if n := len(rowsFor(f, f.bob, "mention")); n != 1 {
+				t.Fatalf("control: bob has %d mention rows, want 1", n)
+			}
+			if n := len(rowsFor(f, carol, "mention")); n != 0 {
+				t.Fatalf("carol cannot see the item yet has %d mention rows", n)
+			}
+			if n := len(rowsFor(f, f.owner, "mention")); n != 0 {
+				t.Fatalf("the author mentioned themselves and has %d mention rows", n)
+			}
+		})
+	})
+}
