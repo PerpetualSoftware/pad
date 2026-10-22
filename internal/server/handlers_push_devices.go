@@ -36,8 +36,8 @@ func (s *Server) SetPushGateway(url string) {
 }
 
 // SetPushGatewayClient sets the client the push dispatcher sends through
-// (TASK-3939). Called once at startup, before the server accepts connections.
-// Nothing starts a dispatcher from it yet.
+// (TASK-3939). Called once at startup, before the server accepts connections,
+// and before StartPushDispatch (cmd/pad configurePush).
 func (s *Server) SetPushGatewayClient(g *notify.Gateway) {
 	s.pushGateway = g
 }
