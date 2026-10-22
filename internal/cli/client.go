@@ -308,9 +308,14 @@ func SetMaxListPages(n int) (restore func()) {
 // next-offset until has-more is false, and keeps the FIRST page's
 // UndeclaredKeys (a filter warning is a property of the query, and the first
 // response is where it is raised). A server older than BUG-3704 sends no
-// paging state, so one response is everything. A has-more whose next-offset
-// does not advance, or a list longer than maxListPages, is an error: handing
-// back a short list as though it were the whole one is this bug's own class.
+// paging state, so one response is everything. A has-more page must be full
+// and contiguous: the server sets has-more only when it trimmed the probe row
+// (handlers_items.go listItemsPage), so such a page holds exactly `limit` rows
+// and its next-offset is offset+limit, i.e. len(items) > 0 and next-offset ==
+// offset+len(items) (BUG-4024). An empty has-more page, a next-offset that
+// skips rows never returned, or one that falls short is an error, as is a
+// list longer than maxListPages: handing back a short list as though it were
+// the whole one is this bug's own class.
 // params' limit and offset are the pager's own.
 func listAllPages(params url.Values, startOffset int, fetch func(url.Values) ([]models.Item, ItemListPage, error)) ([]models.Item, ItemListPage, error) {
 	q := url.Values{}
@@ -338,8 +343,8 @@ func listAllPages(params url.Values, startOffset int, fetch func(url.Values) ([]
 			first.Known = page.Known
 			return all, first, nil
 		}
-		if page.NextOffset <= offset {
-			return nil, ItemListPage{}, fmt.Errorf("the server reported more items (X-Pad-Has-More) but its next offset %d does not advance past %d; stopped after %d items rather than return a partial list", page.NextOffset, offset, len(all))
+		if len(items) == 0 || page.NextOffset != offset+len(items) {
+			return nil, ItemListPage{}, fmt.Errorf("the server reported more items (X-Pad-Has-More) but its next offset %d does not advance contiguously: the page at offset %d held %d items, so the next offset should be %d; stopped after %d items rather than return a partial list", page.NextOffset, offset, len(items), offset+len(items), len(all))
 		}
 		if pages >= maxListPages {
 			return nil, ItemListPage{}, fmt.Errorf("the list is longer than the %d-page cap (%d items read, server still reports X-Pad-Has-More); narrow the filter or pass --limit", maxListPages, len(all))

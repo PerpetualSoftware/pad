@@ -101,6 +101,46 @@ func TestBUG4024_PagerErrorsOnANonAdvancingOffset(t *testing.T) {
 	}
 }
 
+// R2-F1: a has-more page must be full and contiguous; every other shape is an
+// error with no items, even when a later page says has-more=false.
+func TestBUG4024_PagerRefusesAMalformedHasMorePage(t *testing.T) {
+	cases := map[string]struct{ rows, next int }{
+		"empty page with an advancing next offset": {0, 5},
+		"empty page that does not advance at all":  {0, 0},
+		"next offset jumps past the rows returned": {3, 9},
+		"next offset one short of the rows":        {3, 2},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			// first page: serve tc.rows rows; the next request (if any) is the final page.
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				from, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+				var items []models.Item
+				if from == 0 {
+					w.Header().Set("X-Pad-Has-More", "true")
+					w.Header().Set("X-Pad-Next-Offset", strconv.Itoa(tc.next))
+					for i := 0; i < tc.rows; i++ {
+						items = append(items, models.Item{ID: fmt.Sprintf("it-%d", i)})
+					}
+				} else {
+					w.Header().Set("X-Pad-Has-More", "false")
+					items = []models.Item{{ID: "late"}}
+				}
+				_ = json.NewEncoder(w).Encode(items)
+			}))
+			t.Cleanup(ts.Close)
+			t.Setenv("HOME", t.TempDir())
+			got, err := NewClientFromURL(ts.URL).ListAllItems("ws", url.Values{})
+			if err == nil || !strings.Contains(err.Error(), "rather than return a partial list") {
+				t.Fatalf("err = %v (items %d), want a partial-list refusal", err, len(got))
+			}
+			if got != nil {
+				t.Fatalf("a short list came back with the error: %d items", len(got))
+			}
+		})
+	}
+}
+
 func TestBUG4024_PagerErrorsAtThePageCapNamingIt(t *testing.T) {
 	defer SetMaxListPages(3)()
 	ts, offsets := pagerServer(t, 1000, 10, nil)

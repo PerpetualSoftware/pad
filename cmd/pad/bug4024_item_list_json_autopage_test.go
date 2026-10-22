@@ -31,6 +31,7 @@ type pagedItemServer struct {
 	serverPage int
 	noHeaders  bool   // an older server: no paging state at all
 	foreverAt  int    // if >0, always claim more (next offset = offset+foreverAt)
+	jump       bool   // page one claims a next offset past its rows, then the end
 	stuck      bool   // claim more but never advance the next offset
 	undeclared string // X-Pad-Undeclared-Filter-Keys, first page only
 	withCode   bool   // rows carry a code context (what reconcile keeps)
@@ -60,6 +61,13 @@ func (p *pagedItemServer) handler() http.Handler {
 		}
 		switch {
 		case p.noHeaders:
+		case p.jump:
+			if from == 0 {
+				w.Header().Set("X-Pad-Has-More", "true")
+				w.Header().Set("X-Pad-Next-Offset", strconv.Itoa(to+size))
+			} else {
+				w.Header().Set("X-Pad-Has-More", "false")
+			}
 		case p.stuck:
 			w.Header().Set("X-Pad-Has-More", "true")
 			w.Header().Set("X-Pad-Next-Offset", strconv.Itoa(from))
@@ -270,6 +278,18 @@ func TestBUG4024_NonAdvancingOffsetIsAnErrorNotAShortArray(t *testing.T) {
 	out, _, err := runItemList(t, "json")
 	if err == nil || !strings.Contains(err.Error(), "does not advance") {
 		t.Fatalf("err = %v, want a does-not-advance error", err)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("a partial array reached stdout: %.200s", out)
+	}
+}
+
+func TestBUG4024_SkippingNextOffsetIsAnErrorNotAShortArray(t *testing.T) {
+	p := &pagedItemServer{total: 500, serverPage: 100, jump: true}
+	setupFormatRoutingTest(t, p.handler())
+	out, _, err := runItemList(t, "json")
+	if err == nil || !strings.Contains(err.Error(), "rather than return a partial list") {
+		t.Fatalf("err = %v, want a partial-list refusal", err)
 	}
 	if strings.TrimSpace(out) != "" {
 		t.Fatalf("a partial array reached stdout: %.200s", out)
