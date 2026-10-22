@@ -434,11 +434,13 @@ Run with --help-collections to see available collections and their status values
 // --- list ---
 
 // Default + hard-max caps on `pad item list` result size (TASK-2000).
-// The default is a safety net so a bare `pad item list` / `--all` can't dump
-// the whole workspace into an agent's context; the max clamps an explicit
-// oversized `--limit`. Both bound the JSON/table payload, never the item body
-// (that's handled by the summary projection). Generous enough that normal
-// workspaces aren't truncated; small enough that pathological ones are.
+// The default is a safety net so a bare table/markdown `pad item list` /
+// `--all` can't dump the whole workspace into an agent's context; the max
+// clamps an explicit oversized `--limit`. Both bound the table payload, never
+// the item body (that's handled by the summary projection). `--format json`
+// WITHOUT `--limit` is not capped: a consumer parsing the array cannot see a
+// stderr notice, so it pages to completion instead (BUG-4024). An explicit
+// `--limit` (including 0, which means the default) keeps the cap.
 const (
 	defaultItemListLimit = 200
 	maxItemListLimit     = 1000
@@ -447,6 +449,7 @@ const (
 // printItemListTruncation tells a human, on stderr, that the list stopped
 // short and how to see the rest. The server says so exactly (BUG-3704); an
 // older server does not, and then len==limit is the hedged guess it always was.
+// The JSON auto-page path (BUG-4024) never calls it: nothing was cut short.
 func printItemListTruncation(page cli.ItemListPage, n, limit int) {
 	switch {
 	case page.Known && page.HasMore:
@@ -543,10 +546,19 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 			if groupBy != "" {
 				params.Set("group_by", groupBy)
 			}
+			// --format json with no --limit pages to completion (BUG-4024):
+			// the array is the whole answer, since a caller parsing it never
+			// sees the stderr notice. Detection is whether the flag was
+			// passed, not its value, so an explicit --limit (even 0) keeps
+			// the capped behaviour below.
+			autoPage := formatFlag == "json" && !cmd.Flags().Changed("limit")
+
 			// Apply a default limit + hard-max clamp (TASK-2000). Unbounded
 			// lists (esp. --all, which spans every collection) can dump
 			// megabytes into an agent's context; cap them. An explicit
 			// oversized --limit is clamped down rather than rejected.
+			// --limit 0 is "the default": it is clamped to
+			// defaultItemListLimit, not "no limit" (BUG-4024).
 			effectiveLimit := limitNum
 			if effectiveLimit <= 0 {
 				effectiveLimit = defaultItemListLimit
@@ -554,9 +566,11 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 			if effectiveLimit > maxItemListLimit {
 				effectiveLimit = maxItemListLimit
 			}
-			params.Set("limit", fmt.Sprintf("%d", effectiveLimit))
-			if offsetNum > 0 {
-				params.Set("offset", fmt.Sprintf("%d", offsetNum))
+			if !autoPage {
+				params.Set("limit", fmt.Sprintf("%d", effectiveLimit))
+				if offsetNum > 0 {
+					params.Set("offset", fmt.Sprintf("%d", offsetNum))
+				}
 			}
 
 			// Apply arbitrary --field key=value filters as query params.
@@ -587,10 +601,19 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 				// by its singular alias (BUG-2630); the fallback preserves
 				// shorthand against pre-resolver servers (BUG-2578).
 				items, err = cli.WithCollectionAliasFallback(args[0], client.CollectionNotFoundIsAuthoritative, func(slug string) ([]models.Item, error) {
-					got, pg, lerr := client.ListCollectionItemsReport(ws, slug, params)
+					var got []models.Item
+					var pg cli.ItemListPage
+					var lerr error
+					if autoPage {
+						got, pg, lerr = client.ListAllCollectionItemsReport(ws, slug, params, offsetNum)
+					} else {
+						got, pg, lerr = client.ListCollectionItemsReport(ws, slug, params)
+					}
 					page = pg
 					return got, lerr
 				})
+			} else if autoPage {
+				items, page, err = client.ListAllItemsReport(ws, params, offsetNum)
 			} else {
 				items, page, err = client.ListItemsReport(ws, params)
 			}
@@ -604,7 +627,10 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 			}
 			// The truncation notice goes to stderr after the output, in every
 			// format (BUG-3704).
-			defer printItemListTruncation(page, len(items), effectiveLimit)
+			// The auto-page path read to the end, so there is nothing to say.
+			if !autoPage {
+				defer printItemListTruncation(page, len(items), effectiveLimit)
+			}
 
 			if formatFlag == "json" {
 				// Default to the token-light summary shape (drops the rich
@@ -653,7 +679,7 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 	cmd.MarkFlagsMutuallyExclusive("parent", "unparented")
 	cmd.Flags().StringVar(&sortBy, "sort", "", "sort order (e.g. priority:desc,created_at:asc)")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "group results by field")
-	cmd.Flags().IntVar(&limitNum, "limit", 0, fmt.Sprintf("max number of items to return (default %d, max %d)", defaultItemListLimit, maxItemListLimit))
+	cmd.Flags().IntVar(&limitNum, "limit", 0, fmt.Sprintf("max number of items to return (default %d, max %d; with --format json and no --limit, every matching item is returned)", defaultItemListLimit, maxItemListLimit))
 	cmd.Flags().IntVar(&offsetNum, "offset", 0, "skip the first N items (for pagination)")
 	cmd.Flags().BoolVar(&showAll, "all", false, "include done/completed/archived items")
 	cmd.Flags().BoolVar(&fullOutput, "full", false, "JSON output only: include full content + all fields (default: token-light summary shape)")
