@@ -313,7 +313,10 @@ func releaseSet(claimedAt string) string {
 }
 
 // CountNotificationsSentSince is how many of userID's rows were pushed at or
-// after since: the rate cap's input.
+// after since: the rate cap's input. sent_at is stored at whole seconds, so a
+// row in since's own second cannot be placed before or after since; truncating
+// the cutoff counts that whole second, which errs toward fewer pushes, never
+// past the cap (TASK-3939 B2a codex r2).
 func (s *Store) CountNotificationsSentSince(userID string, since time.Time) (int, error) {
 	var n int
 	err := s.db.QueryRow(s.q(`
