@@ -69,8 +69,8 @@ func deviceAt(t *testing.T, s *Store, userID, token, createdAt string, ttl time.
 	}
 	s.mustExec(t, `UPDATE sessions SET expires_at = ? WHERE id = ?`, time.Now().UTC().Add(ttl).Format(time.RFC3339), sessionID)
 	deviceID = newID()
-	s.mustExec(t, `INSERT INTO push_devices (id, user_id, session_id, connection_id, platform, token, app_version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'android', ?, '1', ?, ?)`, deviceID, userID, sessionID, "conn-"+deviceID, token, createdAt, createdAt)
+	s.mustExec(t, `INSERT INTO push_devices (id, user_id, session_id, connection_id, platform, token, app_version, created_at, updated_at, reg_seq)
+		VALUES (?, ?, ?, ?, 'android', ?, '1', ?, ?, `+s.regSeqInsertExpr()+`)`, deviceID, userID, sessionID, "conn-"+deviceID, token, createdAt, createdAt)
 	return
 }
 
@@ -478,7 +478,8 @@ func TestLivePushDevices(t *testing.T) {
 		t.Fatalf("A lost the token to a device whose session is not B's: %v", deviceIDs(got))
 	}
 
-	// A tie on created_at goes to the larger id, for exactly one of the two.
+	// A tie on created_at goes to the later registration (higher reg_seq, TASK-4031),
+	// whatever the ids, for exactly one of the two.
 	tieA, _ := deviceAt(t, s, a.ID, "tie", stamp(-time.Hour), time.Hour)
 	tieB, _ := deviceAt(t, s, b.ID, "tie", stamp(-time.Hour), time.Hour)
 	gotA, _ := s.LivePushDevices(a.ID, now)
@@ -487,8 +488,8 @@ func TestLivePushDevices(t *testing.T) {
 	if ownsA == ownsB {
 		t.Fatalf("tie: A owns=%v B owns=%v, want exactly one", ownsA, ownsB)
 	}
-	if want := tieB > tieA; ownsB != want {
-		t.Fatalf("tie went to the smaller id")
+	if !ownsB {
+		t.Fatalf("tie went to the earlier registration")
 	}
 }
 
@@ -609,33 +610,35 @@ func TestClaimNotifications_HeldRowsDoNotCrowdLimit(t *testing.T) {
 	}
 }
 
-// A shared token whose two rows carry the SAME created_at goes to the higher
-// id, in both directions, and to exactly one user.
-// Kills: dropping the tie-break (neither owns it), or flipping `>` (the lower
-// id owns it).
-func TestLivePushDevices_SharedTokenTieGoesToHigherID(t *testing.T) {
+// A shared token goes to the row with the higher reg_seq, in both directions
+// and whatever the ids and timestamps say, and to exactly one user (TASK-4031).
+// Kills: comparing updated_at/id instead of reg_seq, or flipping `>`.
+func TestLivePushDevices_SharedTokenGoesToHigherRegSeq(t *testing.T) {
 	t.Parallel()
 	for _, aHigher := range []bool{true, false} {
-		t.Run(fmt.Sprintf("A higher id=%v", aHigher), func(t *testing.T) {
+		t.Run(fmt.Sprintf("A higher seq=%v", aHigher), func(t *testing.T) {
 			s := testStore(t)
 			a, b := notifyUser(t, s, "a@example.com"), notifyUser(t, s, "b@example.com")
 			stamp := ago(time.Hour)
 			da, _ := deviceAt(t, s, a.ID, "tie", stamp, time.Hour)
 			db, _ := deviceAt(t, s, b.ID, "tie", stamp, time.Hour)
+			// The ids point the other way from the sequence.
 			lo, hi := "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
-			idA, idB := lo, hi
+			idA, idB := hi, lo
+			seqA, seqB := 1000, 2000
 			if aHigher {
-				idA, idB = hi, lo
+				idA, idB = lo, hi
+				seqA, seqB = 2000, 1000
 			}
-			s.mustExec(t, `UPDATE push_devices SET id = ? WHERE id = ?`, idA, da)
-			s.mustExec(t, `UPDATE push_devices SET id = ? WHERE id = ?`, idB, db)
+			s.mustExec(t, `UPDATE push_devices SET id = ?, reg_seq = ? WHERE id = ?`, idA, seqA, da)
+			s.mustExec(t, `UPDATE push_devices SET id = ?, reg_seq = ? WHERE id = ?`, idB, seqB, db)
 			gotA, err := s.LivePushDevices(a.ID, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
 			gotB, _ := s.LivePushDevices(b.ID, time.Now())
 			if ownsA, ownsB := containsDevice(gotA, idA), containsDevice(gotB, idB); ownsA != aHigher || ownsB != !aHigher {
-				t.Fatalf("A owns=%v B owns=%v, want the higher id (A higher=%v) only", ownsA, ownsB, aHigher)
+				t.Fatalf("A owns=%v B owns=%v, want the higher reg_seq (A higher=%v) only", ownsA, ownsB, aHigher)
 			}
 		})
 	}

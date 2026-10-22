@@ -56,3 +56,35 @@ func TestPushDispatch_CrossUserReclaimRoutesToTheLatestRegistrant(t *testing.T) 
 		}
 	})
 }
+
+// TASK-4031: two users registered one phone in the same second and the PREVIOUS
+// registrant (bob) holds the larger id. Ownership follows the registration
+// sequence, so bob's pending row reaches no message and carol's is sent.
+// Kills: the ownership clause comparing updated_at then id.
+func TestPushDispatch_SameSecondReclaimIgnoresIDOrder(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		carol := f.user("carol")
+		must(t, srv.store.AddWorkspaceMember(f.ws.ID, carol.ID, "editor"))
+		f.exec(`DELETE FROM push_devices WHERE user_id = ?`, f.bob.ID)
+		bobDev, _ := f.device(f.bob, "tok-phone", 3*time.Hour)
+		carolDev, _ := f.device(carol, "tok-phone", 3*time.Hour)
+		same := f.ts(3 * time.Hour)
+		f.exec(`UPDATE push_devices SET created_at = ?, updated_at = ? WHERE token = ?`, same, same, "tok-phone")
+		f.exec(`UPDATE push_devices SET id = ? WHERE id = ?`, "zzzz-bob-larger", bobDev)
+		f.exec(`UPDATE push_devices SET id = ? WHERE id = ?`, "aaaa-carol-smaller", carolDev)
+		bobRow := f.row("comment")
+		carolRow := f.row("comment", func(o *rowOpt) { o.user = carol })
+		f.tick()
+		if st := f.state(carolRow); st.State != "sent" {
+			t.Fatalf("carol's row = %s/%q, want sent: she registered last", st.State, st.Reason)
+		}
+		if st := f.state(bobRow); st.State == "sent" {
+			t.Fatalf("bob's row was sent to a phone carol registered after him")
+		}
+		msgs := f.fake.all()
+		if len(msgs) != 1 || msgs[0].Data.NID != carolRow {
+			t.Fatalf("messages = %+v, want exactly carol's one", msgs)
+		}
+	})
+}
