@@ -1526,8 +1526,11 @@ func bootPlanBackfill(s *store.Store, cloud bool) error {
 // configurePush wires the push gateway from cfg and, when one is configured,
 // starts the push dispatcher (TASK-3939 B2c). A gateway URL with no usable
 // secret is refused before anything starts. With no URL the server offers no
-// push and no dispatcher runs: no device can register, so nothing is queued.
-// Shutdown stops the dispatcher with the server's other background loops.
+// push and no dispatcher runs: no new device can register. Rows are still
+// queued for devices registered while a gateway was configured; they stay
+// pending, and once a gateway is configured again the dispatcher expires any
+// past the expiry age instead of sending them. Shutdown stops the dispatcher
+// with the server's other background loops.
 func configurePush(srv *server.Server, cfg *config.Config) error {
 	srv.SetPushGateway(cfg.PushGatewayURL)
 	if cfg.PushGatewayURL == "" {
