@@ -192,7 +192,7 @@ func (s *Store) claimNotificationIDs(callerToken string, ids []string, settle, l
 			  AND push_state = 'pending'
 			  AND created_at <= ?
 			  AND (claimed_at IS NULL OR claimed_at < ?)`), token, ts, id, settle, lease); err != nil {
-			return Claim{}, fmt.Errorf("claim notification %s: %w", id, err)
+			return Claim{}, fmt.Errorf("claim notification: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -242,7 +242,8 @@ func (s *Store) ExpireStaleNotifications(createdCutoff, leaseCutoff time.Time) (
 // settleNotifications runs one UPDATE per chunk of ids, each conditioned on
 // the claim and on the row still being pending, so a claimer whose lease
 // lapsed cannot stamp a row another instance now holds. It returns the rows
-// changed.
+// changed. Every settle is under the claim EXCEPT recording a delivery
+// (RecordNotificationsSent): a push that went out is true whoever holds the row.
 func (s *Store) settleNotifications(token string, ids []string, set string, setArgs ...any) (int64, error) {
 	if token == "" {
 		return 0, errEmptyClaimToken
@@ -271,7 +272,9 @@ func (s *Store) settleNotifications(token string, ids []string, set string, setA
 }
 
 // MarkNotificationsSent records ids as pushed. token is Claim.Token. A row not
-// (or no longer) pending under it is left alone.
+// (or no longer) pending under it is left alone. The dispatcher does not use
+// it: SENT is the one deliberate exception to settle-under-the-claim, and is
+// recorded by id with RecordNotificationsSent (push_dispatch_settle.go).
 func (s *Store) MarkNotificationsSent(token string, ids []string) (int64, error) {
 	return s.settleNotifications(token, ids, `push_state = 'sent', sent_at = ?`, now())
 }

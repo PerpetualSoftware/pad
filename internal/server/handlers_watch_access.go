@@ -200,15 +200,25 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // resolver computeSSEVisibility (handlers_events.go) has the same shape
 // and was NOT changed, because no counting caller reads it.
 func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User, workspaceID string) (watchAccessVisibility, error) {
+	vis, msg, err := s.resolveWatchAccessVisibility(bearerAuth, user, workspaceID)
+	if err != nil {
+		slog.Warn(msg, "workspace_id", workspaceID, "user_id", user.ID, "error", err)
+	}
+	return vis, err
+}
+
+// resolveWatchAccessVisibility is computeWatchAccessVisibility without the
+// logging: on error it returns the log message for the failing lookup instead
+// of writing it, so the push dispatcher (TASK-3939 B1), which must never log a
+// workspace id, a user id or a store error, can call it.
+func (s *Server) resolveWatchAccessVisibility(bearerAuth bool, user *models.User, workspaceID string) (watchAccessVisibility, string, error) {
 	if user.Role == "admin" && !bearerAuth {
-		return watchAccessVisibility{fullAccess: true}, nil
+		return watchAccessVisibility{fullAccess: true}, "", nil
 	}
 
 	member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
 	if err != nil {
-		slog.Warn("watch-access: failed to resolve workspace membership, denying all in workspace",
-			"workspace_id", workspaceID, "user_id", user.ID, "error", err)
-		return watchAccessVisibility{}, err
+		return watchAccessVisibility{}, "watch-access: failed to resolve workspace membership, denying all in workspace", err
 	}
 	if member != nil && member.CollectionAccess != "specific" {
 		// "all" access (or the legacy "" default) — unrestricted. Note
@@ -217,7 +227,7 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 		// member of this specific workspace legitimately sees it in
 		// full; the gate above only denies the platform-wide, not-a-
 		// member-here bypass.
-		return watchAccessVisibility{fullAccess: true}, nil
+		return watchAccessVisibility{fullAccess: true}, "", nil
 	}
 
 	// From here: either a "specific"-access member, a non-member guest,
@@ -227,9 +237,7 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 	// VisibleCollectionIDs.
 	fullCollIDs, grantedItemIDs, gerr := s.store.GuestVisibleResources(workspaceID, user.ID)
 	if gerr != nil {
-		slog.Warn("watch-access: failed to resolve grants, denying all in workspace",
-			"workspace_id", workspaceID, "user_id", user.ID, "error", gerr)
-		return watchAccessVisibility{}, gerr
+		return watchAccessVisibility{}, "watch-access: failed to resolve grants, denying all in workspace", gerr
 	}
 
 	fullCollSet := make(map[string]bool, len(fullCollIDs))
@@ -244,9 +252,7 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 		// collection_grants from GuestVisibleResources above.
 		memberColls, mcErr := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
 		if mcErr != nil {
-			slog.Warn("watch-access: failed to resolve member collection access, denying all in workspace",
-				"workspace_id", workspaceID, "user_id", user.ID, "error", mcErr)
-			return watchAccessVisibility{}, mcErr
+			return watchAccessVisibility{}, "watch-access: failed to resolve member collection access, denying all in workspace", mcErr
 		}
 		for _, id := range memberColls {
 			fullCollSet[id] = true
@@ -261,5 +267,5 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 	return watchAccessVisibility{
 		visibleCollIDs: fullCollSet,
 		grantedItemIDs: grantedSet,
-	}, nil
+	}, "", nil
 }

@@ -63,6 +63,11 @@ type Gateway struct {
 	HTTP   *http.Client
 }
 
+// SendTimeout is the HTTP client's whole-request timeout, above the gateway's
+// own 20s deadline. The dispatcher's claim lease must exceed it by a margin
+// (internal/server/push_dispatch.go).
+const SendTimeout = 25 * time.Second
+
 // NewGateway returns a Gateway with a client that does not follow redirects:
 // the secret rides in a header, and a redirect would carry it to wherever the
 // answer points.
@@ -70,7 +75,7 @@ func NewGateway(url, secret string) *Gateway {
 	return &Gateway{
 		URL: url, Secret: secret,
 		HTTP: &http.Client{
-			Timeout: 25 * time.Second, // above the gateway's own 20s deadline
+			Timeout: SendTimeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

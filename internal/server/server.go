@@ -427,6 +427,10 @@ type Server struct {
 	// loop via stopOutboxDrain.
 	outboxDrain outboxDrainConfig
 
+	// pushDispatch holds the push dispatcher's config and lifecycle
+	// (TASK-3939). Stop() signals the loop via stopPushDispatch.
+	pushDispatch pushDispatchConfig
+
 	// reminderTick holds the periodic config + lifecycle for the item-reminder
 	// scheduler (IDEA-2641). Mirrors outboxDrain. Configured via
 	// SetReminderTickConfig + started via StartReminderTick; Stop() signals
@@ -759,6 +763,7 @@ func (s *Server) Stop() {
 	// SPEC-3 event outbox drain (TASK-2714). Same lifecycle pattern; an
 	// in-flight delivery is tracked on s.bg and awaited below.
 	s.stopOutboxDrain()
+	s.stopPushDispatch()
 	// Item reminder tick (IDEA-2641). Same lifecycle pattern; an in-flight
 	// pass is tracked on s.bg and awaited below.
 	s.stopReminderTick()
