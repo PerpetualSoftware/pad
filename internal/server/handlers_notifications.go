@@ -77,13 +77,25 @@ func (s *Server) handleGetMyNotification(w http.ResponseWriter, r *http.Request)
 	}
 	owner := ws.OwnerUsername
 	if owner == "" && ws.OwnerID != "" {
-		if u, err := s.store.GetUser(ws.OwnerID); err == nil && u != nil {
+		u, err := s.store.GetUser(ws.OwnerID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if u != nil {
 			owner = u.Username
 		}
 	}
+	// A deleted actor is a nil user and an empty name; a store error is a 500
+	// (TASK-3939 B2b codex r3).
 	actor := ""
 	if n.ActorUserID != "" {
-		if u, err := s.store.GetUser(n.ActorUserID); err == nil && u != nil {
+		u, err := s.store.GetUser(n.ActorUserID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if u != nil {
 			actor = u.Name
 		}
 	}
