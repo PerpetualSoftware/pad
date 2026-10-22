@@ -248,6 +248,24 @@ func TestNotificationEnrichment_PinnedTokenRefused(t *testing.T) {
 	f.must(f.do("GET", "/api/v1/me/notifications/anything", f.ownerTok, nil), http.StatusNotFound, "unpinned GET /me/notifications/{id}")
 }
 
+// An unpinned personal API token resolves its own user's notification through
+// the router, as docs/api.md promises (TASK-3939 B2b codex r2).
+func TestNotificationEnrichment_UnpinnedBearerTokenReadsItsOwnRow(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		id := f.row("comment")
+		tok, err := srv.store.CreateAPIToken(f.bob.ID, models.APITokenCreate{Name: "phone"}, 0, 0)
+		must(t, err)
+		req := httptest.NewRequest("GET", "/api/v1/me/notifications/"+id, nil)
+		req.Header.Set("Authorization", "Bearer "+tok.Token)
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"id":"`+id+`"`) {
+			t.Fatalf("bearer GET own row: %d %s, want 200 carrying id %s", rr.Code, rr.Body.String(), id)
+		}
+	})
+}
+
 // The mention leg runs the REAL enqueue: a comment @-mentioning bob is written
 // through the store, and nothing seeds a row by hand. The dispatcher then
 // pushes it as a mention.
