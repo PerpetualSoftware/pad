@@ -13,6 +13,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/notify"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TASK-4032: a push the gateway accepted whose 'sent' record then fails must
@@ -511,6 +512,77 @@ func TestPushDispatch_PartialRecordClearsTheChunksThatLanded(t *testing.T) {
 			if i >= chunk && (!stillParked || st != "pending") {
 				t.Fatalf("failed-chunk id %d: parked=%v state=%s, want parked and pending", i, stillParked, st)
 			}
+		}
+	})
+}
+
+// failExpire installs (on) or drops (off) a trigger that aborts the expiry
+// sweep's UPDATE (push_state='expired'), leaving every other write working.
+func (f *pdx) failExpire(on bool) {
+	f.t.Helper()
+	switch {
+	case on && f.pg():
+		f.exec(`CREATE OR REPLACE FUNCTION pd_fail_expire() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'pd fault'; END $$`)
+		f.exec(`CREATE TRIGGER pd_fail_expire BEFORE UPDATE ON user_notifications FOR EACH ROW WHEN (NEW.push_state = 'expired') EXECUTE FUNCTION pd_fail_expire()`)
+	case on:
+		f.exec(`CREATE TRIGGER pd_fail_expire BEFORE UPDATE ON user_notifications WHEN NEW.push_state = 'expired' BEGIN SELECT RAISE(ABORT, 'pd fault'); END`)
+	case f.pg():
+		f.exec(`DROP TRIGGER pd_fail_expire ON user_notifications`)
+	default:
+		f.exec(`DROP TRIGGER pd_fail_expire`)
+	}
+}
+
+// TASK-4032 r5 H-Q1. A parked row past the expiry age is dropped from the set
+// even when its record fails again; if the expiry sweep failed in the same
+// tick, the row is still pending with a lapsed lease. The claim's expiry
+// bound is what keeps it from being pushed a second time. Kills: removing the
+// bound from the claim (2 Send calls).
+func TestPushDispatch_DroppedParkedRowIsNotResentWhenExpireFails(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		id := f.row("comment")
+		clk := f.clock(time.Now())
+		f.failSent(true)
+		f.tick()
+		if f.fake.callCount() != 1 || f.parkedCount() != 1 {
+			t.Fatalf("setup: %d Send calls, %d parked; want 1 and 1", f.fake.callCount(), f.parkedCount())
+		}
+		// Keep bob's device live across the jump, so a re-claimed row would be
+		// SENT (and counted) rather than skipped as no_device.
+		f.exec(`UPDATE sessions SET expires_at = ? WHERE user_id = ?`, f.ts(-48*time.Hour), f.bob.ID)
+		f.failExpire(true)
+		clk.advance(pushExpireAfter + defaultPushLease + time.Minute)
+		f.tick()
+		// The send count first: a re-sent row is parked again, so the parked
+		// count alone would hide which failure happened.
+		if n := f.fake.callCount(); n != 1 {
+			t.Fatalf("%d Send calls, want 1: the dropped row was pushed again", n)
+		}
+		if n := f.parkedCount(); n != 0 {
+			t.Fatalf("%d parked after the row passed the expiry age, want 0 (dropped)", n)
+		}
+		if st := f.state(id); st.State != "pending" {
+			t.Fatalf("row = %+v, want pending (record and expire both failed)", st)
+		}
+	})
+}
+
+// TASK-4032 r5 H-Q1. The drop rule compares against the same second-truncated
+// cutoff the claim uses, so a row created exactly on the cutoff second is
+// claimable AND kept parked (excluded from the claim), never claimable and
+// dropped. The tick starts half a second past that second. Kills: comparing
+// against the untruncated cutoff (the entry is dropped).
+func TestPushDispatch_ParkedEntryAtTheCutoffSecondIsKept(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		id := f.row("comment")
+		created := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+		f.failSent(true)
+		f.srv.parkUnrecorded([]string{id}, map[string]store.Notification{id: {ID: id, UserID: f.bob.ID, CreatedAt: created.Format(time.RFC3339)}}, created)
+		f.srv.retryUnrecorded(created.Add(pushExpireAfter + 500*time.Millisecond))
+		if n := f.parkedCount(); n != 1 {
+			t.Fatalf("%d parked, want 1: a row on the cutoff second is still claimable, so its entry must stay", n)
 		}
 	})
 }

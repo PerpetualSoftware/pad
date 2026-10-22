@@ -138,7 +138,7 @@ func TestPushDispatch_SlowSendNotReclaimedMidFlight(t *testing.T) {
 		clk := f.clock(time.Now().Add(-time.Hour))
 		id := f.row("comment", func(o *rowOpt) { o.age = 90 * time.Minute })
 		compete := func(when string) {
-			c, err := srv.store.ClaimPendingNotifications("rival", 10, time.Now().Add(-10*time.Second), time.Now().Add(-3*time.Second), nil)
+			c, err := srv.store.ClaimPendingNotifications("rival", 10, time.Now().Add(-10*time.Second), time.Now().Add(-3*time.Second), time.Time{}, nil)
 			if err != nil || len(c.Rows) != 0 {
 				t.Errorf("%s: a rival claimed %d rows (err %v)", when, len(c.Rows), err)
 			}
@@ -164,7 +164,7 @@ func TestPushDispatch_SlowSendNotReclaimedMidFlight(t *testing.T) {
 		}
 		// A retry release keeps the row unavailable for the lease (B2a), so
 		// the rival gets it once the lease has run out.
-		c, err := srv.store.ClaimPendingNotifications("rival", 10, time.Now().Add(-10*time.Second), time.Now().Add(time.Minute), nil)
+		c, err := srv.store.ClaimPendingNotifications("rival", 10, time.Now().Add(-10*time.Second), time.Now().Add(time.Minute), time.Time{}, nil)
 		if err != nil || len(c.Rows) != 1 {
 			t.Fatalf("after release the rival claimed %d rows (err %v)", len(c.Rows), err)
 		}
@@ -266,7 +266,7 @@ func TestPushDispatch_LateSentRecordedWhenReclaimed(t *testing.T) {
 		go func() { f.tick(); close(done) }()
 		<-entered
 		f.lapse(id)
-		b, err := srv.store.ClaimPendingNotifications("B", 10, time.Now().Add(-10*time.Second), time.Now().Add(-time.Minute), nil)
+		b, err := srv.store.ClaimPendingNotifications("B", 10, time.Now().Add(-10*time.Second), time.Now().Add(-time.Minute), time.Time{}, nil)
 		if err != nil || len(b.Rows) != 1 {
 			t.Fatalf("B reclaimed %d rows (%v)", len(b.Rows), err)
 		}
@@ -313,7 +313,7 @@ func TestPushDispatch_HeldRecheckDropsRowsTakenMidTick(t *testing.T) {
 		go func() { f.tick(); close(done) }()
 		<-entered
 		f.lapse(second)
-		b, err := srv.store.ClaimPendingNotifications("B", 10, time.Now().Add(-10*time.Second), time.Now().Add(-time.Minute), nil)
+		b, err := srv.store.ClaimPendingNotifications("B", 10, time.Now().Add(-10*time.Second), time.Now().Add(-time.Minute), time.Time{}, nil)
 		if err != nil || len(b.Rows) != 1 || b.Rows[0].ID != second {
 			t.Fatalf("B claimed %v (%v), want the second row only", b.Rows, err)
 		}

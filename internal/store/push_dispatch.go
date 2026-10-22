@@ -122,6 +122,12 @@ const maxNotificationClaim = 100
 // already held from an earlier call (TASK-3939 r1-H1). A held row whose lease
 // lapsed is a candidate again and is returned with claimed_at refreshed.
 //
+// expireCutoff is the expiry age's lower bound (TASK-4032 r5 H-Q1): a row
+// created before it is never selected, so the claim does not depend on the
+// expiry sweep having run and succeeded. It is the exact complement of the
+// dispatcher's rule for dropping a parked entry (created before the same
+// second-truncated cutoff). The zero time bounds nothing.
+//
 // exclude lists ids that are never selected (TASK-4032 codex r1 M1): the
 // dispatcher passes the rows it already delivered but could not record, so
 // they cannot fill the batch ahead of rows that still need a push. nil or
@@ -134,7 +140,7 @@ const maxNotificationClaim = 100
 // same second (claimed_at has second precision), is therefore safe by
 // construction: two such calls can never read back each other's rows
 // (TASK-3939 r2-F1).
-func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff, leaseCutoff time.Time, exclude []string) (Claim, error) {
+func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff, leaseCutoff, expireCutoff time.Time, exclude []string) (Claim, error) {
 	if token == "" {
 		return Claim{}, errEmptyClaimToken
 	}
@@ -142,9 +148,9 @@ func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff,
 		return Claim{}, nil // no rows, no write: nothing to settle
 	}
 	limit = min(limit, maxNotificationClaim)
-	settle, lease := cutoffTS(settleCutoff), cutoffTS(leaseCutoff)
+	settle, lease, expire := cutoffTS(settleCutoff), cutoffTS(leaseCutoff), cutoffTS(expireCutoff)
 	notIn := ""
-	args := []any{settle, lease}
+	args := []any{settle, expire, lease}
 	if len(exclude) > 0 {
 		ph, exArgs := idPlaceholders(exclude)
 		notIn = " AND id NOT IN (" + ph + ")"
@@ -154,7 +160,7 @@ func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff,
 	rows, err := s.db.Query(s.q(`
 		SELECT id FROM user_notifications
 		WHERE push_state = 'pending'
-		  AND created_at <= ?
+		  AND created_at <= ? AND created_at >= ?
 		  AND (claimed_at IS NULL OR claimed_at < ?)`+notIn+`
 		ORDER BY created_at, id
 		LIMIT ?`), args...)
@@ -178,7 +184,7 @@ func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff,
 	if len(ids) == 0 {
 		return Claim{}, nil
 	}
-	return s.claimNotificationIDs(token, ids, settle, lease, now())
+	return s.claimNotificationIDs(token, ids, settle, expire, lease, now())
 }
 
 // claimNotificationIDs is the ARBITER: one conditional UPDATE per candidate,
@@ -187,7 +193,7 @@ func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff,
 // can hand it a stale candidate list (a row another claimer took since the
 // select) and a fixed ts, which the public entry point's own select would
 // already have filtered.
-func (s *Store) claimNotificationIDs(callerToken string, ids []string, settle, lease, ts string) (Claim, error) {
+func (s *Store) claimNotificationIDs(callerToken string, ids []string, settle, expire, lease, ts string) (Claim, error) {
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return Claim{}, fmt.Errorf("claim notifications: nonce: %w", err)
@@ -204,8 +210,8 @@ func (s *Store) claimNotificationIDs(callerToken string, ids []string, settle, l
 			SET claim_token = ?, claimed_at = ?
 			WHERE id = ?
 			  AND push_state = 'pending'
-			  AND created_at <= ?
-			  AND (claimed_at IS NULL OR claimed_at < ?)`), token, ts, id, settle, lease); err != nil {
+			  AND created_at <= ? AND created_at >= ?
+			  AND (claimed_at IS NULL OR claimed_at < ?)`), token, ts, id, settle, expire, lease); err != nil {
 			return Claim{}, fmt.Errorf("claim notification: %w", err)
 		}
 	}

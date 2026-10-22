@@ -333,16 +333,26 @@ func recordedPrefix(err error) int {
 	return 0
 }
 
+// expireCutoff is the creation time before which a row is past
+// pushExpireAfter. It is truncated to the second because the store compares
+// RFC3339 seconds: the claim's bound (created_at >= cutoff) and the parked
+// entry's drop rule (created before cutoff) are then exact complements, so no
+// row is both claimable and droppable.
+func expireCutoff(start time.Time) time.Time {
+	return start.Add(-pushExpireAfter).Truncate(time.Second)
+}
+
 // retryUnrecorded runs at the start of every tick, before the gateway check
 // and the claim, so it needs no gateway: recording is database work. A record
 // that returns no error clears every parked id, including one it changed no
 // row for (that row was settled elsewhere, which is a fine outcome too). A
 // failed one clears the ids in the chunks that committed before the failure
 // and keeps the rest, except those whose notification is past
-// pushExpireAfter: the expiry sweep takes such a row and the claim never
-// selects an expired row, so nothing can re-send it, and dropping the entry
-// is what keeps a database that stays down from growing the set. The ids are
-// sorted so the chunking is deterministic.
+// pushExpireAfter (expireCutoff): the claim never selects a row created
+// before that cutoff, whether or not the expiry sweep landed (TASK-4032 r5
+// H-Q1), so nothing can re-send it, and dropping the entry is what keeps a
+// database that stays down from growing the set. The ids are sorted so the
+// chunking is deterministic.
 func (s *Server) retryUnrecorded(start time.Time) {
 	d := &s.pushDispatch
 	d.mu.Lock()
@@ -362,7 +372,7 @@ func (s *Server) retryUnrecorded(start time.Time) {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	cutoff := start.Add(-pushExpireAfter)
+	cutoff := expireCutoff(start)
 	for i, id := range ids {
 		if i < landed || d.unrecorded[id].created.Before(cutoff) {
 			delete(d.unrecorded, id)
@@ -456,7 +466,7 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 	// Fresh per tick and never kept: the store appends its own nonce, and
 	// every settle below uses Claim.Token.
 	token := "pd-" + cfg.instanceID + "-" + uuid.NewString()
-	claim, err := s.store.ClaimPendingNotifications(token, notify.MaxBatch, start.Add(-cfg.settle), start.Add(-cfg.lease), exclude)
+	claim, err := s.store.ClaimPendingNotifications(token, notify.MaxBatch, start.Add(-cfg.settle), start.Add(-cfg.lease), expireCutoff(start), exclude)
 	if err != nil {
 		slog.Error("push dispatch: claim failed", "op", "claim")
 		return
