@@ -87,7 +87,7 @@ func (s *Store) RegisterPushDevice(userID, sessionID, connectionID, platform, to
 		}
 		ts := now()
 		if _, err := tx.Exec(s.q(`
-			UPDATE push_devices SET session_id = ?, connection_id = ?, platform = ?, app_version = ?, updated_at = ?
+			UPDATE push_devices SET session_id = ?, connection_id = ?, platform = ?, app_version = ?, updated_at = ?, reg_seq = `+s.regSeqUpdateExpr()+`
 			WHERE id = ?`), sessionID, connectionID, platform, appVersion, ts, keptID); err != nil {
 			return nil, fmt.Errorf("register push device: update: %w", err)
 		}
@@ -133,8 +133,8 @@ func (s *Store) RegisterPushDevice(userID, sessionID, connectionID, platform, to
 		Platform: platform, Token: token, AppVersion: appVersion, CreatedAt: ts, UpdatedAt: ts,
 	}
 	if _, err := tx.Exec(s.q(`
-		INSERT INTO push_devices (id, user_id, session_id, connection_id, platform, token, app_version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		INSERT INTO push_devices (id, user_id, session_id, connection_id, platform, token, app_version, created_at, updated_at, reg_seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, `+s.regSeqInsertExpr()+`)`),
 		d.ID, d.UserID, d.SessionID, d.ConnectionID, d.Platform, d.Token, d.AppVersion, d.CreatedAt, d.UpdatedAt); err != nil {
 		return nil, fmt.Errorf("register push device: insert: %w", err)
 	}
@@ -143,6 +143,23 @@ func (s *Store) RegisterPushDevice(userID, sessionID, connectionID, platform, to
 	}
 	return d, nil
 }
+
+// regSeqUpdateExpr is the SQL value a register writes to reg_seq on a row it
+// UPDATEs (TASK-4031). SQLite: MAX+1, race-free because every write
+// transaction is BEGIN IMMEDIATE. Postgres: the sequence, which hands two
+// concurrent registrants distinct values (the user FOR UPDATE lock covers only
+// one user).
+func (s *Store) regSeqUpdateExpr() string {
+	if s.dialect.Driver() == DriverPostgres {
+		return `nextval('push_devices_reg_seq')`
+	}
+	return `(SELECT COALESCE(MAX(reg_seq), 0) + 1 FROM push_devices)`
+}
+
+// regSeqInsertExpr is the value an INSERT writes: the same as the UPDATE's on
+// SQLite; on Postgres the column default is nextval, so an explicit call is the
+// same thing and keeps the two writers visibly alike.
+func (s *Store) regSeqInsertExpr() string { return s.regSeqUpdateExpr() }
 
 // DeletePushDevice removes the device bound to this session under this
 // connection id. Absent is not an error: the call is idempotent.

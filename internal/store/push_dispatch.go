@@ -333,10 +333,11 @@ func (s *Store) PruneNotifications(olderThan time.Time) (int64, error) {
 // to the same user, and has not expired. And when another user holds the same
 // token (push_devices is unique on (user_id, token), not on token), only the
 // newest LIVE registrant owns it: A's notification never goes to a phone B
-// has since signed into. "Newest" is the latest registration (updated_at, which
-// every register refreshes), not created_at, which a same-user re-register keeps
-// (TASK-4027): otherwise the previous user would keep a phone the first user
-// has reclaimed. A tie on updated_at goes to the larger id.
+// has since signed into. "Newest" is the latest registration by reg_seq
+// (TASK-4031), a unique sequence every register advances (INSERT and the
+// same-user in-place UPDATE) and a session rebind does not. It is not
+// updated_at, which has second resolution and tied a same-second reclaim to the
+// random id, nor created_at, which a same-user re-register keeps (TASK-4027).
 func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, error) {
 	ts := cutoffTS(at)
 	rows, err := s.db.Query(s.q(`
@@ -348,7 +349,7 @@ func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, erro
 		    SELECT 1 FROM push_devices d2
 		    JOIN sessions s2 ON s2.id = d2.session_id AND s2.user_id = d2.user_id AND s2.expires_at >= ?
 		    WHERE d2.token = d.token AND d2.user_id <> d.user_id
-		      AND (d2.updated_at > d.updated_at OR (d2.updated_at = d.updated_at AND d2.id > d.id)))
+		      AND d2.reg_seq > d.reg_seq)
 		ORDER BY d.created_at, d.id`), ts, userID, ts)
 	if err != nil {
 		return nil, fmt.Errorf("live push devices: %w", err)

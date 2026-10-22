@@ -156,8 +156,12 @@ func (f *pdx) device(u *models.User, token string, ago time.Duration) (deviceID,
 	must(f.t, row.Scan(&sessionID))
 	deviceID = fmt.Sprintf("dev-%d-%d", f.n, pdxSeq.Add(1))
 	ts := f.ts(ago)
-	f.exec(`INSERT INTO push_devices (id, user_id, session_id, connection_id, platform, token, app_version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'android', ?, '1', ?, ?)`, deviceID, u.ID, sessionID, "conn-"+deviceID, token, ts, ts)
+	regSeq := `(SELECT COALESCE(MAX(reg_seq), 0) + 1 FROM push_devices)`
+	if f.srv.store.D().Driver() == store.DriverPostgres {
+		regSeq = `nextval('push_devices_reg_seq')`
+	}
+	f.exec(`INSERT INTO push_devices (id, user_id, session_id, connection_id, platform, token, app_version, created_at, updated_at, reg_seq)
+		VALUES (?, ?, ?, ?, 'android', ?, '1', ?, ?, `+regSeq+`)`, deviceID, u.ID, sessionID, "conn-"+deviceID, token, ts, ts)
 	return
 }
 

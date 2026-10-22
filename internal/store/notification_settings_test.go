@@ -41,8 +41,8 @@ func addDevice(t *testing.T, s *Store, userID string) string {
 		t.Fatal(err)
 	}
 	ts := now()
-	s.mustExec(t, `INSERT INTO push_devices (id, user_id, session_id, connection_id, platform, token, app_version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, newID(), userID, sessionID, "conn-"+newID(), "ios", "tok-"+newID(), "1.0", ts, ts)
+	s.mustExec(t, `INSERT INTO push_devices (id, user_id, session_id, connection_id, platform, token, app_version, created_at, updated_at, reg_seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, `+s.regSeqInsertExpr()+`)`, newID(), userID, sessionID, "conn-"+newID(), "ios", "tok-"+newID(), "1.0", ts, ts)
 	return sessionID
 }
 
