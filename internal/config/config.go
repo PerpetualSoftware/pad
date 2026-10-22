@@ -101,7 +101,8 @@ type Config struct {
 	// raw env strings. They are parsed by PushDispatchTimings at server
 	// startup, not in Load, so a malformed value refuses `pad server start`
 	// rather than breaking every other pad command. Empty means unset: the
-	// dispatcher keeps its default. Env only; there is no config.toml key.
+	// dispatcher keeps its default; a value of only whitespace is set and malformed,
+	// not unset. Env only; there is no config.toml key.
 	PushDispatchIntervalRaw    string `toml:"-"`
 	PushDispatchSettleRaw      string `toml:"-"`
 	PushDispatchLeaseRaw       string `toml:"-"`
@@ -917,7 +918,9 @@ type PushDispatchTimings struct {
 // PushDispatchTimings parses the four PAD_PUSH_DISPATCH_* knobs (TASK-3939
 // part C, ruling 77a8fae7). A knob that is set but is not a Go duration, or is
 // not positive, is an error naming its variable; it never falls back to the
-// default. The message is fixed: it does not echo the value.
+// default. A value of only whitespace is malformed, not unset (only the empty
+// string is unset), so it refuses too (TASK-3939 part C, ruling 37e3eafa).
+// The message is fixed: it does not echo the value.
 func (c *Config) PushDispatchTimings() (PushDispatchTimings, error) {
 	var t PushDispatchTimings
 	for _, k := range []struct {

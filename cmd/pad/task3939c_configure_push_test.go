@@ -126,13 +126,22 @@ func TestConfigurePush_BadKnobRefusesStartup(t *testing.T) {
 		name    string
 		mutate  func(*config.Config)
 		wantVar string
+		// wantDetail are substrings that tell the two lease causes apart: the
+		// name alone cannot, since PAD_PUSH_DISPATCH_LEASE is a prefix of
+		// PAD_PUSH_DISPATCH_LEASE_MARGIN (TASK-3939 part C, ruling 37e3eafa).
+		wantDetail []string
 	}{
-		{"malformed interval", func(c *config.Config) { c.PushDispatchIntervalRaw = "soon" }, "PAD_PUSH_DISPATCH_INTERVAL"},
-		{"malformed settle", func(c *config.Config) { c.PushDispatchSettleRaw = "10" }, "PAD_PUSH_DISPATCH_SETTLE"},
-		{"zero lease", func(c *config.Config) { c.PushDispatchLeaseRaw = "0s" }, "PAD_PUSH_DISPATCH_LEASE"},
-		{"negative margin", func(c *config.Config) { c.PushDispatchLeaseMarginRaw = "-1s" }, "PAD_PUSH_DISPATCH_LEASE_MARGIN"},
-		{"lease shorter than send timeout plus margin", func(c *config.Config) { c.PushDispatchLeaseRaw = "30s" }, "PAD_PUSH_DISPATCH_LEASE"},
-		{"margin that outgrows the default lease", func(c *config.Config) { c.PushDispatchLeaseMarginRaw = "50s" }, "PAD_PUSH_DISPATCH_LEASE_MARGIN"},
+		{"malformed interval", func(c *config.Config) { c.PushDispatchIntervalRaw = "soon" }, "PAD_PUSH_DISPATCH_INTERVAL", nil},
+		{"whitespace-only interval", func(c *config.Config) { c.PushDispatchIntervalRaw = " " }, "PAD_PUSH_DISPATCH_INTERVAL", nil},
+		{"malformed settle", func(c *config.Config) { c.PushDispatchSettleRaw = "10" }, "PAD_PUSH_DISPATCH_SETTLE", nil},
+		{"zero lease", func(c *config.Config) { c.PushDispatchLeaseRaw = "0s" }, "PAD_PUSH_DISPATCH_LEASE", nil},
+		{"negative margin", func(c *config.Config) { c.PushDispatchLeaseMarginRaw = "-1s" }, "PAD_PUSH_DISPATCH_LEASE_MARGIN", nil},
+		{"lease shorter than send timeout plus margin", func(c *config.Config) { c.PushDispatchLeaseRaw = "30s" }, "PAD_PUSH_DISPATCH_LEASE", []string{"lease 30s", "margin 15s"}},
+		{"margin that outgrows the default lease", func(c *config.Config) { c.PushDispatchLeaseMarginRaw = "50s" }, "PAD_PUSH_DISPATCH_LEASE_MARGIN", []string{"lease 1m0s", "margin 50s"}},
+		{"margin of 2562047h", func(c *config.Config) { c.PushDispatchLeaseMarginRaw = "2562047h" }, "PAD_PUSH_DISPATCH_LEASE_MARGIN", []string{"lease 1m0s"}},
+		// 2562047h47m16s + the 25s send timeout exceeds MaxInt64 and wraps
+		// negative; 2562047h alone does not.
+		{"margin that overflows the sum", func(c *config.Config) { c.PushDispatchLeaseMarginRaw = "2562047h47m16s" }, "PAD_PUSH_DISPATCH_LEASE_MARGIN", []string{"lease 1m0s"}},
 	}
 	for _, withURL := range []bool{true, false} {
 		for _, tc := range cases {
@@ -151,6 +160,11 @@ func TestConfigurePush_BadKnobRefusesStartup(t *testing.T) {
 				err := configurePush(srv, cfg)
 				if err == nil || !strings.Contains(err.Error(), tc.wantVar) {
 					t.Fatalf("configurePush = %v, want a refusal naming %s", err, tc.wantVar)
+				}
+				for _, d := range tc.wantDetail {
+					if !strings.Contains(err.Error(), d) {
+						t.Errorf("refusal %q lacks %q", err, d)
+					}
 				}
 				if srv.PushDispatchRunning() {
 					t.Fatal("the push dispatcher started despite the refusal")

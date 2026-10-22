@@ -1527,7 +1527,10 @@ func bootPlanBackfill(s *store.Store, cloud bool) error {
 // starts the push dispatcher (TASK-3939 B2c). A gateway URL with no usable
 // secret is refused before anything starts. So is a malformed or non-positive
 // PAD_PUSH_DISPATCH_* knob, or a combination whose lease is shorter than the
-// send timeout plus margin (TASK-3939 part C, ruling 77a8fae7): a bad knob is
+// send timeout plus margin, or whose margin overflows that sum (TASK-3939
+// part C, rulings 77a8fae7 and 37e3eafa; the refusal names both
+// PAD_PUSH_DISPATCH_LEASE and _LEASE_MARGIN and states the resolved values,
+// since either can be the cause): a bad knob is
 // an operator error whether or not a gateway is set, so it is checked first
 // and never falls back to the default. The knobs are applied before
 // StartPushDispatch because the interval is read once, at Start. With no URL the server offers no
@@ -1546,7 +1549,9 @@ func configurePush(srv *server.Server, cfg *config.Config) error {
 	// margin) refuses startup the same way a malformed value does.
 	// sendTimeout is 0 (keep notify.SendTimeout): it has no knob.
 	if err := srv.SetPushDispatchConfig(timings.Interval, timings.Settle, timings.Lease, timings.LeaseMargin, 0); err != nil {
-		return fmt.Errorf("PAD_PUSH_DISPATCH_LEASE must be at least the %s send timeout plus PAD_PUSH_DISPATCH_LEASE_MARGIN (unset knobs use lease 60s, margin 15s)", notify.SendTimeout)
+		// The setter's error carries the resolved lease and margin, which is
+		// what tells the operator which of the two knobs to change.
+		return fmt.Errorf("PAD_PUSH_DISPATCH_LEASE must be at least the send timeout plus PAD_PUSH_DISPATCH_LEASE_MARGIN; change either knob (%w)", err)
 	}
 	srv.SetPushGateway(cfg.PushGatewayURL)
 	if cfg.PushGatewayURL == "" {

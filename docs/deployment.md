@@ -1483,9 +1483,11 @@ Mobile push goes out through a push gateway. With no `PAD_PUSH_GATEWAY_URL` this
 | `PAD_PUSH_DISPATCH_LEASE` | `60s` | How long a claimed notification stays reserved to this instance before another may reclaim it. |
 | `PAD_PUSH_DISPATCH_LEASE_MARGIN` | `15s` | Safety margin the lease must keep beyond the send timeout. |
 
-The four timing knobs are Go durations (`5s`, `1m30s`) and are environment variables only. Startup refuses a value that is not a valid duration, is zero or negative, or that breaks the lease rule below, with a message naming the variable. It never falls back to the default silently, and it refuses whether or not a gateway URL is set.
+The four timing knobs are Go durations (`5s`, `1m30s`) and are environment variables only. Startup refuses a value that is not a valid duration, is zero or negative, or that breaks the lease rule below, with a message naming the variable. A value of only whitespace is malformed, not unset: only an empty or absent variable is unset. It never falls back to the default silently, and it refuses whether or not a gateway URL is set.
 
-**Lease rule.** The lease must be at least the send timeout plus the lease margin (`PAD_PUSH_DISPATCH_LEASE >= 25s + PAD_PUSH_DISPATCH_LEASE_MARGIN`). A lease shorter than that would let a second instance reclaim a notification while the first is still sending it, and push it twice. With the defaults, 60s >= 25s + 15s. Raising the margin past 35s therefore needs a longer lease too.
+Values are not capped: a large explicit value is your choice (a huge settle simply means nothing is pushed, a huge interval means the dispatcher effectively never runs). The one bound is the lease rule, which also refuses a margin so large that adding the send timeout would overflow.
+
+**Lease rule.** The lease must be at least the send timeout plus the lease margin (`PAD_PUSH_DISPATCH_LEASE >= 25s + PAD_PUSH_DISPATCH_LEASE_MARGIN`). A lease shorter than that would let a second instance reclaim a notification while the first is still sending it, and push it twice. With the defaults, 60s >= 25s + 15s. Raising the margin past 35s therefore needs a longer lease too. The refusal message names both `PAD_PUSH_DISPATCH_LEASE` and `PAD_PUSH_DISPATCH_LEASE_MARGIN` and states the lease, send timeout and margin it resolved (defaults included), so you can see which to change.
 
 **The send timeout is fixed at 25s and has no setting.** It is the whole-request timeout of the gateway's HTTP client, built into the binary. A setting for it would only change the number the lease rule checks, not the timeout the client uses, so the rule would certify a value that is never applied.
 

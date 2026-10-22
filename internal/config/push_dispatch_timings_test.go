@@ -50,7 +50,7 @@ func TestPushDispatchTimings_UnsetIsZero(t *testing.T) {
 func TestPushDispatchTimings_BadValueNamesTheVariable(t *testing.T) {
 	vars := []string{"PAD_PUSH_DISPATCH_INTERVAL", "PAD_PUSH_DISPATCH_SETTLE", "PAD_PUSH_DISPATCH_LEASE", "PAD_PUSH_DISPATCH_LEASE_MARGIN"}
 	for _, v := range vars {
-		for _, bad := range []string{"soon", "10", "0", "0s", "-5s"} {
+		for _, bad := range []string{"soon", "10", "0", "0s", "-5s", " "} {
 			t.Run(v+"="+bad, func(t *testing.T) {
 				cfg := loadWithPushEnv(t, map[string]string{v: bad})
 				_, err := cfg.PushDispatchTimings()

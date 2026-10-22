@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -130,7 +132,8 @@ type pushDispatchSettings struct {
 // so a later change needs a restart); settle, lease, leaseMargin and
 // sendTimeout are read on every tick.
 // A combination violating the lease invariant is refused whole and nothing
-// changes.
+// changes; the error wraps errPushLeaseTooShort and states the RESOLVED lease,
+// send timeout and margin, so a caller can tell which knob caused it.
 func (s *Server) SetPushDispatchConfig(interval, settle, lease, leaseMargin, sendTimeout time.Duration) error {
 	cur := s.resolvePushDispatchSettings()
 	pick := func(v, d time.Duration) time.Duration {
@@ -144,9 +147,15 @@ func (s *Server) SetPushDispatchConfig(interval, settle, lease, leaseMargin, sen
 		lease: pick(lease, cur.lease), leaseMargin: pick(leaseMargin, cur.leaseMargin),
 		sendTimeout: pick(sendTimeout, cur.sendTimeout),
 	}
-	if next.lease < next.sendTimeout+next.leaseMargin {
+	// sendTimeout + leaseMargin wraps negative when the margin is within
+	// sendTimeout of MaxInt64 (ParseDuration accepts up to about 2562047h), and
+	// the wrapped sum would pass the comparison below. Such a margin exceeds
+	// every representable lease, so it is the same violation (TASK-3939 part C,
+	// ruling 37e3eafa). Every other use of these durations is time.Time.Add or
+	// NewTicker, which cannot wrap at this magnitude, so no cap is needed.
+	if next.leaseMargin > math.MaxInt64-next.sendTimeout || next.lease < next.sendTimeout+next.leaseMargin {
 		slog.Warn("push dispatch: config refused", "reason", "lease shorter than send timeout plus margin")
-		return errPushLeaseTooShort
+		return fmt.Errorf("%w: lease %s is shorter than send timeout %s plus margin %s", errPushLeaseTooShort, next.lease, next.sendTimeout, next.leaseMargin)
 	}
 	d := &s.pushDispatch
 	d.mu.Lock()
@@ -277,7 +286,9 @@ type PushDispatchApplied struct {
 // PushDispatchApplied reads the dispatcher's timings, filling defaults for
 // any unset one. Read-only; startup's wiring test reads it to prove the knobs
 // reached the dispatcher, and the interval before Start (TASK-3939 part C,
-// ruling 77a8fae7).
+// ruling 77a8fae7). A test-only seam, read at single-threaded startup: it
+// takes the lock twice (resolve, then startedInterval), so a concurrent
+// reconfigure could give a mixed snapshot.
 func (s *Server) PushDispatchApplied() PushDispatchApplied {
 	cur := s.resolvePushDispatchSettings()
 	s.pushDispatch.mu.Lock()
