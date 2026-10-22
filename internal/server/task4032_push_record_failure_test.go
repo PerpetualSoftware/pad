@@ -233,13 +233,15 @@ func TestPushDispatch_FullUnrecordedSetHoldsClaimsAndSends(t *testing.T) {
 		clk := f.clock(time.Now())
 		f.failSent(true)
 		f.tick()
-		if n := f.parkedCount(); n != 3 {
-			t.Fatalf("%d parked, want 3 (the set is never trimmed)", n)
-		}
 		fresh := f.freshRows(1)[0]
 		f.tickLeases(clk, 4)
+		// The re-send check comes first so an evicting implementation fails
+		// on the re-send itself, not on the parked count.
 		if n := f.fake.callCount(); n != 1 {
 			t.Fatalf("%d Send calls while the set was full, want 1", n)
+		}
+		if n := f.parkedCount(); n != 3 {
+			t.Fatalf("%d parked, want 3 (the set is never trimmed)", n)
 		}
 		if st := f.state(fresh); st.State != "pending" || st.Claim != "" || st.Attempts != 0 {
 			t.Fatalf("fresh row = %+v, want pending, never claimed, held", st)
@@ -418,6 +420,47 @@ func TestPushDispatch_ParkedEntryClearsWhenTheRecordAffectsNoRow(t *testing.T) {
 		f.tick()
 		if f.parkedCount() != 0 {
 			t.Fatal("the entry outlived a retry that settled nothing")
+		}
+	})
+}
+
+// Stop does not wait for the tick in flight, so Start can run a second loop
+// beside it. Ticks are serialized: while one is blocked inside a gateway send,
+// another does not claim or send, and runs only once the first finishes.
+func TestTask4032_TicksNeverOverlapAcrossStopStart(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		first := f.row("comment")
+		entered, release := parkedSend(f)
+		done1 := make(chan struct{})
+		go func() { f.tick(); close(done1) }()
+		<-entered
+
+		srv.stopPushDispatch()
+		srv.StartPushDispatch()
+		defer srv.stopPushDispatch()
+
+		second := f.row("comment")
+		done2 := make(chan struct{})
+		go func() { f.tick(); close(done2) }()
+		select {
+		case <-done2:
+			t.Fatal("a second tick ran to completion while the first was blocked in Send")
+		case <-time.After(300 * time.Millisecond):
+		}
+		if n := f.fake.callCount(); n != 1 {
+			t.Fatalf("%d Send calls while the first tick was blocked, want 1", n)
+		}
+		if st := f.state(second); st.Claim != "" {
+			t.Fatalf("second row = %+v: a second tick claimed while the first was in flight", st)
+		}
+		close(release)
+		<-done1
+		<-done2
+		for _, id := range []string{first, second} {
+			if st := f.state(id); st.State != "sent" {
+				t.Fatalf("row %s = %+v, want sent once the ticks ran in turn", id, st)
+			}
 		}
 	})
 }

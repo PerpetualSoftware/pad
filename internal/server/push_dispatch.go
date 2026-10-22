@@ -91,6 +91,12 @@ type pushDispatchConfig struct {
 	// unrecordedFull is whether the last tick found the set at its cap, so
 	// the full state logs once on entering and once on leaving.
 	unrecordedFull bool
+	// tickMu serializes ticks for the life of the process: Stop does not wait
+	// for the tick in flight, so a later Start could otherwise run a second
+	// one beside it, and two ticks would each pass the cap check and send.
+	// Stop cancels the in-flight tick's context, so a waiter is never held
+	// longer than that tick's unwind.
+	tickMu sync.Mutex
 	// tick, when non-nil, replaces the interval ticker so a test drives passes.
 	tick <-chan time.Time
 }
@@ -409,6 +415,8 @@ var kindPriority = map[string]int{
 
 // runPushDispatchTick is one pass. ctx is the shutdown signal.
 func (s *Server) runPushDispatchTick(ctx context.Context) {
+	s.pushDispatch.tickMu.Lock()
+	defer s.pushDispatch.tickMu.Unlock()
 	cfg := s.resolvePushDispatchSettings()
 	start := s.pushNow()
 	s.expireAndPrune(cfg, start)
