@@ -31,10 +31,16 @@ type PushDevice struct {
 	UpdatedAt    string
 }
 
-// RegisterPushDevice binds a push token to a session in ONE transaction: it
-// deletes every row on EITHER unique key (this session's own row, whatever its
-// token, and this user's row for this token, whatever its session), evicts the
-// oldest devices while the user is at the cap, then inserts. A single-key
+// RegisterPushDevice binds a push token to a session in ONE transaction. When
+// this user already holds the token, the row is UPDATED in place: id and
+// created_at (the device's first registration, which the dispatcher's
+// predates-device gate reads) are kept, the session, connection, platform and
+// app version move to the caller, updated_at is refreshed, and the caller's own
+// session row for any OTHER token is deleted first (session_id is unique). The
+// cap loop is skipped because the row count cannot grow (TASK-4027). Otherwise
+// it deletes every row on EITHER unique key (this session's own row, whatever
+// its token, and this user's row for this token, whatever its session), evicts
+// the oldest devices while the user is at the cap, then inserts. A single-key
 // upsert cannot clear the other key and collides with it (TASK-3938).
 //
 // On Postgres the user row is locked first so two concurrent registers
@@ -70,6 +76,30 @@ func (s *Store) RegisterPushDevice(userID, sessionID, connectionID, platform, to
 	}
 	if parseTime(expiresAt).Before(time.Now().UTC()) {
 		return nil, ErrPushSessionGone
+	}
+
+	var keptID, keptCreated string
+	switch err := tx.QueryRow(s.q(`SELECT id, created_at FROM push_devices WHERE user_id = ? AND token = ?`),
+		userID, token).Scan(&keptID, &keptCreated); {
+	case err == nil:
+		if _, err := tx.Exec(s.q(`DELETE FROM push_devices WHERE session_id = ? AND id <> ?`), sessionID, keptID); err != nil {
+			return nil, fmt.Errorf("register push device: clear session: %w", err)
+		}
+		ts := now()
+		if _, err := tx.Exec(s.q(`
+			UPDATE push_devices SET session_id = ?, connection_id = ?, platform = ?, app_version = ?, updated_at = ?
+			WHERE id = ?`), sessionID, connectionID, platform, appVersion, ts, keptID); err != nil {
+			return nil, fmt.Errorf("register push device: update: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("register push device: commit: %w", err)
+		}
+		return &PushDevice{
+			ID: keptID, UserID: userID, SessionID: sessionID, ConnectionID: connectionID,
+			Platform: platform, Token: token, AppVersion: appVersion, CreatedAt: keptCreated, UpdatedAt: ts,
+		}, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return nil, fmt.Errorf("register push device: lookup token: %w", err)
 	}
 
 	if _, err := tx.Exec(s.q(`DELETE FROM push_devices WHERE session_id = ? OR (user_id = ? AND token = ?)`),

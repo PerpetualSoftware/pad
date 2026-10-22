@@ -414,3 +414,218 @@ func TestPushDevices_Rotation_KeepsTheFence(t *testing.T) {
 		t.Fatalf("%d sessions after a fenced rotation (%v), want 0", n, err)
 	}
 }
+
+// TASK-4027. now() has SECOND precision, so every test that tells a kept
+// timestamp from a reset one backdates the row first: a same-second re-register
+// would otherwise make a reset indistinguishable from a keep.
+
+// backdatePushDevice sets both timestamps of (user, token)'s row, ago in the past.
+func backdatePushDevice(t *testing.T, s *Store, userID, token string, ago time.Duration) string {
+	t.Helper()
+	at := time.Now().UTC().Add(-ago).Format(time.RFC3339)
+	s.mustExec(t, `UPDATE push_devices SET created_at = ?, updated_at = ? WHERE user_id = ? AND token = ?`, at, at, userID, token)
+	return at
+}
+
+func deviceByToken(t *testing.T, s *Store, userID, token string) *PushDevice {
+	t.Helper()
+	ds, err := s.ListPushDevices(userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range ds {
+		if ds[i].Token == token {
+			return &ds[i]
+		}
+	}
+	return nil
+}
+
+func liveHas(t *testing.T, s *Store, userID, token string) bool {
+	t.Helper()
+	ds, err := s.LivePushDevices(userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ds {
+		if d.Token == token {
+			return true
+		}
+	}
+	return false
+}
+
+// Kills: resetting created_at (m1), minting a new id (m2), not refreshing
+// updated_at (m7), or not carrying the new connection id / app version.
+func TestPushDevices_Reregister_SameSessionKeepsIDAndCreatedAt(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := notifyUser(t, s, "keep1@example.com")
+	sess, _ := pushSession(t, s, u.ID)
+	first := register(t, s, u.ID, sess, "tok-A")
+	old := backdatePushDevice(t, s, u.ID, "tok-A", 3*time.Hour)
+	got, err := s.RegisterPushDevice(u.ID, sess, "conn-new", "ios", "tok-A", "2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != first.ID || got.CreatedAt != old {
+		t.Fatalf("returned id/created_at = %s/%s, want kept %s/%s", got.ID, got.CreatedAt, first.ID, old)
+	}
+	row := deviceByToken(t, s, u.ID, "tok-A")
+	if row == nil || row.ID != first.ID || row.CreatedAt != old {
+		t.Fatalf("stored row = %+v, want id %s created_at %s", row, first.ID, old)
+	}
+	if row.UpdatedAt == old || row.UpdatedAt != got.UpdatedAt {
+		t.Fatalf("updated_at = %s (returned %s), want refreshed past %s", row.UpdatedAt, got.UpdatedAt, old)
+	}
+	if row.ConnectionID != "conn-new" || row.AppVersion != "2.0" || row.Platform != "ios" {
+		t.Fatalf("row = %+v, want the new connection, app version and platform", row)
+	}
+}
+
+// Kills: resetting created_at, or not moving the row to the new session.
+func TestPushDevices_Reregister_NewSessionKeepsCreatedAt(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := notifyUser(t, s, "keep2@example.com")
+	oldSess, _ := pushSession(t, s, u.ID)
+	newSess, _ := pushSession(t, s, u.ID)
+	first := register(t, s, u.ID, oldSess, "tok-A")
+	old := backdatePushDevice(t, s, u.ID, "tok-A", 3*time.Hour)
+	register(t, s, u.ID, newSess, "tok-A")
+	ds, _ := s.ListPushDevices(u.ID)
+	if len(ds) != 1 || ds[0].SessionID != newSess || ds[0].CreatedAt != old || ds[0].ID != first.ID {
+		t.Fatalf("devices = %+v, want one row on the new session with created_at %s", ds, old)
+	}
+}
+
+// Kills: dropping the session_id delete on the update path (m4: the caller's
+// A row keeps the session and the UPDATE collides on session_id).
+func TestPushDevices_Reregister_BothKeysKeepsB(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := notifyUser(t, s, "keep3@example.com")
+	caller, _ := pushSession(t, s, u.ID)
+	other, _ := pushSession(t, s, u.ID)
+	register(t, s, u.ID, caller, "tok-A")
+	b := register(t, s, u.ID, other, "tok-B")
+	backdatePushDevice(t, s, u.ID, "tok-A", 5*time.Hour)
+	bAt := backdatePushDevice(t, s, u.ID, "tok-B", 4*time.Hour)
+	register(t, s, u.ID, caller, "tok-B")
+	ds, _ := s.ListPushDevices(u.ID)
+	if len(ds) != 1 || ds[0].Token != "tok-B" || ds[0].SessionID != caller || ds[0].CreatedAt != bAt || ds[0].ID != b.ID {
+		t.Fatalf("devices = %+v, want only tok-B on the caller's session with created_at %s", ds, bAt)
+	}
+}
+
+// Kills: running the cap loop on the update path (m3): at the cap it would
+// evict a device although the row count cannot grow.
+func TestPushDevices_Reregister_AtCapEvictsNothing(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := notifyUser(t, s, "keep4@example.com")
+	sessions := make([]string, MaxPushDevicesPerUser)
+	ids := map[string]bool{}
+	for i := range sessions {
+		sessions[i], _ = pushSession(t, s, u.ID)
+		ids[register(t, s, u.ID, sessions[i], fmt.Sprintf("tok-%02d", i)).ID] = true
+	}
+	register(t, s, u.ID, sessions[5], "tok-05")
+	ds, _ := s.ListPushDevices(u.ID)
+	if len(ds) != MaxPushDevicesPerUser {
+		t.Fatalf("%d devices after a re-register at the cap, want %d", len(ds), MaxPushDevicesPerUser)
+	}
+	for _, d := range ds {
+		if !ids[d.ID] {
+			t.Fatalf("unexpected id %s", d.ID)
+		}
+		delete(ids, d.ID)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("ids missing after the re-register: %v", ids)
+	}
+}
+
+// Director pin 1. Kills: an update path that does not refresh updated_at (m7):
+// the re-registered OLDEST device would stay oldest and be the one evicted.
+func TestPushDevices_Reregister_IsNewestForTheCap(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := notifyUser(t, s, "keep5@example.com")
+	sessions := make([]string, MaxPushDevicesPerUser)
+	for i := range sessions {
+		sessions[i], _ = pushSession(t, s, u.ID)
+		register(t, s, u.ID, sessions[i], fmt.Sprintf("tok-%02d", i))
+		backdatePushDevice(t, s, u.ID, fmt.Sprintf("tok-%02d", i), time.Duration(40-i)*time.Hour) // tok-00 oldest, tok-01 next
+	}
+	register(t, s, u.ID, sessions[0], "tok-00")
+	extra, _ := pushSession(t, s, u.ID)
+	register(t, s, u.ID, extra, "tok-new")
+	got := deviceTokens(t, s, u.ID)
+	if len(got) != MaxPushDevicesPerUser {
+		t.Fatalf("%d devices, want %d", len(got), MaxPushDevicesPerUser)
+	}
+	if _, ok := got["tok-00"]; !ok {
+		t.Fatal("the re-registered device was evicted as if it were still the oldest")
+	}
+	if _, ok := got["tok-01"]; ok {
+		t.Fatal("the second-oldest device (tok-01) survived: the eviction took another row")
+	}
+}
+
+// Kills: a lookup on token alone (m5): u2 would inherit u1's row and created_at,
+// and u1's row would be moved off its session.
+func TestPushDevices_Register_OtherUserGetsFreshCreatedAt(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u1, u2 := notifyUser(t, s, "own1@example.com"), notifyUser(t, s, "own2@example.com")
+	s1, _ := pushSession(t, s, u1.ID)
+	s2, _ := pushSession(t, s, u2.ID)
+	first := register(t, s, u1.ID, s1, "shared")
+	old := backdatePushDevice(t, s, u1.ID, "shared", 6*time.Hour)
+	got := register(t, s, u2.ID, s2, "shared")
+	if got.ID == first.ID || got.CreatedAt == old {
+		t.Fatalf("u2's row = %+v, want a fresh id and created_at", got)
+	}
+	r1 := deviceByToken(t, s, u1.ID, "shared")
+	if r1 == nil || r1.ID != first.ID || r1.CreatedAt != old || r1.UpdatedAt != old || r1.SessionID != s1 {
+		t.Fatalf("u1's row = %+v, want untouched (id %s, created/updated %s, session %s)", r1, first.ID, old, s1)
+	}
+}
+
+// Director pin 2. Kills: ownership by created_at (m6), a token-only lookup (m5).
+// u1 keeps its first created_at on the reclaim, so only updated_at can hand the
+// phone back from u2.
+func TestPushDevices_CrossUserReclaim_OwnershipFollowsLatestRegistration(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u1, u2 := notifyUser(t, s, "rc1@example.com"), notifyUser(t, s, "rc2@example.com")
+	s1, _ := pushSession(t, s, u1.ID)
+	s2, _ := pushSession(t, s, u2.ID)
+	first := register(t, s, u1.ID, s1, "T")
+	u1At := backdatePushDevice(t, s, u1.ID, "T", 3*time.Hour)
+	register(t, s, u2.ID, s2, "T")
+	u2At := backdatePushDevice(t, s, u2.ID, "T", 2*time.Hour)
+	if !liveHas(t, s, u2.ID, "T") || liveHas(t, s, u1.ID, "T") {
+		t.Fatal("after u2 registered T, u2 should own it and u1 should not")
+	}
+
+	got := register(t, s, u1.ID, s1, "T")
+	if got.ID != first.ID || got.CreatedAt != u1At {
+		t.Fatalf("u1's reclaim = %+v, want the kept id and created_at %s", got, u1At)
+	}
+	if !liveHas(t, s, u1.ID, "T") {
+		t.Fatal("u1 re-registered T but does not own it")
+	}
+	if liveHas(t, s, u2.ID, "T") {
+		t.Fatal("u2 still owns T after u1 reclaimed it")
+	}
+	// No row through which u2 owns T: u2's row is unchanged and merely loses.
+	r2 := deviceByToken(t, s, u2.ID, "T")
+	if r2 == nil || r2.CreatedAt != u2At || r2.UpdatedAt != u2At {
+		t.Fatalf("u2's row = %+v, want untouched at %s", r2, u2At)
+	}
+	if n := s.countRows(t, `SELECT COUNT(*) FROM push_devices WHERE token = ? AND user_id = ? AND updated_at > ?`, "T", u2.ID, u2At); n != 0 {
+		t.Fatalf("%d u2 rows newer than u2's registration", n)
+	}
+}
