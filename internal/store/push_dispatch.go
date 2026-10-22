@@ -288,19 +288,35 @@ func (s *Store) MarkNotificationsSkipped(token string, ids []string, reason stri
 // ReleaseNotifications hands claimed rows back after a retryable failure:
 // the claim is cleared and attempts goes up by one. A row reaching
 // MaxNotificationAttempts is skipped as gateway_failed in the SAME statement,
-// so no window leaves it pending past its last attempt.
+// so no window leaves it pending past its last attempt. The row is claimable
+// again at once; the dispatcher uses ReleaseNotificationsBackoff instead.
 func (s *Store) ReleaseNotifications(token string, ids []string) (int64, error) {
-	max := MaxNotificationAttempts
-	return s.settleNotifications(token, ids, fmt.Sprintf(`
+	return s.settleNotifications(token, ids, releaseSet(`NULL`))
+}
+
+// ReleaseNotificationsBackoff is ReleaseNotifications that stamps claimed_at
+// with the release time instead of clearing it, so the row stays unavailable
+// to ClaimPendingNotifications for one lease: a retry's delay equals the
+// lease, and MaxNotificationAttempts span minutes and not seconds (TASK-3939
+// part B2a). claim_token is still cleared.
+func (s *Store) ReleaseNotificationsBackoff(token string, ids []string) (int64, error) {
+	return s.settleNotifications(token, ids, releaseSet(`?`), now())
+}
+
+func releaseSet(claimedAt string) string {
+	return fmt.Sprintf(`
 		push_state = CASE WHEN attempts + 1 >= %d THEN 'skipped' ELSE 'pending' END,
 		skip_reason = CASE WHEN attempts + 1 >= %d THEN '%s' ELSE skip_reason END,
 		attempts = attempts + 1,
 		claim_token = '',
-		claimed_at = NULL`, max, max, SkipReasonGatewayFailed))
+		claimed_at = %s`, MaxNotificationAttempts, MaxNotificationAttempts, SkipReasonGatewayFailed, claimedAt)
 }
 
 // CountNotificationsSentSince is how many of userID's rows were pushed at or
-// after since: the rate cap's input.
+// after since: the rate cap's input. sent_at is stored at whole seconds, so a
+// row in since's own second cannot be placed before or after since; truncating
+// the cutoff counts that whole second, which errs toward fewer pushes, never
+// past the cap (TASK-3939 B2a codex r2).
 func (s *Store) CountNotificationsSentSince(userID string, since time.Time) (int, error) {
 	var n int
 	err := s.db.QueryRow(s.q(`
@@ -341,7 +357,7 @@ func (s *Store) PruneNotifications(olderThan time.Time) (int64, error) {
 func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, error) {
 	ts := cutoffTS(at)
 	rows, err := s.db.Query(s.q(`
-		SELECT d.id, d.user_id, d.session_id, d.connection_id, d.platform, d.token, d.app_version, d.created_at, d.updated_at
+		SELECT d.id, d.user_id, d.session_id, d.connection_id, d.platform, d.token, d.app_version, d.created_at, d.updated_at, d.reg_seq
 		FROM push_devices d
 		JOIN sessions s ON s.id = d.session_id AND s.user_id = d.user_id AND s.expires_at >= ?
 		WHERE d.user_id = ?
@@ -358,7 +374,7 @@ func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, erro
 	var out []PushDevice
 	for rows.Next() {
 		var d PushDevice
-		if err := rows.Scan(&d.ID, &d.UserID, &d.SessionID, &d.ConnectionID, &d.Platform, &d.Token, &d.AppVersion, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.UserID, &d.SessionID, &d.ConnectionID, &d.Platform, &d.Token, &d.AppVersion, &d.CreatedAt, &d.UpdatedAt, &d.RegSeq); err != nil {
 			return nil, fmt.Errorf("live push devices: scan: %w", err)
 		}
 		out = append(out, d)
@@ -369,6 +385,21 @@ func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, erro
 // DeletePushDeviceByID removes one device row. Absent is not an error.
 func (s *Store) DeletePushDeviceByID(id string) error {
 	if _, err := s.db.Exec(s.q(`DELETE FROM push_devices WHERE id = ?`), id); err != nil {
+		return fmt.Errorf("delete push device: %w", err)
+	}
+	return nil
+}
+
+// DeletePushDeviceIfCurrent removes the device row only while it is still the
+// registration that was SENT to: same id, same token AND same reg_seq. The
+// dispatcher's invalid_token handler uses it: the verdict is about one
+// registration, and the row may have been registered since. A re-register by
+// the same user with the same token updates the row in place, keeping id and
+// token, so those two cannot tell it apart; only reg_seq, which every register
+// advances (TASK-4031), can. The token check stays for a row whose token
+// changed. Absent or advanced is not an error.
+func (s *Store) DeletePushDeviceIfCurrent(id, token string, regSeq int64) error {
+	if _, err := s.db.Exec(s.q(`DELETE FROM push_devices WHERE id = ? AND token = ? AND reg_seq = ?`), id, token, regSeq); err != nil {
 		return fmt.Errorf("delete push device: %w", err)
 	}
 	return nil

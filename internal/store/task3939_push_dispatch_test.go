@@ -374,6 +374,27 @@ func TestCountNotificationsSentSince(t *testing.T) {
 	}
 }
 
+// The window is closed at its start: a row sent exactly at since counts, one
+// second earlier does not. Kills: `sent_at >= ?` weakened to `>`.
+func TestCountNotificationsSentSince_ExactBoundary(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	a := notifyUser(t, f.s, "a@example.com")
+	since := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	mk := func(sentAt time.Time) {
+		id := f.seedNotif(t, a.ID, ago(3*time.Hour))
+		f.s.mustExec(t, `UPDATE user_notifications SET push_state = 'sent', sent_at = ? WHERE id = ?`, sentAt.Format(time.RFC3339), id)
+	}
+	mk(since)
+	if got, err := f.s.CountNotificationsSentSince(a.ID, since); err != nil || got != 1 {
+		t.Fatalf("a row sent exactly at since: count = %d, %v, want 1", got, err)
+	}
+	mk(since.Add(-time.Second))
+	if got, err := f.s.CountNotificationsSentSince(a.ID, since); err != nil || got != 1 {
+		t.Fatalf("a row sent a second before since: count = %d, %v, want still 1", got, err)
+	}
+}
+
 // Kills: dropping the pending guard (an old pending row is deleted); dropping
 // the created_at predicate (a young settled row is deleted).
 func TestPruneNotifications(t *testing.T) {

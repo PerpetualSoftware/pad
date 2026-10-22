@@ -62,11 +62,13 @@ func TestPushDispatch_NonSentResultsReleaseWithAnAttempt(t *testing.T) {
 			return allStatus(msgs, notify.StatusRetry), nil
 		}
 		id := f.row("comment")
+		clk := f.clock(time.Now())
 		f.tick()
 		if st := f.state(id); st.State != "pending" || st.Attempts != 1 || st.Claim != "" {
 			t.Fatalf("after retry: %+v, want pending, 1 attempt, unclaimed", st)
 		}
 		f.fake.fn = func(context.Context, []notify.Message) ([]notify.Result, error) { return nil, notify.ErrUnavailable }
+		clk.advance(2 * defaultPushLease)
 		f.tick()
 		if st := f.state(id); st.State != "pending" || st.Attempts != 2 {
 			t.Fatalf("after a failed request: %+v, want 2 attempts", st)
@@ -134,7 +136,7 @@ func TestPushDispatch_SlowSendNotReclaimedMidFlight(t *testing.T) {
 		f := newPdx(t, srv)
 		must(t, srv.SetPushDispatchConfig(0, 0, 3*time.Second, time.Second, time.Second))
 		clk := f.clock(time.Now().Add(-time.Hour))
-		id := f.row("comment", func(o *rowOpt) { o.age = 3 * time.Hour })
+		id := f.row("comment", func(o *rowOpt) { o.age = 90 * time.Minute })
 		compete := func(when string) {
 			c, err := srv.store.ClaimPendingNotifications("rival", 10, time.Now().Add(-10*time.Second), time.Now().Add(-3*time.Second))
 			if err != nil || len(c.Rows) != 0 {
@@ -160,7 +162,9 @@ func TestPushDispatch_SlowSendNotReclaimedMidFlight(t *testing.T) {
 		if st := f.state(id); st.State != "pending" || st.Attempts != 1 || st.Claim != "" {
 			t.Fatalf("released row = %+v", st)
 		}
-		c, err := srv.store.ClaimPendingNotifications("rival", 10, time.Now().Add(-10*time.Second), time.Now().Add(-3*time.Second))
+		// A retry release keeps the row unavailable for the lease (B2a), so
+		// the rival gets it once the lease has run out.
+		c, err := srv.store.ClaimPendingNotifications("rival", 10, time.Now().Add(-10*time.Second), time.Now().Add(time.Minute))
 		if err != nil || len(c.Rows) != 1 {
 			t.Fatalf("after release the rival claimed %d rows (err %v)", len(c.Rows), err)
 		}
@@ -220,7 +224,9 @@ func TestPushDispatch_FreshClaimTokenPerTick(t *testing.T) {
 			return allStatus(msgs, notify.StatusRetry), nil
 		}
 		id := f.row("comment")
+		clk := f.clock(time.Now())
 		f.tick()
+		clk.advance(2 * defaultPushLease) // a retry release waits out the lease
 		f.tick()
 		if len(prefixes) != 2 || prefixes[0] == prefixes[1] || !strings.HasPrefix(prefixes[0], "pd-") {
 			t.Fatalf("caller tokens = %v, want two different pd-... tokens", prefixes)
