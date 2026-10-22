@@ -560,7 +560,7 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 		case notify.StatusSent:
 			v.sent = true
 		case notify.StatusInvalidToken:
-			if err := s.store.DeletePushDeviceIfToken(o.dev.ID, o.dev.Token); err != nil {
+			if err := s.store.DeletePushDeviceIfCurrent(o.dev.ID, o.dev.Token, o.dev.RegSeq); err != nil {
 				slog.Warn("push dispatch: settle failed", "op", "delete")
 			}
 		case notify.StatusRejected:

@@ -336,12 +336,13 @@ func TestPushDispatch_FifthRetryIsGatewayFailed(t *testing.T) {
 	})
 }
 
-// A late invalid_token names the token that was SENT. If the row holds a
-// different token by the time the verdict lands, the delete must not touch it.
-// The in-place re-register (TASK-4027) keeps the token, and the other path
-// replaces the row under a new id, so no real path changes a row's token under
-// its id: the closest scenario is the row's token changing mid-send, which
-// this pins directly.
+// A late invalid_token is a verdict on the registration that was SENT. It must
+// delete only a row that is still that registration: same id, same token AND
+// the same reg_seq. A row whose token changed under its id is not (no real path
+// does that: the replacing register mints a new id, so this pins the token
+// predicate directly), and neither is a same-user, same-token re-register,
+// which updates the row in place, keeping id and token, and advances reg_seq
+// (TASK-4027, TASK-4031).
 func TestPushDispatch_InvalidTokenKeepsARowWhoseTokenChanged(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)
@@ -352,7 +353,40 @@ func TestPushDispatch_InvalidTokenKeepsARowWhoseTokenChanged(t *testing.T) {
 		f.row("comment")
 		f.tick()
 		if n := f.deviceCount(); n != 1 {
-			t.Fatalf("%d devices, want the re-registered one kept", n)
+			t.Fatalf("%d devices, want the changed-token one kept", n)
+		}
+	})
+}
+
+// Kills: dropping the reg_seq predicate; deleting by id (or id and token) only.
+func TestPushDispatch_InvalidTokenKeepsASameTokenReRegistration(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		var reregErr error
+		f.fake.fn = func(_ context.Context, msgs []notify.Message) ([]notify.Result, error) {
+			_, reregErr = srv.store.RegisterPushDevice(f.bob.ID, f.devSess, "conn-again", "android", "tok-bob-"+fmt.Sprint(f.n), "2")
+			return allStatus(msgs, notify.StatusInvalidToken), nil
+		}
+		f.row("comment")
+		f.tick()
+		must(t, reregErr)
+		if n := f.deviceCount(); n != 1 {
+			t.Fatalf("%d devices, want the same-token re-registration kept", n)
+		}
+	})
+}
+
+// Positive control: with no re-register the same verdict deletes the device.
+func TestPushDispatch_InvalidTokenDeletesAnUntouchedDevice(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		f.fake.fn = func(_ context.Context, msgs []notify.Message) ([]notify.Result, error) {
+			return allStatus(msgs, notify.StatusInvalidToken), nil
+		}
+		f.row("comment")
+		f.tick()
+		if n := f.deviceCount(); n != 0 {
+			t.Fatalf("%d devices, want the invalid one deleted", n)
 		}
 	})
 }

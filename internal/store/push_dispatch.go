@@ -354,7 +354,7 @@ func (s *Store) PruneNotifications(olderThan time.Time) (int64, error) {
 func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, error) {
 	ts := cutoffTS(at)
 	rows, err := s.db.Query(s.q(`
-		SELECT d.id, d.user_id, d.session_id, d.connection_id, d.platform, d.token, d.app_version, d.created_at, d.updated_at
+		SELECT d.id, d.user_id, d.session_id, d.connection_id, d.platform, d.token, d.app_version, d.created_at, d.updated_at, d.reg_seq
 		FROM push_devices d
 		JOIN sessions s ON s.id = d.session_id AND s.user_id = d.user_id AND s.expires_at >= ?
 		WHERE d.user_id = ?
@@ -371,7 +371,7 @@ func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, erro
 	var out []PushDevice
 	for rows.Next() {
 		var d PushDevice
-		if err := rows.Scan(&d.ID, &d.UserID, &d.SessionID, &d.ConnectionID, &d.Platform, &d.Token, &d.AppVersion, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.UserID, &d.SessionID, &d.ConnectionID, &d.Platform, &d.Token, &d.AppVersion, &d.CreatedAt, &d.UpdatedAt, &d.RegSeq); err != nil {
 			return nil, fmt.Errorf("live push devices: scan: %w", err)
 		}
 		out = append(out, d)
@@ -387,13 +387,16 @@ func (s *Store) DeletePushDeviceByID(id string) error {
 	return nil
 }
 
-// DeletePushDeviceIfToken removes the device row only while it still holds
-// token. The dispatcher's invalid_token handler uses it: the verdict is about
-// the token that was SENT, and the row may have been re-registered since, so a
-// delete by id alone could remove a fresh registration. Absent or changed is
-// not an error.
-func (s *Store) DeletePushDeviceIfToken(id, token string) error {
-	if _, err := s.db.Exec(s.q(`DELETE FROM push_devices WHERE id = ? AND token = ?`), id, token); err != nil {
+// DeletePushDeviceIfCurrent removes the device row only while it is still the
+// registration that was SENT to: same id, same token AND same reg_seq. The
+// dispatcher's invalid_token handler uses it: the verdict is about one
+// registration, and the row may have been registered since. A re-register by
+// the same user with the same token updates the row in place, keeping id and
+// token, so those two cannot tell it apart; only reg_seq, which every register
+// advances (TASK-4031), can. The token check stays for a row whose token
+// changed. Absent or advanced is not an error.
+func (s *Store) DeletePushDeviceIfCurrent(id, token string, regSeq int64) error {
+	if _, err := s.db.Exec(s.q(`DELETE FROM push_devices WHERE id = ? AND token = ? AND reg_seq = ?`), id, token, regSeq); err != nil {
 		return fmt.Errorf("delete push device: %w", err)
 	}
 	return nil

@@ -29,6 +29,8 @@ type PushDevice struct {
 	AppVersion   string
 	CreatedAt    string
 	UpdatedAt    string
+	// RegSeq is the registration sequence, set by LivePushDevices only.
+	RegSeq int64
 }
 
 // RegisterPushDevice binds a push token to a session in ONE transaction. When
