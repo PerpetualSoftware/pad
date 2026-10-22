@@ -218,7 +218,7 @@ describe('needs page: dismiss', () => {
 		await click(btn('Dismiss'));
 		expect(refs()).toEqual(['TASK-1']);
 		expect(host.querySelector('[data-testid="needs-action-error"]')?.textContent).toContain('boom');
-		expect(btn(/^Hidden/).textContent).toBe(before.hid);
+		expect(btn(/^Hidden/).textContent).toContain('(0)');
 		expect(groupCounts()).toEqual([['WS alpha', '1']]);
 	});
 });
