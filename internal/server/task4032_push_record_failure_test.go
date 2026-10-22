@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -460,6 +463,53 @@ func TestTask4032_TicksNeverOverlapAcrossStopStart(t *testing.T) {
 		for _, id := range []string{first, second} {
 			if st := f.state(id); st.State != "sent" {
 				t.Fatalf("row %s = %+v, want sent once the ticks ran in turn", id, st)
+			}
+		}
+	})
+}
+
+// TASK-4032 codex r3 M1. A retry whose record fails in a later chunk has
+// already committed the earlier ones; those ids must leave the parked set, or
+// each counts twice against the rate cap (once as sent, once as parked). The
+// fault hits one row in the second 500-id chunk (store.notificationIDChunk).
+// Kills: clearing nothing on error (all ids stay parked); clearing everything
+// on error (the failed chunk's ids leave the set while still pending).
+func TestPushDispatch_PartialRecordClearsTheChunksThatLanded(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		const chunk = 500
+		var ids []string
+		for i := 0; i < chunk+5; i++ {
+			ids = append(ids, f.row("comment"))
+		}
+		sorted := slices.Clone(ids)
+		sort.Strings(sorted)
+		bad := sorted[chunk+2]
+		if f.pg() {
+			f.exec(`CREATE OR REPLACE FUNCTION pd_fail_one() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'pd fault'; END $$`)
+			f.exec(`CREATE TRIGGER pd_fail_one BEFORE UPDATE ON user_notifications FOR EACH ROW WHEN (NEW.push_state = 'sent' AND NEW.id = '` + bad + `') EXECUTE FUNCTION pd_fail_one()`)
+		} else {
+			f.exec(`CREATE TRIGGER pd_fail_one BEFORE UPDATE ON user_notifications WHEN NEW.push_state = 'sent' AND NEW.id = '` + bad + `' BEGIN SELECT RAISE(ABORT, 'pd fault'); END`)
+		}
+		now := time.Now()
+		f.srv.parkUnrecorded(ids, nil, now)
+		f.srv.retryUnrecorded(now)
+
+		d := &f.srv.pushDispatch
+		d.mu.Lock()
+		parked := maps.Clone(d.unrecorded)
+		d.mu.Unlock()
+		if len(parked) != 5 {
+			t.Fatalf("%d parked after a second-chunk failure, want 5 (the failed chunk)", len(parked))
+		}
+		for i, id := range sorted {
+			_, stillParked := parked[id]
+			st := f.state(id).State
+			if i < chunk && (stillParked || st != "sent") {
+				t.Fatalf("committed-chunk id %d: parked=%v state=%s, want unparked and sent", i, stillParked, st)
+			}
+			if i >= chunk && (!stillParked || st != "pending") {
+				t.Fatalf("failed-chunk id %d: parked=%v state=%s, want parked and pending", i, stillParked, st)
 			}
 		}
 	})

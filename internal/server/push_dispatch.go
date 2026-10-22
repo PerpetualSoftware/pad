@@ -322,14 +322,27 @@ func (s *Server) parkUnrecorded(ids []string, meta map[string]store.Notification
 	}
 }
 
+// recordedPrefix is how many leading ids a failed RecordNotificationsSent
+// still recorded: its chunks commit one by one, and an id left parked after
+// its chunk landed counts twice against the rate cap (TASK-4032 codex r3 M1).
+func recordedPrefix(err error) int {
+	var rse *store.RecordSentError
+	if errors.As(err, &rse) {
+		return rse.Landed
+	}
+	return 0
+}
+
 // retryUnrecorded runs at the start of every tick, before the gateway check
 // and the claim, so it needs no gateway: recording is database work. A record
-// that lands clears every parked id (a row settled elsewhere is a fine
-// outcome too). A failed one keeps the entries, except those whose
-// notification is past pushExpireAfter: the expiry sweep takes such a row and
-// the claim never selects an expired row, so nothing can re-send it, and
-// dropping the entry is what keeps a database that stays down from growing
-// the set.
+// that returns no error clears every parked id, including one it changed no
+// row for (that row was settled elsewhere, which is a fine outcome too). A
+// failed one clears the ids in the chunks that committed before the failure
+// and keeps the rest, except those whose notification is past
+// pushExpireAfter: the expiry sweep takes such a row and the claim never
+// selects an expired row, so nothing can re-send it, and dropping the entry
+// is what keeps a database that stays down from growing the set. The ids are
+// sorted so the chunking is deterministic.
 func (s *Server) retryUnrecorded(start time.Time) {
 	d := &s.pushDispatch
 	d.mu.Lock()
@@ -341,12 +354,17 @@ func (s *Server) retryUnrecorded(start time.Time) {
 	if len(ids) == 0 {
 		return
 	}
+	sort.Strings(ids)
 	_, err := s.store.RecordNotificationsSent(ids)
+	landed := len(ids)
+	if err != nil {
+		landed = recordedPrefix(err)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	cutoff := start.Add(-pushExpireAfter)
-	for _, id := range ids {
-		if err == nil || d.unrecorded[id].created.Before(cutoff) {
+	for i, id := range ids {
+		if i < landed || d.unrecorded[id].created.Before(cutoff) {
 			delete(d.unrecorded, id)
 		}
 	}
@@ -740,8 +758,10 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 	if len(sentIDs) > 0 {
 		if _, err := s.store.RecordNotificationsSent(sentIDs); err != nil {
 			// Delivered but unrecorded: park, or the row is re-sent every lease.
+			// A tick claims at most notify.MaxBatch rows, inside one record
+			// chunk, so the prefix is 0 today; it is honoured anyway.
 			slog.Warn("push dispatch: settle failed", "op", "sent")
-			s.parkUnrecorded(sentIDs, meta, s.pushNow())
+			s.parkUnrecorded(sentIDs[recordedPrefix(err):], meta, s.pushNow())
 		}
 	}
 	s.settleSkips(token, skips)

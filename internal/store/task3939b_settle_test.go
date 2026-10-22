@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -186,5 +187,39 @@ func TestClaimNotifications_ExcludeSkipsTheListedIDs(t *testing.T) {
 	}
 	if got, err = f.s.ClaimPendingNotifications("Z", 10, settle, lease, []string{}); err != nil || len(got.Rows) != 0 {
 		t.Fatalf("empty exclusion: %v %v, want nothing left", ids(got.Rows), err)
+	}
+}
+
+// TASK-4032 codex r3 M1. A failure in a later chunk follows chunks that
+// committed; the error says how many leading ids they covered. Kills:
+// returning a plain error (errors.As fails); reporting 0 or len(ids) landed.
+func TestRecordNotificationsSent_ReportsTheChunksThatLanded(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "partial@example.com")
+	ids := make([]string, notificationIDChunk+3)
+	for i := range ids {
+		ids[i] = f.seedNotif(t, u.ID, ago(time.Minute))
+	}
+	bad := ids[notificationIDChunk+1]
+	if f.s.dialect.Driver() == DriverPostgres {
+		f.s.mustExec(t, `CREATE FUNCTION rs_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'rs fault'; END $$`)
+		f.s.mustExec(t, `CREATE TRIGGER rs_fail BEFORE UPDATE ON user_notifications FOR EACH ROW WHEN (NEW.push_state = 'sent' AND NEW.id = '`+bad+`') EXECUTE FUNCTION rs_fail()`)
+	} else {
+		f.s.mustExec(t, `CREATE TRIGGER rs_fail BEFORE UPDATE ON user_notifications WHEN NEW.push_state = 'sent' AND NEW.id = '`+bad+`' BEGIN SELECT RAISE(ABORT, 'rs fault'); END`)
+	}
+	n, err := f.s.RecordNotificationsSent(ids)
+	var rse *RecordSentError
+	if !errors.As(err, &rse) {
+		t.Fatalf("err = %v, want a *RecordSentError", err)
+	}
+	if rse.Landed != notificationIDChunk || n != notificationIDChunk {
+		t.Fatalf("landed %d, recorded %d; want %d each (the first chunk)", rse.Landed, n, notificationIDChunk)
+	}
+	if st, _, _, _ := f.notifRow(t, ids[notificationIDChunk-1]); st != "sent" {
+		t.Fatalf("last id of the committed chunk is %s, want sent", st)
+	}
+	if st, _, _, _ := f.notifRow(t, ids[notificationIDChunk]); st != "pending" {
+		t.Fatalf("first id of the failed chunk is %s, want pending", st)
 	}
 }

@@ -5,6 +5,18 @@ import "fmt"
 // The dispatcher's settle primitives beyond push_dispatch.go's claim-guarded
 // ones (TASK-3939 part B).
 
+// RecordSentError is RecordNotificationsSent's error. The record runs one
+// UPDATE per chunk with no transaction, so a failure can follow chunks that
+// already committed: Landed is how many leading ids those chunks covered,
+// which a caller must treat as recorded (TASK-4032 codex r3 M1).
+type RecordSentError struct {
+	Landed int
+	err    error
+}
+
+func (e *RecordSentError) Error() string { return e.err.Error() }
+func (e *RecordSentError) Unwrap() error { return e.err }
+
 // RecordNotificationsSent records ids as pushed, BY ID AND NOT BY CLAIM: this
 // is the one deliberate exception to "settle only under the claim" (r4-L4).
 // A delivery is a fact. A claimer whose Send outlived its lease has still
@@ -13,6 +25,7 @@ import "fmt"
 // ExpireStaleNotifications took after the lease lapsed; a token guard would
 // lose the delivered row or record it twice. Only pending and expired rows
 // move: a skipped row stays skipped. Skip and release stay token-guarded.
+// An error is always a *RecordSentError.
 func (s *Store) RecordNotificationsSent(ids []string) (int64, error) {
 	var total int64
 	for start := 0; start < len(ids); start += notificationIDChunk {
@@ -22,11 +35,12 @@ func (s *Store) RecordNotificationsSent(ids []string) (int64, error) {
 			SET push_state = 'sent', sent_at = ?, claim_token = '', claimed_at = NULL
 			WHERE push_state IN ('pending', 'expired') AND id IN (`+ph+`)`), append([]any{now()}, args...)...)
 		if err != nil {
-			return total, fmt.Errorf("record notifications sent: %w", err)
+			return total, &RecordSentError{Landed: start, err: fmt.Errorf("record notifications sent: %w", err)}
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return total, fmt.Errorf("record notifications sent: %w", err)
+			// The UPDATE committed; only its count is lost.
+			return total, &RecordSentError{Landed: end, err: fmt.Errorf("record notifications sent: %w", err)}
 		}
 		total += n
 	}
