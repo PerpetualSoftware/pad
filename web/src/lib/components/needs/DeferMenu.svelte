@@ -41,12 +41,21 @@
 		}
 	}
 
+	// A press outside closes the menu. The row's own Defer button is outside the
+	// menu's root but is the toggle, so it is left to its click handler.
+	function onPointerdown(e: PointerEvent) {
+		const t = e.target;
+		if (!(t instanceof Node) || !root || root.contains(t)) return;
+		if (t instanceof Element && t.closest('.defer-wrap')?.contains(root)) return;
+		onclose();
+	}
+
 	onMount(() => {
 		root?.querySelector<HTMLElement>('button')?.focus();
 	});
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onpointerdown={onPointerdown} />
 
 <div class="defer-menu" role="group" aria-label="Defer until" bind:this={root}>
 	<Button variant="ghost" size="sm" onclick={() => choose(tomorrowAt9())}>Tomorrow 09:00</Button>

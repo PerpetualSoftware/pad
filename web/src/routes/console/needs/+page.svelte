@@ -30,13 +30,29 @@
 	let loadError = $state('');
 	let actionError = $state('');
 	let busy = $state<Record<string, boolean>>({});
+	// The one row whose defer menu is open; opening another closes it.
+	let openMenu = $state('');
 
 	// Every list request takes a ticket; only the newest ticket may write state,
 	// so a slow response for an old sort or view cannot overwrite a newer one.
 	let ticket = 0;
 
+	// Rows this person acted on, per view, with the order the action COMPLETED
+	// in. A list request that started before that cannot be trusted about the
+	// row (its page may predate the PUT), so its rows are filtered; a request
+	// that started after is served by the committed state and passes untouched.
+	let actionsDone = 0;
+	const acted: Record<NeedsView, Map<string, number>> = { active: new Map(), hidden: new Map() };
+
+	function trusted(rs: NeedsRow[], v: NeedsView, startedAt: number): NeedsRow[] {
+		const m = acted[v];
+		if (m.size === 0) return rs;
+		return rs.filter((r) => (m.get(keyOf(r)) ?? 0) <= startedAt);
+	}
+
 	async function load(s: NeedsSort, v: NeedsView) {
 		const mine = ++ticket;
+		const startedAt = actionsDone;
 		loading = true;
 		loadingMore = false;
 		loadError = '';
@@ -44,7 +60,7 @@
 		try {
 			const res = await api.needs.list({ sort: s, view: v });
 			if (mine !== ticket) return;
-			rows = res.rows ?? [];
+			rows = trusted(res.rows ?? [], v, startedAt);
 			total = res.total ?? 0;
 			hidden = res.hidden ?? 0;
 			workspaces = res.workspaces ?? [];
@@ -52,7 +68,12 @@
 			nextCursor = res.next_cursor ?? '';
 		} catch (e) {
 			if (mine !== ticket) return;
+			// Nothing from the previous view survives next to the error. `hidden`
+			// does: it counts everything this person hid, whatever the sort or
+			// view, so it is still true, and 0 would be a false "Hidden (0)".
 			rows = [];
+			total = 0;
+			workspaces = [];
 			nextCursor = '';
 			loadError = e instanceof Error ? e.message : 'Failed to load';
 		} finally {
@@ -63,12 +84,14 @@
 	async function loadMore() {
 		if (!nextCursor || loadingMore) return;
 		const mine = ticket;
+		const startedAt = actionsDone;
+		const v = view;
 		loadingMore = true;
 		try {
-			const res = await api.needs.list({ sort, view, cursor: nextCursor });
+			const res = await api.needs.list({ sort, view: v, cursor: nextCursor });
 			if (mine !== ticket) return;
-			const have = new Set(rows.map((r) => `${r.workspace.slug}/${r.item.ref}`));
-			rows = [...rows, ...(res.rows ?? []).filter((r) => !have.has(`${r.workspace.slug}/${r.item.ref}`))];
+			const have = new Set(rows.map(keyOf));
+			rows = [...rows, ...trusted(res.rows ?? [], v, startedAt).filter((r) => !have.has(keyOf(r)))];
 			nextCursor = res.next_cursor ?? '';
 		} catch (e) {
 			if (mine !== ticket) return;
@@ -101,15 +124,21 @@
 		);
 	}
 
-	async function act(row: NeedsRow, call: () => Promise<unknown>, hiddenDelta: number) {
+	/** `from` is the view the action is taken in; the row leaves it for the other. */
+	async function act(row: NeedsRow, call: () => Promise<unknown>, from: NeedsView) {
 		const k = keyOf(row);
 		if (busy[k]) return;
 		busy = { ...busy, [k]: true };
 		actionError = '';
-		const mine = ticket;
 		try {
 			await call();
-			if (mine === ticket) settle(row, hiddenDelta);
+			const to: NeedsView = from === 'active' ? 'hidden' : 'active';
+			acted[from].set(k, ++actionsDone);
+			acted[to].delete(k);
+			if (openMenu === k) openMenu = '';
+			// Counts belong to the list that showed the row; a list loaded since
+			// (a quick sort or view change) never counted it as ours to adjust.
+			if (view === from && rows.some((r) => keyOf(r) === k)) settle(row, from === 'active' ? 1 : -1);
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : 'That did not go through';
 		} finally {
@@ -119,7 +148,7 @@
 	}
 
 	const dismiss = (row: NeedsRow) =>
-		act(row, () => api.needs.snooze(row.workspace.slug, row.item.ref, { kind: 'dismiss', marker: row.marker }), 1);
+		act(row, () => api.needs.snooze(row.workspace.slug, row.item.ref, { kind: 'dismiss', marker: row.marker }), 'active');
 	const defer = (row: NeedsRow, deferUntil: string) =>
 		act(
 			row,
@@ -129,10 +158,10 @@
 					defer_until: deferUntil,
 					marker: row.marker
 				}),
-			1
+			'active'
 		);
 	const restore = (row: NeedsRow) =>
-		act(row, () => api.needs.restore(row.workspace.slug, row.item.ref), -1);
+		act(row, () => api.needs.restore(row.workspace.slug, row.item.ref), 'hidden');
 
 	// Groups by first appearance, so the server's sort carries through.
 	let groups = $derived.by(() => {
@@ -162,7 +191,7 @@
 	title={view === 'hidden' ? 'Hidden' : 'Needs you'}
 	count={loading ? undefined : total}
 	description={view === 'hidden'
-		? 'Items you dismissed or deferred. They return on their own when something new happens.'
+		? 'Dismissed items come back when something new happens on them. Deferred items come back at the time you chose, whatever happens.'
 		: 'What is waiting on you, across every workspace.'}
 >
 	{#snippet actions()}
@@ -212,6 +241,8 @@
 					<NeedsRowView
 						{row}
 						{view}
+						menuOpen={openMenu === keyOf(row)}
+						onmenu={(open) => (openMenu = open ? keyOf(row) : openMenu === keyOf(row) ? '' : openMenu)}
 						busy={!!busy[keyOf(row)]}
 						ondismiss={dismiss}
 						ondefer={defer}

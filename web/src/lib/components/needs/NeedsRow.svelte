@@ -8,14 +8,15 @@
 		row: NeedsRow;
 		view: NeedsView;
 		busy?: boolean;
+		/** Whether this row's defer menu is open; the page keeps one open at a time. */
+		menuOpen?: boolean;
+		onmenu?: (open: boolean) => void;
 		ondismiss: (row: NeedsRow) => void;
 		ondefer: (row: NeedsRow, deferUntil: string) => void;
 		onrestore: (row: NeedsRow) => void;
 	}
 
-	let { row, view, busy = false, ondismiss, ondefer, onrestore }: Props = $props();
-
-	let deferOpen = $state(false);
+	let { row, view, busy = false, menuOpen = false, onmenu = () => {}, ondismiss, ondefer, onrestore }: Props = $props();
 
 	function ago(iso: string): string {
 		const ms = Date.now() - new Date(iso).getTime();
@@ -67,17 +68,17 @@
 					variant="ghost"
 					disabled={busy}
 					aria-haspopup="true"
-					aria-expanded={deferOpen}
-					onclick={() => (deferOpen = !deferOpen)}
+					aria-expanded={menuOpen}
+					onclick={() => onmenu(!menuOpen)}
 				>
 					Defer
 				</Button>
-				{#if deferOpen}
+				{#if menuOpen}
 					<div class="defer-pop">
 						<DeferMenu
-							onclose={() => (deferOpen = false)}
+							onclose={() => onmenu(false)}
 							onpick={(iso) => {
-								deferOpen = false;
+								onmenu(false);
 								ondefer(row, iso);
 							}}
 						/>

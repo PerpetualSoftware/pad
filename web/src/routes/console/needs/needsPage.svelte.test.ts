@@ -353,3 +353,119 @@ describe('needs page: degraded, empty, paging', () => {
 		expect(host.querySelector('[role="alert"]')?.textContent).toContain('nope');
 	});
 });
+
+describe('needs page: r1 fixes', () => {
+	const deferred = () => {
+		let resolve!: (v: unknown) => void;
+		const promise = new Promise((r) => (resolve = r));
+		return { promise, resolve };
+	};
+
+	it('hidden-view copy says deferrals hold until their time and only dismissals return on news', async () => {
+		await mountWith(resp([row('a', 'TASK-1')], { hidden: 1 }));
+		list.mockResolvedValue(resp([row('a', 'TASK-7', { snooze: { kind: 'dismiss' } })], { hidden: 1 }));
+		await click(btn(/^Hidden/));
+		const text = host.textContent ?? '';
+		expect(text).not.toContain('on their own');
+		expect(text).toMatch(/Dismissed items come back when something new happens/);
+		expect(text).toMatch(/Deferred items come back at the time you chose/);
+	});
+
+	it('a Load more that was in flight when a row was dismissed does not bring the row back', async () => {
+		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { next_cursor: 'c1' }));
+		const more = deferred();
+		list.mockImplementationOnce(() => more.promise);
+		await click(btn('Load more'));
+		snooze.mockResolvedValue({});
+		await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+		expect(refs()).toEqual(['TASK-3']);
+		// The page was built before the PUT committed: it still has TASK-1.
+		more.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-2')]));
+		await settle();
+		expect(refs()).toEqual(['TASK-3', 'TASK-2']);
+	});
+
+	it('a dismissed row is not shown by a list started before the PUT finished, whichever lands first', async () => {
+		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+		const put = deferred();
+		snooze.mockImplementationOnce(() => put.promise);
+		await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+		// Sort change while the PUT is pending; the new list still holds the row.
+		list.mockResolvedValueOnce(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+		await click(btn('Importance'));
+		expect(refs()).toEqual(['TASK-1', 'TASK-3']);
+		put.resolve({});
+		await settle();
+		expect(refs()).toEqual(['TASK-3']);
+	});
+
+	it('a reload still in flight when the PUT completes is filtered too', async () => {
+		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+		const put = deferred();
+		snooze.mockImplementationOnce(() => put.promise);
+		await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+		const reload = deferred();
+		list.mockImplementationOnce(() => reload.promise);
+		await click(btn('Importance'));
+		put.resolve({});
+		await settle();
+		reload.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+		await settle();
+		expect(refs()).toEqual(['TASK-3']);
+	});
+
+	it('restoring stops the filter, and dismissing does not hide the row from the hidden view', async () => {
+		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 0 }));
+		snooze.mockResolvedValue({});
+		await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+		list.mockResolvedValue(resp([row('a', 'TASK-1', { snooze: { kind: 'dismiss' } })], { hidden: 1 }));
+		await click(btn(/^Hidden/));
+		expect(refs()).toEqual(['TASK-1']);
+		restore.mockResolvedValue({});
+		await click(btn('Restore'));
+		expect(refs()).toEqual([]);
+		list.mockResolvedValue(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+		await click(btn(/^Back to needs you/));
+		expect(refs()).toEqual(['TASK-1', 'TASK-3']);
+	});
+
+	it('a failed reload clears the previous total next to the error', async () => {
+		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-2'), row('a', 'TASK-3')]));
+		expect(host.querySelector('h1')?.textContent).toContain('3');
+		list.mockRejectedValueOnce(new Error('nope'));
+		await click(btn('Importance'));
+		expect(host.querySelector('[role="alert"]')?.textContent).toContain('nope');
+		expect(host.querySelector('h1')?.textContent).not.toContain('3');
+	});
+
+	describe('defer menus', () => {
+		async function twoRows() {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-2')]));
+		}
+		const deferBtn = (ref: string) => btn(/^Defer$/, host.querySelector(`[data-ref="${ref}"]`)!);
+
+		it('a press outside the menu closes it, a press inside does not', async () => {
+			await twoRows();
+			await click(deferBtn('TASK-1'));
+			const menu = host.querySelector('.defer-menu')!;
+			menu.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+			await settle();
+			expect(host.querySelector('.defer-menu')).not.toBeNull();
+			host.querySelector('h2')!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+			await settle();
+			expect(host.querySelector('.defer-menu')).toBeNull();
+		});
+
+		it('opening a second row menu closes the first, and one Escape leaves nothing open', async () => {
+			await twoRows();
+			await click(deferBtn('TASK-1'));
+			await click(deferBtn('TASK-2'));
+			const menus = host.querySelectorAll('.defer-menu');
+			expect(menus.length).toBe(1);
+			expect(host.querySelector('[data-ref="TASK-2"] .defer-menu')).not.toBeNull();
+			menus[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			await settle();
+			expect(host.querySelectorAll('.defer-menu').length).toBe(0);
+		});
+	});
+});
