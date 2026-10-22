@@ -8,6 +8,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/notify"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TASK-3939 part B1: the dispatcher IS the privacy gate. Every case seeds a
@@ -322,4 +323,19 @@ func TestPushDispatch_MessageShape(t *testing.T) {
 			}
 		}
 	})
+}
+
+// user_notifications.kind has a CHECK, so an unknown kind cannot be seeded;
+// the guard is for a kind added to the schema before the dispatcher learns its
+// text. It must skip, not send.
+func TestKindEnabled_UnknownKindIsSkipped(t *testing.T) {
+	set := models.DefaultNotificationSettings()
+	if got := kindEnabled(set, store.Notification{Kind: "bogus"}); got != skipUnknownKind {
+		t.Fatalf("unknown kind = %q, want %q", got, skipUnknownKind)
+	}
+	for _, k := range []string{"assigned", "comment", "reply", "reminder", "mention"} {
+		if got := kindEnabled(set, store.Notification{Kind: k}); got != "" {
+			t.Fatalf("%s with default settings = %q, want enabled", k, got)
+		}
+	}
 }
