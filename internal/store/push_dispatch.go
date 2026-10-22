@@ -288,15 +288,28 @@ func (s *Store) MarkNotificationsSkipped(token string, ids []string, reason stri
 // ReleaseNotifications hands claimed rows back after a retryable failure:
 // the claim is cleared and attempts goes up by one. A row reaching
 // MaxNotificationAttempts is skipped as gateway_failed in the SAME statement,
-// so no window leaves it pending past its last attempt.
+// so no window leaves it pending past its last attempt. The row is claimable
+// again at once; the dispatcher uses ReleaseNotificationsBackoff instead.
 func (s *Store) ReleaseNotifications(token string, ids []string) (int64, error) {
-	max := MaxNotificationAttempts
-	return s.settleNotifications(token, ids, fmt.Sprintf(`
+	return s.settleNotifications(token, ids, releaseSet(`NULL`))
+}
+
+// ReleaseNotificationsBackoff is ReleaseNotifications that stamps claimed_at
+// with the release time instead of clearing it, so the row stays unavailable
+// to ClaimPendingNotifications for one lease: a retry's delay equals the
+// lease, and MaxNotificationAttempts span minutes and not seconds (TASK-3939
+// part B2a). claim_token is still cleared.
+func (s *Store) ReleaseNotificationsBackoff(token string, ids []string) (int64, error) {
+	return s.settleNotifications(token, ids, releaseSet(`?`), now())
+}
+
+func releaseSet(claimedAt string) string {
+	return fmt.Sprintf(`
 		push_state = CASE WHEN attempts + 1 >= %d THEN 'skipped' ELSE 'pending' END,
 		skip_reason = CASE WHEN attempts + 1 >= %d THEN '%s' ELSE skip_reason END,
 		attempts = attempts + 1,
 		claim_token = '',
-		claimed_at = NULL`, max, max, SkipReasonGatewayFailed))
+		claimed_at = %s`, MaxNotificationAttempts, MaxNotificationAttempts, SkipReasonGatewayFailed, claimedAt)
 }
 
 // CountNotificationsSentSince is how many of userID's rows were pushed at or
@@ -369,6 +382,18 @@ func (s *Store) LivePushDevices(userID string, at time.Time) ([]PushDevice, erro
 // DeletePushDeviceByID removes one device row. Absent is not an error.
 func (s *Store) DeletePushDeviceByID(id string) error {
 	if _, err := s.db.Exec(s.q(`DELETE FROM push_devices WHERE id = ?`), id); err != nil {
+		return fmt.Errorf("delete push device: %w", err)
+	}
+	return nil
+}
+
+// DeletePushDeviceIfToken removes the device row only while it still holds
+// token. The dispatcher's invalid_token handler uses it: the verdict is about
+// the token that was SENT, and the row may have been re-registered since, so a
+// delete by id alone could remove a fresh registration. Absent or changed is
+// not an error.
+func (s *Store) DeletePushDeviceIfToken(id, token string) error {
+	if _, err := s.db.Exec(s.q(`DELETE FROM push_devices WHERE id = ? AND token = ?`), id, token); err != nil {
 		return fmt.Errorf("delete push device: %w", err)
 	}
 	return nil

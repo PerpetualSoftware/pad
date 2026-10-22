@@ -17,8 +17,10 @@ import (
 // The push dispatcher (TASK-3939 part B1): claims settled user_notifications
 // rows, runs every privacy gate (push_gates.go) on each, groups the survivors
 // per (user, item), sends one content-free push per live device, and settles
-// the rows. B1 is the decide-and-send core; StartPushDispatch is NOT called
-// from cmd/pad yet.
+// the rows. StartPushDispatch is NOT called
+// from cmd/pad yet. Part B2a adds the 30/h cap and the summary push, the retry
+// matrix (which results retry, skip or delete a device), and the expire and
+// retention sweeps.
 //
 // LEASE INVARIANT (r6-Q1): lease >= sendTimeout + leaseMargin. A claim is
 // stamped with second precision (up to 1s behind the real clock), and a Send
@@ -36,6 +38,16 @@ const (
 	defaultPushSettle      = 10 * time.Second
 	defaultPushLease       = 60 * time.Second
 	defaultPushLeaseMargin = 15 * time.Second
+
+	pushSummaryAbove = 3                  // more than this many groups for one user => one summary push
+	pushRateCap      = 30                 // rows pushed per user per pushRateWindow
+	pushRateWindow   = time.Hour          //
+	pushExpireAfter  = time.Hour          // a pending row older than this is noise, not a push
+	pushRetention    = 7 * 24 * time.Hour // sent, skipped and expired rows are kept this long
+	pushPruneEvery   = time.Hour          // created_at is unindexed, so the prune is throttled
+
+	skipRateLimited     = "rate_limited"
+	skipGatewayRejected = "gateway_rejected"
 )
 
 var errPushLeaseTooShort = errors.New("push dispatch: lease must be at least sendTimeout + leaseMargin")
@@ -58,6 +70,7 @@ type pushDispatchConfig struct {
 	stop        chan struct{}
 	running     bool
 	instanceID  string
+	lastPrune   time.Time // when the retention sweep last ran
 	// tick, when non-nil, replaces the interval ticker so a test drives passes.
 	tick <-chan time.Time
 }
@@ -68,6 +81,9 @@ type pushDispatchSettings struct {
 }
 
 // SetPushDispatchConfig overrides the timings; zero keeps the current value.
+// interval is read once, by StartPushDispatch (the ticker is fixed at Start,
+// so a later change needs a restart); settle, lease, leaseMargin and
+// sendTimeout are read on every tick.
 // A combination violating the lease invariant is refused whole and nothing
 // changes.
 func (s *Server) SetPushDispatchConfig(interval, settle, lease, leaseMargin, sendTimeout time.Duration) error {
@@ -214,9 +230,49 @@ func (s *Server) stopPushDispatch() {
 type pushUnit struct {
 	rowIDs  []string
 	nid     string
-	kind    string
+	kind    string // notify.KindSummary for a collapsed unit
 	devices []store.PushDevice
 }
+
+// expireAndPrune is the tick's housekeeping, run before the claim so a stale
+// row is never sent: pending rows older than pushExpireAfter expire, and rows
+// settled longer ago than pushRetention are deleted at most hourly.
+func (s *Server) expireAndPrune(cfg pushDispatchSettings, start time.Time) {
+	if _, err := s.store.ExpireStaleNotifications(start.Add(-pushExpireAfter), start.Add(-cfg.lease)); err != nil {
+		slog.Warn("push dispatch: housekeeping failed", "op", "expire")
+	}
+	d := &s.pushDispatch
+	d.mu.Lock()
+	prev := d.lastPrune
+	due := start.Sub(prev) >= pushPruneEvery
+	if due {
+		d.lastPrune = start
+	}
+	d.mu.Unlock()
+	if !due {
+		return
+	}
+	if _, err := s.store.PruneNotifications(start.Add(-pushRetention)); err != nil {
+		slog.Warn("push dispatch: housekeeping failed", "op", "prune")
+		d.mu.Lock()
+		d.lastPrune = prev
+		d.mu.Unlock()
+	}
+}
+
+// rowNewer orders two rows by created_at, then kind priority, then id.
+func rowNewer(a, b store.Notification) bool {
+	if a.CreatedAt != b.CreatedAt {
+		return a.CreatedAt > b.CreatedAt
+	}
+	if pa, pb := kindPriority[a.Kind], kindPriority[b.Kind]; pa != pb {
+		return pa > pb
+	}
+	return a.ID > b.ID
+}
+
+// tickWarn records which gateway failures a tick saw, so each logs once.
+type tickWarn struct{ unavailable, badRequest bool }
 
 // kindPriority breaks a created_at tie between rows of one group, so the kind
 // of a mixed group is deterministic (ids are random).
@@ -227,11 +283,12 @@ var kindPriority = map[string]int{
 // runPushDispatchTick is one pass. ctx is the shutdown signal.
 func (s *Server) runPushDispatchTick(ctx context.Context) {
 	cfg := s.resolvePushDispatchSettings()
+	start := s.pushNow()
+	s.expireAndPrune(cfg, start)
 	sender := s.pushSenderOrNil()
 	if sender == nil {
 		return
 	}
-	start := s.pushNow()
 	// Fresh per tick and never kept: the store appends its own nonce, and
 	// every settle below uses Claim.Token.
 	token := "pd-" + cfg.instanceID + "-" + uuid.NewString()
@@ -272,26 +329,64 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 	s.settleSkips(claim.Token, skips)
 	s.unclaim(claim.Token, unclaim)
 
-	var units []pushUnit
+	// Per user, in claim order: more than pushSummaryAbove groups collapse
+	// into one summary unit (after gating, so only visible rows count), then
+	// the 30/h cap admits or rate-limits each unit. Rows from the same tick
+	// that were admitted count against the cap even if the send later fails.
+	var userOrder []string
+	byUser := map[string][]string{}
 	for _, key := range order {
-		rows := groups[key]
-		sort.SliceStable(rows, func(i, j int) bool {
-			if rows[i].CreatedAt != rows[j].CreatedAt {
-				return rows[i].CreatedAt < rows[j].CreatedAt
-			}
-			if pi, pj := kindPriority[rows[i].Kind], kindPriority[rows[j].Kind]; pi != pj {
-				return pi < pj
-			}
-			return rows[i].ID < rows[j].ID
-		})
-		newest := rows[len(rows)-1]
-		u := pushUnit{nid: newest.ID, kind: newest.Kind, devices: cache.devices[newest.UserID]}
-		for _, r := range rows {
-			u.rowIDs = append(u.rowIDs, r.ID)
+		u := groups[key][0].UserID
+		if _, seen := byUser[u]; !seen {
+			userOrder = append(userOrder, u)
 		}
-		units = append(units, u)
+		byUser[u] = append(byUser[u], key)
 	}
+	var units []pushUnit
+	limited := map[string][]string{}
+	var capErr []string
+	for _, uid := range userOrder {
+		var userUnits []pushUnit
+		for _, key := range byUser[uid] {
+			rows := groups[key]
+			sort.SliceStable(rows, func(i, j int) bool { return rowNewer(rows[j], rows[i]) })
+			u := pushUnit{nid: rows[len(rows)-1].ID, kind: rows[len(rows)-1].Kind, devices: cache.devices[uid]}
+			for _, r := range rows {
+				u.rowIDs = append(u.rowIDs, r.ID)
+			}
+			userUnits = append(userUnits, u)
+		}
+		if len(userUnits) > pushSummaryAbove {
+			sum := pushUnit{kind: notify.KindSummary, devices: cache.devices[uid]}
+			var newest store.Notification
+			for _, key := range byUser[uid] {
+				for _, r := range groups[key] {
+					sum.rowIDs = append(sum.rowIDs, r.ID)
+					if newest.ID == "" || rowNewer(r, newest) {
+						newest = r
+					}
+				}
+			}
+			sum.nid = newest.ID
+			userUnits = []pushUnit{sum}
+		}
+		sent, cerr := s.store.CountNotificationsSentSince(uid, start.Add(-pushRateWindow))
+		for _, u := range userUnits {
+			switch {
+			case cerr != nil:
+				capErr = append(capErr, u.rowIDs...)
+			case sent >= pushRateCap:
+				limited[skipRateLimited] = append(limited[skipRateLimited], u.rowIDs...)
+			default:
+				sent += len(u.rowIDs)
+				units = append(units, u)
+			}
+		}
+	}
+	s.settleSkips(claim.Token, limited)
+	s.unclaim(claim.Token, capErr)
 
+	var warn tickWarn
 	// Chunks hold whole units, so a unit's outcome is decided in one place.
 	for len(units) > 0 {
 		var chunk []pushUnit
@@ -309,7 +404,13 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 			s.unclaim(claim.Token, unitRowIDs(append(chunk, units...)))
 			return
 		}
-		s.sendChunk(ctx, sender, claim.Token, chunk, deadline)
+		s.sendChunk(ctx, sender, claim.Token, chunk, deadline, &warn)
+	}
+	if warn.unavailable {
+		slog.Warn("push dispatch: gateway unavailable, rows released")
+	}
+	if warn.badRequest {
+		slog.Warn("push dispatch: gateway refused a request, rows skipped")
 	}
 }
 
@@ -362,10 +463,16 @@ func (s *Server) unclaim(token string, ids []string) {
 	}
 }
 
-// sendChunk sends one chunk of whole units and settles it immediately. B1: a
-// unit any of whose devices was sent is sent; every other outcome releases
-// its rows (attempts + 1).
-func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string, chunk []pushUnit, deadline time.Time) {
+// sendChunk sends one chunk of whole units and settles it immediately. Per
+// message: sent keeps the device; invalid_token deletes it (the only result
+// that does, and only while the row still holds the token that was sent);
+// rejected and retry keep it. Per unit: any device sent => sent (the others are
+// not chased, so nothing duplicates); otherwise any retry (or a missing
+// result) => release with a backoff; otherwise every device was terminal =>
+// skipped gateway_rejected if any was rejected, else no_device. A whole request
+// the gateway refused (ErrBadRequest) skips every unit with no attempt; any
+// other whole-request error releases them.
+func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string, chunk []pushUnit, deadline time.Time, warn *tickWarn) {
 	// Drop rows no longer held (reclaimed, settled or deleted meanwhile).
 	all := unitRowIDs(chunk)
 	held, err := s.store.HeldNotifications(token, all)
@@ -378,8 +485,12 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 	for _, id := range held {
 		heldSet[id] = true
 	}
+	type sentMsg struct {
+		unit int
+		dev  store.PushDevice
+	}
 	var msgs []notify.Message
-	owner := map[string]int{} // message id -> unit index
+	owner := map[string]sentMsg{} // message id -> unit index and device
 	var live []pushUnit
 	var noMsg []string // units none of whose devices could be given a message
 	for _, u := range chunk {
@@ -393,14 +504,18 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 			continue
 		}
 		u.rowIDs = ids
+		count := 1
+		if u.kind == notify.KindSummary {
+			count = len(ids)
+		}
 		first := len(msgs)
 		for _, d := range u.devices[:min(len(u.devices), notify.MaxBatch)] {
 			id := notify.BatchID(len(msgs))
-			m, ok := notify.NewMessage(id, d.Platform, d.Token, u.kind, u.nid, d.ConnectionID, 1)
+			m, ok := notify.NewMessage(id, d.Platform, d.Token, u.kind, u.nid, d.ConnectionID, count)
 			if !ok {
 				continue
 			}
-			owner[id] = len(live)
+			owner[id] = sentMsg{len(live), d}
 			msgs = append(msgs, m)
 		}
 		if len(msgs) == first {
@@ -424,20 +539,48 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 		s.unclaim(token, unitRowIDs(live)) // shutdown: no verdict, no attempt
 		return
 	}
-	sent := make([]bool, len(live))
-	if serr == nil {
-		for _, r := range results {
-			if i, ok := owner[r.ID]; ok && r.Status == notify.StatusSent {
-				sent[i] = true
+	if errors.Is(serr, notify.ErrBadRequest) {
+		warn.badRequest = true
+		s.settleSkips(token, map[string][]string{skipGatewayRejected: unitRowIDs(live)})
+		return
+	}
+	if serr != nil {
+		warn.unavailable = true
+		results = nil
+	}
+	type unitVerdict struct{ sent, retry, rejected bool }
+	verdict := make([]unitVerdict, len(live))
+	status := make(map[string]string, len(results))
+	for _, r := range results {
+		status[r.ID] = r.Status
+	}
+	for id, o := range owner {
+		v := &verdict[o.unit]
+		switch status[id] {
+		case notify.StatusSent:
+			v.sent = true
+		case notify.StatusInvalidToken:
+			if err := s.store.DeletePushDeviceIfToken(o.dev.ID, o.dev.Token); err != nil {
+				slog.Warn("push dispatch: settle failed", "op", "delete")
 			}
+		case notify.StatusRejected:
+			v.rejected = true
+		default: // retry, an unknown status, or no result at all
+			v.retry = true
 		}
 	}
 	var sentIDs, releaseIDs []string
+	skips := map[string][]string{}
 	for i, u := range live {
-		if sent[i] {
+		switch v := verdict[i]; {
+		case v.sent:
 			sentIDs = append(sentIDs, u.rowIDs...)
-		} else {
+		case v.retry:
 			releaseIDs = append(releaseIDs, u.rowIDs...)
+		case v.rejected:
+			skips[skipGatewayRejected] = append(skips[skipGatewayRejected], u.rowIDs...)
+		default:
+			skips[skipNoDevice] = append(skips[skipNoDevice], u.rowIDs...)
 		}
 	}
 	if len(sentIDs) > 0 {
@@ -445,8 +588,9 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 			slog.Warn("push dispatch: settle failed", "op", "sent")
 		}
 	}
+	s.settleSkips(token, skips)
 	if len(releaseIDs) > 0 {
-		if _, err := s.store.ReleaseNotifications(token, releaseIDs); err != nil {
+		if _, err := s.store.ReleaseNotificationsBackoff(token, releaseIDs); err != nil {
 			slog.Warn("push dispatch: settle failed", "op", "release")
 		}
 	}

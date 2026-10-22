@@ -24,7 +24,7 @@ import (
 // Recipients are NOT access-checked here. Removing a member leaves them an
 // item's created_by and possibly its assignee, so a row can be written for
 // someone who can no longer see the item. Once the dispatcher is wired
-// into the server (TASK-3939 part B2; part B1 only builds it), it re-checks
+// into the server (TASK-3939 part B2c; B1 and B2a only build it), it re-checks
 // current membership and item visibility at send and skips the row: that is
 // the privacy gate.
 //

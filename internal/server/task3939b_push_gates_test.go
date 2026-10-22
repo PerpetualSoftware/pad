@@ -437,7 +437,7 @@ func TestPushDispatch_ZeroMessageUnitIsSkipped(t *testing.T) {
 			if withSender {
 				chunk = append(chunk, pushUnit{rowIDs: []string{good}, nid: good, kind: "assigned", devices: devs})
 			}
-			srv.sendChunk(context.Background(), f.fake, claim.Token, chunk, time.Now().Add(time.Minute))
+			srv.sendChunk(context.Background(), f.fake, claim.Token, chunk, time.Now().Add(time.Minute), &tickWarn{})
 			if st := f.state(bad); st.State != "skipped" || st.Reason != skipNoDevice || st.Attempts != 0 {
 				t.Fatalf("zero-message unit = %+v, want skipped/%s, no attempt", st, skipNoDevice)
 			}
