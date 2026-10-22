@@ -137,18 +137,29 @@
 						onclick={closeMobileMenu}
 						class:active={isActive('/console') &&
 							!isActive('/console/settings') &&
+							!isActive('/console/needs') &&
 							!isActive('/console/billing') &&
 							!isActive('/console/admin') &&
 							!isActive('/console/deleted-workspaces') &&
 							!isActive('/console/connected-apps')}
 						aria-current={(isActive('/console') &&
 							!isActive('/console/settings') &&
+							!isActive('/console/needs') &&
 							!isActive('/console/billing') &&
 							!isActive('/console/admin') &&
 							!isActive('/console/deleted-workspaces') &&
 							!isActive('/console/connected-apps')) ? 'page' : undefined}
 					>
 						Workspaces
+					</a>
+					<a
+						href="/console/needs"
+						class="nav-link"
+						onclick={closeMobileMenu}
+						class:active={isActive('/console/needs')}
+						aria-current={(isActive('/console/needs')) ? 'page' : undefined}
+					>
+						Needs you
 					</a>
 					<a
 						href="/console/settings"

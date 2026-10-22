@@ -3459,3 +3459,104 @@ export interface ArchivedCollection {
 	item_count: number;
 	archived_at: string;
 }
+
+// ── Needs you (TASK-3923, IDEA-3906 unit A6) ───────────────────────────────
+// Mirrors the Go JSON tags in internal/needs/needs.go and
+// internal/server/handlers_me_needs.go.
+
+export type NeedsSort = 'age' | 'importance' | 'simplicity';
+export type NeedsView = 'active' | 'hidden';
+
+export interface NeedsWorkspaceLabel {
+	slug: string;
+	name: string;
+	owner_username: string;
+}
+
+export interface NeedsItemInfo {
+	ref: string;
+	title: string;
+	collection: string;
+	collection_slug: string;
+	status?: string;
+	priority?: string;
+	created_at: string;
+	updated_at: string;
+	path: string;
+}
+
+export interface NeedsWhy {
+	rule: 'asked' | 'mentioned' | 'assigned' | 'admin_fallback' | string;
+	text: string;
+	by?: string;
+	at?: string;
+	comment_id?: string;
+}
+
+export interface NeedsBecause {
+	kind: 'human_task' | 'needs_human' | 'mention' | string;
+	at: string;
+	by?: string;
+	comment_id?: string;
+}
+
+/** What the person had seen of an item; echoed back verbatim on dismiss/defer. */
+export interface NeedsSnoozeMarker {
+	seen_comment_at: string;
+	seen_comment_ids: string[];
+	seen_transition_seq: number;
+}
+
+export interface NeedsSnooze {
+	item_id: string;
+	workspace_id: string;
+	kind: 'dismiss' | 'defer';
+	defer_until?: string;
+	marker: NeedsSnoozeMarker;
+	created_at: string;
+	holds: boolean;
+}
+
+export interface NeedsScore {
+	value: number;
+	hint?: string;
+	why?: string[];
+}
+
+export interface NeedsRow {
+	workspace: NeedsWorkspaceLabel;
+	item: NeedsItemInfo;
+	why: NeedsWhy;
+	because: NeedsBecause[];
+	needs_human?: string;
+	waiting_since: string;
+	marker?: NeedsSnoozeMarker;
+	snooze?: NeedsSnooze;
+	importance?: NeedsScore;
+	simplicity?: NeedsScore;
+}
+
+export interface NeedsWorkspaceCount extends NeedsWorkspaceLabel {
+	count: number;
+}
+
+export interface NeedsResponse {
+	rows: NeedsRow[];
+	next_cursor?: string;
+	total: number;
+	hidden: number;
+	workspaces: NeedsWorkspaceCount[];
+	degraded?: string[];
+}
+
+export interface NeedsListParams {
+	sort?: NeedsSort;
+	view?: NeedsView;
+	workspace?: string;
+	limit?: number;
+	cursor?: string;
+}
+
+export type NeedsSnoozeRequest =
+	| { kind: 'dismiss'; marker?: NeedsSnoozeMarker }
+	| { kind: 'defer'; defer_until: string; marker?: NeedsSnoozeMarker };

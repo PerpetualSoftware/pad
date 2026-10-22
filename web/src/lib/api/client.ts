@@ -110,6 +110,12 @@ import type {
 	CollectionFieldUsage
 } from '$lib/types';
 import type { ImportSummary, ImportUniqueDrop } from '$lib/types';
+import type {
+	NeedsListParams,
+	NeedsResponse,
+	NeedsSnooze,
+	NeedsSnoozeRequest
+} from '$lib/types';
 import { runSessionExpiryKeepers } from '$lib/stores/sessionExpiryKeep';
 import { reportWorkspaceWrite } from './workspaceWrites';
 import { noteServerDate } from './serverClock';
@@ -3553,6 +3559,33 @@ export const api = {
 		removeWorkspace: (id: string, workspaceSlug: string) =>
 			request<ConnectedApp>(
 				`/connected-apps/${encodeURIComponent(id)}/workspaces/${encodeURIComponent(workspaceSlug)}`,
+				{ method: 'DELETE' }
+			)
+	},
+
+	// ── Needs you (TASK-3923, IDEA-3906 A6) ──────────────────────────────────
+	needs: {
+		/** GET /me/needs. Only the params given go on the URL. */
+		list: (params: NeedsListParams = {}) => {
+			const q = new URLSearchParams();
+			if (params.sort) q.set('sort', params.sort);
+			if (params.view) q.set('view', params.view);
+			if (params.workspace) q.set('workspace', params.workspace);
+			if (params.limit) q.set('limit', String(params.limit));
+			if (params.cursor) q.set('cursor', params.cursor);
+			const qs = q.toString();
+			return request<NeedsResponse>(`/me/needs${qs ? `?${qs}` : ''}`);
+		},
+		/** Dismiss or defer one item for the caller. `ref` is the issue ref (TASK-5). */
+		snooze: (ws: string, ref: string, body: NeedsSnoozeRequest) =>
+			request<{ ref: string; snooze: NeedsSnooze }>(
+				`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/needs/snooze`,
+				{ method: 'PUT', body: JSON.stringify(body) }
+			),
+		/** Restore: DELETE the caller's snooze. Idempotent, sends no body. */
+		restore: (ws: string, ref: string) =>
+			request<{ ref: string; snooze: null }>(
+				`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/needs/snooze`,
 				{ method: 'DELETE' }
 			)
 	},
