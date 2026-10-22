@@ -50,6 +50,26 @@
 		return rs.filter((r) => (m.get(keyOf(r)) ?? 0) <= startedAt);
 	}
 
+	/**
+	 * A first-page response that `trusted` filtered still carries counts that
+	 * include the dropped rows: it predates the action. Adjust them relative to
+	 * THAT response, exactly as `settle` does for the state it replaced. The two
+	 * never apply to the same action in one state: settle edits the state that
+	 * held the row, and this edits the response that is about to replace it; a
+	 * response that started after the action is not filtered, so it is used as-is.
+	 */
+	function adjustCounts(res: { total?: number; hidden?: number; workspaces?: NeedsWorkspaceCount[] }, dropped: NeedsRow[], v: NeedsView) {
+		let t = res.total ?? 0;
+		let h = res.hidden ?? 0;
+		let ws = res.workspaces ?? [];
+		for (const r of dropped) {
+			t = Math.max(0, t - 1);
+			h = Math.max(0, h + (v === 'active' ? 1 : -1));
+			ws = ws.map((w) => (w.slug === r.workspace.slug ? { ...w, count: Math.max(0, w.count - 1) } : w));
+		}
+		return { total: t, hidden: h, workspaces: ws.filter((w) => w.count > 0) };
+	}
+
 	async function load(s: NeedsSort, v: NeedsView) {
 		const mine = ++ticket;
 		const startedAt = actionsDone;
@@ -60,10 +80,13 @@
 		try {
 			const res = await api.needs.list({ sort: s, view: v });
 			if (mine !== ticket) return;
-			rows = trusted(res.rows ?? [], v, startedAt);
-			total = res.total ?? 0;
-			hidden = res.hidden ?? 0;
-			workspaces = res.workspaces ?? [];
+			const all = res.rows ?? [];
+			const kept = trusted(all, v, startedAt);
+			const adj = adjustCounts(res, all.filter((r) => !kept.includes(r)), v);
+			rows = kept;
+			total = adj.total;
+			hidden = adj.hidden;
+			workspaces = adj.workspaces;
 			degraded = res.degraded ?? [];
 			nextCursor = res.next_cursor ?? '';
 		} catch (e) {
@@ -90,6 +113,8 @@
 		try {
 			const res = await api.needs.list({ sort, view: v, cursor: nextCursor });
 			if (mine !== ticket) return;
+			// Counts are not written from this response (they stay the first
+			// page's, which settle keeps true), so only the rows are filtered.
 			const have = new Set(rows.map(keyOf));
 			rows = [...rows, ...trusted(res.rows ?? [], v, startedAt).filter((r) => !have.has(keyOf(r)))];
 			nextCursor = res.next_cursor ?? '';

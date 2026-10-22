@@ -429,6 +429,94 @@ describe('needs page: r1 fixes', () => {
 		expect(refs()).toEqual(['TASK-1', 'TASK-3']);
 	});
 
+	describe('counts of a filtered response', () => {
+		const total = () => host.querySelector('h1')?.textContent ?? '';
+
+		it('the hunter trigger (list lands while the PUT is pending, settle then runs): total, group count and Hidden adjusted', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 0 }));
+			await click(btn('Importance'));
+			expect(refs()).toEqual(['TASK-1', 'TASK-3']);
+			put.resolve({});
+			await settle();
+			expect(refs()).toEqual(['TASK-3']);
+			expect(groupCounts()).toEqual([['WS a', '1']]);
+			expect(total()).toContain('1');
+			expect(total()).not.toContain('2');
+			expect(btn(/^Hidden/).textContent).toContain('(1)');
+		});
+
+		it('the same for a filtered reload that lands after the PUT, dropping a group that reaches 0', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('b', 'TASK-2')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+			const reload = deferred();
+			list.mockImplementationOnce(() => reload.promise);
+			await click(btn('Importance'));
+			put.resolve({});
+			await settle();
+			reload.resolve(resp([row('a', 'TASK-1'), row('b', 'TASK-2')], { hidden: 0 }));
+			await settle();
+			expect(groupCounts()).toEqual([['WS b', '1']]);
+			expect(btn(/^Hidden/).textContent).toContain('(1)');
+		});
+
+		it('hidden view: a pending Restore and a reload that predates it', async () => {
+			await mountWith(resp([]));
+			list.mockResolvedValue(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 2 }));
+			await click(btn(/^Hidden/));
+			const put = deferred();
+			restore.mockImplementationOnce(() => put.promise);
+			await click(btn('Restore', host.querySelector('[data-ref="TASK-1"]')!));
+			const reload = deferred();
+			list.mockImplementationOnce(() => reload.promise);
+			await click(btn('Importance'));
+			put.resolve({});
+			await settle();
+			reload.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 2 }));
+			await settle();
+			expect(refs()).toEqual(['TASK-3']);
+			expect(groupCounts()).toEqual([['WS a', '1']]);
+			expect(total()).toContain('1');
+			expect(total()).not.toContain('2');
+		});
+
+		it('a filtered Load more writes no counts: they stay the first page\'s, which settle kept true', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], {
+				total: 3,
+				next_cursor: 'c1',
+				workspaces: [{ slug: 'a', name: 'WS a', owner_username: 'dave', count: 3 }]
+			}));
+			const more = deferred();
+			list.mockImplementationOnce(() => more.promise);
+			await click(btn('Load more'));
+			snooze.mockResolvedValue({});
+			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+			expect(groupCounts()).toEqual([['WS a', '2']]);
+			more.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-2')], { total: 3, hidden: 0 }));
+			await settle();
+			expect(refs()).toEqual(['TASK-3', 'TASK-2']);
+			expect(groupCounts()).toEqual([['WS a', '2']]);
+			expect(btn(/^Hidden/).textContent).toContain('(1)');
+		});
+
+		it('no double count: settle adjusted the row, and a reload started after the PUT is used as-is', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			snooze.mockResolvedValue({});
+			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+			expect(groupCounts()).toEqual([['WS a', '1']]);
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-3')], { hidden: 1 }));
+			await click(btn('Importance'));
+			expect(groupCounts()).toEqual([['WS a', '1']]);
+			expect(total()).toContain('1');
+			expect(btn(/^Hidden/).textContent).toContain('(1)');
+		});
+	});
+
 	it('a failed reload clears the previous total next to the error', async () => {
 		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-2'), row('a', 'TASK-3')]));
 		expect(host.querySelector('h1')?.textContent).toContain('3');
