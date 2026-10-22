@@ -36,6 +36,8 @@ import (
 // again; the ids are parked in-process, the record is retried at every tick
 // start (gateway or not), parked rows are never re-sent and count toward the
 // 30/h cap, and an entry is dropped once recorded or past pushExpireAfter.
+// The set is in-process, so a restart or a second instance can still re-send a
+// row once after its lease, which the client de-dupes by nid.
 //
 // Logging: fixed strings and counts only. A store error can carry a row id or
 // a value, so it is never logged here.
