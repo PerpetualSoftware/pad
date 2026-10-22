@@ -73,6 +73,8 @@ func (s *Server) notificationAccess(c *pushGateCache, n store.Notification) (ite
 		}
 		c.users[n.UserID] = user
 	}
+	// user == nil guards a user deleted between the claim and this gate
+	// (user_notifications.user_id cascades on delete, migration 155).
 	if user == nil || user.IsDisabled() || user.IsApp() {
 		return nil, skipUserDisabled, nil
 	}
@@ -121,7 +123,7 @@ func (s *Server) notificationAccess(c *pushGateCache, n store.Notification) (ite
 	if !ok {
 		// bearerAuth=true: a platform admin's cookie bypass is a property of a
 		// live browser connection, not of a push to a phone.
-		if vis, err = s.computeWatchAccessVisibility(true, user, n.WorkspaceID); err != nil {
+		if vis, _, err = s.resolveWatchAccessVisibility(true, user, n.WorkspaceID); err != nil {
 			return nil, "", err
 		}
 		c.vis[mkey] = vis
@@ -145,7 +147,7 @@ func (s *Server) notificationAccess(c *pushGateCache, n store.Notification) (ite
 			}
 			c.comments[n.CommentID] = cm
 		}
-		if cm == nil || cm.Deleted {
+		if cm == nil || cm.Deleted || cm.ItemID != n.ItemID || cm.WorkspaceID != n.WorkspaceID {
 			return nil, skipCommentGone, nil
 		}
 	}

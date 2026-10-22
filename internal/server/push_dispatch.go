@@ -53,7 +53,8 @@ type pushDispatchConfig struct {
 	lease       time.Duration
 	leaseMargin time.Duration
 	sendTimeout time.Duration
-	sender      pushSender // test seam; nil = the server's gateway
+	sender      pushSender       // test seam; nil = the server's gateway
+	now         func() time.Time // test seam; nil = time.Now
 	stop        chan struct{}
 	running     bool
 	instanceID  string
@@ -125,6 +126,16 @@ func (s *Server) resolvePushDispatchSettings() pushDispatchSettings {
 		d.instanceID = uuid.NewString()
 	}
 	return pushDispatchSettings{d.interval, d.settle, d.lease, d.leaseMargin, d.sendTimeout, d.instanceID}
+}
+
+func (s *Server) pushNow() time.Time {
+	s.pushDispatch.mu.Lock()
+	now := s.pushDispatch.now
+	s.pushDispatch.mu.Unlock()
+	if now == nil {
+		return time.Now()
+	}
+	return now()
 }
 
 func (s *Server) pushSenderOrNil() pushSender {
@@ -220,7 +231,7 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 	if sender == nil {
 		return
 	}
-	start := time.Now()
+	start := s.pushNow()
 	// Fresh per tick and never kept: the store appends its own nonce, and
 	// every settle below uses Claim.Token.
 	token := "pd-" + cfg.instanceID + "-" + uuid.NewString()
@@ -294,7 +305,7 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 			units = units[1:]
 			msgs += n
 		}
-		if ctx.Err() != nil || time.Until(deadline) < cfg.sendTimeout {
+		if ctx.Err() != nil || deadline.Sub(s.pushNow()) < cfg.sendTimeout {
 			s.unclaim(claim.Token, unitRowIDs(append(chunk, units...)))
 			return
 		}
@@ -370,6 +381,7 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 	var msgs []notify.Message
 	owner := map[string]int{} // message id -> unit index
 	var live []pushUnit
+	var noMsg []string // units none of whose devices could be given a message
 	for _, u := range chunk {
 		var ids []string
 		for _, id := range u.rowIDs {
@@ -381,6 +393,7 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 			continue
 		}
 		u.rowIDs = ids
+		first := len(msgs)
 		for _, d := range u.devices[:min(len(u.devices), notify.MaxBatch)] {
 			id := notify.BatchID(len(msgs))
 			m, ok := notify.NewMessage(id, d.Platform, d.Token, u.kind, u.nid, d.ConnectionID, 1)
@@ -390,7 +403,14 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 			owner[id] = len(live)
 			msgs = append(msgs, m)
 		}
+		if len(msgs) == first {
+			noMsg = append(noMsg, ids...)
+			continue
+		}
 		live = append(live, u)
+	}
+	if len(noMsg) > 0 {
+		s.settleSkips(token, map[string][]string{skipNoDevice: noMsg})
 	}
 	if len(msgs) == 0 {
 		s.unclaim(token, unitRowIDs(live))
