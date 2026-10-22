@@ -50,29 +50,10 @@
 		return rs.filter((r) => (m.get(keyOf(r)) ?? 0) <= startedAt);
 	}
 
-	/**
-	 * A first-page response that `trusted` filtered still carries counts that
-	 * include the dropped rows: it predates the action. Adjust them relative to
-	 * THAT response, exactly as `settle` does for the state it replaced. The two
-	 * never apply to the same action in one state: settle edits the state that
-	 * held the row, and this edits the response that is about to replace it; a
-	 * response that started after the action is not filtered, so it is used as-is.
-	 */
-	function adjustCounts(res: { total?: number; hidden?: number; workspaces?: NeedsWorkspaceCount[] }, dropped: NeedsRow[], v: NeedsView) {
-		let t = res.total ?? 0;
-		let h = res.hidden ?? 0;
-		let ws = res.workspaces ?? [];
-		for (const r of dropped) {
-			t = Math.max(0, t - 1);
-			h = Math.max(0, h + (v === 'active' ? 1 : -1));
-			ws = ws.map((w) => (w.slug === r.workspace.slug ? { ...w, count: Math.max(0, w.count - 1) } : w));
-		}
-		return { total: t, hidden: h, workspaces: ws.filter((w) => w.count > 0) };
-	}
-
 	async function load(s: NeedsSort, v: NeedsView) {
 		const mine = ++ticket;
 		const startedAt = actionsDone;
+		let stale = false;
 		loading = true;
 		loadingMore = false;
 		loadError = '';
@@ -80,13 +61,11 @@
 		try {
 			const res = await api.needs.list({ sort: s, view: v });
 			if (mine !== ticket) return;
-			const all = res.rows ?? [];
-			const kept = trusted(all, v, startedAt);
-			const adj = adjustCounts(res, all.filter((r) => !kept.includes(r)), v);
-			rows = kept;
-			total = adj.total;
-			hidden = adj.hidden;
-			workspaces = adj.workspaces;
+			stale = startedAt < actionsDone;
+			rows = trusted(res.rows ?? [], v, startedAt);
+			total = res.total ?? 0;
+			hidden = res.hidden ?? 0;
+			workspaces = res.workspaces ?? [];
 			degraded = res.degraded ?? [];
 			nextCursor = res.next_cursor ?? '';
 		} catch (e) {
@@ -97,11 +76,22 @@
 			rows = [];
 			total = 0;
 			workspaces = [];
+			degraded = [];
 			nextCursor = '';
 			loadError = e instanceof Error ? e.message : 'Failed to load';
 		} finally {
 			if (mine === ticket) loading = false;
 		}
+		// THE CLASS FIX (TASK-3923 r3): a response whose request started before
+		// the latest completed dismiss/defer/restore was served by a state that may
+		// predate it. `trusted` keeps the acted row from flickering back, but its
+		// counts (and a destination view's rows) can still be wrong, so ask again:
+		// that request starts after every completed action, so it is authoritative.
+		// Exactly one refetch per stale response, and it is not stale itself (its
+		// startedAt is the current actionsDone), so it cannot trigger another
+		// unless a NEW action completes meanwhile. It goes through the ticket
+		// guard like any load: a later sort or view change supersedes it.
+		if (stale) void load(s, v);
 	}
 
 	async function loadMore() {
@@ -109,12 +99,13 @@
 		const mine = ticket;
 		const startedAt = actionsDone;
 		const v = view;
+		let stale = false;
 		loadingMore = true;
 		try {
 			const res = await api.needs.list({ sort, view: v, cursor: nextCursor });
 			if (mine !== ticket) return;
-			// Counts are not written from this response (they stay the first
-			// page's, which settle keeps true), so only the rows are filtered.
+			// Counts are not written from this response; only the rows are filtered.
+			stale = startedAt < actionsDone;
 			const have = new Set(rows.map(keyOf));
 			rows = [...rows, ...trusted(res.rows ?? [], v, startedAt).filter((r) => !have.has(keyOf(r)))];
 			nextCursor = res.next_cursor ?? '';
@@ -124,6 +115,12 @@
 		} finally {
 			if (mine === ticket) loadingMore = false;
 		}
+		// Same class fix as `load`. A stale Load more reloads PAGE 1 of the
+		// current view, which drops the extra pages already loaded and resets
+		// pagination. That is acceptable: it only happens when an action completed
+		// during the Load more request, which is rare, and the reload's rows and
+		// counts are authoritative.
+		if (stale) void load(sort, v);
 	}
 
 	// The one effect: refetch whenever the sort or the view changes.

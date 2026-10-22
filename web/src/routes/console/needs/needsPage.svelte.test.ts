@@ -371,20 +371,6 @@ describe('needs page: r1 fixes', () => {
 		expect(text).toMatch(/Deferred items come back at the time you chose/);
 	});
 
-	it('a Load more that was in flight when a row was dismissed does not bring the row back', async () => {
-		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { next_cursor: 'c1' }));
-		const more = deferred();
-		list.mockImplementationOnce(() => more.promise);
-		await click(btn('Load more'));
-		snooze.mockResolvedValue({});
-		await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
-		expect(refs()).toEqual(['TASK-3']);
-		// The page was built before the PUT committed: it still has TASK-1.
-		more.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-2')]));
-		await settle();
-		expect(refs()).toEqual(['TASK-3', 'TASK-2']);
-	});
-
 	it('a dismissed row is not shown by a list started before the PUT finished, whichever lands first', async () => {
 		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
 		const put = deferred();
@@ -395,21 +381,6 @@ describe('needs page: r1 fixes', () => {
 		await click(btn('Importance'));
 		expect(refs()).toEqual(['TASK-1', 'TASK-3']);
 		put.resolve({});
-		await settle();
-		expect(refs()).toEqual(['TASK-3']);
-	});
-
-	it('a reload still in flight when the PUT completes is filtered too', async () => {
-		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
-		const put = deferred();
-		snooze.mockImplementationOnce(() => put.promise);
-		await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
-		const reload = deferred();
-		list.mockImplementationOnce(() => reload.promise);
-		await click(btn('Importance'));
-		put.resolve({});
-		await settle();
-		reload.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
 		await settle();
 		expect(refs()).toEqual(['TASK-3']);
 	});
@@ -429,28 +400,14 @@ describe('needs page: r1 fixes', () => {
 		expect(refs()).toEqual(['TASK-1', 'TASK-3']);
 	});
 
-	describe('counts of a filtered response', () => {
-		const total = () => host.querySelector('h1')?.textContent ?? '';
+	describe('stale responses (class fix): one fresh page-1 load of the current view', () => {
+		const heading = () => host.querySelector('h1')?.textContent ?? '';
+		const hiddenN = () => btn(/^Hidden/).textContent ?? '';
+		const lastCall = () => list.mock.calls[list.mock.calls.length - 1][0];
+		const never = () => new Promise(() => {});
 
-		it('the hunter trigger (list lands while the PUT is pending, settle then runs): total, group count and Hidden adjusted', async () => {
+		it('row 1: a stale active response shows a dismissed row; the refetch drops it and fixes every count', async () => {
 			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
-			const put = deferred();
-			snooze.mockImplementationOnce(() => put.promise);
-			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
-			list.mockResolvedValueOnce(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 0 }));
-			await click(btn('Importance'));
-			expect(refs()).toEqual(['TASK-1', 'TASK-3']);
-			put.resolve({});
-			await settle();
-			expect(refs()).toEqual(['TASK-3']);
-			expect(groupCounts()).toEqual([['WS a', '1']]);
-			expect(total()).toContain('1');
-			expect(total()).not.toContain('2');
-			expect(btn(/^Hidden/).textContent).toContain('(1)');
-		});
-
-		it('the same for a filtered reload that lands after the PUT, dropping a group that reaches 0', async () => {
-			await mountWith(resp([row('a', 'TASK-1'), row('b', 'TASK-2')]));
 			const put = deferred();
 			snooze.mockImplementationOnce(() => put.promise);
 			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
@@ -459,15 +416,21 @@ describe('needs page: r1 fixes', () => {
 			await click(btn('Importance'));
 			put.resolve({});
 			await settle();
-			reload.resolve(resp([row('a', 'TASK-1'), row('b', 'TASK-2')], { hidden: 0 }));
+			list.mockImplementationOnce(() => Promise.resolve(resp([row('a', 'TASK-3')], { hidden: 1 })));
+			reload.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 0 }));
 			await settle();
-			expect(groupCounts()).toEqual([['WS b', '1']]);
-			expect(btn(/^Hidden/).textContent).toContain('(1)');
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(lastCall()).toEqual({ sort: 'importance', view: 'active' });
+			expect(refs()).toEqual(['TASK-3']);
+			expect(groupCounts()).toEqual([['WS a', '1']]);
+			expect(heading()).toContain('1');
+			expect(heading()).not.toContain('2');
+			expect(hiddenN()).toContain('(1)');
 		});
 
-		it('hidden view: a pending Restore and a reload that predates it', async () => {
+		it('row 2: a stale hidden response shows a restored row; the refetch drops it', async () => {
 			await mountWith(resp([]));
-			list.mockResolvedValue(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 2 }));
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 2 }));
 			await click(btn(/^Hidden/));
 			const put = deferred();
 			restore.mockImplementationOnce(() => put.promise);
@@ -477,43 +440,231 @@ describe('needs page: r1 fixes', () => {
 			await click(btn('Importance'));
 			put.resolve({});
 			await settle();
+			list.mockImplementationOnce(() => Promise.resolve(resp([row('a', 'TASK-3')], { hidden: 1 })));
 			reload.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 2 }));
 			await settle();
+			expect(lastCall()).toEqual({ sort: 'importance', view: 'hidden' });
 			expect(refs()).toEqual(['TASK-3']);
 			expect(groupCounts()).toEqual([['WS a', '1']]);
-			expect(total()).toContain('1');
-			expect(total()).not.toContain('2');
+			expect(heading()).toContain('1');
+			expect(heading()).not.toContain('2');
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-1')], { hidden: 1 }));
+			await click(btn(/^Back to needs you/));
+			expect(hiddenN()).toContain('(1)');
 		});
 
-		it('a filtered Load more writes no counts: they stay the first page\'s, which settle kept true', async () => {
-			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], {
-				total: 3,
-				next_cursor: 'c1',
-				workspaces: [{ slug: 'a', name: 'WS a', owner_username: 'dave', count: 3 }]
-			}));
+		it('row 3: a stale first-page response whose counts include a filtered row (two workspaces; one group empties)', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('b', 'TASK-2')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+			const reload = deferred();
+			list.mockImplementationOnce(() => reload.promise);
+			await click(btn('Importance'));
+			put.resolve({});
+			await settle();
+			list.mockImplementationOnce(() => Promise.resolve(resp([row('b', 'TASK-2')], { hidden: 1 })));
+			reload.resolve(resp([row('a', 'TASK-1'), row('b', 'TASK-2')], { hidden: 0 }));
+			await settle();
+			expect(refs()).toEqual(['TASK-2']);
+			expect(groupCounts()).toEqual([['WS b', '1']]);
+			expect(heading()).toContain('1');
+			expect(heading()).not.toContain('2');
+			expect(hiddenN()).toContain('(1)');
+		});
+
+		it('row 4: the acted row is on page 2 of the stale response; the refetch corrects the counts', async () => {
+			await mountWith(
+				resp([row('a', 'TASK-1'), row('a', 'TASK-3')], {
+					total: 4,
+					workspaces: [{ slug: 'a', name: 'WS a', owner_username: 'dave', count: 4 }]
+				})
+			);
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+			const reload = deferred();
+			list.mockImplementationOnce(() => reload.promise);
+			await click(btn('Importance'));
+			put.resolve({});
+			await settle();
+			list.mockImplementationOnce(() =>
+				Promise.resolve(resp([row('a', 'TASK-3'), row('a', 'TASK-4'), row('a', 'TASK-5')], { hidden: 1 }))
+			);
+			// Row 1 sits on page 2 of this stale response, so nothing is filtered.
+			reload.resolve(
+				resp([row('a', 'TASK-3'), row('a', 'TASK-4'), row('a', 'TASK-5')], {
+					total: 4,
+					hidden: 0,
+					next_cursor: 'p2',
+					workspaces: [{ slug: 'a', name: 'WS a', owner_username: 'dave', count: 4 }]
+				})
+			);
+			await settle();
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(refs()).toEqual(['TASK-3', 'TASK-4', 'TASK-5']);
+			expect(groupCounts()).toEqual([['WS a', '3']]);
+			expect(heading()).toContain('3');
+			expect(heading()).not.toContain('4');
+			expect(hiddenN()).toContain('(1)');
+		});
+
+		it('row 5: a stale DESTINATION response omits the acted row; the refetch shows it and Hidden (N) is right', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+			const toHidden = deferred();
+			list.mockImplementationOnce(() => toHidden.promise);
+			await click(btn(/^Hidden/));
+			put.resolve({});
+			await settle();
+			list.mockImplementationOnce(() =>
+				Promise.resolve(resp([row('a', 'TASK-1', { snooze: { kind: 'dismiss' } })], { hidden: 1 }))
+			);
+			toHidden.resolve(resp([], { hidden: 0 }));
+			await settle();
+			expect(lastCall()).toEqual({ sort: 'age', view: 'hidden' });
+			expect(refs()).toEqual(['TASK-1']);
+			expect(groupCounts()).toEqual([['WS a', '1']]);
+			expect(heading()).toContain('1');
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-3')], { hidden: 1 }));
+			await click(btn(/^Back to needs you/));
+			expect(refs()).toEqual(['TASK-3']);
+			expect(hiddenN()).toContain('(1)');
+		});
+
+		it('row 6: a stale Load more page brings an acted row back; it stays filtered and page 1 is reloaded', async () => {
+			await mountWith(
+				resp([row('a', 'TASK-1'), row('a', 'TASK-3')], {
+					total: 3,
+					next_cursor: 'c1',
+					workspaces: [{ slug: 'a', name: 'WS a', owner_username: 'dave', count: 3 }]
+				})
+			);
 			const more = deferred();
 			list.mockImplementationOnce(() => more.promise);
 			await click(btn('Load more'));
 			snooze.mockResolvedValue({});
 			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
-			expect(groupCounts()).toEqual([['WS a', '2']]);
+			expect(refs()).toEqual(['TASK-3']);
+			list.mockImplementationOnce(() =>
+				Promise.resolve(resp([row('a', 'TASK-3'), row('a', 'TASK-2')], { hidden: 1 }))
+			);
 			more.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-2')], { total: 3, hidden: 0 }));
 			await settle();
+			expect(list).toHaveBeenCalledTimes(3);
+			// The refetch is page 1: no cursor.
+			expect(lastCall()).toEqual({ sort: 'age', view: 'active' });
 			expect(refs()).toEqual(['TASK-3', 'TASK-2']);
 			expect(groupCounts()).toEqual([['WS a', '2']]);
-			expect(btn(/^Hidden/).textContent).toContain('(1)');
+			expect(heading()).toContain('2');
+			expect(hiddenN()).toContain('(1)');
 		});
 
-		it('no double count: settle adjusted the row, and a reload started after the PUT is used as-is', async () => {
+		it('row 7: a stale Load more in the destination view omits the row; the refetch shows it', async () => {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+			// The hidden view loads before the PUT commits: it lacks TASK-1.
+			list.mockResolvedValueOnce(
+				resp([row('a', 'TASK-7', { snooze: { kind: 'dismiss' } })], { hidden: 1, next_cursor: 'h1' })
+			);
+			await click(btn(/^Hidden/));
+			expect(refs()).toEqual(['TASK-7']);
+			const more = deferred();
+			list.mockImplementationOnce(() => more.promise);
+			await click(btn('Load more'));
+			put.resolve({});
+			await settle();
+			list.mockImplementationOnce(() =>
+				Promise.resolve(
+					resp(
+						[row('a', 'TASK-1', { snooze: { kind: 'dismiss' } }), row('a', 'TASK-7', { snooze: { kind: 'dismiss' } })],
+						{ hidden: 2 }
+					)
+				)
+			);
+			more.resolve(resp([row('a', 'TASK-8', { snooze: { kind: 'dismiss' } })], { hidden: 1 }));
+			await settle();
+			expect(lastCall()).toEqual({ sort: 'age', view: 'hidden' });
+			expect(refs()).toEqual(['TASK-1', 'TASK-7']);
+			expect(groupCounts()).toEqual([['WS a', '2']]);
+			expect(heading()).toContain('2');
+			list.mockResolvedValueOnce(resp([row('a', 'TASK-3')], { hidden: 2 }));
+			await click(btn(/^Back to needs you/));
+			expect(hiddenN()).toContain('(2)');
+		});
+
+		it('row 8: the error path clears degraded, rows, total and workspaces (Hidden stays)', async () => {
+			await mountWith(resp([row('alpha', 'TASK-1')], { degraded: ['alpha'], hidden: 4 }));
+			expect(host.querySelector('[data-testid="needs-degraded"]')).not.toBeNull();
+			list.mockRejectedValueOnce(new Error('nope'));
+			await click(btn('Importance'));
+			expect(host.querySelector('[role="alert"]')?.textContent).toContain('nope');
+			expect(host.querySelector('[data-testid="needs-degraded"]')).toBeNull();
+			expect(refs()).toEqual([]);
+			expect(groupCounts()).toEqual([]);
+			expect(heading()).not.toContain('1');
+			expect(hiddenN()).toContain('(4)');
+		});
+
+		async function staleSetup() {
+			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
+			const put = deferred();
+			snooze.mockImplementationOnce(() => put.promise);
+			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
+			const reload = deferred();
+			list.mockImplementationOnce(() => reload.promise);
+			await click(btn('Importance'));
+			put.resolve({});
+			await settle();
+			return reload;
+		}
+
+		it('(a) no loop: one stale response leads to exactly one refetch', async () => {
+			const reload = await staleSetup();
+			expect(list).toHaveBeenCalledTimes(2);
+			let after = 0;
+			// A loop would keep asking; cap it so a regression fails instead of hanging.
+			list.mockImplementation(() => (++after > 5 ? never() : Promise.resolve(resp([row('a', 'TASK-3')], { hidden: 1 }))));
+			reload.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 0 }));
+			for (let i = 0; i < 5; i++) await settle();
+			expect(list).toHaveBeenCalledTimes(3);
+			expect(refs()).toEqual(['TASK-3']);
+		});
+
+		it('(c) a sort toggle during the refetch supersedes it, and the superseded refetch writes no state', async () => {
+			const reload = await staleSetup();
+			const refetch = deferred();
+			list.mockImplementationOnce(() => refetch.promise);
+			reload.resolve(resp([row('a', 'TASK-1'), row('a', 'TASK-3')], { hidden: 0 }));
+			await settle();
+			expect(list).toHaveBeenCalledTimes(3);
+			list.mockImplementationOnce(() => Promise.resolve(resp([row('a', 'TASK-9')], { hidden: 1 })));
+			await click(btn('Simplicity'));
+			expect(lastCall()).toEqual({ sort: 'simplicity', view: 'active' });
+			expect(refs()).toEqual(['TASK-9']);
+			refetch.resolve(resp([row('a', 'TASK-3')], { total: 5, hidden: 7 }));
+			await settle();
+			expect(refs()).toEqual(['TASK-9']);
+			expect(heading()).not.toContain('5');
+			expect(hiddenN()).toContain('(1)');
+			expect(list).toHaveBeenCalledTimes(4);
+		});
+
+		it('no double count: settle adjusted the row, and a reload started after the PUT is used as-is, with no refetch', async () => {
 			await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3')]));
 			snooze.mockResolvedValue({});
 			await click(btn('Dismiss', host.querySelector('[data-ref="TASK-1"]')!));
 			expect(groupCounts()).toEqual([['WS a', '1']]);
 			list.mockResolvedValueOnce(resp([row('a', 'TASK-3')], { hidden: 1 }));
 			await click(btn('Importance'));
+			expect(list).toHaveBeenCalledTimes(2);
 			expect(groupCounts()).toEqual([['WS a', '1']]);
-			expect(total()).toContain('1');
-			expect(btn(/^Hidden/).textContent).toContain('(1)');
+			expect(heading()).toContain('1');
+			expect(hiddenN()).toContain('(1)');
 		});
 	});
 
