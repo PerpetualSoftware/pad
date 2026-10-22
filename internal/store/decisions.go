@@ -4,10 +4,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/textguard"
@@ -453,7 +457,7 @@ func (s *Store) CompleteDecisionJob(j DecisionJob) error {
 			return fmt.Errorf("debounce superseded decision job %s/%s: %w", j.ItemID, j.QuestionSet, err)
 		}
 	}
-	return s.releaseDecisionJob(j, "", 0)
+	return s.releaseDecisionClaim(j)
 }
 
 // FailDecisionJob records a failed attempt and holds the job until retryAfter
@@ -466,7 +470,10 @@ func (s *Store) FailDecisionJob(j DecisionJob, cause error, retryAfter time.Dura
 	if cause != nil {
 		msg = cause.Error()
 	}
-	return s.releaseDecisionJob(j, msg, retryAfter)
+	if msg == "" {
+		msg = noDecisionErrorMessage
+	}
+	return s.recordDecisionFailure(j, msg, retryAfter)
 }
 
 // DropDecisionJob abandons a claimed job: the item is gone, the set no
@@ -495,30 +502,82 @@ func (s *Store) DropDecisionJob(j DecisionJob) error {
 // the job. It is claimable again at once, unless its debounce (not_before)
 // is still ahead.
 func (s *Store) ReleaseDecisionJob(j DecisionJob) error {
-	return s.releaseDecisionJob(j, "", 0)
+	return s.releaseDecisionClaim(j)
 }
 
-func (s *Store) releaseDecisionJob(j DecisionJob, failure string, retryAfter time.Duration) error {
-	if failure == "" {
-		// Superseded: release the claim so the newer generation is claimable
-		// as soon as its not_before allows (at once when it has none).
-		_, err := s.db.Exec(s.q(`
-			UPDATE decision_jobs SET claimed_by = NULL, lease_expires_at = NULL
-			WHERE item_id = ? AND question_set = ? AND claimed_by = ?`),
-			j.ItemID, j.QuestionSet, j.ClaimedBy)
-		if err != nil {
-			return fmt.Errorf("release decision job %s/%s: %w", j.ItemID, j.QuestionSet, err)
-		}
-		return nil
-	}
+// releaseDecisionClaim gives a claim back without recording anything: attempts
+// and last_error are untouched, so the job is claimable again as soon as its
+// not_before allows. Complete (superseded generation) and Release use it.
+func (s *Store) releaseDecisionClaim(j DecisionJob) error {
 	_, err := s.db.Exec(s.q(`
+		UPDATE decision_jobs SET claimed_by = NULL, lease_expires_at = NULL
+		WHERE item_id = ? AND question_set = ? AND claimed_by = ?`),
+		j.ItemID, j.QuestionSet, j.ClaimedBy)
+	if err != nil {
+		return fmt.Errorf("release decision job %s/%s: %w", j.ItemID, j.QuestionSet, err)
+	}
+	return nil
+}
+
+// noDecisionErrorMessage stands in for a failure whose cause carries no text
+// (a nil error, or one whose Error() is ""). A failure must always count an
+// attempt: reading an empty message as "superseded" released the claim with
+// no attempt and no last_error, so the job was re-run on every tick (BUG-4022).
+const noDecisionErrorMessage = "decision evaluation failed with no error message"
+
+// unrecordableDecisionError is the last_error written when the store refused
+// the real message. It is a constant on purpose: anything read out of the
+// error that just failed is driver text, which is what may be unrecordable.
+// The SQLSTATE, when the driver gives one in its fixed shape, is appended.
+const unrecordableDecisionError = "failure not recordable: the store refused the message"
+
+// decisionSQLState returns the five-character SQLSTATE of a Postgres error,
+// or "" for anything else (SQLite has none) or a code of an unexpected shape.
+func decisionSQLState(err error) string {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || !decisionSQLStateRe.MatchString(pgErr.Code) {
+		return ""
+	}
+	return pgErr.Code
+}
+
+var decisionSQLStateRe = regexp.MustCompile(`^[0-9A-Z]{5}$`)
+
+// recordDecisionFailure counts a failed attempt: attempts+1, last_error, and
+// the lease moved to the retry time. Generation- and claim-matched.
+//
+// It fails OPEN (BUG-4022): if the UPDATE carrying the message is refused,
+// one fallback UPDATE with the same WHERE and lease records the attempt with
+// a fixed last_error instead. Without it a refused message left attempts at 0,
+// so the backoff never grew, the permanent drop never fired, and the job was
+// re-run (a paid provider call) every lease, forever. Only if the fallback
+// also fails are both errors returned.
+func (s *Store) recordDecisionFailure(j DecisionJob, failure string, retryAfter time.Duration) error {
+	const q = `
 		UPDATE decision_jobs
 		SET attempts = attempts + 1, last_error = ?, lease_expires_at = ?
-		WHERE item_id = ? AND question_set = ? AND generation = ? AND claimed_by = ?`),
-		truncateDecisionError(failure), decisionTime(time.Now().Add(retryAfter)),
+		WHERE item_id = ? AND question_set = ? AND generation = ? AND claimed_by = ?`
+	lease := decisionTime(time.Now().Add(retryAfter))
+	res, err := s.db.Exec(s.q(q), truncateDecisionError(failure), lease,
 		j.ItemID, j.QuestionSet, j.Generation, j.ClaimedBy)
 	if err != nil {
-		return fmt.Errorf("fail decision job %s/%s: %w", j.ItemID, j.QuestionSet, err)
+		fallback := unrecordableDecisionError
+		if code := decisionSQLState(err); code != "" {
+			fallback += " (SQLSTATE " + code + ")"
+		}
+		var ferr error
+		res, ferr = s.db.Exec(s.q(q), fallback, lease,
+			j.ItemID, j.QuestionSet, j.Generation, j.ClaimedBy)
+		if ferr != nil {
+			return errors.Join(
+				fmt.Errorf("fail decision job %s/%s: %w", j.ItemID, j.QuestionSet, err),
+				fmt.Errorf("fail decision job %s/%s (fallback): %w", j.ItemID, j.QuestionSet, ferr))
+		}
+		slog.Warn("decision failure message not stored; recorded a fixed one",
+			"item_id", j.ItemID, "question_set", j.QuestionSet)
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		return nil
 	}
 	// Zero rows means the job was re-enqueued; the enqueue already reset its
 	// failure history, so release the claim for the new generation.

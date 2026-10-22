@@ -646,3 +646,36 @@ func TestRunner_WorkspaceDeletedMidJobIsHeld(t *testing.T) {
 		t.Fatalf("job for a workspace deleted mid-job is %+v; want held (owed, unclaimed, attempts=0)", j)
 	}
 }
+
+// BUG-4022: an outcome the store refuses to record with the real message is
+// still counted through runJob, so the permanent drop can fire. The store is
+// poisoned by a trigger on the failure text, which is the provider's body.
+func TestRunner_RefusedFailureMessageStillCountsAndDrops(t *testing.T) {
+	fx := newRunnerFixture(t)
+	if _, err := fx.s.DB().Exec(`CREATE TRIGGER decision_jobs_poison BEFORE UPDATE ON decision_jobs
+		FOR EACH ROW WHEN NEW.last_error LIKE '%POISON-BODY%'
+		BEGIN SELECT RAISE(ABORT, 'poisoned decision_jobs update'); END`); err != nil {
+		t.Fatal(err)
+	}
+	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"detail":"POISON-BODY bad request"}`, http.StatusBadRequest)
+	})
+	run := func() {
+		t.Helper()
+		expireDecisionBackoff(t, fx)
+		if _, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run()
+	j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
+	if j == nil || j.Attempts != 1 || j.LastError == "" {
+		t.Fatalf("after one refused-message failure the job is %+v; want attempts=1 with an error", j)
+	}
+	for i := 1; i < maxDecisionAttempts; i++ {
+		run()
+	}
+	if j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet); j != nil {
+		t.Fatalf("a permanently refused job was kept after %d attempts: %+v", maxDecisionAttempts, j)
+	}
+}
