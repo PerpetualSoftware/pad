@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -95,8 +96,19 @@ type Config struct {
 	// (PAD_PUSH_GATEWAY_SECRET, TASK-3939). Empty falls back to the cloud
 	// outbound secret: see resolvePushGatewaySecret in cmd/pad.
 	PushGatewaySecret string `toml:"push_gateway_secret"`
-	MCPPublicURL      string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
-	AuthServerURL     string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
+	// The push dispatch timing knobs (PAD_PUSH_DISPATCH_INTERVAL, _SETTLE,
+	// _LEASE, _LEASE_MARGIN; TASK-3939 part C, ruling 77a8fae7), kept as the
+	// raw env strings. They are parsed by PushDispatchTimings at server
+	// startup, not in Load, so a malformed value refuses `pad server start`
+	// rather than breaking every other pad command. Empty means unset: the
+	// dispatcher keeps its default. Env only; there is no config.toml key.
+	PushDispatchIntervalRaw    string `toml:"-"`
+	PushDispatchSettleRaw      string `toml:"-"`
+	PushDispatchLeaseRaw       string `toml:"-"`
+	PushDispatchLeaseMarginRaw string `toml:"-"`
+
+	MCPPublicURL  string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
+	AuthServerURL string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
 	// OpenAIAppsChallenge is the domain-verification token OpenAI's plugin
 	// dashboard issues, served verbatim at /.well-known/openai-apps-challenge
 	// on cloud (TASK-3321 G4). Validated in ResolveMCPEndpoints.
@@ -464,6 +476,10 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_PUSH_GATEWAY_SECRET"); v != "" {
 		cfg.PushGatewaySecret = v
 	}
+	cfg.PushDispatchIntervalRaw = os.Getenv("PAD_PUSH_DISPATCH_INTERVAL")
+	cfg.PushDispatchSettleRaw = os.Getenv("PAD_PUSH_DISPATCH_SETTLE")
+	cfg.PushDispatchLeaseRaw = os.Getenv("PAD_PUSH_DISPATCH_LEASE")
+	cfg.PushDispatchLeaseMarginRaw = os.Getenv("PAD_PUSH_DISPATCH_LEASE_MARGIN")
 	if v := os.Getenv("PAD_MCP_PUBLIC_URL"); v != "" {
 		cfg.MCPPublicURL = v
 	}
@@ -890,4 +906,40 @@ func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
 
 func (c *Config) LogFile() string {
 	return filepath.Join(c.DataDir, "logs", "server.log")
+}
+
+// PushDispatchTimings is the parsed push dispatch timing knobs. A zero field
+// means the knob was unset and the dispatcher keeps its default.
+type PushDispatchTimings struct {
+	Interval, Settle, Lease, LeaseMargin time.Duration
+}
+
+// PushDispatchTimings parses the four PAD_PUSH_DISPATCH_* knobs (TASK-3939
+// part C, ruling 77a8fae7). A knob that is set but is not a Go duration, or is
+// not positive, is an error naming its variable; it never falls back to the
+// default. The message is fixed: it does not echo the value.
+func (c *Config) PushDispatchTimings() (PushDispatchTimings, error) {
+	var t PushDispatchTimings
+	for _, k := range []struct {
+		env, raw string
+		dst      *time.Duration
+	}{
+		{"PAD_PUSH_DISPATCH_INTERVAL", c.PushDispatchIntervalRaw, &t.Interval},
+		{"PAD_PUSH_DISPATCH_SETTLE", c.PushDispatchSettleRaw, &t.Settle},
+		{"PAD_PUSH_DISPATCH_LEASE", c.PushDispatchLeaseRaw, &t.Lease},
+		{"PAD_PUSH_DISPATCH_LEASE_MARGIN", c.PushDispatchLeaseMarginRaw, &t.LeaseMargin},
+	} {
+		if k.raw == "" {
+			continue
+		}
+		d, err := time.ParseDuration(strings.TrimSpace(k.raw))
+		if err != nil {
+			return PushDispatchTimings{}, fmt.Errorf("%s is not a valid duration (use a Go duration such as 5s or 1m30s)", k.env)
+		}
+		if d <= 0 {
+			return PushDispatchTimings{}, fmt.Errorf("%s must be greater than zero", k.env)
+		}
+		*k.dst = d
+	}
+	return t, nil
 }

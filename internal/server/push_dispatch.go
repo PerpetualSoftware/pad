@@ -20,7 +20,9 @@ import (
 // the rows. Part B2a added the 30/h cap and the summary push, the retry matrix
 // (which results retry, skip or delete a device), and the expire and retention
 // sweeps. Server startup (cmd/pad configurePush, TASK-3939 B2c) calls
-// StartPushDispatch when PAD_PUSH_GATEWAY_URL is set, with the default timings.
+// StartPushDispatch when PAD_PUSH_GATEWAY_URL is set, after applying the
+// PAD_PUSH_DISPATCH_* timing knobs through SetPushDispatchConfig (TASK-3939
+// part C); an unset knob keeps its default below.
 //
 // LEASE INVARIANT (r6-Q1): lease >= sendTimeout + leaseMargin. A claim is
 // stamped with second precision (up to 1s behind the real clock), and a Send
@@ -29,7 +31,9 @@ import (
 // three ways: the setter refuses a violating config, all gateway I/O runs
 // under a deadline of start+lease-leaseMargin, and a chunk only starts when
 // sendTimeout is still left before that deadline (otherwise its rows are
-// unclaimed, no attempt burned).
+// unclaimed, no attempt burned). Startup applies the operator's knobs through
+// the setter, so a lease too short for sendTimeout (fixed at notify.SendTimeout,
+// not configurable) plus the margin refuses startup (TASK-3939 part C).
 //
 // SENT BUT UNRECORDED (TASK-4032): a failed 'sent' record is not merely logged.
 // The push went out, so the row would be reclaimed after the lease and pushed
@@ -83,8 +87,11 @@ type pushDispatchConfig struct {
 	now         func() time.Time // test seam; nil = time.Now
 	stop        chan struct{}
 	running     bool
-	instanceID  string
-	lastPrune   time.Time // when the retention sweep last ran
+	// startedInterval is the interval the ticker was last created with, 0 if
+	// the loop never started (TASK-3939 part C: proves the knob reached Start).
+	startedInterval time.Duration
+	instanceID      string
+	lastPrune       time.Time // when the retention sweep last ran
 	// unrecorded holds rows the gateway accepted whose 'sent' record failed
 	// (TASK-4032); see parkUnrecorded.
 	unrecorded map[string]unrecordedRow
@@ -116,6 +123,9 @@ type pushDispatchSettings struct {
 }
 
 // SetPushDispatchConfig overrides the timings; zero keeps the current value.
+// Server startup calls it from the PAD_PUSH_DISPATCH_* knobs (cmd/pad
+// configurePush, TASK-3939 part C) and passes 0 for sendTimeout, which has no
+// knob because notify.SendTimeout is baked into the gateway's HTTP client.
 // interval is read once, by StartPushDispatch (the ticker is fixed at Start,
 // so a later change needs a restart); settle, lease, leaseMargin and
 // sendTimeout are read on every tick.
@@ -213,6 +223,7 @@ func (s *Server) StartPushDispatch() {
 	d.stop = make(chan struct{})
 	d.running = true
 	stop, tick := d.stop, d.tick
+	d.startedInterval = cfg.interval
 	d.mu.Unlock()
 
 	s.bg.Add(1)
@@ -254,6 +265,24 @@ func (s *Server) PushDispatchRunning() bool {
 	s.pushDispatch.mu.Lock()
 	defer s.pushDispatch.mu.Unlock()
 	return s.pushDispatch.running
+}
+
+// PushDispatchApplied is what the dispatcher will use (or is using). Interval
+// is the stored setting; StartedInterval is the interval the ticker was
+// actually created with, 0 if the loop never started.
+type PushDispatchApplied struct {
+	Interval, Settle, Lease, LeaseMargin, StartedInterval time.Duration
+}
+
+// PushDispatchApplied reads the dispatcher's timings, filling defaults for
+// any unset one. Read-only; startup's wiring test reads it to prove the knobs
+// reached the dispatcher, and the interval before Start (TASK-3939 part C,
+// ruling 77a8fae7).
+func (s *Server) PushDispatchApplied() PushDispatchApplied {
+	cur := s.resolvePushDispatchSettings()
+	s.pushDispatch.mu.Lock()
+	defer s.pushDispatch.mu.Unlock()
+	return PushDispatchApplied{cur.interval, cur.settle, cur.lease, cur.leaseMargin, s.pushDispatch.startedInterval}
 }
 
 // stopPushDispatch signals the loop to exit. Safe when it never started.
