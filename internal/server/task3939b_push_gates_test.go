@@ -426,7 +426,7 @@ func TestPushDispatch_ZeroMessageUnitIsSkipped(t *testing.T) {
 				good = f.row("assigned", func(o *rowOpt) { o.item = other })
 				ids = append(ids, good)
 			}
-			claim, err := srv.store.ClaimPendingNotifications("zm", 10, time.Now(), time.Now().Add(-time.Minute))
+			claim, err := srv.store.ClaimPendingNotifications("zm", 10, time.Now(), time.Now().Add(-time.Minute), time.Time{}, nil)
 			must(t, err)
 			if len(claim.Rows) != len(ids) {
 				t.Fatalf("claimed %d rows, want %d", len(claim.Rows), len(ids))
@@ -437,7 +437,7 @@ func TestPushDispatch_ZeroMessageUnitIsSkipped(t *testing.T) {
 			if withSender {
 				chunk = append(chunk, pushUnit{rowIDs: []string{good}, nid: good, kind: "assigned", devices: devs})
 			}
-			srv.sendChunk(context.Background(), f.fake, claim.Token, chunk, time.Now().Add(time.Minute), &tickWarn{})
+			srv.sendChunk(context.Background(), f.fake, claim.Token, chunk, time.Now().Add(time.Minute), nil, &tickWarn{})
 			if st := f.state(bad); st.State != "skipped" || st.Reason != skipNoDevice || st.Attempts != 0 {
 				t.Fatalf("zero-message unit = %+v, want skipped/%s, no attempt", st, skipNoDevice)
 			}

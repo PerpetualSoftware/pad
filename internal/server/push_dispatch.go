@@ -31,6 +31,14 @@ import (
 // sendTimeout is still left before that deadline (otherwise its rows are
 // unclaimed, no attempt burned).
 //
+// SENT BUT UNRECORDED (TASK-4032): a failed 'sent' record is not merely logged.
+// The push went out, so the row would be reclaimed after the lease and pushed
+// again; the ids are parked in-process, the record is retried at every tick
+// start (gateway or not), parked rows are never re-sent and count toward the
+// 30/h cap, and an entry is dropped once recorded or past pushExpireAfter.
+// The set is in-process, so a restart or a second instance can still re-send a
+// row once after its lease, which the client de-dupes by nid.
+//
 // Logging: fixed strings and counts only. A store error can carry a row id or
 // a value, so it is never logged here.
 const (
@@ -45,6 +53,12 @@ const (
 	pushExpireAfter  = time.Hour          // a pending row older than this is noise, not a push
 	pushRetention    = 7 * 24 * time.Hour // sent, skipped and expired rows are kept this long
 	pushPruneEvery   = time.Hour          // created_at is unindexed, so the prune is throttled
+
+	// pushUnrecordedCap bounds the parked set in size (TASK-4032). The age
+	// rule alone bounds it in time. At the cap the dispatcher stops claiming
+	// and sending (backpressure) rather than evicting: an evicted row is
+	// pending, and would be sent again once its lease lapsed.
+	pushUnrecordedCap = 1000
 
 	skipRateLimited     = "rate_limited"
 	skipGatewayRejected = "gateway_rejected"
@@ -71,8 +85,29 @@ type pushDispatchConfig struct {
 	running     bool
 	instanceID  string
 	lastPrune   time.Time // when the retention sweep last ran
+	// unrecorded holds rows the gateway accepted whose 'sent' record failed
+	// (TASK-4032); see parkUnrecorded.
+	unrecorded map[string]unrecordedRow
+	// unrecordedCapOverride replaces pushUnrecordedCap when > 0 (tests only).
+	unrecordedCapOverride int
+	// unrecordedFull is whether the last tick found the set at its cap, so
+	// the full state logs once on entering and once on leaving.
+	unrecordedFull bool
+	// tickMu serializes ticks for the life of the process: Stop does not wait
+	// for the tick in flight, so a later Start could otherwise run a second
+	// one beside it, and two ticks would each pass the cap check and send.
+	// Stop cancels the in-flight tick's context, so a waiter is never held
+	// longer than that tick's unwind.
+	tickMu sync.Mutex
 	// tick, when non-nil, replaces the interval ticker so a test drives passes.
 	tick <-chan time.Time
+}
+
+// unrecordedRow is a row whose push the gateway accepted but whose 'sent'
+// record has not landed.
+type unrecordedRow struct {
+	userID  string
+	created time.Time // the notification's created_at; its expiry clock
 }
 
 type pushDispatchSettings struct {
@@ -260,6 +295,134 @@ func (s *Server) expireAndPrune(cfg pushDispatchSettings, start time.Time) {
 	}
 }
 
+// parkUnrecorded remembers rows the gateway delivered but whose 'sent' record
+// failed (TASK-4032). A row left pending is reclaimed after the lease and
+// pushed again, once per lease, until it expires; the set stops that
+// in-process (the tick skips parked rows after the claim) and drives the
+// record until it lands. meta supplies each row's user and created_at; an
+// unknown row falls back to now. Nothing is ever evicted: an evicted row is
+// still pending and would be re-sent. The size bound is held by the tick,
+// which stops claiming and sending while the set is at its cap (see
+// checkUnrecordedFull); one tick's sends can overshoot it by at most one
+// batch.
+func (s *Server) parkUnrecorded(ids []string, meta map[string]store.Notification, at time.Time) {
+	d := &s.pushDispatch
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.unrecorded == nil {
+		d.unrecorded = map[string]unrecordedRow{}
+	}
+	for _, id := range ids {
+		e := unrecordedRow{created: at}
+		if n, ok := meta[id]; ok {
+			e.userID = n.UserID
+			if t, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {
+				e.created = t
+			}
+		}
+		d.unrecorded[id] = e
+	}
+}
+
+// recordedPrefix is how many leading ids a failed RecordNotificationsSent
+// still recorded: its chunks commit one by one, and an id left parked after
+// its chunk landed counts twice against the rate cap (TASK-4032 codex r3 M1).
+func recordedPrefix(err error) int {
+	var rse *store.RecordSentError
+	if errors.As(err, &rse) {
+		return rse.Landed
+	}
+	return 0
+}
+
+// expireCutoff is the creation time before which a row is past
+// pushExpireAfter. It is truncated to the second because the store compares
+// RFC3339 seconds: the claim's bound (created_at >= cutoff) and the parked
+// entry's drop rule (created before cutoff) are then exact complements, so no
+// row is both claimable and droppable.
+func expireCutoff(start time.Time) time.Time {
+	return start.Add(-pushExpireAfter).Truncate(time.Second)
+}
+
+// retryUnrecorded runs at the start of every tick, before the gateway check
+// and the claim, so it needs no gateway: recording is database work. A record
+// that returns no error clears every parked id, including one it changed no
+// row for (that row was settled elsewhere, which is a fine outcome too). A
+// failed one clears the ids in the chunks that committed before the failure
+// and keeps the rest, except those whose notification is past
+// pushExpireAfter (expireCutoff): the claim never selects a row created
+// before that cutoff, whether or not the expiry sweep landed (TASK-4032 r5
+// H-Q1), so nothing can re-send it, and dropping the entry is what keeps a
+// database that stays down from growing the set. The ids are sorted so the
+// chunking is deterministic.
+func (s *Server) retryUnrecorded(start time.Time) {
+	d := &s.pushDispatch
+	d.mu.Lock()
+	ids := make([]string, 0, len(d.unrecorded))
+	for id := range d.unrecorded {
+		ids = append(ids, id)
+	}
+	d.mu.Unlock()
+	if len(ids) == 0 {
+		return
+	}
+	sort.Strings(ids)
+	_, err := s.store.RecordNotificationsSent(ids)
+	landed := len(ids)
+	if err != nil {
+		landed = recordedPrefix(err)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	cutoff := expireCutoff(start)
+	for i, id := range ids {
+		if i < landed || d.unrecorded[id].created.Before(cutoff) {
+			delete(d.unrecorded, id)
+		}
+	}
+	if err != nil {
+		slog.Warn("push dispatch: settle failed", "op", "sent-retry")
+	}
+}
+
+// checkUnrecordedFull reports whether the parked set is at its cap, which
+// holds the tick's claim and send. It logs one fixed-string warning when the
+// state is entered and one when it is left, never per tick, with no ids and
+// no error text.
+func (s *Server) checkUnrecordedFull() bool {
+	d := &s.pushDispatch
+	d.mu.Lock()
+	limit := pushUnrecordedCap
+	if d.unrecordedCapOverride > 0 {
+		limit = d.unrecordedCapOverride
+	}
+	full := len(d.unrecorded) >= limit
+	changed := full != d.unrecordedFull
+	d.unrecordedFull = full
+	d.mu.Unlock()
+	if changed && full {
+		slog.Warn("push dispatch: unrecorded sends at the cap, holding claims and sends")
+	} else if changed {
+		slog.Warn("push dispatch: unrecorded sends below the cap, resuming")
+	}
+	return full
+}
+
+// unrecordedSnapshot returns the parked ids and each user's parked count. A
+// parked row was delivered, so it counts toward that user's 30/h cap although
+// the database does not show it as sent yet.
+func (s *Server) unrecordedSnapshot() (ids map[string]bool, perUser map[string]int) {
+	d := &s.pushDispatch
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ids, perUser = make(map[string]bool, len(d.unrecorded)), map[string]int{}
+	for id, e := range d.unrecorded {
+		ids[id] = true
+		perUser[e.userID]++
+	}
+	return
+}
+
 // rowNewer orders two rows by created_at, then kind priority, then id.
 func rowNewer(a, b store.Notification) bool {
 	if a.CreatedAt != b.CreatedAt {
@@ -282,17 +445,30 @@ var kindPriority = map[string]int{
 
 // runPushDispatchTick is one pass. ctx is the shutdown signal.
 func (s *Server) runPushDispatchTick(ctx context.Context) {
+	s.pushDispatch.tickMu.Lock()
+	defer s.pushDispatch.tickMu.Unlock()
 	cfg := s.resolvePushDispatchSettings()
 	start := s.pushNow()
 	s.expireAndPrune(cfg, start)
+	s.retryUnrecorded(start)
+	if s.checkUnrecordedFull() {
+		return // pending rows wait, up to their expiry, rather than repeat
+	}
 	sender := s.pushSenderOrNil()
 	if sender == nil {
 		return
 	}
+	// Taken before the claim: parked rows are excluded from it, so they
+	// cannot occupy batch slots ahead of rows that still need a push.
+	parked, parkedPerUser := s.unrecordedSnapshot()
+	exclude := make([]string, 0, len(parked))
+	for id := range parked {
+		exclude = append(exclude, id)
+	}
 	// Fresh per tick and never kept: the store appends its own nonce, and
 	// every settle below uses Claim.Token.
 	token := "pd-" + cfg.instanceID + "-" + uuid.NewString()
-	claim, err := s.store.ClaimPendingNotifications(token, notify.MaxBatch, start.Add(-cfg.settle), start.Add(-cfg.lease))
+	claim, err := s.store.ClaimPendingNotifications(token, notify.MaxBatch, start.Add(-cfg.settle), start.Add(-cfg.lease), expireCutoff(start), exclude)
 	if err != nil {
 		slog.Error("push dispatch: claim failed", "op", "claim")
 		return
@@ -307,7 +483,14 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 	var unclaim []string
 	groups := map[string][]store.Notification{}
 	var order []string
+	meta := make(map[string]store.Notification, len(claim.Rows))
 	for _, n := range claim.Rows {
+		meta[n.ID] = n
+		if parked[n.ID] {
+			// Belt: the claim already excludes parked ids; a parked row that
+			// still arrives is never gated or sent. Left claimed.
+			continue
+		}
 		_, reason, gerr := s.notificationAccess(cache, n)
 		if gerr == nil && reason == "" {
 			reason, gerr = s.preferenceGates(cache, n, start)
@@ -371,6 +554,7 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 			userUnits = []pushUnit{sum}
 		}
 		sent, cerr := s.store.CountNotificationsSentSince(uid, start.Add(-pushRateWindow))
+		sent += parkedPerUser[uid]
 		for _, u := range userUnits {
 			switch {
 			case cerr != nil:
@@ -404,7 +588,7 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 			s.unclaim(claim.Token, unitRowIDs(append(chunk, units...)))
 			break // still emit this tick's warnings for chunks already sent
 		}
-		s.sendChunk(ctx, sender, claim.Token, chunk, deadline, &warn)
+		s.sendChunk(ctx, sender, claim.Token, chunk, deadline, meta, &warn)
 	}
 	if warn.unavailable {
 		slog.Warn("push dispatch: gateway unavailable, rows released")
@@ -472,7 +656,7 @@ func (s *Server) unclaim(token string, ids []string) {
 // skipped gateway_rejected if any was rejected, else no_device. A whole request
 // the gateway refused (ErrBadRequest) skips every unit with no attempt; any
 // other whole-request error releases them.
-func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string, chunk []pushUnit, deadline time.Time, warn *tickWarn) {
+func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string, chunk []pushUnit, deadline time.Time, meta map[string]store.Notification, warn *tickWarn) {
 	// Drop rows no longer held (reclaimed, settled or deleted meanwhile).
 	all := unitRowIDs(chunk)
 	held, err := s.store.HeldNotifications(token, all)
@@ -585,7 +769,11 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 	}
 	if len(sentIDs) > 0 {
 		if _, err := s.store.RecordNotificationsSent(sentIDs); err != nil {
+			// Delivered but unrecorded: park, or the row is re-sent every lease.
+			// A tick claims at most notify.MaxBatch rows, inside one record
+			// chunk, so the prefix is 0 today; it is honoured anyway.
 			slog.Warn("push dispatch: settle failed", "op", "sent")
+			s.parkUnrecorded(sentIDs[recordedPrefix(err):], meta, s.pushNow())
 		}
 	}
 	s.settleSkips(token, skips)
