@@ -126,48 +126,37 @@ func TestPushDispatch_LeaseExceedsSendTimeout(t *testing.T) {
 
 // The Send runs under the tick's deadline (start + lease - margin), so it ends
 // before the claim lapses; while it runs, and while the tick still holds the
-// row after it, no other claimer can take the row.
+// row after the deadline fired, no other claimer can take the row. The clock
+// is the dispatcher's seam: the tick "started" an hour ago, so its deadline is
+// already past and the Send's context must already be done.
 func TestPushDispatch_SlowSendNotReclaimedMidFlight(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)
 		must(t, srv.SetPushDispatchConfig(0, 0, 3*time.Second, time.Second, time.Second))
-		id := f.row("comment")
-		entered, parked, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-		var began time.Time
-		f.fake.fn = func(ctx context.Context, _ []notify.Message) ([]notify.Result, error) {
-			began = time.Now()
-			close(entered)
-			select {
-			case <-ctx.Done(): // the dispatcher's deadline, not the fake's patience
-			case <-time.After(8 * time.Second):
-				t.Error("Send was never cut off: no deadline on the gateway call")
-			}
-			close(parked)
-			<-release
-			return nil, notify.ErrUnavailable
-		}
+		clk := f.clock(time.Now().Add(-time.Hour))
+		id := f.row("comment", func(o *rowOpt) { o.age = 3 * time.Hour })
 		compete := func(when string) {
 			c, err := srv.store.ClaimPendingNotifications("rival", 10, time.Now().Add(-10*time.Second), time.Now().Add(-3*time.Second))
 			if err != nil || len(c.Rows) != 0 {
 				t.Errorf("%s: a rival claimed %d rows (err %v)", when, len(c.Rows), err)
 			}
 		}
-		done := make(chan struct{})
-		tickStart := time.Now()
-		go func() { f.tick(); close(done) }()
-		<-entered
-		compete("mid-flight")
-		<-parked
-		if d := time.Since(tickStart); d < time.Second || d > 2800*time.Millisecond {
-			t.Errorf("Send was cut off after %v, want about lease-margin (2s)", d)
+		f.fake.fn = func(ctx context.Context, _ []notify.Message) ([]notify.Result, error) {
+			compete("mid-flight")
+			dl, ok := ctx.Deadline()
+			if !ok || !dl.Equal(clk.start.Add(2*time.Second)) {
+				t.Errorf("Send deadline = %v (set %v), want tick start + lease - margin = %v", dl, ok, clk.start.Add(2*time.Second))
+			}
+			if ctx.Err() == nil {
+				t.Error("the deadline had passed but the Send context is live: no deadline on the gateway call")
+			}
+			compete("after the deadline fired, tick still holding")
+			return nil, notify.ErrUnavailable
 		}
-		_ = began
-		compete("after the timeout, tick still holding")
+		f.tick()
 		if n := f.fake.callCount(); n != 1 {
 			t.Errorf("%d Send calls while the row was held", n)
 		}
-		close(release)
-		<-done
 		if st := f.state(id); st.State != "pending" || st.Attempts != 1 || st.Claim != "" {
 			t.Fatalf("released row = %+v", st)
 		}
@@ -197,8 +186,9 @@ func TestPushDispatch_ChunkNotStartedWithoutTimeLeft(t *testing.T) {
 		f := newPdx(t, srv)
 		must(t, srv.SetPushDispatchConfig(0, 0, 3*time.Second, time.Second, time.Second))
 		first, second := manyUnits(f)
+		clk := f.clock(time.Now())
 		f.fake.fn = func(_ context.Context, msgs []notify.Message) ([]notify.Result, error) {
-			time.Sleep(1200 * time.Millisecond) // deadline (2s) minus this is under the 1s send timeout
+			clk.advance(1200 * time.Millisecond) // deadline (2s) minus this is under the 1s send timeout
 			return allStatus(msgs, notify.StatusSent), nil
 		}
 		f.tick()

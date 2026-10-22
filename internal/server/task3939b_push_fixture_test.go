@@ -223,3 +223,32 @@ func (f *pdx) settings(mut func(*models.NotificationSettings)) {
 	mut(&set)
 	must(f.t, f.srv.store.PutNotificationSettings(f.bob.ID, set))
 }
+
+// pdClock is the dispatcher's clock (Server.pushDispatch.now) under a test's
+// control, so lease and deadline behaviour never depends on wall-clock timing.
+type pdClock struct {
+	mu    sync.Mutex
+	t     time.Time
+	start time.Time
+}
+
+func (c *pdClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *pdClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// clock installs a fake dispatcher clock reading at.
+func (f *pdx) clock(at time.Time) *pdClock {
+	c := &pdClock{t: at, start: at}
+	f.srv.pushDispatch.mu.Lock()
+	f.srv.pushDispatch.now = c.now
+	f.srv.pushDispatch.mu.Unlock()
+	return c
+}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -23,7 +24,8 @@ type gateCase struct {
 	kind   string // default comment
 	setup  func(f *pdx, id string)
 	row    []func(*rowOpt)
-	reason string // "" = the row is pushed
+	reason string                  // "" = the row is pushed
+	check  func(f *pdx, id string) // extra assertions on a pushed row
 }
 
 func gateCases() []gateCase {
@@ -33,6 +35,12 @@ func gateCases() []gateCase {
 	}
 	offKind := func(mut func(*models.NotificationSettings)) func(*pdx, string) {
 		return func(f *pdx, _ string) { f.settings(mut) }
+	}
+	otherWorkspace := func(f *pdx) *models.Workspace {
+		ws2, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: fmt.Sprintf("Other %d", f.n), OwnerID: f.owner.ID})
+		must(f.t, err)
+		must(f.t, f.srv.store.AddWorkspaceMember(ws2.ID, f.bob.ID, "editor"))
+		return ws2
 	}
 	return []gateCase{
 		// controls: each kind, as the fixture leaves it
@@ -75,10 +83,7 @@ func gateCases() []gateCase {
 			must(f.t, f.srv.store.DeleteWorkspace(f.ws.Slug))
 		}},
 		{name: "row_workspace_is_not_the_items", kind: "assigned", reason: skipItemGone, setup: func(f *pdx, id string) {
-			ws2, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: fmt.Sprintf("Other %d", f.n), OwnerID: f.owner.ID})
-			must(f.t, err)
-			must(f.t, f.srv.store.AddWorkspaceMember(ws2.ID, f.bob.ID, "editor"))
-			f.exec(`UPDATE user_notifications SET workspace_id = ? WHERE id = ?`, ws2.ID, id)
+			f.exec(`UPDATE user_notifications SET workspace_id = ? WHERE id = ?`, otherWorkspace(f).ID, id)
 		}},
 
 		// G4 the user
@@ -96,7 +101,7 @@ func gateCases() []gateCase {
 		{name: "unassigned", kind: "assigned", reason: skipNoLongerAssign, setup: func(f *pdx, _ string) {
 			f.exec(`UPDATE items SET assigned_user_id = NULL WHERE id = ?`, f.item.ID)
 		}},
-		{name: "assigned_away_and_back", kind: "assigned", setup: func(f *pdx, _ string) {
+		{name: "assigned_control", kind: "assigned", setup: func(f *pdx, _ string) {
 			f.exec(`UPDATE items SET assigned_user_id = ? WHERE id = ?`, f.owner.ID, f.item.ID)
 			f.exec(`UPDATE items SET assigned_user_id = ? WHERE id = ?`, f.bob.ID, f.item.ID)
 		}},
@@ -110,6 +115,17 @@ func gateCases() []gateCase {
 			f.exec(`DELETE FROM comments WHERE id = ?`, f.comment.ID)
 		}},
 		{name: "comment_row_without_a_comment_id", kind: "comment", reason: skipCommentGone, row: []func(*rowOpt){func(o *rowOpt) { o.comment = "" }}},
+
+		// the row's comment must be a comment on the row's item, in its workspace
+		{name: "comment_belongs_to_another_item", kind: "comment", reason: skipCommentGone, setup: func(f *pdx, id string) {
+			other := f.newItem("Other", &f.bob.ID)
+			cm, err := f.srv.store.CreateComment(f.ws.ID, other.ID, f.owner.ID, models.CommentCreate{Body: "x", Author: "Owner", CreatedBy: "user", Source: "web"})
+			must(f.t, err)
+			f.exec(`UPDATE user_notifications SET comment_id = ? WHERE id = ?`, cm.ID, id)
+		}},
+		{name: "comment_belongs_to_another_workspace", kind: "comment", reason: skipCommentGone, setup: func(f *pdx, _ string) {
+			f.exec(`UPDATE comments SET workspace_id = ? WHERE id = ?`, otherWorkspace(f).ID, f.comment.ID)
+		}},
 
 		// G5 settings
 		{name: "push_disabled", kind: "comment", reason: skipSettingOff, setup: offKind(func(s *models.NotificationSettings) { s.PushEnabled = false })},
@@ -144,6 +160,19 @@ func gateCases() []gateCase {
 		}},
 		{name: "second_device_after_the_row_older_device_live", kind: "comment", setup: func(f *pdx, _ string) {
 			f.device(f.bob, "tok-second", 30*time.Second)
+		}, check: func(f *pdx, _ string) {
+			devs, err := f.srv.store.LivePushDevices(f.bob.ID, time.Now())
+			must(f.t, err)
+			if len(devs) != 2 || devs[0].ID != f.devID {
+				f.t.Fatalf("live devices = %+v, want the earliest (%s) first of two", devs, f.devID)
+			}
+			got := map[string]int{}
+			for _, m := range f.fake.all() {
+				got[m.Token]++
+			}
+			if len(got) != 2 || got["tok-bob-"+fmt.Sprint(f.n)] != 1 || got["tok-second"] != 1 {
+				f.t.Fatalf("messages per token = %v, want exactly one to each live device", got)
+			}
 		}},
 		{name: "device_session_expired", kind: "comment", reason: skipNoDevice, setup: func(f *pdx, _ string) {
 			f.exec(`UPDATE sessions SET expires_at = ? WHERE id = ?`, f.ts(time.Minute), f.devSess)
@@ -153,6 +182,22 @@ func gateCases() []gateCase {
 		{name: "privacy_reason_wins_over_preference", kind: "comment", reason: skipNotMember, setup: func(f *pdx, id string) {
 			removeBob(f, id)
 			f.settings(func(s *models.NotificationSettings) { s.PushEnabled = false })
+		}},
+		{name: "user_reason_wins_over_membership", kind: "comment", reason: skipUserDisabled, setup: func(f *pdx, id string) {
+			removeBob(f, id)
+			f.exec(`UPDATE users SET disabled_at = ? WHERE id = ?`, f.ts(time.Minute), f.bob.ID)
+		}},
+		{name: "membership_reason_wins_over_item_gone", kind: "assigned", reason: skipNotMember, setup: func(f *pdx, id string) {
+			removeBob(f, id)
+			must(f.t, f.srv.store.DeleteItem(f.item.ID))
+		}},
+		{name: "workspace_gone_reason_wins_over_item_gone", kind: "assigned", reason: skipWorkspaceGone, setup: func(f *pdx, _ string) {
+			must(f.t, f.srv.store.DeleteItem(f.item.ID))
+			must(f.t, f.srv.store.DeleteWorkspace(f.ws.Slug))
+		}},
+		{name: "item_gone_reason_wins_over_visibility", kind: "assigned", reason: skipItemGone, setup: func(f *pdx, id string) {
+			specificNone(f, id)
+			must(f.t, f.srv.store.DeleteItem(f.item.ID))
 		}},
 		{name: "visibility_reason_wins_over_assignment", kind: "assigned", reason: skipNotVisible, setup: func(f *pdx, id string) {
 			specificNone(f, id)
@@ -176,6 +221,9 @@ func TestPushDispatch_Gates(t *testing.T) {
 				if c.reason == "" {
 					if st.State != "sent" || f.fake.callCount() != 1 {
 						t.Fatalf("control: state=%s/%q calls=%d, want sent and 1 call", st.State, st.Reason, f.fake.callCount())
+					}
+					if c.check != nil {
+						c.check(f, id)
 					}
 					return
 				}
@@ -264,23 +312,55 @@ func TestPushDispatch_MentionAndCommentRowsShareOnePush(t *testing.T) {
 	})
 }
 
+// gateLookups is every lookup a tick makes that the fixture can force to fail:
+// the table whose rename breaks it, and the access it needs to be reached.
+var gateLookups = []struct {
+	name, table string
+	specific    bool // bob needs "specific" collection access to reach it
+}{
+	{"settings", "user_notification_settings", false},
+	{"comment", "comments", false},
+	{"user", "users", false},
+	{"membership", "workspace_members", false},
+	{"workspace", "workspaces", false},
+	{"subject", "items", false},
+	{"devices", "push_devices", false},
+	{"visibility_collection_grants", "collection_grants", true},
+	{"visibility_item_grants", "item_grants", true},
+	{"visibility_member_collections", "member_collection_access", true},
+}
+
+// breakTable makes every query on table fail and returns the undo.
+func (f *pdx) breakTable(table string) (restore func()) {
+	f.exec(`ALTER TABLE ` + table + ` RENAME TO ` + table + `_broken`)
+	restored := false
+	restore = func() {
+		if !restored {
+			restored = true
+			f.exec(`ALTER TABLE ` + table + `_broken RENAME TO ` + table)
+		}
+	}
+	f.t.Cleanup(restore)
+	return restore
+}
+
+func (f *pdx) grantSpecific() {
+	must(f.t, f.srv.store.SetMemberCollectionAccess(f.ws.ID, f.bob.ID, "specific", []string{f.coll.ID}))
+}
+
 // A gate that cannot be evaluated is not a denial: the row is unclaimed, no
-// attempt is burned, no skip is recorded, and nothing is sent.
+// attempt is burned, no skip is recorded, and nothing is sent. Every lookup
+// the dispatcher makes is forced to fail in turn.
 func TestPushDispatch_GateErrorUnclaimsNeverSends(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
-		for _, table := range []string{"user_notification_settings", "comments"} {
-			t.Run(table, func(t *testing.T) {
+		for _, lk := range gateLookups {
+			t.Run(lk.name, func(t *testing.T) {
 				f := newPdx(t, srv)
-				id := f.row("comment")
-				f.exec(`ALTER TABLE ` + table + ` RENAME TO ` + table + `_broken`)
-				restored := false
-				restore := func() {
-					if !restored {
-						restored = true
-						f.exec(`ALTER TABLE ` + table + `_broken RENAME TO ` + table)
-					}
+				if lk.specific {
+					f.grantSpecific()
 				}
-				defer restore()
+				id := f.row("comment")
+				restore := f.breakTable(lk.table)
 				f.tick()
 				st := f.state(id)
 				if st.State != "pending" || st.Claim != "" || st.Attempts != 0 || st.Reason != "" {
@@ -296,6 +376,84 @@ func TestPushDispatch_GateErrorUnclaimsNeverSends(t *testing.T) {
 				}
 			})
 		}
+	})
+}
+
+// The dispatcher shares computeWatchAccessVisibility's lookups but not its
+// logging: that function logs the workspace id, user id and raw store error,
+// and a tick must log none of them (the handler keeps its own log).
+func TestPushDispatch_VisibilityErrorsLeakNothingToTheLog(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		for _, lk := range gateLookups {
+			if !lk.specific && lk.name != "membership" {
+				continue
+			}
+			t.Run(lk.name, func(t *testing.T) {
+				f := newPdx(t, srv)
+				f.grantSpecific()
+				id := f.row("comment")
+				logs := pdCaptureLogs(t)
+				f.breakTable(lk.table)
+				f.tick()
+				out := logs.String()
+				for _, leak := range []string{f.ws.ID, f.bob.ID, id, lk.table, "_broken", "no such table", "does not exist", "failed to resolve"} {
+					if strings.Contains(out, leak) {
+						t.Fatalf("log leaks %q: %s", leak, out)
+					}
+				}
+				if st := f.state(id); st.State != "pending" || st.Claim != "" || st.Attempts != 0 || st.Reason != "" {
+					t.Fatalf("row = %+v, want pending, unclaimed, no attempt, no skip", st)
+				}
+			})
+		}
+	})
+}
+
+// A unit none of whose devices can be given a message (NewMessage refuses an
+// unknown kind, which the gates exclude, so the unit is built by hand) is
+// settled up front as a skip, whether it is alone in its chunk or another unit
+// sends beside it. It is neither unclaimed nor released with an attempt.
+func TestPushDispatch_ZeroMessageUnitIsSkipped(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		run := func(t *testing.T, withSender bool) {
+			f := newPdx(t, srv)
+			other := f.newItem("Other", &f.bob.ID)
+			f.exec(`DELETE FROM user_notifications`) // the assignment enqueued a row
+			bad := f.row("comment")
+			ids := []string{bad}
+			good := ""
+			if withSender {
+				good = f.row("assigned", func(o *rowOpt) { o.item = other })
+				ids = append(ids, good)
+			}
+			claim, err := srv.store.ClaimPendingNotifications("zm", 10, time.Now(), time.Now().Add(-time.Minute))
+			must(t, err)
+			if len(claim.Rows) != len(ids) {
+				t.Fatalf("claimed %d rows, want %d", len(claim.Rows), len(ids))
+			}
+			devs, err := srv.store.LivePushDevices(f.bob.ID, time.Now())
+			must(t, err)
+			chunk := []pushUnit{{rowIDs: []string{bad}, nid: bad, kind: "bogus", devices: devs}}
+			if withSender {
+				chunk = append(chunk, pushUnit{rowIDs: []string{good}, nid: good, kind: "assigned", devices: devs})
+			}
+			srv.sendChunk(context.Background(), f.fake, claim.Token, chunk, time.Now().Add(time.Minute))
+			if st := f.state(bad); st.State != "skipped" || st.Reason != skipNoDevice || st.Attempts != 0 {
+				t.Fatalf("zero-message unit = %+v, want skipped/%s, no attempt", st, skipNoDevice)
+			}
+			wantCalls := 0
+			if withSender {
+				wantCalls = 1
+				if st := f.state(good); st.State != "sent" {
+					t.Fatalf("the sending unit = %+v", st)
+				}
+			}
+			if n := f.fake.callCount(); n != wantCalls {
+				t.Fatalf("%d Send calls, want %d", n, wantCalls)
+			}
+		}
+		t.Run("alone_in_a_chunk", func(t *testing.T) { run(t, false) })
+		t.Run("beside_a_unit_that_sends", func(t *testing.T) { run(t, true) })
 	})
 }
 
@@ -316,6 +474,9 @@ func TestPushDispatch_MessageShape(t *testing.T) {
 			m.Data.NID != id || m.Data.CID != "conn-"+f.devID || m.Data.Kind != "comment" || m.Data.Count != 1 {
 			t.Fatalf("message = %+v", m)
 		}
+		// Belt and braces: the exact-field comparison above is the real
+		// assertion; this scan only catches a secret that lands in a field
+		// the comparison does not name.
 		blob := fmt.Sprintf("%+v", msgs)
 		for _, secret := range []string{"SECRET", "owner", "Push "} {
 			if strings.Contains(blob, secret) {
