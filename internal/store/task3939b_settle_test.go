@@ -20,11 +20,11 @@ func TestRecordNotificationsSent_IsByIDForPendingAndExpiredOnly(t *testing.T) {
 	settle := at(10 * time.Second)
 
 	reclaimed := f.seedNotif(t, u.ID, ago(time.Minute))
-	xc, _ := f.s.ClaimPendingNotifications("X", 10, settle, at(time.Minute))
+	xc, _ := f.s.ClaimPendingNotifications("X", 10, settle, at(time.Minute), nil)
 	if len(xc.Rows) != 1 {
 		t.Fatal("X claimed nothing")
 	}
-	zc, _ := f.s.ClaimPendingNotifications("Z", 10, settle, at(-time.Hour)) // X's lease lapsed
+	zc, _ := f.s.ClaimPendingNotifications("Z", 10, settle, at(-time.Hour), nil) // X's lease lapsed
 	if len(zc.Rows) != 1 {
 		t.Fatal("Z did not reclaim")
 	}
@@ -69,7 +69,7 @@ func TestUnclaimNotifications_NoAttemptAndTokenGuarded(t *testing.T) {
 	f := newNotifyFixture(t)
 	u := notifyUser(t, f.s, "unc@example.com")
 	id := f.seedNotif(t, u.ID, ago(time.Minute))
-	c, _ := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute))
+	c, _ := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute), nil)
 	if len(c.Rows) != 1 {
 		t.Fatal("no claim")
 	}
@@ -83,7 +83,7 @@ func TestUnclaimNotifications_NoAttemptAndTokenGuarded(t *testing.T) {
 	if state != "pending" || tok != "" || attempts != 0 {
 		t.Fatalf("row = %s/%q/%d, want pending, unclaimed, 0 attempts", state, tok, attempts)
 	}
-	if again, _ := f.s.ClaimPendingNotifications("Y", 10, at(10*time.Second), at(time.Minute)); len(again.Rows) != 1 {
+	if again, _ := f.s.ClaimPendingNotifications("Y", 10, at(10*time.Second), at(time.Minute), nil); len(again.Rows) != 1 {
 		t.Fatal("an unclaimed row is claimable at once")
 	}
 	if _, err := f.s.UnclaimNotifications("", []string{id}); err == nil {
@@ -97,7 +97,7 @@ func TestHeldNotifications(t *testing.T) {
 	f := newNotifyFixture(t)
 	u := notifyUser(t, f.s, "held@example.com")
 	a, b, c := f.seedNotif(t, u.ID, ago(time.Minute)), f.seedNotif(t, u.ID, ago(time.Minute)), f.seedNotif(t, u.ID, ago(time.Minute))
-	cl, _ := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute))
+	cl, _ := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute), nil)
 	if len(cl.Rows) != 3 {
 		t.Fatal("claimed", len(cl.Rows))
 	}
@@ -153,5 +153,38 @@ func TestNotificationSettles_CoverMoreIDsThanOneChunk(t *testing.T) {
 	last := ids[len(ids)-1]
 	if state, _, _, _ := f.notifRow(t, last); state != "sent" {
 		t.Fatalf("the last id is %s, want sent", state)
+	}
+}
+
+// TASK-4032 codex r1 M1. Kills: ignoring exclude (the excluded legs go red);
+// building the clause for an empty list (the nil leg goes red on a SQL error).
+func TestClaimNotifications_ExcludeSkipsTheListedIDs(t *testing.T) {
+	t.Parallel()
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "excl@example.com")
+	a := f.seedNotif(t, u.ID, ago(3*time.Minute))
+	b := f.seedNotif(t, u.ID, ago(2*time.Minute))
+	c := f.seedNotif(t, u.ID, ago(time.Minute))
+	settle, lease := at(10*time.Second), at(time.Minute)
+
+	got, err := f.s.ClaimPendingNotifications("X", 2, settle, lease, []string{a})
+	if err != nil || len(got.Rows) != 2 || got.Rows[0].ID != b || got.Rows[1].ID != c {
+		t.Fatalf("excluding the oldest: %v %v, want %s and %s", ids(got.Rows), err, b, c)
+	}
+	if st, _, _, _ := f.notifRow(t, a); st != "pending" {
+		t.Fatalf("excluded row = %s, want untouched", st)
+	}
+
+	// At the dispatcher's cap of 1000 ids, with unrelated ids, nothing is lost.
+	many := make([]string, 1000)
+	for i := range many {
+		many[i] = "nope-" + strings.Repeat("x", 8) + string(rune('a'+i%26)) + time.Duration(i).String()
+	}
+	got, err = f.s.ClaimPendingNotifications("Y", 10, settle, lease, many)
+	if err != nil || len(got.Rows) != 1 || got.Rows[0].ID != a {
+		t.Fatalf("1000 unrelated exclusions: %v %v, want just %s (b and c are leased)", ids(got.Rows), err, a)
+	}
+	if got, err = f.s.ClaimPendingNotifications("Z", 10, settle, lease, []string{}); err != nil || len(got.Rows) != 0 {
+		t.Fatalf("empty exclusion: %v %v, want nothing left", ids(got.Rows), err)
 	}
 }

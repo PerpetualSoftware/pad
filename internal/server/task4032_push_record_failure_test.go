@@ -3,9 +3,12 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/notify"
 )
 
@@ -175,23 +178,178 @@ func TestPushDispatch_RecordFailureMixedChunkStillSettles(t *testing.T) {
 	})
 }
 
-func TestPushDispatch_UnrecordedSetIsCapped(t *testing.T) {
-	srv := testServer(t)
+// capture routes slog to a buffer for the test.
+func captureTask4032Logs(t *testing.T) *syncBuffer {
+	t.Helper()
+	var buf syncBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// cleanItem is an item assigned to bob whose assignment row (enqueued once a
+// device exists) is deleted, so a test controls every row on it.
+func (f *pdx) cleanItem(title string) *models.Item {
+	f.t.Helper()
+	it := f.newItem(title, &f.bob.ID)
+	f.exec(`DELETE FROM user_notifications WHERE item_id = ?`, it.ID)
+	return it
+}
+
+// freshRows gives bob n new single-row groups, each on its own clean item.
+func (f *pdx) freshRows(n int) []string {
+	f.t.Helper()
 	var ids []string
-	for i := 0; i < pushUnrecordedCap+1; i++ {
-		ids = append(ids, fmt.Sprintf("id-%d", i))
+	for i := 0; i < n; i++ {
+		it := f.cleanItem(fmt.Sprintf("Fresh %d", i))
+		ids = append(ids, f.row("assigned", func(o *rowOpt) { o.item = it; o.age = time.Minute }))
 	}
-	srv.parkUnrecorded(ids, nil, time.Now())
-	d := &srv.pushDispatch
-	if len(d.unrecorded) != pushUnrecordedCap {
-		t.Fatalf("%d parked, want the cap %d", len(d.unrecorded), pushUnrecordedCap)
-	}
-	if _, ok := d.unrecorded[ids[0]]; ok {
-		t.Fatal("the oldest entry survived the overflow")
-	}
-	if _, ok := d.unrecorded[ids[len(ids)-1]]; !ok {
-		t.Fatal("the newest entry was dropped")
-	}
+	return ids
+}
+
+func (f *pdx) setUnrecordedCap(n int) {
+	d := &f.srv.pushDispatch
+	d.mu.Lock()
+	d.unrecordedCapOverride = n
+	d.mu.Unlock()
+}
+
+// While the parked set is at its cap a tick claims and sends nothing, so no
+// parked row is ever re-sent (nothing is evicted), and the full state logs
+// once on entry and once on exit. Recording the rows drains the set and
+// sending resumes.
+func TestPushDispatch_FullUnrecordedSetHoldsClaimsAndSends(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		logs := captureTask4032Logs(t)
+		f := newPdx(t, srv)
+		f.setUnrecordedCap(2)
+		// Three rows on one item are one push; parking all three overshoots the
+		// cap of 2, so an evicting implementation would free one for a re-send.
+		var parked []string
+		for i := 0; i < 3; i++ {
+			parked = append(parked, f.row("comment"))
+		}
+		clk := f.clock(time.Now())
+		f.failSent(true)
+		f.tick()
+		if n := f.parkedCount(); n != 3 {
+			t.Fatalf("%d parked, want 3 (the set is never trimmed)", n)
+		}
+		fresh := f.freshRows(1)[0]
+		f.tickLeases(clk, 4)
+		if n := f.fake.callCount(); n != 1 {
+			t.Fatalf("%d Send calls while the set was full, want 1", n)
+		}
+		if st := f.state(fresh); st.State != "pending" || st.Claim != "" || st.Attempts != 0 {
+			t.Fatalf("fresh row = %+v, want pending, never claimed, held", st)
+		}
+		for _, id := range parked {
+			if st := f.state(id); st.State != "pending" {
+				t.Fatalf("parked row = %+v, want pending", st)
+			}
+		}
+		if n := strings.Count(logs.String(), "at the cap, holding"); n != 1 {
+			t.Fatalf("%d entering warnings over several full ticks, want 1:\n%s", n, logs.String())
+		}
+		if strings.Contains(logs.String(), "resuming") {
+			t.Fatal("left the full state while still full")
+		}
+
+		f.failSent(false)
+		f.tick()
+		if n := f.parkedCount(); n != 0 {
+			t.Fatalf("%d parked after the record landed, want 0", n)
+		}
+		for _, id := range append(parked, fresh) {
+			if st := f.state(id); st.State != "sent" {
+				t.Fatalf("row %s = %+v after recovery, want sent", id, st)
+			}
+		}
+		if n := f.fake.callCount(); n != 2 {
+			t.Fatalf("%d Send calls, want 2: the parked push once, the fresh row once", n)
+		}
+		f.tick()
+		if n := strings.Count(logs.String(), "below the cap, resuming"); n != 1 {
+			t.Fatalf("%d leaving warnings, want 1:\n%s", n, logs.String())
+		}
+		if n := strings.Count(logs.String(), "at the cap, holding"); n != 1 {
+			t.Fatalf("%d entering warnings after the drain, want 1", n)
+		}
+	})
+}
+
+// Parked rows are never claimed: with more of them than one claim batch, a
+// fresh pending row is still claimed and sent.
+func TestPushDispatch_ParkedRowsDoNotStarveTheClaimBatch(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		var ids []string
+		for i := 0; i < notify.MaxBatch+50; i++ {
+			ids = append(ids, f.row("comment", func(o *rowOpt) { o.age = 5 * time.Minute }))
+		}
+		// Parked directly (no user, so the 30/h cap is not involved); the
+		// trigger keeps the tick's record retry from clearing them.
+		f.clock(time.Now())
+		f.failSent(true)
+		srv.parkUnrecorded(ids, nil, time.Now())
+		fresh := f.freshRows(1)[0]
+		f.tick()
+		msgs := f.fake.all()
+		if len(msgs) != 1 || msgs[0].Data.NID != fresh {
+			t.Fatalf("pushes = %+v, want exactly one, for the fresh row %s", msgs, fresh)
+		}
+		if st := f.state(fresh); st.State != "pending" || f.parkedCount() != len(ids)+1 {
+			t.Fatalf("fresh row = %+v with %d parked, want pending (record failing) and parked", st, f.parkedCount())
+		}
+	})
+}
+
+// Parked rows are not part of the summary: it counts only the new rows. They
+// still count toward the 30/h cap.
+func TestPushDispatch_SummaryCountsOnlyNewRowsParkedStillCap(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		f.row("comment")
+		f.row("comment")
+		clk := f.clock(time.Now())
+		f.failSent(true)
+		f.tick()
+		if n := f.parkedCount(); n != 2 {
+			t.Fatalf("%d parked, want 2", n)
+		}
+		fresh := f.freshRows(pushSummaryAbove + 1)
+		f.tickLeases(clk, 1)
+		msgs := f.fake.all()
+		if len(msgs) != 2 {
+			t.Fatalf("%d messages, want the first push and one summary", len(msgs))
+		}
+		if m := msgs[1]; m.Data.Kind != notify.KindSummary || m.Data.Count != len(fresh) {
+			t.Fatalf("second message = %+v, want a summary of %d new rows (not the parked)", m, len(fresh))
+		}
+	})
+}
+
+func TestPushDispatch_ParkedRowsCountTowardTheCapForASummary(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		for i := 0; i < pushRateCap; i++ {
+			f.row("comment")
+		}
+		clk := f.clock(time.Now())
+		f.failSent(true)
+		f.tick()
+		fresh := f.freshRows(pushSummaryAbove + 1)
+		f.tickLeases(clk, 1)
+		for _, id := range fresh {
+			if st := f.state(id); st.State != "skipped" || st.Reason != skipRateLimited {
+				t.Fatalf("row = %+v, want rate_limited behind 30 parked rows", st)
+			}
+		}
+		if n := f.fake.callCount(); n != 1 {
+			t.Fatalf("%d Send calls, want 1: no summary past the cap", n)
+		}
+	})
 }
 
 // A parked row on an item must not pull a sibling row into its own push.

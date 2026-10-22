@@ -122,13 +122,19 @@ const maxNotificationClaim = 100
 // already held from an earlier call (TASK-3939 r1-H1). A held row whose lease
 // lapsed is a candidate again and is returned with claimed_at refreshed.
 //
+// exclude lists ids that are never selected (TASK-4032 codex r1 M1): the
+// dispatcher passes the rows it already delivered but could not record, so
+// they cannot fill the batch ahead of rows that still need a push. nil or
+// empty excludes nothing. The list is one bind parameter per id; the caller
+// keeps it to its 1000-entry cap, far under both dialects' limits.
+//
 // Each call stamps its OWN claim token: the caller's token plus a per-call
 // random nonce, returned as Claim.Token. Mark, skip and release take that
 // token, never the caller's. Reusing a caller token across calls, even in the
 // same second (claimed_at has second precision), is therefore safe by
 // construction: two such calls can never read back each other's rows
 // (TASK-3939 r2-F1).
-func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff, leaseCutoff time.Time) (Claim, error) {
+func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff, leaseCutoff time.Time, exclude []string) (Claim, error) {
 	if token == "" {
 		return Claim{}, errEmptyClaimToken
 	}
@@ -137,13 +143,21 @@ func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff,
 	}
 	limit = min(limit, maxNotificationClaim)
 	settle, lease := cutoffTS(settleCutoff), cutoffTS(leaseCutoff)
+	notIn := ""
+	args := []any{settle, lease}
+	if len(exclude) > 0 {
+		ph, exArgs := idPlaceholders(exclude)
+		notIn = " AND id NOT IN (" + ph + ")"
+		args = append(args, exArgs...)
+	}
+	args = append(args, limit)
 	rows, err := s.db.Query(s.q(`
 		SELECT id FROM user_notifications
 		WHERE push_state = 'pending'
 		  AND created_at <= ?
-		  AND (claimed_at IS NULL OR claimed_at < ?)
+		  AND (claimed_at IS NULL OR claimed_at < ?)`+notIn+`
 		ORDER BY created_at, id
-		LIMIT ?`), settle, lease, limit)
+		LIMIT ?`), args...)
 	if err != nil {
 		return Claim{}, fmt.Errorf("claim notifications: select candidates: %w", err)
 	}

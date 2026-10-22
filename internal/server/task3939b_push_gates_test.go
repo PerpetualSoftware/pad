@@ -426,7 +426,7 @@ func TestPushDispatch_ZeroMessageUnitIsSkipped(t *testing.T) {
 				good = f.row("assigned", func(o *rowOpt) { o.item = other })
 				ids = append(ids, good)
 			}
-			claim, err := srv.store.ClaimPendingNotifications("zm", 10, time.Now(), time.Now().Add(-time.Minute))
+			claim, err := srv.store.ClaimPendingNotifications("zm", 10, time.Now(), time.Now().Add(-time.Minute), nil)
 			must(t, err)
 			if len(claim.Rows) != len(ids) {
 				t.Fatalf("claimed %d rows, want %d", len(claim.Rows), len(ids))

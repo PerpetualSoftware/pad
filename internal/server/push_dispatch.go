@@ -52,8 +52,10 @@ const (
 	pushRetention    = 7 * 24 * time.Hour // sent, skipped and expired rows are kept this long
 	pushPruneEvery   = time.Hour          // created_at is unindexed, so the prune is throttled
 
-	// pushUnrecordedCap backstops the parked set (TASK-4032). The age rule
-	// alone bounds it in time; this bounds it in size when a burst parks many.
+	// pushUnrecordedCap bounds the parked set in size (TASK-4032). The age
+	// rule alone bounds it in time. At the cap the dispatcher stops claiming
+	// and sending (backpressure) rather than evicting: an evicted row is
+	// pending, and would be sent again once its lease lapsed.
 	pushUnrecordedCap = 1000
 
 	skipRateLimited     = "rate_limited"
@@ -83,8 +85,12 @@ type pushDispatchConfig struct {
 	lastPrune   time.Time // when the retention sweep last ran
 	// unrecorded holds rows the gateway accepted whose 'sent' record failed
 	// (TASK-4032); see parkUnrecorded.
-	unrecorded    map[string]unrecordedRow
-	unrecordedSeq int64
+	unrecorded map[string]unrecordedRow
+	// unrecordedCapOverride replaces pushUnrecordedCap when > 0 (tests only).
+	unrecordedCapOverride int
+	// unrecordedFull is whether the last tick found the set at its cap, so
+	// the full state logs once on entering and once on leaving.
+	unrecordedFull bool
 	// tick, when non-nil, replaces the interval ticker so a test drives passes.
 	tick <-chan time.Time
 }
@@ -94,7 +100,6 @@ type pushDispatchConfig struct {
 type unrecordedRow struct {
 	userID  string
 	created time.Time // the notification's created_at; its expiry clock
-	seq     int64     // park order, for the size backstop
 }
 
 type pushDispatchSettings struct {
@@ -287,8 +292,11 @@ func (s *Server) expireAndPrune(cfg pushDispatchSettings, start time.Time) {
 // pushed again, once per lease, until it expires; the set stops that
 // in-process (the tick skips parked rows after the claim) and drives the
 // record until it lands. meta supplies each row's user and created_at; an
-// unknown row falls back to now. Past pushUnrecordedCap the oldest parked
-// entries are dropped, which degrades those rows to a re-send after the lease.
+// unknown row falls back to now. Nothing is ever evicted: an evicted row is
+// still pending and would be re-sent. The size bound is held by the tick,
+// which stops claiming and sending while the set is at its cap (see
+// checkUnrecordedFull); one tick's sends can overshoot it by at most one
+// batch.
 func (s *Server) parkUnrecorded(ids []string, meta map[string]store.Notification, at time.Time) {
 	d := &s.pushDispatch
 	d.mu.Lock()
@@ -304,18 +312,7 @@ func (s *Server) parkUnrecorded(ids []string, meta map[string]store.Notification
 				e.created = t
 			}
 		}
-		d.unrecordedSeq++
-		e.seq = d.unrecordedSeq
 		d.unrecorded[id] = e
-	}
-	for len(d.unrecorded) > pushUnrecordedCap {
-		oldest, oldestSeq := "", int64(0)
-		for id, e := range d.unrecorded {
-			if oldest == "" || e.seq < oldestSeq {
-				oldest, oldestSeq = id, e.seq
-			}
-		}
-		delete(d.unrecorded, oldest)
 	}
 }
 
@@ -350,6 +347,29 @@ func (s *Server) retryUnrecorded(start time.Time) {
 	if err != nil {
 		slog.Warn("push dispatch: settle failed", "op", "sent-retry")
 	}
+}
+
+// checkUnrecordedFull reports whether the parked set is at its cap, which
+// holds the tick's claim and send. It logs one fixed-string warning when the
+// state is entered and one when it is left, never per tick, with no ids and
+// no error text.
+func (s *Server) checkUnrecordedFull() bool {
+	d := &s.pushDispatch
+	d.mu.Lock()
+	limit := pushUnrecordedCap
+	if d.unrecordedCapOverride > 0 {
+		limit = d.unrecordedCapOverride
+	}
+	full := len(d.unrecorded) >= limit
+	changed := full != d.unrecordedFull
+	d.unrecordedFull = full
+	d.mu.Unlock()
+	if changed && full {
+		slog.Warn("push dispatch: unrecorded sends at the cap, holding claims and sends")
+	} else if changed {
+		slog.Warn("push dispatch: unrecorded sends below the cap, resuming")
+	}
+	return full
 }
 
 // unrecordedSnapshot returns the parked ids and each user's parked count. A
@@ -393,14 +413,24 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 	start := s.pushNow()
 	s.expireAndPrune(cfg, start)
 	s.retryUnrecorded(start)
+	if s.checkUnrecordedFull() {
+		return // pending rows wait, up to their expiry, rather than repeat
+	}
 	sender := s.pushSenderOrNil()
 	if sender == nil {
 		return
 	}
+	// Taken before the claim: parked rows are excluded from it, so they
+	// cannot occupy batch slots ahead of rows that still need a push.
+	parked, parkedPerUser := s.unrecordedSnapshot()
+	exclude := make([]string, 0, len(parked))
+	for id := range parked {
+		exclude = append(exclude, id)
+	}
 	// Fresh per tick and never kept: the store appends its own nonce, and
 	// every settle below uses Claim.Token.
 	token := "pd-" + cfg.instanceID + "-" + uuid.NewString()
-	claim, err := s.store.ClaimPendingNotifications(token, notify.MaxBatch, start.Add(-cfg.settle), start.Add(-cfg.lease))
+	claim, err := s.store.ClaimPendingNotifications(token, notify.MaxBatch, start.Add(-cfg.settle), start.Add(-cfg.lease), exclude)
 	if err != nil {
 		slog.Error("push dispatch: claim failed", "op", "claim")
 		return
@@ -415,12 +445,12 @@ func (s *Server) runPushDispatchTick(ctx context.Context) {
 	var unclaim []string
 	groups := map[string][]store.Notification{}
 	var order []string
-	parked, parkedPerUser := s.unrecordedSnapshot()
 	meta := make(map[string]store.Notification, len(claim.Rows))
 	for _, n := range claim.Rows {
 		meta[n.ID] = n
 		if parked[n.ID] {
-			// Delivered, record pending: not gated, not sent, left claimed.
+			// Belt: the claim already excludes parked ids; a parked row that
+			// still arrives is never gated or sent. Left claimed.
 			continue
 		}
 		_, reason, gerr := s.notificationAccess(cache, n)

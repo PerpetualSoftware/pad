@@ -38,7 +38,7 @@ func (f notifyFixture) notifRow(t *testing.T, id string) (state, reason, token s
 // claimRows and claimIDRows are the claim calls with the per-claim token
 // dropped, for tests that only look at the rows.
 func claimRows(s *Store, token string, limit int, settle, lease time.Time) ([]Notification, error) {
-	c, err := s.ClaimPendingNotifications(token, limit, settle, lease)
+	c, err := s.ClaimPendingNotifications(token, limit, settle, lease, nil)
 	return c.Rows, err
 }
 
@@ -212,12 +212,12 @@ func TestMarkNotifications_StaleClaimerIsNoOp(t *testing.T) {
 	u := notifyUser(t, f.s, "a@example.com")
 	id := f.seedNotif(t, u.ID, ago(time.Minute))
 	settle := at(10 * time.Second)
-	xc, _ := f.s.ClaimPendingNotifications("X", 10, settle, at(time.Minute))
+	xc, _ := f.s.ClaimPendingNotifications("X", 10, settle, at(time.Minute), nil)
 	if len(xc.Rows) != 1 {
 		t.Fatal("X claimed nothing")
 	}
 	// X's lease lapses; Z takes the row.
-	zc, _ := f.s.ClaimPendingNotifications("Z", 10, settle, at(-time.Hour))
+	zc, _ := f.s.ClaimPendingNotifications("Z", 10, settle, at(-time.Hour), nil)
 	if len(zc.Rows) != 1 {
 		t.Fatal("Z did not reclaim")
 	}
@@ -282,7 +282,7 @@ func TestMarkNotificationsSkipped_RecordsReason(t *testing.T) {
 	f := newNotifyFixture(t)
 	u := notifyUser(t, f.s, "a@example.com")
 	a, b := f.seedNotif(t, u.ID, ago(time.Minute)), f.seedNotif(t, u.ID, ago(time.Minute))
-	xc, _ := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute))
+	xc, _ := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute), nil)
 	if n, err := f.s.MarkNotificationsSkipped(xc.Token, []string{a}, "not_member"); err != nil || n != 1 {
 		t.Fatalf("%d %v", n, err)
 	}
@@ -302,7 +302,7 @@ func TestReleaseNotifications_SkipsAtFive(t *testing.T) {
 	u := notifyUser(t, f.s, "a@example.com")
 	id := f.seedNotif(t, u.ID, ago(time.Minute))
 	for attempt := 1; attempt <= MaxNotificationAttempts; attempt++ {
-		got, err := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute))
+		got, err := f.s.ClaimPendingNotifications("X", 10, at(10*time.Second), at(time.Minute), nil)
 		if err != nil || len(got.Rows) != 1 {
 			t.Fatalf("attempt %d: claim %v %v", attempt, ids(got.Rows), err)
 		}
@@ -595,7 +595,7 @@ func TestClaimNotifications_ReadBackExcludesSettled(t *testing.T) {
 	u := notifyUser(t, f.s, "a@example.com")
 	first := f.seedNotif(t, u.ID, ago(2*time.Minute))
 	settle, lease := at(10*time.Second), at(time.Minute)
-	fc, _ := f.s.ClaimPendingNotifications("X", 10, settle, lease)
+	fc, _ := f.s.ClaimPendingNotifications("X", 10, settle, lease, nil)
 	if len(fc.Rows) != 1 {
 		t.Fatal("first claim")
 	}
@@ -794,8 +794,8 @@ func TestClaimNotifications_SameTokenSameSecondIsDisjoint(t *testing.T) {
 	// Two sequential public calls also never share a token.
 	c := f.seedNotif(t, u.ID, ago(time.Minute))
 	d := f.seedNotif(t, u.ID, ago(time.Minute))
-	c1, _ := f.s.ClaimPendingNotifications("tok", 1, at(10*time.Second), at(time.Minute))
-	c2, _ := f.s.ClaimPendingNotifications("tok", 1, at(10*time.Second), at(time.Minute))
+	c1, _ := f.s.ClaimPendingNotifications("tok", 1, at(10*time.Second), at(time.Minute), nil)
+	c2, _ := f.s.ClaimPendingNotifications("tok", 1, at(10*time.Second), at(time.Minute), nil)
 	if c1.Token == c2.Token || len(c1.Rows) != 1 || len(c2.Rows) != 1 || c1.Rows[0].ID == c2.Rows[0].ID {
 		t.Fatalf("calls shared a claim: %q %v / %q %v (rows %s %s)", c1.Token, ids(c1.Rows), c2.Token, ids(c2.Rows), c, d)
 	}
@@ -820,7 +820,7 @@ func TestClaimNotifications_LimitIsClamped(t *testing.T) {
 		return n
 	}
 	for _, limit := range []int{0, -1} {
-		c, err := f.s.ClaimPendingNotifications("tok", limit, at(10*time.Second), at(time.Minute))
+		c, err := f.s.ClaimPendingNotifications("tok", limit, at(10*time.Second), at(time.Minute), nil)
 		if err != nil {
 			t.Fatalf("limit %d: %v", limit, err)
 		}
