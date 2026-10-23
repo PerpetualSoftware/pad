@@ -1738,6 +1738,16 @@ const CmdhelpVersion = "0.1"
 //     caller cannot read embeds nothing; a failed fetch stays non-fatal,
 //     as on stdio. Stdio is unchanged.
 //
+//     0.101 — TASK-4035. ADDITIVE bump on the v0.28 grounds: a new
+//     read-only `pad_project.action=catch-up`, the caller's own catch-up
+//     digest (GET /workspaces/{ws}/catch-up, no params), on both
+//     transports. It never marks caught up: PUT /me/seen stays web-only
+//     (ruling 380aa793), so pad_project keeps its read-only annotation.
+//     The ChatGPT surface gains a read-only `catch_up` over the same GET.
+//     No existing name, enum or param moved. Some existing tool
+//     descriptions were reworded to fewer bytes to pay for the entry; no
+//     rule, caveat, refusal or ref was dropped.
+//
 //     0.100 — BUG-3864. BEHAVIOR bump on the 0.45 grounds; no name, enum
 //     or param shape changed. A refused call names its cause, on BOTH
 //     transports. `permission_denied` gains `details.reason` when the server
@@ -2207,7 +2217,7 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.100"
+const ToolSurfaceVersion = "0.101"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

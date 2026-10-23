@@ -138,6 +138,8 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Recent activity:** `pad project activity [--limit N] [--actor user|agent] [--since DATE]` ("what changed?" / "what did other agents do since I last worked?") — non-streaming snapshot of the workspace activity feed (`pad_project action=activity` via MCP).
 
+**Catch up:** `pad project catch-up` ("catch me up" / "what needs me?") — your own digest since you last marked caught up (`pad_project action=catch-up` via MCP). Read-only; Mark caught up is web-only.
+
 **Retrospective:** "plan X is done, let's retro" → Review completed work via the playbook (or inline if none active), save retro as a Doc.
 
 **Onboarding:**

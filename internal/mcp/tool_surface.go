@@ -108,6 +108,10 @@ var readOnlyActions = map[string]map[string]bool{
 		"changelog": true,
 		"report":    true,
 		"activity":  true,
+		// TASK-4035: a GET digest. Mark caught up (PUT /me/seen) has no
+		// action on purpose (ruling 380aa793); this entry keeps pad_project
+		// read-only on the tool annotation.
+		"catch-up": true,
 	},
 	"pad_role": {
 		"list": true,

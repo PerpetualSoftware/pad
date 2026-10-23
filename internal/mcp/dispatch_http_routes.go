@@ -297,6 +297,15 @@ func init() {
 			queryParams:  map[string]string{"window": "window", "collections": "collections"},
 		}.toRouteMapper(),
 
+		// `project catch-up` (TASK-4035) — the caller's own digest. A plain
+		// GET with no params: the endpoint never writes, and the cursor
+		// moves only through PUT /me/seen, which no route here maps
+		// (ruling 380aa793).
+		"project catch-up": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/catch-up",
+		}.toRouteMapper(),
+
 		// `project activity` (TASK-2018) — non-streaming, bounded
 		// snapshot of the enriched workspace activity feed. The endpoint
 		// applies the limit + actor + since filters server-side, so all

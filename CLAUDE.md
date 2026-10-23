@@ -242,6 +242,7 @@ pad project dashboard         # Project dashboard
 pad project next              # Recommended next task
 pad project standup [--days N]  # Daily standup report
 pad project changelog [--days N] [--parent REF]  # Release notes from completed items
+pad project catch-up          # Your own catch-up digest, read-only (Mark caught up is web-only)
 pad item block <source> <target>  # e.g. pad item block TASK-5 TASK-8
 pad item blocked-by <item> <blocker>
 pad item deps <ref>           # Show dependencies

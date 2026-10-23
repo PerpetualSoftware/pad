@@ -209,17 +209,15 @@ tool with ` + "`action: run, ref: <slug>`" + ` here, ` + "`/pad <slug>`" + ` in 
 Actions:
   list  — Workspace playbook catalog. Returns metadata only (no bodies):
           ref, title, slug, invocation_slug, trigger, scope, status,
-          has_arguments, summary. Sorted with invocation_slug-bearing
-          playbooks first so user-invokable candidates surface
-          at the top.
+          has_arguments, summary. Sorted with invocation_slug-bearing playbooks first, so
+          user-invokable candidates lead.
           Required: workspace.
   get   — Full item for one playbook, including body content + structured
           fields (which carry the canonical ` + "`arguments`" + ` JSON spec).
           Required: workspace, ref.
   run   — Parse args against the playbook's declared spec and return the
           body + bound_args + any required-but-unbound entries (so the
-          agent can prompt the user instead of failing the call). Side-
-          effect-free: the playbook body is markdown instructions for the
+          agent can prompt the user instead of failing the call). Side-effect-free: the playbook body is markdown instructions for the
           agent, not a shell script — the server primes the call; the
           agent executes the steps.
           Required: workspace, ref.

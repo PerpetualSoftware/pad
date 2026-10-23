@@ -1492,6 +1492,67 @@ func (c *Client) ListActivity(wsSlug string, params url.Values) ([]models.Activi
 	return result, c.get(path, &result)
 }
 
+// CatchUpLine, CatchUpSection, CatchUpAgentGroup and CatchUpResponse mirror
+// the GET /workspaces/{ws}/catch-up payload (TASK-4035). They are local
+// copies, not the server's types: internal/cli does not import
+// internal/store. Rendering decodes into them; --format json prints the raw
+// bytes, so a field added server-side still reaches the caller.
+type CatchUpLine struct {
+	Ref        string `json:"ref"`
+	Title      string `json:"title"`
+	Collection string `json:"collection"`
+	What       string `json:"what"`
+	Actor      string `json:"actor,omitempty"`
+	Agent      string `json:"agent,omitempty"`
+	At         string `json:"at,omitempty"`
+}
+
+type CatchUpSection struct {
+	Total int           `json:"total"`
+	Lines []CatchUpLine `json:"lines"`
+}
+
+type CatchUpAgentGroup struct {
+	Agent   string        `json:"agent"`
+	Changes int           `json:"changes"`
+	Items   int           `json:"items"`
+	Lines   []CatchUpLine `json:"lines"`
+}
+
+type CatchUpResponse struct {
+	Window struct {
+		Since           string `json:"since"`
+		Until           string `json:"until"`
+		HasCursor       bool   `json:"has_cursor"`
+		CappedAtCeiling bool   `json:"capped_at_ceiling"`
+	} `json:"window"`
+	NeedsYou       CatchUpSection `json:"needs_you"`
+	Finished       CatchUpSection `json:"finished"`
+	NewAndReopened CatchUpSection `json:"new_and_reopened"`
+	Comments       CatchUpSection `json:"comments"`
+	Agents         struct {
+		Total  int                 `json:"total"`
+		Groups []CatchUpAgentGroup `json:"groups"`
+	} `json:"agents"`
+	Degraded []string `json:"degraded,omitempty"`
+}
+
+// GetCatchUp reads the caller's catch-up digest (TASK-4035). It is a plain
+// GET: the endpoint never writes, and marking caught up (PUT /me/seen) has no
+// client method on purpose (ruling 380aa793). The raw body is returned beside
+// the decoded form so --format json can print it verbatim.
+func (c *Client) GetCatchUp(wsSlug string) (json.RawMessage, *CatchUpResponse, error) {
+	var raw json.RawMessage
+	if err := c.get("/workspaces/"+url.PathEscape(wsSlug)+"/catch-up", &raw); err != nil {
+		return nil, nil, err
+	}
+	var resp CatchUpResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, nil, fmt.Errorf("decode catch-up: %w", err)
+	}
+	return raw, &resp, nil
+}
+
 // --- Convention Library ---
 
 // ConventionLibraryResponse is the response from the convention-library endpoint.

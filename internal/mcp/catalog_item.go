@@ -175,7 +175,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, context, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release, reminders, link-pr, unlink-pr. NOT used for ack-reminder (which addresses a REMINDER by `reminder_id`, since an item can carry several) and NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, context, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release, reminders, link-pr, unlink-pr. NOT used for ack-reminder (it addresses a REMINDER by `reminder_id`, since an item can carry several) or bulk-update (pass `refs`, an array, instead)."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -194,7 +194,7 @@ var padItemSchemaParams = []ParamDef{
 	// the item's collection + typed fields. `export` returns this same
 	// text as its tool result.
 	// ── Reminders ── (IDEA-2641)
-	{Name: "remind_at", Type: "string", Description: "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00 which is stored as the same moment in UTC). Required for: remind. A bare date (2026-08-01) is REFUSED, not assumed to mean midnight — it names a 24-hour span, and choosing an hour inside it would fire at a time nobody picked."},
+	{Name: "remind_at", Type: "string", Description: "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00 which is stored as the same moment in UTC). Required for: remind. A bare date (2026-08-01) is REFUSED, not assumed to be midnight: it names a 24-hour span, and picking an hour in it would fire at a time nobody chose."},
 	// PR metadata for action=link-pr (TASK-3611), sent as given.
 	{Name: "pr_number", Type: "number", Description: "The pull request's number (> 0). Required for: link-pr."},
 	{Name: "pr_url", Type: "string", Description: "The pull request's absolute http(s) URL. Required for: link-pr."},
@@ -282,12 +282,12 @@ var padItemSchemaParams = []ParamDef{
 	// or just guessed shapes when other input shapes errored. The
 	// expanded description names the dedicated top-level params so
 	// agents don't fall back to `field` for them.
-	{Name: "field", Type: "array<string>", Description: "Custom field setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. Four keys are REFUSED on create, update and move (code=validation_failed, reason in the hint), each with its own writer: implementation_notes -> action=note, decision_log -> action=decide, github_pr -> action=link-pr / unlink-pr, convention -> library activation only. On create, create the item first, then note / decide on it. On create/update the `fields` OBJECT param is an equivalent alternative."},
+	{Name: "field", Type: "array<string>", Description: "Setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. Four keys are REFUSED on create, update and move (code=validation_failed, reason in the hint), each with its own writer: implementation_notes -> action=note, decision_log -> action=decide, github_pr -> action=link-pr / unlink-pr, convention -> library activation only. On create, create the item first, then note / decide on it. On create/update the `fields` OBJECT param is an equivalent alternative."},
 	// `fields`: the OBJECT alias for the write path (#1066). Reads
 	// return `fields` as a native object, so writing that same shape
 	// back is what agents naturally do — it used to be silently
 	// dropped. See catalog_item_fields.go for the merge contract.
-	{Name: "fields", Type: "object", Description: "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values keep their JSON type: a number stays a number, and an object or array is written as-is to multi_select / json fields (BUG-2850). Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref. Structured values work on both transports: the local stdio server passes them to the CLI as one --fields-json object."},
+	{Name: "fields", Type: "object", Description: "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values keep their JSON type: a number stays a number; an object or array is written as-is to multi_select / json fields (BUG-2850). Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref. Structured values work on both transports: the local stdio server passes them to the CLI as one --fields-json object."},
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
@@ -314,7 +314,7 @@ var padItemSchemaParams = []ParamDef{
 	// force=true skips the guard and still records the transition.
 	// The same flag exists on `pad item update --force` so the CLI
 	// and MCP escape hatches are identical.
-	{Name: "force", Type: "bool", Description: "Override the open-children guard. Optional for: update, bulk-update, move. When the server returns code=open_children, details.open_children lists the blocking child refs so an agent can ship them and retry — or set force=true if the children should be intentionally orphaned."},
+	{Name: "force", Type: "bool", Description: "Override the open-children guard. Optional for: update, bulk-update, move. When the server returns code=open_children, details.open_children lists the blocking child refs so an agent can ship them and retry, or set force=true to orphan them on purpose."},
 
 	// ── Optimistic concurrency ── (TASK-2022)
 	// update only. Round-trip the `updated_at` a prior get returned; the
@@ -345,7 +345,7 @@ var padItemSchemaParams = []ParamDef{
 	// PLAN-3555: the deliberate-overwrite opt-out. Phase 1 changes no outcome;
 	// phase 2 refuses a body write that carries neither this nor a token.
 	{Name: "replace", Type: "bool", Description: "update: true overwrites the content on purpose, whatever changed since you read it (no version token). A content write with neither this nor expected_seq is flagged warnings.unguarded_content_write now and will be refused later. Conflicts with expected_seq."},
-	{Name: "expected_seq", Type: "number", Description: "Optimistic-concurrency guard for action=update, PREFERRED over expected_updated_at. The `seq` you last read; the update is rejected with code=update_conflict if the item changed since. Unlike expected_updated_at it distinguishes two writes inside the same second. Optional."},
+	{Name: "expected_seq", Type: "number", Description: "Optimistic-concurrency guard for action=update, PREFERRED over expected_updated_at. The `seq` you last read; the update is rejected with code=update_conflict if the item changed since. Unlike expected_updated_at, it tells apart two writes in the same second. Optional."},
 
 	// ── Notes / decisions ──
 	{Name: "summary", Type: "string", Description: "Short note headline. Required for: note."},
@@ -362,23 +362,19 @@ Actions:
     Optional: status, priority, category, content, parent, role, assign, tags,
     field, fields.
     Use the dedicated top-level params (status / priority / category / parent
-    / role / assign / tags) for those named fields — the dispatcher rolls
-    them into the item's fields JSON automatically. The 'field' param is
-    the escape hatch for SCHEMA-DECLARED custom fields without a dedicated
-    param; accepts an array of "key=value" strings. The 'fields' OBJECT
-    (the same shape reads return, e.g. {"status":"done","effort":"l"}) is
-    an equivalent write form; the same key with CONFLICTING values in two
-    places is refused rather than resolved.
-    The 'tags' param accepts a JSON array of strings (e.g. ["v1","frontend"])
-    — NOT a comma-separated string.
+    / role / assign / tags) for those fields; the dispatcher rolls them into the item's fields JSON. 'field' is the escape hatch for SCHEMA-DECLARED custom fields without a
+    dedicated param: an array of "key=value" strings. The 'fields' OBJECT (the shape reads return, e.g.
+    {"status":"done","effort":"l"}) is an equivalent write form; a key with
+    CONFLICTING values in two places is refused, not resolved.
+    'tags' is a JSON array of strings (e.g. ["v1","frontend"]), NOT a
+    comma-separated string.
   update        — Update an item by ref.
     Required: ref. At least one mutable field.
     Optional: title, status, priority, content, role, assign, parent, comment, tags,
     field, fields, expected_seq, expected_updated_at, overwrite_pending_edits,
     replace.
     Same placement rules as create. Field updates MERGE server-side: only
-    the keys you set change. Pass expected_seq (the seq you last read, on
-    every item and every list summary) to fail with code=update_conflict
+    the keys you set change. Pass expected_seq (the seq you last read, on every item and list summary) to fail with code=update_conflict
     if the item changed since; the details carry actual_seq. PREFER IT over
     expected_updated_at, which cannot tell two writes inside one second
     apart.
@@ -394,8 +390,7 @@ Actions:
     live document: the response echoes what you SENT with
     warnings.content_outcome="applied_pending_flush" (it describes the
     write, not the row), and a read before a tab saves still returns the
-    PREVIOUS content. That is lag, not a failed write: re-read later (with
-    get, or list with full=true; a default list carries no content), never
+    PREVIOUS content. That is lag, not a failed write: re-read later (get, or list with full=true; a default list carries no content), never
     re-send. Nothing guarantees that save, so do not wait on it in a loop. The editor may normalise
     the stored markdown, so compare on meaning, not bytes.
   delete        — Archive an item.
@@ -454,9 +449,8 @@ Actions:
     Required: reminder_id (from the fired suggestion, or from
     the response when you armed it — NOT the item ref, since an
     item can carry several reminders).
-    Nothing else acknowledges one: completing the item does not,
-    because a reminder may have been armed to fire after the
-    work was done.
+    Nothing else acknowledges one: completing the item does not, since a reminder may be armed to fire
+    after the work is done.
   reminders     — List an item's reminders (armed, fired, acknowledged).
     Each row's "id" is what unremind takes as reminder_id (and
     ack-reminder, once that reminder has fired).
@@ -476,9 +470,8 @@ Actions:
   release       — Release an item's execution lease when you finish.
     Required: ref. Optional: holder, worker_id (releasing someone
     else's live lease is refused).
-    Idempotent: releasing an absent or expired lease answers
-    released:false with no error, so cleanup never needs to
-    check first.
+    Idempotent: releasing an absent or expired lease answers released:false,
+    no error, so cleanup needs no check first.
   star          — Star an item for quick access.
     Required: ref.
   unstar        — Remove star.
@@ -502,14 +495,12 @@ Actions:
     Optional: limit (default 50, max 300), offset.
     Returns same-workspace rows first, then cross-workspace
     rows (each cross-ws row carries source_workspace_slug).
-    Use this when you need to answer "what other items
-    reference TASK-5?" without scanning the full content
-    corpus.
+    Use it to answer "what other items reference TASK-5?" without scanning
+    all content.
   history       — Read an item's version history (newest-first, read-only).
     Required: ref. Optional: limit (default 50, max 300 —
     the NEWEST N versions), full.
-    Returns a token-light summary per recorded version
-    (id, created_at, created_by, source, change_summary);
+    Returns a token-light summary per version (id, created_at, created_by, source, change_summary);
     the resolved content body is omitted. Restoring a
     version is a web-UI action, not exposed here.
   bulk-update   — Update status/priority across multiple items.
@@ -539,8 +530,8 @@ Actions:
 
 ALWAYS prefer issue refs (TASK-5, IDEA-12) over slugs.
 
-When updating status, include comment="why" so the audit trail tells the team
-WHY the status changed, not just THAT it did.
+When updating status, include comment="why" so the audit trail records WHY, not just THAT it
+changed.
 
 For cross-item search use pad_search.action=query — pad_item.list filters within
 a single query but doesn't do FTS scoring.`

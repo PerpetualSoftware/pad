@@ -115,9 +115,8 @@ Actions:
             DSL example:    fields="status:select:open,done; priority:select:high,medium,low"
             Relation in the DSL: the third part is the TARGET COLLECTION slug,
             not an options list, and it is required —
-            fields="reviewer:relation:people". A relation with no target is
-            refused rather than built, because such a field cannot accept any
-            value.
+            fields="reviewer:relation:people". A relation with no target is refused, since such a field cannot
+            accept any value.
             Schema example: schema={"fields":[{"key":"status","type":"select","options":["new","done"],"terminal_options":["done"]}]}
             Prefer schema when terminal_options matters (driving dashboard
             active/complete counts) or when fields need defaults, computed
@@ -130,8 +129,8 @@ Actions:
                       explicitly set are mutated; everything else is left
                       untouched.
             This is the adaptation primitive for the onboarding playbook
-            (/pad onboard) — rewrite seeded collections to match the
-            project's actual vocabulary instead of template defaults.
+            (/pad onboard): rewrite seeded collections to match the
+            project's vocabulary, not template defaults.
             Removing a field or option that items hold is allowed; they
             keep the value, and warnings.orphaned says how many.
   delete  — Archive a collection: it and its items leave every view. Owner-only.
@@ -148,8 +147,8 @@ Actions:
             Required: workspace, slug (the archived collection's slug from
             list-archived, or its id).
 
-Schema for an individual collection is included in the list response — read it
-from there rather than calling list again. v0.2 does not expose a dedicated
+An individual collection's schema is in the list response: read it there
+rather than calling list again. v0.2 does not expose a dedicated
 read-by-slug action; if you need that, file a feature request.
 
 Use pad_collection when an agent needs to discover collection types or set up

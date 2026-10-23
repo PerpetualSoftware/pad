@@ -163,6 +163,22 @@ var dashboardShape = shapeWith(shapeKeys(
 	"pending_reminders": shapeKeys("item_ref", "item_title", "remind_at", "fired_at"),
 })
 
+// catchUpShape is the catch_up response allow-list (TASK-4035): the digest's
+// own keys. Every line key is a name the model reads; none is a handle.
+var catchUpLineShape = shapeKeys("ref", "title", "collection", "what", "actor", "agent", "at")
+var catchUpSectionShape = shape{"total": keepAll, "lines": catchUpLineShape}
+var catchUpShape = shape{
+	"window":           shapeKeys("since", "until", "has_cursor", "capped_at_ceiling"),
+	"needs_you":        catchUpSectionShape,
+	"finished":         catchUpSectionShape,
+	"new_and_reopened": catchUpSectionShape,
+	"comments":         catchUpSectionShape,
+	"agents": shapeWith(shapeKeys("total"), shape{
+		"groups": shapeWith(shapeKeys("agent", "changes", "items"), shape{"lines": catchUpLineShape}),
+	}),
+	"degraded": keepAll,
+}
+
 var overviewShape = shape{
 	"workspace":        shapeKeys("slug", "name", "description"),
 	"user":             shapeKeys("name"),
@@ -206,6 +222,7 @@ var chatGPTResponseShapes = map[string]shape{
 	"what_next":         shapeList(suggestionShape),
 	"ready_items":       shapeWith(shapeKeys("count"), shape{"results": suggestionShape}),
 	"recent_activity":   shapeList(activityShape),
+	"catch_up":          catchUpShape,
 	"list_playbooks":    shapeList(playbookMetaShape),
 	"get_playbook":      itemShape,
 }

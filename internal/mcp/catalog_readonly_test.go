@@ -107,6 +107,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_project", "changelog"}: {"project", "changelog"},
 		{"pad_project", "report"}:    {"project", "report"},
 		{"pad_project", "activity"}:  {"project", "activity"},
+		{"pad_project", "catch-up"}:  {"project", "catch-up"},
 
 		{"pad_role", "list"}:   {"role", "list"},
 		{"pad_role", "create"}: {"role", "create"},
@@ -279,6 +280,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_project", "changelog"}: {"project", "changelog"},
 		{"pad_project", "report"}:    {"project", "report"},
 		{"pad_project", "activity"}:  {"project", "activity"},
+		{"pad_project", "catch-up"}:  {"project", "catch-up"},
 
 		{"pad_role", "list"}:   {"role", "list"},
 		{"pad_role", "create"}: {"role", "create"},
@@ -589,6 +591,10 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 					"actor":     {Type: "string"},
 					"since":     {Type: "string"},
 				},
+			},
+			"project catch-up": {
+				Summary: "catch-up",
+				Flags:   map[string]cmdhelp.Flag{"workspace": {Type: "string"}},
 			},
 			// Role
 			"role list": {Summary: "list roles", Flags: mkFlags("workspace")},

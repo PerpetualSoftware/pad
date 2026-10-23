@@ -61,17 +61,15 @@ Actions:
   server-info   — Server name + runtime version. Lightweight; no params.
   version       — Full version metadata (pad version, cmdhelp version, tool surface
                   version, MCP protocol version). Same JSON as pad://_meta/version.
-  tool-surface  — catalog dump: every tool managed by the hand-curated
-                  catalog (the ten resource × action tools — pad_set_workspace
-                  is registered separately and not included), its actions, and
-                  its input schema. tools/list also contains pad_set_workspace
-                  and matches the catalog otherwise — the historical cmdhelp
+  tool-surface  — catalog dump: every tool in the hand-curated catalog (the ten resource × action tools;
+  pad_set_workspace is registered separately, not included), its actions, and
+                  its input schema. tools/list also holds pad_set_workspace and otherwise
+                  matches the catalog — the historical cmdhelp
                   walker was retired in TASK-981.
   bootstrap     — Consolidated agent context-load blob (workspace + user + collections
                   + always-on conventions + roles + playbook metadata + dashboard +
                   recent activity). On-demand refresh for agents that didn't get the
-                  resource prefetch, or want a fresh snapshot mid-session after lots
-                  of mutations. Equivalent to pad://workspace/{ws}/bootstrap and to
+                  resource prefetch, or want a fresh snapshot after many mutations. Equivalent to pad://workspace/{ws}/bootstrap and to
                   pad_set_workspace's embedded response.
 
 Use pad_meta when an agent needs to discover server capabilities, regenerate context,
