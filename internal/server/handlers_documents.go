@@ -405,7 +405,11 @@ const maxAgentNameRunes = 64
 // control-laden string into every activity row and timeline chip
 // (BUG-3372).
 func agentNameFromRequest(r *http.Request) string {
-	raw := r.Header.Get("X-Pad-Agent")
+	return normalizeAgentName(r.Header.Get("X-Pad-Agent"))
+}
+
+// TASK-4039 r3: share the header's stored form with chat key validation.
+func normalizeAgentName(raw string) string {
 	if raw == "" {
 		return ""
 	}

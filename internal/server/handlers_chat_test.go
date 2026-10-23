@@ -72,6 +72,58 @@ func TestChat_EnsureDM_CreateThenIdempotent(t *testing.T) {
 	}
 	f.must(f.request("POST", chatBase, "", map[string]any{}), 400, "missing key")
 }
+
+// TASK-4039 r3: human-created DMs must be reachable through X-Pad-Agent.
+func TestChat_Ensure_RejectsUnnormalisedAgentKey(t *testing.T) {
+	t.Setenv("PAD_DISABLE_RATE_LIMITS", "")
+	f := newChatFixture(t)
+	token, err := f.srv.store.CreateSession(f.owner.ID, "web", "", "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{"leading whitespace", " claude"},
+		{"trailing whitespace", "claude "},
+		{"over rune cap", strings.Repeat("x", maxAgentNameRunes+1)},
+		{"embedded control", "cla\u0007ude"},
+		{"normalised", "claude"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]string{"agent_key": tc.key})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest("POST", chatBase, strings.NewReader(string(body)))
+			r.AddCookie(&http.Cookie{Name: "pad_session", Value: token})
+			r.AddCookie(&http.Cookie{Name: "pad_csrf", Value: strings.Repeat("a", 64)})
+			r.Header.Set("X-CSRF-Token", strings.Repeat("a", 64))
+			r.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			f.srv.ServeHTTP(rr, r)
+			if tc.key == "claude" {
+				if rr.Code != 201 {
+					t.Fatalf("valid key: %d %s", rr.Code, rr.Body.String())
+				}
+				return
+			}
+			if rr.Code != 400 {
+				t.Errorf("invalid key: got %d, want 400: %s", rr.Code, rr.Body.String())
+			} else {
+				errorBody := chatObject(t, rr)["error"].(map[string]any)
+				if errorBody["code"] != "validation_error" || errorBody["message"] != "agent_key must be a valid agent name" {
+					t.Errorf("invalid key error: %s", rr.Body.String())
+				}
+			}
+			if remaining := f.srv.rateLimiters.ChatDM.getLimiter(f.owner.ID).Tokens(); remaining != 30 {
+				t.Errorf("invalid key spent a ChatDM token: %v remaining, want 30", remaining)
+			}
+		})
+	}
+}
+
 func TestChat_Send_BodyCannotOverrideAuthor(t *testing.T) {
 	f := newChatFixture(t)
 	path := f.ensure("rook")

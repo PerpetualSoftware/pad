@@ -114,6 +114,11 @@ func (s *Server) handleEnsureChatConversation(w http.ResponseWriter, r *http.Req
 		}
 		in.AgentKey = actor.AgentKey
 	}
+	// TASK-4039 r3: human-created DMs must be reachable through X-Pad-Agent.
+	if actor.AgentKey == "" && normalizeAgentName(in.AgentKey) != in.AgentKey {
+		writeError(w, 400, "validation_error", "agent_key must be a valid agent name")
+		return
+	}
 	// TASK-4039 r2: reject malformed keys before spending a creation token.
 	var invalidKey string
 	switch {

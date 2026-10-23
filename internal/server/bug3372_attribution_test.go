@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -177,12 +176,22 @@ func TestBUG3372_AgentNameIsBounded(t *testing.T) {
 		r.Header.Set("X-Pad-Agent", v)
 		return r
 	}
-	if got := agentNameFromRequest(req("  Claude\tCode \x01")); got != "ClaudeCode" {
-		t.Errorf("control characters: %q, want ClaudeCode", got)
-	}
-	long := agentNameFromRequest(req(strings.Repeat("é", 200)))
-	if utf8.RuneCountInString(long) != maxAgentNameRunes {
-		t.Errorf("long name kept %d runes, want %d", utf8.RuneCountInString(long), maxAgentNameRunes)
+	// TASK-4039 r3: pin header results before sharing its normalization with chat.
+	for _, tc := range []struct{ name, raw, want string }{
+		{"empty", "", ""},
+		{"normalised", "claude", "claude"},
+		{"whitespace", " \t\u2003claude\u00a0\n", "claude"},
+		{"controls", "  Claude\tCode \x01", "ClaudeCode"},
+		{"controls only", "\x01\x02", ""},
+		{"trim after controls", "\x01 claude \x02", "claude"},
+		{"rune cap", strings.Repeat("é", maxAgentNameRunes+1), strings.Repeat("é", maxAgentNameRunes)},
+		{"trim after cap", strings.Repeat("x", maxAgentNameRunes-1) + " y", strings.Repeat("x", maxAgentNameRunes-1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentNameFromRequest(req(tc.raw)); got != tc.want {
+				t.Errorf("agentNameFromRequest(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
 	}
 	if actor, _ := actorFromRequest(req("\x01\x02")); actor != "user" {
 		t.Errorf("a control-only header made the request %q, want user", actor)
