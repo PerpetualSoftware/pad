@@ -694,6 +694,10 @@ agent acts on twice. Only re-send what the server told you it skipped.
 
 #### Upgrading a multi-instance deployment
 
+Worker activity uses a separate namespaced `activity:<user>:<worker>` key
+(`pad:activity:…`, or `pad:<namespace>:activity:…`) with a 30-minute TTL;
+session renewals do not overwrite or extend it.
+
 `PAD_REDIS_URL` now also backs the **session-presence registry** — the list of
 which agent sessions are connected, which `pad push` and the web UI's "Push to
 agent" picker read to decide where a push goes. Previously that registry was
