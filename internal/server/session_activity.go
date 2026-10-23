@@ -116,11 +116,16 @@ if previous and incoming.client_at then
   if ok and type(record) == 'table' and type(record.client_at) == 'table' then
     local old = record.client_at
     local new = incoming.client_at
-    if old.seconds > new.seconds or (old.seconds == new.seconds and old.nanos > new.nanos) then
-      local seconds = old.seconds - new.seconds
-      local window = tonumber(ARGV[3])
-      if seconds < window or (seconds == window and old.nanos <= new.nanos) then
-        return 0
+    -- Corrupt stored timestamps carry no ordering information.
+    if type(old.seconds) == 'number' and type(old.nanos) == 'number'
+        and old.seconds % 1 == 0 and old.nanos % 1 == 0
+        and old.nanos >= 0 and old.nanos < 1000000000 then
+      if old.seconds > new.seconds or (old.seconds == new.seconds and old.nanos > new.nanos) then
+        local seconds = old.seconds - new.seconds
+        local window = tonumber(ARGV[3])
+        if seconds < window or (seconds == window and old.nanos <= new.nanos) then
+          return 0
+        end
       end
     end
   end
