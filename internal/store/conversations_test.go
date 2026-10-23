@@ -560,6 +560,20 @@ func TestSendAdvancesOwnMarker(t *testing.T) {
 	}
 }
 
+// TASK-4038 r4: a malformed owner id is refused as input before any SQL runs.
+func TestEnsureAgentDMValidatesOwner(t *testing.T) {
+	s := testStore(t)
+	for name, owner := range map[string]string{
+		"empty":         "",
+		"NUL":           "owner\x00id",
+		"invalid UTF-8": "owner\xffid",
+	} {
+		if _, _, err := s.EnsureAgentDM(owner, "claude"); !errors.Is(err, ErrInvalidConversationInput) {
+			t.Errorf("%s owner: err = %v, want ErrInvalidConversationInput", name, err)
+		}
+	}
+}
+
 func TestDmKeyUnique(t *testing.T) {
 	s := testStore(t)
 	a, b := chatUser(t, s, "alice"), chatUser(t, s, "bob")

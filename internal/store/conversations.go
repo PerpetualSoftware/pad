@@ -86,8 +86,10 @@ func validateConversationActor(actor models.ConversationActor) error {
 // creating it (and its two member rows) on first use. created reports whether
 // this call made it. Idempotent on dm_key.
 func (s *Store) EnsureAgentDM(ownerUserID, agentKey string) (*models.Conversation, bool, error) {
-	if ownerUserID == "" {
-		return nil, false, invalidConversation("owner is required")
+	// TASK-4038 r4: the same identity check every actor method runs, so a
+	// malformed owner id is an input error rather than a driver error.
+	if err := validateConversationActor(models.ConversationActor{UserID: ownerUserID}); err != nil {
+		return nil, false, err
 	}
 	if err := validateConversationAgentKey(agentKey, false); err != nil {
 		return nil, false, err
