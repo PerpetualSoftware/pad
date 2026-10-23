@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -20,9 +21,20 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
+// requirePSEnv makes missing ps fail rather than skip in the Linux Go CI job.
+const requirePSEnv = "PAD_TEST_REQUIRE_PS"
+
+func skipProcessGroupTest(t *testing.T, why string) {
+	t.Helper()
+	if os.Getenv(requirePSEnv) != "" {
+		t.Fatalf("%s is set, but this test would skip: %s", requirePSEnv, why)
+	}
+	t.Skip(why)
+}
+
 func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	if _, err := exec.LookPath("ps"); err != nil {
-		t.Skip("ps unavailable on PATH (for example, in the Nix build sandbox); the Linux Go CI job has ps and runs this test: " + err.Error())
+		skipProcessGroupTest(t, "ps unavailable on PATH (for example, in the Nix build sandbox); the Linux Go CI job has ps and runs this test: "+err.Error())
 	}
 	const parentExitBound = time.Second
 	if parentExitBound >= cli.SessionActivityHTTPTimeout {
@@ -91,8 +103,8 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	}
 	parentExitElapsed := time.Since(arrivedAt)
 	// The unique server URL identifies this test's child. The lookup uses
-	// ps -A -o pid=,args= (procps on Linux). This test skips without ps,
-	// including in the Nix build sandbox; the Linux Go CI job has ps and runs it.
+	// ps -A -o pid=,args= (procps on Linux). Without ps, this test skips in
+	// the Nix build sandbox but fails when Linux Go CI sets PAD_TEST_REQUIRE_PS.
 	// Capture its pid before signaling so a dead child cannot disappear from
 	// the process list and accidentally satisfy the survival assertion.
 	// Leave time to release the response before the child's HTTP timeout.
