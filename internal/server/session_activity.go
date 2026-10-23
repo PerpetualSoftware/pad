@@ -114,9 +114,9 @@ func (p *RedisSessionPresence) activityKey(userID, workerID string) string {
 // Comparison and expiry changes must share one atomic operation: detached
 // reports can reach different server instances in the opposite order.
 var sessionActivityWriteScript = redis.NewScript(`
-local previous = redis.call('GET', KEYS[1])
+local previous = redis.pcall('GET', KEYS[1])
 local incoming = cjson.decode(ARGV[1])
-if previous and incoming.client_at then
+if type(previous) == 'string' and incoming.client_at then
   local ok, record = pcall(cjson.decode, previous)
   if ok and type(record) == 'table' and type(record.client_at) == 'table' then
     local old = record.client_at
