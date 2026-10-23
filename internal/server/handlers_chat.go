@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -47,7 +48,7 @@ func writeChatError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrConversationNotFound):
 		writeError(w, 404, "not_found", "Conversation not found")
 	// TASK-4039: the store's stricter membership refusal shares the resolver's wire text.
-	case errors.Is(err, store.ErrInvalidConversationInput) && err.Error() == store.ErrInvalidConversationInput.Error()+": context workspace not found":
+	case errors.Is(err, store.ErrContextWorkspaceNotFound):
 		writeError(w, 400, "validation_error", "context workspace not found")
 	case errors.Is(err, store.ErrInvalidConversationInput):
 		writeError(w, 400, "validation_error", err.Error())
@@ -100,7 +101,7 @@ func (s *Server) handleEnsureChatConversation(w http.ResponseWriter, r *http.Req
 	var in struct {
 		AgentKey string `json:"agent_key"`
 	}
-	if err := decodeJSON(r, &in); err != nil {
+	if err := decodeJSON(r, &in); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, 400, "validation_error", "Invalid JSON body")
 		return
 	}
@@ -224,20 +225,36 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "reply_to_seq must be at least 1")
 		return
 	}
+	// TASK-4039 r1: charge admitted members equally for both replay paths and sends.
+	if !s.allowChatSend(w, c.ID, actor) {
+		return
+	}
 	contextID := ""
 	if in.ContextWorkspace != "" {
 		access := s.AuthorizeCrossWorkspaceRead(r, in.ContextWorkspace, CrossWorkspaceWorkspaceOnlyScope())
 		if !access.Allowed {
+			if in.OpKey != "" {
+				msg, found, err := s.store.ReplayConversationMessage(actor, c.ID, in.OpKey)
+				if err != nil {
+					writeChatError(w, err)
+					return
+				}
+				if found {
+					messages, refs := s.enrichChatMessages(r, actor, []models.ConversationMessage{*msg})
+					writeJSON(w, 200, chatSendResponse{Message: messages[0], Replayed: true, Refs: refs})
+					return
+				}
+			}
 			writeError(w, 400, "validation_error", "context workspace not found")
 			return
 		}
 		contextID = access.Workspace.ID
 	}
-	// TASK-4039: charge only admitted members; retries spend the same token as sends.
-	if !s.allowChatSend(w, c.ID, actor) {
-		return
+	// TASK-4039 r1: source and authorship share the wire and in-process bearer signal.
+	source := "web"
+	if isBearerAuth(r) {
+		source = "cli"
 	}
-	_, source := actorFromRequest(r)
 	result, err := s.store.SendConversationMessage(models.ConversationSend{ConversationID: c.ID, Author: actor, Body: in.Body, ReplyToSeq: in.ReplyToSeq, OpKey: in.OpKey, Source: source, ContextWorkspaceID: contextID})
 	if err != nil {
 		writeChatError(w, err)

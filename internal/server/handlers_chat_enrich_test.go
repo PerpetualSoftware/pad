@@ -264,3 +264,26 @@ func TestChat_Refs_TokenAllowListHonoured(t *testing.T) {
 		t.Fatalf("allow-list context leak: %v", m)
 	}
 }
+
+// TASK-4039 r1: bare refs without context do not consume lookup slots.
+func TestChat_Refs_ContextlessRefsDoNotConsumeCap(t *testing.T) {
+	f := newChatEnrichFixture(t)
+	p := f.ensure("rook")
+	item := f.seedItem()
+	var body strings.Builder
+	for i := 1; i <= 50; i++ {
+		fmt.Fprintf(&body, "[[TASK-%d]] ", i)
+	}
+	fmt.Fprintf(&body, "[[%s::%s]]", f.wsSlug, item.Ref)
+	rr := f.request("POST", p+"/messages", "", map[string]any{"body": body.String()})
+	f.must(rr, 201, "send mixed refs")
+	refs := chatRefs(t, rr)
+	if len(refs) != 51 || refs[50]["state"] != "visible" || refs[50]["title"] != item.Title {
+		t.Fatalf("real ref pushed past cap: %v", refs)
+	}
+	for _, ref := range refs[:50] {
+		if ref["state"] != "unresolved" || ref["workspace"] != "" {
+			t.Fatalf("contextless ref: %v", ref)
+		}
+	}
+}

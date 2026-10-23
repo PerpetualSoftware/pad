@@ -27,6 +27,7 @@ func (s *Server) enrichChatMessages(r *http.Request, actor models.ConversationAc
 	contexts := make(map[string]*chatContextWorkspace)
 	type refKey struct{ workspace, ref string }
 	seen := make(map[refKey]bool)
+	lookups := 0
 	for _, m := range messages {
 		msg := newChatMsg(actor, m)
 		if m.Deleted {
@@ -60,8 +61,9 @@ func (s *Server) enrichChatMessages(r *http.Request, actor models.ConversationAc
 				continue
 			}
 			seen[key] = true
-			// TASK-4039: the cap makes no visibility claim about overflow.
-			if len(seen) <= 50 && workspace != "" {
+			// TASK-4039 r1: context-less refs spend no lookup slot; overflow stays unresolved.
+			if workspace != "" && lookups < 50 {
+				lookups++
 				ref = s.resolveChatRef(r, ref)
 			}
 			refs = append(refs, ref)

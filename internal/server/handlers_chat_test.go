@@ -101,51 +101,74 @@ func TestChat_Send_BodyCannotOverrideAuthor(t *testing.T) {
 	}
 }
 func TestChat_Send_CookieSessionIgnoresAgentHeader(t *testing.T) {
-	f := newChatFixture(t)
-	path := f.ensure("rook")
-	token, err := f.srv.store.CreateSession(f.owner.ID, "web", "", "", time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := httptest.NewRequest("POST", path+"/messages", strings.NewReader(`{"body":"human"}`))
-	r.AddCookie(&http.Cookie{Name: "pad_session", Value: token})
-	r.AddCookie(&http.Cookie{Name: "pad_csrf", Value: strings.Repeat("a", 64)})
-	r.Header.Set("X-CSRF-Token", strings.Repeat("a", 64))
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("X-Pad-Agent", "rook")
-	rr := httptest.NewRecorder()
-	f.srv.ServeHTTP(rr, r)
-	f.must(rr, 201, "cookie send")
-	m := chatMessage(t, rr)
-	if m["author_is_human"] != true || m["mine"] != true || m["author_agent_key"] != "" || m["source"] != "web" {
-		t.Fatalf("cookie must author as human: %v", m)
-	}
-	conv, _ := f.srv.store.GetConversationByNumber(models.ConversationActor{UserID: f.owner.ID}, 1)
-	page, err := f.srv.store.ListConversationMessages(models.ConversationActor{UserID: f.owner.ID}, conv.ID, nil, nil, 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page.Messages[0].AuthorAgentKey != "" {
-		t.Fatalf("stored cookie author = %q, want human", page.Messages[0].AuthorAgentKey)
+	for _, authorization := range []string{"", "Basic xyz"} {
+		t.Run(authorization, func(t *testing.T) {
+			f := newChatFixture(t)
+			path := f.ensure("rook")
+			token, err := f.srv.store.CreateSession(f.owner.ID, "web", "", "", time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest("POST", path+"/messages", strings.NewReader(`{"body":"human"}`))
+			r.AddCookie(&http.Cookie{Name: "pad_session", Value: token})
+			r.AddCookie(&http.Cookie{Name: "pad_csrf", Value: strings.Repeat("a", 64)})
+			r.Header.Set("X-CSRF-Token", strings.Repeat("a", 64))
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("X-Pad-Agent", "rook")
+			r.Header.Set("Authorization", authorization)
+			rr := httptest.NewRecorder()
+			f.srv.ServeHTTP(rr, r)
+			if authorization != "" {
+				// TASK-4039 r1: TokenAuth rejects a stray Basic header before session auth.
+				f.must(rr, 401, "cookie with non-Bearer authorization")
+				if chatObject(t, rr)["error"].(map[string]any)["message"] != "Invalid authorization header format" {
+					t.Fatal(rr.Body.String())
+				}
+				return
+			}
+			f.must(rr, 201, "cookie send")
+			m := chatMessage(t, rr)
+			if m["author_is_human"] != true || m["mine"] != true || m["author_agent_key"] != "" || m["source"] != "web" {
+				t.Fatalf("cookie must author as human: %v", m)
+			}
+			conv, _ := f.srv.store.GetConversationByNumber(models.ConversationActor{UserID: f.owner.ID}, 1)
+			page, err := f.srv.store.ListConversationMessages(models.ConversationActor{UserID: f.owner.ID}, conv.ID, nil, nil, 50)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if page.Messages[0].AuthorAgentKey != "" {
+				t.Fatalf("stored cookie author = %q, want human", page.Messages[0].AuthorAgentKey)
+			}
+		})
 	}
 }
 func TestChat_Send_RemoteMCPWithoutNameRefused(t *testing.T) {
 	f := newChatFixture(t)
 	path := f.ensure("rook")
-	for _, name := range []string{"", "rook"} {
-		r := httptest.NewRequest("POST", path+"/messages", strings.NewReader(`{"body":"mcp"}`))
-		r.Header.Set("Authorization", "Bearer "+f.ownerTok)
-		r.Header.Set("X-Pad-Agent", name)
-		r = r.WithContext(WithRemoteMCPCaller(r.Context(), RemoteMCPCaller{}))
-		rr := httptest.NewRecorder()
-		f.srv.ServeHTTP(rr, r)
-		if name == "" {
-			f.must(rr, 403, "unnamed MCP")
-			if !strings.Contains(rr.Body.String(), "agent_name_required") {
-				t.Fatal(rr.Body.String())
+	for _, inProcess := range []bool{false, true} {
+		for _, name := range []string{"", "rook"} {
+			r := httptest.NewRequest("POST", path+"/messages", strings.NewReader(`{"body":"mcp"}`))
+			if inProcess {
+				// TASK-4039 r1: the dispatcher authenticates through context, without a header.
+				r = r.WithContext(WithAPITokenAuth(WithCurrentUser(r.Context(), f.owner)))
+			} else {
+				r.Header.Set("Authorization", "Bearer "+f.ownerTok)
 			}
-		} else {
-			f.must(rr, 201, "named MCP")
+			r.Header.Set("X-Pad-Agent", name)
+			r = r.WithContext(WithRemoteMCPCaller(r.Context(), RemoteMCPCaller{}))
+			rr := httptest.NewRecorder()
+			f.srv.ServeHTTP(rr, r)
+			if name == "" {
+				f.must(rr, 403, "unnamed MCP")
+				if !strings.Contains(rr.Body.String(), "agent_name_required") {
+					t.Fatal(rr.Body.String())
+				}
+			} else {
+				f.must(rr, 201, "named MCP")
+				if chatMessage(t, rr)["source"] != "cli" {
+					t.Fatal(rr.Body.String())
+				}
+			}
 		}
 	}
 }
@@ -637,34 +660,127 @@ func TestChat_NonMemberAdminCookieGets404(t *testing.T) {
 	}
 }
 
-// TASK-4039: HTTP replay remains usable after context membership is removed.
+// TASK-4039 r1: an identical retry survives each kind of context access loss.
 func TestChat_Send_OpKeyReplayAfterContextMembershipRemoved(t *testing.T) {
-	f := newChatFixture(t)
-	p := f.ensure("rook")
-
-	contextOwner := mkUser(t, f.srv, "context-owner-chat@example.com")
-	ws, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Chat context", OwnerID: contextOwner.ID})
-	if err != nil {
-		t.Fatal(err)
+	for _, loss := range []string{"member removed", "workspace soft-deleted", "token access lost"} {
+		t.Run(loss, func(t *testing.T) {
+			f := newChatEnrichFixture(t)
+			p := f.ensure("rook")
+			denial := f.request("POST", p+"/messages", "", map[string]any{"body": "hello", "context_workspace": "unknown-workspace"})
+			f.must(denial, 400, "unknown context")
+			body := map[string]any{"body": "[[TASK-1]] stored with context", "op_key": "with-context", "context_workspace": f.wsID}
+			first := f.request("POST", p+"/messages", "rook", body)
+			f.must(first, 201, "send with context")
+			firstMessage := chatMessage(t, first)
+			switch loss {
+			case "member removed":
+				if err := f.srv.store.RemoveWorkspaceMember(f.wsID, f.owner.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "workspace soft-deleted":
+				if err := f.srv.store.DeleteWorkspace(f.wsSlug); err != nil {
+					t.Fatal(err)
+				}
+			}
+			retry := func() *httptest.ResponseRecorder {
+				t.Helper()
+				raw, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := httptest.NewRequest("POST", p+"/messages", strings.NewReader(string(raw)))
+				r.Header.Set("Authorization", "Bearer "+f.ownerTok)
+				r.Header.Set("X-Pad-Agent", "rook")
+				r.Header.Set("Content-Type", "application/json")
+				if loss == "token access lost" {
+					r = r.WithContext(WithTokenAllowedWorkspaces(r.Context(), []string{"another-workspace"}))
+				}
+				rr := httptest.NewRecorder()
+				f.srv.ServeHTTP(rr, r)
+				return rr
+			}
+			rr := retry()
+			f.must(rr, 200, "identical replay after context loss")
+			m := chatMessage(t, rr)
+			if chatObject(t, rr)["replayed"] != true || m["id"] != firstMessage["id"] || m["seq"] != firstMessage["seq"] || m["body"] != body["body"] {
+				t.Fatal(rr.Body.String())
+			}
+			if strings.Contains(rr.Body.String(), f.wsID) || strings.Contains(rr.Body.String(), f.wsSlug) || strings.Contains(rr.Body.String(), "context_workspace") {
+				t.Fatalf("lost context leaked: %s", rr.Body.String())
+			}
+			if refs := chatRefs(t, rr); len(refs) != 1 || refs[0]["state"] != "unresolved" || refs[0]["workspace"] != "" {
+				t.Fatalf("replay refs: %v", refs)
+			}
+			for _, key := range []string{"new-key", ""} {
+				body["op_key"] = key
+				rr = retry()
+				f.must(rr, 400, "lost context with no prior op_key")
+				if rr.Body.String() != denial.Body.String() {
+					t.Fatalf("context denial changed: %s / %s", rr.Body.String(), denial.Body.String())
+				}
+			}
+		})
 	}
-	for _, member := range []struct{ id, role string }{{contextOwner.ID, "owner"}, {f.owner.ID, "editor"}} {
-		if err := f.srv.store.AddWorkspaceMember(ws.ID, member.id, member.role); err != nil {
-			t.Fatal(err)
+}
+
+// TASK-4039 r1: both replay paths spend exactly one token and share exhaustion.
+func TestChat_RateLimit_ReplayAfterContextLoss(t *testing.T) {
+	t.Setenv("PAD_DISABLE_RATE_LIMITS", "")
+	for _, sends := range []int{19, 20} {
+		for _, lost := range []bool{false, true} {
+			t.Run(fmt.Sprintf("sends=%d/lost=%v", sends, lost), func(t *testing.T) {
+				f := newChatEnrichFixture(t)
+				p := f.ensure("rook")
+				body := map[string]any{"body": "original", "op_key": "once", "context_workspace": f.wsID}
+				f.must(f.request("POST", p+"/messages", "rook", body), 201, "original")
+				for i := 1; i < sends; i++ {
+					f.must(f.request("POST", p+"/messages", "rook", map[string]any{"body": "fill"}), 201, "fill bucket")
+				}
+				if lost {
+					if err := f.srv.store.RemoveWorkspaceMember(f.wsID, f.owner.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				rr := f.request("POST", p+"/messages", "rook", body)
+				want := 200
+				if sends == 20 {
+					want = 429
+				}
+				f.must(rr, want, "replay bucket parity")
+				if want == 200 && chatObject(t, rr)["replayed"] != true {
+					t.Fatal(rr.Body.String())
+				}
+				rr = f.request("POST", p+"/messages", "rook", map[string]any{"body": "original", "op_key": "once"})
+				f.must(rr, 429, "normal replay after bucket exhausted")
+				if rr.Header().Get("X-RateLimit-Remaining") != "0" {
+					t.Fatalf("remaining: %v", rr.Header())
+				}
+			})
 		}
 	}
-	first := f.request("POST", p+"/messages", "rook", map[string]any{"body": "stored with context", "op_key": "with-context", "context_workspace": ws.ID})
-	f.must(first, 201, "send with context")
-	firstMessage := chatMessage(t, first)
-	if err := f.srv.store.RemoveWorkspaceMember(ws.ID, f.owner.ID); err != nil {
-		t.Fatal(err)
-	}
-	rr := f.request("POST", p+"/messages", "rook", map[string]any{"body": "replacement", "op_key": "with-context"})
-	f.must(rr, 200, "replay after workspace access loss")
-	m := chatMessage(t, rr)
-	if chatObject(t, rr)["replayed"] != true || m["id"] != firstMessage["id"] || m["seq"] != firstMessage["seq"] || m["body"] != "stored with context" {
-		t.Fatal(rr.Body.String())
-	}
-	if strings.Contains(rr.Body.String(), ws.ID) || strings.Contains(rr.Body.String(), "context_workspace") {
-		t.Fatal(rr.Body.String())
+}
+
+func TestChat_EnsureDM_EmptyBody(t *testing.T) {
+	for _, agent := range []string{"rook", ""} {
+		t.Run(agent, func(t *testing.T) {
+			f := newChatFixture(t)
+			r := httptest.NewRequest("POST", chatBase, nil)
+			r.Header.Set("Authorization", "Bearer "+f.ownerTok)
+			r.Header.Set("X-Pad-Agent", agent)
+			rr := httptest.NewRecorder()
+			f.srv.ServeHTTP(rr, r)
+			if agent == "" {
+				f.must(rr, 400, "human still requires agent_key")
+				if chatObject(t, rr)["error"].(map[string]any)["message"] != "invalid conversation input: agent key is required" {
+					t.Fatal(rr.Body.String())
+				}
+			} else {
+				f.must(rr, 201, "agent empty body")
+				c := chatObject(t, rr)["conversation"].(map[string]any)
+				if c["agent_key"] != agent || chatObject(t, rr)["created"] != true {
+					t.Fatal(rr.Body.String())
+				}
+			}
+		})
 	}
 }
