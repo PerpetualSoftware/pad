@@ -85,12 +85,18 @@ func TestSessionActivityTimestampOrdering(t *testing.T) {
 				check(t, false)
 			})
 			t.Run("legacy clears ordering", func(t *testing.T) {
+				post(t, tok.Token, "idle", t2, 204)
 				post(t, tok.Token, "busy", "absent", 204)
 				check(t, true)
 				post(t, tok.Token, "idle", t1, 204)
 				check(t, false)
 				post(t, tok.Token, "busy", "2000-01-01T00:00:00Z", 204)
 				check(t, true) // A year-long gap is a clock step, not a reorder.
+			})
+			t.Run("timestamped after legacy applies", func(t *testing.T) {
+				post(t, tok.Token, "idle", "absent", 204)
+				post(t, tok.Token, "busy", t1, 204)
+				check(t, true)
 			})
 			t.Run("malformed timestamp", func(t *testing.T) {
 				post(t, tok.Token, "idle", "absent", 204)
@@ -215,6 +221,21 @@ func TestSessionActivityReceiptExpiry(t *testing.T) {
 			if err != nil || got[presenceWorkerA] {
 				t.Fatalf("stale write refreshed busy TTL: %v %v", got, err)
 			}
+			t.Run("expired record does not order next write", func(t *testing.T) {
+				clientAt := now
+				if err := p.SetActivity("A", presenceWorkerA, false, now, &clientAt); err != nil {
+					t.Fatal(err)
+				}
+				advance(sessionActivityTTL + time.Second)
+				older := clientAt.Add(-time.Nanosecond)
+				if err := p.SetActivity("A", presenceWorkerA, true, now, &older); err != nil {
+					t.Fatal(err)
+				}
+				got, err := p.BusyWorkers("A", []string{presenceWorkerA})
+				if err != nil || !got[presenceWorkerA] {
+					t.Fatalf("expired record blocked older write: %v %v", got, err)
+				}
+			})
 		})
 	}
 }

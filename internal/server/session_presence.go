@@ -304,8 +304,10 @@ type SessionIdentity struct {
 type SessionPresence interface {
 	// SetActivity records activity for this credential user and worker,
 	// independently of any connection. Entries expire 30 minutes after the
-	// server receipt time at. A strictly older clientAt is ignored; nil always
-	// applies and clears the ordering timestamp.
+	// server receipt time at. A strictly older clientAt is ignored only when
+	// its gap from the stored timestamp is within reorderWindow (inclusive).
+	// A larger gap applies as a clock step. A nil clientAt always applies and
+	// clears the ordering timestamp.
 	SetActivity(userID, workerID string, busy bool, at time.Time, clientAt *time.Time) error
 	// BusyWorkers reads this user's activity in one batch, ignoring empty
 	// and duplicate workers and expired records. On error, known states may
