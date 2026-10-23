@@ -26,6 +26,7 @@ var (
 )
 
 const (
+	maxConversationIDBytes   = 128
 	maxConversationBodyBytes = 64 * 1024
 	maxConversationSource    = 32
 	maxConversationOpKey     = 128
@@ -80,6 +81,14 @@ func validateConversationActor(actor models.ConversationActor) error {
 		return invalidConversation("user id must be valid UTF-8 without NUL bytes")
 	}
 	return validateConversationAgentKey(actor.AgentKey, true)
+}
+
+// TASK-4038 r6: malformed ids name no conversation; reject them before SQL.
+func validateConversationID(id string) error {
+	if id == "" || len(id) > maxConversationIDBytes || strings.ContainsRune(id, 0) || !utf8.ValidString(id) {
+		return ErrConversationNotFound
+	}
+	return nil
 }
 
 // EnsureAgentDM returns the owner's direct conversation with the agent,
@@ -172,6 +181,9 @@ func scanConversation(row rowScanner) (*models.Conversation, error) {
 
 // GetConversation returns a conversation the actor is a member of.
 func (s *Store) GetConversation(actor models.ConversationActor, id string) (*models.Conversation, error) {
+	if err := validateConversationID(id); err != nil {
+		return nil, err
+	}
 	if err := validateConversationActor(actor); err != nil {
 		return nil, err
 	}
@@ -206,7 +218,11 @@ func (s *Store) GetConversationByNumber(actor models.ConversationActor, number i
 // checks the author is a member. A send whose op_key was already used by the
 // same author in the same conversation is rolled back (no seq is spent) and
 // returns the stored message with Replayed set, whatever body it carried.
+// TASK-4038 r6: sends leave both read and delivered markers unchanged.
 func (s *Store) SendConversationMessage(in models.ConversationSend) (*models.ConversationSendResult, error) {
+	if err := validateConversationID(in.ConversationID); err != nil {
+		return nil, err
+	}
 	if err := validateConversationActor(in.Author); err != nil {
 		return nil, err
 	}
@@ -252,6 +268,14 @@ func (s *Store) SendConversationMessage(in models.ConversationSend) (*models.Con
 	return res, nil
 }
 
+// TASK-4038 r6: the literal nonempty op_key term lets the partial index be used.
+const conversationOpKeyLookup = `SELECT seq FROM conversation_messages
+	WHERE conversation_id = ? AND author_user_id = ? AND author_agent_key = ? AND op_key = ? AND op_key <> ''`
+
+const conversationOpKeyLookupWithMembership = conversationOpKeyLookup + `
+	AND EXISTS (SELECT 1 FROM conversation_members cm
+		WHERE cm.conversation_id = conversation_messages.conversation_id AND cm.user_id = ? AND cm.agent_key = ?)`
+
 func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models.ConversationSendResult, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -276,12 +300,7 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 			// then-conversation lock order stays intact; this path writes nothing.
 			if in.OpKey != "" {
 				var prior int64
-				err := tx.QueryRow(s.q(`
-					SELECT seq FROM conversation_messages
-					WHERE conversation_id = ? AND author_user_id = ? AND author_agent_key = ? AND op_key = ?
-					AND EXISTS (SELECT 1 FROM conversation_members cm
-						WHERE cm.conversation_id = conversation_messages.conversation_id AND cm.user_id = ? AND cm.agent_key = ?)
-				`), in.ConversationID, in.Author.UserID, in.Author.AgentKey, in.OpKey, in.Author.UserID, in.Author.AgentKey).Scan(&prior)
+				err := tx.QueryRow(s.q(conversationOpKeyLookupWithMembership), in.ConversationID, in.Author.UserID, in.Author.AgentKey, in.OpKey, in.Author.UserID, in.Author.AgentKey).Scan(&prior)
 				if err == nil {
 					msg, err := s.conversationMessageBySeq(tx, in.ConversationID, prior)
 					if err != nil {
@@ -317,10 +336,7 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 
 	if in.OpKey != "" {
 		var prior int64
-		err := tx.QueryRow(s.q(`
-			SELECT seq FROM conversation_messages
-			WHERE conversation_id = ? AND author_user_id = ? AND author_agent_key = ? AND op_key = ?
-		`), in.ConversationID, in.Author.UserID, in.Author.AgentKey, in.OpKey).Scan(&prior)
+		err := tx.QueryRow(s.q(conversationOpKeyLookup), in.ConversationID, in.Author.UserID, in.Author.AgentKey, in.OpKey).Scan(&prior)
 		if err == nil {
 			msg, err := s.conversationMessageBySeq(tx, in.ConversationID, prior)
 			if err != nil {
@@ -362,15 +378,10 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 		return nil, fmt.Errorf("insert message: %w", err)
 	}
 
-	// The author has seen and received their own message.
-	if _, err := tx.Exec(s.q(`
-		UPDATE conversation_members SET
-			read_seq = CASE WHEN read_seq < ? THEN ? ELSE read_seq END,
-			delivered_seq = CASE WHEN delivered_seq < ? THEN ? ELSE delivered_seq END
-		WHERE conversation_id = ? AND user_id = ? AND agent_key = ?
-	`), seq, seq, seq, seq, in.ConversationID, in.Author.UserID, in.Author.AgentKey); err != nil {
-		return nil, fmt.Errorf("advance author marker: %w", err)
-	}
+	// TASK-4038 r6: leave both markers alone: high-water marks would cover
+	// the other side's unseen messages. "Replying marks read" is the client's
+	// job via MarkConversationRead with the seq it actually displayed;
+	// delivered_seq moves only through MarkConversationDelivered.
 
 	msg, err := s.conversationMessageBySeq(tx, in.ConversationID, seq)
 	if err != nil {
@@ -464,6 +475,9 @@ func (s *Store) conversationMessageBySeq(q Queryer, convID string, seq int64) (*
 // messages; before returns the newest limit below that seq; after returns the
 // oldest limit above it. Both cursors are refused.
 func (s *Store) ListConversationMessages(actor models.ConversationActor, convID string, before, after *int64, limit int) (*models.ConversationPage, error) {
+	if err := validateConversationID(convID); err != nil {
+		return nil, err
+	}
 	if err := validateConversationActor(actor); err != nil {
 		return nil, err
 	}
@@ -545,6 +559,9 @@ func (s *Store) ListConversationMessages(actor models.ConversationActor, convID 
 // DeleteConversationMessage tombstones an authorized member's message while
 // retaining its row and sequence, including on repeated deletes (TASK-4038).
 func (s *Store) DeleteConversationMessage(actor models.ConversationActor, convID string, seq int64) (*models.ConversationMessage, bool, error) {
+	if err := validateConversationID(convID); err != nil {
+		return nil, false, err
+	}
 	if err := validateConversationActor(actor); err != nil {
 		return nil, false, err
 	}
@@ -599,6 +616,9 @@ func (s *Store) DeleteConversationMessage(actor models.ConversationActor, convID
 
 // MarkConversationRead advances the member's read marker, capped at last_seq (TASK-4038).
 func (s *Store) MarkConversationRead(actor models.ConversationActor, convID string, toSeq int64) (int64, error) {
+	if err := validateConversationID(convID); err != nil {
+		return 0, err
+	}
 	if err := validateConversationActor(actor); err != nil {
 		return 0, err
 	}
@@ -607,6 +627,9 @@ func (s *Store) MarkConversationRead(actor models.ConversationActor, convID stri
 
 // MarkConversationDelivered advances the delivery marker with the same cap (TASK-4038).
 func (s *Store) MarkConversationDelivered(actor models.ConversationActor, convID string, toSeq int64) (int64, error) {
+	if err := validateConversationID(convID); err != nil {
+		return 0, err
+	}
 	if err := validateConversationActor(actor); err != nil {
 		return 0, err
 	}

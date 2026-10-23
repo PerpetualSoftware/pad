@@ -643,26 +643,154 @@ func TestSendReplyTo(t *testing.T) {
 	}
 }
 
-func TestSendAdvancesOwnMarker(t *testing.T) {
+// TASK-4038 r6: sending must not acknowledge unseen messages from the other side.
+func TestSendLeavesMarkersAlone(t *testing.T) {
+	for _, scenario := range []string{"unseen human messages", "plain send"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := testStore(t)
+			u := chatUser(t, s, "alice")
+			c := chatDM(t, s, u, "claude")
+			human := models.ConversationActor{UserID: u.ID}
+			agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+			marks := func(actor models.ConversationActor) {
+				t.Helper()
+				var rs, ds int64
+				if err := s.db.QueryRow(s.q(`SELECT read_seq, delivered_seq FROM conversation_members WHERE conversation_id = ? AND user_id = ? AND agent_key = ?`), c.ID, actor.UserID, actor.AgentKey).Scan(&rs, &ds); err != nil {
+					t.Fatal(err)
+				}
+				if rs != 0 || ds != 0 {
+					t.Errorf("%q markers = %d/%d, want 0/0", actor.AgentKey, rs, ds)
+				}
+			}
+			if scenario == "unseen human messages" {
+				chatSend(t, s, c.ID, human, "m1", "", nil)
+				chatSend(t, s, c.ID, human, "m2", "", nil)
+				marks(agent)
+				r := chatSend(t, s, c.ID, agent, "m3", "", nil)
+				if r.Message.Seq != 3 {
+					t.Fatalf("m3 seq = %d, want 3", r.Message.Seq)
+				}
+				marks(agent)
+				for _, tc := range []struct {
+					actor models.ConversationActor
+					want  int
+				}{{agent, 2}, {human, 1}} {
+					rows, total, err := s.UnreadSummary(tc.actor)
+					if err != nil || len(rows) != 1 || total != tc.want {
+						t.Errorf("%q unread = %+v total=%d, want %d: %v", tc.actor.AgentKey, rows, total, tc.want, err)
+					} else if rows[0].ConversationID != c.ID || rows[0].Unread != tc.want {
+						t.Errorf("%q unread row = %+v, want conversation %s unread %d", tc.actor.AgentKey, rows[0], c.ID, tc.want)
+					}
+				}
+			} else {
+				r := chatSend(t, s, c.ID, human, "hi", "", nil)
+				marks(human)
+				marks(agent)
+				if len(r.Recipients) != 1 || r.Recipients[0] != agent {
+					t.Fatalf("recipients = %+v", r.Recipients)
+				}
+			}
+		})
+	}
+}
+
+// TASK-4038 r6: explain the actual replay queries, including the context-loss fallback.
+func TestOpKeyLookupUsesPartialIndex(t *testing.T) {
+	s := testStore(t)
+	if s.dialect.Driver() == DriverPostgres {
+		t.Skip("SQLite query plan test")
+	}
+	for _, tc := range []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{"normal replay", conversationOpKeyLookup, []any{"conversation", "user", "claude", "op"}},
+		{"context loss replay", conversationOpKeyLookupWithMembership, []any{"conversation", "user", "claude", "op", "user", "claude"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := s.db.Query(s.q("EXPLAIN QUERY PLAN "+tc.query), tc.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var plan []string
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+					t.Fatal(err)
+				}
+				plan = append(plan, detail)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(strings.Join(plan, "\n"), "uq_conversation_messages_op_key") {
+				t.Errorf("lookup does not use uq_conversation_messages_op_key: %v", plan)
+			}
+		})
+	}
+}
+
+// TASK-4038 r6: malformed ids name no conversation, regardless of the SQL driver.
+func TestMalformedConversationIDIsNotFound(t *testing.T) {
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
-	c := chatDM(t, s, u, "claude")
-	r := chatSend(t, s, c.ID, models.ConversationActor{UserID: u.ID}, "hi", "", nil)
-	marks := func(agent string) (int64, int64) {
-		var rs, ds int64
-		if err := s.db.QueryRow(s.q(`SELECT read_seq, delivered_seq FROM conversation_members WHERE conversation_id = ? AND user_id = ? AND agent_key = ?`), c.ID, u.ID, agent).Scan(&rs, &ds); err != nil {
-			t.Fatal(err)
+	actor := models.ConversationActor{UserID: u.ID}
+	methods := []struct {
+		name string
+		call func(string) error
+	}{
+		{"GetConversation", func(id string) error {
+			_, err := s.GetConversation(actor, id)
+			return err
+		}},
+		{"ListConversationMessages", func(id string) error {
+			_, err := s.ListConversationMessages(actor, id, nil, nil, 10)
+			return err
+		}},
+		{"DeleteConversationMessage", func(id string) error {
+			_, _, err := s.DeleteConversationMessage(actor, id, 1)
+			return err
+		}},
+		{"MarkConversationRead", func(id string) error {
+			_, err := s.MarkConversationRead(actor, id, 1)
+			return err
+		}},
+		{"MarkConversationDelivered", func(id string) error {
+			_, err := s.MarkConversationDelivered(actor, id, 1)
+			return err
+		}},
+		{"SendConversationMessage", func(id string) error {
+			_, err := s.SendConversationMessage(models.ConversationSend{ConversationID: id, Author: actor, Body: "hello"})
+			return err
+		}},
+	}
+	for _, state := range []string{"open database", "closed database"} {
+		if state == "closed database" {
+			if err := s.db.Close(); err != nil {
+				t.Fatal(err)
+			}
 		}
-		return rs, ds
-	}
-	if rs, ds := marks(""); rs != r.Message.Seq || ds != r.Message.Seq {
-		t.Fatalf("author markers = %d/%d, want %d/%d", rs, ds, r.Message.Seq, r.Message.Seq)
-	}
-	if rs, ds := marks("claude"); rs != 0 || ds != 0 {
-		t.Fatalf("recipient markers moved: %d/%d", rs, ds)
-	}
-	if len(r.Recipients) != 1 || r.Recipients[0].AgentKey != "claude" {
-		t.Fatalf("recipients = %+v", r.Recipients)
+		t.Run(state, func(t *testing.T) {
+			for _, method := range methods {
+				t.Run(method.name, func(t *testing.T) {
+					for _, input := range []struct{ name, id string }{
+						{"NUL", "conversation\x00id"},
+						{"invalid UTF-8", "conversation\xff"},
+						{"empty", ""},
+						{"too long", strings.Repeat("x", 129)},
+					} {
+						t.Run(input.name, func(t *testing.T) {
+							if err := method.call(input.id); !errors.Is(err, ErrConversationNotFound) {
+								t.Errorf("malformed id: got %v, want ErrConversationNotFound", err)
+							}
+						})
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -792,6 +920,10 @@ func TestListMessagesPaging(t *testing.T) {
 	me := models.ConversationActor{UserID: u.ID}
 	for i := 1; i <= 10; i++ {
 		chatSend(t, s, c.ID, me, fmt.Sprintf("m%d", i), "", nil)
+	}
+	// TASK-4038 r6: page metadata reflects an explicit client acknowledgement.
+	if _, err := s.MarkConversationRead(me, c.ID, 10); err != nil {
+		t.Fatal(err)
 	}
 	// A tombstone stays in the page.
 	if _, err := s.db.Exec(s.q(`UPDATE conversation_messages SET body = '', deleted_at = ? WHERE conversation_id = ? AND seq = 8`), nowNano(), c.ID); err != nil {
@@ -996,8 +1128,11 @@ func TestUnreadExcludesOwnAndDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	chatSend(t, s, c2.ID, models.ConversationActor{UserID: u.ID, AgentKey: "codex"}, "other DM", "", nil)
-	// TASK-4038: isolate the unread predicate from the sender's automatic marker.
-	if _, err := s.db.Exec(s.q(`UPDATE conversation_members SET read_seq = 0 WHERE conversation_id = ?`), c.ID); err != nil {
+	// TASK-4038 r6: delivery acknowledgements are explicit and independent of reads.
+	if _, err := s.MarkConversationDelivered(human, c.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkConversationDelivered(agent, c.ID, 3); err != nil {
 		t.Fatal(err)
 	}
 	check := func(actor models.ConversationActor, wantRows, wantTotal int) []models.ConversationUnread {
@@ -1040,6 +1175,13 @@ func TestListConversations(t *testing.T) {
 	chatSend(t, s, c2.ID, models.ConversationActor{UserID: u.ID, AgentKey: "codex"}, "older", "", nil)
 	first := chatSend(t, s, c1.ID, human, "human", "", nil).Message
 	last := chatSend(t, s, c1.ID, models.ConversationActor{UserID: u.ID, AgentKey: "claude"}, "newest", "", &first.Seq).Message
+	// TASK-4038 r6: the inbox exposes markers explicitly acknowledged by each client.
+	if _, err := s.MarkConversationRead(human, c1.ID, first.Seq); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkConversationRead(models.ConversationActor{UserID: u.ID, AgentKey: "claude"}, c1.ID, last.Seq); err != nil {
+		t.Fatal(err)
+	}
 	// TASK-4038: the highest seq remains the preview even with the oldest timestamp.
 	if _, err := s.db.Exec(s.q(`UPDATE conversation_messages SET created_at = ? WHERE id = ?`), "2000-01-01T00:00:00.000000000Z", last.ID); err != nil {
 		t.Fatal(err)
