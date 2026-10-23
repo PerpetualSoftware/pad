@@ -92,7 +92,8 @@ func TestChat_GuardHandlersDoNotReferenceEmitters(t *testing.T) {
 }
 func TestChat_ResponsesNeverCarryRawIdentifiers(t *testing.T) {
 	f := newChatFixture(t)
-	f.ensure("rook")
+	p := f.ensure("rook")
+	f.must(f.request("POST", p+"/messages", "", map[string]any{"body": "[[TASK-999999]]", "context_workspace": f.wsSlug}), 201, "seed context")
 	for _, tc := range chatRouteCases() {
 		rr := rawReq(f.srv, tc.method, tc.path, f.ownerTok, "", tc.body)
 		if rr.Code >= 300 {
@@ -103,7 +104,7 @@ func TestChat_ResponsesNeverCarryRawIdentifiers(t *testing.T) {
 			switch x := v.(type) {
 			case map[string]any:
 				for k, val := range x {
-					for _, bad := range []string{"owner_user_id", "dm_key", "author_user_id", "context_workspace_id", "op_key", "context_workspace", "refs"} {
+					for _, bad := range []string{"owner_user_id", "dm_key", "author_user_id", "context_workspace_id", "op_key"} {
 						if k == bad {
 							t.Errorf("%s %s leaks %s", tc.method, tc.path, k)
 						}

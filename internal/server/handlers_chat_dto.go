@@ -35,21 +35,23 @@ type chatLastMessage struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 type chatMsg struct {
-	ID             string                    `json:"id"`
-	ConversationID string                    `json:"conversation_id"`
-	Seq            int64                     `json:"seq"`
-	AuthorAgentKey string                    `json:"author_agent_key"`
-	AuthorIsHuman  bool                      `json:"author_is_human"`
-	Mine           bool                      `json:"mine"`
-	Source         string                    `json:"source"`
-	Body           string                    `json:"body"`
-	ReplyToSeq     *int64                    `json:"reply_to_seq,omitempty"`
-	ReplyTo        *models.ConversationQuote `json:"reply_to,omitempty"`
-	CreatedAt      time.Time                 `json:"created_at"`
-	Deleted        bool                      `json:"deleted"`
-	DeletedAt      *time.Time                `json:"deleted_at,omitempty"`
+	ContextWorkspace *chatContextWorkspace     `json:"context_workspace,omitempty"`
+	ID               string                    `json:"id"`
+	ConversationID   string                    `json:"conversation_id"`
+	Seq              int64                     `json:"seq"`
+	AuthorAgentKey   string                    `json:"author_agent_key"`
+	AuthorIsHuman    bool                      `json:"author_is_human"`
+	Mine             bool                      `json:"mine"`
+	Source           string                    `json:"source"`
+	Body             string                    `json:"body"`
+	ReplyToSeq       *int64                    `json:"reply_to_seq,omitempty"`
+	ReplyTo          *models.ConversationQuote `json:"reply_to,omitempty"`
+	CreatedAt        time.Time                 `json:"created_at"`
+	Deleted          bool                      `json:"deleted"`
+	DeletedAt        *time.Time                `json:"deleted_at,omitempty"`
 }
 type chatMessagesResponse struct {
+	Refs      []chatRef `json:"refs"`
 	Messages  []chatMsg `json:"messages"`
 	OldestSeq int64     `json:"oldest_seq"`
 	NewestSeq int64     `json:"newest_seq"`
@@ -58,8 +60,9 @@ type chatMessagesResponse struct {
 	HasMore   bool      `json:"has_more"`
 }
 type chatSendResponse struct {
-	Message  chatMsg `json:"message"`
-	Replayed bool    `json:"replayed"`
+	Refs     []chatRef `json:"refs"`
+	Message  chatMsg   `json:"message"`
+	Replayed bool      `json:"replayed"`
 }
 
 func newChatConversation(c models.Conversation, agentKey string) chatConversation {

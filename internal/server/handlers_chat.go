@@ -46,6 +46,9 @@ func writeChatError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrConversationNotFound):
 		writeError(w, 404, "not_found", "Conversation not found")
+	// TASK-4039: the store's stricter membership refusal shares the resolver's wire text.
+	case errors.Is(err, store.ErrInvalidConversationInput) && err.Error() == store.ErrInvalidConversationInput.Error()+": context workspace not found":
+		writeError(w, 400, "validation_error", "context workspace not found")
 	case errors.Is(err, store.ErrInvalidConversationInput):
 		writeError(w, 400, "validation_error", err.Error())
 	case errors.Is(err, store.ErrConversationForbidden):
@@ -182,10 +185,8 @@ func (s *Server) handleListChatMessages(w http.ResponseWriter, r *http.Request) 
 		writeChatError(w, err)
 		return
 	}
-	out := chatMessagesResponse{Messages: make([]chatMsg, 0, len(page.Messages)), OldestSeq: page.OldestSeq, NewestSeq: page.NewestSeq, LastSeq: page.LastSeq, ReadSeq: page.ReadSeq, HasMore: page.HasMore}
-	for _, m := range page.Messages {
-		out.Messages = append(out.Messages, newChatMsg(actor, m))
-	}
+	out := chatMessagesResponse{OldestSeq: page.OldestSeq, NewestSeq: page.NewestSeq, LastSeq: page.LastSeq, ReadSeq: page.ReadSeq, HasMore: page.HasMore}
+	out.Messages, out.Refs = s.enrichChatMessages(r, actor, page.Messages)
 	writeJSON(w, 200, out)
 }
 func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
@@ -198,9 +199,10 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Body       string `json:"body"`
-		ReplyToSeq *int64 `json:"reply_to_seq"`
-		OpKey      string `json:"op_key"`
+		Body             string `json:"body"`
+		ReplyToSeq       *int64 `json:"reply_to_seq"`
+		OpKey            string `json:"op_key"`
+		ContextWorkspace string `json:"context_workspace"`
 	}
 	if err := decodeJSONWithLimit(r, &in, 128*1024); err != nil {
 		writeError(w, 400, "validation_error", "Invalid JSON body (maximum 128 KiB)")
@@ -222,12 +224,21 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "validation_error", "reply_to_seq must be at least 1")
 		return
 	}
+	contextID := ""
+	if in.ContextWorkspace != "" {
+		access := s.AuthorizeCrossWorkspaceRead(r, in.ContextWorkspace, CrossWorkspaceWorkspaceOnlyScope())
+		if !access.Allowed {
+			writeError(w, 400, "validation_error", "context workspace not found")
+			return
+		}
+		contextID = access.Workspace.ID
+	}
 	// TASK-4039: charge only admitted members; retries spend the same token as sends.
 	if !s.allowChatSend(w, c.ID, actor) {
 		return
 	}
 	_, source := actorFromRequest(r)
-	result, err := s.store.SendConversationMessage(models.ConversationSend{ConversationID: c.ID, Author: actor, Body: in.Body, ReplyToSeq: in.ReplyToSeq, OpKey: in.OpKey, Source: source})
+	result, err := s.store.SendConversationMessage(models.ConversationSend{ConversationID: c.ID, Author: actor, Body: in.Body, ReplyToSeq: in.ReplyToSeq, OpKey: in.OpKey, Source: source, ContextWorkspaceID: contextID})
 	if err != nil {
 		writeChatError(w, err)
 		return
@@ -236,7 +247,8 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if result.Replayed {
 		status = 200
 	}
-	writeJSON(w, status, chatSendResponse{Message: newChatMsg(actor, result.Message), Replayed: result.Replayed})
+	messages, refs := s.enrichChatMessages(r, actor, []models.ConversationMessage{result.Message})
+	writeJSON(w, status, chatSendResponse{Message: messages[0], Replayed: result.Replayed, Refs: refs})
 }
 func (s *Server) handleDeleteChatMessage(w http.ResponseWriter, r *http.Request) {
 	actor, ok := chatActor(w, r)

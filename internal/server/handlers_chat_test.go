@@ -76,7 +76,7 @@ func TestChat_Send_BodyCannotOverrideAuthor(t *testing.T) {
 	f := newChatFixture(t)
 	path := f.ensure("rook")
 	other := mkUser(t, f.srv, "other-chat@example.com")
-	rr := f.request("POST", path+"/messages", "rook", map[string]any{"body": "hello", "author_user_id": other.ID, "author_agent_key": "forged", "source": "forged", "seq": 900, "agent_key": "forged", "context_workspace": "ignored-in-part-A"})
+	rr := f.request("POST", path+"/messages", "rook", map[string]any{"body": "hello", "author_user_id": other.ID, "author_agent_key": "forged", "source": "forged", "seq": 900, "agent_key": "forged", "context_workspace": f.wsSlug})
 	f.must(rr, 201, "send")
 	m := chatMessage(t, rr)
 	if m["author_agent_key"] != "rook" || m["source"] != "cli" || m["seq"] != float64(1) || m["mine"] != true || m["author_is_human"] != false {
@@ -90,7 +90,7 @@ func TestChat_Send_BodyCannotOverrideAuthor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Messages[0].AuthorUserID != f.owner.ID || page.Messages[0].AuthorAgentKey != "rook" || page.Messages[0].Source != "cli" || page.Messages[0].ContextWorkspaceID != nil {
+	if page.Messages[0].AuthorUserID != f.owner.ID || page.Messages[0].AuthorAgentKey != "rook" || page.Messages[0].Source != "cli" || page.Messages[0].ContextWorkspaceID == nil || *page.Messages[0].ContextWorkspaceID != f.wsID {
 		t.Fatalf("stored author: %+v", page.Messages[0])
 	}
 	rr = f.request("GET", path+"/messages", "", nil)
@@ -637,8 +637,7 @@ func TestChat_NonMemberAdminCookieGets404(t *testing.T) {
 	}
 }
 
-// TASK-4039: replay remains usable for messages the store persisted with context
-// even though Part A does not yet accept that context through HTTP.
+// TASK-4039: HTTP replay remains usable after context membership is removed.
 func TestChat_Send_OpKeyReplayAfterContextMembershipRemoved(t *testing.T) {
 	f := newChatFixture(t)
 	p := f.ensure("rook")
@@ -653,22 +652,16 @@ func TestChat_Send_OpKeyReplayAfterContextMembershipRemoved(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	actor := models.ConversationActor{UserID: f.owner.ID, AgentKey: "rook"}
-	c, err := f.srv.store.GetConversationByNumber(actor, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := f.srv.store.SendConversationMessage(models.ConversationSend{ConversationID: c.ID, Author: actor, Body: "stored with context", Source: "cli", OpKey: "with-context", ContextWorkspaceID: ws.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := f.request("POST", p+"/messages", "rook", map[string]any{"body": "stored with context", "op_key": "with-context", "context_workspace": ws.ID})
+	f.must(first, 201, "send with context")
+	firstMessage := chatMessage(t, first)
 	if err := f.srv.store.RemoveWorkspaceMember(ws.ID, f.owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	rr := f.request("POST", p+"/messages", "rook", map[string]any{"body": "replacement", "op_key": "with-context"})
 	f.must(rr, 200, "replay after workspace access loss")
 	m := chatMessage(t, rr)
-	if chatObject(t, rr)["replayed"] != true || m["id"] != first.Message.ID || m["seq"] != float64(first.Message.Seq) || m["body"] != "stored with context" {
+	if chatObject(t, rr)["replayed"] != true || m["id"] != firstMessage["id"] || m["seq"] != firstMessage["seq"] || m["body"] != "stored with context" {
 		t.Fatal(rr.Body.String())
 	}
 	if strings.Contains(rr.Body.String(), ws.ID) || strings.Contains(rr.Body.String(), "context_workspace") {
