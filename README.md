@@ -682,16 +682,20 @@ The plugin's Claude Code hooks report activity through `pad session activity`:
 the hook returns immediately and sends the report in a detached background
 process, so a prompt never waits on the network. `UserPromptSubmit` sets busy
 and `Stop` clears it. Client timestamps keep a late busy report from overwriting
-a newer idle report. Claude Code fires no `Stop` when the user interrupts a turn
+a newer idle report within a 10-second reorder window; larger gaps apply as
+clock steps. Claude Code fires no `Stop` when the user interrupts a turn
 with Esc, so an interrupted session reads busy until its record expires 30
 minutes after the prompt report reaches the server. Nothing refreshes the record
 mid-turn: a single turn longer than 30 minutes reads `online` or
 `connected_not_accepting` for the rest of the turn, according to its armed state.
-`pad session activity` exits 0 silently on every failure, including bad arguments
-and flag errors. As for every command, `--help` still prints help to stdout;
-the shipped hooks never pass it. The hooks discard output because
-`UserPromptSubmit` stdout reaches the model. Activity reporting does not change
-push consent.
+For `pad session activity`, argument errors, flag errors, configuration failures,
+network failures and spawn failures are silent and exit 0. `--help` prints help
+to stdout; the shipped hooks never pass it. An OS-level kill cannot be converted
+to exit 0. If session identity cannot be resolved within 500ms, that report is
+sent without a worker id and the server drops it with `400 invalid_worker_id`.
+The next prompt or stop retries resolution and corrects activity once identity
+resolves. The hooks discard output because `UserPromptSubmit` stdout reaches
+the model. Activity reporting does not change push consent.
 
 ## License
 

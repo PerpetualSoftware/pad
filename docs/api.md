@@ -172,9 +172,13 @@ session id.
 `{"state":"idle"}`, with an optional client timestamp `at` in RFC3339 or
 RFC3339Nano format (for example `{"state":"busy","at":"2026-10-23T12:00:00.123456789Z"}`),
 and requires a valid `X-Pad-Worker`. Success is `204` with no body, including
-when a stale report is ignored. A timestamp strictly older than the stored
-client timestamp is ignored; an equal or newer timestamp applies. A report
-without `at` always applies and clears the stored client timestamp, so the
+when a reordered report is ignored. A report is ignored only when both it and
+the stored record carry client timestamps, its timestamp is strictly older,
+and the gap is at most 10 seconds (inclusive). This reorder window covers the
+child's three-second bound plus spawn and scheduling slack for reports racing
+in flight. An older timestamp beyond the window applies as a clock step;
+an equal or newer timestamp also applies. A report without `at` always applies
+and clears the stored client timestamp, so the
 next timestamped report wins. Missing or malformed worker: `400 invalid_worker_id`;
 malformed body, timestamp, or any other state: `400 validation_error`.
 It records activity under the credential's user plus worker, independently of
@@ -207,9 +211,13 @@ state. Either failure logs one warning per request and the list still answers
 server startup. It captures the client timestamp and returns immediately while
 a detached background child sends the report, so a prompt never waits on the
 network. The child has a three-second overall deadline and a two-second HTTP
-request timeout within it. It exits 0 silently on every failure, including
-spawn failures, bad arguments and flag errors. As for every command, `--help`
-still prints help to stdout; the shipped hooks never pass it. It is not an MCP tool.
+request timeout within it. Argument errors, flag errors, configuration failures,
+network failures and spawn failures are silent and exit 0. `--help` prints help
+to stdout; the shipped hooks never pass it. An OS-level kill cannot be converted
+to exit 0. If session identity cannot be resolved within 500ms, that report is
+sent without a worker id and the server drops it with `400 invalid_worker_id`.
+The next prompt or stop retries resolution and corrects activity once identity
+resolves. It is not an MCP tool.
 
 ### Workspace-pinned tokens (BUG-3982)
 
