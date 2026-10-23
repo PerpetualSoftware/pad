@@ -990,16 +990,25 @@ func catchUpCmd() *cobra.Command {
 others finished, created, reopened, commented on, or did as agents since you
 last pressed Mark caught up (at most 14 days back).
 
-Read-only. It never moves your cursor; Mark caught up is done in the web UI.`,
+Read-only. It never moves your cursor; Mark caught up is done in the web UI.
+
+--format json prints the server's JSON, re-indented.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
-			raw, cu, err := client.GetCatchUp(getWorkspace())
+			raw, err := client.GetCatchUp(getWorkspace())
 			if err != nil {
 				return err
 			}
 			if formatFlag == "json" {
+				// The server's JSON, re-indented, with no typed decode: a
+				// server-side shape change must not break json consumers
+				// (TASK-4035, rulings eedbf63d and cb588bde).
 				return cli.PrintJSON(raw)
+			}
+			cu, err := cli.DecodeCatchUp(raw)
+			if err != nil {
+				return err
 			}
 			md := formatFlag == "markdown"
 			out := os.Stdout

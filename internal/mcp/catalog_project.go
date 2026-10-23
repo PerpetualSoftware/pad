@@ -104,7 +104,7 @@ Actions:
                Optional: limit (default 20), actor (user | agent),
                since (ISO date).
   catch-up   — Your own catch-up digest: what needs you, and what others
-               finished, created, commented on or did as agents since you
+               finished, created, reopened, commented on or did as agents since you
                last marked caught up (max 14 days). Never marks caught up.
                Required: workspace.
 

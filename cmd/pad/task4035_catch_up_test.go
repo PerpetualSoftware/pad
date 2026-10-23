@@ -84,7 +84,7 @@ func TestCatchUpCommand_JSON(t *testing.T) {
 	gj, _ := json.Marshal(got)
 	wj, _ := json.Marshal(want)
 	if string(gj) != string(wj) {
-		t.Errorf("stdout is not the response verbatim (a section or field was dropped):\n got %s\nwant %s", gj, wj)
+		t.Errorf("stdout dropped a section or field of the response (it is the server's JSON, re-indented):\n got %s\nwant %s", gj, wj)
 	}
 }
 
@@ -164,6 +164,29 @@ func TestCatchUpCommand_ErrorSurfaces(t *testing.T) {
 		}
 		if len(rec.reqs) != 1 || !strings.HasPrefix(rec.reqs[0], "GET ") {
 			t.Errorf("status %d: requests = %v", code, rec.reqs)
+		}
+	}
+}
+
+// A body whose field type the CLI struct does not hold: json prints the
+// server's JSON anyway, table and markdown refuse (TASK-4035, rulings
+// eedbf63d and cb588bde).
+func TestCatchUpCommand_JSONSkipsTypedDecode(t *testing.T) {
+	body := strings.Replace(catchUpBody(true, false, ""), `"comments":{"total":0,"lines":[]}`, `"comments":{"total":"seven","lines":[]}`, 1)
+	if !strings.Contains(body, `"seven"`) {
+		t.Fatal("fixture did not take the bad field")
+	}
+	out, err := runCatchUp(t, &catchUpRecorder{body: body}, "json")
+	if err != nil {
+		t.Fatalf("json errored on a valid body of an unknown shape: %v", err)
+	}
+	if !strings.Contains(out, `"seven"`) {
+		t.Errorf("json output lost the retyped field:\n%s", out)
+	}
+	for _, format := range []string{"table", "markdown"} {
+		out, err := runCatchUp(t, &catchUpRecorder{body: body}, format)
+		if err == nil {
+			t.Errorf("%s: no error on a body the typed decode cannot hold; stdout:\n%s", format, out)
 		}
 	}
 }
