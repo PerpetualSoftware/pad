@@ -354,187 +354,114 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "rationale", Type: "string", Description: "Reasoning behind the decision. Optional for: decide."},
 }
 
-const padItemToolDescription = `Item operations — the consolidated CRUD + relationships + comments + notes surface.
+const padItemToolDescription = `Item operations — CRUD, relationships, comments and notes.
 
 Actions:
-  create        — Create a new item.
+  create — Create an item.
     Required: collection, title.
-    Optional: status, priority, category, content, parent, role, assign, tags,
-    field, fields.
-    Use the dedicated top-level params (status / priority / category / parent
-    / role / assign / tags) for those fields; the dispatcher rolls them into the item's fields JSON. 'field' is the escape hatch for SCHEMA-DECLARED custom fields without a
-    dedicated param: an array of "key=value" strings. The 'fields' OBJECT (the shape reads return, e.g.
-    {"status":"done","effort":"l"}) is an equivalent write form; a key with
-    CONFLICTING values in two places is refused, not resolved.
-    'tags' is a JSON array of strings (e.g. ["v1","frontend"]), NOT a
-    comma-separated string.
-  update        — Update an item by ref.
-    Required: ref. At least one mutable field.
+    Optional: status, priority, category, content, parent, role, assign, tags, field, fields.
+    Use dedicated params for those fields. Custom schema fields use field:
+    ["key=value"] or the equivalent fields OBJECT (as returned by reads).
+    Conflicting values for one key across inputs are refused.
+    tags is an array of strings, not comma-separated text.
+  update — Update an item; field writes MERGE only supplied keys.
+    Required: ref, at least one mutable field.
     Optional: title, status, priority, content, role, assign, parent, comment, tags,
-    field, fields, expected_seq, expected_updated_at, overwrite_pending_edits,
-    replace.
-    Same placement rules as create. Field updates MERGE server-side: only
-    the keys you set change. Pass expected_seq (the seq you last read, on every item and list summary) to fail with code=update_conflict
-    if the item changed since; the details carry actual_seq. PREFER IT over
-    expected_updated_at, which cannot tell two writes inside one second
-    apart.
-    A 'content' write REPLACES the whole body, so send expected_seq with
-    it: read (get), edit that body, write it back with the seq you read.
-    On update_conflict with details.content_write, do NOT resend your
-    body (it would undo the change you missed): re-read, apply your edit
-    to the CURRENT content, and send that with the new seq. To overwrite
-    on purpose, send replace=true instead of a seq. A content write with
-    neither is flagged warnings.unguarded_content_write, and a later
-    release refuses it.
-    Writing 'content' while a browser tab has the item open goes to that
-    live document: the response echoes what you SENT with
-    warnings.content_outcome="applied_pending_flush" (it describes the
-    write, not the row), and a read before a tab saves still returns the
-    PREVIOUS content. That is lag, not a failed write: re-read later (get, or list with full=true; a default list carries no content), never
-    re-send. Nothing guarantees that save, so do not wait on it in a loop. The editor may normalise
-    the stored markdown, so compare on meaning, not bytes.
-  delete        — Archive an item.
-    Required: ref.
-  restore       — Un-archive (restore) a soft-deleted item by ref.
-    Required: ref.
-  get           — Read an item.
-    Required: ref. Optional: lines ("40-80": numbered body lines plus
-    seq, for quoting a patch's anchors).
-  patch         — Replace exact text in an item's body without sending all of it.
-    Required: ref, and edits ([{old, new, line_hint?}]) or undo (a patch_id
-    from an earlier patch answer, to invert it). Optional: expected_seq.
-    Each old must occur EXACTLY ONCE in the current body (quote more
-    context, or pass line_hint to pick among exact matches); edits apply
-    in order, all or nothing. The answer is a unified diff of what changed:
-    read it. Anchors guarantee position, not meaning: if the text around
-    your anchor was rewritten, the edit still lands. A moved expected_seq
-    does not refuse: the patch applies and returns rebased=true with the
-    intervening writes (complete=false when some left no record). On an
-    item open in an editor, the editor applies it to its live document,
-    merging with the typing there, and the answer carries
-    content_state="applied_pending_flush". Refusals write nothing:
-    patch_anchor_missing / patch_anchor_ambiguous (re-read, quote current
-    text), patch_unstable_roundtrip (the open editor would also change
-    content you did not edit: send a whole-body update instead) and
-    patch_room_open (an older editor that cannot apply patches holds it).
-  list          — List items, optionally filtered.
-    Optional: collection, status, priority, parent, unparented, role, assign, all, limit, full.
-    parent and unparented are mutually exclusive. Results are
-    summary-shaped (no content bodies) unless full=true.
-  move          — Move an item to a different collection.
-    Required: ref, target_collection.
-  link          — Create a relationship between two items.
-    Required: ref, target, link_type.
+    field, fields, expected_seq, expected_updated_at, overwrite_pending_edits, replace.
+    Same input placement as create. Prefer expected_seq (the seq from get/list)
+    over expected_updated_at: it detects writes within the same second.
+    A stale seq returns update_conflict with details.actual_seq.
+    content REPLACES the body: get, edit, then send with expected_seq.
+    On update_conflict with details.content_write, re-read and apply your edit
+    to CURRENT content; never resend your stale body. replace=true deliberately
+    overwrites instead of checking a seq. Without either guard the response carries
+    warnings.unguarded_content_write; a later release will refuse it.
+    With an open browser editor, warnings.content_outcome="applied_pending_flush"
+    echoes what you SENT, while get/list(full=true) can return PREVIOUS content.
+    Saving is not guaranteed: re-read later, never resend or wait in a loop.
+    Markdown may normalize; compare meaning, not bytes.
+  delete — Archive an item. Required: ref.
+  restore — Restore an archived item. Required: ref.
+  get — Read an item. Required: ref.
+    Optional: lines ("40-80": numbered body lines plus seq, for patch anchors).
+  patch — Replace exact body text without resending the whole body.
+    Required: ref, edits ([{old, new, line_hint?}]) OR undo (a prior patch_id).
+    Optional: expected_seq.
+    Each old must match EXACTLY ONCE; quote more context or use line_hint
+    to choose among exact matches. Edits apply in order, all or nothing.
+    Read the returned unified diff: anchors guarantee position, not meaning.
+    A changed expected_seq permits rebasing: rebased=true includes intervening
+    writes (complete=false when some left no record). An open editor applies
+    the patch to its live document with content_state="applied_pending_flush".
+    Refusals write nothing: patch_anchor_missing / patch_anchor_ambiguous
+    need fresh anchors; patch_unstable_roundtrip requires a whole-body update
+    because the editor would change unrelated text; patch_room_open means
+    an older editor cannot apply patches.
+  list — List items. Optional: collection, status, priority, parent,
+    unparented, role, assign, all, limit, full.
+    parent and unparented are exclusive. No content bodies unless full=true.
+  move — Change collection. Required: ref, target_collection.
+  link — Add a relationship. Required: ref, target, link_type.
     link_type: blocks | blocked-by | supersedes | implements | split-from.
-  unlink        — Remove a relationship.
-    Required: ref, target, link_type.
-  deps          — Show all dependencies (incoming + outgoing) for an item.
-    Required: ref.
-  context       — One brief before starting work: the item, parents
-    with acceptance criteria, matching conventions, deps, links.
-    Required: ref. Optional: intent, role, budget.
-  link-pr       — Link a pull request to an item, from metadata you
-    supply; nothing is fetched from GitHub.
-    Required: ref, pr_number, pr_url. Optional: pr_title,
-    pr_state, pr_branch, pr_repo. Linking again replaces the
-    link. Answers with the item.
-  unlink-pr     — Remove an item's PR link. Required: ref.
-  remind        — Arm a one-shot reminder that fires at a specific instant.
-    Required: ref, remind_at (RFC3339 INSTANT — a bare date is
-    refused, since it names a 24-hour span rather than a moment).
-    When it fires, the item appears in pad_project next/ready
-    carrying the reminder_id, until you acknowledge it. Use this
-    when you defer work: it is how you ask to be reminded.
-  ack-reminder  — Acknowledge a fired reminder so it leaves next/ready.
-    Required: reminder_id (from the fired suggestion, or from
-    the response when you armed it — NOT the item ref, since an
-    item can carry several reminders).
-    Nothing else acknowledges one: completing the item does not, since a reminder may be armed to fire
-    after the work is done.
-  reminders     — List an item's reminders (armed, fired, acknowledged).
-    Each row's "id" is what unremind takes as reminder_id (and
-    ack-reminder, once that reminder has fired).
-    Required: ref.
-  unremind      — Disarm (delete) a reminder.
-    Required: reminder_id (from reminders, or from the response
-    when you armed it).
-  claim         — Atomically claim an item for execution (lease with expiry).
-    Required: ref. Optional: holder, worker_id, ttl (Go duration,
-    default 15m, max 24h). Answers with your worker_id.
-    Exactly one concurrent claimer wins; the loser gets a 409
-    naming the live holder and expiry — log it and skip, don't
-    retry in a loop. Re-claim while you hold it to extend the
-    expiry (heartbeat). The lease expires on its own: a crashed
-    holder blocks nobody past the TTL, and there is no reaper
-    to wait for.
-  release       — Release an item's execution lease when you finish.
-    Required: ref. Optional: holder, worker_id (releasing someone
-    else's live lease is refused).
-    Idempotent: releasing an absent or expired lease answers released:false,
-    no error, so cleanup needs no check first.
-  star          — Star an item for quick access.
-    Required: ref.
-  unstar        — Remove star.
-    Required: ref.
-  starred       — List starred items.
-    Optional: all.
-  comment       — Add a comment.
-    Required: ref, message.
-    Optional: reply_to (comment ID for threaded reply).
-  list-comments — List comments on an item. Each carries its id and
-    edited (true once its body has been changed).
-    Required: ref.
-  edit-comment  — Replace a comment's body. Only its author may.
+  unlink — Remove a relationship. Required: ref, target, link_type.
+  deps — Read incoming/outgoing dependencies. Required: ref.
+  context — Work brief: item, parents' acceptance criteria, matching
+    conventions, deps and links. Required: ref. Optional: intent, role, budget.
+  link-pr — Link supplied GitHub metadata; nothing is fetched.
+    Required: ref, pr_number, pr_url.
+    Optional: pr_title, pr_state, pr_branch, pr_repo.
+    Replaces any previous link; returns the item.
+  unlink-pr — Remove a PR link. Required: ref.
+  remind — Schedule a one-shot reminder. Required: ref, remind_at (RFC3339
+    instant; bare dates refused). Fired reminders appear in next/ready with
+    reminder_id until acknowledged. Use when deferring work.
+  ack-reminder — Acknowledge a fired reminder.
+    Required: reminder_id (from remind/reminders/next/ready, NOT item ref).
+    Completing an item does not acknowledge it: a reminder can fire afterward.
+  reminders — List armed/fired/acknowledged reminders.
+    Required: ref. Each row's id is the reminder_id for ack-reminder/unremind.
+  unremind — Delete a reminder. Required: reminder_id.
+  claim — Atomically claim an execution lease.
+    Required: ref. Optional: holder, worker_id, ttl (Go duration; default 15m,
+    max 24h). Returns worker_id. One concurrent claimer wins; a loser's 409
+    names holder and expiry. Skip it, never retry in a loop.
+    Reclaim to heartbeat; expired leases stop blocking without a reaper.
+  release — Release a lease. Required: ref. Optional: holder, worker_id.
+    Cannot release another holder's live lease. Absent/expired leases return
+    released:false without error; no precheck needed.
+  star — Star an item. Required: ref.
+  unstar — Remove star. Required: ref.
+  starred — List starred items. Optional: all.
+  comment — Add a comment. Required: ref, message.
+    Optional: reply_to (parent comment ID).
+  list-comments — List comments with id and edited flag. Required: ref.
+  edit-comment — Replace a comment body (author only).
     Required: ref, comment_id, message.
-  delete-comment — Delete a comment. Anyone who may edit the item may.
-    One that still has replies becomes a placeholder (deleted: true,
-    empty body) its replies stay under; it goes when its last reply does.
-    Required: ref, comment_id.
-  backlinks     — List inbound [[...]] references to an item ("Mentioned in").
-    Required: ref.
-    Optional: limit (default 50, max 300), offset.
-    Returns same-workspace rows first, then cross-workspace
-    rows (each cross-ws row carries source_workspace_slug).
-    Use it to answer "what other items reference TASK-5?" without scanning
-    all content.
-  history       — Read an item's version history (newest-first, read-only).
-    Required: ref. Optional: limit (default 50, max 300 —
-    the NEWEST N versions), full.
-    Returns a token-light summary per version (id, created_at, created_by, source, change_summary);
-    the resolved content body is omitted. Restoring a
-    version is a web-UI action, not exposed here.
-  bulk-update   — Update status/priority across multiple items.
-    Required: refs (array of refs, e.g. ["TASK-5", "TASK-8"]),
-    AND at least one of status / priority.
-  note          — Append an implementation note to an item.
-    Required: ref, summary.
-    Optional: details.
-  decide        — Record a decision on an item.
-    Required: ref, decision.
-    Optional: rationale.
-  export        — Export a playbook or convention as a portable artifact.
-    Required: ref (PLAYB-N / CONVE-N, or slug).
-    Returns the artifact TEXT (YAML frontmatter + Markdown
-    body) as the tool result — ready to hand to import in
-    another workspace. Only playbooks and conventions are
-    exportable; the server rejects any other item type.
-    Read-only / side-effect-free.
-  import        — Import a portable artifact as a new DRAFT item.
-    Required: artifact (the full artifact text a prior
-    export produced).
-    Creates a playbook or convention draft (the server
-    gates by the artifact's collection) and returns
-    {ref, slug, warnings}. The item lands as a draft —
-    review and activate it afterward. Mutating but not
-    destructive (creates an item, like create).
+  delete-comment — Delete a comment (item editors may).
+    Required: ref, comment_id. Replies keep a deleted:true, empty-body
+    placeholder until its last reply is deleted.
+  backlinks — Read inbound [[...]] references.
+    Required: ref. Optional: limit (default 50, max 300), offset.
+    Same-workspace rows precede cross-workspace rows (source_workspace_slug).
+  history — Read newest-first version summaries.
+    Required: ref. Optional: limit (newest 50 by default, max 300), full.
+    Summaries: id, created_at, created_by, source, change_summary.
+    full includes resolved content; restoring is web-only.
+  bulk-update — Set status/priority on several items.
+    Required: refs (array), at least one of status / priority.
+  note — Append an implementation note. Required: ref, summary. Optional: details.
+  decide — Record a decision. Required: ref, decision. Optional: rationale.
+  export — Export a playbook/convention only.
+    Required: ref (PLAYB-N / CONVE-N or slug).
+    Read-only artifact TEXT: YAML frontmatter + Markdown body, ready to import.
+  import — Create a playbook/convention DRAFT from an artifact.
+    Required: artifact (full export text).
+    Returns {ref, slug, warnings}; review and activate afterward.
+    Additive creation, not destructive.
 
-ALWAYS prefer issue refs (TASK-5, IDEA-12) over slugs.
-
-When updating status, include comment="why" so the audit trail records WHY, not just THAT it
-changed.
-
-For cross-item search use pad_search.action=query — pad_item.list filters within
-a single query but doesn't do FTS scoring.`
+Prefer issue refs (TASK-5, IDEA-12) over slugs.
+Include comment="why" with status changes for the audit trail.
+Use pad_search.action=query for cross-item FTS; list only filters.`
 
 // itemLinkOp describes one direction (link or unlink) of a link_type
 // — the cmdPath to invoke, the snake_case input keys the CLI's

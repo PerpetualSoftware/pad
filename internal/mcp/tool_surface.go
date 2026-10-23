@@ -63,6 +63,7 @@ type toolSurfaceToolSummary struct {
 //   - pad_project:    all read (dashboard/next/ready/stale/standup/
 //     changelog/report/activity).
 //   - pad_role:       list read; create/update/delete write.
+//   - pad_chat:       list/inbox read; show/send/delete/read write.
 //   - pad_search:     query read.
 //   - pad_playbook:   list/get read; run is side-effect-free (returns the
 //     body + bound args for the agent to execute) → read; match is a
@@ -71,6 +72,7 @@ type toolSurfaceToolSummary struct {
 //   - pad_attachment: list/show read (metadata only; no upload/download).
 //   - pad_meta:       server-info/version/tool-surface/bootstrap all read.
 var readOnlyActions = map[string]map[string]bool{
+	"pad_chat": {"list": true, "inbox": true},
 	"pad_item": {
 		"reminders":     true,
 		"get":           true,

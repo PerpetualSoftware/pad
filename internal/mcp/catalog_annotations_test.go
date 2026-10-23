@@ -54,6 +54,7 @@ func TestCatalogTools_AnnotationsExplicit(t *testing.T) {
 		"pad_item":       destructive,
 		"pad_collection": destructive,
 		"pad_role":       destructive,
+		"pad_chat":       destructive,
 	}
 
 	seen := map[string]bool{}
