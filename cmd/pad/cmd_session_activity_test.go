@@ -2,11 +2,26 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestSessionActivityHookProcess(t *testing.T) {
+	if os.Getenv("PAD_TEST_ACTIVITY_HOOK") != "1" {
+		return
+	}
+	root := newRootCmd()
+	root.SetArgs([]string{"--url", os.Getenv("PAD_TEST_ACTIVITY_URL"), "session", "activity", "busy"})
+	if root.Execute() != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
 
 func TestSessionActivityUnreachable(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -18,22 +33,21 @@ func TestSessionActivityUnreachable(t *testing.T) {
 	}
 	addr := listener.Addr().String()
 	listener.Close()
-	root := newRootCmd()
+	t.Setenv("PAD_TEST_ACTIVITY_HOOK", "1")
+	t.Setenv("PAD_TEST_ACTIVITY_URL", "http://"+addr)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	// A subprocess catches os.Exit, prompts, and writes to real stdout/stderr.
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSessionActivityHookProcess$")
 	var stdout, stderr bytes.Buffer
-	root.SetOut(&stdout)
-	root.SetErr(&stderr)
-	root.SetArgs([]string{"--url", "http://" + addr, "session", "activity", "busy"})
-	start := time.Now()
-	if err := root.Execute(); err != nil {
-		t.Fatalf("hook must exit 0: %v", err)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("hook must exit 0: %v; stderr: %s", err, &stderr)
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 	if strings.Count(stderr.String(), "\n") > 1 {
 		t.Fatalf("stderr = %q", stderr.String())
-	}
-	if time.Since(start) > 3*time.Second {
-		t.Fatal("hook exceeded short timeout")
 	}
 }

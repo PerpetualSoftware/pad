@@ -834,22 +834,40 @@ func (c *Client) ListWatches() ([]models.Watch, error) {
 	return result, c.get("/watches", &result)
 }
 
+// SetSessionActivity reports this worker's activity with a short deadline.
+// It never probes capabilities, starts a server or retries; hook callers may
+// ignore any error so an unavailable Pad cannot interrupt the agent.
+func (c *Client) SetSessionActivity(ctx context.Context, state string) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	data, err := json.Marshal(map[string]string{"state": state})
+	if err != nil {
+		return err
+	}
+	req, err := c.newRequest("POST", "/sessions/activity", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req = req.WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return c.handleResponse(resp, nil)
+}
+
 // StreamSessionIdentity is what a monitor tells the server about itself
 // when it opens the event stream (PLAN-2558 S2, TASK-2560), so the
 // server's presence registry can name the session instead of showing an
 // opaque uuid.
 //
-// The two fields are the wire-safe subset of what `pad session register`
-// records locally (internal/cli/session_registry.go). What is missing
-// is the point: the messaging socket path and its identity never leave
-// this machine, the cwd travels as a BASENAME, because "docapp" is what
-// a session picker needs while "/home/dave/Dev/docapp" additionally
-// hands over a home directory and an account name — and the agent name
-// the registry carries since TASK-2767 stays local until IDEA-2750 part
-// 2b gives it a reviewed place on the wire.
-//
-// Both fields are optional. A zero value produces the pre-S2 behaviour:
-// an unlabelled session that still receives every event.
+// Label and PID are the wire-safe subset of the local registration:
+// the messaging socket and its identity stay local, and cwd travels only
+// as a basename. Armed declares push consent. The client also sends
+// X-Pad-Agent and X-Pad-Worker through newRequest; presence uses both,
+// with the worker stable across /clear. All identity fields are optional.
 type StreamSessionIdentity struct {
 	// Label names the session for a human — the working directory's
 	// basename ("docapp"). The server sanitizes and truncates it.

@@ -133,6 +133,7 @@ import (
 // busy. Consumers must keep treating this list as "connected as far as the
 // server can tell", never as a delivery guarantee.
 type RedisSessionPresence struct {
+	now func() time.Time // nil uses time.Now; injectable for activity expiry tests
 	// presenceObservable carries the optional operational-event seam
 	// (BUG-2727). Embedded so SetObserver is part of the type's surface.
 	presenceObservable
@@ -460,6 +461,8 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity, origin 
 	sess := LiveSession{
 		ID:          id,
 		Label:       ident.Label,
+		Agent:       ident.Agent,
+		WorkerID:    ident.WorkerID,
 		PID:         ident.PID,
 		Armed:       ident.Armed,
 		BearerAuth:  origin.BearerAuth,

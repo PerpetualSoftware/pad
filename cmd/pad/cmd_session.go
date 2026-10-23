@@ -26,6 +26,7 @@ func sessionCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		sessionRegisterCmd(),
+		sessionActivityCmd(),
 		sessionListCmd(),
 		sessionPruneCmd(),
 		sessionArmCmd(),
@@ -742,4 +743,34 @@ func printSessionStatus(st sessionStatusJSON) {
 		fmt.Fprintf(tw, "Server sees:\t(unreachable — session counts unknown)\n")
 	}
 	tw.Flush()
+}
+
+// sessionActivityCmd is hook plumbing: no prompting, server startup or output.
+// A missed activity update must never fail a Claude Code hook.
+func sessionActivityCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "activity <busy|idle>",
+		Short: "Report this worker's activity (best effort, for hooks)",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 || (args[0] != "busy" && args[0] != "idle") {
+				return fmt.Errorf("expected busy or idle")
+			}
+			return nil
+		},
+		Run: func(cmd *cobra.Command, args []string) {
+			// Avoid getClient/getConfiguredConfig: they can start a server, prompt,
+			// or exit nonzero. Hooks silently tolerate configuration failures too.
+			cfg, err := config.Load()
+			if err != nil {
+				return
+			}
+			if urlFlag != "" {
+				cfg.URL = urlFlag
+				cfg.LoadedFromFlags = true
+			}
+			applyPadTomlOverride(cfg)
+			client := cli.NewClientFromURL(cfg.BaseURL())
+			_ = client.SetSessionActivity(cmd.Context(), args[0])
+		},
+	}
 }

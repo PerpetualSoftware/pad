@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -23,6 +24,11 @@ func presenceRequest(t *testing.T, srv *Server, method, token, worker, body stri
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	} else if method == "POST" {
+		// Pass the existing CSRF gate so a principal-less request reaches 401.
+		csrf := strings.Repeat("a", 64)
+		req.AddCookie(&http.Cookie{Name: csrfCookieName(srv.secureCookies), Value: csrf})
+		req.Header.Set(csrfHeader, csrf)
 	}
 	req.Header.Set("X-Pad-Worker", worker)
 	rr := httptest.NewRecorder()
@@ -85,6 +91,8 @@ func TestPresenceCarriesAgent(t *testing.T) {
 
 func TestSessionActivityByWorker(t *testing.T) {
 	srv := testServerWithPresence(t)
+	now := time.Now()
+	srv.sessionPresence.(*MemorySessionPresence).now = func() time.Time { return now }
 	_, _, tokA, userA := setupWatchTestUser(t, srv)
 	userB, err := srv.store.CreateUser(models.UserCreate{Email: "activity-b@example.com", Name: "B", Password: "pw-test-12345"})
 	if err != nil {
@@ -105,12 +113,15 @@ func TestSessionActivityByWorker(t *testing.T) {
 			t.Fatal(ev.Type)
 		}
 	}
-	check := func(want string) {
+	check := func(busy bool) {
 		t.Helper()
 		for _, row := range presenceRows(t, srv, tokA.Token) {
 			expected := "connected_not_accepting"
-			if row["worker"] == "wk_aaaa" {
-				expected = want
+			if row["armed"] == true {
+				expected = "online"
+			}
+			if row["worker"] == "wk_aaaa" && busy {
+				expected = "busy"
 			}
 			if row["state"] != expected {
 				t.Fatalf("row = %+v, want state %s", row, expected)
@@ -128,21 +139,21 @@ func TestSessionActivityByWorker(t *testing.T) {
 		}
 	}
 	post(tokB.Token, presenceWorkerA, "busy", 204, "")
-	check("connected_not_accepting") // Cross-user pin: B claims A's EXACT worker.
+	check(false) // Cross-user pin: B claims A's EXACT worker.
 	post(tokA.Token, presenceWorkerA, "busy", 204, "")
-	check("busy")
+	check(true)
 	// Reconnects share activity by worker even though the session id changes.
-	srv.sessionPresence.Add(userA.ID, parseSessionIdentity(httptest.NewRequest("GET", "/?armed=true", nil)), SessionOrigin{})
+	req := httptest.NewRequest("GET", "/?armed=true", nil)
+	req.Header.Set("X-Pad-Worker", presenceWorkerA)
+	srv.sessionPresence.Add(userA.ID, parseSessionIdentity(req), SessionOrigin{})
+	check(true)
 	post(tokA.Token, presenceWorkerA, "idle", 204, "")
-	for _, row := range presenceRows(t, srv, tokA.Token) {
-		want := "connected_not_accepting"
-		if row["armed"] == true {
-			want = "online"
-		}
-		if row["state"] != want {
-			t.Fatalf("idle state: %+v", row)
-		}
-	}
+	check(false)
+	post(tokA.Token, presenceWorkerA, "busy", 204, "")
+	check(true)
+	now = now.Add(31 * time.Minute)
+	check(false)
+
 	for _, worker := range []string{"", "bad"} {
 		post(tokA.Token, worker, "busy", 400, "invalid_worker_id")
 	}
