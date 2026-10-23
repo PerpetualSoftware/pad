@@ -181,6 +181,13 @@ Otherwise `state` is `online` when `armed` is true, or
 `connected_not_accepting` when false. A session without a worker is never
 busy. State does not change push consent or delivery rules.
 
+The Claude Code hooks set busy on `UserPromptSubmit` and clear it on `Stop`.
+Claude Code fires no `Stop` when the user interrupts a turn with Esc, so an
+interrupted session reads `busy` until its record expires 30 minutes after
+the prompt. Nothing refreshes the record mid-turn: a single turn longer than
+30 minutes reads `online` or `connected_not_accepting` for the rest of the
+turn, according to its armed state.
+
 Both endpoints require a resolved user (`401 unauthorized` otherwise) and
 answer `503 unavailable` when the presence registry is absent or cannot be
 read/written. An activity read failure on the list endpoint instead leaves
@@ -188,8 +195,10 @@ that session `online` or `connected_not_accepting`, and logs one warning per
 request; other sessions retain their activity state. Workspace-pinned PATs are
 refused by the existing pin policy.
 `pad session activity <busy|idle>` is intended for hooks: silent, no prompts or
-server startup, a two-second request timeout, and exit zero even when Pad is
-unavailable. It is not an MCP tool.
+server startup, a three-second overall deadline, and a two-second HTTP request
+timeout within it. It exits 0 silently on every failure, including bad arguments
+and flag errors. As for every command, `--help` still prints help to stdout;
+the shipped hooks never pass it. It is not an MCP tool.
 
 ### Workspace-pinned tokens (BUG-3982)
 

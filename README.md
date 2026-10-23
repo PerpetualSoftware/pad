@@ -679,9 +679,16 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 - **The accepted caveat.** An agent can run the arm command from inside its own session. That is visible in the transcript, within the operator's sight: the gate protects sessions from the outside and does not police the inside. A push can inject text; it cannot click a permission prompt.
 
 The plugin's Claude Code hooks report activity through `pad session activity`:
-`UserPromptSubmit` marks the session busy and `Stop` marks it idle. The hooks
-discard output because `UserPromptSubmit` stdout reaches the model. Activity
-reporting does not change push consent.
+`UserPromptSubmit` sets busy and `Stop` clears it. Claude Code fires no `Stop`
+when the user interrupts a turn with Esc, so an interrupted session reads busy
+until its record expires 30 minutes after the prompt. Nothing refreshes the
+record mid-turn: a single turn longer than 30 minutes reads `online` or
+`connected_not_accepting` for the rest of the turn, according to its armed state.
+`pad session activity` exits 0 silently on every failure, including bad arguments
+and flag errors. As for every command, `--help` still prints help to stdout;
+the shipped hooks never pass it. The hooks discard output because
+`UserPromptSubmit` stdout reaches the model. Activity reporting does not change
+push consent.
 
 ## License
 
