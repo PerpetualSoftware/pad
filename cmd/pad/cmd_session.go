@@ -749,8 +749,9 @@ func printSessionStatus(st sessionStatusJSON) {
 // A missed activity update must never fail a Claude Code hook.
 func sessionActivityCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "activity <busy|idle>",
-		Short: "Report this worker's activity (best effort, for hooks)",
+		Use:     "activity <busy|idle>",
+		Short:   "Report this worker's activity (best effort, for hooks)",
+		Example: "  pad session activity busy\n  pad session activity idle",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 || (args[0] != "busy" && args[0] != "idle") {
 				return fmt.Errorf("expected busy or idle")
