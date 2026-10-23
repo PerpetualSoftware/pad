@@ -53,6 +53,130 @@ func chatLastSeq(t *testing.T, s *Store, convID string) int64 {
 	return n
 }
 
+func TestSendRejectsInvalidInput(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c := chatDM(t, s, u, "claude")
+	actor := models.ConversationActor{UserID: u.ID}
+	chatSend(t, s, c.ID, actor, "existing message", "", nil)
+
+	for _, tc := range []struct {
+		name                             string
+		body, source, opKey, contextWSID string
+	}{
+		{name: "body NUL", body: "hello\x00world"},
+		{name: "source NUL", body: "hello", source: "test\x00"},
+		{name: "op_key NUL", body: "hello", opKey: "op\x00"},
+		{name: "body invalid UTF-8", body: "hello\xff"},
+		{name: "source invalid UTF-8", body: "hello", source: "test\xff"},
+		{name: "op_key invalid UTF-8", body: "hello", opKey: "op\xff"},
+		{name: "context NUL", body: "hello", contextWSID: "ws\x00"},
+		{name: "context invalid UTF-8", body: "hello", contextWSID: "ws\xff"},
+		{name: "context too long", body: "hello", contextWSID: strings.Repeat("x", 129)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := chatLastSeq(t, s, c.ID)
+			_, err := s.SendConversationMessage(models.ConversationSend{
+				ConversationID: c.ID, Author: actor, Body: tc.body, Source: tc.source,
+				OpKey: tc.opKey, ContextWorkspaceID: tc.contextWSID,
+			})
+			if !errors.Is(err, ErrInvalidConversationInput) {
+				t.Errorf("send: err = %v, want ErrInvalidConversationInput", err)
+			}
+			if got := chatLastSeq(t, s, c.ID); got != before {
+				t.Errorf("last_seq = %d, want %d after refused send", got, before)
+			}
+		})
+	}
+}
+
+func TestSendContextWorkspace(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c := chatDM(t, s, u, "claude")
+	actor := models.ConversationActor{UserID: u.ID}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Context", OwnerID: u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := models.ConversationSend{ConversationID: c.ID, Author: actor, Body: "context", ContextWorkspaceID: ws.ID}
+	sent, err := s.SendConversationMessage(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sent.Message.ContextWorkspaceID; got == nil || *got != ws.ID {
+		t.Fatalf("stored context workspace = %v, want %s", got, ws.ID)
+	}
+	page, err := s.ListConversationMessages(actor, c.ID, nil, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := page.Messages[0].ContextWorkspaceID; got == nil || *got != ws.ID {
+		t.Fatalf("listed context workspace = %v, want %s", got, ws.ID)
+	}
+	if err := s.DeleteWorkspace(ws.Slug); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, id string }{
+		{"unknown", "unknown-workspace"},
+		{"soft-deleted", ws.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := chatLastSeq(t, s, c.ID)
+			in.ContextWorkspaceID = tc.id
+			if _, err := s.SendConversationMessage(in); !errors.Is(err, ErrInvalidConversationInput) {
+				t.Errorf("send: err = %v, want ErrInvalidConversationInput", err)
+			}
+			if got := chatLastSeq(t, s, c.ID); got != before {
+				t.Errorf("last_seq = %d, want %d after refused context", got, before)
+			}
+		})
+	}
+}
+
+func TestDeleteRejectsNonPositiveSeq(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c := chatDM(t, s, u, "claude")
+	actor := models.ConversationActor{UserID: u.ID}
+	for _, seq := range []int64{0, -1} {
+		t.Run(fmt.Sprint(seq), func(t *testing.T) {
+			if _, _, err := s.DeleteConversationMessage(actor, c.ID, seq); !errors.Is(err, ErrInvalidConversationInput) {
+				t.Errorf("delete seq %d: err = %v, want ErrInvalidConversationInput", seq, err)
+			}
+		})
+	}
+}
+
+func TestQuoteExcerptLeadingWhitespace(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c := chatDM(t, s, u, "claude")
+	actor := models.ConversationActor{UserID: u.ID}
+	for _, tc := range []struct{ name, body, want string }{
+		{"spaces and newlines", strings.Repeat(" \n", 500) + "hello", "hello"},
+		{"body cap", strings.Repeat(" ", maxConversationBodyBytes-len("hello")) + "hello", "hello"},
+		{"Unicode whitespace", strings.Repeat("\u2003\n", 250) + "hello", "hello"},
+		{"whitespace within line", "hello" + strings.Repeat(" ", 1000) + "world", "hello world"},
+		{"rune cap", strings.Repeat(" \n", 500) + strings.Repeat("é", 200), strings.Repeat("é", 97) + "..."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := chatSend(t, s, c.ID, actor, tc.body, "", nil)
+			reply := chatSend(t, s, c.ID, actor, "reply", "", &original.Message.Seq)
+			if q := reply.Message.ReplyTo; q == nil || q.Excerpt != tc.want {
+				t.Errorf("quote = %+v, want excerpt %q", q, tc.want)
+			}
+			page, err := s.ListConversationMessages(actor, c.ID, nil, nil, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if q := page.Messages[0].ReplyTo; q == nil || q.Excerpt != tc.want {
+				t.Errorf("listed quote = %+v, want excerpt %q", q, tc.want)
+			}
+		})
+	}
+}
+
 func TestConversationSeqConcurrent(t *testing.T) {
 	run := func(t *testing.T, s *Store) {
 		u := chatUser(t, s, "alice")

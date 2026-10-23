@@ -29,6 +29,7 @@ const (
 	maxConversationSource    = 32
 	maxConversationOpKey     = 128
 	maxConversationAgentKey  = 128
+	maxConversationContextID = 128
 
 	defaultConversationPage = 50
 	maxConversationPage     = 200
@@ -178,6 +179,16 @@ func (s *Store) GetConversationByNumber(actor models.ConversationActor, number i
 // same author in the same conversation is rolled back (no seq is spent) and
 // returns the stored message with Replayed set, whatever body it carried.
 func (s *Store) SendConversationMessage(in models.ConversationSend) (*models.ConversationSendResult, error) {
+	for _, field := range []struct{ name, value string }{
+		{"body", in.Body},
+		{"source", in.Source},
+		{"op_key", in.OpKey},
+		{"context workspace id", in.ContextWorkspaceID},
+	} {
+		if strings.ContainsRune(field.value, 0) || !utf8.ValidString(field.value) {
+			return nil, invalidConversation("%s must be valid UTF-8 without NUL bytes", field.name)
+		}
+	}
 	if in.Body == "" || strings.TrimSpace(in.Body) == "" {
 		return nil, invalidConversation("body is required")
 	}
@@ -189,6 +200,9 @@ func (s *Store) SendConversationMessage(in models.ConversationSend) (*models.Con
 	}
 	if len(in.OpKey) > maxConversationOpKey {
 		return nil, invalidConversation("op_key is longer than %d bytes", maxConversationOpKey)
+	}
+	if len(in.ContextWorkspaceID) > maxConversationContextID {
+		return nil, invalidConversation("context workspace id is longer than %d bytes", maxConversationContextID)
 	}
 	if in.Author.UserID == "" {
 		return nil, invalidConversation("author is required")
@@ -219,6 +233,21 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 		return nil, fmt.Errorf("begin send: %w", err)
 	}
 	defer tx.Rollback()
+
+	if in.ContextWorkspaceID != "" {
+		// TASK-4038: lock the workspace before chat rows, matching PurgeWorkspaceData.
+		// Otherwise the INSERT's FK lock can deadlock with the purge's ON DELETE SET NULL.
+		query := `SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL`
+		if s.dialect.Driver() == DriverPostgres {
+			query += ` FOR KEY SHARE`
+		}
+		var exists int
+		if err := tx.QueryRow(s.q(query), in.ContextWorkspaceID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return nil, invalidConversation("context workspace not found")
+		} else if err != nil {
+			return nil, fmt.Errorf("check context workspace: %w", err)
+		}
+	}
 
 	ts := nowNano()
 	var seq int64
@@ -327,12 +356,14 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 	return &models.ConversationSendResult{Message: *msg, Recipients: recipients}, nil
 }
 
-// conversationMessageSelect reads a message with its quote preview. The quote
-// body is cut in SQL so a long quoted body is never carried whole.
+// conversationMessageSelect reads a message with its quote preview (TASK-4038).
+// The 65536-character SQL bound covers every valid body under the 64 KiB byte
+// cap, so QuoteExcerpt can skip any Unicode whitespace and collapse long runs
+// within the first non-empty line. Quote reads remain bounded in both dialects.
 const conversationMessageSelect = `
 	SELECT m.id, m.conversation_id, m.seq, m.author_user_id, m.author_agent_key, m.source, m.body,
 	       m.reply_to_seq, m.context_workspace_id, m.created_at, m.deleted_at,
-	       q.seq, q.author_agent_key, substr(q.body, 1, 400), q.deleted_at
+	       q.seq, q.author_agent_key, substr(q.body, 1, 65536), q.deleted_at
 	FROM conversation_messages m
 	LEFT JOIN conversation_messages q ON q.conversation_id = m.conversation_id AND q.seq = m.reply_to_seq`
 
@@ -459,6 +490,9 @@ func (s *Store) ListConversationMessages(actor models.ConversationActor, convID 
 // DeleteConversationMessage tombstones an authorized member's message while
 // retaining its row and sequence, including on repeated deletes (TASK-4038).
 func (s *Store) DeleteConversationMessage(actor models.ConversationActor, convID string, seq int64) (*models.ConversationMessage, bool, error) {
+	if seq < 1 {
+		return nil, false, invalidConversation("seq must be at least 1")
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, false, fmt.Errorf("begin delete message: %w", err)
