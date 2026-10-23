@@ -189,6 +189,12 @@ var migratedRefusalTables = []string{
 	"activities",
 	// A person's push settings (TASK-3937): choices, not delivery state.
 	"user_notification_settings",
+	// Chat (TASK-4038): a person's conversations with their agents. The
+	// bundle export does not carry them, so a write to the abandoned file
+	// must refuse rather than be lost.
+	"conversations",
+	"conversation_members",
+	"conversation_messages",
 	"comment_reactions",
 	"views",
 	"agent_roles",

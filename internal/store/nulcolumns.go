@@ -308,6 +308,18 @@ var nulColumns = []nulColumn{
 	{"push_devices", "connection_id", classText},
 	{"push_devices", "token", classText},
 	{"push_devices", "app_version", classText},
+
+	// conversations (TASK-4038): dm_key is built from the agent key, which is
+	// a request-supplied name; title is reserved for 2b threads. source and
+	// the agent keys are attribution, op_key arrives in the send request.
+	{"conversations", "dm_key", classText},
+	{"conversations", "title", classText},
+	{"conversation_members", "agent_key", classText},
+	{"conversation_messages", "body", classText},
+	{"conversation_messages", "source", classText},
+	{"conversation_messages", "author_agent_key", classText},
+	{"conversation_messages", "op_key", classText},
+	{"conversation_messages", "deleted_by_agent_key", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -336,6 +348,7 @@ var nulTriggerMigrations = []string{
 	"140_nul_invariant_triggers_post139.sql",
 	"152_nul_invariant_triggers_post151.sql",
 	"156_nul_invariant_triggers_post155.sql",
+	"159_nul_invariant_triggers_post158.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -366,6 +379,15 @@ var nulColumnTriggerFile = map[string]string{
 	"push_devices.connection_id": "156_nul_invariant_triggers_post155.sql",
 	"push_devices.token":         "156_nul_invariant_triggers_post155.sql",
 	"push_devices.app_version":   "156_nul_invariant_triggers_post155.sql",
+	// 158 introduced the tables (TASK-4038).
+	"conversations.dm_key":                       "159_nul_invariant_triggers_post158.sql",
+	"conversations.title":                        "159_nul_invariant_triggers_post158.sql",
+	"conversation_members.agent_key":             "159_nul_invariant_triggers_post158.sql",
+	"conversation_messages.body":                 "159_nul_invariant_triggers_post158.sql",
+	"conversation_messages.source":               "159_nul_invariant_triggers_post158.sql",
+	"conversation_messages.author_agent_key":     "159_nul_invariant_triggers_post158.sql",
+	"conversation_messages.op_key":               "159_nul_invariant_triggers_post158.sql",
+	"conversation_messages.deleted_by_agent_key": "159_nul_invariant_triggers_post158.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered

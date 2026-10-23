@@ -1664,6 +1664,11 @@ func (s *Store) eraseUserTx(tx *sql.Tx, userID string) error {
 		{"delete created share links", "DELETE FROM share_links WHERE created_by = ?"},
 		{"delete mcp audit log", "DELETE FROM mcp_audit_log WHERE user_id = ?"},
 		{"delete oauth connections", "DELETE FROM oauth_connections WHERE user_id = ?"},
+		// Chat (TASK-4038). The FK cascade would remove these with the users
+		// row; deleting them here takes the conversations row lock before
+		// DELETE FROM users, the order a send uses (conversation row first),
+		// so the two cannot cycle. Members and messages cascade off it.
+		{"delete conversations", "DELETE FROM conversations WHERE owner_user_id = ?"},
 	}
 	for _, stmt := range deletes {
 		if err := exec(stmt.what, stmt.query); err != nil {
