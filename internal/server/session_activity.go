@@ -3,9 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
 const sessionActivityTTL = 30 * time.Minute
@@ -45,22 +44,31 @@ func (p *MemorySessionPresence) SetActivity(userID, workerID string, busy bool, 
 	return nil
 }
 
-func (p *MemorySessionPresence) IsBusy(userID, workerID string) (bool, error) {
-	if workerID == "" {
-		return false, nil
-	}
+func (p *MemorySessionPresence) BusyWorkers(userID string, workerIDs []string) (map[string]bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	key := sessionActivityKey{userID, workerID}
-	record, ok := p.activity[key]
-	if !ok {
-		return false, nil
+	busy := make(map[string]bool, len(workerIDs))
+	now := presenceNow(p.now)
+	for _, workerID := range workerIDs {
+		if workerID == "" {
+			continue
+		}
+		if _, seen := busy[workerID]; seen {
+			continue
+		}
+		busy[workerID] = false
+		key := sessionActivityKey{userID, workerID}
+		record, ok := p.activity[key]
+		if !ok {
+			continue
+		}
+		if !now.Before(record.At.Add(sessionActivityTTL)) {
+			delete(p.activity, key)
+			continue
+		}
+		busy[workerID] = record.Busy
 	}
-	if !presenceNow(p.now).Before(record.At.Add(sessionActivityTTL)) {
-		delete(p.activity, key)
-		return false, nil
-	}
-	return record.Busy, nil
+	return busy, nil
 }
 
 func (p *RedisSessionPresence) activityKey(userID, workerID string) string {
@@ -83,22 +91,51 @@ func (p *RedisSessionPresence) SetActivity(userID, workerID string, busy bool, a
 	return p.client.Set(ctx, key, payload, ttl).Err()
 }
 
-func (p *RedisSessionPresence) IsBusy(userID, workerID string) (bool, error) {
-	if workerID == "" {
-		return false, nil
+func (p *RedisSessionPresence) BusyWorkers(userID string, workerIDs []string) (map[string]bool, error) {
+	busy := make(map[string]bool, len(workerIDs))
+	workers := make([]string, 0, len(workerIDs))
+	keys := make([]string, 0, len(workerIDs))
+	for _, workerID := range workerIDs {
+		if workerID == "" {
+			continue
+		}
+		if _, seen := busy[workerID]; seen {
+			continue
+		}
+		busy[workerID] = false
+		workers = append(workers, workerID)
+		keys = append(keys, p.activityKey(userID, workerID))
+	}
+	if len(keys) == 0 {
+		return busy, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout())
 	defer cancel()
-	payload, err := p.client.Get(ctx, p.activityKey(userID, workerID)).Bytes()
-	if err == redis.Nil {
-		return false, nil
-	}
+	values, err := p.client.MGet(ctx, keys...).Result()
 	if err != nil {
-		return false, err
+		return busy, err
 	}
-	var record sessionActivity
-	if err := json.Unmarshal(payload, &record); err != nil {
-		return false, err
+	now := presenceNow(p.now)
+	var decodeErr error
+	for i, value := range values {
+		if value == nil {
+			continue
+		}
+		payload, ok := value.(string)
+		if !ok {
+			if decodeErr == nil {
+				decodeErr = fmt.Errorf("session activity: unexpected payload type %T", value)
+			}
+			continue
+		}
+		var record sessionActivity
+		if err := json.Unmarshal([]byte(payload), &record); err != nil {
+			if decodeErr == nil {
+				decodeErr = err
+			}
+			continue
+		}
+		busy[workers[i]] = record.Busy && now.Before(record.At.Add(sessionActivityTTL))
 	}
-	return record.Busy && presenceNow(p.now).Before(record.At.Add(sessionActivityTTL)), nil
+	return busy, decodeErr
 }

@@ -92,22 +92,21 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "Session presence is not available")
 		return
 	}
+	workers := make([]string, 0, len(sessions))
+	for _, sess := range sessions {
+		workers = append(workers, sess.WorkerID)
+	}
+	busy, err := s.sessionPresence.BusyWorkers(user.ID, workers)
+	if err != nil {
+		slog.Warn("sessions: activity read failed", "error", err, "user_id", user.ID)
+	}
 	rows := make([]sessionResponse, 0, len(sessions))
-	activityWarningLogged := false
 	for _, sess := range sessions {
 		state := "connected_not_accepting"
 		if sess.Armed {
 			state = "online"
 		}
-		busy, err := s.sessionPresence.IsBusy(user.ID, sess.WorkerID)
-		if err != nil {
-			if !activityWarningLogged {
-				slog.Warn("sessions: activity read failed", "error", err, "user_id", user.ID)
-				activityWarningLogged = true
-			}
-			busy = false
-		}
-		if sess.WorkerID != "" && busy {
+		if sess.WorkerID != "" && busy[sess.WorkerID] {
 			state = "busy"
 		}
 		sess.WorkerID = models.ShortWorkerID(sess.WorkerID)

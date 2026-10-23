@@ -2,8 +2,12 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +15,119 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
+
+// Record the activity commands separately from ListForUser's own Redis reads.
+type activityReadHook struct {
+	mu    sync.Mutex
+	calls [][]string
+}
+
+func (h *activityReadHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *activityReadHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func (h *activityReadHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "get" || cmd.Name() == "mget" {
+			var keys []string
+			for _, arg := range cmd.Args()[1:] {
+				if key, ok := arg.(string); ok && strings.Contains(key, "activity:") {
+					keys = append(keys, key)
+				}
+			}
+			if len(keys) > 0 {
+				h.mu.Lock()
+				h.calls = append(h.calls, append([]string{cmd.Name()}, keys...))
+				h.mu.Unlock()
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func TestListSessions_ActivitySingleMGet(t *testing.T) {
+	writer, reader, mr := newRedisPresencePair(t)
+	srv := testServerWithPresence(t)
+	srv.SetSessionPresence(reader)
+	_, _, tok, user := setupWatchTestUser(t, srv)
+	if err := writer.SetActivity(user.ID, presenceWorkerA, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	mr.Set(writer.activityKey(user.ID, presenceWorkerB), "garbage activity")
+	want := map[string]string{
+		writer.Add(user.ID, SessionIdentity{WorkerID: presenceWorkerA, Armed: true}, SessionOrigin{}): "busy",
+		writer.Add(user.ID, SessionIdentity{WorkerID: presenceWorkerA}, SessionOrigin{}):              "busy",
+		writer.Add(user.ID, SessionIdentity{WorkerID: presenceWorkerB, Armed: true}, SessionOrigin{}): "online",
+	}
+	hook := &activityReadHook{}
+	reader.client.AddHook(hook)
+	rows := presenceRows(t, srv, tok.Token) // Also asserts HTTP 200.
+	if len(rows) != len(want) {
+		t.Fatalf("got %d sessions, want %d", len(rows), len(want))
+	}
+	for _, row := range rows {
+		if expected, ok := want[row["id"].(string)]; !ok || row["state"] != expected {
+			t.Errorf("unexpected session state: %+v (want %s)", row, expected)
+		}
+	}
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	if len(hook.calls) != 1 || hook.calls[0][0] != "mget" || len(hook.calls[0]) != 3 {
+		t.Fatalf("want one MGET with two worker keys, got %v", hook.calls)
+	}
+	keys := map[string]bool{hook.calls[0][1]: true, hook.calls[0][2]: true}
+	if !keys[writer.activityKey(user.ID, presenceWorkerA)] || !keys[writer.activityKey(user.ID, presenceWorkerB)] {
+		t.Fatalf("unexpected MGET keys: %v", hook.calls)
+	}
+}
+
+type failedActivityPresence struct {
+	MemorySessionPresence
+	reads int
+}
+
+func (p *failedActivityPresence) BusyWorkers(string, []string) (map[string]bool, error) {
+	p.reads++
+	return nil, errors.New("activity batch unavailable")
+}
+
+func TestListSessions_ActivityBatchFailure(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	p := &failedActivityPresence{MemorySessionPresence: *NewMemorySessionPresence()}
+	srv := testServerWithPresence(t)
+	srv.SetSessionPresence(p)
+	_, _, tok, user := setupWatchTestUser(t, srv)
+	for _, worker := range []string{presenceWorkerA, presenceWorkerB} {
+		if err := p.SetActivity(user.ID, worker, true, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]string{
+		p.Add(user.ID, SessionIdentity{WorkerID: presenceWorkerA, Armed: true}, SessionOrigin{}): "online",
+		p.Add(user.ID, SessionIdentity{WorkerID: presenceWorkerA}, SessionOrigin{}):              "connected_not_accepting",
+		p.Add(user.ID, SessionIdentity{WorkerID: presenceWorkerB}, SessionOrigin{}):              "connected_not_accepting",
+	}
+	rows := presenceRows(t, srv, tok.Token)
+	if len(rows) != len(want) {
+		t.Fatalf("got %d sessions, want %d", len(rows), len(want))
+	}
+	for _, row := range rows {
+		if expected, ok := want[row["id"].(string)]; !ok || row["state"] != expected {
+			t.Errorf("unexpected session state: %+v (want %s)", row, expected)
+		}
+	}
+	if p.reads != 1 {
+		t.Errorf("got %d activity batches, want one", p.reads)
+	}
+	if got := bytes.Count(logs.Bytes(), []byte("sessions: activity read failed")); got != 1 {
+		t.Fatalf("got %d warnings, want one: %s", got, &logs)
+	}
+}
 
 func TestListSessions_CorruptActivityDegrades(t *testing.T) {
 	// Do not run in parallel: capture the handler's request-level warning.
@@ -79,9 +196,9 @@ func TestPresenceActivityRegistries(t *testing.T) {
 			}
 			assertBusy := func(user, worker string, want bool) {
 				t.Helper()
-				got, err := reader.IsBusy(user, worker)
-				if err != nil || got != want {
-					t.Fatalf("IsBusy(%s,%s) = %v,%v, want %v", user, worker, got, err, want)
+				got, err := reader.BusyWorkers(user, []string{worker, worker, ""})
+				if err != nil || got[worker] != want {
+					t.Fatalf("BusyWorkers(%s,%s) = %v,%v, want %v", user, worker, got, err, want)
 				}
 			}
 			if err := writer.SetActivity("B", presenceWorkerA, true, now); err != nil {
@@ -154,7 +271,7 @@ func TestPresenceActivityRedisNamespaceAndTTL(t *testing.T) {
 	}
 	other := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
 	t.Cleanup(other.Close)
-	if busy, err := other.IsBusy("A", presenceWorkerA); err != nil || busy {
+	if busy, err := other.BusyWorkers("A", []string{presenceWorkerA}); err != nil || busy[presenceWorkerA] {
 		t.Fatalf("namespace leak: %v %v", busy, err)
 	}
 	// Activity lives outside frozen session JSON and survives a renewal write.
@@ -166,7 +283,7 @@ func TestPresenceActivityRedisNamespaceAndTTL(t *testing.T) {
 	if err := p.write(t.Context(), "A", id, payload); err != nil {
 		t.Fatal(err)
 	}
-	if busy, err := p.IsBusy("A", presenceWorkerA); err != nil || !busy {
+	if busy, err := p.BusyWorkers("A", []string{presenceWorkerA}); err != nil || !busy[presenceWorkerA] {
 		t.Fatalf("renewal lost busy: %v %v", busy, err)
 	}
 	mr.FastForward(30 * time.Minute)

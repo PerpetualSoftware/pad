@@ -305,8 +305,10 @@ type SessionPresence interface {
 	// SetActivity records activity for this credential user and worker,
 	// independently of any connection. Entries expire 30 minutes after at.
 	SetActivity(userID, workerID string, busy bool, at time.Time) error
-	// IsBusy reads only this user/worker pair and ignores expired activity.
-	IsBusy(userID, workerID string) (bool, error)
+	// BusyWorkers reads this user's activity in one batch, ignoring empty
+	// and duplicate workers and expired records. On error, known states may
+	// still be returned; missing or undecodable entries are not busy.
+	BusyWorkers(userID string, workerIDs []string) (map[string]bool, error)
 	// Add registers a newly-opened stream for userID and returns the
 	// session's generated id, which the caller MUST pass to Remove.
 	// The identity is whatever the client claimed about itself, already

@@ -190,10 +190,11 @@ turn, according to its armed state.
 
 Both endpoints require a resolved user (`401 unauthorized` otherwise) and
 answer `503 unavailable` when the presence registry is absent or cannot be
-read/written. An activity read failure on the list endpoint instead leaves
-that session `online` or `connected_not_accepting`, and logs one warning per
-request; other sessions retain their activity state. Workspace-pinned PATs are
-refused by the existing pin policy.
+read/written. The list endpoint reads activity in one batch. A failed batch
+leaves all sessions `online` or `connected_not_accepting`; an undecodable entry
+only affects that worker's sessions, and other workers retain their activity
+state. Either failure logs one warning per request and the list still answers
+`200`. Workspace-pinned PATs are refused by the existing pin policy.
 `pad session activity <busy|idle>` is intended for hooks: silent, no prompts or
 server startup, a three-second overall deadline, and a two-second HTTP request
 timeout within it. It exits 0 silently on every failure, including bad arguments
