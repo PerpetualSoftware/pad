@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func TestSessionActivityParentNeverReports(t *testing.T) {
@@ -67,8 +69,10 @@ func TestSessionActivityDetachedTimestamp(t *testing.T) {
 			if state != "busy" || got != timestamp {
 				t.Errorf("child body: %q %q", state, got)
 			}
-			if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 3*time.Second {
-				t.Error("missing background deadline")
+			deadline, ok := ctx.Deadline()
+			remaining := time.Until(deadline)
+			if !ok || remaining < models.SessionActivityReportBound-100*time.Millisecond || remaining > models.SessionActivityReportBound {
+				t.Errorf("child deadline has %v remaining, want report bound %v within 100ms", remaining, models.SessionActivityReportBound)
 			}
 		}
 		cmd := sessionActivityCmd()
