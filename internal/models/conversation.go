@@ -79,6 +79,10 @@ type ConversationSend struct {
 
 // ConversationSendResult is a send's outcome. Replayed means the op_key had
 // already been used and Message is the stored message, not a new one.
+// TASK-4038: Recipients contains every OTHER member identity, including the
+// human member, because the web also needs a ref-only nudge. TASK-4041 filters
+// to agent members for monitor delivery. A Replayed result has no Recipients;
+// the caller must not notify on a replay.
 type ConversationSendResult struct {
 	Message    ConversationMessage
 	Replayed   bool
@@ -87,11 +91,15 @@ type ConversationSendResult struct {
 
 // ConversationPage is a window of messages in ascending seq order, tombstones
 // included.
+// TASK-4038: HasMore applies only to the requested direction. For a non-empty
+// page, older messages exist iff OldestSeq > 1; newer messages exist iff
+// NewestSeq < LastSeq, which is why LastSeq is included on the page.
 type ConversationPage struct {
 	Messages  []ConversationMessage `json:"messages"`
 	OldestSeq int64                 `json:"oldest_seq"`
 	NewestSeq int64                 `json:"newest_seq"`
 	LastSeq   int64                 `json:"last_seq"`
+	ReadSeq   int64                 `json:"read_seq"`
 	HasMore   bool                  `json:"has_more"`
 }
 

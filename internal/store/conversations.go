@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -34,6 +35,14 @@ const (
 	defaultConversationPage = 50
 	maxConversationPage     = 200
 )
+
+// TASK-4038: like decisionTimeFormat in decisions.go and idemTimeFormat in
+// idempotency.go, keep nanoseconds fixed-width so TEXT timestamps sort by time.
+const chatTimeFormat = "2006-01-02T15:04:05.000000000Z"
+
+func chatTime(t time.Time) string { return t.UTC().Format(chatTimeFormat) }
+
+func chatNow() string { return chatTime(time.Now()) }
 
 func invalidConversation(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidConversationInput, fmt.Sprintf(format, args...))
@@ -96,7 +105,7 @@ func (s *Store) EnsureAgentDM(ownerUserID, agentKey string) (*models.Conversatio
 		return nil, false, fmt.Errorf("lookup dm: %w", err)
 	}
 
-	id, ts := newID(), nowNano()
+	id, ts := newID(), chatNow()
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO conversations (id, owner_user_id, number, kind, title, dm_key, last_seq, created_at, updated_at)
 		VALUES (?, ?, (SELECT COALESCE(MAX(number), 0) + 1 FROM conversations WHERE owner_user_id = ?), 'direct', '', ?, 0, ?, ?)
@@ -249,7 +258,7 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 		}
 	}
 
-	ts := nowNano()
+	ts := chatNow()
 	var seq int64
 	err = tx.QueryRow(s.q(`
 		UPDATE conversations SET last_seq = last_seq + 1, updated_at = ?
@@ -424,10 +433,12 @@ func (s *Store) ListConversationMessages(actor models.ConversationActor, convID 
 		limit = maxConversationPage
 	}
 
-	var lastSeq int64
+	var lastSeq, readSeq int64
 	err := s.db.QueryRow(s.q(`
-		SELECT c.last_seq FROM conversations c WHERE c.id = ? AND `+conversationMemberOf),
-		convID, actor.UserID, actor.AgentKey).Scan(&lastSeq)
+		SELECT c.last_seq, member.read_seq FROM conversations c
+		JOIN conversation_members member ON member.conversation_id = c.id
+		WHERE c.id = ? AND member.user_id = ? AND member.agent_key = ?`),
+		convID, actor.UserID, actor.AgentKey).Scan(&lastSeq, &readSeq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrConversationNotFound
 	}
@@ -467,7 +478,7 @@ func (s *Store) ListConversationMessages(actor models.ConversationActor, convID 
 		return nil, fmt.Errorf("list messages: %w", err)
 	}
 
-	page := &models.ConversationPage{LastSeq: lastSeq}
+	page := &models.ConversationPage{LastSeq: lastSeq, ReadSeq: readSeq}
 	if len(msgs) > limit {
 		page.HasMore = true
 		msgs = msgs[:limit]
@@ -518,7 +529,7 @@ func (s *Store) DeleteConversationMessage(actor models.ConversationActor, convID
 	result, err := tx.Exec(s.q(`UPDATE conversation_messages
 		SET body = '', deleted_at = ?, deleted_by_user_id = ?, deleted_by_agent_key = ?
 		WHERE conversation_id = ? AND seq = ? AND deleted_at IS NULL`),
-		nowNano(), actor.UserID, actor.AgentKey, convID, seq)
+		chatNow(), actor.UserID, actor.AgentKey, convID, seq)
 	if err != nil {
 		return nil, false, fmt.Errorf("tombstone message: %w", err)
 	}

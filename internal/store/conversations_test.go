@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -51,6 +52,64 @@ func chatLastSeq(t *testing.T, s *Store, convID string) int64 {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func TestChatTimestampsAreFixedWidth(t *testing.T) {
+	t.Run("format", func(t *testing.T) {
+		instant := time.Date(2026, 10, 23, 5, 0, 5, 123456780, time.UTC)
+		next := instant.Add(time.Nanosecond)
+		first, second := chatTime(instant), chatTime(next)
+		if len(first) != 30 || len(second) != 30 {
+			t.Errorf("timestamp widths = %d/%d, want 30/30: %q, %q", len(first), len(second), first, second)
+		}
+		if !instant.Before(next) || first >= second {
+			t.Errorf("timestamp order disagrees with time order: %q >= %q", first, second)
+		}
+		for _, value := range []time.Time{instant, next} {
+			if got := parseTime(chatTime(value)); !got.Equal(value) {
+				t.Errorf("parseTime round trip = %v, want %v", got, value)
+			}
+		}
+	})
+	t.Run("stored", func(t *testing.T) {
+		s := testStore(t)
+		u := chatUser(t, s, "alice")
+		c := chatDM(t, s, u, "claude")
+		human := models.ConversationActor{UserID: u.ID}
+		first := chatSend(t, s, c.ID, human, "first", "", nil)
+		chatSend(t, s, c.ID, human, "second", "", nil)
+		if _, _, err := s.DeleteConversationMessage(human, c.ID, first.Message.Seq); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.db.Query(s.q(`
+			SELECT 'conversations.created_at', created_at FROM conversations WHERE id = ?
+			UNION ALL SELECT 'conversations.updated_at', updated_at FROM conversations WHERE id = ?
+			UNION ALL SELECT 'conversation_members.added_at', added_at FROM conversation_members WHERE conversation_id = ?
+			UNION ALL SELECT 'conversation_messages.created_at', created_at FROM conversation_messages WHERE conversation_id = ?
+			UNION ALL SELECT 'conversation_messages.deleted_at', deleted_at FROM conversation_messages WHERE conversation_id = ? AND deleted_at IS NOT NULL
+		`), c.ID, c.ID, c.ID, c.ID, c.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		count := 0
+		for rows.Next() {
+			var column, value string
+			if err := rows.Scan(&column, &value); err != nil {
+				t.Fatal(err)
+			}
+			if len(value) != 30 {
+				t.Errorf("%s width = %d, want 30: %q", column, len(value), value)
+			}
+			count++
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if count != 7 {
+			t.Fatalf("timestamp count = %d, want 7", count)
+		}
+	})
 }
 
 func TestSendRejectsInvalidInput(t *testing.T) {
@@ -348,6 +407,22 @@ func TestSendReplyTo(t *testing.T) {
 		t.Fatalf("a refused send spent a seq: last_seq = %d, want %d", ls, before)
 	}
 
+	// TASK-4038: reject self and future replies before the schema CHECK can fire.
+	for _, offset := range []int64{1, 50} {
+		t.Run(fmt.Sprintf("last_seq+%d", offset), func(t *testing.T) {
+			before := chatLastSeq(t, s, c.ID)
+			target := before + offset
+			if _, err := s.SendConversationMessage(models.ConversationSend{
+				ConversationID: c.ID, Author: human, Body: "future reply", ReplyToSeq: &target,
+			}); !errors.Is(err, ErrReplyTargetNotFound) {
+				t.Errorf("reply to %d: err = %v, want ErrReplyTargetNotFound", target, err)
+			}
+			if got := chatLastSeq(t, s, c.ID); got != before {
+				t.Errorf("last_seq = %d, want %d after refused reply", got, before)
+			}
+		})
+	}
+
 	// A tombstoned target (set by raw UPDATE: delete is run B).
 	if _, err := s.db.Exec(s.q(`UPDATE conversation_messages SET body = '', deleted_at = ? WHERE conversation_id = ? AND seq = 1`), nowNano(), c.ID); err != nil {
 		t.Fatal(err)
@@ -439,7 +514,8 @@ func TestDmKeyUnique(t *testing.T) {
 	}
 }
 
-func TestMembershipGatesEveryRead(t *testing.T) {
+// TASK-4038: EnsureAgentDM is excluded because it takes no actor; its caller (TASK-4039) must pass the authenticated owner.
+func TestMembershipGatesEveryActorMethod(t *testing.T) {
 	s := testStore(t)
 	a, b := chatUser(t, s, "alice"), chatUser(t, s, "bob")
 	c := chatDM(t, s, a, "claude")
@@ -520,6 +596,9 @@ func TestListMessagesPaging(t *testing.T) {
 	p, err := s.ListConversationMessages(me, c.ID, nil, nil, 4)
 	if err != nil || !eq(seqs(p), []int64{7, 8, 9, 10}) || !p.HasMore || p.OldestSeq != 7 || p.NewestSeq != 10 || p.LastSeq != 10 {
 		t.Fatalf("newest: %v %+v", err, p)
+	}
+	if p.ReadSeq != 10 {
+		t.Fatalf("page read_seq = %d, want 10", p.ReadSeq)
 	}
 	if !p.Messages[1].Deleted || p.Messages[1].Body != "" {
 		t.Fatalf("tombstone not returned as such: %+v", p.Messages[1])
@@ -661,6 +740,17 @@ func TestReadSeqMonotonic(t *testing.T) {
 				if got, err := tc.mark(human, c.ID, step.to); err != nil || got != step.want {
 					t.Fatalf("mark %d = %d, want %d: %v", step.to, got, step.want, err)
 				}
+				page, err := s.ListConversationMessages(human, c.ID, nil, nil, 3)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantRead := int64(0)
+				if tc.name == "read" {
+					wantRead = step.want
+				}
+				if page.ReadSeq != wantRead {
+					t.Fatalf("page read_seq after %s %d = %d, want %d", tc.name, step.to, page.ReadSeq, wantRead)
+				}
 			}
 			empty := chatDM(t, s, u, "empty-"+tc.name)
 			if got, err := tc.mark(human, empty.ID, 999); err != nil || got != 0 {
@@ -736,6 +826,10 @@ func TestListConversations(t *testing.T) {
 	chatSend(t, s, c2.ID, models.ConversationActor{UserID: u.ID, AgentKey: "codex"}, "older", "", nil)
 	first := chatSend(t, s, c1.ID, human, "human", "", nil).Message
 	last := chatSend(t, s, c1.ID, models.ConversationActor{UserID: u.ID, AgentKey: "claude"}, "newest", "", &first.Seq).Message
+	// TASK-4038: the highest seq remains the preview even with the oldest timestamp.
+	if _, err := s.db.Exec(s.q(`UPDATE conversation_messages SET created_at = ? WHERE id = ?`), "2000-01-01T00:00:00.000000000Z", last.ID); err != nil {
+		t.Fatal(err)
+	}
 	rows, err := s.ListConversations(human)
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("list: %+v err=%v", rows, err)
@@ -745,6 +839,9 @@ func TestListConversations(t *testing.T) {
 	}
 	if m := rows[0].LastMessage; m == nil || m.ID != last.ID || m.Seq != 2 || m.Body != "newest" || m.ReplyTo == nil || m.ReplyTo.Excerpt != "human" {
 		t.Fatalf("last message: %+v", m)
+	}
+	if !rows[0].LastMessage.CreatedAt.Before(first.CreatedAt) {
+		t.Fatalf("last message timestamp = %v, want before %v", rows[0].LastMessage.CreatedAt, first.CreatedAt)
 	}
 	if m := rows[1].LastMessage; m == nil || m.Seq != 1 || m.Body != "older" {
 		t.Fatalf("other last message: %+v", m)
