@@ -93,6 +93,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows := make([]sessionResponse, 0, len(sessions))
+	activityWarningLogged := false
 	for _, sess := range sessions {
 		state := "connected_not_accepting"
 		if sess.Armed {
@@ -100,9 +101,11 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		busy, err := s.sessionPresence.IsBusy(user.ID, sess.WorkerID)
 		if err != nil {
-			slog.Warn("sessions: activity read failed", "error", err, "user_id", user.ID)
-			writeError(w, http.StatusServiceUnavailable, "unavailable", "Session presence is not available")
-			return
+			if !activityWarningLogged {
+				slog.Warn("sessions: activity read failed", "error", err, "user_id", user.ID)
+				activityWarningLogged = true
+			}
+			busy = false
 		}
 		if sess.WorkerID != "" && busy {
 			state = "busy"

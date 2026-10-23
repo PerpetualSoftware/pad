@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -9,6 +11,47 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
+
+func TestListSessions_CorruptActivityDegrades(t *testing.T) {
+	// Do not run in parallel: capture the handler's request-level warning.
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	writer, reader, mr := newRedisPresencePair(t)
+	srv := testServerWithPresence(t)
+	srv.SetSessionPresence(reader)
+	_, _, tok, user := setupWatchTestUser(t, srv)
+	corruptWorker := "wk_cccccccccccccccccccccccccccccccc"
+	for _, worker := range []string{presenceWorkerA, corruptWorker} {
+		mr.Set(writer.activityKey(user.ID, worker), "garbage activity")
+	}
+	if err := writer.SetActivity(user.ID, presenceWorkerB, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		writer.Add(user.ID, SessionIdentity{WorkerID: presenceWorkerA, Armed: true}, SessionOrigin{}): "online",
+		writer.Add(user.ID, SessionIdentity{WorkerID: corruptWorker}, SessionOrigin{}):                "connected_not_accepting",
+		writer.Add(user.ID, SessionIdentity{WorkerID: presenceWorkerB, Armed: true}, SessionOrigin{}): "busy",
+		writer.Add(user.ID, SessionIdentity{Armed: true}, SessionOrigin{}):                            "online",
+	}
+	// Two requests prove that warnings are limited per request, not globally.
+	for request := 1; request <= 2; request++ {
+		rows := presenceRows(t, srv, tok.Token) // Asserts HTTP 200.
+		if len(rows) != len(want) {
+			t.Fatalf("got %d sessions, want %d", len(rows), len(want))
+		}
+		for _, row := range rows {
+			if expected, ok := want[row["id"].(string)]; !ok || row["state"] != expected {
+				t.Errorf("unexpected session state: %+v (want %s)", row, expected)
+			}
+		}
+		if got := bytes.Count(logs.Bytes(), []byte("sessions: activity read failed")); got != request {
+			t.Fatalf("got %d warnings after %d requests, want one per request: %s", got, request, &logs)
+		}
+	}
+}
 
 func TestPresenceActivityRegistries(t *testing.T) {
 	for _, backend := range []string{"memory", "redis"} {

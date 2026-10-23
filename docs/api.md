@@ -183,7 +183,10 @@ busy. State does not change push consent or delivery rules.
 
 Both endpoints require a resolved user (`401 unauthorized` otherwise) and
 answer `503 unavailable` when the presence registry is absent or cannot be
-read/written. Workspace-pinned PATs are refused by the existing pin policy.
+read/written. An activity read failure on the list endpoint instead leaves
+that session `online` or `connected_not_accepting`, and logs one warning per
+request; other sessions retain their activity state. Workspace-pinned PATs are
+refused by the existing pin policy.
 `pad session activity <busy|idle>` is intended for hooks: silent, no prompts or
 server startup, a two-second request timeout, and exit zero even when Pad is
 unavailable. It is not an MCP tool.
