@@ -1470,6 +1470,31 @@ Email enables sending workspace invitation links. Without it, users can still jo
 | `PAD_EMAIL_FROM` | `noreply@getpad.dev` | Sender email address |
 | `PAD_EMAIL_FROM_NAME` | `Pad` | Sender display name |
 
+### Push notifications
+
+Mobile push goes out through a push gateway. With no `PAD_PUSH_GATEWAY_URL` this server offers no push and runs no dispatcher.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAD_PUSH_GATEWAY_URL` | — | Base URL of the push gateway. Setting it turns push on and starts the dispatcher. |
+| `PAD_PUSH_GATEWAY_SECRET` | see below | Secret sent to the gateway in the `X-Cloud-Secret` header. If unset, the first non-empty of `PAD_CLOUD_OUTBOUND_SECRET`, then the last entry of `PAD_CLOUD_SECRET`. Startup refuses a gateway URL with no usable secret. |
+| `PAD_PUSH_DISPATCH_INTERVAL` | `5s` | How often the dispatcher looks for notifications to push. Read once at startup. |
+| `PAD_PUSH_DISPATCH_SETTLE` | `10s` | How long a notification must sit before it is pushed. |
+| `PAD_PUSH_DISPATCH_LEASE` | `60s` | How long a claimed notification stays reserved to this instance before another may reclaim it. |
+| `PAD_PUSH_DISPATCH_LEASE_MARGIN` | `15s` | Safety margin the lease must keep beyond the send timeout. |
+
+The four timing knobs are Go durations (`5s`, `1m30s`) and are environment variables only. Startup refuses a value that is not a valid duration, is zero or negative, or that breaks the lease rule below, with a message naming the variable. A value of only whitespace is malformed, not unset: only an empty or absent variable is unset. It never falls back to the default silently, and it refuses whether or not a gateway URL is set.
+
+Values are not capped: a large explicit value is your choice (a huge settle simply means nothing is pushed, a huge interval means the dispatcher effectively never runs). The one bound is the lease rule, which also refuses a margin so large that adding the send timeout would overflow.
+
+**Lease rule.** The lease must be at least the send timeout plus the lease margin (`PAD_PUSH_DISPATCH_LEASE >= 25s + PAD_PUSH_DISPATCH_LEASE_MARGIN`). A lease shorter than that would let a second instance reclaim a notification while the first is still sending it, and push it twice. With the defaults, 60s >= 25s + 15s. Raising the margin past 35s therefore needs a longer lease too. The refusal message names both `PAD_PUSH_DISPATCH_LEASE` and `PAD_PUSH_DISPATCH_LEASE_MARGIN` and states the lease, send timeout and margin it resolved (defaults included), so you can see which to change.
+
+**The send timeout is fixed at 25s and has no setting.** It is the whole-request timeout of the gateway's HTTP client, built into the binary. A setting for it would only change the number the lease rule checks, not the timeout the client uses, so the rule would certify a value that is never applied.
+
+**Use `https://` for the gateway URL.** Over plain `http://`, the `X-Cloud-Secret` header and the notification payloads travel in cleartext. Use `http://` only on a network you control, such as a private Docker network between the two containers. Startup accepts `http://` on purpose: the URL is set by the operator, at the same trust as `PAD_CLOUD_URL`.
+
+The secret is shared with pad-cloud unless you set `PAD_PUSH_GATEWAY_SECRET` separately. If the gateway is not pad-cloud, set it, so the cloud secret is not sent to another service.
+
 ### Password recovery (when email is not configured)
 
 Without an email provider, the web "Forgot password" flow can't send a reset

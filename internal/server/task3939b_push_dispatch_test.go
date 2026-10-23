@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -119,6 +120,18 @@ func TestPushDispatch_LeaseExceedsSendTimeout(t *testing.T) {
 	}
 	if err := srv.SetPushDispatchConfig(0, 0, cfg.sendTimeout+cfg.leaseMargin, 0, 0); err != nil {
 		t.Fatalf("a lease exactly at the invariant was refused: %v", err)
+	}
+	// A margin near MaxInt64 would wrap sendTimeout+margin negative and pass
+	// the comparison; it must refuse and change nothing (TASK-3939 part C,
+	// ruling 37e3eafa).
+	for _, margin := range []time.Duration{2562047 * time.Hour, time.Duration(math.MaxInt64) - cfg.sendTimeout + 1, time.Duration(math.MaxInt64)} {
+		if err := srv.SetPushDispatchConfig(0, 0, 0, margin, 0); !errors.Is(err, errPushLeaseTooShort) {
+			t.Fatalf("margin %v: err = %v, want refused", margin, err)
+		}
+	}
+	// The error states the resolved values.
+	if err := srv.SetPushDispatchConfig(0, 0, 30*time.Second, 0, 0); err == nil || !strings.Contains(err.Error(), "lease 30s") || !strings.Contains(err.Error(), "margin 15s") {
+		t.Fatalf("err = %v, want the resolved lease and margin", err)
 	}
 	// Raising the send timeout past the lease is the same violation.
 	if err := srv.SetPushDispatchConfig(0, 0, 0, 0, time.Hour); !errors.Is(err, errPushLeaseTooShort) {
