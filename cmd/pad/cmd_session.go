@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -745,6 +746,26 @@ func printSessionStatus(st sessionStatusJSON) {
 	tw.Flush()
 }
 
+var sessionActivityTimeout = 3 * time.Second
+
+var sessionActivityBody = reportSessionActivity
+
+func reportSessionActivity(ctx context.Context, state string) {
+	// Avoid getClient/getConfiguredConfig: they can start a server, prompt,
+	// or exit nonzero. Hooks silently tolerate configuration failures too.
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	if urlFlag != "" {
+		cfg.URL = urlFlag
+		cfg.LoadedFromFlags = true
+	}
+	applyPadTomlOverride(cfg)
+	client := cli.NewClientFromURL(cfg.BaseURL())
+	_ = client.SetSessionActivity(ctx, state)
+}
+
 // sessionActivityCmd is hook plumbing: no prompting, server startup or output.
 // A missed activity update must never fail a Claude Code hook.
 func sessionActivityCmd() *cobra.Command {
@@ -762,19 +783,20 @@ func sessionActivityCmd() *cobra.Command {
 			if len(args) != 1 || (args[0] != "busy" && args[0] != "idle") {
 				return
 			}
-			// Avoid getClient/getConfiguredConfig: they can start a server, prompt,
-			// or exit nonzero. Hooks silently tolerate configuration failures too.
-			cfg, err := config.Load()
-			if err != nil {
-				return
+			ctx, cancel := context.WithTimeout(cmd.Context(), sessionActivityTimeout)
+			defer cancel()
+			done := make(chan struct{})
+			go func() {
+				sessionActivityBody(ctx, args[0])
+				close(done)
+			}()
+			// Configuration, credentials and worker resolution can block before
+			// HTTP starts. Return even if the body cannot observe cancellation;
+			// main then exits, releasing any locks held by the process.
+			select {
+			case <-done:
+			case <-ctx.Done():
 			}
-			if urlFlag != "" {
-				cfg.URL = urlFlag
-				cfg.LoadedFromFlags = true
-			}
-			applyPadTomlOverride(cfg)
-			client := cli.NewClientFromURL(cfg.BaseURL())
-			_ = client.SetSessionActivity(cmd.Context(), args[0])
 		},
 	}
 	// Flag parsing precedes Run too. Swallow its errors here so the root's

@@ -52,6 +52,39 @@ func TestSessionActivityInvalidFlags(t *testing.T) {
 	}
 }
 
+func TestSessionActivityBlockedBodyProcess(t *testing.T) {
+	if os.Getenv("PAD_TEST_ACTIVITY_BLOCKED") != "1" {
+		return
+	}
+	sessionActivityTimeout = 25 * time.Millisecond
+	sessionActivityBody = func(context.Context, string) { select {} }
+	root := newRootCmd()
+	root.SetArgs([]string{"session", "activity", "busy"})
+	if root.Execute() != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func TestSessionActivityOverallDeadline(t *testing.T) {
+	t.Setenv("PAD_TEST_ACTIVITY_BLOCKED", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSessionActivityBlockedBodyProcess$")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	start := time.Now()
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("blocked hook must exit 0 within its total deadline: %v; stderr: %s", err, &stderr)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("blocked hook took %v with a 25ms deadline", elapsed)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("blocked hook must be silent: stdout=%q stderr=%q", &stdout, &stderr)
+	}
+}
+
 func assertSessionActivityHookSilent(t *testing.T, args ...string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
