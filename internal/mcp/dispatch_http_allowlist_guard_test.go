@@ -147,12 +147,12 @@ type allowlistClassification struct {
 // filterWorkspacesByTokenAllowlist or handlers_search.go's
 // tokenAllowedWorkspaceMatches) or an argument for why it cannot leak.
 var allowlistCoverage = map[string]allowlistClassification{
-	"chat list":   {exempt, "Global conversation membership is caller-scoped, not workspace data; reference enrichment uses cross-workspace read authorization."},
-	"chat inbox":  {exempt, "Global unread counts are restricted to the credential and agent's conversation memberships."},
-	"chat show":   {exempt, "Global messages require caller membership; context/reference enrichment checks workspace authorization."},
-	"chat send":   {exempt, "Global DM ensure/send uses caller membership; context_workspace is authorized by the existing chat handler."},
-	"chat delete": {exempt, "Deletes only the caller's own message in a global conversation where it is a member."},
-	"chat read":   {exempt, "Advances only the caller's own read marker in a global conversation."},
+	"chat list":   {exempt, "JUDGMENT: Global conversation membership is caller-scoped, not workspace data; reference enrichment uses cross-workspace read authorization."},
+	"chat inbox":  {exempt, "JUDGMENT: Global unread counts are restricted to the credential and agent's conversation memberships."},
+	"chat show":   {exempt, "JUDGMENT: Global messages require caller membership; context/reference enrichment checks workspace authorization."},
+	"chat send":   {exempt, "JUDGMENT: Global DM ensure/send uses caller membership; context_workspace is authorized by the existing chat handler."},
+	"chat delete": {exempt, "JUDGMENT: Deletes only the caller's own message in a global conversation where it is a member."},
+	"chat read":   {exempt, "JUDGMENT: Advances only the caller's own read marker in a global conversation."},
 	// --- Workspace-global, filters the allow-list itself ---
 	"workspace list": {filtersAllowlist,
 		"handlers_workspaces.go handleListWorkspaces → filterWorkspacesByTokenAllowlist (BUG-2102)"},
