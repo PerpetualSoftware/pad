@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -211,6 +212,111 @@ func TestSendContextWorkspace(t *testing.T) {
 			}
 			if got := chatLastSeq(t, s, c.ID); got != before {
 				t.Errorf("last_seq = %d, want %d after refused context", got, before)
+			}
+		})
+	}
+}
+
+func TestSendReplayAfterContextLoss(t *testing.T) {
+	for _, name := range []string{
+		"soft-deleted workspace", "removed member", "no prior send",
+		"another author's op_key", "non-member of conversation",
+		"removed conversation member", "tombstone", "quote preview",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := testStore(t)
+			u := chatUser(t, s, "alice")
+			owner := chatUser(t, s, "owner")
+			c := chatDM(t, s, u, "claude")
+			author := models.ConversationActor{UserID: u.ID}
+			ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Context", OwnerID: owner.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.AddWorkspaceMember(ws.ID, u.ID, "editor"); err != nil {
+				t.Fatal(err)
+			}
+			in := models.ConversationSend{
+				ConversationID: c.ID, Author: author, Body: "original", Source: "test",
+				ContextWorkspaceID: ws.ID, OpKey: "k1",
+			}
+			if name == "quote preview" {
+				quoted := chatSend(t, s, c.ID, author, "quoted text", "", nil)
+				in.ReplyToSeq = &quoted.Message.Seq
+			}
+			var want *models.ConversationSendResult
+			if name != "no prior send" {
+				want, err = s.SendConversationMessage(in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if name != "quote preview" && (want.Replayed || want.Message.Seq != 1) {
+					t.Fatalf("initial send: %+v, want a new message at seq 1", want)
+				}
+				if name == "tombstone" {
+					if _, _, err := s.DeleteConversationMessage(author, c.ID, want.Message.Seq); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// TASK-4038 r5: compare the full result with the normal replay path.
+				want, err = s.SendConversationMessage(in)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if name == "removed member" {
+				err = s.RemoveWorkspaceMember(ws.ID, u.ID)
+			} else {
+				err = s.DeleteWorkspace(ws.Slug)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantReplay := true
+			switch name {
+			case "no prior send":
+				in.OpKey = "new-key"
+				wantReplay = false
+			case "another author's op_key":
+				in.Author.AgentKey = "claude"
+				wantReplay = false
+			case "non-member of conversation":
+				in.Author = models.ConversationActor{UserID: owner.ID}
+				wantReplay = false
+			case "removed conversation member":
+				// TASK-4038 r5: even an existing author's key requires current membership.
+				if _, err := s.db.Exec(s.q(`DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ? AND agent_key = ?`), c.ID, author.UserID, author.AgentKey); err != nil {
+					t.Fatal(err)
+				}
+				wantReplay = false
+			}
+			beforeSeq, beforeCount := chatLastSeq(t, s, c.ID), chatCount(t, s, c.ID)
+			in.Body = "different retry body"
+			got, err := s.SendConversationMessage(in)
+			if wantReplay {
+				if err != nil {
+					t.Fatalf("replay after context loss: %v", err)
+				}
+				if !got.Replayed || len(got.Recipients) != 0 || !reflect.DeepEqual(got, want) {
+					t.Errorf("replay = %+v, want normal replay %+v", got, want)
+				}
+			} else {
+				unknown := in
+				unknown.ContextWorkspaceID = "unknown-workspace"
+				_, unknownErr := s.SendConversationMessage(unknown)
+				const wantError = "invalid conversation input: context workspace not found"
+				if !errors.Is(unknownErr, ErrInvalidConversationInput) || fmt.Sprint(unknownErr) != wantError {
+					t.Fatalf("unknown workspace error = %v, want %q", unknownErr, wantError)
+				}
+				if got != nil || !errors.Is(err, ErrInvalidConversationInput) || fmt.Sprint(err) != fmt.Sprint(unknownErr) {
+					t.Errorf("send = %+v, err = %v, want nil and %q", got, err, wantError)
+				}
+			}
+			if seq, count := chatLastSeq(t, s, c.ID), chatCount(t, s, c.ID); seq != beforeSeq || count != beforeCount {
+				t.Errorf("last_seq/count = %d/%d, want unchanged %d/%d", seq, count, beforeSeq, beforeCount)
 			}
 		})
 	}

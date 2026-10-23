@@ -271,6 +271,28 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 		}
 		var exists int
 		if err := tx.QueryRow(s.q(query), in.Author.UserID, in.ContextWorkspaceID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			// TASK-4038 r5: a committed send still replays after context loss.
+			// Check conversation membership without row locks so the workspace-
+			// then-conversation lock order stays intact; this path writes nothing.
+			if in.OpKey != "" {
+				var prior int64
+				err := tx.QueryRow(s.q(`
+					SELECT seq FROM conversation_messages
+					WHERE conversation_id = ? AND author_user_id = ? AND author_agent_key = ? AND op_key = ?
+					AND EXISTS (SELECT 1 FROM conversation_members cm
+						WHERE cm.conversation_id = conversation_messages.conversation_id AND cm.user_id = ? AND cm.agent_key = ?)
+				`), in.ConversationID, in.Author.UserID, in.Author.AgentKey, in.OpKey, in.Author.UserID, in.Author.AgentKey).Scan(&prior)
+				if err == nil {
+					msg, err := s.conversationMessageBySeq(tx, in.ConversationID, prior)
+					if err != nil {
+						return nil, err
+					}
+					return &models.ConversationSendResult{Message: *msg, Replayed: true}, nil
+				}
+				if !errors.Is(err, sql.ErrNoRows) {
+					return nil, fmt.Errorf("lookup op_key: %w", err)
+				}
+			}
 			return nil, invalidConversation("context workspace not found")
 		} else if err != nil {
 			return nil, fmt.Errorf("check context workspace: %w", err)
