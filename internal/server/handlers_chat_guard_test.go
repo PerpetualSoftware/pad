@@ -1,0 +1,129 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/events"
+)
+
+// TASK-4039: chat has no item event, watch, activity, outbox or webhook effects.
+func TestChat_EmitsNothing(t *testing.T) {
+	f := newChatFixture(t)
+	bus := events.New()
+	f.srv.SetEventBus(bus)
+	ch, _, _ := bus.Subscribe(context.Background(), f.wsID)
+	defer bus.Unsubscribe(ch)
+	mark := f.mark()
+	counts := func() []int {
+		out := []int{}
+		for _, table := range []string{"activities", "event_outbox", "webhook_deliveries"} {
+			var n int
+			if err := f.srv.store.DB().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+	before := counts()
+	p := f.ensure("rook")
+
+	for _, tc := range []struct {
+		body   map[string]any
+		status int
+	}{
+		{map[string]any{"body": "first", "op_key": "once"}, 201},
+		{map[string]any{"body": "replay", "op_key": "once"}, 200},
+		{map[string]any{"body": "reply", "reply_to_seq": 1}, 201},
+	} {
+		f.must(f.request("POST", p+"/messages", "rook", tc.body), tc.status, "send")
+	}
+
+	f.must(f.request("DELETE", p+"/messages/1", "", nil), 200, "delete")
+	f.must(f.request("POST", p+"/read", "", map[string]any{"seq": 2}), 200, "read")
+	for _, path := range []string{chatBase, p, p + "/messages", "/api/v1/me/chat/unread"} {
+		f.must(f.request("GET", path, "", nil), 200, "get")
+	}
+	if after := counts(); !reflect.DeepEqual(before, after) {
+		t.Fatalf("chat effects: before %v after %v", before, after)
+	}
+	if f.mark() != mark {
+		t.Fatalf("chat emitted watch events: %v", f.srv.watchEvents.EventsSince(mark))
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("chat emitted event: %+v", ev)
+	default:
+	}
+}
+func TestChat_GuardHandlersDoNotReferenceEmitters(t *testing.T) {
+	files, err := filepath.Glob("handlers_chat*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") || (path != "handlers_chat.go" && !strings.HasPrefix(path, "handlers_chat_")) {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			name := id.Name
+			if name == "events" || name == "watchEvents" || name == "goAsync" || strings.HasPrefix(name, "publish") || strings.HasPrefix(name, "logActivity") || strings.HasPrefix(name, "outbox") || strings.Contains(name, "Webhook") {
+				t.Errorf("%s references emitter %s", path, name)
+			}
+			return true
+		})
+	}
+}
+func TestChat_ResponsesNeverCarryRawIdentifiers(t *testing.T) {
+	f := newChatFixture(t)
+	f.ensure("rook")
+	for _, tc := range chatRouteCases() {
+		rr := rawReq(f.srv, tc.method, tc.path, f.ownerTok, "", tc.body)
+		if rr.Code >= 300 {
+			t.Fatalf("%s %s: %d %s", tc.method, tc.path, rr.Code, rr.Body.String())
+		}
+		var walk func(any)
+		walk = func(v any) {
+			switch x := v.(type) {
+			case map[string]any:
+				for k, val := range x {
+					for _, bad := range []string{"owner_user_id", "dm_key", "author_user_id", "context_workspace_id", "op_key", "context_workspace", "refs"} {
+						if k == bad {
+							t.Errorf("%s %s leaks %s", tc.method, tc.path, k)
+						}
+					}
+					walk(val)
+				}
+			case []any:
+				for _, val := range x {
+					walk(val)
+				}
+			}
+		}
+		out := chatObject(t, rr)
+		walk(out)
+		if tc.method == "GET" && strings.HasSuffix(tc.path, "/messages") {
+			var bad []string
+			nullLists(reflect.TypeOf(chatMessagesResponse{}), out, "page", &bad)
+			if len(bad) > 0 {
+				t.Fatal(fmt.Sprint(bad))
+			}
+		}
+	}
+}

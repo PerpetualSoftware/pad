@@ -16,6 +16,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/time/rate"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // rateLimitConfig holds the rate and burst for a limiter.
@@ -275,6 +277,9 @@ func (rl *ipRateLimiter) sweepLocked(now time.Time) {
 
 // RateLimiters holds all the rate limiters used by the server.
 type RateLimiters struct {
+	// TASK-4039: handler-level chat buckets, charged after principal admission.
+	ChatSend *ipRateLimiter
+	ChatDM   *ipRateLimiter
 	// Auth endpoints: strict limits per IP
 	Auth *ipRateLimiter
 	// Login attempts per email: catches credential-spraying that bypasses
@@ -443,6 +448,8 @@ type RateLimiters struct {
 // NewRateLimiters creates rate limiters with sensible defaults.
 func NewRateLimiters() *RateLimiters {
 	return &RateLimiters{
+		ChatSend: newIPRateLimiter(rateLimitConfig{Rate: 20.0 / 60.0, Burst: 20}),
+		ChatDM:   newIPRateLimiter(rateLimitConfig{Rate: 30.0 / 3600.0, Burst: 30, Retention: 2 * time.Hour}),
 		// Login: 5 attempts per minute per IP (= 5/60 per second, burst 5)
 		Auth: newIPRateLimiter(rateLimitConfig{
 			Rate:  rate.Limit(5.0 / 60.0),
@@ -672,6 +679,8 @@ func (rls *RateLimiters) Stop() {
 		return
 	}
 	for _, rl := range []*ipRateLimiter{
+		rls.ChatSend,
+		rls.ChatDM,
 		rls.Auth,
 		rls.AuthEmail,
 		rls.PasswordReset,
@@ -895,6 +904,33 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// TASK-4039: human sends use only the general API limit. Membership is checked
+// by the handler before this helper may allocate an agent bucket.
+func (s *Server) allowChatSend(w http.ResponseWriter, convID string, actor models.ConversationActor) bool {
+	if actor.AgentKey == "" || s.rateLimiters == nil || s.rateLimiters.ChatSend == nil {
+		return true
+	}
+	rl := s.rateLimiters.ChatSend
+	if !rl.allow(convID + "|" + actor.UserID + "|" + actor.AgentKey) {
+		writeRateLimitResponse(w, rl.config)
+		return false
+	}
+	return true
+}
+
+// TASK-4039: every admitted DM-create attempt, including reuse, spends a token.
+func (s *Server) allowChatDM(w http.ResponseWriter, userID string) bool {
+	if s.rateLimiters == nil || s.rateLimiters.ChatDM == nil {
+		return true
+	}
+	rl := s.rateLimiters.ChatDM
+	if !rl.allow(userID) {
+		writeRateLimitResponse(w, rl.config)
+		return false
+	}
+	return true
 }
 
 // allowDecisionProviderCall charges one token from the DecisionProvider
