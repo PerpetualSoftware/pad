@@ -148,8 +148,7 @@ func TestChatRemoteReadMarkers(t *testing.T) {
 		page       string
 		want       int64
 	}{
-		{"show returned max", "show", map[string]any{"target": "C12", "since": float64(2), "limit": float64(3)}, `{"messages":[{"seq":7},{"seq":4}],"last_seq":99,"newest_seq":98}`, 7},
-		{"show zero limit", "show", map[string]any{"target": "12", "limit": float64(0), "no_mark": true}, `{"messages":[{"seq":7}],"last_seq":99}`, 0},
+		{"show returned max", "show", map[string]any{"target": "C12", "since": float64(2), "limit": float64(3)}, `{"messages":[{"seq":7},{"seq":4}],"read_seq":3,"last_seq":99,"newest_seq":98}`, 7},
 		{"show no mark", "show", map[string]any{"target": "12", "no_mark": true}, `{"messages":[{"seq":7}],"last_seq":99}`, 0},
 		{"show empty", "show", map[string]any{"target": "12"}, `{"messages":[],"last_seq":99}`, 0},
 		{"send reply", "send", map[string]any{"target": "C12", "body": "hi", "reply_to": float64(4)}, `{"message":{"seq":100},"replayed":false}`, 4},
@@ -161,9 +160,6 @@ func TestChatRemoteReadMarkers(t *testing.T) {
 				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					switch r.URL.Path {
 					case "/api/v1/me/conversations/12/messages":
-						if tc.name == "show zero limit" && r.URL.Query().Get("limit") != "0" {
-							t.Errorf("zero limit should reach the server: %s", r.URL.RawQuery)
-						}
 						if tc.name == "show returned max" && (r.URL.Query().Get("after_seq") != "2" || r.URL.Query().Get("limit") != "3") {
 							t.Errorf("query: %s", r.URL.RawQuery)
 						}
@@ -195,6 +191,117 @@ func TestChatRemoteReadMarkers(t *testing.T) {
 			}
 			if tc.want == 0 && len(marks) != 0 || tc.want != 0 && (len(marks) != 1 || marks[0] != tc.want) {
 				t.Fatalf("marks: %v want=%d", marks, tc.want)
+			}
+			if tc.input["no_mark"] == true && strings.Contains(textOf(res), `"mark"`) {
+				t.Fatalf("no_mark returned mark metadata: %s", textOf(res))
+			}
+		})
+	}
+}
+
+func TestChatRemoteContiguousPage(t *testing.T) {
+	for _, first := range []int{31, 1} {
+		t.Run(fmt.Sprint(first), func(t *testing.T) {
+			var marks []int64
+			d := &HTTPHandlerDispatcher{UserResolver: func(context.Context) *models.User { return &models.User{ID: "u"} }, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/read") {
+					var in struct{ Seq int64 }
+					_ = json.NewDecoder(r.Body).Decode(&in)
+					marks = append(marks, in.Seq)
+					fmt.Fprintf(w, `{"read_seq":%d}`, in.Seq)
+					return
+				}
+				var messages []map[string]any
+				for seq := first; seq < first+50; seq++ {
+					messages = append(messages, map[string]any{"seq": seq})
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"messages": messages, "read_seq": 0})
+			})}
+			input := map[string]any{"target": "C12"}
+			res, err := d.Dispatch(WithDispatchInput(context.Background(), input), []string{"chat", "show"}, nil)
+			if err != nil || res.IsError {
+				t.Fatalf("result: %v %v", res, err)
+			}
+			raw, _ := json.Marshal(res.StructuredContent)
+			var result struct {
+				Messages []any
+				Mark     struct {
+					Marked  bool
+					Reason  string
+					ReadSeq int64 `json:"read_seq"`
+					First   int64 `json:"first_unshown"`
+					Last    int64 `json:"last_unshown"`
+				}
+			}
+			if err := json.Unmarshal(raw, &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Messages) != 50 {
+				t.Fatalf("lost messages: %s", raw)
+			}
+			if first == 31 {
+				if len(marks) != 0 || result.Mark.Marked || result.Mark.Reason != "gap" || result.Mark.ReadSeq != 0 || result.Mark.First != 1 || result.Mark.Last != 30 {
+					t.Errorf("gap result=%s marks=%v", raw, marks)
+				}
+			} else if len(marks) != 1 || marks[0] != 50 || !result.Mark.Marked || result.Mark.ReadSeq != 50 {
+				t.Errorf("contiguous result=%s marks=%v", raw, marks)
+			}
+			if !strings.Contains(textOf(res), `"mark"`) {
+				t.Errorf("text missing mark: %s", textOf(res))
+			}
+		})
+	}
+}
+
+func TestChatRemoteMarkFailurePreservesOutcome(t *testing.T) {
+	for _, verb := range []string{"send", "show"} {
+		t.Run(verb, func(t *testing.T) {
+			readCalls := 0
+			d := &HTTPHandlerDispatcher{UserResolver: func(context.Context) *models.User { return &models.User{ID: "u"} }, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/read") {
+					readCalls++
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `{"error":{"code":"forbidden","message":"Read-only token"}}`)
+					return
+				}
+				if verb == "send" {
+					w.WriteHeader(http.StatusCreated)
+					fmt.Fprint(w, `{"message":{"seq":2,"body":"stored"}}`)
+				} else {
+					fmt.Fprint(w, `{"messages":[{"seq":1,"body":"stored"}],"read_seq":0}`)
+				}
+			})}
+			input := map[string]any{"target": "C12", "body": "hello", "reply_to": float64(1)}
+			res, err := d.Dispatch(WithDispatchInput(context.Background(), input), []string{"chat", verb}, nil)
+			if err != nil || res.IsError {
+				t.Errorf("successful %s failed: %v %s", verb, err, textOf(res))
+			}
+			raw, _ := json.Marshal(res.StructuredContent)
+			var result struct {
+				Mark struct {
+					Marked bool
+					Error  string
+				}
+			}
+			_ = json.Unmarshal(raw, &result)
+			if readCalls != 1 || !strings.Contains(string(raw), "stored") || result.Mark.Marked || !strings.Contains(result.Mark.Error, "Read-only token") {
+				t.Fatalf("calls=%d result=%s", readCalls, raw)
+			}
+		})
+	}
+}
+
+func TestChatRemoteLimitValidation(t *testing.T) {
+	for _, limit := range []any{float64(-1), float64(0), float64(201), 1.5} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			d := &HTTPHandlerDispatcher{UserResolver: func(context.Context) *models.User { return &models.User{ID: "u"} }, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("invalid limit reached handler")
+				fmt.Fprint(w, `{}`)
+			})}
+			input := map[string]any{"target": "C12", "limit": limit}
+			res, err := d.Dispatch(WithDispatchInput(context.Background(), input), []string{"chat", "show"}, nil)
+			if err != nil || !res.IsError || !strings.Contains(textOf(res), "validation_failed") {
+				t.Fatalf("limit %v: %v %s", limit, err, textOf(res))
 			}
 		})
 	}

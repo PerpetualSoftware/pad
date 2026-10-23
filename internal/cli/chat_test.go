@@ -22,3 +22,32 @@ func TestChatTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestChatReadSeq(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		seqs          []int64
+		readSeq, want int64
+	}{
+		{"empty", nil, 10, 0},
+		{"next ascending", []int64{11, 12, 13}, 10, 13},
+		{"next descending", []int64{13, 12, 11}, 10, 13},
+		{"overlap ascending", []int64{8, 9, 10, 11}, 10, 11},
+		{"overlap descending", []int64{11, 10, 9, 8}, 10, 11},
+		{"gap ascending", []int64{31, 32, 33}, 0, 0},
+		{"gap descending", []int64{33, 32, 31}, 0, 0},
+		{"since skips unread", []int64{41, 42}, 10, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			messages := make([]struct {
+				Seq int64 `json:"seq"`
+			}, len(tc.seqs))
+			for i, seq := range tc.seqs {
+				messages[i].Seq = seq
+			}
+			if got := ChatReadSeq(messages, tc.readSeq); got != tc.want {
+				t.Fatalf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

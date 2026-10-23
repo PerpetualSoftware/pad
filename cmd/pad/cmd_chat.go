@@ -42,10 +42,13 @@ func chatShowCmd() *cobra.Command {
 	var since int64
 	var limit int
 	var noMark bool
-	cmd := &cobra.Command{Use: "show <target>", Example: "  pad chat show C12 --since 4", Short: "Show chat messages and mark the returned messages read", Args: cobra.ExactArgs(1),
+	cmd := &cobra.Command{Use: "show <target>", Example: "  pad chat show C12 --since 4", Short: "Show chat messages and mark read when no unread messages are skipped", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, _, err := cli.ParseChatTarget(args[0]); err != nil {
 				return err
+			}
+			if limit < 1 || limit > 200 {
+				return fmt.Errorf("--limit must be between 1 and 200")
 			}
 			client, _ := getClient()
 			n, err := client.ResolveChatTarget(args[0], false)
@@ -67,6 +70,7 @@ func chatShowCmd() *cobra.Command {
 				return nil
 			}
 			var page struct {
+				ReadSeq  int64 `json:"read_seq"`
 				Messages []struct {
 					Seq int64 `json:"seq"`
 				} `json:"messages"`
@@ -74,10 +78,18 @@ func chatShowCmd() *cobra.Command {
 			if err := json.Unmarshal(raw, &page); err != nil {
 				return err
 			}
-			if seq := cli.ChatMaxReturnedSeq(page.Messages); seq > 0 {
+			if seq := cli.ChatReadSeq(page.Messages, page.ReadSeq); seq > 0 {
 				if _, err := client.ReadChat(n, seq); err != nil {
-					return fmt.Errorf("messages displayed, but marking read failed: %w", err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: messages displayed, but marking read failed: %v\n", err)
 				}
+			} else if len(page.Messages) > 0 {
+				first := page.Messages[0].Seq
+				for _, msg := range page.Messages[1:] {
+					if msg.Seq < first {
+						first = msg.Seq
+					}
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "Not marked read: messages #%d-#%d were not shown; run pad chat show C%d --since %d\n", page.ReadSeq+1, first-1, n, page.ReadSeq)
 			}
 			return nil
 		}}
@@ -135,12 +147,12 @@ func chatSendCmd() *cobra.Command {
 			}
 			if in.ReplyToSeq != nil {
 				if _, err := client.ReadChat(n, *in.ReplyToSeq); err != nil {
-					return fmt.Errorf("message sent, but marking reply read failed: %w", err)
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: message sent, but marking reply read failed: %v\n", err)
 				}
 			}
 			return nil
 		}}
-	cmd.Flags().Int64Var(&replyTo, "reply-to", 0, "Reply to this message sequence (marks only this sequence read)")
+	cmd.Flags().Int64Var(&replyTo, "reply-to", 0, "Reply to this message sequence (marks read through this sequence)")
 	cmd.Flags().StringVar(&opKey, "op-key", "", "Caller-owned idempotency key")
 	cmd.Flags().StringVar(&contextWorkspace, "context-workspace", "", "Workspace for resolving message references (defaults to cwd link)")
 	return cmd

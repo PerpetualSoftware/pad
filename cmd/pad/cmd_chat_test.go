@@ -21,7 +21,7 @@ func TestChatShowReadMarker(t *testing.T) {
 		flags      []string
 		want       []int64
 	}{
-		{"returned max", `{"messages":[{"seq":7,"body":"seven"},{"seq":4,"deleted":true}],"last_seq":99,"newest_seq":98}`, nil, []int64{7}},
+		{"returned max", `{"messages":[{"seq":7,"body":"seven"},{"seq":4,"deleted":true}],"read_seq":3,"last_seq":99,"newest_seq":98}`, nil, []int64{7}},
 		{"no mark", `{"messages":[{"seq":7}],"last_seq":99}`, []string{"--no-mark"}, nil},
 		{"empty", `{"messages":[],"last_seq":99}`, nil, nil},
 	} {
@@ -204,6 +204,111 @@ func TestChatSendWorkspaceContext(t *testing.T) {
 			cmd.SetArgs(args)
 			if err := cmd.Execute(); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestChatShowContiguousPage(t *testing.T) {
+	oldFormat, oldWorkspace, oldURL := formatFlag, workspaceFlag, urlFlag
+	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = oldFormat, oldWorkspace, oldURL })
+	for _, first := range []int{31, 1} {
+		t.Run(fmt.Sprint(first), func(t *testing.T) {
+			var marks []int64
+			ts := setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/read") {
+					var in struct{ Seq int64 }
+					_ = json.NewDecoder(r.Body).Decode(&in)
+					marks = append(marks, in.Seq)
+					fmt.Fprintf(w, `{"read_seq":%d}`, in.Seq)
+					return
+				}
+				var messages []map[string]any
+				for seq := first; seq < first+50; seq++ {
+					messages = append(messages, map[string]any{"seq": seq, "body": "hello"})
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"messages": messages, "read_seq": 0})
+			}))
+			var out, stderr bytes.Buffer
+			cmd := newRootCmd()
+			cmd.SetOut(&out)
+			cmd.SetErr(&stderr)
+			cmd.SetArgs([]string{"--url", ts.URL, "chat", "show", "C12", "--format", "json"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), `"messages"`) {
+				t.Fatalf("missing page: %s", out.String())
+			}
+			if first == 31 {
+				if len(marks) != 0 {
+					t.Errorf("marked across gap: %v", marks)
+				}
+				if !strings.Contains(stderr.String(), "Not marked read: messages #1-#30 were not shown; run pad chat show C12 --since 0") {
+					t.Errorf("missing gap note: %s", stderr.String())
+				}
+			} else if len(marks) != 1 || marks[0] != 50 {
+				t.Errorf("marks=%v, want [50]", marks)
+			}
+		})
+	}
+}
+
+func TestChatMarkFailurePreservesOutcome(t *testing.T) {
+	oldFormat, oldWorkspace, oldURL := formatFlag, workspaceFlag, urlFlag
+	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = oldFormat, oldWorkspace, oldURL })
+	for _, verb := range []string{"send", "show"} {
+		t.Run(verb, func(t *testing.T) {
+			readCalls := 0
+			ts := setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/read") {
+					readCalls++
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `{"error":{"code":"forbidden","message":"Read-only token"}}`)
+					return
+				}
+				if verb == "send" {
+					w.WriteHeader(http.StatusCreated)
+					fmt.Fprint(w, `{"message":{"seq":2,"body":"stored"}}`)
+				} else {
+					fmt.Fprint(w, `{"messages":[{"seq":1,"body":"stored"}],"read_seq":0}`)
+				}
+			}))
+			var out, stderr bytes.Buffer
+			cmd := newRootCmd()
+			cmd.SetOut(&out)
+			cmd.SetErr(&stderr)
+			args := []string{"--url", ts.URL, "chat", verb, "C12"}
+			if verb == "send" {
+				args = append(args, "hello", "--reply-to", "1", "--context-workspace", "")
+			}
+			cmd.SetArgs(append(args, "--format", "json"))
+			if err := cmd.Execute(); err != nil {
+				t.Errorf("successful %s failed: %v", verb, err)
+			}
+			if readCalls != 1 || !strings.Contains(out.String(), "stored") || !strings.Contains(stderr.String(), "Warning:") || !strings.Contains(stderr.String(), "Read-only token") {
+				t.Fatalf("calls=%d out=%s stderr=%s", readCalls, out.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestChatLimitValidation(t *testing.T) {
+	oldFormat, oldWorkspace, oldURL := formatFlag, workspaceFlag, urlFlag
+	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = oldFormat, oldWorkspace, oldURL })
+	for _, limit := range []string{"-1", "0", "201"} {
+		t.Run(limit, func(t *testing.T) {
+			ts := setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("invalid limit reached server")
+				fmt.Fprint(w, `{}`)
+			}))
+			cmd := newRootCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--url", ts.URL, "chat", "show", "@rook", "--limit", limit})
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "limit must be between 1 and 200") {
+				t.Fatalf("limit %s: %v", limit, err)
 			}
 		})
 	}

@@ -22,16 +22,26 @@ func ParseChatTarget(target string) (number int, agent string, err error) {
 	return 0, "", fmt.Errorf("invalid chat target %q: use C<n>, <n>, or @<name>", target)
 }
 
-// ChatMaxReturnedSeq deliberately ignores last_seq and newest_seq: only
-// messages in the returned page were displayed by this client.
-func ChatMaxReturnedSeq(messages []struct {
+// ChatReadSeq returns the highest displayed sequence only when the page reaches
+// the existing read marker. A high-water mark must not skip unseen messages.
+// Conversation sequences are contiguous, including deleted-message tombstones.
+func ChatReadSeq(messages []struct {
 	Seq int64 `json:"seq"`
-}) int64 {
-	var maxSeq int64
-	for _, msg := range messages {
-		if msg.Seq > maxSeq {
-			maxSeq = msg.Seq
+}, readSeq int64) int64 {
+	if len(messages) == 0 {
+		return 0
+	}
+	first, last := messages[0].Seq, messages[0].Seq
+	for _, msg := range messages[1:] {
+		if msg.Seq < first {
+			first = msg.Seq
+		}
+		if msg.Seq > last {
+			last = msg.Seq
 		}
 	}
-	return maxSeq
+	if first > readSeq && first-readSeq > 1 {
+		return 0
+	}
+	return last
 }

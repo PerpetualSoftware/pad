@@ -33,6 +33,7 @@ func (d *HTTPHandlerDispatcher) chatRequest(ctx context.Context, key string, use
 // The decoder is deliberately chat-specific: these responses contain no
 // collection definitions or item field schemas.
 type chatHTTPResponse struct {
+	ReadSeq       int64 `json:"read_seq"`
 	Conversations []struct {
 		Number   int    `json:"number"`
 		AgentKey string `json:"agent_key"`
@@ -122,11 +123,14 @@ func (d *HTTPHandlerDispatcher) dispatchChat(verb string) specialDispatchFn {
 			for _, field := range []struct {
 				name, query string
 				min         int64
-			}{{"since", "after_seq", 0}, {"limit", "limit", 0}} {
+			}{{"since", "after_seq", 0}, {"limit", "limit", 1}} {
 				if _, ok := input[field.name]; ok {
 					n, err := chatSequence(input, field.name, field.min)
 					if err != nil {
 						return invalid(err)
+					}
+					if field.name == "limit" && n > 200 {
+						return invalid(fmt.Errorf("limit must be between 1 and 200"))
 					}
 					q.Set(field.query, strconv.FormatInt(n, 10))
 				}
@@ -185,13 +189,21 @@ func (d *HTTPHandlerDispatcher) dispatchChat(verb string) specialDispatchFn {
 			if err != nil {
 				return dispatcherErrorResult(key, "decode messages", err), nil
 			}
-			if maxSeq := cli.ChatMaxReturnedSeq(page.Messages); maxSeq > 0 {
-				mark := d.chatRequest(ctx, key, user, http.MethodPost, path+"/read", map[string]int64{"seq": maxSeq})
-				if mark.IsError {
-					return mark, nil
-				}
+			if seq := cli.ChatReadSeq(page.Messages, page.ReadSeq); seq > 0 {
+				mark := d.chatRequest(ctx, key, user, http.MethodPost, path+"/read", map[string]int64{"seq": seq})
+				return withChatMark(res, chatMarkStatus(mark)), nil
 			}
-			return res, nil
+			note := map[string]any{"marked": false, "reason": "empty", "read_seq": page.ReadSeq}
+			if len(page.Messages) > 0 {
+				first := page.Messages[0].Seq
+				for _, msg := range page.Messages[1:] {
+					if msg.Seq < first {
+						first = msg.Seq
+					}
+				}
+				note["reason"], note["first_unshown"], note["last_unshown"] = "gap", page.ReadSeq+1, first-1
+			}
+			return withChatMark(res, note), nil
 		case "send":
 			res := d.chatRequest(ctx, key, user, http.MethodPost, path+"/messages", in)
 			if res.IsError {
@@ -199,9 +211,7 @@ func (d *HTTPHandlerDispatcher) dispatchChat(verb string) specialDispatchFn {
 			}
 			if in.ReplyToSeq != nil {
 				mark := d.chatRequest(ctx, key, user, http.MethodPost, path+"/read", map[string]int64{"seq": *in.ReplyToSeq})
-				if mark.IsError {
-					return mark, nil
-				}
+				return withChatMark(res, chatMarkStatus(mark)), nil
 			}
 			return res, nil
 		case "delete":
@@ -212,4 +222,26 @@ func (d *HTTPHandlerDispatcher) dispatchChat(verb string) specialDispatchFn {
 			return invalid(fmt.Errorf("unknown chat action %q", verb))
 		}
 	}
+}
+
+// Follow-up marking must never replace a successful fetch or stored send.
+func withChatMark(res *CallToolResult, mark map[string]any) *CallToolResult {
+	response := res.StructuredContent.(map[string]any)
+	response["mark"] = mark
+	raw, _ := json.Marshal(response)
+	return structuredResult(response, string(raw))
+}
+
+func chatMarkStatus(mark *CallToolResult) map[string]any {
+	if mark.IsError {
+		raw, _ := json.Marshal(mark.StructuredContent)
+		var envelope ErrorEnvelope
+		_ = json.Unmarshal(raw, &envelope)
+		return map[string]any{"marked": false, "error": fmt.Sprintf("%s: %s", envelope.Error.Code, envelope.Error.Message)}
+	}
+	page, err := decodeChatResult(mark)
+	if err != nil {
+		return map[string]any{"marked": false, "error": err.Error()}
+	}
+	return map[string]any{"marked": true, "read_seq": page.ReadSeq}
 }
