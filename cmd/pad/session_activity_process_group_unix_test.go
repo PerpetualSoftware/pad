@@ -18,6 +18,9 @@ import (
 )
 
 func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
+	if _, err := exec.LookPath("ps"); err != nil {
+		t.Skip("ps unavailable on PATH (for example, in the Nix build sandbox); the Linux Go CI job has ps and runs this test: " + err.Error())
+	}
 	bin := filepath.Join(t.TempDir(), "pad")
 	build := exec.Command("go", "build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -78,10 +81,9 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("parent did not exit while server held the child request")
 	}
-	// The unique server URL identifies this test's child. CI runs this test
-	// only on Linux; the macOS and Windows Smoke jobs run no cmd/pad tests.
-	// The lookup uses ps -A -o pid=,args= (procps on Linux), and fails rather
-	// than skips if ps is missing.
+	// The unique server URL identifies this test's child. The lookup uses
+	// ps -A -o pid=,args= (procps on Linux). This test skips without ps,
+	// including in the Nix build sandbox; the Linux Go CI job has ps and runs it.
 	// Capture its pid before signaling so a dead child cannot disappear from
 	// the process list and accidentally satisfy the survival assertion.
 	childPID := sessionActivityChildPID(t, srv.URL, cmd.Process.Pid)
