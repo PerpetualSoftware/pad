@@ -28,6 +28,7 @@ func TestSessionActivityRedisReplacesCorruptClientTimestamp(t *testing.T) {
 		{"missing nanos", fmt.Sprintf(`{"busy":true,"client_at":{"seconds":%d}}`, seconds)},
 		{"string seconds", fmt.Sprintf(`{"busy":true,"client_at":{"seconds":%q,"nanos":0}}`, fmt.Sprint(seconds))},
 		{"fractional seconds", fmt.Sprintf(`{"busy":true,"client_at":{"seconds":%d.5,"nanos":0}}`, seconds)},
+		{"negative nanos", fmt.Sprintf(`{"busy":true,"client_at":{"seconds":%d,"nanos":-1}}`, seconds)},
 		{"out-of-range nanos", fmt.Sprintf(`{"busy":true,"client_at":{"seconds":%d,"nanos":1000000000}}`, seconds)},
 		{"huge seconds", `{"busy":true,"client_at":{"seconds":1e100,"nanos":0}}`},
 		{"WRONGTYPE", ""},
