@@ -2133,6 +2133,16 @@ func (s *Server) setupRouter() {
 			r.Post("/me/invitations/{id}/accept", s.handleAcceptMyInvitation)
 			r.Post("/me/invitations/{id}/decline", s.handleDeclineMyInvitation)
 
+			// TASK-4039: global, membership-only, no workspace check, not for apps.
+			r.Get("/me/conversations", s.handleListChatConversations)
+			r.Post("/me/conversations", s.handleEnsureChatConversation)
+			r.Get("/me/conversations/{n}", s.handleGetChatConversation)
+			r.Get("/me/conversations/{n}/messages", s.handleListChatMessages)
+			r.Post("/me/conversations/{n}/messages", s.handleSendChatMessage)
+			r.Delete("/me/conversations/{n}/messages/{seq}", s.handleDeleteChatMessage)
+			r.Post("/me/conversations/{n}/read", s.handleMarkChatRead)
+			r.Get("/me/chat/unread", s.handleChatUnread)
+
 			// Workspaces
 			r.Route("/workspaces", func(r chi.Router) {
 				r.Get("/", s.handleListWorkspaces)

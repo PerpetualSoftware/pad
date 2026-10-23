@@ -198,8 +198,8 @@ func TestSendContextWorkspace(t *testing.T) {
 			before := chatLastSeq(t, s, c.ID)
 			in.ContextWorkspaceID = tc.id
 			_, err := s.SendConversationMessage(in)
-			if !errors.Is(err, ErrInvalidConversationInput) {
-				t.Errorf("send: err = %v, want ErrInvalidConversationInput", err)
+			if !errors.Is(err, ErrContextWorkspaceNotFound) || !errors.Is(err, ErrInvalidConversationInput) {
+				t.Errorf("send: err = %v, want context sentinel wrapping ErrInvalidConversationInput", err)
 			}
 			if tc.name == "unknown" {
 				unknownError = fmt.Sprint(err)
@@ -308,7 +308,7 @@ func TestSendReplayAfterContextLoss(t *testing.T) {
 				unknown.ContextWorkspaceID = "unknown-workspace"
 				_, unknownErr := s.SendConversationMessage(unknown)
 				const wantError = "invalid conversation input: context workspace not found"
-				if !errors.Is(unknownErr, ErrInvalidConversationInput) || fmt.Sprint(unknownErr) != wantError {
+				if !errors.Is(unknownErr, ErrContextWorkspaceNotFound) || !errors.Is(unknownErr, ErrInvalidConversationInput) || fmt.Sprint(unknownErr) != wantError {
 					t.Fatalf("unknown workspace error = %v, want %q", unknownErr, wantError)
 				}
 				if got != nil || !errors.Is(err, ErrInvalidConversationInput) || fmt.Sprint(err) != fmt.Sprint(unknownErr) {
@@ -1323,5 +1323,62 @@ func TestPurgeWorkspaceLeavesChatMessages(t *testing.T) {
 	}
 	if chatCount(t, s, c.ID) != 1 || chatLastSeq(t, s, c.ID) != 1 {
 		t.Fatal("failed FK send changed messages or last_seq")
+	}
+}
+
+// TASK-4039 r1: replay reads only the current member's own author/key pair.
+func TestReplayConversationMessage(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c := chatDM(t, s, u, "claude")
+	human := models.ConversationActor{UserID: u.ID}
+	agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+	original := chatSend(t, s, c.ID, human, "original", "human-key", nil).Message
+	agentMessage := chatSend(t, s, c.ID, agent, "agent", "agent-key", nil).Message
+	for _, tc := range []struct {
+		name        string
+		actor       models.ConversationActor
+		convID, key string
+		want        *models.ConversationMessage
+		err         error
+	}{
+		{"own human", human, c.ID, "human-key", &original, nil},
+		{"own agent", agent, c.ID, "agent-key", &agentMessage, nil},
+		{"human cannot replay agent", human, c.ID, "agent-key", nil, nil},
+		{"agent cannot replay human", agent, c.ID, "human-key", nil, nil},
+		{"non-member", models.ConversationActor{UserID: u.ID, AgentKey: "outsider"}, c.ID, "human-key", nil, nil},
+		{"unknown key", human, c.ID, "missing", nil, nil},
+		{"empty key", human, c.ID, "", nil, nil},
+		{"long key", human, c.ID, strings.Repeat("x", 129), nil, nil},
+		{"other conversation", human, chatDM(t, s, u, "other").ID, "human-key", nil, nil},
+		{"empty conversation", human, "", "human-key", nil, ErrConversationNotFound},
+		{"malformed conversation", human, "bad\x00id", "human-key", nil, ErrConversationNotFound},
+		{"long conversation", human, strings.Repeat("c", 129), "human-key", nil, ErrConversationNotFound},
+		{"invalid actor", models.ConversationActor{}, c.ID, "human-key", nil, ErrInvalidConversationInput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, found, err := s.ReplayConversationMessage(tc.actor, tc.convID, tc.key)
+			if !errors.Is(err, tc.err) || found != (tc.want != nil) || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("replay = %+v, %v, %v; want %+v, %v", got, found, err, tc.want, tc.err)
+			}
+		})
+	}
+	tombstone, _, err := s.DeleteConversationMessage(human, c.ID, original.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := s.ReplayConversationMessage(human, c.ID, "human-key")
+	if err != nil || !found || !reflect.DeepEqual(got, tombstone) || !got.Deleted || got.Body != "" {
+		t.Fatalf("tombstone replay = %+v, %v, %v", got, found, err)
+	}
+	if _, err := s.db.Exec(s.q("DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ? AND agent_key = ?"), c.ID, human.UserID, human.AgentKey); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err = s.ReplayConversationMessage(human, c.ID, "human-key")
+	if err != nil || found || got != nil {
+		t.Fatalf("removed conversation member replay = %+v, %v, %v", got, found, err)
+	}
+	if chatLastSeq(t, s, c.ID) != 2 || chatCount(t, s, c.ID) != 2 {
+		t.Fatal("read-only replay changed sequence or row count")
 	}
 }
