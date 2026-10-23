@@ -309,7 +309,7 @@ func TestRedisSessionPresence_EmptyListIsNotNil(t *testing.T) {
 		t.Fatal("an empty listing must be an empty slice, not nil — it serialises as null and breaks array consumers")
 	}
 
-	encoded, err := json.Marshal(sessionsResponse{Sessions: sessions, Count: len(sessions)})
+	encoded, err := json.Marshal(map[string]any{"sessions": sessions, "count": len(sessions)})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

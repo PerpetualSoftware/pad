@@ -1,8 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // sessionsResponse is the body of GET /api/v1/sessions.
@@ -13,8 +17,14 @@ import (
 // that the cheapest possible read keeps the common case from having to
 // reason about the array at all.
 type sessionsResponse struct {
-	Sessions []LiveSession `json:"sessions"`
-	Count    int           `json:"count"`
+	Sessions []sessionResponse `json:"sessions"`
+	Count    int               `json:"count"`
+}
+
+// sessionResponse adds current activity without persisting it in session JSON.
+type sessionResponse struct {
+	LiveSession
+	State string `json:"state"`
 }
 
 // handleListSessions returns the caller's OWN live event-stream
@@ -83,5 +93,76 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "Session presence is not available")
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsResponse{Sessions: sessions, Count: len(sessions)})
+	workers := make([]string, 0, len(sessions))
+	for _, sess := range sessions {
+		workers = append(workers, sess.WorkerID)
+	}
+	busy, err := s.sessionPresence.BusyWorkers(user.ID, workers)
+	if err != nil {
+		slog.Warn("sessions: activity read failed", "error", err, "user_id", user.ID)
+	}
+	rows := make([]sessionResponse, 0, len(sessions))
+	for _, sess := range sessions {
+		state := "connected_not_accepting"
+		if sess.Armed {
+			state = "online"
+		}
+		if sess.WorkerID != "" && busy[sess.WorkerID] {
+			state = "busy"
+		}
+		sess.WorkerID = models.ShortWorkerID(sess.WorkerID)
+		rows = append(rows, sessionResponse{LiveSession: sess, State: state})
+	}
+	writeJSON(w, http.StatusOK, sessionsResponse{Sessions: rows, Count: len(rows)})
+}
+
+// handleSessionActivity writes only the credential user's worker activity.
+// POST /api/v1/sessions/activity
+func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
+		return
+	}
+	if s.sessionPresence == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "Session presence is not available")
+		return
+	}
+	worker := r.Header.Get("X-Pad-Worker")
+	if !models.ValidWorkerID(worker) {
+		writeError(w, http.StatusBadRequest, "invalid_worker_id", `X-Pad-Worker must be "wk_" followed by 32 lowercase hex characters`)
+		return
+	}
+	var body struct {
+		State string          `json:"state"`
+		At    json.RawMessage `json:"at"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", "Invalid activity body")
+		return
+	}
+	if body.State != "busy" && body.State != "idle" {
+		writeError(w, http.StatusBadRequest, "validation_error", "state must be busy or idle")
+		return
+	}
+	var clientAt *time.Time
+	if len(body.At) > 0 {
+		var raw string
+		if err := json.Unmarshal(body.At, &raw); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", "at must be an RFC3339 timestamp")
+			return
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", "at must be an RFC3339 timestamp")
+			return
+		}
+		clientAt = &parsed
+	}
+	if err := s.sessionPresence.SetActivity(user.ID, worker, body.State == "busy", time.Now().UTC(), clientAt); err != nil {
+		slog.Warn("sessions: activity write failed", "error", err, "user_id", user.ID)
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "Session presence is not available")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

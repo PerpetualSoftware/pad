@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/go-chi/chi/v5"
 
@@ -392,40 +391,6 @@ func actorFromRequest(r *http.Request) (actor, source string) {
 	}
 
 	return actor, source
-}
-
-// maxAgentNameRunes bounds the self-declared agent name (BUG-3372).
-const maxAgentNameRunes = 64
-
-// agentNameFromRequest is the X-Pad-Agent header as stored: trimmed, control
-// characters removed, at most maxAgentNameRunes. The header is a client's
-// self-description and cannot be verified; it only ever labels the caller's
-// OWN writes (user_id is still the authenticated account), so it is kept as
-// the agent signal. What it may not do is carry an unbounded or
-// control-laden string into every activity row and timeline chip
-// (BUG-3372).
-func agentNameFromRequest(r *http.Request) string {
-	return normalizeAgentName(r.Header.Get("X-Pad-Agent"))
-}
-
-// TASK-4039 r3: share the header's stored form with chat key validation.
-func normalizeAgentName(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	var b strings.Builder
-	n := 0
-	for _, c := range strings.TrimSpace(raw) {
-		if unicode.IsControl(c) {
-			continue
-		}
-		if n == maxAgentNameRunes {
-			break
-		}
-		b.WriteRune(c)
-		n++
-	}
-	return strings.TrimSpace(b.String())
 }
 
 // stampCommentAttribution sets a new comment's author, created_by and source

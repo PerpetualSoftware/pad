@@ -1,0 +1,11 @@
+{
+  "description": "Report this session's busy/idle activity to Pad presence (TASK-4040).",
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "pad session activity busy >/dev/null 2>&1 || true", "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "pad session activity idle >/dev/null 2>&1 || true", "timeout": 5 } ] }
+    ]
+  }
+}

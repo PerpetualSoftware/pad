@@ -408,19 +408,10 @@ func monitorClient() (*cli.Client, error) {
 // presence registry (PLAN-2558 S2, TASK-2560): the working directory's
 // basename as a human-readable label, plus this process's own pid.
 //
-// WHY NOT READ ~/.pad/sessions/. When this slice shipped (S2), the
-// registry was keyed on the dead `pad session register` command pid and
-// the only fields to match on were pid and cwd — two agent sessions in
-// one checkout were indistinguishable, and picking "the newest" would
-// have put a wrong-but-confident name in the S5 target picker. TASK-2767
-// fixed the registry: it is now keyed on the harness session pid
-// (CLAUDE_PID) and records the messaging socket's identity, so a monitor
-// COULD find its own record exactly (same CLAUDE_CODE_MESSAGING_SOCKET).
-// It still does not, by ruling: the agent name reaching the server is
-// IDEA-2750 part 2b, a wire change with its own review (the server would
-// then carry a self-declared label per stream, and the picker would show
-// it), and until that lands the label stays what the monitor can never
-// be wrong about — its own cwd and pid.
+// Label and PID describe this monitor directly. Agent name and worker id
+// travel separately through the client's X-Pad-Agent and X-Pad-Worker headers;
+// presence carries both, and the worker id stays stable across /clear.
+// The messaging socket's path and identity remain local.
 //
 // Failures are silent by construction: os.Getwd can fail (a deleted
 // cwd), and the answer is an unlabelled session, not a dead monitor.

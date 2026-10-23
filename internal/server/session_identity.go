@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // Session-identity headers on GET /api/v1/events/stream (PLAN-2558 S2,
@@ -18,7 +20,7 @@ import (
 // this is the reasoning, recorded because the choice is otherwise
 // invisible:
 //
-//   - A query param would put the label and pid in every access log
+//   - A query param would put the label, pid, agent and worker in every access log
 //     line — this server logs `path=` for each request — and in any
 //     proxy log in front of it. The whole point of the privacy line
 //     here (basename, never the full cwd; never the socket path) is to
@@ -46,7 +48,7 @@ const (
 )
 
 // sessionArmedQueryParam is PLAN-2613 S1's consent declaration —
-// deliberately a QUERY PARAM, not a third header alongside label/pid.
+// deliberately a QUERY PARAM, not a header alongside label, pid, agent and worker.
 // The header choice above is privacy-driven: a label or pid is local-
 // machine detail that shouldn't travel into an access log. Armed is the
 // opposite of private — it's a plain boolean, and a durable log trail of
@@ -71,15 +73,20 @@ const sessionArmedQueryParam = "armed"
 const maxSessionLabelLen = 64
 
 // parseSessionIdentity reads the self-declared session identity off a
-// stream request. It never fails: every malformed input degrades to the
-// S1 behaviour (an unlabelled session) rather than rejecting the
-// connection, because presence is a convenience and event delivery is
-// not — a client with a garbled header still deserves its events.
+// stream request. It never fails: malformed fields are sanitized or dropped
+// individually rather than rejecting the connection, because presence is a
+// convenience and event delivery is not. A garbled header must not lose events.
 func parseSessionIdentity(r *http.Request) SessionIdentity {
+	worker := r.Header.Get("X-Pad-Worker")
+	if !models.ValidWorkerID(worker) {
+		worker = ""
+	}
 	return SessionIdentity{
-		Label: sanitizeSessionLabel(r.Header.Get(sessionLabelHeader)),
-		PID:   parseSessionPID(r.Header.Get(sessionPIDHeader)),
-		Armed: r.URL.Query().Get(sessionArmedQueryParam) == "true",
+		Agent:    normalizeAgentName(r.Header.Get("X-Pad-Agent")),
+		WorkerID: worker,
+		Label:    sanitizeSessionLabel(r.Header.Get(sessionLabelHeader)),
+		PID:      parseSessionPID(r.Header.Get(sessionPIDHeader)),
+		Armed:    r.URL.Query().Get(sessionArmedQueryParam) == "true",
 	}
 }
 
