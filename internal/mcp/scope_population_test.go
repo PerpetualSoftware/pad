@@ -116,8 +116,8 @@ func scopePopulationHandler(onMutate func()) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/me/conversations/12/messages" {
-			// show is a write when its page has messages to mark read.
-			_, _ = w.Write([]byte(`{"messages":[{"seq":4}],"last_seq":9}`))
+			// show attempts a write only when its page reaches the read marker.
+			_, _ = w.Write([]byte(`{"messages":[{"seq":4}],"read_seq":3,"last_seq":9}`))
 			return
 		}
 		p := strings.TrimPrefix(r.URL.Path, "/api/v1/workspaces/docapp/")
