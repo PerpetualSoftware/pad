@@ -79,13 +79,14 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 		t.Fatal("background request never arrived")
 	}
 	// The server has received the child's request and still holds its response.
-	// Waiting for the child in the parent must fail this assertion.
+	// Keep this bound below SetSessionActivity's 2s HTTP timeout so waiting
+	// for the child in the parent must fail this assertion.
 	select {
 	case err := <-parentExited:
 		if err != nil {
 			t.Fatalf("parent: %v, stderr=%q", err, &stderr)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("parent did not exit while server held the child request")
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {

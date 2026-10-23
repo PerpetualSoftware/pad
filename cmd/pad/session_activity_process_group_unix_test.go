@@ -68,15 +68,20 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("background request never arrived")
 	}
+	// Keep this bound below SetSessionActivity's 2s HTTP timeout so a parent
+	// waiting for the child cannot pass by waiting for that timeout instead.
 	select {
 	case err := <-parentExited:
 		if err != nil {
 			t.Fatalf("parent: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("parent did not exit while server held the child request")
 	}
-	// The unique server URL identifies this test's child on Linux and macOS.
+	// The unique server URL identifies this test's child. CI runs this test
+	// only on Linux; the macOS and Windows Smoke jobs run no cmd/pad tests.
+	// The lookup uses ps -A -o pid=,args= (procps on Linux), and fails rather
+	// than skips if ps is missing.
 	// Capture its pid before signaling so a dead child cannot disappear from
 	// the process list and accidentally satisfy the survival assertion.
 	childPID := sessionActivityChildPID(t, srv.URL, cmd.Process.Pid)
@@ -85,13 +90,17 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
 		t.Fatalf("kill parent process group: %v", err)
 	}
-	if err := syscall.Kill(childPID, 0); err != nil {
-		t.Fatalf("child pid %d is not alive after parent process-group kill: %v", childPID, err)
-	}
-	// A zombie can still answer kill(pid, 0) until reaped. Require its live
-	// command line as well, without depending on when HTTP observes EOF.
-	if got := sessionActivityChildPID(t, srv.URL, cmd.Process.Pid); got != childPID {
-		t.Fatalf("live child pid after parent process-group kill = %d, want %d", got, childPID)
+	// SIGKILL delivery is asynchronous, and zombies can still answer
+	// kill(pid, 0). Require a non-zombie child throughout a sustained window.
+	for deadline := time.Now().Add(500 * time.Millisecond); ; time.Sleep(20 * time.Millisecond) {
+		out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(childPID)).Output()
+		state := strings.TrimSpace(string(out))
+		if err != nil || state == "" || strings.HasPrefix(state, "Z") {
+			t.Fatalf("child pid %d did not stay alive after parent process-group kill: state=%q, ps error=%v", childPID, state, err)
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
 	}
 	releaseResponse()
 	select {
@@ -108,7 +117,7 @@ func sessionActivityChildPID(t *testing.T, url string, parentPID int) int {
 	t.Helper()
 	out, err := exec.Command("ps", "-A", "-o", "pid=,args=").Output()
 	if err != nil {
-		t.Fatalf("find live child: %v", err)
+		t.Fatalf("find child: %v", err)
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
@@ -125,6 +134,6 @@ func sessionActivityChildPID(t *testing.T, url string, parentPID int) int {
 			}
 		}
 	}
-	t.Fatalf("no live child with --url %s (parent pid %d)", url, parentPID)
+	t.Fatalf("no child with --url %s (parent pid %d)", url, parentPID)
 	return 0
 }
