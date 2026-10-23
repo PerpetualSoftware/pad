@@ -390,6 +390,10 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, c
 		{"delete push devices", `DELETE FROM push_devices WHERE user_id = ?`, []any{userID}},
 		{"delete queued notifications", `DELETE FROM user_notifications WHERE user_id = ?`, []any{userID}},
 		{"delete notification settings", `DELETE FROM user_notification_settings WHERE user_id = ?`, []any{userID}},
+		// A claim keeps the users row, so no cascade fires; clear chats so
+		// the new holder cannot inherit the old owner's agent chats (TASK-4038).
+		{"delete conversations", `DELETE FROM conversations WHERE owner_user_id = ?`, []any{userID}},
+		{"delete conversation memberships", `DELETE FROM conversation_members WHERE user_id = ?`, []any{userID}},
 		// Every grant the account held is recorded as revoked, so a refresh
 		// or code exchange that validated before the claim mints nothing
 		// after it (BUG-3678). The connection rows, read before the delete
