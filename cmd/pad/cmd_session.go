@@ -748,17 +748,20 @@ func printSessionStatus(st sessionStatusJSON) {
 // sessionActivityCmd is hook plumbing: no prompting, server startup or output.
 // A missed activity update must never fail a Claude Code hook.
 func sessionActivityCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:     "activity <busy|idle>",
-		Short:   "Report this worker's activity (best effort, for hooks)",
-		Example: "  pad session activity busy\n  pad session activity idle",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 1 || (args[0] != "busy" && args[0] != "idle") {
-				return fmt.Errorf("expected busy or idle")
-			}
-			return nil
-		},
+	cmd := &cobra.Command{
+		Use:           "activity <busy|idle>",
+		Short:         "Report this worker's activity (best effort, for hooks)",
+		Example:       "  pad session activity busy\n  pad session activity idle",
+		Args:          cobra.ArbitraryArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		// Override the root's --format validation: this hook has no formatted
+		// output, and even an invalid format must not fail a Claude Code hook.
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error { return nil },
 		Run: func(cmd *cobra.Command, args []string) {
+			if len(args) != 1 || (args[0] != "busy" && args[0] != "idle") {
+				return
+			}
 			// Avoid getClient/getConfiguredConfig: they can start a server, prompt,
 			// or exit nonzero. Hooks silently tolerate configuration failures too.
 			cfg, err := config.Load()
@@ -774,4 +777,8 @@ func sessionActivityCmd() *cobra.Command {
 			_ = client.SetSessionActivity(cmd.Context(), args[0])
 		},
 	}
+	// Flag parsing precedes Run too. Swallow its errors here so the root's
+	// flag-error handler cannot print usage or make the hook exit nonzero.
+	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return nil })
+	return cmd
 }

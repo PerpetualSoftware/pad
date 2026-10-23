@@ -16,7 +16,12 @@ func TestSessionActivityHookProcess(t *testing.T) {
 		return
 	}
 	root := newRootCmd()
-	root.SetArgs([]string{"--url", os.Getenv("PAD_TEST_ACTIVITY_URL"), "session", "activity", "busy"})
+	for i, arg := range os.Args {
+		if arg == "--" {
+			root.SetArgs(append([]string{"--url", os.Getenv("PAD_TEST_ACTIVITY_URL")}, os.Args[i+1:]...))
+			break
+		}
+	}
 	if root.Execute() != nil {
 		os.Exit(1)
 	}
@@ -24,8 +29,34 @@ func TestSessionActivityHookProcess(t *testing.T) {
 }
 
 func TestSessionActivityUnreachable(t *testing.T) {
+	assertSessionActivityHookSilent(t, "session", "activity", "busy")
+}
+
+func TestSessionActivityInvalidArgs(t *testing.T) {
+	for _, args := range [][]string{{"foo"}, {}, {"busy", "extra"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			assertSessionActivityHookSilent(t, append([]string{"session", "activity"}, args...)...)
+		})
+	}
+}
+
+func TestSessionActivityInvalidFormat(t *testing.T) {
+	assertSessionActivityHookSilent(t, "--format", "invalid", "session", "activity", "busy")
+}
+
+func TestSessionActivityInvalidFlags(t *testing.T) {
+	for _, flag := range []string{"--unknown", "--format", "--url"} {
+		t.Run(flag, func(t *testing.T) {
+			assertSessionActivityHookSilent(t, "session", "activity", "busy", flag)
+		})
+	}
+}
+
+func assertSessionActivityHookSilent(t *testing.T, args ...string) {
+	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PAD_DATA_DIR", t.TempDir())
+	t.Setenv("PAD_DB_PATH", "")
 	t.Setenv("PAD_WORKER_ID", "wk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -38,7 +69,9 @@ func TestSessionActivityUnreachable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	// A subprocess catches os.Exit, prompts, and writes to real stdout/stderr.
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSessionActivityHookProcess$")
+	argv := append([]string{"-test.run=^TestSessionActivityHookProcess$", "--"}, args...)
+	cmd := exec.CommandContext(ctx, os.Args[0], argv...)
+	cmd.Dir = t.TempDir() // An unlinked directory, as in a fresh hook session.
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
