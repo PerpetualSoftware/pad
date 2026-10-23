@@ -187,6 +187,12 @@ func TestMarkdownRoutingAcrossSurfaces(t *testing.T) {
 			want: []string{"| When | Actor | Action | Item | Changes |", "TASK-5 a task", "status: ready → done"},
 		},
 		{
+			name:   "project catch-up",
+			routes: map[string]any{"/catch-up": catchUpBody(true, false, "")},
+			cmd:    catchUpCmd,
+			want:   []string{"# Catch up", "## Needs you (7)", "| Ref | Title | Collection | What | Who | At |", "| TASK-9 |"},
+		},
+		{
 			name: "role list",
 			routes: map[string]any{"/agent-roles": []models.AgentRole{{
 				Slug: "implementer", Name: "Implementer", Icon: "🔧",

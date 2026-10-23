@@ -289,6 +289,16 @@ var ChatGPTCatalog = []ChatGPTTool{
 		Hints:       ChatGPTHints{ReadOnly: true},
 	},
 	{
+		// TASK-4035: a pass-through of the same GET, so the handler's
+		// visibility applies. It reads only: marking caught up is web-only.
+		Name:        "catch_up",
+		Description: "Show your own catch-up digest: what needs you, and what others did since you last marked the workspace caught up. Never marks it.",
+		Source:      ChatGPTSource{"pad_project", "catch-up"},
+		Params:      []string{chatGPTWorkspaceParam},
+		Required:    []string{chatGPTWorkspaceParam},
+		Hints:       ChatGPTHints{ReadOnly: true},
+	},
+	{
 		Name:        "list_playbooks",
 		Description: "List a workspace's playbooks: reusable step-by-step procedures the team has written down.",
 		Source:      ChatGPTSource{"pad_playbook", "list"},

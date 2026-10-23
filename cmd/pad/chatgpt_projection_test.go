@@ -208,6 +208,7 @@ func sweepAllTools(t *testing.T, f projectionFixture) {
 		{"what_next", map[string]any{"workspace": ws}},
 		{"ready_items", map[string]any{"workspace": ws}},
 		{"recent_activity", map[string]any{"workspace": ws}},
+		{"catch_up", map[string]any{"workspace": ws}},
 		{"list_playbooks", map[string]any{"workspace": ws}},
 		{"get_playbook", map[string]any{"workspace": ws, "ref": "ship"}},
 		{"archive_item", map[string]any{"workspace": ws, "ref": f.task2}},

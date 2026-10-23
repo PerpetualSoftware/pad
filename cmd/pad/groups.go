@@ -98,6 +98,7 @@ func projectCmd() *cobra.Command {
 		changelogCmd(),
 		reportCmd(),
 		activityCmd(),
+		catchUpCmd(),
 		watchCmd(),
 		reconcileCmd(),
 	)

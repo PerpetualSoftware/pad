@@ -81,8 +81,7 @@ Actions:
                       (the rename target; pass slug for lookup AND
                       new_slug for the replacement value).
             This is the adaptation primitive for the /pad onboard playbook
-            (PLAN-1496): rewriting seeded role descriptions/icons to match
-            the team's actual division of work.
+            (PLAN-1496): rewriting seeded role descriptions/icons to match the team's division of work.
   delete  — Delete a role by slug.
             Required: workspace, slug.
 

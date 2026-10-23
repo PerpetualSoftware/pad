@@ -976,6 +976,160 @@ func changelogCmd() *cobra.Command {
 	return cmd
 }
 
+// catchUpHint is the closing line of the table and markdown output. Mark
+// caught up is web-only: the cursor is the human's (TASK-4035, ruling
+// 380aa793), so this command has no way to move it.
+const catchUpHint = "Mark caught up is done in the web UI; this command only reads."
+
+func catchUpCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "catch-up",
+		Short:   "Show your catch-up digest: what changed since you last marked the workspace caught up",
+		Example: `  pad project catch-up --format markdown`,
+		Long: `Show your own catch-up digest for the workspace: what needs you now, and what
+others finished, created, reopened, commented on, or did as agents since you
+last pressed Mark caught up (at most 14 days back).
+
+Read-only. It never moves your cursor; Mark caught up is done in the web UI.
+
+--format json prints the server's JSON, re-indented.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			raw, err := client.GetCatchUp(getWorkspace())
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				// The server's JSON, re-indented, with no typed decode: a
+				// server-side shape change must not break json consumers
+				// (TASK-4035, rulings eedbf63d and cb588bde).
+				return cli.PrintJSON(raw)
+			}
+			cu, err := cli.DecodeCatchUp(raw)
+			if err != nil {
+				return err
+			}
+			md := formatFlag == "markdown"
+			out := os.Stdout
+
+			window := "since " + cu.Window.Since
+			if !cu.Window.HasCursor {
+				window = "no cursor: last 14 days"
+			} else if cu.Window.CappedAtCeiling {
+				window += " (capped at 14 days)"
+			}
+			if md {
+				fmt.Fprintf(out, "# Catch up\n\n_%s, until %s_\n", window, cu.Window.Until)
+			} else {
+				fmt.Fprintf(out, "Catch up (%s, until %s)\n", window, cu.Window.Until)
+			}
+			if len(cu.Degraded) > 0 {
+				note := "Could not read: " + strings.Join(cu.Degraded, ", ") + " (shown empty)"
+				if md {
+					fmt.Fprintf(out, "\n**%s**\n", note)
+				} else {
+					fmt.Fprintf(out, "%s\n", note)
+				}
+			}
+
+			sections := []struct {
+				title string
+				sec   cli.CatchUpSection
+			}{
+				{"Needs you", cu.NeedsYou},
+				{"Finished", cu.Finished},
+				{"New and reopened", cu.NewAndReopened},
+				{"Comments", cu.Comments},
+			}
+			for _, s := range sections {
+				printCatchUpSection(out, md, fmt.Sprintf("%s (%d)", s.title, s.sec.Total), s.sec.Lines, s.sec.Total)
+			}
+			printCatchUpHeading(out, md, fmt.Sprintf("Agents (%d)", cu.Agents.Total))
+			if len(cu.Agents.Groups) == 0 {
+				fmt.Fprintln(out, catchUpEmptyLine(md))
+			}
+			for _, g := range cu.Agents.Groups {
+				head := fmt.Sprintf("%s: %d changes on %d items", g.Agent, g.Changes, g.Items)
+				if md {
+					fmt.Fprintf(out, "### %s\n\n", head)
+				} else {
+					fmt.Fprintf(out, "\n  %s\n", head)
+				}
+				printCatchUpLines(out, md, g.Lines)
+			}
+
+			if md {
+				fmt.Fprintf(out, "\n_%s_\n", catchUpHint)
+			} else {
+				fmt.Fprintf(out, "\n%s\n", catchUpHint)
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+func catchUpEmptyLine(md bool) string {
+	if md {
+		return "_Nothing._"
+	}
+	return "  Nothing."
+}
+
+func printCatchUpHeading(out io.Writer, md bool, title string) {
+	if md {
+		fmt.Fprintf(out, "\n## %s\n\n", title)
+	} else {
+		fmt.Fprintf(out, "\n%s\n", title)
+	}
+}
+
+func printCatchUpSection(out io.Writer, md bool, title string, lines []cli.CatchUpLine, total int) {
+	printCatchUpHeading(out, md, title)
+	if len(lines) == 0 {
+		fmt.Fprintln(out, catchUpEmptyLine(md))
+		return
+	}
+	printCatchUpLines(out, md, lines)
+	if total > len(lines) {
+		more := fmt.Sprintf("and %d more", total-len(lines))
+		if md {
+			fmt.Fprintf(out, "\n_%s_\n", more)
+		} else {
+			fmt.Fprintf(out, "  %s\n", more)
+		}
+	}
+}
+
+func printCatchUpLines(out io.Writer, md bool, lines []cli.CatchUpLine) {
+	if md {
+		rows := make([][]string, 0, len(lines))
+		for _, l := range lines {
+			rows = append(rows, []string{l.Ref, l.Title, l.Collection, l.What, catchUpWho(l), l.At})
+		}
+		cli.RenderMarkdownTable(out, []string{"Ref", "Title", "Collection", "What", "Who", "At"}, rows)
+		return
+	}
+	for _, l := range lines {
+		who := catchUpWho(l)
+		if who != "" {
+			who = " by " + who
+		}
+		fmt.Fprintf(out, "  %s  %s  [%s%s]\n", l.Ref, l.Title, l.What, who)
+	}
+}
+
+func catchUpWho(l cli.CatchUpLine) string {
+	if l.Agent != "" {
+		if l.Actor != "" {
+			return l.Actor + " (" + l.Agent + ")"
+		}
+		return l.Agent
+	}
+	return l.Actor
+}
+
 func activityCmd() *cobra.Command {
 	var limit int
 	var actor string

@@ -104,6 +104,46 @@
         "securitySchemes": [
           {
             "scopes": [
+              "pad:read"
+            ],
+            "type": "oauth2"
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "description": "Show your own catch-up digest: what needs you, and what others did since you last marked the workspace caught up. Never marks it.",
+      "inputSchema": {
+        "properties": {
+          "workspace": {
+            "description": "Workspace slug, from list_workspaces. Pass it on every call.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "name": "catch_up",
+      "securitySchemes": [
+        {
+          "scopes": [
+            "pad:read"
+          ],
+          "type": "oauth2"
+        }
+      ]
+    },
+    {
+      "_meta": {
+        "securitySchemes": [
+          {
+            "scopes": [
               "pad:write"
             ],
             "type": "oauth2"

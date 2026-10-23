@@ -64,6 +64,7 @@ var padProjectTool = ToolDef{
 		"changelog": passThrough([]string{"project", "changelog"}),
 		"report":    passThrough([]string{"project", "report"}),
 		"activity":  passThrough([]string{"project", "activity"}),
+		"catch-up":  passThrough([]string{"project", "catch-up"}),
 	},
 }
 
@@ -75,11 +76,10 @@ Actions:
                Required: workspace.
   next       — Recommended next item to work on (uses dashboard's suggestion logic).
                Required: workspace.
-  ready      — Up to three items to work on next, best first: the same
-               ranked list as next. Reminders, overdue, in-progress, active-
-               plan and high/critical items lead; leftover slots are filled
-               with other open items from collections that track priority
-               or severity. Blocked items are excluded (see stale).
+  ready      — Up to three items to work on next, best first (the same
+  ranked list as next). Reminders, overdue, in-progress, active-
+  plan and high/critical items lead; other open items from
+  collections tracking priority or severity fill leftover slots. Blocked items are excluded (see stale).
                Required: workspace.
   stale      — Items needing attention — stalled, blocked, overdue, or
                otherwise falling out of the active workflow.
@@ -103,6 +103,10 @@ Actions:
                Required: workspace.
                Optional: limit (default 20), actor (user | agent),
                since (ISO date).
+  catch-up   — Your own catch-up digest: what needs you, and what others
+               finished, created, reopened, commented on or did as agents since you
+               last marked caught up (max 14 days). Never marks caught up.
+               Required: workspace.
 
 Use pad_project when an agent needs to summarize progress, plan next work,
 catch up on recent activity, or generate retro / standup / changelog reports.`
