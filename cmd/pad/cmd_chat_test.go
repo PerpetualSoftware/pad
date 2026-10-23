@@ -22,6 +22,8 @@ func TestChatShowReadMarker(t *testing.T) {
 		want       []int64
 	}{
 		{"returned max", `{"messages":[{"seq":7,"body":"seven"},{"seq":4,"deleted":true}],"read_seq":3,"last_seq":99,"newest_seq":98}`, nil, []int64{7}},
+		{"distance two leaves one unseen", `{"messages":[{"seq":12},{"seq":13}],"read_seq":10}`, nil, nil},
+		{"distance one is contiguous", `{"messages":[{"seq":11},{"seq":12}],"read_seq":10}`, nil, []int64{12}},
 		{"no mark", `{"messages":[{"seq":7}],"last_seq":99}`, []string{"--no-mark"}, nil},
 		{"empty", `{"messages":[],"last_seq":99}`, nil, nil},
 	} {

@@ -30,6 +30,8 @@ func TestChatReadSeq(t *testing.T) {
 		readSeq, want int64
 	}{
 		{"empty", nil, 10, 0},
+		{"distance two leaves one unseen", []int64{12, 13}, 10, 0},
+		{"distance one is contiguous", []int64{11, 12}, 10, 12},
 		{"next ascending", []int64{11, 12, 13}, 10, 13},
 		{"next descending", []int64{13, 12, 11}, 10, 13},
 		{"overlap ascending", []int64{8, 9, 10, 11}, 10, 11},

@@ -149,6 +149,8 @@ func TestChatRemoteReadMarkers(t *testing.T) {
 		want       int64
 	}{
 		{"show returned max", "show", map[string]any{"target": "C12", "since": float64(2), "limit": float64(3)}, `{"messages":[{"seq":7},{"seq":4}],"read_seq":3,"last_seq":99,"newest_seq":98}`, 7},
+		{"distance two leaves one unseen", "show", map[string]any{"target": "C12"}, `{"messages":[{"seq":12},{"seq":13}],"read_seq":10}`, 0},
+		{"distance one is contiguous", "show", map[string]any{"target": "C12"}, `{"messages":[{"seq":11},{"seq":12}],"read_seq":10}`, 12},
 		{"show no mark", "show", map[string]any{"target": "12", "no_mark": true}, `{"messages":[{"seq":7}],"last_seq":99}`, 0},
 		{"show empty", "show", map[string]any{"target": "12"}, `{"messages":[],"last_seq":99}`, 0},
 		{"send reply", "send", map[string]any{"target": "C12", "body": "hi", "reply_to": float64(4)}, `{"message":{"seq":100},"replayed":false}`, 4},
