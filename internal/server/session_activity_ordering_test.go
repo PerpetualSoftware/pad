@@ -24,9 +24,12 @@ func TestSessionActivityReorderWindowDerivedFromReportBound(t *testing.T) {
 func TestSessionActivityTimestampOrdering(t *testing.T) {
 	for _, backend := range []string{"memory", "redis"} {
 		t.Run(backend, func(t *testing.T) {
+			now := time.Now().UTC()
 			srv := testServerWithPresence(t)
+			srv.sessionPresence.(*MemorySessionPresence).now = func() time.Time { return now }
 			if backend == "redis" {
 				p, _, _ := newRedisPresencePair(t)
+				p.now = func() time.Time { return now }
 				srv.SetSessionPresence(p)
 			}
 			_, _, tok, user := setupWatchTestUser(t, srv)
@@ -94,9 +97,24 @@ func TestSessionActivityTimestampOrdering(t *testing.T) {
 				check(t, true) // A year-long gap is a clock step, not a reorder.
 			})
 			t.Run("timestamped after legacy applies", func(t *testing.T) {
-				post(t, tok.Token, "idle", "absent", 204)
-				post(t, tok.Token, "busy", t1, 204)
-				check(t, true)
+				for _, tc := range []struct {
+					name   string
+					offset time.Duration
+				}{
+					{"older within reorder window", -2 * time.Second},
+					{"newer", 2 * time.Second},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						// Seed a legacy idle record at the injected server time T.
+						// With no client_at, even T - 2s must change its state.
+						if err := srv.sessionPresence.SetActivity(user.ID, presenceWorkerA, false, now, nil); err != nil {
+							t.Fatal(err)
+						}
+						check(t, false)
+						post(t, tok.Token, "busy", now.Add(tc.offset).Format(time.RFC3339Nano), 204)
+						check(t, true)
+					})
+				}
 			})
 			t.Run("malformed timestamp", func(t *testing.T) {
 				post(t, tok.Token, "idle", "absent", 204)
