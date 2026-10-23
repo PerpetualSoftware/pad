@@ -12,7 +12,7 @@ import (
 )
 
 func chatListCmd() *cobra.Command {
-	return &cobra.Command{Use: "list", Short: "List your global chat conversations", Args: cobra.NoArgs,
+	return &cobra.Command{Use: "list", Example: "  pad chat list", Short: "List your global chat conversations", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			raw, err := client.ListChatConversations()
@@ -25,7 +25,7 @@ func chatListCmd() *cobra.Command {
 
 func chatInboxCmd() *cobra.Command {
 	var agent string
-	cmd := &cobra.Command{Use: "inbox", Short: "Show unread chat counts", Args: cobra.NoArgs,
+	cmd := &cobra.Command{Use: "inbox", Example: "  pad chat inbox --agent rook", Short: "Show unread chat counts", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			raw, err := client.ChatUnread(agent)
@@ -42,7 +42,7 @@ func chatShowCmd() *cobra.Command {
 	var since int64
 	var limit int
 	var noMark bool
-	cmd := &cobra.Command{Use: "show <target>", Short: "Show chat messages and mark the returned messages read", Args: cobra.ExactArgs(1),
+	cmd := &cobra.Command{Use: "show <target>", Example: "  pad chat show C12 --since 4", Short: "Show chat messages and mark the returned messages read", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, _, err := cli.ParseChatTarget(args[0]); err != nil {
 				return err
@@ -90,7 +90,7 @@ func chatShowCmd() *cobra.Command {
 func chatSendCmd() *cobra.Command {
 	var replyTo int64
 	var opKey, contextWorkspace string
-	cmd := &cobra.Command{Use: "send <target> <body>", Short: "Send a chat message (- reads stdin)", Args: cobra.ExactArgs(2),
+	cmd := &cobra.Command{Use: "send <target> <body>", Example: "  pad chat send @rook \"Ready for review\"", Short: "Send a chat message (- reads stdin)", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, _, err := cli.ParseChatTarget(args[0]); err != nil {
 				return err
@@ -147,7 +147,7 @@ func chatSendCmd() *cobra.Command {
 }
 
 func chatDeleteCmd() *cobra.Command {
-	return &cobra.Command{Use: "delete <target> <seq>", Short: "Delete one of your chat messages", Args: cobra.ExactArgs(2),
+	return &cobra.Command{Use: "delete <target> <seq>", Example: "  pad chat delete C12 4", Short: "Delete one of your chat messages", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, _, err := cli.ParseChatTarget(args[0]); err != nil {
 				return err
@@ -171,7 +171,7 @@ func chatDeleteCmd() *cobra.Command {
 
 func chatReadCmd() *cobra.Command {
 	var to int64
-	cmd := &cobra.Command{Use: "read <target>", Short: "Mark chat read through a message sequence", Args: cobra.ExactArgs(1),
+	cmd := &cobra.Command{Use: "read <target>", Example: "  pad chat read C12 --to 4", Short: "Mark chat read through a message sequence", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, _, err := cli.ParseChatTarget(args[0]); err != nil {
 				return err

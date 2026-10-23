@@ -13,6 +13,9 @@ import (
 )
 
 func TestChatShowReadMarker(t *testing.T) {
+	oldFormat, oldWorkspace, oldURL := formatFlag, workspaceFlag, urlFlag
+	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = oldFormat, oldWorkspace, oldURL })
+
 	for _, tc := range []struct {
 		name, page string
 		flags      []string
@@ -56,6 +59,9 @@ func TestChatShowReadMarker(t *testing.T) {
 }
 
 func TestChatSendAndTargetResolution(t *testing.T) {
+	oldFormat, oldWorkspace, oldURL := formatFlag, workspaceFlag, urlFlag
+	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = oldFormat, oldWorkspace, oldURL })
+
 	for _, tc := range []struct {
 		name     string
 		args     []string
@@ -159,6 +165,9 @@ func TestChatHumanTombstonesAndQuotes(t *testing.T) {
 }
 
 func TestChatSendWorkspaceContext(t *testing.T) {
+	oldFormat, oldWorkspace, oldURL := formatFlag, workspaceFlag, urlFlag
+	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = oldFormat, oldWorkspace, oldURL })
+
 	for _, tc := range []struct{ name, link, explicit, want string }{
 		{"linked cwd", "linked", "", "linked"},
 		{"explicit overrides link", "linked", "explicit", "explicit"},
