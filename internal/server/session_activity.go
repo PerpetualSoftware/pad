@@ -11,6 +11,9 @@ import (
 
 const sessionActivityTTL = 30 * time.Minute
 
+// Reports have a 3s child bound; allow spawn and scheduling slack for races.
+const reorderWindow = 10 * time.Second
+
 type sessionActivityKey struct{ userID, workerID string }
 type sessionActivity struct {
 	Busy     bool                      `json:"busy"`
@@ -59,7 +62,10 @@ func (p *MemorySessionPresence) SetActivity(userID, workerID string, busy bool, 
 	key := sessionActivityKey{userID, workerID}
 	timestamp := activityTimestamp(clientAt)
 	if previous := p.activity[key].ClientAt; timestamp != nil && previous != nil && timestamp.before(previous) {
-		return nil
+		previousAt := time.Unix(previous.Seconds, int64(previous.Nanos))
+		if previousAt.Sub(*clientAt) <= reorderWindow {
+			return nil
+		}
 	}
 	if !now.Before(at.Add(sessionActivityTTL)) {
 		delete(p.activity, key)
@@ -111,7 +117,11 @@ if previous and incoming.client_at then
     local old = record.client_at
     local new = incoming.client_at
     if old.seconds > new.seconds or (old.seconds == new.seconds and old.nanos > new.nanos) then
-      return 0
+      local seconds = old.seconds - new.seconds
+      local window = tonumber(ARGV[3])
+      if seconds < window or (seconds == window and old.nanos <= new.nanos) then
+        return 0
+      end
     end
   end
 end
@@ -132,7 +142,7 @@ func (p *RedisSessionPresence) SetActivity(userID, workerID string, busy bool, a
 		return err
 	}
 	// Separate from session JSON: renewLoop replays the connection's frozen payload.
-	return sessionActivityWriteScript.Run(ctx, p.client, []string{key}, payload, ttl.Milliseconds()).Err()
+	return sessionActivityWriteScript.Run(ctx, p.client, []string{key}, payload, ttl.Milliseconds(), int64(reorderWindow/time.Second)).Err()
 }
 
 func (p *RedisSessionPresence) BusyWorkers(userID string, workerIDs []string) (map[string]bool, error) {

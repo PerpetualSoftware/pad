@@ -81,9 +81,10 @@ func TestSessionActivityTimestampOrdering(t *testing.T) {
 				post(t, tok.Token, "idle", t1, 204)
 				check(t, false)
 				post(t, tok.Token, "busy", "2000-01-01T00:00:00Z", 204)
-				check(t, false)
+				check(t, true) // A year-long gap is a clock step, not a reorder.
 			})
 			t.Run("malformed timestamp", func(t *testing.T) {
+				post(t, tok.Token, "idle", "absent", 204)
 				for _, at := range []string{"", "tomorrow", "2001-01-01"} {
 					post(t, tok.Token, "busy", at, 400)
 				}
@@ -100,6 +101,57 @@ func TestSessionActivityTimestampOrdering(t *testing.T) {
 				post(t, tokB.Token, "busy", "2099-01-01T00:00:00Z", 204)
 				check(t, false)
 			})
+		})
+	}
+}
+
+func TestSessionActivityReorderWindow(t *testing.T) {
+	for _, backend := range []string{"memory", "redis"} {
+		t.Run(backend, func(t *testing.T) {
+			srv := testServerWithPresence(t)
+			if backend == "redis" {
+				p, _, _ := newRedisPresencePair(t)
+				srv.SetSessionPresence(p)
+			}
+			_, _, tok, user := setupWatchTestUser(t, srv)
+			at := time.Date(2026, 10, 23, 12, 0, 0, 123456789, time.UTC)
+			for _, tc := range []struct {
+				name             string
+				stored, incoming time.Time
+				storedBusy       bool
+				wantBusy         bool
+			}{
+				{"two second reorder", at, at.Add(-2 * time.Second), false, false},
+				{"far future clock recovers", at.Add(time.Hour), at, true, false},
+				{"clock steps back", at, at.Add(-time.Hour), true, false},
+				{"ten second boundary", at, at.Add(-10 * time.Second), false, false},
+				{"one nanosecond beyond boundary", at, at.Add(-10*time.Second - time.Nanosecond), false, true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					post := func(busy bool, timestamp *time.Time) {
+						t.Helper()
+						state := "idle"
+						if busy {
+							state = "busy"
+						}
+						body := fmt.Sprintf(`{"state":%q`, state)
+						if timestamp != nil {
+							body += fmt.Sprintf(`,"at":%q`, timestamp.Format(time.RFC3339Nano))
+						}
+						rr := presenceRequest(t, srv, http.MethodPost, tok.Token, presenceWorkerA, body+"}")
+						if rr.Code != http.StatusNoContent {
+							t.Fatalf("post %s: %d %s", body, rr.Code, rr.Body.String())
+						}
+					}
+					post(false, nil) // Clear ordering from the preceding case.
+					post(tc.storedBusy, &tc.stored)
+					post(!tc.storedBusy, &tc.incoming)
+					got, err := srv.sessionPresence.BusyWorkers(user.ID, []string{presenceWorkerA})
+					if err != nil || got[presenceWorkerA] != tc.wantBusy {
+						t.Fatalf("busy = %v, %v; want %v", got, err, tc.wantBusy)
+					}
+				})
+			}
 		})
 	}
 }
