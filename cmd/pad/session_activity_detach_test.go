@@ -88,7 +88,9 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 
 func sessionActivityRegistry(t *testing.T) cli.SessionRegistration {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("PAD_DATA_DIR", t.TempDir())
 	t.Setenv("PAD_DB_PATH", "")
 	t.Setenv("PAD_TOKEN", "activity-local-test")
