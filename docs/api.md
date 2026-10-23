@@ -208,6 +208,7 @@ leaves all sessions `online` or `connected_not_accepting`; an undecodable entry
 only affects that worker's sessions, and other workers retain their activity
 state. Either failure logs one warning per request and the list still answers
 `200`. Workspace-pinned PATs are refused by the existing pin policy.
+A hook running with a read-only API token cannot report activity (`POST /api/v1/sessions/activity` is refused with `403`) and silently does nothing.
 `pad session activity <busy|idle>` is intended for hooks: silent, no prompts or
 server startup. It captures the client timestamp and returns immediately while
 a detached background child sends the report, so a prompt never waits on the

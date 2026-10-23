@@ -696,6 +696,7 @@ sent without a worker id and the server drops it with `400 invalid_worker_id`.
 The next prompt or stop retries resolution and corrects activity once identity
 resolves. The hooks discard output because `UserPromptSubmit` stdout reaches
 the model. Activity reporting does not change push consent.
+A hook running with a read-only API token cannot report activity and silently does nothing.
 
 ## License
 
