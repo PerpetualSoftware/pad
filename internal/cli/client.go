@@ -850,11 +850,14 @@ func (c *Client) ListWatches() ([]models.Watch, error) {
 	return result, c.get("/watches", &result)
 }
 
+// SessionActivityHTTPTimeout bounds the HTTP request made by SetSessionActivity.
+const SessionActivityHTTPTimeout = 2 * time.Second
+
 // SetSessionActivity reports this worker's activity with a short deadline.
 // It never probes capabilities, starts a server or retries; hook callers may
 // ignore any error so an unavailable Pad cannot interrupt the agent.
 func (c *Client) SetSessionActivity(ctx context.Context, state, at string) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, SessionActivityHTTPTimeout)
 	defer cancel()
 	data, err := json.Marshal(map[string]string{"state": state, "at": at})
 	if err != nil {

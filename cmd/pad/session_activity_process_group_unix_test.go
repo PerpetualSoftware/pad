@@ -15,11 +15,17 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	if _, err := exec.LookPath("ps"); err != nil {
 		t.Skip("ps unavailable on PATH (for example, in the Nix build sandbox); the Linux Go CI job has ps and runs this test: " + err.Error())
+	}
+	const parentExitBound = time.Second
+	if parentExitBound >= cli.SessionActivityHTTPTimeout {
+		t.Fatalf("parent exit bound %v must be below session activity HTTP timeout %v", parentExitBound, cli.SessionActivityHTTPTimeout)
 	}
 	bin := filepath.Join(t.TempDir(), "pad")
 	build := exec.Command("go", "build", "-o", bin, ".")
@@ -71,14 +77,14 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("background request never arrived")
 	}
-	// Keep this bound below SetSessionActivity's 2s HTTP timeout so a parent
+	// Keep this bound below SetSessionActivity's HTTP timeout so a parent
 	// waiting for the child cannot pass by waiting for that timeout instead.
 	select {
 	case err := <-parentExited:
 		if err != nil {
 			t.Fatalf("parent: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(parentExitBound):
 		t.Fatal("parent did not exit while server held the child request")
 	}
 	// The unique server URL identifies this test's child. The lookup uses

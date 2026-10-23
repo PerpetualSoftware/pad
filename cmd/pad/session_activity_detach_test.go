@@ -18,6 +18,10 @@ import (
 )
 
 func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
+	const parentExitBound = time.Second
+	if parentExitBound >= cli.SessionActivityHTTPTimeout {
+		t.Fatalf("parent exit bound %v must be below session activity HTTP timeout %v", parentExitBound, cli.SessionActivityHTTPTimeout)
+	}
 	bin := filepath.Join(t.TempDir(), "pad")
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
@@ -79,14 +83,14 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 		t.Fatal("background request never arrived")
 	}
 	// The server has received the child's request and still holds its response.
-	// Keep this bound below SetSessionActivity's 2s HTTP timeout so waiting
+	// Keep this bound below SetSessionActivity's HTTP timeout so waiting
 	// for the child in the parent must fail this assertion.
 	select {
 	case err := <-parentExited:
 		if err != nil {
 			t.Fatalf("parent: %v, stderr=%q", err, &stderr)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(parentExitBound):
 		t.Fatal("parent did not exit while server held the child request")
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
