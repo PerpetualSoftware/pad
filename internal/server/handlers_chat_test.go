@@ -217,9 +217,27 @@ func TestChat_RateLimit_20PerMinutePerAgentPerConversation(t *testing.T) {
 	f.must(f.request("POST", p2+"/messages", "owl", map[string]any{"body": "separate"}), 201, "separate conversation")
 
 }
-func TestChat_RateLimit_DM30PerHour(t *testing.T) {
+func TestChat_Ensure_ReuseIsUncharged(t *testing.T) {
 	t.Setenv("PAD_DISABLE_RATE_LIMITS", "")
 	f := newChatFixture(t)
+	f.ensure("rook")
+	for i := 0; i < 40; i++ {
+		// TASK-4039 r2: all agents share the owner's creation bucket.
+		rr := f.request("POST", chatBase, "rook", map[string]any{})
+		f.must(rr, 200, fmt.Sprintf("reuse %d", i+1))
+		if chatObject(t, rr)["created"] != false {
+			t.Fatal("reuse reported created")
+		}
+	}
+	f.must(f.request("POST", chatBase, "owl", map[string]any{}), 201, "create after reuses")
+}
+
+func TestChat_Ensure_CreateBucketStillLimits(t *testing.T) {
+	t.Setenv("PAD_DISABLE_RATE_LIMITS", "")
+	f := newChatFixture(t)
+	for _, key := range []string{"", strings.Repeat("x", 129), "bad\nkey"} {
+		f.must(f.request("POST", chatBase, "", map[string]any{"agent_key": key}), 400, "invalid key is uncharged")
+	}
 	for i := 0; i < 30; i++ {
 		f.must(f.request("POST", chatBase, "", map[string]any{"agent_key": fmt.Sprintf("agent-%d", i)}), 201, "create DM")
 	}
@@ -228,6 +246,8 @@ func TestChat_RateLimit_DM30PerHour(t *testing.T) {
 	if rr.Header().Get("Retry-After") != "120" {
 		t.Fatalf("DM retry: %v", rr.Header())
 	}
+	f.must(f.request("POST", chatBase, "", map[string]any{}), 400, "empty key with exhausted bucket")
+	f.must(f.request("POST", chatBase, "agent-0", map[string]any{}), 200, "reuse with exhausted bucket")
 	other := mkUser(t, f.srv, "dm-other-chat@example.com")
 	rr = rawReq(f.srv, "POST", chatBase, f.token(other), "", `{"agent_key":"rook"}`)
 	f.must(rr, 201, "DM bucket is per user")

@@ -51,18 +51,20 @@ type chatMsg struct {
 	DeletedAt        *time.Time                `json:"deleted_at,omitempty"`
 }
 type chatMessagesResponse struct {
-	Refs      []chatRef `json:"refs"`
-	Messages  []chatMsg `json:"messages"`
-	OldestSeq int64     `json:"oldest_seq"`
-	NewestSeq int64     `json:"newest_seq"`
-	LastSeq   int64     `json:"last_seq"`
-	ReadSeq   int64     `json:"read_seq"`
-	HasMore   bool      `json:"has_more"`
+	RefsTruncated bool      `json:"refs_truncated"`
+	Refs          []chatRef `json:"refs"`
+	Messages      []chatMsg `json:"messages"`
+	OldestSeq     int64     `json:"oldest_seq"`
+	NewestSeq     int64     `json:"newest_seq"`
+	LastSeq       int64     `json:"last_seq"`
+	ReadSeq       int64     `json:"read_seq"`
+	HasMore       bool      `json:"has_more"`
 }
 type chatSendResponse struct {
-	Refs     []chatRef `json:"refs"`
-	Message  chatMsg   `json:"message"`
-	Replayed bool      `json:"replayed"`
+	RefsTruncated bool      `json:"refs_truncated"`
+	Refs          []chatRef `json:"refs"`
+	Message       chatMsg   `json:"message"`
+	Replayed      bool      `json:"replayed"`
 }
 
 func newChatConversation(c models.Conversation, agentKey string) chatConversation {

@@ -33,6 +33,61 @@ func chatRefs(t *testing.T, rr *httptest.ResponseRecorder) []map[string]any {
 	return out
 }
 
+func TestChat_Refs_TruncatedAt200(t *testing.T) {
+	for _, count := range []int{0, 10, 200, 6000} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			f := newChatEnrichFixture(t)
+			p := f.ensure("rook")
+			check := func(rr *httptest.ResponseRecorder, want int, truncated bool) {
+				t.Helper()
+				refs := chatRefs(t, rr)
+				if len(refs) != want {
+					t.Errorf("len(refs) = %d, want %d", len(refs), want)
+				}
+				if got := chatObject(t, rr)["refs_truncated"]; got != truncated {
+					t.Errorf("refs_truncated = %v, want %v (always present)", got, truncated)
+				}
+				resolved := 0
+				for i, ref := range refs {
+					if ref["workspace"] != "ws" || ref["ref"] != fmt.Sprintf("TASK-%d", i+1) {
+						t.Fatalf("ref %d = %v; want distinct refs in source order", i, ref)
+					}
+					if ref["state"] != "unresolved" {
+						resolved++
+					}
+				}
+				if resolved > 50 {
+					t.Errorf("%d non-unresolved refs, want at most 50", resolved)
+				}
+			}
+			// TASK-4039 r2: split 6,000 refs into bodies below the 64 KiB cap.
+			for start := 1; start <= count; start += 2000 {
+				var body strings.Builder
+				end := min(start+1999, count)
+				for i := start; i <= end; i++ {
+					fmt.Fprintf(&body, "[[ws::TASK-%d]] ", i)
+				}
+				// TASK-4039 r2: duplicates at the cap do not imply truncation.
+				fmt.Fprintf(&body, "[[ws::task-%d]]", start)
+				rr := f.request("POST", p+"/messages", "", map[string]any{"body": body.String(), "op_key": fmt.Sprint(start)})
+				f.must(rr, 201, "send refs")
+				if start == 1 {
+					check(rr, min(end, 200), end > 200)
+					replay := f.request("POST", p+"/messages", "", map[string]any{"body": "replay", "op_key": fmt.Sprint(start), "context_workspace": "missing"})
+					f.must(replay, 200, "replay with denied context")
+					check(replay, min(end, 200), end > 200)
+				}
+			}
+			if count == 200 {
+				f.must(f.request("POST", p+"/messages", "", map[string]any{"body": "[[ws::task-1]] [[ws::TASK-200]]"}), 201, "duplicate-only message")
+			}
+			page := f.request("GET", p+"/messages?limit=200", "", nil)
+			f.must(page, 200, "list refs")
+			check(page, min(count, 200), count > 200)
+		})
+	}
+}
+
 func TestChat_ContextWorkspace_ShownThenHiddenAfterMemberRemoved(t *testing.T) {
 	f := newChatEnrichFixture(t)
 	p := f.ensure("rook")

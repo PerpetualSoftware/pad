@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -112,7 +114,37 @@ func (s *Server) handleEnsureChatConversation(w http.ResponseWriter, r *http.Req
 		}
 		in.AgentKey = actor.AgentKey
 	}
-	if !s.allowChatDM(w, actor.UserID) {
+	// TASK-4039 r2: reject malformed keys before spending a creation token.
+	var invalidKey string
+	switch {
+	case in.AgentKey == "":
+		invalidKey = "agent key is required"
+	case len(in.AgentKey) > 128:
+		invalidKey = "agent key is longer than 128 bytes"
+	case !utf8.ValidString(in.AgentKey):
+		invalidKey = "agent key is not valid UTF-8"
+	case strings.ContainsFunc(in.AgentKey, unicode.IsControl):
+		invalidKey = "agent key contains a control character"
+	}
+	if invalidKey != "" {
+		writeError(w, 400, "validation_error", store.ErrInvalidConversationInput.Error()+": "+invalidKey)
+		return
+	}
+	// TASK-4039 r2: use the human's inbox, even when the caller is an agent.
+	rows, err := s.store.ListConversations(models.ConversationActor{UserID: actor.UserID})
+	if err != nil {
+		writeChatError(w, err)
+		return
+	}
+	exists := false
+	for _, row := range rows {
+		if row.AgentKey == in.AgentKey {
+			exists = true
+			break
+		}
+	}
+	// TASK-4039 r2: concurrent first creates can both spend a token; acceptable.
+	if !exists && !s.allowChatDM(w, actor.UserID) {
 		return
 	}
 	c, created, err := s.store.EnsureAgentDM(actor.UserID, in.AgentKey)
@@ -187,7 +219,7 @@ func (s *Server) handleListChatMessages(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	out := chatMessagesResponse{OldestSeq: page.OldestSeq, NewestSeq: page.NewestSeq, LastSeq: page.LastSeq, ReadSeq: page.ReadSeq, HasMore: page.HasMore}
-	out.Messages, out.Refs = s.enrichChatMessages(r, actor, page.Messages)
+	out.Messages, out.Refs, out.RefsTruncated = s.enrichChatMessages(r, actor, page.Messages)
 	writeJSON(w, 200, out)
 }
 func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
@@ -240,8 +272,8 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if found {
-					messages, refs := s.enrichChatMessages(r, actor, []models.ConversationMessage{*msg})
-					writeJSON(w, 200, chatSendResponse{Message: messages[0], Replayed: true, Refs: refs})
+					messages, refs, truncated := s.enrichChatMessages(r, actor, []models.ConversationMessage{*msg})
+					writeJSON(w, 200, chatSendResponse{Message: messages[0], Replayed: true, Refs: refs, RefsTruncated: truncated})
 					return
 				}
 			}
@@ -264,8 +296,8 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 	if result.Replayed {
 		status = 200
 	}
-	messages, refs := s.enrichChatMessages(r, actor, []models.ConversationMessage{result.Message})
-	writeJSON(w, status, chatSendResponse{Message: messages[0], Replayed: result.Replayed, Refs: refs})
+	messages, refs, truncated := s.enrichChatMessages(r, actor, []models.ConversationMessage{result.Message})
+	writeJSON(w, status, chatSendResponse{Message: messages[0], Replayed: result.Replayed, Refs: refs, RefsTruncated: truncated})
 }
 func (s *Server) handleDeleteChatMessage(w http.ResponseWriter, r *http.Request) {
 	actor, ok := chatActor(w, r)

@@ -920,7 +920,7 @@ func (s *Server) allowChatSend(w http.ResponseWriter, convID string, actor model
 	return true
 }
 
-// TASK-4039: every admitted DM-create attempt, including reuse, spends a token.
+// TASK-4039 r2: charge only valid DM-create attempts after checking for reuse.
 func (s *Server) allowChatDM(w http.ResponseWriter, userID string) bool {
 	if s.rateLimiters == nil || s.rateLimiters.ChatDM == nil {
 		return true
