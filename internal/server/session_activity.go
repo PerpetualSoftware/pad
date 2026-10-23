@@ -5,14 +5,35 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 const sessionActivityTTL = 30 * time.Minute
 
 type sessionActivityKey struct{ userID, workerID string }
 type sessionActivity struct {
-	Busy bool      `json:"busy"`
-	At   time.Time `json:"at"`
+	Busy     bool                      `json:"busy"`
+	At       time.Time                 `json:"at"` // Server receipt, for expiry.
+	ClientAt *sessionActivityTimestamp `json:"client_at,omitempty"`
+}
+
+// Separate seconds and nanoseconds remain exact in Lua's numeric type, unlike
+// UnixNano. A nil timestamp represents an older client without ordering data.
+type sessionActivityTimestamp struct {
+	Seconds int64 `json:"seconds"`
+	Nanos   int   `json:"nanos"`
+}
+
+func activityTimestamp(at *time.Time) *sessionActivityTimestamp {
+	if at == nil {
+		return nil
+	}
+	return &sessionActivityTimestamp{Seconds: at.Unix(), Nanos: at.Nanosecond()}
+}
+
+func (at *sessionActivityTimestamp) before(other *sessionActivityTimestamp) bool {
+	return at.Seconds < other.Seconds || (at.Seconds == other.Seconds && at.Nanos < other.Nanos)
 }
 
 func presenceNow(now func() time.Time) time.Time {
@@ -22,7 +43,7 @@ func presenceNow(now func() time.Time) time.Time {
 	return time.Now()
 }
 
-func (p *MemorySessionPresence) SetActivity(userID, workerID string, busy bool, at time.Time) error {
+func (p *MemorySessionPresence) SetActivity(userID, workerID string, busy bool, at time.Time, clientAt *time.Time) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := presenceNow(p.now)
@@ -36,11 +57,15 @@ func (p *MemorySessionPresence) SetActivity(userID, workerID string, busy bool, 
 		p.activity = make(map[sessionActivityKey]sessionActivity)
 	}
 	key := sessionActivityKey{userID, workerID}
+	timestamp := activityTimestamp(clientAt)
+	if previous := p.activity[key].ClientAt; timestamp != nil && previous != nil && timestamp.before(previous) {
+		return nil
+	}
 	if !now.Before(at.Add(sessionActivityTTL)) {
 		delete(p.activity, key)
 		return nil
 	}
-	p.activity[key] = sessionActivity{Busy: busy, At: at}
+	p.activity[key] = sessionActivity{Busy: busy, At: at, ClientAt: timestamp}
 	return nil
 }
 
@@ -75,20 +100,39 @@ func (p *RedisSessionPresence) activityKey(userID, workerID string) string {
 	return p.keys.Name("activity:" + userID + ":" + workerID)
 }
 
-func (p *RedisSessionPresence) SetActivity(userID, workerID string, busy bool, at time.Time) error {
+// Comparison and expiry changes must share one atomic operation: detached
+// reports can reach different server instances in the opposite order.
+var sessionActivityWriteScript = redis.NewScript(`
+local previous = redis.call('GET', KEYS[1])
+local incoming = cjson.decode(ARGV[1])
+if previous and incoming.client_at then
+  local ok, record = pcall(cjson.decode, previous)
+  if ok and type(record) == 'table' and type(record.client_at) == 'table' then
+    local old = record.client_at
+    local new = incoming.client_at
+    if old.seconds > new.seconds or (old.seconds == new.seconds and old.nanos > new.nanos) then
+      return 0
+    end
+  end
+end
+if tonumber(ARGV[2]) <= 0 then
+  return redis.call('DEL', KEYS[1])
+end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+return 1
+`)
+
+func (p *RedisSessionPresence) SetActivity(userID, workerID string, busy bool, at time.Time, clientAt *time.Time) error {
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout())
 	defer cancel()
 	key := p.activityKey(userID, workerID)
 	ttl := at.Add(sessionActivityTTL).Sub(presenceNow(p.now))
-	if ttl <= 0 {
-		return p.client.Del(ctx, key).Err()
-	}
-	payload, err := json.Marshal(sessionActivity{Busy: busy, At: at})
+	payload, err := json.Marshal(sessionActivity{Busy: busy, At: at, ClientAt: activityTimestamp(clientAt)})
 	if err != nil {
 		return err
 	}
 	// Separate from session JSON: renewLoop replays the connection's frozen payload.
-	return p.client.Set(ctx, key, payload, ttl).Err()
+	return sessionActivityWriteScript.Run(ctx, p.client, []string{key}, payload, ttl.Milliseconds()).Err()
 }
 
 func (p *RedisSessionPresence) BusyWorkers(userID string, workerIDs []string) (map[string]bool, error) {

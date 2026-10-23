@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -133,7 +134,8 @@ func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		State string `json:"state"`
+		State string          `json:"state"`
+		At    json.RawMessage `json:"at"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", "Invalid activity body")
@@ -143,7 +145,21 @@ func (s *Server) handleSessionActivity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "state must be busy or idle")
 		return
 	}
-	if err := s.sessionPresence.SetActivity(user.ID, worker, body.State == "busy", time.Now().UTC()); err != nil {
+	var clientAt *time.Time
+	if len(body.At) > 0 {
+		var raw string
+		if err := json.Unmarshal(body.At, &raw); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", "at must be an RFC3339 timestamp")
+			return
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", "at must be an RFC3339 timestamp")
+			return
+		}
+		clientAt = &parsed
+	}
+	if err := s.sessionPresence.SetActivity(user.ID, worker, body.State == "busy", time.Now().UTC(), clientAt); err != nil {
 		slog.Warn("sessions: activity write failed", "error", err, "user_id", user.ID)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "Session presence is not available")
 		return

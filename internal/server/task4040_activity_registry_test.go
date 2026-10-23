@@ -52,7 +52,7 @@ func TestListSessions_ActivitySingleMGet(t *testing.T) {
 	srv := testServerWithPresence(t)
 	srv.SetSessionPresence(reader)
 	_, _, tok, user := setupWatchTestUser(t, srv)
-	if err := writer.SetActivity(user.ID, presenceWorkerA, true, time.Now()); err != nil {
+	if err := writer.SetActivity(user.ID, presenceWorkerA, true, time.Now(), nil); err != nil {
 		t.Fatal(err)
 	}
 	mr.Set(writer.activityKey(user.ID, presenceWorkerB), "garbage activity")
@@ -103,7 +103,7 @@ func TestListSessions_ActivityBatchFailure(t *testing.T) {
 	srv.SetSessionPresence(p)
 	_, _, tok, user := setupWatchTestUser(t, srv)
 	for _, worker := range []string{presenceWorkerA, presenceWorkerB} {
-		if err := p.SetActivity(user.ID, worker, true, time.Now()); err != nil {
+		if err := p.SetActivity(user.ID, worker, true, time.Now(), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -144,7 +144,7 @@ func TestListSessions_CorruptActivityDegrades(t *testing.T) {
 	for _, worker := range []string{presenceWorkerA, corruptWorker} {
 		mr.Set(writer.activityKey(user.ID, worker), "garbage activity")
 	}
-	if err := writer.SetActivity(user.ID, presenceWorkerB, true, time.Now()); err != nil {
+	if err := writer.SetActivity(user.ID, presenceWorkerB, true, time.Now(), nil); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{
@@ -201,11 +201,11 @@ func TestPresenceActivityRegistries(t *testing.T) {
 					t.Fatalf("BusyWorkers(%s,%s) = %v,%v, want %v", user, worker, got, err, want)
 				}
 			}
-			if err := writer.SetActivity("B", presenceWorkerA, true, now); err != nil {
+			if err := writer.SetActivity("B", presenceWorkerA, true, now, nil); err != nil {
 				t.Fatal(err)
 			}
 			assertBusy("A", presenceWorkerA, false)
-			if err := writer.SetActivity("A", presenceWorkerA, true, now); err != nil {
+			if err := writer.SetActivity("A", presenceWorkerA, true, now, nil); err != nil {
 				t.Fatal(err)
 			}
 			assertBusy("A", presenceWorkerA, true)
@@ -214,11 +214,11 @@ func TestPresenceActivityRegistries(t *testing.T) {
 			writer.Remove("A", first)
 			writer.Add("A", ident, SessionOrigin{})
 			assertBusy("A", presenceWorkerA, true) // Across reconnect or /clear.
-			if err := writer.SetActivity("A", presenceWorkerA, false, now); err != nil {
+			if err := writer.SetActivity("A", presenceWorkerA, false, now, nil); err != nil {
 				t.Fatal(err)
 			}
 			assertBusy("A", presenceWorkerA, false)
-			if err := writer.SetActivity("A", presenceWorkerA, true, now); err != nil {
+			if err := writer.SetActivity("A", presenceWorkerA, true, now, nil); err != nil {
 				t.Fatal(err)
 			}
 			advance(30 * time.Minute)
@@ -230,7 +230,7 @@ func TestPresenceActivityRegistries(t *testing.T) {
 			srv.SetSessionPresence(reader)
 			_, _, tok, user := setupWatchTestUser(t, srv)
 			writer.Add(user.ID, ident, SessionOrigin{})
-			if err := writer.SetActivity(user.ID, presenceWorkerA, true, now); err != nil {
+			if err := writer.SetActivity(user.ID, presenceWorkerA, true, now, nil); err != nil {
 				t.Fatal(err)
 			}
 			if got := presenceRows(t, srv, tok.Token)[0]["state"]; got != "busy" {
@@ -259,7 +259,7 @@ func TestPresenceActivityRedisNamespaceAndTTL(t *testing.T) {
 	t.Cleanup(p.Close)
 	now := time.Now()
 	p.now = func() time.Time { return now }
-	if err := p.SetActivity("A", presenceWorkerA, true, now); err != nil {
+	if err := p.SetActivity("A", presenceWorkerA, true, now, nil); err != nil {
 		t.Fatal(err)
 	}
 	key := keys.Name("activity:A:" + presenceWorkerA)

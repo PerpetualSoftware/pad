@@ -303,8 +303,10 @@ type SessionIdentity struct {
 // across; they are load-bearing on the in-process case only.
 type SessionPresence interface {
 	// SetActivity records activity for this credential user and worker,
-	// independently of any connection. Entries expire 30 minutes after at.
-	SetActivity(userID, workerID string, busy bool, at time.Time) error
+	// independently of any connection. Entries expire 30 minutes after the
+	// server receipt time at. A strictly older clientAt is ignored; nil always
+	// applies and clears the ordering timestamp.
+	SetActivity(userID, workerID string, busy bool, at time.Time, clientAt *time.Time) error
 	// BusyWorkers reads this user's activity in one batch, ignoring empty
 	// and duplicate workers and expired records. On error, known states may
 	// still be returned; missing or undecodable entries are not busy.
