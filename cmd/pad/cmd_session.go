@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -749,8 +750,9 @@ func printSessionStatus(st sessionStatusJSON) {
 var sessionActivityTimeout = 3 * time.Second
 
 var sessionActivityBody = reportSessionActivity
+var sessionActivitySpawn = spawnSessionActivity
 
-func reportSessionActivity(ctx context.Context, state string) {
+func reportSessionActivity(ctx context.Context, state, at string) {
 	// Avoid getClient/getConfiguredConfig: they can start a server, prompt,
 	// or exit nonzero. Hooks silently tolerate configuration failures too.
 	cfg, err := config.Load()
@@ -763,12 +765,38 @@ func reportSessionActivity(ctx context.Context, state string) {
 	}
 	applyPadTomlOverride(cfg)
 	client := cli.NewClientFromURL(cfg.BaseURL())
-	_ = client.SetSessionActivity(ctx, state)
+	_ = client.SetSessionActivity(ctx, state, at)
+}
+
+func spawnSessionActivity(state, at string) error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer null.Close()
+	args := []string{"session", "activity", state, "--detached-at", at}
+	if urlFlag != "" {
+		args = append(args, "--url", urlFlag)
+	}
+	cmd := exec.Command(executable, args...)
+	cmd.SysProcAttr = sessionActivityProcessAttrs()
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = null, null, null
+	// A nil Env inherits CLAUDE_PID, credentials and worker resolution inputs.
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Never Wait: even an unreachable server must not delay the hook parent.
+	return cmd.Process.Release()
 }
 
 // sessionActivityCmd is hook plumbing: no prompting, server startup or output.
 // A missed activity update must never fail a Claude Code hook.
 func sessionActivityCmd() *cobra.Command {
+	var detachedAt string
 	cmd := &cobra.Command{
 		Use:           "activity <busy|idle>",
 		Short:         "Report this worker's activity (best effort, for hooks)",
@@ -780,25 +808,35 @@ func sessionActivityCmd() *cobra.Command {
 		// output, and even an invalid format must not fail a Claude Code hook.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error { return nil },
 		Run: func(cmd *cobra.Command, args []string) {
+			at := time.Now().UTC().Format(time.RFC3339Nano)
 			if len(args) != 1 || (args[0] != "busy" && args[0] != "idle") {
+				return
+			}
+			if !cmd.Flags().Changed("detached-at") {
+				_ = sessionActivitySpawn(args[0], at)
+				return
+			}
+			if _, err := time.Parse(time.RFC3339Nano, detachedAt); err != nil {
 				return
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), sessionActivityTimeout)
 			defer cancel()
 			done := make(chan struct{})
 			go func() {
-				sessionActivityBody(ctx, args[0])
+				sessionActivityBody(ctx, args[0], detachedAt)
 				close(done)
 			}()
 			// Configuration, credentials and worker resolution can block before
 			// HTTP starts. Return even if the body cannot observe cancellation;
-			// main then exits, releasing any locks held by the process.
+			// the background child then exits, releasing any process-held locks.
 			select {
 			case <-done:
 			case <-ctx.Done():
 			}
 		},
 	}
+	cmd.Flags().StringVar(&detachedAt, "detached-at", "", "Send a previously timestamped activity report in this process")
+	_ = cmd.Flags().MarkHidden("detached-at")
 	// Flag parsing precedes Run too. Swallow its errors here so the root's
 	// flag-error handler cannot print usage or make the hook exit nonzero.
 	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return nil })

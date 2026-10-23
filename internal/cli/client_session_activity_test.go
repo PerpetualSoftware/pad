@@ -22,8 +22,9 @@ func TestSetSessionActivity(t *testing.T) {
 				}
 				var body struct {
 					State string `json:"state"`
+					At    string `json:"at"`
 				}
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.State != "busy" {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.State != "busy" || body.At != "2026-10-23T00:00:00.123456789Z" {
 					t.Errorf("body = %+v, %v", body, err)
 				}
 				w.WriteHeader(status)
@@ -34,7 +35,7 @@ func TestSetSessionActivity(t *testing.T) {
 			if err := c.SetWorkerID(worker); err != nil {
 				t.Fatal(err)
 			}
-			if err := c.SetSessionActivity(context.Background(), "busy"); (err != nil) != (status >= 400) {
+			if err := c.SetSessionActivity(context.Background(), "busy", "2026-10-23T00:00:00.123456789Z"); (err != nil) != (status >= 400) {
 				t.Fatalf("status %d: %v", status, err)
 			}
 		})
@@ -53,7 +54,7 @@ func TestSetSessionActivityTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if err := c.SetSessionActivity(context.Background(), "idle"); err == nil {
+	if err := c.SetSessionActivity(context.Background(), "idle", time.Now().UTC().Format(time.RFC3339Nano)); err == nil {
 		t.Fatal("expected timeout")
 	}
 	if elapsed := time.Since(start); elapsed < time.Second || elapsed > 3*time.Second {

@@ -837,10 +837,10 @@ func (c *Client) ListWatches() ([]models.Watch, error) {
 // SetSessionActivity reports this worker's activity with a short deadline.
 // It never probes capabilities, starts a server or retries; hook callers may
 // ignore any error so an unavailable Pad cannot interrupt the agent.
-func (c *Client) SetSessionActivity(ctx context.Context, state string) error {
+func (c *Client) SetSessionActivity(ctx context.Context, state, at string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	data, err := json.Marshal(map[string]string{"state": state})
+	data, err := json.Marshal(map[string]string{"state": state, "at": at})
 	if err != nil {
 		return err
 	}

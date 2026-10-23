@@ -15,6 +15,7 @@ func TestSessionActivityHookProcess(t *testing.T) {
 	if os.Getenv("PAD_TEST_ACTIVITY_HOOK") != "1" {
 		return
 	}
+	sessionActivitySpawn = func(string, string) error { return os.ErrPermission }
 	root := newRootCmd()
 	for i, arg := range os.Args {
 		if arg == "--" {
@@ -29,6 +30,10 @@ func TestSessionActivityHookProcess(t *testing.T) {
 }
 
 func TestSessionActivityUnreachable(t *testing.T) {
+	assertSessionActivityHookSilent(t, "session", "activity", "busy", "--detached-at", "2026-10-23T00:00:00Z")
+}
+
+func TestSessionActivitySpawnFailureSilent(t *testing.T) {
 	assertSessionActivityHookSilent(t, "session", "activity", "busy")
 }
 
@@ -57,9 +62,9 @@ func TestSessionActivityBlockedBodyProcess(t *testing.T) {
 		return
 	}
 	sessionActivityTimeout = 25 * time.Millisecond
-	sessionActivityBody = func(context.Context, string) { select {} }
+	sessionActivityBody = func(context.Context, string, string) { select {} }
 	root := newRootCmd()
-	root.SetArgs([]string{"session", "activity", "busy"})
+	root.SetArgs([]string{"session", "activity", "busy", "--detached-at", "2026-10-23T00:00:00Z"})
 	if root.Execute() != nil {
 		os.Exit(1)
 	}
@@ -113,7 +118,7 @@ func assertSessionActivityHookSilent(t *testing.T, args ...string) {
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
-	if strings.Count(stderr.String(), "\n") > 1 {
+	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
