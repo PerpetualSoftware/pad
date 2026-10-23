@@ -9,7 +9,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+func TestSessionActivityTimeoutDefaultsToReportBound(t *testing.T) {
+	if sessionActivityTimeout != models.SessionActivityReportBound {
+		t.Fatalf("session activity timeout = %v, want report bound %v", sessionActivityTimeout, models.SessionActivityReportBound)
+	}
+}
 
 func TestSessionActivityHookProcess(t *testing.T) {
 	if os.Getenv("PAD_TEST_ACTIVITY_HOOK") != "1" {

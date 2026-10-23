@@ -174,7 +174,8 @@ RFC3339Nano format (for example `{"state":"busy","at":"2026-10-23T12:00:00.12345
 and requires a valid `X-Pad-Worker`. Success is `204` with no body, including
 when a reordered report is ignored. A report is ignored only when both it and
 the stored record carry client timestamps, its timestamp is strictly older,
-and the gap is at most 10 seconds (inclusive). This reorder window covers the
+and the gap is at most 10 seconds, inclusive (the 3s report bound plus 7s slack).
+This reorder window covers the
 child's three-second bound plus spawn and scheduling slack for reports racing
 in flight. An older timestamp beyond the window applies as a clock step;
 an equal or newer timestamp also applies. A report without `at` always applies

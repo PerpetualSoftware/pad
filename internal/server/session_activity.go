@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/redis/go-redis/v9"
 )
 
 const sessionActivityTTL = 30 * time.Minute
 
-// Reports have a 3s child bound; allow spawn and scheduling slack for races.
-const reorderWindow = 10 * time.Second
+const reorderSlack = 7 * time.Second
+
+// Two reports from one worker can only race while both are in flight, so their
+// at values can be separated by at most the report bound plus spawn and
+// scheduling slack. Any larger gap must be a clock step.
+const reorderWindow = models.SessionActivityReportBound + reorderSlack
 
 type sessionActivityKey struct{ userID, workerID string }
 type sessionActivity struct {

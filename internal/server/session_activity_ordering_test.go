@@ -12,6 +12,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func TestSessionActivityReorderWindowDerivedFromReportBound(t *testing.T) {
+	if want := models.SessionActivityReportBound + reorderSlack; reorderWindow != want {
+		t.Fatalf("reorder window = %v, want report bound plus slack %v", reorderWindow, want)
+	}
+	if reorderWindow%time.Second != 0 {
+		t.Fatal("reorder window must be whole seconds for the Lua script")
+	}
+}
+
 func TestSessionActivityTimestampOrdering(t *testing.T) {
 	for _, backend := range []string{"memory", "redis"} {
 		t.Run(backend, func(t *testing.T) {
