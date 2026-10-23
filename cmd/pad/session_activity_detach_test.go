@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 	arrived := make(chan request, 1)
 	finished := make(chan struct{})
 	release := make(chan struct{})
+	releaseResponse := sync.OnceFunc(func() { close(release) })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -48,21 +50,18 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 		close(finished)
 	}))
 	defer srv.Close()
-	defer close(release)
+	defer releaseResponse()
 	cmd := exec.Command(bin, "--url", srv.URL, "session", "activity", "busy")
 	cmd.Dir = t.TempDir()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	start := time.Now()
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("parent: %v, stderr=%q", err, &stderr)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start parent: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed >= 300*time.Millisecond {
-		t.Errorf("parent waited %s for blocked child; want <300ms", elapsed)
-	}
-	if stdout.Len() != 0 || stderr.Len() != 0 {
-		t.Fatalf("parent output: %q %q", &stdout, &stderr)
-	}
+	defer cmd.Process.Kill()
+	parentExited := make(chan error, 1)
+	go func() { parentExited <- cmd.Wait() }()
 	select {
 	case req := <-arrived:
 		if got := req.header.Get("X-Pad-Worker"); got != record.WorkerID {
@@ -79,10 +78,24 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("background request never arrived")
 	}
+	// The server has received the child's request and still holds its response.
+	// Waiting for the child in the parent must fail this assertion.
+	select {
+	case err := <-parentExited:
+		if err != nil {
+			t.Fatalf("parent: %v, stderr=%q", err, &stderr)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("parent did not exit while server held the child request")
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("parent output: %q %q", &stdout, &stderr)
+	}
+	releaseResponse()
 	select {
 	case <-finished:
-		t.Fatal("child finished before parent returned")
-	default:
+	case <-time.After(time.Second):
+		t.Fatal("child report did not complete after releasing the response")
 	}
 }
 
