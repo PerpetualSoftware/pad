@@ -180,7 +180,8 @@ child's three-second bound plus spawn and scheduling slack for reports racing
 in flight. An older timestamp beyond the window applies as a clock step;
 an equal or newer timestamp also applies. A report without `at` always applies
 and clears the stored client timestamp, so the
-next timestamped report wins. Missing or malformed worker: `400 invalid_worker_id`;
+next timestamped report wins. An explicit null `at` is malformed; omit the field instead.
+Missing or malformed worker: `400 invalid_worker_id`;
 malformed body, timestamp, or any other state: `400 validation_error`.
 It records activity under the credential's user plus worker, independently of
 session ids. A different user claiming the exact same worker cannot change the
