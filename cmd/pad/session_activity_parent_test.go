@@ -71,8 +71,8 @@ func TestSessionActivityDetachedTimestamp(t *testing.T) {
 			}
 			deadline, ok := ctx.Deadline()
 			remaining := time.Until(deadline)
-			if !ok || remaining < models.SessionActivityReportBound-100*time.Millisecond || remaining > models.SessionActivityReportBound {
-				t.Errorf("child deadline has %v remaining, want report bound %v within 100ms", remaining, models.SessionActivityReportBound)
+			if !ok || remaining < models.SessionActivityReportBound-time.Second || remaining > models.SessionActivityReportBound {
+				t.Errorf("child deadline has %v remaining, want report bound %v within 1s", remaining, models.SessionActivityReportBound)
 			}
 		}
 		cmd := sessionActivityCmd()

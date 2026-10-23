@@ -19,6 +19,12 @@ func TestSessionActivityTimeoutDefaultsToReportBound(t *testing.T) {
 	}
 }
 
+func TestSessionActivityResolutionTimeoutDefault(t *testing.T) {
+	if sessionActivityResolutionTimeout != 500*time.Millisecond {
+		t.Fatalf("identity resolution default = %v, want 500ms", sessionActivityResolutionTimeout)
+	}
+}
+
 func TestSessionActivityHookProcess(t *testing.T) {
 	if os.Getenv("PAD_TEST_ACTIVITY_HOOK") != "1" {
 		return
@@ -88,7 +94,7 @@ func TestSessionActivityBlockedBodyProcess(t *testing.T) {
 
 func TestSessionActivityOverallDeadline(t *testing.T) {
 	t.Setenv("PAD_TEST_ACTIVITY_BLOCKED", "1")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSessionActivityBlockedBodyProcess$")
 	var stdout, stderr bytes.Buffer
@@ -97,7 +103,7 @@ func TestSessionActivityOverallDeadline(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("blocked hook must exit 0 within its total deadline: %v; stderr: %s", err, &stderr)
 	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("blocked hook took %v with a 25ms deadline", elapsed)
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {

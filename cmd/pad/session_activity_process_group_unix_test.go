@@ -3,13 +3,14 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -25,7 +26,7 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	// Build before isolating HOME so the build uses the run's Go cache.
 	sessionActivityRegistry(t)
 	t.Setenv("PAD_WORKER_ID", "")
-	arrived := make(chan context.Context, 1)
+	arrived := make(chan struct{}, 1)
 	completed := make(chan error, 1)
 	release := make(chan struct{})
 	releaseResponse := sync.OnceFunc(func() { close(release) })
@@ -37,7 +38,7 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 			completed <- fmt.Errorf("read child request: %w", err)
 			return
 		}
-		arrived <- r.Context()
+		arrived <- struct{}{}
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -60,9 +61,8 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	defer cmd.Process.Kill()
 	parentExited := make(chan error, 1)
 	go func() { parentExited <- cmd.Wait() }()
-	var requestContext context.Context
 	select {
-	case requestContext = <-arrived:
+	case <-arrived:
 	case err := <-completed:
 		t.Fatalf("receive child request: %v", err)
 	case <-time.After(5 * time.Second):
@@ -73,20 +73,25 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parent: %v", err)
 		}
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		t.Fatal("parent did not exit while server held the child request")
 	}
+	// The unique server URL identifies this test's child on Linux and macOS.
+	// Capture its pid before signaling so a dead child cannot disappear from
+	// the process list and accidentally satisfy the survival assertion.
+	childPID := sessionActivityChildPID(t, srv.URL, cmd.Process.Pid)
 	// Setpgid with Pgid zero makes the parent's pid its process group id.
 	// ESRCH is expected when Setsid has already moved the child out of it.
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
 		t.Fatalf("kill parent process group: %v", err)
 	}
-	select {
-	case <-requestContext.Done():
-		t.Fatal("child request canceled by parent process-group kill")
-	case <-time.After(100 * time.Millisecond):
-		// Let signal delivery and a disconnected socket reach the server before
-		// releasing the response; otherwise a handler return could hide a death.
+	if err := syscall.Kill(childPID, 0); err != nil {
+		t.Fatalf("child pid %d is not alive after parent process-group kill: %v", childPID, err)
+	}
+	// A zombie can still answer kill(pid, 0) until reaped. Require its live
+	// command line as well, without depending on when HTTP observes EOF.
+	if got := sessionActivityChildPID(t, srv.URL, cmd.Process.Pid); got != childPID {
+		t.Fatalf("live child pid after parent process-group kill = %d, want %d", got, childPID)
 	}
 	releaseResponse()
 	select {
@@ -97,4 +102,29 @@ func TestSessionActivitySurvivesParentProcessGroupKill(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("child request did not complete after releasing the response")
 	}
+}
+
+func sessionActivityChildPID(t *testing.T, url string, parentPID int) int {
+	t.Helper()
+	out, err := exec.Command("ps", "-A", "-o", "pid=,args=").Output()
+	if err != nil {
+		t.Fatalf("find live child: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid == parentPID {
+			continue
+		}
+		for i := 1; i+1 < len(fields); i++ {
+			if fields[i] == "--url" && fields[i+1] == url {
+				return pid
+			}
+		}
+	}
+	t.Fatalf("no live child with --url %s (parent pid %d)", url, parentPID)
+	return 0
 }

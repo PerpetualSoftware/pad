@@ -748,8 +748,10 @@ func printSessionStatus(st sessionStatusJSON) {
 	tw.Flush()
 }
 
+const sessionActivityDefaultResolutionTimeout = 500 * time.Millisecond
+
 var sessionActivityTimeout = models.SessionActivityReportBound
-var sessionActivityResolutionTimeout = 500 * time.Millisecond
+var sessionActivityResolutionTimeout = sessionActivityDefaultResolutionTimeout
 
 var sessionActivityBody = reportSessionActivity
 var sessionActivitySpawn = spawnSessionActivity

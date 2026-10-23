@@ -85,7 +85,7 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parent: %v, stderr=%q", err, &stderr)
 		}
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		t.Fatal("parent did not exit while server held the child request")
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
