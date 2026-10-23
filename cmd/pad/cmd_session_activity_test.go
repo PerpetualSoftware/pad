@@ -15,7 +15,7 @@ func TestSessionActivityHookProcess(t *testing.T) {
 	if os.Getenv("PAD_TEST_ACTIVITY_HOOK") != "1" {
 		return
 	}
-	sessionActivitySpawn = func(string, string) error { return os.ErrPermission }
+	sessionActivitySpawn = func(string, string, string, string) error { return os.ErrPermission }
 	root := newRootCmd()
 	for i, arg := range os.Args {
 		if arg == "--" {
@@ -34,6 +34,13 @@ func TestSessionActivityUnreachable(t *testing.T) {
 }
 
 func TestSessionActivitySpawnFailureSilent(t *testing.T) {
+	assertSessionActivityHookSilent(t, "session", "activity", "busy")
+}
+
+func TestSessionActivityResolutionErrorSilent(t *testing.T) {
+	// CaptureSessionOwner rejects this malformed harness pid. Neither identity
+	// resolver may turn that failure into output or a nonzero hook exit.
+	t.Setenv("PAD_SESSION_PID", "invalid-pid")
 	assertSessionActivityHookSilent(t, "session", "activity", "busy")
 }
 
@@ -62,7 +69,7 @@ func TestSessionActivityBlockedBodyProcess(t *testing.T) {
 		return
 	}
 	sessionActivityTimeout = 25 * time.Millisecond
-	sessionActivityBody = func(context.Context, string, string) { select {} }
+	sessionActivityBody = func(context.Context, string, string, string, string) { select {} }
 	root := newRootCmd()
 	root.SetArgs([]string{"session", "activity", "busy", "--detached-at", "2026-10-23T00:00:00Z"})
 	if root.Execute() != nil {
@@ -95,7 +102,7 @@ func assertSessionActivityHookSilent(t *testing.T, args ...string) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PAD_DATA_DIR", t.TempDir())
 	t.Setenv("PAD_DB_PATH", "")
-	t.Setenv("PAD_WORKER_ID", "wk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	t.Setenv("PAD_WORKER_ID", "")
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

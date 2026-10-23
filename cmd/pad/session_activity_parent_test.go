@@ -23,10 +23,10 @@ func TestSessionActivityParentNeverReports(t *testing.T) {
 	} {
 		t.Run(strings.Join(tc.args, "_"), func(t *testing.T) {
 			called := false
-			sessionActivityBody = func(context.Context, string, string) { called = true }
+			sessionActivityBody = func(context.Context, string, string, string, string) { called = true }
 			spawns := 0
 			start := time.Now()
-			sessionActivitySpawn = func(state, at string) error {
+			sessionActivitySpawn = func(state, at, agent, worker string) error {
 				spawns++
 				parsed, err := time.Parse(time.RFC3339Nano, at)
 				if state != tc.args[0] || err != nil || !strings.HasSuffix(at, "Z") || parsed.Before(start) || parsed.After(time.Now()) {
@@ -58,11 +58,11 @@ func TestSessionActivityParentNeverReports(t *testing.T) {
 func TestSessionActivityDetachedTimestamp(t *testing.T) {
 	oldBody, oldSpawn := sessionActivityBody, sessionActivitySpawn
 	t.Cleanup(func() { sessionActivityBody, sessionActivitySpawn = oldBody, oldSpawn })
-	sessionActivitySpawn = func(string, string) error { t.Error("child tried to spawn"); return nil }
+	sessionActivitySpawn = func(string, string, string, string) error { t.Error("child tried to spawn"); return nil }
 	const timestamp = "2026-10-23T00:00:00.123456789Z"
 	for _, at := range []string{timestamp, "", "invalid"} {
 		called := false
-		sessionActivityBody = func(ctx context.Context, state, got string) {
+		sessionActivityBody = func(ctx context.Context, state, got, agent, worker string) {
 			called = true
 			if state != "busy" || got != timestamp {
 				t.Errorf("child body: %q %q", state, got)
@@ -82,5 +82,55 @@ func TestSessionActivityDetachedTimestamp(t *testing.T) {
 		if called != (at == timestamp) {
 			t.Errorf("timestamp %q: child body called=%v", at, called)
 		}
+	}
+}
+
+func TestSessionActivityParentIdentityResolution(t *testing.T) {
+	oldResolve, oldSpawn := sessionActivityResolveIdentity, sessionActivitySpawn
+	oldTimeout := sessionActivityResolutionTimeout
+	t.Cleanup(func() {
+		sessionActivityResolveIdentity, sessionActivitySpawn = oldResolve, oldSpawn
+		sessionActivityResolutionTimeout = oldTimeout
+	})
+	sessionActivityResolutionTimeout = 25 * time.Millisecond
+	for _, blocked := range []bool{false, true} {
+		t.Run(map[bool]string{false: "resolved", true: "deadline"}[blocked], func(t *testing.T) {
+			release, done := make(chan struct{}), make(chan struct{})
+			defer func() { close(release); <-done }()
+			sessionActivityResolveIdentity = func() (string, string) {
+				defer close(done)
+				if blocked {
+					<-release // Deliberately ignores the parent's cancellation.
+				}
+				return "Captured/Agent", "wk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			}
+			spawns := 0
+			sessionActivitySpawn = func(state, at, agent, worker string) error {
+				spawns++
+				wantAgent, wantWorker := "Captured/Agent", "wk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+				if blocked {
+					wantAgent, wantWorker = "", ""
+				}
+				if agent != wantAgent || worker != wantWorker {
+					t.Errorf("spawn identity = %q %q, want %q %q", agent, worker, wantAgent, wantWorker)
+				}
+				return nil
+			}
+			cmd := sessionActivityCmd()
+			cmd.SetArgs([]string{"busy"})
+			var stdout, stderr bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&stderr)
+			start := time.Now()
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+				t.Errorf("resolution took %s with a 25ms deadline", elapsed)
+			}
+			if spawns != 1 || stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Errorf("spawns=%d stdout=%q stderr=%q", spawns, &stdout, &stderr)
+			}
+		})
 	}
 }

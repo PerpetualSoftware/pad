@@ -72,6 +72,22 @@ func NewClient(host string, port int) *Client {
 
 // NewClientFromURL creates a client from a full base URL (e.g., "https://app.getpad.dev").
 func NewClientFromURL(baseURL string) *Client {
+	c := newClientFromURL(baseURL)
+	c.SetAgentName(ResolveAgentName())
+	return c
+}
+
+// NewClientFromURLWithAgentName uses an already resolved agent name without
+// consulting the session registry, workspace configuration or environment for
+// agent identity. Authentication is resolved normally.
+// An empty name explicitly omits X-Pad-Agent.
+func NewClientFromURLWithAgentName(baseURL, agentName string) *Client {
+	c := newClientFromURL(baseURL)
+	c.SetAgentName(agentName)
+	return c
+}
+
+func newClientFromURL(baseURL string) *Client {
 	baseURL = strings.TrimRight(baseURL, "/")
 	c := &Client{
 		baseURL: baseURL + "/api/v1",
@@ -106,13 +122,13 @@ func NewClientFromURL(baseURL string) *Client {
 		}
 	}
 
-	// Resolve the agent identity that becomes X-Pad-Agent. Used to read
-	// .pad.toml's agent_name and nothing else, which meant any workspace that
-	// had not opted in recorded agent writes as human ones (BUG-2542). See
-	// ResolveAgentName for the precedence and for what this signal cannot do.
-	c.agentName = ResolveAgentName()
-
 	return c
+}
+
+// SetAgentName sets X-Pad-Agent verbatim; an empty name omits the header.
+// Call it before the first request.
+func (c *Client) SetAgentName(name string) {
+	c.agentName = name
 }
 
 // SetAuthToken sets the authorization token for API requests.

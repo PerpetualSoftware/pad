@@ -15,6 +15,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // sessionCmd groups the local session-registry verbs (register / list /
@@ -748,11 +749,17 @@ func printSessionStatus(st sessionStatusJSON) {
 }
 
 var sessionActivityTimeout = 3 * time.Second
+var sessionActivityResolutionTimeout = 500 * time.Millisecond
 
 var sessionActivityBody = reportSessionActivity
 var sessionActivitySpawn = spawnSessionActivity
+var sessionActivityResolveIdentity = func() (agent, worker string) {
+	// Match synchronous requests, including their best-effort handling of
+	// registry and configuration errors.
+	return cli.ResolveAgentName(), cli.ResolveWorkerID()
+}
 
-func reportSessionActivity(ctx context.Context, state, at string) {
+func reportSessionActivity(ctx context.Context, state, at, agent, worker string) {
 	// Avoid getClient/getConfiguredConfig: they can start a server, prompt,
 	// or exit nonzero. Hooks silently tolerate configuration failures too.
 	cfg, err := config.Load()
@@ -764,11 +771,17 @@ func reportSessionActivity(ctx context.Context, state, at string) {
 		cfg.LoadedFromFlags = true
 	}
 	applyPadTomlOverride(cfg)
-	client := cli.NewClientFromURL(cfg.BaseURL())
+	// The child no longer has the harness in its ancestry. Never resolve its
+	// identity again, even when the parent passed empty values.
+	client := cli.NewClientFromURLWithAgentName(cfg.BaseURL(), agent)
+	if !models.ValidWorkerID(worker) {
+		worker = ""
+	}
+	_ = client.SetWorkerID(worker)
 	_ = client.SetSessionActivity(ctx, state, at)
 }
 
-func spawnSessionActivity(state, at string) error {
+func spawnSessionActivity(state, at, agent, worker string) error {
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -778,14 +791,15 @@ func spawnSessionActivity(state, at string) error {
 		return err
 	}
 	defer null.Close()
-	args := []string{"session", "activity", state, "--detached-at", at}
+	args := []string{"session", "activity", state, "--detached-at", at,
+		"--detached-agent", agent, "--detached-worker", worker}
 	if urlFlag != "" {
 		args = append(args, "--url", urlFlag)
 	}
 	cmd := exec.Command(executable, args...)
 	cmd.SysProcAttr = sessionActivityProcessAttrs()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = null, null, null
-	// A nil Env inherits CLAUDE_PID, credentials and worker resolution inputs.
+	// A nil Env inherits credentials; identity is passed explicitly above.
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -796,7 +810,7 @@ func spawnSessionActivity(state, at string) error {
 // sessionActivityCmd is hook plumbing: no prompting, server startup or output.
 // A missed activity update must never fail a Claude Code hook.
 func sessionActivityCmd() *cobra.Command {
-	var detachedAt string
+	var detachedAt, detachedAgent, detachedWorker string
 	cmd := &cobra.Command{
 		Use:           "activity <busy|idle>",
 		Short:         "Report this worker's activity (best effort, for hooks)",
@@ -813,7 +827,24 @@ func sessionActivityCmd() *cobra.Command {
 				return
 			}
 			if !cmd.Flags().Changed("detached-at") {
-				_ = sessionActivitySpawn(args[0], at)
+				// Resolve while the harness is still our ancestor, under a separate
+				// short deadline. If local resolution blocks, spawn without identity
+				// rather than block the prompt; the child must not try again.
+				ctx, cancel := context.WithTimeout(cmd.Context(), sessionActivityResolutionTimeout)
+				defer cancel()
+				type identity struct{ agent, worker string }
+				resolved := make(chan identity, 1)
+				resolve := sessionActivityResolveIdentity
+				go func() {
+					agent, worker := resolve()
+					resolved <- identity{agent, worker}
+				}()
+				var id identity
+				select {
+				case id = <-resolved:
+				case <-ctx.Done():
+				}
+				_ = sessionActivitySpawn(args[0], at, id.agent, id.worker)
 				return
 			}
 			if _, err := time.Parse(time.RFC3339Nano, detachedAt); err != nil {
@@ -823,10 +854,10 @@ func sessionActivityCmd() *cobra.Command {
 			defer cancel()
 			done := make(chan struct{})
 			go func() {
-				sessionActivityBody(ctx, args[0], detachedAt)
+				sessionActivityBody(ctx, args[0], detachedAt, detachedAgent, detachedWorker)
 				close(done)
 			}()
-			// Configuration, credentials and worker resolution can block before
+			// Configuration and credentials can block before
 			// HTTP starts. Return even if the body cannot observe cancellation;
 			// the background child then exits, releasing any process-held locks.
 			select {
@@ -837,6 +868,10 @@ func sessionActivityCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&detachedAt, "detached-at", "", "Send a previously timestamped activity report in this process")
 	_ = cmd.Flags().MarkHidden("detached-at")
+	cmd.Flags().StringVar(&detachedAgent, "detached-agent", "", "Previously resolved agent name")
+	_ = cmd.Flags().MarkHidden("detached-agent")
+	cmd.Flags().StringVar(&detachedWorker, "detached-worker", "", "Previously resolved worker id")
+	_ = cmd.Flags().MarkHidden("detached-worker")
 	// Flag parsing precedes Run too. Swallow its errors here so the root's
 	// flag-error handler cannot print usage or make the hook exit nonzero.
 	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return nil })
