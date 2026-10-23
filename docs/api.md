@@ -169,14 +169,22 @@ Claude Code `/clear` and stream reconnects; each connection still gets a new
 session id.
 
 `POST /api/v1/sessions/activity` accepts `{"state":"busy"}` or
-`{"state":"idle"}` and requires a valid `X-Pad-Worker`. Success is `204` with no
-body. Missing or malformed worker: `400 invalid_worker_id`; malformed body or
-any other state: `400 validation_error`. It records activity under the
-credential's user plus worker, independently of session ids. A different user
-claiming the exact same worker cannot change the caller's presence.
+`{"state":"idle"}`, with an optional client timestamp `at` in RFC3339 or
+RFC3339Nano format (for example `{"state":"busy","at":"2026-10-23T12:00:00.123456789Z"}`),
+and requires a valid `X-Pad-Worker`. Success is `204` with no body, including
+when a stale report is ignored. A timestamp strictly older than the stored
+client timestamp is ignored; an equal or newer timestamp applies. A report
+without `at` always applies and clears the stored client timestamp, so the
+next timestamped report wins. Missing or malformed worker: `400 invalid_worker_id`;
+malformed body, timestamp, or any other state: `400 validation_error`.
+It records activity under the credential's user plus worker, independently of
+session ids. A different user claiming the exact same worker cannot change the
+caller's presence.
 
 A session is `busy` when its worker has an unexpired busy record. Activity
-expires 30 minutes after being recorded, and idle clears busy immediately.
+expires 30 minutes after server receipt, independently of client clock skew,
+and an accepted idle report clears busy immediately. Client timestamps order
+reports from the same worker; server receipt time controls the busy window and TTL.
 Otherwise `state` is `online` when `armed` is true, or
 `connected_not_accepting` when false. A session without a worker is never
 busy. State does not change push consent or delivery rules.
@@ -184,9 +192,9 @@ busy. State does not change push consent or delivery rules.
 The Claude Code hooks set busy on `UserPromptSubmit` and clear it on `Stop`.
 Claude Code fires no `Stop` when the user interrupts a turn with Esc, so an
 interrupted session reads `busy` until its record expires 30 minutes after
-the prompt. Nothing refreshes the record mid-turn: a single turn longer than
-30 minutes reads `online` or `connected_not_accepting` for the rest of the
-turn, according to its armed state.
+the prompt report reaches the server. Nothing refreshes the record mid-turn:
+a single turn longer than 30 minutes reads `online` or `connected_not_accepting`
+for the rest of the turn, according to its armed state.
 
 Both endpoints require a resolved user (`401 unauthorized` otherwise) and
 answer `503 unavailable` when the presence registry is absent or cannot be
@@ -196,10 +204,12 @@ only affects that worker's sessions, and other workers retain their activity
 state. Either failure logs one warning per request and the list still answers
 `200`. Workspace-pinned PATs are refused by the existing pin policy.
 `pad session activity <busy|idle>` is intended for hooks: silent, no prompts or
-server startup, a three-second overall deadline, and a two-second HTTP request
-timeout within it. It exits 0 silently on every failure, including bad arguments
-and flag errors. As for every command, `--help` still prints help to stdout;
-the shipped hooks never pass it. It is not an MCP tool.
+server startup. It captures the client timestamp and returns immediately while
+a detached background child sends the report, so a prompt never waits on the
+network. The child has a three-second overall deadline and a two-second HTTP
+request timeout within it. It exits 0 silently on every failure, including
+spawn failures, bad arguments and flag errors. As for every command, `--help`
+still prints help to stdout; the shipped hooks never pass it. It is not an MCP tool.
 
 ### Workspace-pinned tokens (BUG-3982)
 
