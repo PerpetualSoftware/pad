@@ -678,6 +678,11 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 - **No grandfathering.** Updating the plugin replaces the v0.14 always-on monitor with the gated one for everyone. Sessions that used to receive pushes receive none until they connect; the web composer's counts make that visible rather than silent.
 - **The accepted caveat.** An agent can run the arm command from inside its own session. That is visible in the transcript, within the operator's sight: the gate protects sessions from the outside and does not police the inside. A push can inject text; it cannot click a permission prompt.
 
+The plugin's Claude Code hooks report activity through `pad session activity`:
+`UserPromptSubmit` marks the session busy and `Stop` marks it idle. The hooks
+discard output because `UserPromptSubmit` stdout reaches the model. Activity
+reporting does not change push consent.
+
 ## License
 
 [Apache License 2.0](LICENSE)
