@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
@@ -22,18 +26,23 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	// Build before isolating HOME: the nested build uses the run's Go cache.
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("PAD_DATA_DIR", t.TempDir())
-	t.Setenv("PAD_DB_PATH", "")
-	t.Setenv("PAD_WORKER_ID", "wk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	t.Setenv("PAD_TOKEN", "activity-local-test")
-	arrived := make(chan map[string]string, 1)
+	record := sessionActivityRegistry(t)
+	t.Setenv("PAD_WORKER_ID", "") // The worker must come from the registry.
+	t.Setenv("PAD_AGENT", "")
+	if err := os.Unsetenv("PAD_AGENT"); err != nil {
+		t.Fatal(err)
+	}
+	type request struct {
+		body   map[string]string
+		header http.Header
+	}
+	arrived := make(chan request, 1)
 	finished := make(chan struct{})
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		arrived <- body
+		arrived <- request{body, r.Header.Clone()}
 		<-release
 		w.WriteHeader(http.StatusNoContent)
 		close(finished)
@@ -55,7 +64,14 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 		t.Fatalf("parent output: %q %q", &stdout, &stderr)
 	}
 	select {
-	case body := <-arrived:
+	case req := <-arrived:
+		if got := req.header.Get("X-Pad-Worker"); got != record.WorkerID {
+			t.Errorf("X-Pad-Worker = %q, want registered worker %q", got, record.WorkerID)
+		}
+		if got := req.header.Get("X-Pad-Agent"); got != record.Agent {
+			t.Errorf("X-Pad-Agent = %q, want registered name %q (PAD_AGENT unset)", got, record.Agent)
+		}
+		body := req.body
 		at, err := time.Parse(time.RFC3339Nano, body["at"])
 		if body["state"] != "busy" || err != nil || at.Before(start) || at.After(time.Now()) {
 			t.Fatalf("request: %v, timestamp error: %v", body, err)
@@ -68,4 +84,31 @@ func TestSessionActivityRealBinaryReturnsBeforeResponse(t *testing.T) {
 		t.Fatal("child finished before parent returned")
 	default:
 	}
+}
+
+func sessionActivityRegistry(t *testing.T) cli.SessionRegistration {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_DATA_DIR", t.TempDir())
+	t.Setenv("PAD_DB_PATH", "")
+	t.Setenv("PAD_TOKEN", "activity-local-test")
+	t.Setenv("PAD_SESSION_PID", "")
+	t.Setenv("CLAUDE_PID", strconv.Itoa(os.Getpid()))
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
+	record, err := cli.RegisterSession(t.TempDir(), "registered-activity-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Liveness != cli.LivenessAlive {
+		t.Skip("this platform cannot verify the registered session is alive")
+	}
+	data, err := os.ReadFile(record.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registration cli.SessionRegistration
+	if err := json.Unmarshal(data, &registration); err != nil {
+		t.Fatal(err)
+	}
+	return registration
 }
