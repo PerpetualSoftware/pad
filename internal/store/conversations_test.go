@@ -339,6 +339,20 @@ func TestMembershipGatesEveryRead(t *testing.T) {
 		if _, err := s.SendConversationMessage(models.ConversationSend{ConversationID: c.ID, Author: o, Body: "x"}); !errors.Is(err, ErrConversationNotFound) {
 			t.Errorf("%+v Send: %v", o, err)
 		}
+		if _, _, err := s.DeleteConversationMessage(o, c.ID, 1); !errors.Is(err, ErrConversationNotFound) {
+			t.Errorf("%+v Delete: %v", o, err)
+		}
+		for _, mark := range []func(models.ConversationActor, string, int64) (int64, error){s.MarkConversationRead, s.MarkConversationDelivered} {
+			if _, err := mark(o, c.ID, 1); !errors.Is(err, ErrConversationNotFound) {
+				t.Errorf("%+v Mark: %v", o, err)
+			}
+		}
+		if rows, err := s.ListConversations(o); err != nil || len(rows) != 0 {
+			t.Errorf("%+v List: %+v, %v", o, rows, err)
+		}
+		if rows, total, err := s.UnreadSummary(o); err != nil || len(rows) != 0 || total != 0 {
+			t.Errorf("%+v Unread: %+v total=%d, %v", o, rows, total, err)
+		}
 	}
 	if n := chatCount(t, s, c.ID); n != 1 {
 		t.Fatalf("an outsider's send left a row: %d", n)
@@ -408,5 +422,326 @@ func TestListMessagesPaging(t *testing.T) {
 	p, err = s.ListConversationMessages(me, c.ID, nil, nil, 0)
 	if err != nil || len(p.Messages) != 10 || p.HasMore {
 		t.Fatalf("default limit: %v %d", err, len(p.Messages))
+	}
+}
+
+func TestDeleteAlwaysTombstones(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c := chatDM(t, s, u, "claude")
+	human := models.ConversationActor{UserID: u.ID}
+	agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+	original := chatSend(t, s, c.ID, agent, "erase me", "", nil).Message
+	chatSend(t, s, c.ID, human, "reply", "", &original.Seq)
+	deleted, changed, err := s.DeleteConversationMessage(agent, c.ID, original.Seq)
+	if err != nil || !changed || deleted == nil || deleted.ID != original.ID || deleted.Seq != original.Seq || !deleted.Deleted || deleted.Body != "" || deleted.DeletedAt == nil {
+		t.Fatalf("delete: message=%+v changed=%v err=%v", deleted, changed, err)
+	}
+	var body, deletedAt, deletedBy, deletedAgent string
+	if err := s.db.QueryRow(s.q(`SELECT body, deleted_at, deleted_by_user_id, deleted_by_agent_key FROM conversation_messages WHERE id = ?`), original.ID).Scan(&body, &deletedAt, &deletedBy, &deletedAgent); err != nil {
+		t.Fatal(err)
+	}
+	if body != "" || deletedAt == "" || deletedBy != u.ID || deletedAgent != agent.AgentKey {
+		t.Fatalf("tombstone fields: %q %q %q %q", body, deletedAt, deletedBy, deletedAgent)
+	}
+	again, changed, err := s.DeleteConversationMessage(human, c.ID, original.Seq)
+	if err != nil || changed || again == nil || !again.Deleted || !again.DeletedAt.Equal(*deleted.DeletedAt) {
+		t.Fatalf("second delete: %+v changed=%v err=%v", again, changed, err)
+	}
+	var afterBy, afterAgent string
+	if err := s.db.QueryRow(s.q(`SELECT deleted_by_user_id, deleted_by_agent_key FROM conversation_messages WHERE id = ?`), original.ID).Scan(&afterBy, &afterAgent); err != nil {
+		t.Fatal(err)
+	}
+	if afterBy != deletedBy || afterAgent != deletedAgent || chatCount(t, s, c.ID) != 2 || chatLastSeq(t, s, c.ID) != 2 {
+		t.Fatal("second delete changed attribution, row count or last_seq")
+	}
+	page, err := s.ListConversationMessages(human, c.ID, nil, nil, 10)
+	if err != nil || len(page.Messages) != 2 || !page.Messages[0].Deleted || page.Messages[0].Body != "" {
+		t.Fatalf("listed tombstone: %+v err=%v", page, err)
+	}
+	if q := page.Messages[1].ReplyTo; q == nil || !q.Deleted || q.Excerpt != "" {
+		t.Fatalf("quote of tombstone: %+v", q)
+	}
+}
+
+func TestSendReplayAfterTombstone(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c := chatDM(t, s, u, "claude")
+	actor := models.ConversationActor{UserID: u.ID}
+	first := chatSend(t, s, c.ID, actor, "original", "op-1", nil)
+	if _, _, err := s.DeleteConversationMessage(actor, c.ID, first.Message.Seq); err != nil {
+		t.Fatal(err)
+	}
+	replay := chatSend(t, s, c.ID, actor, "different", "op-1", nil)
+	if !replay.Replayed || replay.Message.ID != first.Message.ID || replay.Message.Seq != first.Message.Seq || !replay.Message.Deleted || replay.Message.Body != "" || replay.Message.DeletedAt == nil || chatCount(t, s, c.ID) != 1 || chatLastSeq(t, s, c.ID) != 1 {
+		t.Fatalf("replay after delete: %+v", replay)
+	}
+}
+
+func TestDeleteAuthorization(t *testing.T) {
+	s := testStore(t)
+	u, outsider := chatUser(t, s, "alice"), chatUser(t, s, "bob")
+	c := chatDM(t, s, u, "claude")
+	chatDM(t, s, u, "codex")
+	human := models.ConversationActor{UserID: u.ID}
+	agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+	cases := []struct {
+		name          string
+		author, actor models.ConversationActor
+		want          error
+	}{
+		{"owner deletes agent", agent, human, nil},
+		{"agent deletes own", agent, agent, nil},
+		{"owner deletes own", human, human, nil},
+		{"agent cannot delete human", human, agent, ErrConversationForbidden},
+		{"other agent is not a member", agent, models.ConversationActor{UserID: u.ID, AgentKey: "codex"}, ErrConversationNotFound},
+		{"other user is not a member", agent, models.ConversationActor{UserID: outsider.ID}, ErrConversationNotFound},
+	}
+	// TASK-4038: these are all member/author combinations in a two-member DM.
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := chatSend(t, s, c.ID, tc.author, tc.name, "", nil).Message
+			got, changed, err := s.DeleteConversationMessage(tc.actor, c.ID, msg.Seq)
+			if !errors.Is(err, tc.want) || (tc.want == nil && (!changed || got == nil || !got.Deleted)) || (tc.want != nil && (changed || got != nil)) {
+				t.Fatalf("delete: %+v changed=%v err=%v, want %v", got, changed, err, tc.want)
+			}
+			if tc.want != nil {
+				stored, err := s.conversationMessageBySeq(s.db, c.ID, msg.Seq)
+				if err != nil || stored.Deleted || stored.Body != tc.name {
+					t.Fatalf("refused delete changed message: %+v err=%v", stored, err)
+				}
+			}
+		})
+	}
+	if _, _, err := s.DeleteConversationMessage(human, c.ID, 999); !errors.Is(err, ErrConversationNotFound) {
+		t.Fatalf("missing seq: %v", err)
+	}
+}
+
+func TestReadSeqMonotonic(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	human := models.ConversationActor{UserID: u.ID}
+	agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+	for _, tc := range []struct {
+		name string
+		mark func(models.ConversationActor, string, int64) (int64, error)
+	}{{"read", s.MarkConversationRead}, {"delivered", s.MarkConversationDelivered}} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := chatDM(t, s, u, "claude-"+tc.name)
+			for i := 0; i < 7; i++ {
+				chatSend(t, s, c.ID, models.ConversationActor{UserID: u.ID, AgentKey: "claude-" + tc.name}, "hi", "", nil)
+			}
+			for _, step := range []struct{ to, want int64 }{{5, 5}, {3, 5}, {999, 7}, {0, 7}} {
+				if got, err := tc.mark(human, c.ID, step.to); err != nil || got != step.want {
+					t.Fatalf("mark %d = %d, want %d: %v", step.to, got, step.want, err)
+				}
+			}
+			empty := chatDM(t, s, u, "empty-"+tc.name)
+			if got, err := tc.mark(human, empty.ID, 999); err != nil || got != 0 {
+				t.Fatalf("empty marker = %d: %v", got, err)
+			}
+			if _, err := tc.mark(human, c.ID, -1); !errors.Is(err, ErrInvalidConversationInput) {
+				t.Fatalf("negative marker: %v", err)
+			}
+			if _, err := tc.mark(agent, c.ID, 1); !errors.Is(err, ErrConversationNotFound) {
+				t.Fatalf("non-member marker: %v", err)
+			}
+			if _, err := tc.mark(human, "missing", 1); !errors.Is(err, ErrConversationNotFound) {
+				t.Fatalf("missing conversation marker: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnreadExcludesOwnAndDeleted(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c, c2 := chatDM(t, s, u, "claude"), chatDM(t, s, u, "codex")
+	human := models.ConversationActor{UserID: u.ID}
+	agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+	chatSend(t, s, c.ID, human, "human message", "", nil)
+	chatSend(t, s, c.ID, agent, "agent message", "", nil)
+	deleted := chatSend(t, s, c.ID, agent, "deleted message", "", nil).Message
+	if _, _, err := s.DeleteConversationMessage(human, c.ID, deleted.Seq); err != nil {
+		t.Fatal(err)
+	}
+	chatSend(t, s, c2.ID, models.ConversationActor{UserID: u.ID, AgentKey: "codex"}, "other DM", "", nil)
+	// TASK-4038: isolate the unread predicate from the sender's automatic marker.
+	if _, err := s.db.Exec(s.q(`UPDATE conversation_members SET read_seq = 0 WHERE conversation_id = ?`), c.ID); err != nil {
+		t.Fatal(err)
+	}
+	check := func(actor models.ConversationActor, wantRows, wantTotal int) []models.ConversationUnread {
+		t.Helper()
+		rows, total, err := s.UnreadSummary(actor)
+		if err != nil || len(rows) != wantRows || total != wantTotal {
+			t.Fatalf("unread %q: rows=%+v total=%d, want %d/%d: %v", actor.AgentKey, rows, total, wantRows, wantTotal, err)
+		}
+		return rows
+	}
+	rows := check(human, 2, 2)
+	for _, row := range rows {
+		if row.Unread != 1 || row.ReadSeq != 0 || (row.ConversationID == c.ID && (row.Number != c.Number || row.AgentKey != "claude" || row.LastSeq != 3 || row.DeliveredSeq != 1)) {
+			t.Fatalf("human unread row: %+v", row)
+		}
+	}
+	rows = check(agent, 1, 1)
+	if rows[0].ConversationID != c.ID || rows[0].AgentKey != "claude" || rows[0].DeliveredSeq != 3 {
+		t.Fatalf("agent unread row: %+v", rows[0])
+	}
+	for _, actor := range []models.ConversationActor{human, agent} {
+		if _, err := s.MarkConversationRead(actor, c.ID, 999); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(agent, 0, 0)
+	check(human, 1, 1)
+	if _, err := s.MarkConversationRead(human, c2.ID, 999); err != nil {
+		t.Fatal(err)
+	}
+	check(human, 0, 0)
+	check(models.ConversationActor{UserID: u.ID, AgentKey: "outsider"}, 0, 0)
+}
+
+func TestListConversations(t *testing.T) {
+	s := testStore(t)
+	u, other := chatUser(t, s, "alice"), chatUser(t, s, "bob")
+	human := models.ConversationActor{UserID: u.ID}
+	c1, c2 := chatDM(t, s, u, "claude"), chatDM(t, s, u, "codex")
+	chatSend(t, s, c2.ID, models.ConversationActor{UserID: u.ID, AgentKey: "codex"}, "older", "", nil)
+	first := chatSend(t, s, c1.ID, human, "human", "", nil).Message
+	last := chatSend(t, s, c1.ID, models.ConversationActor{UserID: u.ID, AgentKey: "claude"}, "newest", "", &first.Seq).Message
+	rows, err := s.ListConversations(human)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("list: %+v err=%v", rows, err)
+	}
+	if rows[0].ID != c1.ID || rows[1].ID != c2.ID || rows[0].AgentKey != "claude" || rows[1].AgentKey != "codex" || rows[0].Unread != 1 || rows[1].Unread != 1 || rows[0].ReadSeq != 1 || rows[1].ReadSeq != 0 {
+		t.Fatalf("inbox order/counts: %+v", rows)
+	}
+	if m := rows[0].LastMessage; m == nil || m.ID != last.ID || m.Seq != 2 || m.Body != "newest" || m.ReplyTo == nil || m.ReplyTo.Excerpt != "human" {
+		t.Fatalf("last message: %+v", m)
+	}
+	if m := rows[1].LastMessage; m == nil || m.Seq != 1 || m.Body != "older" {
+		t.Fatalf("other last message: %+v", m)
+	}
+	if _, _, err := s.DeleteConversationMessage(human, c1.ID, last.Seq); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.ListConversations(human)
+	if err != nil || len(rows) != 2 || rows[0].ID != c1.ID || rows[0].Unread != 0 || rows[0].LastMessage == nil || !rows[0].LastMessage.Deleted || rows[0].LastMessage.Body != "" {
+		t.Fatalf("tombstoned last message: %+v err=%v", rows, err)
+	}
+	agentRows, err := s.ListConversations(models.ConversationActor{UserID: u.ID, AgentKey: "claude"})
+	if err != nil || len(agentRows) != 1 || agentRows[0].ID != c1.ID || agentRows[0].ReadSeq != 2 || agentRows[0].Unread != 0 {
+		t.Fatalf("agent inbox: %+v err=%v", agentRows, err)
+	}
+	if rows, err := s.ListConversations(models.ConversationActor{UserID: other.ID}); err != nil || len(rows) != 0 {
+		t.Fatalf("other owner: %+v err=%v", rows, err)
+	}
+	// TASK-4038: equal timestamps have a stable id tie-breaker, empty DMs no preview.
+	empty := chatDM(t, s, u, "empty")
+	if _, err := s.db.Exec(s.q(`UPDATE conversations SET updated_at = ? WHERE owner_user_id = ?`), nowNano(), u.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.ListConversations(human)
+	if err != nil || len(rows) != 3 || rows[0].ID > rows[1].ID || rows[1].ID > rows[2].ID {
+		t.Fatalf("tied order: %+v err=%v", rows, err)
+	}
+	for _, row := range rows {
+		if row.ID == empty.ID && (row.LastMessage != nil || row.Unread != 0 || row.LastSeq != 0) {
+			t.Fatalf("empty DM: %+v", row)
+		}
+	}
+}
+
+func TestDeleteAccountRemovesConversations(t *testing.T) {
+	s := testStore(t)
+	u, bystander := chatUser(t, s, "alice"), chatUser(t, s, "bob")
+	c, kept := chatDM(t, s, u, "claude"), chatDM(t, s, bystander, "claude")
+	chatSend(t, s, c.ID, models.ConversationActor{UserID: u.ID}, "doomed", "", nil)
+	chatSend(t, s, kept.ID, models.ConversationActor{UserID: bystander.ID}, "kept", "", nil)
+	if err := s.DeleteAccountAtomic(u.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertChatRows(t, s, c.ID, 0, 0, 0)
+	assertChatRows(t, s, kept.ID, 1, 2, 1)
+	if got, err := s.GetUser(u.ID); err != nil || got != nil {
+		t.Fatalf("deleted user: %+v err=%v", got, err)
+	}
+}
+
+func TestAccountClaimRemovesConversations(t *testing.T) {
+	s := testStore(t)
+	u := createUnverifiedUser(t, s, "claim@chat.test")
+	bystander := chatUser(t, s, "bob")
+	c, kept := chatDM(t, s, u, "claude"), chatDM(t, s, bystander, "claude")
+	chatSend(t, s, c.ID, models.ConversationActor{UserID: u.ID}, "old owner's chat", "", nil)
+	chatSend(t, s, kept.ID, models.ConversationActor{UserID: bystander.ID}, "kept", "", nil)
+	token, err := s.CreateEmailVerification(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := s.ClaimAccountByVerification(token)
+	if err != nil || claim.UserID != u.ID {
+		t.Fatalf("claim: %+v err=%v", claim, err)
+	}
+	assertChatRows(t, s, c.ID, 0, 0, 0)
+	assertChatRows(t, s, kept.ID, 1, 2, 1)
+	if got, err := s.GetUser(u.ID); err != nil || got == nil || !got.IsEmailVerified() {
+		t.Fatalf("claimed user row: %+v err=%v", got, err)
+	}
+}
+
+func assertChatRows(t *testing.T, s *Store, convID string, conversations, members, messages int) {
+	t.Helper()
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{`SELECT COUNT(*) FROM conversations WHERE id = ?`, conversations},
+		{`SELECT COUNT(*) FROM conversation_members WHERE conversation_id = ?`, members},
+		{`SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?`, messages},
+	} {
+		var got int
+		if err := s.db.QueryRow(s.q(tc.query), convID).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %d, want %d", tc.query, got, tc.want)
+		}
+	}
+}
+
+func TestPurgeWorkspaceLeavesChatMessages(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c := chatDM(t, s, u, "claude")
+	actor := models.ConversationActor{UserID: u.ID}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Context", OwnerID: u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := models.ConversationSend{ConversationID: c.ID, Author: actor, Body: "workspace context", ContextWorkspaceID: ws.ID}
+	sent, err := s.SendConversationMessage(in)
+	if err != nil || sent.Message.ContextWorkspaceID == nil || *sent.Message.ContextWorkspaceID != ws.ID {
+		t.Fatalf("send with context: %+v err=%v", sent, err)
+	}
+	if err := s.DeleteWorkspace(ws.Slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PurgeWorkspaceData(ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.ListConversationMessages(actor, c.ID, nil, nil, 10)
+	if err != nil || len(page.Messages) != 1 || page.Messages[0].ID != sent.Message.ID || page.Messages[0].ContextWorkspaceID != nil || page.Messages[0].Body != in.Body || page.Messages[0].Deleted {
+		t.Fatalf("message after purge: %+v err=%v", page, err)
+	}
+	in.ContextWorkspaceID = "unknown-workspace"
+	if _, err := s.SendConversationMessage(in); err == nil {
+		t.Fatal("send with unknown workspace accepted")
+	}
+	if chatCount(t, s, c.ID) != 1 || chatLastSeq(t, s, c.ID) != 1 {
+		t.Fatal("failed FK send changed messages or last_seq")
 	}
 }

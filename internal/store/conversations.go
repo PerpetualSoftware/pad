@@ -455,3 +455,177 @@ func (s *Store) ListConversationMessages(actor models.ConversationActor, convID 
 	}
 	return page, nil
 }
+
+// DeleteConversationMessage tombstones an authorized member's message while
+// retaining its row and sequence, including on repeated deletes (TASK-4038).
+func (s *Store) DeleteConversationMessage(actor models.ConversationActor, convID string, seq int64) (*models.ConversationMessage, bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, false, fmt.Errorf("begin delete message: %w", err)
+	}
+	defer tx.Rollback()
+
+	msg, err := scanConversationMessage(tx.QueryRow(s.q(conversationMessageSelect+`
+		WHERE m.conversation_id = ? AND m.seq = ? AND EXISTS (
+			SELECT 1 FROM conversation_members member WHERE member.conversation_id = m.conversation_id
+			AND member.user_id = ? AND member.agent_key = ?)`), convID, seq, actor.UserID, actor.AgentKey))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, ErrConversationNotFound
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("load delete target: %w", err)
+	}
+	if msg.AuthorUserID != actor.UserID || (actor.AgentKey != "" && actor.AgentKey != msg.AuthorAgentKey) {
+		return nil, false, ErrConversationForbidden
+	}
+	if msg.Deleted {
+		return msg, false, nil
+	}
+	result, err := tx.Exec(s.q(`UPDATE conversation_messages
+		SET body = '', deleted_at = ?, deleted_by_user_id = ?, deleted_by_agent_key = ?
+		WHERE conversation_id = ? AND seq = ? AND deleted_at IS NULL`),
+		nowNano(), actor.UserID, actor.AgentKey, convID, seq)
+	if err != nil {
+		return nil, false, fmt.Errorf("tombstone message: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("tombstone rows affected: %w", err)
+	}
+	msg, err = s.conversationMessageBySeq(tx, convID, seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, ErrConversationNotFound
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit delete message: %w", err)
+	}
+	return msg, n != 0, nil
+}
+
+// MarkConversationRead advances the member's read marker, capped at last_seq (TASK-4038).
+func (s *Store) MarkConversationRead(actor models.ConversationActor, convID string, toSeq int64) (int64, error) {
+	return s.markConversationSeq(actor, convID, toSeq, "read_seq")
+}
+
+// MarkConversationDelivered advances the delivery marker with the same cap (TASK-4038).
+func (s *Store) MarkConversationDelivered(actor models.ConversationActor, convID string, toSeq int64) (int64, error) {
+	return s.markConversationSeq(actor, convID, toSeq, "delivered_seq")
+}
+
+// column is one of the two fixed marker columns above, never caller input (TASK-4038).
+func (s *Store) markConversationSeq(actor models.ConversationActor, convID string, toSeq int64, column string) (int64, error) {
+	if toSeq < 0 {
+		return 0, invalidConversation("marker must not be negative")
+	}
+	var seq int64
+	err := s.db.QueryRow(s.q(`UPDATE conversation_members SET `+column+` = CASE
+		WHEN ? <= `+column+` THEN `+column+`
+		WHEN ? > (SELECT last_seq FROM conversations WHERE id = ?) THEN (SELECT last_seq FROM conversations WHERE id = ?)
+		ELSE ? END
+		WHERE conversation_id = ? AND user_id = ? AND agent_key = ? RETURNING `+column),
+		toSeq, toSeq, convID, convID, toSeq, convID, actor.UserID, actor.AgentKey).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrConversationNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("mark conversation %s: %w", column, err)
+	}
+	return seq, nil
+}
+
+// TASK-4038: a human and their agents share user_id, so authorship is a pair.
+const conversationUnreadCount = `(SELECT COUNT(*) FROM conversation_messages x
+	WHERE x.conversation_id = member.conversation_id AND x.seq > member.read_seq AND x.deleted_at IS NULL
+	AND NOT (x.author_user_id = member.user_id AND x.author_agent_key = member.agent_key))`
+
+// TASK-4038: each 2a DM has exactly one agent member, whose key labels the inbox row.
+const conversationInboxFrom = ` FROM conversations c
+	JOIN conversation_members member ON member.conversation_id = c.id
+	JOIN conversation_members agent ON agent.conversation_id = c.id AND agent.agent_key <> ''
+	WHERE member.user_id = ? AND member.agent_key = ?`
+
+// UnreadSummary returns only memberships with unread messages and their total (TASK-4038).
+func (s *Store) UnreadSummary(actor models.ConversationActor) ([]models.ConversationUnread, int, error) {
+	rows, err := s.db.Query(s.q(`SELECT conversation_id, number, agent_key, unread, last_seq, read_seq, delivered_seq
+		FROM (SELECT c.id AS conversation_id, c.number, agent.agent_key, `+conversationUnreadCount+` AS unread,
+		c.last_seq, member.read_seq, member.delivered_seq`+conversationInboxFrom+`) inbox
+		WHERE unread > 0 ORDER BY number`), actor.UserID, actor.AgentKey)
+	if err != nil {
+		return nil, 0, fmt.Errorf("unread summary: %w", err)
+	}
+	defer rows.Close()
+	out := []models.ConversationUnread{}
+	total := 0
+	for rows.Next() {
+		var u models.ConversationUnread
+		if err := rows.Scan(&u.ConversationID, &u.Number, &u.AgentKey, &u.Unread, &u.LastSeq, &u.ReadSeq, &u.DeliveredSeq); err != nil {
+			return nil, 0, fmt.Errorf("scan unread summary: %w", err)
+		}
+		out = append(out, u)
+		total += u.Unread
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("unread summary rows: %w", err)
+	}
+	return out, total, nil
+}
+
+// ListConversations returns the member's inbox, with one batched read of the
+// last messages; deleted previews remain tombstones (TASK-4038).
+func (s *Store) ListConversations(actor models.ConversationActor) ([]models.ConversationSummary, error) {
+	rows, err := s.db.Query(s.q(`SELECT c.id, c.owner_user_id, c.number, c.kind, c.title, c.dm_key,
+		c.last_seq, c.created_at, c.updated_at, agent.agent_key, member.read_seq, `+conversationUnreadCount+
+		conversationInboxFrom+` ORDER BY c.updated_at DESC, c.id`), actor.UserID, actor.AgentKey)
+	if err != nil {
+		return nil, fmt.Errorf("list conversations: %w", err)
+	}
+	defer rows.Close()
+	out := []models.ConversationSummary{}
+	indexes := map[string]int{}
+	var pairs []string
+	var args []any
+	for rows.Next() {
+		var c models.ConversationSummary
+		var dmKey sql.NullString
+		var created, updated string
+		if err := rows.Scan(&c.ID, &c.OwnerUserID, &c.Number, &c.Kind, &c.Title, &dmKey, &c.LastSeq,
+			&created, &updated, &c.AgentKey, &c.ReadSeq, &c.Unread); err != nil {
+			return nil, fmt.Errorf("scan conversation summary: %w", err)
+		}
+		c.DMKey = dmKey.String
+		c.CreatedAt, c.UpdatedAt = parseTime(created), parseTime(updated)
+		indexes[c.ID] = len(out)
+		out = append(out, c)
+		if c.LastSeq > 0 {
+			pairs = append(pairs, "(?, ?)")
+			args = append(args, c.ID, c.LastSeq)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list conversation rows: %w", err)
+	}
+	rows.Close()
+	if len(pairs) == 0 {
+		return out, nil
+	}
+	messages, err := s.db.Query(s.q(conversationMessageSelect+`
+		WHERE (m.conversation_id, m.seq) IN (`+strings.Join(pairs, ", ")+`)`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list last messages: %w", err)
+	}
+	defer messages.Close()
+	for messages.Next() {
+		msg, err := scanConversationMessage(messages)
+		if err != nil {
+			return nil, fmt.Errorf("scan last message: %w", err)
+		}
+		out[indexes[msg.ConversationID]].LastMessage = msg
+	}
+	if err := messages.Err(); err != nil {
+		return nil, fmt.Errorf("list last message rows: %w", err)
+	}
+	return out, nil
+}
