@@ -82,7 +82,7 @@ func parseSessionIdentity(r *http.Request) SessionIdentity {
 		worker = ""
 	}
 	return SessionIdentity{
-		Agent:    sanitizeAgentName(r.Header.Get("X-Pad-Agent")),
+		Agent:    normalizeAgentName(r.Header.Get("X-Pad-Agent")),
 		WorkerID: worker,
 		Label:    sanitizeSessionLabel(r.Header.Get(sessionLabelHeader)),
 		PID:      parseSessionPID(r.Header.Get(sessionPIDHeader)),

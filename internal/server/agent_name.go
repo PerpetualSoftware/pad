@@ -12,12 +12,14 @@ const maxAgentNameRunes = 64
 // agentNameFromRequest is the X-Pad-Agent header as stored for the caller's
 // writes and presence. This is a self-description, never a verified identity.
 func agentNameFromRequest(r *http.Request) string {
-	return sanitizeAgentName(r.Header.Get("X-Pad-Agent"))
+	return normalizeAgentName(r.Header.Get("X-Pad-Agent"))
 }
 
-// sanitizeAgentName applies the same hygiene to write attribution and presence:
-// trimmed, control characters removed, at most maxAgentNameRunes runes.
-func sanitizeAgentName(raw string) string {
+// normalizeAgentName is the one stored form of a self-declared agent name,
+// shared by write attribution, presence (TASK-4040) and chat key validation
+// (TASK-4039 r3): trimmed, control characters removed, at most
+// maxAgentNameRunes runes.
+func normalizeAgentName(raw string) string {
 	if raw == "" {
 		return ""
 	}

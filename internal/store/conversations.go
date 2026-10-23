@@ -23,6 +23,8 @@ var (
 	ErrReplyTargetNotFound      = errors.New("reply target not found")
 	ErrReplyTargetDeleted       = errors.New("reply target was deleted")
 	ErrInvalidConversationInput = errors.New("invalid conversation input")
+	// TASK-4039 r1: retain the input-error identity and text for context refusals.
+	ErrContextWorkspaceNotFound = fmt.Errorf("%w: context workspace not found", ErrInvalidConversationInput)
 )
 
 const (
@@ -276,6 +278,35 @@ const conversationOpKeyLookupWithMembership = conversationOpKeyLookup + `
 	AND EXISTS (SELECT 1 FROM conversation_members cm
 		WHERE cm.conversation_id = conversation_messages.conversation_id AND cm.user_id = ? AND cm.agent_key = ?)`
 
+// ReplayConversationMessage returns a current conversation member's own message
+// for opKey. TASK-4039 r1: an identical HTTP retry can lose context workspace
+// access before reaching SendConversationMessage. This read-only lookup takes no
+// row lock and opens no write transaction. Empty or over-long keys are not found.
+func (s *Store) ReplayConversationMessage(actor models.ConversationActor, convID, opKey string) (*models.ConversationMessage, bool, error) {
+	if err := validateConversationID(convID); err != nil {
+		return nil, false, err
+	}
+	if err := validateConversationActor(actor); err != nil {
+		return nil, false, err
+	}
+	if opKey == "" || len(opKey) > maxConversationOpKey {
+		return nil, false, nil
+	}
+	var seq int64
+	err := s.db.QueryRow(s.q(conversationOpKeyLookupWithMembership), convID, actor.UserID, actor.AgentKey, opKey, actor.UserID, actor.AgentKey).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("lookup op_key: %w", err)
+	}
+	msg, err := s.conversationMessageBySeq(s.db, convID, seq)
+	if err != nil {
+		return nil, false, err
+	}
+	return msg, true, nil
+}
+
 func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models.ConversationSendResult, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -312,7 +343,7 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 					return nil, fmt.Errorf("lookup op_key: %w", err)
 				}
 			}
-			return nil, invalidConversation("context workspace not found")
+			return nil, ErrContextWorkspaceNotFound
 		} else if err != nil {
 			return nil, fmt.Errorf("check context workspace: %w", err)
 		}
