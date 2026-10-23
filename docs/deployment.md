@@ -694,10 +694,6 @@ agent acts on twice. Only re-send what the server told you it skipped.
 
 #### Upgrading a multi-instance deployment
 
-Worker activity uses a separate namespaced `activity:<user>:<worker>` key
-(`pad:activity:…`, or `pad:<namespace>:activity:…`) with a 30-minute TTL;
-session renewals do not overwrite or extend it.
-
 `PAD_REDIS_URL` now also backs the **session-presence registry** — the list of
 which agent sessions are connected, which `pad push` and the web UI's "Push to
 agent" picker read to decide where a push goes. Previously that registry was
@@ -734,6 +730,10 @@ used — so a broadcast reporting `0` during the rollout may well have been
 delivered. Re-sending one is a second instruction the receiving agent will act
 on twice. Only re-send a push the server told you it skipped. There is no Redis or database migration; the
 registry's keys are transient and expire on their own TTL.
+
+Worker activity uses a separate namespaced `activity:<user>:<worker>` key
+(`pad:activity:…`, or `pad:<namespace>:activity:…`) with a 30-minute TTL;
+session renewals do not overwrite or extend it.
 
 #### Event ID-space migration (`PAD_EVENTS_PUBLISH_EPOCH`)
 
