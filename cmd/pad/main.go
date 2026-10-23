@@ -182,6 +182,7 @@ func newRootCmd() *cobra.Command {
 		agentCmd(),
 		githubCmd(),
 		roleCmd(),
+		chatCmd(),
 		tagCmd(),
 		webhooksCmd(),
 		tokenCmd(),

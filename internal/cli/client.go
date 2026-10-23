@@ -3353,3 +3353,106 @@ func (c *Client) AcceptMyInvitation(id string) (role, workspaceSlug string, err 
 func (c *Client) DeclineMyInvitation(id string) error {
 	return c.post("/me/invitations/"+url.PathEscape(id)+"/decline", nil, nil)
 }
+
+// --- Global chat ---
+// Keep the wire responses intact so --format json includes refs and future
+// additive fields. The commands decode only the fields they need to render.
+func (c *Client) ListChatConversations() (json.RawMessage, error) {
+	var result json.RawMessage
+	err := c.get("/me/conversations", &result)
+	return result, err
+}
+
+func (c *Client) EnsureChatDM(agent string) (json.RawMessage, error) {
+	var result json.RawMessage
+	err := c.post("/me/conversations", map[string]string{"agent_key": agent}, &result)
+	return result, err
+}
+
+func (c *Client) ChatUnread(agent string) (json.RawMessage, error) {
+	var result json.RawMessage
+	path := "/me/chat/unread"
+	if agent != "" {
+		path += "?agent=" + url.QueryEscape(agent)
+	}
+	err := c.get(path, &result)
+	return result, err
+}
+
+func (c *Client) ChatMessages(number int, since *int64, limit int) (json.RawMessage, error) {
+	q := url.Values{}
+	if since != nil {
+		q.Set("after_seq", strconv.FormatInt(*since, 10))
+	}
+	q.Set("limit", strconv.Itoa(limit))
+	var result json.RawMessage
+	err := c.get(fmt.Sprintf("/me/conversations/%d/messages?%s", number, q.Encode()), &result)
+	return result, err
+}
+
+type ChatSendInput struct {
+	Body             string  `json:"body"`
+	ReplyToSeq       *int64  `json:"reply_to_seq,omitempty"`
+	OpKey            *string `json:"op_key,omitempty"`
+	ContextWorkspace string  `json:"context_workspace,omitempty"`
+}
+
+func (c *Client) SendChatMessage(number int, input ChatSendInput) (json.RawMessage, error) {
+	var result json.RawMessage
+	// The caller owns idempotency. Never generate op_key or retry a send.
+	err := c.post(fmt.Sprintf("/me/conversations/%d/messages", number), input, &result)
+	return result, err
+}
+
+func (c *Client) DeleteChatMessage(number int, seq int64) (json.RawMessage, error) {
+	var result json.RawMessage
+	err := c.deleteWithResult(fmt.Sprintf("/me/conversations/%d/messages/%d", number, seq), &result)
+	return result, err
+}
+
+func (c *Client) ReadChat(number int, seq int64) (json.RawMessage, error) {
+	var result json.RawMessage
+	err := c.post(fmt.Sprintf("/me/conversations/%d/read", number), map[string]int64{"seq": seq}, &result)
+	return result, err
+}
+
+func (c *Client) ResolveChatTarget(target string, ensure bool) (int, error) {
+	n, agent, err := ParseChatTarget(target)
+	if err != nil || agent == "" {
+		return n, err
+	}
+	raw, err := c.ListChatConversations()
+	if err != nil {
+		return 0, err
+	}
+	var list struct {
+		Conversations []struct {
+			Number   int    `json:"number"`
+			AgentKey string `json:"agent_key"`
+		} `json:"conversations"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return 0, err
+	}
+	for _, conv := range list.Conversations {
+		if conv.AgentKey == agent {
+			return conv.Number, nil
+		}
+	}
+	if !ensure {
+		return 0, &APIError{Status: http.StatusNotFound, Code: "not_found", Message: fmt.Sprintf("Conversation for @%s not found", agent)}
+	}
+	raw, err = c.EnsureChatDM(agent)
+	if err != nil {
+		return 0, err
+	}
+	var result struct {
+		Conversation struct {
+			Number int `json:"number"`
+		} `json:"conversation"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return 0, err
+	}
+	return result.Conversation.Number, nil
+}
