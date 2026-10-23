@@ -158,6 +158,17 @@ func TestSendContextWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := s.AddWorkspaceMember(ws.ID, u.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	other := chatUser(t, s, "bob")
+	foreign, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Foreign", OwnerID: other.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddWorkspaceMember(foreign.ID, other.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
 	in := models.ConversationSend{ConversationID: c.ID, Author: actor, Body: "context", ContextWorkspaceID: ws.ID}
 	sent, err := s.SendConversationMessage(in)
 	if err != nil {
@@ -176,18 +187,101 @@ func TestSendContextWorkspace(t *testing.T) {
 	if err := s.DeleteWorkspace(ws.Slug); err != nil {
 		t.Fatal(err)
 	}
+	var unknownError string
 	for _, tc := range []struct{ name, id string }{
 		{"unknown", "unknown-workspace"},
 		{"soft-deleted", ws.ID},
+		{"non-member", foreign.ID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := chatLastSeq(t, s, c.ID)
 			in.ContextWorkspaceID = tc.id
-			if _, err := s.SendConversationMessage(in); !errors.Is(err, ErrInvalidConversationInput) {
+			_, err := s.SendConversationMessage(in)
+			if !errors.Is(err, ErrInvalidConversationInput) {
 				t.Errorf("send: err = %v, want ErrInvalidConversationInput", err)
+			}
+			if tc.name == "unknown" {
+				unknownError = fmt.Sprint(err)
+				if unknownError != "invalid conversation input: context workspace not found" {
+					t.Errorf("unknown workspace error = %q", unknownError)
+				}
+			}
+			if got := fmt.Sprint(err); got != unknownError {
+				t.Errorf("context error = %q, want unknown workspace error %q", got, unknownError)
 			}
 			if got := chatLastSeq(t, s, c.ID); got != before {
 				t.Errorf("last_seq = %d, want %d after refused context", got, before)
+			}
+		})
+	}
+}
+
+func TestActorValidation(t *testing.T) {
+	s := testStore(t)
+	u := chatUser(t, s, "alice")
+	c := chatDM(t, s, u, "claude")
+	chatSend(t, s, c.ID, models.ConversationActor{UserID: u.ID}, "existing message", "", nil)
+
+	methods := []struct {
+		name string
+		call func(models.ConversationActor) error
+	}{
+		{"GetConversation", func(actor models.ConversationActor) error {
+			_, err := s.GetConversation(actor, c.ID)
+			return err
+		}},
+		{"GetConversationByNumber", func(actor models.ConversationActor) error {
+			_, err := s.GetConversationByNumber(actor, c.Number)
+			return err
+		}},
+		{"ListConversationMessages", func(actor models.ConversationActor) error {
+			_, err := s.ListConversationMessages(actor, c.ID, nil, nil, 10)
+			return err
+		}},
+		{"DeleteConversationMessage", func(actor models.ConversationActor) error {
+			_, _, err := s.DeleteConversationMessage(actor, c.ID, 1)
+			return err
+		}},
+		{"MarkConversationRead", func(actor models.ConversationActor) error {
+			_, err := s.MarkConversationRead(actor, c.ID, 1)
+			return err
+		}},
+		{"MarkConversationDelivered", func(actor models.ConversationActor) error {
+			_, err := s.MarkConversationDelivered(actor, c.ID, 1)
+			return err
+		}},
+		{"UnreadSummary", func(actor models.ConversationActor) error {
+			_, _, err := s.UnreadSummary(actor)
+			return err
+		}},
+		{"ListConversations", func(actor models.ConversationActor) error {
+			_, err := s.ListConversations(actor)
+			return err
+		}},
+		{"SendConversationMessage", func(actor models.ConversationActor) error {
+			_, err := s.SendConversationMessage(models.ConversationSend{ConversationID: c.ID, Author: actor, Body: "hello"})
+			return err
+		}},
+	}
+	for _, tc := range []struct {
+		name  string
+		actor models.ConversationActor
+	}{
+		{"empty user id", models.ConversationActor{}},
+		{"NUL user id", models.ConversationActor{UserID: u.ID + "\x00"}},
+		{"invalid UTF-8 user id", models.ConversationActor{UserID: u.ID + "\xff"}},
+		{"NUL agent key", models.ConversationActor{UserID: u.ID, AgentKey: "claude\x00"}},
+		{"invalid UTF-8 agent key", models.ConversationActor{UserID: u.ID, AgentKey: "claude\xff"}},
+		{"control agent key", models.ConversationActor{UserID: u.ID, AgentKey: "claude\n"}},
+		{"long agent key", models.ConversationActor{UserID: u.ID, AgentKey: strings.Repeat("a", 129)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, method := range methods {
+				t.Run(method.name, func(t *testing.T) {
+					if err := method.call(tc.actor); !errors.Is(err, ErrInvalidConversationInput) {
+						t.Errorf("err = %v, want ErrInvalidConversationInput", err)
+					}
+				})
 			}
 		})
 	}
@@ -941,6 +1035,9 @@ func TestPurgeWorkspaceLeavesChatMessages(t *testing.T) {
 	actor := models.ConversationActor{UserID: u.ID}
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Context", OwnerID: u.ID})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddWorkspaceMember(ws.ID, u.ID, "owner"); err != nil {
 		t.Fatal(err)
 	}
 	in := models.ConversationSend{ConversationID: c.ID, Author: actor, Body: "workspace context", ContextWorkspaceID: ws.ID}

@@ -71,6 +71,17 @@ func validateConversationAgentKey(key string, allowEmpty bool) error {
 	return nil
 }
 
+// TASK-4038: reject malformed actor identities before they reach either SQL driver.
+func validateConversationActor(actor models.ConversationActor) error {
+	if actor.UserID == "" {
+		return invalidConversation("user id is required")
+	}
+	if strings.ContainsRune(actor.UserID, 0) || !utf8.ValidString(actor.UserID) {
+		return invalidConversation("user id must be valid UTF-8 without NUL bytes")
+	}
+	return validateConversationAgentKey(actor.AgentKey, true)
+}
+
 // EnsureAgentDM returns the owner's direct conversation with the agent,
 // creating it (and its two member rows) on first use. created reports whether
 // this call made it. Idempotent on dm_key.
@@ -159,6 +170,9 @@ func scanConversation(row rowScanner) (*models.Conversation, error) {
 
 // GetConversation returns a conversation the actor is a member of.
 func (s *Store) GetConversation(actor models.ConversationActor, id string) (*models.Conversation, error) {
+	if err := validateConversationActor(actor); err != nil {
+		return nil, err
+	}
 	c, err := scanConversation(s.db.QueryRow(s.q(conversationSelect+` WHERE c.id = ? AND `+conversationMemberOf), id, actor.UserID, actor.AgentKey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrConversationNotFound
@@ -172,6 +186,9 @@ func (s *Store) GetConversation(actor models.ConversationActor, id string) (*mod
 // GetConversationByNumber resolves a number in the actor's own numbering
 // (numbers are per owner; 2a conversations are all the actor's own).
 func (s *Store) GetConversationByNumber(actor models.ConversationActor, number int) (*models.Conversation, error) {
+	if err := validateConversationActor(actor); err != nil {
+		return nil, err
+	}
 	c, err := scanConversation(s.db.QueryRow(s.q(conversationSelect+` WHERE c.owner_user_id = ? AND c.number = ? AND `+conversationMemberOf), actor.UserID, number, actor.UserID, actor.AgentKey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrConversationNotFound
@@ -188,6 +205,9 @@ func (s *Store) GetConversationByNumber(actor models.ConversationActor, number i
 // same author in the same conversation is rolled back (no seq is spent) and
 // returns the stored message with Replayed set, whatever body it carried.
 func (s *Store) SendConversationMessage(in models.ConversationSend) (*models.ConversationSendResult, error) {
+	if err := validateConversationActor(in.Author); err != nil {
+		return nil, err
+	}
 	for _, field := range []struct{ name, value string }{
 		{"body", in.Body},
 		{"source", in.Source},
@@ -212,12 +232,6 @@ func (s *Store) SendConversationMessage(in models.ConversationSend) (*models.Con
 	}
 	if len(in.ContextWorkspaceID) > maxConversationContextID {
 		return nil, invalidConversation("context workspace id is longer than %d bytes", maxConversationContextID)
-	}
-	if in.Author.UserID == "" {
-		return nil, invalidConversation("author is required")
-	}
-	if err := validateConversationAgentKey(in.Author.AgentKey, true); err != nil {
-		return nil, err
 	}
 	if in.ReplyToSeq != nil && *in.ReplyToSeq < 1 {
 		return nil, invalidConversation("reply_to_seq must be at least 1")
@@ -244,14 +258,17 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 	defer tx.Rollback()
 
 	if in.ContextWorkspaceID != "" {
-		// TASK-4038: lock the workspace before chat rows, matching PurgeWorkspaceData.
+		// TASK-4038: join the author's membership and lock only the workspace
+		// before chat rows, matching PurgeWorkspaceData's lock order.
 		// Otherwise the INSERT's FK lock can deadlock with the purge's ON DELETE SET NULL.
-		query := `SELECT 1 FROM workspaces WHERE id = ? AND deleted_at IS NULL`
+		query := `SELECT 1 FROM workspaces w
+			JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?
+			WHERE w.id = ? AND w.deleted_at IS NULL`
 		if s.dialect.Driver() == DriverPostgres {
-			query += ` FOR KEY SHARE`
+			query += ` FOR KEY SHARE OF w`
 		}
 		var exists int
-		if err := tx.QueryRow(s.q(query), in.ContextWorkspaceID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRow(s.q(query), in.Author.UserID, in.ContextWorkspaceID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
 			return nil, invalidConversation("context workspace not found")
 		} else if err != nil {
 			return nil, fmt.Errorf("check context workspace: %w", err)
@@ -423,6 +440,9 @@ func (s *Store) conversationMessageBySeq(q Queryer, convID string, seq int64) (*
 // messages; before returns the newest limit below that seq; after returns the
 // oldest limit above it. Both cursors are refused.
 func (s *Store) ListConversationMessages(actor models.ConversationActor, convID string, before, after *int64, limit int) (*models.ConversationPage, error) {
+	if err := validateConversationActor(actor); err != nil {
+		return nil, err
+	}
 	if before != nil && after != nil {
 		return nil, invalidConversation("before and after are mutually exclusive")
 	}
@@ -501,6 +521,9 @@ func (s *Store) ListConversationMessages(actor models.ConversationActor, convID 
 // DeleteConversationMessage tombstones an authorized member's message while
 // retaining its row and sequence, including on repeated deletes (TASK-4038).
 func (s *Store) DeleteConversationMessage(actor models.ConversationActor, convID string, seq int64) (*models.ConversationMessage, bool, error) {
+	if err := validateConversationActor(actor); err != nil {
+		return nil, false, err
+	}
 	if seq < 1 {
 		return nil, false, invalidConversation("seq must be at least 1")
 	}
@@ -552,11 +575,17 @@ func (s *Store) DeleteConversationMessage(actor models.ConversationActor, convID
 
 // MarkConversationRead advances the member's read marker, capped at last_seq (TASK-4038).
 func (s *Store) MarkConversationRead(actor models.ConversationActor, convID string, toSeq int64) (int64, error) {
+	if err := validateConversationActor(actor); err != nil {
+		return 0, err
+	}
 	return s.markConversationSeq(actor, convID, toSeq, "read_seq")
 }
 
 // MarkConversationDelivered advances the delivery marker with the same cap (TASK-4038).
 func (s *Store) MarkConversationDelivered(actor models.ConversationActor, convID string, toSeq int64) (int64, error) {
+	if err := validateConversationActor(actor); err != nil {
+		return 0, err
+	}
 	return s.markConversationSeq(actor, convID, toSeq, "delivered_seq")
 }
 
@@ -594,6 +623,9 @@ const conversationInboxFrom = ` FROM conversations c
 
 // UnreadSummary returns only memberships with unread messages and their total (TASK-4038).
 func (s *Store) UnreadSummary(actor models.ConversationActor) ([]models.ConversationUnread, int, error) {
+	if err := validateConversationActor(actor); err != nil {
+		return nil, 0, err
+	}
 	rows, err := s.db.Query(s.q(`SELECT conversation_id, number, agent_key, unread, last_seq, read_seq, delivered_seq
 		FROM (SELECT c.id AS conversation_id, c.number, agent.agent_key, `+conversationUnreadCount+` AS unread,
 		c.last_seq, member.read_seq, member.delivered_seq`+conversationInboxFrom+`) inbox
@@ -621,6 +653,9 @@ func (s *Store) UnreadSummary(actor models.ConversationActor) ([]models.Conversa
 // ListConversations returns the member's inbox, with one batched read of the
 // last messages; deleted previews remain tombstones (TASK-4038).
 func (s *Store) ListConversations(actor models.ConversationActor) ([]models.ConversationSummary, error) {
+	if err := validateConversationActor(actor); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.Query(s.q(`SELECT c.id, c.owner_user_id, c.number, c.kind, c.title, c.dm_key,
 		c.last_seq, c.created_at, c.updated_at, agent.agent_key, member.read_seq, `+conversationUnreadCount+
 		conversationInboxFrom+` ORDER BY c.updated_at DESC, c.id`), actor.UserID, actor.AgentKey)
