@@ -12,9 +12,12 @@ import (
 func TestPushDispatch_ReregisterKeepsPendingRowDeliverable(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)
-		// The device was first registered 2h ago; the row is 1h old.
+		// The device was first registered 2h ago; the row is 30m old, after that
+		// registration and well inside pushExpireAfter. A row aged exactly
+		// pushExpireAfter expired whenever a second boundary fell between the
+		// insert and the tick, since both run on the real clock (BUG-4033).
 		f.exec(`UPDATE push_devices SET created_at = ?, updated_at = ? WHERE id = ?`, f.ts(2*time.Hour), f.ts(2*time.Hour), f.devID)
-		id := f.row("comment", func(o *rowOpt) { o.age = time.Hour })
+		id := f.row("comment", func(o *rowOpt) { o.age = 30 * time.Minute })
 		d, err := srv.store.RegisterPushDevice(f.bob.ID, f.devSess, "conn-again", "android", "tok-bob-"+fmt.Sprint(f.n), "2")
 		must(t, err)
 		if d.ID != f.devID {
