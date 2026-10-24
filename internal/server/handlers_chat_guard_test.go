@@ -8,12 +8,12 @@ import (
 	"go/token"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
-	"regexp"
 )
 
 // TASK-4041: chat has no kernel event, activity, outbox or webhook effects.
@@ -164,34 +164,65 @@ func checkChatReplayPublicationGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// TASK-4041: replay must skip the notifier itself. Today's store also
-	// returns no replay recipients, so bus assertions alone cannot pin this.
+	// TASK-4041, CONVE-12: both the !Replayed guard and the store's empty
+	// replay recipients suppress publication. They produce the same end state,
+	// so no bus assertion can distinguish them; the AST pins the guard itself.
+	var handler *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "handleSendChatMessage" {
+			handler = fn
+		}
+	}
+	if handler == nil || handler.Body == nil {
+		t.Fatal("missing handleSendChatMessage")
+	}
+	var sendEnd, errorReturnEnd token.Pos
 	guarded := false
-	ast.Inspect(file, func(n ast.Node) bool {
-		branch, ok := n.(*ast.IfStmt)
-		if !ok {
-			return true
+	for _, stmt := range handler.Body.List {
+		if assign, ok := stmt.(*ast.AssignStmt); ok {
+			for _, rhs := range assign.Rhs {
+				if call, ok := rhs.(*ast.CallExpr); ok {
+					if target, ok := call.Fun.(*ast.SelectorExpr); ok && target.Sel.Name == "SendConversationMessage" {
+						sendEnd = assign.End()
+					}
+				}
+			}
+		}
+		branch, ok := stmt.(*ast.IfStmt)
+		if !ok || sendEnd == token.NoPos || branch.Pos() <= sendEnd {
+			continue
+		}
+		if cond, ok := branch.Cond.(*ast.BinaryExpr); ok && cond.Op == token.NEQ {
+			left, lok := cond.X.(*ast.Ident)
+			right, rok := cond.Y.(*ast.Ident)
+			if lok && rok && left.Name == "err" && right.Name == "nil" && len(branch.Body.List) > 0 {
+				if _, ok := branch.Body.List[len(branch.Body.List)-1].(*ast.ReturnStmt); ok {
+					errorReturnEnd = branch.End()
+				}
+			}
 		}
 		negation, ok := branch.Cond.(*ast.UnaryExpr)
-		if !ok || negation.Op != token.NOT {
-			return true
+		if !ok || negation.Op != token.NOT || errorReturnEnd == token.NoPos || branch.Pos() <= errorReturnEnd {
+			continue
 		}
 		field, ok := negation.X.(*ast.SelectorExpr)
 		if !ok || field.Sel.Name != "Replayed" {
-			return true
+			continue
+		}
+		result, ok := field.X.(*ast.Ident)
+		if !ok || result.Name != "result" {
+			continue
 		}
 		ast.Inspect(branch.Body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if ok {
+			if call, ok := n.(*ast.CallExpr); ok {
 				if target, ok := call.Fun.(*ast.SelectorExpr); ok && target.Sel.Name == "notifyChatMessage" {
 					guarded = true
 				}
 			}
 			return true
 		})
-		return true
-	})
+	}
 	if !guarded {
-		t.Fatal("chat publication must be guarded by !result.Replayed")
+		t.Fatal("handleSendChatMessage must guard publication with !result.Replayed after the SendConversationMessage error return")
 	}
 }

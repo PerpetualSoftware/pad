@@ -74,23 +74,30 @@ func TestChatKindNotWatchMatched(t *testing.T) {
 	}
 }
 func TestChatPublishRefOnlyNoBody(t *testing.T) {
-	f := newChatFixture(t)
-	p := f.ensure("rook")
-	mark := f.mark()
-	body := strings.Repeat("界", 120) + "SECRET-BODY-xyz"
-	f.must(f.request("POST", p+"/messages", "", map[string]any{"body": body}), 201, "send")
-	ns := f.srv.watchEvents.EventsSince(mark)
-	if len(ns) != 1 {
-		t.Fatalf("notices=%v", ns)
-	}
-	n := ns[0]
-	b, _ := json.Marshal(n)
-	wire, _ := json.Marshal(watchEventPayloadFor(nil, n))
-	if strings.Contains(string(b)+string(wire), "SECRET-BODY-xyz") || len([]rune(n.Excerpt)) > 100 || n.Excerpt != models.QuoteExcerpt(body) || n.Summary != "" {
-		t.Fatalf("body leak: %s %s", b, wire)
-	}
-	if n.ConversationID == "" || n.ConversationNumber != 1 || n.MessageID == "" || n.MessageSeq != 1 || n.AuthorUserID != f.owner.ID || n.AuthorAgentKey != "" || n.TargetUserID != f.owner.ID || n.TargetAgentKey != "rook" {
-		t.Fatalf("bad ref: %+v", n)
+	for _, tc := range []struct{ name, body string }{
+		{"rune-bound", strings.Repeat("界", 120) + "SECRET-BODY-xyz"},
+		{"first-line", "public preview\nSECOND-LINE-SECRET"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := tc.body
+			f := newChatFixture(t)
+			p := f.ensure("rook")
+			mark := f.mark()
+			f.must(f.request("POST", p+"/messages", "", map[string]any{"body": body}), 201, "send")
+			ns := f.srv.watchEvents.EventsSince(mark)
+			if len(ns) != 1 {
+				t.Fatalf("notices=%v", ns)
+			}
+			n := ns[0]
+			b, _ := json.Marshal(n)
+			wire, _ := json.Marshal(watchEventPayloadFor(nil, n))
+			if strings.Contains(string(b)+string(wire), "SECRET-BODY-xyz") || strings.Contains(string(b)+string(wire), "SECOND-LINE-SECRET") || len([]rune(n.Excerpt)) > 100 || n.Excerpt != models.QuoteExcerpt(body) || n.Summary != "" {
+				t.Fatalf("body leak: %s %s", b, wire)
+			}
+			if n.ConversationID == "" || n.ConversationNumber != 1 || n.MessageID == "" || n.MessageSeq != 1 || n.AuthorUserID != f.owner.ID || n.AuthorAgentKey != "" || n.TargetUserID != f.owner.ID || n.TargetAgentKey != "rook" {
+				t.Fatalf("bad ref: %+v", n)
+			}
+		})
 	}
 }
 func TestChatPublishSkipsAuthorAndHuman(t *testing.T) {
@@ -214,14 +221,31 @@ func TestChatDirectionNotSettableFromServer(t *testing.T) {
 	defer h.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch := connectWatchStreamWithHeadersAndQuery(ctx, t, h.URL, f.ownerTok, map[string]string{"X-Pad-Agent": "rook", "X-Pad-Direction": "true"}, "armed=true&direction=true&accept_instructions=true")
-	waitForWatchEvent(t, ch, time.Second)
+	plain := connectWatchStreamWithHeadersAndQuery(ctx, t, h.URL, f.ownerTok, map[string]string{"X-Pad-Agent": "rook"}, "chat=true&armed=true")
+	shaped := connectWatchStreamWithHeadersAndQuery(ctx, t, h.URL, f.ownerTok, map[string]string{"X-Pad-Agent": "rook", "X-Pad-Direction": "true"}, "chat=true&armed=true&direction=true&framing=direction&accept_instructions=true&instruction=true")
+	waitForWatchEvent(t, plain, time.Second)
+	waitForWatchEvent(t, shaped, time.Second)
 	p := f.ensure("rook")
 	f.must(f.request("POST", p+"/messages", "", map[string]any{"body": "hi"}), 201, "send")
-	select {
-	case e := <-ch:
-		t.Fatalf("unexpected chat: %+v", e)
-	case <-time.After(60 * time.Millisecond):
+	payloads := make([]map[string]any, 2)
+	for i, ch := range []<-chan watchSSEEvent{plain, shaped} {
+		e := waitForWatchEvent(t, ch, time.Second)
+		if err := json.Unmarshal([]byte(e.Data), &payloads[i]); err != nil {
+			t.Fatal(err)
+		}
+		if payloads[i]["kind"] != "chat" {
+			t.Fatalf("expected delivered chat: %+v", e)
+		}
+		for key, value := range payloads[i] {
+			text, _ := value.(string)
+			if re.MatchString(key) || re.MatchString(text) {
+				t.Fatalf("direction-shaped payload: %s", e.Data)
+			}
+		}
+	}
+	// The same event must arrive unchanged, including the exact key set.
+	if !reflect.DeepEqual(payloads[0], payloads[1]) {
+		t.Fatalf("query/header changed chat payload: plain=%v shaped=%v", payloads[0], payloads[1])
 	}
 }
 func TestWatchStreamChatPayloadShape(t *testing.T) {
@@ -269,5 +293,62 @@ func TestChatStreamDeniedWhenUserDisabled(t *testing.T) {
 	}
 	if cache.delivers(nil, "u", "", watchStreamPrefs{armed: true, chat: true, agentKey: "rook"}, chatNotice()) {
 		t.Fatal("disabled delivered")
+	}
+}
+
+// TASK-4041: chat-only streams have no workspace visibility lookup to refresh
+// identity incidentally. Their reval tick must reset denial even on reload errors.
+func TestChatStreamTickDeniesAndRecovers(t *testing.T) {
+	f := newChatFixture(t)
+	tick := make(chan time.Time)
+	f.srv.watchRevalTickOverride.Store(&tick)
+	h := httptest.NewServer(f.srv)
+	defer h.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStreamWithHeadersAndQuery(ctx, t, h.URL, f.ownerTok, map[string]string{"X-Pad-Agent": "rook"}, "chat=true&armed=true")
+	waitForWatchEvent(t, ch, time.Second)
+	n := chatNotice()
+	n.TargetUserID = f.owner.ID
+	publish := func() { f.srv.publishWatchNotification(n) }
+	publish()
+	if e := waitForWatchEvent(t, ch, time.Second); !strings.Contains(e.Data, `"kind":"chat"`) {
+		t.Fatal(e)
+	}
+	processed := make(chan struct{}, 1)
+	fault := func() error { processed <- struct{}{}; return errFakeWatchListReload }
+	f.srv.watchPredicatesLoadFault.Store(&fault)
+	driveTick := func() {
+		t.Helper()
+		select {
+		case tick <- time.Time{}:
+		case <-time.After(3 * time.Second):
+			t.Fatal("tick not received")
+		}
+		select {
+		case <-processed:
+		case <-time.After(3 * time.Second):
+			t.Fatal("tick not processed; stream closed or watch reload skipped")
+		}
+	}
+	// Preserve the credential so closure on revocation cannot mask denial.
+	if err := f.srv.store.DisableUserLeavingCredentialsForTesting(f.owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	driveTick()
+	publish()
+	select {
+	case e := <-ch:
+		t.Fatalf("disabled chat-only stream delivered or closed: %+v", e)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := f.srv.store.EnableUser(f.owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	driveTick()
+	n.MessageID = "after-enable"
+	publish()
+	if e := waitForWatchEvent(t, ch, time.Second); !strings.Contains(e.Data, `"message_id":"after-enable"`) {
+		t.Fatal(e)
 	}
 }

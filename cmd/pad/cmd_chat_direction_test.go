@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/PerpetualSoftware/pad/internal/cli"
-	"github.com/PerpetualSoftware/pad/internal/mcp"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
+	"github.com/PerpetualSoftware/pad/internal/mcp"
 )
 
 func chatSessionEnv(t *testing.T) {
@@ -114,26 +116,67 @@ func TestSessionResetClearsDirection(t *testing.T) {
 	}
 }
 func TestChatArmHasNoMCPPath(t *testing.T) {
-	for _, tool := range mcp.Catalog {
-		if tool.Name == "pad_chat" {
-			for _, action := range []string{"arm", "disarm"} {
-				if _, ok := tool.Actions[action]; ok {
-					t.Fatalf("MCP exposes %s.%s", tool.Name, action)
-				}
-			}
+	root := newRootCmd()
+	doc := cmdhelp.Build(root, root, cmdhelp.Options{Binary: "pad", MaxDepth: -1})
+	for _, path := range []string{"chat arm", "chat disarm"} {
+		if _, ok := doc.Commands[path]; ok {
+			t.Errorf("unwired constructor is exposed as a command: %s", path)
 		}
 	}
-	paths, err := filepath.Glob("../../internal/mcp/catalog*.go")
-	if err != nil {
+	server := mcp.NewServer(mcp.Options{})
+	if _, err := mcp.Register(server.MCP(), mcp.RegistryOptions{
+		Doc: doc, Workspace: mcp.NewSharedWorkspaceState(), Dispatcher: &recordingDispatcher{},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range paths {
-		b, err := os.ReadFile(p)
+	tools := server.MCP().ListTools()
+	if len(tools) == 0 {
+		t.Fatal("MCP projection must enumerate real tools")
+	}
+	for name, tool := range tools {
+		if name != "pad_chat" {
+			continue
+		}
+		// Inspect the schema actually advertised to MCP, rather than source
+		// strings or a catalog entry that may not be registered.
+		data, err := json.Marshal(tool.Tool.InputSchema.Properties["action"])
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(b), "accept-instructions") || strings.Contains(string(b), "chat arm") {
-			t.Fatal(p)
+		var action struct {
+			Enum []string `json:"enum"`
+		}
+		if err := json.Unmarshal(data, &action); err != nil {
+			t.Fatal(err)
+		}
+		for _, value := range action.Enum {
+			if value == "arm" || value == "disarm" {
+				t.Errorf("MCP exposes %s.%s", name, value)
+			}
+		}
+	}
+	// Also inspect the catalog's public tool/action descriptor projection.
+	data, err := mcp.ToolSurfaceJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var surface struct {
+		Tools []struct {
+			Name    string
+			Actions []struct{ Name string }
+		}
+	}
+	if err := json.Unmarshal(data, &surface); err != nil {
+		t.Fatal(err)
+	}
+	if len(surface.Tools) == 0 {
+		t.Fatal("empty catalog tool projection")
+	}
+	for _, tool := range surface.Tools {
+		for _, action := range tool.Actions {
+			if tool.Name == "pad_chat" && (action.Name == "arm" || action.Name == "disarm") {
+				t.Errorf("tool surface exposes %s.%s", tool.Name, action.Name)
+			}
 		}
 	}
 }

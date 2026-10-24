@@ -42,23 +42,40 @@ func TestChatDirectionFileKeyedBySocketOnly(t *testing.T) {
 	if !ChatDirectionOn() {
 		t.Fatal("not on")
 	}
-	cwd, _ := os.Getwd()
-	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
-	if _, err := WriteArmState(); err != nil {
+	cwd, err := os.Getwd()
+	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := os.ReadFile(path)
-	dir := filepath.Dir(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	// A live, well-formed cwd file with the CURRENT socket must not be a
+	// fallback when the socket-keyed file is missing (TASK-4041).
 	for _, name := range []string{"chat-direction-dir-" + shortHash(cwd) + ".json", "chat-direction-repo-" + shortHash(cwd) + ".json"} {
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(filepath.Dir(path), name), data, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
+	var planted ArmState
+	if err := json.Unmarshal(data, &planted); err != nil {
+		t.Fatal(err)
+	}
+	if !armStateWellFormed(&planted) || armStateOwnerVerdict(&planted) != LivenessAlive || planted.Socket != socket || SessionArmState() != LocalArmOn {
+		t.Fatal("cwd fixture must pass every gate except its file key")
+	}
+	if ChatDirectionOn() {
+		t.Fatal("cwd fallback with socket set")
+	}
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
 	if _, err := WriteChatDirection(); err == nil {
 		t.Fatal("headless write")
 	}
 	if ChatDirectionOn() {
-		t.Fatal("cwd fallback")
+		t.Fatal("cwd fallback without socket")
 	}
 	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", socket+"other")
 	if ChatDirectionOn() {
@@ -137,16 +154,27 @@ func TestPadTomlNeverImpliesDirection(t *testing.T) {
 	}
 	for _, s := range []string{"LoadPadToml", "ResolveAutoArm", "auto_arm"} {
 		if strings.Contains(string(src), s) {
-			t.Fatalf("forbidden dependency %s", s)
+			t.Errorf("forbidden dependency %s", s)
 		}
 	}
 	directionEnv(t)
-	os.WriteFile(".pad.toml", []byte("workspace = 'test'\n[push]\nauto_arm = true\n"), 0600)
-	if ChatDirectionOn() {
-		t.Fatal("repo implied direction")
+	if err := os.WriteFile(".pad.toml", []byte("workspace = 'test'\n[push]\nauto_arm = true\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	WriteChatDirection()
+	if _, err := WriteArmState(); err != nil {
+		t.Fatal(err)
+	}
+	if !ResolveAnnouncedArmed() || SessionArmState() != LocalArmOn {
+		t.Fatal("delivery must be armed before checking direction")
+	}
+	path, err := chatDirectionPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("direction file must be absent: %v", err)
+	}
 	if ChatDirectionOn() {
-		t.Fatal("repo arm substituted for explicit arm")
+		t.Fatal("repo implied direction with delivery armed and no direction file")
 	}
 }
