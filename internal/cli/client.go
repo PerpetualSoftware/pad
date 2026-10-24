@@ -954,11 +954,26 @@ func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID st
 
 // MarkChatDelivered acknowledges only messages printed by this monitor (TASK-4041).
 func (c *Client) MarkChatDelivered(number int, seq int64) error {
+	return c.MarkChatDeliveredContext(context.Background(), number, seq)
+}
+
+// MarkChatDeliveredContext bounds the monitor acknowledgement by its context.
+func (c *Client) MarkChatDeliveredContext(ctx context.Context, number int, seq int64) error {
 	data, err := json.Marshal(map[string]int64{"seq": seq})
 	if err != nil {
 		return err
 	}
-	return c.PostRaw(fmt.Sprintf("/me/conversations/%d/delivered", number), data, nil)
+	req, err := c.newRequest("POST", fmt.Sprintf("/me/conversations/%d/delivered", number), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return c.handleResponse(resp, nil)
 }
 
 // maxHeaderLabelLen bounds the label the client is willing to put on
@@ -3449,23 +3464,33 @@ func (c *Client) EnsureChatDM(agent string) (json.RawMessage, error) {
 }
 
 func (c *Client) ChatUnread(agent string) (json.RawMessage, error) {
+	return c.ChatUnreadContext(context.Background(), agent)
+}
+
+// ChatUnreadContext shares the summary deadline with identity resolution.
+func (c *Client) ChatUnreadContext(ctx context.Context, agent string) (json.RawMessage, error) {
 	var result json.RawMessage
 	path := "/me/chat/unread"
 	if agent != "" {
 		path += "?agent=" + url.QueryEscape(agent)
 	}
-	err := c.get(path, &result)
+	err := c.getContext(ctx, path, &result)
 	return result, err
 }
 
 func (c *Client) ChatMessages(number int, since *int64, limit int) (json.RawMessage, error) {
+	return c.ChatMessagesContext(context.Background(), number, since, limit)
+}
+
+// ChatMessagesContext bounds gap fills, including reading the response body.
+func (c *Client) ChatMessagesContext(ctx context.Context, number int, since *int64, limit int) (json.RawMessage, error) {
 	q := url.Values{}
 	if since != nil {
 		q.Set("after_seq", strconv.FormatInt(*since, 10))
 	}
 	q.Set("limit", strconv.Itoa(limit))
 	var result json.RawMessage
-	err := c.get(fmt.Sprintf("/me/conversations/%d/messages?%s", number, q.Encode()), &result)
+	err := c.getContext(ctx, fmt.Sprintf("/me/conversations/%d/messages?%s", number, q.Encode()), &result)
 	return result, err
 }
 

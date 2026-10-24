@@ -157,7 +157,7 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 					if change == "profile-once" && connections == 1 {
 						// The failed connect identity lookup now backs off globally. Deliver
 						// a fresh event after expiry to exercise recovery on this connection.
-						if sleepOrDone(ctx, monitorChatFloorBackoff) {
+						if sleepOrDone(ctx, monitorChatFloorBackoff+time.Second) {
 							fmt.Fprint(w, event)
 							w.(http.Flusher).Flush()
 						}

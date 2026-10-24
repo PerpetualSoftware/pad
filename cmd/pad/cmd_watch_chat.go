@@ -14,9 +14,9 @@ import (
 
 type chatSink interface {
 	conversationFloor(ctx context.Context, number int) (int64, error)
-	messagesAfter(number int, after int64, limit int) ([]monitorChatMessage, error)
-	delivered(number int, seq int64) error
-	unread(agent string) (monitorChatUnread, error)
+	messagesAfter(ctx context.Context, number int, after int64, limit int) ([]monitorChatMessage, error)
+	delivered(ctx context.Context, number int, seq int64) error
+	unread(ctx context.Context, agent string) (monitorChatUnread, error)
 }
 
 type monitorChatMessage struct {
@@ -32,8 +32,8 @@ type monitorChatMessage struct {
 
 type httpChatSink struct{ client *cli.Client }
 
-func (s httpChatSink) messagesAfter(number int, after int64, limit int) ([]monitorChatMessage, error) {
-	data, err := s.client.ChatMessages(number, &after, limit)
+func (s httpChatSink) messagesAfter(ctx context.Context, number int, after int64, limit int) ([]monitorChatMessage, error) {
+	data, err := s.client.ChatMessagesContext(ctx, number, &after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -62,8 +62,8 @@ func (s httpChatSink) conversationFloor(ctx context.Context, number int) (int64,
 	return *out.DeliveredSeq, nil
 }
 
-func (s httpChatSink) delivered(number int, seq int64) error {
-	return s.client.MarkChatDelivered(number, seq)
+func (s httpChatSink) delivered(ctx context.Context, number int, seq int64) error {
+	return s.client.MarkChatDeliveredContext(ctx, number, seq)
 }
 
 // The unread summary supplies only the connection-time unread pointer.
@@ -72,8 +72,8 @@ type monitorChatUnread struct {
 	Total         int                         `json:"total"`
 }
 
-func (s httpChatSink) unread(agent string) (monitorChatUnread, error) {
-	data, err := s.client.ChatUnread(agent)
+func (s httpChatSink) unread(ctx context.Context, agent string) (monitorChatUnread, error) {
+	data, err := s.client.ChatUnreadContext(ctx, agent)
 	if err != nil {
 		return monitorChatUnread{}, err
 	}
@@ -114,6 +114,9 @@ func formatChatLine(m monitorChatMessage, direction bool) string {
 // seenChat is only the bounded event-dedupe memory across reconnects.
 var seenChat = newRecentSet(256, 10*time.Minute)
 
+// Stream HTTP rule: every chat HTTP call on the stream goroutine is bounded
+// at 3s; any failure backs that conversation off 10s (identity failure backs
+// off globally). The unread summary has no conversation to back off.
 const (
 	monitorChatFloorTimeout = 3 * time.Second
 	monitorChatFloorBackoff = 10 * time.Second
@@ -160,7 +163,11 @@ func (c *monitorChat) acknowledge(number int) {
 	// Invariant: an ack only ever sends a value at or below local delivered.
 	// A fill-cursor seed is not delivery; only handled rows advance delivered.
 	if seq := c.delivered[number]; seq > 0 {
-		_ = c.sink.delivered(number, seq)
+		ctx, cancel := context.WithTimeout(context.Background(), c.floorTimeout)
+		defer cancel()
+		if err := c.sink.delivered(ctx, number, seq); err != nil || ctx.Err() != nil {
+			c.retryAfter[number] = c.now().Add(monitorChatFloorBackoff)
+		}
 	}
 }
 
@@ -189,6 +196,11 @@ func (c *monitorChat) retract(w io.Writer, p watchStreamPayload) bool {
 
 func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	if !cli.ResolveAnnouncedArmed() || p.MessageID == "" || p.Conversation <= 0 || p.MessageSeq <= 0 {
+		return
+	}
+	// Gate the entire fill path, including dedupe re-ack and existing floors.
+	now := c.now()
+	if now.Before(c.identityRetryAfter) || now.Before(c.retryAfter[p.Conversation]) {
 		return
 	}
 	if _, fetched := c.last[p.Conversation]; !fetched {
@@ -229,8 +241,12 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 			c.acknowledge(p.Conversation)
 		}
 	}()
-	messages, err := c.sink.messagesAfter(p.Conversation, after, limit)
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), c.floorTimeout)
+	messages, err := c.sink.messagesAfter(ctx, p.Conversation, after, limit)
+	ctxErr := ctx.Err()
+	cancel()
+	if err != nil || ctxErr != nil {
+		c.retryAfter[p.Conversation] = c.now().Add(monitorChatFloorBackoff)
 		return
 	}
 	for _, m := range messages {
@@ -328,23 +344,27 @@ func (c *monitorChat) attemptFloor(number int) bool {
 
 // The synchronous summary supplies identity and an unread line only.
 type monitorChatSummary struct {
-	identity monitorChatIdentity
-	sink     chatSink
-	unread   monitorChatUnread
-	ok       bool
+	identity       monitorChatIdentity
+	sink           chatSink
+	unread         monitorChatUnread
+	ok             bool
+	identityFailed bool
 }
 
-func readMonitorChatSummary(sink chatSink, identity monitorChatIdentity, resolve func(context.Context) (monitorChatIdentity, chatSink), agent string) monitorChatSummary {
+func readMonitorChatSummary(ctx context.Context, sink chatSink, identity monitorChatIdentity, resolve func(context.Context) (monitorChatIdentity, chatSink), agent string) monitorChatSummary {
 	if resolve != nil {
-		identity, sink = resolve(context.Background())
+		identity, sink = resolve(ctx)
+		if sink == nil || ctx.Err() != nil {
+			return monitorChatSummary{identityFailed: true}
+		}
 	}
 	result := monitorChatSummary{identity: identity, sink: sink}
 	if sink == nil {
 		return result
 	}
 	var err error
-	result.unread, err = sink.unread(agent)
-	result.ok = err == nil
+	result.unread, err = sink.unread(ctx, agent)
+	result.ok = err == nil && ctx.Err() == nil
 	return result
 }
 
@@ -352,7 +372,13 @@ func (c *monitorChat) summary(w io.Writer) bool {
 	if !cli.ResolveAnnouncedArmed() || (c.resolveIdentity != nil && c.now().Before(c.identityRetryAfter)) {
 		return false
 	}
-	return c.applySummary(w, readMonitorChatSummary(c.sink, c.identity, c.resolveIdentity, cli.ResolveAgentName()))
+	ctx, cancel := context.WithTimeout(context.Background(), c.floorTimeout)
+	defer cancel()
+	result := readMonitorChatSummary(ctx, c.sink, c.identity, c.resolveIdentity, cli.ResolveAgentName())
+	if result.identityFailed {
+		c.identityRetryAfter = c.now().Add(monitorChatFloorBackoff)
+	}
+	return c.applySummary(w, result)
 }
 
 func (c *monitorChat) applySummary(w io.Writer, result monitorChatSummary) bool {
