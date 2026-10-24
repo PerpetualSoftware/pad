@@ -187,6 +187,7 @@ func TestMonitorChatStreamHTTPDeadlines(t *testing.T) {
 	for _, operation := range []string{"unread", "unread-body", "fill", "fill-body", "ack", "ack-error-body"} {
 		t.Run(operation, func(t *testing.T) {
 			chatSessionEnv(t)
+			stop := make(chan struct{})
 			h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if operation == "ack" || operation == "ack-error-body" {
 					if strings.HasSuffix(r.URL.Path, "/messages") {
@@ -202,20 +203,36 @@ func TestMonitorChatStreamHTTPDeadlines(t *testing.T) {
 					fmt.Fprint(w, `{"`)
 					w.(http.Flusher).Flush()
 				}
-				<-r.Context().Done()
+				select {
+				case <-r.Context().Done():
+				case <-stop:
+				}
 			}))
-			defer h.Close()
+			done := make(chan struct{})
+			t.Cleanup(func() {
+				close(stop)
+				h.Close()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Error("HTTP operation did not finish after releasing the handler")
+				}
+			})
 			c := newMonitorChat(httpChatSink{cli.NewClientFromURL(h.URL)}, newRecentSet(256, time.Minute))
 			c.floorTimeout = 20 * time.Millisecond
 			c.last[1] = 0
 			var out bytes.Buffer
-			start := time.Now()
-			if strings.HasPrefix(operation, "unread") {
-				c.summary(&out)
-			} else {
-				c.handle(&out, floorEvent(1, 1))
-			}
-			if time.Since(start) > time.Second {
+			go func() {
+				defer close(done)
+				if strings.HasPrefix(operation, "unread") {
+					c.summary(&out)
+				} else {
+					c.handle(&out, floorEvent(1, 1))
+				}
+			}()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
 				t.Fatal("HTTP ignored the stream deadline")
 			}
 			if !strings.HasPrefix(operation, "ack") && out.Len() != 0 {
