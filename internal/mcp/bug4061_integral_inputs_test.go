@@ -112,6 +112,11 @@ func TestBUG4061_EveryDispatchDoorRefusesAFractionNamingIt(t *testing.T) {
 		{[]string{"project", "changelog"}, map[string]any{"days": 1e19}, "days", false},
 		// r2: expected_seq used to come back as a raw error, not an envelope.
 		{[]string{"item", "update"}, map[string]any{"ref": "TASK-1", "content": "x", "expected_seq": 1.5}, "expected_seq", true},
+		// r7 (h2 L1): the generic route mapper's other numeric query keys, and
+		// a json.Number through Dispatch rather than at the unit level.
+		{[]string{"item", "context"}, map[string]any{"ref": "TASK-1", "budget": 1.5}, "budget", false},
+		{[]string{"project", "activity"}, map[string]any{"limit": 2.5}, "limit", false},
+		{[]string{"item", "list"}, map[string]any{"limit": json.Number("1.5")}, "limit", false},
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.cmd, " ")+" "+tc.param, func(t *testing.T) {
@@ -199,6 +204,9 @@ func TestBUG4061_LinesViewReadsTheServerSeqLeniently(t *testing.T) {
 		{"absent", nil, 0},
 		{"whole", float64(17), 17},
 		{"fraction", 1.5, 0},
+		// r7 (h2 L2): a float64 seq of magnitude 2^53 or more is refused by
+		// wholeInt64, and the lenient read leaves Seq zero, as for a fraction.
+		{"at 2^53", float64(1 << 53), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := map[string]any{"ref": "TASK-1", "content": "a\nb\n"}
