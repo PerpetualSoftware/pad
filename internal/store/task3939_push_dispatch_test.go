@@ -847,3 +847,14 @@ func TestMaxNotificationClaimIsGatewayBatch(t *testing.T) {
 		t.Fatalf("maxNotificationClaim = %d, notify.MaxBatch = %d", maxNotificationClaim, notify.MaxBatch)
 	}
 }
+
+// TASK-4051 r1 D2: a dispatcher tick claims at most notify.MaxBatch rows, so
+// RecordNotificationsSent sees them in one chunk and the tick's recordedPrefix
+// is always 0 (internal/server/push_dispatch.go:821). Dropping that call is an
+// equivalent mutant only while this holds; raising MaxBatch past the chunk
+// makes it a live one, which needs a tick-path test.
+func TestNotificationIDChunkHoldsAGatewayBatch(t *testing.T) {
+	if notify.MaxBatch > notificationIDChunk {
+		t.Fatalf("notify.MaxBatch = %d exceeds notificationIDChunk = %d", notify.MaxBatch, notificationIDChunk)
+	}
+}
