@@ -9,7 +9,7 @@ import (
 )
 
 // TASK-4041, DOC-4036: this independent declaration is socket-scoped only.
-// Reuse the owner stamps without changing the push arm file's JSON contract.
+// Reuse the owner stamps and bind direction to one explicit arm generation.
 func chatDirectionPath() (string, error) {
 	socket := os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET")
 	if socket == "" {
@@ -27,13 +27,17 @@ func WriteChatDirection() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	arm, _, err := readArmState()
+	if err != nil || arm == nil || arm.Generation == "" || SessionArmState() != LocalArmOn {
+		return "", fmt.Errorf("chat direction requires a fresh pad session arm")
+	}
 	socket := os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET")
 	info, err := os.Stat(socket)
 	if err != nil {
 		return "", fmt.Errorf("chat session socket: %w", err)
 	}
 	cwd, _ := os.Getwd()
-	st := ArmState{Armed: true, PID: os.Getpid(), Socket: socket, Cwd: cwd, StartedAt: time.Now().UTC().Format(time.RFC3339), SocketMtimeUnixNano: info.ModTime().UnixNano()}
+	st := ArmState{Armed: true, Generation: arm.Generation, PID: os.Getpid(), Socket: socket, Cwd: cwd, StartedAt: time.Now().UTC().Format(time.RFC3339), SocketMtimeUnixNano: info.ModTime().UnixNano()}
 	if ino, dev, ok := statIdentity(info); ok {
 		st.SocketIno, st.SocketDev = ino, dev
 	}
@@ -74,7 +78,11 @@ func ChatDirectionOn() bool {
 		reapOwnedArmFile(path, func() (*ArmState, error) { return readChatDirection(path) })
 		return false
 	case LivenessAlive:
-		return SessionArmState() == LocalArmOn
+		if SessionArmState() != LocalArmOn {
+			return false
+		}
+		arm, _, err := readArmState()
+		return err == nil && arm != nil && st.Generation != "" && st.Generation == arm.Generation
 	default:
 		return false
 	}
@@ -86,7 +94,7 @@ func ClearChatDirection() error {
 		return nil
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+		return fmt.Errorf("remove chat direction %s: %w", path, err)
 	}
 	return nil
 }

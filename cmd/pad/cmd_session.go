@@ -442,6 +442,8 @@ command exits non-zero.`,
 	}
 }
 
+var clearSessionChatDirection = cli.ClearChatDirection
+
 // sessionDisarmCmd is `pad session disarm` (PLAN-2613 S3, TASK-2618): the
 // withdrawal verb. It writes a session-scoped explicit-OFF marker (NOT a
 // file removal), so the session stops accepting pushes for its remaining
@@ -449,8 +451,6 @@ command exits non-zero.`,
 // lie there. The marker dies with the session (same liveness as an arm),
 // so across sessions auto_arm remains the standing contract; permanent-off
 // is a .pad.toml edit. Idempotent.
-var clearSessionChatDirection = cli.ClearChatDirection
-
 func sessionDisarmCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "disarm",
@@ -476,7 +476,7 @@ disarm is kept for the directory until 'pad session reset'.
 Idempotent.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_ = clearSessionChatDirection()
+			clearErr := clearSessionChatDirection()
 			path, err := cli.WriteDisarmState()
 			if err != nil {
 				return err
@@ -485,6 +485,9 @@ Idempotent.`,
 			// auto_arm is deciding again (BUG-3227). Refuse loudly.
 			if _, err := cli.VerifyArmStateHeld(); err != nil {
 				return err
+			}
+			if clearErr != nil {
+				return clearErr
 			}
 			// Whether auto_arm would otherwise re-arm THIS session tells the
 			// user if the disarm actually changed anything visible.
@@ -531,10 +534,13 @@ session, and stays in force for the directory until reset.
 Idempotent.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_ = clearSessionChatDirection()
+			clearErr := clearSessionChatDirection()
 			removed, path, err := cli.RemoveArmState()
 			if err != nil {
 				return err
+			}
+			if clearErr != nil {
+				return clearErr
 			}
 			if formatFlag == "json" {
 				return cli.PrintJSON(map[string]any{
