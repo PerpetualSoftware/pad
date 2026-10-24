@@ -10,7 +10,7 @@ const chatDirectionWarning = "Warning: instructions sent through Pad chat will d
 
 func newChatArmCmd() *cobra.Command {
 	var accept bool
-	cmd := &cobra.Command{Use: "arm", Short: "Accept chat instructions for this session", Args: cobra.NoArgs,
+	cmd := &cobra.Command{Use: "arm", Example: "  pad chat arm --accept-instructions", Short: "Accept chat instructions for this session", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !accept {
 				return fmt.Errorf("chat arm requires --accept-instructions; use pad session arm for delivery")
@@ -36,7 +36,7 @@ func newChatArmCmd() *cobra.Command {
 }
 
 func newChatDisarmCmd() *cobra.Command {
-	return &cobra.Command{Use: "disarm", Short: "Treat chat as information again", Args: cobra.NoArgs,
+	return &cobra.Command{Use: "disarm", Example: "  pad chat disarm", Short: "Treat chat as information again", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := cli.ClearChatDirection(); err != nil {
 				return err
