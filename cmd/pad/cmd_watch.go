@@ -645,8 +645,9 @@ func runWatchMonitor(ctx context.Context) error {
 // too large to replay, stop trying.
 //
 // It is also delivered MID-STREAM since BUG-2730, on a connection that never
-// dropped. This loop clears the cursor and chat baselines, re-seeds chat from
-// /me/chat/unread, and keeps printed ids so refetched rows are not printed twice.
+// dropped. This loop clears the cursor and chat floors. Each conversation
+// refetches its own server marker on its next event; local delivery and printed
+// ids survive. /me/chat/unread supplies only the unread pointer.
 // The connection stays open and the next notification starts a fresh coverage span.
 //
 // It is NOT the consumer's whole response: whoever reads stdout has to be

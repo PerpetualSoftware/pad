@@ -32,7 +32,7 @@ func TestMonitorChatFailedIdentityDefersDeliveredHistory(t *testing.T) {
 			}
 			var out bytes.Buffer
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "owed", MessageSeq: 3})
-			awaitChatSummary(t, c)
+			awaitChatFloor(t, c, 1)
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "owed", MessageSeq: 3})
 			awaitChatFloor(t, c, 1)
 			wantAttempts := 2
@@ -65,7 +65,7 @@ func TestMonitorChatIdentityRecoveryPrintsOnlyOwedMessages(t *testing.T) {
 	p := watchStreamPayload{Conversation: 1, MessageID: "owed4", MessageSeq: 4}
 	c.handle(&out, p)
 	// The next event after a successful GET must start at the server floor.
-	awaitChatSummary(t, c)
+	awaitChatFloor(t, c, 1)
 	c.handle(&out, p)
 	if attempts != 2 || !slices.Equal(f.after, []int64{2}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[1] != 4 || strings.Count(out.String(), "fetched ") != 2 || strings.Count(out.String(), "fetched owed3\n") != 1 || strings.Count(out.String(), "fetched owed4\n") != 1 {
 		t.Fatalf("recovery must print exactly owed rows: output=%q after=%v acks=%v delivered=%v", out.String(), f.after, f.ackSeqs, c.delivered)
@@ -89,7 +89,7 @@ func TestMonitorChatHandleDoesNotBlockOnIdentity(t *testing.T) {
 		return monitorChatIdentity{}, nil
 	}
 	done := make(chan struct{})
-	t.Cleanup(func() { close(release); <-done; awaitChatSummary(t, c) })
+	t.Cleanup(func() { close(release); <-done; awaitChatFloor(t, c, 1) })
 	go func() {
 		c.handle(&bytes.Buffer{}, watchStreamPayload{Conversation: 1, MessageID: "m", MessageSeq: 2})
 		close(done)
@@ -106,10 +106,6 @@ func TestMonitorChatHandleDoesNotBlockOnIdentity(t *testing.T) {
 	}
 }
 
-// Wait for the single asynchronous read, leaving its result for the next event.
-// No monitor state or writer is touched by the reader goroutine.
-func awaitChatSummary(t *testing.T, c *monitorChat) { t.Helper(); awaitChatFloor(t, c, 1) }
-
 func TestMonitorChatIdentityChangeFailedSummaryDiscardsOldBaseline(t *testing.T) {
 	chatSessionEnv(t)
 	f := &fakeChatSink{unreadErr: errors.New("summary unavailable"), floorErr: errors.New("floor unavailable")}
@@ -120,7 +116,7 @@ func TestMonitorChatIdentityChangeFailedSummaryDiscardsOldBaseline(t *testing.T)
 	var out bytes.Buffer
 	c.resync(&out)
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "new", MessageSeq: 6})
-	awaitChatSummary(t, c)
+	awaitChatFloor(t, c, 1)
 	if len(c.last) != 0 || len(c.delivered) != 0 || len(c.printedIDs) != 0 || out.Len() != 0 || f.fetches != 0 || f.acks != 0 {
 		t.Fatalf("restored another identity's baseline: last=%v delivered=%v printed=%v output=%q fetches=%d acks=%v", c.last, c.delivered, c.printedIDs, out.String(), f.fetches, f.ackSeqs)
 	}

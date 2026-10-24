@@ -106,26 +106,30 @@ func TestMonitorChatFailedFloorIsolatedAndRetries(t *testing.T) {
 	if len(f.requests[1]) != 0 {
 		t.Fatal("duplicate in-flight fetch")
 	}
-	// C can complete while A remains blocked.
-	c.handle(&out, floorEvent(3, 1))
+	// C can complete while A remains blocked. Message ids are globally unique.
+	cEvent := floorEvent(3, 1)
+	cEvent.MessageID = "c1"
+	f.messages = []monitorChatMessage{chatMsg("c1", 1)}
+	c.handle(&out, cEvent)
 	floorRequest(t, f, 3) <- floorReply{}
 	awaitChatFloor(t, c, 3)
-	c.handle(&out, floorEvent(3, 1))
+	c.handle(&out, cEvent)
 	if c.delivered[3] != 1 || f.acks != 1 {
 		t.Fatal("another conversation blocked")
 	}
+	f.messages = []monitorChatMessage{chatMsg("m1", 1)}
 	out.Reset()
 	acks := f.acks
 	a <- floorReply{err: errors.New("floor unavailable")}
 	awaitChatFloor(t, c, 1)
 	c.handle(&out, floorEvent(1, 1))
-	retry := floorRequest(t, f, 1)
 	if out.Len() != 0 || f.acks != acks {
 		t.Fatal("failed fetch printed or acknowledged")
 	}
 	if _, ok := c.last[1]; ok {
 		t.Fatal("failed fetch stored floor")
 	}
+	retry := floorRequest(t, f, 1)
 	retry <- floorReply{}
 	awaitChatFloor(t, c, 1)
 	c.handle(&out, floorEvent(1, 1))

@@ -12,6 +12,7 @@ import (
 )
 
 type chatSink interface {
+	conversationFloor(number int) (int64, error)
 	messagesAfter(number int, after int64, limit int) ([]monitorChatMessage, error)
 	delivered(number int, seq int64) error
 	unread(agent string) (monitorChatUnread, error)
@@ -43,12 +44,28 @@ func (s httpChatSink) messagesAfter(number int, after int64, limit int) ([]monit
 	}
 	return out.Messages, nil
 }
+func (s httpChatSink) conversationFloor(number int) (int64, error) {
+	data, err := s.client.ChatConversation(number)
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		DeliveredSeq *int64 `json:"delivered_seq"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return 0, err
+	}
+	if out.DeliveredSeq == nil || *out.DeliveredSeq < 0 {
+		return 0, fmt.Errorf("conversation C%d has no valid delivered_seq", number)
+	}
+	return *out.DeliveredSeq, nil
+}
+
 func (s httpChatSink) delivered(number int, seq int64) error {
 	return s.client.MarkChatDelivered(number, seq)
 }
 
-// TASK-4041: retain delivered_seq from the same response as the summary.
-// A successful response lists every conversation with positive unread count.
+// The unread summary supplies only the connection-time unread pointer.
 type monitorChatUnread struct {
 	Conversations []models.ConversationUnread `json:"conversations"`
 	Total         int                         `json:"total"`
@@ -104,14 +121,14 @@ type monitorChat struct {
 	printedIDs      map[string]bool // True until its retraction is written; retain every id.
 	last            map[int]int64
 	delivered       map[int]int64
-	summaryReady    bool
 	identity        monitorChatIdentity
 	resolveIdentity func() (monitorChatIdentity, chatSink)
-	pending         chan monitorChatSummary
+	generation      uint64
+	pendingFloor    map[int]chan floorResult
 }
 
 func newMonitorChat(sink chatSink, printed *recentSet) *monitorChat {
-	return &monitorChat{sink: sink, printed: printed, printedIDs: map[string]bool{}, last: map[int]int64{}, delivered: map[int]int64{}}
+	return &monitorChat{sink: sink, printed: printed, printedIDs: map[string]bool{}, last: map[int]int64{}, delivered: map[int]int64{}, pendingFloor: map[int]chan floorResult{}}
 }
 
 func (c *monitorChat) setIdentity(baseURL, userID string) {
@@ -120,10 +137,9 @@ func (c *monitorChat) setIdentity(baseURL, userID string) {
 		return
 	}
 	c.identity = identity
-	clear(c.last)
+	c.resetFloors()
 	clear(c.delivered)
 	clear(c.printedIDs)
-	c.summaryReady = false
 	c.printed.mu.Lock()
 	clear(c.printed.at)
 	c.printed.order = nil
@@ -165,20 +181,15 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	if !cli.ResolveAnnouncedArmed() || p.MessageID == "" || p.Conversation <= 0 || p.MessageSeq <= 0 {
 		return
 	}
-	if _, baseline := c.last[p.Conversation]; (c.sink == nil || !baseline) && !c.summaryReady {
-		if !c.attemptSummary(w) {
-			return // No safe floor yet: no output, ack, or stored baseline.
+	if _, fetched := c.last[p.Conversation]; !fetched {
+		if !c.attemptFloor(p.Conversation) {
+			return // First contact defers: no output, ack, or stored floor.
 		}
 	}
 	if c.sink == nil {
 		return
 	}
-	last, baseline := c.last[p.Conversation]
-	if !baseline {
-		// Absence from a successful summary means zero unread.
-		last = p.MessageSeq - 1
-		c.last[p.Conversation] = last
-	}
+	last := c.last[p.Conversation]
 	if p.Deleted {
 		if !c.retract(w, p) {
 			return
@@ -261,17 +272,67 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	}
 }
 
-// A failed summary restores only known fill baselines. Readiness stays false
-// so unlisted conversations defer until a summary succeeds. Local delivery
-// and printed ids survive reconnect and sync_required for the same identity.
+// Discard every connection's floor and pending read, retaining handled rows
+// and retraction ownership for the same identity.
+func (c *monitorChat) resetFloors() {
+	c.generation++
+	clear(c.last)
+	clear(c.pendingFloor)
+}
+
 func (c *monitorChat) resync(w io.Writer) {
-	previous := c.last
-	identity := c.identity
-	c.last = map[int]int64{}
-	c.summaryReady = false
-	if !c.summary(w) && c.identity == identity {
-		c.last = previous
+	c.resetFloors()
+	c.summary(w)
+}
+
+// A result carries both the requesting identity and the resolved identity.
+// Resolving an unknown identity may adopt a new identity, but an obsolete
+// request can never adopt its sink or install its floor.
+type floorResult struct {
+	identity         monitorChatIdentity
+	generation       uint64
+	resolvedIdentity monitorChatIdentity
+	sink             chatSink
+	floor            int64
+	ok               bool
+}
+
+func (c *monitorChat) attemptFloor(number int) bool {
+	if pending := c.pendingFloor[number]; pending != nil {
+		select {
+		case result := <-pending:
+			delete(c.pendingFloor, number)
+			if result.identity == c.identity && result.generation == c.generation {
+				if result.sink != nil && c.resolveIdentity != nil {
+					c.setIdentity(result.resolvedIdentity.baseURL, result.resolvedIdentity.userID)
+					c.sink = result.sink
+					c.resolveIdentity = nil
+				}
+				if result.ok {
+					c.last[number] = max(result.floor, c.delivered[number])
+					return true
+				}
+			}
+		default:
+			return false
+		}
 	}
+	pending := make(chan floorResult, 1)
+	c.pendingFloor[number] = pending
+	sink, identity, generation, resolve := c.sink, c.identity, c.generation, c.resolveIdentity
+	go func() {
+		result := floorResult{identity: identity, generation: generation, resolvedIdentity: identity, sink: sink}
+		if resolve != nil {
+			result.resolvedIdentity, result.sink = resolve()
+		}
+		if result.sink != nil {
+			var err error
+			result.floor, err = result.sink.conversationFloor(number)
+			result.ok = err == nil
+		}
+		pending <- result
+	}()
+	return false
 }
 
 // Only the stream goroutine applies results or writes output. An event starts
@@ -297,29 +358,7 @@ func readMonitorChatSummary(sink chatSink, identity monitorChatIdentity, resolve
 	return result
 }
 
-func (c *monitorChat) attemptSummary(w io.Writer) bool {
-	if c.pending != nil {
-		select {
-		case result := <-c.pending:
-			c.pending = nil
-			if c.applySummary(w, result) {
-				return true
-			}
-		default:
-			return false
-		}
-	}
-	pending := make(chan monitorChatSummary, 1)
-	c.pending = pending
-	sink, identity, resolve, agent := c.sink, c.identity, c.resolveIdentity, cli.ResolveAgentName()
-	go func() {
-		pending <- readMonitorChatSummary(sink, identity, resolve, agent)
-	}()
-	return false
-}
-
 func (c *monitorChat) summary(w io.Writer) bool {
-	c.pending = nil // A synchronous summary supersedes any prior event read.
 	if !cli.ResolveAnnouncedArmed() {
 		return false
 	}
@@ -339,15 +378,6 @@ func (c *monitorChat) applySummary(w io.Writer, result monitorChatSummary) bool 
 		return false
 	}
 	summary := result.unread
-	for _, row := range summary.Conversations {
-		if _, exists := c.last[row.Number]; !exists {
-			c.last[row.Number] = max(row.DeliveredSeq, c.delivered[row.Number])
-		}
-	}
-	for number, seq := range c.delivered {
-		c.last[number] = max(c.last[number], seq)
-	}
-	c.summaryReady = true
 	if summary.Total > 0 {
 		fmt.Fprintf(w, "Pad chat: %d unread messages — use pad chat show to read them.\n", summary.Total)
 	}

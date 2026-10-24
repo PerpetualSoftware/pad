@@ -346,7 +346,7 @@ func TestMonitorChatDedupeRetriesFailedAck(t *testing.T) {
 	// Printed ids can survive a reconnect without a local baseline.
 	c = newMonitorChat(f, c.printed)
 	c.handle(&out, p)
-	awaitChatSummary(t, c)
+	awaitChatFloor(t, c, 1)
 	if !slices.Equal(f.ackSeqs, []int64{2, 2}) || f.fetches != 1 {
 		t.Fatalf("acked without a positive baseline: acks=%v fetches=%d", f.ackSeqs, f.fetches)
 	}
