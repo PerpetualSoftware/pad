@@ -798,9 +798,14 @@ func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*
 		out[k] = v
 	}
 
-	// Whole rows: a fractional limit under 1 takes the default, as zero does.
+	// A limit of zero or less takes the default. A fractional one is refused,
+	// not truncated (BUG-4061): 0.5 used to become 0, and so the default.
 	limit := mcpItemListDefaultLimit
-	if n, ok := numericInput(input["limit"]); ok && int(n) > 0 {
+	n, ok, err := intParam(input, "limit")
+	if err != nil {
+		return errStructured("pad_item.list", err), nil
+	}
+	if ok && int(n) > 0 {
 		limit = int(n)
 	}
 	if limit > mcpItemListMaxLimit {
@@ -892,7 +897,11 @@ func actionItemHistory(ctx context.Context, input map[string]any, env ActionEnv)
 	}
 
 	limit := mcpItemHistoryDefaultLimit
-	if n, ok := numericInput(input["limit"]); ok && n > 0 {
+	n, ok, err := intParam(input, "limit")
+	if err != nil {
+		return errStructured("pad_item.history", err), nil
+	}
+	if ok && n > 0 {
 		limit = int(n)
 	}
 	if limit > mcpItemHistoryMaxLimit {
@@ -1022,8 +1031,10 @@ func actionItemGet(ctx context.Context, input map[string]any, env ActionEnv) (*C
 	lines, from, to, total := bodypatch.SliceBodyLines(content, start, end)
 	view := bodypatch.BodyLines{Start: from, End: to, TotalLines: total, Lines: lines}
 	view.Ref, _ = m["ref"].(string)
-	if n, ok := numericInput(m["seq"]); ok {
-		view.Seq = int64(n)
+	// The server's own seq, not caller input: read leniently, so an absent
+	// or malformed one leaves Seq zero (BUG-4061 ruled it out of scope).
+	if n, ok, _ := numericInput(m["seq"]); ok {
+		view.Seq = n
 	}
 	view.ContentState, _ = m["content_state"].(string)
 	text, _ := json.Marshal(view)

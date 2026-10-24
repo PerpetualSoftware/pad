@@ -110,6 +110,11 @@ func chatSequence(input map[string]any, name string, min int64) (int64, error) {
 		}
 		n = int64(x)
 	} else {
+		// Every other type: json.Number and the native integers parse here.
+		// A float32 would not (fmt.Sprint(float32(1e6)) is "1e+06"), but none
+		// reaches this today, since the JSON transports deliver only float64
+		// (BUG-4061 note). A float32 producer would route through the same
+		// integral and range check as float64 above.
 		n, err = strconv.ParseInt(fmt.Sprint(v), 10, 64)
 	}
 	if err != nil || n < min {
