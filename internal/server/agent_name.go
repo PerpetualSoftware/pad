@@ -4,10 +4,9 @@ import (
 	"net/http"
 	"strings"
 	"unicode"
-)
 
-// maxAgentNameRunes bounds the self-declared agent name (BUG-3372).
-const maxAgentNameRunes = 64
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
 
 // agentNameFromRequest is the X-Pad-Agent header as stored for the caller's
 // writes and presence. This is a self-description, never a verified identity.
@@ -18,7 +17,7 @@ func agentNameFromRequest(r *http.Request) string {
 // normalizeAgentName is the one stored form of a self-declared agent name,
 // shared by write attribution, presence (TASK-4040) and chat key validation
 // (TASK-4039 r3): trimmed, control characters removed, at most
-// maxAgentNameRunes runes.
+// models.MaxAgentNameRunes runes.
 func normalizeAgentName(raw string) string {
 	if raw == "" {
 		return ""
@@ -29,7 +28,7 @@ func normalizeAgentName(raw string) string {
 		if unicode.IsControl(c) {
 			continue
 		}
-		if n == maxAgentNameRunes {
+		if n == models.MaxAgentNameRunes {
 			break
 		}
 		b.WriteRune(c)

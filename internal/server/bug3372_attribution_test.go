@@ -184,8 +184,8 @@ func TestBUG3372_AgentNameIsBounded(t *testing.T) {
 		{"controls", "  Claude\tCode \x01", "ClaudeCode"},
 		{"controls only", "\x01\x02", ""},
 		{"trim after controls", "\x01 claude \x02", "claude"},
-		{"rune cap", strings.Repeat("é", maxAgentNameRunes+1), strings.Repeat("é", maxAgentNameRunes)},
-		{"trim after cap", strings.Repeat("x", maxAgentNameRunes-1) + " y", strings.Repeat("x", maxAgentNameRunes-1)},
+		{"rune cap", strings.Repeat("é", models.MaxAgentNameRunes+1), strings.Repeat("é", models.MaxAgentNameRunes)},
+		{"trim after cap", strings.Repeat("x", models.MaxAgentNameRunes-1) + " y", strings.Repeat("x", models.MaxAgentNameRunes-1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := agentNameFromRequest(req(tc.raw)); got != tc.want {
