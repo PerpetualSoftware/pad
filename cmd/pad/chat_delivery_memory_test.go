@@ -53,11 +53,13 @@ func TestMonitorChatDeliveryMemoryOutlivesSeenChat(t *testing.T) {
 	}
 	f.before = func() { f.failAck = true }
 	c := newSeededMonitorChat(f, seen)
-	c.now = func() time.Time { return now }
+	// Keep the cache clock fixed during the 300-row count-eviction check.
+	retryNow := now
+	c.now = func() time.Time { return retryNow }
 	var out bytes.Buffer
 	for seq := int64(1); seq <= 300; seq++ {
 		c.handle(&out, floorEvent(1, seq))
-		now = now.Add(monitorChatFloorBackoff)
+		retryNow = retryNow.Add(monitorChatFloorBackoff)
 	}
 	if seen.contains("m1") || !seen.contains("m300") || f.deliveredSeq != 0 {
 		t.Fatal("test needs eviction and failed acks")
@@ -71,6 +73,7 @@ func TestMonitorChatDeliveryMemoryOutlivesSeenChat(t *testing.T) {
 			t.Fatalf("after=%v acks=%v printed=%d", f.after, f.ackSeqs, strings.Count(out.String(), "fetched "))
 		}
 		now = now.Add(11 * time.Minute)
+		retryNow = retryNow.Add(monitorChatFloorBackoff)
 	}
 }
 

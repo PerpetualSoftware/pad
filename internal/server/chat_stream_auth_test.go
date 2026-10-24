@@ -2,11 +2,12 @@ package server
 
 import (
 	"context"
-	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
 func TestChatStreamCookieIgnoresAgentHeader(t *testing.T) {

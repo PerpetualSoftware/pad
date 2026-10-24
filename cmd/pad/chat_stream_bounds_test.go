@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/PerpetualSoftware/pad/internal/cli"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 func TestMonitorChatSummaryIdentityTimeoutBackoff(t *testing.T) {
