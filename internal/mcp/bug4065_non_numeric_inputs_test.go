@@ -74,7 +74,7 @@ func TestBUG4065_NumericInputAdmitsOrRefusesEveryType(t *testing.T) {
 		{"string 00 refused", "00", 0, false, `must be a whole number, got the string "00"`},
 		{"string -010 refused", "-010", 0, false, `must be a whole number, got the string "-010"`},
 		{"string 0", "0", 0, true, ""},
-		{"string 10 has no leading zero", "100", 100, true, ""},
+		{"string 100 (no leading zero)", "100", 100, true, ""},
 		{"string 2^53-1", "9007199254740991", 1<<53 - 1, true, ""},
 		{"string 1.0", "1.0", 0, false, `must be a whole number, got the string "1.0"`},
 		{"string 1e3", "1e3", 0, false, `must be a whole number, got the string "1e3"`},
@@ -89,6 +89,8 @@ func TestBUG4065_NumericInputAdmitsOrRefusesEveryType(t *testing.T) {
 		{"string above int64", "99999999999999999999", 0, false, `is out of range, got the string "99999999999999999999"`},
 		// Other JSON types.
 		{"bool", true, 0, false, "must be a number, got a boolean"},
+		// false is refused too, not skipped as absent (r3 item 2).
+		{"bool false", false, 0, false, "must be a number, got a boolean"},
 		{"object", map[string]any{"n": 1.0}, 0, false, "must be a number, got an object"},
 		{"array", []any{1.0}, 0, false, "must be a number, got an array"},
 		// Native Go integers (BUG-4061's Q6 note): widened exactly.
@@ -232,6 +234,7 @@ func TestBUG4065_EveryDoorRefusesANonNumberNamingIt(t *testing.T) {
 		{"empty string", ""},
 		{"string above int64", "99999999999999999999"},
 		{"bool", true},
+		{"bool false", false},
 		{"object", map[string]any{"n": 1.0}},
 		{"array", []any{7.0}},
 	}
@@ -340,6 +343,9 @@ func TestBUG4065_PRNumberBoundAndJSONNumber(t *testing.T) {
 			if tc.refuse {
 				if res == nil || !res.IsError {
 					t.Fatalf("not refused; reached %q", reached)
+				}
+				if len(reached) != 0 {
+					t.Fatalf("a refused pr_number reached the server: %q", reached)
 				}
 				txt := textOf(res)
 				if !strings.Contains(txt, "pr_number must be a positive whole number") || !strings.Contains(txt, `"hint":"Pass `+"`pr_number=\\u003cN\\u003e`"+`, the PR's number."`) {
@@ -605,7 +611,7 @@ func TestBUG4065_NoRouteForwardsANonNumberForANumberParam(t *testing.T) {
 			if readsP {
 				reads = append(reads, cmd+" "+p)
 			}
-			for _, bad := range []any{true, "abc", map[string]any{"n": 1.0}} {
+			for _, bad := range []any{true, false, "abc", map[string]any{"n": 1.0}} {
 				resB, reqB := run(cmd, p, bad, true)
 				if readsP {
 					if !namesP(resB, p) || len(writes(reqB)) != 0 {
@@ -678,4 +684,49 @@ var bug4065ReadSet = []string{
 	"role update sort_order",
 	"workspace audit-log days",
 	"workspace audit-log limit",
+}
+
+// The catalog doors (r3 item 4): pad_item.list and pad_item.history read limit
+// through intParam themselves, before the dispatcher. A non-number is refused
+// naming limit and reaches no dispatcher; "7" is the limit used.
+func TestBUG4065_CatalogLimitNonNumbers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  func(context.Context, map[string]any, ActionEnv) (*CallToolResult, error)
+		// want is the --limit value the dispatcher receives for "7"; list asks
+		// for one row past its limit (BUG-3704).
+		want string
+	}{
+		{"pad_item.list", actionItemList, "8"},
+		{"pad_item.history", actionItemHistory, "7"},
+	} {
+		for _, bad := range []any{"abc", true, false, map[string]any{"n": 1.0}, "010", ""} {
+			t.Run(fmt.Sprintf("%s %#v", tc.name, bad), func(t *testing.T) {
+				disp := &fakeDispatcher{}
+				env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState("docapp"), Dispatcher: disp}
+				res, err := tc.act(context.Background(), map[string]any{"ref": "TASK-1", "limit": bad}, env)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res == nil || !res.IsError || !strings.Contains(textOf(res), tc.name+": limit ") {
+					t.Fatalf("want a refusal naming limit, got %s", textOf(res))
+				}
+				if len(disp.gotPath) != 0 {
+					t.Fatalf("a refused limit reached the dispatcher: %v", disp.gotPath)
+				}
+			})
+		}
+		t.Run(tc.name+" string 7", func(t *testing.T) {
+			disp := &fakeDispatcher{}
+			env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState("docapp"), Dispatcher: disp}
+			res, err := tc.act(context.Background(), map[string]any{"ref": "TASK-1", "limit": "7"}, env)
+			if err != nil || res.IsError {
+				t.Fatalf("\"7\" was refused: %v %s", err, textOf(res))
+			}
+			args := strings.Join(disp.gotArgs, " ")
+			if !strings.Contains(args, "--limit "+tc.want) {
+				t.Fatalf("dispatcher args %q, want --limit %s", args, tc.want)
+			}
+		})
+	}
 }

@@ -2263,7 +2263,8 @@ const CmdhelpVersion = "0.1"
 // now refused), pad_collection's and pad_role's update sort_order (which used
 // to reach the server's decode as a 400), and pad_chat's since, limit,
 // reply_to, seq and to (2^53 now bounds a float64; json.Number "1e6" is
-// accepted). Non-numeric query keys are still forwarded verbatim. These
+// accepted; a present null is still refused there, as before, with the same
+// message). Non-numeric query keys are still forwarded verbatim. These
 // parameters are declared "number", so the bump is owed by behaviour, as for
 // v0.103.
 const ToolSurfaceVersion = "0.104"
