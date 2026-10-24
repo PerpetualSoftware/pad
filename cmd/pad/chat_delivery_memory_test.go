@@ -176,8 +176,11 @@ func TestMonitorChatAdapterQueryShape(t *testing.T) {
 	}))
 	defer h.Close()
 	sink := httpChatSink{client: cli.NewClientFromURLWithAgentName(h.URL, "monitor")}
-	for _, after := range []int64{0, 7} {
-		messages, err := sink.messagesAfter(12, after, 20)
+	for _, query := range []struct {
+		after int64
+		limit int
+	}{{0, 1}, {7, 20}} {
+		messages, err := sink.messagesAfter(12, query.after, query.limit)
 		if err != nil || len(messages) != 1 || messages[0].Seq != 8 {
 			t.Fatalf("messages=%v err=%v", messages, err)
 		}
@@ -189,7 +192,7 @@ func TestMonitorChatAdapterQueryShape(t *testing.T) {
 	// Literal old raw-GET paths pin the adapter through the TASK-4042 client,
 	// including after_seq=0 (a nil cursor would change the server's default).
 	want := []string{
-		"GET /api/v1/me/conversations/12/messages?after_seq=0&limit=20",
+		"GET /api/v1/me/conversations/12/messages?after_seq=0&limit=1",
 		"GET /api/v1/me/conversations/12/messages?after_seq=7&limit=20",
 		"GET /api/v1/me/chat/unread?agent=seat+%2B%26%2Fname",
 	}
