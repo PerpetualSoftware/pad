@@ -1,13 +1,20 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/notify"
 	"github.com/PerpetualSoftware/pad/internal/server"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
@@ -171,5 +178,141 @@ func TestConfigurePush_BadKnobRefusesStartup(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TASK-4051: a signed-in device registration observes the gateway URL wired
+// by startup through the real HTTP handler. Kills: M1a.
+func TestConfigurePush_EnablesDeviceRegistration(t *testing.T) {
+	_, srv, _, tok := task4051PushServer(t)
+	if err := configurePush(srv, &config.Config{PushGatewayURL: "http://gateway.test/send", PushGatewaySecret: "test-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/me/push-devices/conn-4051", strings.NewReader(`{"platform":"android","token":"test-device","app_version":"1"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("device registration = %d %s, want 200 (push available)", rr.Code, rr.Body.String())
+	}
+}
+
+func task4051PushServer(t *testing.T) (*store.Store, *server.Server, *models.User, string) {
+	t.Helper()
+	s := storetest.NewSQLite(t)
+	srv := server.New(s)
+	t.Cleanup(srv.Stop)
+	u, err := s.CreateUser(models.UserCreate{Email: "push-4051@example.com", Name: "Push", Username: "push-4051", Password: "pw-test-12345"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := s.CreateSession(u.ID, "android", "", "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, srv, u, tok
+}
+
+// TASK-4051: one pending notification reaches exactly the configured HTTP
+// gateway, using notify.Gateway's messages/results contract. Kills: M1b.
+func TestConfigurePush_SendsToConfiguredGateway(t *testing.T) {
+	s, srv, u, tok := task4051PushServer(t)
+	var sends atomic.Int64
+	arrived := make(chan []notify.Message, 4)
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sends.Add(1)
+		var body struct {
+			Messages []notify.Message `json:"messages"`
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/push/send" || r.Header.Get("X-Cloud-Secret") != "test-secret" {
+			t.Errorf("unexpected gateway request: %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		results := make([]notify.Result, len(body.Messages))
+		for i, m := range body.Messages {
+			results[i] = notify.Result{ID: m.ID, Status: notify.StatusSent}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
+		arrived <- body.Messages
+	}))
+	defer gateway.Close()
+	session, err := s.ValidateSession(tok)
+	if err != nil || session == nil {
+		t.Fatalf("ValidateSession = %v, %v", session, err)
+	}
+	dev, err := s.RegisterPushDevice(u.ID, session.ID, "conn-4051", "android", "test-device", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := s.DB().Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE push_devices SET created_at = ? WHERE id = ?`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), dev.ID)
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Push 4051", OwnerID: u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddWorkspaceMember(ws.ID, u.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatal(err)
+	}
+	coll, err := s.GetCollectionBySlug(ws.ID, "tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Assigned task", Fields: `{"status":"open"}`, AssignedUserID: &u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(`DELETE FROM user_notifications`)
+	exec(`INSERT INTO user_notifications (id, user_id, workspace_id, item_id, kind, dedupe_key, created_at) VALUES (?, ?, ?, ?, 'assigned', ?, ?)`, "n-4051", u.ID, ws.ID, item.ID, "k-4051", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	cfg := &config.Config{PushGatewayURL: gateway.URL + "/internal/push/send", PushGatewaySecret: "test-secret", PushDispatchIntervalRaw: "10ms", PushDispatchSettleRaw: "1ms"}
+	if err := configurePush(srv, cfg); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msgs := <-arrived:
+		if len(msgs) != 1 || msgs[0].Token != "test-device" || msgs[0].Data.NID != "n-4051" {
+			t.Errorf("gateway messages = %+v, want the seeded notification on its device", msgs)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no send request arrived at the configured gateway before the deadline")
+	}
+	srv.Stop()
+	if got := sends.Load(); got != 1 {
+		t.Fatalf("send requests arriving at the configured gateway = %d, want exactly 1", got)
+	}
+}
+
+// TASK-4051: stopping the whole server stops its configured dispatcher too.
+// Kills: M2.
+func TestConfigurePush_ServerStopStopsDispatcher(t *testing.T) {
+	// No Stop cleanup: if shutdown hangs, the deadline must fail cleanly.
+	// A leaked goroutine is acceptable only in that failing run.
+	srv := server.New(storetest.NewSQLite(t))
+	if err := configurePush(srv, &config.Config{PushGatewayURL: "http://gateway.test/send", PushGatewaySecret: "test-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.PushDispatchRunning() {
+		t.Fatal("configured dispatcher is not running")
+	}
+	done := make(chan struct{})
+	go func() { srv.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Server.Stop did not drain the dispatcher before the deadline")
+	}
+	if srv.PushDispatchRunning() {
+		t.Error("dispatcher is still running after Server.Stop")
 	}
 }

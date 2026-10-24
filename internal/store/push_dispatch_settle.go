@@ -1,6 +1,12 @@
 package store
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
+
+// TASK-4051: test-only fault seam for a committed UPDATE's row count.
+var rowsAffected = func(r sql.Result) (int64, error) { return r.RowsAffected() }
 
 // The dispatcher's settle primitives beyond push_dispatch.go's claim-guarded
 // ones (TASK-3939 part B).
@@ -37,7 +43,7 @@ func (s *Store) RecordNotificationsSent(ids []string) (int64, error) {
 		if err != nil {
 			return total, &RecordSentError{Landed: start, err: fmt.Errorf("record notifications sent: %w", err)}
 		}
-		n, err := res.RowsAffected()
+		n, err := rowsAffected(res)
 		if err != nil {
 			// The UPDATE committed; only its count is lost.
 			return total, &RecordSentError{Landed: end, err: fmt.Errorf("record notifications sent: %w", err)}

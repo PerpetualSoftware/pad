@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"slices"
 	"strings"
@@ -221,6 +222,41 @@ func TestRecordNotificationsSent_ReportsTheChunksThatLanded(t *testing.T) {
 	}
 	if st, _, _, _ := f.notifRow(t, ids[notificationIDChunk]); st != "pending" {
 		t.Fatalf("first id of the failed chunk is %s, want pending", st)
+	}
+}
+
+// TASK-4051: a count failure after the second UPDATE still means both chunks
+// committed, while the returned count covers only the first. Kills: M3.
+func TestRecordNotificationsSent_RowsAffectedErrorReportsCommittedChunk(t *testing.T) {
+	f := newNotifyFixture(t)
+	u := notifyUser(t, f.s, "rows-affected@example.com")
+	ids := make([]string, notificationIDChunk+3)
+	for i := range ids {
+		ids[i] = f.seedNotif(t, u.ID, ago(time.Minute))
+	}
+	original := rowsAffected
+	t.Cleanup(func() { rowsAffected = original })
+	calls := 0
+	fault := errors.New("second chunk count fault")
+	rowsAffected = func(r sql.Result) (int64, error) {
+		calls++
+		if calls == 2 {
+			return 0, fault
+		}
+		return original(r)
+	}
+	n, err := f.s.RecordNotificationsSent(ids)
+	var rse *RecordSentError
+	if !errors.As(err, &rse) || !errors.Is(err, fault) {
+		t.Fatalf("error = %v, want RecordSentError wrapping count fault", err)
+	}
+	if rse.Landed != len(ids) || n != notificationIDChunk || calls != 2 {
+		t.Errorf("landed=%d count=%d calls=%d, want %d/%d/2", rse.Landed, n, calls, len(ids), notificationIDChunk)
+	}
+	for _, id := range ids {
+		if state, _, _, _ := f.notifRow(t, id); state != "sent" {
+			t.Fatalf("row %s = %s, want sent (both UPDATEs committed)", id, state)
+		}
 	}
 }
 
