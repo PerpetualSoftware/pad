@@ -63,6 +63,9 @@ const (
 	// account of the cause, and the hint claims none.
 	ErrPermissionDenied ErrorCode = "permission_denied"
 
+	// ErrAgentNameRequired is chat's refusal of an unnamed remote MCP client.
+	ErrAgentNameRequired ErrorCode = "agent_name_required"
+
 	// ErrEmailNotVerified fires when a Cloud account whose email address is
 	// unverified attempts a write (BUG-3864). The server's own code on every
 	// door that enforces it. Not permission_denied: no role, token or grant
@@ -495,6 +498,7 @@ const storedStateUnreadableHint = "Retrying will not help — the item's stored 
 // declarations block at the top of this file should also be added
 // for type safety in test assertions.
 var allowedStructuredErrorCodes = map[string]struct{}{
+	"agent_name_required": {}, // TASK-4042: remote chat needs declared clientInfo.name.
 	"open_children":       {}, // IDEA-1494
 	"plan_limit_exceeded": {}, // TASK-788
 	// BUG-3098. No catalog action reaches an invitation accept today; the
@@ -1687,6 +1691,9 @@ func serverHintFor(bodyMsg, route string, status int) string {
 // plan-limit hint tells the caller to upgrade, which is wrong for an invitee
 // refused by someone else's member cap (BUG-3098).
 func hint403For(code, bodyMsg, route string) string {
+	if code == string(ErrAgentNameRequired) {
+		return "Declare your agent name in MCP clientInfo.name and reconnect before using pad_chat."
+	}
 	if code == string(ErrWorkspaceMemberLimit) {
 		parts := []string{"The workspace is at its member limit; only its owner can make room. Retry the accept after they do."}
 		if route != "" {

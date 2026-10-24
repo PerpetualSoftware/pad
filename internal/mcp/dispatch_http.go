@@ -466,6 +466,10 @@ func (d *HTTPHandlerDispatcher) specialRoutes() map[string]specialDispatchFn {
 
 func (d *HTTPHandlerDispatcher) buildSpecialRoutes() map[string]specialDispatchFn {
 	return map[string]specialDispatchFn{
+		"chat show":           d.dispatchChat("show"),
+		"chat send":           d.dispatchChat("send"),
+		"chat delete":         d.dispatchChat("delete"),
+		"chat read":           d.dispatchChat("read"),
 		"item update":         d.dispatchItemUpdate,
 		"item show":           d.dispatchItemShow,
 		"item list":           d.dispatchItemList,

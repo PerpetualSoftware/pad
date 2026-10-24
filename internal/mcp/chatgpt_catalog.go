@@ -319,6 +319,12 @@ var ChatGPTCatalog = []ChatGPTTool{
 // ChatGPTExclusions are the /mcp operations deliberately not on the ChatGPT
 // surface, each with its reason (TASK-3321 U1-T, lead-ruled).
 var ChatGPTExclusions = map[ChatGPTSource]string{
+	{"pad_chat", "list"}:                "agent chat is not on the ChatGPT surface",
+	{"pad_chat", "inbox"}:               "agent chat is not on the ChatGPT surface",
+	{"pad_chat", "show"}:                "agent chat is not on the ChatGPT surface",
+	{"pad_chat", "send"}:                "agent chat is not on the ChatGPT surface",
+	{"pad_chat", "delete"}:              "agent chat is not on the ChatGPT surface",
+	{"pad_chat", "read"}:                "agent chat is not on the ChatGPT surface",
 	{Tool: chatGPTSetWorkspaceSource}:   "on this shared server it persists no session workspace, so it would only duplicate get_workspace_overview, the connect step",
 	{"pad_item", "bulk-update"}:         "batch overwrite with a large blast radius and little chat value",
 	{"pad_item", "move"}:                "drops fields the target collection does not declare; confusing in chat",

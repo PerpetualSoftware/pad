@@ -157,6 +157,25 @@ PAD_EMAIL_FROM_NAME=Pad                 # Sender display name (default: Pad)
 
 ## CLI
 
+Global chat targets are `C<n>`, `<n>`, or `@<name>` for your DM with an agent.
+All chat commands support `--format json`.
+
+```bash
+pad chat list
+pad chat inbox [--agent NAME]
+pad chat show <target> [--since N] [--limit N] [--no-mark]
+pad chat send <target> <body|-> [--reply-to N] [--op-key K] [--context-workspace SLUG]
+pad chat delete <target> <seq>
+pad chat read <target> --to N
+```
+
+Show marks only the messages returned by the page read (unless `--no-mark`).
+Replying marks read only to `--reply-to`; plain sends mark nothing. Send
+ensures an unknown `@name` DM; other commands return not found. Body `-`
+reads stdin. Reference context defaults to the cwd's `.pad.toml` workspace
+link when present. Chat itself is global and needs no workspace.
+
+
 Items are referenced by **issue ID** (e.g. `TASK-5`, `BUG-8`) wherever a `<ref>` argument appears.
 Slugs also work but issue IDs are preferred.
 

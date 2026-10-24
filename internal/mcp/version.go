@@ -2217,7 +2217,15 @@ const CmdhelpVersion = "0.1"
 //     this surface can receive it; the entry exists so a future action does
 //     not collapse it to permission_denied. When an action that can reach
 //     it is added, that addition is the contract change and owns the bump.
-const ToolSurfaceVersion = "0.101"
+//
+// v0.102 — TASK-4042: adds global pad_chat (list, inbox, show, send,
+// delete, read) on stdio and remote HTTP; excluded from ChatGPT. Show marks
+// through the highest returned seq only when the page reaches the last read
+// message (min <= read_seq+1); gaps mark nothing. Remote mark reports outcomes;
+// mark failures preserve show/send success. Replies mark through reply_to. No direction.
+// Existing descriptions were reworded; examples/reasons moved to docs/mcp.md
+// without dropping any rule, caveat, refusal or ref.
+const ToolSurfaceVersion = "0.102"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
