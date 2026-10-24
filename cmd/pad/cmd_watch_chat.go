@@ -116,7 +116,7 @@ var seenChat = newRecentSet(256, 10*time.Minute)
 
 // Stream HTTP rule: every chat HTTP call on the stream goroutine is bounded
 // at 3s; any failure backs that conversation off 10s (identity failure backs
-// off globally). The unread summary has no conversation to back off.
+// off globally). Unread failures back off the summary separately.
 const (
 	monitorChatFloorTimeout = 3 * time.Second
 	monitorChatFloorBackoff = 10 * time.Second
@@ -136,6 +136,7 @@ type monitorChat struct {
 	now                func() time.Time
 	retryAfter         map[int]time.Time
 	identityRetryAfter time.Time
+	summaryRetryAfter  time.Time
 }
 
 func newMonitorChat(sink chatSink, printed *recentSet) *monitorChat {
@@ -150,6 +151,7 @@ func (c *monitorChat) setIdentity(baseURL, userID string) {
 	c.identity = identity
 	clear(c.retryAfter)
 	c.identityRetryAfter = time.Time{}
+	c.summaryRetryAfter = time.Time{}
 	c.resetFloors()
 	clear(c.delivered)
 	clear(c.printedIDs)
@@ -212,7 +214,7 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		return
 	}
 	last := c.last[p.Conversation]
-	if p.Deleted {
+	if p.Deleted && p.MessageSeq <= last+1 {
 		if !c.retract(w, p) {
 			return
 		}
@@ -369,7 +371,7 @@ func readMonitorChatSummary(ctx context.Context, sink chatSink, identity monitor
 }
 
 func (c *monitorChat) summary(w io.Writer) bool {
-	if !cli.ResolveAnnouncedArmed() || (c.resolveIdentity != nil && c.now().Before(c.identityRetryAfter)) {
+	if !cli.ResolveAnnouncedArmed() || c.now().Before(c.summaryRetryAfter) || (c.resolveIdentity != nil && c.now().Before(c.identityRetryAfter)) {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), c.floorTimeout)
@@ -378,7 +380,11 @@ func (c *monitorChat) summary(w io.Writer) bool {
 	if result.identityFailed {
 		c.identityRetryAfter = c.now().Add(monitorChatFloorBackoff)
 	}
-	return c.applySummary(w, result)
+	ok := c.applySummary(w, result)
+	if !result.identityFailed && !result.ok {
+		c.summaryRetryAfter = c.now().Add(monitorChatFloorBackoff)
+	}
+	return ok
 }
 
 func (c *monitorChat) applySummary(w io.Writer, result monitorChatSummary) bool {
