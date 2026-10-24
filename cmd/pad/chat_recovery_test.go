@@ -1,0 +1,199 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestMonitorChatFailedResyncUnlistedConversationFetchesHistory(t *testing.T) {
+	chatSessionEnv(t)
+	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)}}
+	c := newMonitorChat(f, newRecentSet(256, 10*time.Minute))
+	var out bytes.Buffer
+	if !c.summary(&out) {
+		t.Fatal("initial summary failed")
+	}
+	f.unreadErr = errors.New("summary unavailable")
+	c.stream(&out, fakeSSEResponse("event: sync_required\ndata: {}\n\n"+strings.ReplaceAll(chatSSE("d", 4, false), `"conversation":1`, `"conversation":2`)), "")
+	if !slices.Equal(f.after, []int64{0}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[2] != 4 || c.summaryReady {
+		t.Fatalf("failed summary opened delivery: after=%v acks=%v delivered=%v ready=%t output=%q", f.after, f.ackSeqs, c.delivered, c.summaryReady, out.String())
+	}
+	previous := -1
+	for _, id := range []string{"a", "b", "c", "d"} {
+		at := strings.Index(out.String(), "fetched "+id+"\n")
+		if at <= previous {
+			t.Fatalf("missing or unordered %s: %q", id, out.String())
+		}
+		previous = at
+	}
+}
+
+func TestMonitorChatRetractionOutlivesSeenChat(t *testing.T) {
+	for _, expiry := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expiry=%t", expiry), func(t *testing.T) {
+			chatSessionEnv(t)
+			seen := newRecentSet(256, 10*time.Minute)
+			now := time.Unix(1000, 0)
+			seen.now = func() time.Time { return now }
+			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("original", 1)}}
+			c := newMonitorChat(f, seen)
+			var out bytes.Buffer
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "original", MessageSeq: 1})
+			if out.Len() == 0 || !seen.contains("original") {
+				t.Fatal("original was not printed")
+			}
+			if expiry {
+				now = now.Add(11 * time.Minute)
+			} else {
+				for i := 0; i < 256; i++ {
+					seen.seen(fmt.Sprintf("other-%d", i))
+				}
+			}
+			if seen.contains("original") {
+				t.Fatal("test must expire or evict original from seenChat")
+			}
+			// A cursor seed does not make another process's rows ours to retract.
+			c.last[1] = 2
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "other-process", MessageSeq: 2, Deleted: true})
+			if strings.Contains(out.String(), "retracted") {
+				t.Fatal("retracted a row this process never printed")
+			}
+			p := watchStreamPayload{Conversation: 1, MessageID: "original", MessageSeq: 1, Deleted: true}
+			acks := f.acks
+			c.handle(failChatWriter{}, p)
+			if f.acks != acks || c.last[1] != 2 {
+				t.Fatal("failed retraction advanced or acknowledged delivery")
+			}
+			c.handle(&out, p)
+			if strings.Count(out.String(), "message original retracted") != 1 {
+				t.Fatalf("owed retraction lost: %q", out.String())
+			}
+			// The next contiguous tombstone can acknowledge only after the owed
+			// retraction has been written. The earlier delivered floor stays at 1.
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "tombstone", MessageSeq: 3, Deleted: true})
+			if c.delivered[1] != 3 || !slices.Equal(f.ackSeqs, []int64{1, 3}) {
+				t.Fatalf("tombstone did not acknowledge: delivered=%v acks=%v", c.delivered, f.ackSeqs)
+			}
+			c.handle(&out, p)
+			if strings.Count(out.String(), "message original retracted") != 1 {
+				t.Fatal("duplicate retraction")
+			}
+		})
+	}
+}
+
+func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
+	for _, change := range []string{"same", "base-url", "user"} {
+		t.Run(change, func(t *testing.T) {
+			chatSessionEnv(t)
+			t.Setenv("PAD_URL", "")
+			t.Setenv("PAD_MODE", "remote")
+			t.Setenv("PAD_TOKEN", "")
+			t.Chdir(t.TempDir())
+			oldSeen := seenChat
+			seenChat = newRecentSet(256, 10*time.Minute)
+			t.Cleanup(func() { seenChat = oldSeen })
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			defer cancel()
+			var mu sync.Mutex
+			connections := 0
+			var afters, acks []int64
+			var serverURL string
+			writeURL := func(base string) error {
+				return os.WriteFile(filepath.Join(".", ".pad.toml"), []byte(fmt.Sprintf("workspace = \"test\"\nurl = %q\n", base)), 0600)
+			}
+			h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				path := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/first"), "/second")
+				switch path {
+				case "/api/v1/auth/me":
+					id := "user1"
+					if change == "user" && connections > 0 {
+						id = "user2"
+					}
+					json.NewEncoder(w).Encode(map[string]string{"id": id})
+				case "/api/v1/events/stream":
+					connections++
+					w.Header().Set("Content-Type", "text/event-stream")
+					if connections == 1 {
+						fmt.Fprint(w, chatSSE("old", 2, false))
+					} else {
+						fmt.Fprint(w, chatSSE("next", 3, false))
+					}
+				case "/api/v1/me/chat/unread":
+					if connections == 1 {
+						fmt.Fprint(w, `{"total":2,"conversations":[{"number":1,"delivered_seq":0}]}`)
+					} else {
+						http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					}
+				case "/api/v1/me/conversations/1/messages":
+					after, _ := strconv.ParseInt(r.URL.Query().Get("after_seq"), 10, 64)
+					afters = append(afters, after)
+					rows := []monitorChatMessage{chatMsg("shared", 1), chatMsg("old", 2)}
+					if connections > 1 {
+						rows[1].Deleted = true
+						rows = append(rows, chatMsg("next", 3))
+					}
+					var messages []monitorChatMessage
+					for _, row := range rows {
+						if row.Seq > after {
+							messages = append(messages, row)
+						}
+					}
+					json.NewEncoder(w).Encode(map[string]any{"messages": messages})
+				case "/api/v1/me/conversations/1/delivered":
+					var body struct{ Seq int64 }
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					acks = append(acks, body.Seq)
+					if connections == 1 && change == "base-url" {
+						if err := writeURL(serverURL + "/second"); err != nil {
+							t.Error(err)
+						}
+					}
+					fmt.Fprint(w, `{}`)
+					if connections > 1 {
+						cancel()
+					}
+				default:
+					t.Error("unexpected request", r.URL)
+					http.NotFound(w, r)
+				}
+			}))
+			defer h.Close()
+			serverURL = h.URL
+			if err := writeURL(serverURL + "/first"); err != nil {
+				t.Fatal(err)
+			}
+			out := captureStdoutDraining(t, func() {
+				if err := runWatchMonitor(ctx); err != nil {
+					t.Error(err)
+				}
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			wantAfters, wantShared := []int64{0, 0}, 2
+			if change == "same" {
+				wantAfters, wantShared = []int64{0, 2}, 1
+			}
+			if connections != 2 || !slices.Equal(afters, wantAfters) || !slices.Equal(acks, []int64{2, 3}) || strings.Count(out, "fetched shared\n") != wantShared || strings.Count(out, "fetched next\n") != 1 || strings.Contains(out, "retracted") {
+				t.Fatalf("identity %s: connections=%d after=%v acks=%v output=%q", change, connections, afters, acks, out)
+			}
+		})
+	}
+}
