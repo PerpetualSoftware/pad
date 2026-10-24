@@ -120,7 +120,7 @@ func TestSessionDirectionClearFailureStillDisarms(t *testing.T) {
 			calls := 0
 			clearSessionChatDirection = func() error {
 				calls++
-				return &os.PathError{Op: "remove", Path: path, Err: os.ErrPermission}
+				return fmt.Errorf("could not remove chat direction file %s: %w", path, os.ErrPermission)
 			}
 			cmd := sessionDisarmCmd()
 			if verb == "reset" {
@@ -129,7 +129,12 @@ func TestSessionDirectionClearFailureStillDisarms(t *testing.T) {
 			var errout bytes.Buffer
 			cmd.SetErr(&errout)
 			err = cmd.Execute() // main exits 1 on any Execute error.
-			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(errout.String(), path) || calls != 1 {
+			state := "disarmed"
+			if verb == "reset" {
+				state = "reset"
+			}
+			message := fmt.Sprintf("session %s; could not remove chat direction file %s: %v", state, path, os.ErrPermission)
+			if err == nil || err.Error() != message || !strings.Contains(errout.String(), message) || !errors.Is(err, os.ErrPermission) || calls != 1 {
 				t.Errorf("clear failure must return non-zero and name file: err=%v stderr=%q calls=%d", err, errout.String(), calls)
 			}
 			want := cli.LocalArmOff

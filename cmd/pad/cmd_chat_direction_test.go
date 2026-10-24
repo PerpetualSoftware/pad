@@ -134,24 +134,28 @@ func TestChatDisarmLeavesPushArm(t *testing.T) {
 }
 func TestSessionDisarmClearsDirection(t *testing.T) {
 	chatSessionEnv(t)
-	cli.WriteChatDirection()
+	path, err := cli.WriteChatDirection()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := sessionDisarmCmd().Execute(); err != nil {
 		t.Fatal(err)
 	}
-	cli.WriteArmState()
-	if cli.ChatDirectionOn() {
-		t.Fatal("direction revived")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("direction file survived: %v", err)
 	}
 }
 func TestSessionResetClearsDirection(t *testing.T) {
 	chatSessionEnv(t)
-	cli.WriteChatDirection()
+	path, err := cli.WriteChatDirection()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := sessionResetCmd().Execute(); err != nil {
 		t.Fatal(err)
 	}
-	cli.WriteArmState()
-	if cli.ChatDirectionOn() {
-		t.Fatal("direction revived")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("direction file survived: %v", err)
 	}
 }
 
