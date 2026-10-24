@@ -59,6 +59,17 @@ type watchEventPayload struct {
 	// PushID is set only on a push (TASK-3585) and omitted otherwise: a
 	// monitor that has already printed this push_id drops the event.
 	PushID string `json:"push_id,omitempty"`
+	// TASK-4041: only KindChat fills these fields.
+	ConversationID string `json:"conversation_id,omitempty"`
+	Conversation   int    `json:"conversation,omitempty"`
+	MessageID      string `json:"message_id,omitempty"`
+	MessageSeq     int64  `json:"message_seq,omitempty"`
+	ReplyToSeq     *int64 `json:"reply_to_seq,omitempty"`
+	Excerpt        string `json:"excerpt,omitempty"`
+	AuthorAgentKey string `json:"author_agent_key,omitempty"`
+	AuthorIsHuman  *bool  `json:"author_is_human,omitempty"`
+	TargetAgentKey string `json:"target_agent_key,omitempty"`
+	Deleted        bool   `json:"deleted,omitempty"`
 }
 
 // handleWatchEventsStream streams the caller's watch/nudge notifications.
@@ -71,7 +82,8 @@ type watchEventPayload struct {
 // to exactly two things (DR-2: no firehose, no wildcard subscriptions),
 // plus a third a stream receives only when it opts in with ?access=true:
 // workspace_access_changed addressed to its own user (TASK-3272; see
-// watchStreamDelivers):
+// watchStreamDelivers). KindChat additionally requires ?chat=true, an armed
+// stream, and an exact user/agent match (TASK-4041, DOC-4036):
 //
 //  1. Notifications on an item the caller has an explicit watch on
 //     (internal/store's watches table), gated by that watch's optional
@@ -238,6 +250,12 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// asks for it. Read here rather than into SessionIdentity because it is
 	// a delivery preference of this connection, not presence metadata.
 	access := r.URL.Query().Get(watchAccessQueryParam) == "true"
+	prefs := watchStreamPrefs{armed: armed, access: access, chat: r.URL.Query().Get(watchChatQueryParam) == "true", agentKey: normalizeAgentName(ident.Agent)}
+	// Like chatActor, cookie sessions have no agent identity for chat delivery.
+	// Keep the parsed identity intact for presence and all other stream behavior.
+	if !isBearerAuth(r) {
+		prefs.agentKey = ""
+	}
 	// sessionID hoisted out of the if-block (PLAN-2558 S5, TASK-2588): a
 	// targeted push's predicate (Notification.TargetSessionID) is
 	// evaluated in the select loop below, which needs this connection's
@@ -322,7 +340,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 		} else {
 			for _, n := range missed {
-				if !watchStreamDelivers(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, access, n) {
+				if !visCache.delivers(watches, user.ID, sessionID, prefs, n) {
 					continue
 				}
 				if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(visCache, n)); err != nil {
@@ -412,7 +430,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			if !ok {
 				return
 			}
-			if !watchStreamDelivers(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, armed, access, n) {
+			if !visCache.delivers(watches, user.ID, sessionID, prefs, n) {
 				continue
 			}
 			if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(visCache, n)); err != nil {
@@ -730,6 +748,10 @@ func (s *Server) loadWatchPredicates(r *http.Request, userID string) (map[string
 // ordinary watch events, and only loses the instruction-bearing push
 // channel.
 func watchNotificationVisible(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, armed bool, n watchevents.Notification) bool {
+	// TASK-4041: chat never falls through item or workspace visibility.
+	if n.Kind == watchevents.KindChat {
+		return false
+	}
 	// TASK-2533 codex round 2 finding 2: the caller's CURRENT access to
 	// the notification's collection/item is checked FIRST and applies
 	// UNIFORMLY to every kind below — watch-matched and addressed-to-you
@@ -843,6 +865,22 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 // for the same reason: a browser EventSource cannot set headers. Only
 // "true" counts.
 const watchAccessQueryParam = "access"
+const watchChatQueryParam = "chat"
+
+type watchStreamPrefs struct {
+	armed, access, chat bool
+	agentKey            string
+}
+
+func (c *watchVisCache) denied() bool { return c.deny }
+
+// TASK-4041: chat is global; do not resolve an empty workspace on either path.
+func (c *watchVisCache) delivers(watches map[string]string, userID, sessionID string, prefs watchStreamPrefs, n watchevents.Notification) bool {
+	if n.Kind == watchevents.KindChat {
+		return !c.denied() && watchStreamDelivers(watches, watchAccessVisibility{}, userID, sessionID, prefs, n)
+	}
+	return watchStreamDelivers(watches, c.forWorkspace(n.WorkspaceID), userID, sessionID, prefs, n)
+}
 
 // watchStreamDelivers is the stream's delivery decision. It answers
 // workspace_access_changed itself and hands every other kind to
@@ -858,11 +896,14 @@ const watchAccessQueryParam = "access"
 // the web tab bar that consumes it (PLAN-3002 U7b) does not arm. An
 // access=true stream is an ordinary /events/stream connection and counts
 // against PAD_SSE_MAX_PER_USER like any other.
-func watchStreamDelivers(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, armed, access bool, n watchevents.Notification) bool {
-	if n.Kind == watchevents.KindWorkspaceAccessChanged {
-		return access && n.TargetUserID != "" && n.TargetUserID == userID
+func watchStreamDelivers(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, prefs watchStreamPrefs, n watchevents.Notification) bool {
+	if n.Kind == watchevents.KindChat {
+		return prefs.chat && prefs.armed && n.TargetUserID != "" && n.TargetUserID == userID && n.TargetAgentKey != "" && n.TargetAgentKey == prefs.agentKey
 	}
-	return watchNotificationVisible(watches, vis, userID, sessionID, armed, n)
+	if n.Kind == watchevents.KindWorkspaceAccessChanged {
+		return prefs.access && n.TargetUserID != "" && n.TargetUserID == userID
+	}
+	return watchNotificationVisible(watches, vis, userID, sessionID, prefs.armed, n)
 }
 
 // parseWatchPredicate splits a `field=value` predicate string. DOC-2479
@@ -893,6 +934,13 @@ func parseWatchPredicate(raw string) (field, value string, ok bool) {
 // (e.g. a webhook or system-sourced mutation), rather than adding a
 // second field DOC-2479 doesn't specify.
 func watchEventPayloadFor(c *watchVisCache, n watchevents.Notification) watchEventPayload {
+	if n.Kind == watchevents.KindChat {
+		human := n.AuthorAgentKey == ""
+		return watchEventPayload{ID: n.ID, Ts: n.Timestamp, Kind: n.Kind,
+			ConversationID: n.ConversationID, Conversation: n.ConversationNumber, MessageID: n.MessageID, MessageSeq: n.MessageSeq,
+			ReplyToSeq: n.ReplyToSeq, Excerpt: n.Excerpt, AuthorAgentKey: n.AuthorAgentKey, AuthorIsHuman: &human,
+			TargetAgentKey: n.TargetAgentKey, Deleted: n.ChatDeleted}
+	}
 	workspaceSlug := c.workspaceSlug(n.WorkspaceID)
 	actor := n.ActorName
 	if actor == "" {

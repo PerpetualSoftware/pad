@@ -401,6 +401,10 @@ and only armed sessions receive pushes (the consent gate). Run
 'pad session disarm' to withdraw consent, or 'pad session status' to see
 the current state.
 
+Re-running 'pad session arm' creates a new arm generation and ends chat
+direction. To accept chat instructions again, the user must re-run
+'pad chat arm --accept-instructions'.
+
 Arming is per-session and transient. To opt a whole REPOSITORY in without
 arming each session by hand, set 'push.auto_arm = true' under a [push]
 table in the repo's .pad.toml (a deliberate, committed choice).
@@ -442,6 +446,8 @@ command exits non-zero.`,
 	}
 }
 
+var clearSessionChatDirection = cli.ClearChatDirection
+
 // sessionDisarmCmd is `pad session disarm` (PLAN-2613 S3, TASK-2618): the
 // withdrawal verb. It writes a session-scoped explicit-OFF marker (NOT a
 // file removal), so the session stops accepting pushes for its remaining
@@ -474,6 +480,7 @@ disarm is kept for the directory until 'pad session reset'.
 Idempotent.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			clearErr := clearSessionChatDirection()
 			path, err := cli.WriteDisarmState()
 			if err != nil {
 				return err
@@ -482,6 +489,9 @@ Idempotent.`,
 			// auto_arm is deciding again (BUG-3227). Refuse loudly.
 			if _, err := cli.VerifyArmStateHeld(); err != nil {
 				return err
+			}
+			if clearErr != nil {
+				return fmt.Errorf("session disarmed; %w", clearErr)
 			}
 			// Whether auto_arm would otherwise re-arm THIS session tells the
 			// user if the disarm actually changed anything visible.
@@ -528,9 +538,13 @@ session, and stays in force for the directory until reset.
 Idempotent.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			clearErr := clearSessionChatDirection()
 			removed, path, err := cli.RemoveArmState()
 			if err != nil {
 				return err
+			}
+			if clearErr != nil {
+				return fmt.Errorf("session reset; %w", clearErr)
 			}
 			if formatFlag == "json" {
 				return cli.PrintJSON(map[string]any{
@@ -551,7 +565,8 @@ Idempotent.`,
 // sessionStatusJSON is the JSON shape of `pad session status` (a stable
 // contract S4's composer and other tooling can read).
 type sessionStatusJSON struct {
-	Workspace string `json:"workspace,omitempty"`
+	ChatDirection bool   `json:"chat_direction"`
+	Workspace     string `json:"workspace,omitempty"`
 	// LocalState is THIS session's tri-state local override (PLAN-2613 S3):
 	// "armed" (explicit `pad session arm`), "disarmed" (explicit `pad
 	// session disarm`, which beats auto_arm for this session), "none"
@@ -604,6 +619,7 @@ func sessionStatusCmd() *cobra.Command {
 			localState := cli.SessionArmState()
 
 			st := sessionStatusJSON{
+				ChatDirection:      cli.ChatDirectionOn(),
 				LocalState:         localArmStateString(localState),
 				LocalArmed:         localState == cli.LocalArmOn,
 				AutoArm:            decision.Armed,
@@ -716,6 +732,7 @@ func printSessionStatus(st sessionStatusJSON) {
 		local = "cannot verify this session on this platform — failing closed; local arm/disarm cannot take effect here (use .pad.toml push.auto_arm; pad session reset clears this file)"
 	}
 	fmt.Fprintf(tw, "Local state:\t%s\n", local)
+	fmt.Fprintf(tw, "Chat direction:\t%t\n", st.ChatDirection)
 
 	auto := "off"
 	switch {

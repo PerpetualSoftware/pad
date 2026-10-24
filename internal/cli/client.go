@@ -902,6 +902,8 @@ type StreamSessionIdentity struct {
 	// server.sessionArmedQueryParam for why (audit-visible by design, and
 	// reachable by a future non-CLI client that can't set headers).
 	Armed bool
+	// Chat opts into ref-only chat delivery (TASK-4041).
+	Chat bool
 }
 
 // NewWatchEventsStreamRequest builds an authenticated GET request for
@@ -942,7 +944,36 @@ func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID st
 		q.Set("armed", "true")
 		req.URL.RawQuery = q.Encode()
 	}
+	if ident.Chat {
+		q := req.URL.Query()
+		q.Set("chat", "true")
+		req.URL.RawQuery = q.Encode()
+	}
 	return req, nil
+}
+
+// MarkChatDelivered acknowledges only messages printed by this monitor (TASK-4041).
+func (c *Client) MarkChatDelivered(number int, seq int64) error {
+	return c.MarkChatDeliveredContext(context.Background(), number, seq)
+}
+
+// MarkChatDeliveredContext bounds the monitor acknowledgement by its context.
+func (c *Client) MarkChatDeliveredContext(ctx context.Context, number int, seq int64) error {
+	data, err := json.Marshal(map[string]int64{"seq": seq})
+	if err != nil {
+		return err
+	}
+	req, err := c.newRequest("POST", fmt.Sprintf("/me/conversations/%d/delivered", number), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	return c.handleResponse(resp, nil)
 }
 
 // maxHeaderLabelLen bounds the label the client is willing to put on
@@ -2191,8 +2222,13 @@ func (c *Client) Logout() error {
 
 // GetCurrentUser returns the authenticated user's profile.
 func (c *Client) GetCurrentUser() (*LoginUser, error) {
+	return c.GetCurrentUserContext(context.Background())
+}
+
+// GetCurrentUserContext allows callers to bound identity resolution.
+func (c *Client) GetCurrentUserContext(ctx context.Context) (*LoginUser, error) {
 	var result LoginUser
-	return &result, c.get("/auth/me", &result)
+	return &result, c.getContext(ctx, "/auth/me", &result)
 }
 
 // CheckSession returns the current auth status.
@@ -3022,11 +3058,20 @@ func (c *Client) get(path string, result interface{}) error {
 // getWithHeader is get that also returns the response headers (nil when no
 // response arrived).
 func (c *Client) getWithHeader(path string, result interface{}) (http.Header, error) {
+	return c.getWithHeaderContext(context.Background(), path, result)
+}
+
+func (c *Client) getContext(ctx context.Context, path string, result interface{}) error {
+	_, err := c.getWithHeaderContext(ctx, path, result)
+	return err
+}
+
+func (c *Client) getWithHeaderContext(ctx context.Context, path string, result interface{}) (http.Header, error) {
 	req, err := c.newRequest("GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -3400,6 +3445,18 @@ func (c *Client) ListChatConversations() (json.RawMessage, error) {
 	return result, err
 }
 
+func (c *Client) ChatConversation(number int) (json.RawMessage, error) {
+	return c.ChatConversationContext(context.Background(), number)
+}
+
+// ChatConversationContext allows the monitor's floor GET to share its deadline
+// with identity resolution, including reading the response body.
+func (c *Client) ChatConversationContext(ctx context.Context, number int) (json.RawMessage, error) {
+	var result json.RawMessage
+	err := c.getContext(ctx, fmt.Sprintf("/me/conversations/%d", number), &result)
+	return result, err
+}
+
 func (c *Client) EnsureChatDM(agent string) (json.RawMessage, error) {
 	var result json.RawMessage
 	err := c.post("/me/conversations", map[string]string{"agent_key": agent}, &result)
@@ -3407,23 +3464,33 @@ func (c *Client) EnsureChatDM(agent string) (json.RawMessage, error) {
 }
 
 func (c *Client) ChatUnread(agent string) (json.RawMessage, error) {
+	return c.ChatUnreadContext(context.Background(), agent)
+}
+
+// ChatUnreadContext shares the summary deadline with identity resolution.
+func (c *Client) ChatUnreadContext(ctx context.Context, agent string) (json.RawMessage, error) {
 	var result json.RawMessage
 	path := "/me/chat/unread"
 	if agent != "" {
 		path += "?agent=" + url.QueryEscape(agent)
 	}
-	err := c.get(path, &result)
+	err := c.getContext(ctx, path, &result)
 	return result, err
 }
 
 func (c *Client) ChatMessages(number int, since *int64, limit int) (json.RawMessage, error) {
+	return c.ChatMessagesContext(context.Background(), number, since, limit)
+}
+
+// ChatMessagesContext bounds gap fills, including reading the response body.
+func (c *Client) ChatMessagesContext(ctx context.Context, number int, since *int64, limit int) (json.RawMessage, error) {
 	q := url.Values{}
 	if since != nil {
 		q.Set("after_seq", strconv.FormatInt(*since, 10))
 	}
 	q.Set("limit", strconv.Itoa(limit))
 	var result json.RawMessage
-	err := c.get(fmt.Sprintf("/me/conversations/%d/messages?%s", number, q.Encode()), &result)
+	err := c.getContext(ctx, fmt.Sprintf("/me/conversations/%d/messages?%s", number, q.Encode()), &result)
 	return result, err
 }
 

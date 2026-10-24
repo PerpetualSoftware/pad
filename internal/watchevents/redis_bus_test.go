@@ -22,6 +22,7 @@ package watchevents
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -796,5 +797,29 @@ func TestRedisBusCloseIsIdempotentAndClosesSubscribers(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("post-Close Subscribe returned a live channel nobody will ever close")
+	}
+}
+
+func TestChatNotificationSurvivesRedisRoundTrip(t *testing.T) {
+	b, _ := newMiniredisBus(t, 64)
+	ch, _, err := b.Subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := int64(3)
+	// TASK-4041: Publish must encode the real Redis envelope; the subscriber
+	// must decode it and replace the JSON id with the script-assigned id.
+	want := Notification{ID: 999, Timestamp: 123, Kind: KindChat, ConversationID: "conv", ConversationNumber: 9, MessageID: "msg", MessageSeq: 4, ReplyToSeq: &seq, Excerpt: "short | preview", AuthorUserID: "u", AuthorAgentKey: "a", TargetUserID: "t", TargetAgentKey: "b", ChatDeleted: true}
+	if err := b.Publish(want); err != nil {
+		t.Fatal(err)
+	}
+	want.ID = 1
+	select {
+	case got := <-ch:
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip: %+v != %+v", got, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("chat notification never returned through the Redis envelope")
 	}
 }

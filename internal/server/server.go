@@ -2142,6 +2142,7 @@ func (s *Server) setupRouter() {
 			r.Post("/me/conversations/{n}/messages", s.handleSendChatMessage)
 			r.Delete("/me/conversations/{n}/messages/{seq}", s.handleDeleteChatMessage)
 			r.Post("/me/conversations/{n}/read", s.handleMarkChatRead)
+			r.Post("/me/conversations/{n}/delivered", s.handleMarkChatDelivered)
 			r.Get("/me/chat/unread", s.handleChatUnread)
 
 			// Workspaces

@@ -184,7 +184,7 @@ func (s *Server) handleGetChatConversation(w http.ResponseWriter, r *http.Reques
 	}
 	for _, row := range rows {
 		if row.ID == c.ID {
-			writeJSON(w, 200, newChatDetail(row))
+			writeJSON(w, 200, chatConversationGet{chatConversationDetail: newChatDetail(row), DeliveredSeq: row.DeliveredSeq})
 			return
 		}
 	}
@@ -301,6 +301,9 @@ func (s *Server) handleSendChatMessage(w http.ResponseWriter, r *http.Request) {
 		writeChatError(w, err)
 		return
 	}
+	if !result.Replayed {
+		s.notifyChatMessage(c, result.Message, result.Recipients, false)
+	}
 	status := 201
 	if result.Replayed {
 		status = 200
@@ -327,6 +330,9 @@ func (s *Server) handleDeleteChatMessage(w http.ResponseWriter, r *http.Request)
 		writeChatError(w, err)
 		return
 	}
+	if deleted {
+		s.notifyChatDeleted(c, *m, actor)
+	}
 	writeJSON(w, 200, map[string]any{"message": newChatMsg(actor, *m), "deleted": deleted})
 }
 func (s *Server) handleMarkChatRead(w http.ResponseWriter, r *http.Request) {
@@ -351,6 +357,29 @@ func (s *Server) handleMarkChatRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"read_seq": seq})
+}
+func (s *Server) handleMarkChatDelivered(w http.ResponseWriter, r *http.Request) {
+	actor, ok := chatActor(w, r)
+	if !ok {
+		return
+	}
+	c, ok := s.resolveChatConversation(w, r, actor)
+	if !ok {
+		return
+	}
+	var in struct {
+		Seq *int64 `json:"seq"`
+	}
+	if err := decodeJSON(r, &in); err != nil || in.Seq == nil || *in.Seq < 0 {
+		writeError(w, 400, "validation_error", "seq must be a nonnegative integer")
+		return
+	}
+	seq, err := s.store.MarkConversationDelivered(actor, c.ID, *in.Seq)
+	if err != nil {
+		writeChatError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"delivered_seq": seq})
 }
 func (s *Server) handleChatUnread(w http.ResponseWriter, r *http.Request) {
 	actor, ok := chatActor(w, r)

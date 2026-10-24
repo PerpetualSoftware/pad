@@ -35,10 +35,11 @@ type Conversation struct {
 // ConversationSummary is one inbox row.
 type ConversationSummary struct {
 	Conversation
-	AgentKey    string               `json:"agent_key"`
-	ReadSeq     int64                `json:"read_seq"`
-	Unread      int                  `json:"unread"`
-	LastMessage *ConversationMessage `json:"last_message,omitempty"`
+	AgentKey     string               `json:"agent_key"`
+	ReadSeq      int64                `json:"read_seq"`
+	DeliveredSeq int64                `json:"delivered_seq"`
+	Unread       int                  `json:"unread"`
+	LastMessage  *ConversationMessage `json:"last_message,omitempty"`
 }
 
 // ConversationQuote is the preview of the message a reply quotes. Never the

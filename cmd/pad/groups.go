@@ -259,6 +259,6 @@ func chatCmd() *cobra.Command {
 		Long:  "Global chat. Targets are C<n>, <n>, or @<name> for your DM with an agent.",
 		RunE:  unknownSubcommandRun,
 	}
-	cmd.AddCommand(chatListCmd(), chatInboxCmd(), chatShowCmd(), chatSendCmd(), chatDeleteCmd(), chatReadCmd())
+	cmd.AddCommand(chatListCmd(), chatInboxCmd(), chatShowCmd(), chatSendCmd(), chatDeleteCmd(), chatReadCmd(), newChatArmCmd(), newChatDisarmCmd())
 	return cmd
 }

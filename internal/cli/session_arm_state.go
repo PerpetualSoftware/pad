@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -68,6 +69,9 @@ import (
 // so a human inspecting this security artifact reads intent at a glance.
 type ArmState struct {
 	Armed bool `json:"armed"`
+	// Generation identifies one explicit arm. Older files still arm delivery;
+	// chat direction alone requires a nonempty matching generation.
+	Generation string `json:"generation,omitempty"`
 	// Disarmed makes the file TRI-STATE (PLAN-2613 S3). S2 had two states:
 	// a present (armed) file or none. S3 adds an explicit-OFF value so a
 	// within-session `pad session disarm` can withdraw consent even in an
@@ -222,6 +226,13 @@ func writeArmStateFile(disarmed bool) (path string, err error) {
 		Socket:    socket,
 		Cwd:       cwd,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if !disarmed {
+		var generation [32]byte
+		if _, err := rand.Read(generation[:]); err != nil {
+			return "", fmt.Errorf("generate arm generation: %w", err)
+		}
+		st.Generation = hex.EncodeToString(generation[:])
 	}
 	if socket != "" {
 		// Bind the file to this specific socket instance — its mtime plus,
@@ -591,7 +602,12 @@ func MarkFirstConnect() (first bool, err error) {
 // closed), never the reverse. Best effort throughout — a lingering file
 // is simply re-evaluated on the next read.
 func reapArmFile(path string) {
-	if st, _, err := readArmState(); err == nil && st != nil && armStateOwnerVerdict(st) != LivenessDead {
+	reapOwnedArmFile(path, func() (*ArmState, error) { st, _, err := readArmState(); return st, err })
+}
+
+// TASK-4041: share the race-safe owner recheck with the independent chat file.
+func reapOwnedArmFile(path string, read func() (*ArmState, error)) {
+	if st, err := read(); err == nil && st != nil && armStateOwnerVerdict(st) != LivenessDead {
 		return // re-written by an owner that is not provably dead — leave it
 	}
 	_ = os.Remove(path)

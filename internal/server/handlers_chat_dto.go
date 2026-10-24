@@ -22,6 +22,10 @@ type chatConversationDetail struct {
 	ReadSeq int64 `json:"read_seq"`
 	Unread  int   `json:"unread"`
 }
+type chatConversationGet struct {
+	chatConversationDetail
+	DeliveredSeq int64 `json:"delivered_seq"`
+}
 type chatConversationSummary struct {
 	chatConversationDetail
 	LastMessage *chatLastMessage `json:"last_message,omitempty"`
