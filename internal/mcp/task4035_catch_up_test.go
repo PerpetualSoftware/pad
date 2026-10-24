@@ -13,9 +13,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
+	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
@@ -160,5 +162,83 @@ func TestTASK4035_CatchUpOverMCPNeverCreatesTheCursor(t *testing.T) {
 		if r.method != http.MethodGet || !strings.HasSuffix(r.path, "/catch-up") {
 			t.Errorf("unexpected request: %+v", r)
 		}
+	}
+}
+
+// TASK-4051: two members' comment digests follow the caller through the real
+// MCP dispatcher, server and store, as in the server's TASK-3615 case.
+// Each sees comments on their own item and none on the other's. Kills: M5a.
+func TestTASK4051_CatchUpOverMCPScopesToEachCaller(t *testing.T) {
+	s := storetest.NewSQLite(t)
+	srv := server.New(s)
+	t.Cleanup(srv.Stop)
+	user := func(name string) *models.User {
+		t.Helper()
+		u, err := s.CreateUser(models.UserCreate{Email: name + "-4051@example.com", Name: name, Username: name + "-4051", Password: "pw-test-12345"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Stable member ids let the caller-pinning mutation target a real member.
+		id := "task4051-" + name
+		if _, err := s.DB().Exec(`UPDATE users SET id = ? WHERE id = ?`, id, u.ID); err != nil {
+			t.Fatal(err)
+		}
+		u.ID = id
+		return u
+	}
+	alice, bob := user("alice"), user("bob")
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Catch 4051", Slug: "catch-4051", OwnerID: alice.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []*models.User{alice, bob} {
+		if err := s.AddWorkspaceMember(ws.ID, u.ID, "editor"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatal(err)
+	}
+	coll, err := s.GetCollectionBySlug(ws.ID, "tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range []struct{ owner, commenter *models.User }{{alice, bob}, {bob, alice}} {
+		it, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: pair.owner.Name + " thread", ActorUserID: pair.owner.ID, CreatedBy: "user", Fields: `{"status":"open"}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CreateComment(ws.ID, it.ID, pair.commenter.ID, models.CommentCreate{Body: "news for " + pair.owner.Name, CreatedBy: "user", Source: "web"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Put the activity safely inside both readers' windows.
+	ts := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	for _, table := range []string{"items", "comments"} {
+		if _, err := s.DB().Exec("UPDATE "+table+" SET created_at = ? WHERE workspace_id = ?", ts, ws.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := &HTTPHandlerDispatcher{Handler: srv, UserResolver: func(ctx context.Context) *models.User { u, _ := server.CurrentUserFromContext(ctx); return u }}
+	for _, caller := range []*models.User{alice, bob} {
+		t.Run(caller.Name, func(t *testing.T) {
+			ctx := server.WithCurrentUser(context.Background(), caller)
+			res, err := d.Dispatch(WithDispatchInput(ctx, map[string]any{"workspace": ws.Slug}), []string{"project", "catch-up"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.IsError {
+				t.Fatalf("catch-up error: %s", textOf(res))
+			}
+			var digest struct {
+				Comments store.CatchUpSection `json:"comments"`
+			}
+			if err := json.Unmarshal([]byte(textOf(res)), &digest); err != nil {
+				t.Fatal(err)
+			}
+			if digest.Comments.Total != 1 || len(digest.Comments.Lines) != 1 || digest.Comments.Lines[0].Title != caller.Name+" thread" {
+				t.Fatalf("%s's comment digest = %+v, want only their own relevant thread", caller.Name, digest.Comments)
+			}
+		})
 	}
 }

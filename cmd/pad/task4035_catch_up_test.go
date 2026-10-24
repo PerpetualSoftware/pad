@@ -190,3 +190,19 @@ func TestCatchUpCommand_JSONSkipsTypedDecode(t *testing.T) {
 		}
 	}
 }
+
+// TASK-4051: an existing cursor older than the ceiling is labelled as capped
+// in both human-readable formats. Kills: M5b.
+func TestCatchUpCommand_OldCursorLabelsFourteenDayCap(t *testing.T) {
+	for _, format := range []string{"table", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			out, err := runCatchUp(t, &catchUpRecorder{body: catchUpBody(true, true, "")}, format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, "since 2026-10-09T00:00:00Z (capped at 14 days)") {
+				t.Fatalf("old cursor lacks the cap label:\n%s", out)
+			}
+		})
+	}
+}
