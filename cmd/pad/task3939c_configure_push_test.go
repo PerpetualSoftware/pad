@@ -294,9 +294,11 @@ func TestConfigurePush_SendsToConfiguredGateway(t *testing.T) {
 }
 
 // TASK-4051: stopping the whole server stops its configured dispatcher too.
-// The cleanup repeats Stop, exercising its idempotent shutdown. Kills: M2.
+// Kills: M2.
 func TestConfigurePush_ServerStopStopsDispatcher(t *testing.T) {
-	_, srv, _, _ := task4051PushServer(t)
+	// No Stop cleanup: if shutdown hangs, the deadline must fail cleanly.
+	// A leaked goroutine is acceptable only in that failing run.
+	srv := server.New(storetest.NewSQLite(t))
 	if err := configurePush(srv, &config.Config{PushGatewayURL: "http://gateway.test/send", PushGatewaySecret: "test-secret"}); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +310,7 @@ func TestConfigurePush_ServerStopStopsDispatcher(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Error("Server.Stop did not drain the dispatcher before the deadline")
+		t.Fatal("Server.Stop did not drain the dispatcher before the deadline")
 	}
 	if srv.PushDispatchRunning() {
 		t.Error("dispatcher is still running after Server.Stop")
