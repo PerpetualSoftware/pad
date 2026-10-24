@@ -31,9 +31,6 @@ func TestChat_AgentCannotReachSiblingAgentDM(t *testing.T) {
 	convID := chatObject(t, got)["id"].(string)
 	missing := chatBase + "/999"
 
-	before := chatDMState(t, f, convID)
-	sendBuckets, dmBuckets := chatBucketCount(f.srv.rateLimiters.ChatSend), chatBucketCount(f.srv.rateLimiters.ChatDM)
-
 	cases := []struct {
 		name, method, suffix string
 		body                 any
@@ -46,13 +43,12 @@ func TestChat_AgentCannotReachSiblingAgentDM(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Baselines per case, so a leak is reported by the case that caused it.
+			before := chatDMState(t, f, convID)
+			sendBuckets, dmBuckets := chatBucketCount(f.srv.rateLimiters.ChatSend), chatBucketCount(f.srv.rateLimiters.ChatDM)
 			rr := f.request(tc.method, bravo+tc.suffix, "alpha", tc.body)
 			if rr.Code != 404 {
 				t.Fatalf("alpha %s on bravo's DM: status %d, body %s", tc.name, rr.Code, rr.Body.String())
-			}
-			ref := f.request(tc.method, missing+tc.suffix, "alpha", tc.body)
-			if rr.Body.String() != ref.Body.String() {
-				t.Fatalf("alpha %s: existence oracle: %q vs missing %q", tc.name, rr.Body.String(), ref.Body.String())
 			}
 			if after := chatDMState(t, f, convID); after != before {
 				t.Fatalf("alpha %s changed bravo's DM: %s -> %s", tc.name, before, after)
@@ -62,6 +58,10 @@ func TestChat_AgentCannotReachSiblingAgentDM(t *testing.T) {
 			}
 			if n := chatBucketCount(f.srv.rateLimiters.ChatDM); n != dmBuckets {
 				t.Fatalf("alpha %s allocated a DM bucket: %d -> %d", tc.name, dmBuckets, n)
+			}
+			ref := f.request(tc.method, missing+tc.suffix, "alpha", tc.body)
+			if rr.Body.String() != ref.Body.String() {
+				t.Fatalf("alpha %s: existence oracle: %q vs missing %q", tc.name, rr.Body.String(), ref.Body.String())
 			}
 		})
 	}
