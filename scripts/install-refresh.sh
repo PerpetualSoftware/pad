@@ -564,6 +564,15 @@ PORT="${PORT:-7777}"
 # waiting CLI returns the moment the server answers; the deadline only
 # decides how long a CLI waits on a refresh that is failing, after which it
 # errors naming this pid rather than spawning.
+# The restarted server logs where `pad server info` says the log is:
+# cfg.LogFile(), <data dir>/logs/server.log (BUG-4064). This used to be
+# $HOME/.pad/server.log, a second file nothing else reads, and one that also
+# ignored PAD_DATA_DIR. Created here, before anything is stopped, so a failure
+# refuses with the old server still running.
+LOG_FILE="$(data_dir)/logs/server.log"
+mkdir -p "$(dirname "$LOG_FILE")" || die "could not create $(dirname "$LOG_FILE") for the server log"
+LEGACY_LOG="$HOME/.pad/server.log"
+
 REFRESH_MARKER="$(data_dir)/refresh.lock"
 MARKER_WRITTEN=""
 probe_budget="$PROBE_TIMEOUT"
@@ -745,9 +754,9 @@ if [ "${#early[@]}" -gt 0 ]; then
 fi
 
 if [ -z "${PAD_NO_SETSID:-}" ] && command -v setsid >/dev/null 2>&1; then
-	setsid nohup "${restart[@]}" >>"$HOME/.pad/server.log" 2>&1 </dev/null &
+	setsid nohup "${restart[@]}" >>"$LOG_FILE" 2>&1 </dev/null &
 else
-	nohup "${restart[@]}" >>"$HOME/.pad/server.log" 2>&1 </dev/null &
+	nohup "${restart[@]}" >>"$LOG_FILE" 2>&1 </dev/null &
 fi
 RESTART_PID=$!
 disown 2>/dev/null || true
@@ -894,10 +903,17 @@ fi
 if [ ${#failed[@]} -gt 0 ]; then
 	die "server did not answer on: ${failed[*]} (port $PORT, waited ${PROBE_TIMEOUT}s each).
   The binary is installed; the server is not serving those addresses.
-  Restart argv was: ${restart[*]}"
+  Restart argv was: ${restart[*]}
+  Server log: $LOG_FILE"
 fi
 
 note "server restarted and answering on: ${probe_hosts[*]} (port $PORT)"
+note "server log: $LOG_FILE"
+# The old destination is left as it is: it is the operator's file, and an
+# investigation in flight may still be counting from it.
+if [ "$LEGACY_LOG" != "$LOG_FILE" ] && [ -f "$LEGACY_LOG" ]; then
+	note "older refreshes logged to $LEGACY_LOG; it is no longer written, and this server logs to $LOG_FILE"
+fi
 if [ -n "${unattributed:-}" ]; then
 	note "listener ownership NOT verified: neither ss nor lsof can see listeners here, so the process answering was not confirmed to be the restart (pid $RESTART_PID)"
 fi
