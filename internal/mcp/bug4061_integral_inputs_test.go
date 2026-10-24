@@ -144,8 +144,16 @@ func TestBUG4061_EveryDispatchDoorRefusesAFractionNamingIt(t *testing.T) {
 			if res == nil || !res.IsError {
 				t.Fatalf("not refused; the request reached %q", reached)
 			}
-			if txt := textOf(res); !strings.Contains(txt, tc.param+" ") || !strings.Contains(txt, string(ErrValidationFailed)) {
-				t.Fatalf("refusal does not name %q as a validation failure: %s", tc.param, txt)
+			// The refusal clause must START with the key: the message renders as
+			// "<cmdKey>: <param> must be ...". A bare "<param> " substring also
+			// matched the hint (expected_seq's "Pass expected_seq as ..."), so it
+			// could not see a door naming the wrong key (BUG-4061 r8, Q8).
+			txt := textOf(res)
+			if !strings.Contains(txt, ": "+tc.param+" must be ") && !strings.Contains(txt, ": "+tc.param+" is ") {
+				t.Fatalf("refusal clause does not start with %q: %s", tc.param, txt)
+			}
+			if !strings.Contains(txt, string(ErrValidationFailed)) {
+				t.Fatalf("refusal is not a validation failure: %s", txt)
 			}
 			if reached != "" {
 				t.Fatalf("a refused input reached the handler at %q", reached)
