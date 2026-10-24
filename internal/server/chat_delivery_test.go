@@ -18,7 +18,7 @@ func chatNotice() watchevents.Notification {
 	return watchevents.Notification{Kind: watchevents.KindChat, ConversationID: "conv", ConversationNumber: 1, MessageID: "msg", MessageSeq: 1, TargetUserID: "u", TargetAgentKey: "rook"}
 }
 func TestChatKindRequiresOptInArmedAgentMatch(t *testing.T) {
-	for _, change := range []string{"none", "chat", "armed", "user", "agent", "empty-target-agent", "empty-agent", "empty-user"} {
+	for _, change := range []string{"none", "chat", "armed", "user", "agent", "empty-target-agent", "empty-agent", "both-empty-agents", "empty-user"} {
 		t.Run(change, func(t *testing.T) {
 			n := chatNotice()
 			p := watchStreamPrefs{chat: true, armed: true, agentKey: "rook"}
@@ -35,6 +35,9 @@ func TestChatKindRequiresOptInArmedAgentMatch(t *testing.T) {
 			case "empty-target-agent":
 				n.TargetAgentKey = ""
 			case "empty-agent":
+				p.agentKey = ""
+			case "both-empty-agents":
+				n.TargetAgentKey = ""
 				p.agentKey = ""
 			case "empty-user":
 				n.TargetUserID = ""

@@ -801,17 +801,25 @@ func TestRedisBusCloseIsIdempotentAndClosesSubscribers(t *testing.T) {
 }
 
 func TestChatNotificationSurvivesRedisRoundTrip(t *testing.T) {
-	seq := int64(3)
-	want := Notification{Kind: KindChat, ConversationID: "conv", ConversationNumber: 9, MessageID: "msg", MessageSeq: 4, ReplyToSeq: &seq, Excerpt: "short", AuthorUserID: "u", AuthorAgentKey: "a", TargetUserID: "t", TargetAgentKey: "b", ChatDeleted: true}
-	data, err := json.Marshal(want)
+	b, _ := newMiniredisBus(t, 64)
+	ch, _, err := b.Subscribe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got Notification
-	if err = json.Unmarshal(data, &got); err != nil {
+	seq := int64(3)
+	// TASK-4041: Publish must encode the real Redis envelope; the subscriber
+	// must decode it and replace the JSON id with the script-assigned id.
+	want := Notification{ID: 999, Timestamp: 123, Kind: KindChat, ConversationID: "conv", ConversationNumber: 9, MessageID: "msg", MessageSeq: 4, ReplyToSeq: &seq, Excerpt: "short | preview", AuthorUserID: "u", AuthorAgentKey: "a", TargetUserID: "t", TargetAgentKey: "b", ChatDeleted: true}
+	if err := b.Publish(want); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("round trip: %+v != %+v", got, want)
+	want.ID = 1
+	select {
+	case got := <-ch:
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("round trip: %+v != %+v", got, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("chat notification never returned through the Redis envelope")
 	}
 }
