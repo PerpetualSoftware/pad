@@ -16,7 +16,7 @@ import (
 	"regexp"
 )
 
-// TASK-4039: chat has no item event, watch, activity, outbox or webhook effects.
+// TASK-4041: chat has no kernel event, activity, outbox or webhook effects.
 func TestChatEmitsNoKernelEvent(t *testing.T) {
 	f := newChatFixture(t)
 	bus := events.New()
@@ -156,4 +156,42 @@ func checkChatRequestFields(t *testing.T, re *regexp.Regexp) {
 		}
 		return true
 	})
+}
+
+func checkChatReplayPublicationGuard(t *testing.T) {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "handlers_chat.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TASK-4041: replay must skip the notifier itself. Today's store also
+	// returns no replay recipients, so bus assertions alone cannot pin this.
+	guarded := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		branch, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		negation, ok := branch.Cond.(*ast.UnaryExpr)
+		if !ok || negation.Op != token.NOT {
+			return true
+		}
+		field, ok := negation.X.(*ast.SelectorExpr)
+		if !ok || field.Sel.Name != "Replayed" {
+			return true
+		}
+		ast.Inspect(branch.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if ok {
+				if target, ok := call.Fun.(*ast.SelectorExpr); ok && target.Sel.Name == "notifyChatMessage" {
+					guarded = true
+				}
+			}
+			return true
+		})
+		return true
+	})
+	if !guarded {
+		t.Fatal("chat publication must be guarded by !result.Replayed")
+	}
 }

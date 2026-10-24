@@ -124,6 +124,7 @@ func TestChatReplayDoesNotPublish(t *testing.T) {
 	if f.mark() != mark {
 		t.Fatal("replay published")
 	}
+	checkChatReplayPublicationGuard(t)
 }
 func TestChatDeletePublishesRetractionOnce(t *testing.T) {
 	f := newChatFixture(t)
