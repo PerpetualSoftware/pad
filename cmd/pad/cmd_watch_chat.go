@@ -161,8 +161,9 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		return
 	}
 	for _, m := range messages {
-		// TASK-4041, DOC-4036: a high-water marker cannot cross an
-		// unprinted message, even if a later event has already arrived.
+		// TASK-4041, DOC-4036: ack contiguous seqs that are printed, Mine,
+		// or tombstones (retract only a previously printed original).
+		// A missing seq or event id mismatch stops both the fill and ack.
 		if m.Seq != after+1 || m.Seq > p.MessageSeq {
 			return
 		}
@@ -171,12 +172,7 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		}
 		if m.Deleted {
 			c.retract(w, watchStreamPayload{MessageID: m.ID, Conversation: p.Conversation})
-			return
-		}
-		if m.Mine {
-			return
-		}
-		if !c.printed.contains(m.ID) {
+		} else if !m.Mine && !c.printed.contains(m.ID) {
 			m.Conversation = p.Conversation
 			direction := cli.ChatDirectionOn()
 			// TASK-4041: this final check covers the fetch AND the direction
@@ -195,7 +191,7 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		highest = m.Seq
 	}
 	if after < p.MessageSeq && len(messages) == 20 && cli.ResolveAnnouncedArmed() {
-		fmt.Fprintf(w, "%d more in C%d: pad chat show C%d --since %d\n", p.MessageSeq-after, p.Conversation, p.Conversation, after)
+		fmt.Fprintf(w, "up to %d more in C%d: pad chat show C%d --since %d\n", p.MessageSeq-after, p.Conversation, p.Conversation, after)
 	}
 }
 
