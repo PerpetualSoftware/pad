@@ -542,6 +542,35 @@ for candidate in "$configured_port" "${PAD_PORT:-}" "$(config_value port || true
 done
 PORT="${PORT:-7777}"
 
+# --- 2a. The server log, proven writable before anything is stopped ----------
+#
+# The restarted server logs where `pad server info` says the log is:
+# cfg.LogFile(), <data dir>/logs/server.log (BUG-4064). This used to be
+# $HOME/.pad/server.log, a second file nothing else reads, and one that also
+# ignored PAD_DATA_DIR. The file is opened for append HERE, before the stop:
+# a redirect that cannot open its target never runs the command, so an
+# unwritable log found after the stop would leave no server at all. A missing
+# parent (a fresh HOME), a read-only mount, a file another user owns (for a
+# non-root caller) or a directory in its place all refuse now, with the
+# running server untouched.
+#
+# A RELATIVE data dir is anchored where the restarted server will resolve it
+# (BUG-4064 r2). config.Load takes PAD_DATA_DIR verbatim, or PAD_DB_PATH's
+# dirname, with no filepath.Abs (config.go), so the server resolves it against
+# its own cwd. The restart runs in SERVER_CWD (the cd in section 5) or, when
+# none was captured, here. Proving the file relative to THIS cwd instead
+# would check one file and then open another after the stop.
+DATA_DIR="$(data_dir)"
+case "$DATA_DIR" in
+/*) ;;
+*) DATA_DIR="${SERVER_CWD:-$PWD}/$DATA_DIR" ;;
+esac
+LOG_FILE="$DATA_DIR/logs/server.log"
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null &&
+	{ : >>"$LOG_FILE"; } 2>/dev/null ||
+	die "cannot append to the server log $LOG_FILE. Nothing was stopped; the running server is untouched. Fix the path's permissions and re-run."
+LEGACY_LOG="$HOME/.pad/server.log"
+
 # --- 2b. Claim the stop->restart window (BUG-3215) ---------------------------
 #
 # Between the stop below and the restart answering, nothing serves this port,
@@ -632,7 +661,10 @@ fi
 # --- 4. Move into place, then check the OUTCOME -------------------------------
 mv -f "$STAGED" "$INSTALLED" || die "could not move the staged binary into $INSTALLED"
 STAGED=""
-rm -f "$HOME/.pad/pad.pid"
+# cfg.PIDFile() is <data dir>/pad.pid (config.go), claimed by `pad server
+# start` (cmd/pad/cmd_server.go); not $HOME/.pad under PAD_DATA_DIR (BUG-4064).
+# DATA_DIR is section 2a's, anchored like the log.
+rm -f "$DATA_DIR/pad.pid"
 
 # The check TASK-2787 asks for, and it is deliberately on the installed file
 # rather than on any step: read what is now at the install path and require it
@@ -668,12 +700,10 @@ if [ ${#SERVER_ARGV[@]} -gt 0 ]; then
 else
 	restart=("$INSTALLED" server start)
 fi
-# mkdir before the redirect: a missing ~/.pad makes the redirection fail and
-# the server never starts, which the probe then reports as "did not answer" —
-# true, but three steps downstream of the cause. Found by the probe-failure
-# test on a fresh HOME, where the directory does not exist; on a developer's
-# box it exists by luck of history, which is why nothing had caught it.
-mkdir -p "$HOME/.pad"
+# The redirect target exists and is writable: 2a created and opened it
+# before the stop. A missing directory there would make the redirection fail
+# and the server never start, three steps upstream of the probe that reports
+# it (found on a fresh HOME by the probe-failure test).
 # setsid where it exists, plain nohup where it does not. Codex round 2
 # (P1): setsid is Linux-specific and absent from a default macOS
 # environment, where an unconditional call would fail AFTER the old server
@@ -745,9 +775,9 @@ if [ "${#early[@]}" -gt 0 ]; then
 fi
 
 if [ -z "${PAD_NO_SETSID:-}" ] && command -v setsid >/dev/null 2>&1; then
-	setsid nohup "${restart[@]}" >>"$HOME/.pad/server.log" 2>&1 </dev/null &
+	setsid nohup "${restart[@]}" >>"$LOG_FILE" 2>&1 </dev/null &
 else
-	nohup "${restart[@]}" >>"$HOME/.pad/server.log" 2>&1 </dev/null &
+	nohup "${restart[@]}" >>"$LOG_FILE" 2>&1 </dev/null &
 fi
 RESTART_PID=$!
 disown 2>/dev/null || true
@@ -894,10 +924,17 @@ fi
 if [ ${#failed[@]} -gt 0 ]; then
 	die "server did not answer on: ${failed[*]} (port $PORT, waited ${PROBE_TIMEOUT}s each).
   The binary is installed; the server is not serving those addresses.
-  Restart argv was: ${restart[*]}"
+  Restart argv was: ${restart[*]}
+  Server log: $LOG_FILE"
 fi
 
 note "server restarted and answering on: ${probe_hosts[*]} (port $PORT)"
+note "server log: $LOG_FILE"
+# The old destination is left as it is: it is the operator's file, and an
+# investigation in flight may still be counting from it.
+if [ "$LEGACY_LOG" != "$LOG_FILE" ] && [ -f "$LEGACY_LOG" ]; then
+	note "older refreshes logged to $LEGACY_LOG; it is no longer written, and this server logs to $LOG_FILE"
+fi
 if [ -n "${unattributed:-}" ]; then
 	note "listener ownership NOT verified: neither ss nor lsof can see listeners here, so the process answering was not confirmed to be the restart (pid $RESTART_PID)"
 fi

@@ -230,11 +230,18 @@ type stubEnv struct {
 	// verified copy beside it.
 	installedPath    string
 	installedVersion string
+	// dataDir is PAD_DATA_DIR for the script. Empty clears it, and
+	// PAD_DB_PATH is always cleared, so the developer's own environment
+	// cannot move the data dir (and the refresh marker and server log in it)
+	// out of the test's HOME (BUG-4064).
+	dataDir string
 }
 
 func (e stubEnv) env() []string {
 	return append(os.Environ(),
 		"HOME="+e.home,
+		"PAD_DATA_DIR="+e.dataDir,
+		"PAD_DB_PATH=",
 		fmt.Sprintf("PAD_PORT=%d", e.port),
 		"PAD_PROBE_TIMEOUT=8",
 		"STUB_VERSION="+e.version,
@@ -2001,5 +2008,261 @@ func TestInstallRefresh_WebStampCheckUsesTheCallersCheckout(t *testing.T) {
 				t.Errorf("stale warning = %v, want %v\nstderr=%s", warned, tc.wantWarn, res.stderr)
 			}
 		})
+	}
+}
+
+// THE SERVER LOG (BUG-4064): the restarted server writes to the file `pad
+// server info` reports, cfg.LogFile() = <data dir>/logs/server.log, on both
+// restart branches and under PAD_DATA_DIR. It used to append to
+// $HOME/.pad/server.log, a second file the CLI never names and which ignored
+// PAD_DATA_DIR, so anyone following `pad server info` read a stale log.
+//
+// The evidence is the restarted process's OWN stdout line (STUB_ANNOUNCE),
+// found in the expected file and absent from the old one.
+func TestInstallRefresh_RestartedServerLogsToTheConfiguredLogFile(t *testing.T) {
+	requireScriptDeps(t)
+	for _, tc := range []struct {
+		name     string
+		noSetsid bool
+		dataDir  bool
+	}{
+		{name: "setsid", noSetsid: false},
+		{name: "no setsid", noSetsid: true},
+		{name: "setsid under PAD_DATA_DIR", noSetsid: false, dataDir: true},
+		{name: "no setsid under PAD_DATA_DIR", noSetsid: true, dataDir: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.noSetsid {
+				if _, err := exec.LookPath("setsid"); err != nil {
+					t.Skip("setsid not available; the script would take the other branch")
+				}
+			}
+			home, dir := t.TempDir(), t.TempDir()
+			name := uniqueName(t)
+			defer killStub(t, name)
+			port := freePort(t)
+			const commit = "abc1234"
+
+			built := installStub(t, dir, name)
+			installed := filepath.Join(home, "bin", name)
+			e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+				argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+			wantLog := filepath.Join(home, ".pad", "logs", "server.log")
+			if tc.dataDir {
+				e.dataDir = filepath.Join(t.TempDir(), "data")
+				wantLog = filepath.Join(e.dataDir, "logs", "server.log")
+			}
+
+			cmd := exec.Command("bash", scriptPath(t), built, installed, commit)
+			cmd.Env = append(e.env(), "STUB_ANNOUNCE=1")
+			if tc.noSetsid {
+				cmd.Env = append(cmd.Env, "PAD_NO_SETSID=1")
+			}
+			var out, errb strings.Builder
+			cmd.Stdout, cmd.Stderr = &out, &errb
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("refresh failed: %v\nstdout=%s\nstderr=%s", err, out.String(), errb.String())
+			}
+
+			// The probe answered, so the stub has bound; its line may still
+			// be in flight to the file for a moment.
+			want := fmt.Sprintf("LISTENING %d", port)
+			var got []byte
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+				if got, _ = os.ReadFile(wantLog); strings.Contains(string(got), want) {
+					break
+				}
+			}
+			if !strings.Contains(string(got), want) {
+				t.Fatalf("the restarted server's output is not in %s (want %q); file holds %q\nstdout=%s", wantLog, want, got, out.String())
+			}
+			if _, err := os.Stat(filepath.Join(home, ".pad", "server.log")); !os.IsNotExist(err) {
+				t.Errorf("the old destination %s was written (stat err=%v)", filepath.Join(home, ".pad", "server.log"), err)
+			}
+			if !strings.Contains(out.String(), "server log: "+wantLog) {
+				t.Errorf("the report does not name the log file %s; stdout=%s", wantLog, out.String())
+			}
+		})
+	}
+}
+
+// The old log file is the operator's: a refresh leaves it byte-for-byte as it
+// was and says where the server logs now (BUG-4064).
+func TestInstallRefresh_LeavesTheOldLogFileAndNamesTheNewOne(t *testing.T) {
+	requireScriptDeps(t)
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	legacy := filepath.Join(home, ".pad", "server.log")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const old = "a line an earlier refresh wrote\n"
+	if err := os.WriteFile(legacy, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+	res := runScript(t, e, built, installed, commit)
+	if res.err != nil {
+		t.Fatalf("refresh failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	if b, err := os.ReadFile(legacy); err != nil || string(b) != old {
+		t.Errorf("the old log changed: %q, %v; want %q", b, err, old)
+	}
+	newLog := filepath.Join(home, ".pad", "logs", "server.log")
+	if want := "older refreshes logged to " + legacy + "; it is no longer written, and this server logs to " + newLog; !strings.Contains(res.stdout, want) {
+		t.Errorf("no note naming both files; want %q in stdout=%s", want, res.stdout)
+	}
+}
+
+// AN UNWRITABLE LOG REFUSES BEFORE THE STOP (BUG-4064 r1, rated Medium): a
+// redirect that cannot open its target never runs the command, so a log found
+// unwritable after the stop would leave no server at all, an outage on the
+// box. Here the log path is a directory, which refuses for root too. The
+// refresh must refuse naming it, and the server that was running must still
+// be the one answering.
+func TestInstallRefresh_RefusesAnUnwritableLogBeforeStopping(t *testing.T) {
+	requireScriptDeps(t)
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home}
+	logPath := filepath.Join(home, ".pad", "logs", "server.log")
+	if err := os.MkdirAll(logPath, 0o755); err != nil { // a directory where the file goes
+		t.Fatal(err)
+	}
+
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	startPreServer(t, pre, "127.0.0.1", port)
+	prePid := strconv.Itoa(pre.Process.Pid)
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err == nil {
+		t.Fatalf("refresh succeeded with an unwritable log\nstdout=%s\nstderr=%s", res.stdout, res.stderr)
+	}
+	if want := "cannot append to the server log " + logPath + ". Nothing was stopped"; !strings.Contains(res.stderr, want) {
+		t.Errorf("refusal does not name the log; want %q in stderr=%s", want, res.stderr)
+	}
+	got, err := pidAnswersAt(port)
+	if err != nil || got != prePid {
+		t.Fatalf("the running server did not survive the refusal: /stub/pid = %q, %v; want %s", got, err, prePid)
+	}
+}
+
+// THE PID FILE (BUG-4064 r1): `pad server start` claims cfg.PIDFile(),
+// <data dir>/pad.pid (cmd/pad/cmd_server.go, config.go). The refresh clears a
+// stale one there; it used to clear $HOME/.pad/pad.pid even under
+// PAD_DATA_DIR and leave the real one behind.
+func TestInstallRefresh_ClearsThePIDFileInTheDataDir(t *testing.T) {
+	requireScriptDeps(t)
+	home, dir := t.TempDir(), t.TempDir()
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home,
+		dataDir: filepath.Join(t.TempDir(), "data")}
+	pidFile := filepath.Join(e.dataDir, "pad.pid")
+	if err := os.MkdirAll(e.dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidFile, []byte("999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runScript(t, e, built, installed, commit)
+	if res.err != nil {
+		t.Fatalf("refresh failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Errorf("the stale pid file in the data dir survived the refresh (stat err=%v)", err)
+	}
+}
+
+// A RELATIVE DATA DIR (BUG-4064 r2, Medium): config.Load applies PAD_DATA_DIR
+// verbatim, so the server resolves "data" against its own cwd, and the restart
+// runs in the server's cwd (BUG-3196). Section 2a used to prove the log under
+// the CALLER's cwd and the restart then opened it under the server's, where
+// logs/ did not exist: the old server stopped and nothing came back. The log
+// and the pid file are anchored to the server's cwd now, not the caller's.
+func TestInstallRefresh_AnchorsARelativeDataDirToTheServersCwd(t *testing.T) {
+	requireScriptDeps(t)
+	home, dir := t.TempDir(), t.TempDir()
+	serverDir, callerDir := realDir(t, t.TempDir()), realDir(t, t.TempDir())
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home, dataDir: "data"}
+	// A stale pid file where the server would claim it; logs/ deliberately absent.
+	pidFile := filepath.Join(serverDir, "data", "pad.pid")
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidFile, []byte("999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	pre.Dir = serverDir
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	res := runScriptIn(t, e, callerDir, built, installed, commit, "STUB_ANNOUNCE=1")
+	if res.err != nil {
+		t.Fatalf("refresh failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	wantLog := filepath.Join(serverDir, "data", "logs", "server.log")
+	want := fmt.Sprintf("LISTENING %d", port)
+	var got []byte
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if got, _ = os.ReadFile(wantLog); strings.Contains(string(got), want) {
+			break
+		}
+	}
+	if !strings.Contains(string(got), want) {
+		t.Fatalf("the restarted server's output is not in %s (want %q); file holds %q\nstdout=%s", wantLog, want, got, res.stdout)
+	}
+	if !strings.Contains(res.stdout, "server log: "+wantLog) {
+		t.Errorf("the report does not name %s; stdout=%s", wantLog, res.stdout)
+	}
+	// Neither the log nor the pid file is resolved against the caller's cwd.
+	// (refresh.lock still is, as every CLI reader of a relative data dir is:
+	// BUG-4066, so callerDir/data itself may exist.)
+	for _, p := range []string{filepath.Join(callerDir, "data", "logs"), filepath.Join(callerDir, "data", "pad.pid")} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("the refresh resolved %s against the caller's cwd (stat err=%v)", p, err)
+		}
+	}
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Errorf("the stale pid file in the server's data dir survived (stat err=%v)", err)
 	}
 }
