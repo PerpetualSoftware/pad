@@ -153,15 +153,8 @@ func buildQuery(input map[string]any, mapping map[string]string) string {
 				q.Set(dst, "true")
 			}
 		case float64:
-			// Cheap int detection — JSON parser gives every number as
-			// float64, but CLI flags in cmdhelp can be "int" type so
-			// most callers pass whole numbers. Emit without the
-			// trailing ".0" so the wire format matches the CLI.
-			if x == float64(int64(x)) {
-				q.Set(dst, strconv.FormatInt(int64(x), 10))
-			} else {
-				q.Set(dst, strconv.FormatFloat(x, 'f', -1, 64))
-			}
+			number, _ := formatNumber(x)
+			q.Set(dst, number)
 		case json.Number:
 			q.Set(dst, x.String())
 		default:

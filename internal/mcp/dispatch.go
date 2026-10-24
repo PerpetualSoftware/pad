@@ -502,6 +502,8 @@ func BuildCLIArgs(
 				return nil, fmt.Errorf("argument %q: %w", arg.Name, err)
 			}
 			positionals = append(positionals, items...)
+		} else if number, ok := formatNumber(v); ok {
+			positionals = append(positionals, number)
 		} else {
 			positionals = append(positionals, fmt.Sprint(v))
 		}
@@ -663,8 +665,8 @@ func toStringSlice(v any) ([]string, error) {
 }
 
 // encodeFlagValue stringifies an MCP input value for inclusion as a CLI
-// flag argument. Strings and primitives pass through fmt.Sprint as before;
-// structured values (maps, slices) are JSON-encoded so that flags accepting
+// flag argument. Numbers use decimal notation; strings and booleans pass through.
+// Structured values (maps, slices) are JSON-encoded so that flags accepting
 // JSON literals — like `pad collection create --schema '<json>'` — receive
 // a valid JSON string rather than Go's map-print syntax.
 //
@@ -672,12 +674,15 @@ func toStringSlice(v any) ([]string, error) {
 // involved; the JSON string travels intact to the subprocess and is parsed
 // by the CLI flag's own decoder.
 func encodeFlagValue(v any) (string, error) {
+	if number, ok := formatNumber(v); ok {
+		return number, nil
+	}
 	switch t := v.(type) {
 	case nil:
 		return "", nil
 	case string:
 		return t, nil
-	case bool, int, int32, int64, uint, uint32, uint64, float32, float64, json.Number:
+	case bool:
 		return fmt.Sprint(v), nil
 	default:
 		// map[string]any, []any, or any other structured type: JSON-encode.
