@@ -94,7 +94,7 @@ func ClearChatDirection() error {
 		return nil
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove chat direction %s: %w", path, err)
+		return fmt.Errorf("could not remove chat direction file %s: %w", path, err)
 	}
 	return nil
 }

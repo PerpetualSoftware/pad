@@ -487,7 +487,7 @@ Idempotent.`,
 				return err
 			}
 			if clearErr != nil {
-				return clearErr
+				return fmt.Errorf("session disarmed; %w", clearErr)
 			}
 			// Whether auto_arm would otherwise re-arm THIS session tells the
 			// user if the disarm actually changed anything visible.
@@ -540,7 +540,7 @@ Idempotent.`,
 				return err
 			}
 			if clearErr != nil {
-				return clearErr
+				return fmt.Errorf("session reset; %w", clearErr)
 			}
 			if formatFlag == "json" {
 				return cli.PrintJSON(map[string]any{
