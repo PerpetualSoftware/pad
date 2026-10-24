@@ -207,6 +207,8 @@ func flatJSONBody(input map[string]any, keys []string) ([]byte, error) {
 // produce a clear "not yet implemented over HTTP transport" error.
 func init() {
 	routeTable = map[string]RouteMapper{
+		"chat list":  routeSpec{method: http.MethodGet, pathTemplate: "/api/v1/me/conversations"}.toRouteMapper(),
+		"chat inbox": routeSpec{method: http.MethodGet, pathTemplate: "/api/v1/me/chat/unread", queryParams: map[string]string{"agent": "agent"}}.toRouteMapper(),
 		// --- Item CRUD-ish ---
 		"item create": mapItemCreate,
 		"item show": routeSpec{

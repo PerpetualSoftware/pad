@@ -251,3 +251,14 @@ func agentStatusCmd() *cobra.Command {
 		},
 	}
 }
+
+func chatCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "chat",
+		Short: "Chat with agents across workspaces",
+		Long:  "Global chat. Targets are C<n>, <n>, or @<name> for your DM with an agent.",
+		RunE:  unknownSubcommandRun,
+	}
+	cmd.AddCommand(chatListCmd(), chatInboxCmd(), chatShowCmd(), chatSendCmd(), chatDeleteCmd(), chatReadCmd())
+	return cmd
+}

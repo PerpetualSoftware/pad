@@ -402,7 +402,7 @@ directory for `claude-code`, and an `[mcp_servers.pad]` table in
 project-scoped, it's install-on-request only — `--all` and `pad mcp status` cover
 the per-user clients (including Codex) and skip it.
 
-**Tool catalog (v0.101)** — ten resource × action tools plus `pad_set_workspace`. Undeclared input keys are rejected with a structured error rather than silently dropped, and field values are typed against the collection schema on the server:
+**Tool catalog (v0.102)** — eleven resource × action tools plus `pad_set_workspace`. Undeclared input keys are rejected with a structured error rather than silently dropped, and field values are typed against the collection schema on the server:
 
 | Tool | Actions |
 |---|---|
@@ -415,6 +415,7 @@ the per-user clients (including Codex) and skip it.
 | `pad_playbook` | `list`, `get`, `run`, `match` |
 | `pad_library` | `list`, `get`, `activate` |
 | `pad_attachment` | `list`, `show` |
+| `pad_chat` | `list`, `inbox`, `show`, `send`, `delete`, `read` (global agent chat; excluded from ChatGPT) |
 | `pad_meta` | `server-info`, `version`, `tool-surface`, `bootstrap` |
 | `pad_set_workspace` | session-default workspace pinning (response embeds the bootstrap blob) |
 
@@ -426,7 +427,7 @@ Plus resources at `pad://workspaces`, `pad://workspace/{ws}/dashboard`,
 and `pad://_meta/version`.
 
 **Stability contract.** The catalog is versioned
-(`tool_surface_version: "0.101"`) and advertised in the initialize handshake and at
+(`tool_surface_version: "0.102"`) and advertised in the initialize handshake and at
 `pad://_meta/version`, so external agents can pin against it; the per-version
 changelog lives in [`internal/mcp/version.go`](internal/mcp/version.go). Errors
 come back as structured envelopes (`{error: {code, message, hint, ...}}`) from a

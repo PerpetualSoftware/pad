@@ -116,10 +116,9 @@ func TestCatalogWorkspacePrecedence(t *testing.T) {
 // legitimately omitted workspace, but the new `bootstrap` action needs
 // workspace context so the tool now exposes the param. server-info /
 // version / tool-surface actions ignore it. The intentionallyServerWide
-// list is empty for now but kept so a future tool that genuinely needs
-// to opt out has a documented home.
+// list includes global chat, which belongs to the caller rather than a workspace.
 func TestCatalogWorkspaceParamAdvertisedOnAllWorkspaceTools(t *testing.T) {
-	intentionallyServerWide := map[string]bool{}
+	intentionallyServerWide := map[string]bool{"pad_chat": true}
 	for _, def := range Catalog {
 		t.Run(def.Name, func(t *testing.T) {
 			tool := buildToolFromDef(def)

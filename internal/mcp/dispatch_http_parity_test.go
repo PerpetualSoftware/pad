@@ -39,6 +39,7 @@ import (
 // anything not in the command's declared args/flags.
 func parityFixtureInput() map[string]any {
 	return map[string]any{
+		"target": "C12", "body": "hello", "seq": float64(4), "to": float64(4),
 		"email":             "test@example.com",
 		"name":              "test-name",
 		"slug":              "test-slug",

@@ -93,6 +93,8 @@ func TestToolSurfaceJSON_ReadOnlyFlags(t *testing.T) {
 
 	// Spot-check known reads.
 	reads := [][2]string{
+		{"pad_chat", "list"},
+		{"pad_chat", "inbox"},
 		{"pad_item", "get"},
 		{"pad_item", "list"},
 		{"pad_item", "backlinks"},
@@ -120,6 +122,10 @@ func TestToolSurfaceJSON_ReadOnlyFlags(t *testing.T) {
 
 	// Spot-check known writes.
 	writes := [][2]string{
+		{"pad_chat", "show"},
+		{"pad_chat", "send"},
+		{"pad_chat", "delete"},
+		{"pad_chat", "read"},
 		{"pad_item", "create"},
 		{"pad_item", "delete"},
 		{"pad_item", "import"},
