@@ -281,17 +281,18 @@ func TestMonitorChatRespectsConsentRecheck(t *testing.T) {
 }
 func TestMonitorDeleteRetraction(t *testing.T) {
 	chatSessionEnv(t)
-	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1)}}
+	f := &fakeChatSink{}
 	c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 	var out bytes.Buffer
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "never", MessageSeq: 2, Deleted: true})
-	if out.Len() != 0 || f.fetches != 0 || f.acks != 0 {
+	if out.Len() != 0 || f.fetches != 1 || f.acks != 0 {
 		t.Fatal("unseen tombstone")
 	}
+	f.messages = []monitorChatMessage{chatMsg("a", 1)}
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1, Deleted: true})
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1, Deleted: true})
-	if strings.Count(out.String(), "retracted") != 1 || f.fetches != 1 || f.acks != 1 {
+	if strings.Count(out.String(), "retracted") != 1 || f.fetches != 2 || f.acks != 1 {
 		t.Fatal(out.String(), f)
 	}
 }
@@ -317,14 +318,14 @@ func TestMonitorChatFinalTombstoneAdvancesContiguously(t *testing.T) {
 			if c.last[1] != 2 || f.deliveredSeq != 2 || !slices.Equal(f.ackSeqs, []int64{2}) || f.fetches != 0 || strings.Count(out.String(), "retracted") != wantRetractions {
 				t.Fatalf("cursor=%d acks=%v delivered=%d fetches=%d output=%q", c.last[1], f.ackSeqs, f.deliveredSeq, f.fetches, out.String())
 			}
-			// An out-of-order tombstone must wait for a contiguous gap fill.
+			// An out-of-order tombstone attempts a fill, but cannot cross missing rows.
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "d", MessageSeq: 4, Deleted: true})
-			if c.last[1] != 2 || !slices.Equal(f.ackSeqs, []int64{2}) || f.fetches != 0 {
+			if c.last[1] != 2 || !slices.Equal(f.ackSeqs, []int64{2}) || f.fetches != 1 {
 				t.Fatalf("crossed gap: cursor=%d acks=%v fetches=%d", c.last[1], f.ackSeqs, f.fetches)
 			}
 			f.messages = []monitorChatMessage{chatMsg("c", 3), {ID: "d", Seq: 4, Deleted: true}, chatMsg("e", 5)}
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "e", MessageSeq: 5})
-			if c.last[1] != 5 || !slices.Equal(f.ackSeqs, []int64{2, 5}) || !slices.Equal(f.after, []int64{2}) || !strings.Contains(out.String(), "fetched c\n") || !strings.Contains(out.String(), "fetched e\n") {
+			if c.last[1] != 5 || !slices.Equal(f.ackSeqs, []int64{2, 5}) || !slices.Equal(f.after, []int64{2, 2}) || !strings.Contains(out.String(), "fetched c\n") || !strings.Contains(out.String(), "fetched e\n") {
 				t.Fatalf("gap fill: cursor=%d acks=%v after=%v output=%q", c.last[1], f.ackSeqs, f.after, out.String())
 			}
 		})

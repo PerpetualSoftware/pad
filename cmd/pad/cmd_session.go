@@ -449,6 +449,8 @@ command exits non-zero.`,
 // lie there. The marker dies with the session (same liveness as an arm),
 // so across sessions auto_arm remains the standing contract; permanent-off
 // is a .pad.toml edit. Idempotent.
+var clearSessionChatDirection = cli.ClearChatDirection
+
 func sessionDisarmCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "disarm",
@@ -474,7 +476,7 @@ disarm is kept for the directory until 'pad session reset'.
 Idempotent.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_ = cli.ClearChatDirection()
+			_ = clearSessionChatDirection()
 			path, err := cli.WriteDisarmState()
 			if err != nil {
 				return err
@@ -529,7 +531,7 @@ session, and stays in force for the directory until reset.
 Idempotent.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_ = cli.ClearChatDirection()
+			_ = clearSessionChatDirection()
 			removed, path, err := cli.RemoveArmState()
 			if err != nil {
 				return err

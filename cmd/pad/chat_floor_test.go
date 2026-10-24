@@ -29,7 +29,7 @@ func floorEvent(n int, seq int64) watchStreamPayload {
 }
 
 // T1: B's first contact is an out-of-order tombstone. A listed summary
-// marker must not authorize acknowledging rows 1-2, which were never printed.
+// marker must not authorize skipping rows 1-2: the fetched floor starts the fill.
 func TestMonitorChatServerFloorHunter(t *testing.T) {
 	for _, stale := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stale-snapshot=%t", stale), func(t *testing.T) {
@@ -42,13 +42,13 @@ func TestMonitorChatServerFloorHunter(t *testing.T) {
 			c := newMonitorChat(f, newRecentSet(256, 10*time.Minute))
 			var out bytes.Buffer
 			c.summary(&out)
-			out.Reset() // The unread line is allowed; message output is not.
+			out.Reset() // Inspect the event fill separately from the unread line.
 			p := floorEvent(2, 3)
 			p.Deleted = true
 			c.handle(&out, p)
 			floor, applied := c.last[2]
-			if !applied || floor != 0 || c.delivered[2] != 0 || f.acks != 0 || f.fetches != 0 || out.Len() != 0 {
-				t.Fatalf("T1 requires floor 0 and no handling above unprinted rows 1-2: last=%v delivered=%v acks=%v output=%q", c.last, c.delivered, f.ackSeqs, out.String())
+			if !applied || floor != 2 || c.delivered[2] != 2 || !slices.Equal(f.ackSeqs, []int64{2}) || f.fetches != 1 || !slices.Equal(f.after, []int64{0}) || strings.Count(out.String(), "fetched ") != 2 {
+				t.Fatalf("T1 must fetch floor 0 and handle rows 1-2 before acknowledging: last=%v delivered=%v acks=%v output=%q", c.last, c.delivered, f.ackSeqs, out.String())
 			}
 		})
 	}
