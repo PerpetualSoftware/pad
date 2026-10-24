@@ -6,7 +6,8 @@ import (
 	"log/slog"
 )
 
-// TASK-4041, DOC-4036: publish only references after the store commits.
+// TASK-4041, DOC-4036: publish after the store commits, with no full body;
+// a bounded excerpt (at most 100 runes, first line) rides on the event.
 func (s *Server) notifyChatMessage(c *models.Conversation, m models.ConversationMessage, recipients []models.ConversationActor, deleted bool) {
 	excerpt := models.QuoteExcerpt(m.Body)
 	if deleted {
