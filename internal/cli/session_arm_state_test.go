@@ -129,8 +129,6 @@ func TestArmState_DisarmRemovesAndIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestArmState_HeadlessLivePid: the cwd-fallback path with no socket reads
-// as armed while its owner pid (this process) is alive.
 // BUG-4025: the helper must win over an ambient session pid. CI never sets
 // CLAUDE_PID, so without this test a helper that stopped clearing it would
 // still pass there; here a dead pid is planted first, as a relaunched
@@ -149,6 +147,8 @@ func TestArmStateTestEnv_IgnoresAmbientSessionPID(t *testing.T) {
 	}
 }
 
+// TestArmState_HeadlessLivePid: the cwd-fallback path with no socket reads
+// as armed while its owner pid (this process) is alive.
 func TestArmState_HeadlessLivePid(t *testing.T) {
 	armStateTestEnv(t, "") // no socket → headless, cwd-keyed, pid liveness
 
