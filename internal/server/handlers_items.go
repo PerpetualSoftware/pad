@@ -2339,6 +2339,20 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			if s.metrics != nil {
 				s.metrics.ContentWritesUnguardedTotal.WithLabelValues(door, kind).Inc()
 			}
+			// TASK-4062: the counter is zeroed by every restart and has no
+			// scraper, so the same event is logged once per Inc() and the
+			// week's count is read from the log. Identifiers only: never the
+			// body, the title or a field value.
+			actorKind, _ := actorFromRequest(r)
+			slog.Info("content write unguarded",
+				"door", door,
+				"kind", kind,
+				"item_ref", item.Ref,
+				"item_id", item.ID,
+				"workspace_id", workspaceID,
+				"actor_kind", actorKind,
+				"actor_user_id", currentUserID(r),
+			)
 			unguardedContentWrite = kind == writeKindContent && door != writeDoorWeb
 		}
 	}
