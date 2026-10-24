@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // TASK-4041: this adapter avoids colliding with TASK-4042's Client methods.
 type chatSink interface {
 	messagesAfter(number int, after int64, limit int) ([]monitorChatMessage, error)
 	delivered(number int, seq int64) error
-	unread(agent string) (int, error)
+	unread(agent string) (monitorChatUnread, error)
 }
 
 type monitorChatMessage struct {
@@ -47,18 +48,24 @@ func (s httpChatSink) messagesAfter(number int, after int64, limit int) ([]monit
 func (s httpChatSink) delivered(number int, seq int64) error {
 	return s.client.MarkChatDelivered(number, seq)
 }
-func (s httpChatSink) unread(agent string) (int, error) {
+
+// TASK-4041: retain delivered_seq from the same response as the summary.
+// A successful response lists every conversation with positive unread count.
+type monitorChatUnread struct {
+	Conversations []models.ConversationUnread `json:"conversations"`
+	Total         int                         `json:"total"`
+}
+
+func (s httpChatSink) unread(agent string) (monitorChatUnread, error) {
 	data, err := s.client.RawGet("/me/chat/unread?agent=" + url.QueryEscape(agent))
 	if err != nil {
-		return 0, err
+		return monitorChatUnread{}, err
 	}
-	var out struct {
-		Total int `json:"total"`
-	}
+	var out monitorChatUnread
 	if err := json.Unmarshal(data, &out); err != nil {
-		return 0, err
+		return monitorChatUnread{}, err
 	}
-	return out.Total, nil
+	return out, nil
 }
 
 // TASK-4041, DOC-4036: authority is decided from fetched authorship and fresh
@@ -92,9 +99,10 @@ func formatChatLine(m monitorChatMessage, direction bool) string {
 var seenChat = newRecentSet(256, 10*time.Minute)
 
 type monitorChat struct {
-	sink    chatSink
-	printed *recentSet
-	last    map[int]int64
+	sink         chatSink
+	printed      *recentSet
+	last         map[int]int64
+	summaryReady bool
 }
 
 func newMonitorChat(sink chatSink, printed *recentSet) *monitorChat {
@@ -130,9 +138,17 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		return
 	}
 	last, baseline := c.last[p.Conversation]
-	after, limit := p.MessageSeq-1, 1
-	if baseline && p.MessageSeq > last+1 {
-		after, limit = last, 20
+	if !baseline {
+		// TASK-4041, DOC-4036: absence from a successful unread summary
+		// means zero unread. Without a summary, fetch history fail-closed.
+		if c.summaryReady {
+			last = p.MessageSeq - 1
+		}
+		c.last[p.Conversation] = last
+	}
+	after, limit := last, 1
+	if p.MessageSeq > last+1 {
+		limit = 20
 	}
 	var highest int64
 	defer func() {
@@ -140,37 +156,32 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 			_ = c.sink.delivered(p.Conversation, highest)
 		}
 	}()
-	for {
-		messages, err := c.sink.messagesAfter(p.Conversation, after, limit)
-		if err != nil || len(messages) == 0 {
+	messages, err := c.sink.messagesAfter(p.Conversation, after, limit)
+	if err != nil {
+		return
+	}
+	for _, m := range messages {
+		// TASK-4041, DOC-4036: a high-water marker cannot cross an
+		// unprinted message, even if a later event has already arrived.
+		if m.Seq != after+1 || m.Seq > p.MessageSeq {
 			return
 		}
-		previous := after
-		for _, m := range messages {
-			if m.Seq <= after {
-				return
-			}
-			if m.Seq > p.MessageSeq {
-				return
-			}
-			// The first-event lookup must resolve exactly the referenced message.
-			if m.Seq == p.MessageSeq && m.ID != p.MessageID {
-				return
-			}
-			after = m.Seq
-			if m.Deleted {
-				c.retract(w, watchStreamPayload{MessageID: m.ID, Conversation: p.Conversation})
-				continue
-			}
-			if m.Mine || c.printed.contains(m.ID) {
-				continue
-			}
-			// Recheck AFTER fetching as well: consent may have changed during IO.
-			if !cli.ResolveAnnouncedArmed() {
-				return
-			}
+		if m.Seq == p.MessageSeq && m.ID != p.MessageID {
+			return
+		}
+		if m.Deleted {
+			c.retract(w, watchStreamPayload{MessageID: m.ID, Conversation: p.Conversation})
+			return
+		}
+		if m.Mine {
+			return
+		}
+		if !c.printed.contains(m.ID) {
 			m.Conversation = p.Conversation
 			direction := cli.ChatDirectionOn()
+			// TASK-4041: this final check covers the fetch AND the direction
+			// read. A second check between those reads was redundant: no
+			// output or acknowledgement occurs before this check.
 			if !cli.ResolveAnnouncedArmed() {
 				return
 			}
@@ -178,14 +189,13 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 				return
 			}
 			c.printed.seen(m.ID)
-			if m.Seq > c.last[p.Conversation] {
-				c.last[p.Conversation] = m.Seq
-			}
-			highest = m.Seq
 		}
-		if after >= p.MessageSeq || after <= previous || limit == 1 {
-			return
-		}
+		after = m.Seq
+		c.last[p.Conversation] = m.Seq
+		highest = m.Seq
+	}
+	if after < p.MessageSeq && len(messages) == 20 && cli.ResolveAnnouncedArmed() {
+		fmt.Fprintf(w, "%d more in C%d: pad chat show C%d --since %d\n", p.MessageSeq-after, p.Conversation, p.Conversation, after)
 	}
 }
 
@@ -193,9 +203,17 @@ func (c *monitorChat) summary(w io.Writer) {
 	if c.sink == nil || !cli.ResolveAnnouncedArmed() {
 		return
 	}
-	total, err := c.sink.unread(cli.ResolveAgentName())
-	if err != nil || total <= 0 || !cli.ResolveAnnouncedArmed() {
+	summary, err := c.sink.unread(cli.ResolveAgentName())
+	if err != nil || !cli.ResolveAnnouncedArmed() {
 		return
 	}
-	fmt.Fprintf(w, "Pad chat: %d unread messages — use pad chat show to read them.\n", total)
+	for _, row := range summary.Conversations {
+		if _, exists := c.last[row.Number]; !exists {
+			c.last[row.Number] = row.DeliveredSeq
+		}
+	}
+	c.summaryReady = true
+	if summary.Total > 0 {
+		fmt.Fprintf(w, "Pad chat: %d unread messages — use pad chat show to read them.\n", summary.Total)
+	}
 }

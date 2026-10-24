@@ -24,6 +24,7 @@ type fakeChatSink struct {
 	total                 int
 	agent                 string
 	before                func()
+	beforeUnread          func()
 }
 
 func (f *fakeChatSink) messagesAfter(n int, after int64, limit int) ([]monitorChatMessage, error) {
@@ -49,10 +50,13 @@ func (f *fakeChatSink) messagesAfter(n int, after int64, limit int) ([]monitorCh
 	return out, nil
 }
 func (f *fakeChatSink) delivered(n int, seq int64) error { f.acks++; f.seq = seq; return nil }
-func (f *fakeChatSink) unread(agent string) (int, error) {
+func (f *fakeChatSink) unread(agent string) (monitorChatUnread, error) {
 	f.totals++
+	if f.beforeUnread != nil {
+		f.beforeUnread()
+	}
 	f.agent = agent
-	return f.total, nil
+	return monitorChatUnread{Total: f.total}, nil
 }
 func chatSSE(id string, seq int64, deleted bool) string {
 	b, _ := json.Marshal(watchStreamPayload{Kind: "chat", Conversation: 1, MessageID: id, MessageSeq: seq, Deleted: deleted, Excerpt: "EVENT-SECRET"})
@@ -167,6 +171,10 @@ func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotAgent = r.Header.Get("X-Pad-Agent")
+		if r.URL.Path == "/api/v1/me/chat/unread" {
+			fmt.Fprint(w, `{"total":0,"conversations":[]}`)
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/me/conversations/1/delivered" {
 			var body struct {
 				Seq int64 `json:"seq"`
@@ -189,6 +197,7 @@ func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 	sink := httpChatSink{client: client}
 	var out bytes.Buffer
 	c := newMonitorChat(sink, newRecentSet(256, 10*60*1e9))
+	c.summary(&out)
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "m", MessageSeq: 7, Excerpt: "EVENT-SECRET"})
 	if gotAuth != "Bearer monitor-token" || gotAgent != "rook" || acks != 1 || !strings.Contains(out.String(), "OWN-CREDENTIAL-BODY") || strings.Contains(out.String(), "EVENT-SECRET") {
 		t.Fatal(gotAuth, gotAgent, out.String())
@@ -250,19 +259,115 @@ func TestMonitorDeleteRetraction(t *testing.T) {
 	}
 }
 
-func TestMonitorChatGapPagesAndOwnMessages(t *testing.T) {
-	chatSessionEnv(t)
-	f := &fakeChatSink{}
-	for i := int64(1); i <= 43; i++ {
-		m := chatMsg(fmt.Sprint(i), i)
-		m.Mine = i == 2
-		f.messages = append(f.messages, m)
+// TASK-4041, DOC-4036: never move the delivery marker across an unprinted
+// sequence, including our own messages, tombstones, and a malformed gap page.
+func TestMonitorChatAckStopsAtUnprintedMessage(t *testing.T) {
+	for _, kind := range []string{"own", "deleted", "missing"} {
+		t.Run(kind, func(t *testing.T) {
+			chatSessionEnv(t)
+			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3)}}
+			switch kind {
+			case "own":
+				f.messages[1].Mine = true
+			case "deleted":
+				f.messages[1].Deleted = true
+			case "missing":
+				f.messages = append(f.messages[:1], f.messages[2:]...)
+			}
+			c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+			var out bytes.Buffer
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "c", MessageSeq: 3})
+			if f.seq != 1 || f.acks != 1 || strings.Contains(out.String(), "fetched c") {
+				t.Fatalf("crossed unprinted message: output=%q sink=%+v", out.String(), f)
+			}
+		})
 	}
-	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+}
+
+func TestMonitorChatSummaryRespectsConsentRecheck(t *testing.T) {
+	chatSessionEnv(t)
+	f := &fakeChatSink{total: 3, beforeUnread: func() { cli.WriteDisarmState() }}
 	var out bytes.Buffer
-	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "1", MessageSeq: 1})
-	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "43", MessageSeq: 43})
-	if f.fetches != 4 || f.acks != 2 || f.seq != 43 || len(strings.Split(strings.TrimSpace(out.String()), "\n")) != 42 || strings.Contains(out.String(), "fetched 2\n") {
-		t.Fatal(out.String(), f)
+	newMonitorChat(f, newRecentSet(256, 10*60*1e9)).summary(&out)
+	if f.totals != 1 || out.Len() != 0 || f.acks != 0 {
+		t.Fatalf("consent changed during unread fetch: output=%q sink=%+v", out.String(), f)
+	}
+}
+
+func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
+	for _, tc := range []struct {
+		name, summary     string
+		event, after, ack int64
+		printed, limit    int
+		more              string
+	}{
+		{"25-message-gap", `{"total":25,"conversations":[{"number":1,"delivered_seq":0,"unread":25}]}`, 25, 0, 20, 20, 20, "5 more in C1: pad chat show C1 --since 20"},
+		{"fresh-unread-history", `{"total":1,"conversations":[{"number":1,"delivered_seq":5,"read_seq":7,"unread":1}]}`, 8, 5, 8, 3, 20, ""},
+		{"arrived-after-summary", `{"total":1,"conversations":[{"number":1,"delivered_seq":5,"last_seq":6,"unread":1}]}`, 7, 5, 7, 2, 20, ""},
+		{"missing-means-zero-unread", `{"total":0,"conversations":[]}`, 8, 7, 8, 1, 1, ""},
+		{"other-conversation-unread", `{"total":1,"conversations":[{"number":2,"delivered_seq":4,"unread":1}]}`, 8, 7, 8, 1, 1, ""},
+		{"summary-error-fetches-history", `error`, 8, 0, 8, 8, 20, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chatSessionEnv(t)
+			oldSeen := seenChat
+			seenChat = newRecentSet(256, 10*60*1e9)
+			t.Cleanup(func() { seenChat = oldSeen })
+			var acks []int64
+			fetches := 0
+			h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/me/chat/unread":
+					if r.URL.Query().Get("agent") != cli.ResolveAgentName() {
+						t.Error("unread agent filter missing", r.URL)
+					}
+					if tc.summary == "error" {
+						http.Error(w, "unavailable", http.StatusServiceUnavailable)
+						return
+					}
+					fmt.Fprint(w, tc.summary)
+				case "/api/v1/me/conversations/1/messages":
+					fetches++
+					if r.URL.Query().Get("after_seq") != fmt.Sprint(tc.after) || r.URL.Query().Get("limit") != fmt.Sprint(tc.limit) {
+						t.Errorf("fetch %s, want after_seq=%d limit=%d", r.URL, tc.after, tc.limit)
+					}
+					var messages []monitorChatMessage
+					for seq := tc.after + 1; seq <= tc.event && len(messages) < tc.limit; seq++ {
+						messages = append(messages, chatMsg(fmt.Sprintf("m%02d", seq), seq))
+					}
+					json.NewEncoder(w).Encode(map[string]any{"messages": messages})
+				case "/api/v1/me/conversations/1/delivered":
+					var body struct {
+						Seq int64 `json:"seq"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					acks = append(acks, body.Seq)
+					fmt.Fprint(w, `{}`)
+				default:
+					t.Error("unexpected request", r.URL)
+					http.NotFound(w, r)
+				}
+			}))
+			defer h.Close()
+			var out bytes.Buffer
+			streamWatchEventsTo(&out, fakeSSEResponse(chatSSE(fmt.Sprintf("m%02d", tc.event), tc.event, false)), "", httpChatSink{cli.NewClientFromURLWithAgentName(h.URL, cli.ResolveAgentName())})
+			if fetches != 1 || len(acks) != 1 || acks[0] != tc.ack || strings.Count(out.String(), "fetched m") != tc.printed {
+				t.Fatalf("fetches=%d acks=%v output=%s", fetches, acks, out.String())
+			}
+			previous := -1
+			for seq := tc.after + 1; seq <= tc.ack; seq++ {
+				at := strings.Index(out.String(), fmt.Sprintf("fetched m%02d", seq))
+				if at <= previous {
+					t.Fatalf("acked past unprinted or unordered seq %d: %s", seq, out.String())
+				}
+				previous = at
+			}
+			if tc.more != "" && !strings.Contains(out.String(), tc.more+"\n") {
+				t.Fatalf("missing continuation %q: %s", tc.more, out.String())
+			}
+		})
 	}
 }
