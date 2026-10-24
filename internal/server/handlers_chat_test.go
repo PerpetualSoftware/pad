@@ -326,15 +326,30 @@ func TestChat_LongHeaderAgent_ExplicitKeyMatchesNormalisedName(t *testing.T) {
 	f.must(f.request("GET", "/api/v1/me/chat/unread?agent="+url.QueryEscape(raw), raw, nil), 400, "filter by the raw name")
 }
 
-func TestChat_Ensure_65RuneBodyRefusedWithoutCreation(t *testing.T) {
+// BUG-4055 / TASK-4059: a human's body agent_key that the normalizer would
+// change is refused, not silently changed, and nothing is created. This pins
+// the equality gate (normalizeAgentName(key) != key), which a 65-rune key
+// reaches first because normalizing truncates it. It does not pin the 64-rune
+// bound itself: the handler's rune-count case is shadowed by that gate, so the
+// bound is pinned by the store's own table (conversations_test.go "65 runes")
+// and the 64-rune non-ASCII round trip above.
+func TestChat_Ensure_BodyKeyTheNormalizerWouldChangeIsRefusedWithoutCreation(t *testing.T) {
 	f := newChatFixture(t)
 	// ASCII keeps this under the former byte cap, so silently truncating
 	// the explicit identifier cannot hide behind an unrelated byte refusal.
 	rr := f.request("POST", chatBase, "", map[string]any{"agent_key": strings.Repeat("x", 65)})
 	if rr.Code != 400 {
 		t.Errorf("ensure = %d %s, want 400", rr.Code, rr.Body.String())
-	} else if got := chatObject(t, rr)["error"].(map[string]any)["code"]; got != "validation_error" {
-		t.Errorf("error code = %v, want validation_error", got)
+	} else {
+		e := chatObject(t, rr)["error"].(map[string]any)
+		if e["code"] != "validation_error" {
+			t.Errorf("error code = %v, want validation_error", e["code"])
+		}
+		// The equality gate's own message, so a refusal by any later case
+		// (the shadowed rune bound included) does not satisfy this test.
+		if e["message"] != "agent_key must be a valid agent name" {
+			t.Errorf("refused by %q, want the equality gate's refusal", e["message"])
+		}
 	}
 	rows, err := f.srv.store.ListConversations(models.ConversationActor{UserID: f.owner.ID})
 	if err != nil {
