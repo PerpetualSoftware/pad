@@ -96,7 +96,7 @@ func TestMonitorChatRetractionOutlivesSeenChat(t *testing.T) {
 }
 
 func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
-	for _, change := range []string{"same", "base-url", "user"} {
+	for _, change := range []string{"same", "base-url", "user", "profile-error", "empty-user"} {
 		t.Run(change, func(t *testing.T) {
 			chatSessionEnv(t)
 			t.Setenv("PAD_URL", "")
@@ -121,6 +121,15 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 				path := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/first"), "/second")
 				switch path {
 				case "/api/v1/auth/me":
+					if change == "profile-error" || change == "empty-user" {
+						time.AfterFunc(500*time.Millisecond, cancel)
+						if change == "profile-error" {
+							http.Error(w, "unavailable", http.StatusServiceUnavailable)
+						} else {
+							fmt.Fprint(w, `{"id":""}`)
+						}
+						return
+					}
 					id := "user1"
 					if change == "user" && connections > 0 {
 						id = "user2"
@@ -129,6 +138,9 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 				case "/api/v1/events/stream":
 					connections++
 					w.Header().Set("Content-Type", "text/event-stream")
+					if change == "profile-error" || change == "empty-user" {
+						fmt.Fprint(w, "event: notification\ndata: {\"kind\":\"push\",\"summary\":\"push-survives\"}\n\n")
+					}
 					if connections == 1 {
 						fmt.Fprint(w, chatSSE("old", 2, false))
 					} else {
@@ -187,6 +199,12 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 			})
 			mu.Lock()
 			defer mu.Unlock()
+			if change == "profile-error" || change == "empty-user" {
+				if connections != 1 || len(afters) != 0 || len(acks) != 0 || !strings.Contains(out, "push-survives") || strings.Contains(out, "fetched ") {
+					t.Fatalf("unresolved identity affected push or handled chat: connections=%d after=%v acks=%v output=%q", connections, afters, acks, out)
+				}
+				return
+			}
 			wantAfters, wantShared := []int64{0, 0}, 2
 			if change == "same" {
 				wantAfters, wantShared = []int64{0, 2}, 1
