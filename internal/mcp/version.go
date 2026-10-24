@@ -2252,7 +2252,8 @@ const CmdhelpVersion = "0.1"
 // (|x| < 2^53), so "10" is 10 and "123" is a GUARDED write. Every other
 // string ("010", "1.0", "1e3", " 10", "+10", "") and every other type is
 // refused (validation_failed, naming the parameter); "010" because stdio's
-// CLI flags read it as octal 8. The rule covers the same doors as v0.103,
+// CLI flags read it as octal 8. An empty string or false is refused, not
+// skipped as absent. The rule covers the same doors as v0.103,
 // including every numeric key on a query-string door (item backlinks, item
 // search, item context's budget, project activity, project standup and
 // changelog), where a bool, an object or "abc" used to reach the server's

@@ -1851,6 +1851,8 @@ func numericInput(v any) (int64, bool, error) {
 		n = int64(x)
 	case uint64:
 		n, err = uint64Int64(x)
+	case uintptr:
+		n, err = uint64Int64(uint64(x))
 	case json.Number:
 		n, err = jsonNumberInt64(x)
 	case string:

@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
 
@@ -101,6 +102,7 @@ func TestBUG4065_NumericInputAdmitsOrRefusesEveryType(t *testing.T) {
 		{"uint64 MaxInt64", uint64(math.MaxInt64), math.MaxInt64, true, ""},
 		{"uint64 above MaxInt64", uint64(math.MaxUint64), 0, false, "is out of range, got 18446744073709551615"},
 		{"uint above MaxInt64", uint(1 << 63), 0, false, "is out of range, got 9223372036854775808"},
+		{"uintptr", uintptr(9), 9, true, ""},
 		// float32 widens exactly, then wholeInt64.
 		{"float32 whole", float32(3), 3, true, ""},
 		{"float32 fraction", float32(1.5), 0, false, "must be a whole number, got 1.5"},
@@ -227,6 +229,8 @@ func TestBUG4065_EveryDoorRefusesANonNumberNamingIt(t *testing.T) {
 		{"string abc", "abc"},
 		{"string 1.5", "1.5"},
 		{"string 010", "010"},
+		{"empty string", ""},
+		{"string above int64", "99999999999999999999"},
 		{"bool", true},
 		{"object", map[string]any{"n": 1.0}},
 		{"array", []any{7.0}},
@@ -421,28 +425,51 @@ func itoa(n int) string {
 	return string(b)
 }
 
-// Absent still means the default (r1 h2 L3): only null and a missing key are
-// absent, and neither is refused or forwarded.
+// Absent still means the default (r1 h2 L3, r2 item 8): only null and a
+// missing key are absent, and neither is refused or forwarded.
 func TestBUG4065_AbsentMeansTheDefault(t *testing.T) {
-	door := bug4065Door{
-		cmd:   []string{"item", "list"},
-		input: map[string]any{},
-		param: "limit",
-		set:   func(in map[string]any, v any) { in["limit"] = v },
-	}
-	for _, v := range []any{nil} {
-		res, reached := bug4065Dispatch(t, door, v)
+	for name, set := range map[string]func(map[string]any, any){
+		"present null": func(in map[string]any, v any) { in["limit"] = v },
+		"missing key":  func(map[string]any, any) {},
+	} {
+		door := bug4065Door{cmd: []string{"item", "list"}, input: map[string]any{}, param: "limit", set: set}
+		res, reached := bug4065Dispatch(t, door, nil)
 		if res != nil && res.IsError && strings.Contains(textOf(res), string(ErrValidationFailed)) {
-			t.Fatalf("null limit was refused: %s", textOf(res))
+			t.Fatalf("%s limit was refused: %s", name, textOf(res))
 		}
 		if len(reached) == 0 {
-			t.Fatalf("null limit reached no handler")
+			t.Fatalf("%s limit reached no handler", name)
 		}
 		for _, r := range reached {
 			if strings.Contains(r, "limit=<nil>") || strings.Contains(r, "limit=null") {
-				t.Fatalf("null limit was forwarded: %q", r)
+				t.Fatalf("%s limit was forwarded: %q", name, r)
 			}
 		}
+	}
+	// A null expected_seq is absent too, so the write stays UNGUARDED, as
+	// before: no expected_seq goes on the wire, and it is not refused.
+	door := bug4065Door{
+		cmd:   []string{"item", "update"},
+		input: map[string]any{"ref": "TASK-1", "content": "x"},
+		param: "expected_seq",
+		set:   func(in map[string]any, v any) { in["expected_seq"] = v },
+	}
+	res, reached := bug4065Dispatch(t, door, nil)
+	if res != nil && res.IsError && strings.Contains(textOf(res), string(ErrValidationFailed)) {
+		t.Fatalf("a null expected_seq was refused: %s", textOf(res))
+	}
+	var wrote bool
+	for _, r := range reached {
+		if strings.HasPrefix(r, http.MethodGet+" ") {
+			continue
+		}
+		wrote = true
+		if strings.Contains(r, "expected_seq") {
+			t.Fatalf("a null expected_seq went on the wire: %q", r)
+		}
+	}
+	if !wrote {
+		t.Fatalf("a null expected_seq produced no write: %q", reached)
 	}
 }
 
@@ -503,12 +530,22 @@ func TestBUG4065_PadItemToolHandlerExpectedSeq(t *testing.T) {
 	}
 }
 
-// The population check the lead asked for (5a06782e, Q12): every remote
-// dispatch route, against every parameter its tool declares "number". Each
-// is set to a bool and then to "abc"; neither may reach the server under that
-// parameter's name, as a query value or a body field. It is either refused,
-// or the route does not read that parameter at all. A new numeric query key
-// left off a route's numericQuery list fails here, not in production.
+// The population check the lead asked for (5a06782e, Q12; rebuilt in r2 per
+// b9025d7c). For every remote dispatch route and every parameter p its tool
+// declares "number", the route is dispatched three ways from a curated valid
+// base: p absent, p = "7", and p = each bad value. The forwarded requests are
+// compared, so the oracle does not depend on the wire name p travels under:
+//   - "7" forwards the same as absent: the route does not read p, and a bad
+//     value must forward the same as absent too;
+//   - "7" forwards differently: the route READS p, and a bad value must be
+//     refused with validation_failed naming p, with no write reaching the
+//     server (a route may read the item first);
+//   - every variant refused for some other reason: INCONCLUSIVE, which fails,
+//     so a base that does not satisfy a route cannot pass vacuously.
+//
+// The set of (route, p) pairs classed as reading p is pinned against
+// bug4065ReadSet, so a route that stops reading p altogether cannot go green
+// by being reclassified as "does not read".
 func TestBUG4065_NoRouteForwardsANonNumberForANumberParam(t *testing.T) {
 	toolFor := func(cmd string) string {
 		word := strings.SplitN(cmd, " ", 2)[0]
@@ -528,50 +565,117 @@ func TestBUG4065_NoRouteForwardsANonNumberForANumberParam(t *testing.T) {
 	for k := range (&HTTPHandlerDispatcher{}).specialRoutes() {
 		cmds[k] = true
 	}
-	checked := 0
+	writes := func(reached []string) []string {
+		var out []string
+		for _, r := range reached {
+			if !strings.HasPrefix(r, http.MethodGet+" ") {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	run := func(cmd, p string, v any, present bool) (*CallToolResult, []string) {
+		input := bug4065WalkBase(cmd)
+		delete(input, p)
+		if present {
+			input[p] = v
+		}
+		door := bug4065Door{cmd: strings.Split(cmd, " "), input: input, param: p, set: func(map[string]any, any) {}}
+		return bug4065Dispatch(t, door, nil)
+	}
+	namesP := func(res *CallToolResult, p string) bool {
+		txt := textOf(res)
+		return res != nil && res.IsError && strings.Contains(txt, string(ErrValidationFailed)) &&
+			(strings.Contains(txt, ": "+p+" must be ") || strings.Contains(txt, ": "+p+" is "))
+	}
+	var reads, inconclusive []string
 	for cmd := range cmds {
-		defs := params[toolFor(cmd)]
-		for _, p := range defs {
-			if p.Type != "number" {
+		for _, def := range params[toolFor(cmd)] {
+			if def.Type != "number" {
 				continue
 			}
-			for _, bad := range []struct {
-				v     any
-				query string
-				body  string
-			}{
-				{true, p.Name + "=true", `"` + p.Name + `":true`},
-				{"abc", p.Name + "=abc", `"` + p.Name + `":"abc"`},
-			} {
-				// Every string param gets a plausible value so the route gets
-				// as far as reading the numeric one.
-				input := map[string]any{}
-				for _, q := range defs {
-					if q.Type == "string" {
-						input[q.Name] = "x"
+			p := def.Name
+			resA, reqA := run(cmd, p, nil, false)
+			resS, reqS := run(cmd, p, "7", true)
+			if len(reqA) == 0 && len(reqS) == 0 && !namesP(resA, p) {
+				inconclusive = append(inconclusive, fmt.Sprintf("%s %s: absent=%s seven=%s", cmd, p, textOf(resA), textOf(resS)))
+				continue
+			}
+			readsP := strings.Join(reqA, "\n") != strings.Join(reqS, "\n")
+			if readsP {
+				reads = append(reads, cmd+" "+p)
+			}
+			for _, bad := range []any{true, "abc", map[string]any{"n": 1.0}} {
+				resB, reqB := run(cmd, p, bad, true)
+				if readsP {
+					if !namesP(resB, p) || len(writes(reqB)) != 0 {
+						t.Errorf("%s reads %s but %#v was not refused naming it (res=%s, writes=%q)", cmd, p, bad, textOf(resB), writes(reqB))
 					}
+					continue
 				}
-				input["workspace"] = "docapp"
-				input["ref"], input["item_ref"], input["target"] = "TASK-1", "TASK-1", "C12"
-				input[p.Name] = bad.v
-				door := bug4065Door{
-					cmd:   strings.Split(cmd, " "),
-					input: input,
-					param: p.Name,
-					set:   func(map[string]any, any) {},
+				if strings.Join(reqB, "\n") != strings.Join(reqA, "\n") {
+					t.Errorf("%s does not read %s, yet %#v changed what it forwards: %q, absent %q", cmd, p, bad, reqB, reqA)
 				}
-				_, reached := bug4065Dispatch(t, door, nil)
-				for _, r := range reached {
-					if strings.Contains(r, "?"+bad.query) || strings.Contains(r, "&"+bad.query) || strings.Contains(r, bad.body) {
-						t.Errorf("%s forwarded %s=%#v to the server: %q", cmd, p.Name, bad.v, r)
-					}
-				}
-				checked++
 			}
 		}
 	}
-	if checked < 40 {
-		t.Fatalf("checked only %d (route, number param, value) cases; the walk is not reaching the catalog", checked)
+	for _, c := range inconclusive {
+		t.Errorf("INCONCLUSIVE (the base does not get this route as far as the parameter): %s", c)
 	}
-	t.Logf("checked %d (route, number param, value) cases", checked)
+	sort.Strings(reads)
+	want := append([]string(nil), bug4065ReadSet...)
+	sort.Strings(want)
+	if strings.Join(reads, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the derived read-set moved; got:\n%s\nwant (bug4065ReadSet):\n%s", strings.Join(reads, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// bug4065WalkBase is a curated valid input for cmd: every value is one the
+// route accepts, so a refusal in the walk is about the numeric parameter.
+func bug4065WalkBase(cmd string) map[string]any {
+	base := map[string]any{
+		"workspace": "docapp", "ref": "TASK-1", "item_ref": "TASK-1", "target": "C12",
+		"query": "needle", "slug": "tasks", "attachment_id": "att-1", "seq": 3.0, "to": 3.0,
+		"body": "hi", "name": "Tasks", "collection": "tasks", "title": "A title",
+		"message": "a comment", "comment_id": "c-1", "reminder_id": "r-1", "status": "done",
+		"decision": "ship it", "pr_number": 5.0, "pr_url": "https://example.com/pr/5",
+		"content": "body text", "target_collection": "ideas", "summary": "a note",
+		"artifact": "title: x\n", "code": "join-code", "email": "someone@example.com",
+	}
+	return base
+}
+
+// bug4065ReadSet is the checked-in set of (route, parameter) pairs the walk
+// derives as reading a number-declared parameter. Review a change here
+// against the route's code: a pair that disappears means a route stopped
+// reading the parameter. Reviewed against the code at r2: these are the
+// top-level doors of bug4065Doors (edits[].line_hint is nested, so the door
+// table covers it).
+var bug4065ReadSet = []string{
+	"attachment list limit",
+	"attachment list offset",
+	"chat delete seq",
+	"chat read to",
+	"chat send reply_to",
+	"chat show limit",
+	"chat show since",
+	"collection update sort_order",
+	"github link pr_number",
+	"item backlinks limit",
+	"item backlinks offset",
+	"item context budget",
+	"item history limit",
+	"item list limit",
+	"item list offset",
+	"item patch expected_seq",
+	"item search limit",
+	"item search offset",
+	"item starred limit",
+	"item update expected_seq",
+	"project activity limit",
+	"project changelog days",
+	"project standup days",
+	"role update sort_order",
+	"workspace audit-log days",
+	"workspace audit-log limit",
 }
