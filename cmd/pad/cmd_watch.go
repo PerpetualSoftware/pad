@@ -542,15 +542,20 @@ func runWatchMonitor(ctx context.Context) error {
 
 		req, err := client.NewWatchEventsStreamRequest(streamCtx, lastEventID, monitorSessionIdentity())
 		if err == nil {
-			// An unresolved chat identity must not reuse another user's
-			// memory. Disable chat for this connection; pushes still flow.
+			// Keep chat closed until its identity is known; pushes still
+			// flow. A failed lookup can retry on the next chat reference.
 			chat.sink = nil
-			user, identityErr := client.GetCurrentUser()
-			if identityErr == nil && user.ID != "" {
+			chat.retryIdentity = func() {
+				user, identityErr := client.GetCurrentUser()
+				if identityErr != nil || user.ID == "" {
+					return
+				}
 				baseURL := req.URL.Scheme + "://" + req.URL.Host + strings.TrimSuffix(req.URL.EscapedPath(), "/api/v1/events/stream")
 				chat.setIdentity(baseURL, user.ID)
 				chat.sink = httpChatSink{client: client}
+				chat.retryIdentity = nil
 			}
+			chat.retryIdentity()
 		}
 		if err != nil {
 			cancelStream()

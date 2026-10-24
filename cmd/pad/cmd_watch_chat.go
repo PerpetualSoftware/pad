@@ -99,13 +99,14 @@ var seenChat = newRecentSet(256, 10*time.Minute)
 type monitorChatIdentity struct{ baseURL, userID string }
 
 type monitorChat struct {
-	sink         chatSink
-	printed      *recentSet
-	printedIDs   map[string]bool // True until its retraction is written; retain every id.
-	last         map[int]int64
-	delivered    map[int]int64
-	summaryReady bool
-	identity     monitorChatIdentity
+	sink          chatSink
+	printed       *recentSet
+	printedIDs    map[string]bool // True until its retraction is written; retain every id.
+	last          map[int]int64
+	delivered     map[int]int64
+	summaryReady  bool
+	identity      monitorChatIdentity
+	retryIdentity func()
 }
 
 func newMonitorChat(sink chatSink, printed *recentSet) *monitorChat {
@@ -160,6 +161,9 @@ func (c *monitorChat) retract(w io.Writer, p watchStreamPayload) bool {
 }
 
 func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
+	if c.retryIdentity != nil && cli.ResolveAnnouncedArmed() {
+		c.retryIdentity()
+	}
 	if !cli.ResolveAnnouncedArmed() || c.sink == nil || p.MessageID == "" || p.Conversation <= 0 || p.MessageSeq <= 0 {
 		return
 	}
