@@ -125,6 +125,9 @@ func (s *Server) handleEnsureChatConversation(w http.ResponseWriter, r *http.Req
 	switch {
 	case in.AgentKey == "":
 		invalidKey = "agent key is required"
+	// BUG-4055 r1: shadowed, never reached. A human's key is refused above by the
+	// r3 normalizeAgentName(in.AgentKey) != in.AgentKey gate, and an agent's key is
+	// its already-normalised header. Kept so the bound holds if that gate moves.
 	case utf8.RuneCountInString(in.AgentKey) > models.MaxAgentNameRunes:
 		invalidKey = fmt.Sprintf("agent key is longer than %d characters", models.MaxAgentNameRunes)
 	case !utf8.ValidString(in.AgentKey):

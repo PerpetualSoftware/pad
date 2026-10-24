@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -302,6 +303,27 @@ func TestChat_NonASCII64RuneAgentKeyRoundTrip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// BUG-4055 r1: an agent whose header truncates must name itself by the
+// normalised key, never by the raw header, on both the ensure body and the
+// unread filter. Kills: any non-empty agent body refused; the body or the
+// filter compared with the raw header instead of the normalised key.
+func TestChat_LongHeaderAgent_ExplicitKeyMatchesNormalisedName(t *testing.T) {
+	f := newChatFixture(t)
+	raw := strings.Repeat("😀", 70)
+	key := strings.Repeat("😀", 64)
+
+	rr := f.request("POST", chatBase, raw, map[string]any{"agent_key": key})
+	f.must(rr, 201, "agent names itself by the normalised key")
+	if got := chatObject(t, rr)["conversation"].(map[string]any)["agent_key"]; got != key {
+		t.Fatalf("agent_key = %v, want the 64-rune key", got)
+	}
+	f.must(f.request("POST", chatBase, raw, map[string]any{"agent_key": key}), 200, "same key again reuses the DM")
+	f.must(f.request("POST", chatBase, raw, map[string]any{"agent_key": raw}), 400, "the raw 70-rune name is not the agent's key")
+
+	f.must(f.request("GET", "/api/v1/me/chat/unread?agent="+url.QueryEscape(key), raw, nil), 200, "filter by the normalised key")
+	f.must(f.request("GET", "/api/v1/me/chat/unread?agent="+url.QueryEscape(raw), raw, nil), 400, "filter by the raw name")
 }
 
 func TestChat_Ensure_65RuneBodyRefusedWithoutCreation(t *testing.T) {
