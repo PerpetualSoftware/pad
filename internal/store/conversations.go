@@ -32,7 +32,6 @@ const (
 	maxConversationBodyBytes = 64 * 1024
 	maxConversationSource    = 32
 	maxConversationOpKey     = 128
-	maxConversationAgentKey  = 128
 	maxConversationContextID = 128
 
 	defaultConversationPage = 50
@@ -60,11 +59,11 @@ func validateConversationAgentKey(key string, allowEmpty bool) error {
 		}
 		return invalidConversation("agent key is required")
 	}
-	if len(key) > maxConversationAgentKey {
-		return invalidConversation("agent key is longer than %d bytes", maxConversationAgentKey)
-	}
 	if !utf8.ValidString(key) {
 		return invalidConversation("agent key is not valid UTF-8")
+	}
+	if utf8.RuneCountInString(key) > models.MaxAgentNameRunes {
+		return invalidConversation("agent key is longer than %d characters", models.MaxAgentNameRunes)
 	}
 	for _, r := range key {
 		if unicode.IsControl(r) {

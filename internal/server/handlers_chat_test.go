@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -87,7 +88,7 @@ func TestChat_Ensure_RejectsUnnormalisedAgentKey(t *testing.T) {
 	}{
 		{"leading whitespace", " claude"},
 		{"trailing whitespace", "claude "},
-		{"over rune cap", strings.Repeat("x", maxAgentNameRunes+1)},
+		{"over rune cap", strings.Repeat("x", models.MaxAgentNameRunes+1)},
 		{"embedded control", "cla\u0007ude"},
 		{"normalised", "claude"},
 	} {
@@ -224,14 +225,123 @@ func TestChat_Send_RemoteMCPWithoutNameRefused(t *testing.T) {
 		}
 	}
 }
-func TestChat_Send_AgentKeyTooManyBytes_400(t *testing.T) {
+
+// BUG-4055: chat must use the key the real presence stream recorded, even
+// when the self-declared header exceeds both the rune and former byte caps.
+func TestChat_AgentHeaderTruncatesToPresenceKey(t *testing.T) {
 	f := newChatFixture(t)
-	for _, name := range []string{strings.Repeat("😀", 40), strings.Repeat("x", 129)} {
-		rr := f.request("GET", chatBase, name, nil)
-		f.must(rr, 400, "header bytes")
-		if !strings.Contains(rr.Body.String(), "X-Pad-Agent must be at most 128 bytes") {
-			t.Fatal(rr.Body.String())
-		}
+	f.srv.SetSessionPresence(NewMemorySessionPresence())
+	name := strings.Repeat("😀", 70)
+	ts := httptest.NewServer(f.srv)
+	defer ts.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStreamWithHeaders(ctx, t, ts.URL, f.ownerTok, map[string]string{
+		"X-Pad-Agent": name, "X-Pad-Worker": presenceWorkerA,
+	})
+	if ev := waitForWatchEvent(t, ch, 3*time.Second); ev.Type != "connected" {
+		t.Fatalf("stream: %q", ev.Type)
+	}
+	rows := presenceRows(t, f.srv, f.ownerTok)
+	if len(rows) != 1 || rows[0]["agent"] != strings.Repeat("😀", 64) {
+		t.Fatalf("presence must record the truncated name: %+v", rows)
+	}
+	presenceKey := rows[0]["agent"].(string)
+
+	rr := f.request("POST", chatBase, name, map[string]any{})
+	f.must(rr, 201, "ensure with long header")
+	conversation := chatObject(t, rr)["conversation"].(map[string]any)
+	if conversation["agent_key"] != presenceKey {
+		t.Fatalf("chat key = %v, presence key = %q", conversation["agent_key"], presenceKey)
+	}
+	path := fmt.Sprintf("%s/%.0f/messages", chatBase, conversation["number"])
+	rr = f.request("POST", path, name, map[string]any{"body": "hello"})
+	f.must(rr, 201, "send with long header")
+	if got := chatMessage(t, rr)["author_agent_key"]; got != presenceKey {
+		t.Fatalf("chat author = %v, presence key = %q", got, presenceKey)
+	}
+}
+
+func TestChat_NonASCII64RuneAgentKeyRoundTrip(t *testing.T) {
+	name := strings.Repeat("😀", 64) // 256 bytes; valid without truncation.
+	for _, caller := range []string{"human", "agent"} {
+		t.Run(caller, func(t *testing.T) {
+			f := newChatFixture(t)
+			header := ""
+			body := map[string]any{"agent_key": name}
+			if caller == "agent" {
+				header = name
+				body = map[string]any{}
+			}
+			rr := f.request("POST", chatBase, header, body)
+			f.must(rr, 201, "ensure 64 rune key")
+			conversation := chatObject(t, rr)["conversation"].(map[string]any)
+			if conversation["agent_key"] != name {
+				t.Fatalf("ensure key = %v, want %q", conversation["agent_key"], name)
+			}
+			path := fmt.Sprintf("%s/%.0f/messages", chatBase, conversation["number"])
+			rr = f.request("POST", path, header, map[string]any{"body": "hello"})
+			f.must(rr, 201, "send 64 rune key")
+			if got := chatMessage(t, rr)["author_agent_key"]; got != header {
+				t.Fatalf("send author = %v, want %q", got, header)
+			}
+			rr = f.request("GET", path, header, nil)
+			f.must(rr, 200, "list messages")
+			messages := chatObject(t, rr)["messages"].([]any)
+			if len(messages) != 1 {
+				t.Fatalf("messages = %v", messages)
+			}
+			message := messages[0].(map[string]any)
+			if message["author_agent_key"] != header || message["body"] != "hello" {
+				t.Fatalf("stored message did not round-trip: %v", message)
+			}
+			rr = f.request("GET", chatBase, header, nil)
+			f.must(rr, 200, "list conversations")
+			conversations := chatObject(t, rr)["conversations"].([]any)
+			if len(conversations) != 1 || conversations[0].(map[string]any)["agent_key"] != name {
+				t.Fatalf("stored key did not round-trip byte-identically: %v", conversations)
+			}
+		})
+	}
+}
+
+// BUG-4055 r1: an agent whose header truncates must name itself by the
+// normalised key, never by the raw header, on both the ensure body and the
+// unread filter. Kills: any non-empty agent body refused; the body or the
+// filter compared with the raw header instead of the normalised key.
+func TestChat_LongHeaderAgent_ExplicitKeyMatchesNormalisedName(t *testing.T) {
+	f := newChatFixture(t)
+	raw := strings.Repeat("😀", 70)
+	key := strings.Repeat("😀", 64)
+
+	rr := f.request("POST", chatBase, raw, map[string]any{"agent_key": key})
+	f.must(rr, 201, "agent names itself by the normalised key")
+	if got := chatObject(t, rr)["conversation"].(map[string]any)["agent_key"]; got != key {
+		t.Fatalf("agent_key = %v, want the 64-rune key", got)
+	}
+	f.must(f.request("POST", chatBase, raw, map[string]any{"agent_key": key}), 200, "same key again reuses the DM")
+	f.must(f.request("POST", chatBase, raw, map[string]any{"agent_key": raw}), 400, "the raw 70-rune name is not the agent's key")
+
+	f.must(f.request("GET", "/api/v1/me/chat/unread?agent="+url.QueryEscape(key), raw, nil), 200, "filter by the normalised key")
+	f.must(f.request("GET", "/api/v1/me/chat/unread?agent="+url.QueryEscape(raw), raw, nil), 400, "filter by the raw name")
+}
+
+func TestChat_Ensure_65RuneBodyRefusedWithoutCreation(t *testing.T) {
+	f := newChatFixture(t)
+	// ASCII keeps this under the former byte cap, so silently truncating
+	// the explicit identifier cannot hide behind an unrelated byte refusal.
+	rr := f.request("POST", chatBase, "", map[string]any{"agent_key": strings.Repeat("x", 65)})
+	if rr.Code != 400 {
+		t.Errorf("ensure = %d %s, want 400", rr.Code, rr.Body.String())
+	} else if got := chatObject(t, rr)["error"].(map[string]any)["code"]; got != "validation_error" {
+		t.Errorf("error code = %v, want validation_error", got)
+	}
+	rows, err := f.srv.store.ListConversations(models.ConversationActor{UserID: f.owner.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("refused key created conversations: %+v", rows)
 	}
 }
 func TestChat_RateLimit_20PerMinutePerAgentPerConversation(t *testing.T) {

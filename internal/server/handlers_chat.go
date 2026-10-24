@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -30,6 +31,7 @@ func chatActor(w http.ResponseWriter, r *http.Request) (models.ConversationActor
 		writeError(w, 403, "forbidden", "Chat is not available to apps")
 		return models.ConversationActor{}, false
 	}
+	// BUG-4055: header names share attribution/presence normalization; see the ensure body check.
 	key := agentNameFromRequest(r)
 	if _, remote := remoteMCPCaller(r); remote && key == "" {
 		writeError(w, 403, "agent_name_required", "Remote MCP chat requires an agent name")
@@ -38,10 +40,6 @@ func chatActor(w http.ResponseWriter, r *http.Request) (models.ConversationActor
 	// TASK-4039 R1: cookie sessions always speak as the human.
 	if !isBearerAuth(r) {
 		key = ""
-	}
-	if isBearerAuth(r) && len(r.Header.Get("X-Pad-Agent")) > 128 {
-		writeError(w, 400, "validation_error", "X-Pad-Agent must be at most 128 bytes")
-		return models.ConversationActor{}, false
 	}
 	return models.ConversationActor{UserID: u.ID, AgentKey: key}, true
 }
@@ -115,6 +113,9 @@ func (s *Server) handleEnsureChatConversation(w http.ResponseWriter, r *http.Req
 		in.AgentKey = actor.AgentKey
 	}
 	// TASK-4039 r3: human-created DMs must be reachable through X-Pad-Agent.
+	// BUG-4055 (ruling aea461b3): a body field is an explicit identifier and
+	// must be refused rather than silently changed. The header is a self-declared
+	// name shared with attribution and presence, so the normalizer truncates it.
 	if actor.AgentKey == "" && normalizeAgentName(in.AgentKey) != in.AgentKey {
 		writeError(w, 400, "validation_error", "agent_key must be a valid agent name")
 		return
@@ -124,8 +125,11 @@ func (s *Server) handleEnsureChatConversation(w http.ResponseWriter, r *http.Req
 	switch {
 	case in.AgentKey == "":
 		invalidKey = "agent key is required"
-	case len(in.AgentKey) > 128:
-		invalidKey = "agent key is longer than 128 bytes"
+	// BUG-4055 r1: shadowed, never reached. A human's key is refused above by the
+	// r3 normalizeAgentName(in.AgentKey) != in.AgentKey gate, and an agent's key is
+	// its already-normalised header. Kept so the bound holds if that gate moves.
+	case utf8.RuneCountInString(in.AgentKey) > models.MaxAgentNameRunes:
+		invalidKey = fmt.Sprintf("agent key is longer than %d characters", models.MaxAgentNameRunes)
 	case !utf8.ValidString(in.AgentKey):
 		invalidKey = "agent key is not valid UTF-8"
 	case strings.ContainsFunc(in.AgentKey, unicode.IsControl):
