@@ -34,7 +34,9 @@ func TestBUG4061_NumericInputRefusesWhatItWouldChange(t *testing.T) {
 		{name: "int64", in: int64(8), want: 8, present: true},
 		{name: "json.Number whole", in: json.Number("42"), want: 42, present: true},
 		{name: "json.Number fraction", in: json.Number("1.5"), wantErr: "got 1.5"},
-		{name: "json.Number above int64", in: json.Number("1e19"), wantErr: "got 1e19"},
+		{name: "json.Number above int64", in: json.Number("1e19"), wantErr: "is out of range"},
+		{name: "json.Number whole with an exponent", in: json.Number("1e6"), want: 1000000, present: true},
+		{name: "json.Number not a number", in: json.Number("abc"), wantErr: "must be a whole number, got abc"},
 		{name: "nil is absent", in: nil},
 		{name: "a string is absent, as before", in: "10"},
 	}
@@ -79,6 +81,12 @@ func TestBUG4061_EveryDispatchDoorRefusesAFractionNamingIt(t *testing.T) {
 		{[]string{"workspace", "audit-log"}, map[string]any{"limit": 1e19}, "limit"},
 		{[]string{"item", "list"}, map[string]any{"limit": -2.7}, "limit"},
 		{[]string{"item", "list"}, map[string]any{"offset": 1.5}, "offset"},
+		// The four buildQuery callers (lead ruling on Q2): the generic route
+		// mapper, mapItemSearch, and the standup and changelog dispatchers.
+		{[]string{"item", "backlinks"}, map[string]any{"ref": "TASK-1", "limit": 1.5}, "limit"},
+		{[]string{"item", "search"}, map[string]any{"query": "x", "offset": 2.5}, "offset"},
+		{[]string{"project", "standup"}, map[string]any{"days": 0.5}, "days"},
+		{[]string{"project", "changelog"}, map[string]any{"days": 1e19}, "days"},
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.cmd, " ")+" "+tc.param, func(t *testing.T) {
@@ -196,8 +204,9 @@ func TestBUG4061_ExpectedSeqRangeAndJSONNumber(t *testing.T) {
 	}{
 		{"above int64", 1e19, 0, "expected_seq is out of range"},
 		{"json.Number whole", json.Number("42"), 42, ""},
-		{"json.Number fraction", json.Number("42.7"), 0, "expected_seq must be a whole number in range, got 42.7"},
-		{"json.Number above int64", json.Number("1e19"), 0, "expected_seq must be a whole number in range"},
+		{"json.Number fraction", json.Number("42.7"), 0, "expected_seq must be a whole number, got 42.7"},
+		{"json.Number whole with an exponent", json.Number("4.2e1"), 42, ""},
+		{"json.Number above int64", json.Number("1e19"), 0, "expected_seq is out of range"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, present, err := itemExpectedSeqParam(map[string]any{"expected_seq": tc.v})

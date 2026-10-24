@@ -123,10 +123,13 @@ func TestExpandPath_UnclosedPlaceholderErrors(t *testing.T) {
 }
 
 func TestBuildQuery_SkipsEmptyAndMissing(t *testing.T) {
-	got := buildQuery(
+	got, qerr := buildQuery(
 		map[string]any{"a": "x", "b": "", "c": nil, "d": "y"},
 		map[string]string{"a": "a", "b": "b", "c": "c", "d": "d", "e": "e"},
 	)
+	if qerr != nil {
+		t.Fatal(qerr)
+	}
 	values, err := parseQuery(got)
 	if err != nil {
 		t.Fatalf("parse query %q: %v", got, err)
@@ -142,10 +145,13 @@ func TestBuildQuery_SkipsEmptyAndMissing(t *testing.T) {
 }
 
 func TestBuildQuery_RenamesAndTypes(t *testing.T) {
-	got := buildQuery(
+	got, qerr := buildQuery(
 		map[string]any{"query": "OAuth", "limit": float64(50), "all": true, "skip": false},
 		map[string]string{"q": "query", "limit": "limit", "include_archived": "all", "_skip": "skip"},
 	)
+	if qerr != nil {
+		t.Fatal(qerr)
+	}
 	values, err := parseQuery(got)
 	if err != nil {
 		t.Fatalf("parse query: %v", err)
@@ -173,8 +179,8 @@ func TestBuildQuery_HandlesJSONNumber(t *testing.T) {
 	if err := dec.Decode(&input); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	got := buildQuery(input, map[string]string{"limit": "limit"})
-	if got != "limit=50" {
+	got, qerr := buildQuery(input, map[string]string{"limit": "limit"})
+	if qerr != nil || got != "limit=50" {
 		t.Errorf("got %q, want limit=50", got)
 	}
 }

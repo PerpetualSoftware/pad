@@ -68,7 +68,11 @@ func (s routeSpec) toRouteMapper() RouteMapper {
 		if err != nil {
 			return "", "", nil, err
 		}
-		if q := buildQuery(input, queryParams); q != "" {
+		q, err := buildQuery(input, queryParams)
+		if err != nil {
+			return "", "", nil, err
+		}
+		if q != "" {
 			path += "?" + q
 		}
 		var body []byte
@@ -134,9 +138,15 @@ func expandPath(template string, input map[string]any) (string, error) {
 // Numbers from JSON arrive as float64; ints with no fractional part
 // emit without the .0. Booleans only emit when true (matching the
 // CLI's "presence-only" treatment).
-func buildQuery(input map[string]any, mapping map[string]string) string {
+//
+// BUG-4061: a number that is not a whole int64 is refused, naming the key.
+// Every numeric query parameter this builds is an integer (limit, offset,
+// days, budget), and the server's parsers read "1.5" as absent and use their
+// default (parseDaysParam, the limit parsers), so forwarding it silently
+// replaced the caller's number exactly as numericInput's truncation did.
+func buildQuery(input map[string]any, mapping map[string]string) (string, error) {
 	if len(mapping) == 0 {
-		return ""
+		return "", nil
 	}
 	q := url.Values{}
 	for dst, src := range mapping {
@@ -153,11 +163,12 @@ func buildQuery(input map[string]any, mapping map[string]string) string {
 			if x {
 				q.Set(dst, "true")
 			}
-		case float64:
-			number, _ := formatNumber(x)
-			q.Set(dst, number)
-		case json.Number:
-			q.Set(dst, x.String())
+		case float64, json.Number:
+			n, _, err := numericInput(x)
+			if err != nil {
+				return "", fmt.Errorf("%s %w", src, err)
+			}
+			q.Set(dst, strconv.FormatInt(n, 10))
 		default:
 			// BUG-4056 r1: float32 and the integer types share formatNumber.
 			if number, ok := formatNumber(v); ok {
@@ -168,9 +179,9 @@ func buildQuery(input map[string]any, mapping map[string]string) string {
 		}
 	}
 	if len(q) == 0 {
-		return ""
+		return "", nil
 	}
-	return q.Encode()
+	return q.Encode(), nil
 }
 
 // flatJSONBody serializes selected input keys into a JSON object.
@@ -1719,13 +1730,27 @@ func numericInput(v any) (int64, bool, error) {
 	case int64:
 		return x, true, nil
 	case json.Number:
-		n, err := x.Int64()
+		n, err := jsonNumberInt64(x)
 		if err != nil {
-			return 0, false, fmt.Errorf("must be a whole number in range, got %s", x.String())
+			return 0, false, err
 		}
 		return n, true, nil
 	}
 	return 0, false, nil
+}
+
+// jsonNumberInt64 is wholeInt64 for a json.Number. Int64() alone refuses a
+// whole number written with an exponent ("1e6"), so a literal it cannot parse
+// is read as a float and gets the same whole-and-in-range check.
+func jsonNumberInt64(x json.Number) (int64, error) {
+	if n, err := x.Int64(); err == nil {
+		return n, nil
+	}
+	f, err := x.Float64()
+	if err != nil {
+		return 0, fmt.Errorf("must be a whole number, got %s", x.String())
+	}
+	return wholeInt64(f)
 }
 
 // wholeInt64 converts a float64 that is exactly an int64, and refuses any
@@ -1819,7 +1844,7 @@ func mapItemSearch(input map[string]any) (string, string, []byte, error) {
 	if query == "" {
 		return "", "", nil, fmt.Errorf("query is required")
 	}
-	q := buildQuery(input, map[string]string{
+	q, err := buildQuery(input, map[string]string{
 		"q":          "query",
 		"workspace":  "workspace",
 		"collection": "collection",
@@ -1829,6 +1854,9 @@ func mapItemSearch(input map[string]any) (string, string, []byte, error) {
 		"limit":      "limit",
 		"offset":     "offset",
 	})
+	if err != nil {
+		return "", "", nil, err
+	}
 	urlPath := "/api/v1/search"
 	if q != "" {
 		urlPath += "?" + q

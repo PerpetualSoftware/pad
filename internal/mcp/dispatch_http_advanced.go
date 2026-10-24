@@ -827,9 +827,9 @@ func itemExpectedSeqParam(input map[string]any) (int64, bool, error) {
 		}
 		return n, true, nil
 	case json.Number:
-		n, err := v.Int64()
+		n, err := jsonNumberInt64(v)
 		if err != nil {
-			return 0, false, fmt.Errorf("expected_seq must be a whole number in range, got %s", v.String())
+			return 0, false, fmt.Errorf("expected_seq %w", err)
 		}
 		return n, true, nil
 	case int64:

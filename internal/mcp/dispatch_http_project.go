@@ -128,7 +128,11 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
 		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/standup"
-	if q := buildQuery(input, map[string]string{"days": "days"}); q != "" {
+	q, err := buildQuery(input, map[string]string{"days": "days"})
+	if err != nil {
+		return validationFailedResult(cmdKey, err.Error(), "Pass days as a whole number."), nil
+	}
+	if q != "" {
 		path += "?" + q
 	}
 	return d.executeRequest(ctx, cmdKey, user, http.MethodGet, path, nil)
@@ -162,7 +166,11 @@ func (d *HTTPHandlerDispatcher) dispatchProjectChangelog(
 		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/changelog"
-	if q := buildQuery(input, map[string]string{"days": "days", "since": "since", "parent": "parent"}); q != "" {
+	q, err := buildQuery(input, map[string]string{"days": "days", "since": "since", "parent": "parent"})
+	if err != nil {
+		return validationFailedResult(cmdKey, err.Error(), "Pass days as a whole number."), nil
+	}
+	if q != "" {
 		path += "?" + q
 	}
 	return d.executeRequest(ctx, cmdKey, user, http.MethodGet, path, nil)

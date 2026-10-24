@@ -2231,8 +2231,12 @@ const CmdhelpVersion = "0.1"
 // fraction used to truncate (limit 1.5 read as 1, limit 0.5 as the default), a
 // value outside int64 converted to an implementation-defined one, and a
 // json.Number that did not parse was dropped as absent. Covers limit, offset
-// and days on every remote door, pad_item.list and pad_item.history's limit,
-// and expected_seq (range and json.Number; fractions were already refused).
+// and days on every remote door that reads them locally, pad_item.list and
+// pad_item.history's limit, every query-string door built by buildQuery (item
+// backlinks, item context's budget, project activity, item search, project
+// standup and changelog), whose server parsers used to default a forwarded
+// "1.5" silently, and expected_seq (range and json.Number; fractions were
+// already refused). A whole json.Number in exponent form ("1e6") is accepted.
 // The schemas declare these as "number", so the refused inputs were valid
 // under the advertised shape: the bump is owed by the behaviour, not by a
 // schema change (the precedent is the multi_relation DSL refusal).
