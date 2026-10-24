@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -25,6 +27,11 @@ type fakeChatSink struct {
 	agent                 string
 	before                func()
 	beforeUnread          func()
+	failAck               bool
+	deliveredSeq          int64
+	ackSeqs               []int64
+	summaryRows           []models.ConversationUnread
+	unreadErr             error
 }
 
 func (f *fakeChatSink) messagesAfter(n int, after int64, limit int) ([]monitorChatMessage, error) {
@@ -49,14 +56,26 @@ func (f *fakeChatSink) messagesAfter(n int, after int64, limit int) ([]monitorCh
 	}
 	return out, nil
 }
-func (f *fakeChatSink) delivered(n int, seq int64) error { f.acks++; f.seq = seq; return nil }
+func (f *fakeChatSink) delivered(n int, seq int64) error {
+	f.acks++
+	f.seq = seq
+	f.ackSeqs = append(f.ackSeqs, seq)
+	if f.failAck {
+		f.failAck = false
+		return errors.New("ack")
+	}
+	if seq > f.deliveredSeq {
+		f.deliveredSeq = seq
+	}
+	return nil
+}
 func (f *fakeChatSink) unread(agent string) (monitorChatUnread, error) {
 	f.totals++
 	if f.beforeUnread != nil {
 		f.beforeUnread()
 	}
 	f.agent = agent
-	return monitorChatUnread{Total: f.total}, nil
+	return monitorChatUnread{Total: f.total, Conversations: f.summaryRows}, f.unreadErr
 }
 func chatSSE(id string, seq int64, deleted bool) string {
 	b, _ := json.Marshal(watchStreamPayload{Kind: "chat", Conversation: 1, MessageID: id, MessageSeq: seq, Deleted: deleted, Excerpt: "EVENT-SECRET"})
@@ -139,7 +158,7 @@ func TestMonitorDedupeAndDeliveredAck(t *testing.T) {
 	}
 	c.handle(&out, p)
 	c.handle(&out, p)
-	if f.acks != 1 || f.seq != 1 || strings.Count(out.String(), "fetched a") != 1 {
+	if f.acks != 2 || f.seq != 1 || strings.Count(out.String(), "fetched a") != 1 {
 		t.Fatal(out.String(), f)
 	}
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "c", MessageSeq: 3})
@@ -256,6 +275,115 @@ func TestMonitorDeleteRetraction(t *testing.T) {
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1, Deleted: true})
 	if strings.Count(out.String(), "retracted") != 1 || f.fetches != 1 || f.acks != 1 {
 		t.Fatal(out.String(), f)
+	}
+}
+
+func TestMonitorChatFinalTombstoneAdvancesContiguously(t *testing.T) {
+	for _, printed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("original-printed=%t", printed), func(t *testing.T) {
+			chatSessionEnv(t)
+			f := &fakeChatSink{}
+			c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+			c.last[1] = 1
+			if printed {
+				c.printed.seen("b")
+			}
+			var out bytes.Buffer
+			p := watchStreamPayload{Conversation: 1, MessageID: "b", MessageSeq: 2, Deleted: true}
+			c.handle(&out, p)
+			c.handle(&out, p)
+			wantRetractions := 0
+			if printed {
+				wantRetractions = 1
+			}
+			if c.last[1] != 2 || f.deliveredSeq != 2 || !slices.Equal(f.ackSeqs, []int64{2}) || f.fetches != 0 || strings.Count(out.String(), "retracted") != wantRetractions {
+				t.Fatalf("cursor=%d acks=%v delivered=%d fetches=%d output=%q", c.last[1], f.ackSeqs, f.deliveredSeq, f.fetches, out.String())
+			}
+			// An out-of-order tombstone must wait for a contiguous gap fill.
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "d", MessageSeq: 4, Deleted: true})
+			if c.last[1] != 2 || !slices.Equal(f.ackSeqs, []int64{2}) || f.fetches != 0 {
+				t.Fatalf("crossed gap: cursor=%d acks=%v fetches=%d", c.last[1], f.ackSeqs, f.fetches)
+			}
+			f.messages = []monitorChatMessage{chatMsg("c", 3), {ID: "d", Seq: 4, Deleted: true}, chatMsg("e", 5)}
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "e", MessageSeq: 5})
+			if c.last[1] != 5 || !slices.Equal(f.ackSeqs, []int64{2, 5}) || !slices.Equal(f.after, []int64{2}) || !strings.Contains(out.String(), "fetched c\n") || !strings.Contains(out.String(), "fetched e\n") {
+				t.Fatalf("gap fill: cursor=%d acks=%v after=%v output=%q", c.last[1], f.ackSeqs, f.after, out.String())
+			}
+		})
+	}
+}
+
+func TestMonitorChatDedupeRetriesFailedAck(t *testing.T) {
+	chatSessionEnv(t)
+	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2)}, failAck: true}
+	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	var out bytes.Buffer
+	p := watchStreamPayload{Conversation: 1, MessageID: "b", MessageSeq: 2}
+	c.handle(&out, p)
+	if c.last[1] != 2 || f.deliveredSeq != 0 || !slices.Equal(f.ackSeqs, []int64{2}) {
+		t.Fatalf("failed ack: cursor=%d delivered=%d acks=%v", c.last[1], f.deliveredSeq, f.ackSeqs)
+	}
+	// An older duplicate retries the contiguous cursor, not the event seq.
+	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})
+	if c.last[1] != 2 || f.deliveredSeq != 2 || !slices.Equal(f.ackSeqs, []int64{2, 2}) || f.fetches != 1 || strings.Count(out.String(), "fetched ") != 2 {
+		t.Fatalf("dedupe retry: cursor=%d delivered=%d acks=%v fetches=%d output=%q", c.last[1], f.deliveredSeq, f.ackSeqs, f.fetches, out.String())
+	}
+	// Printed ids can survive a reconnect without a local baseline.
+	c = newMonitorChat(f, c.printed)
+	c.handle(&out, p)
+	if !slices.Equal(f.ackSeqs, []int64{2, 2}) || f.fetches != 1 {
+		t.Fatalf("acked without a positive baseline: acks=%v fetches=%d", f.ackSeqs, f.fetches)
+	}
+}
+
+func TestMonitorChatSyncRequiredReseedsBaselines(t *testing.T) {
+	for _, name := range []string{"failed-ack", "seq-minus-one-seed", "summary-unavailable"} {
+		t.Run(name, func(t *testing.T) {
+			chatSessionEnv(t)
+			oldSeen := seenChat
+			seenChat = newRecentSet(256, 10*60*1e9)
+			t.Cleanup(func() { seenChat = oldSeen })
+			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)}}
+			f.beforeUnread = func() {
+				if f.totals == 1 {
+					if name == "failed-ack" {
+						f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: 0}}
+						f.failAck = true
+					} else {
+						// The first event seeds at seq-1, then its fetch fails.
+						f.fail = true
+					}
+					return
+				}
+				f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: f.deliveredSeq}}
+				if name == "summary-unavailable" {
+					f.unreadErr = errors.New("unread")
+				}
+			}
+			var out bytes.Buffer
+			stream := chatSSE("c", 3, false) + "event: sync_required\ndata: {}\n\n" + chatSSE("d", 4, false)
+			streamWatchEventsTo(&out, fakeSSEResponse(stream), "", f)
+			firstAfter := int64(2)
+			firstLimit := 1
+			wantAcks := []int64{4}
+			if name == "failed-ack" {
+				firstAfter = 0
+				firstLimit = 20
+				wantAcks = []int64{3, 4}
+			}
+			if f.totals != 2 || !slices.Equal(f.after, []int64{firstAfter, 0}) || !slices.Equal(f.limits, []int{firstLimit, 20}) || !slices.Equal(f.ackSeqs, wantAcks) || f.deliveredSeq != 4 {
+				t.Fatalf("totals=%d after=%v limits=%v acks=%v delivered=%d output=%q", f.totals, f.after, f.limits, f.ackSeqs, f.deliveredSeq, out.String())
+			}
+			previous := -1
+			for _, id := range []string{"a", "b", "c", "d"} {
+				line := "fetched " + id + "\n"
+				at := strings.Index(out.String(), line)
+				if strings.Count(out.String(), line) != 1 || at <= previous {
+					t.Fatalf("missing, duplicate, or unordered %s: %s", id, out.String())
+				}
+				previous = at
+			}
+		})
 	}
 }
 
