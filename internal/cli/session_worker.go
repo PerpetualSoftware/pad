@@ -105,9 +105,10 @@ func keptWorkerID(path string, owner SessionOwner) string {
 // SetWorkerID makes this client send id as X-Pad-Worker instead of the one
 // ResolveWorkerID would pick: the `--worker-id` flag, which is also how a
 // local-stdio MCP call's `worker_id` param arrives. It must be called before
-// the first request. A malformed id is refused here, not sent.
+// the first request. An empty id explicitly omits the header without resolving a
+// replacement. A malformed non-empty id is refused here, not sent.
 func (c *Client) SetWorkerID(id string) error {
-	if !models.ValidWorkerID(id) {
+	if id != "" && !models.ValidWorkerID(id) {
 		return fmt.Errorf(`--worker-id must be "wk_" followed by 32 lowercase hex characters, got %q`, id)
 	}
 	c.workerOnce.Do(func() {})

@@ -1832,6 +1832,7 @@ func (s *Server) setupRouter() {
 		// line. Self-scoped; see handleListSessions on why there is
 		// deliberately no admin view.
 		r.Get("/api/v1/sessions", s.handleListSessions)
+		r.Post("/api/v1/sessions/activity", s.handleSessionActivity)
 
 		// WebSocket endpoint for Yjs-based collaborative editing on a
 		// single item (PLAN-1248). Lives outside jsonContentType for

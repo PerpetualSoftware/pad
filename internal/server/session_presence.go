@@ -123,9 +123,14 @@ import (
 // genuinely needs delivery confidence, and give that consumer an ack
 // rather than a faster heartbeat.
 //
-// Label and PID arrive from the client (S2) and are self-declared —
+// Label, PID, agent name and worker id arrive from the client and are self-declared —
 // see SessionIdentity.
 type LiveSession struct {
+	// Agent and WorkerID are self-declared connection facts, from
+	// SessionIdentity, never SessionOrigin. WorkerID is full in the registry;
+	// handleListSessions replaces it with models.ShortWorkerID for the wire.
+	Agent    string `json:"agent,omitempty"`
+	WorkerID string `json:"worker,omitempty"`
 	// ID is server-generated per connection, not per client. A client
 	// that reconnects (including the Last-Event-ID resume path) gets a
 	// NEW id, because from the presence registry's point of view a
@@ -233,7 +238,7 @@ type SessionOrigin struct {
 //
 // SELF-DECLARED, NOT VERIFIED — the same honesty-not-verification line
 // BUG-2542 drew for actor attribution. Nothing here is checked against
-// anything: a client can claim any label and any pid. That is
+// anything: a client can claim any label, pid, agent name and worker id. That is
 // acceptable precisely because the blast radius is the caller's own
 // row — GET /api/v1/sessions is self-scoped with no admin view
 // (handlers_sessions.go), so the only list a lying client corrupts is
@@ -249,6 +254,10 @@ type SessionOrigin struct {
 // needs, while the absolute path leaks the home directory (and usually
 // the account name) for no gain.
 type SessionIdentity struct {
+	// Agent is sanitized with the same rules as write attribution.
+	Agent string
+	// WorkerID is the full, shape-validated worker id; it survives /clear.
+	WorkerID string
 	// Label is a short human-meaningful name, already sanitized by
 	// parseSessionIdentity before it reaches the registry.
 	Label string
@@ -258,7 +267,7 @@ type SessionIdentity struct {
 	// client that resolved its own consent config to enabled and said
 	// so explicitly at connect (the `armed` query param — see
 	// session_identity.go for why this one field is a query param
-	// rather than a header like Label/PID). Absent or false is the
+	// rather than a header like Label/PID/Agent/WorkerID). Absent or false is the
 	// legacy shape and is not a lesser trust level to fix later — it is
 	// the correct answer for a client that predates the consent model
 	// entirely, or one that has it but the user hasn't opted in. False
@@ -293,6 +302,17 @@ type SessionIdentity struct {
 // startup). Do not port MemorySessionPresence's lifecycle assumptions
 // across; they are load-bearing on the in-process case only.
 type SessionPresence interface {
+	// SetActivity records activity for this credential user and worker,
+	// independently of any connection. Entries expire 30 minutes after the
+	// server receipt time at. A strictly older clientAt is ignored only when
+	// its gap from the stored timestamp is within reorderWindow (inclusive).
+	// A larger gap applies as a clock step. A nil clientAt always applies and
+	// clears the ordering timestamp.
+	SetActivity(userID, workerID string, busy bool, at time.Time, clientAt *time.Time) error
+	// BusyWorkers reads this user's activity in one batch, ignoring empty
+	// and duplicate workers and expired records. On error, known states may
+	// still be returned; missing or undecodable entries are not busy.
+	BusyWorkers(userID string, workerIDs []string) (map[string]bool, error)
 	// Add registers a newly-opened stream for userID and returns the
 	// session's generated id, which the caller MUST pass to Remove.
 	// The identity is whatever the client claimed about itself, already
@@ -330,7 +350,9 @@ type SessionPresence interface {
 // YOU GET note before putting it behind more than one padd process;
 // RedisSessionPresence (session_presence_redis.go) is what that needs.
 type MemorySessionPresence struct {
-	mu sync.RWMutex
+	mu       sync.RWMutex
+	now      func() time.Time // nil uses time.Now; injectable for activity expiry tests
+	activity map[sessionActivityKey]sessionActivity
 	// byUser is userID -> sessionID -> session. Two levels rather than a
 	// flat map keyed by session id because every read is user-scoped
 	// (there is no "list all sessions on this server" consumer, and
@@ -353,6 +375,8 @@ func (p *MemorySessionPresence) Add(userID string, ident SessionIdentity, origin
 	sess := LiveSession{
 		ID:          id,
 		Label:       ident.Label,
+		Agent:       ident.Agent,
+		WorkerID:    ident.WorkerID,
 		PID:         ident.PID,
 		Armed:       ident.Armed,
 		BearerAuth:  origin.BearerAuth,

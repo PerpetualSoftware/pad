@@ -2551,12 +2551,18 @@ export interface ServerCapabilities {
  * delivery guarantee, and consumers must not word it as one — "one session
  * connected" is honest, "this will be delivered" is not.
  *
- * `label` and `pid` are SELF-DECLARED by the connecting client (S2) and
+ * `label`, `pid`, `agent` and `worker` are SELF-DECLARED by the connecting client and
  * verified against nothing. That is safe only because the list is self-scoped
  * — a lying client corrupts nobody's list but its own. Never build anything
  * on them that needs them to be true.
  */
 export interface LiveSession {
+	/** Sanitized, self-declared agent name. */
+	agent?: string;
+	/** Short worker display id (wk_3f2a), never the full worker id. */
+	worker?: string;
+	/** Busy activity expires after 30 minutes; otherwise state follows armed. */
+	state: 'online' | 'busy' | 'connected_not_accepting';
 	/** Server-generated per CONNECTION, not per client: a reconnect (including
 	 *  a Last-Event-ID resume) gets a new id. Not a stable client identity. */
 	id: string;

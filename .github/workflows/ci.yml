@@ -165,6 +165,9 @@ jobs:
         # legs keeps ONE number in this file. It is a hang-catcher, not a
         # performance budget: the signal for "the suite got slow" is job
         # wall-clock, not this value.
+        # The process-group test must not silently skip on the gate of record; the Nix sandbox has no ps and skips.
+        env:
+          PAD_TEST_REQUIRE_PS: "1"
         run: go test -timeout=45m ./...
 
       - name: Run tests with race detector
@@ -199,6 +202,8 @@ jobs:
         # our code. Race detection itself stays on everywhere, modernc
         # included, and checkptr stays on for every other package.
         # Measured: -25% on 267 serial server tests, -40% on a 40-test probe.
+        env:
+          PAD_TEST_REQUIRE_PS: "1"
         run: go test -race -gcflags='modernc.org/...=-d=checkptr=0' -timeout=45m ./...
 
       - name: Build binary

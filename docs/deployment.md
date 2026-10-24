@@ -731,6 +731,10 @@ delivered. Re-sending one is a second instruction the receiving agent will act
 on twice. Only re-send a push the server told you it skipped. There is no Redis or database migration; the
 registry's keys are transient and expire on their own TTL.
 
+Worker activity uses a separate namespaced `activity:<user>:<worker>` key
+(`pad:activity:…`, or `pad:<namespace>:activity:…`) with a 30-minute TTL;
+session renewals do not overwrite or extend it.
+
 #### Event ID-space migration (`PAD_EVENTS_PUBLISH_EPOCH`)
 
 Events on the workspace activity stream (`GET /api/v1/events`) carry a

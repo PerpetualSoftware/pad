@@ -223,7 +223,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// confident label on it.
 	//
 	// The identity is whatever the client claimed in its request
-	// (S2, TASK-2560 for label/pid; PLAN-2613 S1 for armed) — sanitized,
+	// (label, pid, agent, worker, and push consent) — sanitized,
 	// never verified, and the legacy/empty shape for any client that
 	// doesn't say. See SessionIdentity. Parsed unconditionally, BEFORE
 	// the presence-registry branch below, because `armed` gates push

@@ -142,9 +142,9 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage: true,
 		// Validate the persistent --format value up front so a bogus value
 		// fails loudly instead of silently rendering a table. Runs for every
-		// subcommand (cobra invokes the nearest PersistentPreRunE, and no
-		// subcommand defines its own). The help command binds its own local
-		// --format, which shadows this persistent flag, so `pad help … --format md`
+		// subcommand except the best-effort session activity hook (cobra
+		// invokes the nearest PersistentPreRunE). The help command binds its
+		// own local --format, which shadows this persistent flag, so `pad help … --format md`
 		// leaves formatFlag at its "table" default and still passes.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			switch formatFlag {

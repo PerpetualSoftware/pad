@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 )
@@ -19,6 +20,49 @@ const (
 	claudePluginManifest = "../../plugin/.claude-plugin/plugin.json"
 	claudeMarketplace    = "../../.claude-plugin/marketplace.json"
 )
+
+func TestClaudePlugin_ActivityHooks(t *testing.T) {
+	b, err := os.ReadFile(claudePluginManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct{ Hooks string }
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Hooks != "./hooks/activity-hooks.json" {
+		t.Fatalf("hooks = %q, want the activity hooks file (separate from the pane mod)", manifest.Hooks)
+	}
+	b, err = os.ReadFile(filepath.Join("../../plugin", manifest.Hooks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Type, Command string
+				Timeout       int
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Hooks) != 2 {
+		t.Fatalf("expected just UserPromptSubmit and Stop, got %v", config.Hooks)
+	}
+	for event, state := range map[string]string{"UserPromptSubmit": "busy", "Stop": "idle"} {
+		groups := config.Hooks[event]
+		if len(groups) != 1 || len(groups[0].Hooks) != 1 {
+			t.Fatalf("%s must have one command hook: %+v", event, groups)
+		}
+		hook := groups[0].Hooks[0]
+		// UserPromptSubmit stdout reaches the model, so discarding output is part of the contract.
+		if hook.Type != "command" || hook.Command != "pad session activity "+state+" >/dev/null 2>&1 || true" || hook.Timeout != 5 {
+			t.Errorf("unexpected %s hook: %+v", event, hook)
+		}
+	}
+}
 
 func pinnedVersion(t *testing.T, path string, entries func(map[string]any) []map[string]any) []string {
 	t.Helper()
