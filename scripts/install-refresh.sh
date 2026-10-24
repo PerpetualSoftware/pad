@@ -542,6 +542,22 @@ for candidate in "$configured_port" "${PAD_PORT:-}" "$(config_value port || true
 done
 PORT="${PORT:-7777}"
 
+# --- 2a. The server log, proven writable before anything is stopped ----------
+#
+# The restarted server logs where `pad server info` says the log is:
+# cfg.LogFile(), <data dir>/logs/server.log (BUG-4064). This used to be
+# $HOME/.pad/server.log, a second file nothing else reads, and one that also
+# ignored PAD_DATA_DIR. The file is opened for append HERE, before the stop:
+# a redirect that cannot open its target never runs the command, so an
+# unwritable log found after the stop would leave no server at all. A missing
+# parent (a fresh HOME), a read-only mount, a root-owned file or a directory
+# in its place all refuse now, with the running server untouched.
+LOG_FILE="$(data_dir)/logs/server.log"
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null &&
+	{ : >>"$LOG_FILE"; } 2>/dev/null ||
+	die "cannot append to the server log $LOG_FILE. Nothing was stopped; the running server is untouched. Fix the path's permissions and re-run."
+LEGACY_LOG="$HOME/.pad/server.log"
+
 # --- 2b. Claim the stop->restart window (BUG-3215) ---------------------------
 #
 # Between the stop below and the restart answering, nothing serves this port,
@@ -564,15 +580,6 @@ PORT="${PORT:-7777}"
 # waiting CLI returns the moment the server answers; the deadline only
 # decides how long a CLI waits on a refresh that is failing, after which it
 # errors naming this pid rather than spawning.
-# The restarted server logs where `pad server info` says the log is:
-# cfg.LogFile(), <data dir>/logs/server.log (BUG-4064). This used to be
-# $HOME/.pad/server.log, a second file nothing else reads, and one that also
-# ignored PAD_DATA_DIR. Created here, before anything is stopped, so a failure
-# refuses with the old server still running.
-LOG_FILE="$(data_dir)/logs/server.log"
-mkdir -p "$(dirname "$LOG_FILE")" || die "could not create $(dirname "$LOG_FILE") for the server log"
-LEGACY_LOG="$HOME/.pad/server.log"
-
 REFRESH_MARKER="$(data_dir)/refresh.lock"
 MARKER_WRITTEN=""
 probe_budget="$PROBE_TIMEOUT"
@@ -641,7 +648,9 @@ fi
 # --- 4. Move into place, then check the OUTCOME -------------------------------
 mv -f "$STAGED" "$INSTALLED" || die "could not move the staged binary into $INSTALLED"
 STAGED=""
-rm -f "$HOME/.pad/pad.pid"
+# cfg.PIDFile() is <data dir>/pad.pid (config.go), claimed by `pad server
+# start` (cmd/pad/cmd_server.go); not $HOME/.pad under PAD_DATA_DIR (BUG-4064).
+rm -f "$(data_dir)/pad.pid"
 
 # The check TASK-2787 asks for, and it is deliberately on the installed file
 # rather than on any step: read what is now at the install path and require it
@@ -677,12 +686,10 @@ if [ ${#SERVER_ARGV[@]} -gt 0 ]; then
 else
 	restart=("$INSTALLED" server start)
 fi
-# mkdir before the redirect: a missing ~/.pad makes the redirection fail and
-# the server never starts, which the probe then reports as "did not answer" —
-# true, but three steps downstream of the cause. Found by the probe-failure
-# test on a fresh HOME, where the directory does not exist; on a developer's
-# box it exists by luck of history, which is why nothing had caught it.
-mkdir -p "$HOME/.pad"
+# The redirect target exists and is writable: 2a created and opened it
+# before the stop. A missing directory there would make the redirection fail
+# and the server never start, three steps upstream of the probe that reports
+# it (found on a fresh HOME by the probe-failure test).
 # setsid where it exists, plain nohup where it does not. Codex round 2
 # (P1): setsid is Linux-specific and absent from a default macOS
 # environment, where an unconditional call would fail AFTER the old server
