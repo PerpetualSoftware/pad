@@ -541,6 +541,17 @@ func runWatchMonitor(ctx context.Context) error {
 		}()
 
 		req, err := client.NewWatchEventsStreamRequest(streamCtx, lastEventID, monitorSessionIdentity())
+		if err == nil {
+			// An unresolved chat identity must not reuse another user's
+			// memory. Disable chat for this connection; pushes still flow.
+			chat.sink = nil
+			user, identityErr := client.GetCurrentUser()
+			if identityErr == nil && user.ID != "" {
+				baseURL := req.URL.Scheme + "://" + req.URL.Host + strings.TrimSuffix(req.URL.EscapedPath(), "/api/v1/events/stream")
+				chat.setIdentity(baseURL, user.ID)
+				chat.sink = httpChatSink{client: client}
+			}
+		}
 		if err != nil {
 			cancelStream()
 			attempt++
@@ -579,7 +590,6 @@ func runWatchMonitor(ctx context.Context) error {
 
 		attempt = 0 // connected — reset backoff for the NEXT disconnect
 
-		chat.sink = httpChatSink{client: client}
 		lastEventID = chat.stream(os.Stdout, resp, lastEventID)
 		resp.Body.Close()
 		cancelStream()

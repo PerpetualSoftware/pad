@@ -93,20 +93,39 @@ func formatChatLine(m monitorChatMessage, direction bool) string {
 	return strings.Join(strings.Fields(line), " ")
 }
 
-// Printed ids support retractions and recent-id dedupe across reconnects.
-// Delivery memory is the monitor's unbounded per-conversation high-water below.
+// seenChat is only the bounded event-dedupe memory across reconnects.
 var seenChat = newRecentSet(256, 10*time.Minute)
+
+type monitorChatIdentity struct{ baseURL, userID string }
 
 type monitorChat struct {
 	sink         chatSink
 	printed      *recentSet
+	printedIDs   map[string]bool // True until its retraction is written; retain every id.
 	last         map[int]int64
 	delivered    map[int]int64
 	summaryReady bool
+	identity     monitorChatIdentity
 }
 
 func newMonitorChat(sink chatSink, printed *recentSet) *monitorChat {
-	return &monitorChat{sink: sink, printed: printed, last: map[int]int64{}, delivered: map[int]int64{}}
+	return &monitorChat{sink: sink, printed: printed, printedIDs: map[string]bool{}, last: map[int]int64{}, delivered: map[int]int64{}}
+}
+
+func (c *monitorChat) setIdentity(baseURL, userID string) {
+	identity := monitorChatIdentity{baseURL, userID}
+	if identity == c.identity {
+		return
+	}
+	c.identity = identity
+	clear(c.last)
+	clear(c.delivered)
+	clear(c.printedIDs)
+	c.summaryReady = false
+	c.printed.mu.Lock()
+	clear(c.printed.at)
+	c.printed.order = nil
+	c.printed.mu.Unlock()
 }
 
 func (c *monitorChat) acknowledge(number int) {
@@ -129,12 +148,13 @@ func (c *monitorChat) retract(w io.Writer, p watchStreamPayload) bool {
 	if !cli.ResolveAnnouncedArmed() {
 		return false
 	}
-	if !c.printed.contains(p.MessageID) || c.printed.contains(key) {
+	if !c.printedIDs[p.MessageID] || c.printed.contains(key) {
 		return true
 	}
 	if _, err := fmt.Fprintln(w, formatChatLine(monitorChatMessage{ID: p.MessageID, Conversation: p.Conversation, Deleted: true}, false)); err != nil {
 		return false // Leave an owed retraction retryable.
 	}
+	c.printedIDs[p.MessageID] = false
 	c.printed.seen(key)
 	return true
 }
@@ -221,6 +241,10 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 				return
 			}
 			c.printed.seen(m.ID)
+			// Retraction ownership is process memory, used only to decide
+			// whether a retraction is owed. Keep one id per printed line for
+			// the process lifetime: any count or TTL bound loses late deletes.
+			c.printedIDs[m.ID] = true
 		}
 		after = m.Seq
 		c.last[p.Conversation] = m.Seq
@@ -232,14 +256,15 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	}
 }
 
-// resync replaces fill baselines only after a successful summary. Local
-// delivery is process memory: neither reconnect nor sync_required resets it.
+// A failed summary restores only known fill baselines. Readiness stays false
+// so unlisted conversations fetch from zero. Local delivery and printed ids
+// survive both reconnect and sync_required.
 func (c *monitorChat) resync(w io.Writer) {
-	previous, ready := c.last, c.summaryReady
+	previous := c.last
 	c.last = map[int]int64{}
 	c.summaryReady = false
 	if !c.summary(w) {
-		c.last, c.summaryReady = previous, ready
+		c.last = previous
 	}
 }
 

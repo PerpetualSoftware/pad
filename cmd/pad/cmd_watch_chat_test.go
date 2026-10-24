@@ -286,7 +286,7 @@ func TestMonitorChatFinalTombstoneAdvancesContiguously(t *testing.T) {
 			c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
 			c.last[1] = 1
 			if printed {
-				c.printed.seen("b")
+				c.printedIDs["b"] = true
 			}
 			var out bytes.Buffer
 			p := watchStreamPayload{Conversation: 1, MessageID: "b", MessageSeq: 2, Deleted: true}
@@ -441,7 +441,7 @@ func TestMonitorChatTombstoneInGap(t *testing.T) {
 			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), {ID: "b", Seq: 2, Deleted: true}, chatMsg("c", 3)}}
 			c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
 			if printed {
-				c.printed.seen("b")
+				c.printedIDs["b"] = true
 			}
 			var out bytes.Buffer
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})

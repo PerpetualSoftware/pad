@@ -144,9 +144,10 @@ func TestMonitorChatRetractionWriteFailureStopsAck(t *testing.T) {
 			if printed.contains("expired") {
 				t.Fatal("test must exercise expiry")
 			}
-			printed.seen("deleted") // the original is still owed a retraction
+			// The original is still owed a retraction.
 			f := &fakeChatSink{messages: []monitorChatMessage{{ID: "deleted", Seq: 1, Deleted: true}, chatMsg("next", 2)}}
 			c := newMonitorChat(f, printed)
+			c.printedIDs["deleted"] = true
 			p := watchStreamPayload{Conversation: 1, MessageID: "next", MessageSeq: 2}
 			if direct {
 				p = watchStreamPayload{Conversation: 1, MessageID: "deleted", MessageSeq: 1, Deleted: true}
