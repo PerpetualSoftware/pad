@@ -16,9 +16,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-func TestMonitorChatFailedResyncUnlistedConversationFetchesHistory(t *testing.T) {
+// CONVE-9: build 12 supersedes r5's expectation of printing seqs 1-4.
+func TestMonitorChatFailedResyncUnlistedConversationDefers(t *testing.T) {
 	chatSessionEnv(t)
 	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)}}
 	c := newMonitorChat(f, newRecentSet(256, 10*time.Minute))
@@ -27,17 +30,21 @@ func TestMonitorChatFailedResyncUnlistedConversationFetchesHistory(t *testing.T)
 		t.Fatal("initial summary failed")
 	}
 	f.unreadErr = errors.New("summary unavailable")
-	c.stream(&out, fakeSSEResponse("event: sync_required\ndata: {}\n\n"+strings.ReplaceAll(chatSSE("d", 4, false), `"conversation":1`, `"conversation":2`)), "")
-	if !slices.Equal(f.after, []int64{0}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[2] != 4 || c.summaryReady {
-		t.Fatalf("failed summary opened delivery: after=%v acks=%v delivered=%v ready=%t output=%q", f.after, f.ackSeqs, c.delivered, c.summaryReady, out.String())
+	c.resync(&out)
+	p := watchStreamPayload{Conversation: 2, MessageID: "d", MessageSeq: 4}
+	c.handle(&out, p)
+	if out.Len() != 0 || f.fetches != 0 || f.acks != 0 || c.summaryReady || len(c.last) != 0 || len(c.delivered) != 0 {
+		t.Fatalf("failed summary must defer: after=%v acks=%v last=%v delivered=%v ready=%t output=%q", f.after, f.ackSeqs, c.last, c.delivered, c.summaryReady, out.String())
 	}
-	previous := -1
-	for _, id := range []string{"a", "b", "c", "d"} {
-		at := strings.Index(out.String(), "fetched "+id+"\n")
-		if at <= previous {
-			t.Fatalf("missing or unordered %s: %q", id, out.String())
-		}
-		previous = at
+	f.unreadErr = nil
+	f.summaryRows = []models.ConversationUnread{{Number: 2, DeliveredSeq: 2}}
+	f.total = 2
+	if !c.summary(&out) {
+		t.Fatal("recovery summary failed")
+	}
+	c.handle(&out, p)
+	if !slices.Equal(f.after, []int64{2}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[2] != 4 || strings.Contains(out.String(), "fetched a") || strings.Contains(out.String(), "fetched b") || strings.Count(out.String(), "fetched c\n") != 1 || strings.Count(out.String(), "fetched d\n") != 1 || strings.Count(out.String(), "2 unread messages") != 1 {
+		t.Fatalf("recovery replayed delivered history or lost owed rows: after=%v acks=%v output=%q", f.after, f.ackSeqs, out.String())
 	}
 }
 
