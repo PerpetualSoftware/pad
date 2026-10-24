@@ -23,19 +23,19 @@ func TestMonitorChatFailedResyncUnlistedConversationDefers(t *testing.T) {
 	chatSessionEnv(t)
 	f := &fakeChatSink{floor: 2, floorErr: errors.New("floor unavailable"), messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)}}
 	c := newMonitorChat(f, newRecentSet(256, 10*time.Minute))
+	now := time.Unix(1000, 0)
+	c.now = func() time.Time { return now }
 	var out bytes.Buffer
 	c.summary(&out)
 	f.unreadErr = errors.New("summary unavailable")
 	c.resync(&out)
 	p := watchStreamPayload{Conversation: 2, MessageID: "d", MessageSeq: 4}
 	c.handle(&out, p)
-	awaitChatFloor(t, c, 2)
 	if out.Len() != 0 || f.fetches != 0 || f.acks != 0 || len(c.last) != 0 || len(c.delivered) != 0 {
 		t.Fatal("first contact did not defer")
 	}
 	f.floorErr = nil
-	c.handle(&out, p)
-	awaitChatFloor(t, c, 2)
+	now = now.Add(monitorChatFloorBackoff)
 	c.handle(&out, p)
 	if f.floorReads.Load() != 2 || !slices.Equal(f.after, []int64{2}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[2] != 4 || strings.Contains(out.String(), "fetched a") || strings.Contains(out.String(), "fetched b") || strings.Count(out.String(), "fetched c\n") != 1 || strings.Count(out.String(), "fetched d\n") != 1 {
 		t.Fatalf("after=%v acks=%v output=%q", f.after, f.ackSeqs, out.String())
@@ -111,7 +111,6 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 			defer cancel()
 			var mu sync.Mutex
 			connections, profileReads := 0, 0
-			floorRead := make(chan struct{}, 4)
 			var afters, acks []int64
 			var serverURL string
 			writeURL := func(base string) error {
@@ -155,28 +154,21 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 					mu.Unlock()
 					fmt.Fprint(w, event)
 					w.(http.Flusher).Flush()
-					if change != "profile-error" && change != "empty-user" {
+					// Hold the stream until this single event has been acknowledged.
+					for {
+						mu.Lock()
+						handled := len(acks) >= connections
+						mu.Unlock()
+						if handled {
+							break
+						}
 						select {
-						case <-floorRead:
 						case <-ctx.Done():
+							break
+						case <-time.After(time.Millisecond):
+							continue
 						}
-						// Repeated events consume an already-completed GET. Stop
-						// once acknowledgement cancels or the connection should end.
-						for i := 0; i < 50; i++ {
-							select {
-							case <-ctx.Done():
-								i = 50
-							case <-time.After(5 * time.Millisecond):
-								fmt.Fprint(w, event)
-								w.(http.Flusher).Flush()
-							}
-							mu.Lock()
-							handled := len(acks) >= connections
-							mu.Unlock()
-							if handled {
-								break
-							}
-						}
+						break
 					}
 					mu.Lock()
 				case "/api/v1/me/chat/unread":
@@ -187,7 +179,6 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 					}
 				case "/api/v1/me/conversations/1":
 					fmt.Fprint(w, `{"delivered_seq":0}`)
-					floorRead <- struct{}{}
 				case "/api/v1/me/conversations/1/messages":
 					after, _ := strconv.ParseInt(r.URL.Query().Get("after_seq"), 10, 64)
 					afters = append(afters, after)

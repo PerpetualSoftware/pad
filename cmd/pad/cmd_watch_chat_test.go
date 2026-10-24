@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,7 +39,7 @@ type fakeChatSink struct {
 	unreadErr             error
 }
 
-func (f *fakeChatSink) conversationFloor(int) (int64, error) {
+func (f *fakeChatSink) conversationFloor(context.Context, int) (int64, error) {
 	f.floorReads.Add(1)
 	return f.floor, f.floorErr
 }
@@ -231,8 +232,6 @@ func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 	c := newMonitorChat(sink, newRecentSet(256, 10*60*1e9))
 	c.summary(&out)
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "m", MessageSeq: 7, Excerpt: "EVENT-SECRET"})
-	awaitChatFloor(t, c, 1)
-	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "m", MessageSeq: 7, Excerpt: "EVENT-SECRET"})
 	if gotAuth != "Bearer monitor-token" || gotAgent != "rook" || acks != 1 || !strings.Contains(out.String(), "OWN-CREDENTIAL-BODY") || strings.Contains(out.String(), "EVENT-SECRET") {
 		t.Fatal(gotAuth, gotAgent, out.String())
 	}
@@ -346,7 +345,6 @@ func TestMonitorChatDedupeRetriesFailedAck(t *testing.T) {
 	// Printed ids can survive a reconnect without a local baseline.
 	c = newMonitorChat(f, c.printed)
 	c.handle(&out, p)
-	awaitChatFloor(t, c, 1)
 	if !slices.Equal(f.ackSeqs, []int64{2, 2}) || f.fetches != 1 {
 		t.Fatalf("acked without a positive baseline: acks=%v fetches=%d", f.ackSeqs, f.fetches)
 	}
@@ -374,8 +372,6 @@ func TestMonitorChatSyncRequiredReseedsBaselines(t *testing.T) {
 				t.Fatal("sync retained old floor")
 			}
 			p := watchStreamPayload{Conversation: 1, MessageID: "d", MessageSeq: 4}
-			c.handle(&out, p)
-			awaitChatFloor(t, c, 1)
 			c.handle(&out, p)
 			after := int64(0)
 			want := []int64{4}
@@ -585,8 +581,6 @@ func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 			var out bytes.Buffer
 			c := newMonitorChat(httpChatSink{cli.NewClientFromURLWithAgentName(h.URL, cli.ResolveAgentName())}, seenChat)
 			c.stream(&out, fakeSSEResponse(chatSSE(fmt.Sprintf("m%02d", tc.event), tc.event, false)), "")
-			awaitChatFloor(t, c, 1)
-			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: fmt.Sprintf("m%02d", tc.event), MessageSeq: tc.event})
 			if fetches != 1 || len(acks) != 1 || acks[0] != tc.ack || strings.Count(out.String(), "fetched m") != tc.printed {
 				t.Fatalf("fetches=%d acks=%v output=%s", fetches, acks, out.String())
 			}
@@ -607,10 +601,8 @@ func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 
 func newSeededMonitorChat(f *fakeChatSink, printed *recentSet) *monitorChat {
 	c := newMonitorChat(f, printed)
-	c.attemptFloor(1)
-	// This helper is only for tests of filling after a successful floor read.
-	result := <-c.pendingFloor[1]
-	c.pendingFloor[1] <- result
-	c.attemptFloor(1)
+	if !c.attemptFloor(1) {
+		panic("test floor unavailable")
+	}
 	return c
 }

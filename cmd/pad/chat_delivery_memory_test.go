@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -36,8 +37,6 @@ func TestMonitorChatSyncSummaryFailureRefetchesFloor(t *testing.T) {
 	}
 	p := watchStreamPayload{Conversation: 1, MessageID: "d", MessageSeq: 4}
 	c.handle(&out, p)
-	awaitChatFloor(t, c, 1)
-	c.handle(&out, p)
 	if f.floorReads.Load() != 2 || !slices.Equal(f.after, []int64{2, 3}) || !slices.Equal(f.ackSeqs, []int64{3, 4}) || strings.Count(out.String(), "fetched ") != 2 {
 		t.Fatalf("after=%v acks=%v output=%q", f.after, f.ackSeqs, out.String())
 	}
@@ -64,8 +63,6 @@ func TestMonitorChatDeliveryMemoryOutlivesSeenChat(t *testing.T) {
 	now = now.Add(11 * time.Minute)
 	for seq := int64(301); seq <= 302; seq++ {
 		c.stream(&out, fakeSSEResponse("event: sync_required\ndata: {}\n\n"), "")
-		c.handle(&out, floorEvent(1, 1))
-		awaitChatFloor(t, c, 1)
 		c.handle(&out, floorEvent(1, 1))
 		c.handle(&out, floorEvent(1, seq))
 		if strings.Count(out.String(), "fetched ") != int(seq) || strings.Count(out.String(), "fetched m1\n") != 1 || f.after[len(f.after)-1] != seq-1 || c.delivered[1] != seq {
@@ -97,8 +94,6 @@ func TestMonitorChatDedupeAckUsesDeliveredNotSeed(t *testing.T) {
 				want = []int64{1}
 			}
 			p := watchStreamPayload{Conversation: 1, MessageID: "old", MessageSeq: 2}
-			c.handle(&out, p)
-			awaitChatFloor(t, c, 1)
 			c.handle(&out, p)
 			if c.last[1] != 7 || !slices.Equal(f.ackSeqs, want) || f.fetches != 0 || out.Len() != 0 {
 				t.Fatalf("ack used floor: last=%v acks=%v want=%v", c.last, f.ackSeqs, want)
@@ -163,7 +158,7 @@ func TestMonitorChatAdapterQueryShape(t *testing.T) {
 			t.Fatalf("messages=%v err=%v", messages, err)
 		}
 	}
-	floor, err := sink.conversationFloor(12)
+	floor, err := sink.conversationFloor(context.Background(), 12)
 	if err != nil || floor != 7 {
 		t.Fatalf("floor=%d err=%v", floor, err)
 	}
