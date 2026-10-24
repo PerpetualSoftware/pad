@@ -132,6 +132,12 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	}
 	if p.Deleted {
 		c.retract(w, p)
+		// A final tombstone has no later event to trigger a gap fill.
+		// Only consume it directly when it is the next contiguous seq.
+		if p.MessageSeq == c.last[p.Conversation]+1 {
+			c.last[p.Conversation] = p.MessageSeq
+			_ = c.sink.delivered(p.Conversation, p.MessageSeq)
+		}
 		return
 	}
 	if c.printed.contains(p.MessageID) {
