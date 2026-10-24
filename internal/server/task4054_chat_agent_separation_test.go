@@ -24,13 +24,24 @@ import (
 func TestChat_AgentCannotReachSiblingAgentDM(t *testing.T) {
 	t.Setenv("PAD_DISABLE_RATE_LIMITS", "")
 	f := newChatFixture(t)
-	f.ensure("alpha")
-	bravo := f.ensure("bravo")
+	// TASK-4060 r1: seed both DMs through the store, not the API, so the
+	// owner's ChatDM bucket is still unallocated when the ensure case runs and
+	// its "no DM bucket" assertion can actually move.
+	if _, _, err := f.srv.store.EnsureAgentDM(f.owner.ID, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	bravoDM, _, err := f.srv.store.EnsureAgentDM(f.owner.ID, "bravo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bravo := fmt.Sprintf("%s/%d", chatBase, bravoDM.Number)
 	bravoMsg := f.request("POST", bravo+"/messages", "bravo", map[string]any{"body": "from bravo"})
 	f.must(bravoMsg, 201, "bravo send")
 	bravoSeq := int64(chatMessage(t, bravoMsg)["seq"].(float64))
-	// TASK-4060: an owner message bravo has not read, so bravo's DM carries
-	// unread rows that a leaked inbox or unread summary would show alpha.
+	// TASK-4060: unread rows on both sides. The owner has not read bravo's
+	// message, so a leak that resolves alpha to the owner's member row (the
+	// UserID-only actor) shows bravo's DM with unread 1. Bravo has not read
+	// the owner's message, so a leak onto bravo's row would show it too.
 	f.must(f.request("POST", bravo+"/messages", "", map[string]any{"body": "from owner"}), 201, "owner send")
 
 	got := f.request("GET", bravo, "", nil)
@@ -108,29 +119,33 @@ func TestChat_AgentCannotReachSiblingAgentDM(t *testing.T) {
 		}
 	})
 
-	// TASK-4060 items 2 and 4: alpha cannot ensure (and so resolve) bravo's DM
-	// by naming it. This is the one path that reaches allowChatDM, so the DM
-	// bucket assertion lives here, where it can move.
+	// TASK-4060 items 2 and 4: alpha cannot ensure (and so resolve or create)
+	// another agent's DM by naming it. This is the one path that reaches
+	// allowChatDM. The DM bucket is unallocated here (the DMs were seeded through
+	// the store), so a charge before the refusal shows. Naming a key with no DM
+	// yet ("charlie") is what lets a create before the refusal show as a row.
 	t.Run("ensure", func(t *testing.T) {
-		dmBuckets := chatBucketCount(f.srv.rateLimiters.ChatDM)
-		owner := f.request("GET", chatBase, "", nil)
-		f.must(owner, 200, "owner inbox before")
-		ownerRows := len(chatObject(t, owner)["conversations"].([]any))
+		for _, key := range []string{"bravo", "charlie"} {
+			dmBuckets := chatBucketCount(f.srv.rateLimiters.ChatDM)
+			owner := f.request("GET", chatBase, "", nil)
+			f.must(owner, 200, "owner inbox before")
+			ownerRows := len(chatObject(t, owner)["conversations"].([]any))
 
-		rr := f.request("POST", chatBase, "alpha", map[string]any{"agent_key": "bravo"})
-		if rr.Code != 400 || !strings.Contains(rr.Body.String(), "agent_key must match X-Pad-Agent") {
-			t.Fatalf("alpha ensuring bravo's DM: status %d, body %s", rr.Code, rr.Body.String())
-		}
-		if strings.Contains(rr.Body.String(), convID) {
-			t.Fatalf("alpha's refused ensure names bravo's DM: %s", rr.Body.String())
-		}
-		if n := chatBucketCount(f.srv.rateLimiters.ChatDM); n != dmBuckets {
-			t.Fatalf("alpha's refused ensure allocated a DM bucket: %d -> %d", dmBuckets, n)
-		}
-		owner = f.request("GET", chatBase, "", nil)
-		f.must(owner, 200, "owner inbox after")
-		if n := len(chatObject(t, owner)["conversations"].([]any)); n != ownerRows {
-			t.Fatalf("alpha's refused ensure created a conversation: %d -> %d", ownerRows, n)
+			rr := f.request("POST", chatBase, "alpha", map[string]any{"agent_key": key})
+			if rr.Code != 400 || !strings.Contains(rr.Body.String(), "agent_key must match X-Pad-Agent") {
+				t.Fatalf("alpha ensuring %s's DM: status %d, body %s", key, rr.Code, rr.Body.String())
+			}
+			if strings.Contains(rr.Body.String(), convID) {
+				t.Fatalf("alpha's refused ensure of %s names bravo's DM: %s", key, rr.Body.String())
+			}
+			if n := chatBucketCount(f.srv.rateLimiters.ChatDM); n != dmBuckets {
+				t.Fatalf("alpha's refused ensure of %s allocated a DM bucket: %d -> %d", key, dmBuckets, n)
+			}
+			owner = f.request("GET", chatBase, "", nil)
+			f.must(owner, 200, "owner inbox after")
+			if n := len(chatObject(t, owner)["conversations"].([]any)); n != ownerRows {
+				t.Fatalf("alpha's refused ensure of %s created a conversation: %d -> %d", key, ownerRows, n)
+			}
 		}
 	})
 }
