@@ -13,122 +13,95 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
-	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-func TestMonitorChatSyncSummaryFailureRetainsBaselines(t *testing.T) {
+func TestMonitorChatSyncSummaryFailureRefetchesFloor(t *testing.T) {
 	chatSessionEnv(t)
-	oldSeen := seenChat
-	seenChat = newRecentSet(2, 10*time.Minute)
-	t.Cleanup(func() { seenChat = oldSeen })
+	seen := newRecentSet(2, 10*time.Minute)
 	now := time.Unix(1000, 0)
-	seenChat.now = func() time.Time { return now }
-	f := &fakeChatSink{
-		messages:    []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)},
-		summaryRows: []models.ConversationUnread{{Number: 1, DeliveredSeq: 2}},
-	}
-	f.beforeUnread = func() {
-		if f.totals == 2 {
-			now = now.Add(11 * time.Minute)
-			if seenChat.contains("c") {
-				t.Fatal("test must expire printed ids before recovery")
-			}
-			f.unreadErr = errors.New("summary unavailable")
-		}
-	}
+	seen.now = func() time.Time { return now }
+	f := &fakeChatSink{floor: 2, messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)}}
+	c := newSeededMonitorChat(f, seen)
 	var out bytes.Buffer
-	stream := chatSSE("c", 3, false) + "event: sync_required\ndata: {}\n\n" + chatSSE("d", 4, false)
-	streamWatchEventsTo(&out, fakeSSEResponse(stream), "", f)
-	if !slices.Equal(f.after, []int64{2, 3}) || !slices.Equal(f.ackSeqs, []int64{3, 4}) || strings.Count(out.String(), "fetched ") != 2 || strings.Count(out.String(), "fetched c\n") != 1 || strings.Count(out.String(), "fetched d\n") != 1 {
-		t.Fatalf("lost baselines or reprinted history: after=%v acks=%v output=%q", f.after, f.ackSeqs, out.String())
+	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "c", MessageSeq: 3})
+	now = now.Add(11 * time.Minute)
+	if seen.contains("c") {
+		t.Fatal("test needs expired id")
+	}
+	f.unreadErr = errors.New("summary unavailable")
+	f.floor = 0
+	c.resync(&out)
+	if len(c.last) != 0 {
+		t.Fatal("restored pre-sync floor")
+	}
+	p := watchStreamPayload{Conversation: 1, MessageID: "d", MessageSeq: 4}
+	c.handle(&out, p)
+	awaitChatFloor(t, c, 1)
+	c.handle(&out, p)
+	if f.floorReads.Load() != 2 || !slices.Equal(f.after, []int64{2, 3}) || !slices.Equal(f.ackSeqs, []int64{3, 4}) || strings.Count(out.String(), "fetched ") != 2 {
+		t.Fatalf("after=%v acks=%v output=%q", f.after, f.ackSeqs, out.String())
 	}
 }
 
 func TestMonitorChatDeliveryMemoryOutlivesSeenChat(t *testing.T) {
 	chatSessionEnv(t)
-	oldSeen := seenChat
-	seenChat = newRecentSet(256, 10*time.Minute)
-	t.Cleanup(func() { seenChat = oldSeen })
+	seen := newRecentSet(256, 10*time.Minute)
 	now := time.Unix(1000, 0)
-	seenChat.now = func() time.Time { return now }
-	f := &fakeChatSink{summaryRows: []models.ConversationUnread{{Number: 1, DeliveredSeq: 0}}}
-	var stream strings.Builder
-	for seq := int64(1); seq <= 301; seq++ {
-		id := fmt.Sprintf("m%d", seq)
-		f.messages = append(f.messages, chatMsg(id, seq))
-		if seq <= 300 {
-			stream.WriteString(chatSSE(id, seq, false))
-		}
+	seen.now = func() time.Time { return now }
+	f := &fakeChatSink{}
+	for seq := int64(1); seq <= 302; seq++ {
+		f.messages = append(f.messages, chatMsg(fmt.Sprintf("m%d", seq), seq))
 	}
-	// Every print's acknowledgement fails, leaving the server marker at zero.
 	f.before = func() { f.failAck = true }
-	f.beforeUnread = func() {
-		if f.totals == 2 {
-			if seenChat.contains("m1") || !seenChat.contains("m300") || f.deliveredSeq != 0 {
-				t.Fatal("test must evict the oldest of 300 printed ids with all acks failed")
-			}
-			now = now.Add(11 * time.Minute)
-		}
-	}
-	stream.WriteString("event: sync_required\ndata: {}\n\n")
-	stream.WriteString(chatSSE("m1", 1, false))
-	stream.WriteString(chatSSE("m301", 301, false))
+	c := newSeededMonitorChat(f, seen)
 	var out bytes.Buffer
-	c := newMonitorChat(f, seenChat)
-	c.stream(&out, fakeSSEResponse(stream.String()), "")
-	if strings.Count(out.String(), "fetched ") != 301 || strings.Count(out.String(), "fetched m1\n") != 1 || strings.Count(out.String(), "fetched m301\n") != 1 || f.after[len(f.after)-1] != 300 || f.seq != 301 {
-		t.Fatalf("delivery memory lost: after=%v acks=%v printed=%d", f.after, f.ackSeqs, strings.Count(out.String(), "fetched "))
+	for seq := int64(1); seq <= 300; seq++ {
+		c.handle(&out, floorEvent(1, seq))
 	}
-	// A new SSE connection reuses the process's monitor, even after every
-	// remaining printed id expires and the summary still has a lower marker.
-	f.beforeUnread = nil
+	if seen.contains("m1") || !seen.contains("m300") || f.deliveredSeq != 0 {
+		t.Fatal("test needs eviction and failed acks")
+	}
 	now = now.Add(11 * time.Minute)
-	f.messages = append(f.messages, chatMsg("m302", 302))
-	c.stream(&out, fakeSSEResponse(chatSSE("m1", 1, false)+chatSSE("m302", 302, false)), "")
-	if strings.Count(out.String(), "fetched ") != 302 || strings.Count(out.String(), "fetched m1\n") != 1 || f.after[len(f.after)-1] != 301 || c.delivered[1] != 302 {
-		t.Fatalf("reconnect lost local delivery: cursor=%d delivered=%d printed=%d", c.last[1], c.delivered[1], strings.Count(out.String(), "fetched "))
+	for seq := int64(301); seq <= 302; seq++ {
+		c.stream(&out, fakeSSEResponse("event: sync_required\ndata: {}\n\n"), "")
+		c.handle(&out, floorEvent(1, 1))
+		awaitChatFloor(t, c, 1)
+		c.handle(&out, floorEvent(1, 1))
+		c.handle(&out, floorEvent(1, seq))
+		if strings.Count(out.String(), "fetched ") != int(seq) || strings.Count(out.String(), "fetched m1\n") != 1 || f.after[len(f.after)-1] != seq-1 || c.delivered[1] != seq {
+			t.Fatalf("after=%v acks=%v printed=%d", f.after, f.ackSeqs, strings.Count(out.String(), "fetched "))
+		}
+		now = now.Add(11 * time.Minute)
 	}
 }
 
 func TestMonitorChatDedupeAckUsesDeliveredNotSeed(t *testing.T) {
-	for _, name := range []string{"seq-minus-one-seed", "server-marker-ahead"} {
-		t.Run(name, func(t *testing.T) {
+	for _, handled := range []bool{false, true} {
+		t.Run(fmt.Sprint(handled), func(t *testing.T) {
 			chatSessionEnv(t)
-			printed := newRecentSet(2, time.Minute)
+			seen := newRecentSet(2, time.Minute)
 			now := time.Unix(1000, 0)
-			printed.now = func() time.Time { return now }
-			printed.seen("expired")
+			seen.now = func() time.Time { return now }
+			seen.seen("expired")
 			now = now.Add(2 * time.Minute)
-			if printed.contains("expired") {
-				t.Fatal("test must exercise expiry")
+			if seen.contains("expired") {
+				t.Fatal("test needs expiry")
 			}
-			// A printed id retained from an earlier connection is not a local
-			// delivery high-water, and cannot make a seed acknowledgeable.
-			printed.seen("old")
-			f := &fakeChatSink{}
-			c := newMonitorChat(f, printed)
+			seen.seen("old")
+			f := &fakeChatSink{floor: 7}
+			c := newMonitorChat(f, seen)
 			var out bytes.Buffer
-			var wantAcks []int64
-			if name == "seq-minus-one-seed" {
-				c.summary(&out)
-				f.fail = true
-				c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "eight", MessageSeq: 8})
-			} else {
-				f.messages = []monitorChatMessage{chatMsg("one", 1)}
-				f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: 0}}
-				c.summary(&out)
-				c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "one", MessageSeq: 1})
-				delete(c.last, 1) // a successful reconnect summary re-seeds the cursor
-				f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: 7}}
-				c.summary(&out)
-				wantAcks = []int64{1, 1}
+			want := []int64(nil)
+			if handled {
+				c.delivered[1] = 1
+				want = []int64{1}
 			}
-			if c.last[1] != 7 {
-				t.Fatalf("test needs an unhandled seed at 7, got %d", c.last[1])
-			}
-			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "old", MessageSeq: 2})
-			if !slices.Equal(f.ackSeqs, wantAcks) {
-				t.Fatalf("ack crossed local delivery: acks=%v want=%v cursor=%d", f.ackSeqs, wantAcks, c.last[1])
+			p := watchStreamPayload{Conversation: 1, MessageID: "old", MessageSeq: 2}
+			c.handle(&out, p)
+			awaitChatFloor(t, c, 1)
+			c.handle(&out, p)
+			if c.last[1] != 7 || !slices.Equal(f.ackSeqs, want) || f.fetches != 0 || out.Len() != 0 {
+				t.Fatalf("ack used floor: last=%v acks=%v want=%v", c.last, f.ackSeqs, want)
 			}
 		})
 	}
@@ -173,6 +146,8 @@ func TestMonitorChatAdapterQueryShape(t *testing.T) {
 		requests = append(requests, r.Method+" "+r.URL.RequestURI())
 		if strings.HasSuffix(r.URL.Path, "/messages") {
 			io.WriteString(w, `{"messages":[{"id":"m","seq":8}]}`)
+		} else if strings.HasSuffix(r.URL.Path, "/12") {
+			io.WriteString(w, `{"delivered_seq":7}`)
 		} else {
 			io.WriteString(w, `{"total":1,"conversations":[{"number":12,"delivered_seq":7}]}`)
 		}
@@ -188,6 +163,10 @@ func TestMonitorChatAdapterQueryShape(t *testing.T) {
 			t.Fatalf("messages=%v err=%v", messages, err)
 		}
 	}
+	floor, err := sink.conversationFloor(12)
+	if err != nil || floor != 7 {
+		t.Fatalf("floor=%d err=%v", floor, err)
+	}
 	summary, err := sink.unread("seat +&/name")
 	if err != nil || summary.Total != 1 || len(summary.Conversations) != 1 || summary.Conversations[0].DeliveredSeq != 7 {
 		t.Fatalf("summary=%+v err=%v", summary, err)
@@ -197,6 +176,7 @@ func TestMonitorChatAdapterQueryShape(t *testing.T) {
 	want := []string{
 		"GET /api/v1/me/conversations/12/messages?after_seq=0&limit=1",
 		"GET /api/v1/me/conversations/12/messages?after_seq=7&limit=20",
+		"GET /api/v1/me/conversations/12",
 		"GET /api/v1/me/chat/unread?agent=seat+%2B%26%2Fname",
 	}
 	if !slices.Equal(requests, want) {

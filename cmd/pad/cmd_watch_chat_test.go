@@ -12,11 +12,15 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 )
 
 type fakeChatSink struct {
+	floor                 int64
+	floorErr              error
+	floorReads            atomic.Int32
 	messages              []monitorChatMessage
 	fetches, acks, totals int
 	seq                   int64
@@ -32,6 +36,11 @@ type fakeChatSink struct {
 	ackSeqs               []int64
 	summaryRows           []models.ConversationUnread
 	unreadErr             error
+}
+
+func (f *fakeChatSink) conversationFloor(int) (int64, error) {
+	f.floorReads.Add(1)
+	return f.floor, f.floorErr
 }
 
 func (f *fakeChatSink) messagesAfter(n int, after int64, limit int) ([]monitorChatMessage, error) {
@@ -205,6 +214,10 @@ func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 			fmt.Fprint(w, `{"delivered_seq":7}`)
 			return
 		}
+		if r.URL.Path == "/api/v1/me/conversations/1" {
+			fmt.Fprint(w, `{"delivered_seq":6}`)
+			return
+		}
 		if r.URL.Query().Get("after_seq") != "6" || r.URL.Query().Get("limit") != "1" {
 			t.Error(r.URL)
 		}
@@ -217,6 +230,8 @@ func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 	var out bytes.Buffer
 	c := newMonitorChat(sink, newRecentSet(256, 10*60*1e9))
 	c.summary(&out)
+	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "m", MessageSeq: 7, Excerpt: "EVENT-SECRET"})
+	awaitChatFloor(t, c, 1)
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "m", MessageSeq: 7, Excerpt: "EVENT-SECRET"})
 	if gotAuth != "Bearer monitor-token" || gotAgent != "rook" || acks != 1 || !strings.Contains(out.String(), "OWN-CREDENTIAL-BODY") || strings.Contains(out.String(), "EVENT-SECRET") {
 		t.Fatal(gotAuth, gotAgent, out.String())
@@ -338,62 +353,47 @@ func TestMonitorChatDedupeRetriesFailedAck(t *testing.T) {
 }
 
 func TestMonitorChatSyncRequiredReseedsBaselines(t *testing.T) {
-	for _, name := range []string{"failed-ack", "seq-minus-one-seed", "summary-unavailable"} {
+	for _, name := range []string{"failed-ack", "message-fetch-failure", "summary-unavailable"} {
 		t.Run(name, func(t *testing.T) {
 			chatSessionEnv(t)
-			oldSeen := seenChat
-			seenChat = newRecentSet(256, 10*60*1e9)
-			t.Cleanup(func() { seenChat = oldSeen })
-			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)}}
-			f.beforeUnread = func() {
-				if f.totals == 1 {
-					if name == "failed-ack" {
-						f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: 0}}
-						f.failAck = true
-					} else {
-						// The first event seeds at seq-1, then its fetch fails.
-						f.fail = true
-					}
-					return
-				}
-				f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: f.deliveredSeq}}
-				if name == "summary-unavailable" {
-					f.unreadErr = errors.New("unread")
-				}
-			}
+			f := &fakeChatSink{floor: 2, messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)}}
+			c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 			var out bytes.Buffer
-			stream := chatSSE("c", 3, false) + "event: sync_required\ndata: {}\n\n" + chatSSE("d", 4, false)
-			streamWatchEventsTo(&out, fakeSSEResponse(stream), "", f)
-			firstAfter := int64(2)
-			firstLimit := 1
-			secondAfter := int64(0)
-			secondLimit := 20
-			wantAcks := []int64{4}
 			if name == "failed-ack" {
-				firstAfter = 0
-				firstLimit = 20
-				secondAfter = 3 // local delivery is the re-seed floor
-				secondLimit = 1
-				wantAcks = []int64{3, 4}
-			} else if name == "summary-unavailable" {
-				secondAfter = 2 // a failed summary restores even an unhandled seed
+				f.failAck = true
+			} else {
+				f.fail = true
 			}
-			if f.totals != 2 || !slices.Equal(f.after, []int64{firstAfter, secondAfter}) || !slices.Equal(f.limits, []int{firstLimit, secondLimit}) || !slices.Equal(f.ackSeqs, wantAcks) || f.deliveredSeq != 4 {
-				t.Fatalf("totals=%d after=%v limits=%v acks=%v delivered=%d output=%q", f.totals, f.after, f.limits, f.ackSeqs, f.deliveredSeq, out.String())
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "c", MessageSeq: 3})
+			if name == "summary-unavailable" {
+				f.unreadErr = errors.New("summary")
+			}
+			f.floor = 0 // a lower server snapshot cannot replace handled local rows
+			c.stream(&out, fakeSSEResponse("event: sync_required\ndata: {}\n\n"), "")
+			if len(c.last) != 0 {
+				t.Fatal("sync retained old floor")
+			}
+			p := watchStreamPayload{Conversation: 1, MessageID: "d", MessageSeq: 4}
+			c.handle(&out, p)
+			awaitChatFloor(t, c, 1)
+			c.handle(&out, p)
+			after := int64(0)
+			want := []int64{4}
+			ids := []string{"a", "b", "c", "d"}
+			if name == "failed-ack" {
+				after = 3
+				want = []int64{3, 4}
+				ids = []string{"c", "d"}
+			}
+			if f.floorReads.Load() != 2 || !slices.Equal(f.after, []int64{2, after}) || !slices.Equal(f.ackSeqs, want) {
+				t.Fatalf("reads=%d after=%v acks=%v", f.floorReads.Load(), f.after, f.ackSeqs)
 			}
 			previous := -1
-			ids := []string{"a", "b", "c", "d"}
-			if name == "summary-unavailable" {
-				ids = []string{"c", "d"}
-				if strings.Contains(out.String(), "fetched a\n") || strings.Contains(out.String(), "fetched b\n") {
-					t.Fatal("failed summary discarded the prior seed", out.String())
-				}
-			}
 			for _, id := range ids {
 				line := "fetched " + id + "\n"
 				at := strings.Index(out.String(), line)
 				if strings.Count(out.String(), line) != 1 || at <= previous {
-					t.Fatalf("missing, duplicate, or unordered %s: %s", id, out.String())
+					t.Fatal(out.String())
 				}
 				previous = at
 			}
@@ -525,16 +525,17 @@ func TestMonitorChatSummaryRespectsConsentRecheck(t *testing.T) {
 func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 	for _, tc := range []struct {
 		name, summary     string
+		floor             int64
 		event, after, ack int64
 		printed, limit    int
 		more              string
 	}{
-		{"25-message-gap", `{"total":25,"conversations":[{"number":1,"delivered_seq":0,"unread":25}]}`, 25, 0, 20, 20, 20, "up to 5 more in C1: pad chat show C1 --since 20"},
-		{"fresh-unread-history", `{"total":1,"conversations":[{"number":1,"delivered_seq":5,"read_seq":7,"unread":1}]}`, 8, 5, 8, 3, 20, ""},
-		{"arrived-after-summary", `{"total":1,"conversations":[{"number":1,"delivered_seq":5,"last_seq":6,"unread":1}]}`, 7, 5, 7, 2, 20, ""},
-		{"missing-means-zero-unread", `{"total":0,"conversations":[]}`, 8, 7, 8, 1, 1, ""},
-		{"other-conversation-unread", `{"total":1,"conversations":[{"number":2,"delivered_seq":4,"unread":1}]}`, 8, 7, 8, 1, 1, ""},
-		{"summary-error-defers", `error`, 8, 0, 0, 0, 20, ""},
+		{"25-message-gap", `{"total":25,"conversations":[{"number":1,"delivered_seq":0,"unread":25}]}`, 0, 25, 0, 20, 20, 20, "up to 5 more in C1: pad chat show C1 --since 20"},
+		{"fresh-unread-history", `{"total":1,"conversations":[{"number":1,"delivered_seq":5,"read_seq":7,"unread":1}]}`, 5, 8, 5, 8, 3, 20, ""},
+		{"arrived-after-summary", `{"total":1,"conversations":[{"number":1,"delivered_seq":5,"last_seq":6,"unread":1}]}`, 5, 7, 5, 7, 2, 20, ""},
+		{"missing-summary-still-fetches-floor", `{"total":0,"conversations":[]}`, 2, 8, 2, 8, 6, 20, ""},
+		{"other-conversation-unread", `{"total":1,"conversations":[{"number":2,"delivered_seq":4,"unread":1}]}`, 2, 8, 2, 8, 6, 20, ""},
+		{"summary-error-does-not-gate-floor", `error`, 2, 8, 2, 8, 6, 20, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chatSessionEnv(t)
@@ -554,6 +555,8 @@ func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 						return
 					}
 					fmt.Fprint(w, tc.summary)
+				case "/api/v1/me/conversations/1":
+					fmt.Fprintf(w, `{"delivered_seq":%d}`, tc.floor)
 				case "/api/v1/me/conversations/1/messages":
 					fetches++
 					if r.URL.Query().Get("after_seq") != fmt.Sprint(tc.after) || r.URL.Query().Get("limit") != fmt.Sprint(tc.limit) {
@@ -582,13 +585,8 @@ func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 			var out bytes.Buffer
 			c := newMonitorChat(httpChatSink{cli.NewClientFromURLWithAgentName(h.URL, cli.ResolveAgentName())}, seenChat)
 			c.stream(&out, fakeSSEResponse(chatSSE(fmt.Sprintf("m%02d", tc.event), tc.event, false)), "")
-			awaitChatSummary(t, c)
-			if tc.summary == "error" {
-				if fetches != 0 || len(acks) != 0 || out.Len() != 0 || len(c.last) != 0 {
-					t.Fatalf("summary failure did not defer: fetches=%d acks=%v output=%q last=%v", fetches, acks, out.String(), c.last)
-				}
-				return
-			}
+			awaitChatFloor(t, c, 1)
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: fmt.Sprintf("m%02d", tc.event), MessageSeq: tc.event})
 			if fetches != 1 || len(acks) != 1 || acks[0] != tc.ack || strings.Count(out.String(), "fetched m") != tc.printed {
 				t.Fatalf("fetches=%d acks=%v output=%s", fetches, acks, out.String())
 			}
@@ -609,7 +607,10 @@ func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 
 func newSeededMonitorChat(f *fakeChatSink, printed *recentSet) *monitorChat {
 	c := newMonitorChat(f, printed)
-	f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: f.deliveredSeq}}
-	c.summary(io.Discard)
+	c.attemptFloor(1)
+	// This helper is only for tests of filling after a successful floor read.
+	result := <-c.pendingFloor[1]
+	c.pendingFloor[1] <- result
+	c.attemptFloor(1)
 	return c
 }

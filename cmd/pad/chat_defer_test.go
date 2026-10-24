@@ -12,17 +12,16 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
-	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func TestMonitorChatFailedIdentityDefersDeliveredHistory(t *testing.T) {
 	for _, recovered := range []bool{false, true} {
 		t.Run(fmt.Sprint(recovered), func(t *testing.T) {
 			chatSessionEnv(t)
-			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("old1", 1), chatMsg("old2", 2), chatMsg("owed", 3)}, unreadErr: errors.New("summary unavailable")}
+			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("old1", 1), chatMsg("old2", 2), chatMsg("owed", 3)}, floorErr: errors.New("floor unavailable")}
 			c := newMonitorChat(nil, newRecentSet(256, 10*time.Minute))
 			// Connect failed to identify the user. Even if this event recovers
-			// identity, it still needs the server summary before fetching rows.
+			// identity, it still needs the server floor before fetching rows.
 			attempts := 0
 			c.resolveIdentity = func() (monitorChatIdentity, chatSink) {
 				attempts++
@@ -34,8 +33,14 @@ func TestMonitorChatFailedIdentityDefersDeliveredHistory(t *testing.T) {
 			var out bytes.Buffer
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "owed", MessageSeq: 3})
 			awaitChatSummary(t, c)
-			if attempts != 1 || out.Len() != 0 || f.fetches != 0 || f.acks != 0 || len(c.last) != 0 || len(c.delivered) != 0 {
-				t.Fatalf("unresolved summary replayed history: attempts=%d output=%q after=%v acks=%v last=%v delivered=%v", attempts, out.String(), f.after, f.ackSeqs, c.last, c.delivered)
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "owed", MessageSeq: 3})
+			awaitChatFloor(t, c, 1)
+			wantAttempts := 2
+			if recovered {
+				wantAttempts = 1
+			}
+			if attempts != wantAttempts || out.Len() != 0 || f.fetches != 0 || f.acks != 0 || len(c.last) != 0 || len(c.delivered) != 0 {
+				t.Fatalf("unresolved floor replayed history: attempts=%d output=%q after=%v acks=%v last=%v delivered=%v", attempts, out.String(), f.after, f.ackSeqs, c.last, c.delivered)
 			}
 		})
 	}
@@ -43,7 +48,7 @@ func TestMonitorChatFailedIdentityDefersDeliveredHistory(t *testing.T) {
 
 func TestMonitorChatIdentityRecoveryPrintsOnlyOwedMessages(t *testing.T) {
 	chatSessionEnv(t)
-	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("old1", 1), chatMsg("old2", 2), chatMsg("owed3", 3), chatMsg("owed4", 4)}, summaryRows: []models.ConversationUnread{{Number: 1, DeliveredSeq: 2}}, total: 2}
+	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("old1", 1), chatMsg("old2", 2), chatMsg("owed3", 3), chatMsg("owed4", 4)}, floor: 2, total: 2}
 	c := newMonitorChat(nil, newRecentSet(256, 10*time.Minute))
 	attempts := 0
 	c.resolveIdentity = func() (monitorChatIdentity, chatSink) {
@@ -59,10 +64,10 @@ func TestMonitorChatIdentityRecoveryPrintsOnlyOwedMessages(t *testing.T) {
 	}
 	p := watchStreamPayload{Conversation: 1, MessageID: "owed4", MessageSeq: 4}
 	c.handle(&out, p)
-	// The next event after a successful summary must start at the server floor.
+	// The next event after a successful GET must start at the server floor.
 	awaitChatSummary(t, c)
 	c.handle(&out, p)
-	if attempts != 2 || !slices.Equal(f.after, []int64{2}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[1] != 4 || strings.Count(out.String(), "fetched ") != 2 || strings.Count(out.String(), "fetched owed3\n") != 1 || strings.Count(out.String(), "fetched owed4\n") != 1 || strings.Count(out.String(), "2 unread messages") != 1 {
+	if attempts != 2 || !slices.Equal(f.after, []int64{2}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[1] != 4 || strings.Count(out.String(), "fetched ") != 2 || strings.Count(out.String(), "fetched owed3\n") != 1 || strings.Count(out.String(), "fetched owed4\n") != 1 {
 		t.Fatalf("recovery must print exactly owed rows: output=%q after=%v acks=%v delivered=%v", out.String(), f.after, f.ackSeqs, c.delivered)
 	}
 }
@@ -103,22 +108,11 @@ func TestMonitorChatHandleDoesNotBlockOnIdentity(t *testing.T) {
 
 // Wait for the single asynchronous read, leaving its result for the next event.
 // No monitor state or writer is touched by the reader goroutine.
-func awaitChatSummary(t *testing.T, c *monitorChat) {
-	t.Helper()
-	if c.pending == nil {
-		return
-	}
-	select {
-	case result := <-c.pending:
-		c.pending <- result
-	case <-time.After(time.Second):
-		t.Fatal("summary read did not finish")
-	}
-}
+func awaitChatSummary(t *testing.T, c *monitorChat) { t.Helper(); awaitChatFloor(t, c, 1) }
 
 func TestMonitorChatIdentityChangeFailedSummaryDiscardsOldBaseline(t *testing.T) {
 	chatSessionEnv(t)
-	f := &fakeChatSink{unreadErr: errors.New("summary unavailable")}
+	f := &fakeChatSink{unreadErr: errors.New("summary unavailable"), floorErr: errors.New("floor unavailable")}
 	c := newMonitorChat(f, newRecentSet(256, 10*time.Minute))
 	c.setIdentity("server", "old-user")
 	c.last[1], c.delivered[1], c.printedIDs["old"] = 5, 5, true

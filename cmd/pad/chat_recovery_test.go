@@ -16,35 +16,29 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// CONVE-9: build 12 supersedes r5's expectation of printing seqs 1-4.
+// Summary failure does not gate the independent per-conversation floor.
 func TestMonitorChatFailedResyncUnlistedConversationDefers(t *testing.T) {
 	chatSessionEnv(t)
-	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)}}
+	f := &fakeChatSink{floor: 2, floorErr: errors.New("floor unavailable"), messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3), chatMsg("d", 4)}}
 	c := newMonitorChat(f, newRecentSet(256, 10*time.Minute))
 	var out bytes.Buffer
-	if !c.summary(&out) {
-		t.Fatal("initial summary failed")
-	}
+	c.summary(&out)
 	f.unreadErr = errors.New("summary unavailable")
 	c.resync(&out)
 	p := watchStreamPayload{Conversation: 2, MessageID: "d", MessageSeq: 4}
 	c.handle(&out, p)
-	awaitChatSummary(t, c)
-	if out.Len() != 0 || f.fetches != 0 || f.acks != 0 || c.summaryReady || len(c.last) != 0 || len(c.delivered) != 0 {
-		t.Fatalf("failed summary must defer: after=%v acks=%v last=%v delivered=%v ready=%t output=%q", f.after, f.ackSeqs, c.last, c.delivered, c.summaryReady, out.String())
+	awaitChatFloor(t, c, 2)
+	if out.Len() != 0 || f.fetches != 0 || f.acks != 0 || len(c.last) != 0 || len(c.delivered) != 0 {
+		t.Fatal("first contact did not defer")
 	}
-	f.unreadErr = nil
-	f.summaryRows = []models.ConversationUnread{{Number: 2, DeliveredSeq: 2}}
-	f.total = 2
-	c.handle(&out, p) // consume the failed read and start one recovery attempt
-	awaitChatSummary(t, c)
+	f.floorErr = nil
 	c.handle(&out, p)
-	if !slices.Equal(f.after, []int64{2}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[2] != 4 || strings.Contains(out.String(), "fetched a") || strings.Contains(out.String(), "fetched b") || strings.Count(out.String(), "fetched c\n") != 1 || strings.Count(out.String(), "fetched d\n") != 1 || strings.Count(out.String(), "2 unread messages") != 1 {
-		t.Fatalf("recovery replayed delivered history or lost owed rows: after=%v acks=%v output=%q", f.after, f.ackSeqs, out.String())
+	awaitChatFloor(t, c, 2)
+	c.handle(&out, p)
+	if f.floorReads.Load() != 2 || !slices.Equal(f.after, []int64{2}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[2] != 4 || strings.Contains(out.String(), "fetched a") || strings.Contains(out.String(), "fetched b") || strings.Count(out.String(), "fetched c\n") != 1 || strings.Count(out.String(), "fetched d\n") != 1 {
+		t.Fatalf("after=%v acks=%v output=%q", f.after, f.ackSeqs, out.String())
 	}
 }
 
@@ -117,6 +111,7 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 			defer cancel()
 			var mu sync.Mutex
 			connections, profileReads := 0, 0
+			floorRead := make(chan struct{}, 4)
 			var afters, acks []int64
 			var serverURL string
 			writeURL := func(base string) error {
@@ -153,17 +148,46 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 					if change == "profile-error" || change == "empty-user" {
 						fmt.Fprint(w, "event: notification\ndata: {\"kind\":\"push\",\"summary\":\"push-survives\"}\n\n")
 					}
+					event := chatSSE("next", 3, false)
 					if connections == 1 {
-						fmt.Fprint(w, chatSSE("old", 2, false))
-					} else {
-						fmt.Fprint(w, chatSSE("next", 3, false))
+						event = chatSSE("old", 2, false)
 					}
+					mu.Unlock()
+					fmt.Fprint(w, event)
+					w.(http.Flusher).Flush()
+					if change != "profile-error" && change != "empty-user" {
+						select {
+						case <-floorRead:
+						case <-ctx.Done():
+						}
+						// Repeated events consume an already-completed GET. Stop
+						// once acknowledgement cancels or the connection should end.
+						for i := 0; i < 50; i++ {
+							select {
+							case <-ctx.Done():
+								i = 50
+							case <-time.After(5 * time.Millisecond):
+								fmt.Fprint(w, event)
+								w.(http.Flusher).Flush()
+							}
+							mu.Lock()
+							handled := len(acks) >= connections
+							mu.Unlock()
+							if handled {
+								break
+							}
+						}
+					}
+					mu.Lock()
 				case "/api/v1/me/chat/unread":
 					if connections == 1 || change == "profile-once" || change == "base-url" || change == "user" {
 						fmt.Fprint(w, `{"total":2,"conversations":[{"number":1,"delivered_seq":0}]}`)
 					} else {
 						http.Error(w, "unavailable", http.StatusServiceUnavailable)
 					}
+				case "/api/v1/me/conversations/1":
+					fmt.Fprint(w, `{"delivered_seq":0}`)
+					floorRead <- struct{}{}
 				case "/api/v1/me/conversations/1/messages":
 					after, _ := strconv.ParseInt(r.URL.Query().Get("after_seq"), 10, 64)
 					afters = append(afters, after)
@@ -222,8 +246,9 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 			if change == "same" {
 				wantAfters, wantShared = []int64{0, 2}, 1
 			}
+			acks = slices.Compact(acks)
 			if change == "profile-once" {
-				wantAfters, wantShared, wantAcks = []int64{0}, 1, []int64{3}
+				wantAfters, wantShared = []int64{0, 2}, 1
 			}
 			if connections != 2 || !slices.Equal(afters, wantAfters) || !slices.Equal(acks, wantAcks) || strings.Count(out, "fetched shared\n") != wantShared || strings.Count(out, "fetched next\n") != 1 || strings.Contains(out, "retracted") {
 				t.Fatalf("identity %s: connections=%d after=%v acks=%v output=%q", change, connections, afters, acks, out)
