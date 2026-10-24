@@ -424,7 +424,8 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	}
 	// BUG-3037: the seq token, read by itemExpectedSeqParam (numericInput's
 	// rule, BUG-4065: a JSON number or a plain decimal string) and forwarded as
-	// an integer so the server sees the same value the CLI flag produces. A zero or negative value is forwarded as-is and refused at the
+	// an integer so the server sees the same value the CLI flag produces. A
+	// zero or negative value is forwarded as-is and refused at the
 	// boundary with a 400 — the server never issues a seq below 1, so sending
 	// one is a caller bug and saying so beats a 409 loop that reads as
 	// contention.

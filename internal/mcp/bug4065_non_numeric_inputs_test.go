@@ -552,6 +552,10 @@ func TestBUG4065_PadItemToolHandlerExpectedSeq(t *testing.T) {
 // The set of (route, p) pairs classed as reading p is pinned against
 // bug4065ReadSet, so a route that stops reading p altogether cannot go green
 // by being reclassified as "does not read".
+//
+// Conditional reads are outside the walk: a route that reads p only when an
+// input the base does not set is present is classed "does not read". The
+// door table covers the live case, edits[].line_hint (BUG-4065 r4, 86de95f1).
 func TestBUG4065_NoRouteForwardsANonNumberForANumberParam(t *testing.T) {
 	toolFor := func(cmd string) string {
 		word := strings.SplitN(cmd, " ", 2)[0]
