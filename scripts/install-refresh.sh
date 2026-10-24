@@ -550,9 +550,22 @@ PORT="${PORT:-7777}"
 # ignored PAD_DATA_DIR. The file is opened for append HERE, before the stop:
 # a redirect that cannot open its target never runs the command, so an
 # unwritable log found after the stop would leave no server at all. A missing
-# parent (a fresh HOME), a read-only mount, a root-owned file or a directory
-# in its place all refuse now, with the running server untouched.
-LOG_FILE="$(data_dir)/logs/server.log"
+# parent (a fresh HOME), a read-only mount, a file another user owns (for a
+# non-root caller) or a directory in its place all refuse now, with the
+# running server untouched.
+#
+# A RELATIVE data dir is anchored where the restarted server will resolve it
+# (BUG-4064 r2). config.Load takes PAD_DATA_DIR verbatim, or PAD_DB_PATH's
+# dirname, with no filepath.Abs (config.go), so the server resolves it against
+# its own cwd. The restart runs in SERVER_CWD (the cd in section 5) or, when
+# none was captured, here. Proving the file relative to THIS cwd instead
+# would check one file and then open another after the stop.
+DATA_DIR="$(data_dir)"
+case "$DATA_DIR" in
+/*) ;;
+*) DATA_DIR="${SERVER_CWD:-$PWD}/$DATA_DIR" ;;
+esac
+LOG_FILE="$DATA_DIR/logs/server.log"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null &&
 	{ : >>"$LOG_FILE"; } 2>/dev/null ||
 	die "cannot append to the server log $LOG_FILE. Nothing was stopped; the running server is untouched. Fix the path's permissions and re-run."
@@ -650,7 +663,8 @@ mv -f "$STAGED" "$INSTALLED" || die "could not move the staged binary into $INST
 STAGED=""
 # cfg.PIDFile() is <data dir>/pad.pid (config.go), claimed by `pad server
 # start` (cmd/pad/cmd_server.go); not $HOME/.pad under PAD_DATA_DIR (BUG-4064).
-rm -f "$(data_dir)/pad.pid"
+# DATA_DIR is section 2a's, anchored like the log.
+rm -f "$DATA_DIR/pad.pid"
 
 # The check TASK-2787 asks for, and it is deliberately on the installed file
 # rather than on any step: read what is now at the install path and require it

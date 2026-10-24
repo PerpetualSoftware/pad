@@ -2199,3 +2199,70 @@ func TestInstallRefresh_ClearsThePIDFileInTheDataDir(t *testing.T) {
 		t.Errorf("the stale pid file in the data dir survived the refresh (stat err=%v)", err)
 	}
 }
+
+// A RELATIVE DATA DIR (BUG-4064 r2, Medium): config.Load applies PAD_DATA_DIR
+// verbatim, so the server resolves "data" against its own cwd, and the restart
+// runs in the server's cwd (BUG-3196). Section 2a used to prove the log under
+// the CALLER's cwd and the restart then opened it under the server's, where
+// logs/ did not exist: the old server stopped and nothing came back. The log
+// and the pid file are anchored to the server's cwd now, not the caller's.
+func TestInstallRefresh_AnchorsARelativeDataDirToTheServersCwd(t *testing.T) {
+	requireScriptDeps(t)
+	home, dir := t.TempDir(), t.TempDir()
+	serverDir, callerDir := realDir(t, t.TempDir()), realDir(t, t.TempDir())
+	name := uniqueName(t)
+	defer killStub(t, name)
+	port := freePort(t)
+	const commit = "abc1234"
+
+	built := installStub(t, dir, name)
+	installed := filepath.Join(home, "bin", name)
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+		argvLog: filepath.Join(home, "argv.log"), port: port, home: home, dataDir: "data"}
+	// A stale pid file where the server would claim it; logs/ deliberately absent.
+	pidFile := filepath.Join(serverDir, "data", "pad.pid")
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidFile, []byte("999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+	pre.Env = e.env()
+	pre.Dir = serverDir
+	startPreServer(t, pre, "127.0.0.1", port)
+
+	res := runScriptIn(t, e, callerDir, built, installed, commit, "STUB_ANNOUNCE=1")
+	if res.err != nil {
+		t.Fatalf("refresh failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	wantLog := filepath.Join(serverDir, "data", "logs", "server.log")
+	want := fmt.Sprintf("LISTENING %d", port)
+	var got []byte
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if got, _ = os.ReadFile(wantLog); strings.Contains(string(got), want) {
+			break
+		}
+	}
+	if !strings.Contains(string(got), want) {
+		t.Fatalf("the restarted server's output is not in %s (want %q); file holds %q\nstdout=%s", wantLog, want, got, res.stdout)
+	}
+	if !strings.Contains(res.stdout, "server log: "+wantLog) {
+		t.Errorf("the report does not name %s; stdout=%s", wantLog, res.stdout)
+	}
+	// Neither the log nor the pid file is resolved against the caller's cwd.
+	// (refresh.lock still is, as every CLI reader of a relative data dir is:
+	// BUG-4066, so callerDir/data itself may exist.)
+	for _, p := range []string{filepath.Join(callerDir, "data", "logs"), filepath.Join(callerDir, "data", "pad.pid")} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("the refresh resolved %s against the caller's cwd (stat err=%v)", p, err)
+		}
+	}
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Errorf("the stale pid file in the server's data dir survived (stat err=%v)", err)
+	}
+}
