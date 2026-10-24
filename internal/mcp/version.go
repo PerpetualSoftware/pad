@@ -2247,20 +2247,24 @@ const CmdhelpVersion = "0.1"
 // as absent. A string, a bool, an object or an array used to be dropped, so
 // the default applied, and a string expected_seq made a content write
 // UNGUARDED. Now only null is absent. A string is accepted when it is a plain
-// decimal integer (an optional '-' and digits, nothing else), parsed exactly
-// and bounded like a JSON number (|x| < 2^53), so "10" is 10 and "123" is a
-// GUARDED write, as stdio's CLI flags and the buildQuery doors already read
-// it. Every other string ("1.0", "1e3", " 10", "+10", "") and every other
-// type is refused (validation_failed, naming the parameter). The rule now
-// covers the same doors as v0.103, plus pad_item.update's and
+// decimal integer with no leading zero (an optional '-', then "0" or digits
+// not starting with 0), parsed exactly and bounded like a JSON number
+// (|x| < 2^53), so "10" is 10 and "123" is a GUARDED write. Every other
+// string ("010", "1.0", "1e3", " 10", "+10", "") and every other type is
+// refused (validation_failed, naming the parameter); "010" because stdio's
+// CLI flags read it as octal 8. The rule covers the same doors as v0.103,
+// including every numeric key on a query-string door (item backlinks, item
+// search, item context's budget, project activity, project standup and
+// changelog), where a bool, an object or "abc" used to reach the server's
+// Atoi and silently become its default, plus pad_item.update's and
 // pad_item.patch's expected_seq, pad_item.patch's edits[].line_hint,
 // pad_item.link-pr's pr_number (a json.Number is read exactly; 2^53 itself is
 // now refused), pad_collection's and pad_role's update sort_order (which used
 // to reach the server's decode as a 400), and pad_chat's since, limit,
 // reply_to, seq and to (2^53 now bounds a float64; json.Number "1e6" is
-// accepted). Strings at buildQuery's query-string doors are still forwarded
-// verbatim. These parameters are declared "number", so the bump is owed by
-// behaviour, as for v0.103.
+// accepted). Non-numeric query keys are still forwarded verbatim. These
+// parameters are declared "number", so the bump is owed by behaviour, as for
+// v0.103.
 const ToolSurfaceVersion = "0.104"
 
 // MetaVersionURI is the canonical URI of the queryable version document.

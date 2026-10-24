@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -65,8 +66,14 @@ func TestBUG4065_NumericInputAdmitsOrRefusesEveryType(t *testing.T) {
 		{"string 10", "10", 10, true, ""},
 		{"string -12", "-12", -12, true, ""},
 		{"string -0", "-0", 0, true, ""},
-		// ParseInt reads leading zeros as decimal, not octal: "010" is 10.
-		{"string 010 is decimal 10", "010", 10, true, ""},
+		// A leading zero is refused (lead ruling 5a06782e): stdio's CLI flags
+		// parse base 0, so "010" is 8 there, and reading it as 10 here would
+		// make one string two numbers.
+		{"string 010 refused", "010", 0, false, `must be a whole number, got the string "010"`},
+		{"string 00 refused", "00", 0, false, `must be a whole number, got the string "00"`},
+		{"string -010 refused", "-010", 0, false, `must be a whole number, got the string "-010"`},
+		{"string 0", "0", 0, true, ""},
+		{"string 10 has no leading zero", "100", 100, true, ""},
 		{"string 2^53-1", "9007199254740991", 1<<53 - 1, true, ""},
 		{"string 1.0", "1.0", 0, false, `must be a whole number, got the string "1.0"`},
 		{"string 1e3", "1e3", 0, false, `must be a whole number, got the string "1e3"`},
@@ -128,8 +135,7 @@ type bug4065Door struct {
 	// may reach the handler; no write may.
 	readsFirst bool
 	// used is a substring the forwarded request (method, URI and body) must
-	// contain when the parameter is the string "7". "" skips the check (chat:
-	// its doors resolve a target first; chatSequence is pinned directly).
+	// contain when the parameter is the string "7".
 	used string
 }
 
@@ -150,11 +156,17 @@ func bug4065Doors() []bug4065Door {
 		{[]string{"workspace", "audit-log"}, map[string]any{}, "limit", top("limit"), false, "limit=7"},
 		{[]string{"item", "list"}, map[string]any{}, "limit", top("limit"), false, "limit=7"},
 		{[]string{"item", "list"}, map[string]any{}, "offset", top("offset"), false, "offset=7"},
-		// The buildQuery doors: a string already went verbatim and still does
-		// (MUST NOT CHANGE), so "7" is used; a bool or an object is refused
-		// only where the key is numeric. Pinned for the refusal side below.
+		// The buildQuery doors (lead ruling 5a06782e, Q12): each numeric key
+		// goes through numericInput, so "7" forwards 7 and a non-number is
+		// refused, where the server's Atoi used to default it silently.
 		{[]string{"project", "standup"}, map[string]any{}, "days", top("days"), false, "days=7"},
 		{[]string{"project", "changelog"}, map[string]any{}, "days", top("days"), false, "days=7"},
+		{[]string{"item", "backlinks"}, map[string]any{"ref": "TASK-1"}, "limit", top("limit"), false, "limit=7"},
+		{[]string{"item", "backlinks"}, map[string]any{"ref": "TASK-1"}, "offset", top("offset"), false, "offset=7"},
+		{[]string{"item", "search"}, map[string]any{"query": "x"}, "limit", top("limit"), false, "limit=7"},
+		{[]string{"item", "search"}, map[string]any{"query": "x"}, "offset", top("offset"), false, "offset=7"},
+		{[]string{"item", "context"}, map[string]any{"ref": "TASK-1"}, "budget", top("budget"), false, "budget=7"},
+		{[]string{"project", "activity"}, map[string]any{}, "limit", top("limit"), false, "limit=7"},
 		// expected_seq at both write doors.
 		{[]string{"item", "update"}, map[string]any{"ref": "TASK-1", "content": "x"}, "expected_seq", top("expected_seq"), true, `"expected_seq":7`},
 		{[]string{"item", "patch"}, map[string]any{"ref": "TASK-1", "edits": []any{map[string]any{"old": "a", "new": "b"}}}, "expected_seq", top("expected_seq"), false, `"expected_seq":7`},
@@ -164,12 +176,14 @@ func bug4065Doors() []bug4065Door {
 		{[]string{"role", "update"}, map[string]any{"slug": "rook"}, "sort_order", top("sort_order"), false, `"sort_order":7`},
 		// pr_number (b46baef8).
 		{[]string{"github", "link"}, map[string]any{"item_ref": "TASK-1", "pr_url": "https://example.com/pr/7"}, "pr_number", top("pr_number"), false, `"number":7`},
-		// chatSequence's four doors. Validation runs before target resolution.
-		{[]string{"chat", "show"}, map[string]any{"target": "dave"}, "since", top("since"), false, ""},
-		{[]string{"chat", "show"}, map[string]any{"target": "dave"}, "limit", top("limit"), false, ""},
-		{[]string{"chat", "send"}, map[string]any{"target": "dave", "body": "hi"}, "reply_to", top("reply_to"), false, ""},
-		{[]string{"chat", "delete"}, map[string]any{"target": "dave"}, "seq", top("seq"), false, ""},
-		{[]string{"chat", "read"}, map[string]any{"target": "dave"}, "to", top("to"), false, ""},
+		// chatSequence's doors. Validation runs before target resolution; the
+		// C<n> target form needs no lookup, so "7" can be followed to the wire
+		// (r1 h2 L2).
+		{[]string{"chat", "show"}, map[string]any{"target": "C12"}, "since", top("since"), false, "after_seq=7"},
+		{[]string{"chat", "show"}, map[string]any{"target": "C12"}, "limit", top("limit"), false, "limit=7"},
+		{[]string{"chat", "send"}, map[string]any{"target": "C12", "body": "hi"}, "reply_to", top("reply_to"), false, `"reply_to_seq":7`},
+		{[]string{"chat", "delete"}, map[string]any{"target": "C12"}, "seq", top("seq"), false, "/messages/7"},
+		{[]string{"chat", "read"}, map[string]any{"target": "C12"}, "to", top("to"), false, `"seq":7`},
 	}
 }
 
@@ -212,18 +226,13 @@ func TestBUG4065_EveryDoorRefusesANonNumberNamingIt(t *testing.T) {
 	}{
 		{"string abc", "abc"},
 		{"string 1.5", "1.5"},
+		{"string 010", "010"},
 		{"bool", true},
 		{"object", map[string]any{"n": 1.0}},
+		{"array", []any{7.0}},
 	}
 	for _, door := range bug4065Doors() {
 		for _, val := range values {
-			// The buildQuery doors (standup, changelog) do not know a key's
-			// type: a string or a bool is forwarded verbatim for the server to
-			// parse and refuse, which is the bug's stated boundary and, for a
-			// string, MUST NOT CHANGE (af4bff40). They carry only the "7" row.
-			if door.cmd[0] == "project" {
-				continue
-			}
 			t.Run(strings.Join(door.cmd, " ")+" "+door.param+" "+val.name, func(t *testing.T) {
 				res, reached := bug4065Dispatch(t, door, val.v)
 				if res == nil || !res.IsError {
@@ -249,7 +258,7 @@ func TestBUG4065_EveryDoorRefusesANonNumberNamingIt(t *testing.T) {
 func TestBUG4065_EveryDoorUsesAPlainDecimalString(t *testing.T) {
 	for _, door := range bug4065Doors() {
 		if door.used == "" {
-			continue
+			t.Fatalf("door %v %s names no forwarded substring", door.cmd, door.param)
 		}
 		t.Run(strings.Join(door.cmd, " ")+" "+door.param, func(t *testing.T) {
 			res, reached := bug4065Dispatch(t, door, "7")
@@ -379,7 +388,7 @@ func TestBUG4065_ItemListResourceLimitFlag(t *testing.T) {
 		_, _ = w.Write([]byte(`[]`))
 	})
 	f := NewHTTPResourceFetcher(&HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})})
-	for _, bad := range []string{"1.5", "abc", "", "+5"} {
+	for _, bad := range []string{"1.5", "abc", "", "+5", "05"} {
 		uris = nil
 		_, err := f.fetchItemList(context.Background(), &models.User{ID: "u"}, "docapp", map[string]string{"limit": bad})
 		if err == nil || !strings.HasPrefix(err.Error(), "item list: limit ") {
@@ -395,6 +404,7 @@ func TestBUG4065_ItemListResourceLimitFlag(t *testing.T) {
 	}{
 		{"7", "limit=7"},
 		{"0", "limit=" + itoa(itemListResourceLimit)},
+		{"-5", "limit=" + itoa(itemListResourceLimit)},
 	} {
 		uris = nil
 		if _, err := f.fetchItemList(context.Background(), &models.User{ID: "u"}, "docapp", map[string]string{"limit": tc.flag}); err != nil {
@@ -409,4 +419,159 @@ func TestBUG4065_ItemListResourceLimitFlag(t *testing.T) {
 func itoa(n int) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+// Absent still means the default (r1 h2 L3): only null and a missing key are
+// absent, and neither is refused or forwarded.
+func TestBUG4065_AbsentMeansTheDefault(t *testing.T) {
+	door := bug4065Door{
+		cmd:   []string{"item", "list"},
+		input: map[string]any{},
+		param: "limit",
+		set:   func(in map[string]any, v any) { in["limit"] = v },
+	}
+	for _, v := range []any{nil} {
+		res, reached := bug4065Dispatch(t, door, v)
+		if res != nil && res.IsError && strings.Contains(textOf(res), string(ErrValidationFailed)) {
+			t.Fatalf("null limit was refused: %s", textOf(res))
+		}
+		if len(reached) == 0 {
+			t.Fatalf("null limit reached no handler")
+		}
+		for _, r := range reached {
+			if strings.Contains(r, "limit=<nil>") || strings.Contains(r, "limit=null") {
+				t.Fatalf("null limit was forwarded: %q", r)
+			}
+		}
+	}
+}
+
+// End to end through the pad_item tool handler (lead ruling 5a06782e, Q14):
+// the catalog gate checks input KEYS only, so a string or a bool expected_seq
+// reaches the dispatcher. Arguments are decoded from JSON bytes, as an MCP
+// client's arrive.
+func TestBUG4065_PadItemToolHandlerExpectedSeq(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		raw    string
+		refuse string
+		wire   any
+	}{
+		{"string 123 is a guarded write", `"123"`, "", 123.0},
+		{"bool is refused naming expected_seq", `true`, ": expected_seq must be a number, got a boolean", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var writes []map[string]any
+			mux := http.NewServeMux()
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method != http.MethodGet && r.Body != nil {
+					raw, _ := io.ReadAll(r.Body)
+					var body map[string]any
+					_ = json.Unmarshal(raw, &body)
+					writes = append(writes, body)
+				}
+				_, _ = w.Write([]byte(`{}`))
+			})
+			disp := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+			env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState("docapp"), Dispatcher: disp}
+			var args map[string]any
+			raw := fmt.Sprintf(`{"action":"update","workspace":"docapp","ref":"TASK-1","content":"x","expected_seq":%s}`, tc.raw)
+			if err := json.Unmarshal([]byte(raw), &args); err != nil {
+				t.Fatal(err)
+			}
+			res, err := makeFanOutHandler(padItemTool, env)(context.Background(), callToolRequest(args))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.refuse != "" {
+				if res == nil || !res.IsError || !strings.Contains(textOf(res), tc.refuse) || !strings.Contains(textOf(res), string(ErrValidationFailed)) {
+					t.Fatalf("want a validation_failed refusal containing %q, got %s", tc.refuse, textOf(res))
+				}
+				if len(writes) != 0 {
+					t.Fatalf("a refused expected_seq still wrote: %v", writes)
+				}
+				return
+			}
+			if res != nil && res.IsError {
+				t.Fatalf("refused: %s", textOf(res))
+			}
+			if len(writes) != 1 || writes[0]["expected_seq"] != tc.wire {
+				t.Fatalf("want one write with expected_seq %v, got %v", tc.wire, writes)
+			}
+		})
+	}
+}
+
+// The population check the lead asked for (5a06782e, Q12): every remote
+// dispatch route, against every parameter its tool declares "number". Each
+// is set to a bool and then to "abc"; neither may reach the server under that
+// parameter's name, as a query value or a body field. It is either refused,
+// or the route does not read that parameter at all. A new numeric query key
+// left off a route's numericQuery list fails here, not in production.
+func TestBUG4065_NoRouteForwardsANonNumberForANumberParam(t *testing.T) {
+	toolFor := func(cmd string) string {
+		word := strings.SplitN(cmd, " ", 2)[0]
+		if word == "github" {
+			return "pad_item"
+		}
+		return "pad_" + word
+	}
+	params := map[string][]ParamDef{}
+	for _, def := range Catalog {
+		params[def.Name] = def.Schema.Params
+	}
+	cmds := map[string]bool{}
+	for k := range routeTable {
+		cmds[k] = true
+	}
+	for k := range (&HTTPHandlerDispatcher{}).specialRoutes() {
+		cmds[k] = true
+	}
+	checked := 0
+	for cmd := range cmds {
+		defs := params[toolFor(cmd)]
+		for _, p := range defs {
+			if p.Type != "number" {
+				continue
+			}
+			for _, bad := range []struct {
+				v     any
+				query string
+				body  string
+			}{
+				{true, p.Name + "=true", `"` + p.Name + `":true`},
+				{"abc", p.Name + "=abc", `"` + p.Name + `":"abc"`},
+			} {
+				// Every string param gets a plausible value so the route gets
+				// as far as reading the numeric one.
+				input := map[string]any{}
+				for _, q := range defs {
+					if q.Type == "string" {
+						input[q.Name] = "x"
+					}
+				}
+				input["workspace"] = "docapp"
+				input["ref"], input["item_ref"], input["target"] = "TASK-1", "TASK-1", "C12"
+				input[p.Name] = bad.v
+				door := bug4065Door{
+					cmd:   strings.Split(cmd, " "),
+					input: input,
+					param: p.Name,
+					set:   func(map[string]any, any) {},
+				}
+				_, reached := bug4065Dispatch(t, door, nil)
+				for _, r := range reached {
+					if strings.Contains(r, "?"+bad.query) || strings.Contains(r, "&"+bad.query) || strings.Contains(r, bad.body) {
+						t.Errorf("%s forwarded %s=%#v to the server: %q", cmd, p.Name, bad.v, r)
+					}
+				}
+				checked++
+			}
+		}
+	}
+	if checked < 40 {
+		t.Fatalf("checked only %d (route, number param, value) cases; the walk is not reaching the catalog", checked)
+	}
+	t.Logf("checked %d (route, number param, value) cases", checked)
 }

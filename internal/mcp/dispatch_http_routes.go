@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,16 @@ type routeSpec struct {
 	// from "only set --flag if it has a value."
 	queryParams map[string]string
 
+	// numericQuery lists the INPUT keys among queryParams' values that are
+	// integers (the catalog declares them "number"). buildQuery reads them
+	// through numericInput, so a bool, an object or a string that is not a
+	// plain decimal integer is refused naming the key; the server would
+	// otherwise Atoi it, fail and silently use its default (BUG-4065 r1, lead
+	// ruling 5a06782e). TestBUG4065_NoRouteForwardsANonNumberForANumberParam
+	// walks every route against the catalog so a new numeric key cannot be
+	// left off.
+	numericQuery []string
+
 	// bodyKeys lists input keys that pass through into a flat JSON
 	// body. Empty-string values are omitted (matches the CLI's
 	// "only-when-set" semantic). For nested or transformed bodies use
@@ -63,13 +74,14 @@ func (s routeSpec) toRouteMapper() RouteMapper {
 	method := s.method
 	template := s.pathTemplate
 	queryParams := s.queryParams
+	numericQuery := s.numericQuery
 	bodyKeys := s.bodyKeys
 	return func(input map[string]any) (string, string, []byte, error) {
 		path, err := expandPath(template, input)
 		if err != nil {
 			return "", "", nil, err
 		}
-		q, err := buildQuery(input, queryParams)
+		q, err := buildQuery(input, queryParams, numericQuery...)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -145,7 +157,14 @@ func expandPath(template string, input map[string]any) (string, error) {
 // days, budget), and the server's parsers read "1.5" as absent and use their
 // default (parseDaysParam, the limit parsers), so forwarding it silently
 // replaced the caller's number exactly as numericInput's truncation did.
-func buildQuery(input map[string]any, mapping map[string]string) (string, error) {
+//
+// BUG-4065 r1 (lead ruling 5a06782e): the input keys named in numeric are
+// integers. Each is read through numericInput whatever its type, so "7" and 7
+// both forward 7, and a bool, an object, an array, "7.5" or "abc" is refused
+// naming the key. The server's parsers Atoi these and keep their default on
+// error, so forwarding them verbatim was this bug's silent default. Every
+// other key keeps the switch below: a string verbatim, a bool when true.
+func buildQuery(input map[string]any, mapping map[string]string, numeric ...string) (string, error) {
 	if len(mapping) == 0 {
 		return "", nil
 	}
@@ -153,6 +172,14 @@ func buildQuery(input map[string]any, mapping map[string]string) (string, error)
 	for dst, src := range mapping {
 		v, ok := input[src]
 		if !ok || v == nil {
+			continue
+		}
+		if slices.Contains(numeric, src) {
+			n, _, err := numericInput(v)
+			if err != nil {
+				return "", fmt.Errorf("%s %w", src, err)
+			}
+			q.Set(dst, strconv.FormatInt(n, 10))
 			continue
 		}
 		switch x := v.(type) {
@@ -238,6 +265,7 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/context",
 			queryParams:  map[string]string{"intent": "intent", "role": "role", "budget": "budget"},
+			numericQuery: []string{"budget"},
 		}.toRouteMapper(),
 		"item delete": routeSpec{
 			method:       http.MethodDelete,
@@ -298,6 +326,7 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/backlinks",
 			queryParams:  map[string]string{"limit": "limit", "offset": "offset"},
+			numericQuery: []string{"limit", "offset"},
 		}.toRouteMapper(),
 
 		// --- Read-only workspace surfaces ---
@@ -334,6 +363,7 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/activity",
 			queryParams:  map[string]string{"limit": "limit", "actor": "actor", "since": "since"},
+			numericQuery: []string{"limit"},
 		}.toRouteMapper(),
 
 		// `pad bootstrap` shells out to `pad_meta.action=bootstrap` and
@@ -1787,8 +1817,9 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 //     above MaxInt64 is refused as out of range;
 //   - a float32 widens exactly to float64 and gets wholeInt64's rules;
 //   - a string is admitted only as a plain decimal integer (decimalIntString),
-//     the form stdio's CLI flags and the buildQuery doors already accept, so
-//     all three surfaces agree (lead ruling af4bff40, Q1);
+//     a form stdio's CLI flags read as the same number (lead ruling af4bff40,
+//     Q1; leading zeros refused per 5a06782e). Strings and float64 are
+//     bounded at |x| < 2^53; the native Go integers keep their int64 range;
 //   - anything else is refused, naming its JSON type.
 func numericInput(v any) (int64, bool, error) {
 	var n int64
@@ -1842,15 +1873,19 @@ func uint64Int64(x uint64) (int64, error) {
 	return int64(x), nil
 }
 
-// decimalIntString admits a string only when it is a plain decimal integer:
-// an optional '-', then one or more digits, nothing else (no whitespace, no
-// '+', no '.', no exponent, not empty). It is parsed exactly by ParseInt and
-// then gets the float64 path's bound, |x| < 2^53, so a string accepts no
-// value a JSON number would not (lead ruling af4bff40, Q1). Leading zeros are
-// decimal: "010" is 10.
+// decimalIntString admits a string only when it is a plain decimal integer,
+// ^-?(0|[1-9][0-9]*)$: an optional '-', then "0" or digits with no leading
+// zero, nothing else (no whitespace, no '+', no '.', no exponent, not empty).
+// It is parsed exactly by ParseInt and then gets the float64 path's bound,
+// |x| < 2^53, so a string accepts no value a JSON number would not (lead
+// ruling af4bff40, Q1). A leading zero ("010", "00", "-010") is refused, not
+// read as decimal: stdio's CLI flags parse base 0, so "010" is 8 there, and
+// accepting it here as 10 would make one string two numbers (BUG-4065 r1,
+// lead ruling 5a06782e). "-0" is 0.
 func decimalIntString(s string) (int64, error) {
 	digits := strings.TrimPrefix(s, "-")
-	if digits == "" || strings.TrimLeft(digits, "0123456789") != "" {
+	if digits == "" || strings.TrimLeft(digits, "0123456789") != "" ||
+		(len(digits) > 1 && digits[0] == '0') {
 		return 0, fmt.Errorf("must be a whole number, got the string %q", s)
 	}
 	n, err := strconv.ParseInt(s, 10, 64)
@@ -2063,7 +2098,7 @@ func mapItemSearch(input map[string]any) (string, string, []byte, error) {
 		"sort":       "sort",
 		"limit":      "limit",
 		"offset":     "offset",
-	})
+	}, "limit", "offset")
 	if err != nil {
 		return "", "", nil, err
 	}

@@ -422,9 +422,9 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if v, ok := input["expected_updated_at"].(string); ok && v != "" {
 		payload["expected_updated_at"] = v
 	}
-	// BUG-3037: the seq token. JSON numbers arrive as float64 on this path; it
-	// is forwarded as an integer so the server sees the same value the CLI flag
-	// produces. A zero or negative value is forwarded as-is and refused at the
+	// BUG-3037: the seq token, read by itemExpectedSeqParam (numericInput's
+	// rule, BUG-4065: a JSON number or a plain decimal string) and forwarded as
+	// an integer so the server sees the same value the CLI flag produces. A zero or negative value is forwarded as-is and refused at the
 	// boundary with a 400 — the server never issues a seq below 1, so sending
 	// one is a caller bug and saying so beats a 409 loop that reads as
 	// contention.
@@ -811,10 +811,11 @@ func (d *HTTPHandlerDispatcher) maybeInjectWorkspace(
 // It REFUSES a fractional value rather than truncating it (codex round 1).
 // int64(42.7) is 42 — a DIFFERENT row state, and one that may well be the
 // current one, so truncation turns a malformed token into a silent ACCEPT: the
-// exact failure this token exists to remove, reintroduced by a coercion. JSON
-// numbers arrive as float64 on this transport, so the whole-number check is the
-// only thing standing between "the caller sent nonsense" and "the write went
-// through as if they had not".
+// exact failure this token exists to remove, reintroduced by a coercion. The
+// same holds for a value of the wrong type: reading it as absent sends the
+// write unguarded (BUG-4065), so every non-null value is either the number it
+// spells or a refusal. That check is the only thing standing between "the
+// caller sent nonsense" and "the write went through as if they had not".
 //
 // A free function so it can be driven directly: the dispatcher method around it
 // needs a live handler chain.
