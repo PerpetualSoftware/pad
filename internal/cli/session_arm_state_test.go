@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,13 @@ func armStateTestEnv(t *testing.T, socket string) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", socket)
+	// BUG-4025: CaptureSessionOwner prefers PAD_SESSION_PID, then CLAUDE_PID,
+	// over this process. A gate inherits them from the harness that started
+	// it, and a dead one (the session relaunched mid-run) made headless arms
+	// read disarmed. Empty means unset there, so every caller owns as "self";
+	// a test that exercises pid resolution sets them after this call.
+	t.Setenv("PAD_SESSION_PID", "")
+	t.Setenv("CLAUDE_PID", "")
 	repo := t.TempDir()
 	chdir(t, repo)
 	return repo
@@ -118,6 +126,24 @@ func TestArmState_DisarmRemovesAndIsIdempotent(t *testing.T) {
 	}
 	if removed {
 		t.Fatal("second disarm should report nothing was removed")
+	}
+}
+
+// BUG-4025: the helper must win over an ambient session pid. CI never sets
+// CLAUDE_PID, so without this test a helper that stopped clearing it would
+// still pass there; here a dead pid is planted first, as a relaunched
+// harness leaves it.
+func TestArmStateTestEnv_IgnoresAmbientSessionPID(t *testing.T) {
+	dead := strconv.Itoa(exitedProcessPID(t))
+	t.Setenv("PAD_SESSION_PID", dead)
+	t.Setenv("CLAUDE_PID", dead)
+	armStateTestEnv(t, "")
+
+	if _, err := WriteArmState(); err != nil {
+		t.Fatalf("WriteArmState: %v", err)
+	}
+	if !SessionArmedLocally() {
+		t.Fatal("an ambient dead session pid leaked into the test: the headless arm read disarmed")
 	}
 }
 
