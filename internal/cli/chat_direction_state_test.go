@@ -44,6 +44,9 @@ func TestChatDirectionFileKeyedBySocketOnly(t *testing.T) {
 	}
 	cwd, _ := os.Getwd()
 	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
+	if _, err := WriteArmState(); err != nil {
+		t.Fatal(err)
+	}
 	data, _ := os.ReadFile(path)
 	dir := filepath.Dir(path)
 	for _, name := range []string{"chat-direction-dir-" + shortHash(cwd) + ".json", "chat-direction-repo-" + shortHash(cwd) + ".json"} {

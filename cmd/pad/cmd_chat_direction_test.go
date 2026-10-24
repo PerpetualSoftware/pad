@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/mcp"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +114,15 @@ func TestSessionResetClearsDirection(t *testing.T) {
 	}
 }
 func TestChatArmHasNoMCPPath(t *testing.T) {
+	for _, tool := range mcp.Catalog {
+		if tool.Name == "pad_chat" {
+			for _, action := range []string{"arm", "disarm"} {
+				if _, ok := tool.Actions[action]; ok {
+					t.Fatalf("MCP exposes %s.%s", tool.Name, action)
+				}
+			}
+		}
+	}
 	paths, err := filepath.Glob("../../internal/mcp/catalog*.go")
 	if err != nil {
 		t.Fatal(err)

@@ -163,9 +163,21 @@ func TestMonitorDedupeAndDeliveredAck(t *testing.T) {
 func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 	chatSessionEnv(t)
 	var gotAuth, gotAgent string
+	acks := 0
 	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotAgent = r.Header.Get("X-Pad-Agent")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/me/conversations/1/delivered" {
+			var body struct {
+				Seq int64 `json:"seq"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Seq != 7 {
+				t.Errorf("bad delivered acknowledgement: %+v, %v", body, err)
+			}
+			acks++
+			fmt.Fprint(w, `{"delivered_seq":7}`)
+			return
+		}
 		if r.URL.Query().Get("after_seq") != "6" || r.URL.Query().Get("limit") != "1" {
 			t.Error(r.URL)
 		}
@@ -178,7 +190,7 @@ func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 	var out bytes.Buffer
 	c := newMonitorChat(sink, newRecentSet(256, 10*60*1e9))
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "m", MessageSeq: 7, Excerpt: "EVENT-SECRET"})
-	if gotAuth != "Bearer monitor-token" || gotAgent != "rook" || !strings.Contains(out.String(), "OWN-CREDENTIAL-BODY") || strings.Contains(out.String(), "EVENT-SECRET") {
+	if gotAuth != "Bearer monitor-token" || gotAgent != "rook" || acks != 1 || !strings.Contains(out.String(), "OWN-CREDENTIAL-BODY") || strings.Contains(out.String(), "EVENT-SECRET") {
 		t.Fatal(gotAuth, gotAgent, out.String())
 	}
 }
