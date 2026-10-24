@@ -70,7 +70,17 @@ type watchStreamPayload struct {
 	Summary   string `json:"summary"`
 	// PushID is set on a push (TASK-3585). A re-publish of the same push
 	// (a retry after a server crash) carries the same id; seenPushes drops it.
-	PushID string `json:"push_id,omitempty"`
+	PushID         string `json:"push_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	Conversation   int    `json:"conversation,omitempty"`
+	MessageID      string `json:"message_id,omitempty"`
+	MessageSeq     int64  `json:"message_seq,omitempty"`
+	ReplyToSeq     *int64 `json:"reply_to_seq,omitempty"`
+	Excerpt        string `json:"excerpt,omitempty"`
+	AuthorAgentKey string `json:"author_agent_key,omitempty"`
+	AuthorIsHuman  bool   `json:"author_is_human,omitempty"`
+	TargetAgentKey string `json:"target_agent_key,omitempty"`
+	Deleted        bool   `json:"deleted,omitempty"`
 }
 
 // recentSet remembers ids for a bounded time and count, so the monitor can
@@ -444,6 +454,7 @@ func monitorSessionIdentity() cli.StreamSessionIdentity {
 	// (Codex R1 S3 HIGH-1) rather than lingering until a natural reconnect
 	// that an idle SSE connection might never have.
 	ident.Armed = cli.ResolveAnnouncedArmed()
+	ident.Chat = ident.Armed
 	return ident
 }
 
@@ -567,7 +578,7 @@ func runWatchMonitor(ctx context.Context) error {
 
 		attempt = 0 // connected — reset backoff for the NEXT disconnect
 
-		lastEventID = streamWatchEvents(resp, lastEventID)
+		lastEventID = streamWatchEventsTo(os.Stdout, resp, lastEventID, httpChatSink{client: client})
 		resp.Body.Close()
 		cancelStream()
 
@@ -633,7 +644,13 @@ func streamWatchEvents(resp *http.Response, lastEventID string) string {
 	return streamWatchEventsTo(os.Stdout, resp, lastEventID)
 }
 
-func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string) string {
+func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string, sinks ...chatSink) string {
+	var sink chatSink
+	if len(sinks) > 0 {
+		sink = sinks[0]
+	}
+	chat := newMonitorChat(sink, seenChat)
+	chat.summary(w)
 	scanner := bufio.NewScanner(resp.Body)
 	var eventType, data string
 	resyncAnnounced := false
@@ -662,14 +679,22 @@ func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string) s
 				}
 				if data != "" {
 					var payload watchStreamPayload
-					if err := json.Unmarshal([]byte(data), &payload); err == nil &&
-						(payload.PushID == "" || !seenPushes.seen(payload.PushID)) {
+					if err := json.Unmarshal([]byte(data), &payload); err == nil {
+						if payload.Kind == "chat" {
+							chat.handle(w, payload)
+							resyncAnnounced = false
+							break
+						}
+						if payload.PushID != "" && seenPushes.seen(payload.PushID) {
+							break
+						}
 						fmt.Fprintln(w, formatMonitorLine(payload))
 						resyncAnnounced = false
 					}
 				}
 			case "sync_required":
 				lastEventID = ""
+				chat.summary(w)
 				if !resyncAnnounced {
 					// The same consent gate a notification takes: a disarmed
 					// session is told nothing, including this.

@@ -902,6 +902,8 @@ type StreamSessionIdentity struct {
 	// server.sessionArmedQueryParam for why (audit-visible by design, and
 	// reachable by a future non-CLI client that can't set headers).
 	Armed bool
+	// Chat opts into ref-only chat delivery (TASK-4041).
+	Chat bool
 }
 
 // NewWatchEventsStreamRequest builds an authenticated GET request for
@@ -942,7 +944,21 @@ func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID st
 		q.Set("armed", "true")
 		req.URL.RawQuery = q.Encode()
 	}
+	if ident.Chat {
+		q := req.URL.Query()
+		q.Set("chat", "true")
+		req.URL.RawQuery = q.Encode()
+	}
 	return req, nil
+}
+
+// MarkChatDelivered acknowledges only messages printed by this monitor (TASK-4041).
+func (c *Client) MarkChatDelivered(number int, seq int64) error {
+	data, err := json.Marshal(map[string]int64{"seq": seq})
+	if err != nil {
+		return err
+	}
+	return c.PostRaw(fmt.Sprintf("/me/conversations/%d/delivered", number), data, nil)
 }
 
 // maxHeaderLabelLen bounds the label the client is willing to put on

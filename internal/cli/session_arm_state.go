@@ -591,7 +591,12 @@ func MarkFirstConnect() (first bool, err error) {
 // closed), never the reverse. Best effort throughout — a lingering file
 // is simply re-evaluated on the next read.
 func reapArmFile(path string) {
-	if st, _, err := readArmState(); err == nil && st != nil && armStateOwnerVerdict(st) != LivenessDead {
+	reapOwnedArmFile(path, func() (*ArmState, error) { st, _, err := readArmState(); return st, err })
+}
+
+// TASK-4041: share the race-safe owner recheck with the independent chat file.
+func reapOwnedArmFile(path string, read func() (*ArmState, error)) {
+	if st, err := read(); err == nil && st != nil && armStateOwnerVerdict(st) != LivenessDead {
 		return // re-written by an owner that is not provably dead — leave it
 	}
 	_ = os.Remove(path)
