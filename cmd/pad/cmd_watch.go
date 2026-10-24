@@ -545,17 +545,14 @@ func runWatchMonitor(ctx context.Context) error {
 			// Keep chat closed until its identity is known; pushes still
 			// flow. A failed lookup can retry on the next chat reference.
 			chat.sink = nil
-			chat.retryIdentity = func() {
+			chat.resolveIdentity = func() (monitorChatIdentity, chatSink) {
 				user, identityErr := client.GetCurrentUser()
 				if identityErr != nil || user.ID == "" {
-					return
+					return monitorChatIdentity{}, nil
 				}
 				baseURL := req.URL.Scheme + "://" + req.URL.Host + strings.TrimSuffix(req.URL.EscapedPath(), "/api/v1/events/stream")
-				chat.setIdentity(baseURL, user.ID)
-				chat.sink = httpChatSink{client: client}
-				chat.retryIdentity = nil
+				return monitorChatIdentity{baseURL, user.ID}, httpChatSink{client: client}
 			}
-			chat.retryIdentity()
 		}
 		if err != nil {
 			cancelStream()

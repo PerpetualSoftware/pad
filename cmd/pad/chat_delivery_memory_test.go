@@ -115,6 +115,8 @@ func TestMonitorChatDedupeAckUsesDeliveredNotSeed(t *testing.T) {
 				c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "eight", MessageSeq: 8})
 			} else {
 				f.messages = []monitorChatMessage{chatMsg("one", 1)}
+				f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: 0}}
+				c.summary(&out)
 				c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "one", MessageSeq: 1})
 				delete(c.last, 1) // a successful reconnect summary re-seeds the cursor
 				f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: 7}}
@@ -146,7 +148,7 @@ func TestMonitorChatRetractionWriteFailureStopsAck(t *testing.T) {
 			}
 			// The original is still owed a retraction.
 			f := &fakeChatSink{messages: []monitorChatMessage{{ID: "deleted", Seq: 1, Deleted: true}, chatMsg("next", 2)}}
-			c := newMonitorChat(f, printed)
+			c := newSeededMonitorChat(f, printed)
 			c.printedIDs["deleted"] = true
 			p := watchStreamPayload{Conversation: 1, MessageID: "next", MessageSeq: 2}
 			if direct {

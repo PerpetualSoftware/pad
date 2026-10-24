@@ -131,7 +131,7 @@ func TestChatFramingByAuthor(t *testing.T) {
 	cli.WriteChatDirection()
 	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), {ID: "b", Seq: 2, AuthorAgentKey: "other", Body: "agent"}}}
 	var out bytes.Buffer
-	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "b", MessageSeq: 2})
 	cli.ClearChatDirection()
@@ -149,7 +149,7 @@ func (failChatWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 func TestMonitorDedupeAndDeliveredAck(t *testing.T) {
 	chatSessionEnv(t)
 	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3)}}
-	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 	var out bytes.Buffer
 	p := watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1}
 	c.handle(failChatWriter{}, p)
@@ -255,7 +255,7 @@ func TestMonitorChatRespectsConsentRecheck(t *testing.T) {
 	}
 	cli.WriteArmState()
 	f.before = func() { cli.WriteDisarmState() }
-	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})
 	if out.Len() != 0 || f.acks != 0 {
 		t.Fatal("consent changed during fetch", out.String())
@@ -264,7 +264,7 @@ func TestMonitorChatRespectsConsentRecheck(t *testing.T) {
 func TestMonitorDeleteRetraction(t *testing.T) {
 	chatSessionEnv(t)
 	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1)}}
-	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 	var out bytes.Buffer
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "never", MessageSeq: 2, Deleted: true})
 	if out.Len() != 0 || f.fetches != 0 || f.acks != 0 {
@@ -283,7 +283,7 @@ func TestMonitorChatFinalTombstoneAdvancesContiguously(t *testing.T) {
 		t.Run(fmt.Sprintf("original-printed=%t", printed), func(t *testing.T) {
 			chatSessionEnv(t)
 			f := &fakeChatSink{}
-			c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+			c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 			c.last[1] = 1
 			if printed {
 				c.printedIDs["b"] = true
@@ -316,7 +316,7 @@ func TestMonitorChatFinalTombstoneAdvancesContiguously(t *testing.T) {
 func TestMonitorChatDedupeRetriesFailedAck(t *testing.T) {
 	chatSessionEnv(t)
 	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2)}, failAck: true}
-	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 	var out bytes.Buffer
 	p := watchStreamPayload{Conversation: 1, MessageID: "b", MessageSeq: 2}
 	c.handle(&out, p)
@@ -331,6 +331,7 @@ func TestMonitorChatDedupeRetriesFailedAck(t *testing.T) {
 	// Printed ids can survive a reconnect without a local baseline.
 	c = newMonitorChat(f, c.printed)
 	c.handle(&out, p)
+	awaitChatSummary(t, c)
 	if !slices.Equal(f.ackSeqs, []int64{2, 2}) || f.fetches != 1 {
 		t.Fatalf("acked without a positive baseline: acks=%v fetches=%d", f.ackSeqs, f.fetches)
 	}
@@ -408,7 +409,7 @@ func TestMonitorChatGapPagesAndOwnMessages(t *testing.T) {
 		m.Mine = seq == 2
 		f.messages = append(f.messages, m)
 	}
-	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 	var out bytes.Buffer
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "1", MessageSeq: 1})
 	for i, want := range []int64{21, 41, 43} {
@@ -439,7 +440,7 @@ func TestMonitorChatTombstoneInGap(t *testing.T) {
 		t.Run(fmt.Sprintf("original-printed=%t", printed), func(t *testing.T) {
 			chatSessionEnv(t)
 			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), {ID: "b", Seq: 2, Deleted: true}, chatMsg("c", 3)}}
-			c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+			c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 			if printed {
 				c.printedIDs["b"] = true
 			}
@@ -468,7 +469,7 @@ func TestMonitorChatOwnMessageAtCappedFillEnd(t *testing.T) {
 		m.Mine = seq == 20
 		f.messages = append(f.messages, m)
 	}
-	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 	var out bytes.Buffer
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "20", MessageSeq: 20})
 	if f.fetches != 1 || f.limits[0] != 20 || f.acks != 1 || f.seq != 20 || c.last[1] != 20 || strings.Count(out.String(), "fetched ") != 19 || strings.Contains(out.String(), "fetched 20\n") || strings.Contains(out.String(), "more in C1") {
@@ -484,7 +485,7 @@ func TestMonitorChatOwnMessageAtTruncatedPageBoundary(t *testing.T) {
 		m.Mine = seq == 20 || seq == 23
 		f.messages = append(f.messages, m)
 	}
-	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 	var out bytes.Buffer
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "25", MessageSeq: 25})
 	if f.fetches != 1 || f.after[0] != 0 || f.limits[0] != 20 || f.acks != 1 || f.seq != 20 || c.last[1] != 20 || strings.Count(out.String(), "fetched ") != 19 || strings.Contains(out.String(), "fetched 20\n") {
@@ -501,7 +502,7 @@ func TestMonitorChatAckStopsAtUnprintedMessage(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		chatSessionEnv(t)
 		f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("c", 3)}}
-		c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+		c := newSeededMonitorChat(f, newRecentSet(256, 10*60*1e9))
 		var out bytes.Buffer
 		c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})
 		c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "c", MessageSeq: 3})
@@ -533,7 +534,7 @@ func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 		{"arrived-after-summary", `{"total":1,"conversations":[{"number":1,"delivered_seq":5,"last_seq":6,"unread":1}]}`, 7, 5, 7, 2, 20, ""},
 		{"missing-means-zero-unread", `{"total":0,"conversations":[]}`, 8, 7, 8, 1, 1, ""},
 		{"other-conversation-unread", `{"total":1,"conversations":[{"number":2,"delivered_seq":4,"unread":1}]}`, 8, 7, 8, 1, 1, ""},
-		{"summary-error-fetches-history", `error`, 8, 0, 8, 8, 20, ""},
+		{"summary-error-defers", `error`, 8, 0, 0, 0, 20, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chatSessionEnv(t)
@@ -579,7 +580,15 @@ func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 			}))
 			defer h.Close()
 			var out bytes.Buffer
-			streamWatchEventsTo(&out, fakeSSEResponse(chatSSE(fmt.Sprintf("m%02d", tc.event), tc.event, false)), "", httpChatSink{cli.NewClientFromURLWithAgentName(h.URL, cli.ResolveAgentName())})
+			c := newMonitorChat(httpChatSink{cli.NewClientFromURLWithAgentName(h.URL, cli.ResolveAgentName())}, seenChat)
+			c.stream(&out, fakeSSEResponse(chatSSE(fmt.Sprintf("m%02d", tc.event), tc.event, false)), "")
+			awaitChatSummary(t, c)
+			if tc.summary == "error" {
+				if fetches != 0 || len(acks) != 0 || out.Len() != 0 || len(c.last) != 0 {
+					t.Fatalf("summary failure did not defer: fetches=%d acks=%v output=%q last=%v", fetches, acks, out.String(), c.last)
+				}
+				return
+			}
 			if fetches != 1 || len(acks) != 1 || acks[0] != tc.ack || strings.Count(out.String(), "fetched m") != tc.printed {
 				t.Fatalf("fetches=%d acks=%v output=%s", fetches, acks, out.String())
 			}
@@ -596,4 +605,11 @@ func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 			}
 		})
 	}
+}
+
+func newSeededMonitorChat(f *fakeChatSink, printed *recentSet) *monitorChat {
+	c := newMonitorChat(f, printed)
+	f.summaryRows = []models.ConversationUnread{{Number: 1, DeliveredSeq: f.deliveredSeq}}
+	c.summary(io.Discard)
+	return c
 }

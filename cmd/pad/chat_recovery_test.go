@@ -33,15 +33,15 @@ func TestMonitorChatFailedResyncUnlistedConversationDefers(t *testing.T) {
 	c.resync(&out)
 	p := watchStreamPayload{Conversation: 2, MessageID: "d", MessageSeq: 4}
 	c.handle(&out, p)
+	awaitChatSummary(t, c)
 	if out.Len() != 0 || f.fetches != 0 || f.acks != 0 || c.summaryReady || len(c.last) != 0 || len(c.delivered) != 0 {
 		t.Fatalf("failed summary must defer: after=%v acks=%v last=%v delivered=%v ready=%t output=%q", f.after, f.ackSeqs, c.last, c.delivered, c.summaryReady, out.String())
 	}
 	f.unreadErr = nil
 	f.summaryRows = []models.ConversationUnread{{Number: 2, DeliveredSeq: 2}}
 	f.total = 2
-	if !c.summary(&out) {
-		t.Fatal("recovery summary failed")
-	}
+	c.handle(&out, p) // consume the failed read and start one recovery attempt
+	awaitChatSummary(t, c)
 	c.handle(&out, p)
 	if !slices.Equal(f.after, []int64{2}) || !slices.Equal(f.ackSeqs, []int64{4}) || c.delivered[2] != 4 || strings.Contains(out.String(), "fetched a") || strings.Contains(out.String(), "fetched b") || strings.Count(out.String(), "fetched c\n") != 1 || strings.Count(out.String(), "fetched d\n") != 1 || strings.Count(out.String(), "2 unread messages") != 1 {
 		t.Fatalf("recovery replayed delivered history or lost owed rows: after=%v acks=%v output=%q", f.after, f.ackSeqs, out.String())
@@ -56,7 +56,7 @@ func TestMonitorChatRetractionOutlivesSeenChat(t *testing.T) {
 			now := time.Unix(1000, 0)
 			seen.now = func() time.Time { return now }
 			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("original", 1)}}
-			c := newMonitorChat(f, seen)
+			c := newSeededMonitorChat(f, seen)
 			var out bytes.Buffer
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "original", MessageSeq: 1})
 			if out.Len() == 0 || !seen.contains("original") {
@@ -143,7 +143,7 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 						return
 					}
 					id := "user1"
-					if change == "user" && connections > 0 {
+					if change == "user" && connections > 1 {
 						id = "user2"
 					}
 					json.NewEncoder(w).Encode(map[string]string{"id": id})
@@ -159,7 +159,7 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 						fmt.Fprint(w, chatSSE("next", 3, false))
 					}
 				case "/api/v1/me/chat/unread":
-					if connections == 1 {
+					if connections == 1 || change == "profile-once" || change == "base-url" || change == "user" {
 						fmt.Fprint(w, `{"total":2,"conversations":[{"number":1,"delivered_seq":0}]}`)
 					} else {
 						http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -218,10 +218,14 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 				return
 			}
 			wantAfters, wantShared := []int64{0, 0}, 2
-			if change == "same" || change == "profile-once" {
+			wantAcks := []int64{2, 3}
+			if change == "same" {
 				wantAfters, wantShared = []int64{0, 2}, 1
 			}
-			if connections != 2 || !slices.Equal(afters, wantAfters) || !slices.Equal(acks, []int64{2, 3}) || strings.Count(out, "fetched shared\n") != wantShared || strings.Count(out, "fetched next\n") != 1 || strings.Contains(out, "retracted") {
+			if change == "profile-once" {
+				wantAfters, wantShared, wantAcks = []int64{0}, 1, []int64{3}
+			}
+			if connections != 2 || !slices.Equal(afters, wantAfters) || !slices.Equal(acks, wantAcks) || strings.Count(out, "fetched shared\n") != wantShared || strings.Count(out, "fetched next\n") != 1 || strings.Contains(out, "retracted") {
 				t.Fatalf("identity %s: connections=%d after=%v acks=%v output=%q", change, connections, afters, acks, out)
 			}
 		})
