@@ -141,6 +141,11 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		return
 	}
 	if c.printed.contains(p.MessageID) {
+		// The previous acknowledgement may have failed after printing.
+		// Retry only the contiguous cursor; the server marker is monotonic.
+		if last := c.last[p.Conversation]; last > 0 {
+			_ = c.sink.delivered(p.Conversation, last)
+		}
 		return
 	}
 	last, baseline := c.last[p.Conversation]
