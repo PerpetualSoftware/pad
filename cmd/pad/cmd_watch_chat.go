@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TASK-4041: this adapter avoids colliding with TASK-4042's Client methods.
 type chatSink interface {
 	messagesAfter(number int, after int64, limit int) ([]monitorChatMessage, error)
 	delivered(number int, seq int64) error
@@ -33,7 +31,7 @@ type monitorChatMessage struct {
 type httpChatSink struct{ client *cli.Client }
 
 func (s httpChatSink) messagesAfter(number int, after int64, limit int) ([]monitorChatMessage, error) {
-	data, err := s.client.RawGet(fmt.Sprintf("/me/conversations/%d/messages?after_seq=%d&limit=%d", number, after, limit))
+	data, err := s.client.ChatMessages(number, &after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +55,7 @@ type monitorChatUnread struct {
 }
 
 func (s httpChatSink) unread(agent string) (monitorChatUnread, error) {
-	data, err := s.client.RawGet("/me/chat/unread?agent=" + url.QueryEscape(agent))
+	data, err := s.client.ChatUnread(agent)
 	if err != nil {
 		return monitorChatUnread{}, err
 	}

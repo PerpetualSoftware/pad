@@ -8,7 +8,6 @@ import (
 
 const chatDirectionWarning = "Warning: instructions sent through Pad chat will drive this agent. Pad does not authenticate the sender; any process holding your Pad credential can send as you. This lasts for this session only. Delivery still needs pad session arm. Destructive or out-of-scope instructions should still be confirmed in-session."
 
-// TASK-4041: constructors only; TASK-4042 owns the chat parent and registration.
 func newChatArmCmd() *cobra.Command {
 	var accept bool
 	cmd := &cobra.Command{Use: "arm", Short: "Accept chat instructions for this session", Args: cobra.NoArgs,

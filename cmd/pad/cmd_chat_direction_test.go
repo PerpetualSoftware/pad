@@ -25,6 +25,39 @@ func chatSessionEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestChatDirectionRootCommandBinding(t *testing.T) {
+	chatSessionEnv(t)
+	oldFormat, oldWorkspace, oldURL := formatFlag, workspaceFlag, urlFlag
+	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = oldFormat, oldWorkspace, oldURL })
+	for _, tc := range []struct {
+		name string
+		args []string
+		on   bool
+	}{
+		{"arm", []string{"chat", "arm", "--accept-instructions"}, true},
+		{"disarm", []string{"chat", "disarm"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newRootCmd()
+			var errout bytes.Buffer
+			root.SetErr(&errout)
+			root.SetArgs(tc.args)
+			captureStdout(t, func() {
+				if err := root.Execute(); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if cli.ChatDirectionOn() != tc.on {
+				t.Fatalf("chat direction = %v, want %v", cli.ChatDirectionOn(), tc.on)
+			}
+			if cli.SessionArmState() != cli.LocalArmOn {
+				t.Fatal("chat command changed delivery consent")
+			}
+		})
+	}
+}
+
 func TestChatArmRequiresFlag(t *testing.T) {
 	chatSessionEnv(t)
 	cmd := newChatArmCmd()
