@@ -60,6 +60,9 @@ func TestChat_AgentCannotReachSiblingAgentDM(t *testing.T) {
 				t.Fatalf("alpha %s allocated a DM bucket: %d -> %d", tc.name, dmBuckets, n)
 			}
 			ref := f.request(tc.method, missing+tc.suffix, "alpha", tc.body)
+			if ref.Code != 404 {
+				t.Fatalf("alpha %s on a missing conversation: status %d, body %s", tc.name, ref.Code, ref.Body.String())
+			}
 			if rr.Body.String() != ref.Body.String() {
 				t.Fatalf("alpha %s: existence oracle: %q vs missing %q", tc.name, rr.Body.String(), ref.Body.String())
 			}
@@ -89,6 +92,9 @@ func chatDMState(t *testing.T, f *chatFixture, convID string) string {
 		}
 		fmt.Fprintf(&b, " member[%s]=%d/%d", key, read, delivered)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	if err := rows.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +110,9 @@ func chatDMState(t *testing.T, f *chatFixture, convID string) string {
 			t.Fatal(err)
 		}
 		fmt.Fprintf(&b, " msg[%d]deleted=%t", seq, deleted)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	return b.String()
 }
