@@ -16,7 +16,7 @@ func formatNumber(v any) (string, bool) {
 		x = n
 	case float32:
 		// UNREACHABLE today (BUG-4061 note): the JSON transports deliver only
-		// float64, and nothing in internal/mcp or cmd/pad passes a float32.
+		// float64, and nothing outside tests passes a float32.
 		// Widening prints float32(0.1) as 0.10000000149011612 below; a float32
 		// producer would want strconv.FormatFloat(float64(n), 'f', -1, 32).
 		x = float64(n)

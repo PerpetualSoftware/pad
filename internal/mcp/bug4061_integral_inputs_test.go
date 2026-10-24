@@ -47,7 +47,8 @@ func TestBUG4061_NumericInputRefusesWhatItWouldChange(t *testing.T) {
 		{name: "json.Number not a number", in: json.Number("abc"), wantErr: "must be a whole number in range, got abc"},
 		// r2: exact, not via float64, which would round these two.
 		{name: "json.Number 2^53+1 with an exponent", in: json.Number("9007199254740993e0"), want: 9007199254740993, present: true},
-		{name: "json.Number a fraction float64 rounds to 1", in: json.Number("1.0000000000000001e0"), wantErr: "must be a whole number"},
+		// r9 (h2 F1): the fraction refusal, not the "in range" one it prefixes.
+		{name: "json.Number a fraction float64 rounds to 1", in: json.Number("1.0000000000000001e0"), wantErr: "must be a whole number, got 1.0000000000000001e0"},
 		{name: "json.Number huge exponent", in: json.Number("1e999999999"), wantErr: "in range"},
 		{name: "json.Number 1e64 is out of range", in: json.Number("1e64"), wantErr: "is out of range"},
 		// r5: big.Rat syntax that is not a JSON number is refused, not parsed.
@@ -249,6 +250,10 @@ func TestBUG4061_ExpectedSeqRangeAndJSONNumber(t *testing.T) {
 		wantErr string
 	}{
 		{"above int64", 1e19, 0, "expected_seq is out of range"},
+		// r9 (h2 F4): the float64 path's own bound, not only the unit-level one.
+		{"float64 2^53-1 is accepted", float64(1<<53 - 1), 1<<53 - 1, ""},
+		{"float64 2^53 is refused", float64(1 << 53), 0, "expected_seq is beyond the exact integer range of a JSON number"},
+		{"float64 -2^53 is refused", -float64(1 << 53), 0, "expected_seq is beyond the exact integer range of a JSON number"},
 		{"json.Number whole", json.Number("42"), 42, ""},
 		{"json.Number fraction", json.Number("42.7"), 0, "expected_seq must be a whole number, got 42.7"},
 		{"json.Number whole with an exponent", json.Number("4.2e1"), 42, ""},
