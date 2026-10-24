@@ -164,7 +164,6 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 						}
 						select {
 						case <-ctx.Done():
-							break
 						case <-time.After(time.Millisecond):
 							continue
 						}
