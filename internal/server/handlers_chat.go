@@ -184,7 +184,7 @@ func (s *Server) handleGetChatConversation(w http.ResponseWriter, r *http.Reques
 	}
 	for _, row := range rows {
 		if row.ID == c.ID {
-			writeJSON(w, 200, newChatDetail(row))
+			writeJSON(w, 200, chatConversationGet{chatConversationDetail: newChatDetail(row), DeliveredSeq: row.DeliveredSeq})
 			return
 		}
 	}

@@ -734,7 +734,7 @@ func (s *Store) ListConversations(actor models.ConversationActor) ([]models.Conv
 		return nil, err
 	}
 	rows, err := s.db.Query(s.q(`SELECT c.id, c.owner_user_id, c.number, c.kind, c.title, c.dm_key,
-		c.last_seq, c.created_at, c.updated_at, agent.agent_key, member.read_seq, `+conversationUnreadCount+
+		c.last_seq, c.created_at, c.updated_at, agent.agent_key, member.read_seq, member.delivered_seq, `+conversationUnreadCount+
 		conversationInboxFrom+` ORDER BY c.updated_at DESC, c.id`), actor.UserID, actor.AgentKey)
 	if err != nil {
 		return nil, fmt.Errorf("list conversations: %w", err)
@@ -749,7 +749,7 @@ func (s *Store) ListConversations(actor models.ConversationActor) ([]models.Conv
 		var dmKey sql.NullString
 		var created, updated string
 		if err := rows.Scan(&c.ID, &c.OwnerUserID, &c.Number, &c.Kind, &c.Title, &dmKey, &c.LastSeq,
-			&created, &updated, &c.AgentKey, &c.ReadSeq, &c.Unread); err != nil {
+			&created, &updated, &c.AgentKey, &c.ReadSeq, &c.DeliveredSeq, &c.Unread); err != nil {
 			return nil, fmt.Errorf("scan conversation summary: %w", err)
 		}
 		c.DMKey = dmKey.String

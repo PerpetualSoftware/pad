@@ -3416,6 +3416,12 @@ func (c *Client) ListChatConversations() (json.RawMessage, error) {
 	return result, err
 }
 
+func (c *Client) ChatConversation(number int) (json.RawMessage, error) {
+	var result json.RawMessage
+	err := c.get(fmt.Sprintf("/me/conversations/%d", number), &result)
+	return result, err
+}
+
 func (c *Client) EnsureChatDM(agent string) (json.RawMessage, error) {
 	var result json.RawMessage
 	err := c.post("/me/conversations", map[string]string{"agent_key": agent}, &result)
