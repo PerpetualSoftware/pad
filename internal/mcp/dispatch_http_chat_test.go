@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -304,6 +305,55 @@ func TestChatRemoteLimitValidation(t *testing.T) {
 			res, err := d.Dispatch(WithDispatchInput(context.Background(), input), []string{"chat", "show"}, nil)
 			if err != nil || !res.IsError || !strings.Contains(textOf(res), "validation_failed") {
 				t.Fatalf("limit %v: %v %s", limit, err, textOf(res))
+			}
+		})
+	}
+}
+
+func TestChatRemoteSendRefusesStdin(t *testing.T) {
+	d := &HTTPHandlerDispatcher{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("stdin body reached handler: %s %s", r.Method, r.URL)
+		fmt.Fprint(w, `{"conversations":[],"conversation":{"number":12}}`)
+	})}
+	input := map[string]any{"target": "@rook", "body": "-"}
+	res, err := d.dispatchChat("send")(context.Background(), input, &models.User{ID: "u"})
+	if err != nil || res == nil || !res.IsError {
+		t.Fatalf("want validation error, got %+v %v", res, err)
+	}
+	if !strings.Contains(textOf(res), "validation_failed") || !strings.Contains(textOf(res), "body '-' reads stdin, which MCP does not provide; pass the text") {
+		t.Fatalf("wrong error: %s", textOf(res))
+	}
+}
+
+func TestWithChatMarkNonObject(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		structured any
+	}{
+		{"text only", nil},
+		{"non-object", []string{"stored"}},
+		{"nil object", map[string]any(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := textResult("message stored")
+			original.StructuredContent = tc.structured
+			first := original.Content[0]
+			mark := map[string]any{"marked": false, "error": "forbidden: Read-only token"}
+			res := withChatMark(original, mark)
+			if res != original || res.IsError || !reflect.DeepEqual(res.StructuredContent, tc.structured) || len(res.Content) != 2 || !reflect.DeepEqual(res.Content[0], first) {
+				t.Fatalf("original result was lost: %+v", res)
+			}
+			raw, err := json.Marshal(res.Content[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var block struct{ Type, Text string }
+			if err := json.Unmarshal(raw, &block); err != nil {
+				t.Fatal(err)
+			}
+			var note struct{ Mark map[string]any }
+			if err := json.Unmarshal([]byte(block.Text), &note); err != nil || block.Type != "text" || !reflect.DeepEqual(note.Mark, mark) {
+				t.Fatalf("mark missing from added text: %s (%v)", raw, err)
 			}
 		})
 	}

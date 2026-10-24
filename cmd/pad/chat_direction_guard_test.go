@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -136,4 +137,33 @@ func TestChatDirectionGuard(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestChatStdioSendRefusesStdin(t *testing.T) {
+	oldFormat, oldWorkspace, oldURL := formatFlag, workspaceFlag, urlFlag
+	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = oldFormat, oldWorkspace, oldURL })
+	for _, def := range mcp.Catalog {
+		if def.Name != "pad_chat" {
+			continue
+		}
+		d := &chatGuardDispatcher{}
+		root := newRootCmd()
+		env := mcp.ActionEnv{Doc: cmdhelp.Build(root, root, cmdhelp.Options{Binary: "pad", MaxDepth: -1}), Workspace: mcp.NewWorkspaceState(""), Dispatcher: d}
+		res, err := def.Actions["send"](context.Background(), map[string]any{"target": "@rook", "body": "-"}, env)
+		if err != nil || res == nil || !res.IsError {
+			t.Fatalf("want validation error, got %+v %v", res, err)
+		}
+		raw, err := json.Marshal(res)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), "validation_failed") || !strings.Contains(string(raw), "body '-' reads stdin, which MCP does not provide; pass the text") {
+			t.Fatalf("wrong error: %s", raw)
+		}
+		if len(d.path) != 0 {
+			t.Fatalf("stdin body dispatched: %v", d.path)
+		}
+		return
+	}
+	t.Fatal("pad_chat is absent")
 }

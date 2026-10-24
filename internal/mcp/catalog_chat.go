@@ -1,6 +1,10 @@
 package mcp
 
+import "context"
+
 func init() { appendToCatalog(padChatTool) }
+
+const chatStdinBodyError = "body '-' reads stdin, which MCP does not provide; pass the text"
 
 var padChatTool = ToolDef{
 	Name:        "pad_chat",
@@ -22,10 +26,15 @@ var padChatTool = ToolDef{
 		},
 	},
 	Actions: map[string]ActionFn{
-		"list":   passThrough([]string{"chat", "list"}),
-		"inbox":  passThrough([]string{"chat", "inbox"}),
-		"show":   passThrough([]string{"chat", "show"}),
-		"send":   passThrough([]string{"chat", "send"}),
+		"list":  passThrough([]string{"chat", "list"}),
+		"inbox": passThrough([]string{"chat", "inbox"}),
+		"show":  passThrough([]string{"chat", "show"}),
+		"send": func(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+			if input["body"] == "-" {
+				return validationFailedResult("chat send", chatStdinBodyError, "Pass message text in body."), nil
+			}
+			return passThrough([]string{"chat", "send"})(ctx, input, env)
+		},
 		"delete": passThrough([]string{"chat", "delete"}),
 		"read":   passThrough([]string{"chat", "read"}),
 	},
@@ -40,7 +49,7 @@ Actions:
     Required: none. Optional: agent.
   show — Unless no_mark, marks the highest returned seq read only when the page
     reaches back to the last read message; empty pages mark nothing.
-    Remote mark reports success, a gap, or a mark error.
+    Both transports report mark success, a gap, or a mark error.
     Required: target. Optional: since, limit, no_mark.
   send — Send; ensure an unknown @name DM first. Replying marks read only
     to reply_to; plain sends mark nothing. Never auto-retry.

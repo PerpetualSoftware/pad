@@ -63,11 +63,13 @@ func chatShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := printChatResponse(cmd, "show", raw); err != nil {
-				return err
-			}
 			if noMark {
-				return nil
+				return printChatResponse(cmd, "show", raw)
+			}
+			if formatFlag != "json" {
+				if err := printChatResponse(cmd, "show", raw); err != nil {
+					return err
+				}
 			}
 			var page struct {
 				ReadSeq  int64 `json:"read_seq"`
@@ -78,8 +80,10 @@ func chatShowCmd() *cobra.Command {
 			if err := json.Unmarshal(raw, &page); err != nil {
 				return err
 			}
+			mark := map[string]any{"marked": false, "reason": "empty", "read_seq": page.ReadSeq}
 			if seq := cli.ChatReadSeq(page.Messages, page.ReadSeq); seq > 0 {
-				if _, err := client.ReadChat(n, seq); err != nil {
+				mark, err = chatReadMark(client, n, seq)
+				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: messages displayed, but marking read failed: %v\n", err)
 				}
 			} else if len(page.Messages) > 0 {
@@ -89,7 +93,11 @@ func chatShowCmd() *cobra.Command {
 						first = msg.Seq
 					}
 				}
+				mark["reason"], mark["first_unshown"], mark["last_unshown"] = "gap", page.ReadSeq+1, first-1
 				fmt.Fprintf(cmd.ErrOrStderr(), "Not marked read: messages #%d-#%d were not shown; run pad chat show C%d --since %d\n", page.ReadSeq+1, first-1, n, page.ReadSeq)
+			}
+			if formatFlag == "json" {
+				return printChatJSONWithMark(cmd, raw, mark)
 			}
 			return nil
 		}}
@@ -142,13 +150,22 @@ func chatSendCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := printChatResponse(cmd, "send", raw); err != nil {
-				return err
+			if formatFlag != "json" {
+				if err := printChatResponse(cmd, "send", raw); err != nil {
+					return err
+				}
 			}
 			if in.ReplyToSeq != nil {
-				if _, err := client.ReadChat(n, *in.ReplyToSeq); err != nil {
+				mark, err := chatReadMark(client, n, *in.ReplyToSeq)
+				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: message sent, but marking reply read failed: %v\n", err)
 				}
+				if formatFlag == "json" {
+					return printChatJSONWithMark(cmd, raw, mark)
+				}
+			}
+			if formatFlag == "json" {
+				return printChatResponse(cmd, "send", raw)
 			}
 			return nil
 		}}
@@ -205,6 +222,36 @@ func chatReadCmd() *cobra.Command {
 	cmd.Flags().Int64Var(&to, "to", 0, "Mark read through this sequence")
 	_ = cmd.MarkFlagRequired("to")
 	return cmd
+}
+
+func chatReadMark(client *cli.Client, number int, seq int64) (map[string]any, error) {
+	raw, err := client.ReadChat(number, seq)
+	var result struct {
+		ReadSeq int64 `json:"read_seq"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &result)
+	}
+	if err != nil {
+		return map[string]any{"marked": false, "error": err.Error()}, err
+	}
+	return map[string]any{"marked": true, "read_seq": result.ReadSeq}, nil
+}
+
+func printChatJSONWithMark(cmd *cobra.Command, raw json.RawMessage, mark map[string]any) error {
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return err
+	}
+	if response == nil {
+		return fmt.Errorf("chat response must be a JSON object")
+	}
+	note, err := json.Marshal(mark)
+	if err != nil {
+		return err
+	}
+	response["mark"] = note
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(response)
 }
 
 func printChatResponse(cmd *cobra.Command, action string, raw json.RawMessage) error {

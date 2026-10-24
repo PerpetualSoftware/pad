@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -147,6 +148,9 @@ func (d *HTTPHandlerDispatcher) dispatchChat(verb string) specialDispatchFn {
 			if !ok {
 				return invalid(fmt.Errorf("body is required"))
 			}
+			if body == "-" {
+				return invalid(errors.New(chatStdinBodyError))
+			}
 			in.Body = body
 			if _, ok := input["reply_to"]; ok {
 				n, err := chatSequence(input, "reply_to", 1)
@@ -226,7 +230,12 @@ func (d *HTTPHandlerDispatcher) dispatchChat(verb string) specialDispatchFn {
 
 // Follow-up marking must never replace a successful fetch or stored send.
 func withChatMark(res *CallToolResult, mark map[string]any) *CallToolResult {
-	response := res.StructuredContent.(map[string]any)
+	response, ok := res.StructuredContent.(map[string]any)
+	if !ok || response == nil {
+		raw, _ := json.Marshal(map[string]any{"mark": mark})
+		res.Content = append(res.Content, textResult(string(raw)).Content...)
+		return res
+	}
 	response["mark"] = mark
 	raw, _ := json.Marshal(response)
 	return structuredResult(response, string(raw))
