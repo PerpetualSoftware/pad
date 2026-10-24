@@ -430,7 +430,10 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// contention.
 	seq, hasSeq, seqErr := itemExpectedSeqParam(input)
 	if seqErr != nil {
-		return nil, seqErr
+		// BUG-4061 r2: a validation_failed envelope, as every other refused
+		// parameter gets, not a raw error the transport turns into a
+		// protocol-level failure.
+		return validationFailedResult(cmdKey, seqErr.Error(), "Pass expected_seq as the whole-number seq you read."), nil
 	}
 	if hasSeq {
 		payload["expected_seq"] = seq

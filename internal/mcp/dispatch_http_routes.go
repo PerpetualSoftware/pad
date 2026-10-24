@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1741,16 +1742,31 @@ func numericInput(v any) (int64, bool, error) {
 
 // jsonNumberInt64 is wholeInt64 for a json.Number. Int64() alone refuses a
 // whole number written with an exponent ("1e6"), so a literal it cannot parse
-// is read as a float and gets the same whole-and-in-range check.
+// is read EXACTLY as a decimal: a float64 would round 9007199254740993e0 to
+// ...992 and 1.0000000000000001 to 1, changing the caller's number again
+// (BUG-4061 r2). The length and exponent bounds keep a literal like 1e999999999
+// from costing a huge allocation; no int64 needs either to be larger.
 func jsonNumberInt64(x json.Number) (int64, error) {
+	s := x.String()
 	if n, err := x.Int64(); err == nil {
 		return n, nil
 	}
-	f, err := x.Float64()
-	if err != nil {
-		return 0, fmt.Errorf("must be a whole number, got %s", x.String())
+	if len(s) > 64 || strings.ContainsAny(s, "/xXpP") {
+		return 0, fmt.Errorf("must be a whole number in range, got %s", s)
 	}
-	return wholeInt64(f)
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		if e, err := strconv.Atoi(s[i+1:]); err != nil || e > 64 || e < -64 {
+			return 0, fmt.Errorf("must be a whole number in range, got %s", s)
+		}
+	}
+	r, ok := new(big.Rat).SetString(s)
+	if !ok || !r.IsInt() {
+		return 0, fmt.Errorf("must be a whole number, got %s", s)
+	}
+	if !r.Num().IsInt64() {
+		return 0, fmt.Errorf("is out of range, got %s", s)
+	}
+	return r.Num().Int64(), nil
 }
 
 // wholeInt64 converts a float64 that is exactly an int64, and refuses any

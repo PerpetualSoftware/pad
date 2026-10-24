@@ -37,6 +37,11 @@ func TestBUG4061_NumericInputRefusesWhatItWouldChange(t *testing.T) {
 		{name: "json.Number above int64", in: json.Number("1e19"), wantErr: "is out of range"},
 		{name: "json.Number whole with an exponent", in: json.Number("1e6"), want: 1000000, present: true},
 		{name: "json.Number not a number", in: json.Number("abc"), wantErr: "must be a whole number, got abc"},
+		// r2: exact, not via float64, which would round these two.
+		{name: "json.Number 2^53+1 with an exponent", in: json.Number("9007199254740993e0"), want: 9007199254740993, present: true},
+		{name: "json.Number a fraction float64 rounds to 1", in: json.Number("1.0000000000000001e0"), wantErr: "must be a whole number"},
+		{name: "json.Number huge exponent", in: json.Number("1e999999999"), wantErr: "in range"},
+		{name: "json.Number 1e64 is out of range", in: json.Number("1e64"), wantErr: "is out of range"},
 		{name: "nil is absent", in: nil},
 		{name: "a string is absent, as before", in: "10"},
 	}
@@ -72,28 +77,38 @@ func TestBUG4061_EveryDispatchDoorRefusesAFractionNamingIt(t *testing.T) {
 		cmd   []string
 		input map[string]any
 		param string
+		// readsFirst: the door reads the item before it validates, so a GET
+		// may reach the handler; no write may.
+		readsFirst bool
 	}{
-		{[]string{"attachment", "list"}, map[string]any{"limit": 1.5}, "limit"},
-		{[]string{"attachment", "list"}, map[string]any{"offset": 2.5}, "offset"},
-		{[]string{"item", "history"}, map[string]any{"ref": "TASK-1", "limit": 1.5}, "limit"},
-		{[]string{"item", "starred"}, map[string]any{"limit": 1.5}, "limit"},
-		{[]string{"workspace", "audit-log"}, map[string]any{"days": 1.5}, "days"},
-		{[]string{"workspace", "audit-log"}, map[string]any{"limit": 1e19}, "limit"},
-		{[]string{"item", "list"}, map[string]any{"limit": -2.7}, "limit"},
-		{[]string{"item", "list"}, map[string]any{"offset": 1.5}, "offset"},
+		{[]string{"attachment", "list"}, map[string]any{"limit": 1.5}, "limit", false},
+		{[]string{"attachment", "list"}, map[string]any{"offset": 2.5}, "offset", false},
+		{[]string{"item", "history"}, map[string]any{"ref": "TASK-1", "limit": 1.5}, "limit", false},
+		{[]string{"item", "starred"}, map[string]any{"limit": 1.5}, "limit", false},
+		{[]string{"workspace", "audit-log"}, map[string]any{"days": 1.5}, "days", false},
+		{[]string{"workspace", "audit-log"}, map[string]any{"limit": 1e19}, "limit", false},
+		{[]string{"item", "list"}, map[string]any{"limit": -2.7}, "limit", false},
+		{[]string{"item", "list"}, map[string]any{"offset": 1.5}, "offset", false},
 		// The four buildQuery callers (lead ruling on Q2): the generic route
 		// mapper, mapItemSearch, and the standup and changelog dispatchers.
-		{[]string{"item", "backlinks"}, map[string]any{"ref": "TASK-1", "limit": 1.5}, "limit"},
-		{[]string{"item", "search"}, map[string]any{"query": "x", "offset": 2.5}, "offset"},
-		{[]string{"project", "standup"}, map[string]any{"days": 0.5}, "days"},
-		{[]string{"project", "changelog"}, map[string]any{"days": 1e19}, "days"},
+		{[]string{"item", "backlinks"}, map[string]any{"ref": "TASK-1", "limit": 1.5}, "limit", false},
+		{[]string{"item", "search"}, map[string]any{"query": "x", "offset": 2.5}, "offset", false},
+		{[]string{"project", "standup"}, map[string]any{"days": 0.5}, "days", false},
+		{[]string{"project", "changelog"}, map[string]any{"days": 1e19}, "days", false},
+		// r2: expected_seq used to come back as a raw error, not an envelope.
+		{[]string{"item", "update"}, map[string]any{"ref": "TASK-1", "content": "x", "expected_seq": 1.5}, "expected_seq", true},
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.cmd, " ")+" "+tc.param, func(t *testing.T) {
 			var reached string
 			mux := http.NewServeMux()
 			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-				reached = r.URL.RequestURI()
+				if tc.readsFirst && r.Method == http.MethodGet {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{}`))
+					return
+				}
+				reached = r.Method + " " + r.URL.RequestURI()
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{}`))
 			})
