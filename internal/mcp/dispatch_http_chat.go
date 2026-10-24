@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -100,7 +101,17 @@ func chatSequence(input map[string]any, name string, min int64) (int64, error) {
 	if !ok {
 		return 0, fmt.Errorf("%s is required", name)
 	}
-	n, err := strconv.ParseInt(fmt.Sprint(v), 10, 64)
+	var n int64
+	var err error
+	if x, ok := v.(float64); ok {
+		// The upper bound is exclusive: float64(MaxInt64) is 2^63.
+		if math.Trunc(x) != x || x < math.MinInt64 || x >= 0x1p63 {
+			return 0, fmt.Errorf("%s must be an integer of at least %d", name, min)
+		}
+		n = int64(x)
+	} else {
+		n, err = strconv.ParseInt(fmt.Sprint(v), 10, 64)
+	}
 	if err != nil || n < min {
 		return 0, fmt.Errorf("%s must be an integer of at least %d", name, min)
 	}
