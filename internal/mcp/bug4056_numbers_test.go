@@ -13,23 +13,35 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// BUG-4056 pinned notation: an integral number forwards without an exponent.
+// BUG-4061 (lead ruling on its Q2, day 33) superseded the rows that forwarded
+// a fraction and a value outside int64 unchanged: every numeric query
+// parameter is an integer and the server's parsers default a malformed one,
+// so those two are now refusals naming the key. The notation rows stand.
 func TestBUG4056BuildQueryNumbersUnchanged(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		in   any
-		want string
+		name    string
+		in      any
+		want    string
+		wantErr string
 	}{
-		{"integral", float64(1000000), "1000000"},
-		{"large integral", float64(1e19), "10000000000000000000"},
-		{"fractional", 2.5, "2.5"},
-		{"negative zero", math.Copysign(0, -1), "0"},
-		{"json number", json.Number("1e6"), "1e6"},
+		{name: "integral", in: float64(1000000), want: "1000000"},
+		{name: "large integral outside int64", in: float64(1e19), wantErr: "n is out of range"},
+		{name: "fractional", in: 2.5, wantErr: "n must be a whole number, got 2.5"},
+		{name: "negative zero", in: math.Copysign(0, -1), want: "0"},
+		{name: "json number", in: json.Number("1e6"), want: "1000000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			query := buildQuery(map[string]any{"n": tc.in}, map[string]string{"n": "n"})
+			query, qerr := buildQuery(map[string]any{"n": tc.in}, map[string]string{"n": "n"})
+			if tc.wantErr != "" {
+				if qerr == nil || !strings.Contains(qerr.Error(), tc.wantErr) {
+					t.Fatalf("buildQuery = %q, %v; want a refusal containing %q", query, qerr, tc.wantErr)
+				}
+				return
+			}
 			values, err := url.ParseQuery(query)
-			if err != nil || values.Get("n") != tc.want {
-				t.Fatalf("buildQuery = %q, %v; want n=%q", query, err, tc.want)
+			if qerr != nil || err != nil || values.Get("n") != tc.want {
+				t.Fatalf("buildQuery = %q, %v, %v; want n=%q", query, qerr, err, tc.want)
 			}
 		})
 	}

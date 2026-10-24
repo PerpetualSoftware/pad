@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -431,7 +430,10 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// contention.
 	seq, hasSeq, seqErr := itemExpectedSeqParam(input)
 	if seqErr != nil {
-		return nil, seqErr
+		// BUG-4061 r2: a validation_failed envelope, as every other refused
+		// parameter gets, not a raw error the transport turns into a
+		// protocol-level failure.
+		return validationFailedResult(cmdKey, seqErr.Error(), "Pass expected_seq as the whole-number seq you read."), nil
 	}
 	if hasSeq {
 		payload["expected_seq"] = seq
@@ -817,12 +819,22 @@ func (d *HTTPHandlerDispatcher) maybeInjectWorkspace(
 // A free function so it can be driven directly: the dispatcher method around it
 // needs a live handler chain.
 func itemExpectedSeqParam(input map[string]any) (int64, bool, error) {
+	// BUG-4061: a float64 outside int64 is refused too (int64 of it is
+	// implementation-defined), and a json.Number gets the same refusal rather
+	// than reading as absent, which would make the write unguarded.
 	switch v := input["expected_seq"].(type) {
 	case float64:
-		if v != math.Trunc(v) {
-			return 0, false, fmt.Errorf("expected_seq must be a whole number, got %v", v)
+		n, err := wholeInt64(v)
+		if err != nil {
+			return 0, false, fmt.Errorf("expected_seq %w", err)
 		}
-		return int64(v), true, nil
+		return n, true, nil
+	case json.Number:
+		n, err := jsonNumberInt64(v)
+		if err != nil {
+			return 0, false, fmt.Errorf("expected_seq %w", err)
+		}
+		return n, true, nil
 	case int64:
 		return v, true, nil
 	case int:

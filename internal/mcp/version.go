@@ -2225,7 +2225,24 @@ const CmdhelpVersion = "0.1"
 // mark failures preserve show/send success. Replies mark through reply_to. No direction.
 // Existing descriptions were reworded; examples/reasons moved to docs/mcp.md
 // without dropping any rule, caveat, refusal or ref.
-const ToolSurfaceVersion = "0.102"
+//
+// v0.103 — BUG-4061: a numeric parameter that is not a whole int64 is REFUSED
+// (validation_failed, naming the parameter) instead of silently changed. A
+// fraction used to truncate (limit 1.5 read as 1, limit 0.5 as the default), a
+// value outside int64 converted to an implementation-defined one, and a
+// json.Number that did not parse was dropped as absent. Covers limit, offset
+// and days on every remote door that reads them locally, pad_item.list and
+// pad_item.history's limit, every query-string door built by buildQuery (item
+// backlinks, item context's budget, project activity, item search, project
+// standup and changelog), whose server parsers used to default a forwarded
+// "1.5" silently, and expected_seq (range and json.Number; fractions were
+// already refused). A whole json.Number in exponent form ("1e6") is accepted,
+// and is parsed exactly. A JSON number decoded as float64 of magnitude 2^53
+// or more is refused: the decoder may already have rounded it.
+// The schemas declare these as "number", so the refused inputs were valid
+// under the advertised shape: the bump is owed by the behaviour, not by a
+// schema change (the precedent is the multi_relation DSL refusal).
+const ToolSurfaceVersion = "0.103"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

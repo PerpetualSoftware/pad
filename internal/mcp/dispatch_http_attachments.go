@@ -65,11 +65,14 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentList(
 	if s, _ := input["sort"].(string); s != "" {
 		q.Set("sort", s)
 	}
-	if n, ok := numericInput(input["limit"]); ok && n > 0 {
-		q.Set("limit", strconv.FormatInt(n, 10))
-	}
-	if n, ok := numericInput(input["offset"]); ok && n > 0 {
-		q.Set("offset", strconv.FormatInt(n, 10))
+	for _, key := range []string{"limit", "offset"} {
+		n, ok, err := intParam(input, key)
+		if err != nil {
+			return validationFailedResult(cmdKey, err.Error(), "Pass "+key+" as a whole number."), nil
+		}
+		if ok && n > 0 {
+			q.Set(key, strconv.FormatInt(n, 10))
+		}
 	}
 	switch {
 	case attached:
