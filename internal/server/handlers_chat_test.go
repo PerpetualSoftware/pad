@@ -575,14 +575,14 @@ func TestChat_Unread_AgentFilterAndMismatch(t *testing.T) {
 	f.must(f.request("GET", "/api/v1/me/chat/unread?agent=owl", "rook", nil), 400, "mismatched agent")
 }
 func chatRouteCases() []struct{ method, path, body string } {
-	return []struct{ method, path, body string }{{"GET", chatBase, ""}, {"POST", chatBase, `{"agent_key":"rook"}`}, {"GET", chatBase + "/1", ""}, {"GET", chatBase + "/1/messages", ""}, {"POST", chatBase + "/1/messages", `{"body":"hi"}`}, {"DELETE", chatBase + "/1/messages/1", ""}, {"POST", chatBase + "/1/read", `{"seq":0}`}, {"GET", "/api/v1/me/chat/unread", ""}}
+	return []struct{ method, path, body string }{{"GET", chatBase, ""}, {"POST", chatBase, `{"agent_key":"rook"}`}, {"GET", chatBase + "/1", ""}, {"GET", chatBase + "/1/messages", ""}, {"POST", chatBase + "/1/messages", `{"body":"hi"}`}, {"DELETE", chatBase + "/1/messages/1", ""}, {"POST", chatBase + "/1/read", `{"seq":0}`}, {"POST", chatBase + "/1/delivered", `{"seq":0}`}, {"GET", "/api/v1/me/chat/unread", ""}}
 }
 func TestChat_NonMemberGets404Everywhere(t *testing.T) {
 	f := newChatFixture(t)
 	p := f.ensure("rook")
 	other := mkUser(t, f.srv, "outsider-chat@example.com")
 	tok := f.token(other)
-	for _, tc := range chatRouteCases()[2:7] {
+	for _, tc := range chatRouteCases()[2:8] {
 		rr := rawReq(f.srv, tc.method, tc.path, tok, "", tc.body)
 		f.must(rr, 404, "other user")
 		missing := rawReq(f.srv, tc.method, strings.Replace(tc.path, "/1", "/999", 1), tok, "", tc.body)
@@ -722,7 +722,7 @@ func TestChat_NonMemberAdminCookieGets404(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range chatRouteCases()[2:7] {
+	for _, tc := range chatRouteCases()[2:8] {
 		rr := rawReq(f.srv, tc.method, tc.path, "", token, tc.body)
 		f.must(rr, 404, "admin nonmember")
 		missing := rawReq(f.srv, tc.method, strings.Replace(tc.path, "/1", "/999", 1), "", token, tc.body)

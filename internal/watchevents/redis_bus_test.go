@@ -22,6 +22,7 @@ package watchevents
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -796,5 +797,21 @@ func TestRedisBusCloseIsIdempotentAndClosesSubscribers(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("post-Close Subscribe returned a live channel nobody will ever close")
+	}
+}
+
+func TestChatNotificationSurvivesRedisRoundTrip(t *testing.T) {
+	seq := int64(3)
+	want := Notification{Kind: KindChat, ConversationID: "conv", ConversationNumber: 9, MessageID: "msg", MessageSeq: 4, ReplyToSeq: &seq, Excerpt: "short", AuthorUserID: "u", AuthorAgentKey: "a", TargetUserID: "t", TargetAgentKey: "b", ChatDeleted: true}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Notification
+	if err = json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip: %+v != %+v", got, want)
 	}
 }

@@ -85,6 +85,8 @@ var ErrNotSubscribed = errors.New("watchevents: this instance has no subscriptio
 // {status-change, assignment, comment, ask}), plus push (IDEA-2544) and the
 // opt-in workspace_access_changed (TASK-3272).
 const (
+	// KindChat is a ref-only conversation nudge (TASK-4041, DOC-4036).
+	KindChat         = "chat"
 	KindStatusChange = "status-change"
 	KindAssignment   = "assignment"
 	KindComment      = "comment"
@@ -219,6 +221,17 @@ type Notification struct {
 	// one of the Access* values above.
 	AccessChange string
 	Timestamp    int64
+	// TASK-4041, DOC-4036: chat carries references and a bounded quote only.
+	ConversationID     string
+	ConversationNumber int
+	MessageID          string
+	MessageSeq         int64
+	ReplyToSeq         *int64
+	Excerpt            string
+	AuthorUserID       string
+	AuthorAgentKey     string
+	TargetAgentKey     string
+	ChatDeleted        bool
 }
 
 // Bus is the pub/sub surface the watch pipeline's producers and the

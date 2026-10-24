@@ -787,3 +787,25 @@ func (s *Store) ListConversations(actor models.ConversationActor) ([]models.Conv
 	}
 	return out, nil
 }
+
+// ConversationMemberActors lists identities for a committed chat retraction
+// (TASK-4041). Membership is checked just as on every other chat read.
+func (s *Store) ConversationMemberActors(actor models.ConversationActor, convID string) ([]models.ConversationActor, error) {
+	if _, err := s.GetConversation(actor, convID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(s.q(`SELECT user_id, agent_key FROM conversation_members WHERE conversation_id = ?`), convID)
+	if err != nil {
+		return nil, fmt.Errorf("list conversation members: %w", err)
+	}
+	defer rows.Close()
+	var out []models.ConversationActor
+	for rows.Next() {
+		var a models.ConversationActor
+		if err := rows.Scan(&a.UserID, &a.AgentKey); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}

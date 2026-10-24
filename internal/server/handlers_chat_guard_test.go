@@ -12,10 +12,12 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
+	"regexp"
 )
 
 // TASK-4039: chat has no item event, watch, activity, outbox or webhook effects.
-func TestChat_EmitsNothing(t *testing.T) {
+func TestChatEmitsNoKernelEvent(t *testing.T) {
 	f := newChatFixture(t)
 	bus := events.New()
 	f.srv.SetEventBus(bus)
@@ -47,6 +49,7 @@ func TestChat_EmitsNothing(t *testing.T) {
 		f.must(f.request("POST", p+"/messages", "rook", tc.body), tc.status, "send")
 	}
 
+	f.must(f.request("POST", p+"/messages", "", map[string]any{"body": "human notice"}), 201, "human send")
 	f.must(f.request("DELETE", p+"/messages/1", "", nil), 200, "delete")
 	f.must(f.request("POST", p+"/read", "", map[string]any{"seq": 2}), 200, "read")
 	for _, path := range []string{chatBase, p, p + "/messages", "/api/v1/me/chat/unread"} {
@@ -55,8 +58,10 @@ func TestChat_EmitsNothing(t *testing.T) {
 	if after := counts(); !reflect.DeepEqual(before, after) {
 		t.Fatalf("chat effects: before %v after %v", before, after)
 	}
-	if f.mark() != mark {
-		t.Fatalf("chat emitted watch events: %v", f.srv.watchEvents.EventsSince(mark))
+	for _, n := range f.srv.watchEvents.EventsSince(mark) {
+		if n.Kind != watchevents.KindChat {
+			t.Fatalf("non-chat watch event: %+v", n)
+		}
 	}
 	select {
 	case ev := <-ch:
@@ -127,4 +132,28 @@ func TestChat_ResponsesNeverCarryRawIdentifiers(t *testing.T) {
 			}
 		}
 	}
+}
+
+func checkChatRequestFields(t *testing.T, re *regexp.Regexp) {
+	file, err := parser.ParseFile(token.NewFileSet(), "handlers_chat.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		st, ok := n.(*ast.StructType)
+		if !ok {
+			return true
+		}
+		for _, f := range st.Fields.List {
+			for _, name := range f.Names {
+				if re.MatchString(name.Name) {
+					t.Error(name.Name)
+				}
+			}
+			if f.Tag != nil && re.MatchString(f.Tag.Value) {
+				t.Error(f.Tag.Value)
+			}
+		}
+		return true
+	})
 }
