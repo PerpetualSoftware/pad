@@ -158,7 +158,12 @@ func buildQuery(input map[string]any, mapping map[string]string) string {
 		case json.Number:
 			q.Set(dst, x.String())
 		default:
-			q.Set(dst, fmt.Sprint(v))
+			// BUG-4056 r1: float32 and the integer types share formatNumber.
+			if number, ok := formatNumber(v); ok {
+				q.Set(dst, number)
+			} else {
+				q.Set(dst, fmt.Sprint(v))
+			}
 		}
 	}
 	if len(q) == 0 {

@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -48,5 +50,31 @@ func TestFormatNumber(t *testing.T) {
 				t.Fatalf("formatNumber(%v) = %q, %v; want %q, %v", tc.in, got, ok, tc.want, tc.ok)
 			}
 		})
+	}
+}
+
+// BUG-4056 r1: array elements and playbook argument tokens share the helper.
+func TestBUG4056SliceAndPlaybookNumbers(t *testing.T) {
+	got, err := toStringSlice([]any{float64(1000000), float64(2.5), "x", true})
+	if err != nil || strings.Join(got, ",") != "1000000,2.5,x,true" {
+		t.Fatalf("toStringSlice = %q, %v", got, err)
+	}
+
+	disp := &fakeDispatcher{}
+	env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState("docapp"), Dispatcher: disp}
+	if _, err := padPlaybookTool.Actions["run"](context.Background(), map[string]any{
+		"ref":  "release",
+		"args": map[string]any{"n": float64(1000000), "version": float64(1500000)},
+	}, env); err != nil {
+		t.Fatalf("dispatch error: %v", err)
+	}
+	joined := strings.Join(disp.gotArgs, " ")
+	for _, want := range []string{"n=1000000", "version=1500000"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("playbook tokens %q lack %q", joined, want)
+		}
+	}
+	if strings.Contains(joined, "e+06") {
+		t.Fatalf("playbook tokens carry exponent text: %q", joined)
 	}
 }

@@ -655,6 +655,11 @@ func toStringSlice(v any) ([]string, error) {
 	case []any:
 		out := make([]string, 0, len(t))
 		for _, e := range t {
+			// BUG-4056 r1: a JSON number element is a float64 too.
+			if number, ok := formatNumber(e); ok {
+				out = append(out, number)
+				continue
+			}
 			out = append(out, fmt.Sprint(e))
 		}
 		return out, nil
