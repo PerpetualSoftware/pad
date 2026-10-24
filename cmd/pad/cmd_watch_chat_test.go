@@ -259,30 +259,115 @@ func TestMonitorDeleteRetraction(t *testing.T) {
 	}
 }
 
-// TASK-4041, DOC-4036: never move the delivery marker across an unprinted
-// sequence, including our own messages, tombstones, and a malformed gap page.
-func TestMonitorChatAckStopsAtUnprintedMessage(t *testing.T) {
-	for _, kind := range []string{"own", "deleted", "missing"} {
-		t.Run(kind, func(t *testing.T) {
+func TestMonitorChatGapPagesAndOwnMessages(t *testing.T) {
+	chatSessionEnv(t)
+	f := &fakeChatSink{}
+	for seq := int64(1); seq <= 43; seq++ {
+		m := chatMsg(fmt.Sprint(seq), seq)
+		m.Mine = seq == 2
+		f.messages = append(f.messages, m)
+	}
+	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	var out bytes.Buffer
+	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "1", MessageSeq: 1})
+	for i, want := range []int64{21, 41, 43} {
+		previous := c.last[1]
+		c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "43", MessageSeq: 43})
+		if f.fetches != i+2 || f.acks != i+2 || f.seq != want || c.last[1] != want || f.after[i+1] != previous || f.limits[i+1] != 20 {
+			t.Fatalf("page %d: cursor=%d sink=%+v output=%q", i, c.last[1], f, out.String())
+		}
+	}
+	if strings.Count(out.String(), "fetched ") != 42 || strings.Contains(out.String(), "fetched 2\n") || strings.Count(out.String(), "more in C1") != 2 {
+		t.Fatal(out.String())
+	}
+	previous := -1
+	for seq := int64(1); seq <= 43; seq++ {
+		if seq == 2 {
+			continue
+		}
+		at := strings.Index(out.String(), fmt.Sprintf("fetched %d\n", seq))
+		if at <= previous {
+			t.Fatalf("missing or unordered human seq %d: %s", seq, out.String())
+		}
+		previous = at
+	}
+}
+
+func TestMonitorChatTombstoneInGap(t *testing.T) {
+	for _, printed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("original-printed=%t", printed), func(t *testing.T) {
 			chatSessionEnv(t)
-			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("b", 2), chatMsg("c", 3)}}
-			switch kind {
-			case "own":
-				f.messages[1].Mine = true
-			case "deleted":
-				f.messages[1].Deleted = true
-			case "missing":
-				f.messages = append(f.messages[:1], f.messages[2:]...)
-			}
+			f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), {ID: "b", Seq: 2, Deleted: true}, chatMsg("c", 3)}}
 			c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+			if printed {
+				c.printed.seen("b")
+			}
 			var out bytes.Buffer
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "c", MessageSeq: 3})
-			if f.seq != 1 || f.acks != 1 || strings.Contains(out.String(), "fetched c") {
-				t.Fatalf("crossed unprinted message: output=%q sink=%+v", out.String(), f)
+			if f.fetches != 2 || f.acks != 2 || f.seq != 3 || c.last[1] != 3 || strings.Count(out.String(), "fetched ") != 2 || !strings.Contains(out.String(), "fetched c\n") {
+				t.Fatalf("cursor=%d sink=%+v output=%q", c.last[1], f, out.String())
+			}
+			wantRetractions := 0
+			if printed {
+				wantRetractions = 1
+			}
+			if strings.Count(out.String(), "message b retracted") != wantRetractions {
+				t.Fatal(out.String())
 			}
 		})
 	}
+}
+
+func TestMonitorChatOwnMessageAtCappedFillEnd(t *testing.T) {
+	chatSessionEnv(t)
+	f := &fakeChatSink{}
+	for seq := int64(1); seq <= 20; seq++ {
+		m := chatMsg(fmt.Sprint(seq), seq)
+		m.Mine = seq == 20
+		f.messages = append(f.messages, m)
+	}
+	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	var out bytes.Buffer
+	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "20", MessageSeq: 20})
+	if f.fetches != 1 || f.limits[0] != 20 || f.acks != 1 || f.seq != 20 || c.last[1] != 20 || strings.Count(out.String(), "fetched ") != 19 || strings.Contains(out.String(), "fetched 20\n") || strings.Contains(out.String(), "more in C1") {
+		t.Fatalf("cursor=%d sink=%+v output=%q", c.last[1], f, out.String())
+	}
+}
+
+func TestMonitorChatOwnMessageAtTruncatedPageBoundary(t *testing.T) {
+	chatSessionEnv(t)
+	f := &fakeChatSink{}
+	for seq := int64(1); seq <= 25; seq++ {
+		m := chatMsg(fmt.Sprint(seq), seq)
+		m.Mine = seq == 20 || seq == 23
+		f.messages = append(f.messages, m)
+	}
+	c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+	var out bytes.Buffer
+	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "25", MessageSeq: 25})
+	if f.fetches != 1 || f.after[0] != 0 || f.limits[0] != 20 || f.acks != 1 || f.seq != 20 || c.last[1] != 20 || strings.Count(out.String(), "fetched ") != 19 || strings.Contains(out.String(), "fetched 20\n") {
+		t.Fatalf("cursor=%d sink=%+v output=%q", c.last[1], f, out.String())
+	}
+	// The span beyond the fetched page may include own messages (seq 23).
+	if !strings.HasSuffix(out.String(), "up to 5 more in C1: pad chat show C1 --since 20\n") || strings.Count(out.String(), "more in C1") != 1 {
+		t.Fatal(out.String())
+	}
+}
+
+// TASK-4041, DOC-4036: missing sequences still stop the fill and ack.
+func TestMonitorChatAckStopsAtUnprintedMessage(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		chatSessionEnv(t)
+		f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("a", 1), chatMsg("c", 3)}}
+		c := newMonitorChat(f, newRecentSet(256, 10*60*1e9))
+		var out bytes.Buffer
+		c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})
+		c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "c", MessageSeq: 3})
+		if f.seq != 1 || f.acks != 1 || strings.Contains(out.String(), "fetched c") {
+			t.Fatalf("crossed missing sequence: output=%q sink=%+v", out.String(), f)
+		}
+	})
 }
 
 func TestMonitorChatSummaryRespectsConsentRecheck(t *testing.T) {
@@ -302,7 +387,7 @@ func TestMonitorChatConnectBaselineAndContiguousAck(t *testing.T) {
 		printed, limit    int
 		more              string
 	}{
-		{"25-message-gap", `{"total":25,"conversations":[{"number":1,"delivered_seq":0,"unread":25}]}`, 25, 0, 20, 20, 20, "5 more in C1: pad chat show C1 --since 20"},
+		{"25-message-gap", `{"total":25,"conversations":[{"number":1,"delivered_seq":0,"unread":25}]}`, 25, 0, 20, 20, 20, "up to 5 more in C1: pad chat show C1 --since 20"},
 		{"fresh-unread-history", `{"total":1,"conversations":[{"number":1,"delivered_seq":5,"read_seq":7,"unread":1}]}`, 8, 5, 8, 3, 20, ""},
 		{"arrived-after-summary", `{"total":1,"conversations":[{"number":1,"delivered_seq":5,"last_seq":6,"unread":1}]}`, 7, 5, 7, 2, 20, ""},
 		{"missing-means-zero-unread", `{"total":0,"conversations":[]}`, 8, 7, 8, 1, 1, ""},
