@@ -167,8 +167,19 @@ func (f *HTTPResourceFetcher) fetchItemList(ctx context.Context, user *models.Us
 	// readItems asks for one row past the cap (BUG-3793), as the CLI's
 	// --limit does on stdio.
 	limit := itemListResourceLimit
-	if n, err := strconv.Atoi(flags["limit"]); err == nil && n > 0 {
-		limit = n
+	// BUG-4065 (Q2): a malformed flag is refused, never defaulted. Atoi used to
+	// read "1.5" or "abc" as absent. The flag is plain decimal or nothing, as
+	// for a string parameter; zero or a negative still means the default.
+	// Today resources.go always writes it with strconv.Itoa, so this guards a
+	// future vector, not a caller-controlled value.
+	if s, set := flags["limit"]; set {
+		n, err := decimalIntString(s)
+		if err != nil {
+			return "", fmt.Errorf("item list: limit %w", err)
+		}
+		if n > 0 {
+			limit = int(n)
+		}
 	}
 	q.Set("limit", strconv.Itoa(limit))
 	if _, all := flags["all"]; !all {

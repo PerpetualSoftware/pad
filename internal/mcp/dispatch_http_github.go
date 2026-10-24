@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,11 +24,17 @@ func (d *HTTPHandlerDispatcher) dispatchGitHubLink(ctx context.Context, input ma
 	if ref == "" {
 		return validationFailedResult(cmdKey, "ref is required", "Pass `ref=<TASK-N>`, the item to link the PR to."), nil
 	}
-	n, ok := input["pr_number"].(float64)
 	// Any positive whole number the CLI's --pr-number takes; the bound is
 	// only where a JSON number stops being an exact integer (codex r2: a
 	// MaxInt32 cap refused what the CLI accepts).
-	if !ok || n <= 0 || n != math.Trunc(n) || n > 1<<53 {
+	//
+	// BUG-4065: read through numericInput, so the bound is wholeInt64's
+	// exclusive 2^53 (the old 'n > 1<<53' admitted 2^53, the rounded image of
+	// 2^53+1), and a json.Number or a plain decimal string is read exactly
+	// instead of refused for its type. Absent stays required. The message and
+	// hint are unchanged.
+	n, ok, err := intParam(input, "pr_number")
+	if err != nil || !ok || n <= 0 {
 		return validationFailedResult(cmdKey, "pr_number must be a positive whole number", "Pass `pr_number=<N>`, the PR's number."), nil
 	}
 	prURL, _ := input["pr_url"].(string)

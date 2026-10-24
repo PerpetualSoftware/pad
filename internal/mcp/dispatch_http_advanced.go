@@ -822,23 +822,10 @@ func itemExpectedSeqParam(input map[string]any) (int64, bool, error) {
 	// BUG-4061: a float64 outside int64 is refused too (int64 of it is
 	// implementation-defined), and a json.Number gets the same refusal rather
 	// than reading as absent, which would make the write unguarded.
-	switch v := input["expected_seq"].(type) {
-	case float64:
-		n, err := wholeInt64(v)
-		if err != nil {
-			return 0, false, fmt.Errorf("expected_seq %w", err)
-		}
-		return n, true, nil
-	case json.Number:
-		n, err := jsonNumberInt64(v)
-		if err != nil {
-			return 0, false, fmt.Errorf("expected_seq %w", err)
-		}
-		return n, true, nil
-	case int64:
-		return v, true, nil
-	case int:
-		return int64(v), true, nil
-	}
-	return 0, false, nil
+	//
+	// BUG-4065: this had its own switch, and any other type (a string, a bool)
+	// fell through to "absent", so the write went out UNGUARDED. It now shares
+	// numericInput's one rule: only nil is absent, "123" is 123, and every
+	// other value is refused naming expected_seq.
+	return intParam(input, "expected_seq")
 }
