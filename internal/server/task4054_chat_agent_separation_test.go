@@ -12,15 +12,16 @@ import (
 //
 // Every {n} endpoint has two membership layers: resolveChatConversation and
 // the endpoint's own store call with the full actor. A leak through the first
-// layer alone (the director's mutant from the TASK-4039 GO audit, and the
-// lead's 2296-m1) is caught for send by its bucket and, for the other
-// endpoints, by the store layer still answering 404. Each {n} case asserts its
+// layer alone (resolveChatConversation ignoring the agent key) is caught for
+// send by its bucket, which is allocated before the store refuses, and for the
+// other endpoints by the store layer still answering 404. Each {n} case asserts its
 // endpoint on its own terms (status, body, side effects), so a leak through
 // BOTH layers of one endpoint fails that endpoint's case. "No bucket" below
 // means no bucket ALLOCATED; token spend on an existing bucket is not claimed.
 //
 // TASK-4060 adds the endpoints that could REVEAL bravo's DM without naming it
-// (the inbox and the unread summary) and an ensure that names bravo.
+// (the inbox and the unread summary), and ensures that name bravo and an
+// agent with no DM yet.
 func TestChat_AgentCannotReachSiblingAgentDM(t *testing.T) {
 	t.Setenv("PAD_DISABLE_RATE_LIMITS", "")
 	f := newChatFixture(t)
@@ -56,7 +57,8 @@ func TestChat_AgentCannotReachSiblingAgentDM(t *testing.T) {
 		{"get", "GET", "", nil},
 		{"list", "GET", "/messages", nil},
 		{"send", "POST", "/messages", map[string]any{"body": "alpha intrudes"}},
-		// TASK-4060: bravo's own message, so an author check cannot mask a leak.
+		// TASK-4060: bravo's own message, so a leak that resolves alpha as bravo
+		// would delete it (a 200 and a changed tombstone) rather than be refused.
 		{"delete", "DELETE", fmt.Sprintf("/messages/%d", bravoSeq), nil},
 		{"read", "POST", "/read", map[string]any{"seq": 1}},
 	}
