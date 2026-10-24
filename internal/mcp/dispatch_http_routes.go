@@ -1751,7 +1751,10 @@ func jsonNumberInt64(x json.Number) (int64, error) {
 	if n, err := x.Int64(); err == nil {
 		return n, nil
 	}
-	if len(s) > 64 || strings.ContainsAny(s, "/xXpP") {
+	// An allow-list, not a deny-list (BUG-4061 r5): big.Rat parses base
+	// prefixes ("0b101" is 5, "0o17" is 15, "0x10" is 16), fractions ("1/2")
+	// and underscores, none of which is a JSON number.
+	if len(s) > 64 || !isDecimalLiteral(s) {
 		return 0, fmt.Errorf("must be a whole number in range, got %s", s)
 	}
 	if i := strings.IndexAny(s, "eE"); i >= 0 {
@@ -1791,6 +1794,51 @@ func wholeInt64(x float64) (int64, error) {
 		return 0, fmt.Errorf("is beyond the exact integer range of a JSON number, got %v", x)
 	}
 	return int64(x), nil
+}
+
+// isDecimalLiteral reports whether s is a plain decimal number: an optional
+// sign, digits with at most one '.', and at most one exponent ('e' or 'E',
+// an optional sign, then digits). At least one digit before the exponent.
+func isDecimalLiteral(s string) bool {
+	i := 0
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	digits, dot := 0, false
+	for ; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digits++
+		case c == '.' && !dot:
+			dot = true
+		default:
+			goto exponent
+		}
+	}
+exponent:
+	if digits == 0 {
+		return false
+	}
+	if i == len(s) {
+		return true
+	}
+	if s[i] != 'e' && s[i] != 'E' {
+		return false
+	}
+	i++
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	if i == len(s) {
+		return false
+	}
+	for ; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // intParam is numericInput on input[key], with the parameter named in the

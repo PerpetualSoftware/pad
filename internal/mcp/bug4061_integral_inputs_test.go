@@ -44,12 +44,19 @@ func TestBUG4061_NumericInputRefusesWhatItWouldChange(t *testing.T) {
 		{name: "json.Number fraction", in: json.Number("1.5"), wantErr: "got 1.5"},
 		{name: "json.Number above int64", in: json.Number("1e19"), wantErr: "is out of range"},
 		{name: "json.Number whole with an exponent", in: json.Number("1e6"), want: 1000000, present: true},
-		{name: "json.Number not a number", in: json.Number("abc"), wantErr: "must be a whole number, got abc"},
+		{name: "json.Number not a number", in: json.Number("abc"), wantErr: "must be a whole number in range, got abc"},
 		// r2: exact, not via float64, which would round these two.
 		{name: "json.Number 2^53+1 with an exponent", in: json.Number("9007199254740993e0"), want: 9007199254740993, present: true},
 		{name: "json.Number a fraction float64 rounds to 1", in: json.Number("1.0000000000000001e0"), wantErr: "must be a whole number"},
 		{name: "json.Number huge exponent", in: json.Number("1e999999999"), wantErr: "in range"},
 		{name: "json.Number 1e64 is out of range", in: json.Number("1e64"), wantErr: "is out of range"},
+		// r5: big.Rat syntax that is not a JSON number is refused, not parsed.
+		{name: "json.Number binary prefix", in: json.Number("0b101"), wantErr: "must be a whole number in range, got 0b101"},
+		{name: "json.Number octal prefix", in: json.Number("0o17"), wantErr: "must be a whole number in range, got 0o17"},
+		{name: "json.Number hex prefix", in: json.Number("0x10"), wantErr: "must be a whole number in range, got 0x10"},
+		{name: "json.Number underscore", in: json.Number("1_000"), wantErr: "must be a whole number in range, got 1_000"},
+		{name: "json.Number fraction syntax", in: json.Number("4/2"), wantErr: "must be a whole number in range, got 4/2"},
+		{name: "json.Number signed exponent", in: json.Number("12e+0"), want: 12, present: true},
 		{name: "nil is absent", in: nil},
 		{name: "a string is absent, as before", in: "10"},
 	}
